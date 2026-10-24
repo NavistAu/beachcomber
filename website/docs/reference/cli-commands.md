@@ -287,7 +287,7 @@ There is no ownership: storing to a field name a Source already produces is allo
 
 ## `comb r` (refresh) `<key> [path] [--path <path>] [--global]`
 
-Re-execute the Sources a key demands, each at its own scope, without reading anything back. A bare `provider` re-runs every Source of the namespace; `provider.field` re-runs the one Source that owns the field — and only that one, so `comb r git.commit` runs `refs` and leaves `diff` alone. A `Global` Source runs at the global entry whatever path the request names; a path-scoped one at the directory given.
+Re-execute the Sources a key demands, each at the instance that answers for the directory, without reading anything back. A bare `provider` re-runs every Source of the namespace; `provider.field` re-runs the one Source that owns the field — and only that one, so `comb r git.commit` runs `refs` and leaves `diff` alone. A Source with no root runs at the one instance at `~` whatever path the request names; a rooted one at the root that answers for the directory given.
 
 ```sh
 comb r git                  # every git Source, for the current directory

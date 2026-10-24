@@ -5,7 +5,6 @@
 //! This is the single place that understands key syntax. `Get` and `Watch` both
 //! build a `QueryPlan` here so they share identical resolution semantics.
 
-use crate::provider::SourceScope;
 use crate::provider::registry::ProviderRegistry;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -109,8 +108,8 @@ pub fn home_dir() -> Option<PathBuf> {
 /// `$HOME`.** A request naming `$HOME` and a request carrying no path at all
 /// are the same request, and both key the pathless entry — so `$HOME` never
 /// gets a cache entry of its own beside the global one. The directory half of
-/// that rule is [`source_dir`]: a `PathScoped` Source addressed at the global
-/// entry still has a real directory to read, and it is `$HOME`.
+/// that rule is [`instance_dir`]: the instance at the global entry still has a
+/// real directory to read, and it is `$HOME`.
 pub fn normalise_path(requested: Option<&str>) -> Option<String> {
     let p = requested?;
     let path = Path::new(p);
@@ -131,19 +130,16 @@ pub fn normalise_path(requested: Option<&str>) -> Option<String> {
     Some(absolute)
 }
 
-/// The directory a Source runs in to produce the records at cache address
-/// `address` — the directory half of the rule at [`normalise_path`].
+/// The directory a Source runs in to produce the records of the instance at
+/// `root` — the directory half of the rule at [`normalise_path`].
 ///
-/// Everywhere but one case this is the address itself. The exception is a
-/// `PathScoped` Source at the global entry, whose address is `None` and whose
-/// directory is therefore `$HOME`: without it a repository at `$HOME` would be
+/// The instance's root, except at the instance at `~`, whose address is `None`
+/// and whose directory is `$HOME`: without it a repository at `$HOME` would be
 /// queried with no directory at all and answer nothing.
-pub fn source_dir(scope: SourceScope, address: Option<&str>) -> Option<String> {
-    match (scope, address) {
-        (SourceScope::PathScoped, None) => {
-            home_dir().map(|home| home.to_string_lossy().into_owned())
-        }
-        _ => address.map(str::to_string),
+pub fn instance_dir(root: Option<&str>) -> Option<String> {
+    match root {
+        Some(root) => Some(root.to_string()),
+        None => home_dir().map(|home| home.to_string_lossy().into_owned()),
     }
 }
 
@@ -180,88 +176,190 @@ pub fn path_chain(path: Option<&str>) -> Vec<Option<String>> {
 }
 
 /// Every cache-entry address one read of a namespace consults, nearest first:
-/// [`path_chain`] from the requested path, plus `provider_entry` as the head
-/// when it is not already a link.
+/// [`path_chain`] from the requested path, plus each instance the read reached
+/// that is not already a link of it.
 ///
-/// `provider_entry` — [`QueryPlan::effective_path`] — is usually on that chain
-/// already: a `canonical_path` walks up from the requested path, so it returns
-/// an ancestor-or-self of it, or `$HOME`, which [`normalise_path`] turns into
-/// the global link. But the walk does not stop at `$HOME` and the chain does:
-/// a project marker *above* `$HOME` (a repository at `/srv/x` with `$HOME` at
-/// `/srv/x/home`) keys the provider's entry at a directory the chain from
-/// `$HOME/proj` never reaches. The entry still has to be read and watched —
-/// canon `field_resolution.md` reads a path-scoped source's records at the
-/// addressed path — so it is added here.
+/// A reached root is usually on that chain already: a Source's `root` walks up
+/// from the requested path, so it is an ancestor-or-self of it, or `$HOME`,
+/// which [`normalise_path`] turns into the global link. But the walk does not
+/// stop at `$HOME` and the chain does: a project marker *above* `$HOME` (a
+/// repository at `/srv/x` with `$HOME` at `/srv/x/home`) is an instance at a
+/// directory the chain from `$HOME/proj` never reaches. The instance still has
+/// to be read and watched, so it is added here, nearest of the extras first.
 ///
 /// [`Cache::read_merged`] walks this, and `watch` subscribes it, so a write to
 /// any entry a frame is assembled from wakes the stream.
 ///
 /// [`Cache::read_merged`]: crate::cache::Cache::read_merged
-/// [`QueryPlan::effective_path`]: QueryPlan::effective_path
-pub fn read_chain(requested: Option<&str>, provider_entry: Option<&str>) -> Vec<Option<String>> {
-    let mut chain = path_chain(requested);
-    if !chain.iter().any(|layer| layer.as_deref() == provider_entry) {
-        chain.insert(0, provider_entry.map(str::to_string));
+pub fn read_chain(requested: Option<&str>, extra: &[Option<String>]) -> Vec<Option<String>> {
+    let on_chain = path_chain(requested);
+    let mut chain: Vec<Option<String>> = Vec::new();
+    for root in extra {
+        if !on_chain.contains(root) && !chain.contains(root) {
+            chain.push(root.clone());
+        }
     }
+    chain.extend(on_chain);
     chain
 }
 
-/// Resolve the effective path for a request: the cache entry the request
-/// addresses, and the head of the chain a read walks.
-///
-/// `requested` is the request's own path, already canonicalised by
-/// [`normalise_path`] — the one canonicalisation a request pays for, since the
-/// caller keeps that value too (a template resolves from it, while the data
-/// half resolves from what this returns).
-///
-/// What differs between namespaces is scope: a namespace that declares no
-/// sources — a static one, or an unknown name — has no scope of its own, so the
-/// requested path is its address; a provider whose sources are all `Global`
-/// declares that it has one answer, which lives at the global entry; and a
-/// provider with a `PathScoped` source may narrow the path further through that
-/// source's `canonical_path` (walking to a project root, say).
-fn resolve_path(key: &str, requested: Option<&str>, registry: &ProviderRegistry) -> Option<String> {
-    let raw = requested?;
-    let Some(provider) = path_provider(key) else {
-        return Some(raw.to_string());
-    };
+/// How many instances one chain may have before it is taken for a Source whose
+/// `root` never settles. A real chain has one per directory level at most.
+const MAX_INSTANCES: usize = 64;
 
-    let Some(sources) = registry.provider_sources(&provider) else {
-        return Some(raw.to_string());
-    };
-    if !sources.iter().any(|s| s.scope == SourceScope::PathScoped) {
-        return None;
-    }
-    for sm in sources {
-        if sm.scope == SourceScope::PathScoped
-            && let Some(src) = registry.source(&provider, &sm.name)
-            && let Some(canonical) = src.canonical_path(Some(raw))
-        {
-            // A walk that stayed put returns an already-canonical path. One
-            // that moved has to be normalised, because it can land on `$HOME`
-            // — a repository rooted there, queried from a subdirectory — and
-            // `$HOME` is the global entry. Otherwise the same directory would
-            // key two entries: `Some($HOME)` from the walk and `None` from a
-            // direct request.
-            return if canonical == raw {
-                Some(canonical)
-            } else {
-                normalise_path(Some(&canonical))
-            };
+/// What the next instance of a chain needs to be found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ask {
+    /// The chain is over: it ended at the instance at `~`.
+    Done,
+    /// The next instance is the one at `~`; no `root` is asked.
+    Home,
+    /// The next instance is whatever the Source's `root` says for this
+    /// directory.
+    Root(String),
+}
+
+/// The walk up one Source's instances from a directory: `R1 = root(dir)`, then
+/// `root(parent(R1))`, and so on, ending at the instance at `~` (`None`) and
+/// never going past it. An instance already visited ends the walk at `~`
+/// instead of repeating, so a `root` that answers the same directory for every
+/// parent still terminates.
+///
+/// The walk does not call `root` itself: it says what it needs ([`Ask`]) and is
+/// given the answer ([`InstanceWalk::step`]), so one walk serves the blocking
+/// callers and the request path, which keeps a first render of a config
+/// Source's `root` line off the async workers.
+#[derive(Debug, Clone)]
+pub struct InstanceWalk {
+    /// The directory the walk starts from; `None` is the global entry.
+    start: Option<String>,
+    /// The instances yielded so far, nearest first.
+    seen: Vec<Option<String>>,
+}
+
+impl InstanceWalk {
+    /// A walk for a read at `dir`: the plan's `requested_path`, so `None` is
+    /// `$HOME` or no path at all, whose only instance is the one at `~`.
+    pub fn new(dir: Option<&str>) -> Self {
+        Self {
+            start: dir.map(str::to_string),
+            seen: Vec::new(),
         }
     }
-    Some(raw.to_string())
+
+    /// What the next instance needs.
+    pub fn ask(&self) -> Ask {
+        match self.seen.last() {
+            None => match &self.start {
+                Some(dir) => Ask::Root(dir.clone()),
+                None => Ask::Home,
+            },
+            Some(None) => Ask::Done,
+            Some(Some(root)) => match Path::new(root).parent() {
+                // The filesystem root has no parent, and `$HOME` is the
+                // instance at `~` itself: either way the next is `~`.
+                None => Ask::Home,
+                Some(parent) if home_dir().as_deref() == Some(parent) => Ask::Home,
+                Some(parent) => Ask::Root(parent.to_string_lossy().into_owned()),
+            },
+        }
+    }
+
+    /// Take the answer to [`InstanceWalk::ask`] (`root`'s normalised answer for
+    /// `Ask::Root`, ignored for `Ask::Home`) and return the next instance:
+    /// `Some(root)` or `None` for the instance at `~`.
+    pub fn step(&mut self, answer: Option<String>) -> Result<Option<String>, String> {
+        let mut next = match self.ask() {
+            Ask::Done => return Err("the instance chain is over".into()),
+            Ask::Home => None,
+            Ask::Root(_) => answer,
+        };
+        if next.is_some() && self.seen.contains(&next) {
+            next = None;
+        }
+        if self.seen.len() >= MAX_INSTANCES {
+            return Err(format!(
+                "more than {MAX_INSTANCES} instances up the chain: root does not settle"
+            ));
+        }
+        self.seen.push(next.clone());
+        Ok(next)
+    }
+}
+
+/// Every instance of `provider`'s Source `source` that a read at `dir` can
+/// reach, nearest first, ending with the instance at `~` (`None`). A Source
+/// whose `root` is always `None` has the one-instance chain `[None]`.
+///
+/// `dir` is the plan's `requested_path`. An error is a `root` that could not be
+/// worked out; it is the read's error, never the instance at `~`.
+pub fn instance_chain(
+    registry: &ProviderRegistry,
+    provider: &str,
+    source: &str,
+    dir: Option<&str>,
+) -> Result<Vec<Option<String>>, String> {
+    let mut walk = InstanceWalk::new(dir);
+    let mut chain = Vec::new();
+    loop {
+        let answer = match walk.ask() {
+            Ask::Done => return Ok(chain),
+            Ask::Home => None,
+            Ask::Root(dir) => registry.instance_root(provider, source, &dir)?,
+        };
+        chain.push(walk.step(answer)?);
+    }
+}
+
+/// Every instance of every Source `demand` selects, for a read at `dir`:
+/// `(source, root)` pairs, each Source's chain nearest first.
+pub fn instances_for(
+    registry: &ProviderRegistry,
+    provider: &str,
+    demand: &SourceDemand,
+    dir: Option<&str>,
+) -> Result<Vec<Instance>, String> {
+    let mut out = Vec::new();
+    for source in demanded_source_names(registry, provider, demand) {
+        for root in instance_chain(registry, provider, &source, dir)? {
+            out.push(Instance {
+                source: source.clone(),
+                root,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// One instance of a Source: the Source's name and the root it answers for
+/// (`None` is the instance at `~`). The unit demand and refreshes address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Instance {
+    pub source: String,
+    pub root: Option<String>,
+}
+
+/// The distinct roots of `instances`, in the order first met: the extra links
+/// [`read_chain`] adds to a read.
+pub fn roots_of(instances: &[Instance]) -> Vec<Option<String>> {
+    let mut roots: Vec<Option<String>> = Vec::new();
+    for instance in instances {
+        if !roots.contains(&instance.root) {
+            roots.push(instance.root.clone());
+        }
+    }
+    roots
 }
 
 /// Which Sources a query demands warming for.
 ///
-/// Approach A from the design spec: an explicit enum keeps field→source
-/// resolution in this layer while leaving scope/path policy in the scheduler.
+/// An explicit enum keeps field→source resolution in this layer while the
+/// instances each Source is warmed at are found per Source ([`InstanceWalk`]).
 /// `Sources(vec![])` means "warm nothing" (e.g. an unknown field) and is
 /// deliberately distinct from `All`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceDemand {
-    /// Whole-provider query: warm every applicable Source (scheduler applies scope filter).
+    /// Whole-provider query: warm every Source.
     All,
     /// Field/source query: warm only these named Sources.
     Sources(Vec<String>),
@@ -311,13 +409,9 @@ pub struct QueryPlan {
     pub provider: String,
     /// The request's own path, canonicalised ([`normalise_path`]) — where the
     /// caller is standing. Static records, and so the template half of a read,
-    /// resolve up the chain from here.
+    /// resolve up the chain from here, and it is where each demanded Source's
+    /// instance chain starts ([`InstanceWalk`]).
     pub requested_path: Option<String>,
-    /// Where the *provider's* records live: [`requested_path`] narrowed by the
-    /// namespace's scope. The data half of a read is addressed here.
-    ///
-    /// [`requested_path`]: QueryPlan::requested_path
-    pub effective_path: Option<String>,
     pub target: KeyParse,
     pub demand: SourceDemand,
     /// Which layers the read sees: `p:put` and `p:source` name one, anything
@@ -348,16 +442,6 @@ pub fn split_layer_facet(key: &str) -> (std::borrow::Cow<'_, str>, crate::cache:
     (key.into(), Layers::All)
 }
 
-/// The provider whose Sources resolve the path of a request for `raw_key`:
-/// the first segment once a layer facet (`:put`, `:source`, `:cache`) is split
-/// off. `None` for any other facet key (`git:template`), which names no
-/// provider's Sources and never reaches a `canonical_path`.
-pub fn path_provider(raw_key: &str) -> Option<String> {
-    let (key, _) = split_layer_facet(raw_key);
-    let segment = key.split('.').next().unwrap_or(&key);
-    (!segment.contains(':')).then(|| segment.to_string())
-}
-
 impl QueryPlan {
     /// Resolve a raw request key + optional path hint into a plan, or refuse
     /// a key whose colons are invalid ([`validate_key`]).
@@ -369,7 +453,6 @@ impl QueryPlan {
         validate_key(raw_key)?;
         let (key, layers) = split_layer_facet(raw_key);
         let requested_path = normalise_path(path_hint);
-        let effective_path = resolve_path(&key, requested_path.as_deref(), registry);
         let target = parse_key(&key);
 
         let provider = match &target {
@@ -377,16 +460,9 @@ impl QueryPlan {
             KeyParse::Field(p, _) => p.clone(),
         };
 
+        // The Sources the key reads. The layer facets `:put` and `:cache` warm
+        // none of them; a caller that warms checks `layers`.
         let demand = match &target {
-            // The put layer is what `put` wrote, and `:cache` reports on what is
-            // cached: no Source has anything to warm.
-            _ if matches!(
-                layers,
-                crate::cache::Layers::Put | crate::cache::Layers::Cache
-            ) =>
-            {
-                SourceDemand::Sources(Vec::new())
-            }
             KeyParse::Provider(_) => SourceDemand::All,
             KeyParse::Field(p, f) => {
                 // A field's demand is the Source of its nearest ancestor node,
@@ -404,7 +480,6 @@ impl QueryPlan {
         Ok(QueryPlan {
             provider,
             requested_path,
-            effective_path,
             target,
             demand,
             layers,
@@ -528,14 +603,12 @@ mod tests {
     }
 
     #[test]
-    fn build_an_undeclared_field_under_sentinel_sources_demands_them_all() {
+    fn build_an_undeclared_field_under_a_sentinel_source_demands_it() {
         let reg = ProviderRegistry::with_defaults();
         let plan = QueryPlan::build("mise.node", None, &reg).unwrap();
         match plan.demand {
-            SourceDemand::Sources(v) => {
-                assert_eq!(v, vec!["global".to_string(), "project".to_string()])
-            }
-            other => panic!("expected Sources([global, project]), got {other:?}"),
+            SourceDemand::Sources(v) => assert_eq!(v, vec!["tools".to_string()]),
+            other => panic!("expected Sources([tools]), got {other:?}"),
         }
     }
 
@@ -606,123 +679,230 @@ mod tests {
 }
 
 #[cfg(test)]
-mod resolve_path_tests {
+mod instance_chain_tests {
     use super::*;
     use crate::provider::registry::ProviderRegistry;
     use crate::provider::{
         FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-        Source, SourceMetadata, SourceResult, SourceScope,
+        Source, SourceMetadata, SourceResult,
     };
+    use std::sync::Arc;
 
-    struct FakeSource(SourceMetadata);
+    type RootFn = Arc<dyn Fn(&str) -> Result<Option<String>, String> + Send + Sync>;
+
+    /// A Source whose root is whatever `root_fn` says, or none at all.
+    struct FakeSource {
+        meta: SourceMetadata,
+        root_fn: Option<RootFn>,
+    }
     impl Source for FakeSource {
         fn metadata(&self) -> &SourceMetadata {
-            &self.0
+            &self.meta
         }
-        fn execute(&self, _path: Option<&str>) -> SourceResult {
-            SourceResult::new()
+        fn execute(&self, _dir: Option<&str>) -> Result<SourceResult, String> {
+            Ok(SourceResult::new())
+        }
+        fn root(&self, dir: &str) -> Result<Option<String>, String> {
+            match &self.root_fn {
+                Some(f) => f(dir),
+                None => Ok(None),
+            }
+        }
+        fn has_root(&self) -> bool {
+            self.root_fn.is_some()
         }
     }
 
     struct FakeProvider {
         name: String,
-        scope: SourceScope,
+        root_fn: Option<RootFn>,
     }
-
-    impl Provider for FakeProvider {
-        fn metadata(&self) -> ProviderMetadata {
-            let invalidation = match self.scope {
-                SourceScope::Global => InvalidationStrategy::Watch {
-                    patterns: vec![],
-                    abs_paths: vec![],
-                },
-                SourceScope::PathScoped => InvalidationStrategy::Poll {
+    impl FakeProvider {
+        fn meta(&self) -> SourceMetadata {
+            SourceMetadata {
+                name: "main".into(),
+                fields: vec![FieldSchema {
+                    name: "v".into(),
+                    field_type: FieldType::String,
+                }],
+                invalidation: InvalidationStrategy::Poll {
                     interval_secs: 30,
                     count: 2,
                 },
-            };
-            ProviderMetadata {
-                name: self.name.clone(),
-                sources: vec![SourceMetadata {
-                    name: "main".into(),
-                    fields: vec![FieldSchema {
-                        name: "v".into(),
-                        field_type: FieldType::String,
-                    }],
-                    scope: self.scope,
-                    invalidation,
-                    failback: FailbackConfig {
-                        reattempts: 3,
-                        interval_secs: 30,
-                    },
-                    fsevents_reinstate: false,
-                    decay: None,
-                    budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
-                }],
+                failback: FailbackConfig {
+                    reattempts: 3,
+                    interval_secs: 30,
+                },
+                fsevents_reinstate: false,
+                decay: None,
+                budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
             }
         }
-
+    }
+    impl Provider for FakeProvider {
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: self.name.clone(),
+                sources: vec![self.meta()],
+            }
+        }
         fn sources(&self) -> Vec<Box<dyn Source>> {
-            vec![Box::new(FakeSource(self.metadata().sources[0].clone()))]
+            vec![Box::new(FakeSource {
+                meta: self.meta(),
+                root_fn: self.root_fn.clone(),
+            })]
         }
     }
 
-    fn registry_with(providers: Vec<Box<dyn Provider>>) -> ProviderRegistry {
+    fn registry_with(name: &str, root_fn: Option<RootFn>) -> ProviderRegistry {
         let mut reg = ProviderRegistry::new();
-        for p in providers {
-            reg.register(p).unwrap();
-        }
+        reg.register(Box::new(FakeProvider {
+            name: name.into(),
+            root_fn,
+        }))
+        .unwrap();
         reg
     }
 
-    #[test]
-    fn global_provider_ignores_explicit_path() {
-        let reg = registry_with(vec![Box::new(FakeProvider {
-            name: "hostname".into(),
-            scope: SourceScope::Global,
-        })]);
-        let result = resolve_path("hostname", normalise_path(Some("/tmp")).as_deref(), &reg);
-        assert_eq!(result, None, "global provider must ignore explicit path");
+    fn home() -> String {
+        home_dir()
+            .expect("$HOME is set")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// A root that is the nearest of `markers` at or above the directory: the
+    /// walk a project marker does, without touching the filesystem.
+    fn marker_walk(markers: Vec<String>) -> RootFn {
+        Arc::new(move |dir: &str| {
+            Ok(markers
+                .iter()
+                .filter(|m| Path::new(dir).starts_with(m.as_str()))
+                .max_by_key(|m| m.len())
+                .cloned())
+        })
     }
 
     #[test]
-    fn path_scoped_provider_honors_explicit_path() {
-        let reg = registry_with(vec![Box::new(FakeProvider {
-            name: "git".into(),
-            scope: SourceScope::PathScoped,
-        })]);
-        let result = resolve_path("git", normalise_path(Some("/tmp")).as_deref(), &reg);
-        // /tmp should canonicalize to something (may differ by OS)
-        assert!(
-            result.is_some(),
-            "path-scoped provider should honor explicit path"
-        );
-    }
-
-    #[test]
-    fn a_namespace_with_no_sources_keeps_the_requested_path() {
-        let reg = ProviderRegistry::new();
-        // A namespace that declares no sources — a static one, or an unknown
-        // name — has no scope of its own, so the requested path is its path and
-        // the chain resolves the rest.
-        let result = resolve_path("nonexistent", normalise_path(Some("/tmp")).as_deref(), &reg);
-        assert_eq!(result, normalise_path(Some("/tmp")));
-        assert!(result.is_some(), "/tmp is not $HOME");
-    }
-
-    #[test]
-    fn a_request_addressing_home_resolves_to_the_global_entry() {
-        let reg = ProviderRegistry::new();
-        let home = home_dir().expect("$HOME is set");
+    fn instance_chain_ends_at_home() {
+        let proj = format!("{}/ws/proj", home());
+        let reg = registry_with("p", Some(marker_walk(vec![proj.clone()])));
+        let dir = format!("{proj}/src");
         assert_eq!(
-            resolve_path(
-                "anything",
-                normalise_path(Some(&home.to_string_lossy())).as_deref(),
-                &reg
-            ),
-            None,
-            "$HOME is the global path"
+            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            vec![Some(proj), None]
         );
+    }
+
+    #[test]
+    fn instance_chain_climbs_through_nested_roots() {
+        let outer = format!("{}/ws/outer", home());
+        let inner = format!("{outer}/vendor/inner");
+        let reg = registry_with("p", Some(marker_walk(vec![outer.clone(), inner.clone()])));
+        let dir = format!("{inner}/src");
+        assert_eq!(
+            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            vec![Some(inner), Some(outer), None]
+        );
+    }
+
+    #[test]
+    fn instance_chain_skips_repeated_roots() {
+        // A root that answers the same directory whatever it is asked about:
+        // the parent of that root asks again, gets it again, and the walk ends
+        // at `~` instead of going round.
+        let fixed = format!("{}/ws/fixed", home());
+        let answer = fixed.clone();
+        let reg = registry_with(
+            "p",
+            Some(Arc::new(move |_dir: &str| Ok(Some(answer.clone())))),
+        );
+        let dir = format!("{}/ws/elsewhere/deep", home());
+        assert_eq!(
+            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            vec![Some(fixed), None]
+        );
+    }
+
+    #[test]
+    fn a_source_with_no_root_has_one_instance() {
+        let reg = registry_with("p", None);
+        let dir = format!("{}/ws/anywhere", home());
+        assert_eq!(
+            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            vec![None]
+        );
+        assert_eq!(instance_chain(&reg, "p", "main", None).unwrap(), vec![None]);
+    }
+
+    #[test]
+    fn a_root_that_is_home_is_the_instance_at_home() {
+        let reg = registry_with("p", Some(Arc::new(|_dir: &str| Ok(Some(home())))));
+        let dir = format!("{}/ws/proj", home());
+        assert_eq!(
+            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            vec![None]
+        );
+    }
+
+    #[test]
+    fn a_root_above_home_is_walked_past_it_to_home() {
+        // `$HOME`'s parent is not home, so the walk continues up from the
+        // marker and still ends at `~`.
+        let above = "/no-such-beachcomber-marker/repo".to_string();
+        let reg = registry_with("p", Some(marker_walk(vec![above.clone()])));
+        let dir = format!("{above}/deep/er");
+        assert_eq!(
+            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            vec![Some(above), None]
+        );
+    }
+
+    #[test]
+    fn a_root_that_fails_is_the_chains_error_not_home() {
+        let reg = registry_with("p", Some(Arc::new(|_dir: &str| Err("no luck".to_string()))));
+        let dir = format!("{}/ws/proj", home());
+        assert_eq!(
+            instance_chain(&reg, "p", "main", Some(&dir)),
+            Err("no luck".to_string())
+        );
+    }
+
+    #[test]
+    fn a_root_that_never_settles_is_an_error() {
+        // Every ask names a root the walk has not seen: a new one beside the
+        // last.
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let reg = registry_with(
+            "p",
+            Some(Arc::new(move |_dir: &str| {
+                let n = asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(Some(format!("/no-such-beachcomber-root/{n}")))
+            })),
+        );
+        let dir = format!("{}/ws/proj", home());
+        let err = instance_chain(&reg, "p", "main", Some(&dir)).unwrap_err();
+        assert!(err.contains("does not settle"), "{err}");
+    }
+
+    #[test]
+    fn read_chain_adds_a_root_the_directory_chain_does_not_reach() {
+        let above = Some("/no-such-beachcomber-marker/repo".to_string());
+        let dir = format!("{}/ws/proj", home());
+        let chain = read_chain(Some(&dir), &[above.clone(), None]);
+        assert_eq!(chain.first(), Some(&above), "the extra link leads");
+        assert_eq!(chain.last(), Some(&None), "the global entry ends it");
+        assert_eq!(
+            chain.iter().filter(|l| l.is_none()).count(),
+            1,
+            "a root already on the chain is not added twice: {chain:?}"
+        );
+    }
+
+    #[test]
+    fn instance_dir_is_home_for_the_instance_at_home() {
+        assert_eq!(instance_dir(None), Some(home()));
+        assert_eq!(instance_dir(Some("/a/b")), Some("/a/b".to_string()));
     }
 }
 

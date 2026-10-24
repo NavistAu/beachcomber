@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use std::path::Path;
 
@@ -26,7 +26,6 @@ fn state_source_metadata() -> SourceMetadata {
             name: "workspace".into(),
             field_type: FieldType::String,
         }],
-        scope: SourceScope::PathScoped,
         invalidation: InvalidationStrategy::Watch {
             patterns: vec![".terraform/environment".into()],
             abs_paths: vec![],
@@ -50,14 +49,14 @@ impl Source for TerraformState {
         M.get_or_init(state_source_metadata)
     }
 
-    fn execute(&self, path: Option<&str>) -> SourceResult {
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let Some(path) = path else {
-            return SourceResult::new();
+            return Err("no directory to run in".into());
         };
         let dir = Path::new(path);
         let tf_dir = dir.join(".terraform");
         if !tf_dir.exists() {
-            return SourceResult::new();
+            return Ok(SourceResult::new());
         }
 
         // Read from .terraform/environment file only. $TF_WORKSPACE is a
@@ -68,12 +67,15 @@ impl Source for TerraformState {
 
         let mut result = SourceResult::new();
         result.insert("workspace", Value::String(workspace));
-        result
+        Ok(result)
     }
 
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        let p = path?;
-        find_terraform_root(Path::new(p))
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(find_terraform_root(Path::new(dir)))
+    }
+
+    fn has_root(&self) -> bool {
+        true
     }
 }
 
@@ -117,7 +119,9 @@ mod tests {
         // This is the field the virtual cascade 'workspace = "env.TF_WORKSPACE or comb.terraform.workspace"' references.
         let dir = make_tf_root(Some("staging"));
         let sources = TerraformProvider.sources();
-        let result = sources[0].execute(Some(dir.path().to_str().unwrap()));
+        let result = sources[0]
+            .execute(Some(dir.path().to_str().unwrap()))
+            .unwrap();
         assert!(
             result.fields.contains_key("workspace"),
             "daemon field must be 'workspace'; got keys: {:?}",
@@ -137,7 +141,9 @@ mod tests {
         let dir = make_tf_root(Some("from-file"));
         let result = temp_env::with_var("TF_WORKSPACE", Some("from-env"), || {
             let sources = TerraformProvider.sources();
-            sources[0].execute(Some(dir.path().to_str().unwrap()))
+            sources[0]
+                .execute(Some(dir.path().to_str().unwrap()))
+                .unwrap()
         });
         // Daemon must return 'from-file' (file value), not 'from-env' (env).
         assert_eq!(
@@ -152,7 +158,9 @@ mod tests {
         let dir = make_tf_root(None); // .terraform exists but no environment file
         let result = temp_env::with_var("TF_WORKSPACE", None::<&str>, || {
             let sources = TerraformProvider.sources();
-            sources[0].execute(Some(dir.path().to_str().unwrap()))
+            sources[0]
+                .execute(Some(dir.path().to_str().unwrap()))
+                .unwrap()
         });
         assert_eq!(
             result.fields.get("workspace").unwrap().as_text(),
@@ -165,36 +173,32 @@ mod tests {
     fn terraform_returns_none_without_terraform_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let sources = TerraformProvider.sources();
-        let result = sources[0].execute(Some(tmp.path().to_str().unwrap()));
+        let result = sources[0]
+            .execute(Some(tmp.path().to_str().unwrap()))
+            .unwrap();
         assert!(result.fields.is_empty());
     }
 
     #[test]
-    fn terraform_canonical_path_returns_module_root_from_subdir() {
+    fn terraform_root_returns_module_root_from_subdir() {
         let project = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(project.path().join(".terraform")).unwrap();
         let subdir = project.path().join("envs").join("dev");
         std::fs::create_dir_all(&subdir).unwrap();
 
         let sources = TerraformProvider.sources();
-        let got = sources[0].canonical_path(Some(subdir.to_str().unwrap()));
+        let got = sources[0].root(subdir.to_str().unwrap()).unwrap();
         let expected = project.path().to_string_lossy().to_string();
         assert_eq!(got, Some(expected));
     }
 
     #[test]
-    fn terraform_canonical_path_none_outside_project() {
+    fn terraform_root_none_outside_project() {
         let tmp = tempfile::tempdir().unwrap();
         let sources = TerraformProvider.sources();
-        let got = sources[0].canonical_path(Some(tmp.path().to_str().unwrap()));
+        let got = sources[0].root(tmp.path().to_str().unwrap()).unwrap();
         if let Some(got) = got {
             assert_ne!(got, tmp.path().to_string_lossy().to_string());
         }
-    }
-
-    #[test]
-    fn terraform_canonical_path_passes_none_through() {
-        let sources = TerraformProvider.sources();
-        assert_eq!(sources[0].canonical_path(None), None);
     }
 }

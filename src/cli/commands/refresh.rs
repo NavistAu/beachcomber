@@ -1,8 +1,8 @@
 //! Handler for the `refresh` subcommand.
 //!
 //! `refresh` is the daemon's `refresh` op and nothing more: it re-executes
-//! only the Sources the key demands, each at its own scope, and reads nothing
-//! back. A key with no Source behind it — a static namespace, a facet key, an
+//! only the Sources the key demands, each at the instance that answers for the
+//! directory, and reads nothing back. A key with no Source behind it — a static namespace, a facet key, an
 //! unknown name, a field no Source owns — is the daemon's refusal, printed in
 //! its own words. `comb get --force` is the read-and-refresh form; this is
 //! the re-execution alone.

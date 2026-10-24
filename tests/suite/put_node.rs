@@ -15,7 +15,7 @@ use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::server::Server;
 use std::sync::Arc;
@@ -59,7 +59,6 @@ impl Source for SentinelSource {
                 name: "<tool>".into(),
                 field_type: FieldType::String,
             }],
-            scope: SourceScope::Global,
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
                 count: 2,
@@ -74,10 +73,10 @@ impl Source for SentinelSource {
         })
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let mut result = SourceResult::new();
         result.insert("node", Value::String("22.0.0".to_string()));
-        result
+        Ok(result)
     }
 }
 
@@ -100,7 +99,6 @@ impl Source for CountingSource {
                 name: "name".into(),
                 field_type: FieldType::String,
             }],
-            scope: SourceScope::Global,
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
                 count: 2,
@@ -115,11 +113,11 @@ impl Source for CountingSource {
         })
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         HOST_RUNS.fetch_add(1, Ordering::SeqCst);
         let mut result = SourceResult::new();
         result.insert("name", Value::String("counted-host".to_string()));
-        result
+        Ok(result)
     }
 }
 

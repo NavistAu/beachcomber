@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use std::path::Path;
 
@@ -36,7 +36,6 @@ fn venv_source_metadata() -> SourceMetadata {
                 field_type: FieldType::String,
             },
         ],
-        scope: SourceScope::PathScoped,
         invalidation: InvalidationStrategy::Watch {
             patterns: vec![".venv".into(), "pyproject.toml".into()],
             abs_paths: vec![],
@@ -60,9 +59,9 @@ impl Source for PythonVenv {
         M.get_or_init(venv_source_metadata)
     }
 
-    fn execute(&self, path: Option<&str>) -> SourceResult {
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let Some(path) = path else {
-            return SourceResult::new();
+            return Err("no directory to run in".into());
         };
         let dir = Path::new(path);
 
@@ -79,16 +78,19 @@ impl Source for PythonVenv {
                 result.insert("venv", Value::Bool(true));
                 result.insert("local_venv_name", Value::String(name.to_string()));
                 result.insert("venv_version", Value::String(venv_version));
-                return result;
+                return Ok(result);
             }
         }
 
-        SourceResult::new()
+        Ok(SourceResult::new())
     }
 
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        let p = path?;
-        find_python_project_root(Path::new(p))
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(find_python_project_root(Path::new(dir)))
+    }
+
+    fn has_root(&self) -> bool {
+        true
     }
 }
 
@@ -154,7 +156,9 @@ mod tests {
         // Confirms the daemon field is 'venv_version', not 'version'.
         let dir = make_venv(".venv", "3.12.1");
         let sources = PythonProvider.sources();
-        let result = sources[0].execute(Some(dir.path().to_str().unwrap()));
+        let result = sources[0]
+            .execute(Some(dir.path().to_str().unwrap()))
+            .unwrap();
         assert!(
             result.fields.contains_key("venv_version"),
             "field must be 'venv_version'; got: {:?}",
@@ -172,7 +176,9 @@ mod tests {
         // The new 'local_venv_name' field holds the raw directory name (.venv, venv, etc.).
         let dir = make_venv(".venv", "3.11.0");
         let sources = PythonProvider.sources();
-        let result = sources[0].execute(Some(dir.path().to_str().unwrap()));
+        let result = sources[0]
+            .execute(Some(dir.path().to_str().unwrap()))
+            .unwrap();
         assert_eq!(result.fields["local_venv_name"].as_text(), ".venv");
     }
 
@@ -182,7 +188,9 @@ mod tests {
         let dir = TempDir::new().unwrap(); // no venv on disk
         let result = temp_env::with_var("VIRTUAL_ENV", Some("/some/external/venv"), || {
             let sources = PythonProvider.sources();
-            sources[0].execute(Some(dir.path().to_str().unwrap()))
+            sources[0]
+                .execute(Some(dir.path().to_str().unwrap()))
+                .unwrap()
         });
         assert!(
             result.fields.is_empty(),
@@ -195,7 +203,9 @@ mod tests {
     fn python_venv_bool_true_when_venv_found() {
         let dir = make_venv("venv", "3.10.0");
         let sources = PythonProvider.sources();
-        let result = sources[0].execute(Some(dir.path().to_str().unwrap()));
+        let result = sources[0]
+            .execute(Some(dir.path().to_str().unwrap()))
+            .unwrap();
         assert_eq!(
             result.fields["venv"].as_text(),
             "true",
@@ -218,7 +228,9 @@ mod tests {
         .unwrap();
 
         let sources = PythonProvider.sources();
-        let result = sources[0].execute(Some(dir.path().to_str().unwrap()));
+        let result = sources[0]
+            .execute(Some(dir.path().to_str().unwrap()))
+            .unwrap();
         let ver = result.fields["venv_version"].as_text();
         assert!(
             !ver.contains("_info"),
@@ -235,7 +247,9 @@ mod tests {
         // Confirm the stdlib venv `version = X.Y.Z` line is still parsed correctly.
         let dir = make_venv(".venv", "3.12.1");
         let sources = PythonProvider.sources();
-        let result = sources[0].execute(Some(dir.path().to_str().unwrap()));
+        let result = sources[0]
+            .execute(Some(dir.path().to_str().unwrap()))
+            .unwrap();
         assert_eq!(result.fields["venv_version"].as_text(), "3.12.1");
     }
 }

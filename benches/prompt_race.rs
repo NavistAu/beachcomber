@@ -34,7 +34,7 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::query::SourceDemand;
+use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher::FsWatcher;
 use beachcomber::watcher_registry::WatcherRegistry;
@@ -243,8 +243,28 @@ fn bench_convergence_l(c: &mut Criterion) {
         handle
             .send(SchedulerMessage::QueryActivity {
                 provider: "git".to_string(),
-                path: Some(path.clone()),
-                demand: SourceDemand::All,
+                instances: vec![
+                    Instance {
+                        source: "head".to_string(),
+                        root: Some(path.clone()),
+                    },
+                    Instance {
+                        source: "refs".to_string(),
+                        root: Some(path.clone()),
+                    },
+                    Instance {
+                        source: "diff".to_string(),
+                        root: Some(path.clone()),
+                    },
+                    Instance {
+                        source: "lineage".to_string(),
+                        root: Some(path.clone()),
+                    },
+                    Instance {
+                        source: "status".to_string(),
+                        root: Some(path.clone()),
+                    },
+                ],
             })
             .await;
         tokio::time::sleep(Duration::from_millis(500)).await;

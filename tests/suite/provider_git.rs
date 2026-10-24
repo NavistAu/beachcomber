@@ -1,47 +1,40 @@
 use crate::common::git::GitRepoFixture;
 use beachcomber::provider::Provider;
-use beachcomber::provider::SourceScope;
 use beachcomber::provider::git::GitProvider;
 use tempfile::TempDir;
 
 #[test]
-fn git_canonical_path_returns_repo_root_from_subdir() {
+fn git_root_returns_repo_root_from_subdir() {
     let repo = GitRepoFixture::new();
     let subdir = repo.create_subdir("src/lib");
 
     let sources = GitProvider.sources();
-    let got = sources[0].canonical_path(Some(subdir.to_str().unwrap()));
+    let got = sources[0].root(subdir.to_str().unwrap()).unwrap();
     let expected = repo.path().to_string_lossy().to_string();
     assert_eq!(got, Some(expected));
 }
 
 #[test]
-fn git_canonical_path_returns_repo_root_when_called_at_root() {
+fn git_root_returns_repo_root_when_called_at_root() {
     let repo = GitRepoFixture::new();
     let sources = GitProvider.sources();
-    let got = sources[0].canonical_path(Some(repo.path_str()));
+    let got = sources[0].root(repo.path_str()).unwrap();
     let expected = repo.path().to_string_lossy().to_string();
     assert_eq!(got, Some(expected));
 }
 
 #[test]
-fn git_canonical_path_returns_none_outside_any_repo() {
+fn git_root_returns_none_outside_any_repo() {
     let tmp = TempDir::new().unwrap();
     let sources = GitProvider.sources();
-    let got = sources[0].canonical_path(Some(tmp.path().to_str().unwrap()));
+    let got = sources[0].root(tmp.path().to_str().unwrap()).unwrap();
     if let Some(got) = got {
         assert_ne!(
             got,
             tmp.path().to_string_lossy().to_string(),
-            "tempdir has no .git; canonical_path should not return the dir itself"
+            "tempdir has no .git; root should not return the dir itself"
         );
     }
-}
-
-#[test]
-fn git_canonical_path_passes_none_through() {
-    let sources = GitProvider.sources();
-    assert_eq!(sources[0].canonical_path(None), None);
 }
 
 #[test]
@@ -51,13 +44,11 @@ fn git_provider_metadata() {
     assert_eq!(meta.sources.len(), 5);
 
     let head_src = meta.sources.iter().find(|s| s.name == "head").unwrap();
-    assert_eq!(head_src.scope, SourceScope::PathScoped);
     let head_fields: Vec<&str> = head_src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(head_fields.contains(&"branch"));
     assert!(head_fields.contains(&"detached"));
 
     let refs_src = meta.sources.iter().find(|s| s.name == "refs").unwrap();
-    assert_eq!(refs_src.scope, SourceScope::PathScoped);
     let refs_fields: Vec<&str> = refs_src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(
         !refs_fields.contains(&"branch"),
@@ -82,7 +73,6 @@ fn git_provider_metadata() {
     assert!(refs_fields.contains(&"push_behind"));
 
     let diff_src = meta.sources.iter().find(|s| s.name == "diff").unwrap();
-    assert_eq!(diff_src.scope, SourceScope::PathScoped);
     let diff_fields: Vec<&str> = diff_src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(diff_fields.contains(&"lines_added"));
     assert!(diff_fields.contains(&"lines_removed"));
@@ -90,7 +80,6 @@ fn git_provider_metadata() {
     assert!(diff_fields.contains(&"lines_staged_removed"));
 
     let lineage_src = meta.sources.iter().find(|s| s.name == "lineage").unwrap();
-    assert_eq!(lineage_src.scope, SourceScope::PathScoped);
     let lineage_fields: Vec<&str> = lineage_src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(lineage_fields.contains(&"branch_parent"));
     assert!(lineage_fields.contains(&"lines_added_parent"));
@@ -100,7 +89,6 @@ fn git_provider_metadata() {
     assert!(lineage_fields.contains(&"lines_removed_default"));
 
     let status_src = meta.sources.iter().find(|s| s.name == "status").unwrap();
-    assert_eq!(status_src.scope, SourceScope::PathScoped);
     let status_fields: Vec<&str> = status_src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(status_fields.contains(&"staged"));
     assert!(status_fields.contains(&"unstaged"));
@@ -129,7 +117,9 @@ fn git_refs_returns_empty_for_non_repo() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(tmp.path().to_str().unwrap()));
+    let result = refs_src
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .unwrap();
     assert!(
         result.fields.is_empty(),
         "Non-git directory should return empty SourceResult"
@@ -145,7 +135,7 @@ fn git_refs_returns_branch() {
         .iter()
         .find(|s| s.metadata().name == "head")
         .unwrap();
-    let result = head_src.execute(Some(repo.path_str()));
+    let result = head_src.execute(Some(repo.path_str())).unwrap();
     let branch = result.fields.get("branch").unwrap().as_text();
     assert!(!branch.is_empty(), "Branch should not be empty");
 }
@@ -158,7 +148,7 @@ fn git_status_clean_repo() {
         .iter()
         .find(|s| s.metadata().name == "status")
         .unwrap();
-    let result = status_src.execute(Some(repo.path_str()));
+    let result = status_src.execute(Some(repo.path_str())).unwrap();
     assert_eq!(result.fields.get("dirty").unwrap().as_text(), "false");
     assert_eq!(result.fields.get("staged").unwrap().as_text(), "0");
     assert_eq!(result.fields.get("unstaged").unwrap().as_text(), "0");
@@ -173,7 +163,7 @@ fn git_status_dirty_repo() {
         .iter()
         .find(|s| s.metadata().name == "status")
         .unwrap();
-    let result = status_src.execute(Some(repo.path_str()));
+    let result = status_src.execute(Some(repo.path_str())).unwrap();
     assert_eq!(result.fields.get("dirty").unwrap().as_text(), "true");
     assert_eq!(result.fields.get("untracked").unwrap().as_text(), "1");
 }
@@ -186,7 +176,7 @@ fn git_status_staged_changes() {
         .iter()
         .find(|s| s.metadata().name == "status")
         .unwrap();
-    let result = status_src.execute(Some(repo.path_str()));
+    let result = status_src.execute(Some(repo.path_str())).unwrap();
     assert_eq!(result.fields.get("staged").unwrap().as_text(), "1");
 }
 
@@ -198,7 +188,7 @@ fn git_status_unstaged_changes() {
         .iter()
         .find(|s| s.metadata().name == "status")
         .unwrap();
-    let result = status_src.execute(Some(repo.path_str()));
+    let result = status_src.execute(Some(repo.path_str())).unwrap();
     assert_eq!(result.fields.get("unstaged").unwrap().as_text(), "1");
 }
 
@@ -212,7 +202,7 @@ fn git_refs_stash_count() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(repo.path_str()));
+    let result = refs_src.execute(Some(repo.path_str())).unwrap();
     assert_eq!(result.fields.get("stash").unwrap().as_text(), "1");
 }
 
@@ -223,10 +213,9 @@ fn git_refs_requires_path() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(None);
     assert!(
-        result.fields.is_empty(),
-        "Git refs source should return empty SourceResult without a path"
+        refs_src.execute(None).is_err(),
+        "Git refs source fails without a directory to run in"
     );
 }
 
@@ -238,7 +227,7 @@ fn git_refs_clean_repo_new_fields() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(repo.path_str()));
+    let result = refs_src.execute(Some(repo.path_str())).unwrap();
 
     // No upstream in a local-only repo
     assert_eq!(result.fields.get("upstream").unwrap().as_text(), "");
@@ -253,7 +242,7 @@ fn git_refs_clean_repo_new_fields() {
         .iter()
         .find(|s| s.metadata().name == "head")
         .unwrap();
-    let head_result = head_src.execute(Some(repo.path_str()));
+    let head_result = head_src.execute(Some(repo.path_str())).unwrap();
     // HEAD is not detached after a normal commit
     assert_eq!(
         head_result.fields.get("detached").unwrap().as_text(),
@@ -269,7 +258,7 @@ fn git_refs_commit_hash_format() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(repo.path_str()));
+    let result = refs_src.execute(Some(repo.path_str())).unwrap();
     let commit = result.fields.get("commit").unwrap().as_text();
     // Short SHA: non-empty, all hex, typically 7 chars
     assert!(!commit.is_empty(), "commit should not be empty");
@@ -292,7 +281,7 @@ fn git_refs_last_commit_age_secs() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(repo.path_str()));
+    let result = refs_src.execute(Some(repo.path_str())).unwrap();
     let age: i64 = result
         .fields
         .get("last_commit_age_secs")
@@ -313,7 +302,7 @@ fn git_diff_lines_added_removed_unstaged() {
         .iter()
         .find(|s| s.metadata().name == "diff")
         .unwrap();
-    let result = diff_src.execute(Some(repo.path_str()));
+    let result = diff_src.execute(Some(repo.path_str())).unwrap();
     let added: i64 = result
         .fields
         .get("lines_added")
@@ -341,7 +330,7 @@ fn git_diff_lines_staged_added_removed() {
         .iter()
         .find(|s| s.metadata().name == "diff")
         .unwrap();
-    let result = diff_src.execute(Some(repo.path_str()));
+    let result = diff_src.execute(Some(repo.path_str())).unwrap();
     let staged_added: i64 = result
         .fields
         .get("lines_staged_added")
@@ -374,7 +363,7 @@ fn git_refs_commit_summary() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(repo.path_str()));
+    let result = refs_src.execute(Some(repo.path_str())).unwrap();
     let summary = result.fields.get("commit_summary").unwrap().as_text();
     assert_eq!(
         summary, "init",
@@ -390,7 +379,7 @@ fn git_refs_push_ahead_behind_no_push_remote() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(repo.path_str()));
+    let result = refs_src.execute(Some(repo.path_str())).unwrap();
     // No push remote configured — both should be 0
     assert_eq!(result.fields.get("push_ahead").unwrap().as_text(), "0");
     assert_eq!(result.fields.get("push_behind").unwrap().as_text(), "0");
@@ -406,7 +395,7 @@ fn git_refs_detached_head() {
         .iter()
         .find(|s| s.metadata().name == "head")
         .unwrap();
-    let result = head_src.execute(Some(repo.path_str()));
+    let result = head_src.execute(Some(repo.path_str())).unwrap();
     assert_eq!(result.fields.get("detached").unwrap().as_text(), "true");
 }
 
@@ -418,7 +407,7 @@ fn git_diff_clean_repo_has_zero_lines() {
         .iter()
         .find(|s| s.metadata().name == "diff")
         .unwrap();
-    let result = diff_src.execute(Some(repo.path_str()));
+    let result = diff_src.execute(Some(repo.path_str())).unwrap();
     assert_eq!(result.fields.get("lines_added").unwrap().as_text(), "0");
     assert_eq!(result.fields.get("lines_removed").unwrap().as_text(), "0");
     assert_eq!(
@@ -464,7 +453,7 @@ fn git_refs_stash_counted_in_linked_worktree() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(wt.to_str().unwrap()));
+    let result = refs_src.execute(Some(wt.to_str().unwrap())).unwrap();
 
     // The stash reflog lives in the SHARED commondir, not <wt>/.git (a file).
     assert_eq!(
@@ -513,7 +502,7 @@ fn git_refs_state_detected_in_linked_worktree() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(wt.to_str().unwrap()));
+    let result = refs_src.execute(Some(wt.to_str().unwrap())).unwrap();
 
     // MERGE_HEAD lives under <main>/.git/worktrees/wt, not <wt>/.git (a file).
     assert_eq!(
@@ -549,6 +538,7 @@ fn lineage_fields(path: &str) -> std::collections::HashMap<String, String> {
         .find(|s| s.metadata().name == "lineage")
         .unwrap();
     src.execute(Some(path))
+        .unwrap()
         .fields
         .iter()
         .map(|(k, v)| (k.clone(), v.as_text()))
@@ -759,7 +749,7 @@ fn git_lineage_requires_path() {
         .iter()
         .find(|s| s.metadata().name == "lineage")
         .unwrap();
-    assert!(src.execute(None).fields.is_empty());
+    assert!(src.execute(None).is_err());
 }
 
 #[test]
@@ -803,7 +793,7 @@ fn git_head_source_reports_branch() {
         .find(|s| s.metadata().name == "head")
         .unwrap();
 
-    let result = head_src.execute(Some(repo.path_str()));
+    let result = head_src.execute(Some(repo.path_str())).unwrap();
     let branch = result.fields.get("branch").unwrap().as_text();
     assert!(!branch.is_empty(), "head source must report branch name");
     assert_eq!(
@@ -841,7 +831,7 @@ fn git_head_branch_correct_in_linked_worktree() {
         .find(|s| s.metadata().name == "head")
         .unwrap();
 
-    let result = head_src.execute(Some(wt.to_str().unwrap()));
+    let result = head_src.execute(Some(wt.to_str().unwrap())).unwrap();
     let branch = result.fields.get("branch").unwrap().as_text();
     assert_eq!(
         branch, "wt-branch",

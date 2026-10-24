@@ -22,7 +22,7 @@ graph TB
     Scheduler --> FSW["FsWatcher<br/>(notify crate)"]
     Scheduler --> Watchdog["Watchdog<br/>(heartbeat monitor)"]
 
-    SB --> Provider["Arc‹dyn Source›<br/>Source::execute() → SourceResult"]
+    SB --> Provider["Arc‹dyn Source›<br/>Source::execute() → Result‹SourceResult›"]
     Provider --> Put["Cache.put_source()"]
 ```
 
@@ -51,7 +51,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`; `split_key()` — first-dot-only `provider.field` split. Key parsing into a `KeyParse` lives in `src/query.rs` (`parse_key`) |
 | `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` — a source name is never a key segment), `resolve_path`, `validate_key` (one colon form, the facet), `split_layer_facet` (`:put` / `:source` / `:cache`), and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
 | `src/config.rs` | TOML config loading from XDG directories; `Config` (composed from its layers), `DaemonConfig` |
-| `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `SourceScope`, `FieldSchema`, `InvalidationStrategy`, `FailbackConfig`, `SourceResult`; `expand_abs_path()` helper |
+| `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `FieldSchema`, `InvalidationStrategy`, `FailbackConfig`, `SourceResult`; `expand_abs_path()` helper |
 | `src/provider/registry.rs` | `ProviderRegistry`: `sources: HashMap<(String, String), Arc<dyn Source>>` keyed by `(provider_name, source_name)` and `providers: HashMap<String, ProviderMetadata>` (metadata snapshot); `Box<dyn Provider>` objects are consumed at `register()` and not retained; `declared_sources` map (`HashMap<(provider, field), source_name>`) walked by `sources_for_key` (nearest declared ancestor of a key, then sentinel fields); built-in registration; validation at registration |
 | `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
 | `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, pure-watch global, `Watch { patterns: [], abs_paths: [...] }` — no `Once` strategy |
@@ -75,7 +75,7 @@ The registry maps a key to its Source by walking the key: the Source of the near
 
 **Cache layout** — `CacheEntry.sources: HashMap<source_name, SourceResult>`. Each `SourceResult` holds `fields`, `last_refreshed_ms`, and `expected_interval_secs`. Reads flatten across sources; writes are per-source (`cache.put_source(provider, path, source_name, result)`).
 
-**Watch registration** — per `(provider, path, source)`. Each source declares relative `patterns` (matched within the scope path) and/or absolute `abs_paths` (e.g., `$XDG_CONFIG_HOME/mise`). The `expand_abs_path()` helper expands `~`, `$HOME`, and XDG env vars at registration time.
+**Watch registration** — per `(provider, path, source)`. Each source declares relative `patterns` (matched within the instance's root) and/or absolute `abs_paths` (e.g., `$XDG_CONFIG_HOME/mise`). The `expand_abs_path()` helper expands `~`, `$HOME`, and XDG env vars at registration time.
 
 ---
 
@@ -109,7 +109,7 @@ and writes it as a single newline-terminated line.
 
 **Step 6: Path resolution**
 
-`resolve_path(Some("."), &context_path, "git", &registry)` checks whether the `git` provider has any `PathScoped` sources (it does). The explicit path `"."` is used. (If the CLI had omitted the path argument, the session's context path would be used instead.) Global-only providers return `None` here regardless of any explicit or context path.
+`QueryPlan::build` canonicalises the explicit path `"."` (if the CLI had omitted the path argument, the session's context path would be used instead). Which instance of each demanded Source answers for it is found next, by `Source::root`, nearest first: a Source with no root has one instance, at `~`, whatever the path.
 
 **Step 7: Cache lookup**
 
@@ -194,7 +194,7 @@ After clearing `in_flight`, the scheduler checks `pending_rerun`. If a rerun was
 
 **Demand signal**
 
-Every `get` request sends `SchedulerMessage::QueryActivity { provider, path }` to the scheduler. This records the current time in the `demand` HashMap for that key. If the key is new to demand, the scheduler immediately sets up polling (based on provider metadata) and filesystem watching (for path-scoped providers), and fires `execute_provider` if the cache is cold.
+Every `get` request sends `SchedulerMessage::QueryActivity { provider, instances }` to the scheduler, one `(source, root)` for every instance the read reached. This records the current time in the `demand` HashMap for each. If an instance is new to demand, the scheduler immediately sets up polling (based on provider metadata) and filesystem watching (relative `watch` paths under the instance's root; none for the relative paths of the instance at `~`), and fires `execute_provider` if the cache is cold.
 
 **Demand window**
 

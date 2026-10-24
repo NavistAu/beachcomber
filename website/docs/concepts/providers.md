@@ -78,9 +78,11 @@ A built-in Source takes `return` and nothing else; the line replaces its schedul
 
 ## Where an instance lives
 
-A config Source's `root` line says which directory an instance answers for: `root = "{{ lup('.git') | dirname }}"` gives one instance per project, shared by every subdirectory of it; no `root` is the single instance at `~`. Built-in sources do the same in Rust: git walks up to `.git/`, mise looks for `mise.toml` or `.mise.toml`, and `battery`, `hostname` and `load` are one instance for the daemon. The cache key of a path-scoped instance is `provider\0path`.
+A config Source's `root` line says which directory an instance answers for: `root = "{{ lup('.git') | dirname }}"` gives one instance per project, shared by every subdirectory of it; no `root` is the single instance at `~`. Built-in sources do the same in Rust: git walks up to `.git/`, mise looks for `mise.toml` or `.mise.toml`, and `battery`, `hostname` and `load` are one instance for the daemon.
 
-The Rust-side metadata that describes a built-in (its invalidation strategy, `Global`/`PathScoped` scope, watch patterns) is internal to the daemon: it is what `return` replaces, not something a config file names. `comb get <provider>:cache.<field>` shows the `poll`, `watch` and `decay` a record registered with.
+A read asks the nearest instance first. If the key is missing there it goes to the parent of that instance's root, and so on up to the instance at `~`, where it stops: `mise` is a single Source, so from a project `mise.node` is the project's while `mise.go`, which only the global config sets, is found at `~`. `comb get mise` merges the instances it walks, the nearer winning. The cache key of a rooted instance is `provider\0root`.
+
+The Rust-side metadata that describes a built-in (its invalidation strategy, how it finds its root, watch patterns) is internal to the daemon: it is what `return` replaces, not something a config file names. `comb get <provider>:cache.<field>` shows the `poll`, `watch` and `decay` a record registered with.
 
 ## comb status — source on the wire
 

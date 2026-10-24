@@ -124,12 +124,13 @@ Read a cached value.
   entry**. A `path` returns the **chain-resolved tree**: static records (source
   `put` or `config:<file>`) are collected from that path and every ancestor up
   to `$HOME` (or to `/` for a path outside `$HOME`) and then the global entry,
-  the nearest winning; provider-produced records stay at their Source's
-  declared scope — path-scoped at the addressed path, global at the global
-  entry — and never walk the chain. See "Path resolution" in
+  the nearest winning. Provider-produced records live at the instances of
+  their Source — the one at the root the Source names for the requested path,
+  and the one at `~` — and a read walks them instance by instance (below)
+  rather than the directory chain. See "Path resolution" in
   `docs/canon/field_resolution.md`.
 - `force` (bool, optional, default false) — re-execute every Source the key
-  demands, each at the cache entry its own scope keys, whether or not it was
+  demands, at every instance the read reaches, whether or not it was
   stale; guarantees a fresh value without evicting anything. A key naming no
   Source (a static namespace, a facet) is an error: `cannot --force static
   namespace '<name>': no source to re-execute from`.
@@ -190,9 +191,15 @@ has no such key, or past a scalar, misses exactly as a missing top-level field
 does. There is no `unknown field` error.
 
 The two halves are addressed from different places. The data half sits where the
-provider's records live, which is the requested path narrowed by the provider's
-scope (global for a provider with no path-scoped source, the project root for
-one that walks to it). A template is a **static record**, so the template half is
+provider's records live: at the instances of the Source that owns the key. A
+Source answers `root(dir)` — the directory whose instance serves `dir`, or none
+for the one instance at `~` — and a read asks the nearest instance first
+(`R1 = root(dir)`). If it lacks the key, the read moves to the parent of that
+root and asks again (`root(parent(R1))`), ending at the instance at `~` and
+never past it. A namespace read takes every instance on the way and merges
+them, the nearer winning per leaf: from `~/ws/proj` with a `mise.toml`,
+`mise.node` is the project's, and `mise.go`, set only in the global config, is
+found at `~`. A template is a **static record**, so the template half is
 read from the requested directory itself and resolves up the chain from there:
 `get git.branch --path <repo>/sub` reads git's records at `<repo>` and its
 templates from `<repo>/sub`.
@@ -295,10 +302,10 @@ Re-execute Sources out-of-band. Does not return the new value.
 
 The key selects which Sources run, exactly as it selects which a `get` warms:
 `refresh git` re-executes every Source of `git`, `refresh git.branch` only the
-Source that owns `branch`. Each runs at the cache entry its own scope keys — the
-global entry for a `Global` Source whatever path the request carried, the
-addressed path for a `PathScoped` one — so `path` is optional and is only
-consulted by the path-scoped ones. Invalid facet syntax on the key is the same
+Source that owns `branch`. Each runs at the instance that answers for the
+requested directory — the root its `root` names for it, or the one instance at
+`~` for a Source with no root — so `path` is optional and is only consulted by
+Sources that have a root. Invalid facet syntax on the key is the same
 error `get`/`put`/`watch` give: `{"ok": false, "error": "invalid facet key:
 <key>"}`.
 
@@ -607,8 +614,8 @@ The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs
   `Value`.
 - **Source** — one of a provider's execution strategies (e.g. `git`'s `head`,
   `refs`, `diff`, `lineage`, `status`), each owning a set of field names and
-  declaring its own scope (`Global` or `PathScoped`) and invalidation
-  strategy. What `Refresh` re-executes and demand-driven warming keeps warm.
+  declaring its own invalidation strategy, and answering which instance serves
+  a directory (`root`). What `Refresh` re-executes and demand-driven warming keeps warm.
 - **Field** — a named element of a provider's output (e.g. `branch` on `git`).
 - **Namespace** — the `provider` or `provider:facet` a key's first segment
   names.

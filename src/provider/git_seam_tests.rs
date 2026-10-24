@@ -160,7 +160,9 @@ fn git_refs_clean_repo_produces_correct_branch() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(dir.path().to_str().unwrap()));
+    let result = refs_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap();
 
     assert!(
         !result.fields.contains_key("branch"),
@@ -205,7 +207,9 @@ fn git_refs_detached_head_sets_detached_true() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(dir.path().to_str().unwrap()));
+    let result = refs_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap();
 
     assert!(
         !result.fields.contains_key("detached"),
@@ -216,7 +220,7 @@ fn git_refs_detached_head_sets_detached_true() {
 }
 
 #[test]
-fn git_refs_git_not_installed_returns_empty() {
+fn git_refs_git_not_installed_fails() {
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![not_found()]);
     let provider = git_provider_with_executor(stub);
@@ -225,19 +229,16 @@ fn git_refs_git_not_installed_returns_empty() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(dir.path().to_str().unwrap()));
-
-    assert!(
-        result.fields.is_empty(),
-        "git not found should produce empty result, got: {:?}",
-        result.fields
-    );
+    let err = refs_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap_err();
+    assert_eq!(err, "git status failed");
 }
 
 #[test]
-fn git_refs_git_returns_failure_exit_code_returns_empty() {
+fn git_refs_git_returns_failure_exit_code_fails() {
     let dir = fake_repo();
-    // status exits non-zero → parse_git_status returns None → empty SourceResult
+    // status exits non-zero → parse_git_status returns None → the execute fails
     let stub = StubGitExecutor::new(vec![failure()]);
     let provider = git_provider_with_executor(stub);
     let sources = provider.sources();
@@ -245,12 +246,10 @@ fn git_refs_git_returns_failure_exit_code_returns_empty() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(Some(dir.path().to_str().unwrap()));
-
-    assert!(
-        result.fields.is_empty(),
-        "non-zero exit from git status should produce empty result"
-    );
+    let err = refs_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap_err();
+    assert_eq!(err, "git status failed");
 }
 
 #[test]
@@ -272,11 +271,13 @@ fn git_refs_malformed_status_output_returns_empty() {
         .find(|s| s.metadata().name == "refs")
         .unwrap();
     // Must not panic
-    let _result = refs_src.execute(Some(dir.path().to_str().unwrap()));
+    let _result = refs_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap();
 }
 
 #[test]
-fn git_refs_returns_empty_when_no_path_given() {
+fn git_refs_fails_when_no_path_given() {
     let stub = StubGitExecutor::new(vec![]);
     let provider = git_provider_with_executor(stub);
     let sources = provider.sources();
@@ -284,8 +285,7 @@ fn git_refs_returns_empty_when_no_path_given() {
         .iter()
         .find(|s| s.metadata().name == "refs")
         .unwrap();
-    let result = refs_src.execute(None);
-    assert!(result.fields.is_empty());
+    assert!(refs_src.execute(None).is_err());
 }
 
 // ── status source seam tests ──────────────────────────────────────────────────
@@ -300,7 +300,9 @@ fn git_status_clean_repo_is_not_dirty() {
         .iter()
         .find(|s| s.metadata().name == "status")
         .unwrap();
-    let result = status_src.execute(Some(dir.path().to_str().unwrap()));
+    let result = status_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap();
 
     assert_eq!(result.fields.get("dirty").unwrap(), &Value::Bool(false));
     assert_eq!(result.fields.get("staged").unwrap(), &Value::Int(0));
@@ -319,7 +321,9 @@ fn git_status_untracked_file_is_dirty() {
         .iter()
         .find(|s| s.metadata().name == "status")
         .unwrap();
-    let result = status_src.execute(Some(dir.path().to_str().unwrap()));
+    let result = status_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap();
 
     assert_eq!(result.fields.get("dirty").unwrap(), &Value::Bool(true));
     assert_eq!(result.fields.get("untracked").unwrap(), &Value::Int(1));
@@ -336,7 +340,9 @@ fn git_status_staged_file_is_dirty() {
         .iter()
         .find(|s| s.metadata().name == "status")
         .unwrap();
-    let result = status_src.execute(Some(dir.path().to_str().unwrap()));
+    let result = status_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap();
 
     assert_eq!(result.fields.get("dirty").unwrap(), &Value::Bool(true));
     assert_eq!(result.fields.get("staged").unwrap(), &Value::Int(1));
@@ -344,7 +350,7 @@ fn git_status_staged_file_is_dirty() {
 }
 
 #[test]
-fn git_status_git_not_installed_returns_empty() {
+fn git_status_git_not_installed_fails() {
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![not_found()]);
     let provider = git_provider_with_executor(stub);
@@ -353,8 +359,11 @@ fn git_status_git_not_installed_returns_empty() {
         .iter()
         .find(|s| s.metadata().name == "status")
         .unwrap();
-    let result = status_src.execute(Some(dir.path().to_str().unwrap()));
-    assert!(result.fields.is_empty());
+    assert!(
+        status_src
+            .execute(Some(dir.path().to_str().unwrap()))
+            .is_err()
+    );
 }
 
 // ── diff source seam tests ────────────────────────────────────────────────────
@@ -375,7 +384,9 @@ fn git_diff_clean_repo_has_zero_lines() {
         .iter()
         .find(|s| s.metadata().name == "diff")
         .unwrap();
-    let result = diff_src.execute(Some(dir.path().to_str().unwrap()));
+    let result = diff_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap();
 
     assert_eq!(result.fields.get("lines_added").unwrap(), &Value::Int(0));
     assert_eq!(result.fields.get("lines_removed").unwrap(), &Value::Int(0));
@@ -402,7 +413,9 @@ fn git_diff_counts_unstaged_lines() {
         .iter()
         .find(|s| s.metadata().name == "diff")
         .unwrap();
-    let result = diff_src.execute(Some(dir.path().to_str().unwrap()));
+    let result = diff_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap();
 
     assert_eq!(result.fields.get("lines_added").unwrap(), &Value::Int(3));
     assert_eq!(result.fields.get("lines_removed").unwrap(), &Value::Int(1));
@@ -430,7 +443,9 @@ fn git_diff_binary_files_are_skipped_gracefully() {
         .iter()
         .find(|s| s.metadata().name == "diff")
         .unwrap();
-    let result = diff_src.execute(Some(dir.path().to_str().unwrap()));
+    let result = diff_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap();
 
     // Binary file "-" parses as 0 via parse::<i64>().unwrap_or(0)
     assert_eq!(result.fields.get("lines_added").unwrap(), &Value::Int(3));
@@ -450,7 +465,9 @@ fn git_diff_git_error_returns_zero_counts() {
         .iter()
         .find(|s| s.metadata().name == "diff")
         .unwrap();
-    let result = diff_src.execute(Some(dir.path().to_str().unwrap()));
+    let result = diff_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap();
 
     // Errors produce (0,0) for both unstaged and staged
     assert_eq!(result.fields.get("lines_added").unwrap(), &Value::Int(0));

@@ -60,7 +60,7 @@ fn registry_source_lookup() {
 fn registry_execute_via_source() {
     let registry = ProviderRegistry::with_defaults();
     let source = registry.source("hostname", "host").unwrap();
-    let result = source.execute(None);
+    let result = source.execute(None).unwrap();
     assert!(
         !result.fields.get("name").unwrap().as_text().is_empty(),
         "Hostname source should return a non-empty name"

@@ -3,9 +3,9 @@ use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
-use beachcomber::query::SourceDemand;
+use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -50,7 +50,6 @@ fn counter_source_meta() -> SourceMetadata {
             name: "count".into(),
             field_type: FieldType::Int,
         }],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
             count: 2,
@@ -77,7 +76,7 @@ impl Source for CountingSourceImpl {
         M.get_or_init(counter_source_meta)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let count = self.counter.fetch_add(1, Ordering::SeqCst);
         // Stand in for work of unknown length: the test decides when this
         // execution ends, so the window the deduplicated refreshes land in is
@@ -85,7 +84,7 @@ impl Source for CountingSourceImpl {
         self.gate.wait();
         let mut result = SourceResult::new();
         result.insert("count", Value::Int(count as i64));
-        result
+        Ok(result)
     }
 }
 
@@ -146,8 +145,10 @@ async fn rapid_refreshes_are_deduplicated() {
         handle
             .send(SchedulerMessage::Refresh {
                 provider: "counter".to_string(),
-                path: None,
-                demand: SourceDemand::All,
+                instances: vec![Instance {
+                    source: "main".to_string(),
+                    root: None,
+                }],
             })
             .await;
     }

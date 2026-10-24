@@ -40,7 +40,7 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
     let mut hostname_fields = HashMap::new();
-    hostname_fields.insert("value".to_string(), Value::String("myhost".to_string()));
+    hostname_fields.insert("name".to_string(), Value::String("myhost".to_string()));
     cache.put_source(
         "hostname",
         None,
@@ -50,7 +50,7 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
     );
 
     let mut user_fields = HashMap::new();
-    user_fields.insert("value".to_string(), Value::String("alice".to_string()));
+    user_fields.insert("name".to_string(), Value::String("alice".to_string()));
     cache.put_source("user", None, "name", user_fields, Schedule::poll(60, 1));
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -71,7 +71,7 @@ async fn get_variadic_both_keys_succeed() {
     let (_tmp, sock) = setup_server().await;
     let mut session = session_for(sock);
 
-    let values = fetch_keys(&mut session, &["hostname.value", "user.value"]);
+    let values = fetch_keys(&mut session, &["hostname.name", "user.name"]);
 
     assert_eq!(values, vec!["myhost", "alice"]);
 }
@@ -81,11 +81,8 @@ async fn get_variadic_partial_failure_still_emits_successful_key() {
     let (_tmp, sock) = setup_server().await;
     let mut session = session_for(sock);
 
-    // "hostname.value" exists; "nonexistent.field" does not.
-    let good = hit(
-        session.get("hostname.value", None).unwrap(),
-        "hostname.value",
-    );
+    // "hostname.name" exists; "nonexistent.field" does not.
+    let good = hit(session.get("hostname.name", None).unwrap(), "hostname.name");
     let bad = session.get("nonexistent.field", None);
 
     assert_eq!(good, "myhost");
@@ -103,14 +100,11 @@ async fn get_variadic_single_key_is_unchanged() {
     // Single-key on a session must behave identically to the CLI's transport.
     let (_tmp, sock) = setup_server().await;
 
-    let direct = fetch(&sock, "hostname.value", None).unwrap().unwrap();
+    let direct = fetch(&sock, "hostname.name", None).unwrap().unwrap();
     assert_eq!(direct.data.as_ref().unwrap(), "myhost");
 
     let mut session = session_for(sock);
-    let via_session = hit(
-        session.get("hostname.value", None).unwrap(),
-        "hostname.value",
-    );
+    let via_session = hit(session.get("hostname.name", None).unwrap(), "hostname.name");
     assert_eq!(via_session, "myhost");
 }
 
@@ -126,8 +120,8 @@ async fn get_variadic_json_format_produces_array() {
             "get",
             "-f",
             "json",
-            "hostname.value",
-            "user.value",
+            "hostname.name",
+            "user.name",
         ]);
         let out = assert_cmd::Command::from_std(cmd).assert().success();
         String::from_utf8(out.get_output().stdout.clone()).unwrap()

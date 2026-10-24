@@ -5,7 +5,7 @@ use crate::engine::PluginSet;
 use crate::provider::config_source::{ConfigSource, DaemonRead, lint_lines};
 use crate::provider::{
     FailbackConfig, InvalidationStrategy, Provider, ProviderMetadata, Source, SourceMetadata,
-    SourceResult, SourceScope, Value, is_sentinel,
+    SourceResult, Value, is_sentinel,
 };
 use crate::scheduler::lifecycle::{DEFAULT_FAILBACK_COUNT, DEFAULT_FAILBACK_INTERVAL_SECS};
 use crate::shape::Retune;
@@ -40,23 +40,38 @@ pub struct RegistryReader {
 
 impl DaemonRead for RegistryReader {
     /// Never executes a Source. `dir` is a directory; `$HOME` addresses the
-    /// global entry, as `QueryPlan` normalises it.
-    fn read(&self, provider: &str, dir: Option<&str>) -> Option<HashMap<String, Value>> {
+    /// global entry, as `QueryPlan` normalises it. It reads every instance up
+    /// each Source's chain from `dir`, as a whole-provider read does.
+    fn read(
+        &self,
+        provider: &str,
+        dir: Option<&str>,
+    ) -> Result<Option<HashMap<String, Value>>, String> {
         let Some((registry, cache)) = self.bound.get() else {
             debug_assert!(false, "a config Source read from a registry never shared");
-            return None;
+            return Ok(None);
         };
-        let registry = registry.upgrade()?;
-        let plan = crate::query::QueryPlan::build(provider, dir, &registry).ok()?;
-        cache
+        let Some(registry) = registry.upgrade() else {
+            return Ok(None);
+        };
+        let Ok(plan) = crate::query::QueryPlan::build(provider, dir, &registry) else {
+            return Ok(None);
+        };
+        let instances = crate::query::instances_for(
+            &registry,
+            &plan.provider,
+            &crate::query::SourceDemand::All,
+            plan.requested_path.as_deref(),
+        )?;
+        Ok(cache
             .read_merged(
                 &plan.provider,
                 plan.requested_path.as_deref(),
-                plan.effective_path.as_deref(),
+                &crate::query::roots_of(&instances),
                 &registry,
                 Layers::All,
             )
-            .map(|merged| merged.fields)
+            .map(|merged| merged.fields))
     }
 }
 
@@ -75,22 +90,33 @@ impl Source for Retuned {
         &self.meta
     }
 
-    fn execute(&self, path: Option<&str>) -> SourceResult {
-        self.inner.execute(path)
+    fn execute(&self, dir: Option<&str>) -> Result<SourceResult, String> {
+        self.inner.execute(dir)
     }
 
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        self.inner.canonical_path(path)
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        self.inner.root(dir)
     }
 
-    fn watched_files(&self, path: Option<&str>) -> Vec<std::path::PathBuf> {
-        self.inner.watched_files(path)
+    fn root_key(&self) -> String {
+        self.inner.root_key()
+    }
+
+    fn has_root(&self) -> bool {
+        self.inner.has_root()
+    }
+
+    fn watched_files(&self, root: Option<&str>) -> Vec<std::path::PathBuf> {
+        self.inner.watched_files(root)
     }
 
     fn read_always(&self) -> bool {
         self.inner.read_always()
     }
 }
+
+/// How long a failed `root` line's error is answered again without re-running it.
+const ROOT_ERROR_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct ProviderRegistry {
     /// (provider_name, source_name) → Arc-wrapped Source trait object.
@@ -105,13 +131,24 @@ pub struct ProviderRegistry {
     sentinel_sources: HashMap<String, Vec<String>>,
     /// Static namespace names registered via `comb put`. Orthogonal to the source model.
     static_names: DashMap<String, ()>,
-    /// Providers with a config Source whose `root` line is set: resolving a
-    /// request's path for one renders that line, which may run a command.
-    config_roots: HashSet<String>,
+    /// The `root` of a config Source, by (provider, source, directory): the
+    /// line is rendered once per directory (it may run a command) and kept
+    /// until the registry is replaced.
+    roots: DashMap<(String, String, String), Option<String>>,
+    /// A `root` line that failed, by (provider, source, directory), with when
+    /// and what it said: answered again for [`ROOT_ERROR_TTL`] rather than
+    /// re-run, so a slow failing line costs its timeout once, not per request.
+    root_errors: DashMap<(String, String, String), (std::time::Instant, String)>,
+    /// Consecutive failures and failback backoff, per instance. The scheduler
+    /// and the inline cold-miss path both record here, so an instance in
+    /// backoff is skipped by either.
+    pub(crate) failures: crate::scheduler::SourceFailureMap,
     /// What every config Source reads `comb.<p>` through.
     reader: Arc<RegistryReader>,
     /// The config Sources registered, as (provider, source).
     config_sources: HashSet<(String, String)>,
+    /// The config Sources with a `root` line, as (provider, source).
+    rendered_roots: HashSet<(String, String)>,
 }
 
 impl Default for ProviderRegistry {
@@ -128,9 +165,12 @@ impl ProviderRegistry {
             declared_sources: HashMap::new(),
             sentinel_sources: HashMap::new(),
             static_names: DashMap::new(),
-            config_roots: HashSet::new(),
+            roots: DashMap::new(),
+            root_errors: DashMap::new(),
+            failures: Arc::default(),
             reader: Arc::new(RegistryReader::default()),
             config_sources: HashSet::new(),
+            rendered_roots: HashSet::new(),
         }
     }
 
@@ -150,10 +190,87 @@ impl ProviderRegistry {
         assert!(bound.is_ok(), "a registry is bound once");
     }
 
-    /// Whether resolving a request's path for `provider` may run a `root`
-    /// line, and so must not hold an async worker.
-    pub fn renders_roots(&self, provider: &str) -> bool {
-        self.config_roots.contains(provider)
+    /// Whether `provider`'s Source `source` finds its root by rendering a
+    /// `root` line, which may run a command, fetch a URL or call a plugin. Its
+    /// answers are kept per directory, and a first render must not hold an
+    /// async worker. A built-in finds its root by looking at the filesystem
+    /// every time, so a marker created after the first request is seen.
+    pub fn renders_root(&self, provider: &str, source: &str) -> bool {
+        self.rendered_roots
+            .contains(&(provider.to_string(), source.to_string()))
+    }
+
+    /// The kept root of the Source for `dir`, if it has been rendered: never
+    /// renders. `Some(root)` is the answer ([`Self::instance_root`]'s).
+    pub fn kept_root(&self, provider: &str, source: &str, dir: &str) -> Option<Option<String>> {
+        self.roots
+            .get(&(provider.to_string(), source.to_string(), dir.to_string()))
+            .map(|root| root.clone())
+    }
+
+    /// The instance of `provider`'s Source `source` that answers for `dir`:
+    /// `Some(root)`, or `None` for the one instance at `~`. A root equal to
+    /// `$HOME` is the instance at `~` ([`crate::query::normalise_path`]).
+    ///
+    /// A config Source renders its `root` line once per directory and the
+    /// answer is kept until the instance it names is evicted
+    /// ([`Self::forget_roots`]); an error is kept for [`ROOT_ERROR_TTL`] only.
+    /// May run a command: callers on an async worker go through
+    /// [`Self::renders_root`] and [`Self::kept_root`] first.
+    pub fn instance_root(
+        &self,
+        provider: &str,
+        source: &str,
+        dir: &str,
+    ) -> Result<Option<String>, String> {
+        if let Some(kept) = self.kept_root(provider, source, dir) {
+            return Ok(kept);
+        }
+        let src = self
+            .source(provider, source)
+            .ok_or_else(|| format!("{provider}.{source}: no such source"))?;
+        let error_key = (provider.to_string(), source.to_string(), dir.to_string());
+        if let Some(failed) = self.root_errors.get(&error_key) {
+            if failed.0.elapsed() < ROOT_ERROR_TTL {
+                return Err(failed.1.clone());
+            }
+            drop(failed);
+            self.root_errors.remove(&error_key);
+        }
+        // Two requests that both miss the kept root for a directory at once
+        // each render the line, and the later insert replaces the earlier: a
+        // duplicate first render, not a wrong answer, since both ask the same
+        // question of the same directory.
+        let found = src.root(dir);
+        if let Err(msg) = &found
+            && self.renders_root(provider, source)
+        {
+            self.root_errors
+                .insert(error_key, (std::time::Instant::now(), msg.clone()));
+        }
+        let root = match found? {
+            // A root that is the directory asked about is already canonical.
+            Some(root) if root == dir => Some(root),
+            Some(root) => crate::query::normalise_path(Some(&root)),
+            None => None,
+        };
+        if self.renders_root(provider, source) {
+            self.roots.insert(
+                (provider.to_string(), source.to_string(), dir.to_string()),
+                root.clone(),
+            );
+        }
+        Ok(root)
+    }
+
+    /// Drop the kept roots of `provider`'s Source `source` that resolved to
+    /// the instance at `root` (`None` is the instance at `~`): the scheduler
+    /// calls this when that instance is evicted, so a root is looked up again
+    /// once the instance it named has gone cold. A marker created or removed
+    /// while the instance lives is not seen until then.
+    pub fn forget_roots(&self, provider: &str, source: &str, root: Option<&str>) {
+        self.roots
+            .retain(|(p, s, _), kept| !(p == provider && s == source && kept.as_deref() == root));
     }
 
     /// Register a provider. Validates metadata, builds the field→source and sentinel maps,
@@ -237,11 +354,11 @@ impl ProviderRegistry {
         for sm in &meta.sources[first_new..] {
             self.index_fields(provider, sm);
         }
-        if sources.iter().any(ConfigSource::has_root) {
-            self.config_roots.insert(provider.to_string());
-        }
         for source in sources {
             let key = (provider.to_string(), source.metadata().name.clone());
+            if source.has_root() {
+                self.rendered_roots.insert(key.clone());
+            }
             self.config_sources.insert(key.clone());
             self.sources.insert(key, Arc::new(source));
         }
@@ -408,6 +525,13 @@ impl ProviderRegistry {
             .get(provider)
             .map(|v| v.iter().map(String::as_str).collect())
             .unwrap_or_default()
+    }
+
+    /// The metadata of one Source, as registered (a retuned built-in's own).
+    pub fn source_metadata(&self, provider: &str, source: &str) -> Option<&SourceMetadata> {
+        self.provider_sources(provider)?
+            .iter()
+            .find(|sm| sm.name == source)
     }
 
     /// Return the slice of SourceMetadata for all sources declared by a provider.
@@ -612,9 +736,10 @@ impl ProviderRegistry {
 
     /// A retuned built-in must still be a Source the registry would have
     /// accepted from code: the checks `register` runs, and the one a `return`
-    /// can newly break. A Source with one instance has no directory to resolve
-    /// a relative watch path against, so only an absolute path is ever
-    /// watched; a relative one would silently watch nothing.
+    /// can newly break. A Source with no root has one instance, at `~`, which
+    /// has no directory to resolve a relative watch path against, so only an
+    /// absolute path is ever watched; a relative one would silently watch
+    /// nothing.
     fn check_retuned(&self, provider: &str, source: &str) -> Result<(), String> {
         let at = format!("[daemon.providers.{provider}.sources.{source}]");
         let meta = self
@@ -622,12 +747,16 @@ impl ProviderRegistry {
             .get(provider)
             .and_then(|p| p.sources.iter().find(|s| s.name == source))
             .expect("a retuned Source is registered");
+        let rooted = self
+            .source(provider, source)
+            .expect("a retuned Source is registered")
+            .has_root();
         let relative = match &meta.invalidation {
             InvalidationStrategy::Watch { patterns, .. }
             | InvalidationStrategy::WatchAndPoll { patterns, .. } => patterns.as_slice(),
             InvalidationStrategy::Poll { .. } => &[],
         };
-        if meta.scope == SourceScope::Global && !relative.is_empty() {
+        if !rooted && !relative.is_empty() {
             let listed: Vec<String> = relative.iter().map(|p| format!("'{p}'")).collect();
             return Err(format!(
                 "{at} return: watch({}) is relative, but {provider}.{source} has one instance; \
@@ -657,7 +786,7 @@ fn engine_defaults(config: &Config) -> EngineDefaults {
 mod tests {
     use super::*;
     use crate::provider::{
-        FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, SourceResult, SourceScope,
+        FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, SourceResult,
     };
 
     struct FakeSource(SourceMetadata);
@@ -665,8 +794,8 @@ mod tests {
         fn metadata(&self) -> &SourceMetadata {
             &self.0
         }
-        fn execute(&self, _path: Option<&str>) -> SourceResult {
-            SourceResult::new()
+        fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
+            Ok(SourceResult::new())
         }
     }
 
@@ -699,7 +828,6 @@ mod tests {
                     field_type: FieldType::String,
                 })
                 .collect(),
-            scope: SourceScope::Global,
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 30,
                 count: 2,
@@ -866,11 +994,72 @@ result.x = "{{ data }}"
             (meta.failback.reattempts, meta.failback.interval_secs),
             (3, 1)
         );
-        assert_eq!(meta.scope, SourceScope::PathScoped);
         assert_eq!(
             reg.sources_for_key("demo", "anything"),
             vec!["s"],
             "a whole-node Source"
+        );
+    }
+
+    #[test]
+    fn a_kept_root_is_re_resolved_once_its_instance_is_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let sub = base.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let sub_str = sub.to_str().unwrap();
+        let reg = registry_from(
+            "[daemon.providers.demo.sources.s]\nroot = \"{{ lup('.root') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
+        );
+
+        assert_eq!(reg.instance_root("demo", "s", sub_str), Ok(None));
+        std::fs::write(sub.join(".root"), "").unwrap();
+        assert_eq!(
+            reg.instance_root("demo", "s", sub_str),
+            Ok(None),
+            "the answer is kept while its instance lives"
+        );
+        reg.forget_roots("demo", "s", Some("/elsewhere"));
+        assert_eq!(
+            reg.instance_root("demo", "s", sub_str),
+            Ok(None),
+            "another instance going cold says nothing about this one"
+        );
+        reg.forget_roots("demo", "s", None);
+        assert_eq!(
+            reg.instance_root("demo", "s", sub_str),
+            Ok(Some(sub_str.to_string())),
+            "once the instance it resolved to is gone, the root is looked up again"
+        );
+    }
+
+    #[test]
+    fn a_providers_sources_that_find_their_root_alike_share_one_lookup() {
+        let reg = ProviderRegistry::with_defaults();
+        let keys: std::collections::HashSet<String> = reg
+            .provider_sources("git")
+            .unwrap()
+            .iter()
+            .map(|sm| reg.source("git", &sm.name).unwrap().root_key())
+            .collect();
+        assert_eq!(keys.len(), 1, "git's Sources walk to the repository alike");
+    }
+
+    #[test]
+    fn a_failing_root_line_is_not_re_run_for_every_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        let reg = registry_from(&format!(
+            "[daemon.providers.demo.sources.s]\nroot = \"{{{{ exec('echo x >> {}; false') }}}}\"\ndata = \"{{{{ 1 }}}}\"\nresult.x = \"{{{{ data }}}}\"\n",
+            runs.display()
+        ));
+        let first = reg.instance_root("demo", "s", "/tmp").unwrap_err();
+        let second = reg.instance_root("demo", "s", "/tmp").unwrap_err();
+        assert_eq!(first, second, "the same error is answered again");
+        assert_eq!(
+            std::fs::read_to_string(&runs).unwrap().lines().count(),
+            1,
+            "the line ran once for two requests"
         );
     }
 
@@ -946,7 +1135,7 @@ return = "{{ result | poll('15s') }}"
         // Sources only, so watch-driven built-ins stay watch-driven.
         let reg = registry_from("[daemon.providers.git.sources.diff]\n");
         let stock = ProviderRegistry::with_defaults();
-        for (provider, source) in [("git", "diff"), ("git", "refs"), ("mise", "global")] {
+        for (provider, source) in [("git", "diff"), ("git", "refs"), ("mise", "tools")] {
             let (got, want) = (
                 source_meta(&reg, provider, source),
                 source_meta(&stock, provider, source),
@@ -1050,6 +1239,34 @@ return = "{{ result | super }}"
             invalidation(&reg, "git", "refs"),
             InvalidationStrategy::Watch { .. }
         ));
+    }
+
+    #[test]
+    fn a_comb_read_whose_root_fails_fails_the_data_render() {
+        let cache = Arc::new(Cache::new());
+        let reg = registry_from(
+            r#"
+[daemon.providers.q.sources.s]
+root = "rel"
+data = "{{ 1 }}"
+result.x = "{{ data }}"
+
+[daemon.providers.p.sources.s]
+data = "{{ comb.q.x }}"
+result.y = "{{ data }}"
+"#,
+        )
+        .share(&cache);
+        let err = reg
+            .source("p", "s")
+            .unwrap()
+            .execute(Some("/tmp"))
+            .unwrap_err();
+        assert!(err.starts_with("p.s: data: comb.q: "), "{err}");
+        assert!(
+            err.contains("q.s: root: must render an absolute directory"),
+            "{err}"
+        );
     }
 
     #[test]

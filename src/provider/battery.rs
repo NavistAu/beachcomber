@@ -1,7 +1,7 @@
 use crate::boundaries::process::{ProcessExecutor, RealProcessExecutor};
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use std::sync::{Arc, OnceLock};
 
@@ -31,7 +31,6 @@ fn state_meta() -> SourceMetadata {
                 field_type: FieldType::Int,
             },
         ],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 30,
             count: 4,
@@ -72,15 +71,16 @@ impl Source for BatteryState {
         M.get_or_init(state_meta)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
-        let Ok(output) = self.executor.run("pmset", vec!["-g".into(), "batt".into()]) else {
-            return SourceResult::new();
-        };
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
+        let output = self
+            .executor
+            .run("pmset", vec!["-g".into(), "batt".into()])
+            .map_err(|e| format!("pmset failed: {e}"))?;
         if !output.status.success() {
-            return SourceResult::new();
+            return Err("pmset exited with an error".into());
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        parse_pmset_output_to_source(&stdout)
+        Ok(parse_pmset_output_to_source(&stdout))
     }
 }
 
@@ -190,7 +190,6 @@ fn level_meta() -> SourceMetadata {
                 field_type: FieldType::String,
             },
         ],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 30,
             count: 4,
@@ -219,7 +218,6 @@ fn upower_meta() -> SourceMetadata {
                 field_type: FieldType::String,
             },
         ],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
             count: 2,
@@ -244,19 +242,18 @@ impl Source for BatteryLevel {
         M.get_or_init(level_meta)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let Some(battery_dir) = find_battery_dir() else {
-            return SourceResult::new();
+            return Ok(SourceResult::new());
         };
-        let Ok(capacity_str) = std::fs::read_to_string(battery_dir.join("capacity")) else {
-            return SourceResult::new();
-        };
-        let Ok(percent) = capacity_str.trim().parse::<i64>() else {
-            return SourceResult::new();
-        };
-        let Ok(status_str) = std::fs::read_to_string(battery_dir.join("status")) else {
-            return SourceResult::new();
-        };
+        let capacity_str = std::fs::read_to_string(battery_dir.join("capacity"))
+            .map_err(|e| format!("cannot read battery capacity: {e}"))?;
+        let percent = capacity_str
+            .trim()
+            .parse::<i64>()
+            .map_err(|e| format!("cannot parse battery capacity: {e}"))?;
+        let status_str = std::fs::read_to_string(battery_dir.join("status"))
+            .map_err(|e| format!("cannot read battery status: {e}"))?;
         let sysfs_status = status_str.trim().to_string();
         let charging = sysfs_status == "Charging";
 
@@ -264,7 +261,7 @@ impl Source for BatteryLevel {
         result.insert("percent", Value::Int(percent));
         result.insert("charging", Value::Bool(charging));
         result.insert("status_raw", Value::String(sysfs_status));
-        result
+        Ok(result)
     }
 }
 
@@ -294,7 +291,7 @@ impl Source for BatteryUpower {
         M.get_or_init(upower_meta)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         // Need the sysfs status to compute the human-readable status.
         let sysfs_status = find_battery_dir()
             .and_then(|d| std::fs::read_to_string(d.join("status")).ok())
@@ -324,7 +321,7 @@ impl Source for BatteryUpower {
         let mut result = SourceResult::new();
         result.insert("time_remaining_secs", Value::Int(time_remaining_secs));
         result.insert("status", Value::String(status));
-        result
+        Ok(result)
     }
 }
 

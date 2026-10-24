@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -59,7 +59,6 @@ fn interfaces_source_metadata() -> SourceMetadata {
                 field_type: FieldType::String,
             },
         ],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 10,
             count: 6,
@@ -83,7 +82,7 @@ impl Source for NetworkInterfaces {
         M.get_or_init(interfaces_source_metadata)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let (iface, ip, ipv6, vpn_active, vpn_name) = scan_interfaces();
         let ssid = get_wifi_ssid();
 
@@ -99,7 +98,7 @@ impl Source for NetworkInterfaces {
         result.insert("vpn_active", Value::Bool(vpn_active));
         result.insert("vpn_name", Value::String(vpn_name));
         result.insert("ssid", Value::String(ssid));
-        result
+        Ok(result)
     }
 }
 

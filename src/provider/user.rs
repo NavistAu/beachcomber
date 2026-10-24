@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 
 pub struct UserProvider;
@@ -31,7 +31,6 @@ fn name_source_metadata() -> SourceMetadata {
                 field_type: FieldType::Int,
             },
         ],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Watch {
             patterns: vec![],
             abs_paths: vec![],
@@ -55,13 +54,13 @@ impl Source for UserName {
         M.get_or_init(name_source_metadata)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let uid = unsafe { libc::getuid() } as i64;
         let name = get_username(uid as u32);
         let mut result = SourceResult::new();
         result.insert("name", Value::String(name));
         result.insert("uid", Value::Int(uid));
-        result
+        Ok(result)
     }
 }
 

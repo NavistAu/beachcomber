@@ -5,9 +5,10 @@
 //! up to `/` when `P` is outside `$HOME`), then the global entry — which is
 //! `$HOME`, so `$HOME` is never a link of its own. Static records — those whose
 //! source is `put` or `config:<file>` — are collected from every entry on the
-//! chain, the nearest winning. Provider-produced records keep their Source's
-//! declared scope: a `Global` source is read at the global entry, a
-//! `PathScoped` one at the addressed path; neither walks the chain.
+//! chain, the nearest winning. Provider-produced records live at the instances
+//! of their Source: the one at the root its `root` names for the requested
+//! directory, and the one at `~`. A read asks the nearest instance first and
+//! walks up the instances, root by root, only while the key is missing.
 //!
 //! Each test owns its `$HOME`: nextest runs every test in its own process, so
 //! `set_var("HOME", …)` here is process-local. That assumption is nextest's,
@@ -18,12 +19,14 @@ use crate::common::daemon::isolate;
 use crate::common::git::{GitRepoFixture, has_git};
 use beachcomber::cache::Cache;
 use beachcomber::cache::Schedule;
+use beachcomber::config::Config;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
+use beachcomber::scheduler::{Scheduler, SchedulerHandle};
 use beachcomber::server::Server;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -44,6 +47,8 @@ struct Fixture {
     root: PathBuf,
     home: PathBuf,
     cache: Arc<Cache>,
+    /// The scheduler the server hands demand to, when the fixture runs one.
+    scheduler: Option<SchedulerHandle>,
 }
 
 impl Fixture {
@@ -56,6 +61,17 @@ impl Fixture {
     /// As [`Fixture::start`], with `$HOME` at `home_rel` below the temp root
     /// — so a test can place something *above* `$HOME`.
     fn start_with_home(registry: ProviderRegistry, home_rel: &str) -> Fixture {
+        Fixture::start_with(registry, home_rel, false)
+    }
+
+    /// As [`Fixture::start`], with a scheduler running beside the server: the
+    /// demand a read signals reaches it. It watches by polling, so starting it
+    /// costs no kernel registration.
+    fn start_scheduled(registry: ProviderRegistry) -> Fixture {
+        Fixture::start_with(registry, "", true)
+    }
+
+    fn start_with(registry: ProviderRegistry, home_rel: &str, scheduled: bool) -> Fixture {
         let root_dir = TempDir::new().unwrap();
         let root = root_dir.path().canonicalize().unwrap();
         // `root.join("")` would append a trailing separator; `$HOME` at the
@@ -77,11 +93,23 @@ impl Fixture {
         let sock = sock_dir.path().join("test.sock");
         let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
         let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+        let registry = Arc::new(registry);
+        let scheduler = scheduled.then(|| {
+            let (handle, mut scheduler) = Scheduler::new(
+                cache.clone(),
+                registry.clone(),
+                Config::default(),
+                watchers.clone(),
+            );
+            scheduler.use_polling_watcher(Duration::from_millis(50));
+            tokio::spawn(async move { scheduler.run().await });
+            handle
+        });
         let server = Server::new(
             sock.clone(),
             cache.clone(),
-            Arc::new(registry),
-            None,
+            registry,
+            scheduler.clone(),
             watchers,
         );
         server.spawn().unwrap();
@@ -93,6 +121,7 @@ impl Fixture {
             root,
             home,
             cache,
+            scheduler,
         }
     }
 
@@ -279,29 +308,39 @@ async fn a_path_outside_home_still_sees_the_global_record() {
     );
 }
 
-// ── (e)+(g) provider records keep their declared scope ───────────────────────
+// ── (e)+(g) provider records live at their Source's instances ───────────────
 
 /// A Source that never runs — every test that uses it seeds the cache
 /// directly, so what is asserted is the read's layering, not execution.
-struct InertSource(SourceMetadata);
+struct InertSource {
+    meta: SourceMetadata,
+    /// Roots at whatever directory it is asked about; otherwise only the
+    /// instance at `~` exists.
+    rooted: bool,
+}
 
 impl Source for InertSource {
     fn metadata(&self) -> &SourceMetadata {
-        &self.0
+        &self.meta
     }
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
-        SourceResult::new()
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
+        Ok(SourceResult::new())
+    }
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(self.rooted.then(|| dir.to_string()))
+    }
+    fn has_root(&self) -> bool {
+        self.rooted
     }
 }
 
-fn source_meta(name: &str, field: &str, scope: SourceScope) -> SourceMetadata {
+fn source_meta(name: &str, field: &str) -> SourceMetadata {
     SourceMetadata {
         name: name.into(),
         fields: vec![FieldSchema {
             name: field.into(),
             field_type: FieldType::String,
         }],
-        scope,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
             count: 2,
@@ -316,24 +355,24 @@ fn source_meta(name: &str, field: &str, scope: SourceScope) -> SourceMetadata {
     }
 }
 
-/// `p` has one `Global` source and one `PathScoped` one — mise's shape.
+/// `p` has one source with no root and one rooted at the directory asked about.
 struct TwoScopeProvider;
 
 impl Provider for TwoScopeProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "p".to_string(),
-            sources: vec![
-                source_meta("glob", "gv", SourceScope::Global),
-                source_meta("proj", "pv", SourceScope::PathScoped),
-            ],
+            sources: vec![source_meta("glob", "gv"), source_meta("proj", "pv")],
         }
     }
     fn sources(&self) -> Vec<Box<dyn Source>> {
         self.metadata()
             .sources
             .into_iter()
-            .map(|m| Box::new(InertSource(m)) as Box<dyn Source>)
+            .map(|m| {
+                let rooted = m.name == "proj";
+                Box::new(InertSource { meta: m, rooted }) as Box<dyn Source>
+            })
             .collect()
     }
 }
@@ -361,21 +400,34 @@ struct CountingSource {
     meta: SourceMetadata,
     runs: &'static AtomicUsize,
     field: &'static str,
+    /// Roots at the nearest `.root` marker; otherwise only the instance at `~`
+    /// exists.
+    rooted: bool,
 }
 
 impl Source for CountingSource {
     fn metadata(&self) -> &SourceMetadata {
         &self.meta
     }
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let n = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
         let mut result = SourceResult::new();
         result.insert(self.field, Value::Int(n as i64));
-        result
+        Ok(result)
+    }
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(if self.rooted {
+            find_root_marker(dir)
+        } else {
+            None
+        })
+    }
+    fn has_root(&self) -> bool {
+        self.rooted
     }
 }
 
-/// `c` has the same two-scope shape as `p`, with sources that actually produce
+/// `c` has the same shape as `p`, with sources that actually produce
 /// records — so they go warm, and a second execution is observable.
 struct CountingProvider;
 
@@ -383,23 +435,22 @@ impl Provider for CountingProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "c".to_string(),
-            sources: vec![
-                source_meta("glob", "gv", SourceScope::Global),
-                source_meta("proj", "pv", SourceScope::PathScoped),
-            ],
+            sources: vec![source_meta("glob", "gv"), source_meta("proj", "pv")],
         }
     }
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![
             Box::new(CountingSource {
-                meta: source_meta("glob", "gv", SourceScope::Global),
+                meta: source_meta("glob", "gv"),
                 runs: &GLOB_RUNS,
                 field: "gv",
+                rooted: false,
             }),
             Box::new(CountingSource {
-                meta: source_meta("proj", "pv", SourceScope::PathScoped),
+                meta: source_meta("proj", "pv"),
                 runs: &PROJ_RUNS,
                 field: "pv",
+                rooted: true,
             }),
         ]
     }
@@ -409,6 +460,14 @@ fn counting_registry() -> ProviderRegistry {
     let mut reg = ProviderRegistry::new();
     reg.register(Box::new(CountingProvider)).unwrap();
     reg
+}
+
+/// A fixture for `c` with a project at `$HOME/ws/project`: the `proj` source
+/// has two instances there, the project's and the one at `~`.
+fn counting_fixture() -> Fixture {
+    let f = Fixture::start(counting_registry());
+    std::fs::write(f.home.join("ws/project/.root"), "").unwrap();
+    f
 }
 
 fn get_forced(key: &str, path: Option<&str>) -> serde_json::Value {
@@ -425,12 +484,13 @@ fn get_waited(key: &str, path: Option<&str>) -> serde_json::Value {
     }
 }
 
-/// A warm sibling is not evidence that this Source is warm. The `Global` source
-/// has records and the `PathScoped` one does not, so the read must run the one
-/// that is actually cold and return both.
+/// A warm sibling is not evidence that this Source is warm. The source with no
+/// root has records and the rooted one does not, so the read must run the one
+/// that is actually cold and return both. A whole-namespace read takes every
+/// instance of a Source, so the rooted one runs at the project and at `~`.
 #[tokio::test]
 async fn a_cold_source_runs_even_when_its_sibling_is_warm() {
-    let f = Fixture::start(counting_registry());
+    let f = counting_fixture();
     let project = f.path("ws/project");
     f.cache.put_source(
         "c",
@@ -446,23 +506,27 @@ async fn a_cold_source_runs_even_when_its_sibling_is_warm() {
     assert_eq!(
         whole["gv"],
         serde_json::json!(0),
-        "the warm global source was left alone"
+        "the warm source was left alone"
     );
     assert_eq!(
         whole["pv"],
         serde_json::json!(1),
-        "the cold path-scoped source ran"
+        "the cold rooted source ran at the project, and its record there is the nearer"
     );
     assert_eq!(GLOB_RUNS.load(Ordering::SeqCst), 0);
-    assert_eq!(PROJ_RUNS.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        PROJ_RUNS.load(Ordering::SeqCst),
+        2,
+        "once at the project, once at `~`"
+    );
 }
 
-/// `--force` re-runs every source the read returns, each at its own scope's
-/// entry, and evicts none of them wholesale — the static records sharing the
+/// `--force` re-runs every source the read returns, at every instance it
+/// reaches, and evicts none of them wholesale — the static records sharing the
 /// addressed entry are still there afterwards.
 #[tokio::test]
 async fn force_re_executes_every_source_and_keeps_the_static_records() {
-    let f = Fixture::start(counting_registry());
+    let f = counting_fixture();
     let project = f.path("ws/project");
     let mut s = f.connect().await;
 
@@ -484,12 +548,13 @@ async fn force_re_executes_every_source_and_keeps_the_static_records() {
     assert_eq!(
         forced["gv"],
         serde_json::json!(2),
-        "the global source re-ran at the global entry, which the request did not name"
+        "the source with no root re-ran at `~`, which the request did not name"
     );
     assert_eq!(
         forced["pv"],
-        serde_json::json!(2),
-        "the path-scoped source re-ran at the addressed entry"
+        serde_json::json!(3),
+        "the rooted source re-ran at the project (and again at `~`, where its \
+         record is the farther one)"
     );
     assert_eq!(
         forced["note"],
@@ -497,20 +562,26 @@ async fn force_re_executes_every_source_and_keeps_the_static_records() {
         "--force refreshes records, it does not evict the entry they share"
     );
 
-    // A field read forces its owning source only.
+    // A field read forces its owning source only, and only as far as the key
+    // is found: the project's instance has `pv`.
     let pv = data(
         send_recv(&mut s, get_forced("c.pv", Some(&project))).await,
         "forced field",
     );
-    assert_eq!(pv, serde_json::json!(3));
+    assert_eq!(pv, serde_json::json!(5));
     assert_eq!(
         GLOB_RUNS.load(Ordering::SeqCst),
         2,
-        "the global source is untouched by a forced read of a path-scoped field"
+        "the other source is untouched by a forced read of a field it does not own"
+    );
+    assert_eq!(
+        PROJ_RUNS.load(Ordering::SeqCst),
+        5,
+        "the walk stopped at the project's instance, which answered"
     );
 }
 
-/// `--force --global` reaches the global source at the entry it lives at.
+/// `--force --global` reaches the instance at ~ at the entry it lives at.
 #[tokio::test]
 async fn force_at_the_global_entry_re_executes_the_global_source() {
     let f = Fixture::start(counting_registry());
@@ -526,7 +597,7 @@ async fn force_at_the_global_entry_re_executes_the_global_source() {
     assert_eq!(
         forced["gv"],
         serde_json::json!(2),
-        "--force --global re-runs the global source"
+        "--force --global re-runs the instance at ~"
     );
     assert_eq!(GLOB_RUNS.load(Ordering::SeqCst), 2);
 }
@@ -548,7 +619,7 @@ async fn age_past_the_poll_interval() {
 /// them with it.
 #[tokio::test]
 async fn wait_re_executes_a_stale_source_and_keeps_the_static_records() {
-    let f = Fixture::start(counting_registry());
+    let f = counting_fixture();
     let project = f.path("ws/project");
     let mut s = f.connect().await;
 
@@ -570,10 +641,10 @@ async fn wait_re_executes_a_stale_source_and_keeps_the_static_records() {
     );
     assert_eq!(
         PROJ_RUNS.load(Ordering::SeqCst),
-        2,
-        "the stale path-scoped source ran again"
+        4,
+        "the stale rooted source ran again at both its instances"
     );
-    assert_eq!(waited["pv"], serde_json::json!(2));
+    assert_eq!(waited["pv"], serde_json::json!(3));
     assert_eq!(
         waited["note"],
         serde_json::json!("keep"),
@@ -581,12 +652,12 @@ async fn wait_re_executes_a_stale_source_and_keeps_the_static_records() {
     );
 }
 
-/// A `Global` source is stale at the global entry, and the request names a
+/// A source with no root is stale at the global entry, and the request names a
 /// directory. `--wait` used to look for staleness at the addressed entry — where
 /// that source keeps nothing — and so never refreshed it.
 #[tokio::test]
 async fn wait_re_executes_a_stale_global_source_from_a_directory_read() {
-    let f = Fixture::start(counting_registry());
+    let f = counting_fixture();
     let project = f.path("ws/project");
     let mut s = f.connect().await;
 
@@ -602,13 +673,13 @@ async fn wait_re_executes_a_stale_global_source_from_a_directory_read() {
     assert_eq!(
         GLOB_RUNS.load(Ordering::SeqCst),
         2,
-        "the global source ran again even though the request named a directory"
+        "the instance at ~ ran again even though the request named a directory"
     );
     assert_eq!(waited["gv"], serde_json::json!(2));
     assert_eq!(
         f.cache
             .get_source("c", None, "glob")
-            .expect("the global source keeps its map at the global entry")
+            .expect("the instance at ~ keeps its map at the global entry")
             .fields["gv"],
         Value::Int(2),
         "the refreshed records landed at the global entry, not the addressed one"
@@ -619,7 +690,7 @@ async fn wait_re_executes_a_stale_global_source_from_a_directory_read() {
 /// read, not re-run.
 #[tokio::test]
 async fn wait_leaves_a_fresh_source_alone() {
-    let f = Fixture::start(counting_registry());
+    let f = counting_fixture();
     let project = f.path("ws/project");
     let mut s = f.connect().await;
 
@@ -632,13 +703,18 @@ async fn wait_leaves_a_fresh_source_alone() {
     assert_eq!(waited["gv"], serde_json::json!(1));
     assert_eq!(waited["pv"], serde_json::json!(1));
     assert_eq!(GLOB_RUNS.load(Ordering::SeqCst), 1);
-    assert_eq!(PROJ_RUNS.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        PROJ_RUNS.load(Ordering::SeqCst),
+        2,
+        "the two instances of the first read, and nothing since"
+    );
 }
 
 #[tokio::test]
-async fn a_provider_record_is_read_at_its_sources_scope() {
+async fn a_provider_record_is_read_at_its_sources_instances() {
     let f = Fixture::start(two_scope_registry());
     let project = f.path("ws/project");
+    std::fs::write(f.home.join("ws/project/.root"), "").unwrap();
 
     f.cache.put_source(
         "p",
@@ -660,79 +736,73 @@ async fn a_provider_record_is_read_at_its_sources_scope() {
         ]),
         Schedule::default(),
     );
+    // The rooted source's instance at `~`: it has been asked once already.
+    f.cache
+        .put_source("p", None, "proj", fields(vec![]), Schedule::default());
 
     let mut s = f.connect().await;
 
+    let at_project = data(send_recv(&mut s, get_at("p", &project)).await, "project");
     assert_eq!(
-        data(send_recv(&mut s, get_at("p.v", &project)).await, "project"),
+        at_project["v"],
         serde_json::json!("project-v"),
-        "at a project path the path-scoped record wins over the global one"
+        "at a project path the project's record wins over the one at `~`"
     );
+    assert_eq!(at_project["gv"], serde_json::json!("G"), "`~`-only field");
     assert_eq!(
-        data(send_recv(&mut s, get("p.v")).await, "global"),
-        serde_json::json!("global-v"),
-        "--global reads the global source's record"
+        at_project["pv"],
+        serde_json::json!("P"),
+        "project-only field"
     );
 
-    let whole = data(send_recv(&mut s, get_at("p", &project)).await, "whole");
-    assert_eq!(whole["gv"], serde_json::json!("G"), "global-only field");
-    assert_eq!(whole["pv"], serde_json::json!("P"), "path-only field");
-    assert_eq!(whole["v"], serde_json::json!("project-v"));
+    let global = data(send_recv(&mut s, get("p")).await, "global");
+    assert_eq!(
+        global,
+        serde_json::json!({"v": "global-v", "gv": "G"}),
+        "--global reads the instances at `~` alone"
+    );
 }
 
-/// Both scopes' maps can sit on the global entry at once — a path-scoped source
-/// runs at `$HOME` for that address, so its records land there beside the
-/// global source's. `--global` must answer with the `Global` source's record,
-/// and must answer the same way every time: the merge order inside a layer is
-/// fixed, not whatever a HashMap iterates.
+/// Two Sources' maps can sit on the global entry at once — the rooted one's
+/// instance at `~` beside the other's only instance. Where both state a field
+/// the answer is the same every time: the merge order inside an entry is fixed
+/// (by Source name), not whatever a HashMap iterates.
 #[tokio::test]
-async fn the_global_source_wins_at_the_global_entry() {
+async fn sources_sharing_the_global_entry_merge_in_a_fixed_order() {
     let f = Fixture::start(two_scope_registry());
-    let project = f.path("ws/project");
 
     f.cache.put_source(
         "p",
         None,
         "proj",
-        fields(vec![("v", Value::String("path-scoped-at-home".into()))]),
+        fields(vec![("v", Value::String("from-proj".into()))]),
         Schedule::default(),
     );
     f.cache.put_source(
         "p",
         None,
         "glob",
-        fields(vec![("v", Value::String("global-v".into()))]),
-        Schedule::default(),
-    );
-    f.cache.put_source(
-        "p",
-        Some(&project),
-        "proj",
-        fields(vec![("v", Value::String("project-v".into()))]),
+        fields(vec![("v", Value::String("from-glob".into()))]),
         Schedule::default(),
     );
 
     let mut s = f.connect().await;
-    for attempt in 1..=2 {
+    for attempt in 1..=3 {
+        let whole = data(send_recv(&mut s, get("p")).await, "--global");
         assert_eq!(
-            data(send_recv(&mut s, get("p.v")).await, "--global"),
-            serde_json::json!("global-v"),
-            "attempt {attempt}: --global resolves to the Global source's record"
+            whole["v"],
+            serde_json::json!("from-proj"),
+            "attempt {attempt}: the later Source name is merged last"
         );
     }
-    assert_eq!(
-        data(send_recv(&mut s, get_at("p.v", &project)).await, "project"),
-        serde_json::json!("project-v"),
-        "at a project path the path-scoped record still wins"
-    );
 }
 
 /// A provider record and a static record inside the same object node: the read
 /// stitches them together instead of letting one map answer alone.
 ///
-/// The two halves live on different layers — the `Global` source's at the
-/// global entry, the static one at the project directory — so the stitching
-/// happens across the chain, not inside one entry.
+/// The two halves live on different layers — the source's at the global
+/// entry, the static one at the project directory — so the stitching happens
+/// across the chain, not inside one entry.
 #[tokio::test]
 async fn a_static_record_merges_into_a_provider_produced_object() {
     let f = Fixture::start(two_scope_registry());
@@ -743,26 +813,26 @@ async fn a_static_record_merges_into_a_provider_produced_object() {
         None,
         "glob",
         fields(vec![(
-            "tools",
+            "gv",
             Value::Object(fields(vec![("y", Value::Int(2))])),
         )]),
         Schedule::default(),
     );
 
     let mut s = f.connect().await;
-    let resp = send_recv(&mut s, put_at("p.tools.x", serde_json::json!(1), &project)).await;
+    let resp = send_recv(&mut s, put_at("p.gv.x", serde_json::json!(1), &project)).await;
     assert!(resp.ok, "put beside a provider record: {:?}", resp.error);
 
     assert_eq!(
         data(
-            send_recv(&mut s, get_at("p.tools", &project)).await,
+            send_recv(&mut s, get_at("p.gv", &project)).await,
             "interior object"
         ),
         serde_json::json!({"x": 1, "y": 2}),
         "the static and provider halves of one object node both show up"
     );
     assert_eq!(
-        data(send_recv(&mut s, get("p.tools")).await, "global read"),
+        data(send_recv(&mut s, get("p.gv")).await, "global read"),
         serde_json::json!({"y": 2}),
         "the static half really is a layer down — the global entry holds only \
          the provider's half"
@@ -771,7 +841,7 @@ async fn a_static_record_merges_into_a_provider_produced_object() {
 
 // ── a narrowing provider still reads static records below its entry ──────────
 
-/// A `PathScoped` source that walks up to the nearest ancestor holding a
+/// A rooted source that walks up to the nearest ancestor holding a
 /// `.root` marker — git's shape (`walk_to_git`) without needing a repository.
 /// It reports the directory it ran in, so a read proves where the record lives,
 /// and the marker's text as `tag` when there is any, so two roots can produce
@@ -782,7 +852,7 @@ impl Source for RootedSource {
     fn metadata(&self) -> &SourceMetadata {
         &self.0
     }
-    fn execute(&self, path: Option<&str>) -> SourceResult {
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let mut result = SourceResult::new();
         let dir = path.unwrap_or_default();
         result.insert("field", Value::String(dir.to_string()));
@@ -791,18 +861,26 @@ impl Source for RootedSource {
         {
             result.insert("tag", Value::String(tag));
         }
-        result
+        Ok(result)
     }
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        let mut cur = Some(Path::new(path?));
-        while let Some(dir) = cur {
-            if dir.join(".root").exists() {
-                return Some(dir.to_string_lossy().into_owned());
-            }
-            cur = dir.parent();
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(find_root_marker(dir))
+    }
+    fn has_root(&self) -> bool {
+        true
+    }
+}
+
+/// The nearest directory at or above `dir` holding a `.root` marker.
+fn find_root_marker(dir: &str) -> Option<String> {
+    let mut cur = Some(Path::new(dir));
+    while let Some(dir) = cur {
+        if dir.join(".root").exists() {
+            return Some(dir.to_string_lossy().into_owned());
         }
-        None
+        cur = dir.parent();
     }
+    None
 }
 
 /// `r` narrows the requested path to the marker directory, so its records sit
@@ -813,15 +891,11 @@ impl Provider for RootedProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "r".to_string(),
-            sources: vec![source_meta("tree", "field", SourceScope::PathScoped)],
+            sources: vec![source_meta("tree", "field")],
         }
     }
     fn sources(&self) -> Vec<Box<dyn Source>> {
-        vec![Box::new(RootedSource(source_meta(
-            "tree",
-            "field",
-            SourceScope::PathScoped,
-        )))]
+        vec![Box::new(RootedSource(source_meta("tree", "field")))]
     }
 }
 
@@ -852,7 +926,7 @@ async fn a_static_record_below_the_provider_entry_is_read_from_the_requested_pat
             "provider record"
         ),
         serde_json::json!(root),
-        "the path-scoped source runs at the marker directory, not the requested one"
+        "the rooted Source runs at the marker directory, not the requested one"
     );
     assert!(
         f.cache.get_entry("r", Some(&root)).is_some(),
@@ -973,39 +1047,230 @@ async fn a_watch_fires_for_a_static_record_below_the_provider_entry() {
     assert_eq!(update.data, Some(serde_json::json!("kept")));
 }
 
-/// The merge takes a provider's records from one entry — the one its source
-/// resolves to — never from an ancestor that also holds records of the same
-/// namespace. Nearest-wins hides such a leak for a field both entries produce,
-/// so the field here exists at the outer root and not at the inner one.
+// ── a key missing at the nearest instance is found farther up ────────────────
+
+/// A rooted source whose records are the `key=value` lines of a `.values` file
+/// in the directory it runs in, so each instance can be given its own: the
+/// project's at its marker directory, the instance at `~` at `$HOME`. Any key
+/// is addressable (`<k>`), as mise's tools are.
+struct WalkSource(SourceMetadata);
+
+impl WalkSource {
+    fn meta() -> SourceMetadata {
+        SourceMetadata {
+            invalidation: InvalidationStrategy::Watch {
+                patterns: vec![".values".into()],
+                abs_paths: vec![],
+            },
+            fsevents_reinstate: true,
+            ..source_meta("s", "<k>")
+        }
+    }
+}
+
+impl Source for WalkSource {
+    fn metadata(&self) -> &SourceMetadata {
+        &self.0
+    }
+    fn execute(&self, dir: Option<&str>) -> Result<SourceResult, String> {
+        let dir = dir.ok_or("no directory")?;
+        let mut result = SourceResult::new();
+        if let Ok(text) = std::fs::read_to_string(Path::new(dir).join(".values")) {
+            for line in text.lines() {
+                if let Some((k, v)) = line.split_once('=') {
+                    result.insert(k, Value::String(v.to_string()));
+                }
+            }
+        }
+        Ok(result)
+    }
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(find_root_marker(dir))
+    }
+    fn has_root(&self) -> bool {
+        true
+    }
+}
+
+struct WalkProvider;
+
+impl Provider for WalkProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: "walk".to_string(),
+            sources: vec![WalkSource::meta()],
+        }
+    }
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(WalkSource(WalkSource::meta()))]
+    }
+}
+
+fn walk_registry() -> ProviderRegistry {
+    let mut reg = ProviderRegistry::new();
+    reg.register(Box::new(WalkProvider)).unwrap();
+    reg
+}
+
+/// `$HOME/.values` sets `a` and `b`; the project at `$HOME/ws/project` sets `a`
+/// only, and a nested root `$HOME/ws/project/vendor/inner` sets `c`.
+fn walk_values(f: &Fixture) {
+    std::fs::write(f.home.join(".values"), "a=home-a\nb=home-b\n").unwrap();
+    std::fs::write(f.home.join("ws/project/.root"), "").unwrap();
+    std::fs::write(f.home.join("ws/project/.values"), "a=project-a\n").unwrap();
+    let inner = f.home.join("ws/project/vendor/inner");
+    std::fs::create_dir_all(inner.join("src")).unwrap();
+    std::fs::write(inner.join(".root"), "").unwrap();
+    std::fs::write(inner.join(".values"), "c=inner-c\n").unwrap();
+}
+
+/// The key the nearest instance has is its answer, and the instance at `~` is
+/// not even asked; a key it lacks is found at the instance at `~`.
 #[tokio::test]
-async fn an_ancestor_entrys_provider_records_never_leak_into_a_nested_root() {
-    let f = rooted_fixture();
-    let outer = f.path("ws/project");
-    std::fs::write(f.home.join("ws/project/.root"), "outer").unwrap();
-    std::fs::create_dir_all(f.home.join("ws/project/inner")).unwrap();
-    std::fs::write(f.home.join("ws/project/inner/.root"), "").unwrap();
-    let inner = f.path("ws/project/inner");
+async fn a_key_missing_at_the_project_instance_is_found_at_the_home_instance() {
+    let f = Fixture::start(walk_registry());
+    walk_values(&f);
+    let sub = f.path("ws/project/foo");
+    let project = f.path("ws/project");
     let mut s = f.connect().await;
 
-    let at_outer = data(send_recv(&mut s, get_at("r", &outer)).await, "outer read");
     assert_eq!(
-        at_outer,
-        serde_json::json!({ "field": outer, "tag": "outer" }),
-        "the outer root produces `tag`"
+        data(send_recv(&mut s, get_at("walk.a", &sub)).await, "walk.a"),
+        serde_json::json!("project-a"),
+        "the project's instance has `a`, and it is nearer than `~`'s"
     );
-
-    let at_inner = data(send_recv(&mut s, get_at("r", &inner)).await, "inner read");
-    assert_eq!(
-        at_inner,
-        serde_json::json!({ "field": inner }),
-        "the inner root's entry is the only one the merge reads provider records from"
-    );
-
-    let leaked = send_recv(&mut s, get_at("r.tag", &inner)).await;
+    assert!(f.cache.get_entry("walk", Some(&project)).is_some());
     assert!(
-        leaked.data.is_none(),
-        "a field the inner root never produces must not arrive from the outer entry, got {:?}",
-        leaked.data
+        f.cache.get_entry("walk", None).is_none(),
+        "the walk stopped at the project's instance: `~` was never asked"
+    );
+
+    assert_eq!(
+        data(send_recv(&mut s, get_at("walk.b", &sub)).await, "walk.b"),
+        serde_json::json!("home-b"),
+        "`b` is missing at the project, so the walk goes on to `~`"
+    );
+    assert!(
+        f.cache.get_entry("walk", None).is_some(),
+        "and the instance at `~` now exists"
+    );
+
+    let whole = data(send_recv(&mut s, get_at("walk", &sub)).await, "whole");
+    assert_eq!(
+        whole,
+        serde_json::json!({"a": "project-a", "b": "home-b"}),
+        "a namespace read merges the instances up the chain, the nearer winning"
+    );
+
+    let absent = send_recv(&mut s, get_at("walk.zz", &sub)).await;
+    assert!(
+        absent.ok && absent.data.is_none(),
+        "a key nobody has is a miss"
+    );
+}
+
+/// Instances chain through every root on the way up: a nested root asks its
+/// parent's root next, then `~`. The nearer instance wins per key, and what it
+/// lacks is filled from the farther ones, never the other way round.
+#[tokio::test]
+async fn a_nested_root_wins_per_key_and_the_outer_root_fills_the_rest() {
+    let f = Fixture::start(walk_registry());
+    walk_values(&f);
+    let inner = f.path("ws/project/vendor/inner/src");
+    let mut s = f.connect().await;
+
+    assert_eq!(
+        data(send_recv(&mut s, get_at("walk", &inner)).await, "whole"),
+        serde_json::json!({"a": "project-a", "b": "home-b", "c": "inner-c"}),
+        "inner, then the project, then `~`"
+    );
+    for (key, want) in [("c", "inner-c"), ("a", "project-a"), ("b", "home-b")] {
+        assert_eq!(
+            data(
+                send_recv(&mut s, get_at(&format!("walk.{key}"), &inner)).await,
+                key
+            ),
+            serde_json::json!(want)
+        );
+    }
+}
+
+/// A read walks as far as it needs and no farther: the instances it reached are
+/// the ones that exist afterwards.
+#[tokio::test]
+async fn a_read_creates_only_the_instances_it_reached() {
+    let f = Fixture::start(walk_registry());
+    walk_values(&f);
+    let inner = f.path("ws/project/vendor/inner/src");
+    let mut s = f.connect().await;
+
+    assert_eq!(
+        data(send_recv(&mut s, get_at("walk.c", &inner)).await, "walk.c"),
+        serde_json::json!("inner-c")
+    );
+    assert!(
+        f.cache
+            .get_entry("walk", Some(&f.path("ws/project/vendor/inner")))
+            .is_some()
+    );
+    assert!(
+        f.cache
+            .get_entry("walk", Some(&f.path("ws/project")))
+            .is_none()
+    );
+    assert!(f.cache.get_entry("walk", None).is_none());
+}
+
+/// An instance's schedule registers when the instance is first requested, at
+/// the root: the lifecycle key is the root's, and the watch is on the root, not
+/// on the subdirectory the request came from. The walk's second instance, at
+/// `~`, has no directory to watch: it watches the file the pattern names in
+/// `$HOME`, on its own, and not `$HOME` itself.
+#[tokio::test]
+async fn watches_register_at_the_root_on_first_request() {
+    let f = Fixture::start_scheduled(walk_registry());
+    walk_values(&f);
+    let project = f.path("ws/project");
+    let sub = f.path("ws/project/foo/bar");
+    let sched = f.scheduler.clone().expect("the fixture runs a scheduler");
+
+    let status = sched.get_status().await.expect("scheduler runs");
+    assert!(
+        status.watched_paths.is_empty(),
+        "nothing is watched before a first request: {:?}",
+        status.watched_paths
+    );
+    assert!(sched.get_lifecycle_snapshots().await.is_empty());
+
+    let mut s = f.connect().await;
+    assert_eq!(
+        data(send_recv(&mut s, get_at("walk.b", &sub)).await, "walk.b"),
+        serde_json::json!("home-b"),
+        "the walk reached both the project and `~`"
+    );
+
+    let keys: std::collections::BTreeSet<Option<String>> = sched
+        .get_lifecycle_snapshots()
+        .await
+        .into_keys()
+        .filter(|k| k.provider == "walk")
+        .map(|k| k.path)
+        .collect();
+    assert_eq!(
+        keys,
+        std::collections::BTreeSet::from([Some(project.clone()), None]),
+        "one lifecycle entry per instance reached, keyed at the root and not at {sub}"
+    );
+
+    let status = sched.get_status().await.expect("scheduler runs");
+    let mut watched = status.watched_paths.clone();
+    watched.sort();
+    let mut want = vec![project, f.path(".values")];
+    want.sort();
+    assert_eq!(
+        watched, want,
+        "the relative watch is on the project's root and, at `~`, on the file in \
+         `$HOME`; neither `$HOME` nor the requested subdirectory is watched"
     );
 }
 
@@ -1023,7 +1288,7 @@ fn rooted_fixture_above_home() -> Fixture {
     f
 }
 
-/// Canon `field_resolution.md` reads a path-scoped source's records at the
+/// Canon `field_resolution.md` reads a rooted Source's records at the
 /// addressed path, wherever the source resolved it to. An entry above `$HOME`
 /// is the one case that is not a link of the requested path's chain, so the
 /// read has to add it — and a static record put below `$HOME` still layers
@@ -1135,7 +1400,7 @@ async fn a_nested_repo_never_reads_the_outer_repos_branch() {
     assert_eq!(
         inner_branch,
         serde_json::json!("innerbr"),
-        "a path-scoped record is read at its own path — never inherited from an ancestor"
+        "a rooted record is read at its own root — never inherited from an ancestor"
     );
 }
 
@@ -1157,8 +1422,8 @@ fn git_at(dir: &Path, args: &[&str]) {
     );
 }
 
-/// `$HOME` is the global path, so a repository rooted there is a path-scoped
-/// source addressed at the global entry: its records key the pathless entry and
+/// `$HOME` is the global path, so a repository rooted there is the
+/// instance at the global entry: its records key the pathless entry and
 /// the source runs at `$HOME`. Addressing `$HOME`, addressing nothing, and
 /// standing in a plain subdirectory are all the same read of the same entry —
 /// there is never a second entry keyed `Some($HOME)`.
@@ -1180,7 +1445,7 @@ async fn a_repository_at_home_is_served_from_the_global_entry() {
             "$HOME"
         ),
         serde_json::json!("homebr"),
-        "a path-scoped source addressed at $HOME runs there"
+        "a rooted Source addressed at $HOME runs there"
     );
     assert_eq!(
         data(send_recv(&mut s, get("git.branch")).await, "--global"),
@@ -1220,7 +1485,7 @@ async fn a_repository_at_home_is_served_from_the_global_entry() {
 
 /// The bare-namespace read follows the field read: a cold cache, a repository
 /// at `$HOME`, and `get git --global` answers with the object rather than a
-/// miss, because a path-scoped source addressed at the global entry runs at
+/// miss, because a rooted Source addressed at the global entry runs at
 /// `$HOME` like any other directory.
 #[tokio::test]
 async fn a_bare_global_read_of_a_home_repository_is_not_a_miss() {

@@ -43,7 +43,7 @@ fn hit(result: CombResult, what: &str) -> serde_json::Value {
 }
 
 /// Set up a server with a real git repo on disk, so the git provider's
-/// `canonical_path` (which walks up looking for `.git`) actually finds a
+/// `root` (which walks up looking for `.git`) actually finds a
 /// repo root and returns the expected path.
 ///
 /// Returns:
@@ -58,7 +58,7 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
-    // Create a real git repo the canonical_path walk can resolve to.
+    // Create a real git repo the root walk can resolve to.
     let repo_tmp = TempDir::new().unwrap();
     let repo_path = repo_tmp
         .path()
@@ -75,7 +75,7 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
         .output()
         .unwrap();
 
-    // Seed a git.branch entry at the repo root (where canonical_path will land).
+    // Seed a git.branch entry at the repo root (where root will land).
     let mut git = HashMap::new();
     git.insert("branch".to_string(), Value::String("main".to_string()));
     git.insert("dirty".to_string(), Value::Bool(false));
@@ -192,7 +192,7 @@ async fn subdir_query_resolves_to_repo_root() {
         .expect("expected ok — subdir should canonicalise to repo root")
         .expect("expected a hit — subdir should canonicalise to repo root");
 
-    // Cache was seeded only at the repo root. If canonical_path didn't walk
+    // Cache was seeded only at the repo root. If root didn't walk
     // up, this lookup would miss. Success proves subdir→root resolution.
     assert_eq!(resp.data.as_ref().unwrap(), "main");
 }

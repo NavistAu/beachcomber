@@ -120,19 +120,23 @@ async fn git_returns_miss_for_non_repo() {
         .unwrap();
 
     // The refresh is asynchronous: the scheduler fans it out to every git
-    // source and each records its outcome once it finishes. A non-repo path
-    // makes every source return no fields, which the scheduler books as a
-    // failure — so a git key appearing in the failure map is the signal that
-    // the refresh ran to completion and wrote nothing.
+    // source. The scheduler handles its messages in order, so by the time it
+    // answers a status request the refresh has started, and the refresh is done
+    // once nothing is in flight. A non-repo path makes every source report
+    // nothing, which is a result and not a failure.
     poll_until_async(
-        "scheduler failure states after refreshing git on a non-repo",
-        "a git key, i.e. the refresh finished having produced no fields",
+        "the scheduler's in-flight sources after refreshing git on a non-repo",
+        "none in flight, i.e. the refresh finished",
         Duration::from_secs(5),
         Duration::from_millis(20),
-        async || handle.get_failure_states().await,
-        |states| states.keys().any(|key| key.provider == "git"),
+        async || handle.get_status().await.expect("scheduler runs").in_flight,
+        |in_flight| in_flight.is_empty(),
     )
     .await;
+    assert!(
+        handle.get_failure_states().await.is_empty(),
+        "a directory with nothing to report is not a failing source"
+    );
 
     let data = fetch(&sock, "git.branch", Some(tmp.path().to_str().unwrap()))
         .unwrap()

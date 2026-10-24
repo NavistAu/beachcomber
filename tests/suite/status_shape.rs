@@ -954,7 +954,7 @@ fn cache_row_new_fields_serde_round_trip() {
 async fn lifecycle_snapshots_message_returns_per_entry_data() {
     use beachcomber::cache::Cache;
     use beachcomber::provider::registry::ProviderRegistry;
-    use beachcomber::query::SourceDemand;
+    use beachcomber::query::Instance;
     use beachcomber::watcher_registry::WatcherRegistry;
     use std::sync::Arc;
 
@@ -975,8 +975,10 @@ async fn lifecycle_snapshots_message_returns_per_entry_data() {
     handle
         .send(SchedulerMessage::QueryActivity {
             provider: "load".to_string(),
-            path: None,
-            demand: SourceDemand::All,
+            instances: vec![Instance {
+                source: "loadavg".to_string(),
+                root: None,
+            }],
         })
         .await;
 

@@ -1,7 +1,8 @@
 use crate::provider::Provider;
-use crate::provider::SourceScope;
+use crate::provider::Source;
 use crate::provider::Value;
-use crate::provider::mise::MiseProvider;
+use crate::provider::mise::{MiseProvider, MiseTools};
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 fn mise_toml_dir(tools: &[(&str, &str)]) -> TempDir {
@@ -14,133 +15,243 @@ fn mise_toml_dir(tools: &[(&str, &str)]) -> TempDir {
     d
 }
 
+fn tools_source() -> Box<dyn Source> {
+    MiseProvider.sources().into_iter().next().unwrap()
+}
+
+fn home() -> String {
+    crate::query::home_dir()
+        .expect("$HOME is set")
+        .to_string_lossy()
+        .into_owned()
+}
+
 #[test]
-fn mise_provider_metadata() {
+fn mise_provider_is_one_source_with_a_tool_sentinel() {
     let meta = MiseProvider.metadata();
     assert_eq!(meta.name, "mise");
-    assert_eq!(meta.sources.len(), 2);
-
-    let global = meta.sources.iter().find(|s| s.name == "global").unwrap();
-    assert_eq!(global.scope, SourceScope::Global);
-    let global_fields: Vec<&str> = global.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(global_fields.contains(&"<tool>"));
-
-    let project = meta.sources.iter().find(|s| s.name == "project").unwrap();
-    assert_eq!(project.scope, SourceScope::PathScoped);
-    let project_fields: Vec<&str> = project.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(project_fields.contains(&"<tool>"));
+    assert_eq!(meta.sources.len(), 1);
+    let tools = &meta.sources[0];
+    assert_eq!(tools.name, "tools");
+    let fields: Vec<&str> = tools.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(fields, vec!["<tool>"]);
+    assert!(meta.validate().is_ok());
+    assert!(tools_source().has_root());
 }
 
 #[test]
-fn mise_canonical_path_returns_project_root_from_subdir() {
-    let project = mise_toml_dir(&[("node", "20")]);
-    let subdir = project.path().join("src").join("inner");
-    std::fs::create_dir_all(&subdir).unwrap();
-
-    let sources = MiseProvider.sources();
-    let project_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "project")
-        .unwrap();
-    let got = project_src.canonical_path(Some(subdir.to_str().unwrap()));
-    let expected = project.path().to_string_lossy().to_string();
-    assert_eq!(got, Some(expected));
-}
-
-#[test]
-fn mise_canonical_path_returns_project_root_at_root() {
-    let project = mise_toml_dir(&[("python", "3.12")]);
-    let sources = MiseProvider.sources();
-    let project_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "project")
-        .unwrap();
-    let got = project_src.canonical_path(Some(project.path().to_str().unwrap()));
-    let expected = project.path().to_string_lossy().to_string();
-    assert_eq!(got, Some(expected));
-}
-
-#[test]
-fn mise_canonical_path_finds_dot_mise_toml() {
-    // Variant marker: `.mise.toml` (not `mise.toml`).
-    let d = tempfile::tempdir().unwrap();
-    std::fs::write(d.path().join(".mise.toml"), "[tools]\n").unwrap();
-    let subdir = d.path().join("sub");
-    std::fs::create_dir_all(&subdir).unwrap();
-
-    let sources = MiseProvider.sources();
-    let project_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "project")
-        .unwrap();
-    let got = project_src.canonical_path(Some(subdir.to_str().unwrap()));
-    let expected = d.path().to_string_lossy().to_string();
-    assert_eq!(got, Some(expected));
-}
-
-#[test]
-fn mise_canonical_path_none_outside_project() {
-    let d = tempfile::tempdir().unwrap();
-    let sources = MiseProvider.sources();
-    let project_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "project")
-        .unwrap();
-    let got = project_src.canonical_path(Some(d.path().to_str().unwrap()));
-    // Either None (no upward project) or Some(ancestor with mise.toml).
-    if let Some(got) = got {
-        assert_ne!(
-            got,
-            d.path().to_string_lossy().to_string(),
-            "tempdir has no mise.toml; canonical_path should not return the dir itself"
-        );
+fn mise_watches_its_files_under_the_root_and_its_config_dir_absolutely() {
+    let meta = MiseProvider.metadata();
+    match &meta.sources[0].invalidation {
+        crate::provider::InvalidationStrategy::Watch {
+            patterns,
+            abs_paths,
+        } => {
+            assert_eq!(
+                patterns,
+                &vec!["mise.toml".to_string(), ".mise.toml".into()]
+            );
+            assert_eq!(abs_paths.len(), 1);
+            assert!(abs_paths[0].ends_with("/mise"), "{abs_paths:?}");
+        }
+        other => panic!("expected Watch, got {other:?}"),
     }
 }
 
 #[test]
-fn mise_canonical_path_passes_none_through() {
-    let sources = MiseProvider.sources();
-    let project_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "project")
-        .unwrap();
-    assert_eq!(project_src.canonical_path(None), None);
+fn the_tools_source_roots_at_the_mise_toml_directory() {
+    let project = mise_toml_dir(&[("node", "20")]);
+    let expected = project.path().to_string_lossy().to_string();
+    let src = tools_source();
+
+    // From a subdirectory, and from the project itself.
+    let subdir = project.path().join("src").join("inner");
+    std::fs::create_dir_all(&subdir).unwrap();
+    assert_eq!(
+        src.root(subdir.to_str().unwrap()),
+        Ok(Some(expected.clone()))
+    );
+    assert_eq!(
+        src.root(project.path().to_str().unwrap()),
+        Ok(Some(expected))
+    );
+}
+
+#[test]
+fn the_tools_source_roots_at_a_dot_mise_toml_directory() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join(".mise.toml"), "[tools]\n").unwrap();
+    let subdir = d.path().join("sub");
+    std::fs::create_dir_all(&subdir).unwrap();
+    assert_eq!(
+        tools_source().root(subdir.to_str().unwrap()),
+        Ok(Some(d.path().to_string_lossy().to_string()))
+    );
+}
+
+#[test]
+fn the_tools_source_has_no_root_outside_a_project() {
+    let d = tempfile::tempdir().unwrap();
+    // Either no project above (the instance at `~`) or an ancestor's mise.toml,
+    // never the empty directory itself.
+    if let Some(got) = tools_source().root(d.path().to_str().unwrap()).unwrap() {
+        assert_ne!(got, d.path().to_string_lossy().to_string());
+    }
+}
+
+/// What `mise ls --current --json` says in a project directory: `node` set by
+/// the project's own `mise.toml`, `go` by the global config.
+fn canned_ls(project: &str) -> String {
+    let global = format!("{}/config.toml", super::mise::global_config_dir_for_tests());
+    serde_json::json!({
+        "node": [{"version": "20.1.0", "source": {"path": format!("{project}/mise.toml")}}],
+        "go": [{"version": "1.22.0", "source": {"path": global}}],
+    })
+    .to_string()
+}
+
+#[test]
+fn one_source_answers_project_then_global() {
+    let project = "/work/proj";
+    let asked: Arc<Mutex<Vec<String>>> = Arc::default();
+    let log = Arc::clone(&asked);
+    let src = MiseTools::with_runner(Box::new(move |cwd: &str| {
+        log.lock().unwrap().push(cwd.to_string());
+        Ok(canned_ls(project))
+    }));
+
+    // At the project's instance: only what the project sets, run in the project.
+    let at_project = src.execute(Some(project)).unwrap();
+    assert_eq!(
+        at_project.fields.keys().collect::<Vec<_>>(),
+        vec!["node"],
+        "the project instance reports the project's tools"
+    );
+    assert_eq!(
+        at_project.fields.get("node"),
+        Some(&Value::String("20.1.0".into()))
+    );
+
+    // At the instance at `~` (the daemon passes `$HOME`): only the global tools.
+    let at_home = src.execute(Some(&home())).unwrap();
+    assert_eq!(at_home.fields.keys().collect::<Vec<_>>(), vec!["go"]);
+    assert_eq!(
+        at_home.fields.get("go"),
+        Some(&Value::String("1.22.0".into()))
+    );
+
+    assert_eq!(*asked.lock().unwrap(), vec![project.to_string(), home()]);
+}
+
+#[test]
+fn the_home_instance_reports_the_global_config_and_a_config_file_in_home() {
+    let home = home();
+    let global = format!("{}/config.toml", super::mise::global_config_dir_for_tests());
+    // The project entry for `python` comes first, so precedence cannot be
+    // an accident of order.
+    let ls = serde_json::json!({
+        "node": [{"version": "18.0.0", "source": {"path": format!("{home}/mise.toml")}}],
+        "python": [
+            {"version": "3.12.0", "source": {"path": format!("{home}/.mise.toml")}},
+            {"version": "3.11.0", "source": {"path": global.clone()}},
+        ],
+        "go": [{"version": "1.22.0", "source": {"path": global}}],
+        "ruby": [{"version": "3.3.0", "source": {"path": "/work/proj/mise.toml"}}],
+    })
+    .to_string();
+    let src = MiseTools::with_runner(Box::new(move |_| Ok(ls.clone())));
+
+    let got = src.execute(Some(&home)).unwrap().fields;
+    let mut keys: Vec<_> = got.keys().cloned().collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec!["go", "node", "python"],
+        "ruby is another directory's"
+    );
+    assert_eq!(got.get("node"), Some(&Value::String("18.0.0".into())));
+    assert_eq!(
+        got.get("python"),
+        Some(&Value::String("3.12.0".into())),
+        "the project config wins a clash"
+    );
+}
+
+#[test]
+fn a_tools_run_that_fails_is_a_failure_not_an_empty_result() {
+    let failing = MiseTools::with_runner(Box::new(|_| Err("mise: not found".into())));
+    assert_eq!(
+        failing.execute(Some("/work/proj")).unwrap_err(),
+        "mise: not found"
+    );
+    let garbled = MiseTools::with_runner(Box::new(|_| Ok("not json".into())));
+    assert!(garbled.execute(Some("/work/proj")).is_err());
+    assert!(
+        MiseTools::with_runner(Box::new(|_| Ok("{}".into())))
+            .execute(None)
+            .is_err(),
+        "no directory to run in is a failure"
+    );
+}
+
+#[test]
+fn a_project_with_no_tools_is_an_empty_result() {
+    let src = MiseTools::with_runner(Box::new(|_| Ok("{}".into())));
+    assert!(src.execute(Some("/work/proj")).unwrap().fields.is_empty());
 }
 
 #[test]
 fn mise_project_execute_returns_flat_tool_fields() {
     let d = mise_toml_dir(&[("node", "20.11.0"), ("python", "3.12.1")]);
+    let project = d.path().to_str().unwrap();
 
-    // Trust the temp dir for mise so it parses our config (macOS-specific).
+    // The shape of a project's answer, from mise's own output format.
+    let ls = serde_json::json!({
+        "node": [{"version": "20.11.0", "source": {"path": format!("{project}/mise.toml")}}],
+        "python": [{"version": "3.12.1", "source": {"path": format!("{project}/mise.toml")}}],
+    })
+    .to_string();
+    let result = MiseTools::with_runner(Box::new(move |_| Ok(ls.clone())))
+        .execute(Some(project))
+        .unwrap();
+    assert_eq!(
+        result.fields.get("node"),
+        Some(&Value::String("20.11.0".into()))
+    );
+    assert!(
+        result
+            .fields
+            .values()
+            .all(|v| matches!(v, Value::String(_))),
+        "all tool values must be Value::String"
+    );
+}
+
+#[test]
+fn mise_project_execute_with_the_real_binary_reports_the_project() {
+    if std::process::Command::new("mise")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipping: mise binary not available");
+        return;
+    }
+    let d = mise_toml_dir(&[("node", "20.11.0"), ("python", "3.12.1")]);
+    // Trust the temp dir for mise so it parses our config.
     let _ = std::process::Command::new("mise")
         .arg("trust")
         .arg(d.path())
         .output();
 
-    let sources = MiseProvider.sources();
-    let project_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "project")
-        .unwrap();
-    let result = project_src.execute(Some(d.path().to_str().unwrap()));
-
-    // Skip if mise isn't installed or no project tools were returned.
-    if result.fields.is_empty() {
-        return;
-    }
-
-    // Fields must be flat strings keyed by tool name.
-    let has_tool = result.fields.contains_key("node") || result.fields.contains_key("python");
+    let result = tools_source()
+        .execute(Some(d.path().to_str().unwrap()))
+        .expect("mise is installed, so the run succeeds");
     assert!(
-        has_tool,
-        "expected 'node' or 'python' as top-level string fields; got fields: {:?}",
+        result.fields.contains_key("node") && result.fields.contains_key("python"),
+        "the project's tools: {:?}",
         result.fields.keys().collect::<Vec<_>>()
     );
-    let has_string = result
-        .fields
-        .values()
-        .all(|v| matches!(v, Value::String(_)));
-    assert!(has_string, "all tool values must be Value::String");
 }
 
 #[test]
@@ -154,12 +265,10 @@ fn mise_global_execute_returns_flat_tool_fields() {
         return;
     }
 
-    let sources = MiseProvider.sources();
-    let global_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "global")
-        .unwrap();
-    let result = global_src.execute(None);
+    // The instance at `~` runs in `$HOME`.
+    let result = tools_source()
+        .execute(Some(&home()))
+        .expect("mise is installed, so the run succeeds");
 
     // May be empty if no global tools are installed.
     let all_strings = result
@@ -171,32 +280,4 @@ fn mise_global_execute_returns_flat_tool_fields() {
         "global entry must have flat Value::String tool fields; got: {:?}",
         result.fields
     );
-}
-
-#[test]
-fn mise_project_execute_no_config_emits_nothing() {
-    let tmp = tempfile::tempdir().unwrap(); // no mise.toml
-    let sources = MiseProvider.sources();
-    let project_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "project")
-        .unwrap();
-    let result = project_src.execute(Some(tmp.path().to_str().unwrap()));
-    assert!(
-        result.fields.is_empty(),
-        "no mise.toml → project execute should return empty SourceResult; got: {:?}",
-        result.fields
-    );
-}
-
-#[test]
-fn mise_sibling_sources_have_disjoint_field_owner() {
-    // Validate the provider passes registration-time validation.
-    let meta = MiseProvider.metadata();
-    // The <tool> sentinel appears in both sources — that's the dynamic-field pattern.
-    // This is expected; the validation logic in ProviderMetadata::validate() handles it.
-    // Just assert we have both sources.
-    assert_eq!(meta.sources.len(), 2);
-    assert!(meta.sources.iter().any(|s| s.name == "global"));
-    assert!(meta.sources.iter().any(|s| s.name == "project"));
 }

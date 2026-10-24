@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 
 pub struct UnameProvider;
@@ -39,7 +39,6 @@ fn system_source_metadata() -> SourceMetadata {
                 field_type: FieldType::String,
             },
         ],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Watch {
             patterns: vec![],
             abs_paths: vec![],
@@ -63,16 +62,16 @@ impl Source for UnameSystem {
         M.get_or_init(system_source_metadata)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let Some(info) = uname_info() else {
-            return SourceResult::new();
+            return Err("uname failed".into());
         };
         let mut result = SourceResult::new();
         result.insert("sysname", Value::String(info.sysname));
         result.insert("release", Value::String(info.release));
         result.insert("version", Value::String(info.version));
         result.insert("machine", Value::String(info.machine));
-        result
+        Ok(result)
     }
 }
 
@@ -107,7 +106,7 @@ fn uname_info() -> Option<UnameInfo> {
 #[cfg(test)]
 mod tests {
     use super::UnameProvider;
-    use crate::provider::{InvalidationStrategy, Provider, SourceScope};
+    use crate::provider::{InvalidationStrategy, Provider};
 
     #[test]
     fn uname_provider_metadata() {
@@ -117,7 +116,6 @@ mod tests {
         assert_eq!(meta.sources.len(), 1);
         let src = &meta.sources[0];
         assert_eq!(src.name, "system");
-        assert_eq!(src.scope, SourceScope::Global);
         assert!(
             matches!(src.invalidation, InvalidationStrategy::Watch { .. }),
             "uname system source should use Watch invalidation"
@@ -133,7 +131,7 @@ mod tests {
     fn uname_provider_executes() {
         let p = UnameProvider;
         let sources = p.sources();
-        let result = sources[0].execute(None);
+        let result = sources[0].execute(None).unwrap();
         let sysname = result
             .fields
             .get("sysname")

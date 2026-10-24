@@ -14,13 +14,12 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use tracing::{debug, info, warn};
 
-use crate::query::SourceDemand;
+use crate::query::Instance;
 
 use crate::cache::Cache;
 pub use crate::cache::FailureSnapshot;
 use crate::config::Config;
 use crate::provider::InvalidationStrategy;
-use crate::provider::SourceScope;
 use crate::provider::registry::ProviderRegistry;
 use crate::scheduler::lifecycle::{
     LifecycleRegistry, LifecycleState, SourceLifecycleConfig, StateTransition, WatchAction,
@@ -31,14 +30,11 @@ use crate::watcher_registry::WatcherRegistry;
 /// Messages sent from the Server to the Scheduler.
 #[derive(Debug)]
 pub enum SchedulerMessage {
-    /// An out-of-band re-execution. `demand` selects which Sources: `All` for a
-    /// whole-namespace refresh, `Sources(..)` for the Source owning a field.
-    /// Each runs at the entry its own scope keys, not at `path` whatever its
-    /// scope.
+    /// An out-of-band re-execution of these instances: each Source the key
+    /// demands, at the root that answers for the requested directory.
     Refresh {
         provider: String,
-        path: Option<String>,
-        demand: SourceDemand,
+        instances: Vec<Instance>,
     },
     FsEvent {
         paths: Vec<PathBuf>,
@@ -48,13 +44,13 @@ pub enum SchedulerMessage {
     GetStatus {
         reply: tokio::sync::oneshot::Sender<SchedulerStatus>,
     },
-    /// A provider+path was queried via get/watch. Signals demand to keep the
-    /// queried Sources warm. `demand` selects which Sources: `All` for a
-    /// whole-provider query, `Sources(..)` for a field/source query.
+    /// A provider was queried via get/watch. Signals demand for every instance
+    /// the read reached, to keep them warm: one `(source, root)` per Source the
+    /// key demands and root its chain visited. The first demand of an instance
+    /// creates its lifecycle entry, and with it its schedule.
     QueryActivity {
         provider: String,
-        path: Option<String>,
-        demand: SourceDemand,
+        instances: Vec<Instance>,
     },
     /// A `put` wrote at `node`. The put's lifecycle is its ttl: `Some(N)` makes
     /// the address a lifecycle entry (poll N x 1, decay 1), replacing every put
@@ -205,7 +201,7 @@ impl SchedulerHandle {
 }
 
 /// Tracks consecutive failures and suppression state for a (provider, path, source) key.
-struct FailureState {
+pub(crate) struct FailureState {
     consecutive_failures: u32,
     suppressed_until: Option<Instant>,
     threshold: u32,
@@ -213,7 +209,7 @@ struct FailureState {
 }
 
 impl FailureState {
-    fn new(threshold: u32, backoff_interval: Duration) -> Self {
+    pub(crate) fn new(threshold: u32, backoff_interval: Duration) -> Self {
         Self {
             consecutive_failures: 0,
             suppressed_until: None,
@@ -222,7 +218,7 @@ impl FailureState {
         }
     }
 
-    fn record_failure(&mut self) {
+    pub(crate) fn record_failure(&mut self) {
         self.consecutive_failures += 1;
         if self.consecutive_failures >= self.threshold {
             // 4 levels of exponential backoff from base interval, stays at level 4
@@ -232,12 +228,12 @@ impl FailureState {
         }
     }
 
-    fn record_success(&mut self) {
+    pub(crate) fn record_success(&mut self) {
         self.consecutive_failures = 0;
         self.suppressed_until = None;
     }
 
-    fn is_suppressed(&self) -> bool {
+    pub(crate) fn is_suppressed(&self) -> bool {
         self.suppressed_until
             .map(|until| Instant::now() < until)
             .unwrap_or(false)
@@ -401,12 +397,18 @@ fn build_status(
 /// In-flight set: per-(provider, path, source) deduplication.
 type SourceKeySet = Arc<std::sync::Mutex<std::collections::HashSet<lifecycle::Key>>>;
 /// Failure backoff map: per-(provider, path, source) failure state.
-type SourceFailureMap = Arc<std::sync::Mutex<HashMap<lifecycle::Key, FailureState>>>;
+pub(crate) type SourceFailureMap = Arc<std::sync::Mutex<HashMap<lifecycle::Key, FailureState>>>;
 
-/// Returns true if any component of the event path (relative to the watched root)
-/// equals any of the patterns. Matching happens at ANY depth — an event at
-/// `some/nested/.git/HEAD` matches the pattern `.git`. This is intentional for
-/// monorepos with nested git submodules.
+/// Whether an event at `event_path` matches any of the watch `patterns` of an
+/// instance rooted at `root`.
+///
+/// A pattern naming one file or directory (`.git`, `mise.toml`) matches any
+/// path component at any depth: an event at `some/nested/.git/HEAD` matches
+/// `.git`. This is intentional for monorepos with nested git submodules.
+///
+/// A pattern naming a path (`.git/HEAD`, `.terraform/environment`) is relative
+/// to the root: it matches the event at that path and anything below it, and
+/// nowhere else.
 ///
 /// If the event path IS the root, the root's basename is matched instead.
 ///
@@ -432,9 +434,15 @@ pub(crate) fn event_matches_patterns(
         }
         return false;
     }
-    relative.components().any(|c| {
-        let name = c.as_os_str().to_string_lossy();
-        patterns.iter().any(|p| p == name.as_ref())
+    patterns.iter().any(|pattern| {
+        let pattern = pattern.trim_end_matches('/');
+        if pattern.contains('/') {
+            relative.starts_with(pattern)
+        } else {
+            relative
+                .components()
+                .any(|c| c.as_os_str().to_string_lossy() == pattern)
+        }
     })
 }
 
@@ -475,6 +483,7 @@ impl Scheduler {
         let (tx, rx) = mpsc::channel(256);
         let handle = SchedulerHandle::new(tx);
         let heartbeat = Arc::new(AtomicU64::new(0));
+        let failure_counts = Arc::clone(&registry.failures);
         let scheduler = Scheduler {
             cache,
             registry,
@@ -482,7 +491,7 @@ impl Scheduler {
             rx,
             in_flight: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             pending_rerun: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-            failure_counts: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            failure_counts,
             heartbeat,
             watchers,
             run_watch_self_test: false,
@@ -504,40 +513,21 @@ impl Scheduler {
         t
     }
 
-    /// Re-execute the Sources of `provider` that `demand` names, each at the
-    /// cache entry its own scope keys: the global entry for a `Global` Source
-    /// whatever path the refresh carried, `path` for a `PathScoped` one.
-    ///
-    /// The names are snapshotted so the registry borrow drops before the calls.
-    fn refresh_sources(&self, provider: &str, path: Option<&str>, demand: &SourceDemand) {
-        let targets: Vec<(String, Option<String>)> = self
-            .registry
-            .provider_sources(provider)
-            .map(|sources| {
-                sources
-                    .iter()
-                    .filter(|sm| demand.selects(&sm.name))
-                    .map(|sm| {
-                        let at = match sm.scope {
-                            SourceScope::Global => None,
-                            SourceScope::PathScoped => path.map(str::to_string),
-                        };
-                        (sm.name.clone(), at)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        for (name, at) in &targets {
-            self.execute_source(provider, name, at.as_deref());
+    /// Re-execute `instances` of `provider`.
+    fn refresh_sources(&self, provider: &str, instances: &[Instance]) {
+        for instance in instances {
+            self.execute_source(provider, &instance.source, instance.root.as_deref());
         }
     }
 
-    /// Execute a specific source on the blocking thread pool and write result to cache.
+    /// Execute one instance of a source (`root` is its cache address, `None`
+    /// for the instance at `~`) on the blocking thread pool and write the result
+    /// to cache.
     /// This is fire-and-forget: returns immediately while the source runs in the background.
-    /// Deduplicates concurrent executions via in_flight: if the (provider, path, source) triple
+    /// Deduplicates concurrent executions via in_flight: if the (provider, root, source) triple
     /// is already running, marks it for a single rerun after completion.
     /// Suppresses execution when failure backoff is active.
-    fn execute_source(&self, provider_name: &str, source_name: &str, path: Option<&str>) {
+    fn execute_source(&self, provider_name: &str, source_name: &str, root: Option<&str>) {
         let Some(source) = self.registry.source(provider_name, source_name) else {
             warn!(
                 "Refresh for unknown source '{}.{}'",
@@ -548,7 +538,7 @@ impl Scheduler {
 
         let key = lifecycle::Key {
             provider: provider_name.to_string(),
-            path: path.map(|s| s.to_string()),
+            path: root.map(|s| s.to_string()),
             source: source_name.to_string(),
             node: String::new(),
         };
@@ -586,11 +576,11 @@ impl Scheduler {
         let in_flight = Arc::clone(&self.in_flight);
         let pending_rerun = Arc::clone(&self.pending_rerun);
         let failure_counts = Arc::clone(&self.failure_counts);
-        // `path` is the cache address; the directory the Source runs in is not
+        // `root` is the cache address; the directory the Source runs in is not
         // always the same string. The global entry's address is `None` and its
-        // directory is `$HOME` (`query::normalise_path`), so a PathScoped
-        // Source scheduled there reads `$HOME` and writes the pathless entry.
-        let exec_dir = crate::query::source_dir(source.metadata().scope, path);
+        // directory is `$HOME` (`query::normalise_path`), so the instance at
+        // `~` runs in `$HOME` and writes the pathless entry.
+        let exec_dir = crate::query::instance_dir(root);
         let source_clone = Arc::clone(&source);
         let provider_name_owned = provider_name.to_string();
         let source_name_owned = source_name.to_string();
@@ -614,9 +604,10 @@ impl Scheduler {
                 )
                 .await;
 
-                // Record success or failure for backoff tracking.
+                // Record success or failure for backoff tracking. A source that
+                // ran and reported nothing succeeded.
                 match &result {
-                    Ok(Ok(r)) if !r.fields.is_empty() => {
+                    Ok(Ok(Ok(_))) => {
                         failure_counts
                             .lock()
                             .unwrap()
@@ -640,7 +631,7 @@ impl Scheduler {
 
                 let cache_path = key_for_cleanup.path.clone();
                 match result {
-                    Ok(Ok(source_result)) if !source_result.fields.is_empty() => {
+                    Ok(Ok(Ok(source_result))) => {
                         cache.put_source(
                             &provider_name_owned,
                             cache_path.as_deref(),
@@ -653,10 +644,10 @@ impl Scheduler {
                             provider_name_owned, source_name_owned, cache_path
                         );
                     }
-                    Ok(Ok(_)) => {
-                        debug!(
-                            "Source '{}.{}' returned empty for path={:?}",
-                            provider_name_owned, source_name_owned, cache_path
+                    Ok(Ok(Err(e))) => {
+                        warn!(
+                            "Source '{}.{}' failed: {}",
+                            provider_name_owned, source_name_owned, e
                         );
                     }
                     Ok(Err(e)) => {
@@ -806,9 +797,9 @@ impl Scheduler {
                             info!("Scheduler shutting down.");
                             break;
                         }
-                        Some(SchedulerMessage::Refresh { provider, path, demand }) => {
-                            debug!("Refresh: provider={} path={:?} demand={:?}", provider, path, demand);
-                            self.refresh_sources(&provider, path.as_deref(), &demand);
+                        Some(SchedulerMessage::Refresh { provider, instances }) => {
+                            debug!("Refresh: provider={} instances={:?}", provider, instances);
+                            self.refresh_sources(&provider, &instances);
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::PutWritten { provider, path, node, ttl_secs }) => {
@@ -859,144 +850,59 @@ impl Scheduler {
                                 .collect();
                             let _ = reply.send(map);
                         }
-                        Some(SchedulerMessage::QueryActivity { provider, path, demand }) => {
+                        Some(SchedulerMessage::QueryActivity { provider, instances }) => {
                             let now = Instant::now();
-                            let Some(sources) = self.registry.provider_sources(&provider) else {
-                                last_activity = now;
-                                continue;
-                            };
-                            // Narrow to the demanded Sources. Scope/path policy in the
-                            // loop below is unchanged and applies to whichever Sources
-                            // survive this filter (canon §150/§268: a field demands only
-                            // its owning Source).
-                            for sm in sources.iter().filter(|sm| demand.selects(&sm.name)) {
-                                // Every source is demanded, whatever path the query
-                                // carried. A Global source always lives at
-                                // (provider, None); a PathScoped one lives at the
-                                // requested path, or — when the query addressed the
-                                // global entry — at (provider, None) too, where it
-                                // runs at `$HOME` (`query::source_dir`). A
-                                // whole-provider query like `comb get mise` from
-                                // inside a project therefore warms BOTH the project
-                                // source at the resolved path AND the global one at
-                                // the global entry.
-                                let effective_key_path = match sm.scope {
-                                    SourceScope::Global => None,
-                                    SourceScope::PathScoped => path.clone(),
+                            for instance in &instances {
+                                let Some(sm) = self.registry.source_metadata(&provider, &instance.source) else {
+                                    continue;
                                 };
-
+                                let root = instance.root.clone();
                                 let key = lifecycle::Key {
                                     provider: provider.clone(),
-                                    path: effective_key_path.clone(),
+                                    path: root.clone(),
                                     source: sm.name.clone(),
                                     node: String::new(),
                                 };
-                                let cfg = source_lifecycle_config(&self.cache, &provider, effective_key_path.as_deref(), sm);
+                                let cfg = source_lifecycle_config(&self.cache, &provider, root.as_deref(), sm);
                                 let outcome = lifecycle.on_demand(key.clone(), cfg, now);
 
-                                match outcome.watch_registration {
-                                    WatchAction::Register | WatchAction::Reinstate => {
-                                        // Register fs watches for PathScoped Watch and
-                                        // WatchAndPoll sources — but only at a directory
-                                        // the query named. A path-scoped source at the
-                                        // global entry runs at `$HOME`, and a recursive
-                                        // watch there is a firehose; it refreshes by
-                                        // poll, by demand, and (when read-always) on
-                                        // every read. A Poll source registers no watch
-                                        // at all (canon provider_source.md invariant 4):
-                                        // its pattern list is empty, and an empty list
-                                        // matches every event under the root, so a
-                                        // subscription for it would re-execute the
-                                        // source on any write anywhere in the tree.
-                                        if matches!(sm.scope, SourceScope::PathScoped)
-                                            && !matches!(sm.invalidation, InvalidationStrategy::Poll { .. })
-                                            && let Some(ref path_str) = path
-                                        {
-                                            let watch_path = PathBuf::from(path_str);
-                                            let patterns = crate::provider::watch_patterns(
-                                                &sm.invalidation,
+                                // The instance's schedule registers when it is
+                                // first requested (and again when decay dropped
+                                // its watches and a demand reinstates them),
+                                // never at load.
+                                if matches!(
+                                    outcome.watch_registration,
+                                    WatchAction::Register | WatchAction::Reinstate
+                                ) {
+                                    let src = self.registry.source(&provider, &sm.name);
+                                    for (watch_path, sub) in instance_watches(
+                                        &provider,
+                                        sm,
+                                        root.as_deref(),
+                                        src.as_deref(),
+                                    ) {
+                                        let (returned_watcher, registered) = register_path_watch(
+                                            fs_watcher,
+                                            &mut watch_paths,
+                                            watch_path.clone(),
+                                            sub,
+                                        )
+                                        .await;
+                                        fs_watcher = returned_watcher;
+                                        if registered {
+                                            debug!(
+                                                "Demand: watching {:?} for provider={} source={} root={:?}",
+                                                watch_path, provider, sm.name, root
                                             );
-                                            let sub = Subscription {
-                                                provider: provider.clone(),
-                                                path: path.clone(),
-                                                source: sm.name.clone(),
-                                                patterns,
-                                            };
-                                            let (returned_watcher, registered) =
-                                                register_path_watch(
-                                                    fs_watcher,
-                                                    &mut watch_paths,
-                                                    watch_path.clone(),
-                                                    sub,
-                                                )
-                                                .await;
-                                            fs_watcher = returned_watcher;
-                                            if registered {
-                                                debug!(
-                                                    "Demand: watching path {:?} for provider={} source={}",
-                                                    path, provider, sm.name
-                                                );
-                                            }
-                                            // A source whose scope path is not itself a
-                                            // watchable directory names the concrete files
-                                            // to watch via watched_files(). Subscribe each
-                                            // file to THIS instance's lifecycle key.
-                                            if let Some(src) = self.registry.source(&provider, &sm.name) {
-                                                for file in src.watched_files(Some(path_str)) {
-                                                    let sub = Subscription {
-                                                        provider: provider.clone(),
-                                                        path: path.clone(),
-                                                        source: sm.name.clone(),
-                                                        patterns: Vec::new(),
-                                                    };
-                                                    let (returned_watcher, _) =
-                                                        register_path_watch(
-                                                            fs_watcher,
-                                                            &mut watch_paths,
-                                                            file,
-                                                            sub,
-                                                        )
-                                                        .await;
-                                                    fs_watcher = returned_watcher;
-                                                }
-                                            }
                                         }
-                                        // Register absolute-path watches for Global Watch/WatchAndPoll sources.
-                                        // Subscriptions key on the source's effective path (None for Global)
-                                        // so fs-event dispatch resolves to the right lifecycle entry.
-                                        if matches!(sm.scope, SourceScope::Global) {
-                                            let abs_paths =
-                                                crate::provider::watch_abs_paths(&sm.invalidation);
-                                            for abs_path_str in &abs_paths {
-                                                let abs_path = PathBuf::from(abs_path_str);
-                                                let sub = Subscription {
-                                                    provider: provider.clone(),
-                                                    path: None,
-                                                    source: sm.name.clone(),
-                                                    patterns: Vec::new(),
-                                                };
-                                                let (returned_watcher, _) = register_path_watch(
-                                                    fs_watcher,
-                                                    &mut watch_paths,
-                                                    abs_path,
-                                                    sub,
-                                                )
-                                                .await;
-                                                fs_watcher = returned_watcher;
-                                            }
-                                        }
-                                    }
-                                    WatchAction::Preserve => {
-                                        // Watches are already live. Nothing to do.
                                     }
                                 }
 
                                 if matches!(outcome.transition, StateTransition::NewlyActive) {
-                                    // Cold → Active: execute inline to populate cache. Use the
-                                    // source's effective key path (None for Global, requested path
-                                    // for PathScoped) so the cache entry matches the lifecycle key.
-                                    if self.cache.get_source(&provider, effective_key_path.as_deref(), &sm.name).is_none() {
-                                        self.execute_source(&provider, &sm.name, effective_key_path.as_deref());
+                                    // Cold → Active: execute to populate the cache,
+                                    // at the instance the lifecycle key names.
+                                    if self.cache.get_source(&provider, root.as_deref(), &sm.name).is_none() {
+                                        self.execute_source(&provider, &sm.name, root.as_deref());
                                     }
                                 }
                             }
@@ -1088,6 +994,8 @@ impl Scheduler {
                         // only when its last source evicts (canon: lifecycle is keyed
                         // per (provider, path, source)).
                         evict(&self.cache, key);
+                        self.registry
+                            .forget_roots(&key.provider, &key.source, key.path.as_deref());
                         drop_watches_for_key(key, &mut watch_paths, &mut fs_watcher);
                     }
 
@@ -1128,8 +1036,8 @@ impl Scheduler {
                 msg = self.rx.recv() => {
                     match msg {
                         None | Some(SchedulerMessage::Shutdown) => break,
-                        Some(SchedulerMessage::Refresh { provider, path, demand }) => {
-                            self.refresh_sources(&provider, path.as_deref(), &demand);
+                        Some(SchedulerMessage::Refresh { provider, instances }) => {
+                            self.refresh_sources(&provider, &instances);
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::PutWritten { provider, path, node, ttl_secs }) => {
@@ -1180,37 +1088,28 @@ impl Scheduler {
                                 .collect();
                             let _ = reply.send(map);
                         }
-                        Some(SchedulerMessage::QueryActivity { provider, path, demand }) => {
+                        Some(SchedulerMessage::QueryActivity { provider, instances }) => {
                             let now = Instant::now();
-                            let Some(sources) = self.registry.provider_sources(&provider) else {
-                                last_activity = now;
-                                continue;
-                            };
-                            // Narrow to the demanded Sources. Scope/path policy in the
-                            // loop below is unchanged and applies to whichever Sources
-                            // survive this filter (canon §150/§268: a field demands only
-                            // its owning Source).
-                            for sm in sources.iter().filter(|sm| demand.selects(&sm.name)) {
-                                let effective_key_path = match sm.scope {
-                                    SourceScope::Global => None,
-                                    SourceScope::PathScoped => path.clone(),
+                            for instance in &instances {
+                                let Some(sm) = self.registry.source_metadata(&provider, &instance.source) else {
+                                    continue;
                                 };
-
+                                let root = instance.root.clone();
                                 let key = lifecycle::Key {
                                     provider: provider.clone(),
-                                    path: effective_key_path.clone(),
+                                    path: root.clone(),
                                     source: sm.name.clone(),
                                     node: String::new(),
                                 };
-                                let cfg = source_lifecycle_config(&self.cache, &provider, effective_key_path.as_deref(), sm);
+                                let cfg = source_lifecycle_config(&self.cache, &provider, root.as_deref(), sm);
                                 let outcome = lifecycle.on_demand(key.clone(), cfg, now);
 
                                 // No filesystem watching in this path.
                                 let _ = outcome.watch_registration;
 
                                 if matches!(outcome.transition, StateTransition::NewlyActive)
-                                    && self.cache.get_source(&provider, effective_key_path.as_deref(), &sm.name).is_none() {
-                                        self.execute_source(&provider, &sm.name, effective_key_path.as_deref());
+                                    && self.cache.get_source(&provider, root.as_deref(), &sm.name).is_none() {
+                                        self.execute_source(&provider, &sm.name, root.as_deref());
                                     }
                             }
                             last_activity = now;
@@ -1244,6 +1143,8 @@ impl Scheduler {
                         // only when its last source evicts (canon: lifecycle is keyed
                         // per (provider, path, source)).
                         evict(&self.cache, key);
+                        self.registry
+                            .forget_roots(&key.provider, &key.source, key.path.as_deref());
                     }
 
                     for (key, new_state) in &actions.transitions {
@@ -1278,6 +1179,65 @@ impl Scheduler {
             }
         }
     }
+}
+
+/// The watches an instance of a Source registers when it is first requested:
+/// each as the path to watch and the subscription that routes its events to the
+/// instance's lifecycle key.
+///
+/// A relative `watch` entry is a pattern under the instance's root directory,
+/// so it registers only for a rooted instance: at `~` a recursive watch of
+/// `$HOME` is the firehose, and the instance refreshes by poll, by demand and
+/// (when read-always) on every read. An absolute entry (`/…`, or `~`/`$XDG_*`
+/// expanded by the Source) is watched whatever the root, and an event on it
+/// refreshes this instance. A Poll Source registers no watch at all: an empty
+/// pattern list matches every event under its root.
+fn instance_watches(
+    provider: &str,
+    sm: &crate::provider::SourceMetadata,
+    root: Option<&str>,
+    source: Option<&dyn crate::provider::Source>,
+) -> Vec<(PathBuf, Subscription)> {
+    let mut out = Vec::new();
+    if matches!(sm.invalidation, InvalidationStrategy::Poll { .. }) {
+        return out;
+    }
+    let subscription = |patterns: Vec<String>| Subscription {
+        provider: provider.to_string(),
+        path: root.map(str::to_string),
+        source: sm.name.clone(),
+        patterns,
+    };
+    let patterns = crate::provider::watch_patterns(&sm.invalidation);
+    if let Some(root) = root {
+        if !patterns.is_empty() {
+            out.push((PathBuf::from(root), subscription(patterns.clone())));
+        }
+        // A source whose root is not itself a watchable directory names the
+        // concrete files to watch via watched_files().
+        if let Some(source) = source {
+            for file in source.watched_files(Some(root)) {
+                out.push((file, subscription(Vec::new())));
+            }
+        }
+    }
+    // The instance at `~` has no directory to watch recursively: that would be
+    // all of `$HOME`. Its files are the single-component patterns joined to
+    // `$HOME` (`mise.toml`, `.tool-versions`), each watched on its own.
+    if root.is_none()
+        && let Some(home) = crate::query::home_dir()
+    {
+        for pattern in &patterns {
+            let file = home.join(pattern);
+            if !pattern.contains('/') && file.exists() {
+                out.push((file, subscription(Vec::new())));
+            }
+        }
+    }
+    for abs in crate::provider::watch_abs_paths(&sm.invalidation) {
+        out.push((PathBuf::from(abs), subscription(Vec::new())));
+    }
+    out
 }
 
 /// Register a fs watch on `path` for `sub`, deduplicating the underlying
@@ -1714,6 +1674,32 @@ mod tests {
             &["pyproject.toml".into()],
             &root,
             Path::new("/proj/foo.txt")
+        ));
+    }
+
+    #[test]
+    fn a_multi_component_pattern_is_a_path_relative_to_the_root() {
+        let root = PathBuf::from("/proj");
+        let head = [".git/HEAD".to_string()];
+        assert!(event_matches_patterns(
+            &head,
+            &root,
+            Path::new("/proj/.git/HEAD")
+        ));
+        assert!(!event_matches_patterns(
+            &head,
+            &root,
+            Path::new("/proj/.git/index")
+        ));
+        assert!(!event_matches_patterns(
+            &head,
+            &root,
+            Path::new("/proj/sub/.git/HEAD")
+        ));
+        assert!(event_matches_patterns(
+            &["a/b".to_string()],
+            &root,
+            Path::new("/proj/a/b/c.txt")
         ));
     }
 

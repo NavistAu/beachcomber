@@ -4,7 +4,7 @@ use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::server::Server;
 use std::collections::HashMap;
@@ -13,11 +13,11 @@ use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-/// A path-scoped provider that stores the path it was called with
+/// A rooted provider that stores the path it was called with
 /// as the "active_path" field value.
-struct PathScopedSourceImpl;
+struct RootedSourceImpl;
 
-impl Source for PathScopedSourceImpl {
+impl Source for RootedSourceImpl {
     fn metadata(&self) -> &SourceMetadata {
         use std::sync::OnceLock;
         static M: OnceLock<SourceMetadata> = OnceLock::new();
@@ -27,7 +27,6 @@ impl Source for PathScopedSourceImpl {
                 name: "active_path".into(),
                 field_type: FieldType::String,
             }],
-            scope: SourceScope::PathScoped,
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
                 count: 2,
@@ -42,28 +41,36 @@ impl Source for PathScopedSourceImpl {
         })
     }
 
-    fn execute(&self, path: Option<&str>) -> SourceResult {
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let mut result = SourceResult::new();
         result.insert(
             "active_path",
             Value::String(path.unwrap_or("<none>").to_string()),
         );
-        result
+        Ok(result)
+    }
+
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(Some(dir.to_string()))
+    }
+
+    fn has_root(&self) -> bool {
+        true
     }
 }
 
-struct PathScopedProvider;
+struct RootedProvider;
 
-impl Provider for PathScopedProvider {
+impl Provider for RootedProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "pathprov".to_string(),
-            sources: vec![PathScopedSourceImpl.metadata().clone()],
+            sources: vec![RootedSourceImpl.metadata().clone()],
         }
     }
 
     fn sources(&self) -> Vec<Box<dyn Source>> {
-        vec![Box::new(PathScopedSourceImpl)]
+        vec![Box::new(RootedSourceImpl)]
     }
 }
 
@@ -80,7 +87,6 @@ impl Source for GlobalSourceImpl {
                 name: "info".into(),
                 field_type: FieldType::String,
             }],
-            scope: SourceScope::Global,
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![],
                 abs_paths: vec![],
@@ -95,10 +101,10 @@ impl Source for GlobalSourceImpl {
         })
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let mut result = SourceResult::new();
         result.insert("info", Value::String("global-value".to_string()));
-        result
+        Ok(result)
     }
 }
 
@@ -130,7 +136,7 @@ fn setup_with_custom_registry() -> (
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(PathScopedProvider))
+        .register(Box::new(RootedProvider))
         .expect("pathprov");
     registry
         .register(Box::new(GlobalProvider))
@@ -324,28 +330,26 @@ async fn global_provider_ignores_context() {
     handle.abort();
 }
 
-/// Test 4: a PathScoped provider's records never walk the chain.
+/// Test 4: a rooted instance that has the key answers it; the instance at `~`
+/// is only asked when the key is missing.
 ///
 /// Static records resolve up the directory chain to `$HOME`, nearest winning
-/// (see tests/suite/store.rs), but a `PathScoped` source's records do not:
-/// `Cache::read_merged` merges a `PathScoped` provider map only at the
-/// addressed entry, never at an ancestor or the global entry. /project/a and
-/// /project/b holding different values is the whole point of path scoping,
-/// and a stray global record must never leak into a path-scoped read. Here
-/// the path-keyed entry is cold, so the normal cold-miss inline execute
-/// answers with the requested path — not the global one.
+/// (see tests/suite/store.rs). A Source's records live at its instances: the
+/// one at the root that answers for the directory, and the one at `~`, asked
+/// only when the nearer one lacks the key. /project/a and /project/b holding
+/// different values is the whole point of roots, and a stray global record
+/// must never shadow a rooted one. Here the instance at the requested path is
+/// cold, so the normal cold-miss inline execute answers with the requested
+/// path, and the walk stops there — the seeded global record is not the answer.
 ///
-/// This is the guard against dropping that addressed-entry-only gate from
-/// `Cache::read_merged`: without it the seeded global entry would answer
-/// here and every path-scoped provider would silently collapse onto one
-/// entry. It passes either way today — nothing about static-record chaining
-/// is exercised here — so its whole value is failing if that gate goes.
+/// This is the guard against the walk going to the instance at `~` before the
+/// nearer one has answered.
 #[tokio::test]
-async fn path_scoped_provider_has_no_global_fallback() {
+async fn a_rooted_instance_that_has_the_key_never_defers_to_the_global_one() {
     let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();
 
-    // A global entry for a PathScoped provider — reachable only by a pathless
-    // read, never by a path-scoped one.
+    // A record at the instance at `~` — reachable by a pathless read, and by a
+    // path-scoped one only when the nearer instance lacks the key.
     let mut fields = HashMap::new();
     fields.insert(
         "active_path".to_string(),
@@ -370,7 +374,7 @@ async fn path_scoped_provider_has_no_global_fallback() {
     assert_eq!(
         resp.data.unwrap(),
         serde_json::json!("/project/zz"),
-        "a PathScoped provider must execute at the requested path, never fall back to the global entry"
+        "a rooted instance must execute at its root, and the global entry is not asked"
     );
 
     handle.abort();

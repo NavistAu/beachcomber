@@ -15,8 +15,8 @@ fn all_sources_pass_conformance() {
             ("metadata_name", &|| {
                 assert_metadata_name(&provider, &source_name, source.as_ref())
             }),
-            ("scope_consistent", &|| {
-                assert_scope_consistent(&provider, &source_name, source.as_ref())
+            ("root_consistent", &|| {
+                assert_root_consistent(&provider, &source_name, source.as_ref())
             }),
             ("missing_path_handled", &|| {
                 assert_missing_path_handled(&provider, &source_name, source.as_ref())

@@ -31,10 +31,16 @@ Every source implements:
 ```rust
 pub trait Source: Send + Sync {
     fn metadata(&self) -> &SourceMetadata;
-    fn execute(&self, path: Option<&str>) -> SourceResult;
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        path.map(|s| s.to_string())  // default: pass through
+    fn execute(&self, dir: Option<&str>) -> Result<SourceResult, String>;
+    /// The instance answering for `dir`: `Some(root)`, or `None` for the one
+    /// instance at `~`.
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        let _ = dir;
+        Ok(None)  // default: one instance, at ~
     }
+    /// True when `root` can name a directory (a Source that overrides `root`
+    /// overrides this too); decides where a relative `watch` can resolve.
+    fn has_root(&self) -> bool { false }
 }
 ```
 
@@ -42,9 +48,11 @@ pub trait Source: Send + Sync {
 
 **`Provider::sources()`** returns one `Box<dyn Source>` per declared `SourceMetadata`. The registry validates that names and fields match the metadata declaration.
 
-**`Source::execute(path)`** runs the source and returns `SourceResult { fields: HashMap<String, Value> }`. Called on a blocking thread pool (`tokio::task::spawn_blocking`), so it may safely call `std::process::Command`, `std::fs::read_to_string`, and other blocking operations. Return an empty `SourceResult` (empty `fields` map) to indicate no value is available — the cache sub-entry for this source is not updated.
+**`Source::execute(dir)`** runs the source and returns `Ok(SourceResult { fields: HashMap<String, Value> })`. `dir` is the instance's working directory: its root, or `$HOME` for the instance at `~`. Called on a blocking thread pool (`tokio::task::spawn_blocking`), so it may safely call `std::process::Command`, `std::fs::read_to_string`, and other blocking operations. `Err(message)` is a failure: nothing is written and the scheduler counts it toward `failback`. `Ok` with an empty `fields` map is a result — the Source has nothing to report here — and it replaces what the instance stored before, so a Source never leaves stale values behind by reporting nothing.
 
-**`Source::canonical_path(path)`** normalises the input path to a project-root. Providers that walk up to a marker (git, mise, direnv, asdf, terraform, python) override this; the default implementation passes the path through unchanged.
+**`Source::root(dir)`** says which instance answers for `dir`. A Source whose records depend on a project (git, mise, direnv, asdf, terraform, python) walks up from `dir` to its marker and returns that directory, or `None` when it finds none; the default returns `None` for every directory, which is a Source with one instance, at `~`. A root equal to `$HOME` is the instance at `~`. An `Err` is a root that could not be worked out, and it fails the read — it is never answered from the instance at `~`.
+
+A read of `p.<key>` from directory `D` asks the nearest instance first (`R1 = root(D)`). If the key is missing there, it asks the parent of that root (`root(parent(R1))`), and so on, ending at the instance at `~` and never past it. A namespace read takes every instance on the way and merges them, the nearer winning per leaf. That is how `mise` is a single Source: inside a project `mise.node` is the project's, and `mise.go`, which only the global config sets, is found at `~`.
 
 ### SourceMetadata fields
 
@@ -52,15 +60,15 @@ pub trait Source: Send + Sync {
 pub struct SourceMetadata {
     pub name: String,
     pub fields: Vec<FieldSchema>,
-    pub scope: SourceScope,          // Global or PathScoped
     pub invalidation: InvalidationStrategy,
     pub failback: FailbackConfig,
     pub fsevents_reinstate: bool,    // default true for Watch / WatchAndPoll
+    pub decay: Option<u8>,           // decay steps before eviction; None takes the `_.decay` prototype
+    pub budget_execute: Duration,    // how long one execute may take before it is reported slow
 }
 ```
 
-`SourceScope::Global` — lifecycle key is `(provider, None, source)`. Watched via `abs_paths` only.
-`SourceScope::PathScoped` — lifecycle key is `(provider, Some(path), source)`. Watched via relative `patterns` resolved under the scope path.
+An instance's lifecycle key is `(provider, root, source)`, with `root` `None` for the instance at `~`. Its schedule registers when the instance is first requested, never at load: relative `patterns` are watched under the instance's root directory, and absolute `abs_paths` are watched whatever the root. At the instance at `~` relative patterns register nothing (a recursive watch of `$HOME` is the firehose), so a Source with no root declares `abs_paths` only; a relative `watch` on a Source that has no root is an error.
 
 ### ProviderMetadata
 
@@ -71,11 +79,11 @@ pub struct ProviderMetadata {
 }
 ```
 
-There is no `global: bool` field on `ProviderMetadata`. Scope is a per-Source property.
+There is no `global: bool` field on `ProviderMetadata`. Whether a Source has a root is a per-Source property (`Source::root`).
 
 ### FieldSchema
 
-`FieldSchema { name, field_type }` — scope is a Source-level property, not per-field.
+`FieldSchema { name, field_type }` — a root is a Source-level property, not per-field.
 
 
 ### expand_abs_path()
@@ -89,21 +97,21 @@ The `expand_abs_path(s: &str) -> Option<PathBuf>` helper (in `src/provider/mod.r
 `git` decomposes into five sources with different strategies:
 
 ```
-git.head    → fsevent, path-scoped, watches .git/ (pure file read of HEAD, no subprocess)
+git.head    → fsevent, rooted at the repository, watches .git/ (pure file read of HEAD, no subprocess)
               fields: branch, detached
 
-git.refs    → fsevent, path-scoped, watches .git/
+git.refs    → fsevent, rooted at the repository, watches .git/
               fields: commit, tag, ahead, behind, upstream, state, state_step, state_total,
                       stash, last_commit_age_secs, commit_summary, push_ahead, push_behind
 
-git.diff    → poll 30s, path-scoped
+git.diff    → poll 30s, rooted at the repository
               fields: lines_added, lines_removed, lines_staged_added, lines_staged_removed
 
-git.lineage → poll 60s, path-scoped
+git.lineage → poll 60s, rooted at the repository
               fields: branch_parent, lines_added_parent, lines_removed_parent,
                       branch_default, lines_added_default, lines_removed_default
 
-git.status  → fsevent_poll (watches .git/index + polls every 60s), path-scoped
+git.status  → fsevent_poll (watches .git/index + polls every 60s), rooted at the repository
               fields: staged, unstaged, untracked, conflicted, dirty
 ```
 
@@ -120,20 +128,20 @@ Consumers still use `comb get git.branch .` as before — the registry's `field 
 Before writing code, answer these questions for each logical group of fields:
 
 1. How do these fields change? (filesystem event, timer, or both)
-2. What is the scope? (global: one instance total; path-scoped: one instance per project root)
+2. Does it have a root? (no root: one instance total, at `~`; a root: one instance per project root, plus the one at `~` the read falls back to)
 3. Do I need absolute-path watches? (e.g., watching `~/.config/mise/config.toml`)
 
 Use this decision table:
 
-| Signal | Scope | Use |
+| Signal | Root | Use |
 |---|---|---|
-| File changes only | path or global | `fsevent` |
-| Timer only | path or global | `poll` |
-| File changes + safety timer | path or global | `fsevent_poll` |
-| Truly static (hostname, uname, user) | global | `fsevent` (pure-watch global) |
-| Global config file watch (mise.global, mise config dir) | global | `fsevent` + `abs_paths` |
+| File changes only | with or without | `fsevent` |
+| Timer only | with or without | `poll` |
+| File changes + safety timer | with or without | `fsevent_poll` |
+| Truly static (hostname, uname, user) | none | `fsevent` (pure-watch, one instance) |
+| Global config file watch (mise config dir) | none | `fsevent` + `abs_paths` |
 
-**Pure-watch global** sources use the `Watch` strategy: no poll of their own. They execute once on first demand and only re-execute when an fs event fires on their registered `abs_paths`. Like every Source they decay once nothing reads them — a watch-only Source's Active window is the default poll lifespan, 60 s × 12 (12 minutes after its last read), after which its watches are dropped — and the next read runs them again. Suitable for values that can only change when a specific file is written: hostname (requires reboot), username (requires reboot), uname (requires reboot), mise global config.
+**Pure-watch** sources with no root use the `Watch` strategy: no poll of their own. They execute once on first demand and only re-execute when an fs event fires on their registered `abs_paths`. Like every Source they decay once nothing reads them — a watch-only Source's Active window is the default poll lifespan, 60 s × 12 (12 minutes after its last read), after which its watches are dropped — and the next read runs them again. Suitable for values that can only change when a specific file is written: hostname (requires reboot), username (requires reboot), uname (requires reboot), mise global config.
 
 ### 2.2 Create the file
 
@@ -142,7 +150,7 @@ Create `src/provider/dockercontext.rs`:
 ```rust
 use crate::provider::{
     expand_abs_path, FailbackConfig, FieldSchema, FieldType, InvalidationStrategy,
-    Provider, ProviderMetadata, Source, SourceMetadata, SourceResult, SourceScope,
+    Provider, ProviderMetadata, Source, SourceMetadata, SourceResult, Value,
 };
 use std::path::PathBuf;
 
@@ -155,7 +163,7 @@ fn config_meta() -> SourceMetadata {
             FieldSchema { name: "name".to_string(), field_type: FieldType::String },
             FieldSchema { name: "endpoint".to_string(), field_type: FieldType::String },
         ],
-        scope: SourceScope::Global,
+        // No root: one instance, at ~, so only absolute paths can be watched.
         invalidation: InvalidationStrategy::Watch {
             patterns: vec![],
             abs_paths: vec![
@@ -169,6 +177,10 @@ fn config_meta() -> SourceMetadata {
         },
         failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
         fsevents_reinstate: true,
+        // Decay steps before eviction; None takes the provider's `_.decay`.
+        decay: None,
+        // How long one execute may take before the engine reports it slow.
+        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
     }
 }
 
@@ -199,20 +211,18 @@ impl Source for DockerContextSource {
         META.get_or_init(config_meta)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
-        let home = match std::env::var("HOME").ok() {
-            Some(h) => h,
-            None => return SourceResult::default(),
-        };
+    // `root` and `has_root` keep their defaults: one instance, at ~. A project
+    // Source overrides both (see src/provider/direnv.rs).
+
+    fn execute(&self, _dir: Option<&str>) -> Result<SourceResult, String> {
+        let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
         let config_path = PathBuf::from(&home).join(".docker").join("config.json");
-        let config_text = match std::fs::read_to_string(&config_path).ok() {
-            Some(t) => t,
-            None => return SourceResult::default(),
+        // No Docker config is nothing to report, not a failure.
+        let Ok(config_text) = std::fs::read_to_string(&config_path) else {
+            return Ok(SourceResult::default());
         };
-        let config: serde_json::Value = match serde_json::from_str(&config_text).ok() {
-            Some(v) => v,
-            None => return SourceResult::default(),
-        };
+        let config: serde_json::Value = serde_json::from_str(&config_text)
+            .map_err(|e| format!("unreadable docker config: {e}"))?;
         let context_name = config
             .get("currentContext")
             .and_then(|v| v.as_str())
@@ -222,9 +232,9 @@ impl Source for DockerContextSource {
             .unwrap_or_else(|| "unix:///var/run/docker.sock".to_string());
 
         let mut result = SourceResult::new();
-        result.insert("name".to_string(), crate::provider::Value::String(context_name));
-        result.insert("endpoint".to_string(), crate::provider::Value::String(endpoint));
-        result
+        result.insert("name", Value::String(context_name));
+        result.insert("endpoint", Value::String(endpoint));
+        Ok(result)
     }
 }
 
@@ -232,10 +242,10 @@ fn read_context_endpoint(home: &str, context_name: &str) -> Option<String> {
     if context_name == "default" {
         return None;
     }
+    // Docker names contexts by the SHA256 of the name; scan the meta directory.
     let meta_dir = PathBuf::from(home).join(".docker").join("contexts").join("meta");
     for entry in std::fs::read_dir(&meta_dir).ok()? {
-        let entry = entry.ok()?;
-        let meta_path = entry.path().join("meta.json");
+        let meta_path = entry.ok()?.path().join("meta.json");
         let text = std::fs::read_to_string(&meta_path).ok()?;
         let meta: serde_json::Value = serde_json::from_str(&text).ok()?;
         if meta.get("Name").and_then(|v| v.as_str()) == Some(context_name) {
@@ -290,7 +300,6 @@ mod tests {
         assert_eq!(src.name, "config");
         assert!(src.fields.iter().any(|f| f.name == "name"));
         assert!(src.fields.iter().any(|f| f.name == "endpoint"));
-        assert_eq!(src.scope, SourceScope::Global);
     }
 
     #[test]
@@ -299,7 +308,7 @@ mod tests {
         // SAFETY: test-only env mutation; nextest runs each test in its own process
         unsafe { std::env::set_var("HOME", dir.path()); }
         let source = DockerContextSource;
-        let result = source.execute(None);
+        let result = source.execute(None).unwrap();
         assert!(result.fields.is_empty());
         unsafe { std::env::remove_var("HOME"); }
     }
@@ -317,7 +326,7 @@ mod tests {
         // SAFETY: test-only env mutation; nextest runs each test in its own process
         unsafe { std::env::set_var("HOME", dir.path()); }
         let source = DockerContextSource;
-        let result = source.execute(None);
+        let result = source.execute(None).unwrap();
         assert_eq!(
             result.fields.get("name"),
             Some(&crate::provider::Value::String("default".to_string()))
@@ -364,15 +373,15 @@ Strategy chooser:
 invalidation: InvalidationStrategy::Poll { interval_secs: 30, count: 4 },
 ```
 
-**`Watch { patterns, abs_paths }`** — re-execute when filesystem paths change. `patterns` are relative path components matched within the source's scope path (path-scoped sources only). `abs_paths` are absolute roots watched directly (typically used by global sources or for cross-repo config files). Use `expand_abs_path()` to expand `~`, `$HOME`, and XDG vars at metadata construction time.
+**`Watch { patterns, abs_paths }`** — re-execute when filesystem paths change. `patterns` are relative path components matched within the instance's root (Sources with a root only). `abs_paths` are absolute roots watched directly (typically used by Sources with no root or for cross-repo config files). Use `expand_abs_path()` to expand `~`, `$HOME`, and XDG vars at metadata construction time.
 
 ```rust
-// git.refs: re-run on any change under .git/ (path-scoped)
+// git.refs: re-run on any change under .git/ (under each repository root)
 invalidation: InvalidationStrategy::Watch {
     patterns: vec![".git".to_string()],
     abs_paths: vec![],
 },
-// mise.global: re-run when the global mise config dir changes
+// mise.tools: also re-run when the global mise config dir changes
 invalidation: InvalidationStrategy::Watch {
     patterns: vec![],
     abs_paths: vec![
@@ -397,7 +406,7 @@ invalidation: InvalidationStrategy::WatchAndPoll {
 },
 ```
 
-For path-scoped sources, `patterns` like `".git"` are relative to the queried path. The scheduler resolves them to absolute watch roots when demand is first registered.
+For Sources with a root, `patterns` like `".git"` are relative to the instance's root. The scheduler resolves them to absolute watch roots when the instance is first requested.
 
 ---
 
@@ -475,8 +484,8 @@ See `docs/performance.md` for the full performance profile, benchmark commands, 
 **Basic structure**
 
 Every provider file should have a `#[cfg(test)]` module. At minimum, test:
-1. `metadata()` returns valid, expected values — check `sources.len()`, source names, field names, scope, invalidation variant
-2. `source.execute()` returns empty `SourceResult` when the required tool/file is absent
+1. `metadata()` returns valid, expected values — check `sources.len()`, source names, field names, root, invalidation variant
+2. `source.execute()` returns an empty `SourceResult` when the required file is absent, and an `Err` when a tool it needs cannot run
 3. `source.execute()` returns the expected fields when given a valid fixture
 
 **Using tempdir**
@@ -524,7 +533,7 @@ fn git_refs_on_empty_repo() {
     let provider = GitProvider;
     let sources = provider.sources();
     let refs_source = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
-    let result = refs_source.execute(Some(dir.path().to_str().unwrap()));
+    let result = refs_source.execute(Some(dir.path().to_str().unwrap())).unwrap();
     assert_eq!(
         result.fields.get("branch"),
         Some(&crate::provider::Value::String("main".to_string()))
@@ -543,7 +552,7 @@ fn returns_empty_without_terraform_dir() {
 
     let provider = TerraformProvider;
     let sources = provider.sources();
-    let result = sources[0].execute(Some(dir.path().to_str().unwrap()));
+    let result = sources[0].execute(Some(dir.path().to_str().unwrap())).unwrap();
     assert!(result.fields.is_empty());
 }
 ```
@@ -607,7 +616,7 @@ The `return` line's decorators map onto `InvalidationStrategy` (see `src/shape/d
 - Both -> `WatchAndPoll { patterns, abs_paths, interval_secs, count }`
 - A Source with no `return` takes the abstract Source's `poll('60s', 12) | failback(3, '1s')` from `defaults/00-comb.toml`
 
-Set `root` to make the Source path-scoped (`data` runs with the root as its working directory):
+Set `root` to give the Source instances at project roots (`data` runs with the root as its working directory):
 
 ```toml
 [daemon.providers.project_version.sources.main]
@@ -616,6 +625,8 @@ data = "{{ exec('cat VERSION 2>/dev/null || echo unknown') | trim }}"
 result.version = "{{ data }}"
 return = "{{ result | watch('VERSION') }}"
 ```
+
+The daemon keeps the root each directory resolved to, so a `root` line (it may run a command) is rendered once per directory rather than per request. The kept answer is dropped when the instance it named is evicted (it has gone cold and decayed away); the next read of that directory looks the root up again. A marker created or removed while the instance is alive is therefore not noticed until then. A `root` line that fails is answered with the same error for a few seconds rather than re-run on every request.
 
 ### When to write a built-in
 

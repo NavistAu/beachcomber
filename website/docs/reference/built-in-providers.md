@@ -11,31 +11,30 @@ Each provider declares one or more **sources** — independent units of executio
 
 ## Source breakdown by provider
 
-| Provider | Source | Strategy | Scope | Fields |
+| Provider | Source | Strategy | Root | Fields |
 |---|---|---|---|---|
-| `asdf` | `tools` | fsevent | path | `tools` (object keyed by tool name) |
-| `aws_profiles` | `config_file` | fsevent_poll 60s (`~/.aws/config`) | global | one object per profile name (`default`, `staging`, …), each `{ region }` |
-| `battery` | `state` | poll 30s | global | `percent`, `charging`, `status`, `time_remaining_secs` (macOS) |
-| `battery` | `level` | poll 30s | global | `percent`, `charging`, `status_raw` (Linux) |
-| `battery` | `upower` | poll 60s | global | `time_remaining_secs`, `status` (Linux, requires UPower) |
-| `direnv` | `state` | fsevent | path | `status`, `allowed` |
-| `gcloud_configs` | `config_dir` | poll 60s | global | `active_config`, plus one object per configuration name, each `{ project, account }` |
-| `git` | `head` | fsevent | path | `branch`, `detached` |
-| `git` | `refs` | fsevent | path | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
-| `git` | `diff` | poll 30s | path | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
-| `git` | `lineage` | poll 60s | path | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
-| `git` | `status` | fsevent_poll | path | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
-| `hostname` | `host` | fsevent (pure-watch global) | global | `name`, `short` |
-| `load` | `loadavg` | poll 10s | global | `one`, `five`, `fifteen` |
-| `mise` | `global` | fsevent (pure-watch global) | global | global tool versions (one field per tool) |
-| `mise` | `project` | fsevent | path | project tool versions (one field per tool) |
-| `network` | `interfaces` | poll 10s | global | `interface`, `ip`, `vpn_active`, `vpn_name`, `ssid`, `online` |
-| `python` | `venv` | fsevent | path | `venv`, `local_venv_name`, `venv_version` (`venv_name` and `version` are [templates](#template-backed-namespaces) over them) |
-| `sudo` | `state` | poll 30s | global | `active` |
-| `terraform` | `state` | fsevent | path | `workspace` |
-| `uname` | `system` | fsevent (pure-watch global) | global | `sysname`, `release`, `version`, `machine` |
-| `uptime` | `time` | poll 60s | global | `seconds`, `days`, `hours`, `minutes` |
-| `user` | `name` | fsevent (pure-watch global) | global | `name`, `uid` |
+| `asdf` | `tools` | fsevent | project | `tools` (object keyed by tool name) |
+| `aws_profiles` | `config_file` | fsevent_poll 60s (`~/.aws/config`) | none | one object per profile name (`default`, `staging`, …), each `{ region }` |
+| `battery` | `state` | poll 30s | none | `percent`, `charging`, `status`, `time_remaining_secs` (macOS) |
+| `battery` | `level` | poll 30s | none | `percent`, `charging`, `status_raw` (Linux) |
+| `battery` | `upower` | poll 60s | none | `time_remaining_secs`, `status` (Linux, requires UPower) |
+| `direnv` | `state` | fsevent | project | `status`, `allowed` |
+| `gcloud_configs` | `config_dir` | poll 60s | none | `active_config`, plus one object per configuration name, each `{ project, account }` |
+| `git` | `head` | fsevent | project | `branch`, `detached` |
+| `git` | `refs` | fsevent | project | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
+| `git` | `diff` | poll 30s | project | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
+| `git` | `lineage` | poll 60s | project | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
+| `git` | `status` | fsevent_poll | project | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
+| `hostname` | `host` | fsevent (pure-watch) | none | `name`, `short` |
+| `load` | `loadavg` | poll 10s | none | `one`, `five`, `fifteen` |
+| `mise` | `tools` | fsevent | project | tool versions, one field per tool: the project's, and for a tool it does not set the global config's, found at the instance at `~` |
+| `network` | `interfaces` | poll 10s | none | `interface`, `ip`, `vpn_active`, `vpn_name`, `ssid`, `online` |
+| `python` | `venv` | fsevent | project | `venv`, `local_venv_name`, `venv_version` (`venv_name` and `version` are [templates](#template-backed-namespaces) over them) |
+| `sudo` | `state` | poll 30s | none | `active` |
+| `terraform` | `state` | fsevent | project | `workspace` |
+| `uname` | `system` | fsevent (pure-watch) | none | `sysname`, `release`, `version`, `machine` |
+| `uptime` | `time` | poll 60s | none | `seconds`, `days`, `hours`, `minutes` |
+| `user` | `name` | fsevent (pure-watch) | none | `name`, `uid` |
 
 **Pure-watch global** sources execute once on first demand and re-execute only when a registered filesystem path changes. They have no poll, so they decay by the default poll lifespan (60 s × 12 after the last read) and run again on the next read.
 
@@ -43,16 +42,16 @@ Each provider declares one or more **sources** — independent units of executio
 
 ## System
 
-| Provider | Scope | Fields | Invalidation | Typical Latency |
+| Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `hostname` | global | `name` (string), `short` (string) | once at startup | 400 ns |
-| `user` | global | `name` (string), `uid` (int) | once at startup | 395 ns |
-| `load` | global | `one` (float), `five` (float), `fifteen` (float) | poll 10s | 550 ns |
-| `uptime` | global | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
-| `battery` | global | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s | 6 ms |
-| `network` | global | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s | 2 ms |
-| `sudo` | global | `active` (bool) | poll 30s | < 1 µs |
-| `uname` | global | `sysname` (string), `release` (string), `version` (string), `machine` (string) | once at startup | < 1 µs |
+| `hostname` | none | `name` (string), `short` (string) | once at startup | 400 ns |
+| `user` | none | `name` (string), `uid` (int) | once at startup | 395 ns |
+| `load` | none | `one` (float), `five` (float), `fifteen` (float) | poll 10s | 550 ns |
+| `uptime` | none | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
+| `battery` | none | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s | 6 ms |
+| `network` | none | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s | 2 ms |
+| `sudo` | none | `active` (bool) | poll 30s | < 1 µs |
+| `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | once at startup | < 1 µs |
 
 **Platform notes:**
 
@@ -82,9 +81,9 @@ Each provider declares one or more **sources** — independent units of executio
 
 ## Git
 
-| Provider | Scope | Fields | Invalidation | Typical Latency |
+| Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `git` | path | 30 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
+| `git` | project | 30 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
 
 **Fields:**
 
@@ -167,11 +166,11 @@ feature/fast-cache
 
 ## Cloud and DevOps
 
-| Provider | Scope | Fields | Invalidation | Typical Latency |
+| Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `gcloud_configs` | global | `active_config` (string), plus one object per gcloud configuration: `{ project, account }` | poll 60s | 1.08 µs |
-| `aws_profiles` | global | one object per profile in `~/.aws/config`: `{ region }` | watch `~/.aws/config` + poll 60s | < 1 µs |
-| `terraform` | path | `workspace` (string) | watch `.terraform/environment` | < 1 µs |
+| `gcloud_configs` | none | `active_config` (string), plus one object per gcloud configuration: `{ project, account }` | poll 60s | 1.08 µs |
+| `aws_profiles` | none | one object per profile in `~/.aws/config`: `{ region }` | watch `~/.aws/config` + poll 60s | < 1 µs |
+| `terraform` | project | `workspace` (string) | watch `.terraform/environment` | < 1 µs |
 
 `gcloud_configs` reads `~/.config/gcloud/configurations/` directly — no Python CLI subprocess. Both are **data providers**: they cache every profile or configuration, blind to the shell's selector, and the user-facing `aws.*` and `gcloud.*` fields are [templates](#template-backed-namespaces) that index them by `$AWS_PROFILE` / `$CLOUDSDK_ACTIVE_CONFIG_NAME`.
 
@@ -204,12 +203,12 @@ Only `python` and `terraform` have a daemon provider of the same name, so only t
 
 ## Development Tools
 
-| Provider | Scope | Fields | Invalidation | Typical Latency |
+| Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `python` | path | `venv` (bool), `local_venv_name` (string), `venv_version` (string) — plus the `venv_name` and `version` [templates](#template-backed-namespaces) | watch `.venv`, `pyproject.toml` | < 1 µs |
-| `mise` | global/path | one string field per tool name (e.g. `node`, `rust`) — `global` source (Global scope) and `project` source (PathScoped) | watch `.mise.toml`, `mise.toml` | varies |
-| `asdf` | path | `tools` (object keyed by tool name) | watch `.tool-versions` | < 1 µs |
-| `direnv` | path | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
+| `python` | project | `venv` (bool), `local_venv_name` (string), `venv_version` (string) — plus the `venv_name` and `version` [templates](#template-backed-namespaces) | watch `.venv`, `pyproject.toml` | < 1 µs |
+| `mise` | project | one string field per tool name (e.g. `node`, `rust`) — one `tools` source: the project's instance, then the global config's at `~` | watch `.mise.toml`, `mise.toml` | varies |
+| `asdf` | project | `tools` (object keyed by tool name) | watch `.tool-versions` | < 1 µs |
+| `direnv` | project | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
 
 **Example output:**
 

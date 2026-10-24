@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use std::path::Path;
 
@@ -26,7 +26,6 @@ fn tools_source_metadata() -> SourceMetadata {
             name: "<tool>".into(),
             field_type: FieldType::String,
         }],
-        scope: SourceScope::PathScoped,
         invalidation: InvalidationStrategy::Watch {
             patterns: vec![".tool-versions".into()],
             abs_paths: vec![],
@@ -50,15 +49,15 @@ impl Source for AsdfTools {
         M.get_or_init(tools_source_metadata)
     }
 
-    fn execute(&self, path: Option<&str>) -> SourceResult {
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let Some(path) = path else {
-            return SourceResult::new();
+            return Err("no directory to run in".into());
         };
         let dir = Path::new(path);
 
         // Try to find a .tool-versions file: first walk from dir, then global fallback.
         let Some(content) = find_tool_versions_content(dir) else {
-            return SourceResult::new();
+            return Ok(SourceResult::new());
         };
 
         let mut result = SourceResult::new();
@@ -75,38 +74,28 @@ impl Source for AsdfTools {
                 result.insert(parts[0], Value::String(parts[1].to_string()));
             }
         }
-        result
+        Ok(result)
     }
 
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        let p = path?;
-        find_tool_versions_root_with_global(Path::new(p))
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(find_tool_versions_root(Path::new(dir)))
+    }
+
+    fn has_root(&self) -> bool {
+        true
     }
 }
 
-/// Walk up from start looking for .tool-versions. Return the directory containing it,
-/// or None if not found (local walk only — no global fallback here, used for cache key).
-fn find_tool_versions_root_with_global(start: &Path) -> Option<String> {
+/// Walk up from `start` looking for .tool-versions: the directory containing
+/// it, or `None` if there is none (the global file is the `~` instance's, which
+/// `find_tool_versions_content` falls back to).
+fn find_tool_versions_root(start: &Path) -> Option<String> {
     let mut cur: Option<&Path> = Some(start);
     while let Some(dir) = cur {
         if dir.join(".tool-versions").exists() {
             return Some(dir.to_string_lossy().to_string());
         }
         cur = dir.parent();
-    }
-    // Global fallback: use HOME as the cache key
-    if let Ok(home) = std::env::var("HOME") {
-        let global = Path::new(&home).join(".tool-versions");
-        if global.exists() {
-            return Some(home);
-        }
-        let xdg_global = Path::new(&home)
-            .join(".config")
-            .join("asdf")
-            .join("tool-versions");
-        if xdg_global.exists() {
-            return Some(home);
-        }
     }
     None
 }
@@ -167,7 +156,9 @@ mod tests {
         )
         .unwrap();
         let sources = AsdfProvider.sources();
-        let result = sources[0].execute(Some(d.path().to_str().unwrap()));
+        let result = sources[0]
+            .execute(Some(d.path().to_str().unwrap()))
+            .unwrap();
 
         // Fields should be flat: result.fields["node"] = "20.11.0"
         assert!(
@@ -194,7 +185,9 @@ mod tests {
 
         let result = temp_env::with_var("HOME", Some(home_dir.path().to_str().unwrap()), || {
             let sources = AsdfProvider.sources();
-            sources[0].execute(Some(project_dir.path().to_str().unwrap()))
+            sources[0]
+                .execute(Some(project_dir.path().to_str().unwrap()))
+                .unwrap()
         });
 
         assert_eq!(
@@ -214,7 +207,9 @@ mod tests {
         )
         .unwrap();
         let sources = AsdfProvider.sources();
-        let result = sources[0].execute(Some(d.path().to_str().unwrap()));
+        let result = sources[0]
+            .execute(Some(d.path().to_str().unwrap()))
+            .unwrap();
         assert!(!result.fields.contains_key("tools"), "no 'tools' object");
         assert!(result.fields.contains_key("node"));
         assert!(result.fields.contains_key("python"));

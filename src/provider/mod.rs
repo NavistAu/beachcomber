@@ -355,13 +355,6 @@ pub enum FieldType {
     Object,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SourceScope {
-    Global,
-    PathScoped,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InvalidationStrategy {
     Poll {
@@ -474,7 +467,6 @@ pub fn expand_abs_path(s: &str) -> Option<std::path::PathBuf> {
 pub struct SourceMetadata {
     pub name: String,
     pub fields: Vec<FieldSchema>,
-    pub scope: SourceScope,
     pub invalidation: InvalidationStrategy,
     pub failback: FailbackConfig,
     /// Whether watches survive decay. Default `true` for Watch/WatchAndPoll
@@ -549,8 +541,8 @@ impl ProviderMetadata {
         }
         // Field name uniqueness across all sources within this provider.
         // Dynamic sentinel names (starting with '<') are placeholders for runtime-resolved
-        // field names and may appear in multiple sources within the same provider (e.g. mise
-        // has a <tool> sentinel in both its global and project sources). Skip uniqueness
+        // field names and may appear in multiple sources within the same provider (a config
+        // Source and a built-in can both answer for the provider node). Skip uniqueness
         // checking for those names.
         let mut field_owners: HashMap<String, String> = HashMap::new();
         for s in &self.sources {
@@ -582,19 +574,6 @@ fn validate_source(provider: &str, s: &SourceMetadata) -> Result<(), String> {
             provider, s.name
         ));
     }
-    // Global sources watch abs_paths only
-    if let (
-        InvalidationStrategy::Watch { patterns, .. }
-        | InvalidationStrategy::WatchAndPoll { patterns, .. },
-        SourceScope::Global,
-    ) = (&s.invalidation, &s.scope)
-        && !patterns.is_empty()
-    {
-        return Err(format!(
-            "provider '{}' source '{}': Global watch source declares patterns; use abs_paths instead",
-            provider, s.name
-        ));
-    }
     // fsevents_reinstate is meaningless for Poll
     if matches!(s.invalidation, InvalidationStrategy::Poll { .. }) && s.fsevents_reinstate {
         return Err(format!(
@@ -611,28 +590,59 @@ pub trait Provider: Send + Sync {
     fn sources(&self) -> Vec<Box<dyn Source>>;
 }
 
-/// A Source is the unit of refresh. Owns its own invalidation, scope, fields,
+/// A Source is the unit of refresh. Owns its own invalidation, fields,
 /// lifecycle, and failure backoff. Identified by (provider_name, source_name).
+///
+/// A Source has one instance per root: the records it makes for a directory
+/// live at the instance [`Source::root`] names for it, and the one instance at
+/// `~` answers for every directory that has no root.
 ///
 /// A new method with a default body must also be forwarded by
 /// `provider::registry::Retuned`, which wraps a built-in whose `return`
 /// retunes it.
 pub trait Source: Send + Sync {
     fn metadata(&self) -> &SourceMetadata;
-    fn execute(&self, path: Option<&str>) -> SourceResult;
 
-    /// Map a candidate path to this Source's canonical scope path.
-    /// `PathScoped` sources walking to a project marker should override.
-    /// Default: identity. Returns `None` to decline demand.
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        path.map(|s| s.to_string())
+    /// Produce the instance's records. `dir` is the instance's working
+    /// directory: its root, or `$HOME` for the instance at `~`.
+    ///
+    /// `Err` is a failure: nothing is written, and the scheduler counts it
+    /// toward `failback`. `Ok` is a result, an empty one included: it replaces
+    /// what the instance stored before, so a Source with nothing to report
+    /// clears its records instead of leaving stale ones behind.
+    fn execute(&self, dir: Option<&str>) -> Result<SourceResult, String>;
+
+    /// The instance answering for `dir`: `Some(root)` is the instance at that
+    /// directory, `None` the one instance at `~`. The default has no roots, so
+    /// every directory is served by the instance at `~`.
+    ///
+    /// A root that cannot be worked out is an `Err` the reader sees, never the
+    /// instance at `~`.
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        let _ = dir;
+        Ok(None)
     }
 
-    /// Absolute files this PathScoped instance should watch, derived from its
-    /// scope `path`. Default: none. A source whose scope path is not itself a
-    /// watchable directory returns the concrete files the scheduler should
-    /// watch instead. Only consulted for Watch/WatchAndPoll PathScoped sources.
-    fn watched_files(&self, _path: Option<&str>) -> Vec<std::path::PathBuf> {
+    /// Names the lookup [`Source::root`] performs. Two Sources of one provider
+    /// with the same key answer every directory alike, so one request asks
+    /// once (git's five Sources share one walk to the repository). The default
+    /// is the Source's own name: nothing is shared.
+    fn root_key(&self) -> String {
+        self.metadata().name.clone()
+    }
+
+    /// Whether [`Source::root`] can name a directory: false for a Source with
+    /// one instance, at `~`. Decides where a relative `watch` path can be
+    /// resolved at all.
+    fn has_root(&self) -> bool {
+        false
+    }
+
+    /// Absolute files this instance should watch, derived from its `root`.
+    /// Default: none. A source whose root is not itself a watchable directory
+    /// returns the concrete files the scheduler should watch instead. Only
+    /// consulted for Watch/WatchAndPoll sources.
+    fn watched_files(&self, _root: Option<&str>) -> Vec<std::path::PathBuf> {
         Vec::new()
     }
 
@@ -648,15 +658,6 @@ pub trait Source: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn source_scope_round_trips_through_serde() {
-        let s = SourceScope::PathScoped;
-        let json = serde_json::to_string(&s).unwrap();
-        assert!(json.contains("pathscoped"), "got: {json}");
-        let back: SourceScope = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, SourceScope::PathScoped);
-    }
 
     #[test]
     fn watch_patterns_strips_trailing_slash() {
@@ -703,7 +704,6 @@ mod tests {
                     field_type: FieldType::String,
                 })
                 .collect(),
-            scope: SourceScope::Global,
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 30,
                 count: 2,
@@ -735,21 +735,6 @@ mod tests {
         };
         let err = meta.validate().unwrap_err();
         assert!(err.contains("declared by both source"));
-    }
-
-    #[test]
-    fn validate_rejects_global_watch_with_patterns() {
-        let mut s = make_source("a", vec!["f1"]);
-        s.invalidation = InvalidationStrategy::Watch {
-            patterns: vec!["foo".into()],
-            abs_paths: vec![],
-        };
-        s.scope = SourceScope::Global;
-        let meta = ProviderMetadata {
-            name: "x".into(),
-            sources: vec![s],
-        };
-        assert!(meta.validate().is_err());
     }
 
     #[test]

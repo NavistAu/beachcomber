@@ -1,5 +1,4 @@
 use crate::provider::Provider;
-use crate::provider::SourceScope;
 use crate::provider::asdf::AsdfProvider;
 use crate::provider::direnv::DirenvProvider;
 use crate::provider::mise::MiseProvider;
@@ -17,7 +16,6 @@ fn terraform_metadata() {
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
     assert_eq!(src.name, "state");
-    assert_eq!(src.scope, SourceScope::PathScoped);
     let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"workspace"));
 }
@@ -26,37 +24,33 @@ fn terraform_metadata() {
 fn terraform_returns_none_without_terraform_dir() {
     let tmp = TempDir::new().unwrap();
     let sources = TerraformProvider.sources();
-    let result = sources[0].execute(Some(tmp.path().to_str().unwrap()));
+    let result = sources[0]
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .unwrap();
     assert!(result.fields.is_empty());
 }
 
 #[test]
-fn terraform_canonical_path_returns_module_root_from_subdir() {
+fn terraform_root_returns_module_root_from_subdir() {
     let project = TempDir::new().unwrap();
     std::fs::create_dir_all(project.path().join(".terraform")).unwrap();
     let subdir = project.path().join("envs").join("dev");
     std::fs::create_dir_all(&subdir).unwrap();
 
     let sources = TerraformProvider.sources();
-    let got = sources[0].canonical_path(Some(subdir.to_str().unwrap()));
+    let got = sources[0].root(subdir.to_str().unwrap()).unwrap();
     let expected = project.path().to_string_lossy().to_string();
     assert_eq!(got, Some(expected));
 }
 
 #[test]
-fn terraform_canonical_path_none_outside_project() {
+fn terraform_root_none_outside_project() {
     let tmp = TempDir::new().unwrap();
     let sources = TerraformProvider.sources();
-    let got = sources[0].canonical_path(Some(tmp.path().to_str().unwrap()));
+    let got = sources[0].root(tmp.path().to_str().unwrap()).unwrap();
     if let Some(got) = got {
         assert_ne!(got, tmp.path().to_string_lossy().to_string());
     }
-}
-
-#[test]
-fn terraform_canonical_path_passes_none_through() {
-    let sources = TerraformProvider.sources();
-    assert_eq!(sources[0].canonical_path(None), None);
 }
 
 // --- Direnv ---
@@ -69,7 +63,6 @@ fn direnv_metadata() {
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
     assert_eq!(src.name, "state");
-    assert_eq!(src.scope, SourceScope::PathScoped);
     let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"status"));
     assert!(fields.contains(&"allowed"));
@@ -79,37 +72,33 @@ fn direnv_metadata() {
 fn direnv_returns_none_without_envrc() {
     let tmp = TempDir::new().unwrap();
     let sources = DirenvProvider.sources();
-    let result = sources[0].execute(Some(tmp.path().to_str().unwrap()));
+    let result = sources[0]
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .unwrap();
     assert!(result.fields.is_empty());
 }
 
 #[test]
-fn direnv_canonical_path_returns_envrc_dir_from_subdir() {
+fn direnv_root_returns_envrc_dir_from_subdir() {
     let project = TempDir::new().unwrap();
     std::fs::write(project.path().join(".envrc"), "export FOO=bar\n").unwrap();
     let subdir = project.path().join("src").join("nested");
     std::fs::create_dir_all(&subdir).unwrap();
 
     let sources = DirenvProvider.sources();
-    let got = sources[0].canonical_path(Some(subdir.to_str().unwrap()));
+    let got = sources[0].root(subdir.to_str().unwrap()).unwrap();
     let expected = project.path().to_string_lossy().to_string();
     assert_eq!(got, Some(expected));
 }
 
 #[test]
-fn direnv_canonical_path_none_outside_project() {
+fn direnv_root_none_outside_project() {
     let tmp = TempDir::new().unwrap();
     let sources = DirenvProvider.sources();
-    let got = sources[0].canonical_path(Some(tmp.path().to_str().unwrap()));
+    let got = sources[0].root(tmp.path().to_str().unwrap()).unwrap();
     if let Some(got) = got {
         assert_ne!(got, tmp.path().to_string_lossy().to_string());
     }
-}
-
-#[test]
-fn direnv_canonical_path_passes_none_through() {
-    let sources = DirenvProvider.sources();
-    assert_eq!(sources[0].canonical_path(None), None);
 }
 
 // --- Python ---
@@ -122,7 +111,6 @@ fn python_metadata() {
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
     assert_eq!(src.name, "venv");
-    assert_eq!(src.scope, SourceScope::PathScoped);
     let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"venv"));
     assert!(fields.contains(&"local_venv_name"));
@@ -141,7 +129,9 @@ fn python_detects_venv() {
     .unwrap();
 
     let sources = PythonProvider.sources();
-    let result = sources[0].execute(Some(tmp.path().to_str().unwrap()));
+    let result = sources[0]
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .unwrap();
     assert_eq!(result.fields.get("venv").unwrap().as_text(), "true");
     assert_eq!(
         result.fields.get("local_venv_name").unwrap().as_text(),
@@ -153,25 +143,27 @@ fn python_detects_venv() {
 fn python_returns_none_without_venv() {
     let tmp = TempDir::new().unwrap();
     let sources = PythonProvider.sources();
-    let result = sources[0].execute(Some(tmp.path().to_str().unwrap()));
+    let result = sources[0]
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .unwrap();
     assert!(result.fields.is_empty());
 }
 
 #[test]
-fn python_canonical_path_returns_pyproject_dir_from_subdir() {
+fn python_root_returns_pyproject_dir_from_subdir() {
     let project = TempDir::new().unwrap();
     std::fs::write(project.path().join("pyproject.toml"), "[project]\n").unwrap();
     let subdir = project.path().join("src").join("pkg");
     std::fs::create_dir_all(&subdir).unwrap();
 
     let sources = PythonProvider.sources();
-    let got = sources[0].canonical_path(Some(subdir.to_str().unwrap()));
+    let got = sources[0].root(subdir.to_str().unwrap()).unwrap();
     let expected = project.path().to_string_lossy().to_string();
     assert_eq!(got, Some(expected));
 }
 
 #[test]
-fn python_canonical_path_returns_venv_dir_from_subdir() {
+fn python_root_returns_venv_dir_from_subdir() {
     let project = TempDir::new().unwrap();
     std::fs::create_dir(project.path().join(".venv")).unwrap();
     std::fs::write(
@@ -183,25 +175,19 @@ fn python_canonical_path_returns_venv_dir_from_subdir() {
     std::fs::create_dir(&subdir).unwrap();
 
     let sources = PythonProvider.sources();
-    let got = sources[0].canonical_path(Some(subdir.to_str().unwrap()));
+    let got = sources[0].root(subdir.to_str().unwrap()).unwrap();
     let expected = project.path().to_string_lossy().to_string();
     assert_eq!(got, Some(expected));
 }
 
 #[test]
-fn python_canonical_path_none_outside_project() {
+fn python_root_none_outside_project() {
     let tmp = TempDir::new().unwrap();
     let sources = PythonProvider.sources();
-    let got = sources[0].canonical_path(Some(tmp.path().to_str().unwrap()));
+    let got = sources[0].root(tmp.path().to_str().unwrap()).unwrap();
     if let Some(got) = got {
         assert_ne!(got, tmp.path().to_string_lossy().to_string());
     }
-}
-
-#[test]
-fn python_canonical_path_passes_none_through() {
-    let sources = PythonProvider.sources();
-    assert_eq!(sources[0].canonical_path(None), None);
 }
 
 // --- Mise ---
@@ -223,7 +209,7 @@ fn mise_detects_config() {
 
     let p = MiseProvider;
     // May return None if mise isn't installed, that's fine
-    // TODO(section-J): update to sources()[0].execute() once mise migrated in Section I
+    // TODO(section-J): update to sources()[0].execute().unwrap() once mise migrated in Section I
     let _ = p;
 }
 
@@ -237,38 +223,31 @@ fn asdf_metadata() {
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
     assert_eq!(src.name, "tools");
-    assert_eq!(src.scope, SourceScope::PathScoped);
     let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"<tool>"));
 }
 
 #[test]
-fn asdf_canonical_path_returns_project_root_from_subdir() {
+fn asdf_root_returns_project_root_from_subdir() {
     let project = TempDir::new().unwrap();
     std::fs::write(project.path().join(".tool-versions"), "nodejs 20.0.0\n").unwrap();
     let subdir = project.path().join("pkg");
     std::fs::create_dir_all(&subdir).unwrap();
 
     let sources = AsdfProvider.sources();
-    let got = sources[0].canonical_path(Some(subdir.to_str().unwrap()));
+    let got = sources[0].root(subdir.to_str().unwrap()).unwrap();
     let expected = project.path().to_string_lossy().to_string();
     assert_eq!(got, Some(expected));
 }
 
 #[test]
-fn asdf_canonical_path_none_outside_project() {
+fn asdf_root_none_outside_project() {
     let tmp = TempDir::new().unwrap();
     let sources = AsdfProvider.sources();
-    let got = sources[0].canonical_path(Some(tmp.path().to_str().unwrap()));
+    let got = sources[0].root(tmp.path().to_str().unwrap()).unwrap();
     if let Some(got) = got {
         assert_ne!(got, tmp.path().to_string_lossy().to_string());
     }
-}
-
-#[test]
-fn asdf_canonical_path_passes_none_through() {
-    let sources = AsdfProvider.sources();
-    assert_eq!(sources[0].canonical_path(None), None);
 }
 
 #[test]
@@ -281,7 +260,9 @@ fn asdf_detects_tool_versions() {
     .unwrap();
 
     let sources = AsdfProvider.sources();
-    let result = sources[0].execute(Some(tmp.path().to_str().unwrap()));
+    let result = sources[0]
+        .execute(Some(tmp.path().to_str().unwrap()))
+        .unwrap();
     // Each tool is a flat top-level field (not nested under "tools" Object).
     assert!(
         !result.fields.contains_key("tools"),

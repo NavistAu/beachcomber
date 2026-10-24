@@ -401,7 +401,7 @@ A put sits above the Source in the layer order, so it hides Source and seed valu
 
 ### `comb r` (refresh) `<key> [path] [--path <path>] [--global]`
 
-Re-execute the Sources a key demands, each at its own scope, reading nothing back. A bare `provider` re-runs every Source of the namespace; `provider.field` re-runs only the Source that owns the field.
+Re-execute the Sources a key demands, each at the instance that answers for the directory, reading nothing back. A bare `provider` re-runs every Source of the namespace; `provider.field` re-runs only the Source that owns the field.
 
 ```sh
 comb r git                  # every git Source, for the current directory
@@ -618,7 +618,7 @@ data = "{{ exec('docker context show') | trim }}"
 result.value = "{{ data }}"            # one field, `docker_context.value`
 return = "{{ result | poll('30s') }}"
 
-# A path-scoped provider that watches files and has a poll fallback
+# A rooted provider that watches files and has a poll fallback
 [daemon.providers.node_version.sources.main]
 root = "{{ lup('package.json') | dirname }}"   # the directory an instance answers for
 data = "{{ exec('node --version') | trim }}"
@@ -704,16 +704,16 @@ beachcomber ships 16 built-in providers organized by category, plus template-bac
 
 ### System
 
-| Provider | Scope | Fields | Invalidation | Typical Latency |
+| Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `hostname` | global | `name` (string), `short` (string) | once at startup | 400 ns |
-| `user` | global | `name` (string), `uid` (int) | once at startup | 395 ns |
-| `load` | global | `one` (float), `five` (float), `fifteen` (float) | poll 10s / floor 5s | 550 ns |
-| `uptime` | global | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
-| `battery` | global | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s / floor 5s | 6 ms |
-| `network` | global | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s / floor 5s | 2 ms |
-| `sudo` | global | `active` (bool) | poll 30s | < 1 µs |
-| `uname` | global | `sysname` (string), `release` (string), `version` (string), `machine` (string) | once at startup | < 1 µs |
+| `hostname` | none | `name` (string), `short` (string) | once at startup | 400 ns |
+| `user` | none | `name` (string), `uid` (int) | once at startup | 395 ns |
+| `load` | none | `one` (float), `five` (float), `fifteen` (float) | poll 10s / floor 5s | 550 ns |
+| `uptime` | none | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
+| `battery` | none | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s / floor 5s | 6 ms |
+| `network` | none | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s / floor 5s | 2 ms |
+| `sudo` | none | `active` (bool) | poll 30s | < 1 µs |
+| `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | once at startup | < 1 µs |
 
 **Example output:**
 
@@ -746,9 +746,9 @@ beachcomber ships 16 built-in providers organized by category, plus template-bac
 
 ### Git
 
-| Provider | Scope | Fields | Invalidation | Typical Latency |
+| Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `git` | path | 30 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
+| `git` | project | 30 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
 
 **Fields:**
 
@@ -819,11 +819,11 @@ feature/fast-cache
 
 ### Cloud and DevOps
 
-| Provider | Scope | Fields | Invalidation | Typical Latency |
+| Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `gcloud_configs` | global | `active_config` (string), plus one object per gcloud configuration: `{ project, account }` | poll 60s | 1.08 µs |
-| `aws_profiles` | global | one object per profile in `~/.aws/config`: `{ region }` | watch `~/.aws/config` + poll 60s | < 1 µs |
-| `terraform` | path | `workspace` (string) | watch `.terraform/environment` | < 1 µs |
+| `gcloud_configs` | none | `active_config` (string), plus one object per gcloud configuration: `{ project, account }` | poll 60s | 1.08 µs |
+| `aws_profiles` | none | one object per profile in `~/.aws/config`: `{ region }` | watch `~/.aws/config` + poll 60s | < 1 µs |
+| `terraform` | project | `workspace` (string) | watch `.terraform/environment` | < 1 µs |
 
 `gcloud_configs` reads `~/.config/gcloud/configurations/` directly — no Python CLI subprocess. Both are **data providers**: they cache every profile or configuration, blind to the shell's selector, and the user-facing `aws.*` and `gcloud.*` fields are templates (below) that index them by `$AWS_PROFILE` / `$CLOUDSDK_ACTIVE_CONFIG_NAME`.
 
@@ -856,12 +856,12 @@ Only `python` and `terraform` have a daemon provider of the same name, so only t
 
 ### Development Tools
 
-| Provider | Scope | Fields | Invalidation | Typical Latency |
+| Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `python` | path | `venv` (bool), `local_venv_name` (string), `venv_version` (string) — plus the `venv_name` and `version` templates above | watch `.venv/`, `pyproject.toml` | < 1 µs |
-| `mise` | global/path | one string field per tool name (e.g. `node`, `rust`) — a `global` source and a `project` source | watch `.mise.toml`, `mise.toml` | varies |
-| `asdf` | path | `tools` (object: tool-name → version) | watch `.tool-versions` | < 1 µs |
-| `direnv` | path | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
+| `python` | project | `venv` (bool), `local_venv_name` (string), `venv_version` (string) — plus the `venv_name` and `version` templates above | watch `.venv/`, `pyproject.toml` | < 1 µs |
+| `mise` | project | one string field per tool name (e.g. `node`, `rust`) — one `tools` source: the project's instance, then the global config's at `~` | watch `.mise.toml`, `mise.toml` | varies |
+| `asdf` | project | `tools` (object: tool-name → version) | watch `.tool-versions` | < 1 µs |
+| `direnv` | project | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
 
 **Example output:**
 
@@ -1192,7 +1192,7 @@ Covered keys: `git.branch`, `git.dirty`, `git.ahead`, `git.behind`, `git.stash`,
 
 ### The chpwd hook
 
-`scripts/chpwd.sh` warms path-scoped provider caches on directory change. When you `cd`, it refreshes `git`, `mise`, `terraform`, `python`, `direnv`, and `asdf` in the background so the cache is warm before your first prompt renders.
+`scripts/chpwd.sh` warms the caches of rooted providers on directory change. When you `cd`, it refreshes `git`, `mise`, `terraform`, `python`, `direnv`, and `asdf` in the background so the cache is warm before your first prompt renders.
 
 ```sh
 # Install — add to your shell rc (zsh, bash; fish requires a separate config file)
@@ -1335,7 +1335,7 @@ return = "{{ result | poll('30s') }}"
 
 Query: `comb g docker_context.context`
 
-**Node.js version provider (path-scoped):**
+**Node.js version provider (rooted):**
 ```sh
 #!/bin/sh
 # ~/.config/beachcomber/providers/node-version.sh
@@ -1532,7 +1532,7 @@ Then `chmod 600` and restart the daemon (`pkill -f 'comb daemon'` — it socket-
 - **Stderr:** A command that succeeds has its stderr dropped. One that fails (a non-zero exit, a timeout) has the tail of its stderr in the error message the daemon logs for the refresh.
 - **Timeouts:** `exec` kills a command after `timeout_ms` (default 10000, 10 s): `exec('slow-tool', timeout_ms=30000)`. A timeout fails the refresh, and the next trigger retries it.
 - **Shell:** A string is executed via `sh -c`; a list (`exec(['cmd', 'arg'])`) is one argument per element with no shell. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
-- **Path-scoped Sources:** `data` runs with the instance's `root` as its working directory. A Source with no `root` is the one instance at `~`.
+- **Rooted Sources:** `data` runs with the instance's `root` as its working directory. A Source with no `root` is the one instance at `~`.
 - **Performance:** Every process spawn costs 2-6ms minimum. For Sources that poll frequently (< 30s), prefer `read` and `lup` over spawning CLI tools. See the design principles in `docs/performance.md`.
 
 ---
@@ -1721,7 +1721,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 |---|---|---|
 | `op` | string | Operation: `hello`, `get`, `refresh`, `put`, `watch`, `context`, `status`, `introspect` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
-| `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
+| `path` | string | Absolute path for providers with a root (git, mise, …). Optional if connection context is set. |
 | `force` | bool | (`get` only) Trigger immediate recomputation before returning. |
 | `wait` | bool | (`get` only) Block until a fresh value is available. |
 
@@ -1748,9 +1748,9 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 **`hello`:** Version negotiation. Clients should send this as the first op on any new connection. Returns `{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.6.0"}}`. `protocol_version` follows semver (major.minor) and is independent of the daemon binary version.
 
-**`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a path-scoped provider queried outside a matching directory).
+**`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a git provider queried outside a repository).
 
-**`refresh`:** Re-execute Sources out-of-band; does not return the new value. The key selects which Sources run, exactly as it selects which a `get` warms: `refresh git` re-executes every Source of `git`, `refresh git.branch` only the Source that owns `branch`. Each runs at the cache entry its own scope keys — the global entry for a `Global` Source whatever path the request carried, the addressed path for a `PathScoped` one — so `path` is optional and is only consulted by the path-scoped ones. A key that names no Source has nothing to re-execute and is an error — a static namespace, an unknown name, or a field no Source owns (a layer facet or `:cache` key is `cannot refresh <key>: a layer facet is read-only`): `{"ok": false, "error": "nothing to refresh: <key> has no sources"}`. Reading configuration afresh is not a refresh; the config watcher does that.
+**`refresh`:** Re-execute Sources out-of-band; does not return the new value. The key selects which Sources run, exactly as it selects which a `get` warms: `refresh git` re-executes every Source of `git`, `refresh git.branch` only the Source that owns `branch`. Each runs at the instance that answers for the requested directory — the root its `root` names for it, or the one instance at `~` for a Source with no root — so `path` is optional and is only consulted by Sources that have a root. A key that names no Source has nothing to re-execute and is an error — a static namespace, an unknown name, or a field no Source owns (a layer facet or `:cache` key is `cannot refresh <key>: a layer facet is read-only`): `{"ok": false, "error": "nothing to refresh: <key> has no sources"}`. Reading configuration afresh is not a refresh; the config watcher does that.
 
 **`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write replaces whatever a put left at that node; `"data": null` removes it. A put replaces the node at that directory, hiding Source and seed values; removing it shows them again. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`, at least `1s`) makes the put its own lifecycle entry: valid for that long, stale for one decay step, then evicted. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success.
 
@@ -1775,7 +1775,7 @@ Server streams responses:
 
 Field-level filtering applies: watching `git.branch` only emits when the branch value changes, not on every git provider update.
 
-**`context`:** Set the working directory for this connection. Subsequent path-scoped `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
+**`context`:** Set the working directory for this connection. Subsequent `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
 
 **`status`:** Returns cache rows — one entry per warm cache key. Each row includes provider, field, value, age, and stale flag. For daemon health information (uptime, scheduler state, active watchers), use `{"op":"introspect","subject":"daemon"}` instead. See [docs/protocol-spec.md](docs/protocol-spec.md) for the full wire contract.
 

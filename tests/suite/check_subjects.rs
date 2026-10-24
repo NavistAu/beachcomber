@@ -91,7 +91,7 @@ async fn introspect_daemon_returns_expected_fields() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn introspect_providers_lists_catalog_with_scope_and_fields() {
+async fn introspect_providers_lists_catalog_with_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
@@ -106,11 +106,10 @@ async fn introspect_providers_lists_catalog_with_scope_and_fields() {
         .expect("providers array");
     assert!(!providers.is_empty(), "at least one provider registered");
 
-    // Check a known global provider like hostname
+    // Check a known provider like hostname
     let hostname = providers.iter().find(|p| p["name"] == "hostname");
     if let Some(h) = hostname {
         assert_eq!(h["source"].as_str(), Some("builtin"));
-        assert_eq!(h["scope"].as_str(), Some("global"));
         // Providers expose per-source metadata under "sources"; check first source's fields.
         let sources = h.get("sources").and_then(|v| v.as_array());
         assert!(sources.is_some(), "hostname missing 'sources' array");
@@ -119,12 +118,6 @@ async fn introspect_providers_lists_catalog_with_scope_and_fields() {
             assert!(first.get("fields").and_then(|v| v.as_array()).is_some());
         }
         assert!(h.get("invalidation").is_some());
-    }
-
-    // Check a path-scoped provider (git)
-    let git = providers.iter().find(|p| p["name"] == "git");
-    if let Some(g) = git {
-        assert_eq!(g["scope"].as_str(), Some("path"));
     }
 
     let verdicts = data
@@ -535,6 +528,51 @@ async fn daemon_introspect_has_pass_verdict() {
     handle.abort();
 }
 
+/// The key introspect no longer carries.
+const REMOVED_KEY: &str = "scope";
+
+/// A Source's root is a question asked of a directory, not a property of the
+/// provider: introspect describes neither a provider nor a Source as "global"
+/// or "path".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn introspect_providers_has_no_scope() {
+    let (_tmp, client, handle) = setup_daemon().await;
+
+    let resp = client
+        .introspect("providers", None)
+        .expect("providers introspect");
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let data = resp.data.unwrap();
+    let providers = data
+        .get("providers")
+        .and_then(|v| v.as_array())
+        .expect("providers array");
+    assert!(
+        providers.iter().any(|p| p["name"] == "git"),
+        "git is registered, so the Source level is checked too"
+    );
+
+    for p in providers {
+        assert!(
+            p.get(REMOVED_KEY).is_none(),
+            "provider has a {REMOVED_KEY}: {p:?}"
+        );
+        for src in p
+            .get("sources")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            assert!(
+                src.get(REMOVED_KEY).is_none(),
+                "source has a {REMOVED_KEY}: {src:?}"
+            );
+        }
+    }
+
+    handle.abort();
+}
+
 /// Providers introspect lists at least one provider with all required fields.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn providers_introspect_has_entries_with_required_fields() {
@@ -555,7 +593,6 @@ async fn providers_introspect_has_entries_with_required_fields() {
     for p in providers {
         assert!(p.get("name").is_some(), "provider missing name: {p:?}");
         assert!(p.get("source").is_some(), "provider missing source: {p:?}");
-        assert!(p.get("scope").is_some(), "provider missing scope: {p:?}");
         // Fields are now per-source — check the "sources" array contains at least one source
         // with a fields entry. Static namespaces may have no sources (data-only).
         if let Some(srcs) = p.get("sources").and_then(|v| v.as_array())

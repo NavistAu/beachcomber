@@ -71,7 +71,7 @@ Returns a `CombResult` (see below).
 
 #### `client.refresh(key, path?)`
 
-Re-execute the Sources `key` demands, each at its own scope. A key naming no
+Re-execute the Sources `key` demands, each at the instance that answers for `path`. A key naming no
 Source (a static namespace, a facet, an unknown name, a field no Source
 owns) rejects with `nothing to refresh: <key> has no sources`. Works over
 both transports — see "Transports and their limits" below.

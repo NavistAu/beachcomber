@@ -1,5 +1,4 @@
 use crate::provider::Provider;
-use crate::provider::SourceScope;
 use crate::provider::aws::AwsProvider;
 use crate::provider::gcloud::GcloudProvider;
 
@@ -11,7 +10,6 @@ fn aws_provider_metadata() {
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
     assert_eq!(src.name, "config_file");
-    assert_eq!(src.scope, SourceScope::Global);
     // Dynamic sentinel field — profile names are not known at compile time.
     let field_names: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(
@@ -24,7 +22,7 @@ fn aws_provider_metadata() {
 fn aws_executes_without_panic() {
     let p = AwsProvider;
     let sources = p.sources();
-    let _ = sources[0].execute(None);
+    let _ = sources[0].execute(None).unwrap();
 }
 
 #[test]
@@ -35,7 +33,6 @@ fn gcloud_provider_metadata() {
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
     assert_eq!(src.name, "config_dir");
-    assert_eq!(src.scope, SourceScope::Global);
     let field_names: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     // Fixed active_config String field
     assert!(field_names.contains(&"active_config"));
@@ -50,7 +47,7 @@ fn gcloud_provider_metadata() {
 fn gcloud_executes_without_panic() {
     let p = GcloudProvider;
     let sources = p.sources();
-    let _ = sources[0].execute(None);
+    let _ = sources[0].execute(None).unwrap();
 }
 
 // ── gcloud seam tests ─────────────────────────────────────────────────────────
@@ -75,7 +72,7 @@ fn gcloud_reads_active_config_indirection() {
         Some(dir.path().to_str().unwrap()),
         || {
             let sources = GcloudProvider.sources();
-            sources[0].execute(None)
+            sources[0].execute(None).unwrap()
         },
     );
 
@@ -138,7 +135,7 @@ fn gcloud_missing_active_config_returns_empty() {
         Some(dir.path().to_str().unwrap()),
         || {
             let sources = GcloudProvider.sources();
-            sources[0].execute(None)
+            sources[0].execute(None).unwrap()
         },
     );
     assert!(
@@ -166,7 +163,7 @@ fn gcloud_project_strip_not_greedy() {
         Some(dir.path().to_str().unwrap()),
         || {
             let sources = GcloudProvider.sources();
-            sources[0].execute(None)
+            sources[0].execute(None).unwrap()
         },
     );
 

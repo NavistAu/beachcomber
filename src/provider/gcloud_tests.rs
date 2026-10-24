@@ -43,7 +43,7 @@ fn gcloud_configs_two_configs_and_active_config_field() {
                 .iter()
                 .find(|s| s.metadata().name == "config_dir")
                 .expect("config_dir source must exist");
-            src.execute(None)
+            src.execute(None).unwrap()
         },
     );
 
@@ -156,7 +156,7 @@ fn gcloud_active_config_name_env_does_not_override_file() {
                 .iter()
                 .find(|s| s.metadata().name == "config_dir")
                 .expect("config_dir source must exist");
-            src.execute(None)
+            src.execute(None).unwrap()
         },
     );
 
@@ -191,7 +191,7 @@ fn gcloud_configs_without_active_config_file_still_enumerates() {
                 .iter()
                 .find(|s| s.metadata().name == "config_dir")
                 .expect("config_dir source must exist");
-            src.execute(None)
+            src.execute(None).unwrap()
         },
     );
 
@@ -222,7 +222,7 @@ fn gcloud_configs_empty_dir_returns_empty() {
                 .iter()
                 .find(|s| s.metadata().name == "config_dir")
                 .expect("config_dir source must exist");
-            src.execute(None)
+            src.execute(None).unwrap()
         },
     );
 
@@ -255,7 +255,7 @@ fn gcloud_configs_skips_config_with_empty_project_and_account() {
                 .iter()
                 .find(|s| s.metadata().name == "config_dir")
                 .expect("config_dir source must exist");
-            src.execute(None)
+            src.execute(None).unwrap()
         },
     );
 
@@ -294,7 +294,7 @@ fn gcloud_padded_core_section_header_is_parsed() {
                 .iter()
                 .find(|s| s.metadata().name == "config_dir")
                 .expect("config_dir source must exist");
-            src.execute(None)
+            src.execute(None).unwrap()
         },
     );
 

@@ -15,7 +15,7 @@ fn execute_all_sources<P: Provider>(provider: &P, path: Option<&str>) -> Vec<usi
     provider
         .sources()
         .iter()
-        .map(|s| s.execute(path).fields.len())
+        .map(|s| s.execute(path).unwrap().fields.len())
         .collect()
 }
 

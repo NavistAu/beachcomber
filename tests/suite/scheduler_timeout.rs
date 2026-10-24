@@ -3,9 +3,9 @@ use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
-use beachcomber::query::SourceDemand;
+use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -49,7 +49,6 @@ fn slow_source_meta() -> SourceMetadata {
             name: "value".into(),
             field_type: FieldType::String,
         }],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
             count: 2,
@@ -75,7 +74,7 @@ impl Source for SlowSourceImpl {
         M.get_or_init(slow_source_meta)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         // Block until the test opens the gate. It stays shut across the whole
         // timeout window, so the scheduler's timeout arm is guaranteed to be
         // the one that fires; opening it afterwards lets this blocking-pool
@@ -83,7 +82,7 @@ impl Source for SlowSourceImpl {
         self.gate.wait();
         let mut result = SourceResult::new();
         result.insert("value", Value::String("done".to_string()));
-        result
+        Ok(result)
     }
 }
 
@@ -142,8 +141,10 @@ async fn slow_provider_times_out() {
     handle
         .send(SchedulerMessage::Refresh {
             provider: "slow".to_string(),
-            path: None,
-            demand: SourceDemand::All,
+            instances: vec![Instance {
+                source: "main".to_string(),
+                root: None,
+            }],
         })
         .await;
 
@@ -225,8 +226,10 @@ async fn fast_provider_completes_within_timeout() {
     handle
         .send(SchedulerMessage::Refresh {
             provider: "hostname".to_string(),
-            path: None,
-            demand: SourceDemand::All,
+            instances: vec![Instance {
+                source: "host".to_string(),
+                root: None,
+            }],
         })
         .await;
 

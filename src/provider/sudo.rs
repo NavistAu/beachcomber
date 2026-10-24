@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -32,7 +32,6 @@ fn state_source_metadata() -> SourceMetadata {
             name: "active".into(),
             field_type: FieldType::Bool,
         }],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 30,
             count: 2,
@@ -56,7 +55,7 @@ impl Source for SudoState {
         M.get_or_init(state_source_metadata)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let mut result = SourceResult::new();
         // Known limitations (not fixable without privilege or helper binary):
         // - timestamp_timeout: hardcoded to 5 minutes; actual sudoers Defaults may differ.
@@ -67,7 +66,7 @@ impl Source for SudoState {
             result.insert("active", Value::Bool(active));
         }
         // If None: timestamp file unreadable (likely root-only); omit field rather than lie.
-        result
+        Ok(result)
     }
 }
 
@@ -155,7 +154,6 @@ pub fn sudo_active_with_ts_path(path: &Path) -> SourceResult {
 mod tests {
     use super::{SudoProvider, sudo_active_with_ts_path};
     use crate::provider::Provider;
-    use crate::provider::SourceScope;
     use crate::provider::Value;
 
     #[test]
@@ -166,7 +164,6 @@ mod tests {
         assert_eq!(meta.sources.len(), 1);
         let src = &meta.sources[0];
         assert_eq!(src.name, "state");
-        assert_eq!(src.scope, SourceScope::Global);
         assert_eq!(src.fields.len(), 1);
         assert_eq!(src.fields[0].name, "active");
     }
@@ -175,7 +172,7 @@ mod tests {
     fn sudo_provider_executes() {
         let p = SudoProvider;
         let sources = p.sources();
-        let result = sources[0].execute(None);
+        let result = sources[0].execute(None).unwrap();
         // sudo state returns active field when timestamp is readable, or empty when root-only.
         // Both are valid outcomes — we just check it doesn't panic.
         let _ = result; // no-panic check

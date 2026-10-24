@@ -20,7 +20,7 @@ use beachcomber::cache::Schedule;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::server::Server;
 use std::sync::Arc;
@@ -749,7 +749,6 @@ fn twin_meta(name: &str, field: &str) -> SourceMetadata {
             name: field.into(),
             field_type: FieldType::Int,
         }],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 600,
             count: 2,
@@ -770,8 +769,8 @@ impl Source for TwinSource {
     fn metadata(&self) -> &SourceMetadata {
         &self.0
     }
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
-        SourceResult::new()
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
+        Ok(SourceResult::new())
     }
 }
 

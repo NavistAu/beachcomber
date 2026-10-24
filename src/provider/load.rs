@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 
 pub struct LoadProvider;
@@ -35,7 +35,6 @@ fn loadavg_source_metadata() -> SourceMetadata {
                 field_type: FieldType::Float,
             },
         ],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 10,
             count: 6,
@@ -59,16 +58,16 @@ impl Source for LoadAvg {
         M.get_or_init(loadavg_source_metadata)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let mut loadavg: [f64; 3] = [0.0; 3];
         let ret = unsafe { libc::getloadavg(loadavg.as_mut_ptr(), 3) };
         if ret < 0 {
-            return SourceResult::new();
+            return Err("getloadavg failed".into());
         }
         let mut result = SourceResult::new();
         result.insert("one", Value::Float(loadavg[0]));
         result.insert("five", Value::Float(loadavg[1]));
         result.insert("fifteen", Value::Float(loadavg[2]));
-        result
+        Ok(result)
     }
 }

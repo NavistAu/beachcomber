@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,6 @@ fn config_file_source_metadata() -> SourceMetadata {
             name: "<profile>".into(),
             field_type: FieldType::Object,
         }],
-        scope: SourceScope::Global,
         // Watch the config file; fall back to poll as backstop.
         invalidation: InvalidationStrategy::WatchAndPoll {
             patterns: vec![],
@@ -70,14 +69,14 @@ impl Source for AwsConfigFile {
         M.get_or_init(config_file_source_metadata)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let config_path = resolve_aws_config_path();
         let profiles = parse_all_profiles(&config_path);
         let mut result = SourceResult::new();
         for (name, fields) in profiles {
             result.insert(name, Value::Object(fields));
         }
-        result
+        Ok(result)
     }
 }
 

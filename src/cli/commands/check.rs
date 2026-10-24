@@ -339,7 +339,6 @@ fn render_subject(
             for p in &providers {
                 let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                 let source = p.get("source").and_then(|v| v.as_str()).unwrap_or("?");
-                let scope = p.get("scope").and_then(|v| v.as_str()).unwrap_or("?");
                 let fields: Vec<&str> = p
                     .get("fields")
                     .and_then(|v| v.as_array())
@@ -372,12 +371,12 @@ fn render_subject(
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
                     lines.push_str(&format!(
-                        "  [WARN] {source:<8} {name:<12} {scope:<7} fields={fields_str:<30} {invalidation} — in backoff {elapsed}s (stage={stage})\n"
+                        "  [WARN] {source:<8} {name:<12} fields={fields_str:<30} {invalidation} — in backoff {elapsed}s (stage={stage})\n"
                     ));
                     worst = worst.max(1);
                 } else {
                     lines.push_str(&format!(
-                        "  [PASS] {source:<8} {name:<12} {scope:<7} fields={fields_str:<30} {invalidation}\n"
+                        "  [PASS] {source:<8} {name:<12} fields={fields_str:<30} {invalidation}\n"
                     ));
                 }
             }

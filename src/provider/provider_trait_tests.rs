@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 
 fn fake_source_metadata() -> SourceMetadata {
@@ -10,7 +10,6 @@ fn fake_source_metadata() -> SourceMetadata {
             name: "value".into(),
             field_type: FieldType::String,
         }],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 30,
             count: 2,
@@ -32,10 +31,10 @@ impl Source for FakeSource {
         static M: OnceLock<SourceMetadata> = OnceLock::new();
         M.get_or_init(fake_source_metadata)
     }
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let mut result = SourceResult::new();
         result.insert("value", Value::String("hello".to_string()));
-        result
+        Ok(result)
     }
 }
 
@@ -69,20 +68,17 @@ fn provider_metadata_fields() {
 }
 
 #[test]
-fn provider_source_is_global() {
-    let p = FakeProvider;
-    assert_eq!(
-        p.metadata().sources[0].scope,
-        SourceScope::Global,
-        "Fake provider source should be global"
-    );
+fn a_source_that_declares_no_root_is_the_instance_at_home() {
+    let sources = FakeProvider.sources();
+    assert!(!sources[0].has_root());
+    assert_eq!(sources[0].root("/some/directory"), Ok(None));
 }
 
 #[test]
 fn provider_execute_returns_result() {
     let p = FakeProvider;
     let sources = p.sources();
-    let result = sources[0].execute(None);
+    let result = sources[0].execute(None).unwrap();
     assert_eq!(
         result.fields.get("value").unwrap().as_text(),
         "hello",

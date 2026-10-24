@@ -7,7 +7,7 @@
 use crate::cache::Cache;
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Source, SourceMetadata,
-    SourceResult, SourceScope, Value,
+    SourceResult, Value,
 };
 use crate::scheduler::lifecycle::{
     DEFAULT_DECAY, DEFAULT_POLL_COUNT, LifecycleRegistry, LifecycleState, SourceLifecycleConfig,
@@ -23,7 +23,6 @@ use std::time::{Duration, Instant};
 fn make_source_meta(
     name: &str,
     field_names: &[&str],
-    scope: SourceScope,
     invalidation: InvalidationStrategy,
     fsevents_reinstate: bool,
 ) -> SourceMetadata {
@@ -36,7 +35,6 @@ fn make_source_meta(
                 field_type: FieldType::String,
             })
             .collect(),
-        scope,
         invalidation,
         failback: FailbackConfig {
             reattempts: 3,
@@ -96,8 +94,8 @@ impl Source for FakeSource {
     fn metadata(&self) -> &SourceMetadata {
         &self.0
     }
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
-        SourceResult::new()
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
+        Ok(SourceResult::new())
     }
 }
 
@@ -264,12 +262,12 @@ fn watch_and_poll_source_refreshes_on_both_paths() {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 5: Path-scoped Watch source decays per K-as-duration
+// Scenario 5: Rooted Watch source decays per K-as-duration
 // ---------------------------------------------------------------------------
 
-/// Canon §"Behaviour assertions": Path-scoped Watch source decays per K-as-duration
+/// Canon §"Behaviour assertions": Rooted Watch source decays per K-as-duration
 ///
-/// Given a Source with strategy Watch and scope PathScoped, the default 60 s x 12 window,
+/// Given a Source with strategy Watch and a root, the default 60 s x 12 window,
 /// when 720 seconds pass with no demand or filesystem event, the Source transitions
 /// to Decay1 and the Decay1 step duration is 1440 seconds.
 #[test]
@@ -301,7 +299,7 @@ fn path_scoped_watch_source_decays_per_k_duration() {
             .transitions
             .iter()
             .any(|(k, s)| { k == &key && matches!(s, LifecycleState::Decay(1)) }),
-        "path-scoped Watch source must enter Decay1 after the Active window; transitions={:?}",
+        "rooted Watch source must enter Decay1 after the Active window; transitions={:?}",
         actions.transitions
     );
     assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
@@ -504,7 +502,6 @@ fn fsevents_reinstate_default_is_true_for_watch_sources() {
     let meta = make_source_meta(
         "refs",
         &["branch"],
-        SourceScope::PathScoped,
         InvalidationStrategy::Watch {
             patterns: vec![".git".to_string()],
             abs_paths: vec![],
@@ -559,7 +556,6 @@ fn fsevents_reinstate_default_is_true_for_watch_and_poll_sources() {
     let meta = make_source_meta(
         "status",
         &["staged"],
-        SourceScope::PathScoped,
         InvalidationStrategy::WatchAndPoll {
             patterns: vec![".git/index".to_string()],
             abs_paths: vec![],
@@ -675,8 +671,8 @@ async fn field_freshness_reflects_owning_source_last_refresh() {
 
 /// Canon §"Behaviour assertions": Watch source with absolute path watches that absolute path
 ///
-/// Given a Source with strategy Watch, abs_paths=["/Users/x/.config/foo"], scope=Global,
-/// when a file under that path changes, the Source's execute fires and the
+/// Given a Source with strategy Watch, abs_paths=["/Users/x/.config/foo"], at the instance
+/// at `~`, when a file under that path changes, the Source's execute fires and the
 /// (provider, None) cache entry is updated.
 #[test]
 fn watch_source_with_absolute_path_uses_abs_paths() {
@@ -684,7 +680,6 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
     let meta = make_source_meta(
         "global",
         &["tool"],
-        SourceScope::Global,
         InvalidationStrategy::Watch {
             patterns: vec![],
             abs_paths: vec![abs_path.clone()],
@@ -701,7 +696,7 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
         } => {
             assert!(
                 patterns.is_empty(),
-                "Global Watch must use abs_paths, not patterns"
+                "a Watch with no root must use abs_paths, not patterns"
             );
             assert_eq!(
                 abs_paths,
@@ -712,14 +707,11 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
         other => panic!("expected Watch strategy, got {:?}", other),
     }
 
-    // Verify scope is Global (path=None, the global entry).
-    assert_eq!(source.metadata().scope, SourceScope::Global);
-
     // Simulate the cache write to (provider, None) after the Source's execute fires.
     let cache = Cache::new();
     cache.put_source(
         "mise",
-        None, // Global scope → the global entry (path=None)
+        None, // the instance at `~` → the global entry (path=None)
         "global",
         make_fields(&[("rust", "1.80.0")]),
         crate::cache::Schedule::default(),
@@ -727,7 +719,7 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
 
     let (val, _) = cache
         .get_field("mise", None, "rust")
-        .expect("Global source must write to the global entry (path=None)");
+        .expect("The instance at ~ must write to the global entry (path=None)");
     assert_eq!(val.as_text(), "1.80.0");
 }
 

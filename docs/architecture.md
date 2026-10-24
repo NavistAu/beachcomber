@@ -45,7 +45,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`; `split_key()` — first-dot-only `provider.field` split. Key parsing into a `KeyParse` lives in `src/query.rs` (`parse_key`) |
 | `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` — a source name is never a key segment), `resolve_path`, `validate_key` (one colon form, the facet), `split_layer_facet` (`:put` / `:source` / `:cache`), and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
 | `src/config.rs` | TOML config loading from XDG directories; `Config` (composed from its layers), `DaemonConfig` |
-| `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `SourceScope`, `FieldSchema`, `InvalidationStrategy`, `FailbackConfig`; `expand_abs_path()` helper |
+| `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `FieldSchema`, `InvalidationStrategy`, `FailbackConfig`; `expand_abs_path()` helper |
 | `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; `declared_sources` map (`HashMap<(provider, field), source_name>`) walked by `sources_for_key` (nearest declared ancestor of a key, then sentinel fields); built-in registration; validation at registration |
 | `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
 | `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, pure-watch global, `host` source |
@@ -69,22 +69,28 @@ The registry maps a key to its Source by walking the key: the Source of the near
 
 **Cache layout** — `CacheEntry.sources: HashMap<source_name, SourceResult>`. Each `SourceResult` holds `fields`, `last_refreshed_ms`, and `expected_interval_secs`. Reads flatten across sources; writes are per-source (`cache.put_source(provider, path, source_name, result)`).
 
-**Watch registration** — per `(provider, path, source)`. Each source declares relative `patterns` (matched within the scope path) and/or absolute `abs_paths` (e.g., `$XDG_CONFIG_HOME/mise`). The `expand_abs_path()` helper expands `~`, `$HOME`, and XDG env vars at registration time.
+**Watch registration** — per `(provider, path, source)`. Each source declares relative `patterns` (matched within the instance's root) and/or absolute `abs_paths` (e.g., `$XDG_CONFIG_HOME/mise`). The `expand_abs_path()` helper expands `~`, `$HOME`, and XDG env vars at registration time.
 
 ### Provider execution
 
-Sources implement `Source::execute(path) -> SourceResult`. The scheduler calls
+Sources implement `Source::execute(dir) -> Result<SourceResult, String>`. The scheduler calls
 each source independently via `tokio::task::spawn_blocking`. Source results are
 written to `CacheEntry.sources[source_name]`; sibling sources in the same
 cache entry are untouched.
 
-Scope is a property of the Source (`SourceScope::Global` or `SourceScope::PathScoped`),
-not individual fields. A Provider with mixed-scope sources (e.g., `mise` with a
-`global` source and a `project` source) emits into different lifecycle keys and
-cache sub-entries per execution.
+A Source has one *instance* per root. `Source::root(dir)` names the instance that
+answers for a directory — `Some(root)`, or `None` for the one instance at `~` — and
+a Source that does not override it has only the instance at `~`. Each instance is
+its own lifecycle key and cache sub-entry, `(provider, root, source)`.
 
-Cache keys use `provider\0path` for path-scoped entries and bare `provider`
-for global. A single provider can own both kinds of entries simultaneously.
+A read walks a Source's instances: the nearest first (`root(dir)`), then, if the key
+is missing there, the parent of that root (`root(parent(root))`), ending at the
+instance at `~`. `mise` is one Source (`tools`) this way: inside a project
+`mise.node` is the project's, and `mise.go`, set only in the global config, is found
+at `~`. A namespace read merges every instance on the way, the nearer winning.
+
+Cache keys use `provider\0root` for a rooted instance and bare `provider` for the
+instance at `~`. A single provider can own both kinds of entries simultaneously.
 
 ---
 
@@ -118,7 +124,7 @@ and writes it as a single newline-terminated line.
 
 **Step 6: Path resolution**
 
-`resolve_path(Some("."), &context_path, "git", &registry)` checks whether the `git` provider has any `PathScoped` fields (it does). The explicit path `"."` is used. (If the CLI had omitted the path argument, the session's context path would be used instead.)
+`QueryPlan::build` canonicalises the explicit path `"."` (if the CLI had omitted the path argument, the session's context path would be used instead). Which instance of each demanded Source answers for it is found next, by `Source::root`, nearest first (see "Provider execution").
 
 **Step 7: Cache lookup**
 
@@ -203,7 +209,7 @@ After clearing `in_flight`, the scheduler checks `pending_rerun`. If a rerun was
 
 **Demand signal**
 
-Every `get` request sends `SchedulerMessage::QueryActivity { provider, path }` to the scheduler. This records the current time in the `demand` HashMap for that key. If the key is new to demand, the scheduler immediately sets up polling (based on provider metadata) and filesystem watching (for path-scoped providers), and fires `execute_provider` if the cache is cold.
+Every `get` request sends `SchedulerMessage::QueryActivity { provider, instances }` to the scheduler, one `(source, root)` for every instance the read reached. This records the current time in the `demand` HashMap for each. If an instance is new to demand, the scheduler immediately sets up polling (based on provider metadata) and filesystem watching (relative `watch` paths under the instance's root; none for the relative paths of the instance at `~`), and fires `execute_provider` if the cache is cold.
 
 **Demand window**
 

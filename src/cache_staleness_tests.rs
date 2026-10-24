@@ -245,7 +245,7 @@ async fn put_addresses_keep_their_own_age() {
     put("b", 2);
 
     let read = cache
-        .read_merged("ns", None, None, &registry, crate::cache::Layers::All)
+        .read_merged("ns", None, &[None], &registry, crate::cache::Layers::All)
         .unwrap();
     assert_eq!(read.records["a"].age_ms(), 5000);
     assert_eq!(read.records["b"].age_ms(), 0);
@@ -262,7 +262,7 @@ async fn a_put_ttl_record_is_stale_past_its_ttl() {
         .unwrap();
     let stale = || {
         cache
-            .read_merged("ns", None, None, &registry, crate::cache::Layers::All)
+            .read_merged("ns", None, &[None], &registry, crate::cache::Layers::All)
             .unwrap()
             .records["a"]
             .is_stale()

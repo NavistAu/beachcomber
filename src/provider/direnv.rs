@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -35,7 +35,6 @@ fn state_source_metadata() -> SourceMetadata {
                 field_type: FieldType::Bool,
             },
         ],
-        scope: SourceScope::PathScoped,
         // LIMITATION: The allow DB path depends on the envrc abs path (per-instance),
         // so it cannot be registered as a static watch path in SourceMetadata.
         // WatchAndPoll with 30s poll interval provides a correctness backstop:
@@ -68,19 +67,19 @@ impl Source for DirenvState {
         M.get_or_init(state_source_metadata)
     }
 
-    fn execute(&self, path: Option<&str>) -> SourceResult {
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let Some(path) = path else {
-            return SourceResult::new();
+            return Err("no directory to run in".into());
         };
         let dir = Path::new(path);
         if !dir.join(".envrc").exists() {
-            return SourceResult::new();
+            return Ok(SourceResult::new());
         }
 
         // Resolve absolute .envrc path for allow DB key.
         let envrc_abs = match std::fs::canonicalize(dir.join(".envrc")) {
             Ok(p) => p,
-            Err(_) => return SourceResult::new(),
+            Err(e) => return Err(format!("direnv: cannot resolve .envrc: {e}")),
         };
         let envrc_abs_str = envrc_abs.to_string_lossy();
 
@@ -99,12 +98,15 @@ impl Source for DirenvState {
         let mut result = SourceResult::new();
         result.insert("status", Value::String(status.to_string()));
         result.insert("allowed", Value::Bool(allowed));
-        result
+        Ok(result)
     }
 
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        let p = path?;
-        find_envrc_root(Path::new(p))
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(find_envrc_root(Path::new(dir)))
+    }
+
+    fn has_root(&self) -> bool {
+        true
     }
 }
 
@@ -190,7 +192,9 @@ mod tests {
         setup_direnv(&allow_db, &envrc_path);
 
         let source = direnv_source_with_allow_db_root(allow_db.path().to_path_buf());
-        let result = source.execute(Some(envrc_dir.path().to_str().unwrap()));
+        let result = source
+            .execute(Some(envrc_dir.path().to_str().unwrap()))
+            .unwrap();
 
         assert_eq!(
             result.fields.get("allowed"),
@@ -208,7 +212,9 @@ mod tests {
         let allow_db = TempDir::new().unwrap(); // empty — no entry
 
         let source = direnv_source_with_allow_db_root(allow_db.path().to_path_buf());
-        let result = source.execute(Some(envrc_dir.path().to_str().unwrap()));
+        let result = source
+            .execute(Some(envrc_dir.path().to_str().unwrap()))
+            .unwrap();
 
         assert_eq!(
             result.fields.get("allowed"),
@@ -224,7 +230,7 @@ mod tests {
         let allow_db = TempDir::new().unwrap();
 
         let source = direnv_source_with_allow_db_root(allow_db.path().to_path_buf());
-        let result = source.execute(Some(dir.path().to_str().unwrap()));
+        let result = source.execute(Some(dir.path().to_str().unwrap())).unwrap();
 
         assert!(
             result.fields.is_empty(),

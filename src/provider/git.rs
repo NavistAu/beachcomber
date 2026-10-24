@@ -1,21 +1,20 @@
 use crate::boundaries::git::{GitExecutor, RealGitExecutor};
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Walk upwards from `start` looking for a directory that contains `.git`.
-/// Returns the containing directory's absolute path, or `None` if no repo
-/// root is found before reaching the filesystem root.
+/// Walk upwards from `dir` looking for a directory that contains `.git`: the
+/// instance's root. `None` when no repo root is found before reaching the
+/// filesystem root, which is the instance at `~`.
 ///
 /// Uses file-system traversal rather than shelling out to `git rev-parse` so
-/// canonicalization stays cheap for the common case (every demand path).
-fn walk_to_git(path: Option<&str>) -> Option<String> {
-    let p = path?;
-    find_repo_root(Path::new(p))
+/// finding the root stays cheap for the common case (every demand path).
+fn walk_to_git(dir: &str) -> Result<Option<String>, String> {
+    Ok(find_repo_root(Path::new(dir)))
 }
 
 fn find_repo_root(start: &Path) -> Option<String> {
@@ -88,8 +87,8 @@ fn resolve_git_dir(root: &Path) -> Option<GitDirs> {
 /// and for `GitStatus` it saves the `git status` it would otherwise spawn only
 /// to watch fail. `GitHead`, `GitRefs` and `GitLineage` hold the same shape
 /// inline, since they need the `GitDirs` themselves. The root is the only
-/// directory a Source is ever handed: `canonical_path` walks to it before the
-/// daemon keys anything.
+/// directory a rooted instance is handed: `root` walks to it before the daemon
+/// keys anything. The instance at `~` is handed `$HOME`, which may not be one.
 fn is_work_tree_root(dir: &Path) -> bool {
     resolve_git_dir(dir).is_some()
 }
@@ -121,7 +120,6 @@ fn head_meta() -> SourceMetadata {
                 field_type: FieldType::Bool,
             },
         ],
-        scope: SourceScope::PathScoped,
         invalidation: InvalidationStrategy::Watch {
             patterns: vec![".git".into()],
             abs_paths: vec![],
@@ -193,7 +191,6 @@ fn refs_meta() -> SourceMetadata {
                 field_type: FieldType::Int,
             },
         ],
-        scope: SourceScope::PathScoped,
         invalidation: InvalidationStrategy::Watch {
             patterns: vec![".git".into()],
             abs_paths: vec![],
@@ -229,7 +226,6 @@ fn diff_meta() -> SourceMetadata {
                 field_type: FieldType::Int,
             },
         ],
-        scope: SourceScope::PathScoped,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 30,
             count: 4,
@@ -273,7 +269,6 @@ fn lineage_meta() -> SourceMetadata {
                 field_type: FieldType::Int,
             },
         ],
-        scope: SourceScope::PathScoped,
         // Poll, like `diff`: the computation is a handful of subprocess spawns,
         // far too costly to run on every `.git` event. The values only move when
         // refs move, so 60s (twice `diff`'s interval) is ample; `count: 2` gives a
@@ -317,7 +312,6 @@ fn status_meta() -> SourceMetadata {
                 field_type: FieldType::Bool,
             },
         ],
-        scope: SourceScope::PathScoped,
         invalidation: InvalidationStrategy::WatchAndPoll {
             patterns: vec![".git/index".into()],
             abs_paths: vec![],
@@ -370,25 +364,32 @@ impl Source for GitHead {
         M.get_or_init(head_meta)
     }
 
-    fn execute(&self, path: Option<&str>) -> SourceResult {
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let Some(path) = path else {
-            return SourceResult::new();
+            return Err("git: no directory to run in".into());
         };
-        // Only emit fields when we can confirm a git repo exists. An empty
-        // SourceResult causes inline_execute_source to skip the cache write,
-        // preserving a cache miss for non-repo paths.
+        // Only emit fields when we can confirm a git repo exists: outside one
+        // the result is empty, which stores no fields and so reads as a miss.
         let Some(dirs) = resolve_git_dir(Path::new(path)) else {
-            return SourceResult::new();
+            return Ok(SourceResult::new());
         };
         let (branch, detached) = Self::parse_head(&dirs);
         let mut result = SourceResult::new();
         result.insert("branch", Value::String(branch));
         result.insert("detached", Value::Bool(detached));
-        result
+        Ok(result)
     }
 
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        walk_to_git(path)
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        walk_to_git(dir)
+    }
+
+    fn root_key(&self) -> String {
+        "git".into()
+    }
+
+    fn has_root(&self) -> bool {
+        true
     }
 
     fn read_always(&self) -> bool {
@@ -412,20 +413,20 @@ impl Source for GitRefs {
         M.get_or_init(refs_meta)
     }
 
-    fn execute(&self, path: Option<&str>) -> SourceResult {
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let Some(path) = path else {
-            return SourceResult::new();
+            return Err("git: no directory to run in".into());
         };
         let dir = Path::new(path);
         // Outside a work tree there is nothing to report. Resolving the dirs is
         // also the guard — this source needs them anyway, so it costs one stat
         // rather than one plus a `git status` that could only fail.
         let Some(dirs) = resolve_git_dir(dir) else {
-            return SourceResult::new();
+            return Ok(SourceResult::new());
         };
 
         let Some(status) = parse_git_status(dir, &*self.executor) else {
-            return SourceResult::new();
+            return Err("git status failed".into());
         };
         let stash_count = count_stashes(&dirs);
         let (state, state_step, state_total) = detect_repo_state(&dirs);
@@ -457,11 +458,19 @@ impl Source for GitRefs {
         result.insert("commit_summary", Value::String(commit_summary));
         result.insert("push_ahead", Value::Int(push_ahead));
         result.insert("push_behind", Value::Int(push_behind));
-        result
+        Ok(result)
     }
 
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        walk_to_git(path)
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        walk_to_git(dir)
+    }
+
+    fn root_key(&self) -> String {
+        "git".into()
+    }
+
+    fn has_root(&self) -> bool {
+        true
     }
 }
 
@@ -481,16 +490,16 @@ impl Source for GitDiff {
         M.get_or_init(diff_meta)
     }
 
-    fn execute(&self, path: Option<&str>) -> SourceResult {
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let Some(path) = path else {
-            return SourceResult::new();
+            return Err("git: no directory to run in".into());
         };
         let dir = Path::new(path);
         // `git diff --numstat` fails outside a work tree and the parse turns a
         // failure into `(0, 0)`, so without this guard every non-repository
         // directory answers with four zeros — a hit, not the miss it is.
         if !is_work_tree_root(dir) {
-            return SourceResult::new();
+            return Ok(SourceResult::new());
         }
 
         let (lines_added, lines_removed) = diff_numstat(dir, &*self.executor);
@@ -501,11 +510,19 @@ impl Source for GitDiff {
         result.insert("lines_removed", Value::Int(lines_removed));
         result.insert("lines_staged_added", Value::Int(lines_staged_added));
         result.insert("lines_staged_removed", Value::Int(lines_staged_removed));
-        result
+        Ok(result)
     }
 
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        walk_to_git(path)
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        walk_to_git(dir)
+    }
+
+    fn root_key(&self) -> String {
+        "git".into()
+    }
+
+    fn has_root(&self) -> bool {
+        true
     }
 }
 
@@ -532,20 +549,20 @@ impl Source for GitLineage {
         M.get_or_init(lineage_meta)
     }
 
-    fn execute(&self, path: Option<&str>) -> SourceResult {
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let Some(path) = path else {
-            return SourceResult::new();
+            return Err("git: no directory to run in".into());
         };
         let dir = Path::new(path);
         let Some(dirs) = resolve_git_dir(dir) else {
-            return SourceResult::new();
+            return Ok(SourceResult::new());
         };
 
         // Detached HEAD has no branch, so it has neither a parent nor a
         // meaningful position relative to one. Emit nothing.
         let (branch, detached) = GitHead::parse_head(&dirs);
         if detached || branch.is_empty() {
-            return SourceResult::new();
+            return Ok(SourceResult::new());
         }
 
         let executor = &*self.executor;
@@ -584,11 +601,19 @@ impl Source for GitLineage {
             result.insert("lines_removed_default", Value::Int(removed));
         }
 
-        result
+        Ok(result)
     }
 
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        walk_to_git(path)
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        walk_to_git(dir)
+    }
+
+    fn root_key(&self) -> String {
+        "git".into()
+    }
+
+    fn has_root(&self) -> bool {
+        true
     }
 }
 
@@ -608,20 +633,20 @@ impl Source for GitStatus {
         M.get_or_init(status_meta)
     }
 
-    fn execute(&self, path: Option<&str>) -> SourceResult {
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let Some(path) = path else {
-            return SourceResult::new();
+            return Err("git: no directory to run in".into());
         };
         let dir = Path::new(path);
         // Outside a work tree there is nothing to report: `git status` fails
         // and the parse already turns that into a miss, but the filesystem
         // probe says so without spawning anything.
         if !is_work_tree_root(dir) {
-            return SourceResult::new();
+            return Ok(SourceResult::new());
         }
 
         let Some(status) = parse_git_status(dir, &*self.executor) else {
-            return SourceResult::new();
+            return Err("git status failed".into());
         };
 
         let dirty = status.staged > 0
@@ -635,11 +660,19 @@ impl Source for GitStatus {
         result.insert("untracked", Value::Int(status.untracked));
         result.insert("conflicted", Value::Int(status.conflicted));
         result.insert("dirty", Value::Bool(dirty));
-        result
+        Ok(result)
     }
 
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        walk_to_git(path)
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        walk_to_git(dir)
+    }
+
+    fn root_key(&self) -> String {
+        "git".into()
+    }
+
+    fn has_root(&self) -> bool {
+        true
     }
 }
 

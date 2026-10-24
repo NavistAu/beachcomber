@@ -2,9 +2,9 @@ use beachcomber::cache::Cache;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
-use beachcomber::query::SourceDemand;
+use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -31,8 +31,10 @@ async fn scheduler_refresh_populates_cache() {
     handle
         .send(SchedulerMessage::Refresh {
             provider: "hostname".to_string(),
-            path: None,
-            demand: SourceDemand::All,
+            instances: vec![Instance {
+                source: "host".to_string(),
+                root: None,
+            }],
         })
         .await;
 
@@ -77,8 +79,7 @@ async fn scheduler_refresh_unknown_provider() {
     handle
         .send(SchedulerMessage::Refresh {
             provider: "nonexistent".to_string(),
-            path: None,
-            demand: SourceDemand::All,
+            instances: vec![],
         })
         .await;
 
@@ -127,11 +128,11 @@ impl Source for CountingSource {
     fn metadata(&self) -> &SourceMetadata {
         &self.meta
     }
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let n = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
         let mut result = SourceResult::new();
         result.insert(&self.meta.fields[0].name, Value::Int(n as i64));
-        result
+        Ok(result)
     }
 }
 
@@ -144,7 +145,6 @@ fn path_source(name: &str, invalidation: InvalidationStrategy) -> SourceMetadata
             name: format!("{name}_runs"),
             field_type: FieldType::Int,
         }],
-        scope: SourceScope::PathScoped,
         invalidation,
         failback: FailbackConfig {
             reattempts: 3,
@@ -156,7 +156,7 @@ fn path_source(name: &str, invalidation: InvalidationStrategy) -> SourceMetadata
     }
 }
 
-/// `w` has one `Poll` source and one `Watch` source, both path-scoped. The
+/// `w` has one `Poll` source and one `Watch` source, both rooted. The
 /// intervals are an hour so nothing in the test fires on a timer.
 struct PollAndWatchProvider;
 
@@ -241,8 +241,16 @@ async fn a_poll_source_registers_no_watch_and_a_watch_source_matches_only_its_pa
     handle
         .send(SchedulerMessage::QueryActivity {
             provider: "w".to_string(),
-            path: Some(root.to_string_lossy().into_owned()),
-            demand: SourceDemand::All,
+            instances: vec![
+                Instance {
+                    source: "polled".to_string(),
+                    root: Some(root.to_string_lossy().into_owned()),
+                },
+                Instance {
+                    source: "watched".to_string(),
+                    root: Some(root.to_string_lossy().into_owned()),
+                },
+            ],
         })
         .await;
     wait_for_runs("polled source first run", &POLLED_RUNS, 1).await;

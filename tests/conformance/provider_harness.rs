@@ -5,7 +5,7 @@
 //! `tests/suite/provider_conformance.rs` wires them into a single nextest test.
 
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::provider::{Source, SourceResult, SourceScope};
+use beachcomber::provider::{Source, SourceResult};
 
 use crate::provider_conformance::conformance::fixtures::ConformanceFixture;
 
@@ -41,30 +41,46 @@ pub fn assert_metadata_name(provider: &str, source_name: &str, source: &dyn Sour
     );
 }
 
-/// Assert that scope is honoured:
-/// - `Global` sources produce structurally-identical field key sets regardless
-///   of whether a path is supplied.
-/// - `PathScoped` sources at least don't panic when given a real path.
-pub fn assert_scope_consistent(provider: &str, source_name: &str, source: &dyn Source) {
-    let meta = source.metadata();
-    match meta.scope {
-        SourceScope::Global => {
-            // Global sources must return the same field-key shape whether a
-            // path is supplied or not.
-            let f = ConformanceFixture::empty();
-            let with_path = source.execute(Some(f.path.to_str().unwrap()));
-            let without_path = source.execute(None);
-            assert_eq!(
-                field_key_shape(&with_path),
-                field_key_shape(&without_path),
-                "{provider}.{source_name}: global source returned different field key shapes \
-                 for path vs no-path",
-            );
-        }
-        SourceScope::PathScoped => {
-            // PathScoped sources just need to not panic when given a real path.
-            let f = ConformanceFixture::empty();
-            let _ = source.execute(Some(f.path.to_str().unwrap()));
+/// Assert that roots are honoured:
+/// - a Source with no root has one instance, at `~`, and produces
+///   structurally-identical field key sets whichever directory it is run in.
+/// - a rooted Source at least doesn't panic when given a real directory, and a
+///   `root` asked about one answers without error.
+///
+/// A Source that fails to run both ways (a missing tool, say) has no fields to
+/// compare: that is reported, not passed over.
+pub fn assert_root_consistent(provider: &str, source_name: &str, source: &dyn Source) {
+    let f = ConformanceFixture::empty();
+    let dir = f.path.to_str().unwrap();
+    if source.has_root() {
+        let _ = source.execute(Some(dir));
+        assert!(
+            source.root(dir).is_ok(),
+            "{provider}.{source_name}: root failed for a plain directory"
+        );
+    } else {
+        assert_eq!(
+            source.root(dir),
+            Ok(None),
+            "{provider}.{source_name}: a Source with no root answers for every directory at ~"
+        );
+        let with_path = source.execute(Some(dir));
+        let without_path = source.execute(None);
+        match (&with_path, &without_path) {
+            (Ok(with_path), Ok(without_path)) => assert_eq!(
+                field_key_shape(with_path),
+                field_key_shape(without_path),
+                "{provider}.{source_name}: a source with no root returned different field key \
+                 shapes for path vs no-path",
+            ),
+            (Err(a), Err(b)) => eprintln!(
+                "{provider}.{source_name}: not compared, it fails both ways here \
+                 (with a directory: {a}; without: {b})"
+            ),
+            (with_path, without_path) => panic!(
+                "{provider}.{source_name}: a source with no root ran for only one of a directory \
+                 and none: {with_path:?} / {without_path:?}"
+            ),
         }
     }
 }
@@ -75,7 +91,9 @@ pub fn assert_scope_consistent(provider: &str, source_name: &str, source: &dyn S
 pub fn assert_missing_path_handled(provider: &str, source_name: &str, source: &dyn Source) {
     let f = ConformanceFixture::missing();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        source.execute(Some(f.path.to_str().unwrap()))
+        source
+            .execute(Some(f.path.to_str().unwrap()))
+            .unwrap_or_default()
     }));
     assert!(
         result.is_ok(),
@@ -90,7 +108,9 @@ pub fn assert_missing_path_handled(provider: &str, source_name: &str, source: &d
 /// JSON round-trip.
 pub fn assert_serialization_roundtrip(provider: &str, source_name: &str, source: &dyn Source) {
     let f = ConformanceFixture::empty();
-    let result = source.execute(Some(f.path.to_str().unwrap()));
+    let result = source
+        .execute(Some(f.path.to_str().unwrap()))
+        .unwrap_or_default();
     let json = serde_json::to_string(&result.fields)
         .unwrap_or_else(|e| panic!("{provider}.{source_name}: serialize fields: {e}"));
     let back: std::collections::HashMap<String, beachcomber::provider::Value> =
@@ -108,7 +128,7 @@ pub fn assert_serialization_roundtrip(provider: &str, source_name: &str, source:
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Return a sorted vec of field key names from a `SourceResult`.
-/// Used as a "shape signature" for scope-consistency comparisons.
+/// Used as a "shape signature" for root-consistency comparisons.
 fn field_key_shape(r: &SourceResult) -> Vec<String> {
     let mut keys: Vec<String> = r.fields.keys().cloned().collect();
     keys.sort();

@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 
 pub struct UptimeProvider;
@@ -39,7 +39,6 @@ fn time_source_metadata() -> SourceMetadata {
                 field_type: FieldType::Int,
             },
         ],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
             count: 2,
@@ -63,7 +62,7 @@ impl Source for UptimeTime {
         M.get_or_init(time_source_metadata)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let mut boottime = libc::timeval {
             tv_sec: 0,
             tv_usec: 0,
@@ -83,7 +82,7 @@ impl Source for UptimeTime {
         };
 
         if ret != 0 {
-            return SourceResult::new();
+            return Err("sysctl kern.boottime failed".into());
         }
 
         let now = unsafe { libc::time(std::ptr::null_mut()) };
@@ -98,6 +97,6 @@ impl Source for UptimeTime {
         result.insert("days", Value::Int(days));
         result.insert("hours", Value::Int(hours));
         result.insert("minutes", Value::Int(minutes));
-        result
+        Ok(result)
     }
 }

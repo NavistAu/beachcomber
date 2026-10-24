@@ -34,7 +34,7 @@ fn aws_profiles_default_and_staging_profiles() {
                 .iter()
                 .find(|s| s.metadata().name == "config_file")
                 .expect("config_file source must exist");
-            src.execute(None)
+            src.execute(None).unwrap()
         },
     );
 
@@ -113,7 +113,7 @@ fn aws_profiles_published_regardless_of_aws_profile_env() {
                 .iter()
                 .find(|s| s.metadata().name == "config_file")
                 .expect("config_file source must exist");
-            src.execute(None)
+            src.execute(None).unwrap()
         },
     );
 
@@ -143,7 +143,7 @@ fn aws_profiles_missing_config_returns_empty() {
                 .iter()
                 .find(|s| s.metadata().name == "config_file")
                 .expect("config_file source must exist");
-            src.execute(None)
+            src.execute(None).unwrap()
         },
     );
 
@@ -173,7 +173,7 @@ fn aws_profiles_skips_profiles_with_no_region() {
                 .iter()
                 .find(|s| s.metadata().name == "config_file")
                 .expect("config_file source must exist");
-            src.execute(None)
+            src.execute(None).unwrap()
         },
     );
 
@@ -237,7 +237,7 @@ fn aws_profiles_unknown_section_does_not_leak() {
                 .iter()
                 .find(|s| s.metadata().name == "config_file")
                 .expect("config_file source must exist");
-            src.execute(None)
+            src.execute(None).unwrap()
         },
     );
 
@@ -282,7 +282,7 @@ fn aws_profiles_interior_spaces_in_section_header_recognised() {
                 .iter()
                 .find(|s| s.metadata().name == "config_file")
                 .expect("config_file source must exist");
-            src.execute(None)
+            src.execute(None).unwrap()
         },
     );
 

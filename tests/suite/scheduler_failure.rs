@@ -3,9 +3,9 @@ use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope,
+    Source, SourceMetadata, SourceResult,
 };
-use beachcomber::query::SourceDemand;
+use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -21,7 +21,6 @@ fn failing_source_meta() -> SourceMetadata {
             name: "value".into(),
             field_type: FieldType::String,
         }],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
             count: 2,
@@ -47,9 +46,9 @@ impl Source for FailingSourceImpl {
         M.get_or_init(failing_source_meta)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         self.counter.fetch_add(1, Ordering::SeqCst);
-        SourceResult::new() // Always returns empty (failure)
+        Err("always fails".to_string())
     }
 }
 
@@ -113,8 +112,10 @@ async fn repeated_failures_trigger_backoff() {
         handle
             .send(SchedulerMessage::Refresh {
                 provider: "failing".to_string(),
-                path: None,
-                demand: SourceDemand::All,
+                instances: vec![Instance {
+                    source: "main".to_string(),
+                    root: None,
+                }],
             })
             .await;
         poll_until_async(
@@ -187,8 +188,10 @@ return = "{{{{ result | poll('60s') | failback(3, '60s') }}}}"
         handle
             .send(SchedulerMessage::Refresh {
                 provider: "claude".to_string(),
-                path: None,
-                demand: SourceDemand::All,
+                instances: vec![Instance {
+                    source: "summary".to_string(),
+                    root: None,
+                }],
             })
             .await;
         poll_until_async(

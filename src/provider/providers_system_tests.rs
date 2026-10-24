@@ -1,6 +1,6 @@
+use crate::provider::Provider;
 use crate::provider::battery::BatteryProvider;
 use crate::provider::load::LoadProvider;
-use crate::provider::{Provider, SourceScope};
 
 // --- Battery ---
 
@@ -19,7 +19,7 @@ fn battery_provider_executes() {
     let p = BatteryProvider;
     // On macOS laptops this returns data; on desktops/CI it may return None
     // We just verify it doesn't panic
-    // TODO(section-J): update to sources()[0].execute() once battery migrated in Section I
+    // TODO(section-J): update to sources()[0].execute().unwrap() once battery migrated in Section I
     let _ = p;
 }
 
@@ -33,7 +33,6 @@ fn load_provider_metadata() {
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
     assert_eq!(src.name, "loadavg");
-    assert_eq!(src.scope, SourceScope::Global);
     let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"one"));
     assert!(fields.contains(&"five"));
@@ -44,7 +43,7 @@ fn load_provider_metadata() {
 fn load_provider_executes() {
     let p = LoadProvider;
     let sources = p.sources();
-    let result = sources[0].execute(None);
+    let result = sources[0].execute(None).unwrap();
     let one = result.fields.get("one").unwrap().as_text();
     let val: f64 = one.parse().expect("Load should be a number");
     assert!(val >= 0.0, "Load average should be non-negative");
@@ -60,7 +59,7 @@ mod battery_linux_tests {
     fn battery_provider_handles_no_battery() {
         let p = BatteryProvider;
         // Should not panic even on VMs with no battery
-        // TODO(section-J): update to sources()[0].execute() once battery migrated in Section I
+        // TODO(section-J): update to sources()[0].execute().unwrap() once battery migrated in Section I
         let _ = p;
     }
 }
@@ -69,9 +68,9 @@ mod battery_linux_tests {
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod uptime_tests {
+    use crate::provider::InvalidationStrategy;
     use crate::provider::Provider;
     use crate::provider::uptime::UptimeProvider;
-    use crate::provider::{InvalidationStrategy, SourceScope};
 
     #[test]
     fn uptime_provider_metadata() {
@@ -81,7 +80,6 @@ mod uptime_tests {
         assert_eq!(meta.sources.len(), 1);
         let src = &meta.sources[0];
         assert_eq!(src.name, "time");
-        assert_eq!(src.scope, SourceScope::Global);
         assert!(matches!(
             src.invalidation,
             InvalidationStrategy::Poll {
@@ -100,7 +98,7 @@ mod uptime_tests {
     fn uptime_provider_executes() {
         let p = UptimeProvider;
         let sources = p.sources();
-        let result = sources[0].execute(None);
+        let result = sources[0].execute(None).unwrap();
         // sysctl may be unavailable in sandboxed environments; if data returned, validate it.
         if !result.fields.is_empty() {
             assert!(

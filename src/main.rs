@@ -122,7 +122,7 @@ enum Commands {
         /// Output format (text, json, sh, csv, tsv, CSV, TSV, fmt)
         #[arg(short, long, default_value = "text")]
         format: String,
-        /// Re-execute every source the key demands, each at its own scope; static records survive
+        /// Re-execute every source the key demands, each at the instance that answers for the directory; static records survive
         #[arg(long)]
         force: bool,
         /// Block until a fresh value is available
@@ -171,7 +171,7 @@ enum Commands {
         #[command(flatten)]
         path: PathArgs,
     },
-    /// Re-execute the Sources a key demands, each at its own scope
+    /// Re-execute the Sources a key demands, each at the instance that answers for the directory
     #[command(visible_alias = "r")]
     Refresh {
         /// Provider key (e.g., "git" or "git.branch")

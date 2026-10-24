@@ -1,5 +1,5 @@
 use crate::provider::network::NetworkProvider;
-use crate::provider::{InvalidationStrategy, Provider, SourceScope};
+use crate::provider::{InvalidationStrategy, Provider};
 // Tests for network provider wrong-value bugs (S6 scope).
 
 #[test]
@@ -10,7 +10,6 @@ fn network_provider_metadata() {
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
     assert_eq!(src.name, "interfaces");
-    assert_eq!(src.scope, SourceScope::Global);
     let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
     assert!(fields.contains(&"interface"));
     assert!(fields.contains(&"ip"));
@@ -29,7 +28,7 @@ fn network_provider_metadata() {
 fn network_provider_executes() {
     let p = NetworkProvider;
     let sources = p.sources();
-    let result = sources[0].execute(None);
+    let result = sources[0].execute(None).unwrap();
     // Network should always return data (online may be false but fields present)
     let online = result.fields.get("online").unwrap().as_text();
     assert!(online == "true" || online == "false");

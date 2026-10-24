@@ -18,8 +18,7 @@
 
 use crate::engine::{PluginSet, daemon_engine_env};
 use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Source, SourceMetadata, SourceResult,
-    SourceScope, Value,
+    FieldSchema, FieldType, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
 use crate::shape::decorators::Recorded;
 use libbeachcomber::engine::EngineCtx;
@@ -30,7 +29,6 @@ use serde_json::{Value as Json, json};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::warn;
 
 /// A daemon-side read of one provider node at a directory entry: put over
 /// source, up the directory chain, never a template. What `comb.<p>` sees.
@@ -40,7 +38,13 @@ use tracing::warn;
 /// recurse into the one being refreshed. So `comb.<own provider>` in a `data`
 /// line is that provider's own last stored value, never a fresh run.
 pub trait DaemonRead: Send + Sync {
-    fn read(&self, provider: &str, dir: Option<&str>) -> Option<HashMap<String, Value>>;
+    /// `Ok(None)` is nothing stored. `Err` is a read that could not be
+    /// answered (a root that failed to work out); it fails the `data` render.
+    fn read(
+        &self,
+        provider: &str,
+        dir: Option<&str>,
+    ) -> Result<Option<HashMap<String, Value>>, String>;
 }
 
 /// The `result` of a Source.
@@ -208,10 +212,25 @@ impl ConfigSource {
             .collect();
 
         let recorded = &spec.recorded;
+        // With no `root` there is one instance, at `~`, and no directory a
+        // relative watch path could be resolved against: it would watch
+        // nothing, silently.
+        let relative = crate::provider::watch_patterns(&recorded.invalidation);
+        if spec.root.is_none() && !relative.is_empty() {
+            let listed: Vec<String> = relative.iter().map(|p| format!("'{p}'")).collect();
+            return Err(stage_error(
+                &spec,
+                "return",
+                format!(
+                    "watch({}) is relative, but the source has no root, so one instance; \
+                     use an absolute path or set root",
+                    listed.join(", ")
+                ),
+            ));
+        }
         let meta = SourceMetadata {
             name: spec.name.clone(),
             fields,
-            scope: SourceScope::PathScoped,
             invalidation: recorded.invalidation.clone(),
             failback: recorded.failback,
             fsevents_reinstate: !matches!(recorded.invalidation, InvalidationStrategy::Poll { .. }),
@@ -228,41 +247,6 @@ impl ConfigSource {
         })
     }
 
-    /// Whether the Source has a `root` line to render.
-    pub fn has_root(&self) -> bool {
-        self.spec.root.is_some()
-    }
-
-    /// Render the root line with cwd = `dir`: `Ok(Some(directory))`, or
-    /// `Ok(None)` for the `~` instance (no root line, or it renders empty or
-    /// none). A line that fails to render, or renders something other than an
-    /// absolute directory, is an `Err`.
-    pub fn render_root(&self, dir: &str) -> Result<Option<String>, String> {
-        let Some(line) = self.spec.root.as_deref() else {
-            return Ok(None);
-        };
-        let jinja = engine(&self.env, &self.plugins, Some(dir.into()));
-        let context = json!({"env": &*self.env, "_": self.underscore()});
-        let rendered =
-            eval_line(&jinja, line, &context).map_err(|e| stage_error(&self.spec, "root", e))?;
-        match rendered {
-            None => Ok(None),
-            Some(Json::String(s)) if s.is_empty() => Ok(None),
-            Some(Json::String(s)) if Path::new(&s).is_absolute() => Ok(Some(s)),
-            Some(other) => {
-                let got = match other {
-                    Json::String(_) => "a relative path",
-                    other => kind(&other),
-                };
-                Err(stage_error(
-                    &self.spec,
-                    "root",
-                    format!("must render an absolute directory, got {got}"),
-                ))
-            }
-        }
-    }
-
     /// The `~` instance's directory: the daemon's own `HOME`.
     fn home(&self) -> Option<&str> {
         self.env.get("HOME").map(String::as_str)
@@ -277,7 +261,11 @@ impl ConfigSource {
     fn comb(&self, dir: Option<&str>) -> Result<Json, String> {
         let mut comb = serde_json::Map::new();
         for provider in &self.comb_providers {
-            if let Some(node) = self.reader.read(provider, dir) {
+            let read = self
+                .reader
+                .read(provider, dir)
+                .map_err(|e| stage_error(&self.spec, "data", format!("comb.{provider}: {e}")))?;
+            if let Some(node) = read {
                 let node = serde_json::to_value(node).map_err(|e| {
                     stage_error(
                         &self.spec,
@@ -347,41 +335,45 @@ impl Source for ConfigSource {
         &self.meta
     }
 
-    /// A render error fails the execute: the empty result is what the
-    /// scheduler's failure accounting turns into `failback`.
-    ///
-    /// Interim, until a `Source::root()` hook replaces `SourceScope` and
-    /// `canonical_path`: the root line is rendered at `path` first, and an instance whose root
-    /// cannot render never produces data. Only the error is checked, not
-    /// that the render equals `path`.
-    fn execute(&self, path: Option<&str>) -> SourceResult {
-        if let Some(dir) = path
-            && let Err(e) = self.render_root(dir)
-        {
-            warn!("{e}");
-            return SourceResult::new();
-        }
-        self.run(path).unwrap_or_else(|e| {
-            warn!("{e}");
-            SourceResult::new()
-        })
+    /// A render error is a failure (`Err`): the scheduler's failure accounting
+    /// turns it into `failback`. A `result` that renders nothing is a result:
+    /// the instance stores no fields.
+    fn execute(&self, dir: Option<&str>) -> Result<SourceResult, String> {
+        self.run(dir)
     }
 
-    /// Interim, until a `Source::root()` hook replaces `SourceScope` and
-    /// `canonical_path`: the rendered root, or the daemon's `HOME` (which `query::normalise_path`
-    /// turns into the global entry) when it renders empty. A root that fails
-    /// to render is logged and declines (`None`), so `resolve_path` keys the
-    /// request at the requested directory instead of at the `~` instance.
-    fn canonical_path(&self, path: Option<&str>) -> Option<String> {
-        let dir = path?;
-        match self.render_root(dir) {
-            Ok(Some(root)) => Some(root),
-            Ok(None) => self.home().map(str::to_string),
-            Err(e) => {
-                warn!("{e}");
-                None
+    /// The `root` line rendered with cwd = `dir`: `Ok(Some(directory))`, or
+    /// `Ok(None)` for the `~` instance (no root line, or it renders empty or
+    /// none). A line that fails to render, or renders something other than an
+    /// absolute directory, is an `Err`: never the instance at `~`.
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        let Some(line) = self.spec.root.as_deref() else {
+            return Ok(None);
+        };
+        let jinja = engine(&self.env, &self.plugins, Some(dir.into()));
+        let context = json!({"env": &*self.env, "_": self.underscore()});
+        let rendered =
+            eval_line(&jinja, line, &context).map_err(|e| stage_error(&self.spec, "root", e))?;
+        match rendered {
+            None => Ok(None),
+            Some(Json::String(s)) if s.is_empty() => Ok(None),
+            Some(Json::String(s)) if Path::new(&s).is_absolute() => Ok(Some(s)),
+            Some(other) => {
+                let got = match other {
+                    Json::String(_) => "a relative path",
+                    other => kind(&other),
+                };
+                Err(stage_error(
+                    &self.spec,
+                    "root",
+                    format!("must render an absolute directory, got {got}"),
+                ))
             }
         }
+    }
+
+    fn has_root(&self) -> bool {
+        self.spec.root.is_some()
     }
 }
 
@@ -416,12 +408,16 @@ mod tests {
     }
 
     impl DaemonRead for FakeReader {
-        fn read(&self, provider: &str, dir: Option<&str>) -> Option<HashMap<String, Value>> {
+        fn read(
+            &self,
+            provider: &str,
+            dir: Option<&str>,
+        ) -> Result<Option<HashMap<String, Value>>, String> {
             self.calls
                 .lock()
                 .unwrap()
                 .push((provider.to_string(), dir.map(str::to_string)));
-            self.answer.get(provider).cloned()
+            Ok(self.answer.get(provider).cloned())
         }
     }
 
@@ -521,7 +517,7 @@ mod tests {
                 "{{ exec('pwd') ~ ':' ~ env.X }}",
                 fields(&[("out", "{{ data }}")]),
             ));
-            let got = src.execute(Some(root.to_str().unwrap()));
+            let got = src.execute(Some(root.to_str().unwrap())).unwrap();
             assert_eq!(
                 text(&got.fields, "out").trim(),
                 format!("{}:daemon-x", root.display())
@@ -540,7 +536,7 @@ mod tests {
             // The environment moves on after the snapshot; the Source keeps
             // the daemon's own.
             temp_env::with_var("X", Some("changed"), || {
-                let got = src.execute(None);
+                let got = src.execute(None).unwrap();
                 assert_eq!(text(&got.fields, "out").trim(), "daemon-x/daemon-x");
             });
         });
@@ -561,9 +557,9 @@ mod tests {
             snapshot,
         );
         // Production passes Some($HOME) for the global entry, not None.
-        let got = src.execute(Some(home.to_str().unwrap()));
+        let got = src.execute(Some(home.to_str().unwrap())).unwrap();
         assert_eq!(text(&got.fields, "out").trim(), home.to_str().unwrap());
-        assert_eq!(src.execute(None).fields, got.fields);
+        assert_eq!(src.execute(None).unwrap().fields, got.fields);
     }
 
     #[test]
@@ -578,7 +574,7 @@ mod tests {
                 ("l", "lit"),
             ]),
         ));
-        let got = src.execute(None).fields;
+        let got = src.execute(None).unwrap().fields;
         assert_eq!(got.get("i"), Some(&Value::Int(1)));
         assert_eq!(got.get("a"), Some(&s("a")));
         assert_eq!(got.get("m"), Some(&s("x1")));
@@ -595,7 +591,7 @@ mod tests {
         let names: Vec<_> = src.metadata().fields.iter().map(|f| &f.name).collect();
         assert_eq!(names, vec!["<node>"]);
         assert!(crate::provider::is_sentinel(names[0]));
-        let got = src.execute(None).fields;
+        let got = src.execute(None).unwrap().fields;
         assert_eq!(got.get("a"), Some(&Value::Int(1)));
         assert_eq!(got.get("b"), Some(&s("two")));
     }
@@ -607,13 +603,16 @@ mod tests {
             "{{ 'secret-token' }}",
             ResultSpec::Whole("{{ data }}".into()),
         ));
-        assert!(src.execute(None).fields.is_empty());
+        assert!(src.execute(None).is_err());
         let src = source(spec(
             None,
             "{{ none }}",
             ResultSpec::Whole("{{ data }}".into()),
         ));
-        assert!(src.execute(None).fields.is_empty());
+        assert!(
+            src.execute(None).unwrap().fields.is_empty(),
+            "a node that renders nothing is a successful empty result"
+        );
     }
 
     #[test]
@@ -622,7 +621,6 @@ mod tests {
         let meta = src.metadata();
         let names: Vec<_> = meta.fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b"]);
-        assert_eq!(meta.scope, SourceScope::PathScoped);
         assert!(!meta.fsevents_reinstate);
         assert_eq!(meta.invalidation, recorded().invalidation);
         assert_eq!(meta.failback, recorded().failback);
@@ -656,7 +654,7 @@ mod tests {
             ),
         ];
         for (invalidation, reinstate) in strategies {
-            let mut sp = spec(None, "x", fields(&[("a", "1")]));
+            let mut sp = spec(Some("/r"), "x", fields(&[("a", "1")]));
             sp.recorded = Recorded {
                 invalidation: invalidation.clone(),
                 failback: FailbackConfig {
@@ -677,13 +675,39 @@ mod tests {
     }
 
     #[test]
+    fn a_relative_watch_needs_a_root_to_be_relative_to() {
+        let mut sp = spec(None, "x", fields(&[("a", "1")]));
+        sp.recorded.invalidation = InvalidationStrategy::Watch {
+            patterns: vec![".git/HEAD".into()],
+            abs_paths: vec![],
+        };
+        let err = new_err(sp.clone());
+        assert!(
+            err.starts_with(
+                "demo.s: return: watch('.git/HEAD') is relative, but the source has no root"
+            ),
+            "{err}"
+        );
+        // With a root line the same watch is fine, and so is an absolute one
+        // without.
+        sp.root = Some("{{ lup('.git') | dirname }}".into());
+        assert!(source(sp.clone()).has_root());
+        sp.root = None;
+        sp.recorded.invalidation = InvalidationStrategy::Watch {
+            patterns: vec![],
+            abs_paths: vec!["/etc/hosts".into()],
+        };
+        assert!(!source(sp).has_root());
+    }
+
+    #[test]
     fn a_none_field_is_absent() {
         let src = source(spec(
             None,
             "{{ none }}",
             fields(&[("gone", "{{ data }}"), ("kept", "k")]),
         ));
-        let got = src.execute(None).fields;
+        let got = src.execute(None).unwrap().fields;
         assert!(!got.contains_key("gone"));
         assert_eq!(got.get("kept"), Some(&s("k")));
     }
@@ -691,9 +715,11 @@ mod tests {
     #[test]
     fn a_render_error_fails_the_execute() {
         let src = source(spec(None, "{{ exec('false') }}", fields(&[("kept", "k")])));
-        assert!(src.execute(None).fields.is_empty());
+        let err = src.execute(None).unwrap_err();
+        assert!(err.starts_with("demo.s: data: "), "{err}");
         let src = source(spec(None, "{{ 1 }}", fields(&[("a", "{{ 'a' + 1 }}")])));
-        assert!(src.execute(None).fields.is_empty());
+        let err = src.execute(None).unwrap_err();
+        assert!(err.starts_with("demo.s: result.a: "), "{err}");
     }
 
     #[test]
@@ -705,11 +731,7 @@ mod tests {
         };
         for root in ["", "{{ none }}"] {
             let src = with_home(root);
-            assert_eq!(src.render_root("/tmp"), Ok(None));
-            assert_eq!(
-                src.canonical_path(Some("/tmp")).as_deref(),
-                Some("/home/someone")
-            );
+            assert_eq!(src.root("/tmp"), Ok(None));
         }
     }
 
@@ -720,10 +742,8 @@ mod tests {
             "{{ 1 }}",
             fields(&[("a", "1")]),
         ));
-        let err = src.render_root("/tmp").unwrap_err();
+        let err = src.root("/tmp").unwrap_err();
         assert!(err.starts_with("demo.s: root: "), "{err}");
-        assert_eq!(src.canonical_path(Some("/tmp")), None);
-        assert!(src.execute(Some("/tmp")).fields.is_empty());
     }
 
     #[test]
@@ -736,14 +756,12 @@ mod tests {
             ("a/b", "a relative path"),
         ] {
             let src = source(spec(Some(root), "x", fields(&[("a", "1")])));
-            let err = src.render_root("/tmp").unwrap_err();
+            let err = src.root("/tmp").unwrap_err();
             assert_eq!(
                 err,
                 format!("demo.s: root: must render an absolute directory, got {kind}"),
                 "{root}"
             );
-            assert_eq!(src.canonical_path(Some("/tmp")), None);
-            assert!(src.execute(Some("/tmp")).fields.is_empty());
         }
     }
 
@@ -760,11 +778,7 @@ mod tests {
             fields(&[("a", "1")]),
         ));
         let want = repo.to_str().unwrap().to_string();
-        assert_eq!(
-            src.render_root(sub.to_str().unwrap()),
-            Ok(Some(want.clone()))
-        );
-        assert_eq!(src.canonical_path(Some(sub.to_str().unwrap())), Some(want));
+        assert_eq!(src.root(sub.to_str().unwrap()), Ok(Some(want.clone())));
     }
 
     #[test]
@@ -786,7 +800,7 @@ mod tests {
             ),
             reader.clone(),
         );
-        let got = src.execute(Some("/work/proj")).fields;
+        let got = src.execute(Some("/work/proj")).unwrap().fields;
         assert_eq!(got.get("r"), Some(&s("eu-1eu-1")));
         // One read per provider the data line names, a miss included, at the
         // directory being executed.
@@ -802,14 +816,36 @@ mod tests {
     }
 
     #[test]
+    fn a_comb_read_error_fails_the_data_render() {
+        struct Failing;
+        impl DaemonRead for Failing {
+            fn read(
+                &self,
+                _provider: &str,
+                _dir: Option<&str>,
+            ) -> Result<Option<HashMap<String, Value>>, String> {
+                Err("q.s: root: boom".into())
+            }
+        }
+        let src = build(
+            spec(None, "{{ comb.q.x }}", fields(&[("r", "{{ data }}")])),
+            Arc::new(Failing),
+        );
+        assert_eq!(
+            src.execute(Some("/work")).unwrap_err(),
+            "demo.s: data: comb.q: q.s: root: boom"
+        );
+    }
+
+    #[test]
     fn the_prototype_name_is_in_every_line() {
         let src = source(spec(
             Some("{{ '/r' if _.name == 's' else '' }}"),
             "{{ _.name }}",
             fields(&[("n", "{{ data ~ _.name }}")]),
         ));
-        assert_eq!(src.render_root("/tmp"), Ok(Some("/r".into())));
-        assert_eq!(text(&src.execute(None).fields, "n"), "ss");
+        assert_eq!(src.root("/tmp"), Ok(Some("/r".into())));
+        assert_eq!(text(&src.execute(None).unwrap().fields, "n"), "ss");
     }
 
     #[test]

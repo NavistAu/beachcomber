@@ -7,9 +7,11 @@
 //! a layer scenario is a daemon started over the files as they are.
 
 use crate::common::daemon::TestDaemon;
+use crate::common::poll::poll_until;
 use crate::common::socket::IsolatedSocket;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tempfile::TempDir;
 
 /// A `$HOME` and a config directory that outlive any one daemon over them.
@@ -115,7 +117,7 @@ result.b = "{{ data }}"
         ),
         (
             "conf.d/10-mine.toml",
-            "[daemon.providers.demo.sources.own]\nreturn = \"{{ result | watch('data.txt') }}\"\n",
+            "[daemon.providers.demo.sources.own]\nreturn = \"{{ result | watch('/etc/hosts') }}\"\n",
         ),
     ]);
     let d = setup.daemon();
@@ -131,7 +133,7 @@ result.b = "{{ data }}"
     assert!(plain.get("watch").is_none(), "{plain}");
 
     let own = get(&d, "demo:cache.b").expect("demo:cache.b");
-    assert_eq!(own["watch"], json!({"0": "data.txt"}), "{own}");
+    assert_eq!(own["watch"], json!({"0": "/etc/hosts"}), "{own}");
     assert!(
         own.get("poll").is_none(),
         "the Source's own return replaces the abstract one whole, poll included: {own}"
@@ -366,6 +368,258 @@ result.cwd = "{{ data }}"
     assert_eq!(at_home["source"], json!("source(s)"), "{at_home}");
 }
 
+/// What `comb check` reads from the daemon for `subject`.
+fn introspect(d: &TestDaemon, subject: &str) -> Value {
+    beachcomber::client::Client::new(d.socket.path.clone())
+        .introspect(subject, None)
+        .unwrap_or_else(|e| panic!("introspect {subject}: {e}"))
+        .data
+        .unwrap_or_else(|| panic!("introspect {subject}: no payload"))
+}
+
+/// The paths the daemon watches for Sources.
+fn watched(d: &TestDaemon) -> Vec<String> {
+    introspect(d, "watches")["paths"]
+        .as_array()
+        .expect("paths")
+        .iter()
+        .map(|p| p.as_str().expect("a path").to_string())
+        .collect()
+}
+
+/// The `(source, root)` of every instance the daemon is keeping warm for
+/// `provider`, sorted; a root of `None` is the instance at `~`.
+fn warm_instances(d: &TestDaemon, provider: &str) -> Vec<(String, Option<String>)> {
+    let mut rows: Vec<(String, Option<String>)> = introspect(d, "demand")["demand"]
+        .as_array()
+        .map(|rows| rows.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .filter(|row| row["provider"] == provider)
+        .map(|row| {
+            (
+                row["source"].as_str().expect("source").to_string(),
+                row["path"].as_str().map(str::to_string),
+            )
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// Lines in `file`, or 0 when it has not been written.
+fn lines_in(file: &Path) -> usize {
+    std::fs::read_to_string(file).map_or(0, |text| text.lines().count())
+}
+
+#[test]
+fn root_runs_per_directory_on_first_request_and_is_cached() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        // Each render appends a line to a counter file, then names the
+        // directory the instance answers for.
+        r#"
+[daemon.providers.demo.sources.s]
+root = "{{ exec('echo run >> ' ~ env.HOME ~ '/roots; echo ' ~ env.HOME ~ '/proj') | trim }}"
+data = "{{ exec('pwd') | trim }}"
+result.cwd = "{{ data }}"
+"#,
+    )]);
+    let proj = setup.home.join("proj");
+    let deep = proj.join("a/b");
+    let other = proj.join("c");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    let roots = setup.home.join("roots");
+    let d = setup.daemon();
+    assert_eq!(lines_in(&roots), 0, "load does not render a root");
+
+    let want = Some(json!(proj.to_str().unwrap()));
+    assert_eq!(get_at(&d, &deep, &["demo.cwd"]), want);
+    assert_eq!(
+        lines_in(&roots),
+        1,
+        "the first request for a directory renders it"
+    );
+
+    assert_eq!(get_at(&d, &deep, &["demo.cwd"]), want);
+    assert_eq!(
+        get_at(&d, &deep, &["demo:cache.cwd"]).map(|m| m["source"].clone()),
+        Some(json!("source(s)"))
+    );
+    assert_eq!(
+        lines_in(&roots),
+        1,
+        "later reads from that directory use the root already found"
+    );
+
+    assert_eq!(get_at(&d, &other, &["demo.cwd"]), want);
+    assert_eq!(
+        lines_in(&roots),
+        2,
+        "a different directory renders its own, once"
+    );
+}
+
+#[test]
+fn return_decorators_register_at_instance_creation_not_at_load() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.demo.sources.s]
+root = "{{ lup('marker') | dirname }}"
+data = "{{ exec('pwd') | trim }}"
+result.cwd = "{{ data }}"
+return = "{{ result | watch('marker') | poll('1h') }}"
+"#,
+    )]);
+    let proj = setup.home.join("proj");
+    let deep = proj.join("a/b");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(proj.join("marker"), "").unwrap();
+    let d = setup.daemon();
+
+    assert_eq!(watched(&d), Vec::<String>::new(), "no watch after load");
+    assert_eq!(warm_instances(&d, "demo"), vec![], "no instance after load");
+
+    assert_eq!(
+        get_at(&d, &deep, &["demo.cwd"]),
+        Some(json!(proj.to_str().unwrap()))
+    );
+    assert_eq!(
+        warm_instances(&d, "demo"),
+        vec![("s".to_string(), Some(proj.to_str().unwrap().to_string()))],
+        "the first request created the instance at the root"
+    );
+    assert_eq!(
+        watched(&d),
+        vec![proj.to_str().unwrap().to_string()],
+        "and registered its watch there, at the root and not at the subdirectory"
+    );
+}
+
+#[test]
+fn two_config_sources_of_one_provider_root_independently() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.demo.sources.a]
+root = "{{ lup('ma') | dirname }}"
+data = "{{ exec('pwd') | trim }}"
+result.cwd_a = "{{ data }}"
+
+[daemon.providers.demo.sources.b]
+root = "{{ lup('mb') | dirname }}"
+data = "{{ exec('pwd') | trim }}"
+result.cwd_b = "{{ data }}"
+"#,
+    )]);
+    let outer = setup.home.join("p");
+    let inner = outer.join("q");
+    let deep = inner.join("deep");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(outer.join("ma"), "").unwrap();
+    std::fs::write(inner.join("mb"), "").unwrap();
+    let d = setup.daemon();
+
+    assert_eq!(
+        get_at(&d, &deep, &["demo.cwd_a"]),
+        Some(json!(outer.to_str().unwrap())),
+        "a roots at the nearest `ma`"
+    );
+    assert_eq!(
+        get_at(&d, &deep, &["demo.cwd_b"]),
+        Some(json!(inner.to_str().unwrap())),
+        "b roots at the nearest `mb`, a directory nearer than a's"
+    );
+    assert_eq!(
+        warm_instances(&d, "demo"),
+        vec![
+            ("a".to_string(), Some(outer.to_str().unwrap().to_string())),
+            ("b".to_string(), Some(inner.to_str().unwrap().to_string())),
+        ],
+        "each Source has its own instance, at its own root"
+    );
+}
+
+#[test]
+fn a_config_source_walks_to_the_home_instance() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        // The whole node is whatever `vals.json` in the working directory says.
+        r#"
+[daemon.providers.demo.sources.s]
+root = "{{ lup('vals.json') | dirname }}"
+data = "{{ exec('cat vals.json 2>/dev/null || echo {}') | fromjson }}"
+result = "{{ data }}"
+"#,
+    )]);
+    let proj = setup.home.join("proj");
+    let deep = proj.join("sub");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(proj.join("vals.json"), r#"{"a": "proj-a"}"#).unwrap();
+    std::fs::write(
+        setup.home.join("vals.json"),
+        r#"{"a": "home-a", "b": "home-b"}"#,
+    )
+    .unwrap();
+    let d = setup.daemon();
+
+    assert_eq!(
+        get_at(&d, &deep, &["demo.a"]),
+        Some(json!("proj-a")),
+        "the project's value is the nearer"
+    );
+    assert_eq!(
+        get_at(&d, &deep, &["demo.b"]),
+        Some(json!("home-b")),
+        "a field missing at the project root is read from the instance at ~"
+    );
+    assert_eq!(
+        get_at(&d, &deep, &["demo"]),
+        Some(json!({"a": "proj-a", "b": "home-b"})),
+        "the whole node merges the instances up the chain"
+    );
+    assert_eq!(get_at(&d, &deep, &["demo.zz"]), None, "a key nobody has");
+}
+
+#[test]
+fn a_root_line_that_fails_to_render_fails_the_read_with_its_error() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.demo.sources.s]
+root = "{{ exec('false') }}"
+data = "{{ exec('pwd') | trim }}"
+result.cwd = "{{ data }}"
+"#,
+    )]);
+    let dir = setup.home.join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let d = setup.daemon();
+
+    let out = d
+        .comb(&dir)
+        .args(["get", "-f", "json", "demo.cwd"])
+        .output()
+        .expect("run comb get");
+    assert!(!out.status.success(), "the read fails: {out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("demo.s: root: "),
+        "the root's own error: {stderr}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains(setup.home.to_str().unwrap()),
+        "and nothing was answered from the instance at ~"
+    );
+    assert_eq!(
+        warm_instances(&d, "demo"),
+        vec![],
+        "no instance was created for a root that could not be found"
+    );
+}
+
 #[test]
 fn a_url_source_serves_the_fetched_field() {
     let mut server = mockito::Server::new();
@@ -429,4 +683,197 @@ fn plugin_looks_in_the_config_directorys_plugins_by_default() {
     link_plugin(&setup.xdg.join("beachcomber").join("plugins"), "demo");
     let d = setup.daemon();
     assert_eq!(get(&d, "lib.first"), Some(json!("x")));
+}
+
+/// A Source whose whole node is the JSON in `vals.json` at its root, rooted at
+/// the nearest `.root` marker.
+const OBJ_SOURCE: &str = r#"
+[daemon.providers.obj.sources.s]
+root = "{{ lup('.root') | dirname }}"
+data = "{{ exec('cat vals.json') | fromjson }}"
+result = "{{ data }}"
+"#;
+
+#[test]
+fn a_field_read_of_an_object_merges_up_the_chain_like_the_namespace_read() {
+    for (proj_vals, home_vals) in [
+        (
+            r#"{"o":{"a":"proj-a"}}"#,
+            r#"{"o":{"a":"home-a","b":"home-b"}}"#,
+        ),
+        (
+            r#"{"o":{"a":null}}"#,
+            r#"{"o":{"a":"home-a","b":"home-b"}}"#,
+        ),
+    ] {
+        let setup = Setup::new(&[("config.toml", OBJ_SOURCE)]);
+        let proj = setup.home.join("ws/p");
+        let sub = proj.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(proj.join(".root"), "").unwrap();
+        std::fs::write(proj.join("vals.json"), proj_vals).unwrap();
+        std::fs::write(setup.home.join("vals.json"), home_vals).unwrap();
+        let d = setup.daemon();
+
+        // The field read goes first, so it is the cold path that is tested.
+        let field = get_at(&d, &sub, &["obj.o"]);
+        let namespace = get_at(&d, &sub, &["obj"]).expect("obj");
+        assert_eq!(
+            field.as_ref(),
+            Some(&namespace["o"]),
+            "get obj.o and get obj agree ({proj_vals} over {home_vals})"
+        );
+        assert_eq!(
+            get_at(&d, &sub, &["obj.o.b"]),
+            Some(json!("home-b")),
+            "the home instance contributes a leaf the project lacks"
+        );
+    }
+}
+
+#[test]
+fn a_nearer_root_beats_the_home_instance_of_a_rootless_sibling_source() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.p.sources.a]
+root = "{{ lup('.root') | dirname }}"
+data = "{{ exec('cat a.json') | fromjson }}"
+result = "{{ data }}"
+
+[daemon.providers.p.sources.b]
+data = "{{ exec('cat b.json') | fromjson }}"
+result = "{{ data }}"
+"#,
+    )]);
+    let outer = setup.home.join("ws/outer");
+    let src = outer.join("inner/src");
+    std::fs::create_dir_all(&src).unwrap();
+    let inner = outer.join("inner");
+    std::fs::write(outer.join(".root"), "").unwrap();
+    std::fs::write(inner.join(".root"), "").unwrap();
+    std::fs::write(outer.join("a.json"), r#"{"k":"outer-a"}"#).unwrap();
+    std::fs::write(inner.join("a.json"), r#"{"other":"inner-a"}"#).unwrap();
+    std::fs::write(setup.home.join("b.json"), r#"{"k":"home-b"}"#).unwrap();
+    let d = setup.daemon();
+
+    assert_eq!(
+        get_at(&d, &src, &["p.k"]),
+        Some(json!("outer-a")),
+        "the instance at ~ is the farthest, whatever the other Source's chain"
+    );
+    assert_eq!(
+        get_at(&d, &src, &["p"]),
+        Some(json!({"k": "outer-a", "other": "inner-a"}))
+    );
+}
+
+#[test]
+fn refresh_re_runs_every_instance_a_force_get_re_runs() {
+    let setup = Setup::new(&[]);
+    let count = setup.home.join("cnt");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.cnt.sources.s]
+root = "{{{{ lup('.root') | dirname }}}}"
+data = "{{{{ exec('pwd >> {}; cat vals.json') | fromjson }}}}"
+result = "{{{{ data }}}}"
+"#,
+            count.display()
+        ),
+    );
+    let proj = setup.home.join("ws/p");
+    let sub = proj.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(proj.join(".root"), "").unwrap();
+    std::fs::write(proj.join("vals.json"), r#"{"y":"proj"}"#).unwrap();
+    std::fs::write(setup.home.join("vals.json"), r#"{"x":"home"}"#).unwrap();
+    let d = setup.daemon();
+
+    assert_eq!(
+        get_at(&d, &sub, &["cnt"]),
+        Some(json!({"y": "proj", "x": "home"}))
+    );
+    let after_read = lines_in(&count);
+    let out = d
+        .comb(&sub)
+        .args(["refresh", "cnt"])
+        .output()
+        .expect("run comb refresh");
+    assert!(out.status.success(), "{out:?}");
+    // The refresh is the scheduler's, so it lands when it lands.
+    poll_until(
+        "the executions after refresh",
+        "one at the project and one at ~",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        || lines_in(&count) - after_read,
+        |n| *n >= 2,
+    );
+    let ran: Vec<String> = std::fs::read_to_string(&count)
+        .unwrap()
+        .lines()
+        .skip(after_read)
+        .map(str::to_string)
+        .collect();
+    assert!(
+        ran.contains(&proj.to_str().unwrap().to_string())
+            && ran.contains(&setup.home.to_str().unwrap().to_string()),
+        "refresh re-ran the project and the global instance: {ran:?}"
+    );
+}
+
+#[test]
+fn a_failing_source_in_backoff_is_skipped_not_re_run_on_every_read() {
+    let setup = Setup::new(&[]);
+    let count = setup.home.join("bad.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.bad.sources.s]
+root = "{{{{ exec('pwd') | trim }}}}"
+data = "{{{{ exec('pwd >> {}; false') }}}}"
+result.x = "{{{{ data }}}}"
+return = "{{{{ result | failback(1, '1h') }}}}"
+"#,
+            count.display()
+        ),
+    );
+    let deep = setup.home.join("ws/a/b/c");
+    std::fs::create_dir_all(&deep).unwrap();
+    let d = setup.daemon();
+
+    assert_eq!(get_at(&d, &deep, &["bad.x"]), None);
+    let first = lines_in(&count);
+    assert!(first >= 2, "the first read tried each level: {first}");
+    assert_eq!(get_at(&d, &deep, &["bad.x"]), None);
+    assert_eq!(get_at(&d, &deep, &["bad.x"]), None);
+    assert_eq!(
+        lines_in(&count),
+        first,
+        "instances in failback backoff are not run again by later reads"
+    );
+}
+
+#[test]
+fn the_home_instance_of_mise_watches_the_config_file_in_home() {
+    let setup = Setup::new(&[]);
+    std::fs::write(setup.home.join("mise.toml"), "").unwrap();
+    let d = setup.daemon();
+
+    // Whether or not `mise` is installed here, the read creates the instance.
+    let _ = get_at(&d, &d.home, &["mise"]);
+    let home = setup.home.to_str().unwrap();
+    let watched = watched(&d);
+    assert!(
+        watched.contains(&format!("{home}/mise.toml")),
+        "the file mise reads from $HOME is watched: {watched:?}"
+    );
+    assert!(
+        !watched.contains(&home.to_string()),
+        "and $HOME is not watched recursively: {watched:?}"
+    );
 }

@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use std::fs;
 
@@ -40,7 +40,6 @@ fn time_source_metadata() -> SourceMetadata {
                 field_type: FieldType::Int,
             },
         ],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
             count: 2,
@@ -64,9 +63,9 @@ impl Source for UptimeTime {
         M.get_or_init(time_source_metadata)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let Some(contents) = fs::read_to_string("/proc/uptime").ok() else {
-            return SourceResult::new();
+            return Err("cannot read /proc/uptime".into());
         };
         let Some(uptime_secs) = contents
             .split_whitespace()
@@ -74,7 +73,7 @@ impl Source for UptimeTime {
             .and_then(|s| s.parse::<f64>().ok())
             .map(|f| f as i64)
         else {
-            return SourceResult::new();
+            return Err("cannot parse /proc/uptime".into());
         };
 
         let days = uptime_secs / 86400;
@@ -86,6 +85,6 @@ impl Source for UptimeTime {
         result.insert("days", Value::Int(days));
         result.insert("hours", Value::Int(hours));
         result.insert("minutes", Value::Int(minutes));
-        result
+        Ok(result)
     }
 }

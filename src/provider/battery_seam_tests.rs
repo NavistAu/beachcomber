@@ -80,7 +80,7 @@ mod macos {
     fn execute_with(stdout: &[u8]) -> crate::provider::SourceResult {
         let stub = StubProcessExecutor::new(vec![success_output(stdout)]);
         let source = battery_state_source_with_executor(stub);
-        source.execute(None)
+        source.execute(None).unwrap()
     }
 
     #[test]
@@ -122,34 +122,25 @@ mod macos {
     }
 
     #[test]
-    fn pmset_binary_not_found_returns_empty_result() {
+    fn pmset_binary_not_found_fails() {
         let stub = StubProcessExecutor::new(vec![io_error()]);
         let source = battery_state_source_with_executor(stub);
-        let result = source.execute(None);
-        assert!(
-            result.fields.is_empty(),
-            "IO error should produce empty result, got: {:?}",
-            result.fields
-        );
+        let err = source.execute(None).unwrap_err();
+        assert!(err.starts_with("pmset failed"), "{err}");
     }
 
     #[test]
-    fn pmset_nonzero_exit_returns_empty_result() {
+    fn pmset_nonzero_exit_fails() {
         let stub = StubProcessExecutor::new(vec![failed_output()]);
         let source = battery_state_source_with_executor(stub);
-        let result = source.execute(None);
-        assert!(
-            result.fields.is_empty(),
-            "non-zero exit should produce empty result, got: {:?}",
-            result.fields
-        );
+        assert!(source.execute(None).is_err());
     }
 
     #[test]
     fn pmset_malformed_output_returns_empty_result() {
         let stub = StubProcessExecutor::new(vec![success_output(b"no battery info here\n")]);
         let source = battery_state_source_with_executor(stub);
-        let result = source.execute(None);
+        let result = source.execute(None).unwrap();
         assert!(
             result.fields.is_empty(),
             "malformed output should produce empty result, got: {:?}",
@@ -186,14 +177,14 @@ mod linux {
     fn execute_with_two(first: &[u8], second: &[u8]) -> crate::provider::SourceResult {
         let stub = StubProcessExecutor::new(vec![success_output(first), success_output(second)]);
         let source = battery_upower_source_with_executor(stub);
-        source.execute(None)
+        source.execute(None).unwrap()
     }
 
     #[test]
     fn upower_not_found_returns_empty() {
         let stub = StubProcessExecutor::new(vec![io_error()]);
         let source = battery_upower_source_with_executor(stub);
-        let result = source.execute(None);
+        let result = source.execute(None).unwrap();
         // time_remaining_secs and status are still written from sysfs; here
         // with no sysfs battery dir, status becomes "unknown".
         assert!(result.fields.contains_key("status"));
@@ -207,7 +198,7 @@ mod linux {
             b"/org/freedesktop/UPower/devices/ac_adapter\n",
         )]);
         let source = battery_upower_source_with_executor(stub);
-        let result = source.execute(None);
+        let result = source.execute(None).unwrap();
         // No "battery" line → time_remaining_secs = 0
         assert_eq!(
             result.fields.get("time_remaining_secs").unwrap().as_text(),

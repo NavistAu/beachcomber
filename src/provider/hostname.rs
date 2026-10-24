@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 
 pub struct HostnameProvider;
@@ -31,7 +31,6 @@ fn host_source_metadata() -> SourceMetadata {
                 field_type: FieldType::String,
             },
         ],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Watch {
             patterns: vec![],
             abs_paths: vec![],
@@ -55,13 +54,13 @@ impl Source for HostnameHost {
         M.get_or_init(host_source_metadata)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let full = gethostname();
         let short = full.split('.').next().unwrap_or(&full).to_string();
         let mut result = SourceResult::new();
         result.insert("name", Value::String(full));
         result.insert("short", Value::String(short));
-        result
+        Ok(result)
     }
 }
 

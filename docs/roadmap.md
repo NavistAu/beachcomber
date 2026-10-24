@@ -32,7 +32,7 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       conformance fixture.
 - [ ] **Per-directory customization.** In tool-heavy directories the prompt drowns in `mise` tool/version output —
       there's no way to shape what comb feeds a given project's prompt. Two candidate mechanisms: (a) a computed
-      field (e.g. `tools_prompt`) that filters `mise.project` through an allowlist and the prompt pulls instead of the
+      field (e.g. `tools_prompt`) that filters the `mise` tools through an allowlist and the prompt pulls instead of the
       raw tool list — the env/cascade computed-fields work gives the expression machinery, but config is global today;
       (b) a project config file (`.beachcomber.toml`?) carrying per-dir allowlists / template definitions — new
       discovery and trust surface, since config would come from arbitrary repos. Cross-references the env/cascade item

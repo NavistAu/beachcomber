@@ -39,8 +39,8 @@ pub const DEFAULT_FAILBACK_INTERVAL_SECS: u64 = 1;
 /// How long one `execute` may take before the engine reports it slow.
 pub const DEFAULT_BUDGET_EXECUTE: Duration = Duration::from_millis(50);
 
-/// Lifecycle key. `path` is None for Global sources; Some(canonical_path) for
-/// PathScoped. `node` is the put address a lifecycle belongs to (`source` is
+/// Lifecycle key. `path` is the instance's root: None for the instance at `~`,
+/// Some(root) for a rooted one. `node` is the put address a lifecycle belongs to (`source` is
 /// `"put"` then) and `""` for every Source instance.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Key {

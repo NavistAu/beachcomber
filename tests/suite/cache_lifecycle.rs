@@ -7,9 +7,9 @@ use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
-use beachcomber::query::SourceDemand;
+use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerHandle, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -25,7 +25,6 @@ fn lc_counter_source_meta() -> SourceMetadata {
             name: "value".into(),
             field_type: FieldType::Int,
         }],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 5,
             count: 2,
@@ -51,11 +50,11 @@ impl Source for LcCounterSourceImpl {
         M.get_or_init(lc_counter_source_meta)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let count = self.counter.fetch_add(1, Ordering::SeqCst);
         let mut result = SourceResult::new();
         result.insert("value", Value::Int(count as i64));
-        result
+        Ok(result)
     }
 }
 
@@ -120,8 +119,10 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
     handle
         .send(SchedulerMessage::QueryActivity {
             provider: "lc_counter".to_string(),
-            path: None,
-            demand: SourceDemand::All,
+            instances: vec![Instance {
+                source: "main".to_string(),
+                root: None,
+            }],
         })
         .await;
 
@@ -178,8 +179,10 @@ async fn integration_active_entry_appears_in_status() {
     handle
         .send(SchedulerMessage::QueryActivity {
             provider: "lc_counter".to_string(),
-            path: None,
-            demand: SourceDemand::All,
+            instances: vec![Instance {
+                source: "main".to_string(),
+                root: None,
+            }],
         })
         .await;
 
@@ -255,8 +258,10 @@ async fn integration_status_response_reports_decay_level() {
     handle
         .send(SchedulerMessage::QueryActivity {
             provider: "lc_counter".to_string(),
-            path: None,
-            demand: SourceDemand::All,
+            instances: vec![Instance {
+                source: "main".to_string(),
+                root: None,
+            }],
         })
         .await;
 
@@ -326,8 +331,10 @@ async fn integration_repeated_queries_keep_data_warm() {
     handle
         .send(SchedulerMessage::QueryActivity {
             provider: "lc_counter".to_string(),
-            path: None,
-            demand: SourceDemand::All,
+            instances: vec![Instance {
+                source: "main".to_string(),
+                root: None,
+            }],
         })
         .await;
 
@@ -354,8 +361,10 @@ async fn integration_repeated_queries_keep_data_warm() {
         handle
             .send(SchedulerMessage::QueryActivity {
                 provider: "lc_counter".to_string(),
-                path: None,
-                demand: SourceDemand::All,
+                instances: vec![Instance {
+                    source: "main".to_string(),
+                    root: None,
+                }],
             })
             .await;
         assert!(

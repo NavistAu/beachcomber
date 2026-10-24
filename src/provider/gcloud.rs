@@ -1,6 +1,6 @@
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, SourceScope, Value,
+    Source, SourceMetadata, SourceResult, Value,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -36,7 +36,6 @@ fn config_dir_source_metadata() -> SourceMetadata {
                 field_type: FieldType::Object,
             },
         ],
-        scope: SourceScope::Global,
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
             count: 2,
@@ -60,9 +59,9 @@ impl Source for GcloudConfigDir {
         M.get_or_init(config_dir_source_metadata)
     }
 
-    fn execute(&self, _path: Option<&str>) -> SourceResult {
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let Some(config_dir) = gcloud_config_dir() else {
-            return SourceResult::new();
+            return Ok(SourceResult::new());
         };
 
         // Read the default active config name from the active_config file only.
@@ -91,7 +90,7 @@ impl Source for GcloudConfigDir {
             result.insert(name, Value::Object(fields));
         }
 
-        result
+        Ok(result)
     }
 }
 

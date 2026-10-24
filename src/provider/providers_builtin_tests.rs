@@ -1,6 +1,6 @@
 use crate::provider::hostname::HostnameProvider;
 use crate::provider::user::UserProvider;
-use crate::provider::{InvalidationStrategy, Provider, SourceScope};
+use crate::provider::{InvalidationStrategy, Provider};
 
 #[test]
 fn hostname_provider_metadata() {
@@ -10,7 +10,6 @@ fn hostname_provider_metadata() {
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
     assert_eq!(src.name, "host");
-    assert_eq!(src.scope, SourceScope::Global, "hostname should be global");
     assert!(
         matches!(src.invalidation, InvalidationStrategy::Watch { .. }),
         "hostname host source should use Watch invalidation"
@@ -24,7 +23,7 @@ fn hostname_provider_metadata() {
 fn hostname_provider_executes() {
     let p = HostnameProvider;
     let sources = p.sources();
-    let result = sources[0].execute(None);
+    let result = sources[0].execute(None).unwrap();
     let name = result.fields.get("name").expect("Should have 'name' field");
     assert!(!name.as_text().is_empty(), "Hostname should not be empty");
 }
@@ -33,7 +32,7 @@ fn hostname_provider_executes() {
 fn hostname_provider_short_is_prefix() {
     let p = HostnameProvider;
     let sources = p.sources();
-    let result = sources[0].execute(None);
+    let result = sources[0].execute(None).unwrap();
     let name = result.fields.get("name").unwrap().as_text();
     let short = result.fields.get("short").unwrap().as_text();
     assert!(
@@ -46,8 +45,8 @@ fn hostname_provider_short_is_prefix() {
 fn hostname_provider_ignores_path() {
     let p = HostnameProvider;
     let sources = p.sources();
-    let r1 = sources[0].execute(None);
-    let r2 = sources[0].execute(Some("/some/path"));
+    let r1 = sources[0].execute(None).unwrap();
+    let r2 = sources[0].execute(Some("/some/path")).unwrap();
     assert_eq!(
         r1.fields.get("name").unwrap().as_text(),
         r2.fields.get("name").unwrap().as_text(),
@@ -63,7 +62,6 @@ fn user_provider_metadata() {
     assert_eq!(meta.sources.len(), 1);
     let src = &meta.sources[0];
     assert_eq!(src.name, "name");
-    assert_eq!(src.scope, SourceScope::Global, "user should be global");
     assert!(
         matches!(src.invalidation, InvalidationStrategy::Watch { .. }),
         "user name source should use Watch invalidation"
@@ -77,7 +75,7 @@ fn user_provider_metadata() {
 fn user_provider_executes() {
     let p = UserProvider;
     let sources = p.sources();
-    let result = sources[0].execute(None);
+    let result = sources[0].execute(None).unwrap();
     let name = result.fields.get("name").expect("Should have 'name' field");
     assert!(!name.as_text().is_empty(), "Username should not be empty");
     let uid = result.fields.get("uid").expect("Should have 'uid' field");

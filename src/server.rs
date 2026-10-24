@@ -1,13 +1,13 @@
 use crate::cache::{Cache, Layers, MergedRead};
 use crate::config::Config;
 use crate::protocol::{self, IntrospectSubject, Request, Response};
-use crate::provider::SourceScope;
 use crate::provider::registry::ProviderRegistry;
-use crate::query::KeyParse;
+use crate::query::{Ask, Instance, InstanceWalk, KeyParse, QueryPlan};
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
 };
 use crate::watcher_registry::WatcherRegistry;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -252,29 +252,104 @@ async fn handle_connection(
     Ok(())
 }
 
-/// [`crate::query::QueryPlan::build`], off the async worker when resolving the
-/// path may render a config Source's `root` line: that line can run a command
-/// (`exec`, up to its timeout), fetch a URL or call a plugin, none of which may
-/// hold a worker. Everything else resolves in place.
-async fn plan_for(
-    key: &str,
-    requested: Option<&str>,
+/// The root of `provider`'s Source `source` for `dir`
+/// ([`ProviderRegistry::instance_root`]), without holding an async worker for
+/// a first render: a config Source's `root` line can run a command (`exec`, up
+/// to its timeout), fetch a URL or call a plugin. The registry keeps each
+/// rendered root per directory, so only the first request for a directory pays
+/// for the render, on the blocking pool; a kept root, and a built-in's
+/// filesystem walk, resolve in place.
+async fn root_for(
     registry: &Arc<ProviderRegistry>,
-) -> Result<crate::query::QueryPlan, String> {
-    let blocks = crate::query::path_provider(key).is_some_and(|p| registry.renders_roots(&p));
-    if !blocks {
-        return crate::query::QueryPlan::build(key, requested, registry);
+    provider: &str,
+    source: &str,
+    dir: &str,
+) -> Result<Option<String>, String> {
+    if registry.renders_root(provider, source)
+        && registry.kept_root(provider, source, dir).is_none()
+    {
+        let (registry, provider, source, dir) = (
+            Arc::clone(registry),
+            provider.to_string(),
+            source.to_string(),
+            dir.to_string(),
+        );
+        return tokio::task::spawn_blocking(move || {
+            registry.instance_root(&provider, &source, &dir)
+        })
+        .await
+        .map_err(|e| format!("resolving the root failed: {e}"))?;
     }
-    let (key, requested, registry) = (
-        key.to_string(),
-        requested.map(str::to_string),
-        Arc::clone(registry),
-    );
-    tokio::task::spawn_blocking(move || {
-        crate::query::QueryPlan::build(&key, requested.as_deref(), &registry)
-    })
-    .await
-    .map_err(|e| format!("resolving the path failed: {e}"))?
+    registry.instance_root(provider, source, dir)
+}
+
+/// The roots found so far by one request, so Sources that find theirs the same
+/// way ([`crate::provider::Source::root_key`]) ask once per directory.
+#[derive(Default)]
+struct RootMemo(HashMap<(String, String, String), Option<String>>);
+
+/// The next instance of `walk`'s chain, or `None` when the chain is over.
+async fn next_instance(
+    walk: &mut InstanceWalk,
+    registry: &Arc<ProviderRegistry>,
+    provider: &str,
+    source: &str,
+    memo: &mut RootMemo,
+) -> Result<Option<Option<String>>, String> {
+    let answer = match walk.ask() {
+        Ask::Done => return Ok(None),
+        Ask::Home => None,
+        Ask::Root(dir) => {
+            let how = registry
+                .source(provider, source)
+                .map_or_else(|| source.to_string(), |s| s.root_key());
+            let key = (provider.to_string(), how, dir.clone());
+            match memo.0.get(&key) {
+                Some(known) => known.clone(),
+                None => {
+                    let found = root_for(registry, provider, source, &dir).await?;
+                    memo.0.insert(key, found.clone());
+                    found
+                }
+            }
+        }
+    };
+    walk.step(answer).map(Some)
+}
+
+/// The Sources a plan reads, for the instances that matter to its layers: the
+/// `put` layer is what `put` wrote, so no Source is involved.
+fn read_demand(plan: &QueryPlan) -> crate::query::SourceDemand {
+    if plan.layers == Layers::Put {
+        crate::query::SourceDemand::Sources(Vec::new())
+    } else {
+        plan.demand.clone()
+    }
+}
+
+/// Every instance of every Source `plan` reads, each Source's chain in full:
+/// what a read that cannot stop at the first hit (a whole namespace, a `watch`,
+/// the `:cache` report) consults. An error is a `root` that could not be worked
+/// out.
+async fn all_instances(
+    registry: &Arc<ProviderRegistry>,
+    plan: &QueryPlan,
+) -> Result<Vec<Instance>, String> {
+    let mut out = Vec::new();
+    let mut memo = RootMemo::default();
+    for source in crate::query::demanded_source_names(registry, &plan.provider, &read_demand(plan))
+    {
+        let mut walk = InstanceWalk::new(plan.requested_path.as_deref());
+        while let Some(root) =
+            next_instance(&mut walk, registry, &plan.provider, &source, &mut memo).await?
+        {
+            out.push(Instance {
+                source: source.clone(),
+                root,
+            });
+        }
+    }
+    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -290,7 +365,7 @@ async fn handle_watch(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) {
     let requested = path.as_deref().or(context_path.as_deref());
-    let plan = match plan_for(&key, requested, registry).await {
+    let plan = match QueryPlan::build(&key, requested, registry) {
         Ok(plan) => plan,
         Err(msg) => {
             let _ = write_watch_line(writer, &Response::error(msg)).await;
@@ -305,22 +380,33 @@ async fn handle_watch(
         return;
     }
 
-    let effective_path = plan.effective_path.clone();
-    // Both halves resolve up the chain from the directory the caller named; only
-    // the provider's own records sit at the scope-resolved one — see
+    // Both halves resolve up the chain from the directory the caller named; the
+    // provider's own records sit at the instances the read reaches — see
     // [`read_watch_value`].
     let requested_path = plan.requested_path.clone();
 
     // A layer facet is a plain read: a watch on one warms nothing.
     let layered = plan.layers != crate::cache::Layers::All;
 
-    // Signal demand (source-aware: canon §150/§268).
+    // A watch follows the whole chain of every Source it reads: it cannot stop
+    // at the first hit, because a later change can make a nearer instance miss.
+    let instances = match all_instances(registry, &plan).await {
+        Ok(instances) => instances,
+        Err(msg) => {
+            warn!("watch {key}: {msg}");
+            let _ = write_watch_line(writer, &Response::error(msg)).await;
+            return;
+        }
+    };
+    let reached = crate::query::roots_of(&instances);
+
+    // Signal demand for every instance on the chains (source-aware: a field
+    // demands only its owning Source).
     if !layered && let Some(sched) = scheduler {
         sched
             .send(SchedulerMessage::QueryActivity {
                 provider: provider_name.clone(),
-                path: effective_path.clone(),
-                demand: plan.demand.clone(),
+                instances: instances.clone(),
             })
             .await;
     }
@@ -329,8 +415,8 @@ async fn handle_watch(
     // one: a `put` at an ancestor, at a directory below the provider's scope
     // entry, or at the global entry changes what this watch resolves to, so it
     // has to wake the stream. That is exactly what [`Cache::read_merged`]
-    // walks (`query::read_chain`, which carries the provider's scope entry even
-    // when it sits above `$HOME`). Every write to `p` or to one of its facets
+    // walks (`query::read_chain`, which carries the roots of the instances even
+    // when one sits above `$HOME`). Every write to `p` or to one of its facets
     // notifies `p` (the watcher registry's one key per namespace), so this one
     // chain also covers template edits and facet keys. One forwarder task per
     // link funnels the per-key broadcasts into a single channel.
@@ -338,7 +424,7 @@ async fn handle_watch(
         let changed = Arc::new(tokio::sync::Notify::new());
         let mut tasks = Vec::new();
         let links: Vec<(String, Option<String>)> =
-            crate::query::read_chain(requested_path.as_deref(), effective_path.as_deref())
+            crate::query::read_chain(requested_path.as_deref(), &reached)
                 .into_iter()
                 .map(|layer| (provider_name.clone(), layer))
                 .collect();
@@ -362,31 +448,16 @@ async fn handle_watch(
 
     // Re-execute any read-always source(s) for the initial snapshot so the
     // first value is fresh off disk, not stale cache.
-    match &plan.target {
-        _ if layered => {}
-        crate::query::KeyParse::Field(provider, field) => {
-            for source_name in registry.sources_for_key(provider, field) {
-                maybe_read_always(
-                    registry,
-                    cache,
-                    provider,
-                    source_name,
-                    effective_path.as_deref(),
-                )
-                .await;
-            }
-        }
-        crate::query::KeyParse::Provider(provider) => {
-            if let Some(sources) = registry.provider_sources(provider) {
-                // Every source applies, whatever the address: a path-scoped one
-                // at the global entry runs at `$HOME` like any other directory
-                // (`query::source_dir`).
-                let source_names: Vec<String> = sources.iter().map(|sm| sm.name.clone()).collect();
-                for sn in &source_names {
-                    maybe_read_always(registry, cache, provider, sn, effective_path.as_deref())
-                        .await;
-                }
-            }
+    if !layered {
+        for instance in &instances {
+            maybe_read_always(
+                registry,
+                cache,
+                &provider_name,
+                &instance.source,
+                instance.root.as_deref(),
+            )
+            .await;
         }
     }
 
@@ -396,7 +467,7 @@ async fn handle_watch(
         registry,
         &plan.target,
         requested_path.as_deref(),
-        effective_path.as_deref(),
+        &reached,
         plan.layers,
     );
     if write_watch_line(writer, &initial).await.is_err() {
@@ -430,8 +501,7 @@ async fn handle_watch(
                     sched
                         .send(SchedulerMessage::QueryActivity {
                             provider: provider_name.clone(),
-                            path: effective_path.clone(),
-                            demand: plan.demand.clone(),
+                            instances: instances.clone(),
                         })
                         .await;
                 }
@@ -441,7 +511,7 @@ async fn handle_watch(
                     registry,
                     &plan.target,
                     requested_path.as_deref(),
-                    effective_path.as_deref(),
+                    &reached,
                     plan.layers,
                 );
 
@@ -499,77 +569,121 @@ impl Drop for ChainWatch {
     }
 }
 
-/// Cold-miss inline-execute: synchronously run a Source to populate the cache,
-/// then let the caller re-read. Mirrors the scheduler's execute_source path
-/// (spawn_blocking + cache.put_source) but runs in the request task so the
-/// response carries fresh data (canon §"Cold cache miss triggers inline fetch").
+/// The lifecycle and failure key of one instance of a Source.
+fn instance_key(
+    provider: &str,
+    source_name: &str,
+    root: Option<&str>,
+) -> crate::scheduler::lifecycle::Key {
+    crate::scheduler::lifecycle::Key {
+        provider: provider.to_string(),
+        path: root.map(str::to_string),
+        source: source_name.to_string(),
+        node: String::new(),
+    }
+}
+
+/// Whether the instance has failed enough times in a row that its failback
+/// holds it back until the backoff ends.
+fn in_failback_backoff(
+    registry: &ProviderRegistry,
+    provider: &str,
+    source_name: &str,
+    root: Option<&str>,
+) -> bool {
+    registry
+        .failures
+        .lock()
+        .unwrap()
+        .get(&instance_key(provider, source_name, root))
+        .is_some_and(|state| state.is_suppressed())
+}
+
+/// Cold-miss inline-execute: synchronously run one instance of a Source to
+/// populate the cache, then let the caller re-read. Mirrors the scheduler's
+/// execute_source path (spawn_blocking + cache.put_source) but runs in the
+/// request task so the response carries fresh data (canon §"Cold cache miss
+/// triggers inline fetch").
 ///
-/// Path argument is the consumer-supplied path; for Global sources it is
-/// ignored and the cache write keys to (provider, None). Returns true if a
-/// non-empty result was written.
+/// `root` is the instance: the cache address its records are written at, `None`
+/// for the instance at `~`. Returns true if the Source ran and its result was
+/// written, an empty result included; a failure is logged, writes nothing and
+/// counts toward the instance's failback. An instance in failback backoff is not
+/// run unless `forced`.
 ///
 /// The cache *address* and the *directory* the Source runs in are two things:
 /// the global entry's address is `None` and its directory is `$HOME`
-/// (`query::normalise_path`), so a PathScoped Source addressed there runs at
-/// `$HOME` and its records land on the pathless entry.
+/// (`query::normalise_path`), so the instance at `~` runs at `$HOME` and its
+/// records land on the pathless entry.
 async fn inline_execute_source(
     registry: &ProviderRegistry,
     cache: &Cache,
     provider: &str,
     source_name: &str,
-    path: Option<&str>,
+    root: Option<&str>,
+    forced: bool,
 ) -> bool {
     let Some(source) = registry.source(provider, source_name) else {
         return false;
     };
-    let scope = source.metadata().scope;
-    let address = match scope {
-        SourceScope::Global => None,
-        SourceScope::PathScoped => path.map(|s| s.to_string()),
-    };
-    let schedule = crate::cache::Schedule::of(source.metadata());
-    let dir = crate::query::source_dir(scope, address.as_deref());
-    let src_clone = std::sync::Arc::clone(&source);
-    let result = match tokio::task::spawn_blocking(move || src_clone.execute(dir.as_deref())).await
-    {
-        Ok(r) => r,
-        Err(_) => return false,
-    };
-    if result.fields.is_empty() {
+    let key = instance_key(provider, source_name, root);
+    // An instance in failback backoff is left alone by a read, as the
+    // scheduler leaves it alone; only an explicit `--force` or `refresh` tries
+    // it again.
+    if !forced && in_failback_backoff(registry, provider, source_name, root) {
+        debug!(
+            "Source '{provider}.{source_name}' at {root:?} is in failback backoff: not run by this read"
+        );
         return false;
     }
-    cache.put_source(
-        provider,
-        address.as_deref(),
-        source_name,
-        result.fields,
-        schedule,
-    );
+    let schedule = crate::cache::Schedule::of(source.metadata());
+    let dir = crate::query::instance_dir(root);
+    let src_clone = std::sync::Arc::clone(&source);
+    let outcome = tokio::task::spawn_blocking(move || src_clone.execute(dir.as_deref())).await;
+    let mut failures = registry.failures.lock().unwrap();
+    let state = failures.entry(key).or_insert_with(|| {
+        crate::scheduler::FailureState::new(
+            source.metadata().failback.reattempts,
+            std::time::Duration::from_secs(source.metadata().failback.interval_secs),
+        )
+    });
+    let result = match outcome {
+        Ok(Ok(r)) => {
+            state.record_success();
+            r
+        }
+        Ok(Err(e)) => {
+            state.record_failure();
+            warn!("Source '{provider}.{source_name}' failed: {e}");
+            return false;
+        }
+        Err(_) => return false,
+    };
+    drop(failures);
+    cache.put_source(provider, root, source_name, result.fields, schedule);
     true
 }
 
 /// How far a read goes to bring a Source up to date before it is read.
 #[derive(Clone, Copy)]
 enum Warm {
-    /// Execute only when the Source has nothing cached at its scope's entry (or
-    /// is read-always).
+    /// Execute only when the instance has nothing cached (or the Source is
+    /// read-always).
     Cold,
-    /// Also re-execute when the Source's own map at its scope's entry is past
-    /// its interval (`--wait`).
+    /// Also re-execute when the instance's own map is past its interval
+    /// (`--wait`).
     Stale,
     /// Always drop the Source's map and re-execute (`--force`, `refresh`).
     Always,
 }
 
-/// Bring one Source up to date for a read addressed at `at`, and say whether it
-/// ran.
+/// Bring one instance of a Source up to date for a read, and say whether it
+/// ran. `root` is the instance: the cache entry its records live at.
 ///
-/// The decision is per Source, never per provider: a warm sibling says nothing
-/// about this one, so a cold Source is executed even when the namespace already
-/// holds records. It runs when it is `read_always`, when `warm` asks for it, or
-/// when it has nothing cached at its own scope's entry — the entry
-/// [`source_scope_path`] names, which for a `Global` Source is the global one
-/// whatever path the request carried.
+/// The decision is per instance, never per provider: a warm sibling says nothing
+/// about this one, so a cold instance is executed even when the namespace
+/// already holds records. It runs when the Source is `read_always`, when `warm`
+/// asks for it, or when it has nothing cached at its root.
 ///
 /// The three modes differ only in when the Source's map is dropped first.
 /// [`Warm::Cold`] never drops it and runs only on a cold miss. [`Warm::Stale`]
@@ -578,32 +692,38 @@ enum Warm {
 ///
 /// Dropping that one map rather than the entry is what keeps a re-execution
 /// from taking its neighbours with it: the static records sharing the entry
-/// survive, and a `Global` Source is refreshed where it actually lives rather
-/// than being missed because the request named a directory.
+/// survive.
 async fn warm_source(
     registry: &ProviderRegistry,
     cache: &Cache,
     provider: &str,
     source_name: &str,
-    at: Option<&str>,
+    root: Option<&str>,
     warm: Warm,
 ) -> bool {
     let Some(source) = registry.source(provider, source_name) else {
         return false;
     };
-    let layer = source_scope_path(registry, provider, source_name, at);
+    let forced = matches!(warm, Warm::Always);
+    // An instance in failback backoff keeps what it has: nothing is dropped
+    // for a run that will not happen.
+    if !forced && in_failback_backoff(registry, provider, source_name, root) {
+        debug!(
+            "Source '{provider}.{source_name}' at {root:?} is in failback backoff: not run by this read"
+        );
+        return false;
+    }
     let drop_first = match warm {
         Warm::Always => true,
-        Warm::Stale => cache.source_is_stale(provider, layer, source_name),
+        Warm::Stale => cache.source_is_stale(provider, root, source_name),
         Warm::Cold => false,
     };
     if drop_first {
-        cache.remove_source(provider, layer, source_name);
-    } else if !source.read_always() && cache.has_provider_records_for(provider, layer, source_name)
-    {
+        cache.remove_source(provider, root, source_name);
+    } else if !source.read_always() && cache.has_provider_records_for(provider, root, source_name) {
         return false;
     }
-    inline_execute_source(registry, cache, provider, source_name, at).await;
+    inline_execute_source(registry, cache, provider, source_name, root, forced).await;
     true
 }
 
@@ -619,13 +739,164 @@ async fn maybe_read_always(
     cache: &Cache,
     provider: &str,
     source_name: &str,
-    path: Option<&str>,
+    root: Option<&str>,
 ) {
     if let Some(src) = registry.source(provider, source_name)
         && src.read_always()
     {
-        inline_execute_source(registry, cache, provider, source_name, path).await;
+        inline_execute_source(registry, cache, provider, source_name, root, false).await;
     }
+}
+
+/// What a climb does at each instance it reaches.
+#[derive(Clone, Copy)]
+enum Climb {
+    /// Bring the instance up to date as `Warm` says, then read.
+    Warm(Warm),
+    /// Only find the instances; run nothing (`refresh` hands them to the
+    /// scheduler).
+    Select,
+}
+
+/// Where a climb got to.
+struct Climbed {
+    /// The instances visited, nearest first.
+    reached: Vec<Instance>,
+    /// Their distinct roots, in the order visited.
+    roots: Vec<Option<String>>,
+    /// Whether any Source ran.
+    ran: bool,
+    /// The merged read at the end.
+    merged: Option<MergedRead>,
+}
+
+/// One demanded Source's walk up its instances, with the next root found but
+/// not yet visited.
+struct Walking {
+    name: String,
+    walk: InstanceWalk,
+    next: Option<Option<String>>,
+    over: bool,
+}
+
+/// How near a root is to the directory read: deeper is nearer, and the
+/// instance at `~` is the farthest of all.
+fn nearness(root: &Option<String>) -> i64 {
+    match root {
+        Some(root) => std::path::Path::new(root).components().count() as i64,
+        None => -1,
+    }
+}
+
+/// Whether a merged read answers a field read: only a leaf does. An object is
+/// the union of what each instance says, so it is complete only at `~`, the
+/// same as a namespace read.
+fn answers_field(merged: &Option<MergedRead>, target: &KeyParse) -> bool {
+    match target {
+        KeyParse::Field(_, field) => lookup_merged(merged, field).is_some_and(|v| !v.is_object()),
+        KeyParse::Provider(_) => false,
+    }
+}
+
+/// The instance chains of every demanded Source, climbed together nearest
+/// first, until the merged read answers or every chain is over.
+///
+/// Every Source is asked for its next root before any instance is visited, and
+/// the nearest root among them is visited next, `~` last. A Source whose next
+/// root is far cannot therefore answer before another Source's nearer one.
+/// After each visit the merged read is tried: a field read stops on a leaf; a
+/// namespace read, and a field that is an object, take every level.
+///
+/// `honor_put` lets a field a `put` states at an instance be answered there,
+/// without running the Source it hides.
+async fn climb(
+    registry: &Arc<ProviderRegistry>,
+    cache: &Cache,
+    plan: &QueryPlan,
+    demanded: &[String],
+    mode: Climb,
+    honor_put: bool,
+) -> Result<Climbed, String> {
+    let provider = plan.provider.as_str();
+    let mut walking: Vec<Walking> = demanded
+        .iter()
+        .map(|name| Walking {
+            name: name.clone(),
+            walk: InstanceWalk::new(plan.requested_path.as_deref()),
+            next: None,
+            over: false,
+        })
+        .collect();
+    let mut memo = RootMemo::default();
+    let mut out = Climbed {
+        reached: Vec::new(),
+        roots: Vec::new(),
+        ran: false,
+        merged: None,
+    };
+    loop {
+        for w in walking.iter_mut() {
+            if w.next.is_none() && !w.over {
+                match next_instance(&mut w.walk, registry, provider, &w.name, &mut memo).await? {
+                    Some(root) => w.next = Some(root),
+                    None => w.over = true,
+                }
+            }
+        }
+        let nearest = walking
+            .iter()
+            .filter_map(|w| w.next.as_ref().map(nearness))
+            .max();
+        let Some(nearest) = nearest else {
+            if out.merged.is_none() {
+                out.merged = read_chain_merged(cache, registry, plan, &out.roots);
+            }
+            return Ok(out);
+        };
+        for w in walking.iter_mut() {
+            if w.next.as_ref().is_none_or(|root| nearness(root) != nearest) {
+                continue;
+            }
+            let root = w.next.take().expect("checked above");
+            if !out.roots.contains(&root) {
+                out.roots.push(root.clone());
+            }
+            if honor_put
+                && matches!(&plan.target, KeyParse::Field(_, field)
+                    if cache.put_answers(provider, root.as_deref(), field))
+            {
+                continue;
+            }
+            if let Climb::Warm(how) = mode {
+                out.ran |=
+                    warm_source(registry, cache, provider, &w.name, root.as_deref(), how).await;
+            }
+            out.reached.push(Instance {
+                source: w.name.clone(),
+                root,
+            });
+        }
+        out.merged = read_chain_merged(cache, registry, plan, &out.roots);
+        if answers_field(&out.merged, &plan.target) {
+            return Ok(out);
+        }
+    }
+}
+
+/// The merged read of `plan`'s address over `roots`.
+fn read_chain_merged(
+    cache: &Cache,
+    registry: &ProviderRegistry,
+    plan: &QueryPlan,
+    roots: &[Option<String>],
+) -> Option<MergedRead> {
+    cache.read_merged(
+        &plan.provider,
+        plan.requested_path.as_deref(),
+        roots,
+        registry,
+        plan.layers,
+    )
 }
 
 /// The value at `field` in a merged read, as wire JSON.
@@ -724,12 +995,12 @@ fn template_half(
     path: Option<&str>,
 ) -> TemplateHalf {
     use crate::provider::Value;
-    // A facet's records are static, so its chain head and its record scope are
-    // the one path the caller named.
+    // A facet's records are static: they resolve up the chain from the one
+    // path the caller named, and no instance is involved.
     let Some(read) = cache.read_merged(
         &format!("{provider}:template"),
         path,
-        path,
+        &[],
         registry,
         crate::cache::Layers::All,
     ) else {
@@ -775,25 +1046,6 @@ fn template_half(
     }
 }
 
-/// The cache-entry address a Source's own records live at: the global entry for
-/// a `Global` source whatever path the request carried, the addressed path for
-/// a `PathScoped` one.
-fn source_scope_path<'a>(
-    registry: &ProviderRegistry,
-    provider: &str,
-    source_name: &str,
-    path: Option<&'a str>,
-) -> Option<&'a str> {
-    let scope = registry
-        .provider_sources(provider)
-        .and_then(|ss| ss.iter().find(|sm| sm.name == source_name))
-        .map(|sm| sm.scope);
-    match scope {
-        Some(SourceScope::Global) => None,
-        _ => path,
-    }
-}
-
 /// Assemble the response for a resolved read: the data half out of `merged`
 /// with its own freshness, and the template half attached to it.
 ///
@@ -836,11 +1088,11 @@ fn read_watch_value(
     registry: &ProviderRegistry,
     target: &KeyParse,
     requested: Option<&str>,
-    provider_entry: Option<&str>,
+    reached: &[Option<String>],
     layers: crate::cache::Layers,
 ) -> Response {
     if layers == crate::cache::Layers::Cache {
-        return cache_facet_response(cache, registry, target, requested, provider_entry);
+        return cache_facet_response(cache, registry, target, requested, reached);
     }
     let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
     // A watch frame carries the same two halves a `get` does. A facet key is
@@ -852,10 +1104,10 @@ fn read_watch_value(
         TemplateHalf::default()
     } else {
         // Templates are static records, so the template half resolves up the
-        // chain from the directory the caller named, not the scope-resolved one.
+        // chain from the directory the caller named, not from an instance's root.
         template_half(cache, registry, provider, target.rest(), requested)
     };
-    let merged = cache.read_merged(provider, requested, provider_entry, registry, layers);
+    let merged = cache.read_merged(provider, requested, reached, registry, layers);
     resolve_halves(&merged, target, half.template, half.rest)
 }
 
@@ -874,7 +1126,7 @@ fn cache_facet_response(
     registry: &ProviderRegistry,
     target: &KeyParse,
     requested: Option<&str>,
-    provider_entry: Option<&str>,
+    reached: &[Option<String>],
 ) -> Response {
     let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
     let rest = target.rest();
@@ -883,7 +1135,7 @@ fn cache_facet_response(
         let prototypes = cache.read_merged(
             &format!("{provider}:cache"),
             requested,
-            None,
+            &[],
             registry,
             Layers::All,
         );
@@ -895,7 +1147,7 @@ fn cache_facet_response(
         };
     }
 
-    let merged = cache.read_merged(provider, requested, provider_entry, registry, Layers::All);
+    let merged = cache.read_merged(provider, requested, reached, registry, Layers::All);
     let half = template_half(cache, registry, provider, rest, requested);
     let value = merged.as_ref().and_then(|m| {
         if rest.is_empty() {
@@ -1038,7 +1290,7 @@ async fn handle_request(
             // path, parsed target, and the warming demand. Get and Watch both
             // build this so they share identical key semantics.
             let requested = path.as_deref().or(context_path.as_deref());
-            let plan = match plan_for(key, requested, registry).await {
+            let plan = match QueryPlan::build(key, requested, registry) {
                 Ok(plan) => plan,
                 Err(msg) => return Response::error(msg),
             };
@@ -1050,75 +1302,41 @@ async fn handle_request(
                 Err(msg) => return Response::error(msg),
             };
 
-            let effective_path = plan.effective_path.clone();
-
             // `p:cache` reports on what is cached: nothing is warmed, no demand
-            // is signalled, and no template is attached.
+            // is signalled, and no template is attached. It reports the records
+            // a read would find, so it follows every chain in full.
             if plan.layers == crate::cache::Layers::Cache {
+                let instances = match all_instances(registry, &plan).await {
+                    Ok(instances) => instances,
+                    Err(msg) => {
+                        warn!("get {key}: {msg}");
+                        return Response::error(msg);
+                    }
+                };
                 return cache_facet_response(
                     cache,
                     registry,
                     &plan.target,
                     plan.requested_path.as_deref(),
-                    effective_path.as_deref(),
+                    &crate::query::roots_of(&instances),
                 );
             }
 
-            // The two halves are addressed from different places. `effective_path`
-            // is where the *provider's* records live: `resolve_path` has already
-            // collapsed it to the global entry for a provider with only `Global`
-            // sources, and walked it to the repository root for git. A template is
+            // The two halves are addressed from different places. A template is
             // a static record, and static records resolve up the chain from the
-            // directory the caller is standing in — so the template half reads from
-            // the requested path, which the plan already canonicalised.
+            // directory the caller is standing in — so the template half reads
+            // from the requested path, which the plan already canonicalised. The
+            // data half reads the instances the walk below reaches.
             let template_path = plan.requested_path.as_deref();
 
-            // `--force` re-executes below, per source and at each source's own
-            // scope; nothing is evicted here. Evicting the addressed entry
-            // wholesale used to take the static records with it and left a
-            // Global source's records — which live at another entry — untouched
-            // and unrefreshed.
+            // `--force` re-executes below, per instance; nothing is evicted
+            // here. Evicting the addressed entry wholesale used to take the
+            // static records with it.
             if *force && registry.is_static_namespace(provider_name) {
                 return Response::error(format!(
                     "cannot --force static namespace '{provider_name}': no source to re-execute from"
                 ));
             }
-
-            // A field the put layer states is answered there: the Source it
-            // hides is neither run nor kept alive by this read. A Source that
-            // is already scheduled keeps its schedule and decays as any
-            // unread key does.
-            let put_answered = !*force
-                && plan.layers != crate::cache::Layers::Source
-                && matches!(&plan.target, KeyParse::Field(_, field)
-                    if cache.put_answers(provider_name, effective_path.as_deref(), field));
-
-            // Signal demand to scheduler — keeps only the queried Source(s) warm
-            // (canon §150/§268: a field query demands only its owning Source).
-            if let Some(sched) = scheduler
-                && !put_answered
-            {
-                sched
-                    .send(SchedulerMessage::QueryActivity {
-                        provider: provider_name.to_string(),
-                        path: effective_path.clone(),
-                        demand: plan.demand.clone(),
-                    })
-                    .await;
-            }
-
-            // Cache lookup with cold-miss inline-execute, routed by key parse form.
-            // Every read goes through `Cache::read_merged`, which resolves the
-            // directory chain (canon §"Path resolution"); this is layering, not
-            // a fallback, so there is no single entry to prefer or fall back to.
-            // Canon §"Cold cache miss triggers inline fetch": on cache miss, synchronously
-            // execute the relevant source(s), write to cache, then re-read.
-            // Read-always sources are re-executed on every read, not just cold misses.
-            //
-            // `at` is where the provider's records live and where its sources
-            // run; the chain the merged read walks starts at the requested
-            // path, so a static record written below `at` is still visible.
-            let at = effective_path.as_deref();
 
             // The template half is read before the data half: `get box.widgets.foo`
             // where `box.widgets` is an object without a `foo` is a hit when a
@@ -1137,50 +1355,83 @@ async fn handle_request(
 
             // Every Source the key demands is brought up to date on its own
             // terms — one cold source is no longer covered for by a warm
-            // sibling — and each at the entry its own scope keys, so a
-            // path-scoped one at the global entry runs at `$HOME` like any
-            // other directory (`query::source_dir`) and a repository rooted
-            // there answers a bare `--global` read. `plan.demand` is every
-            // Source for a bare namespace and the owning Source for a field,
-            // which is what makes this one loop serve both — and what makes it
-            // the same set `refresh` re-executes.
+            // sibling — and each at its instances, nearest first. `plan.demand`
+            // is every Source for a bare namespace and the owning Source for a
+            // field, which is what makes this one loop serve both — and what
+            // makes it the same set `refresh` re-executes. The `put` layer is
+            // what `put` wrote: no Source has anything to run for it.
             let demanded =
-                crate::query::demanded_source_names(registry, provider_name, &plan.demand);
+                crate::query::demanded_source_names(registry, provider_name, &read_demand(&plan));
             let how = match (*force, *wait) {
                 (true, _) => Warm::Always,
                 (false, true) => Warm::Stale,
                 (false, false) => Warm::Cold,
             };
-            let mut ran = false;
-            if !put_answered {
-                for source_name in &demanded {
-                    ran |= warm_source(registry, cache, provider_name, source_name, at, how).await;
-                }
-            }
-            let mut merged = cache.read_merged(
-                provider_name,
-                plan.requested_path.as_deref(),
-                at,
+
+            // The instance chains, climbed together nearest first ([`climb`]):
+            // each instance is brought up to date and the merged read asked for
+            // the address. A field read stops on a leaf; a namespace read has no
+            // single address to satisfy, so it takes every level.
+            let Climbed {
+                reached,
+                roots,
+                ran,
+                mut merged,
+            } = match climb(
                 registry,
-                plan.layers,
-            );
+                cache,
+                &plan,
+                &demanded,
+                Climb::Warm(how),
+                !*force && plan.layers != crate::cache::Layers::Source,
+            )
+            .await
+            {
+                Ok(climbed) => climbed,
+                Err(msg) => {
+                    warn!("get {key}: {msg}");
+                    return Response::error(msg);
+                }
+            };
+
             // A source whose map exists without holding this address is still
-            // worth one attempt — `warm_source` only knows whether the source
+            // worth one attempt — `warm_source` only knows whether the instance
             // has *anything* cached. Only a field read can tell: a namespace
             // read has no single address to miss.
             if let KeyParse::Field(_, field) = &plan.target
                 && lookup_merged(&merged, field).is_none()
                 && !ran
-                && let Some(source_name) = demanded.first()
-                && inline_execute_source(registry, cache, provider_name, source_name, at).await
+                && let Some(first) = reached.first()
+                && inline_execute_source(
+                    registry,
+                    cache,
+                    provider_name,
+                    &first.source,
+                    first.root.as_deref(),
+                    false,
+                )
+                .await
             {
                 merged = cache.read_merged(
                     provider_name,
                     plan.requested_path.as_deref(),
-                    at,
+                    &roots,
                     registry,
                     plan.layers,
                 );
+            }
+
+            // Demand every instance the read reached, so each is kept warm and,
+            // the first time, its schedule is registered.
+            if let Some(sched) = scheduler
+                && !reached.is_empty()
+            {
+                sched
+                    .send(SchedulerMessage::QueryActivity {
+                        provider: provider_name.to_string(),
+                        instances: reached,
+                    })
+                    .await;
             }
 
             // Both halves, assembled the one way `watch` assembles them.
@@ -1190,7 +1441,7 @@ async fn handle_request(
             // The same plan every other op builds, so the key is checked and
             // the path resolved exactly as for a `get`.
             let requested = path.as_deref().or(context_path.as_deref());
-            let plan = match plan_for(key, requested, registry).await {
+            let plan = match QueryPlan::build(key, requested, registry) {
                 Ok(plan) => plan,
                 Err(msg) => return Response::error(msg),
             };
@@ -1219,28 +1470,35 @@ async fn handle_request(
                 return Response::error(format!("nothing to refresh: {addressed} has no sources"));
             }
 
-            // Each demanded Source runs at the entry its own scope keys — the
-            // same layering `--force` uses — whether the scheduler runs it or
-            // this connection does.
+            // The instances a `get --force` of the same key would re-run: every
+            // instance for a namespace, and for a field those up to the one that
+            // answers it. Found the way `get` finds them; whether the scheduler
+            // runs them or this connection does.
+            let instances =
+                match climb(registry, cache, &plan, &demanded, Climb::Select, false).await {
+                    Ok(climbed) => climbed.reached,
+                    Err(msg) => {
+                        warn!("refresh {key}: {msg}");
+                        return Response::error(msg);
+                    }
+                };
             match scheduler {
                 Some(sched) => {
                     sched
                         .send(SchedulerMessage::Refresh {
                             provider: provider_name.to_string(),
-                            path: plan.effective_path.clone(),
-                            demand: plan.demand.clone(),
+                            instances,
                         })
                         .await;
                 }
                 None => {
-                    let at = plan.effective_path.as_deref();
-                    for source_name in &demanded {
+                    for instance in &instances {
                         warm_source(
                             registry,
                             cache,
                             provider_name,
-                            source_name,
-                            at,
+                            &instance.source,
+                            instance.root.as_deref(),
                             Warm::Always,
                         )
                         .await;
@@ -1730,16 +1988,7 @@ async fn handle_introspect_providers(
             "unknown"
         };
 
-        let (scope, sources_out, invalidation) = if let Some(meta) =
-            registry.provider_metadata(name)
-        {
-            // Infer scope from per-source metadata.
-            let any_path = meta
-                .sources
-                .iter()
-                .any(|s| s.scope == SourceScope::PathScoped);
-            let scope = if any_path { "path" } else { "global" };
-
+        let (sources_out, invalidation) = if let Some(meta) = registry.provider_metadata(name) {
             // Collect per-source info.
             let sources_out: Vec<serde_json::Value> = meta
                 .sources
@@ -1764,7 +2013,6 @@ async fn handle_introspect_providers(
                         .collect();
                     serde_json::json!({
                         "name": sm.name,
-                        "scope": if sm.scope == SourceScope::PathScoped { "path" } else { "global" },
                         "fields": fields,
                         "invalidation": summarize_invalidation(&sm.invalidation),
                     })
@@ -1778,9 +2026,9 @@ async fn handle_introspect_providers(
                 .map(|sm| summarize_invalidation(&sm.invalidation))
                 .unwrap_or_else(|| "data-only".to_string());
 
-            (scope, sources_out, invalidation)
+            (sources_out, invalidation)
         } else {
-            ("global", Vec::new(), "data-only".to_string())
+            (Vec::new(), "data-only".to_string())
         };
 
         let relevant: Vec<&LifecycleInfo> = backoff_list
@@ -1808,7 +2056,6 @@ async fn handle_introspect_providers(
         providers_out.push(serde_json::json!({
             "name": name,
             "source": source_type,
-            "scope": scope,
             "sources": sources_out,
             "invalidation": invalidation,
             "in_backoff": in_backoff,
@@ -2112,7 +2359,7 @@ mod tests {
             &registry,
             &target,
             Some("/repo"),
-            Some("/repo"),
+            &[Some("/repo".to_string())],
             crate::cache::Layers::All,
         );
         assert!(resp.ok);
@@ -2153,7 +2400,7 @@ mod tests {
             .expect("put accepted");
 
         let read = cache
-            .read_merged("p", None, None, &registry, crate::cache::Layers::All)
+            .read_merged("p", None, &[None], &registry, crate::cache::Layers::All)
             .expect("both maps");
 
         assert_eq!(
@@ -2207,7 +2454,7 @@ mod tests {
             .read_merged(
                 "p",
                 Some("/x/y"),
-                Some("/x/y"),
+                &[Some("/x/y".to_string()), None],
                 &registry,
                 crate::cache::Layers::All,
             )

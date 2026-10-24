@@ -1,7 +1,7 @@
 use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::query::SourceDemand;
+use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -28,8 +28,10 @@ async fn query_activity_triggers_provider_execution() {
     handle
         .send(SchedulerMessage::QueryActivity {
             provider: "hostname".to_string(),
-            path: None,
-            demand: SourceDemand::All,
+            instances: vec![Instance {
+                source: "host".to_string(),
+                root: None,
+            }],
         })
         .await;
 
@@ -73,8 +75,10 @@ async fn watch_only_providers_do_not_enter_poll_timers() {
     handle
         .send(SchedulerMessage::QueryActivity {
             provider: "hostname".to_string(),
-            path: None,
-            demand: SourceDemand::All,
+            instances: vec![Instance {
+                source: "host".to_string(),
+                root: None,
+            }],
         })
         .await;
 
@@ -119,8 +123,10 @@ async fn repeated_queries_keep_data_warm() {
         handle
             .send(SchedulerMessage::QueryActivity {
                 provider: "hostname".to_string(),
-                path: None,
-                demand: SourceDemand::All,
+                instances: vec![Instance {
+                    source: "host".to_string(),
+                    root: None,
+                }],
             })
             .await;
         assert!(
@@ -171,8 +177,10 @@ async fn field_demand_warms_only_owning_source() {
     handle
         .send(SchedulerMessage::QueryActivity {
             provider: "git".to_string(),
-            path: Some(path.clone()),
-            demand: SourceDemand::Sources(vec!["refs".to_string()]),
+            instances: vec![Instance {
+                source: "refs".to_string(),
+                root: Some(path.clone()),
+            }],
         })
         .await;
 
