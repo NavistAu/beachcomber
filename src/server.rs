@@ -808,6 +808,19 @@ async fn warm_source(
         return Ok(false);
     };
     let forced = matches!(warm, Warm::Always);
+    let drop_first = match warm {
+        Warm::Always => true,
+        Warm::Stale => cache.source_is_stale(provider, root, source_name),
+        Warm::Cold => false,
+    };
+    // A warm instance is the common read: answered before anything global is
+    // locked.
+    if !drop_first
+        && !source.read_always()
+        && cache.has_provider_records_for(provider, root, source_name)
+    {
+        return Ok(false);
+    }
     // An instance in failback backoff keeps what it has: nothing is dropped
     // for a run that will not happen.
     if !forced && in_failback_backoff(registry, provider, source_name, root) {
@@ -816,15 +829,8 @@ async fn warm_source(
         );
         return Ok(false);
     }
-    let drop_first = match warm {
-        Warm::Always => true,
-        Warm::Stale => cache.source_is_stale(provider, root, source_name),
-        Warm::Cold => false,
-    };
     if drop_first {
         cache.remove_source(provider, root, source_name);
-    } else if !source.read_always() && cache.has_provider_records_for(provider, root, source_name) {
-        return Ok(false);
     }
     inline_execute_source(
         registry,
