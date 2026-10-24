@@ -294,28 +294,14 @@ impl ConfigSource {
         }
 
         let recorded = &spec.recorded;
-        // With no `root` there is one instance, at `~`, and no directory a
-        // relative watch path could be resolved against: it would watch
-        // nothing, silently.
-        let relative = crate::provider::watch_patterns(&recorded.invalidation);
-        if spec.root.is_none() && !relative.is_empty() {
-            let listed: Vec<String> = relative.iter().map(|p| format!("'{p}'")).collect();
-            return Err(stage_error(
-                &spec,
-                "return",
-                format!(
-                    "watch({}) is relative, but the source has no root, so one instance; \
-                     use an absolute path or set root",
-                    listed.join(", ")
-                ),
-            ));
-        }
-        if spec.root.is_none() && recorded.nearest {
-            return Err(stage_error(
-                &spec,
-                "return",
-                "the source has no root, so one instance; nearest has no effect".to_string(),
-            ));
+        if spec.root.is_none()
+            && let Some(problem) = crate::provider::one_instance_problem(
+                &format!("{}.{}", spec.provider, spec.name),
+                &recorded.invalidation,
+                recorded.nearest,
+            )
+        {
+            return Err(stage_error(&spec, "return", problem));
         }
         let meta = SourceMetadata {
             name: spec.name.clone(),
@@ -837,7 +823,7 @@ mod tests {
         let err = new_err(sp.clone());
         assert!(
             err.starts_with(
-                "demo.s: return: watch('.git/HEAD') is relative, but the source has no root"
+                "demo.s: return: watch('.git/HEAD') is relative, but demo.s has one instance"
             ),
             "{err}"
         );

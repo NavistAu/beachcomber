@@ -1426,23 +1426,14 @@ impl ProviderRegistry {
             .source(provider, source)
             .expect("a retuned Source is registered")
             .has_root();
-        let relative = match &meta.invalidation {
-            InvalidationStrategy::Watch { patterns, .. }
-            | InvalidationStrategy::WatchAndPoll { patterns, .. } => patterns.as_slice(),
-            InvalidationStrategy::Poll { .. } => &[],
-        };
-        if !rooted && !relative.is_empty() {
-            let listed: Vec<String> = relative.iter().map(|p| format!("'{p}'")).collect();
-            return Err(format!(
-                "{at} return: watch({}) is relative, but {provider}.{source} has one instance; \
-                 use an absolute path",
-                listed.join(", ")
-            ));
-        }
-        if !rooted && meta.nearest {
-            return Err(format!(
-                "{at} return: {provider}.{source} has one instance; nearest has no effect"
-            ));
+        if !rooted
+            && let Some(problem) = crate::provider::one_instance_problem(
+                &format!("{provider}.{source}"),
+                &meta.invalidation,
+                meta.nearest,
+            )
+        {
+            return Err(format!("{at} return: {problem}"));
         }
         self.providers[provider]
             .validate(self.merges_by_default(provider))

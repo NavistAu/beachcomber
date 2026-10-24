@@ -405,6 +405,28 @@ pub fn watch_patterns(strategy: &InvalidationStrategy) -> Vec<String> {
         .collect()
 }
 
+/// What is wrong with a Source of one instance (no `root`, so the one at `~`)
+/// whose schedule is `invalidation` and `nearest`, in words for `subject`
+/// (`<provider>.<source>`); `None` when nothing is. The one instance has no
+/// directory a relative watch path could be resolved against, so it would
+/// watch nothing, silently; and there is no nearer instance for `nearest` to
+/// prefer.
+pub fn one_instance_problem(
+    subject: &str,
+    invalidation: &InvalidationStrategy,
+    nearest: bool,
+) -> Option<String> {
+    let relative = watch_patterns(invalidation);
+    if !relative.is_empty() {
+        let listed: Vec<String> = relative.iter().map(|p| format!("'{p}'")).collect();
+        return Some(format!(
+            "watch({}) is relative, but {subject} has one instance; use an absolute path",
+            listed.join(", ")
+        ));
+    }
+    nearest.then(|| format!("{subject} has one instance; nearest has no effect"))
+}
+
 /// Returns the absolute filesystem paths to watch for a Source's strategy.
 /// Sources are responsible for expanding `~` / `$XDG_*` in metadata() before
 /// the value reaches this helper.
