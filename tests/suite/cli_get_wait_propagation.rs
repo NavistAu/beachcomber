@@ -128,5 +128,9 @@ async fn multi_key_client_side_wait_true_re_executes_stale_entry() {
         name, "stale-seed",
         "wait=true on a stale entry must trigger re-execution; got {name:?}"
     );
-    assert_eq!(age_ms, 0, "wait re-execution must return age_ms=0");
+    // The seed is two seconds old; a re-execution is as old as this call took.
+    assert!(
+        age_ms < 1000,
+        "wait re-execution must return a fresh record, not the seed's age: {age_ms}ms"
+    );
 }
