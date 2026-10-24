@@ -11,7 +11,7 @@ use crate::provider::SourceMetadata;
 use crate::provider::config_source::{ConfigSourceSpec, ResultSpec};
 use crate::shape::decorators::{EngineDefaults, Recorded, record_return};
 use crate::shape::prototype::{Kind, Link, chain, effective, source_prototypes, super_chain};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
 /// A provider and the config Sources composed for it.
 #[derive(Debug, Clone)]
@@ -258,32 +258,6 @@ pub fn build(
         }
         if specs.is_empty() {
             continue;
-        }
-        // In the default `result` two Sources of a provider may not declare
-        // one field; an author who writes the merge has chosen an order.
-        let merges_by_default = crate::shape::provider::merges_by_default(providers, provider);
-        let mut owners: BTreeMap<String, String> = BTreeMap::new();
-        for m in existing.get(provider).into_iter().flatten() {
-            for f in m.fields.iter().filter(|f| !f.name.starts_with('<')) {
-                owners.insert(f.name.clone(), m.name.clone());
-            }
-        }
-        for spec in &specs {
-            let ResultSpec::Fields(pairs) = &spec.result else {
-                continue;
-            };
-            if !merges_by_default {
-                continue;
-            }
-            for (field, _) in pairs {
-                if let Some(prev) = owners.insert(field.clone(), spec.name.clone()) {
-                    err(format!(
-                        "provider '{provider}' field '{field}' is declared by both Source \
-                         '{prev}' and Source '{}'",
-                        spec.name
-                    ));
-                }
-            }
         }
         decls.push(ProviderDecl {
             name: provider.clone(),

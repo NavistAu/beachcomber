@@ -653,7 +653,7 @@ fn the_default_result_forbids_two_sources_declaring_one_field() {
     let errors = source_errors(SHARED_FIELD);
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
-        errors[0].contains("field 'x' is declared by both Source 'a' and Source 'b'"),
+        errors[0].contains("field 'x' declared by both source 'a' and source 'b'"),
         "{errors:?}"
     );
 }

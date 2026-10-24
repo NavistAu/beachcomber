@@ -50,7 +50,7 @@ use crate::provider::registry::ProviderRegistry;
 use crate::provider::source_call::{CallOutcome, Called, CalledRecord, called_in};
 use crate::provider::source_call::{Cold, source_call};
 use crate::shape::decorators::named_decorators;
-use crate::shape::prototype::{Kind, Link, chain, effective, super_chain};
+use crate::shape::prototype::{Kind, Link, chain, super_chain};
 use dashmap::DashSet;
 use libbeachcomber::engine::op_error;
 use libbeachcomber::eval::{single_tag_expression, undeclared_names};
@@ -82,15 +82,6 @@ pub fn is_disabled_in(providers: &toml::Table, name: &str) -> bool {
             .and_then(|p| p.get("enabled"))
             .and_then(toml::Value::as_bool)
             == Some(false)
-}
-
-/// Whether `name`'s `result` is the default merge of its Sources, under which
-/// two of them may not declare one field. The one answer for the load checks
-/// and the read: a disabled provider merges nothing.
-pub fn merges_by_default(providers: &toml::Table, name: &str) -> bool {
-    !is_disabled_in(providers, name)
-        && effective(&chain(providers, Kind::Provider, name, ""), "result")
-            .is_none_or(|line| line.as_str().is_some_and(is_default_result))
 }
 
 /// How many distinct render failures are remembered, so each is logged once. A
@@ -1797,26 +1788,24 @@ mod tests {
     }
 
     #[test]
-    fn the_merge_predicates_agree_for_a_disabled_provider() {
-        for text in [
-            "[demo]\nenabled = false",
-            "[demo]\nenabled = false\nresult = \"{{ merge(sources) }}\"",
-            "[demo]\nenabled = true",
-            "[demo]",
-            "[demo]\nresult = \"{{ {} }}\"",
+    fn a_disabled_provider_merges_nothing() {
+        for (text, default) in [
+            ("[demo]\nenabled = false", false),
+            (
+                "[demo]\nenabled = false\nresult = \"{{ merge(sources) }}\"",
+                false,
+            ),
+            ("[demo]\nenabled = true", true),
+            ("[demo]", true),
+            ("[demo]\nresult = \"{{ {} }}\"", false),
         ] {
-            let providers = over_shipped(text);
-            let lines = ProviderLines::new(&providers).unwrap();
+            let lines = ProviderLines::new(&over_shipped(text)).unwrap();
             assert_eq!(
-                merges_by_default(&providers, "demo"),
                 lines.chains_for("demo").result_is_default(),
+                default,
                 "{text}"
             );
         }
-        assert!(!merges_by_default(
-            &over_shipped("[demo]\nenabled = false"),
-            "demo"
-        ));
     }
 
     #[test]
