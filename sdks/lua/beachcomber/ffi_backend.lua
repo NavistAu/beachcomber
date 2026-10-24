@@ -76,9 +76,8 @@ end
 -- where a miss (`bc_resolve` of an address nothing is stored at) is a
 -- literal `"data":null`. Collapse that to Lua nil, the miss the Client
 -- documents. bc_eval shares the unwrap so the two ops agree on a top-level
--- null (a template rendering none is `""` by canon, so eval never actually
--- produces one); a null nested inside a rendered object stays json.NULL
--- like any other decoded value.
+-- null (a template rendering none is absent, the same nil); a null nested
+-- inside a rendered object stays json.NULL like any other decoded value.
 local function unwrap_resolve(env)
   if not env.ok then
     return { ok = false, error = env.error }

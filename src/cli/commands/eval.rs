@@ -50,10 +50,11 @@ pub fn run_eval(config: &Config, template: &str, path: &str) -> ExitCode {
     };
 
     match eval(template, &inputs, &mut session) {
+        // An absent value prints nothing, as a miss does for `comb get`.
         Ok(value) => {
             print!(
                 "{}",
-                libbeachcomber::render::render_data(Some(&value), "text")
+                libbeachcomber::render::render_data(value.as_ref(), "text")
             );
             ExitCode::SUCCESS
         }

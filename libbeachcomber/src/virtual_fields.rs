@@ -139,34 +139,34 @@ pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
 
 // ── Value conversion ──────────────────────────────────────────────────────────
 
-/// Convert a minijinja `Value` to a `serde_json::Value`.
+/// Convert the value a one-tag line evaluated to into the value it yields:
+/// the one rule the client's templates and the daemon's lines share.
 ///
 /// Preserves types: bool → bool, integer → number, string → string, map →
-/// object, sequence → array. UNDEFINED / None → empty string (all-falsy
-/// result, per canon `field_resolution.md` invariant 9: an all-empty cascade
-/// resolves to `""`).
-pub(crate) fn mj_to_json(v: MjValue) -> JsonValue {
+/// object, sequence → array. `none` and undefined are absent (`None`): null
+/// means absent, never `""`. A number JSON cannot hold (`1 / 0`) is an error.
+pub(crate) fn mj_to_json(v: MjValue) -> Result<Option<JsonValue>, String> {
     if v.is_undefined() || v.is_none() {
-        return JsonValue::String(String::new());
+        return Ok(None);
     }
     // Try bool first (minijinja booleans are distinct from strings).
     if v.kind() == minijinja::value::ValueKind::Bool
         && let Ok(b) = v.clone().try_into() as Result<bool, _>
     {
-        return JsonValue::Bool(b);
+        return Ok(Some(JsonValue::Bool(b)));
     }
     // Try integer.
     if v.kind() == minijinja::value::ValueKind::Number {
         if let Ok(n) = v.clone().try_into() as Result<i64, _> {
-            return JsonValue::Number(serde_json::Number::from(n));
+            return Ok(Some(JsonValue::Number(serde_json::Number::from(n))));
         }
         if let Ok(n) = v.clone().try_into() as Result<u64, _> {
-            return JsonValue::Number(serde_json::Number::from(n));
+            return Ok(Some(JsonValue::Number(serde_json::Number::from(n))));
         }
-        if let Ok(f) = v.clone().try_into() as Result<f64, _>
-            && let Some(n) = serde_json::Number::from_f64(f)
-        {
-            return JsonValue::Number(n);
+        if let Ok(f) = v.clone().try_into() as Result<f64, _> {
+            return serde_json::Number::from_f64(f)
+                .map(|n| Some(JsonValue::Number(n)))
+                .ok_or_else(|| format!("{v} is not a number JSON can hold"));
         }
     }
     // Structured values keep their shape: an interior node is an object and a
@@ -181,9 +181,8 @@ pub(crate) fn mj_to_json(v: MjValue) -> JsonValue {
             | minijinja::value::ValueKind::Iterable
     ) && let Ok(json) = serde_json::to_value(&v)
     {
-        return json;
+        return Ok(Some(json));
     }
-    // String fallback — also handles UNDEFINED that slipped through.
-    let s = v.to_string();
-    JsonValue::String(s)
+    // Strings, and anything else as its text.
+    Ok(Some(JsonValue::String(v.to_string())))
 }

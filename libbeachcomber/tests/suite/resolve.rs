@@ -670,7 +670,10 @@ fn exec_runs_in_the_template_form_too_and_is_refused_the_same_way() {
     let src = "prefix {{ exec(['printf', 'x']) }} suffix";
     let mut i = inputs(&env);
     i.allow_exec = true;
-    assert_eq!(eval(src, &i, &mut f).unwrap(), json!("prefix x suffix"));
+    assert_eq!(
+        eval(src, &i, &mut f).unwrap(),
+        Some(json!("prefix x suffix"))
+    );
     match eval(src, &inputs(&env), &mut f).unwrap_err() {
         ResolveError::Runtime(m) => {
             assert!(m.contains("exec() is disabled"), "unexpected message: {m}")
@@ -831,24 +834,47 @@ fn a_compile_failure_in_one_leaf_fails_the_whole_group_naming_the_leaf() {
 // ── 11. An all-empty cascade ──────────────────────────────────────────────────
 
 #[test]
-fn an_all_empty_cascade_is_the_empty_string_alone_and_in_a_group() {
+fn an_all_empty_cascade_is_absent_alone_and_in_a_group() {
+    // Null means absent, never `""`: the daemon's lines read it the same way.
     let env = spec_env();
     let empty = "{{ env.NOPE or comb.nothing.here }}";
     let mut f = MapFetch::default();
     f.seed("k.empty", Some(CWD), tmpl(json!(empty))).seed(
         "k",
         Some(CWD),
-        tmpl(json!({ "empty": empty })),
+        both(
+            json!({ "empty": "cached" }),
+            json!({ "empty": empty, "set": "{{ 'x' }}" }),
+        ),
     );
 
-    assert_eq!(
-        resolve("k.empty", &inputs(&env), &mut f),
-        Ok(Some(json!("")))
-    );
+    assert_eq!(resolve("k.empty", &inputs(&env), &mut f), Ok(None));
     assert_eq!(
         resolve("k", &inputs(&env), &mut f),
-        Ok(Some(json!({ "empty": "" })))
+        Ok(Some(json!({ "set": "x" }))),
+        "an absent leaf is omitted, and nothing cached shows through it"
     );
+}
+
+#[test]
+fn none_is_absent_and_text_around_it_is_a_string() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    assert_eq!(eval("{{ none }}", &inputs(&env), &mut f), Ok(None));
+    assert_eq!(
+        eval("on {{ none }}", &inputs(&env), &mut f),
+        Ok(Some(json!("on ")))
+    );
+}
+
+#[test]
+fn a_number_json_cannot_hold_is_an_error() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    match eval("{{ 1 / 0 }}", &inputs(&env), &mut f) {
+        Err(ResolveError::Runtime(m)) => assert!(m.contains("inf"), "unexpected message: {m}"),
+        other => panic!("expected a runtime error, got {other:?}"),
+    }
 }
 
 // ── 11a. What a ref binds ─────────────────────────────────────────────────────
@@ -868,27 +894,30 @@ fn a_whole_provider_object_wins_over_a_disagreeing_cache_field() {
     let i = inputs(&env);
 
     // The field ref alone: nothing to override it, so its own value stands.
-    assert_eq!(eval("{{ comb.p.f }}", &i, &mut f).unwrap(), json!("field"));
+    assert_eq!(
+        eval("{{ comb.p.f }}", &i, &mut f).unwrap(),
+        Some(json!("field"))
+    );
     // Both refs, written in either order: the object supplies `f`.
     assert_eq!(
         eval("{{ comb.p.f or comb.p }}", &i, &mut f).unwrap(),
-        json!("whole")
+        Some(json!("whole"))
     );
     assert_eq!(
         eval("{{ comb.p and comb.p.f }}", &i, &mut f).unwrap(),
-        json!("whole")
+        Some(json!("whole"))
     );
     // …and the object itself is not damaged by the field binding.
     assert_eq!(
         eval("{{ comb.p.f and comb.p }}", &i, &mut f).unwrap(),
-        json!({ "f": "whole" })
+        Some(json!({ "f": "whole" }))
     );
 
     // A field the object does not carry is still filled in by its own ref.
     f.seed("p", Some(CWD), data(json!({ "other": 1 })));
     assert_eq!(
         eval("{{ comb.p.f or comb.p }}", &i, &mut f).unwrap(),
-        json!("field")
+        Some(json!("field"))
     );
 }
 
@@ -914,12 +943,20 @@ fn a_miss_binds_nothing_so_default_fires_at_any_depth() {
             "|FB",
         ),
         (r#"{{ p.f }}|{{ p | default("FB") }}"#, "|FB"),
-        ("{{ probe.missing.sub }}", ""),
         ("[{{ probe.missing.sub }}]", "[]"),
         (r#"{{ probe.missing.sub or "next" }}"#, "next"),
     ] {
-        assert_eq!(eval(src, &i, &mut f).unwrap(), json!(want), "src: {src}");
+        assert_eq!(
+            eval(src, &i, &mut f).unwrap(),
+            Some(json!(want)),
+            "src: {src}"
+        );
     }
+    assert_eq!(
+        eval("{{ probe.missing.sub }}", &i, &mut f).unwrap(),
+        None,
+        "alone, a chain through a miss is absent"
+    );
 
     // A hit still binds, and the map it creates is the real one — the
     // whole-provider ref sees the field that hit, not a placeholder.
@@ -935,7 +972,7 @@ fn a_miss_binds_nothing_so_default_fires_at_any_depth() {
             &mut f
         )
         .unwrap(),
-        json!(r#"V|{"f": "V"}"#)
+        Some(json!(r#"V|{"f": "V"}"#))
     );
 
     // A resolved hit lands beside a resolved miss on the same provider: the
@@ -948,7 +985,7 @@ fn a_miss_binds_nothing_so_default_fires_at_any_depth() {
             &mut f
         )
         .unwrap(),
-        json!("V/FB")
+        Some(json!("V/FB"))
     );
 }
 
@@ -982,23 +1019,23 @@ fn the_single_tag_form_keeps_structured_shapes() {
     let i = inputs(&env);
     assert_eq!(
         eval("{{ comb.p }}", &i, &mut f).unwrap(),
-        json!({ "a": 1, "b": "two" })
+        Some(json!({ "a": 1, "b": "two" }))
     );
     assert_eq!(
         eval("{{ [1, comb.p] }}", &i, &mut f).unwrap(),
-        json!([1, { "a": 1, "b": "two" }])
+        Some(json!([1, { "a": 1, "b": "two" }]))
     );
     assert_eq!(
         eval("{{ {'a': 1} | items }}", &i, &mut f).unwrap(),
-        json!([["a", 1]])
+        Some(json!([["a", 1]]))
     );
     assert_eq!(
         eval("{{ [1, 2] | reverse }}", &i, &mut f).unwrap(),
-        json!([2, 1])
+        Some(json!([2, 1]))
     );
     assert!(matches!(
         eval("p={{ comb.p }}", &i, &mut f).unwrap(),
-        Value::String(_)
+        Some(Value::String(_))
     ));
 }
 
@@ -1017,14 +1054,23 @@ fn a_statement_tag_template_renders_over_a_template_ref_and_a_data_ref() {
     .seed("git.dirty", Some(CWD), data(json!(true)));
 
     let env = spec_env();
-    assert_eq!(eval(src, &inputs(&env), &mut f).unwrap(), json!("main*"));
+    assert_eq!(
+        eval(src, &inputs(&env), &mut f).unwrap(),
+        Some(json!("main*"))
+    );
 
     f.seed("git.dirty", Some(CWD), data(json!(false)));
-    assert_eq!(eval(src, &inputs(&env), &mut f).unwrap(), json!("main"));
+    assert_eq!(
+        eval(src, &inputs(&env), &mut f).unwrap(),
+        Some(json!("main"))
+    );
 
     // The env arm inside the referenced template still wins.
     let env = env_of(&[("BRANCH", "feature")]);
-    assert_eq!(eval(src, &inputs(&env), &mut f).unwrap(), json!("feature"));
+    assert_eq!(
+        eval(src, &inputs(&env), &mut f).unwrap(),
+        Some(json!("feature"))
+    );
 }
 
 // ── 13. A transport failure ───────────────────────────────────────────────────
@@ -1103,7 +1149,7 @@ fn eval_of_a_ref_equals_resolving_that_key() {
     let mut f = spec_fetch();
     assert_eq!(
         eval("{{ scanline.widgets.foo }}", &inputs(&env), &mut f).unwrap(),
-        json!("hi")
+        Some(json!("hi"))
     );
 }
 
@@ -1149,11 +1195,11 @@ fn a_ref_past_a_template_walks_into_what_it_renders() {
     // a ref to it takes the same walk `resolve` does.
     assert_eq!(
         eval("{{ scanline.stats.cpu }}", &inputs(&env), &mut f).unwrap(),
-        json!(40)
+        Some(json!(40))
     );
     assert_eq!(
         eval("{{ scanline.stats.cpu + 2 }}", &inputs(&env), &mut f).unwrap(),
-        json!(42)
+        Some(json!(42))
     );
 }
 
@@ -1163,12 +1209,15 @@ fn eval_of_tagless_text_is_that_text() {
     let mut f = spec_fetch();
     assert_eq!(
         eval("hello", &inputs(&env), &mut f).unwrap(),
-        json!("hello")
+        Some(json!("hello"))
     );
     // An empty source is a template of no tags — `-f ''` asks for exactly
     // this — and whitespace-only is literal text that survives.
-    assert_eq!(eval("", &inputs(&env), &mut f).unwrap(), json!(""));
-    assert_eq!(eval("   ", &inputs(&env), &mut f).unwrap(), json!("   "));
+    assert_eq!(eval("", &inputs(&env), &mut f).unwrap(), Some(json!("")));
+    assert_eq!(
+        eval("   ", &inputs(&env), &mut f).unwrap(),
+        Some(json!("   "))
+    );
     assert!(f.log.is_empty());
 }
 

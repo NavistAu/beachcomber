@@ -218,10 +218,10 @@ fn bc_resolve_comb_ref_template() {
 }
 
 /// A cascade `env.X or comb.p.f` takes the env term when present and falls
-/// through when absent; a total miss yields `""`, not an error and not a
-/// miss (canon invariant 9).
+/// through when absent; a total miss is absent (`data: null`), not an error
+/// and not `""`.
 #[test]
-fn bc_resolve_env_or_cache_cascade_falls_through_to_empty_string_on_miss() {
+fn bc_resolve_env_or_cache_cascade_is_absent_on_a_total_miss() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     put(
@@ -240,7 +240,7 @@ fn bc_resolve_env_or_cache_cascade_falls_through_to_empty_string_on_miss() {
     assert_eq!(hit(&v), &serde_json::json!("prod-env"));
 
     let v = resolve(client, "myapp.workspace", "/tmp", None);
-    assert_eq!(hit(&v), &serde_json::json!(""));
+    assert_eq!(hit(&v), &serde_json::Value::Null);
 
     unsafe { bc_client_free(client) };
 }
@@ -299,7 +299,7 @@ fn path_scoped_ref_resolves_at_cwd() {
     );
     assert_eq!(
         hit(&eval(client, "{{ pp.f }}", b, None)),
-        &serde_json::json!("")
+        &serde_json::Value::Null
     );
     assert_eq!(
         hit(&resolve(client, "myprov.myfield", a, None)),
@@ -307,7 +307,7 @@ fn path_scoped_ref_resolves_at_cwd() {
     );
     assert_eq!(
         hit(&resolve(client, "myprov.myfield", b, None)),
-        &serde_json::json!("")
+        &serde_json::Value::Null
     );
 
     unsafe { bc_client_free(client) };
@@ -329,6 +329,10 @@ fn bc_eval_single_tag_is_typed_and_a_template_is_a_string() {
 
     let v = eval(client, "{{ 1 + 1 }} apples", "/tmp", None);
     assert_eq!(hit(&v), &serde_json::json!("2 apples"));
+
+    // A single tag whose value is `none` is absent, as a miss is.
+    let v = eval(client, "{{ none }}", "/tmp", None);
+    assert_eq!(hit(&v), &serde_json::Value::Null);
 
     unsafe { bc_client_free(client) };
 }

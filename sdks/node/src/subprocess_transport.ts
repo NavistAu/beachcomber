@@ -176,8 +176,8 @@ function freshness(node: unknown): { ageMs: number; stale: boolean } {
  * miss; with another `Error querying <key>: ` line it is that refusal, in
  * the daemon's words. Exit 2 with a null value slot and no such line is the
  * resolver's own error — a template that does not compile, a cycle, a
- * failed `exec()` — which the CLI prints as `<key>: <msg>`; a rendered value
- * is never null (a missing ref renders `""`), so that slot is never a hit.
+ * failed `exec()` — which the CLI prints as `<key>: <msg>`; an absent
+ * rendered value is the CLI's miss line, so that slot is never a hit.
  * Exit 2 with the value slot filled is a rendered value whose `:cache` slot
  * missed on its own — a hit with age 0.
  */

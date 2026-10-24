@@ -330,7 +330,7 @@ Evaluate a value expression against cached provider data, resolving every refere
 
 A value expression is written in one of two forms:
 
-- **Single tag** — exactly one `{{ expr }}` spanning the whole argument apart from surrounding whitespace (`'{{ git.dirty }} '` is still a single tag): keeps the expression's natural type (bool, number, object, …).
+- **Single tag** — exactly one `{{ expr }}` spanning the whole argument apart from surrounding whitespace (`'{{ git.dirty }} '` is still a single tag): keeps the expression's natural type (bool, number, object, …). A `none` or undefined value is absent: `comb e` prints nothing, and `bc_eval` and every SDK's `eval` give null, as for a miss.
 - **Template** — literal text and/or more than one tag: always string-valued. A source with no tags at all is a template too — it renders to its own literal text.
 
 ```sh

@@ -193,11 +193,12 @@ pub fn deps(
 /// `comb eval` / `bc_eval`: render a source that is not stored anywhere,
 /// every ref resolved as it would be inside a stored template — so
 /// `comb eval '{{ p.f }}'` and `comb get p.f` agree by construction.
+/// `Ok(None)` is absent, as for [`resolve`].
 pub fn eval(
     src: &str,
     inputs: &Inputs<'_>,
     fetch: &mut dyn Fetch,
-) -> Result<JsonValue, ResolveError> {
+) -> Result<Option<JsonValue>, ResolveError> {
     Resolver::new(inputs, fetch).render(src, "<eval>")
 }
 
@@ -258,8 +259,8 @@ impl<'a> Resolver<'a> {
             Some(JsonValue::String(t)) => {
                 let value = self.render(&t, key)?;
                 Ok(match got.rest {
-                    Some(rest) => walk(value, &rest),
-                    None => Some(value),
+                    Some(rest) => value.and_then(|v| walk(v, &rest)),
+                    None => value,
                 })
             }
             // A group. Every string leaf renders, the shape is kept, and the
@@ -315,15 +316,16 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Render one template source, as the node addressed by `key`.
-    fn render(&mut self, src: &str, key: &str) -> Result<JsonValue, ResolveError> {
+    /// Render one template source, as the node addressed by `key`. `Ok(None)`
+    /// is absent: a one-tag source whose value is `none` or undefined.
+    fn render(&mut self, src: &str, key: &str) -> Result<Option<JsonValue>, ResolveError> {
         self.push(key)?;
         let rendered = self.render_frame(src, key);
         self.stack.pop();
         rendered
     }
 
-    fn render_frame(&mut self, src: &str, key: &str) -> Result<JsonValue, ResolveError> {
+    fn render_frame(&mut self, src: &str, key: &str) -> Result<Option<JsonValue>, ResolveError> {
         let context = self.bind(&discover_refs(src))?;
         // The two forms of `crate::eval::classify`: exactly one `{{ expr }}`
         // takes the typed path, everything else (literal text included)
@@ -339,14 +341,14 @@ impl<'a> Resolver<'a> {
                     .map_err(|e| {
                         ResolveError::Runtime(format!("{key}: expression eval error: {e}"))
                     })?;
-                // An all-empty cascade is `""` — `mj_to_json` maps an
-                // undefined or none result onto it (canon invariant 9).
-                Ok(mj_to_json(value))
+                // A `none` or undefined result is absent, as in the daemon's
+                // lines.
+                mj_to_json(value).map_err(|e| ResolveError::Runtime(format!("{key}: {e}")))
             }
             // A source that does not compile is someone's to go and fix; a
             // failure while rendering is the moment's.
             None => render_template_with(src, &context, self.engine.clone())
-                .map(JsonValue::String)
+                .map(|s| Some(JsonValue::String(s)))
                 .map_err(|e| {
                     let message = format!("{key}: {e}");
                     match e {
@@ -387,13 +389,14 @@ impl<'a> Resolver<'a> {
             match node {
                 JsonValue::String(src) => {
                     match self.render(src, &leaf) {
-                        Ok(value) => {
+                        Ok(Some(value)) => {
                             out.insert(name.clone(), value);
                         }
-                        // A leaf that failed at render time is omitted; one
-                        // that does not compile, cycles or could not be
-                        // fetched fails the whole query, already named.
-                        Err(ResolveError::Runtime(_)) => {}
+                        // An absent leaf, or one that failed at render time,
+                        // is omitted; one that does not compile, cycles or
+                        // could not be fetched fails the whole query, already
+                        // named.
+                        Ok(None) | Err(ResolveError::Runtime(_)) => {}
                         Err(e) => return Err(e),
                     }
                 }

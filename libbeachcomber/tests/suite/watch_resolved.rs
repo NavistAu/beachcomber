@@ -66,19 +66,20 @@ fn value(outcome: Result<WatchOutcome, WatchError>) -> Option<Value> {
     }
 }
 
-/// Drive `w` until it emits `expected`. An intermediate emission is allowed —
-/// a template swapped for one whose refs are not there yet resolves to `""`
-/// on its way — but a timeout, an EOF or an error is a failure.
-fn wait_for(w: &mut ResolvedWatch<'_>, expected: Value) {
+/// Drive `w` until it emits `expected` (`None`: absent). An intermediate
+/// emission is allowed — a template swapped for one whose refs are not there
+/// yet is absent on its way — but a timeout, an EOF or an error is a failure.
+fn wait_for(w: &mut ResolvedWatch<'_>, expected: impl Into<Option<Value>>) {
+    let expected = expected.into();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match w.next(Some(SOON)) {
-            Ok(WatchOutcome::Value(Some(v))) if v == expected => return,
+            Ok(WatchOutcome::Value(v)) if v == expected => return,
             Ok(WatchOutcome::Value(v)) => assert!(
                 Instant::now() < deadline,
-                "watch never emitted {expected}; last emission was {v:?}"
+                "watch never emitted {expected:?}; last emission was {v:?}"
             ),
-            other => panic!("expected {expected}, got {other:?}"),
+            other => panic!("expected {expected:?}, got {other:?}"),
         }
     }
 }
@@ -223,7 +224,7 @@ fn subscriptions_follow_the_deps() {
             None,
         )
         .expect("repoint the template");
-    wait_for(&mut w, json!(""));
+    wait_for(&mut w, None);
     assert_eq!(
         w.deps(),
         [

@@ -404,7 +404,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
             match resolve::eval(template, &resolve.inputs(), &mut fetch) {
                 Ok(v) => CanonicalResponse {
                     ok: true,
-                    data: Some(v),
+                    data: v,
                     data_as_text: None,
                     age_ms: None,
                     stale: None,

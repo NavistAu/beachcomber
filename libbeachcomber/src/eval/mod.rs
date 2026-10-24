@@ -235,9 +235,9 @@ pub fn render_none_as_empty(env: &mut Environment<'_>) {
 
 /// Evaluate one line against `context` (a JSON object of the line's
 /// top-level names) in `env`: exactly one `{{ }}` keeps its expression's type,
-/// converted the way the client converts it; any other mix is a string with
-/// `none` printed as nothing; text with no tags is literal. A `none` or
-/// undefined result is `Ok(None)`: absent. The caller installs
+/// converted the way the client's templates convert it; any other mix is a
+/// string with `none` printed as nothing; text with no tags is literal. A
+/// `none` or undefined result is `Ok(None)`: absent. The caller installs
 /// [`render_none_as_empty`] when it builds `env`. Errors are messages; they
 /// never include the context.
 pub fn eval_line(
@@ -252,10 +252,7 @@ pub fn eval_line(
                 .compile_expression(expr)
                 .and_then(|compiled| compiled.eval(context))
                 .map_err(|e| e.to_string())?;
-            if value.is_undefined() || value.is_none() {
-                return Ok(None);
-            }
-            Ok(Some(crate::virtual_fields::mj_to_json(value)))
+            crate::virtual_fields::mj_to_json(value)
         }
         None => env
             .render_str(src, context)
@@ -456,6 +453,12 @@ mod line_tests {
             run("{{ d }}", json!({"d": {"a": [1, "x"]}})).unwrap(),
             Some(json!({"a": [1, "x"]}))
         );
+    }
+
+    #[test]
+    fn a_number_json_cannot_hold_is_an_error() {
+        let err = run("{{ 1 / 0 }}", json!({})).unwrap_err();
+        assert!(err.contains("inf"), "unexpected message: {err}");
     }
 
     #[test]

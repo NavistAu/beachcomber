@@ -362,7 +362,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   local comb_bin = built_comb()
   local live_tests = {
     "resolve of a missing key is nil with no Error",
-    "eval rendering none is the empty string, not the null sentinel",
+    "eval rendering none is nil, not the null sentinel",
     "resolve renders a put template",
     "refresh of a static namespace is the daemon's words alone",
     "a miss carries age 0 and stale false, not the null sentinel",
@@ -390,11 +390,11 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
       end)
 
       test(live_tests[2], function()
-        -- Canon: a missing ref is falsy and renders "" — a string, never
-        -- a top-level null (and so never json.NULL through the binding).
+        -- A template rendering none is absent: nil, as a miss is, and
+        -- never json.NULL through the binding.
         local value, err = c:eval("{{ none }}", { cwd = "/tmp" })
         assert_nil(err)
-        assert_eq(value, "")
+        assert_nil(value)
       end)
 
       test(live_tests[3], function()

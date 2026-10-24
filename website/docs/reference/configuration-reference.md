@@ -248,11 +248,11 @@ bar = "{{ comb.git.branch | truncate(12) }}"
 
 | Written as | Evaluates to | Example |
 |---|---|---|
-| exactly one `{{ expr }}` tag | the expression's natural type | `"{{ env.OP_SERVICE_ACCOUNT_TOKEN != '' }}"` → a bool |
-| literal text and/or more than one tag | a string | `"{{ git.branch }}{% if git.dirty %}*{% endif %}"` → `main*` |
+| exactly one `{{ expr }}` tag | the expression's natural type; `none` or undefined is absent | `"{{ env.OP_SERVICE_ACCOUNT_TOKEN != '' }}"` → a bool |
+| literal text and/or more than one tag | a string, `none` printing as nothing | `"{{ git.branch }}{% if git.dirty %}*{% endif %}"` → `main*` |
 | no tags at all | its own literal text | `"env.HOME"` → the string `env.HOME` |
 
-Inside an expression, `comb.<provider>.<field>` is the raw cached value; `<provider>.<field>` is that field as `comb get` would resolve it (templates included, recursively, cycle-detected); `env.X` is the caller's environment. A missing ref is undefined and falsy. Filters: minijinja's built-ins plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson`; the engine's `merge`, `map` over objects, `pluck`, `dirname`, `fromini`, `read`, `lup` and `exec` render on the client too, while `url` and `plugin` exist only on the daemon.
+Inside an expression, `comb.<provider>.<field>` is the raw cached value; `<provider>.<field>` is that field as `comb get` would resolve it (templates included, recursively, cycle-detected); `env.X` is the caller's environment. A missing ref is undefined and falsy. A leaf whose single tag yields `none` or undefined (`"{{ env.MYAPP_ENV or comb.myappcache.workspace }}"` with neither set) is absent, never `""`: `comb get` of it is a miss and a group read omits it, as in the daemon's own lines. A number JSON cannot hold (`{{ 1 / 0 }}`) is a runtime error. Filters: minijinja's built-ins plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson`; the engine's `merge`, `map` over objects, `pluck`, `dirname`, `fromini`, `read`, `lup` and `exec` render on the client too, while `url` and `plugin` exist only on the daemon.
 
 **Errors.** A template that does not compile, or a cycle, is a configuration error: a single-leaf query fails, and a namespace query fails naming the leaf (`comb g scanline` exits 2 with `scanline.widgets.foo: …`). A runtime failure — a failed or disabled `exec()` — fails a single-leaf query but is omitted from a namespace object.
 

@@ -543,7 +543,9 @@ pub unsafe extern "C" fn bc_resolve(
 /// `{{ expr }}` tag keeps the expression's natural type; anything else
 /// (literal text, several tags, a source with no tags at all) is a string.
 /// A missing ref — an absent `env.*`, a daemon miss, a key the daemon
-/// rejects — is falsy at any depth, not an error.
+/// rejects — is falsy at any depth, not an error. A one-tag source whose
+/// value is `none` or undefined is absent: `data: null`, as a miss is for
+/// [`bc_resolve`].
 ///
 /// `cwd`, `env_json` and `exec()` behave as for [`bc_resolve`].
 ///
@@ -572,7 +574,10 @@ pub unsafe extern "C" fn bc_eval(
             allow_exec: c.allow_exec(),
         };
         let mut fetch = ClientFetch::new(c);
-        resolve::eval(template_str, &inputs, &mut fetch).map_err(|e| resolve_error(e, &mut fetch))
+        match resolve::eval(template_str, &inputs, &mut fetch) {
+            Ok(value) => Ok(value.unwrap_or(serde_json::Value::Null)),
+            Err(e) => Err(resolve_error(e, &mut fetch)),
+        }
     })
 }
 
