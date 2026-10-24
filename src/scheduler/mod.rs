@@ -821,27 +821,30 @@ impl Scheduler {
             Some(interval) => FsWatcher::new_polling(interval),
             None => FsWatcher::new(),
         };
-        let (mut fs_watcher, mut fs_rx) = match watcher {
-            Ok(pair) => pair,
+        // Without a watcher the loop still serves demand, polls and reloads;
+        // nothing is watched, and `_idle_events` keeps the event channel open
+        // and silent.
+        let (mut fs_watcher, mut fs_rx, _idle_events) = match watcher {
+            Ok((watcher, rx)) => (Some(watcher), rx, None),
             Err(e) => {
                 warn!(
                     "Failed to create filesystem watcher: {}. Watch triggers disabled.",
                     e
                 );
-                // Create a channel that never receives to allow the rest of the loop to work.
-                let (_tx, rx) = mpsc::channel::<Vec<PathBuf>>(1);
-                drop(e);
-                return self.run_without_watcher(rx).await;
+                let (tx, rx) = mpsc::channel::<Vec<PathBuf>>(1);
+                (None, rx, Some(tx))
             }
         };
-        let mut watch_backend = if self.polling_watcher.is_some() {
-            crate::watcher::WatchBackend::Polling
-        } else {
-            crate::watcher::WatchBackend::Native
-        };
+        let mut watch_backend = fs_watcher.as_ref().map(|_| {
+            if self.polling_watcher.is_some() {
+                crate::watcher::WatchBackend::Polling
+            } else {
+                crate::watcher::WatchBackend::Native
+            }
+        });
 
         let mut self_test_rx: Option<tokio::sync::oneshot::Receiver<bool>> =
-            if self.run_watch_self_test {
+            if self.run_watch_self_test && fs_watcher.is_some() {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 tokio::spawn(async move {
                     let ok = crate::watcher::self_test_native_backend(
@@ -896,7 +899,7 @@ impl Scheduler {
                         Some(SchedulerMessage::Reload { next, registry }) => {
                             let watches = self.reload(next, &registry, &mut lifecycle);
                             for key in &watches.drop {
-                                drop_watches_for_key(key, &mut watch_paths, &mut fs_watcher);
+                                drop_watches_for_key(key, &mut watch_paths, fs_watcher.as_mut());
                             }
                             for key in &watches.rewatch {
                                 let Some(sm) = self.registry.source_metadata(&key.provider, &key.source) else {
@@ -923,7 +926,7 @@ impl Scheduler {
                                 &lifecycle,
                                 &watch_paths,
                                 &self.in_flight,
-                                watch_backend.as_str(),
+                                watch_backend.map_or("disabled", |b| b.as_str()),
                             );
                             let _ = reply.send(status);
                         }
@@ -1047,9 +1050,9 @@ impl Scheduler {
                                         warn!("failed to re-register watch on {path:?}: {e}");
                                     }
                                 }
-                                fs_watcher = poll_watcher;
+                                fs_watcher = Some(poll_watcher);
                                 fs_rx = poll_rx;
-                                watch_backend = crate::watcher::WatchBackend::Polling;
+                                watch_backend = Some(crate::watcher::WatchBackend::Polling);
                             }
                             Err(e) => {
                                 warn!(
@@ -1083,7 +1086,7 @@ impl Scheduler {
                     }
 
                     for key in &actions.watch_drops {
-                        drop_watches_for_key(key, &mut watch_paths, &mut fs_watcher);
+                        drop_watches_for_key(key, &mut watch_paths, fs_watcher.as_mut());
                     }
 
                     for key in &actions.evictions {
@@ -1095,161 +1098,7 @@ impl Scheduler {
                         // only when its last source evicts (canon: lifecycle is keyed
                         // per (provider, path, source)).
                         on_evicted(&self.cache, &self.registry, key);
-                        drop_watches_for_key(key, &mut watch_paths, &mut fs_watcher);
-                    }
-
-                    for (key, new_state) in &actions.transitions {
-                        debug!("lifecycle: key {:?} -> {:?}", key, new_state);
-                    }
-
-                    // Idle shutdown.
-                    if let Some(idle_secs) = idle_shutdown_secs
-                        && self.cache.is_empty()
-                        && lifecycle.is_empty()
-                        && last_activity.elapsed().as_secs() >= idle_secs
-                    {
-                        info!("Idle shutdown: no entries, idle for {}s", idle_secs);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    /// Fallback run loop when FsWatcher creation fails — no watch support.
-    async fn run_without_watcher(mut self, mut _dummy_rx: mpsc::Receiver<Vec<PathBuf>>) {
-        // Lifecycle registry: replaces the three old maps (demand, backoff, poll_states).
-        let mut lifecycle = LifecycleRegistry::new();
-
-        let mut tick = interval(Duration::from_secs(1));
-
-        // Periodic GC tick to remove dead channel entries from WatcherRegistry.
-        let mut gc_tick = Self::gc_tick_for_prod().await;
-
-        // Idle shutdown tracking.
-        let mut last_activity = Instant::now();
-        let idle_shutdown_secs = self.config.daemon().idle_shutdown_secs;
-
-        loop {
-            tokio::select! {
-                msg = self.rx.recv() => {
-                    match msg {
-                        None | Some(SchedulerMessage::Shutdown) => break,
-                        Some(SchedulerMessage::Refresh { provider, instances }) => {
-                            self.refresh_sources(&provider, &instances);
-                            last_activity = Instant::now();
-                        }
-                        Some(SchedulerMessage::PutWritten { provider, path, node, ttl_secs }) => {
-                            apply_put_written(&mut lifecycle, &provider, path.as_deref(), &node, ttl_secs, Instant::now());
-                            last_activity = Instant::now();
-                        }
-                        Some(SchedulerMessage::Reload { next, registry }) => {
-                            // No watches to drop or register in the no-watcher path.
-                            self.reload(next, &registry, &mut lifecycle);
-                            last_activity = Instant::now();
-                        }
-                        Some(SchedulerMessage::FsEvent { .. }) => {
-                            // No-op without watcher.
-                        }
-                        Some(SchedulerMessage::GetStatus { reply }) => {
-                            let empty_watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
-                            let status = build_status(
-                                &lifecycle,
-                                &empty_watch_paths,
-                                &self.in_flight,
-                                "disabled",
-                            );
-                            let _ = reply.send(status);
-                        }
-                        Some(SchedulerMessage::GetFailureStates { reply }) => {
-                            let snap: HashMap<lifecycle::Key, FailureSnapshot> = self
-                                .failure_counts
-                                .lock()
-                                .unwrap()
-                                .iter()
-                                .filter_map(|(key, state)| {
-                                    if state.consecutive_failures == 0 {
-                                        return None;
-                                    }
-                                    Some((
-                                        key.clone(),
-                                        FailureSnapshot {
-                                            consecutive_failures: state.consecutive_failures,
-                                            suppressed_until_unix_ms: state
-                                                .suppressed_until
-                                                .map(instant_to_unix_ms),
-                                        },
-                                    ))
-                                })
-                                .collect();
-                            let _ = reply.send(snap);
-                        }
-                        Some(SchedulerMessage::GetLifecycleSnapshots { reply }) => {
-                            let now = Instant::now();
-                            let map: HashMap<lifecycle::Key, LifecycleSnapshot> = lifecycle
-                                .iter()
-                                .map(|(k, entry)| (k.clone(), snapshot_entry(k, entry, now)))
-                                .collect();
-                            let _ = reply.send(map);
-                        }
-                        Some(SchedulerMessage::QueryActivity { provider, instances }) => {
-                            let now = Instant::now();
-                            // A demand for an instance is a demand for the
-                            // instances it calls.
-                            let demanded = self.registry.with_callees(&provider, &instances);
-                            for (provider, instance) in &demanded {
-                                let Some(sm) = self.registry.source_metadata(provider, &instance.source) else {
-                                    continue;
-                                };
-                                let root = instance.root.clone();
-                                let key = lifecycle::Key {
-                                    provider: provider.clone(),
-                                    path: root.clone(),
-                                    source: sm.name.clone(),
-                                    node: String::new(),
-                                };
-                                let cfg = source_lifecycle_config(&self.cache, provider, root.as_deref(), sm);
-                                let outcome = lifecycle.on_demand(key.clone(), cfg, now);
-
-                                // No filesystem watching in this path.
-                                let _ = outcome.watch_registration;
-
-                                if matches!(outcome.transition, StateTransition::NewlyActive)
-                                    && self.cache.get_source(provider, root.as_deref(), &sm.name).is_none() {
-                                        self.execute_source(provider, &sm.name, root.as_deref());
-                                    }
-                            }
-                            last_activity = now;
-                        }
-                    }
-                }
-                // Periodic GC: remove dead broadcast channel entries.
-                _ = gc_tick.tick() => {
-                    self.watchers.gc();
-                }
-                _ = tick.tick() => {
-                    self.heartbeat.fetch_add(1, Ordering::Relaxed);
-                    let actions = lifecycle.tick_holding(Instant::now(), &self.registry.callers_of());
-
-                    for key in &actions.polls_due {
-                        if key.source == crate::cache::PUT_SOURCE {
-                            // A put's poll is its expiry clock; nothing to run.
-                            continue;
-                        }
-                        self.execute_source(&key.provider, &key.source, key.path.as_deref());
-                    }
-
-                    // No watches to drop in the no-watcher path.
-
-                    for key in &actions.evictions {
-                        debug!(
-                            "Evicting source provider={} path={:?} source={}",
-                            key.provider, key.path, key.source
-                        );
-                        // Evict only this source's contribution; the entry is removed
-                        // only when its last source evicts (canon: lifecycle is keyed
-                        // per (provider, path, source)).
-                        on_evicted(&self.cache, &self.registry, key);
+                        drop_watches_for_key(key, &mut watch_paths, fs_watcher.as_mut());
                     }
 
                     for (key, new_state) in &actions.transitions {
@@ -1289,13 +1138,15 @@ impl Scheduler {
 /// Register the watches of one instance of `provider`'s Source `sm` at `root`
 /// ([`instance_watches`]), and hand the watcher back.
 async fn watch_instance(
-    mut fs_watcher: FsWatcher,
+    fs_watcher: Option<FsWatcher>,
     watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
     registry: &ProviderRegistry,
     provider: &str,
     sm: &crate::provider::SourceMetadata,
     root: Option<&str>,
-) -> FsWatcher {
+) -> Option<FsWatcher> {
+    // No watcher, nothing to watch with.
+    let mut fs_watcher = fs_watcher?;
     let src = registry.source(provider, &sm.name);
     for (watch_path, sub) in instance_watches(provider, sm, root, src.as_deref()) {
         let (returned_watcher, registered) =
@@ -1308,7 +1159,7 @@ async fn watch_instance(
             );
         }
     }
-    fs_watcher
+    Some(fs_watcher)
 }
 
 /// The watches an instance of a Source registers when it is first requested:
@@ -1622,7 +1473,7 @@ fn resolve_keys_from_paths(
 fn drop_watches_for_key(
     key: &lifecycle::Key,
     watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
-    fs_watcher: &mut FsWatcher,
+    mut fs_watcher: Option<&mut FsWatcher>,
 ) {
     let mut paths_to_unwatch = Vec::new();
     for (watch_path, subscriptions) in watch_paths.iter_mut() {
@@ -1639,7 +1490,9 @@ fn drop_watches_for_key(
     }
     for wp in paths_to_unwatch {
         watch_paths.remove(&wp);
-        let _ = fs_watcher.unwatch(&wp);
+        if let Some(fs_watcher) = fs_watcher.as_deref_mut() {
+            let _ = fs_watcher.unwatch(&wp);
+        }
         debug!("Unwatched path {:?} (no subscriptions remaining)", wp);
     }
 }
