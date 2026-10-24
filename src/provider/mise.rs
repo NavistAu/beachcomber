@@ -50,6 +50,7 @@ fn filter_tools(
         .as_object()
         .ok_or_else(|| "mise: output is not an object".to_string())?;
 
+    let global_dir = canonical(Some(Path::new(global_config_dir)));
     let mut global: HashMap<String, Value> = HashMap::new();
     let mut project: HashMap<String, Value> = HashMap::new();
     for (tool_name, versions) in obj {
@@ -66,10 +67,10 @@ fn filter_tools(
                 .and_then(|p| p.as_str())
                 .unwrap_or("");
             let version = Value::String(version.to_string());
-            if source_path.starts_with(global_config_dir) {
+            let config_dir = canonical(Path::new(source_path).parent());
+            if config_dir.starts_with(&global_dir) {
                 global.insert(tool_name.clone(), version);
             } else {
-                let config_dir = canonical(Path::new(source_path).parent());
                 let mine = match filter {
                     MiseFilter::Project { root } => {
                         let root = canonical(Some(Path::new(root)));
@@ -307,5 +308,31 @@ mod tests {
             ),
             vec!["node"]
         );
+    }
+
+    #[test]
+    fn a_global_config_named_through_a_symlink_is_still_global() {
+        let base = tempfile::tempdir().unwrap();
+        let real = base.path().join("private-config");
+        std::fs::create_dir_all(real.join("mise")).unwrap();
+        std::fs::write(real.join("mise/config.toml"), "").unwrap();
+        let link = base.path().join("config");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let reported = real.canonicalize().unwrap().join("mise/config.toml");
+        let out = ls(&[("go", reported.to_str().unwrap())]);
+        let global = link.join("mise");
+
+        let names = |filter| -> Vec<String> {
+            filter_tools(&out, global.to_str().unwrap(), filter)
+                .unwrap()
+                .into_keys()
+                .collect()
+        };
+        assert_eq!(
+            names(MiseFilter::Home { home: "/nowhere" }),
+            vec!["go"],
+            "mise reports the resolved path; XDG_CONFIG_HOME is the link"
+        );
+        assert!(names(MiseFilter::Project { root: "/nowhere" }).is_empty());
     }
 }
