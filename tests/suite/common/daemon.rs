@@ -23,7 +23,17 @@ pub struct TestDaemon {
     pub home: PathBuf,
     /// The daemon's `$XDG_CONFIG_HOME`; its config dir is `xdg/beachcomber`.
     pub xdg: PathBuf,
-    process: Child,
+    process: Option<Child>,
+    /// Set when the daemon runs inside this test process (see
+    /// [`TestDaemon::serve_in_process`]).
+    served: Option<InProcess>,
+}
+
+/// An in-process daemon: its own runtime, and the token that stops it.
+struct InProcess {
+    runtime: tokio::runtime::Runtime,
+    cancel: tokio_util::sync::CancellationToken,
+    task: tokio::task::JoinHandle<()>,
 }
 
 impl TestDaemon {
@@ -72,7 +82,67 @@ impl TestDaemon {
             socket,
             home,
             xdg,
-            process,
+            process: Some(process),
+            served: None,
+        }
+    }
+
+    /// The same daemon, run inside this test process: its provider file
+    /// watching polls instead of registering kernel watches, and it starts in
+    /// milliseconds rather than the fraction of a second a spawned `comb
+    /// daemon` takes. For a test that is about the daemon's behaviour, not its
+    /// process; one that needs the real process (its own environment, its
+    /// arguments, signals) uses [`TestDaemon::spawn_in`].
+    ///
+    /// The process environment is pointed at `home` and `xdg` as the spawned
+    /// daemon's is, and the managed defaults are written as `comb daemon` does
+    /// before it loads its configuration. Nextest gives each test its own
+    /// process, so setting it here is local to the test.
+    #[allow(dead_code)]
+    pub fn serve_in_process(socket: IsolatedSocket, home: PathBuf, xdg: PathBuf) -> Self {
+        std::fs::create_dir_all(&home).expect("create temp HOME");
+        // SAFETY: one test per process, and nothing else reads the environment
+        // until the daemon below starts.
+        unsafe {
+            std::env::set_var("HOME", &home);
+            std::env::set_var("XDG_CONFIG_HOME", &xdg);
+            std::env::set_var("XDG_STATE_HOME", home.join(".local/state"));
+        }
+        let config_file = xdg.join("beachcomber").join("config.toml");
+        beachcomber::daemon::defaults::write_managed_defaults(
+            &beachcomber::config::Config::defaults_dir_for(&config_file),
+            env!("BEACHCOMBER_VERSION"),
+        )
+        .expect("write managed defaults");
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("daemon runtime");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (task, ready) = {
+            let _enter = runtime.enter();
+            beachcomber::daemon::start_in_process_polling_with(
+                socket.path.clone(),
+                beachcomber::config::Config::load(),
+                cancel.clone(),
+                None,
+            )
+        };
+        runtime
+            .block_on(ready)
+            .expect("the in-process daemon refused to start");
+        Self {
+            socket,
+            home,
+            xdg,
+            process: None,
+            served: Some(InProcess {
+                runtime,
+                cancel,
+                task,
+            }),
         }
     }
 
@@ -94,7 +164,14 @@ impl TestDaemon {
 
 impl Drop for TestDaemon {
     fn drop(&mut self) {
-        let _ = self.process.kill();
-        let _ = self.process.wait();
+        if let Some(process) = self.process.as_mut() {
+            let _ = process.kill();
+            let _ = process.wait();
+        }
+        if let Some(served) = self.served.take() {
+            served.cancel.cancel();
+            let _ = served.runtime.block_on(served.task);
+            served.runtime.shutdown_background();
+        }
     }
 }

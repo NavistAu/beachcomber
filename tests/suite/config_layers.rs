@@ -1,6 +1,6 @@
 //! `[daemon.providers.<p>.sources.<s>]`: a Source is a function. These tests
-//! spawn real `comb` daemons over a config directory and read through
-//! `comb get`, so they cover the layers (defaults, `config.toml`, `conf.d`),
+//! run a daemon in the test process over a config directory (one test spawns a
+//! real `comb daemon`) and read through `comb get`, so they cover the layers (defaults, `config.toml`, `conf.d`),
 //! the moments each line runs at, and whose environment `data` sees.
 //!
 //! A scenario here is a daemon started over the files as they are. An edit
@@ -49,7 +49,13 @@ impl Setup {
         std::fs::remove_file(self.xdg.join("beachcomber").join(rel)).unwrap();
     }
 
+    /// A daemon over these files, running inside the test process.
     fn daemon(&self) -> TestDaemon {
+        TestDaemon::serve_in_process(IsolatedSocket::new(), self.home.clone(), self.xdg.clone())
+    }
+
+    /// A real `comb daemon` process, for a test about the process itself.
+    fn spawned_daemon(&self) -> TestDaemon {
         TestDaemon::spawn_in(IsolatedSocket::new(), self.home.clone(), self.xdg.clone())
     }
 }
@@ -271,7 +277,7 @@ result.h = "{{ data.h }}"
 result.m = "{{ data.m }}"
 "#,
     )]);
-    let d = setup.daemon();
+    let d = setup.spawned_daemon();
     let get_as_caller = |key: &str| {
         let out = d
             .comb(&d.home)
@@ -799,41 +805,47 @@ data = "{{ exec('cat vals.json') | fromjson }}"
 result = "{{ data }}"
 "#;
 
+/// One scenario per process: the daemon reads `$HOME` once, so a second daemon
+/// over a different `$HOME` in one test process would not see it.
+fn object_field_read_agrees_with_the_namespace_read(proj_vals: &str, home_vals: &str) {
+    let setup = Setup::new(&[("config.toml", OBJ_SOURCE)]);
+    let proj = setup.home.join("ws/p");
+    let sub = proj.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(proj.join(".root"), "").unwrap();
+    std::fs::write(proj.join("vals.json"), proj_vals).unwrap();
+    std::fs::write(setup.home.join("vals.json"), home_vals).unwrap();
+    let d = setup.daemon();
+
+    // The field read goes first, so it is the cold path that is tested.
+    let field = get_at(&d, &sub, &["obj.o"]);
+    let namespace = get_at(&d, &sub, &["obj"]).expect("obj");
+    assert_eq!(
+        field.as_ref(),
+        Some(&namespace["o"]),
+        "get obj.o and get obj agree ({proj_vals} over {home_vals})"
+    );
+    assert_eq!(
+        get_at(&d, &sub, &["obj.o.b"]),
+        Some(json!("home-b")),
+        "the home instance contributes a leaf the project lacks"
+    );
+}
+
 #[test]
 fn a_field_read_of_an_object_merges_up_the_chain_like_the_namespace_read() {
-    for (proj_vals, home_vals) in [
-        (
-            r#"{"o":{"a":"proj-a"}}"#,
-            r#"{"o":{"a":"home-a","b":"home-b"}}"#,
-        ),
-        (
-            r#"{"o":{"a":null}}"#,
-            r#"{"o":{"a":"home-a","b":"home-b"}}"#,
-        ),
-    ] {
-        let setup = Setup::new(&[("config.toml", OBJ_SOURCE)]);
-        let proj = setup.home.join("ws/p");
-        let sub = proj.join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(proj.join(".root"), "").unwrap();
-        std::fs::write(proj.join("vals.json"), proj_vals).unwrap();
-        std::fs::write(setup.home.join("vals.json"), home_vals).unwrap();
-        let d = setup.daemon();
+    object_field_read_agrees_with_the_namespace_read(
+        r#"{"o":{"a":"proj-a"}}"#,
+        r#"{"o":{"a":"home-a","b":"home-b"}}"#,
+    );
+}
 
-        // The field read goes first, so it is the cold path that is tested.
-        let field = get_at(&d, &sub, &["obj.o"]);
-        let namespace = get_at(&d, &sub, &["obj"]).expect("obj");
-        assert_eq!(
-            field.as_ref(),
-            Some(&namespace["o"]),
-            "get obj.o and get obj agree ({proj_vals} over {home_vals})"
-        );
-        assert_eq!(
-            get_at(&d, &sub, &["obj.o.b"]),
-            Some(json!("home-b")),
-            "the home instance contributes a leaf the project lacks"
-        );
-    }
+#[test]
+fn a_field_read_of_an_object_with_a_null_leaf_merges_like_the_namespace_read() {
+    object_field_read_agrees_with_the_namespace_read(
+        r#"{"o":{"a":null}}"#,
+        r#"{"o":{"a":"home-a","b":"home-b"}}"#,
+    );
 }
 
 #[test]
