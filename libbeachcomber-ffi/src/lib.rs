@@ -499,7 +499,7 @@ fn resolve_error(e: ResolveError, fetch: &mut ClientFetch<'_>) -> FfiError {
 /// back to the process's own working directory — this library must never
 /// read ambient state on the caller's behalf. Every fetch the resolution
 /// makes addresses `cwd`, the same convention `comb get --path` follows.
-/// `env_json` is nullable, meaning "no environment": every `env.*` is `""`.
+/// `env_json` is nullable, meaning "no environment": every `env.*` is absent.
 /// `exec()` inside a template runs only on a client created with
 /// `{"exec":true}`; otherwise it fails with `exec() is disabled in this
 /// context`.

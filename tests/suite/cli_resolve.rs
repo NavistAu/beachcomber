@@ -288,7 +288,8 @@ fn env_keys_answer_from_the_shell_and_still_ensure_the_daemon() {
         .assert()
         .success()
         .stdout(predicates::str::diff(home.to_string_lossy().into_owned()));
-    // Canon invariant 6: an env miss is `""`, never an error and never a miss.
+    // An unset variable is absent: under text a miss prints nothing and
+    // succeeds.
     comb()
         .args(["get", "env.NOPE"])
         .assert()

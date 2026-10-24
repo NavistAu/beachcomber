@@ -241,13 +241,13 @@ impl<'a> Resolver<'a> {
 
     /// Resolve one address to the value a surface prints.
     fn resolve(&mut self, key: &str) -> Result<Option<JsonValue>, ResolveError> {
-        // Canon invariant 6: `env.*` is the caller's shell, never the
-        // daemon's, and a miss yields `""` — never an error, never a miss.
+        // `env.*` is the caller's shell, never the daemon's. An unset
+        // variable is absent, as in the daemon's lines — never an error.
         if key == "env" {
             return Ok(None);
         }
         if let Some(var) = key.strip_prefix("env.") {
-            return Ok(Some(JsonValue::String(self.env_value(var))));
+            return Ok(self.env_value(var).map(JsonValue::String));
         }
 
         let Some(got) = self.fetch(key)? else {
@@ -418,8 +418,8 @@ impl<'a> Resolver<'a> {
     ///
     /// A daemon miss binds nothing — not the value, and not the object that
     /// would have enclosed it — so `default` and `or` fire on it; a key the
-    /// daemon rejects is the same missing ref. An env miss binds `""` (canon
-    /// invariant 6), so `or` fires and `default` does not. Where a whole
+    /// daemon rejects is the same missing ref. An unset `env.X` binds nothing
+    /// too, as in the daemon's lines. Where a whole
     /// `comb.P` and a `comb.P.F` disagree, the whole object wins: it is the
     /// authoritative snapshot, whichever ref is bound first.
     fn bind(&mut self, refs: &[Ref]) -> Result<JsonValue, ResolveError> {
@@ -430,9 +430,11 @@ impl<'a> Resolver<'a> {
         for r in refs {
             match r {
                 Ref::Env(var) => {
-                    let value = JsonValue::String(self.env_value(var));
+                    let Some(value) = self.env_value(var) else {
+                        continue;
+                    };
                     if let Some(JsonValue::Object(env)) = top.get_mut("env") {
-                        env.insert(var.clone(), value);
+                        env.insert(var.clone(), JsonValue::String(value));
                     }
                 }
                 Ref::CombField(provider, field) => {
@@ -487,9 +489,9 @@ impl<'a> Resolver<'a> {
         Ok(JsonValue::Object(top))
     }
 
-    /// The caller's `$var`; `""` when unset (canon invariant 6).
-    fn env_value(&self, var: &str) -> String {
-        self.inputs.env.get(var).cloned().unwrap_or_default()
+    /// The caller's `$var`; `None` when unset.
+    fn env_value(&self, var: &str) -> Option<String> {
+        self.inputs.env.get(var).cloned()
     }
 
     /// Enter `key`'s frame, refusing a repeat and a chain past the depth limit.

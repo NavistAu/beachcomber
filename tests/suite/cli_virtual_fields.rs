@@ -202,8 +202,27 @@ fn a_cascade_falls_through_to_the_cache_when_env_is_empty() {
     assert_eq!(get(&d, &cwd, &[], "t.v"), "staging");
 }
 
+/// `key` is absent: under text a miss prints nothing and succeeds; under
+/// json it is the miss error, since there is no value to print.
+fn assert_absent(d: &TestDaemon, cwd: &Path, key: &str) {
+    comb(d, cwd, &[])
+        .args(["get", key])
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty())
+        .stderr(predicates::str::is_empty());
+    comb(d, cwd, &[])
+        .args(["get", "-f", "json", key])
+        .assert()
+        .code(2)
+        .stdout(predicates::str::is_empty())
+        .stderr(predicates::str::contains(format!(
+            "Error querying {key}: no data (cache miss)"
+        )));
+}
+
 #[test]
-fn an_all_empty_cascade_is_the_empty_string() {
+fn an_all_empty_cascade_is_absent() {
     let (d, cwd) = daemon();
     put(
         &d,
@@ -211,14 +230,7 @@ fn an_all_empty_cascade_is_the_empty_string() {
         &["t:template.v", r#""{{ env.A or env.B or env.C }}""#],
     );
 
-    // Present, empty, not a miss: exit 0 under text and `""` under json.
-    comb(&d, &cwd, &[])
-        .args(["get", "t.v"])
-        .assert()
-        .success()
-        .stdout(predicates::str::is_empty())
-        .stderr(predicates::str::is_empty());
-    assert_eq!(get_json(&d, &cwd, &[], "t.v"), serde_json::json!(""));
+    assert_absent(&d, &cwd, "t.v");
 }
 
 #[test]
@@ -295,10 +307,9 @@ fn conda_env_returns_conda_default_env_value() {
 }
 
 #[test]
-fn conda_env_returns_empty_string_when_unset() {
+fn conda_env_is_absent_when_unset() {
     let (d, cwd) = daemon();
-    assert_eq!(get(&d, &cwd, &[], "conda.env"), "");
-    assert_eq!(get_json(&d, &cwd, &[], "conda.env"), serde_json::json!(""));
+    assert_absent(&d, &cwd, "conda.env");
 }
 
 // ── aws.profile ───────────────────────────────────────────────────────────────

@@ -79,7 +79,7 @@ const KEYS: &[(&str, Expect, bool)] = &[
     ("git", Expect::Hit(None), true),
     ("git.lines_added", Expect::Hit(Some("0")), true),
     ("env.SCANLINE_FOO", Expect::Hit(Some(r#""hi""#)), false),
-    ("env.NOPE", Expect::Hit(Some(r#""""#)), false),
+    ("env.NOPE", Expect::Miss, false),
     // Compared as a class only: both are a hit, the ages differ.
     ("git:cache.branch", Expect::Hit(None), true),
     ("a:b:c.x", Expect::Error, false),

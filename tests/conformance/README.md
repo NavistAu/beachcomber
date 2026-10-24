@@ -112,7 +112,7 @@ so `{ "op": "eval", "args": { "template": "{{ p.f }}" } }` and
 The type rule the fixtures pin down:
 
 - **exactly one `{{ expr }}`** spanning the whole source — evaluated as an
-  expression, keeping its natural type. `{{ env.A != "" }}` yields a bool.
+  expression, keeping its natural type. `{{ env.A | bool }}` yields a bool.
   Surrounding whitespace is not literal text.
 - **anything else** — literal text, no tags at all, more than one tag, a
   `{% %}` statement tag, an unterminated marker, or an empty source — is a

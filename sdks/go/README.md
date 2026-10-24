@@ -131,7 +131,7 @@ For latency-sensitive use, prefer `Session`.
 `Resolve` and `Eval` require `cwd`: every fetch the resolution makes
 addresses it, so the library never falls back to the process's own
 working directory. `env` is optional (`nil` for "not supplied") — a `nil`
-`env` makes every `env.*` reference resolve to `""`.
+`env` makes every `env.*` reference absent.
 
 `templateStr` accepts a single `{{ expr }}` tag, or literal text/several
 tags — the former keeps the expression's natural type, the latter is

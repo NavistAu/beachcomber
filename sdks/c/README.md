@@ -108,7 +108,7 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
   client renders them. A plain field is its cached value, a templated one
   is rendered, and a bare provider name is the whole merged namespace; a
   miss is `data: null`. `cwd` is required; `env_json` is nullable ("no
-  environment": every `env.*` is `""`). Every fetch the resolution makes
+  environment": every `env.*` is absent). Every fetch the resolution makes
   addresses `cwd`.
 - `bc_eval(client, template_str, cwd, env_json)` renders a template that is
   stored nowhere — the same value `comb eval` prints. `template_str`

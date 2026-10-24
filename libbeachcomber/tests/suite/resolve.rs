@@ -396,23 +396,21 @@ fn an_env_key_is_answered_from_inputs_with_no_fetch() {
 }
 
 #[test]
-fn an_unset_env_key_is_the_empty_string_with_no_fetch() {
-    // Canon `field_resolution.md` invariant 6: an env miss yields `""`,
-    // never an error and never a miss.
+fn an_unset_env_key_is_absent_with_no_fetch() {
+    // Null means absent, never `""`: an unset variable is a miss, never an
+    // error.
     let env = spec_env();
     let mut f = spec_fetch();
-    assert_eq!(
-        resolve("env.NOPE", &inputs(&env), &mut f),
-        Ok(Some(json!("")))
-    );
+    assert_eq!(resolve("env.NOPE", &inputs(&env), &mut f), Ok(None));
     assert!(f.log.is_empty());
 }
 
 #[test]
-fn an_unset_env_ref_binds_the_empty_string() {
-    // The same rule inside a template: `env.NOPE` is defined and empty, so
-    // `default` — which replaces only an undefined value — does not fire.
-    let env = spec_env();
+fn an_unset_env_ref_binds_nothing() {
+    // The same rule inside a template, as in the daemon's lines: `env.NOPE`
+    // is undefined, so `default` fires; a variable set to `""` is defined.
+    let mut env = spec_env();
+    env.insert("EMPTY".to_string(), String::new());
     let mut f = MapFetch::default();
     f.seed(
         "k.defined",
@@ -423,13 +421,22 @@ fn an_unset_env_ref_binds_the_empty_string() {
         "k.default",
         Some(CWD),
         tmpl(json!("{{ env.NOPE | default('fb') }}")),
+    )
+    .seed(
+        "k.empty",
+        Some(CWD),
+        tmpl(json!("{{ env.EMPTY | default('fb') }}")),
     );
     assert_eq!(
         resolve("k.defined", &inputs(&env), &mut f),
-        Ok(Some(json!(true)))
+        Ok(Some(json!(false)))
     );
     assert_eq!(
         resolve("k.default", &inputs(&env), &mut f),
+        Ok(Some(json!("fb")))
+    );
+    assert_eq!(
+        resolve("k.empty", &inputs(&env), &mut f),
         Ok(Some(json!("")))
     );
 }

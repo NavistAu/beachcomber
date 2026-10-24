@@ -1,3 +1,3 @@
 [client.providers.op]
 # Whether a 1Password service account token is in the shell: a bool, never the token itself.
-template.signed_in = '{{ env.OP_SERVICE_ACCOUNT_TOKEN != "" }}'
+template.signed_in = '{{ env.OP_SERVICE_ACCOUNT_TOKEN | bool }}'

@@ -194,7 +194,7 @@ client renders them in-process with the `cwd` and `env_json` you pass.
 
 | Function | Description |
 |---|---|
-| `char *bc_resolve(BcClient *c, const char *key, const char *cwd, const char *env_json)` | The same value `comb get` returns for this key, cwd and env. A plain field is its cached value, a templated one is rendered, and a bare provider name is the whole merged namespace; a miss is `data: null`. `cwd` is required — every fetch the resolution makes addresses it. `env_json` is nullable ("no environment": every `env.*` is `""`). |
+| `char *bc_resolve(BcClient *c, const char *key, const char *cwd, const char *env_json)` | The same value `comb get` returns for this key, cwd and env. A plain field is its cached value, a templated one is rendered, and a bare provider name is the whole merged namespace; a miss is `data: null`. `cwd` is required — every fetch the resolution makes addresses it. `env_json` is nullable ("no environment": every `env.*` is absent). |
 | `char *bc_eval(BcClient *c, const char *template_str, const char *cwd, const char *env_json)` | Render a template that is stored nowhere — the same value `comb eval` prints. `template_str` accepts a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string — a source with no tags at all is its literal text). `cwd` is required, and every daemon ref the expression names is fetched scoped to it. |
 
 `exec()` inside a template runs only on a client created with
@@ -242,7 +242,7 @@ SDK documented as safe to invoke from another thread while a
 
 | Function | Description |
 |---|---|
-| `BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const char *env_json)` | Open a watch on `key`, resolved at `cwd` with `env_json`'s environment — the same two inputs `bc_resolve` takes. `cwd` is required; `env_json` is nullable ("no environment": every `env.*` is `""`). Returns NULL only on allocation failure. |
+| `BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const char *env_json)` | Open a watch on `key`, resolved at `cwd` with `env_json`'s environment — the same two inputs `bc_resolve` takes. `cwd` is required; `env_json` is nullable ("no environment": every `env.*` is absent). Returns NULL only on allocation failure. |
 | `char *bc_watch_next(BcWatch *w, int32_t timeout_ms)` | Wait for the next event. `timeout_ms`: `-1` blocks indefinitely, `0` polls, `>0` waits that long. |
 | `void bc_watch_cancel(BcWatch *w)` | Cancel a pending or future `bc_watch_next` call. Null-safe. Safe to call from another thread. |
 | `void bc_watch_free(BcWatch *w)` | Free a watch handle. Null-safe. |
