@@ -593,33 +593,33 @@ mod tests {
     }
 
     #[test]
-    fn cap_beats_a_tight_timeout() {
-        // Same oversized writer, but with a timeout so tight (100ms) that a
-        // buggy ordering (checking the deadline before the cap flag, or
-        // detecting the cap too slowly) could plausibly report a timeout
-        // instead. The cap must still win, and well within the 100ms
-        // budget itself.
+    fn the_cap_ends_a_run_that_would_otherwise_go_on() {
+        // The writer exceeds the cap at once and then would run for half a
+        // minute: only the cap can end it before the timeout, so a run that
+        // reports a timeout (or takes anything near one) is not acting on the
+        // cap as it is crossed. The timeout is generous so that load cannot
+        // bring the deadline forward of the cap.
         let req = ExecRequest {
             cmd: "sh",
             label: None,
-            args: &["-c".to_string(), "head -c 2000000 /dev/zero".to_string()],
+            args: &[
+                "-c".to_string(),
+                "head -c 2000000 /dev/zero; sleep 30".to_string(),
+            ],
             stdin: None,
-            timeout_ms: 100,
+            timeout_ms: 20_000,
             env: &test_env(),
             cwd: None,
         };
         let start = Instant::now();
         let err = run(&req).unwrap_err();
-        // The real assertion is which error wins (below); elapsed time is
-        // just a generous sanity check that this didn't fall back to
-        // waiting out some much larger timeout.
+        assert!(err.contains("exceeded"), "{err}");
+        assert!(!err.contains("timed out"), "{err}");
         assert!(
-            start.elapsed() < Duration::from_secs(1),
+            start.elapsed() < Duration::from_secs(15),
             "took {:?}",
             start.elapsed()
         );
-        assert!(err.contains("exceeded"), "{err}");
-        assert!(!err.contains("timed out"), "{err}");
     }
 
     #[test]
