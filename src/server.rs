@@ -1908,7 +1908,7 @@ async fn handle_request(
             }
             let ttl_secs = match ttl.as_deref() {
                 None => None,
-                Some(t) => match crate::scheduler::parse_duration_secs_pub(t) {
+                Some(t) => match crate::config::parse_whole_seconds(t).map(|d| d.as_secs()) {
                     None => return Response::error(format!("invalid ttl: {t}")),
                     Some(0) => return Response::error("ttl must be at least 1s"),
                     Some(n) => Some(n),

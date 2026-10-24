@@ -126,31 +126,6 @@ async fn get_without_force_returns_cached_entry() {
     handle.abort();
 }
 
-/// cache.remove() with a path scope only evicts the matching key; other scopes survive.
-#[test]
-fn cache_remove_targets_path_scope() {
-    let cache = Cache::new();
-
-    let mut a = HashMap::new();
-    a.insert("branch".to_string(), Value::String("aaa".to_string()));
-    cache.put_source("git", Some("fake-path-a"), "refs", a, Schedule::poll(60, 1));
-
-    let mut b = HashMap::new();
-    b.insert("branch".to_string(), Value::String("bbb".to_string()));
-    cache.put_source("git", Some("fake-path-b"), "refs", b, Schedule::poll(60, 1));
-
-    cache.remove("git", Some("fake-path-a"));
-
-    assert!(
-        cache.get_entry("git", Some("fake-path-a")).is_none(),
-        "fake-path-a entry should be evicted"
-    );
-    assert!(
-        cache.get_entry("git", Some("fake-path-b")).is_some(),
-        "fake-path-b entry should be unaffected"
-    );
-}
-
 /// force=true on a static namespace must return an error without evicting the entry.
 #[tokio::test]
 async fn force_on_static_namespace_returns_error() {

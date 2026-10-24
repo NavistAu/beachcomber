@@ -158,12 +158,6 @@ pub(crate) struct Subscription {
     pub(crate) patterns: Vec<String>,
 }
 
-/// Whole seconds of a duration string, for the seconds-only consumers; `None`
-/// when it is not a whole number of seconds (`500ms`).
-pub fn parse_duration_secs_pub(s: &str) -> Option<u64> {
-    crate::config::parse_whole_seconds(s).map(|d| d.as_secs())
-}
-
 /// Handle for sending messages to the scheduler.
 #[derive(Clone)]
 pub struct SchedulerHandle {

@@ -1465,31 +1465,6 @@ impl Cache {
         found.then_some(out)
     }
 
-    /// Look up a specific field across all sources for (provider, path).
-    /// Returns the field value from whichever source owns it, or `None` if not found.
-    ///
-    /// `field` may be a dotted sub-path (e.g. `"project.rust"`): the first segment is the
-    /// top-level field name and subsequent segments traverse nested `Value::Object` maps.
-    ///
-    /// Returns the value plus the owning source's `last_refreshed` timestamp so callers
-    /// can report per-field freshness (canon §"Field freshness": each field's age is the
-    /// freshness of its owning Source's last successful refresh).
-    pub fn get_field(
-        &self,
-        provider: &str,
-        path: Option<&str>,
-        field: &str,
-    ) -> Option<(Value, Instant)> {
-        let key = make_cache_key(provider, path);
-        let entry = self.entries.get(&key)?;
-        for src in entry.sources.values() {
-            if let Some(value) = crate::provider::lookup_path(&src.fields, field) {
-                return Some((value.clone(), src.last_refreshed));
-            }
-        }
-        None
-    }
-
     /// Return a clone of a specific source's entry, or `None` if the (provider, path) key
     /// or the named source within it doesn't exist.
     pub fn get_source(
@@ -1509,13 +1484,6 @@ impl Cache {
         self.entries
             .get(&make_cache_key(provider, at))
             .is_some_and(|e| e.put_address_for(tail).is_some())
-    }
-
-    /// Return a clone of the full `CacheEntry` for (provider, path), or `None`.
-    /// Replaces the old `get()`.
-    pub fn get_entry(&self, provider: &str, path: Option<&str>) -> Option<CacheEntry> {
-        let key = make_cache_key(provider, path);
-        self.entries.get(&key).map(|e| e.clone())
     }
 
     /// The keys stored beside the record at `tail` of `provider`'s entry `at`,
@@ -1615,11 +1583,6 @@ impl Cache {
             .get(&make_cache_key(provider, path))
             .and_then(|e| e.sources.get(source).map(|s| s.is_stale()))
             .unwrap_or(false)
-    }
-
-    pub fn remove(&self, provider: &str, path: Option<&str>) {
-        let key = make_cache_key(provider, path);
-        self.entries.remove(&key);
     }
 
     /// Remove a single source's contribution from the (provider, path) entry.
@@ -1950,6 +1913,44 @@ pub struct FailureSnapshot {
 impl Default for Cache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Reading a whole entry or one field back out of the cache, for the tests
+/// that check what a run stored. Nothing in the daemon reads this way: it
+/// reads through [`Cache::read_merged`], which layers and merges.
+#[cfg(any(test, feature = "test-helpers"))]
+impl Cache {
+    /// Look up a specific field across all sources for (provider, path).
+    /// Returns the field value from whichever source owns it, or `None` if not found.
+    ///
+    /// `field` may be a dotted sub-path (e.g. `"project.rust"`): the first segment is the
+    /// top-level field name and subsequent segments traverse nested `Value::Object` maps.
+    ///
+    /// Returns the value plus the owning source's `last_refreshed` timestamp so callers
+    /// can report per-field freshness (canon §"Field freshness": each field's age is the
+    /// freshness of its owning Source's last successful refresh).
+    pub fn get_field(
+        &self,
+        provider: &str,
+        path: Option<&str>,
+        field: &str,
+    ) -> Option<(Value, Instant)> {
+        let key = make_cache_key(provider, path);
+        let entry = self.entries.get(&key)?;
+        for src in entry.sources.values() {
+            if let Some(value) = crate::provider::lookup_path(&src.fields, field) {
+                return Some((value.clone(), src.last_refreshed));
+            }
+        }
+        None
+    }
+
+    /// Return a clone of the full `CacheEntry` for (provider, path), or `None`.
+    /// Replaces the old `get()`.
+    pub fn get_entry(&self, provider: &str, path: Option<&str>) -> Option<CacheEntry> {
+        let key = make_cache_key(provider, path);
+        self.entries.get(&key).map(|e| e.clone())
     }
 }
 

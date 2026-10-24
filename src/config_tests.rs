@@ -1253,11 +1253,11 @@ fn parse_duration_overflow_is_none_not_a_panic() {
 
 #[test]
 fn whole_second_consumers_reject_sub_second_values() {
-    use crate::scheduler::parse_duration_secs_pub as secs;
+    use crate::config::parse_whole_seconds as secs;
     assert_eq!(secs("500ms"), None);
     assert_eq!(secs("1500ms"), None);
-    assert_eq!(secs("2000ms"), Some(2));
-    assert_eq!(secs("5s"), Some(5));
+    assert_eq!(secs("2000ms"), Some(Duration::from_secs(2)));
+    assert_eq!(secs("5s"), Some(Duration::from_secs(5)));
 }
 
 #[test]

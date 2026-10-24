@@ -1093,9 +1093,6 @@ impl ProviderRegistry {
     /// Panics on registration failure (programmer error, not runtime).
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
-        // TODO(phase1-section-H): re-enable each line once the provider is migrated
-        // to the new Provider/Source trait shape. Uncomment one at a time during Section H.
-        //
         registry
             .register(Box::new(crate::provider::asdf::AsdfProvider))
             .expect("asdf");
