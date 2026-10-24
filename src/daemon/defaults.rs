@@ -2,8 +2,10 @@
 //! files the daemon writes to `<config-dir>/defaults/` and seeds like any
 //! other layer, not a table compiled into a client.
 //!
-//! The files are embedded in the binary only so they can be written; nothing
-//! ever loads them from the embed. Each written file starts with the marker
+//! The files are embedded in the binary so they can be written, and for no
+//! other reason: nothing is loaded from the embed. Configuration is read from the
+//! files on disk, the abstract provider in `00-comb.toml` included. Each
+//! written file starts with the marker
 //! `# Managed by comb <version>`, which is how a later daemon tells a file it
 //! wrote from one the user put there, and a file from this version from one a
 //! previous version left behind.
@@ -40,6 +42,22 @@ pub const SHIPPED: &[(&str, &str)] = &[
         include_str!("../../defaults/terraform.toml"),
     ),
 ];
+
+/// The shipped `00-comb.toml` as a configuration layer, labelled as the file
+/// the daemon writes it to would be: what a `Config` built in memory (a test,
+/// a bench, an embedder with no `defaults/` directory behind it) composes
+/// first, so the abstract provider's lines are there as they are in a running
+/// daemon. The daemon itself reads the file on disk.
+pub fn comb_layer() -> (PathBuf, toml::Value) {
+    let (name, text) = SHIPPED
+        .iter()
+        .find(|(name, _)| *name == "00-comb.toml")
+        .expect("00-comb.toml is shipped");
+    (
+        PathBuf::from("/defaults").join(name),
+        toml::from_str(text).expect("00-comb.toml parses"),
+    )
+}
 
 /// What one run of [`write_managed_defaults`] did.
 #[derive(Debug, Default, PartialEq, Eq)]

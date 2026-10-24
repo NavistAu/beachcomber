@@ -981,3 +981,331 @@ fn the_home_instance_of_mise_watches_the_config_file_in_home() {
         "and $HOME is not watched recursively: {watched:?}"
     );
 }
+
+// ── Provider lines: template, result, return ─────────────────────────────────
+
+/// Two Sources of one provider, each with a field of its own.
+const TWO_SOURCES: &str = r#"
+[daemon.providers.demo.sources.one]
+data = "{{ exec('echo 1') | trim }}"
+result.a = "{{ data }}-a"
+result.b = "{{ data }}-b"
+
+[daemon.providers.demo.sources.two]
+data = "{{ exec('echo 2') | trim }}"
+result.c = "{{ data }}-c"
+"#;
+
+#[test]
+fn default_merge_equals_the_old_merge() {
+    let setup = Setup::new(&[("config.toml", TWO_SOURCES)]);
+    let d = setup.daemon();
+    assert_eq!(
+        get(&d, "demo"),
+        Some(json!({"a": "1-a", "b": "1-b", "c": "2-c"})),
+        "the abstract result merges every Source of the provider"
+    );
+    assert_eq!(get(&d, "demo.c"), Some(json!("2-c")));
+}
+
+#[test]
+fn explicit_merge_last_wins() {
+    // Both Sources declare `x`: the default merge refuses that, an explicit
+    // `merge(a, b)` has chosen an order.
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.demo]
+result = "{{ merge(sources.first(), sources.second()) }}"
+
+[daemon.providers.demo.sources.first]
+data = "{{ exec('echo f') | trim }}"
+result.x = "{{ data }}"
+result.only_first = "{{ data }}"
+
+[daemon.providers.demo.sources.second]
+data = "{{ exec('echo s') | trim }}"
+result.x = "{{ data }}"
+"#,
+    )]);
+    let d = setup.daemon();
+    assert_eq!(get(&d, "demo.x"), Some(json!("s")), "the last one wins");
+    assert_eq!(get(&d, "demo.only_first"), Some(json!("f")));
+}
+
+const TEMPLATED: &str = r#"
+[daemon.providers.demo.sources.s]
+data = "{{ exec('echo d') | trim }}"
+result.a = "{{ data }}"
+
+[daemon.providers.other.sources.s]
+data = "{{ exec('echo o') | trim }}"
+result.a = "{{ data }}"
+
+[client.providers.demo]
+template.t = "{{ 1 + 1 }}"
+
+[client.providers.other]
+template.t = "{{ 1 + 1 }}"
+"#;
+
+#[test]
+fn a_provider_return_without_facet_carries_no_template() {
+    let setup = Setup::new(&[
+        ("config.toml", TEMPLATED),
+        (
+            "conf.d/10-mine.toml",
+            "[daemon.providers.demo]\nreturn = \"{{ result }}\"\n",
+        ),
+    ]);
+    let d = setup.daemon();
+    assert_eq!(get(&d, "other.t"), Some(json!(2)), "the abstract return");
+    assert_eq!(get(&d, "demo.a"), Some(json!("d")));
+    assert_eq!(
+        get(&d, "demo.t"),
+        None,
+        "no facet('template', ...) in the return: no template half"
+    );
+    assert_eq!(
+        get(&d, "demo:template.t"),
+        Some(json!("{{ 1 + 1 }}")),
+        "the facet itself still reads"
+    );
+}
+
+#[test]
+fn underscore_name_at_provider_level() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        "[client.providers.aws]\ntemplate.region = \"{{ 'eu' }}\"\n\
+         [client.providers.gcp]\ntemplate.region = \"{{ 'us' }}\"\n",
+    )]);
+    let d = setup.daemon();
+    assert_eq!(get(&d, "aws:template.region"), Some(json!("{{ 'eu' }}")));
+    assert_eq!(get(&d, "gcp:template.region"), Some(json!("{{ 'us' }}")));
+    assert_eq!(get(&d, "aws.region"), Some(json!("eu")));
+}
+
+#[test]
+fn a_template_line_override_seeds_from_another_client_provider() {
+    let setup = Setup::new(&[
+        (
+            "config.toml",
+            "[client.providers.aws]\ntemplate.region = \"{{ 'eu' }}\"\n",
+        ),
+        (
+            "conf.d/10-mine.toml",
+            "[daemon.providers.git]\ntemplate = \"{{ client.providers.aws.template }}\"\n",
+        ),
+    ]);
+    let d = setup.daemon();
+    assert_eq!(
+        get(&d, "git:template.region"),
+        Some(json!("{{ 'eu' }}")),
+        "git's template is aws's"
+    );
+    assert_eq!(get(&d, "aws:template.region"), Some(json!("{{ 'eu' }}")));
+}
+
+#[test]
+fn super_at_provider_level() {
+    let setup = Setup::new(&[
+        ("config.toml", TEMPLATED),
+        (
+            "conf.d/10-mine.toml",
+            "[daemon.providers.demo]\nreturn = \"{{ result | super }}\"\n",
+        ),
+    ]);
+    let d = setup.daemon();
+    assert_eq!(
+        get(&d, "demo.t"),
+        Some(json!(2)),
+        "| super reaches the abstract return, which attaches the template"
+    );
+}
+
+#[test]
+fn a_provider_with_no_sources_renders_its_result_at_a_read() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        "[daemon.providers.lit]\nresult = \"{{ {'a': 1} }}\"\n\n[daemon.providers.bare]\n",
+    )]);
+    let d = setup.daemon();
+    assert_eq!(get(&d, "lit.a"), Some(json!(1)), "a literal is answered");
+    assert_eq!(get(&d, "lit"), Some(json!({"a": 1})));
+    assert_eq!(
+        get(&d, "bare"),
+        None,
+        "the default result merges no Sources: {{}} answers nothing"
+    );
+}
+
+#[test]
+fn the_default_provider_lines_reproduce_todays_read() {
+    if !crate::common::git::has_git() {
+        return;
+    }
+    let setup = Setup::new(&[("config.toml", BASE)]);
+    let d = setup.daemon();
+    let repo = crate::common::git::GitRepoFixture::new();
+    let nested = repo.path().join("one/two");
+    std::fs::create_dir_all(&nested).unwrap();
+    let nested = nested.canonicalize().unwrap();
+
+    // A built-in provider, read from a directory below its root.
+    assert_eq!(
+        get_at(&d, &nested, &["git.branch"]),
+        Some(json!("main")),
+        "a built-in answers from below its root"
+    );
+
+    // A config provider, with a put over one Source field at the nested
+    // directory: the put wins there, the other field is the Source's, and the
+    // home read is untouched.
+    d.comb(&nested)
+        .args(["put", "demo.a", "\"over\""])
+        .assert()
+        .success();
+    assert_eq!(
+        get_at(&d, &nested, &["demo"]),
+        Some(json!({"a": "over", "b": "base-b"})),
+    );
+    assert_eq!(get_at(&d, &nested, &["demo.b"]), Some(json!("base-b")),);
+    assert_eq!(
+        get_at(&d, &d.home, &["demo"]),
+        Some(json!({"a": "base-a", "b": "base-b"})),
+        "away from the put the Source answers alone"
+    );
+}
+
+/// How many times the Source behind `count` has run: it appends a line per run.
+fn runs(count: &Path) -> usize {
+    std::fs::read_to_string(count).map_or(0, |text| text.lines().count())
+}
+
+#[test]
+fn a_field_a_result_line_renames_is_read_by_its_new_name() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.ren]
+result = "{{ {'y': sources.one().a} }}"
+
+[daemon.providers.ren.sources.one]
+data = "{{ 5 }}"
+result.a = "{{ data }}"
+"#,
+    )]);
+    let d = setup.daemon();
+    // The field read comes first, on a cold daemon: no Source owns `y`, so the
+    // read has to run every Source before the line can say what exists.
+    assert_eq!(get(&d, "ren.y"), Some(json!(5)), "a field the line makes");
+    assert_eq!(get(&d, "ren"), Some(json!({"y": 5})));
+    assert_eq!(get(&d, "ren.a"), None, "and the one it drops is gone");
+}
+
+#[test]
+fn a_field_a_result_line_drops_does_not_rerun_its_source_on_every_read() {
+    let setup = Setup::new(&[]);
+    let count = setup.home.join("count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.drop]
+result = "{{{{ {{'kept': 1}} }}}}"
+
+[daemon.providers.drop.sources.one]
+data = "{{{{ exec(['sh', '-c', 'echo run >> {} ; echo 5']) | trim }}}}"
+result.a = "{{{{ data }}}}"
+"#,
+            count.display()
+        ),
+    );
+    let d = setup.daemon();
+    assert_eq!(get(&d, "drop.kept"), Some(json!(1)));
+    let after_first = runs(&count);
+    assert!(after_first >= 1, "the Source ran for the first read");
+    for _ in 0..3 {
+        assert_eq!(get(&d, "drop.a"), None, "the line dropped it");
+    }
+    assert_eq!(
+        runs(&count),
+        after_first,
+        "a miss the line explains is not a reason to run the Source again"
+    );
+}
+
+#[test]
+fn a_return_line_hands_out_the_data_it_computes() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.p]
+return = "{{ result | merge({'x': 1}) | facet('template', template) }}"
+
+[daemon.providers.p.sources.s]
+data = "{{ 2 }}"
+result.a = "{{ data }}"
+
+[daemon.providers.q]
+return = "{{ {'z': 3} }}"
+
+[client.providers.p]
+template.t = "{{ 7 }}"
+"#,
+    )]);
+    let d = setup.daemon();
+    assert_eq!(get(&d, "p.x"), Some(json!(1)), "a field the return adds");
+    assert_eq!(get(&d, "p.a"), Some(json!(2)), "and the data it hands on");
+    assert_eq!(get(&d, "p.t"), Some(json!(7)), "the template rides beside");
+    assert_eq!(
+        get(&d, "q.z"),
+        Some(json!(3)),
+        "a provider with no Sources answers what its return computes"
+    );
+}
+
+#[test]
+fn a_data_line_sees_what_the_providers_return_gives() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.p]
+return = "{{ result | merge({'x': 1}) | facet('template', template) }}"
+
+[daemon.providers.p.sources.s]
+data = "{{ 2 }}"
+result.a = "{{ data }}"
+
+[daemon.providers.q.sources.s]
+data = "{{ comb.p }}"
+result.seen = "{{ data.x }}"
+"#,
+    )]);
+    let d = setup.daemon();
+    assert_eq!(get(&d, "p"), Some(json!({"a": 2, "x": 1})));
+    assert_eq!(
+        get(&d, "q.seen"),
+        Some(json!(1)),
+        "comb.p is the answer to a get of p, not its stored records"
+    );
+}
+
+#[test]
+fn a_return_that_fails_is_a_miss() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.bad]
+return = "{{ 1 // 0 }}"
+
+[daemon.providers.bad.sources.s]
+data = "{{ 2 }}"
+result.a = "{{ data }}"
+"#,
+    )]);
+    let d = setup.daemon();
+    assert_eq!(get(&d, "bad.a"), None, "the data is not served around it");
+    assert_eq!(get(&d, "bad"), None);
+}

@@ -821,6 +821,11 @@ async fn climb(
     honor_put: bool,
 ) -> Result<Climbed, String> {
     let provider = plan.provider.as_str();
+    // Under the shipped lines a field is its Source's, and a `put` or a hit
+    // settles it early. Under any other a line decides what exists, so a read
+    // takes every level and honours no put's shortcut.
+    let by_default = registry.reads_by_default(provider);
+    let honor_put = honor_put && by_default;
     let mut walking: Vec<Walking> = demanded
         .iter()
         .map(|name| Walking {
@@ -881,7 +886,7 @@ async fn climb(
             });
         }
         out.merged = read_chain_merged(cache, registry, plan, &out.visited);
-        if answers_field(&out.merged, &plan.target) {
+        if by_default && answers_field(&out.merged, &plan.target) {
             return Ok(out);
         }
     }
@@ -982,33 +987,56 @@ struct TemplateHalf {
     rest: Option<String>,
 }
 
-/// The template half of a `get` (spec §3.4): the node at `rest` in the merged
-/// tree of `provider:template` at the same address, the part of `rest` the walk
-/// could not consume.
+/// What a `get` answers once the provider's `return` has read the data: the
+/// data it hands out, and the template half beside it.
+struct Answered {
+    merged: Option<MergedRead>,
+    half: TemplateHalf,
+}
+
+/// The provider's `return` over `result`, the data its records gave (spec
+/// §3.4): the data it answers, and the template half, the node at `rest` in
+/// the tree the line attaches as the `template` facet.
+///
+/// The line is read once per answer, over the data read (`result`) and the
+/// merged tree of `provider:template` at the same address (`template`), which
+/// is a static record: it resolves up the chain from the one path the caller
+/// named, and no instance is involved. A return that never calls
+/// `facet('template', ...)` attaches nothing, and so does one that fails to
+/// render (logged once); one that fails leaves the data as it was.
 ///
 /// A group (object) or a value expression (string) at the address is the
 /// template. A string reached with segments still to go is the template too,
 /// and the remainder comes back as `rest` for the client to apply to whatever
 /// the expression renders. Anything else — a miss, or a non-string scalar in
 /// the way — attaches nothing.
-fn template_half(
+fn answer(
     cache: &Cache,
     registry: &ProviderRegistry,
     provider: &str,
     rest: &str,
     path: Option<&str>,
+    result: Option<MergedRead>,
+) -> Answered {
+    let returned = crate::shape::provider::returned_over(cache, registry, provider, path, result);
+    Answered {
+        half: template_half(returned.template, rest),
+        merged: returned.read,
+    }
+}
+
+/// The node at `rest` in the `template` facet a `return` attached.
+fn template_half(
+    attached: Option<HashMap<String, crate::provider::Value>>,
+    rest: &str,
 ) -> TemplateHalf {
     use crate::provider::Value;
-    // A facet's records are static: they resolve up the chain from the one
-    // path the caller named, and no instance is involved.
-    let Some(read) = cache.read_merged(
-        &format!("{provider}:template"),
-        path,
-        &[],
-        registry,
-        crate::cache::Layers::All,
-    ) else {
+    let Some(fields) = attached else {
         return TemplateHalf::default();
+    };
+    let read = MergedRead {
+        fields,
+        records: HashMap::new(),
     };
 
     if rest.is_empty() {
@@ -1100,18 +1128,21 @@ fn read_watch_value(
     }
     let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
     // A watch frame carries the same two halves a `get` does. A facet key is
-    // already inside a facet and never gets one. Read first: the template
-    // decides whether an unresolvable sub-path is a hit or a miss.
-    let half = if layers != crate::cache::Layers::All
+    // already inside a facet and never gets one. The template decides whether
+    // an unresolvable sub-path is a hit or a miss.
+    let merged = cache.read_merged(provider, requested, reached, registry, layers);
+    let Answered { merged, half } = if layers != crate::cache::Layers::All
         || crate::query::parse_facet(provider).ok().flatten().is_some()
     {
-        TemplateHalf::default()
+        Answered {
+            merged,
+            half: TemplateHalf::default(),
+        }
     } else {
         // Templates are static records, so the template half resolves up the
         // chain from the directory the caller named, not from an instance's root.
-        template_half(cache, registry, provider, target.rest(), requested)
+        answer(cache, registry, provider, target.rest(), requested, merged)
     };
-    let merged = cache.read_merged(provider, requested, reached, registry, layers);
     resolve_halves(&merged, target, half.template, half.rest)
 }
 
@@ -1152,7 +1183,7 @@ fn cache_facet_response(
     }
 
     let merged = cache.read_merged(provider, requested, reached, registry, Layers::All);
-    let half = template_half(cache, registry, provider, rest, requested);
+    let Answered { merged, half } = answer(cache, registry, provider, rest, requested, merged);
     let value = merged.as_ref().and_then(|m| {
         if rest.is_empty() {
             Some(crate::provider::Value::Object(m.fields.clone()))
@@ -1342,21 +1373,6 @@ async fn handle_request(
                 ));
             }
 
-            // The template half is read before the data half: `get box.widgets.foo`
-            // where `box.widgets` is an object without a `foo` is a hit when a
-            // template answers there, a miss otherwise.
-            let half = if facet.is_some() || plan.layers != crate::cache::Layers::All {
-                TemplateHalf::default()
-            } else {
-                template_half(
-                    cache,
-                    registry,
-                    provider_name,
-                    plan.target.rest(),
-                    template_path,
-                )
-            };
-
             // Every Source the key demands is brought up to date on its own
             // terms — one cold source is no longer covered for by a warm
             // sibling — and each at its instances, nearest first. `plan.demand`
@@ -1403,6 +1419,7 @@ async fn handle_request(
             // has *anything* cached. Only a field read can tell: a namespace
             // read has no single address to miss.
             if let KeyParse::Field(_, field) = &plan.target
+                && registry.reads_by_default(provider_name)
                 && lookup_merged(&merged, field).is_none()
                 && !ran
                 && let Some(first) = reached.first()
@@ -1438,7 +1455,27 @@ async fn handle_request(
                     .await;
             }
 
-            // Both halves, assembled the one way `watch` assembles them.
+            // The template half is what the provider's `return` attaches over
+            // the data read: `get box.widgets.foo` where `box.widgets` is an
+            // object without a `foo` is a hit when a template answers there, a
+            // miss otherwise. Both halves, assembled the one way `watch`
+            // assembles them.
+            let Answered { merged, half } =
+                if facet.is_some() || plan.layers != crate::cache::Layers::All {
+                    Answered {
+                        merged,
+                        half: TemplateHalf::default(),
+                    }
+                } else {
+                    answer(
+                        cache,
+                        registry,
+                        provider_name,
+                        plan.target.rest(),
+                        template_path,
+                        merged,
+                    )
+                };
             resolve_halves(&merged, &plan.target, half.template, half.rest)
         }
         Request::Refresh { key, path } => {

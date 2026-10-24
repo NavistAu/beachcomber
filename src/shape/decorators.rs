@@ -469,6 +469,25 @@ fn explain(render: &Render, line: &str, error: &Error) -> String {
     }
 }
 
+/// The schedule decorators `line` names, once each: a call (`poll(...)`) or the
+/// bare `| nearest`. A text scan, like [`explain`]'s: it can only over-report a
+/// decorator's name written inside a string, and a provider line has no use for
+/// one.
+pub fn named_decorators(line: &str) -> Vec<&'static str> {
+    let mut found: Vec<&'static str> = calls(line).into_iter().map(|(name, _)| name).collect();
+    let bare_nearest = line.match_indices("nearest").any(|(at, _)| {
+        let before = line[..at].trim_end();
+        let after = &line[at + "nearest".len()..];
+        before.ends_with('|') && !after.starts_with(|c: char| c.is_alphanumeric() || c == '_')
+    });
+    if bare_nearest {
+        found.push("nearest");
+    }
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
 /// Each decorator call in `line` with its argument text.
 fn calls(line: &str) -> Vec<(&'static str, &str)> {
     let mut found = vec![];

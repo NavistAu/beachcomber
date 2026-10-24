@@ -1,6 +1,7 @@
 use crate::provider::Value;
 use crate::provider::registry::ProviderRegistry;
 use crate::query::Instance;
+use crate::shape::provider::Bound;
 use crate::watcher_registry::WatcherRegistry;
 use dashmap::DashMap;
 use std::collections::{BTreeMap, HashMap};
@@ -24,8 +25,15 @@ pub const CONFIG_SOURCE_PREFIX: &str = "config:";
 /// behind it (canon `provider_source.md` "Field"). `put` and `config:<file>`
 /// are the two; everything else names a Source the daemon refreshes.
 pub fn is_static_label(source_name: &str) -> bool {
-    source_name == PUT_SOURCE || source_name.starts_with(CONFIG_SOURCE_PREFIX)
+    source_name == PUT_SOURCE
+        || source_name.starts_with(CONFIG_SOURCE_PREFIX)
+        || source_name.starts_with(COMPUTED_PREFIX)
 }
+
+/// Prefix on the label of a leaf a provider's `result` or `return` line
+/// computed, which no one Source holds: `computed:result`, `computed:return`.
+/// Like `put` and `config:<file>` it has no Source behind it.
+pub const COMPUTED_PREFIX: &str = "computed:";
 
 /// What a Source's records carry into the `<p>:cache` facet beside them: the
 /// schedule that keeps them fresh. Built from the Source's metadata
@@ -376,7 +384,7 @@ fn occupies(fields: &HashMap<String, Value>, tail: &str) -> bool {
 /// empty node rather than nothing). `prefix` is the node the value is written
 /// at — empty for the namespace root, where the value is always an object and
 /// its members are what get walked.
-fn walk_leaves(prefix: &str, value: Value, out: &mut Vec<(String, Value)>) {
+pub(crate) fn walk_leaves(prefix: &str, value: Value, out: &mut Vec<(String, Value)>) {
     match value {
         Value::Object(map) if !map.is_empty() || prefix.is_empty() => {
             for (k, v) in map {
@@ -630,7 +638,7 @@ fn remove_occupant(fields: &mut HashMap<String, Value>, tail: &str) {
 /// used to pay for every contributing map. Objects present on both sides are
 /// stitched together exactly as `provider::deep_merge` does; anything else
 /// replaces what is there, taking the shadowed records' provenance with it.
-fn merge_layer(
+pub(crate) fn merge_layer(
     fields: &mut HashMap<String, Value>,
     records: &mut HashMap<String, RecordFreshness>,
     overlay: &HashMap<String, Value>,
@@ -668,7 +676,7 @@ fn merge_layer(
 
 /// Merge one layer's finished read into the chain's: the same per-leaf rules
 /// as [`merge_layer`], but each record keeps the freshness the layer gave it.
-fn merge_read(
+pub(crate) fn merge_read(
     fields: &mut HashMap<String, Value>,
     records: &mut HashMap<String, RecordFreshness>,
     overlay: &HashMap<String, Value>,
@@ -722,7 +730,7 @@ fn copy_records(
 /// Record the freshness of every leaf of `value`, which sits at `tail`. A leaf
 /// is any non-object plus an empty object, mirroring [`walk_leaves`] — that is
 /// what a record is.
-fn note_records(
+pub(crate) fn note_records(
     records: &mut HashMap<String, RecordFreshness>,
     tail: &str,
     value: &Value,
@@ -1190,29 +1198,63 @@ impl Cache {
         true
     }
 
-    /// Merge the provider-produced maps of `entry` whose Source the registry
-    /// declares and whose instance at `at` the read visited, into `out`, in
-    /// source-name order. Returns whether anything
-    /// merged.
+    /// Merge the provider's own records at `entry` into `out`: the provider's
+    /// `result` over its Sources' maps at this entry
+    /// ([`ProviderLines::assemble`]). Returns whether anything merged. `entry`
+    /// is `None` for a provider with no Sources, which has no entry of its own
+    /// to read.
     ///
-    /// A map whose source the registry does not declare — a source dropped from
-    /// config since it last ran — is not read at all.
+    /// Each Source the registry declares, in declaration order, is bound to its
+    /// stored map when the read visited its instance at `at`, and to nothing
+    /// otherwise. A map whose Source the registry does not declare — a Source
+    /// dropped from config since it last ran — is not bound at all, and neither
+    /// is a Source's map at a root this read did not visit it at. A line that
+    /// fails to render makes this layer a miss; the failure is logged once.
+    ///
+    /// [`ProviderLines::assemble`]: crate::shape::provider::ProviderLines::assemble
     fn merge_provider_records(
-        entry: &CacheEntry,
+        entry: Option<&CacheEntry>,
         at: Option<&str>,
         namespace: &str,
         registry: &ProviderRegistry,
         visited: &[Instance],
         out: &mut MergedRead,
     ) -> bool {
-        let declared = registry.provider_sources(namespace);
-        Self::merge_named(entry, at, out, |name| {
-            !is_static_label(name)
-                && declared.is_some_and(|ss| ss.iter().any(|sm| sm.name == *name))
+        let Some(declared) = registry.provider_sources(namespace) else {
+            return false;
+        };
+        let mut bound = Vec::with_capacity(declared.len());
+        for sm in declared {
+            let name = &sm.name;
+            let held = (!is_static_label(name)
                 && visited
                     .iter()
-                    .any(|i| i.root.as_deref() == at && i.source == *name)
-        })
+                    .any(|i| i.root.as_deref() == at && i.source == *name))
+            .then(|| entry.and_then(|e| e.sources.get(name)))
+            .flatten()
+            .filter(|src| !src.fields.is_empty())
+            .map(|src| {
+                (
+                    &src.fields,
+                    RecordFreshness {
+                        source: Arc::from(name.as_str()),
+                        entry: at.map(Arc::from),
+                        last_refreshed: src.last_refreshed,
+                        expected_interval_secs: src.expected_interval_secs,
+                    },
+                )
+            });
+            bound.push(Bound { name, held });
+        }
+
+        let lines = registry.lines();
+        match lines.assemble(namespace, at, &bound, out) {
+            Ok(merged) => merged,
+            Err(message) => {
+                lines.note_error(&message);
+                false
+            }
+        }
     }
 
     /// Deep-merge the maps of `entry` whose name `wanted` accepts, in
@@ -1290,6 +1332,16 @@ impl Cache {
             records: HashMap::new(),
         };
         let mut found = false;
+        // A provider with no Sources is a provider all the same: its `result`
+        // is read once, at the global entry (it has no instances), with
+        // `sources` empty. The layers below merge over it.
+        if layers != Layers::Put
+            && registry
+                .provider_sources(namespace)
+                .is_some_and(<[_]>::is_empty)
+        {
+            found |= Self::merge_provider_records(None, None, namespace, registry, &[], &mut out);
+        }
         for layer in chain.iter().rev() {
             let Some(entry) = self
                 .entries
@@ -1310,7 +1362,7 @@ impl Cache {
             let mut hit = false;
             if layers != Layers::Put && visited.iter().any(|i| i.root == *layer) {
                 hit |= Self::merge_provider_records(
-                    &entry,
+                    Some(&entry),
                     layer.as_deref(),
                     namespace,
                     registry,
@@ -2111,6 +2163,206 @@ mod tests {
         assert_eq!(
             read.fields.get("branch"),
             Some(&Value::String("main".into()))
+        );
+    }
+
+    /// A registry with a provider `demo` of two config Sources, `a` (field `x`)
+    /// and `b` (field `y`), and whatever else `extra` configures.
+    fn demo_registry(extra: &str) -> crate::provider::registry::ProviderRegistry {
+        let config = crate::config::Config::from_toml(&format!(
+            "[daemon.providers.demo.sources.a]\ndata = \"{{{{ 1 }}}}\"\nresult.x = \"{{{{ data }}}}\"\n\
+             [daemon.providers.demo.sources.b]\ndata = \"{{{{ 2 }}}}\"\nresult.y = \"{{{{ data }}}}\"\n{extra}"
+        ));
+        crate::provider::registry::ProviderRegistry::with_config(&config, &Default::default())
+            .unwrap_or_else(|e| panic!("loads: {e:?}"))
+    }
+
+    fn store_demo(cache: &Cache, source: &str, field: &str, value: i64) {
+        cache.put_source(
+            "demo",
+            None,
+            source,
+            HashMap::from([(field.to_string(), Value::Int(value))]),
+            crate::cache::Schedule::default(),
+        );
+    }
+
+    fn read_demo(
+        cache: &Cache,
+        registry: &crate::provider::registry::ProviderRegistry,
+        visited: &[&str],
+    ) -> Option<MergedRead> {
+        let visited: Vec<Instance> = visited.iter().map(|s| Instance::new(s, None)).collect();
+        cache.read_merged("demo", None, &visited, registry, Layers::All)
+    }
+
+    #[test]
+    fn the_default_result_merges_every_visited_source_with_its_own_freshness() {
+        let (cache, registry) = (Cache::new(), demo_registry(""));
+        store_demo(&cache, "a", "x", 1);
+        store_demo(&cache, "b", "y", 2);
+        let read = read_demo(&cache, &registry, &["a", "b"]).expect("both Sources");
+        assert_eq!(
+            read.fields,
+            HashMap::from([
+                ("x".to_string(), Value::Int(1)),
+                ("y".to_string(), Value::Int(2))
+            ])
+        );
+        assert_eq!(&*read.records["x"].source, "a");
+        assert_eq!(&*read.records["y"].source, "b");
+
+        let read = read_demo(&cache, &registry, &["a"]).expect("one Source");
+        assert!(
+            !read.fields.contains_key("y"),
+            "a Source the read did not visit is not bound: {:?}",
+            read.fields
+        );
+    }
+
+    #[test]
+    fn an_explicit_result_decides_which_source_wins() {
+        let registry = demo_registry(
+            "[daemon.providers.demo]\nresult = \"{{ merge(sources.b(), sources.a()) }}\"\n\
+             [daemon.providers.demo.sources.c]\ndata = \"{{ 3 }}\"\nresult.x = \"{{ data }}\"\n",
+        );
+        let cache = Cache::new();
+        store_demo(&cache, "a", "x", 1);
+        store_demo(&cache, "c", "x", 3);
+        // The line names only a and b: c is never called.
+        let read = read_demo(&cache, &registry, &["a", "c"]).expect("a Source");
+        assert_eq!(read.fields["x"], Value::Int(1));
+        assert_eq!(&*read.records["x"].source, "a");
+    }
+
+    #[test]
+    fn a_leaf_a_result_computes_is_labelled_and_as_old_as_its_inputs() {
+        let registry = demo_registry(
+            "[daemon.providers.demo]\nresult = \"{{ merge(sources) | merge({'z': 9}) }}\"\n",
+        );
+        let cache = Cache::new();
+        store_demo(&cache, "a", "x", 1);
+        store_demo(&cache, "b", "y", 2);
+        let read = read_demo(&cache, &registry, &["a", "b"]).expect("both Sources");
+        assert_eq!(read.fields["z"], Value::Int(9));
+        assert_eq!(&*read.records["x"].source, "a", "a Source's leaf stays its");
+        assert_eq!(&*read.records["y"].source, "b");
+        let z = &read.records["z"];
+        assert_eq!(&*z.source, "computed:result");
+        assert!(
+            is_static_label(&z.source),
+            "no Source or schedule behind it, so no decay is attached"
+        );
+        let oldest = read.records["x"]
+            .last_refreshed
+            .min(read.records["y"].last_refreshed);
+        assert_eq!(z.last_refreshed, oldest, "as old as the oldest input");
+    }
+
+    #[test]
+    fn two_sources_holding_the_same_value_do_not_pick_one() {
+        let registry = demo_registry(
+            "[daemon.providers.demo]\nresult = \"{{ merge(sources.a(), sources.b()) }}\"\n",
+        );
+        let cache = Cache::new();
+        store_demo(&cache, "a", "x", 1);
+        store_demo(&cache, "b", "x", 1);
+        let read = read_demo(&cache, &registry, &["a", "b"]).expect("both Sources");
+        assert_eq!(
+            &*read.records["x"].source, "computed:result",
+            "equal values are no evidence of which Source gave it"
+        );
+    }
+
+    #[test]
+    fn the_native_default_merge_equals_the_rendered_one() {
+        let rendered = demo_registry(
+            "[daemon.providers.demo]\nresult = \"{{ merge(sources.a(), sources.b()) }}\"\n",
+        );
+        let native = demo_registry("");
+        let cache = Cache::new();
+        store_demo(&cache, "a", "x", 1);
+        store_demo(&cache, "b", "y", 2);
+        let by_line = read_demo(&cache, &rendered, &["a", "b"]).unwrap();
+        let by_default = read_demo(&cache, &native, &["a", "b"]).unwrap();
+        assert_eq!(by_default.fields, by_line.fields);
+        for (tail, record) in &by_default.records {
+            assert_eq!(&*record.source, &*by_line.records[tail].source, "{tail}");
+        }
+    }
+
+    #[test]
+    fn config_sources_merge_in_name_order_whatever_the_file_order() {
+        let config = crate::config::Config::from_toml(
+            "[daemon.providers.ord.sources.zeta]\ndata = \"{{ 1 }}\"\nresult.z = \"{{ data }}\"\n\
+             [daemon.providers.ord.sources.alpha]\ndata = \"{{ 2 }}\"\nresult.a = \"{{ data }}\"\n",
+        );
+        let registry =
+            crate::provider::registry::ProviderRegistry::with_config(&config, &Default::default())
+                .unwrap();
+        let names: Vec<&str> = registry
+            .provider_sources("ord")
+            .unwrap()
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["alpha", "zeta"],
+            "the TOML parser keeps no file order, so declaration order is name order"
+        );
+    }
+
+    #[test]
+    fn a_result_that_fails_to_render_is_a_miss_logged_once() {
+        let registry = demo_registry("[daemon.providers.demo]\nresult = \"{{ 1 // 0 }}\"\n");
+        let cache = Cache::new();
+        store_demo(&cache, "a", "x", 1);
+        assert!(read_demo(&cache, &registry, &["a"]).is_none());
+        assert!(read_demo(&cache, &registry, &["a"]).is_none());
+        let message = registry
+            .lines()
+            .eval(
+                "demo",
+                crate::shape::provider::Key::Result,
+                vec![("sources", minijinja::Value::from(()))],
+            )
+            .unwrap_err();
+        assert!(
+            !registry.lines().note_error(&message),
+            "the failure was logged by the first read, and not again"
+        );
+        // A put beside it is the layer above, and still reads.
+        cache
+            .write_static("demo", None, PUT_SOURCE, "p", Value::Int(7), None)
+            .unwrap();
+        let read = read_demo(&cache, &registry, &["a"]).expect("the put");
+        assert_eq!(
+            read.fields,
+            HashMap::from([("p".to_string(), Value::Int(7))])
+        );
+    }
+
+    #[test]
+    fn a_result_that_is_not_a_map_is_a_miss() {
+        let registry = demo_registry("[daemon.providers.demo]\nresult = \"{{ 3 }}\"\n");
+        let cache = Cache::new();
+        store_demo(&cache, "a", "x", 1);
+        assert!(read_demo(&cache, &registry, &["a"]).is_none());
+    }
+
+    #[test]
+    fn a_provider_with_no_sources_answers_nothing() {
+        let config =
+            crate::config::Config::from_toml("[client.providers.solo]\ntemplate.t = \"x\"\n");
+        let registry =
+            crate::provider::registry::ProviderRegistry::with_config(&config, &Default::default())
+                .unwrap();
+        let cache = Cache::new();
+        assert!(
+            cache
+                .read_merged("solo", None, &[], &registry, Layers::All)
+                .is_none()
         );
     }
 

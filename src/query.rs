@@ -526,6 +526,10 @@ impl QueryPlan {
         // none of them; a caller that warms checks `layers`.
         let demand = match &target {
             KeyParse::Provider(_) => SourceDemand::All,
+            // A provider whose lines are not the shipped ones decides what
+            // exists: a renamed or dropped field is no Source's, so a field
+            // read demands every Source.
+            KeyParse::Field(p, _) if !registry.reads_by_default(p) => SourceDemand::All,
             KeyParse::Field(p, f) => {
                 // A field's demand is the Source of its nearest ancestor node,
                 // else the provider's sentinel Sources, else nothing.

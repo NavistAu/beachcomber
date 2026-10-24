@@ -1,15 +1,18 @@
 //! Seeding the config-seeded facets (spec §3.1, §3.2, §3.9).
 //!
-//! Two tables in configuration are data the daemon writes into the cache, and
+//! Two things in configuration are data the daemon writes into the cache, and
 //! nothing else is seeded from config:
 //!
-//! - `[client.providers.<p>] template` → namespace `<p>:template`, whose string
-//!   leaves are value expressions the client renders;
+//! - a provider's `template` line (`[daemon.providers.<p>] template`, by
+//!   default `[client.providers.<p>] template` of the layer) → namespace
+//!   `<p>:template`, whose string leaves are value expressions the client
+//!   renders. The line is rendered here, once per layer, over that layer's
+//!   `[client]` tree; the leaves themselves are never evaluated;
 //! - `[daemon.providers.<p>.cache]` → namespace `<p>:cache` (`*:cache` for the
 //!   abstract provider `<p> = _`), whose only key is the `_.decay` prototype.
 //!
-//! What each file seeds, and what is wrong with it, comes from one per-file
-//! parse (`crate::shape::seeded::read`). Each is written at the global path, every record labelled `config:<file>`
+//! What the `cache` tables seed, and what is wrong with any file, comes from
+//! one per-file parse (`crate::shape::seeded::read`). Each is written at the global path, every record labelled `config:<file>`
 //! with the file that set it. Layers are written in composition order —
 //! `defaults/*.toml` lexically, then the main config file, then
 //! `conf.d/*.toml` lexically — with the deep-merge semantics
@@ -98,7 +101,7 @@ pub fn spawn_config_seeding(
 /// already refused any file with an error; what a file with an error would have
 /// seeded is not written, only what validated. Refusals are logged.
 pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, layers: &[(PathBuf, toml::Value)]) {
-    let (planned, errors) = plan(layers);
+    let (planned, errors) = plan(layers, registry);
     for e in &errors {
         tracing::error!("{e}");
     }
@@ -131,7 +134,7 @@ pub fn reseed_facets(
     registry: &ProviderRegistry,
     layers: &[(PathBuf, toml::Value)],
 ) {
-    let (mut planned, errors) = plan(layers);
+    let (mut planned, errors) = plan(layers, registry);
     if !errors.is_empty() {
         for e in &errors {
             tracing::error!("{}", e);
@@ -160,20 +163,180 @@ pub fn reseed_facets(
 
 /// The write list per facet namespace, in composition order, and every file's
 /// errors. Pure: registering the namespaces is the caller's, so the plan can be
-/// built and inspected without touching the registry.
-fn plan(layers: &[(PathBuf, toml::Value)]) -> (HashMap<String, Writes>, Vec<String>) {
+/// built and inspected without touching the registry (which only names the
+/// providers there are).
+fn plan(
+    layers: &[(PathBuf, toml::Value)],
+    registry: &ProviderRegistry,
+) -> (HashMap<String, Writes>, Vec<String>) {
     let mut out: HashMap<String, Writes> = HashMap::new();
     let mut errors = Vec::new();
+    let mut reads = Vec::with_capacity(layers.len());
     for (file, layer) in layers {
         let label = Config::config_label(file);
         let read = crate::shape::seeded::read(file, layer);
-        errors.extend(read.errors);
-        for (namespace, tree) in read.writes {
-            let value = Value::from_json(&tree).expect("TOML has no null");
-            out.entry(namespace)
+        errors.extend(read.errors.iter().cloned());
+        for (namespace, tree) in &read.writes {
+            let value = Value::from_json(tree).expect("TOML has no null");
+            out.entry(namespace.clone())
                 .or_default()
                 .push((label.clone(), value));
         }
+        reads.push(read);
     }
+    errors.extend(plan_templates(layers, &reads, registry, &mut out));
     (out, errors)
+}
+
+/// The `<p>:template` writes: each provider's `template` line, composed over
+/// every layer, rendered once per layer over that layer's own `[client]` tree.
+/// A line that gives nothing for a layer writes nothing for it. A provider is
+/// any the registry has or a root names: its template may come from a line of
+/// its own, from a layer's `[client.providers]`, or from the abstract
+/// provider's line, which reaches every provider there is.
+fn plan_templates(
+    layers: &[(PathBuf, toml::Value)],
+    reads: &[crate::shape::seeded::Seeded],
+    registry: &ProviderRegistry,
+    out: &mut HashMap<String, Writes>,
+) -> Vec<String> {
+    let config = Config::from_layers(layers.to_vec());
+    let empty = toml::Table::new();
+    let providers = config.daemon().providers.as_table().unwrap_or(&empty);
+    let lines = match crate::shape::provider::ProviderLines::new(providers) {
+        Ok(lines) => lines,
+        // The same errors the registry's load reports; nothing is rendered
+        // from lines that do not load.
+        Err(errors) => return errors,
+    };
+
+    let mut names: std::collections::BTreeSet<String> =
+        registry.provider_names().into_iter().collect();
+    names.extend(config.named_providers());
+    names.retain(|name| crate::shape::seeded::provider_name_error("", name, true).is_none());
+
+    let mut errors = Vec::new();
+    for ((file, layer), read) in layers.iter().zip(reads) {
+        let label = Config::config_label(file);
+        let client = layer
+            .get("client")
+            .and_then(|c| serde_json::to_value(c).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        for name in names.iter().filter(|n| !read.fenced.contains(*n)) {
+            match lines.template_tree(name, &client) {
+                Ok(Some(tree)) => {
+                    let value = Value::from_json(&tree).expect("a template tree has no null");
+                    out.entry(format!("{name}:template"))
+                        .or_default()
+                        .push((label.clone(), value));
+                }
+                Ok(None) => {}
+                Err(e) => errors.push(format!("{label}: {e}")),
+            }
+        }
+    }
+    errors
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layer(text: &str) -> (PathBuf, toml::Value) {
+        (PathBuf::from("/f.toml"), toml::from_str(text).unwrap())
+    }
+
+    fn planned(layers: &[(PathBuf, toml::Value)]) -> HashMap<String, Writes> {
+        plan(layers, &ProviderRegistry::new()).0
+    }
+
+    #[test]
+    fn a_layer_seeds_only_the_templates_that_validated() {
+        let layers = [
+            crate::daemon::defaults::comb_layer(),
+            layer(
+                "[client.providers.bad]\ntemplate.n = 1\n\n[client.providers.ok]\ntemplate.n = \"{{ 1 }}\"\n",
+            ),
+        ];
+        let (planned, errors) = plan(&layers, &ProviderRegistry::new());
+        assert_eq!(errors.len(), 1, "the bad one is reported once: {errors:?}");
+        assert!(
+            errors[0].starts_with("config:/f.toml: [client.providers.bad] template 'n'"),
+            "{errors:?}"
+        );
+        let mut namespaces: Vec<&str> = planned
+            .keys()
+            .map(String::as_str)
+            .filter(|n| n.ends_with(":template"))
+            .collect();
+        namespaces.sort();
+        assert_eq!(namespaces, ["ok:template"]);
+    }
+
+    #[test]
+    fn each_layer_seeds_from_its_own_client_tree() {
+        let layers = [
+            crate::daemon::defaults::comb_layer(),
+            layer("[client.providers.aws]\ntemplate.a = \"1\"\n"),
+            layer("[client.providers.aws]\ntemplate.b = \"2\"\n"),
+            layer("[daemon]\n"),
+        ];
+        let planned = planned(&layers);
+        let writes = &planned["aws:template"];
+        assert_eq!(
+            writes.len(),
+            2,
+            "the layer with no client tree writes nothing"
+        );
+        assert_eq!(
+            writes[0].1,
+            Value::from_json(&serde_json::json!({"a": "1"})).unwrap()
+        );
+        assert_eq!(
+            writes[1].1,
+            Value::from_json(&serde_json::json!({"b": "2"})).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_template_line_of_a_provider_reads_another_providers_client_tree() {
+        let layers = [
+            crate::daemon::defaults::comb_layer(),
+            layer("[daemon.providers.git]\ntemplate = \"{{ client.providers.aws.template }}\"\n"),
+            layer("[client.providers.aws]\ntemplate.region = \"{{ 1 }}\"\n"),
+        ];
+        let planned = planned(&layers);
+        assert_eq!(planned["git:template"].len(), 1);
+        assert_eq!(planned["aws:template"].len(), 1);
+        assert_eq!(planned["git:template"][0].1, planned["aws:template"][0].1);
+    }
+
+    #[test]
+    fn a_template_line_that_gives_a_non_table_is_reported_and_seeds_nothing() {
+        let layers = [layer(
+            "[daemon.providers.git]\ntemplate = \"{{ 1 }}\"\n\n[client.providers.git]\ntemplate.a = \"x\"\n",
+        )];
+        let (planned, errors) = plan(&layers, &ProviderRegistry::new());
+        assert!(!planned.contains_key("git:template"), "{planned:?}");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("config:/f.toml: git template: ")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_custom_abstract_template_reaches_providers_no_file_names() {
+        let layers = [
+            crate::daemon::defaults::comb_layer(),
+            layer("[daemon.providers._]\ntemplate = \"{{ {'where': '{{ 1 }}'} }}\"\n"),
+        ];
+        let planned = plan(&layers, &ProviderRegistry::with_defaults()).0;
+        assert!(
+            planned.contains_key("git:template"),
+            "a built-in no file names has the abstract template: {:?}",
+            planned.keys().collect::<Vec<_>>()
+        );
+    }
 }

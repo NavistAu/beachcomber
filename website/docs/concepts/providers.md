@@ -78,6 +78,19 @@ return = "{{ result | poll('15s', 8) | nearest }}"
 
 A built-in Source takes `return` and nothing else; the line replaces its schedule whole, and its `nearest` setting with it (a retuned git Source that leaves `| nearest` off cascades), and a built-in with no `return` keeps its own (the `_` Source lines reach it only through `| super`). See the [configuration reference](/docs/reference/configuration-reference).
 
+## What a provider is
+
+A provider is its Sources plus three lines of its own, which the shipped `defaults/00-comb.toml` writes once for every provider as the abstract provider `[daemon.providers._]`:
+
+```toml
+[daemon.providers._]
+template = "{{ client.providers[_.name].template }}"     # this provider's client templates, seeded as the :template facet
+result   = "{{ merge(sources) }}"                         # call each Source, merge the objects
+return   = "{{ result | facet('template', template) }}"   # the data, with the :template facet beside it
+```
+
+`result` is what the provider reads as: each of its Sources is called (`sources.head()` is that Source's stored record where the read is standing) and the records are merged, so a provider with two Sources is one tree. `return` hands that tree out, as it is or reshaped, and attaches the `:template` facet beside it. A provider may write any of the three; a `return` can pipe into the abstract one with `| super` (a `template` or `result` line is the whole value, and `| super` there is a load error). See the [configuration reference](/docs/reference/configuration-reference).
+
 ## Where an instance lives
 
 A config Source's `root` line says which directory an instance answers for: `root = "{{ lup('.git') | dirname }}"` gives one instance per project, shared by every subdirectory of it; no `root` is the single instance at `~`. Built-in sources do the same in Rust: git walks up to `.git/`, mise looks for `mise.toml` or `.mise.toml`, and `battery`, `hostname` and `load` are one instance for the daemon.

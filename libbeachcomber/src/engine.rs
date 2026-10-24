@@ -36,11 +36,10 @@ pub struct EngineCtx {
 /// call fails with the on-topic "exec() is disabled in this context" rather
 /// than a generic "unknown function".
 pub fn build_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
-    let mut env = build_env();
-    env.set_undefined_behavior(UndefinedBehavior::Chainable);
+    let mut jinja = build_pure_engine_env();
     let for_fn = ctx.clone();
     let for_exec_filter = ctx.clone();
-    env.add_function(
+    jinja.add_function(
         "exec",
         move |args: Rest<MjValue>, kwargs: Kwargs| match args.as_slice() {
             [command] => exec(&for_fn, command, kwargs),
@@ -49,7 +48,7 @@ pub fn build_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
             )),
         },
     );
-    env.add_filter(
+    jinja.add_filter(
         "exec",
         move |piped: MjValue, args: Rest<MjValue>, kwargs: Kwargs| {
             if !args.is_empty() {
@@ -61,22 +60,33 @@ pub fn build_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
         },
     );
     let for_filter = ctx.clone();
-    env.add_filter("read", move |path: MjValue| read(&for_filter, &path));
-    env.add_function("lup", move |name: String, kwargs: Kwargs| {
+    jinja.add_filter("read", move |path: MjValue| read(&for_filter, &path));
+    jinja.add_function("lup", move |name: String, kwargs: Kwargs| {
         lup(&ctx, &name, kwargs)
     });
-    env.add_filter("dirname", dirname);
-    env.add_filter("pluck", pluck);
-    env.add_filter("fromini", fromini);
-    env.add_filter("merge", |first: MjValue, rest: Rest<MjValue>| {
+    jinja
+}
+
+/// The pure part of the engine environment: the shared filters, `merge` and
+/// the rest that touch no file, process or network, with undefined values
+/// chainable. [`build_engine_env`] adds `exec`, `read` and `lup` to it; a
+/// surface that must do no IO (a provider's lines, run on every read) stops
+/// here.
+pub fn build_pure_engine_env<'a>() -> Environment<'a> {
+    let mut jinja = build_env();
+    jinja.set_undefined_behavior(UndefinedBehavior::Chainable);
+    jinja.add_filter("dirname", dirname);
+    jinja.add_filter("pluck", pluck);
+    jinja.add_filter("fromini", fromini);
+    jinja.add_filter("merge", |first: MjValue, rest: Rest<MjValue>| {
         merge_values(std::iter::once(first).chain(rest.iter().cloned()))
     });
-    env.add_function("merge", |args: Rest<MjValue>| match args.as_slice() {
+    jinja.add_function("merge", |args: Rest<MjValue>| match args.as_slice() {
         [list] if list.kind() == ValueKind::Seq => merge_values(list.try_iter()?),
         _ => merge_values(args.iter().cloned()),
     });
-    env.add_filter("map", map);
-    env
+    jinja.add_filter("map", map);
+    jinja
 }
 
 fn none() -> MjValue {
@@ -302,10 +312,12 @@ fn fromini(text: String) -> Result<MjValue, Error> {
     Ok(MjValue::from_serialize(serde_json::Value::Object(out)))
 }
 
-/// Deep merge, later wins; a non-object replaces; a `null` leaf removes.
-fn merge_values(values: impl Iterator<Item = MjValue>) -> Result<MjValue, Error> {
+/// Deep merge, later wins; a non-object replaces; a `null` leaf removes. A
+/// `none` or undefined operand contributes nothing: it does not replace what
+/// the others gave.
+pub fn merge_values(values: impl Iterator<Item = MjValue>) -> Result<MjValue, Error> {
     let mut acc = serde_json::Value::Null;
-    for v in values {
+    for v in values.filter(|v| !is_blank(v)) {
         let json = serde_json::to_value(&v).map_err(|e| op_error(format!("merge(): {e}")))?;
         acc = merge_json(acc, json);
     }

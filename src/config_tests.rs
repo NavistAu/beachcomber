@@ -536,7 +536,11 @@ fn a_file_seeds_only_what_validated() {
     let read = crate::shape::seeded::read(std::path::Path::new("/f.toml"), &layer);
     let mut namespaces: Vec<&str> = read.writes.iter().map(|(n, _)| n.as_str()).collect();
     namespaces.sort();
-    assert_eq!(namespaces, ["*:cache", "ok:template"]);
+    assert_eq!(
+        namespaces,
+        ["*:cache"],
+        "a template is the provider's template line's to seed, not the file check's"
+    );
     assert_eq!(read.errors.len(), 2);
 }
 
@@ -573,15 +577,8 @@ fn settings_only_keeps_a_non_cache_sibling_as_a_setting() {
 /// daemon composes defaults and `config.toml`: two layers, each with its own
 /// label, and no `config_path` (so nothing is read or seeded from disk).
 pub(crate) fn with_shipped_defaults(user: &str) -> Config {
-    let (_, shipped) = crate::daemon::defaults::SHIPPED
-        .iter()
-        .find(|(name, _)| *name == "00-comb.toml")
-        .expect("00-comb.toml is shipped");
     Config::from_layers(vec![
-        (
-            PathBuf::from("/shipped/00-comb.toml"),
-            toml::from_str(shipped).unwrap(),
-        ),
+        crate::daemon::defaults::comb_layer(),
         (
             PathBuf::from("/user.toml"),
             toml::from_str(user).expect("valid toml"),
@@ -621,6 +618,67 @@ template.providers = "{{ poll.sources }}"
     let sources = registry.provider_sources("poll").expect("provider poll");
     assert_eq!(sources[0].name, "return");
     assert_eq!(sources[0].fields[0].name, "sources");
+}
+
+/// Two Sources of `demo`, both declaring `x`.
+const SHARED_FIELD: &str = r#"
+[daemon.providers.demo.sources.a]
+data = "{{ 1 }}"
+result.x = "{{ data }}"
+
+[daemon.providers.demo.sources.b]
+data = "{{ 2 }}"
+result.x = "{{ data }}"
+"#;
+
+#[test]
+fn the_default_result_forbids_two_sources_declaring_one_field() {
+    let errors = source_errors(SHARED_FIELD);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("field 'x' is declared by both Source 'a' and Source 'b'"),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn an_explicit_merge_has_chosen_an_order_and_may_share_a_field() {
+    let user = format!(
+        "[daemon.providers.demo]\nresult = \"{{{{ merge(sources.a(), sources.b()) }}}}\"\n{SHARED_FIELD}"
+    );
+    assert_eq!(source_errors(&user), Vec::<String>::new());
+    let registry = shipped_registry(&user);
+    assert_eq!(registry.sources_for_key("demo", "x"), vec!["a", "b"]);
+}
+
+#[test]
+fn a_schedule_decorator_on_a_provider_line_is_a_load_error() {
+    for (key, line) in [
+        ("return", "{{ result | poll('5s') }}"),
+        ("return", "{{ result | watch('/etc/hosts') }}"),
+        ("result", "{{ merge(sources) | ttl(5) }}"),
+    ] {
+        let user = format!("[daemon.providers.demo]\n{key} = \"{line}\"\n");
+        let errors = source_errors(&user);
+        assert_eq!(errors.len(), 1, "{line}: {errors:?}");
+        assert!(
+            errors[0].starts_with(&format!("[daemon.providers.demo] {key}: "))
+                && errors[0].contains("schedule decorator"),
+            "{line}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn a_provider_line_must_be_a_string() {
+    for key in ["template", "result", "return"] {
+        assert_eq!(
+            seeded_errors(&format!("[daemon.providers.demo]\n{key} = 3\n")),
+            vec![format!(
+                "[daemon.providers.demo] {key} must be a string (a jinja line), not integer"
+            )]
+        );
+    }
 }
 
 #[test]
@@ -959,8 +1017,8 @@ fn an_unknown_key_in_a_source_table_is_an_error() {
     );
     // The provider table fences too.
     assert_eq!(
-        seeded_errors("[daemon.providers.demo]\nreturn = \"x\"\n"),
-        vec!["unknown key 'return' in [daemon.providers.demo]".to_string()]
+        seeded_errors("[daemon.providers.demo]\ncommand = \"x\"\n"),
+        vec!["unknown key 'command' in [daemon.providers.demo]".to_string()]
     );
 }
 

@@ -50,6 +50,14 @@ impl Env {
             std::fs::write(cfg_dir.join("conf.d").join(name), body).unwrap();
         }
 
+        // The daemon writes its managed defaults before it composes its
+        // configuration; an in-process one is not `main`, so the fixture does.
+        beachcomber::daemon::defaults::write_managed_defaults(
+            &Config::defaults_dir_for(&cfg_dir.join("config.toml")),
+            env!("BEACHCOMBER_VERSION"),
+        )
+        .unwrap();
+
         let sock_dir = TempDir::new().unwrap();
         let sock = sock_dir.path().join("t.sock");
         Env {
@@ -552,7 +560,12 @@ async fn a_provider_decay_table_seeds_its_own_cache_facet() {
     beachcomber::daemon::seed::seed_facets(
         &cache,
         &registry,
-        &Config::read_layers(None, Some(&main), &e.cfg_dir.join("conf.d")).layers,
+        &Config::read_layers(
+            Some(&e.cfg_dir.join("defaults")),
+            Some(&main),
+            &e.cfg_dir.join("conf.d"),
+        )
+        .layers,
     );
     assert_eq!(cache.resolve_decay("git", None), 2);
     assert_eq!(
@@ -787,7 +800,10 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
 
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
-    let layers = || Config::read_layers(None, Some(&cfg), &conf_d).layers;
+    let defaults = tmp.path().join("defaults");
+    beachcomber::daemon::defaults::write_managed_defaults(&defaults, env!("CARGO_PKG_VERSION"))
+        .unwrap();
+    let layers = || Config::read_layers(Some(&defaults), Some(&cfg), &conf_d).layers;
     beachcomber::daemon::seed::seed_facets(&cache, &registry, &layers());
     let leaf = |name: &str| {
         cache
@@ -798,7 +814,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
 
     let (tx, rx) = std::sync::mpsc::channel();
     let (watch_cache, watch_registry) = (cache.clone(), registry.clone());
-    let (watch_cfg, watch_conf_d) = (cfg.clone(), conf_d.clone());
+    let (watch_cfg, watch_conf_d, watch_defaults) = (cfg.clone(), conf_d.clone(), defaults.clone());
     let stop = CancellationToken::new();
     beachcomber::daemon::config_watch::spawn_config_self_watch_with(
         cfg.clone(),
@@ -807,7 +823,9 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
         stop.clone(),
         move |kind, _| {
             if kind == beachcomber::daemon::config_watch::ChangeKind::FacetsOnly {
-                let layers = Config::read_layers(None, Some(&watch_cfg), &watch_conf_d).layers;
+                let layers =
+                    Config::read_layers(Some(&watch_defaults), Some(&watch_cfg), &watch_conf_d)
+                        .layers;
                 beachcomber::daemon::seed::reseed_facets(&watch_cache, &watch_registry, &layers);
             }
             let _ = tx.send(kind);
@@ -1210,9 +1228,9 @@ fn comb_check_config_reports_a_facet_error() {
 /// reading of the file — as one verdict list under one count.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn comb_check_config_renders_both_views_as_one_list() {
-    // A valid file: the daemon starts, and the client has something to say
-    // that the daemon does not — that an in-process daemon wrote no managed
-    // defaults (only `comb daemon` does).
+    // A valid file: the daemon starts, and the client reads the same file for
+    // itself. The fixture wrote the managed defaults at this binary's version,
+    // as `comb daemon` does, so the defaults line is a pass.
     let e = Env::new("[client.providers.x]\ntemplate.a = \"{{ y }}\"\n", &[]);
     let _h = e.serve().await;
 
@@ -1240,13 +1258,12 @@ async fn comb_check_config_renders_both_views_as_one_list() {
          \x20 [PASS] daemon   config parsed\n\
          \x20 [PASS] daemon   0 config Sources loaded\n\
          \x20 [PASS] local    config file valid\n\
-         \x20 [WARN] local    defaults {}: 9 shipped file(s) missing or stale — the daemon \
-         writes them on its next start\n\
-         \n\
-         (1 warning(s))\n\
+         \x20 [PASS] local    defaults {} ({} files, comb {})\n\
          \n",
         e.cfg_dir.join("config.toml").display(),
         e.cfg_dir.join("defaults").display(),
+        beachcomber::daemon::defaults::SHIPPED.len(),
+        env!("BEACHCOMBER_VERSION"),
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
@@ -1254,5 +1271,5 @@ async fn comb_check_config_renders_both_views_as_one_list() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(out.status.code(), Some(1), "a warning exits 1");
+    assert_eq!(out.status.code(), Some(0), "all passed exits 0");
 }

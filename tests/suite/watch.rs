@@ -27,7 +27,7 @@ fn setup() -> (
     let sock = tmp.path().join("test.sock");
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let mut registry = ProviderRegistry::with_defaults();
+    let mut registry = crate::common::registry::with_shipped_defaults();
     registry.register(Box::new(Watched)).unwrap();
     (tmp, sock, cache, Arc::new(registry), watchers)
 }

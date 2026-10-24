@@ -1,0 +1,1447 @@
+//! A provider's own lines: `template`, `result` and `return`.
+//!
+//! `[daemon.providers.<p>]` takes the three as jinja lines, and an absent one
+//! comes whole from `[daemon.providers._]`, the abstract provider
+//! `defaults/00-comb.toml` writes.
+//!
+//! - `template` is read when the facets are seeded, once per configuration
+//!   layer, over that layer's `[client]` tree. What it gives is the provider's
+//!   `<p>:template` records.
+//! - `result` is read when the provider's records are read, once per directory
+//!   layer, over the provider's own Sources (`sources`). What it gives is that
+//!   layer's Source records.
+//! - `return` is read when a `get` is answered, once, over the data read
+//!   (`result`) and the `template` facet at the requested path. What it gives
+//!   is what the provider answers; the facets it attaches with
+//!   `facet(name, obj)` ride beside the data, and only `template` is consumed.
+//!
+//! `| super` pipes a value into the line one step up the chain, and is
+//! meaningful on `return` alone: a `template` or `result` line is the whole
+//! value, and takes nothing piped in.
+//!
+//! The abstract provider is read like any other table: from the configuration
+//! as composed, the managed `defaults/` layer included. A configuration with
+//! no such layer has no `template` and no `return` line, so no `:template`
+//! facet is seeded or attached; its `result` is the one line the code
+//! supplies, `{{ merge(sources) }}` ([`DEFAULT_RESULT`]).
+//!
+//! The shipped lines are what nearly every read runs, so the renderer is
+//! skipped for them: a `result` that is the default merge is the per-Source
+//! merge done natively, and a `return` that is the identity (with or without
+//! the `template` facet) hands the data on as it is. Both are the same answer
+//! the lines would give.
+//!
+//! Schedule decorators (`poll`, `watch`, ...) belong to a Source's `return`; on
+//! a provider's line they are a load error. So are `exec`, `read`, `lup`, `url`
+//! and `plugin`: these lines run on a read, which does no IO.
+
+use crate::cache::{
+    COMPUTED_PREFIX, Cache, Layers, MergedRead, RecordFreshness, merge_layer, merge_read,
+    note_records, walk_leaves,
+};
+use crate::engine::{FACET_SINK, FacetSink, provider_engine_env};
+use crate::provider::Value;
+use crate::provider::registry::ProviderRegistry;
+use crate::shape::decorators::named_decorators;
+use crate::shape::prototype::{Kind, Link, chain, super_chain};
+use dashmap::DashSet;
+use libbeachcomber::engine::op_error;
+use libbeachcomber::eval::{single_tag_expression, undeclared_names};
+use minijinja::value::{Object, ObjectRepr, Value as MjValue};
+use minijinja::{Environment, Error};
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::time::Instant;
+
+/// The `result` of a provider whose chain has no line: the merge of its
+/// Sources. The one line the code supplies; every other comes from a file.
+pub const DEFAULT_RESULT: &str = "{{ merge(sources) }}";
+
+/// How many distinct render failures are remembered, so each is logged once. A
+/// name no `[daemon.providers.<p>]` table owns can fail too, and the set must
+/// not grow with the names a client asks for.
+const MAX_LOGGED: usize = 256;
+
+/// What a provider line may not call: these lines run on every read.
+const NOT_AVAILABLE: [&str; 5] = ["exec", "read", "lup", "url", "plugin"];
+
+/// A line of a provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    Template,
+    Result,
+    Return,
+}
+
+impl Key {
+    /// The three keys, in the order a file lists them.
+    pub const ALL: [Key; 3] = [Key::Template, Key::Result, Key::Return];
+
+    /// The key as the file spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Key::Template => "template",
+            Key::Result => "result",
+            Key::Return => "return",
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Key::Template => 0,
+            Key::Result => 1,
+            Key::Return => 2,
+        }
+    }
+
+    /// The names a line of this key may read; any other is a load error.
+    /// On `return`, `result` is also the value piped in by a nearer line's
+    /// `| super`.
+    fn sees(self) -> &'static [&'static str] {
+        match self {
+            Key::Template => &["client", "_"],
+            Key::Result => &["sources", "_"],
+            // `sources` and `daemon` arrive with Source calls.
+            Key::Return => &["result", "template", "_"],
+        }
+    }
+}
+
+/// What a provider's `return` does, told from its effective line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReturnKind {
+    /// The data as read, and no facet. No line, and `{{ result }}`.
+    #[default]
+    Identity,
+    /// The data as read, with the `template` facet beside it: the shipped line.
+    IdentityWithTemplate,
+    /// Any other line: rendered once per `get`.
+    Line,
+}
+
+/// One line of a chain, and the table that wrote it.
+#[derive(Debug, Clone)]
+struct Level {
+    path: String,
+    line: String,
+}
+
+/// The lines a provider's `template`, `result` and `return` resolve to, each
+/// nearest first: its own, then the abstract provider's. `| super` on a
+/// `return` steps down this list.
+#[derive(Debug, Default)]
+pub struct Chains {
+    levels: [Vec<Level>; 3],
+    /// What the renderer is handed per key: the whole chain for `return`, the
+    /// nearest line alone for the others.
+    lines: [Arc<Vec<String>>; 3],
+    return_kind: ReturnKind,
+    result_default: bool,
+    /// Whether any line of the `return` chain reads `result` / `template`.
+    return_reads_result: bool,
+    return_reads_template: bool,
+}
+
+impl Chains {
+    fn of(&self, key: Key) -> &[Level] {
+        &self.levels[key.index()]
+    }
+
+    /// The text of `key`'s effective line (its nearest), if any applies.
+    pub fn effective(&self, key: Key) -> Option<&str> {
+        self.of(key).first().map(|l| l.line.as_str())
+    }
+
+    /// Whether `result` is the default merge of the provider's Sources.
+    pub fn result_is_default(&self) -> bool {
+        self.result_default
+    }
+
+    pub fn return_kind(&self) -> ReturnKind {
+        self.return_kind
+    }
+
+    /// Whether a read of the provider is the Sources' records as they are
+    /// stored: the default `result` and an identity `return`. Then a field is
+    /// owned by the Source that declares it; otherwise a line decides what
+    /// exists, and any Source may be behind any field.
+    pub fn reads_by_default(&self) -> bool {
+        self.result_default && self.return_kind != ReturnKind::Line
+    }
+}
+
+fn links<'t>(providers: &'t toml::Table, name: &str) -> Vec<Link<'t>> {
+    if name == "_" {
+        return providers
+            .get("_")
+            .and_then(toml::Value::as_table)
+            .map(|table| Link {
+                path: "[daemon.providers._]".into(),
+                table,
+            })
+            .into_iter()
+            .collect();
+    }
+    chain(providers, Kind::Provider, name, "")
+}
+
+/// The chains of `name` among `providers` (a composed `[daemon.providers]`). A
+/// line of the wrong type is the file check's error, and is not in a chain.
+fn chains(env: &Environment<'_>, providers: &toml::Table, name: &str) -> Chains {
+    let links = links(providers, name);
+    let levels = |key: Key| -> Vec<Level> {
+        let mut found: Vec<Level> = super_chain(&links, key.name())
+            .into_iter()
+            .filter_map(|(at, value)| {
+                Some(Level {
+                    path: links[at].path.clone(),
+                    line: value.as_str()?.to_string(),
+                })
+            })
+            .collect();
+        if found.is_empty() && key == Key::Result {
+            found.push(Level {
+                path: "(built in)".into(),
+                line: DEFAULT_RESULT.into(),
+            });
+        }
+        found
+    };
+    let levels = [
+        levels(Key::Template),
+        levels(Key::Result),
+        levels(Key::Return),
+    ];
+    let lines_of = |key: Key| -> Arc<Vec<String>> {
+        let all = levels[key.index()].iter().map(|l| l.line.clone());
+        Arc::new(if key == Key::Return {
+            all.collect()
+        } else {
+            all.take(1).collect()
+        })
+    };
+    let lines = [
+        lines_of(Key::Template),
+        lines_of(Key::Result),
+        lines_of(Key::Return),
+    ];
+    let reads: BTreeSet<String> = lines[Key::Return.index()]
+        .iter()
+        .filter_map(|line| undeclared_names(env, line, false).ok())
+        .flatten()
+        .collect();
+    let return_kind = match lines[Key::Return.index()].first() {
+        None => ReturnKind::Identity,
+        Some(line) => return_kind_of(line),
+    };
+    let result_default = lines[Key::Result.index()]
+        .first()
+        .is_some_and(|l| is_default_result(l));
+    Chains {
+        levels,
+        lines,
+        return_kind,
+        result_default,
+        return_reads_result: reads.contains("result"),
+        return_reads_template: reads.contains("template"),
+    }
+}
+
+/// `line` with its whitespace gone and its quotes made single: what two
+/// spellings of the same short line have in common.
+fn squeezed(line: &str) -> String {
+    line.chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| if c == '"' { '\'' } else { c })
+        .collect()
+}
+
+/// Whether `line` is the default `result`: `{{ merge(sources) }}`, whitespace
+/// aside. Only then do two Sources of a provider owe each other distinct field
+/// names; an author who writes the merge has chosen an order.
+///
+/// A text test, because minijinja exposes no syntax tree to ask "is this
+/// exactly `merge(sources)`"; the single tag is told from the text around it
+/// by the same rule every other line is.
+pub fn is_default_result(line: &str) -> bool {
+    single_tag_expression(line).is_some_and(|expr| squeezed(expr) == "merge(sources)")
+}
+
+/// The two `return` lines that hand the data on as it is (the second also
+/// attaching the `template` facet), told by text for the reason
+/// [`is_default_result`] is.
+fn return_kind_of(line: &str) -> ReturnKind {
+    let Some(expr) = single_tag_expression(line) else {
+        return ReturnKind::Line;
+    };
+    match squeezed(expr).as_str() {
+        "result" => ReturnKind::Identity,
+        "result|facet('template',template)" => ReturnKind::IdentityWithTemplate,
+        _ => ReturnKind::Line,
+    }
+}
+
+/// What a line gave, and the facets it attached on the way.
+#[derive(Debug, Default)]
+pub struct Evaluated {
+    /// `None`: the line gave none (or an undefined).
+    pub value: Option<MjValue>,
+    /// `facet(name, obj)` calls in order; the last of a name is its value.
+    pub facets: Vec<(String, serde_json::Value)>,
+}
+
+/// One of a provider's Sources as a read found it.
+pub struct Bound<'a> {
+    pub name: &'a str,
+    /// The Source's stored map at the entry being read, with its freshness;
+    /// `None` when the read did not visit its instance or it holds nothing.
+    pub held: Option<(&'a HashMap<String, Value>, RecordFreshness)>,
+}
+
+/// What `return` gave: the data the provider answers, and the `template` facet
+/// beside it.
+#[derive(Debug)]
+pub struct Returned {
+    pub read: Option<MergedRead>,
+    pub template: Option<HashMap<String, Value>>,
+}
+
+/// A provider's compiled lines, for one composed configuration. The chains are
+/// resolved once per provider the configuration names; every other name shares
+/// the abstract provider's.
+pub struct ProviderLines {
+    env: Environment<'static>,
+    own: HashMap<String, Arc<Chains>>,
+    shared: Arc<Chains>,
+    logged: DashSet<String>,
+    /// Whether the log said that it stopped remembering failures.
+    suppressed: AtomicBool,
+}
+
+impl ProviderLines {
+    /// The lines `providers` (a composed `[daemon.providers]`) say. Every line
+    /// of every table, `_`'s included, is checked here: a schedule decorator,
+    /// a call that does IO, a `| super` where it means nothing, a name the line
+    /// may not read, or text that does not compile is a load error.
+    pub fn new(providers: &toml::Table) -> Result<Self, Vec<String>> {
+        let mut env = provider_engine_env();
+        env.add_filter("super", step_up);
+        let own = providers
+            .keys()
+            .map(|name| (name.clone(), Arc::new(chains(&env, providers, name))))
+            .collect();
+        let shared = Arc::new(chains(&env, providers, "_"));
+        let lines = Self {
+            env,
+            own,
+            shared,
+            logged: DashSet::new(),
+            suppressed: AtomicBool::new(false),
+        };
+        let errors = lines.lint();
+        if errors.is_empty() {
+            Ok(lines)
+        } else {
+            Err(errors)
+        }
+    }
+
+    fn lint(&self) -> Vec<String> {
+        let mut errors = BTreeSet::new();
+        for chains in self.own.values().chain(std::iter::once(&self.shared)) {
+            for key in Key::ALL {
+                for Level { path, line } in chains.of(key) {
+                    let at = format!("{path} {}", key.name());
+                    if let Some(decorator) = named_decorators(line).first() {
+                        errors.insert(format!(
+                            "{at}: {decorator}() is a schedule decorator: it belongs on a \
+                             Source's return, not a provider's line"
+                        ));
+                        continue;
+                    }
+                    let used = used_names(line);
+                    if let Some(name) = NOT_AVAILABLE.iter().find(|n| used.contains_key(**n)) {
+                        errors.insert(format!(
+                            "{at}: {name} is not available in a provider's line: these lines \
+                             run on every read and do no IO"
+                        ));
+                        continue;
+                    }
+                    if key != Key::Return && used.get("super") == Some(&Use::Filter) {
+                        errors.insert(format!(
+                            "{at}: | super means nothing on a provider's {} line, which is the \
+                             whole value and takes nothing piped in: write the whole line, or \
+                             pipe into a `return`",
+                            key.name()
+                        ));
+                        continue;
+                    }
+                    match undeclared_names(&self.env, line, false) {
+                        Err(e) => {
+                            errors.insert(format!("{at}: {e}"));
+                        }
+                        Ok(names) => {
+                            if let Some(unknown) =
+                                names.iter().find(|n| !key.sees().contains(&n.as_str()))
+                            {
+                                errors.insert(format!(
+                                    "{at}: unknown name '{unknown}' (this line sees {})",
+                                    key.sees().join(", ")
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        errors.into_iter().collect()
+    }
+
+    /// The resolved chains of `provider`: its own when the configuration has a
+    /// table for it, the abstract provider's otherwise.
+    pub fn chains_for(&self, provider: &str) -> Arc<Chains> {
+        self.own.get(provider).unwrap_or(&self.shared).clone()
+    }
+
+    /// Render `provider`'s `key` line against `vars`, plus `_.name`. On a
+    /// `return`, a `| super` renders the line one step up with its input as
+    /// `result`. An absent line gives none.
+    pub fn eval(
+        &self,
+        provider: &str,
+        key: Key,
+        vars: Vec<(&'static str, MjValue)>,
+    ) -> Result<Evaluated, String> {
+        let lines = self.chains_for(provider).lines[key.index()].clone();
+        if lines.is_empty() {
+            return Ok(Evaluated::default());
+        }
+        let mut vars: Vec<(String, MjValue)> =
+            vars.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        vars.push((
+            "_".into(),
+            MjValue::from_serialize(serde_json::json!({"name": provider})),
+        ));
+        let sink = MjValue::from_object(FacetSink::default());
+        let value = render_level(&self.env, &lines, 0, &Arc::new(vars), &sink)
+            .map_err(|e| format!("{provider} {}: {e}", key.name()))?;
+        let facets = sink
+            .downcast_object_ref::<FacetSink>()
+            .map(FacetSink::take)
+            .unwrap_or_default();
+        Ok(Evaluated { value, facets })
+    }
+
+    /// The `<p>:template` records `provider`'s `template` line gives over one
+    /// layer's `[client]` tree: `Ok(None)` when it gives none, an error when
+    /// what it gives is not a table of value expressions.
+    pub fn template_tree(
+        &self,
+        provider: &str,
+        client: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let vars = vec![("client", MjValue::from_serialize(client))];
+        let Some(value) = self.eval(provider, Key::Template, vars)?.value else {
+            return Ok(None);
+        };
+        let tree = serde_json::to_value(&value).map_err(|e| e.to_string())?;
+        match check_tree(&tree, "") {
+            Ok(()) if tree.is_object() => Ok(Some(tree)),
+            Ok(()) => Err(format!("{provider} template: gave a value, not a table")),
+            Err(at) => Err(format!(
+                "{provider} template: '{at}' is not a value expression or a group"
+            )),
+        }
+    }
+
+    /// Note that a line failed to render, logging `message` the first time it
+    /// is seen. A message names its provider and key, so this is once per
+    /// (provider, key, message): a later, different failure is logged too.
+    /// Returns whether this was the first.
+    pub fn note_error(&self, message: &str) -> bool {
+        if self.logged.len() >= MAX_LOGGED && !self.logged.contains(message) {
+            if !self.suppressed.swap(true, Ordering::Relaxed) {
+                tracing::error!("further provider-line failures suppressed");
+            }
+            return false;
+        }
+        let first = self.logged.insert(message.to_string());
+        if first {
+            tracing::error!("{message}");
+        }
+        first
+    }
+
+    #[cfg(test)]
+    fn suppressed_notice_given(&self) -> bool {
+        self.suppressed.load(Ordering::Relaxed)
+    }
+
+    /// Merge `provider`'s records at one entry into `out`: its `result` over
+    /// the Sources `bound` found there. Returns whether anything merged.
+    ///
+    /// The default `result` is the old merge, done natively in declaration
+    /// order straight into `out`: each Source's leaves keep that Source's
+    /// freshness. Any other line is rendered, and each leaf it gives takes the
+    /// freshness of the one Source holding that very value there; a leaf no
+    /// single Source holds is computed, and is as old as the oldest input
+    /// behind it.
+    pub fn assemble(
+        &self,
+        provider: &str,
+        at: Option<&str>,
+        bound: &[Bound<'_>],
+        out: &mut MergedRead,
+    ) -> Result<bool, String> {
+        if self.chains_for(provider).result_default {
+            let mut any = false;
+            for (fields, fresh) in bound.iter().filter_map(|b| b.held.as_ref()) {
+                merge_layer(&mut out.fields, &mut out.records, fields, fresh, "");
+                any = true;
+            }
+            return Ok(any);
+        }
+        let calls = bound
+            .iter()
+            .map(|b| {
+                (
+                    b.name.to_string(),
+                    b.held
+                        .as_ref()
+                        .and_then(|(fields, _)| serde_json::to_value(fields).ok()),
+                )
+            })
+            .collect();
+        let sources = MjValue::from_object(crate::engine::Sources::new(calls));
+        let evaluated = self.eval(provider, Key::Result, vec![("sources", sources)])?;
+        let Some(value) = evaluated.value else {
+            return Ok(false);
+        };
+        let Some(Value::Object(fields)) = serde_json::to_value(&value)
+            .ok()
+            .as_ref()
+            .and_then(Value::from_json)
+        else {
+            return Err(format!(
+                "{provider} result: a provider's result is a map of fields"
+            ));
+        };
+        if fields.is_empty() {
+            return Ok(false);
+        }
+        let inputs: Vec<Input> = bound
+            .iter()
+            .filter_map(|b| {
+                let (held, fresh) = b.held.as_ref()?;
+                let mut records = HashMap::new();
+                for (k, v) in *held {
+                    note_records(&mut records, k, v, fresh);
+                }
+                Some(Input::new(held, records))
+            })
+            .collect();
+        let records = attribute(&fields, &inputs, at, "result");
+        merge_read(&mut out.fields, &mut out.records, &fields, &records, "");
+        Ok(true)
+    }
+
+    /// What `provider` answers: its `return` over `result`, the data its
+    /// records gave, and the `template` facet (read only when the line reads
+    /// it). The identity lines are not rendered.
+    pub fn returned(
+        &self,
+        provider: &str,
+        result: Option<MergedRead>,
+        template: impl FnOnce() -> Option<HashMap<String, Value>>,
+    ) -> Returned {
+        let chains = self.chains_for(provider);
+        match chains.return_kind {
+            ReturnKind::Identity => {
+                return Returned {
+                    read: result,
+                    template: None,
+                };
+            }
+            ReturnKind::IdentityWithTemplate => {
+                return Returned {
+                    read: result,
+                    template: template(),
+                };
+            }
+            ReturnKind::Line => {}
+        }
+        let as_value = |fields: Option<&HashMap<String, Value>>| {
+            fields.map_or_else(|| MjValue::from(()), MjValue::from_serialize)
+        };
+        let mut vars = Vec::new();
+        if chains.return_reads_result {
+            vars.push(("result", as_value(result.as_ref().map(|r| &r.fields))));
+        }
+        if chains.return_reads_template {
+            vars.push(("template", as_value(template().as_ref())));
+        }
+        let evaluated = match self.eval(provider, Key::Return, vars) {
+            Ok(evaluated) => evaluated,
+            Err(message) => {
+                self.note_error(&message);
+                return Returned {
+                    read: None,
+                    template: None,
+                };
+            }
+        };
+        let attached = evaluated
+            .facets
+            .into_iter()
+            .rev()
+            .find(|(name, _)| name == "template")
+            .and_then(|(_, tree)| match Value::from_json(&tree) {
+                Some(Value::Object(fields)) => Some(fields),
+                _ => None,
+            });
+        let read = match evaluated.value {
+            None => None,
+            Some(value) => match serde_json::to_value(&value)
+                .ok()
+                .as_ref()
+                .and_then(Value::from_json)
+            {
+                Some(Value::Object(fields)) if fields.is_empty() => None,
+                Some(Value::Object(fields)) => {
+                    let inputs: Vec<Input> = result
+                        .iter()
+                        .map(|r| Input::new(&r.fields, r.records.clone()))
+                        .collect();
+                    let records = attribute(&fields, &inputs, None, "return");
+                    Some(MergedRead { fields, records })
+                }
+                _ => {
+                    self.note_error(&format!(
+                        "{provider} return: a provider's return is a map of fields"
+                    ));
+                    return Returned {
+                        read: None,
+                        template: None,
+                    };
+                }
+            },
+        };
+        Returned {
+            read,
+            template: attached,
+        }
+    }
+}
+
+/// What `provider` answers over `result`, the data its records gave at
+/// `path`: its `return`, with the `provider:template` facet read at `path`
+/// only if the line reads it. The one place the data half of an answer is
+/// made, for a `get`, a `watch` frame, `p:cache` and a Source's `comb.<p>`.
+pub fn returned_over(
+    cache: &Cache,
+    registry: &ProviderRegistry,
+    provider: &str,
+    path: Option<&str>,
+    result: Option<MergedRead>,
+) -> Returned {
+    registry.lines().returned(provider, result, || {
+        cache
+            .read_merged(
+                &format!("{provider}:template"),
+                path,
+                &[],
+                registry,
+                Layers::All,
+            )
+            .map(|facet| facet.fields)
+    })
+}
+
+/// How a name is used in a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Use {
+    /// After a `|`.
+    Filter,
+    /// Followed by `(`.
+    Call,
+    Both,
+}
+
+/// The names `line` calls or pipes into, inside its tags and outside its
+/// strings. A text scan, like [`named_decorators`]: it can only miss a name
+/// built some way a line has no use for.
+fn used_names(line: &str) -> HashMap<String, Use> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut found: HashMap<String, Use> = HashMap::new();
+    let (mut in_tag, mut quote) = (false, None);
+    let mut depth = 0usize;
+    let mut last_significant = ' ';
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if !in_tag {
+            if c == '{' && matches!(next, Some('{' | '%')) {
+                in_tag = true;
+                depth = 0;
+                last_significant = ' ';
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        // `}}` ends the tag only outside any dict literal inside it.
+        if depth == 0 && ((c == '}' && next == Some('}')) || (c == '%' && next == Some('}'))) {
+            in_tag = false;
+            i += 2;
+            continue;
+        }
+        if c == '{' {
+            depth += 1;
+        } else if c == '}' {
+            depth = depth.saturating_sub(1);
+        }
+        if c == '\'' || c == '"' {
+            quote = Some(c);
+            last_significant = c;
+            i += 1;
+            continue;
+        }
+        if c.is_alphabetic() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let name: String = chars[start..i].iter().collect();
+            let after_dot = last_significant == '.';
+            let piped = last_significant == '|';
+            let called = chars[i..]
+                .iter()
+                .find(|c| !c.is_whitespace())
+                .is_some_and(|c| *c == '(');
+            if !after_dot {
+                let how = match (piped, called) {
+                    (true, true) => Some(Use::Both),
+                    (true, false) => Some(Use::Filter),
+                    (false, true) => Some(Use::Call),
+                    (false, false) => None,
+                };
+                if let Some(how) = how {
+                    found
+                        .entry(name)
+                        .and_modify(|u| {
+                            if *u != how {
+                                *u = Use::Both;
+                            }
+                        })
+                        .or_insert(how);
+                }
+            }
+            last_significant = 'a';
+            continue;
+        }
+        if !c.is_whitespace() {
+            last_significant = c;
+        }
+        i += 1;
+    }
+    found
+}
+
+/// One input to a line, for telling which Source a leaf it gave came from.
+struct Input {
+    leaves: HashMap<String, Value>,
+    records: HashMap<String, RecordFreshness>,
+    /// The record last refreshed longest ago.
+    oldest: Option<RecordFreshness>,
+}
+
+impl Input {
+    fn new(fields: &HashMap<String, Value>, records: HashMap<String, RecordFreshness>) -> Self {
+        let mut leaves = Vec::new();
+        walk_leaves("", Value::Object(fields.clone()), &mut leaves);
+        let oldest = records.values().min_by_key(|r| r.last_refreshed).cloned();
+        Self {
+            leaves: leaves.into_iter().collect(),
+            records,
+            oldest,
+        }
+    }
+}
+
+/// The freshness of each leaf of `fields`, a line's output over `inputs`. A
+/// leaf exactly one input holds with that very value is that input's record.
+/// Any other is computed by the line: labelled as such (a static label, with no
+/// Source or schedule behind it) and as old as the oldest of the inputs that
+/// hold it, or of all of them when none does.
+fn attribute(
+    fields: &HashMap<String, Value>,
+    inputs: &[Input],
+    at: Option<&str>,
+    line: &str,
+) -> HashMap<String, RecordFreshness> {
+    let mut leaves = Vec::new();
+    walk_leaves("", Value::Object(fields.clone()), &mut leaves);
+    let label: Arc<str> = Arc::from(format!("{COMPUTED_PREFIX}{line}"));
+    let entry: Option<Arc<str>> = at.map(Arc::from);
+    let computed = |pool: &[&Input]| {
+        let oldest = pool
+            .iter()
+            .filter_map(|i| i.oldest.as_ref())
+            .min_by_key(|r| r.last_refreshed);
+        RecordFreshness {
+            source: label.clone(),
+            entry: entry.clone(),
+            last_refreshed: oldest.map_or_else(Instant::now, |r| r.last_refreshed),
+            expected_interval_secs: oldest.and_then(|r| r.expected_interval_secs),
+        }
+    };
+    let all: Vec<&Input> = inputs.iter().collect();
+    let mut records = HashMap::new();
+    for (tail, value) in leaves {
+        let holders: Vec<&Input> = inputs
+            .iter()
+            .filter(|i| i.leaves.get(&tail) == Some(&value))
+            .collect();
+        let record = match holders.as_slice() {
+            [only] => only.records.get(&tail).cloned(),
+            _ => None,
+        }
+        .unwrap_or_else(|| computed(if holders.len() > 1 { &holders } else { &all }));
+        records.insert(tail, record);
+    }
+    records
+}
+
+/// A rendered template tree is tables and string leaves, with keys that name
+/// one record each. `Err` is the address of the first thing that is not.
+fn check_tree(value: &serde_json::Value, at: &str) -> Result<(), String> {
+    match value {
+        serde_json::Value::String(_) => Ok(()),
+        serde_json::Value::Object(map) => {
+            for (key, sub) in map {
+                let here = if at.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{at}.{key}")
+                };
+                if key.is_empty() || key.contains('.') {
+                    return Err(here);
+                }
+                check_tree(sub, &here)?;
+            }
+            Ok(())
+        }
+        _ => Err(at.to_string()),
+    }
+}
+
+/// The line one step up the chain, bound by `| super`.
+#[derive(Debug)]
+struct Above {
+    lines: Arc<Vec<String>>,
+    level: usize,
+    vars: Arc<Vec<(String, MjValue)>>,
+    sink: MjValue,
+}
+
+impl Object for Above {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Plain
+    }
+}
+
+/// The context name the line above is bound to.
+const ABOVE: &str = "super__";
+
+/// `value | super`: render the line above with `value` as its `result`.
+fn step_up(state: &minijinja::State, input: MjValue) -> Result<MjValue, Error> {
+    let above = state.lookup(ABOVE);
+    let Some(above) = above
+        .as_ref()
+        .and_then(|a| a.downcast_object_ref::<Above>())
+    else {
+        return Err(op_error("`| super` has nothing above it"));
+    };
+    let mut vars: Vec<(String, MjValue)> = above
+        .vars
+        .iter()
+        .filter(|(name, _)| name != "result")
+        .cloned()
+        .collect();
+    vars.push(("result".into(), input));
+    let rendered = render_level(
+        state.env(),
+        &above.lines,
+        above.level,
+        &Arc::new(vars),
+        &above.sink,
+    )
+    .map_err(op_error)?;
+    Ok(rendered.unwrap_or_else(|| MjValue::from(())))
+}
+
+/// Render `lines[level]` over `vars`; `None` when it gives none.
+fn render_level(
+    env: &Environment<'_>,
+    lines: &Arc<Vec<String>>,
+    level: usize,
+    vars: &Arc<Vec<(String, MjValue)>>,
+    sink: &MjValue,
+) -> Result<Option<MjValue>, String> {
+    let mut context: Vec<(String, MjValue)> = vars.iter().cloned().collect();
+    context.push((FACET_SINK.into(), sink.clone()));
+    if level + 1 < lines.len() {
+        context.push((
+            ABOVE.into(),
+            MjValue::from_object(Above {
+                lines: lines.clone(),
+                level: level + 1,
+                vars: vars.clone(),
+                sink: sink.clone(),
+            }),
+        ));
+    }
+    let context = MjValue::from_iter(context);
+    let line = &lines[level];
+    match single_tag_expression(line) {
+        Some(expr) => {
+            let value = env
+                .compile_expression(expr)
+                .and_then(|compiled| compiled.eval(context))
+                .map_err(|e| e.to_string())?;
+            Ok((!(value.is_undefined() || value.is_none())).then_some(value))
+        }
+        None => env
+            .render_str(line, context)
+            .map(|text| Some(MjValue::from(text)))
+            .map_err(|e| e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::Sources;
+    use serde_json::json;
+
+    fn table(text: &str) -> toml::Table {
+        toml::from_str(text).unwrap()
+    }
+
+    /// `[daemon.providers]` as the shipped `00-comb.toml` writes it, with
+    /// `text` (a `[daemon.providers]` body) merged over: the managed defaults
+    /// layer under a user's lines, composed as the daemon composes them.
+    fn over_shipped(text: &str) -> toml::Table {
+        let (_, shipped) = crate::daemon::defaults::comb_layer();
+        let mut out = shipped["daemon"]["providers"].clone();
+        crate::config::deep_merge_toml(&mut out, toml::Value::Table(table(text)));
+        match out {
+            toml::Value::Table(t) => t,
+            _ => unreachable!(),
+        }
+    }
+
+    fn lines(text: &str) -> ProviderLines {
+        ProviderLines::new(&over_shipped(text)).unwrap_or_else(|e| panic!("loads: {e:?}"))
+    }
+
+    fn errors(text: &str) -> Vec<String> {
+        match ProviderLines::new(&over_shipped(text)) {
+            Ok(_) => Vec::new(),
+            Err(e) => e,
+        }
+    }
+
+    fn sources(records: &[(&str, Option<serde_json::Value>)]) -> MjValue {
+        MjValue::from_object(Sources::new(
+            records
+                .iter()
+                .map(|(name, record)| (name.to_string(), record.clone()))
+                .collect(),
+        ))
+    }
+
+    fn result(lines: &ProviderLines, provider: &str, records: MjValue) -> serde_json::Value {
+        let value = lines
+            .eval(provider, Key::Result, vec![("sources", records)])
+            .unwrap()
+            .value;
+        value.map_or(serde_json::Value::Null, |v| {
+            serde_json::to_value(&v).unwrap()
+        })
+    }
+
+    #[test]
+    fn the_abstract_provider_is_what_the_defaults_layer_writes() {
+        let chains = lines("").chains_for("git");
+        assert_eq!(
+            chains.effective(Key::Template),
+            Some("{{ client.providers[_.name].template }}")
+        );
+        assert_eq!(chains.effective(Key::Result), Some("{{ merge(sources) }}"));
+        assert_eq!(
+            chains.effective(Key::Return),
+            Some("{{ result | facet('template', template) }}")
+        );
+    }
+
+    #[test]
+    fn an_own_line_is_the_whole_value_and_an_absent_one_is_the_abstracts() {
+        let git = lines("[git]\nreturn = \"{{ result }}\"").chains_for("git");
+        assert_eq!(git.effective(Key::Return), Some("{{ result }}"));
+        assert_eq!(git.effective(Key::Result), Some("{{ merge(sources) }}"));
+        assert_eq!(git.of(Key::Return).len(), 2, "super reaches the abstract");
+    }
+
+    #[test]
+    fn the_default_merge_calls_every_source_in_order() {
+        let lines = lines("");
+        let got = result(
+            &lines,
+            "demo",
+            sources(&[
+                ("one", Some(json!({"a": 1, "shared": {"x": 1}}))),
+                ("none", None),
+                ("two", Some(json!({"b": 2, "shared": {"y": 2}}))),
+            ]),
+        );
+        assert_eq!(got, json!({"a": 1, "b": 2, "shared": {"x": 1, "y": 2}}));
+    }
+
+    #[test]
+    fn a_provider_with_no_sources_answers_nothing() {
+        let got = result(&lines(""), "bare", sources(&[]));
+        assert_eq!(got, serde_json::Value::Null, "an empty record, no hit");
+    }
+
+    #[test]
+    fn no_defaults_layer_leaves_no_template_or_return_and_a_code_default_result() {
+        let bare = ProviderLines::new(&toml::Table::new()).unwrap();
+        let chains = bare.chains_for("git");
+        assert_eq!(chains.effective(Key::Template), None);
+        assert_eq!(chains.effective(Key::Return), None);
+        assert_eq!(chains.effective(Key::Result), Some(DEFAULT_RESULT));
+        let got = result(
+            &bare,
+            "git",
+            sources(&[
+                ("one", Some(json!({"a": 1}))),
+                ("two", Some(json!({"b": 2}))),
+            ]),
+        );
+        assert_eq!(got, json!({"a": 1, "b": 2}));
+    }
+
+    #[test]
+    fn explicit_merge_last_wins() {
+        let lines = lines("[demo]\nresult = \"{{ merge(sources.a(), sources.b()) }}\"");
+        let got = result(
+            &lines,
+            "demo",
+            sources(&[
+                ("a", Some(json!({"x": "a", "keep": 1}))),
+                ("b", Some(json!({"x": "b"}))),
+            ]),
+        );
+        assert_eq!(got, json!({"x": "b", "keep": 1}));
+        let got = result(
+            &lines,
+            "demo",
+            sources(&[("a", Some(json!({"x": "a"}))), ("b", None)]),
+        );
+        assert_eq!(got, json!({"x": "a"}), "a Source with nothing adds nothing");
+    }
+
+    #[test]
+    fn name_is_the_provider_the_line_is_applied_to() {
+        let lines = lines("");
+        let client = json!({"providers": {"aws": {"template": {"p": "x"}}}});
+        assert_eq!(
+            lines.template_tree("aws", &client).unwrap(),
+            Some(json!({"p": "x"}))
+        );
+        assert_eq!(lines.template_tree("gcp", &client).unwrap(), None);
+    }
+
+    #[test]
+    fn a_template_line_may_read_another_providers_client_tree() {
+        let lines = lines("[git]\ntemplate = \"{{ client.providers.aws.template }}\"");
+        let client = json!({"providers": {"aws": {"template": {"p": "x"}}}});
+        assert_eq!(
+            lines.template_tree("git", &client).unwrap(),
+            Some(json!({"p": "x"}))
+        );
+    }
+
+    #[test]
+    fn a_template_line_that_gives_a_non_table_is_an_error() {
+        let lines = lines("[git]\ntemplate = \"{{ 1 }}\"");
+        let err = lines.template_tree("git", &json!({})).unwrap_err();
+        assert!(err.starts_with("git template: "), "{err}");
+        let lines = self::lines("[git]\ntemplate = \"{{ {'a': 1} }}\"");
+        let err = lines.template_tree("git", &json!({})).unwrap_err();
+        assert!(err.contains("'a'"), "{err}");
+    }
+
+    fn returned(lines: &ProviderLines, provider: &str) -> Evaluated {
+        lines
+            .eval(
+                provider,
+                Key::Return,
+                vec![
+                    ("result", MjValue::from_serialize(json!({"a": 1}))),
+                    ("template", MjValue::from_serialize(json!({"t": "x"}))),
+                ],
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn the_abstract_return_attaches_the_template() {
+        let got = returned(&lines(""), "demo");
+        assert_eq!(
+            got.facets,
+            vec![("template".to_string(), json!({"t": "x"}))]
+        );
+        assert_eq!(
+            serde_json::to_value(got.value.unwrap()).unwrap(),
+            json!({"a": 1}),
+            "the data is handed on"
+        );
+    }
+
+    #[test]
+    fn a_return_without_facet_attaches_nothing() {
+        let got = returned(&lines("[demo]\nreturn = \"{{ result }}\""), "demo");
+        assert!(got.facets.is_empty());
+    }
+
+    #[test]
+    fn super_pipes_the_value_into_the_line_above() {
+        let lines = lines("[demo]\nreturn = \"{{ result | facet('mine', 1) | super }}\"");
+        let got = returned(&lines, "demo");
+        let names: Vec<_> = got.facets.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["mine", "template"], "the abstract's runs after");
+        assert_eq!(
+            serde_json::to_value(got.value.unwrap()).unwrap(),
+            json!({"a": 1})
+        );
+    }
+
+    #[test]
+    fn super_with_nothing_above_is_a_render_error() {
+        let lines = lines("[_]\nreturn = \"{{ result | super }}\"");
+        let err = lines
+            .eval("demo", Key::Return, vec![("result", MjValue::from(1))])
+            .unwrap_err();
+        assert!(err.contains("nothing above"), "{err}");
+    }
+
+    #[test]
+    fn a_schedule_decorator_on_a_provider_line_is_a_load_error() {
+        for (key, line) in [
+            ("return", "{{ result | poll('5s') }}"),
+            (
+                "return",
+                "{{ result | watch('a') | facet('template', template) }}",
+            ),
+            ("result", "{{ merge(sources) | ttl(5) }}"),
+            ("return", "{{ result | nearest }}"),
+        ] {
+            let errs = errors(&format!("[demo]\n{key} = \"{line}\""));
+            assert!(
+                errs.len() == 1
+                    && errs[0].starts_with(&format!("[daemon.providers.demo] {key}: "))
+                    && errs[0].contains("schedule decorator"),
+                "{line}: {errs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_abstract_providers_lines_load_too() {
+        let errs = errors("[_]\nreturn = \"{{ result | failback(3, '1s') }}\"");
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(
+            errs[0].starts_with("[daemon.providers._] return: "),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_line_may_only_read_what_its_key_sees() {
+        let errs = errors("[demo]\nresult = \"{{ client.x }}\"");
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(errs[0].contains("unknown name 'client'"), "{errs:?}");
+        let errs = errors("[demo]\ntemplate = \"{{ sources.a() }}\"");
+        assert!(errs[0].contains("unknown name 'sources'"), "{errs:?}");
+        let errs = errors("[demo]\nreturn = \"{{ {{ \"");
+        assert_eq!(errs.len(), 1, "a line that does not compile: {errs:?}");
+        assert!(
+            errs[0].starts_with("[daemon.providers.demo] return: "),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_render_failure_is_logged_once_per_message() {
+        let lines = lines("[demo]\nresult = \"{{ 1 // 0 }}\"");
+        let err = lines
+            .eval("demo", Key::Result, vec![("sources", sources(&[]))])
+            .unwrap_err();
+        assert!(err.starts_with("demo result: "), "{err}");
+        assert!(lines.note_error(&err), "the first is logged");
+        assert!(!lines.note_error(&err), "and no later one");
+        assert!(
+            lines.note_error("demo result: a different failure"),
+            "a later, different failure of the same line is logged too"
+        );
+    }
+
+    #[test]
+    fn the_default_result_is_told_by_its_text() {
+        assert!(is_default_result("{{ merge(sources) }}"));
+        assert!(is_default_result("{{merge( sources )}}"));
+        assert!(!is_default_result("{{ merge(sources.a(), sources.b()) }}"));
+    }
+
+    #[test]
+    fn super_on_a_template_or_result_line_is_a_load_error() {
+        for (key, line) in [
+            ("result", "{{ {'extra': 1} | super }}"),
+            ("template", "{{ {'extra': 'x'} | super }}"),
+        ] {
+            let errs = errors(&format!("[demo]\n{key} = \"{line}\""));
+            assert_eq!(errs.len(), 1, "{line}: {errs:?}");
+            assert!(
+                errs[0].starts_with(&format!(
+                    "[daemon.providers.demo] {key}: | super means nothing"
+                )) && errs[0].contains("write the whole line"),
+                "{errs:?}"
+            );
+        }
+        assert!(
+            errors("[demo]\nreturn = \"{{ result | super }}\"").is_empty(),
+            "on a return it pipes into the line above"
+        );
+    }
+
+    #[test]
+    fn a_template_or_result_line_cannot_read_a_piped_in_result() {
+        let errs = errors("[demo]\ntemplate = \"{{ result }}\"");
+        assert!(errs[0].contains("unknown name 'result'"), "{errs:?}");
+        let errs = errors("[demo]\nresult = \"{{ result }}\"");
+        assert!(errs[0].contains("unknown name 'result'"), "{errs:?}");
+    }
+
+    #[test]
+    fn a_provider_line_cannot_call_anything_that_does_io() {
+        for line in [
+            "{{ exec('echo') }}",
+            "{{ 'a' | exec }}",
+            "{{ 'x' | read }}",
+            "{{ lup('a') }}",
+            "{{ url('http://x') }}",
+            "{{ plugin('a', 'b') }}",
+        ] {
+            for key in ["template", "result", "return"] {
+                let errs = errors(&format!("[demo]\n{key} = \"{line}\""));
+                assert_eq!(errs.len(), 1, "{key} {line}: {errs:?}");
+                assert!(
+                    errs[0].contains("is not available in a provider's line"),
+                    "{key} {line}: {errs:?}"
+                );
+            }
+        }
+        assert!(
+            errors("[demo]\nreturn = \"{{ 'read' }}\"").is_empty(),
+            "a word in a string is no call"
+        );
+    }
+
+    #[test]
+    fn names_no_table_owns_share_the_abstract_providers_chains() {
+        let lines = lines("[git]\nreturn = \"{{ result }}\"");
+        assert!(Arc::ptr_eq(
+            &lines.chains_for("nosuch1"),
+            &lines.chains_for("nosuch2")
+        ));
+        assert!(!Arc::ptr_eq(
+            &lines.chains_for("git"),
+            &lines.chains_for("nosuch1")
+        ));
+        assert_eq!(
+            lines.chains_for("nosuch1").effective(Key::Return),
+            Some("{{ result | facet('template', template) }}")
+        );
+    }
+
+    #[test]
+    fn the_merge_filter_skips_none_like_the_function() {
+        let lines = lines("[demo]\nresult = \"{{ sources.a() | merge(sources.b()) }}\"");
+        let got = result(
+            &lines,
+            "demo",
+            sources(&[("a", Some(json!({"x": "a"}))), ("b", None)]),
+        );
+        assert_eq!(got, json!({"x": "a"}), "a Source with nothing adds nothing");
+    }
+
+    #[test]
+    fn the_return_line_kinds_are_told_apart() {
+        let kind = |text: &str| lines(text).chains_for("demo").return_kind();
+        assert_eq!(
+            kind(""),
+            ReturnKind::IdentityWithTemplate,
+            "the shipped line"
+        );
+        assert_eq!(
+            kind("[demo]\nreturn = \"{{result|facet(\\\"template\\\", template)}}\""),
+            ReturnKind::IdentityWithTemplate,
+            "whitespace and quotes aside"
+        );
+        assert_eq!(
+            kind("[demo]\nreturn = \"{{ result }}\""),
+            ReturnKind::Identity
+        );
+        assert_eq!(
+            kind("[demo]\nreturn = \"{{ result | merge({'x': 1}) }}\""),
+            ReturnKind::Line
+        );
+        assert_eq!(
+            ProviderLines::new(&toml::Table::new())
+                .unwrap()
+                .chains_for("demo")
+                .return_kind(),
+            ReturnKind::Identity,
+            "no line at all"
+        );
+        assert!(lines("").chains_for("demo").reads_by_default());
+        assert!(
+            !lines("[demo]\nresult = \"{{ {} }}\"")
+                .chains_for("demo")
+                .reads_by_default()
+        );
+        assert!(
+            !lines("[demo]\nreturn = \"{{ result | merge({'x': 1}) }}\"")
+                .chains_for("demo")
+                .reads_by_default()
+        );
+    }
+
+    fn fresh(source: &str, secs_ago: u64) -> RecordFreshness {
+        RecordFreshness {
+            source: Arc::from(source),
+            entry: None,
+            last_refreshed: Instant::now() - std::time::Duration::from_secs(secs_ago),
+            expected_interval_secs: Some(60),
+        }
+    }
+
+    fn read_of(pairs: &[(&str, i64)], from: &RecordFreshness) -> MergedRead {
+        MergedRead {
+            fields: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), Value::Int(*v)))
+                .collect(),
+            records: pairs
+                .iter()
+                .map(|(k, _)| (k.to_string(), from.clone()))
+                .collect(),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_returned_line_hands_out_its_value_with_honest_freshness() {
+        let lines = lines(
+            "[demo]\nreturn = \"{{ result | merge({'x': 1, 'a': 5}) | facet('template', template) }}\"",
+        );
+        let result = read_of(&[("a", 5), ("b", 6)], &fresh("one", 30));
+        let tmpl = HashMap::from([("t".to_string(), Value::String("{{ 1 }}".into()))]);
+        let got = lines.returned("demo", Some(result), || Some(tmpl.clone()));
+        let read = got.read.expect("a value");
+        assert_eq!(read.fields["x"], Value::Int(1));
+        assert_eq!(read.fields["b"], Value::Int(6));
+        assert_eq!(got.template, Some(tmpl));
+        assert_eq!(&*read.records["a"].source, "one", "handed on as it was");
+        assert_eq!(&*read.records["b"].source, "one");
+        assert_eq!(
+            &*read.records["x"].source, "computed:return",
+            "a leaf the line made has no Source behind it"
+        );
+        assert!(crate::cache::is_static_label(&read.records["x"].source));
+        assert_eq!(
+            read.records["x"].last_refreshed, read.records["a"].last_refreshed,
+            "as old as what it was computed from"
+        );
+    }
+
+    #[test]
+    fn the_identity_returns_hand_the_data_on_untouched() {
+        let lines = lines("");
+        let here = fresh("one", 0);
+        let got = lines.returned("demo", Some(read_of(&[("a", 1)], &here)), || None);
+        assert_eq!(got.read.unwrap().fields["a"], Value::Int(1));
+        assert!(got.template.is_none(), "no facet to attach");
+        let got = lines.returned("demo", None, || {
+            Some(HashMap::from([("t".to_string(), Value::Int(1))]))
+        });
+        assert!(got.read.is_none());
+        assert!(
+            got.template.is_some(),
+            "a template answers where the data does not"
+        );
+        let got = self::lines("[demo]\nreturn = \"{{ result }}\"").returned("demo", None, || {
+            panic!("a return that never reads the template does not ask for it")
+        });
+        assert!(got.template.is_none());
+    }
+
+    #[test]
+    fn a_return_that_fails_or_gives_no_map_is_a_miss_logged_once() {
+        let here = fresh("one", 0);
+        let lines = lines("[demo]\nreturn = \"{{ 1 // 0 }}\"");
+        let got = lines.returned("demo", Some(read_of(&[("a", 1)], &here)), || None);
+        assert!(got.read.is_none(), "no silent fallback to the data");
+        assert!(got.template.is_none());
+        let message = lines.eval("demo", Key::Return, vec![]).unwrap_err();
+        assert!(!lines.note_error(&message), "already logged by the first");
+
+        let lines = self::lines("[demo]\nreturn = \"{{ 5 }}\"");
+        let got = lines.returned("demo", Some(read_of(&[("a", 1)], &here)), || None);
+        assert!(got.read.is_none(), "a return that is not a map is a miss");
+        assert!(
+            !lines.note_error("demo return: a provider's return is a map of fields"),
+            "and was logged"
+        );
+    }
+
+    #[test]
+    fn a_full_error_log_says_so_once() {
+        let lines = lines("");
+        for i in 0..MAX_LOGGED {
+            assert!(lines.note_error(&format!("failure {i}")));
+        }
+        assert!(!lines.note_error("one more"), "not logged as itself");
+        assert!(
+            lines.suppressed_notice_given(),
+            "but the suppression was noted"
+        );
+    }
+
+    #[test]
+    fn a_dict_literal_does_not_end_a_tag_early() {
+        let errs = errors("[demo]\nresult = \"{{ {'a': {'b': 1}} | merge(exec('x')) }}\"");
+        assert!(errs[0].contains("is not available"), "{errs:?}");
+    }
+}

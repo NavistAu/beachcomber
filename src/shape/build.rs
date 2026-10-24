@@ -11,6 +11,7 @@ use crate::provider::SourceMetadata;
 use crate::provider::config_source::{ConfigSourceSpec, ResultSpec};
 use crate::shape::decorators::{EngineDefaults, Recorded, record_return};
 use crate::shape::prototype::{Kind, Link, chain, effective, source_prototypes, super_chain};
+use crate::shape::provider::is_default_result;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// A provider and the config Sources composed for it.
@@ -259,7 +260,11 @@ pub fn build(
         if specs.is_empty() {
             continue;
         }
-        // Two Sources of a provider may not declare one field.
+        // In the default `result` two Sources of a provider may not declare
+        // one field; an author who writes the merge has chosen an order.
+        let merges_by_default =
+            effective(&chain(providers, Kind::Provider, provider, ""), "result")
+                .is_none_or(|line| line.as_str().is_some_and(is_default_result));
         let mut owners: BTreeMap<String, String> = BTreeMap::new();
         for m in existing.get(provider).into_iter().flatten() {
             for f in m.fields.iter().filter(|f| !f.name.starts_with('<')) {
@@ -270,6 +275,9 @@ pub fn build(
             let ResultSpec::Fields(pairs) = &spec.result else {
                 continue;
             };
+            if !merges_by_default {
+                continue;
+            }
             for (field, _) in pairs {
                 if let Some(prev) = owners.insert(field.clone(), spec.name.clone()) {
                     err(format!(

@@ -531,7 +531,11 @@ impl ProviderMetadata {
     /// Validates provider metadata at registration time. A provider declares
     /// at least one Source; a provider named only in configuration has none
     /// and is registered through `ProviderRegistry::register_config_named`.
-    pub fn validate(&self) -> Result<(), String> {
+    ///
+    /// `distinct_fields` is the default `result`'s rule: two Sources may not
+    /// declare one field. A provider whose `result` merges its Sources in an
+    /// order of its own choosing passes `false`.
+    pub fn validate(&self, distinct_fields: bool) -> Result<(), String> {
         if self.sources.is_empty() {
             return Err(format!("provider '{}' declares no sources", self.name));
         }
@@ -553,7 +557,7 @@ impl ProviderMetadata {
         let mut field_owners: HashMap<String, String> = HashMap::new();
         for s in &self.sources {
             for f in &s.fields {
-                if is_sentinel(&f.name) {
+                if is_sentinel(&f.name) || !distinct_fields {
                     // Dynamic sentinel — allowed to appear in multiple sources.
                     continue;
                 }
@@ -734,7 +738,7 @@ mod tests {
             name: "x".into(),
             sources: vec![make_source("a", vec!["f1"]), make_source("a", vec!["f2"])],
         };
-        assert!(meta.validate().is_err());
+        assert!(meta.validate(true).is_err());
     }
 
     #[test]
@@ -743,7 +747,7 @@ mod tests {
             name: "x".into(),
             sources: vec![make_source("a", vec!["f1"]), make_source("b", vec!["f1"])],
         };
-        let err = meta.validate().unwrap_err();
+        let err = meta.validate(true).unwrap_err();
         assert!(err.contains("declared by both source"));
     }
 
@@ -755,7 +759,7 @@ mod tests {
             name: "x".into(),
             sources: vec![s],
         };
-        assert!(meta.validate().is_err());
+        assert!(meta.validate(true).is_err());
     }
 
     #[test]
@@ -764,7 +768,7 @@ mod tests {
             name: "x".into(),
             sources: vec![make_source("a", vec!["f1"]), make_source("b", vec!["f2"])],
         };
-        assert!(meta.validate().is_ok());
+        assert!(meta.validate(true).is_ok());
     }
 
     #[test]
@@ -840,7 +844,7 @@ mod tests {
             name: "normal".to_string(),
             sources: vec![make_source("a", vec!["f1"])],
         };
-        assert!(meta.validate().is_ok());
+        assert!(meta.validate(true).is_ok());
     }
 
     #[test]

@@ -6,6 +6,13 @@ use std::thread;
 use std::time::Duration;
 use tokio::runtime::{Handle, Runtime};
 
+/// What the daemon composes when it starts: the managed `00-comb.toml` as a
+/// layer, which carries the abstract provider's lines. An in-process daemon
+/// has no `defaults/` directory to read it from.
+fn shipped_defaults() -> Config {
+    Config::from_layers(vec![daemon::defaults::comb_layer()])
+}
+
 /// RAII guard for an in-process daemon spawned in its own thread.
 ///
 /// On `Drop`, the underlying tokio `Runtime` is shut down (background shutdown,
@@ -43,7 +50,7 @@ impl DaemonGuard {
 
         let thread = thread::spawn(move || {
             handle.block_on(async {
-                let (join, _ready) = daemon::start_in_process(sock_clone, Config::default());
+                let (join, _ready) = daemon::start_in_process(sock_clone, shipped_defaults());
                 // Drive the daemon until the runtime is shut down externally.
                 let _ = join.await;
             });

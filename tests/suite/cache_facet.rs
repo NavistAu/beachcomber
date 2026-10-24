@@ -28,7 +28,7 @@ fn setup() -> (
     let sock = tmp.path().join("test.sock");
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     (tmp, sock, cache, registry, watchers)
 }
 
@@ -129,7 +129,7 @@ async fn a_retuned_builtin_shows_its_new_poll_in_the_cache_facet() {
         return;
     }
     let (tmp, sock, cache, _stock, watchers) = setup();
-    let config = beachcomber::config::Config::from_layers(vec![(
+    let config = crate::common::registry::config_over_shipped(vec![(
         std::path::PathBuf::from("/t.toml"),
         toml::from_str(
             "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('15s', 8) }}\"\n",

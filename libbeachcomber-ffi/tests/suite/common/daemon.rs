@@ -13,6 +13,13 @@ use std::thread;
 use std::time::Duration;
 use tokio::runtime::{Handle, Runtime};
 
+/// What the daemon composes when it starts: the managed `00-comb.toml` as a
+/// layer, which carries the abstract provider's lines. An in-process daemon
+/// handed no directory has no `defaults/` to read it from.
+fn shipped_defaults() -> Config {
+    Config::from_layers(vec![daemon::defaults::comb_layer()])
+}
+
 /// RAII guard for an in-process daemon spawned in its own thread.
 pub struct DaemonGuard {
     /// Socket path the daemon is listening on.
@@ -34,7 +41,7 @@ impl DaemonGuard {
     /// no file: it seeds nothing, watches nothing, and never touches the
     /// developer's `~/.config/beachcomber`.
     pub fn spawn() -> Self {
-        Self::start(Config::default(), false)
+        Self::start(shipped_defaults(), false)
     }
 
     /// Spawn a daemon whose configuration directory is `config_dir`: it seeds

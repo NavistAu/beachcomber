@@ -119,9 +119,38 @@ result.value = "{{ data.rates.AUD }}"               # a single nested value
 return = "{{ result | poll('86400s') }}"
 ```
 
+### A provider's own lines — `template`, `result`, `return`
+
+`[daemon.providers.<p>]` takes three jinja lines of its own. An absent one comes whole from `[daemon.providers._]`, the abstract provider the shipped `defaults/00-comb.toml` writes:
+
+```toml
+[daemon.providers._]
+template = "{{ client.providers[_.name].template }}"     # this provider's client templates, seeded as the :template facet
+result   = "{{ merge(sources) }}"                         # call each Source, merge the objects
+return   = "{{ result | facet('template', template) }}"   # the data, with the :template facet beside it
+```
+
+- `template` runs when the facets are seeded, once per configuration layer, over that layer's `[client]` tree (`client`); `_.name` is the provider. What it gives is `<p>:template`, labelled with the layer's file. The default is the provider's own `[client.providers.<p>] template` table. It must give a table of value expressions (string leaves, no dotted or empty keys); the daemon never renders the leaves.
+- `result` runs on a read, for each directory the read reaches. `sources` is a map of callables over the provider's **own** Sources, in declaration order (a config Source's declaration order is its name order, since the file keeps none; a built-in's is the order its provider lists): `sources.head()` is that Source's stored record at the directory being read, or `none` when it has none (a call never runs the Source; the read has already brought it up to date). `merge(sources)` calls every Source in order and deep-merges the records, so `{{ merge(sources) }}` is the whole of "a provider is its Sources". With the default, two Sources of one provider may not declare the same field (a load error naming both); a `result` that names its Sources, `merge(sources.a(), sources.b())`, has chosen an order, and the last one wins. A provider with no Sources is a provider all the same: its `result` is read once, at the global entry, with `sources` empty — so a literal (`result = "{{ {'a': 1} }}"`) answers. With no `result` line of its own the default merges no Sources and gives nothing, so a read of it is a miss. Where no file defines the abstract provider at all (a daemon handed a configuration without the managed `defaults/` layer), `result` is `{{ merge(sources) }}` and there is no `template` or `return`, so no template half.
+- `return` runs once per `get`, over the data read (`result`) and the `:template` facet at the requested path (`template`). What it gives is what the provider answers, and a field read addresses into it: `return = "{{ result | merge({'x': 1}) | facet('template', template) }}"` makes `comb get p.x` answer 1. `result | facet('template', template)` hands the data on and attaches the facet beside it; that attached tree is the `template` half of the answer. A `return` with no `facet('template', …)` carries no template half: `return = "{{ result }}"` makes `comb get demo.t` miss while `comb get demo:template.t` still reads the facet. Under any `result` or `return` other than the shipped ones a field read demands every Source, since the line, not a Source, says what exists: it warms every Source at every level of the directory chain, not just the one that declares the field. That holds for any difference, a cosmetic `| facet(...)` on a `return` included, and for overriding `_`'s `return` or `result`, which changes every provider at once. A `return` that fails to render, or gives something other than a map, makes the read a miss (logged once); the data is not served around it. A Source's `comb.<p>` sees what a `get` of `<p>` answers, `return` included.
+
+A line a file does not set is the abstract provider's, whole. `| super` pipes a value into the line one step up, and means something on `return` alone: `return = "{{ result | facet('mine', 1) | super }}"` attaches `mine` and then does what the abstract `return` does. A `template` or `result` line is the whole value and takes nothing piped in, so `| super` there is a load error; write the whole line. `_.name` is the provider the line is being applied to.
+
+```toml
+# git's templates are aws's, wherever the client wrote them
+[daemon.providers.git]
+template = "{{ client.providers.aws.template }}"
+
+# Two Sources that agree on a field: the second wins
+[daemon.providers.demo]
+result = "{{ merge(sources.first(), sources.second()) }}"
+```
+
+A provider line sees only its own names: `template` sees `client` and `_`, `result` sees `sources` and `_`, `return` sees `result`, `template` and `_` (`result` is also the value piped in by a `| super`). The lines run on every read and do no IO: `exec`, `read`, `lup`, `url` and `plugin` are load errors in them. Schedule decorators (`poll`, `watch`, `ttl`, `failback`, `budget`, `nearest`) belong to a Source's `return`; on a provider's line they are a load error. A line that fails to render makes that layer of the provider's records (for `result`) or its template half (for `return`) a miss, and is logged once per distinct failure (after 256 distinct failures one line says further ones are suppressed).
+
 ### Template facets
 
-A **facet** is a namespace holding data *about* a provider, written `provider:facet`. The `template` facet holds the value expressions a `comb get` on that provider returns alongside the data. Declare one under `[client.providers.<p>]` as `template` — the table maps 1:1 onto the tree, nested tables are groups, and string leaves are the expressions:
+A **facet** is a namespace holding data *about* a provider, written `provider:facet`. The `template` facet holds the value expressions a `comb get` on that provider returns alongside the data. Declare one under `[client.providers.<p>]` as `template` — the table maps 1:1 onto the tree, nested tables are groups, and string leaves are the expressions (the provider's `template` line, above, is what joins it into the facet):
 
 ```toml
 [client.providers.python]
@@ -133,7 +162,7 @@ version = "{{ python.version }}"
 
 That is `python:template.venv_name` and `python:template.widgets.version`. A provider exists if either root names it: one named only under `[client.providers]` or `[daemon.providers]` is a provider with no Sources. The rules are checked file by file, because seeding is, and enforced at daemon startup, on reload and by `comb check config`; each error names its file:
 
-- `[client]` holds only `providers`, and `[client.providers.<p>]` holds only `template`; any other key is `unknown key '<k>' in [client]` (or `[client.providers.<p>]`).
+- `[client]` holds only `providers`, and `[client.providers.<p>]` holds only `template`; any other key is `unknown key '<k>' in [client]` (or `[client.providers.<p>]`). `[daemon.providers.<p>]` holds `cache`, `sources` and the three lines above, and nothing else.
 - Nesting is tables only, so a quoted key containing a `.` (`"a.b" = "…"`) is an **error**, and so is an empty key. A provider name holds no `:` or `.` and is not `*`.
 - A template leaf that is neither a string nor a table is not a value expression: an **error**.
 - The colon-table form `[providers."<p>:template"]` is gone with the whole `[providers]` root: it is `unknown table [providers]`, which says templates live in `[client.providers.<p>] template.<leaf>` and decay in `[daemon.providers.<p>.cache._]`.

@@ -312,10 +312,10 @@ fn the_shipped_default_matches_default_decay() {
     );
 }
 
-/// `00-comb.toml` holds the two abstract tables: the decay prototype, then the
-/// abstract Source's schedule.
+/// `00-comb.toml` holds the abstract provider's three lines, the decay
+/// prototype, and the abstract Source's schedule.
 #[test]
-fn the_shipped_comb_file_holds_the_decay_and_the_abstract_source() {
+fn the_shipped_comb_file_holds_the_abstract_provider_the_decay_and_the_abstract_source() {
     let (_, body) = SHIPPED
         .iter()
         .find(|(name, _)| *name == "00-comb.toml")
@@ -324,8 +324,17 @@ fn the_shipped_comb_file_holds_the_decay_and_the_abstract_source() {
     let providers = parsed["daemon"]["providers"]["_"].as_table().unwrap();
     assert_eq!(
         providers.keys().collect::<Vec<_>>(),
-        vec!["cache", "sources"],
-        "only the abstract provider's two prototypes"
+        vec!["cache", "result", "return", "sources", "template"],
+        "the abstract provider's three lines and its two prototypes"
+    );
+    assert_eq!(
+        providers["template"].as_str(),
+        Some("{{ client.providers[_.name].template }}")
+    );
+    assert_eq!(providers["result"].as_str(), Some("{{ merge(sources) }}"));
+    assert_eq!(
+        providers["return"].as_str(),
+        Some("{{ result | facet('template', template) }}")
     );
     assert_eq!(
         providers["sources"]["_"]["return"].as_str(),
@@ -333,9 +342,11 @@ fn the_shipped_comb_file_holds_the_decay_and_the_abstract_source() {
     );
     assert_eq!(providers["sources"]["_"].as_table().unwrap().len(), 1);
     assert!(
-        body.find("[daemon.providers._.cache._]").unwrap()
-            < body.find("[daemon.providers._.sources._]").unwrap(),
-        "the Source's block is below the decay block"
+        body.find("[daemon.providers._]").unwrap()
+            < body.find("[daemon.providers._.cache._]").unwrap()
+            && body.find("[daemon.providers._.cache._]").unwrap()
+                < body.find("[daemon.providers._.sources._]").unwrap(),
+        "the provider's block is above the decay block, and the Source's block below it"
     );
 }
 

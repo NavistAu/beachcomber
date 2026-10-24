@@ -228,7 +228,7 @@ fn bench_convergence_l(c: &mut Criterion) {
     let (_repo, path) = make_repo_with_branches();
 
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(shipped_registry());
     let (handle, scheduler) = Scheduler::new(
         cache.clone(),
         registry,
@@ -314,3 +314,11 @@ fn bench_convergence_l(c: &mut Criterion) {
 
 criterion_group!(benches, bench_fsevents_delivery, bench_convergence_l);
 criterion_main!(benches);
+
+/// The built-in providers with the shipped `defaults/00-comb.toml` composed in,
+/// as a running daemon has them: the abstract provider's lines are part of
+/// what a read costs.
+fn shipped_registry() -> ProviderRegistry {
+    let config = Config::from_layers(vec![beachcomber::daemon::defaults::comb_layer()]);
+    ProviderRegistry::with_config(&config, &Default::default()).expect("the shipped lines load")
+}

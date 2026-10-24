@@ -6,12 +6,18 @@
 //! itself all go through it, so a file is accepted exactly when what it seeds
 //! was checked, and nothing is written that did not validate.
 //!
-//! - `[client.providers.<p>] template` seeds namespace `<p>:template`: a tree
-//!   of tables whose string leaves are value expressions.
+//! - `[client.providers.<p>] template` is fenced here: a tree of tables whose
+//!   string leaves are value expressions. What it seeds is the provider's
+//!   `template` line's to say ([`crate::shape::provider`], run by the seeding
+//!   itself over the layer's `[client]` tree), so a file is checked here and
+//!   nothing is written from it.
 //! - `[daemon.providers.<p>.cache._] decay` seeds `<p>:cache`, an integer from
 //!   1 to [`MAX_DECAY`]; the abstract provider `_` seeds `*:cache`, the
 //!   prototype every provider without its own falls back to.
 //!
+//! `[daemon.providers.<p>]` also takes the provider's own lines, `template`,
+//! `result` and `return`, each a jinja line (what they mean, and the load
+//! errors that need the composed tree, are [`crate::shape::provider`]'s).
 //! `[daemon.providers.<p>.sources.<s>]` is fenced here too (`root`, `data`,
 //! `result`, `return`, each a jinja line); what a Source means is
 //! [`crate::shape::build`]'s, from the composed tree.
@@ -37,6 +43,9 @@ pub struct Seeded {
     pub errors: Vec<String>,
     /// `(namespace, tree)`: only trees that validated.
     pub writes: Vec<(String, serde_json::Value)>,
+    /// The providers whose `[client.providers.<p>] template` failed the fence
+    /// above: already reported, so the `template` line is not run over it.
+    pub fenced: std::collections::BTreeSet<String>,
 }
 
 /// A provider name as a config key, or the reason it is not one. `client`
@@ -117,9 +126,9 @@ impl Reader {
                 continue;
             };
             let before = self.out.errors.len();
-            let json = self.template_tree(name, "", tree);
-            if self.out.errors.len() == before {
-                self.out.writes.push((format!("{name}:template"), json));
+            self.template_tree(name, "", tree);
+            if self.out.errors.len() > before {
+                self.out.fenced.insert(name.to_string());
             }
         }
     }
@@ -128,13 +137,7 @@ impl Reader {
     /// `"a.b"` names one record while addressing another, and the cache
     /// refuses the write anyway. So is an empty key, and a leaf that is
     /// neither a string nor a table (not a value expression).
-    fn template_tree(
-        &mut self,
-        provider: &str,
-        prefix: &str,
-        table: &toml::Table,
-    ) -> serde_json::Value {
-        let mut out = serde_json::Map::new();
+    fn template_tree(&mut self, provider: &str, prefix: &str, table: &toml::Table) {
         for (key, value) in table {
             let addressed = if prefix.is_empty() {
                 key.clone()
@@ -161,12 +164,8 @@ impl Reader {
                 continue;
             }
             match value {
-                toml::Value::Table(sub) => {
-                    out.insert(key.clone(), self.template_tree(provider, &addressed, sub));
-                }
-                toml::Value::String(s) => {
-                    out.insert(key.clone(), serde_json::Value::String(s.clone()));
-                }
+                toml::Value::Table(sub) => self.template_tree(provider, &addressed, sub),
+                toml::Value::String(_) => {}
                 other => self.err(format!(
                     "[client.providers.{provider}] template '{addressed}' is {}, not a value \
                      expression or a group.",
@@ -174,7 +173,6 @@ impl Reader {
                 )),
             }
         }
-        serde_json::Value::Object(out)
     }
 
     /// `[daemon] plugin`: a table holding only `path`, a list of non-empty
@@ -317,7 +315,8 @@ impl Reader {
     }
 
     /// `[daemon.providers.<p>]` holds `cache` (which holds only `_`, which
-    /// holds only `decay`) and `sources`.
+    /// holds only `decay`), `sources`, and the provider's lines: `template`,
+    /// `result` and `return`, each a string.
     fn daemon_provider(&mut self, name: &str, value: &toml::Value) {
         let Some(table) = value.as_table() else {
             return self.err(format!("[daemon.providers.{name}] must be a table"));
@@ -330,6 +329,15 @@ impl Reader {
         for (key, sub) in table {
             if key == "sources" {
                 self.sources(name, sub);
+                continue;
+            }
+            if matches!(key.as_str(), "template" | "result" | "return") {
+                if !sub.is_str() {
+                    self.err(format!(
+                        "[daemon.providers.{name}] {key} must be a string (a jinja line), not {}",
+                        sub.type_str()
+                    ));
+                }
                 continue;
             }
             if key != "cache" {

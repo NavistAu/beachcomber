@@ -35,7 +35,7 @@ fn mise_provider_is_one_source_with_a_tool_sentinel() {
     assert_eq!(tools.name, "tools");
     let fields: Vec<&str> = tools.fields.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(fields, vec!["<tool>"]);
-    assert!(meta.validate().is_ok());
+    assert!(meta.validate(true).is_ok());
     assert!(tools_source().has_root());
 }
 

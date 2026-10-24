@@ -11,6 +11,7 @@ use crate::query::Found;
 use crate::scheduler::lifecycle::{DEFAULT_FAILBACK_COUNT, DEFAULT_FAILBACK_INTERVAL_SECS};
 use crate::shape::Retune;
 use crate::shape::decorators::EngineDefaults;
+use crate::shape::provider::ProviderLines;
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, Weak};
@@ -64,15 +65,29 @@ impl DaemonRead for RegistryReader {
             &crate::query::SourceDemand::All,
             plan.requested_path.as_deref(),
         )?;
-        Ok(cache
-            .read_merged(
-                &plan.provider,
-                plan.requested_path.as_deref(),
-                &instances,
-                &registry,
-                Layers::All,
-            )
-            .map(|merged| merged.fields))
+        let merged = cache.read_merged(
+            &plan.provider,
+            plan.requested_path.as_deref(),
+            &instances,
+            &registry,
+            Layers::All,
+        );
+        // What a `get` of the provider answers: its `return` has the last word.
+        if crate::query::parse_facet(&plan.provider)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return Ok(merged.map(|m| m.fields));
+        }
+        let returned = crate::shape::provider::returned_over(
+            cache,
+            &registry,
+            &plan.provider,
+            plan.requested_path.as_deref(),
+            merged,
+        );
+        Ok(returned.read.map(|m| m.fields))
     }
 }
 
@@ -126,9 +141,10 @@ pub struct ProviderRegistry {
     sources: HashMap<(String, String), Arc<dyn Source>>,
     /// Provider metadata snapshot, indexed by provider name.
     providers: HashMap<String, ProviderMetadata>,
-    /// (provider_name, declared dotted field) → source_name, sentinels excluded.
-    /// Built once at registration.
-    declared_sources: HashMap<(String, String), String>,
+    /// (provider_name, declared dotted field) → the Sources declaring it, in
+    /// declaration order (more than one only under a `result` that merges them
+    /// itself), sentinels excluded. Built once at registration.
+    declared_sources: HashMap<(String, String), Vec<String>>,
     /// provider_name → Sources declaring a sentinel field (`<tool>`), in
     /// declaration order. They answer for the provider node.
     sentinel_sources: HashMap<String, Vec<String>>,
@@ -150,6 +166,8 @@ pub struct ProviderRegistry {
     pub(crate) failures: crate::scheduler::SourceFailureMap,
     /// What every config Source reads `comb.<p>` through.
     reader: Arc<RegistryReader>,
+    /// Every provider's `template`, `result` and `return` lines, compiled.
+    lines: Arc<ProviderLines>,
     /// The config Sources registered, as (provider, source).
     config_sources: HashSet<(String, String)>,
     /// The config Sources with a `root` line, as (provider, source).
@@ -174,9 +192,19 @@ impl ProviderRegistry {
             root_errors: DashMap::new(),
             failures: Arc::default(),
             reader: Arc::new(RegistryReader::default()),
+            lines: Arc::new(
+                ProviderLines::new(&toml::Table::new())
+                    .expect("a set of lines with no tables loads"),
+            ),
             config_sources: HashSet::new(),
             rendered_roots: HashSet::new(),
         }
+    }
+
+    /// The providers' own lines: what a read of a provider's records, and the
+    /// facets that ride beside it, are made of.
+    pub fn lines(&self) -> &ProviderLines {
+        &self.lines
     }
 
     /// Share the registry the way a running daemon does: behind an `Arc`,
@@ -326,7 +354,7 @@ impl ProviderRegistry {
     /// metadata is invalid, or sources() doesn't match metadata.
     pub fn register(&mut self, provider: Box<dyn Provider>) -> Result<(), String> {
         let meta = provider.metadata();
-        meta.validate()?;
+        meta.validate(self.merges_by_default(&meta.name))?;
         if self.providers.contains_key(&meta.name) {
             return Err(format!("provider '{}' already registered", meta.name));
         }
@@ -362,6 +390,21 @@ impl ProviderRegistry {
         Ok(())
     }
 
+    /// Whether a read of `provider` is its Sources' records as stored (the
+    /// default `result`, an identity `return`): then a field is the one Source
+    /// that declares it. Under any other line the line decides what exists, a
+    /// field read demands every Source, and nothing short of the whole chain
+    /// answers it.
+    pub fn reads_by_default(&self, provider: &str) -> bool {
+        self.lines.chains_for(provider).reads_by_default()
+    }
+
+    /// Whether `provider`'s `result` is the default merge of its Sources, under
+    /// which two of them may not declare one field.
+    fn merges_by_default(&self, provider: &str) -> bool {
+        self.lines.chains_for(provider).result_is_default()
+    }
+
     /// Fill the declared-field map and the sentinel list from one Source.
     fn index_fields(&mut self, provider: &str, sm: &SourceMetadata) {
         for f in &sm.fields {
@@ -374,8 +417,13 @@ impl ProviderRegistry {
                     list.push(sm.name.clone());
                 }
             } else {
-                self.declared_sources
-                    .insert((provider.to_string(), f.name.clone()), sm.name.clone());
+                let owners = self
+                    .declared_sources
+                    .entry((provider.to_string(), f.name.clone()))
+                    .or_default();
+                if !owners.contains(&sm.name) {
+                    owners.push(sm.name.clone());
+                }
             }
         }
     }
@@ -398,7 +446,7 @@ impl ProviderRegistry {
         let first_new = meta.sources.len();
         meta.sources
             .extend(sources.iter().map(|s| s.metadata().clone()));
-        meta.validate()?;
+        meta.validate(self.merges_by_default(provider))?;
         for sm in &meta.sources[first_new..] {
             self.index_fields(provider, sm);
         }
@@ -558,11 +606,11 @@ impl ProviderRegistry {
     pub fn sources_for_key(&self, provider: &str, field: &str) -> Vec<&str> {
         let mut node = field;
         loop {
-            if let Some(src) = self
+            if let Some(owners) = self
                 .declared_sources
                 .get(&(provider.to_string(), node.to_string()))
             {
-                return vec![src.as_str()];
+                return owners.iter().map(String::as_str).collect();
             }
             match node.rfind('.') {
                 Some(i) => node = &node[..i],
@@ -718,8 +766,22 @@ impl ProviderRegistry {
         // Start from the full built-in set, then layer on config-defined providers.
         let mut registry = Self::with_defaults();
 
-        // ── Config Sources, and the built-ins a return retunes ────────────────
+        // ── The providers' own lines ──────────────────────────────────────────
+        // First: what a provider's `result` says decides what its Sources may
+        // declare.
         let mut errors = Vec::new();
+        let no_providers = toml::Table::new();
+        let providers = config
+            .daemon()
+            .providers
+            .as_table()
+            .unwrap_or(&no_providers);
+        match ProviderLines::new(providers) {
+            Ok(lines) => registry.lines = Arc::new(lines),
+            Err(e) => errors.extend(e),
+        }
+
+        // ── Config Sources, and the built-ins a return retunes ────────────────
         let builtins: Vec<(String, String)> = registry.sources.keys().cloned().collect();
         match registry.config_sources(config, vars) {
             Ok(ConfigSources { providers, retunes }) => {
@@ -819,7 +881,7 @@ impl ProviderRegistry {
             ));
         }
         self.providers[provider]
-            .validate()
+            .validate(self.merges_by_default(provider))
             .map_err(|e| format!("{at} return: {e}"))
     }
 }

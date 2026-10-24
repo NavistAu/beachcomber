@@ -7,9 +7,9 @@
 
 use crate::boundaries::http;
 use crate::boundaries::library::{LibraryLoader, LoadedLibrary};
-use libbeachcomber::engine::{EngineCtx, build_engine_env, expand_tilde, op_error};
-use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
-use minijinja::{Environment, Error};
+use libbeachcomber::engine::{EngineCtx, build_engine_env, expand_tilde, merge_values, op_error};
+use minijinja::value::{Enumerator, Kwargs, Object, ObjectRepr, Rest, Value as MjValue, ValueKind};
+use minijinja::{Environment, Error, State};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -158,6 +158,161 @@ pub fn daemon_engine_env<'a>(ctx: Arc<EngineCtx>, plugins: Arc<PluginSet>) -> En
         },
     );
     jinja
+}
+
+/// The engine environment a provider's `template`, `result` and `return` lines
+/// render in: libbeachcomber's pure part (the shared filters, `merge`), plus
+/// [`facet`] and a `merge` that reads a provider's [`Sources`]. There is no
+/// `exec`, `read`, `lup`, `url` or `plugin`: these lines run on a read, which
+/// must not wait on a process, a file, the network or a library.
+pub fn provider_engine_env<'a>() -> Environment<'a> {
+    let mut jinja = libbeachcomber::engine::build_pure_engine_env();
+    libbeachcomber::eval::render_none_as_empty(&mut jinja);
+    jinja.add_filter("facet", facet);
+    jinja.add_function(
+        "merge",
+        |state: &State, args: Rest<MjValue>| -> Result<MjValue, Error> {
+            let called;
+            let operands: &[MjValue] = match args.as_slice() {
+                [only] if only.downcast_object_ref::<Sources>().is_some() => {
+                    let sources = only.downcast_object_ref::<Sources>().expect("checked");
+                    called = sources.call_all(state)?;
+                    &called
+                }
+                [list] if list.kind() == ValueKind::Seq => {
+                    called = list.try_iter()?.collect();
+                    &called
+                }
+                all => all,
+            };
+            // A Source with nothing at this entry contributes nothing:
+            // `merge_values` skips it.
+            merge_values(operands.iter().cloned())
+        },
+    );
+    jinja
+}
+
+/// What `facet(name, obj)` writes into: the facets a line attached, in order.
+/// A render holds one in its context, under a name no line can write.
+#[derive(Debug, Default)]
+pub struct FacetSink {
+    facets: Mutex<Vec<(String, serde_json::Value)>>,
+}
+
+impl FacetSink {
+    /// The facets attached so far, in order; the last of a name is its value.
+    pub fn take(&self) -> Vec<(String, serde_json::Value)> {
+        std::mem::take(&mut self.facets.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+impl Object for FacetSink {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Plain
+    }
+}
+
+/// The context name a render's [`FacetSink`] is bound to.
+pub const FACET_SINK: &str = "facets__";
+
+/// `result | facet(name, obj)`: hands `result` on and attaches `obj` as the
+/// facet `name` beside it. An `obj` that is none attaches nothing.
+fn facet(state: &State, input: MjValue, name: String, obj: MjValue) -> Result<MjValue, Error> {
+    let sink = state.lookup(FACET_SINK);
+    let Some(sink) = sink
+        .as_ref()
+        .and_then(|s| s.downcast_object_ref::<FacetSink>())
+    else {
+        return Err(op_error(
+            "facet(): there is nothing here to attach a facet to",
+        ));
+    };
+    if !(obj.is_undefined() || obj.is_none()) {
+        let json = serde_json::to_value(&obj)
+            .map_err(|e| op_error(format!("facet(): the {name} facet is not JSON: {e}")))?;
+        sink.facets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((name, json));
+    }
+    Ok(input)
+}
+
+/// `sources` in a provider's `result` line: a map of callables over the
+/// provider's own Sources, in declaration order. `sources.head()` is that
+/// Source's stored record at the entry being read, or none when it has none.
+/// A call never executes anything: the read has already brought the Sources up
+/// to date.
+#[derive(Debug)]
+pub struct Sources {
+    calls: Vec<(String, Arc<SourceCall>)>,
+}
+
+impl Sources {
+    /// `(name, record)` per Source, in declaration order; none for a Source
+    /// with nothing at the entry.
+    pub fn new(records: Vec<(String, Option<serde_json::Value>)>) -> Self {
+        Self {
+            calls: records
+                .into_iter()
+                .map(|(name, record)| {
+                    let record = record.map_or_else(|| MjValue::from(()), MjValue::from_serialize);
+                    (name, Arc::new(SourceCall { record }))
+                })
+                .collect(),
+        }
+    }
+
+    /// Every Source called once, in declaration order.
+    fn call_all(&self, state: &State) -> Result<Vec<MjValue>, Error> {
+        self.calls
+            .iter()
+            .map(|(_, call)| call.call(state, &[]))
+            .collect()
+    }
+}
+
+impl Object for Sources {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Map
+    }
+
+    fn get_value(self: &Arc<Self>, key: &MjValue) -> Option<MjValue> {
+        let key = key.as_str()?;
+        self.calls
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, call)| MjValue::from_dyn_object(call.clone()))
+    }
+
+    fn enumerate(self: &Arc<Self>) -> Enumerator {
+        Enumerator::Values(
+            self.calls
+                .iter()
+                .map(|(n, _)| MjValue::from(n.as_str()))
+                .collect(),
+        )
+    }
+}
+
+/// One Source of [`Sources`], callable.
+#[derive(Debug)]
+struct SourceCall {
+    record: MjValue,
+}
+
+impl Object for SourceCall {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Plain
+    }
+
+    fn call(self: &Arc<Self>, _state: &State<'_, '_>, args: &[MjValue]) -> Result<MjValue, Error> {
+        if !args.is_empty() {
+            return Err(op_error("a Source in sources takes no arguments"));
+        }
+        Ok(self.record.clone())
+    }
 }
 
 /// The address without userinfo, query or fragment: tokens like

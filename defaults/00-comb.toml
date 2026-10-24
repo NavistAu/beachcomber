@@ -1,3 +1,9 @@
+[daemon.providers._]
+# What a provider is, for every provider without a line of its own.
+template = "{{ client.providers[_.name].template }}"     # this provider's client templates, seeded as the :template facet
+result   = "{{ merge(sources) }}"                         # call each Source, merge the objects
+return   = "{{ result | facet('template', template) }}"   # the data, with the :template facet beside it
+
 [daemon.providers._.cache._]
 # Decay steps a Source takes before eviction, for every provider without a prototype of its own.
 decay = 4

@@ -72,6 +72,16 @@ impl Fixture {
     }
 
     fn start_with(registry: ProviderRegistry, home_rel: &str, scheduled: bool) -> Fixture {
+        Fixture::start_built(|| registry, home_rel, scheduled)
+    }
+
+    /// As [`Fixture::start_with`], building the registry once `$HOME` is set:
+    /// a registry loaded from configuration reads it.
+    fn start_built(
+        build: impl FnOnce() -> ProviderRegistry,
+        home_rel: &str,
+        scheduled: bool,
+    ) -> Fixture {
         let root_dir = TempDir::new().unwrap();
         let root = root_dir.path().canonicalize().unwrap();
         // `root.join("")` would append a trailing separator; `$HOME` at the
@@ -93,7 +103,7 @@ impl Fixture {
         let sock = sock_dir.path().join("test.sock");
         let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
         let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-        let registry = Arc::new(registry);
+        let registry = Arc::new(build());
         let scheduler = scheduled.then(|| {
             let (handle, mut scheduler) = Scheduler::new(
                 cache.clone(),
@@ -126,7 +136,7 @@ impl Fixture {
     }
 
     fn defaults() -> Fixture {
-        Fixture::start(ProviderRegistry::with_defaults())
+        Fixture::start_built(crate::common::registry::with_shipped_defaults, "", false)
     }
 
     fn path(&self, rel: &str) -> String {
