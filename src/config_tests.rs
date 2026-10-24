@@ -414,6 +414,39 @@ fn a_non_string_template_leaf_is_an_error() {
 }
 
 #[test]
+fn enabled_must_be_a_bool() {
+    for bad in ["\"no\"", "0", "[true]", "{ a = 1 }"] {
+        let errors = seeded_errors(&format!("[daemon.providers.git]\nenabled = {bad}\n"));
+        assert_eq!(errors.len(), 1, "{bad}: {errors:?}");
+        assert!(
+            errors[0].starts_with("[daemon.providers.git] enabled must be true or false, not "),
+            "{bad}: {errors:?}"
+        );
+    }
+    for good in ["true", "false"] {
+        assert_eq!(
+            seeded_errors(&format!("[daemon.providers.git]\nenabled = {good}\n")),
+            Vec::<String>::new()
+        );
+    }
+}
+
+#[test]
+fn enabled_on_the_abstract_provider_is_an_error() {
+    for value in ["false", "true", "\"no\""] {
+        assert_eq!(
+            seeded_errors(&format!("[daemon.providers._]\nenabled = {value}\n")),
+            vec![
+                "[daemon.providers._] enabled: the abstract provider applies to every provider: \
+                 name the provider, [daemon.providers.<p>] enabled = false"
+                    .to_string()
+            ],
+            "{value}"
+        );
+    }
+}
+
+#[test]
 fn a_non_integer_decay_is_an_error() {
     for (bad, shown) in [
         ("\"4\"", "\"4\""),
@@ -446,8 +479,8 @@ fn a_non_integer_decay_is_an_error() {
 #[test]
 fn only_decay_is_accepted_under_a_cache_prototype() {
     assert_eq!(
-        seeded_errors("[daemon.providers.git]\nenabled = true\n"),
-        vec!["unknown key 'enabled' in [daemon.providers.git]".to_string()]
+        seeded_errors("[daemon.providers.git]\nenabled_ = true\n"),
+        vec!["unknown key 'enabled_' in [daemon.providers.git]".to_string()]
     );
     assert_eq!(
         seeded_errors("[daemon.providers.git.cache]\npoll = 5\n"),
@@ -758,6 +791,11 @@ fn every_removed_form_is_an_error() {
             ),
             ("[client.providers.x]", "[client.providers.x]"),
         ] {
+            // `enabled` is a provider's own key now; where it is not, it is
+            // still the removed one.
+            if key == "enabled" && header == "[daemon.providers.git]" {
+                continue;
+            }
             assert_eq!(
                 seeded_errors(&format!("{header}\n{key} = 1\n")),
                 vec![format!("unknown key '{key}' in {label}")],

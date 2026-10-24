@@ -50,7 +50,7 @@ use crate::provider::registry::ProviderRegistry;
 use crate::provider::source_call::{CallOutcome, Called, CalledRecord, called_in};
 use crate::provider::source_call::{Cold, source_call};
 use crate::shape::decorators::named_decorators;
-use crate::shape::prototype::{Kind, Link, chain, super_chain};
+use crate::shape::prototype::{Kind, Link, chain, effective, super_chain};
 use dashmap::DashSet;
 use libbeachcomber::engine::op_error;
 use libbeachcomber::eval::{single_tag_expression, undeclared_names};
@@ -64,6 +64,34 @@ use tokio::time::Instant;
 /// The `result` of a provider whose chain has no line: the merge of its
 /// Sources. The one line the code supplies; every other comes from a file.
 pub const DEFAULT_RESULT: &str = "{{ merge(sources) }}";
+
+/// The `result` of a provider with `enabled = false`: it produces nothing.
+pub const DISABLED_RESULT: &str = "{{ {} }}";
+
+/// The `return` of a provider with `enabled = false`: the data as it is, and
+/// no `template` facet beside it, so no template half rides along on a `get`.
+/// (The `<p>:template` facet is still seeded and readable by its own name.)
+pub const DISABLED_RETURN: &str = "{{ result }}";
+
+/// Whether `providers` (a composed `[daemon.providers]`) switch `name` off. On
+/// `_` it is a file error, so no prototype holds one.
+pub fn is_disabled_in(providers: &toml::Table, name: &str) -> bool {
+    name != "_"
+        && providers
+            .get(name)
+            .and_then(|p| p.get("enabled"))
+            .and_then(toml::Value::as_bool)
+            == Some(false)
+}
+
+/// Whether `name`'s `result` is the default merge of its Sources, under which
+/// two of them may not declare one field. The one answer for the load checks
+/// and the read: a disabled provider merges nothing.
+pub fn merges_by_default(providers: &toml::Table, name: &str) -> bool {
+    !is_disabled_in(providers, name)
+        && effective(&chain(providers, Kind::Provider, name, ""), "result")
+            .is_none_or(|line| line.as_str().is_some_and(is_default_result))
+}
 
 /// How many distinct render failures are remembered, so each is logged once. A
 /// name no `[daemon.providers.<p>]` table owns can fail too, and the set must
@@ -144,6 +172,9 @@ pub struct Chains {
     lines: [Arc<Vec<String>>; 3],
     return_kind: ReturnKind,
     result_default: bool,
+    /// `enabled = false`: `result` is the empty one, `return` carries no
+    /// template, and no Source is selected, called or run.
+    disabled: bool,
     /// Whether any line of the `return` chain reads `result` / `template`.
     return_reads_result: bool,
     return_reads_template: bool,
@@ -176,6 +207,13 @@ impl Chains {
         self.return_kind
     }
 
+    /// Whether the provider is switched off (`enabled = false`): its `result`
+    /// is [`DISABLED_RESULT`], its `return` [`DISABLED_RETURN`], and no Source
+    /// of it is selected, called or run.
+    pub fn is_disabled(&self) -> bool {
+        self.disabled
+    }
+
     /// Whether a read of the provider is the Sources' records as they are
     /// stored: the default `result` and an identity `return`. Then a field is
     /// owned by the Source that declares it; otherwise a line decides what
@@ -204,6 +242,9 @@ fn links<'t>(providers: &'t toml::Table, name: &str) -> Vec<Link<'t>> {
 /// line of the wrong type is the file check's error, and is not in a chain.
 fn chains(env: &Environment<'_>, providers: &toml::Table, name: &str) -> Chains {
     let links = links(providers, name);
+    // `enabled` is read from the provider's own table: on `_` it is a file
+    // error, so no prototype holds one.
+    let disabled = is_disabled_in(providers, name);
     let levels = |key: Key| -> Vec<Level> {
         let mut found: Vec<Level> = super_chain(&links, key.name())
             .into_iter()
@@ -214,6 +255,22 @@ fn chains(env: &Environment<'_>, providers: &toml::Table, name: &str) -> Chains 
                 })
             })
             .collect();
+        if disabled && matches!(key, Key::Result | Key::Return) {
+            // The switch is the nearest `result` and `return`: any other is
+            // not read.
+            let line = if key == Key::Result {
+                DISABLED_RESULT
+            } else {
+                DISABLED_RETURN
+            };
+            found.insert(
+                0,
+                Level {
+                    path: links[0].path.clone(),
+                    line: line.into(),
+                },
+            );
+        }
         if found.is_empty() && key == Key::Result {
             found.push(Level {
                 path: "(built in)".into(),
@@ -269,14 +326,16 @@ fn chains(env: &Environment<'_>, providers: &toml::Table, name: &str) -> Chains 
         None => ReturnKind::Identity,
         Some(line) => return_kind_of(line),
     };
-    let result_default = lines[Key::Result.index()]
-        .first()
-        .is_some_and(|l| is_default_result(l));
+    let result_default = !disabled
+        && lines[Key::Result.index()]
+            .first()
+            .is_some_and(|l| is_default_result(l));
     Chains {
         levels,
         lines,
         return_kind,
         result_default,
+        disabled,
         return_reads_result: reads.contains("result"),
         return_reads_template: reads.contains("template"),
         has_calls: !calls.is_empty(),
@@ -355,6 +414,9 @@ pub struct ProviderLines {
     /// Whether any provider's lines call a Source: when none does, a read looks
     /// no further.
     any_calls: bool,
+    /// Whether any provider is switched off: when none is, a read looks no
+    /// further.
+    any_disabled: bool,
     logged: DashSet<String>,
     /// Whether the log said that it stopped remembering failures.
     suppressed: AtomicBool,
@@ -374,11 +436,13 @@ impl ProviderLines {
             .collect();
         let shared = Arc::new(chains(&env, providers, "_"));
         let any_calls = shared.has_calls || own.values().any(|c| c.has_calls);
+        let any_disabled = own.values().any(|c| c.disabled);
         let lines = Self {
             env,
             own,
             shared,
             any_calls,
+            any_disabled,
             logged: DashSet::new(),
             suppressed: AtomicBool::new(false),
         };
@@ -497,6 +561,11 @@ impl ProviderLines {
     /// call: what a read brings up to date before the lines render.
     pub fn all_calls(&self, provider: &str) -> &[(String, String)] {
         &self.own.get(provider).unwrap_or(&self.shared).calls
+    }
+
+    /// Whether `provider` has `enabled = false`.
+    pub fn is_disabled(&self, provider: &str) -> bool {
+        self.any_disabled && self.own.get(provider).is_some_and(|c| c.disabled)
     }
 
     /// The resolved chains of `provider`: its own when the configuration has a
@@ -1680,6 +1749,74 @@ mod tests {
         let lines = self::lines("[demo]\nreturn = \"{{ daemon.providers.q.sources.t() }}\"");
         let got = lines.returned("demo", None, || None, &|_, _| Err("boom".into()));
         assert!(got.read.is_none(), "a call the line makes fails it");
+    }
+
+    #[test]
+    fn a_disabled_provider_reads_the_empty_result() {
+        let off = lines("[demo]\nenabled = false");
+        let chains = off.chains_for("demo");
+        assert!(chains.is_disabled());
+        assert!(!chains.result_is_default());
+        assert_eq!(
+            result(&off, "demo", sources(&[("s", Some(json!({"a": 1})))])),
+            json!({}),
+            "its Sources' records are not read"
+        );
+        assert!(
+            !lines("[demo]\nenabled = true")
+                .chains_for("demo")
+                .is_disabled()
+        );
+        assert!(!lines("[demo]").chains_for("demo").is_disabled());
+        assert!(!lines("").chains_for("other").is_disabled());
+    }
+
+    #[test]
+    fn disabled_wins_over_a_result_of_the_same_provider() {
+        let off = lines("[demo]\nenabled = false\nresult = \"{{ {'a': 1} }}\"");
+        assert!(off.chains_for("demo").is_disabled());
+        assert_eq!(result(&off, "demo", sources(&[])), json!({}));
+        // The result is still checked, whether or not it is read.
+        let errs = errors("[demo]\nenabled = false\nresult = \"{{ nosuch }}\"");
+        assert!(
+            errs.iter().any(|e| e.contains("unknown name 'nosuch'")),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_disabled_provider_returns_the_data_with_no_template() {
+        let off = lines("[demo]\nenabled = false");
+        let chains = off.chains_for("demo");
+        assert_eq!(chains.return_kind(), ReturnKind::Identity);
+        let got = returned(&off, "demo");
+        assert!(got.facets.is_empty(), "{:?}", got.facets);
+        // A `return` of its own is not read either.
+        let own = lines("[demo]\nenabled = false\nreturn = \"{{ {'x': 1} }}\"");
+        assert_eq!(own.chains_for("demo").return_kind(), ReturnKind::Identity);
+    }
+
+    #[test]
+    fn the_merge_predicates_agree_for_a_disabled_provider() {
+        for text in [
+            "[demo]\nenabled = false",
+            "[demo]\nenabled = false\nresult = \"{{ merge(sources) }}\"",
+            "[demo]\nenabled = true",
+            "[demo]",
+            "[demo]\nresult = \"{{ {} }}\"",
+        ] {
+            let providers = over_shipped(text);
+            let lines = ProviderLines::new(&providers).unwrap();
+            assert_eq!(
+                merges_by_default(&providers, "demo"),
+                lines.chains_for("demo").result_is_default(),
+                "{text}"
+            );
+        }
+        assert!(!merges_by_default(
+            &over_shipped("[demo]\nenabled = false"),
+            "demo"
+        ));
     }
 
     #[test]

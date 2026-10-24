@@ -1752,3 +1752,420 @@ return = "{{{{ daemon.providers.tick.sources.t() }}}}"
         "--force re-ran the called Source"
     );
 }
+
+/// A Source that appends a line to `count` each time it runs, and nothing else.
+fn tally_source(count: &Path) -> String {
+    format!(
+        "data = \"{{{{ exec(['sh', '-c', 'echo run >> {c} ; echo 1']) | trim }}}}\"\nresult.v = \"{{{{ data }}}}\"\n",
+        c = count.display()
+    )
+}
+
+/// Open a `watch` of `key` on a connection of its own and read its first
+/// frame: when it has come, the daemon has handled the request.
+fn watching(d: &TestDaemon, key: &str) -> std::os::unix::net::UnixStream {
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(&d.socket.path).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    writeln!(stream, "{}", json!({"op": "watch", "key": key})).unwrap();
+    let mut first = String::new();
+    BufReader::new(stream.try_clone().unwrap())
+        .read_line(&mut first)
+        .expect("the first frame of a watch");
+    assert!(!first.is_empty(), "the watch of {key} answered");
+    stream
+}
+
+fn refresh_ok(d: &TestDaemon, key: &str) -> bool {
+    d.comb(&d.home)
+        .args(["refresh", key])
+        .output()
+        .expect("run comb refresh")
+        .status
+        .success()
+}
+
+#[test]
+fn a_disabled_provider_is_a_miss() {
+    let setup = Setup::new(&[]);
+    let off_count = setup.home.join("off.count");
+    let on_count = setup.home.join("on.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.off]
+enabled = false
+
+[daemon.providers.off.sources.s]
+{}
+[daemon.providers.on.sources.s]
+{}"#,
+            tally_source(&off_count),
+            tally_source(&on_count),
+        ),
+    );
+    let d = setup.daemon();
+
+    assert_eq!(get(&d, "off"), None, "the provider is a miss");
+    assert_eq!(get(&d, "off.v"), None, "and so is a field of it");
+    let _watch = watching(&d, "off");
+    assert!(
+        !refresh_ok(&d, "off"),
+        "a disabled provider has nothing to refresh"
+    );
+
+    // A read and a refresh of a provider that is enabled have gone through the
+    // same daemon and the same scheduler: what they did, the disabled
+    // provider's requests had the chance to do first.
+    assert_eq!(get(&d, "on.v"), Some(json!("1")));
+    assert!(refresh_ok(&d, "on"));
+    poll_until(
+        "the enabled Source",
+        "re-run by the refresh",
+        Duration::from_secs(20),
+        Duration::from_millis(50),
+        || runs(&on_count),
+        |n| *n >= 2,
+    );
+
+    assert_eq!(runs(&off_count), 0, "no Source of a disabled provider ran");
+    assert_eq!(
+        warm_instances(&d, "off"),
+        Vec::<(String, Option<String>)>::new(),
+        "none is kept warm"
+    );
+    assert!(
+        !warm_instances(&d, "on").is_empty(),
+        "the enabled one is, so the check above can tell"
+    );
+}
+
+#[test]
+fn a_later_layer_can_re_enable_a_provider() {
+    let setup = Setup::new(&[]);
+    let count = setup.home.join("p.count");
+    let source = tally_source(&count);
+    setup.write(
+        "config.toml",
+        &format!(
+            "[daemon.providers.p]\nenabled = false\n\n[daemon.providers.p.sources.s]\n{source}"
+        ),
+    );
+    let d = setup.daemon();
+    assert_eq!(get(&d, "p"), None);
+    assert_eq!(runs(&count), 0);
+    drop(d);
+
+    setup.write(
+        "conf.d/10-back.toml",
+        "[daemon.providers.p]\nenabled = true\n",
+    );
+    let d = setup.daemon();
+    assert_eq!(get(&d, "p"), Some(json!({"v": "1"})));
+    assert_eq!(runs(&count), 1);
+    drop(d);
+
+    // And the other way round: a later layer disables what an earlier enabled.
+    setup.write(
+        "config.toml",
+        &format!(
+            "[daemon.providers.p]\nenabled = true\n\n[daemon.providers.p.sources.s]\n{source}"
+        ),
+    );
+    setup.write(
+        "conf.d/10-back.toml",
+        "[daemon.providers.p]\nenabled = false\n",
+    );
+    let d = setup.daemon();
+    assert_eq!(get(&d, "p"), None);
+    assert_eq!(runs(&count), 1, "the later layer's false is the value");
+}
+
+#[test]
+fn a_built_in_provider_can_be_disabled() {
+    assert!(
+        crate::common::git::has_git(),
+        "this test needs git on $PATH"
+    );
+    let repo = crate::common::git::GitRepoFixture::new();
+    let inside = repo.path().canonicalize().unwrap();
+    let in_repo = |p: &String| p.starts_with(inside.to_str().unwrap());
+
+    // The control: with git enabled the same read keeps git warm and watches
+    // the repository, so the absence below means something.
+    let on = Setup::new(&[]);
+    let d = on.daemon();
+    assert_eq!(get_at(&d, &inside, &["git.branch"]), Some(json!("main")));
+    assert!(!warm_instances(&d, "git").is_empty(), "git is kept warm");
+    poll_until(
+        "the enabled daemon",
+        "watching the repository",
+        Duration::from_secs(20),
+        Duration::from_millis(50),
+        || watched(&d),
+        |paths| paths.iter().any(in_repo),
+    );
+    drop(d);
+
+    let off = Setup::new(&[("config.toml", "[daemon.providers.git]\nenabled = false\n")]);
+    let d = off.daemon();
+    assert_eq!(get_at(&d, &inside, &["git.branch"]), None);
+    assert_eq!(get_at(&d, &inside, &["git"]), None);
+    assert!(
+        !d.comb(&inside)
+            .args(["refresh", "git"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    // A positive event after the requests above: another provider's read.
+    assert!(get_at(&d, &inside, &["hostname"]).is_some());
+    assert_eq!(
+        warm_instances(&d, "git"),
+        Vec::<(String, Option<String>)>::new()
+    );
+    assert!(
+        !watched(&d).iter().any(in_repo),
+        "nothing watches the repository: {:?}",
+        watched(&d)
+    );
+}
+
+#[test]
+fn a_disabled_template_only_provider_is_a_miss_but_its_facet_reads() {
+    // aws is template-only: the shipped defaults give it templates and no
+    // daemon Source.
+    let setup = Setup::new(&[("config.toml", "[daemon.providers.aws]\nenabled = false\n")]);
+    let d = setup.daemon();
+    assert_eq!(get(&d, "aws"), None, "no template half rides along");
+    assert_eq!(get(&d, "aws.region"), None);
+    let facet = get(&d, "aws:template").expect("the facet is still seeded");
+    assert!(facet.get("region").is_some(), "{facet}");
+
+    let on = Setup::new(&[]);
+    let d = on.daemon();
+    assert!(
+        get(&d, "aws").is_some(),
+        "control: enabled, the templates render"
+    );
+}
+
+#[test]
+fn a_disabled_provider_with_a_result_of_its_own_is_still_disabled() {
+    let setup = Setup::new(&[]);
+    let count = setup.home.join("q.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.q]
+enabled = false
+result = "{{{{ merge(sources) }}}}"
+
+[daemon.providers.q.sources.s]
+{}"#,
+            tally_source(&count)
+        ),
+    );
+    let d = setup.daemon();
+    assert_eq!(get(&d, "q"), None);
+    assert_eq!(get(&d, "q.v"), None);
+    assert_eq!(runs(&count), 0);
+}
+
+#[test]
+fn a_call_to_a_disabled_providers_source_is_a_miss_that_runs_nothing() {
+    let setup = Setup::new(&[]);
+    let count = setup.home.join("off.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.off]
+enabled = false
+
+[daemon.providers.off.sources.s]
+{}
+[daemon.providers.caller]
+result = "{{{{ merge(sources) | merge(daemon.providers.off.sources.s()) }}}}"
+
+[daemon.providers.caller.sources.own]
+data = "{{{{ 2 }}}}"
+result.mine = "{{{{ data }}}}"
+
+[daemon.providers.viadata.sources.own]
+data = "{{{{ 'miss' if daemon.providers.off.sources.s() is none else 'hit' }}}}"
+result.seen = "{{{{ data }}}}"
+"#,
+            tally_source(&count)
+        ),
+    );
+    let d = setup.daemon();
+    assert_eq!(
+        get(&d, "caller"),
+        Some(json!({"mine": 2})),
+        "the call gave a miss, which the merge skips"
+    );
+    assert_eq!(
+        get(&d, "viadata"),
+        Some(json!({"seen": "miss"})),
+        "so does a Source's data line"
+    );
+    assert!(refresh_ok(&d, "caller"));
+    let _watch = watching(&d, "caller");
+    assert_eq!(runs(&count), 0, "the call did not run the Source");
+    assert_eq!(
+        warm_instances(&d, "off"),
+        Vec::<(String, Option<String>)>::new()
+    );
+}
+
+#[test]
+fn a_disabled_provider_drops_its_template_half() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.off]
+enabled = false
+
+[client.providers.off.template]
+label = "{{ 'static' }}"
+"#,
+    )]);
+    let d = setup.daemon();
+    // `enabled = false` is `result = "{{ {} }}"` and `return = "{{ result }}"`:
+    // no data, and no template half to render client-side.
+    assert_eq!(get(&d, "off"), None);
+    assert_eq!(get(&d, "off.label"), None);
+    assert_eq!(
+        get(&d, "off:template"),
+        Some(json!({"label": "{{ 'static' }}"})),
+        "the facet is data, and is read by its own name"
+    );
+}
+
+#[test]
+fn a_put_under_a_disabled_provider_is_still_read() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        "[daemon.providers.off]\nenabled = false\n\n[client.providers.off.template]\ny = \"{{ 1 }}\"\n",
+    )]);
+    let d = setup.daemon();
+    d.comb(&d.home)
+        .args(["put", "off.x", "\"kept\""])
+        .assert()
+        .success();
+    assert_eq!(
+        get(&d, "off"),
+        Some(json!({"x": "kept"})),
+        "a put is not a Source's data, and disabling is only about Sources"
+    );
+}
+
+#[test]
+fn a_return_line_call_to_a_disabled_source_is_a_miss_that_runs_nothing() {
+    let setup = Setup::new(&[]);
+    let count = setup.home.join("off.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.off]
+enabled = false
+
+[daemon.providers.off.sources.s]
+{}
+[daemon.providers.caller]
+return = "{{{{ result | merge(daemon.providers.off.sources.s()) }}}}"
+
+[daemon.providers.caller.sources.own]
+data = "{{{{ 2 }}}}"
+result.mine = "{{{{ data }}}}"
+"#,
+            tally_source(&count)
+        ),
+    );
+    let d = setup.daemon();
+    assert_eq!(get(&d, "caller"), Some(json!({"mine": 2})));
+    let _watch = watching(&d, "caller");
+    assert_eq!(runs(&count), 0);
+    assert!(warm_instances(&d, "off").is_empty());
+}
+
+/// `comb <args>` from `d`'s home: whether it succeeded, and its stderr.
+fn comb_status(d: &TestDaemon, args: &[&str]) -> (bool, String) {
+    let out = d.comb(&d.home).args(args).output().expect("run comb");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn refresh_wait_and_force_of_a_disabled_provider() {
+    let setup = Setup::new(&[]);
+    let off_count = setup.home.join("off.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            "[daemon.providers.off]\nenabled = false\n\n[daemon.providers.off.sources.s]\n{}",
+            tally_source(&off_count)
+        ),
+    );
+    let d = setup.daemon();
+    let (ok, err) = comb_status(&d, &["refresh", "off"]);
+    assert!(
+        !ok && err.contains("nothing to refresh: off is disabled"),
+        "{err}"
+    );
+    let (ok, err) = comb_status(&d, &["get", "--force", "off"]);
+    assert!(
+        !ok && err.contains("cannot --force disabled provider 'off'"),
+        "an error like --force on a static namespace, not a silent miss: {err}"
+    );
+    let out = d
+        .comb(&d.home)
+        .args(["get", "--wait", "-f", "json", "off"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "--wait is a miss, not a run: {out:?}"
+    );
+    assert_eq!(runs(&off_count), 0);
+}
+
+#[test]
+fn introspect_providers_marks_a_disabled_provider() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        "[daemon.providers.hostname]\nenabled = false\n",
+    )]);
+    let d = setup.daemon();
+    let providers = introspect(&d, "providers");
+    let row = |name: &str| {
+        providers["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == name)
+            .unwrap_or_else(|| panic!("{name} listed"))
+            .clone()
+    };
+    let off = row("hostname");
+    assert_eq!(off["disabled"], json!(true));
+    assert_eq!(off["invalidation"], json!("disabled"), "{off}");
+    assert!(
+        off["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["invalidation"] == "disabled"),
+        "{off}"
+    );
+    assert_eq!(row("load")["disabled"], json!(false));
+}

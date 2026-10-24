@@ -776,6 +776,11 @@ async fn called_instances(
     let mut out: Vec<(String, Vec<Instance>)> = Vec::new();
     let mut memo = RootMemo::default();
     for (called_provider, source) in &called {
+        // A disabled provider has no instances: its Source is not run for a
+        // call, and the call is a miss.
+        if registry.is_disabled(called_provider) {
+            continue;
+        }
         let mut walk = registry.instance_walk(called_provider, source, dir);
         let mut found = Vec::new();
         while let Some(root) =
@@ -1442,6 +1447,12 @@ async fn handle_request(
             // `--force` re-executes below, per instance; nothing is evicted
             // here. Evicting the addressed entry wholesale used to take the
             // static records with it.
+            if *force && registry.is_disabled(provider_name) {
+                return Response::error(format!(
+                    "cannot --force disabled provider '{provider_name}': no source to re-execute \
+                     (enabled = false)"
+                ));
+            }
             if *force && registry.is_static_namespace(provider_name) {
                 return Response::error(format!(
                     "cannot --force static namespace '{provider_name}': no source to re-execute from"
@@ -1647,6 +1658,9 @@ async fn handle_request(
                 KeyParse::Provider(p) => p.clone(),
                 KeyParse::Field(p, f) => format!("{p}.{f}"),
             };
+            if registry.is_disabled(provider_name) {
+                return Response::error(format!("nothing to refresh: {provider_name} is disabled"));
+            }
             if demanded.is_empty() {
                 return Response::error(format!("nothing to refresh: {addressed} has no sources"));
             }
@@ -2180,6 +2194,7 @@ async fn handle_introspect_providers(
             "unknown"
         };
 
+        let disabled = registry.is_disabled(name);
         let (sources_out, invalidation) = if let Some(meta) = registry.provider_metadata(name) {
             // Collect per-source info.
             let sources_out: Vec<serde_json::Value> = meta
@@ -2206,17 +2221,24 @@ async fn handle_introspect_providers(
                     serde_json::json!({
                         "name": sm.name,
                         "fields": fields,
-                        "invalidation": summarize_invalidation(&sm.invalidation),
+                        "invalidation": if disabled {
+                            "disabled".to_string()
+                        } else {
+                            summarize_invalidation(&sm.invalidation)
+                        },
                     })
                 })
                 .collect();
 
             // Use the first source's invalidation for the top-level summary.
-            let invalidation = meta
-                .sources
-                .first()
-                .map(|sm| summarize_invalidation(&sm.invalidation))
-                .unwrap_or_else(|| "data-only".to_string());
+            let invalidation = if disabled {
+                "disabled".to_string()
+            } else {
+                meta.sources
+                    .first()
+                    .map(|sm| summarize_invalidation(&sm.invalidation))
+                    .unwrap_or_else(|| "data-only".to_string())
+            };
 
             (sources_out, invalidation)
         } else {
@@ -2251,6 +2273,7 @@ async fn handle_introspect_providers(
             "sources": sources_out,
             "invalidation": invalidation,
             "in_backoff": in_backoff,
+            "disabled": disabled,
         }));
     }
 

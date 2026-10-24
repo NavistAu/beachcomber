@@ -465,12 +465,17 @@ impl SourceDemand {
 /// answers the demand, which is what a field no Source owns produces.
 ///
 /// `get` warms this set and `refresh` re-executes it, so the two cannot select
-/// different Sources for the same key.
+/// different Sources for the same key. A disabled provider (`enabled = false`)
+/// demands none: this is where a read, a watch, a refresh and the scheduler's
+/// demand all find the Sources they act on.
 pub fn demanded_source_names(
     registry: &ProviderRegistry,
     provider: &str,
     demand: &SourceDemand,
 ) -> Vec<String> {
+    if registry.is_disabled(provider) {
+        return Vec::new();
+    }
     registry
         .provider_sources(provider)
         .map(|sources| {

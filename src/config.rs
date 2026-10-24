@@ -549,6 +549,14 @@ impl Config {
         }
     }
 
+    /// Whether `[client.providers]` names `provider`.
+    pub fn client_names(&self, provider: &str) -> bool {
+        self.client
+            .get("providers")
+            .and_then(|t| t.get(provider))
+            .is_some()
+    }
+
     /// The names the two roots give providers, `_` excluded: a provider exists
     /// if either root names it. The registry registers those no code or source
     /// block already stands behind, with zero Sources.

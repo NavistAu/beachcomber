@@ -243,6 +243,10 @@ pub fn source_call(
             "sources: {provider}.{source} calls itself"
         )));
     }
+    // A disabled provider produces nothing, and nothing of it runs: a miss.
+    if registry.is_disabled(provider) {
+        return Ok(None);
+    }
     let entry = crate::query::normalise_path(entry);
     let chain = match cold {
         Cold::Run => crate::query::instance_chain(registry, provider, source, entry.as_deref())?,

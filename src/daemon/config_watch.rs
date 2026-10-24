@@ -533,6 +533,16 @@ mod tests {
     }
 
     #[test]
+    fn an_enabled_edit_is_a_settings_change() {
+        let mut dir = Dir::new(SOURCE);
+        dir.write(
+            "conf.d/10-off.toml",
+            "[daemon.providers.git]\nenabled = false\n",
+        );
+        assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
+    }
+
+    #[test]
     fn a_budget_edit_is_a_settings_change() {
         let mut dir = Dir::new(SOURCE);
         dir.write(

@@ -602,6 +602,12 @@ impl ProviderRegistry {
         self.lines.chains_for(provider).reads_by_default()
     }
 
+    /// Whether `provider` is switched off (`enabled = false`): none of its
+    /// Sources is read, run, polled or watched, and a call to one is a miss.
+    pub fn is_disabled(&self, provider: &str) -> bool {
+        self.lines.is_disabled(provider)
+    }
+
     /// Whether `provider`'s `result` is the default merge of its Sources, under
     /// which two of them may not declare one field.
     fn merges_by_default(&self, provider: &str) -> bool {
@@ -1013,6 +1019,22 @@ impl ProviderRegistry {
         // `[client.providers]` or `[daemon.providers]` has no Source behind
         // it: it is registered with zero. `_`, the prototype's name, is never
         // one (`Config::named_providers`).
+        // A table that only switches a provider off, for a name that no
+        // built-in, Source or client table gives a provider, is a typo.
+        for (name, table) in providers {
+            if table
+                .as_table()
+                .is_some_and(|t| t.len() == 1 && t.contains_key("enabled"))
+                && name != "_"
+                && !registry.is_registered(name)
+                && !config.client_names(name)
+            {
+                errors.push(format!(
+                    "[daemon.providers.{name}] enabled: no provider is named '{name}' (no \
+                     built-in, Source or template gives it one)"
+                ));
+            }
+        }
         for name in config.named_providers() {
             registry.register_config_named(&name);
         }
@@ -1824,6 +1846,30 @@ result.y = "{{ data }}"
         assert!(!reg.register_static("hostname"));
         assert!(reg.register_static("myvar"));
         assert!(reg.is_static_namespace("myvar"));
+    }
+
+    #[test]
+    fn enabled_on_a_name_nothing_gives_a_provider_is_a_load_error() {
+        let load = |text: &str| {
+            let config = crate::config_tests::with_shipped_defaults(text);
+            ProviderRegistry::load(&config, &Default::default()).errors
+        };
+        assert_eq!(
+            load("[daemon.providers.gti]\nenabled = false\n"),
+            vec![
+                "[daemon.providers.gti] enabled: no provider is named 'gti' (no built-in, Source \
+                 or template gives it one)"
+            ]
+        );
+        // Named by a built-in, a client template, or a table of its own lines.
+        assert!(load("[daemon.providers.git]\nenabled = false\n").is_empty());
+        assert!(
+            load("[client.providers.mine.template]\nx = \"{{ 1 }}\"\n[daemon.providers.mine]\nenabled = false\n")
+                .is_empty()
+        );
+        assert!(
+            load("[daemon.providers.lit]\nenabled = false\nresult = \"{{ {} }}\"\n").is_empty()
+        );
     }
 
     #[test]

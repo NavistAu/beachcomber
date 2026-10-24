@@ -146,6 +146,22 @@ template = "{{ client.providers.aws.template }}"
 result = "{{ merge(sources.first(), sources.second()) }}"
 ```
 
+### Switching a provider off — `enabled = false`
+
+```toml
+# git produces nothing, and nothing of it runs
+[daemon.providers.git]
+enabled = false
+```
+
+`enabled = false` on `[daemon.providers.<p>]` sets the provider's `result` to `"{{ {} }}"` and its `return` to `"{{ result }}"`, and none of its Sources is selected, called or run. What follows from it:
+
+- **A read is a miss.** `comb get <p>` and `comb get <p>.<field>` find no data and no template half, so a template-only provider (`aws`, `op`, `conda`, `gcloud`, `kubecontext`, `talos`) switches off the same way. The `<p>:template` facet is still seeded and readable by its own name (`comb get aws:template`), and records a `put` stores under `<p>` are still read, since `result` carries them.
+- **No Source of the provider runs.** A read, a `watch` and the scheduler's demand find no Sources to act on, so none is executed, polled, watched or kept warm. `comb refresh <p>` is `nothing to refresh: <p> is disabled`, and `comb get --force <p>` is an error, as it is for a static namespace; `--wait` is a miss. This holds for built-in providers too (`[daemon.providers.git] enabled = false` stops git's polling and its file watches), and `comb check providers` marks the provider `disabled`.
+- **A call to one of its Sources is a miss.** `daemon.providers.<p>.sources.<s>()` from another provider's line, or from a Source's `data`, gives `none` and runs nothing, so `merge(...)` skips it. It is not a load error: a later layer may set `enabled = true` again.
+- **`enabled = false` wins over a `result` or `return` on the same provider.** Neither is read (both are still checked at load). Two meanings for one provider would be two ways to do one thing, and layered files make a conflict an error nobody can fix from where they are: a drop-in that disables a provider need not know what an earlier file wrote.
+- **It is a bool, and a layer may take it back.** Layers replace the key like any other, so a later `enabled = true` re-enables the provider. A value that is not a boolean is an error, and so is `enabled` on `[daemon.providers._]`, which applies to every provider: name the provider. A table that holds only `enabled` for a name no built-in, Source or client template gives a provider is an error too (`no provider is named 'gti'`).
+
 A provider line sees only its own names: `template` sees `client` and `_`, `result` sees `sources`, `daemon` and `_`, `return` sees `result`, `template`, `daemon` and `_` (`result` is also the value piped in by a `| super`; a `return` reaches its provider's own records through `result`, which keeps the `put` and `config:` layers over the Sources). The lines run on every read and do no IO: `exec`, `read`, `lup`, `url` and `plugin` are load errors in them. Schedule decorators (`poll`, `watch`, `ttl`, `failback`, `budget`, `nearest`) belong to a Source's `return`; on a provider's line they are a load error. A line that fails to render makes that layer of the provider's records (for `result`) or its template half (for `return`) a miss, and is logged once per distinct failure (after 256 distinct failures one line says further ones are suppressed).
 
 ### Template facets
@@ -162,7 +178,7 @@ version = "{{ python.version }}"
 
 That is `python:template.venv_name` and `python:template.widgets.version`. A provider exists if either root names it: one named only under `[client.providers]` or `[daemon.providers]` is a provider with no Sources. The rules are checked file by file, because seeding is, and enforced at daemon startup, on reload and by `comb check config`; each error names its file:
 
-- `[client]` holds only `providers`, and `[client.providers.<p>]` holds only `template`; any other key is `unknown key '<k>' in [client]` (or `[client.providers.<p>]`). `[daemon.providers.<p>]` holds `cache`, `sources` and the three lines above, and nothing else.
+- `[client]` holds only `providers`, and `[client.providers.<p>]` holds only `template`; any other key is `unknown key '<k>' in [client]` (or `[client.providers.<p>]`). `[daemon.providers.<p>]` holds `cache`, `sources`, `enabled` (a boolean; [not on `_`](#switching-a-provider-off--enabled--false)) and the three lines above, and nothing else.
 - Nesting is tables only, so a quoted key containing a `.` (`"a.b" = "…"`) is an **error**, and so is an empty key. A provider name holds no `:` or `.` and is not `*`.
 - A template leaf that is neither a string nor a table is not a value expression: an **error**.
 - The colon-table form `[providers."<p>:template"]` is gone with the whole `[providers]` root: it is `unknown table [providers]`, which says templates live in `[client.providers.<p>] template.<leaf>` and decay in `[daemon.providers.<p>.cache._]`.
@@ -298,6 +314,7 @@ Composition rules:
 | `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
 | `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds with no client before the daemon shuts down; unset keeps it resident |
 | `budget.execute` | duration | `"50ms"` | The execute budget recorded for every Source whose `return` does not name `budget(...)`; at least `1ms`. Recorded, not yet enforced: a later release reads it. |
+| `providers.<p>.enabled` | bool | `true` | `false` switches the provider off: sugar for `result = "{{ {} }}"`, and no Source of it runs ([Switching a provider off](#switching-a-provider-off--enabled--false)). Not valid on `_` |
 | `providers.<p>.cache._.decay` | int, 1 to 16 | (4 from `defaults/00-comb.toml`) | Decay steps before eviction, seeded as `<p>:cache._.decay`; `<p> = _` is every provider ([Template facets](#template-facets)) |
 
 **`[client]` section:**
@@ -308,7 +325,7 @@ Composition rules:
 
 > Values are checked when the configuration loads, and an error names the file: `log_level` is one of `off`, `error`, `warn`, `info`, `debug`, `trace`; `provider_timeout_secs` and `idle_shutdown_secs` are at least `1`; `socket_path` and `env_file` are not empty; `watchdog_interval` and `watchdog_threshold` are whole seconds of at least `1s` (`"30s"`, `"5m"`, `"1h"`), a threshold needs an interval, and a threshold below the interval is an error. `budget.execute` also takes milliseconds (`"250ms"`). `[daemon]` takes no other keys. A file that is not valid TOML is an error too: it is never skipped.
 
-> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`). The `[providers]` root, the `[lifecycle]` (`idle_shutdown_secs` moved to `[daemon]`), `[failback]` and `[tree]` tables, and the `scope`, `marker`, `poll_*`, `fsevent_*`, `failback_*`, `budget_*` and `enabled` keys are config errors, at whatever level they appear.
+> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`). The `[providers]` root, the `[lifecycle]` (`idle_shutdown_secs` moved to `[daemon]`), `[failback]` and `[tree]` tables, and the `scope`, `marker`, `poll_*`, `fsevent_*`, `failback_*`, `budget_*` keys are config errors, at whatever level they appear, and so is `enabled` anywhere but `[daemon.providers.<p>]`.
 
 **`[daemon.providers.<name>.sources.<source>]` section for a built-in Source:**
 

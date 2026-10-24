@@ -18,6 +18,8 @@
 //! `[daemon.providers.<p>]` also takes the provider's own lines, `template`,
 //! `result` and `return`, each a jinja line (what they mean, and the load
 //! errors that need the composed tree, are [`crate::shape::provider`]'s).
+//! `enabled = false` is a bool on a named provider: sugar for the empty
+//! `result`, so a provider that produces nothing and runs no Source.
 //! `[daemon.providers.<p>.sources.<s>]` is fenced here too (`root`, `data`,
 //! `result`, `return`, each a jinja line); what a Source means is
 //! [`crate::shape::build`]'s, from the composed tree.
@@ -315,8 +317,9 @@ impl Reader {
     }
 
     /// `[daemon.providers.<p>]` holds `cache` (which holds only `_`, which
-    /// holds only `decay`), `sources`, and the provider's lines: `template`,
-    /// `result` and `return`, each a string.
+    /// holds only `decay`), `sources`, the provider's lines: `template`,
+    /// `result` and `return`, each a string, and `enabled`, a bool (not on
+    /// `_`: it would switch off every provider).
     fn daemon_provider(&mut self, name: &str, value: &toml::Value) {
         let Some(table) = value.as_table() else {
             return self.err(format!("[daemon.providers.{name}] must be a table"));
@@ -329,6 +332,21 @@ impl Reader {
         for (key, sub) in table {
             if key == "sources" {
                 self.sources(name, sub);
+                continue;
+            }
+            if key == "enabled" {
+                if name == "_" {
+                    self.err(
+                        "[daemon.providers._] enabled: the abstract provider applies to every \
+                         provider: name the provider, [daemon.providers.<p>] enabled = false"
+                            .into(),
+                    );
+                } else if !sub.is_bool() {
+                    self.err(format!(
+                        "[daemon.providers.{name}] enabled must be true or false, not {}",
+                        sub.type_str()
+                    ));
+                }
                 continue;
             }
             if matches!(key.as_str(), "template" | "result" | "return") {

@@ -675,7 +675,9 @@ return = "{{ result | poll('86400s') }}"
 
 > Values are checked when the configuration loads, and an error names the file: `log_level` is one of `off`, `error`, `warn`, `info`, `debug`, `trace`; `provider_timeout_secs` and `idle_shutdown_secs` are at least `1`; `socket_path` and `env_file` are not empty; `watchdog_interval` and `watchdog_threshold` are whole seconds of at least `1s` (`"30s"`, `"5m"`, `"1h"`), a threshold needs an interval, and a threshold below the interval is an error. `budget.execute` also takes milliseconds (`"250ms"`). `[daemon]` takes no other keys. A file that is not valid TOML is an error too: it is never skipped.
 
-> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`). The `[providers]` root, `[lifecycle]`, `[failback]` and `[tree]` tables, and the `scope`, `marker`, `poll_*`, `fsevent_*`, `failback_*`, `budget_*` and `enabled` keys are config errors.
+> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`). The `[providers]` root, `[lifecycle]`, `[failback]` and `[tree]` tables, and the `scope`, `marker`, `poll_*`, `fsevent_*`, `failback_*`, `budget_*` keys are config errors, and so is `enabled` anywhere but `[daemon.providers.<name>]`.
+
+**`[daemon.providers.<name>] enabled = false`** switches a provider off, built-in or template-only. It sets the provider's `result` to `"{{ {} }}"` and its `return` to `"{{ result }}"`, and none of its Sources is selected, called or run: a `get` of it is a miss (no data, no template half), and its Sources are not run, polled, watched or refreshed (`comb refresh <name>` is `nothing to refresh: <name> is disabled`, `get --force` is an error). A call to one of its Sources from another line is a miss. The `<name>:template` facet is still seeded and readable, and a `put` under the name is still read. `enabled = false` wins over a `result` or `return` set on the same provider. A later layer may set `enabled = true`; it must be a boolean, it is an error on `[daemon.providers._]`, and on a name nothing gives a provider.
 
 **`[daemon.providers.<name>.sources.<source>]` section for a built-in Source:**
 

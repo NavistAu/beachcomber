@@ -91,6 +91,8 @@ return   = "{{ result | facet('template', template) }}"   # the data, with the :
 
 `result` is what the provider reads as: each of its Sources is called (`sources.head()` is that Source's stored record where the read is standing) and the records are merged, so a provider with two Sources is one tree. `return` hands that tree out, as it is or reshaped, and attaches the `:template` facet beside it. A provider may write any of the three; a `return` can pipe into the abstract one with `| super` (a `template` or `result` line is the whole value, and `| super` there is a load error). See the [configuration reference](/docs/reference/configuration-reference).
 
+A provider can be switched off: `[daemon.providers.git] enabled = false` sets its `result` to `"{{ {} }}"` and its `return` to `"{{ result }}"`, and none of its Sources is selected, called or run. A read of it is a miss, with no template half either (its `:template` facet is still readable by name), and a later layer can set `enabled = true` again. See [Switching a provider off](/docs/reference/configuration-reference#switching-a-provider-off--enabled--false).
+
 ## Where an instance lives
 
 A config Source's `root` line says which directory an instance answers for: `root = "{{ lup('.git') | dirname }}"` gives one instance per project, shared by every subdirectory of it; no `root` is the single instance at `~`. Built-in sources do the same in Rust: git walks up to `.git/`, mise looks for `mise.toml` or `.mise.toml`, and `battery`, `hostname` and `load` are one instance for the daemon.

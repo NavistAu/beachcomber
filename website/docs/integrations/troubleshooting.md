@@ -77,7 +77,7 @@ If this returns nothing, either:
 
 ## Provider not available
 
-If a key always returns empty, the provider may not be enabled or supported on your platform:
+If a key always returns empty, the provider may be switched off (`enabled = false` under `[daemon.providers.<name>]`) or not supported on your platform:
 
 Check your `~/.config/beachcomber/config.toml` if a provider you expect is missing. See the [built-in providers reference](../reference/built-in-providers.md) for every provider and its fields, and [platform notes](../reference/built-in-providers.md) for fields that need optional components (e.g. UPower on Linux for `battery.time_remaining`).
 
