@@ -359,7 +359,7 @@ Use `comb check daemon` for daemon health (pid, uptime, version, active watchers
 Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.
 
 ```sh
-BEACHCOMBER_LOG=debug comb d                          # debug logging
+RUST_LOG=beachcomber=debug comb d                     # debug logging (or log_level = "debug")
 comb d --socket /tmp/beachcomber-debug.sock            # override socket path
 ```
 

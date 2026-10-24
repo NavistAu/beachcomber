@@ -430,7 +430,7 @@ Socket path resolution order: `daemon.socket_path` in config → `BEACHCOMBER_SO
 
 ```sh
 # Run with debug logging
-BEACHCOMBER_LOG=debug comb d
+RUST_LOG=beachcomber=debug comb d
 
 # Override socket path
 comb d --socket /tmp/beachcomber-debug.sock
