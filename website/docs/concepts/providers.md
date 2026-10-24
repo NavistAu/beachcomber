@@ -58,6 +58,7 @@ A source's schedule is its `return` line, built from decorators on `result`:
 | `watch(path, ...)` | Re-executes when a watched path changes. A relative path is matched within the directory the instance answers for; an absolute one (or `~/...`) is watched directly, for values that live in a config file elsewhere |
 | `ttl(interval)` | `poll(interval, 1)` with a decay depth of 1: valid for one interval, then gone |
 | `failback(count, interval)` | After `count` failures, suppress execution for `interval`, doubling per level. Always on: the engine's `failback(3, '1s')` applies where a line is silent |
+| `nearest` | The nearest instance answers alone, instead of cascading up to `~`: see [Where an instance lives](#where-an-instance-lives). Takes no arguments; not saying it is cascade |
 | `budget(duration)` | The execute budget recorded for the source; `[daemon] budget.execute` (default `50ms`) where a line is silent. Recorded, not yet enforced |
 
 `poll` and `watch` together make a watch with a timer backstop. A source with neither is watch-only with nothing to watch: it executes on first demand and is served from the cache after that. Like every source it decays once nothing reads it (the default Active window is 60 s × 12).
@@ -69,18 +70,38 @@ data = "{{ exec('node --version') | trim }}"
 result.value = "{{ data }}"
 return = "{{ result | watch('.node-version', 'package.json') | poll('60s') }}"
 
-# A built-in Source retuned: git's diff polls every 15 seconds
+# A built-in Source retuned: git's diff polls every 15 seconds. The line replaces
+# everything the Source declares, `nearest` included, so git's says it again
 [daemon.providers.git.sources.diff]
-return = "{{ result | poll('15s', 8) }}"
+return = "{{ result | poll('15s', 8) | nearest }}"
 ```
 
-A built-in Source takes `return` and nothing else; the line replaces its schedule whole, and a built-in with no `return` keeps its own (the `_` Source lines reach it only through `| super`). See the [configuration reference](/docs/reference/configuration-reference).
+A built-in Source takes `return` and nothing else; the line replaces its schedule whole, and its `nearest` setting with it (a retuned git Source that leaves `| nearest` off cascades), and a built-in with no `return` keeps its own (the `_` Source lines reach it only through `| super`). See the [configuration reference](/docs/reference/configuration-reference).
 
 ## Where an instance lives
 
 A config Source's `root` line says which directory an instance answers for: `root = "{{ lup('.git') | dirname }}"` gives one instance per project, shared by every subdirectory of it; no `root` is the single instance at `~`. Built-in sources do the same in Rust: git walks up to `.git/`, mise looks for `mise.toml` or `.mise.toml`, and `battery`, `hostname` and `load` are one instance for the daemon.
 
-A read asks the nearest instance first. If the key is missing there it goes to the parent of that instance's root, and so on up to the instance at `~`, where it stops: `mise` is a single Source, so from a project `mise.node` is the project's while `mise.go`, which only the global config sets, is found at `~`. `comb get mise` merges the instances it walks, the nearer winning. The cache key of a rooted instance is `provider\0root`.
+A Source's instances combine in one of two ways.
+
+**Cascade** is the default. A read asks the nearest instance first. If the key is missing there it goes to the parent of that instance's root, and so on up to the instance at `~`, where it stops: `mise` is a single Source, so from a project `mise.node` is the project's while `mise.go`, which only the global config sets, is found at `~`. `comb get mise` merges the instances it walks, the nearer winning per leaf. A directory with no root is served by the instance at `~`. Use it when the instances are layers of one setting.
+
+**Nearest** is `| nearest` on the `return` line. The nearest instance answers alone: a key it lacks is absent, no outer instance fills in, and a directory with no root has no instance at all, so no value and nothing runs; `~` is not a fallback. `git` is nearest: inside a nested repository `comb get git.branch_parent` is that repository's or absent, never the superproject's, and outside any repository there are no git values. (A repository at `$HOME` is found like any other, so every directory under `$HOME` without a repository of its own reads it.) `direnv` (the nearest `.envrc`), `python` (the venv) and `terraform` are nearest too; `mise` and `asdf` cascade. Use it when the instance is the one you are in.
+
+```toml
+# A config Source over the nearest package.json only
+[daemon.providers.pkg.sources.main]
+root = "{{ lup('package.json') | dirname }}"
+data = "{{ exec('cat package.json') | fromjson }}"
+result.name = "{{ data.name }}"
+return = "{{ result | watch('package.json') | nearest }}"
+
+# Every git config Source nearest: one with no return of its own, or whose return calls `| super`, takes it
+[daemon.providers.git.sources._]
+return = "{{ result | nearest | super }}"
+```
+
+Records written by `put`, and the `config:` seeds, merge up the directory chain whichever a Source does. The cache key of a rooted instance is `provider\0root`.
 
 The Rust-side metadata that describes a built-in (its invalidation strategy, how it finds its root, watch patterns) is internal to the daemon: it is what `return` replaces, not something a config file names. `comb get <provider>:cache.<field>` shows the `poll`, `watch` and `decay` a record registered with.
 

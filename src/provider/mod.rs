@@ -477,6 +477,12 @@ pub struct SourceMetadata {
     pub decay: Option<u8>,
     /// How long one `execute` may take before the engine reports it slow.
     pub budget_execute: std::time::Duration,
+    /// How the Source's instances combine. `false` cascades: a read takes
+    /// each leaf from the nearest instance that has it, then the next one up,
+    /// ending at `~`. `true` is `| nearest`: the nearest instance answers
+    /// alone, and no instance found is no value. Meaningless for a Source
+    /// with no root, whose one instance is at `~` either way.
+    pub nearest: bool,
 }
 
 /// What a Source produces on a successful execute. Disjoint with sibling
@@ -612,9 +618,12 @@ pub trait Source: Send + Sync {
     /// clears its records instead of leaving stale ones behind.
     fn execute(&self, dir: Option<&str>) -> Result<SourceResult, String>;
 
-    /// The instance answering for `dir`: `Some(root)` is the instance at that
-    /// directory, `None` the one instance at `~`. The default has no roots, so
-    /// every directory is served by the instance at `~`.
+    /// The root `dir` finds: `Some(root)` is the directory the walk found,
+    /// `$HOME` itself included; `None` is that it found nothing. What nothing
+    /// means is the Source's `nearest` setting: a cascading Source is then
+    /// served by the instance at `~`, a nearest one has no instance
+    /// ([`crate::query::Found`]). The default has no roots, so every
+    /// directory is served by the instance at `~`.
     ///
     /// A root that cannot be worked out is an `Err` the reader sees, never the
     /// instance at `~`.
@@ -715,6 +724,7 @@ mod tests {
             fsevents_reinstate: false,
             decay: None,
             budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+            nearest: false,
         }
     }
 

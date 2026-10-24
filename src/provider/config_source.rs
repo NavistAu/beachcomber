@@ -228,6 +228,13 @@ impl ConfigSource {
                 ),
             ));
         }
+        if spec.root.is_none() && recorded.nearest {
+            return Err(stage_error(
+                &spec,
+                "return",
+                "the source has no root, so one instance; nearest has no effect".to_string(),
+            ));
+        }
         let meta = SourceMetadata {
             name: spec.name.clone(),
             fields,
@@ -236,6 +243,7 @@ impl ConfigSource {
             fsevents_reinstate: !matches!(recorded.invalidation, InvalidationStrategy::Poll { .. }),
             decay: recorded.decay,
             budget_execute: recorded.budget_execute,
+            nearest: recorded.nearest,
         };
         Ok(Self {
             spec,
@@ -433,6 +441,7 @@ mod tests {
             },
             budget_execute: Duration::from_millis(50),
             decay: None,
+            nearest: false,
         }
     }
 
@@ -663,6 +672,7 @@ mod tests {
                 },
                 budget_execute: Duration::from_millis(321),
                 decay: Some(1),
+                nearest: false,
             };
             let meta = source(sp).metadata().clone();
             assert_eq!(meta.invalidation, invalidation);

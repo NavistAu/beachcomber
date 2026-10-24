@@ -124,10 +124,15 @@ pub fn normalise_path(requested: Option<&str>) -> Option<String> {
             .map(|abs| abs.to_string_lossy().to_string())
             .unwrap_or_else(|_| p.to_string())
     };
-    if home_dir().is_some_and(|home| home.as_os_str() == absolute.as_str()) {
+    if is_home(&absolute) {
         return None;
     }
     Some(absolute)
+}
+
+/// Whether `dir` is the daemon's `$HOME`, byte for byte.
+pub fn is_home(dir: &str) -> bool {
+    home_dir().is_some_and(|home| home.as_os_str() == dir)
 }
 
 /// The directory a Source runs in to produce the records of the instance at
@@ -210,7 +215,8 @@ const MAX_INSTANCES: usize = 64;
 /// What the next instance of a chain needs to be found.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Ask {
-    /// The chain is over: it ended at the instance at `~`.
+    /// The chain is over: it ended at the instance at `~`, or, for a nearest
+    /// Source, after its one instance or after finding none.
     Done,
     /// The next instance is the one at `~`; no `root` is asked.
     Home,
@@ -219,11 +225,32 @@ pub enum Ask {
     Root(String),
 }
 
-/// The walk up one Source's instances from a directory: `R1 = root(dir)`, then
-/// `root(parent(R1))`, and so on, ending at the instance at `~` (`None`) and
-/// never going past it. An instance already visited ends the walk at `~`
-/// instead of repeating, so a `root` that answers the same directory for every
-/// parent still terminates.
+/// What a Source's `root` found for a directory, kept apart so that a walk
+/// that found nothing is not mistaken for one that found `$HOME` itself: both
+/// are the instance at `~` for a cascading Source, but only the second is an
+/// instance for a nearest one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    /// A root other than `$HOME`.
+    At(String),
+    /// `$HOME`: the instance at `~`.
+    Home,
+    /// No root.
+    Nothing,
+}
+
+/// The walk up one Source's instances from a directory.
+///
+/// A cascading Source's walk is `R1 = root(dir)`, then `root(parent(R1))`, and
+/// so on, ending at the instance at `~` (`None`) and never going past it.
+/// Finding nothing continues to `~`. An instance already visited ends the walk
+/// at `~` instead of repeating, so a `root` that answers the same directory
+/// for every parent still terminates.
+///
+/// A nearest Source's walk is `[R1]` and no more: finding nothing is no
+/// instance, and it starts from `$HOME` when the read is at `~`, since the
+/// repository there (or above) is the answer. A Source with no root has the one
+/// instance at `~` either way.
 ///
 /// The walk does not call `root` itself: it says what it needs ([`Ask`]) and is
 /// given the answer ([`InstanceWalk::step`]), so one walk serves the blocking
@@ -233,27 +260,41 @@ pub enum Ask {
 pub struct InstanceWalk {
     /// The directory the walk starts from; `None` is the global entry.
     start: Option<String>,
+    /// Whether the nearest instance answers alone.
+    nearest: bool,
     /// The instances yielded so far, nearest first.
     seen: Vec<Option<String>>,
+    /// Set when a nearest walk found nothing.
+    over: bool,
 }
 
 impl InstanceWalk {
     /// A walk for a read at `dir`: the plan's `requested_path`, so `None` is
-    /// `$HOME` or no path at all, whose only instance is the one at `~`.
-    pub fn new(dir: Option<&str>) -> Self {
+    /// `$HOME` or no path at all. `nearest` is the Source's setting and only
+    /// counts for a Source with a root.
+    pub fn new(dir: Option<&str>, nearest: bool) -> Self {
         Self {
             start: dir.map(str::to_string),
+            nearest,
             seen: Vec::new(),
+            over: false,
         }
     }
 
     /// What the next instance needs.
     pub fn ask(&self) -> Ask {
+        if self.over {
+            return Ask::Done;
+        }
         match self.seen.last() {
-            None => match &self.start {
-                Some(dir) => Ask::Root(dir.clone()),
-                None => Ask::Home,
+            None => match (&self.start, self.nearest) {
+                (Some(dir), _) => Ask::Root(dir.clone()),
+                (None, true) => home_dir().map_or(Ask::Home, |home| {
+                    Ask::Root(home.to_string_lossy().into_owned())
+                }),
+                (None, false) => Ask::Home,
             },
+            Some(_) if self.nearest => Ask::Done,
             Some(None) => Ask::Done,
             Some(Some(root)) => match Path::new(root).parent() {
                 // The filesystem root has no parent, and `$HOME` is the
@@ -265,14 +306,22 @@ impl InstanceWalk {
         }
     }
 
-    /// Take the answer to [`InstanceWalk::ask`] (`root`'s normalised answer for
-    /// `Ask::Root`, ignored for `Ask::Home`) and return the next instance:
-    /// `Some(root)` or `None` for the instance at `~`.
-    pub fn step(&mut self, answer: Option<String>) -> Result<Option<String>, String> {
+    /// Take the answer to [`InstanceWalk::ask`] (ignored for `Ask::Home`) and
+    /// return the next instance: `Some(root)`, `Some(None)` for the instance
+    /// at `~`, or `None` when a nearest walk found no instance at all.
+    pub fn step(&mut self, answer: Found) -> Result<Option<Option<String>>, String> {
         let mut next = match self.ask() {
             Ask::Done => return Err("the instance chain is over".into()),
             Ask::Home => None,
-            Ask::Root(_) => answer,
+            Ask::Root(_) => match answer {
+                Found::At(root) => Some(root),
+                Found::Home => None,
+                Found::Nothing if self.nearest => {
+                    self.over = true;
+                    return Ok(None);
+                }
+                Found::Nothing => None,
+            },
         };
         if next.is_some() && self.seen.contains(&next) {
             next = None;
@@ -283,13 +332,14 @@ impl InstanceWalk {
             ));
         }
         self.seen.push(next.clone());
-        Ok(next)
+        Ok(Some(next))
     }
 }
 
 /// Every instance of `provider`'s Source `source` that a read at `dir` can
-/// reach, nearest first, ending with the instance at `~` (`None`). A Source
-/// whose `root` is always `None` has the one-instance chain `[None]`.
+/// reach, nearest first. A cascading Source ends with the instance at `~`
+/// (`None`), and one with no root has the one-instance chain `[None]`; a
+/// nearest Source has the one instance its root finds, or none.
 ///
 /// `dir` is the plan's `requested_path`. An error is a `root` that could not be
 /// worked out; it is the read's error, never the instance at `~`.
@@ -299,15 +349,18 @@ pub fn instance_chain(
     source: &str,
     dir: Option<&str>,
 ) -> Result<Vec<Option<String>>, String> {
-    let mut walk = InstanceWalk::new(dir);
+    let mut walk = registry.instance_walk(provider, source, dir);
     let mut chain = Vec::new();
     loop {
         let answer = match walk.ask() {
             Ask::Done => return Ok(chain),
-            Ask::Home => None,
+            Ask::Home => Found::Home,
             Ask::Root(dir) => registry.instance_root(provider, source, &dir)?,
         };
-        chain.push(walk.step(answer)?);
+        match walk.step(answer)? {
+            Some(root) => chain.push(root),
+            None => return Ok(chain),
+        }
     }
 }
 
@@ -337,6 +390,15 @@ pub fn instances_for(
 pub struct Instance {
     pub source: String,
     pub root: Option<String>,
+}
+
+impl Instance {
+    pub fn new(source: &str, root: Option<&str>) -> Self {
+        Self {
+            source: source.to_string(),
+            root: root.map(str::to_string),
+        }
+    }
 }
 
 /// The distinct roots of `instances`, in the order first met: the extra links
@@ -716,6 +778,7 @@ mod instance_chain_tests {
     struct FakeProvider {
         name: String,
         root_fn: Option<RootFn>,
+        nearest: bool,
     }
     impl FakeProvider {
         fn meta(&self) -> SourceMetadata {
@@ -736,6 +799,7 @@ mod instance_chain_tests {
                 fsevents_reinstate: false,
                 decay: None,
                 budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+                nearest: self.nearest,
             }
         }
     }
@@ -755,10 +819,15 @@ mod instance_chain_tests {
     }
 
     fn registry_with(name: &str, root_fn: Option<RootFn>) -> ProviderRegistry {
+        registry_of(name, root_fn, false)
+    }
+
+    fn registry_of(name: &str, root_fn: Option<RootFn>, nearest: bool) -> ProviderRegistry {
         let mut reg = ProviderRegistry::new();
         reg.register(Box::new(FakeProvider {
             name: name.into(),
             root_fn,
+            nearest,
         }))
         .unwrap();
         reg
@@ -855,6 +924,55 @@ mod instance_chain_tests {
         assert_eq!(
             instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
             vec![Some(above), None]
+        );
+    }
+
+    #[test]
+    fn a_nearest_chain_is_the_one_root_found() {
+        let outer = format!("{}/ws/outer", home());
+        let inner = format!("{outer}/vendor/inner");
+        let reg = registry_of("p", Some(marker_walk(vec![outer, inner.clone()])), true);
+        let dir = format!("{inner}/src");
+        assert_eq!(
+            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            vec![Some(inner)],
+            "no outer instance, and no instance at ~"
+        );
+    }
+
+    #[test]
+    fn a_nearest_chain_that_found_nothing_is_empty_not_home() {
+        let reg = registry_of("p", Some(marker_walk(vec![])), true);
+        let dir = format!("{}/ws/proj", home());
+        assert_eq!(
+            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            Vec::<Option<String>>::new()
+        );
+        assert_eq!(
+            instance_chain(&reg, "p", "main", None).unwrap(),
+            Vec::<Option<String>>::new(),
+            "a read at ~ asks the root from $HOME, and it found nothing"
+        );
+    }
+
+    #[test]
+    fn a_nearest_chain_that_found_home_is_the_instance_at_home() {
+        let reg = registry_of("p", Some(Arc::new(|_dir: &str| Ok(Some(home())))), true);
+        let dir = format!("{}/ws/proj", home());
+        assert_eq!(
+            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            vec![None]
+        );
+        assert_eq!(instance_chain(&reg, "p", "main", None).unwrap(), vec![None]);
+    }
+
+    #[test]
+    fn a_nearest_source_with_no_root_still_has_its_instance_at_home() {
+        let reg = registry_of("p", None, true);
+        let dir = format!("{}/ws/proj", home());
+        assert_eq!(
+            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            vec![None]
         );
     }
 

@@ -1,7 +1,7 @@
 //! Return decorators (Decisions 7 and 8): a Source's schedule, recorded.
 //!
 //! A Source's `return` line is rendered once, at load, with `result` bound to
-//! a sentinel and `poll`, `watch`, `ttl`, `failback`, `budget` and `super`
+//! a sentinel and `poll`, `watch`, `ttl`, `failback`, `budget`, `nearest` and `super`
 //! registered as filters that record their call and hand their input on. The
 //! render must give the sentinel back. The context holds nothing else (`_`
 //! is `{"name": ...}`), undefined is an error, and the environment is the
@@ -28,7 +28,7 @@ const MAX_INTERVAL_SECS: u64 = 365 * 24 * 3600;
 /// Counts multiply an interval into a lifespan, which decay then doubles.
 const MAX_COUNT: u32 = 10_000;
 const MUST_DECORATE: &str = "a Source's return must decorate result";
-const DECORATORS: [&str; 5] = ["poll", "watch", "ttl", "failback", "budget"];
+const DECORATORS: [&str; 6] = ["poll", "watch", "ttl", "failback", "budget", "nearest"];
 
 /// What `result` is bound to: an opaque object. It has no length, items or
 /// attributes, so anything that needs them errors; and printing it counts, so
@@ -73,6 +73,9 @@ pub struct Recorded {
     /// `Some(1)` for a `ttl(...)` Source; otherwise the provider's `_.decay`
     /// decides.
     pub decay: Option<u8>,
+    /// `| nearest`: the nearest instance answers alone. Not saying it is
+    /// cascade.
+    pub nearest: bool,
 }
 
 /// What a Source gets for a decorator its chain does not name: every Source
@@ -91,6 +94,7 @@ struct Line {
     ttl: Option<u64>,
     failback: Option<FailbackConfig>,
     budget: Option<Duration>,
+    nearest: bool,
 }
 
 struct Render {
@@ -233,6 +237,7 @@ fn merge(levels: &[Line], defaults: &EngineDefaults) -> Result<Recorded, ReturnE
             .find_map(|l| l.budget)
             .unwrap_or(defaults.budget_execute),
         decay,
+        nearest: levels.iter().any(|l| l.nearest),
     })
 }
 
@@ -351,6 +356,10 @@ fn record(
                 return Err(format!("{name}(): must be at least 1ms"));
             }
             line.budget = Some(budget);
+        }
+        "nearest" => {
+            arity(args.is_empty(), "no arguments")?;
+            line.nearest = true;
         }
         "watch" => {
             arity(!args.is_empty(), "at least one path")?;
@@ -822,6 +831,53 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn nearest_is_recorded() {
+        assert!(
+            !rec("{{ result | watch('w') }}").nearest,
+            "cascade is the default"
+        );
+        assert!(rec("{{ result | watch('.git/HEAD') | nearest }}").nearest);
+        assert!(rec("{{ result | nearest() | watch('w') }}").nearest);
+        assert!(
+            rec("{{ result | nearest | nearest }}").nearest,
+            "a later duplicate in one line is harmless"
+        );
+    }
+
+    #[test]
+    fn a_prototypes_nearest_reaches_a_source_through_super() {
+        let r = record(&[
+            "{{ result | watch('w') | super }}",
+            "{{ result | nearest }}",
+        ])
+        .unwrap();
+        assert!(r.nearest);
+        let r = record(&[
+            "{{ result | nearest | super }}",
+            "{{ result | watch('w') }}",
+        ])
+        .unwrap();
+        assert!(r.nearest, "the nearer line's setting applies");
+    }
+
+    #[test]
+    fn a_source_without_super_does_not_inherit_nearest() {
+        let r = record(&["{{ result | watch('w') }}", "{{ result | nearest }}"]).unwrap();
+        assert!(!r.nearest);
+    }
+
+    #[test]
+    fn nearest_takes_no_arguments() {
+        for line in ["{{ result | nearest(1) }}", "{{ result | nearest('git') }}"] {
+            assert_eq!(
+                record(&[line]).unwrap_err(),
+                "nearest(): takes no arguments",
+                "{line}"
+            );
+        }
     }
 
     #[test]

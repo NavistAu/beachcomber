@@ -63,10 +63,12 @@ provider_timeout_secs = 10
 # ─── Retuning a built-in Source ────────────────────────────────────────────────
 # A built-in Source takes `return` and nothing else. The line replaces its
 # schedule whole: here git's diff polls every 15 seconds, eight times, then
-# decays. A built-in with no `return` here keeps its own schedule.
+# decays. A built-in with no `return` here keeps its own schedule. The line
+# replaces everything it declares, `nearest` included: git, direnv, python and
+# terraform Sources are nearest, so a retune of one says `| nearest` again.
 
 [daemon.providers.git.sources.diff]
-return = "{{ result | poll('15s', 8) | failback(5, '2s') }}"
+return = "{{ result | poll('15s', 8) | failback(5, '2s') | nearest }}"
 
 
 # ─── Config Sources ────────────────────────────────────────────────────────────
@@ -281,7 +283,7 @@ Composition rules:
 
 **`[daemon.providers.<name>.sources.<source>]` section for a built-in Source:**
 
-A table naming a built-in Rust Source takes `return` only; `root`, `data` and `result` are errors (`git.diff is a built-in Source: only return can be set`). The line replaces the Source's invalidation, failback, decay and budget whole; a failback or budget it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget.execute`). `| super` extends the nearest `_` Source's line, as for a config Source. A built-in with no `return` keeps its own schedule: the `_` lines do not reach it.
+A table naming a built-in Rust Source takes `return` only; `root`, `data` and `result` are errors (`git.diff is a built-in Source: only return can be set`). The line replaces the Source's invalidation, failback, decay, budget and `nearest` whole; a failback or budget it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget.execute`). `| super` extends the nearest `_` Source's line, as for a config Source. A built-in with no `return` keeps its own schedule: the `_` lines do not reach it.
 
 **`[daemon.providers.<name>.sources.<source>]` section (config Sources):**
 
@@ -289,8 +291,8 @@ A table naming a built-in Rust Source takes `return` only; `root`, `data` and `r
 |---|---|---|---|
 | `data` | string | yes | The body: a jinja line that runs on the daemon, usually `exec('command')`. Sees `env` (the daemon's own), `comb.<provider>` and `_`. |
 | `result` | string, or table of strings | yes | `result = "{{ data }}"` owns the whole provider node; `result.<field> = "{{ … }}"` lines declare fields, each over `data`. |
-| `root` | string | no | The directory an instance answers for, e.g. `{{ lup('.git') \| dirname }}`. Empty (the default) is the one instance at `~`. |
-| `return` | string | no | What the Source hands out, decorated: `poll(interval, count)`, `watch(path, …)`, `ttl(interval)`, `failback(count, interval)`, `budget(interval)`. Absent, it takes the nearest `_` Source's (`defaults/00-comb.toml` ships `poll('60s', 12) \| failback(3, '1s')`). `\| super` extends that line instead of replacing it. |
+| `root` | string | no | The directory an instance answers for, e.g. `{{ lup('.git') \| dirname }}`. Empty (the default) is the one instance at `~`; on a `\| nearest` Source, a `root` that renders none means no instance. |
+| `return` | string | no | What the Source hands out, decorated: `poll(interval, count)`, `watch(path, …)`, `ttl(interval)`, `failback(count, interval)`, `budget(interval)`, `nearest` (the nearest instance answers alone instead of cascading up to `~`; see [Where an instance lives](/docs/concepts/providers#where-an-instance-lives)). Absent, it takes the nearest `_` Source's (`defaults/00-comb.toml` ships `poll('60s', 12) \| failback(3, '1s')`). `\| super` extends that line instead of replacing it. |
 
 A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources, and to a built-in Source's `return` only through `| super`: a built-in with no `return` of its own keeps its Rust schedule.
 

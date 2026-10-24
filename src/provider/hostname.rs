@@ -42,6 +42,7 @@ fn host_source_metadata() -> SourceMetadata {
         fsevents_reinstate: false,
         decay: None,
         budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        nearest: false,
     }
 }
 

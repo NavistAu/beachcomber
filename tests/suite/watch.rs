@@ -1,8 +1,11 @@
 use beachcomber::cache::Cache;
 use beachcomber::cache::Schedule;
 use beachcomber::protocol::Response;
-use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::provider::{
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult, Value,
+};
 use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::collections::HashMap;
@@ -24,8 +27,64 @@ fn setup() -> (
     let sock = tmp.path().join("test.sock");
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = Arc::new(ProviderRegistry::with_defaults());
-    (tmp, sock, cache, registry, watchers)
+    let mut registry = ProviderRegistry::with_defaults();
+    registry.register(Box::new(Watched)).unwrap();
+    (tmp, sock, cache, Arc::new(registry), watchers)
+}
+
+/// A provider with one Source and no root: its one instance is at `~`, so the
+/// records these tests put there are what a read at any directory sees. (git
+/// is nearest, and a directory outside a repository has no git instance.)
+struct Watched;
+
+fn watched_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "main".into(),
+        fields: vec![
+            FieldSchema {
+                name: "branch".into(),
+                field_type: FieldType::String,
+            },
+            FieldSchema {
+                name: "dirty".into(),
+                field_type: FieldType::Bool,
+            },
+        ],
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 60,
+            count: 1,
+        },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 1,
+        },
+        fsevents_reinstate: false,
+        decay: None,
+        budget_execute: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        nearest: false,
+    }
+}
+
+impl Provider for Watched {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: "watched".into(),
+            sources: vec![watched_meta()],
+        }
+    }
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(Watched)]
+    }
+}
+
+impl Source for Watched {
+    fn metadata(&self) -> &SourceMetadata {
+        static M: std::sync::OnceLock<SourceMetadata> = std::sync::OnceLock::new();
+        M.get_or_init(watched_meta)
+    }
+    fn execute(&self, _dir: Option<&str>) -> Result<SourceResult, String> {
+        Ok(SourceResult::new())
+    }
 }
 
 fn git_fields(branch: &str, dirty: bool) -> HashMap<String, Value> {
@@ -40,9 +99,9 @@ async fn watch_receives_initial_value() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     cache.put_source(
-        "git",
+        "watched",
         None,
-        "refs",
+        "main",
         git_fields("main", false),
         Schedule::poll(60, 1),
     );
@@ -55,7 +114,7 @@ async fn watch_receives_initial_value() {
     let mut reader = BufReader::new(reader);
 
     writer
-        .write_all(b"{\"op\":\"watch\",\"key\":\"git.branch\"}\n")
+        .write_all(b"{\"op\":\"watch\",\"key\":\"watched.branch\"}\n")
         .await
         .unwrap();
 
@@ -85,9 +144,9 @@ async fn watch_receives_updates() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     cache.put_source(
-        "git",
+        "watched",
         None,
-        "refs",
+        "main",
         git_fields("main", false),
         Schedule::poll(60, 1),
     );
@@ -101,7 +160,7 @@ async fn watch_receives_updates() {
     let mut reader = BufReader::new(reader);
 
     writer
-        .write_all(b"{\"op\":\"watch\",\"key\":\"git.branch\"}\n")
+        .write_all(b"{\"op\":\"watch\",\"key\":\"watched.branch\"}\n")
         .await
         .unwrap();
 
@@ -119,9 +178,9 @@ async fn watch_receives_updates() {
 
     // Update cache with new branch
     cache_writer.put_source(
-        "git",
+        "watched",
         None,
-        "refs",
+        "main",
         git_fields("feature/new-branch", false),
         Schedule::poll(60, 1),
     );
@@ -153,9 +212,9 @@ async fn watch_filters_unchanged_field() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     cache.put_source(
-        "git",
+        "watched",
         None,
-        "refs",
+        "main",
         git_fields("main", false),
         Schedule::poll(60, 1),
     );
@@ -169,7 +228,7 @@ async fn watch_filters_unchanged_field() {
     let mut reader = BufReader::new(reader);
 
     writer
-        .write_all(b"{\"op\":\"watch\",\"key\":\"git.branch\"}\n")
+        .write_all(b"{\"op\":\"watch\",\"key\":\"watched.branch\"}\n")
         .await
         .unwrap();
 
@@ -187,9 +246,9 @@ async fn watch_filters_unchanged_field() {
 
     // Update cache — change only dirty, branch stays "main"
     cache_writer.put_source(
-        "git",
+        "watched",
         None,
-        "refs",
+        "main",
         git_fields("main", true),
         Schedule::poll(60, 1),
     );
@@ -214,9 +273,9 @@ async fn watch_provider_level_gets_all_changes() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     cache.put_source(
-        "git",
+        "watched",
         None,
-        "refs",
+        "main",
         git_fields("main", false),
         Schedule::poll(60, 1),
     );
@@ -229,9 +288,9 @@ async fn watch_provider_level_gets_all_changes() {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
-    // Watch "git" — no field, gets whole provider
+    // Watch "watched" — no field, gets whole provider
     writer
-        .write_all(b"{\"op\":\"watch\",\"key\":\"git\"}\n")
+        .write_all(b"{\"op\":\"watch\",\"key\":\"watched\"}\n")
         .await
         .unwrap();
 
@@ -252,9 +311,9 @@ async fn watch_provider_level_gets_all_changes() {
     // Update cache — change only dirty, branch stays "main"
     // Provider-level watch should still fire since the overall object changed
     cache_writer.put_source(
-        "git",
+        "watched",
         None,
-        "refs",
+        "main",
         git_fields("main", true),
         Schedule::poll(60, 1),
     );
@@ -293,7 +352,7 @@ async fn watch_miss_then_update() {
     let mut reader = BufReader::new(reader);
 
     writer
-        .write_all(b"{\"op\":\"watch\",\"key\":\"git.branch\"}\n")
+        .write_all(b"{\"op\":\"watch\",\"key\":\"watched.branch\"}\n")
         .await
         .unwrap();
 
@@ -316,9 +375,9 @@ async fn watch_miss_then_update() {
 
     // Now populate the cache
     cache_writer.put_source(
-        "git",
+        "watched",
         None,
-        "refs",
+        "main",
         git_fields("main", false),
         Schedule::poll(60, 1),
     );

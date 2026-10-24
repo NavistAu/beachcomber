@@ -88,6 +88,10 @@ is missing there, the parent of that root (`root(parent(root))`), ending at the
 instance at `~`. `mise` is one Source (`tools`) this way: inside a project
 `mise.node` is the project's, and `mise.go`, set only in the global config, is found
 at `~`. A namespace read merges every instance on the way, the nearer winning.
+That is a *cascade*, the default. A `nearest` Source (git, direnv, python,
+terraform) is answered by the instance `root(dir)` finds alone: a missing key is
+absent, the walk does not move up, and finding no root means no instance, with no
+fallback to `~`.
 
 Cache keys use `provider\0root` for a rooted instance and bare `provider` for the
 instance at `~`. A single provider can own both kinds of entries simultaneously.

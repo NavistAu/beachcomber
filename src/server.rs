@@ -2,7 +2,7 @@ use crate::cache::{Cache, Layers, MergedRead};
 use crate::config::Config;
 use crate::protocol::{self, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
-use crate::query::{Ask, Instance, InstanceWalk, KeyParse, QueryPlan};
+use crate::query::{Ask, Found, Instance, InstanceWalk, KeyParse, QueryPlan};
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
 };
@@ -264,7 +264,7 @@ async fn root_for(
     provider: &str,
     source: &str,
     dir: &str,
-) -> Result<Option<String>, String> {
+) -> Result<Found, String> {
     if registry.renders_root(provider, source)
         && registry.kept_root(provider, source, dir).is_none()
     {
@@ -286,7 +286,7 @@ async fn root_for(
 /// The roots found so far by one request, so Sources that find theirs the same
 /// way ([`crate::provider::Source::root_key`]) ask once per directory.
 #[derive(Default)]
-struct RootMemo(HashMap<(String, String, String), Option<String>>);
+struct RootMemo(HashMap<(String, String, String), Found>);
 
 /// The next instance of `walk`'s chain, or `None` when the chain is over.
 async fn next_instance(
@@ -298,7 +298,7 @@ async fn next_instance(
 ) -> Result<Option<Option<String>>, String> {
     let answer = match walk.ask() {
         Ask::Done => return Ok(None),
-        Ask::Home => None,
+        Ask::Home => Found::Home,
         Ask::Root(dir) => {
             let how = registry
                 .source(provider, source)
@@ -314,7 +314,7 @@ async fn next_instance(
             }
         }
     };
-    walk.step(answer).map(Some)
+    walk.step(answer)
 }
 
 /// The Sources a plan reads, for the instances that matter to its layers: the
@@ -339,7 +339,8 @@ async fn all_instances(
     let mut memo = RootMemo::default();
     for source in crate::query::demanded_source_names(registry, &plan.provider, &read_demand(plan))
     {
-        let mut walk = InstanceWalk::new(plan.requested_path.as_deref());
+        let mut walk =
+            registry.instance_walk(&plan.provider, &source, plan.requested_path.as_deref());
         while let Some(root) =
             next_instance(&mut walk, registry, &plan.provider, &source, &mut memo).await?
         {
@@ -398,7 +399,7 @@ async fn handle_watch(
             return;
         }
     };
-    let reached = crate::query::roots_of(&instances);
+    let reached = instances.clone();
 
     // Signal demand for every instance on the chains (source-aware: a field
     // demands only its owning Source).
@@ -424,7 +425,7 @@ async fn handle_watch(
         let changed = Arc::new(tokio::sync::Notify::new());
         let mut tasks = Vec::new();
         let links: Vec<(String, Option<String>)> =
-            crate::query::read_chain(requested_path.as_deref(), &reached)
+            crate::query::read_chain(requested_path.as_deref(), &crate::query::roots_of(&reached))
                 .into_iter()
                 .map(|layer| (provider_name.clone(), layer))
                 .collect();
@@ -760,10 +761,12 @@ enum Climb {
 
 /// Where a climb got to.
 struct Climbed {
-    /// The instances visited, nearest first.
+    /// The instances brought up to date and demanded, nearest first: every
+    /// one visited but those a `put` answered.
     reached: Vec<Instance>,
-    /// Their distinct roots, in the order visited.
-    roots: Vec<Option<String>>,
+    /// Every instance visited, one a `put` answered included (which is not in
+    /// `reached`: nothing runs or is kept warm for it).
+    visited: Vec<Instance>,
     /// Whether any Source ran.
     ran: bool,
     /// The merged read at the end.
@@ -822,7 +825,7 @@ async fn climb(
         .iter()
         .map(|name| Walking {
             name: name.clone(),
-            walk: InstanceWalk::new(plan.requested_path.as_deref()),
+            walk: registry.instance_walk(provider, name, plan.requested_path.as_deref()),
             next: None,
             over: false,
         })
@@ -830,7 +833,7 @@ async fn climb(
     let mut memo = RootMemo::default();
     let mut out = Climbed {
         reached: Vec::new(),
-        roots: Vec::new(),
+        visited: Vec::new(),
         ran: false,
         merged: None,
     };
@@ -849,7 +852,7 @@ async fn climb(
             .max();
         let Some(nearest) = nearest else {
             if out.merged.is_none() {
-                out.merged = read_chain_merged(cache, registry, plan, &out.roots);
+                out.merged = read_chain_merged(cache, registry, plan, &out.visited);
             }
             return Ok(out);
         };
@@ -858,9 +861,10 @@ async fn climb(
                 continue;
             }
             let root = w.next.take().expect("checked above");
-            if !out.roots.contains(&root) {
-                out.roots.push(root.clone());
-            }
+            out.visited.push(Instance {
+                source: w.name.clone(),
+                root: root.clone(),
+            });
             if honor_put
                 && matches!(&plan.target, KeyParse::Field(_, field)
                     if cache.put_answers(provider, root.as_deref(), field))
@@ -876,24 +880,24 @@ async fn climb(
                 root,
             });
         }
-        out.merged = read_chain_merged(cache, registry, plan, &out.roots);
+        out.merged = read_chain_merged(cache, registry, plan, &out.visited);
         if answers_field(&out.merged, &plan.target) {
             return Ok(out);
         }
     }
 }
 
-/// The merged read of `plan`'s address over `roots`.
+/// The merged read of `plan`'s address over the `visited` instances.
 fn read_chain_merged(
     cache: &Cache,
     registry: &ProviderRegistry,
     plan: &QueryPlan,
-    roots: &[Option<String>],
+    visited: &[Instance],
 ) -> Option<MergedRead> {
     cache.read_merged(
         &plan.provider,
         plan.requested_path.as_deref(),
-        roots,
+        visited,
         registry,
         plan.layers,
     )
@@ -1088,7 +1092,7 @@ fn read_watch_value(
     registry: &ProviderRegistry,
     target: &KeyParse,
     requested: Option<&str>,
-    reached: &[Option<String>],
+    reached: &[Instance],
     layers: crate::cache::Layers,
 ) -> Response {
     if layers == crate::cache::Layers::Cache {
@@ -1126,7 +1130,7 @@ fn cache_facet_response(
     registry: &ProviderRegistry,
     target: &KeyParse,
     requested: Option<&str>,
-    reached: &[Option<String>],
+    reached: &[Instance],
 ) -> Response {
     let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
     let rest = target.rest();
@@ -1318,7 +1322,7 @@ async fn handle_request(
                     registry,
                     &plan.target,
                     plan.requested_path.as_deref(),
-                    &crate::query::roots_of(&instances),
+                    &instances,
                 );
             }
 
@@ -1374,7 +1378,7 @@ async fn handle_request(
             // single address to satisfy, so it takes every level.
             let Climbed {
                 reached,
-                roots,
+                visited,
                 ran,
                 mut merged,
             } = match climb(
@@ -1415,7 +1419,7 @@ async fn handle_request(
                 merged = cache.read_merged(
                     provider_name,
                     plan.requested_path.as_deref(),
-                    &roots,
+                    &visited,
                     registry,
                     plan.layers,
                 );
@@ -1462,11 +1466,11 @@ async fn handle_request(
             // afresh is not a refresh: the config watcher does that.
             let demanded =
                 crate::query::demanded_source_names(registry, provider_name, &plan.demand);
+            let addressed = match &plan.target {
+                KeyParse::Provider(p) => p.clone(),
+                KeyParse::Field(p, f) => format!("{p}.{f}"),
+            };
             if demanded.is_empty() {
-                let addressed = match &plan.target {
-                    KeyParse::Provider(p) => p.clone(),
-                    KeyParse::Field(p, f) => format!("{p}.{f}"),
-                };
                 return Response::error(format!("nothing to refresh: {addressed} has no sources"));
             }
 
@@ -1482,6 +1486,13 @@ async fn handle_request(
                         return Response::error(msg);
                     }
                 };
+            // Every demanded Source is nearest and found no instance here.
+            if instances.is_empty() {
+                return Response::error(format!(
+                    "nothing to refresh: {addressed} has no instance at {}",
+                    plan.requested_path.as_deref().unwrap_or("~")
+                ));
+            }
             match scheduler {
                 Some(sched) => {
                     sched
@@ -2359,7 +2370,7 @@ mod tests {
             &registry,
             &target,
             Some("/repo"),
-            &[Some("/repo".to_string())],
+            &[Instance::new("refs", Some("/repo"))],
             crate::cache::Layers::All,
         );
         assert!(resp.ok);
@@ -2400,7 +2411,7 @@ mod tests {
             .expect("put accepted");
 
         let read = cache
-            .read_merged("p", None, &[None], &registry, crate::cache::Layers::All)
+            .read_merged("p", None, &[], &registry, crate::cache::Layers::All)
             .expect("both maps");
 
         assert_eq!(
@@ -2451,13 +2462,7 @@ mod tests {
             .expect("put accepted");
 
         let read = cache
-            .read_merged(
-                "p",
-                Some("/x/y"),
-                &[Some("/x/y".to_string()), None],
-                &registry,
-                crate::cache::Layers::All,
-            )
+            .read_merged("p", Some("/x/y"), &[], &registry, crate::cache::Layers::All)
             .expect("both layers");
 
         assert_eq!(

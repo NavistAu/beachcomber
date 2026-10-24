@@ -199,7 +199,10 @@ root and asks again (`root(parent(R1))`), ending at the instance at `~` and
 never past it. A namespace read takes every instance on the way and merges
 them, the nearer winning per leaf: from `~/ws/proj` with a `mise.toml`,
 `mise.node` is the project's, and `mise.go`, set only in the global config, is
-found at `~`. A template is a **static record**, so the template half is
+found at `~`. That is a **cascade**, the default. A Source marked `nearest` is
+answered by `R1` alone: a key it lacks is absent, the read does not move up, and
+no root found means no instance and no value (git works this way: a nested
+repository never shows its superproject's values). A template is a **static record**, so the template half is
 read from the requested directory itself and resolves up the chain from there:
 `get git.branch --path <repo>/sub` reads git's records at `<repo>` and its
 templates from `<repo>/sub`.

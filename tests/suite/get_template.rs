@@ -760,6 +760,7 @@ fn twin_meta(name: &str, field: &str) -> SourceMetadata {
         fsevents_reinstate: false,
         decay: None,
         budget_execute: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        nearest: false,
     }
 }
 

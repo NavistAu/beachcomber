@@ -602,10 +602,12 @@ provider_timeout_secs = 10
 # ─── Retuning a built-in Source ────────────────────────────────────────────────
 # A built-in Source takes `return` and nothing else. The line replaces its
 # schedule whole: here git's diff polls every 15 seconds, eight times, then
-# decays. A built-in with no `return` here keeps its own schedule.
+# decays. A built-in with no `return` here keeps its own schedule. The line
+# replaces everything it declares, `nearest` included: git, direnv, python and
+# terraform Sources are nearest, so a retune of one says `| nearest` again.
 
 [daemon.providers.git.sources.diff]
-return = "{{ result | poll('15s', 8) | failback(5, '2s') }}"
+return = "{{ result | poll('15s', 8) | failback(5, '2s') | nearest }}"
 
 
 # ─── Config Sources ────────────────────────────────────────────────────────────
@@ -677,7 +679,7 @@ return = "{{ result | poll('86400s') }}"
 
 **`[daemon.providers.<name>.sources.<source>]` section for a built-in Source:**
 
-A table naming a built-in Rust Source takes `return` only; `root`, `data` and `result` are errors. The line replaces the Source's invalidation, failback, decay and budget whole; a failback or budget it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget.execute`). `| super` extends the nearest `_` Source's line, as for a config Source. A built-in with no `return` keeps its own schedule: the `_` lines do not reach it.
+A table naming a built-in Rust Source takes `return` only; `root`, `data` and `result` are errors. The line replaces the Source's invalidation, failback, decay, budget and `nearest` whole; a failback or budget it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget.execute`). `| super` extends the nearest `_` Source's line, as for a config Source. A built-in with no `return` keeps its own schedule: the `_` lines do not reach it.
 
 **`[daemon.providers.<name>.sources.<source>]` section (config Sources):**
 
@@ -685,8 +687,8 @@ A table naming a built-in Rust Source takes `return` only; `root`, `data` and `r
 |---|---|---|---|
 | `data` | string | yes | The body: a jinja line that runs on the daemon, usually `exec('command')`. Sees `env` (the daemon's own), `comb.<provider>` and `_`. |
 | `result` | string, or table of strings | yes | `result = "{{ data }}"` owns the whole provider node; `result.<field> = "{{ … }}"` lines declare fields, each over `data`. |
-| `root` | string | no | The directory an instance answers for, e.g. `{{ lup('.git') \| dirname }}`. Empty (the default) is the one instance at `~`. |
-| `return` | string | no | What the Source hands out, decorated: `poll(interval, count)`, `watch(path, …)`, `ttl(interval)`, `failback(count, interval)`, `budget(interval)`. Absent, it takes the nearest `_` Source's (`defaults/00-comb.toml` ships `poll('60s', 12) \| failback(3, '1s')`). `\| super` extends that line instead of replacing it. |
+| `root` | string | no | The directory an instance answers for, e.g. `{{ lup('.git') \| dirname }}`. Empty (the default) is the one instance at `~`; on a `\| nearest` Source, a `root` that renders none means no instance. |
+| `return` | string | no | What the Source hands out, decorated: `poll(interval, count)`, `watch(path, …)`, `ttl(interval)`, `failback(count, interval)`, `budget(interval)`, `nearest` (the nearest instance answers alone instead of cascading up to `~`; see Rooted Sources). Absent, it takes the nearest `_` Source's (`defaults/00-comb.toml` ships `poll('60s', 12) \| failback(3, '1s')`). `\| super` extends that line instead of replacing it. |
 
 A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources, and to a built-in Source's `return` only through `| super`: a built-in with no `return` of its own keeps its Rust schedule.
 
@@ -1532,7 +1534,7 @@ Then `chmod 600` and restart the daemon (`pkill -f 'comb daemon'` — it socket-
 - **Stderr:** A command that succeeds has its stderr dropped. One that fails (a non-zero exit, a timeout) has the tail of its stderr in the error message the daemon logs for the refresh.
 - **Timeouts:** `exec` kills a command after `timeout_ms` (default 10000, 10 s): `exec('slow-tool', timeout_ms=30000)`. A timeout fails the refresh, and the next trigger retries it.
 - **Shell:** A string is executed via `sh -c`; a list (`exec(['cmd', 'arg'])`) is one argument per element with no shell. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
-- **Rooted Sources:** `data` runs with the instance's `root` as its working directory. A Source with no `root` is the one instance at `~`.
+- **Rooted Sources:** `data` runs with the instance's `root` as its working directory. A Source with no `root` is the one instance at `~`. A read from a directory takes each value from the instance at its nearest root, then the next root up, ending at `~`: a **cascade**, the default, which suits layered settings (mise, asdf's `.tool-versions`) where a project sets some keys and `~` the rest. Add `| nearest` to `return` and the nearest instance answers alone: a key it lacks is absent, and a directory whose `root` renders none has no instance and no value (it does not fall back to `~`). That suits "the one you are in" (git, direnv, a Python venv, a terraform root): `return = "{{ result | watch('.git/HEAD') | nearest }}"`. Put `nearest` on a `_` prototype and reach it with `| super` to make a provider's Sources nearest together.
 - **Performance:** Every process spawn costs 2-6ms minimum. For Sources that poll frequently (< 30s), prefer `read` and `lup` over spawning CLI tools. See the design principles in `docs/performance.md`.
 
 ---

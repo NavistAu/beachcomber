@@ -174,6 +174,32 @@ async fn refreshing_a_namespace_re_executes_every_source() {
     handle.abort();
 }
 
+/// git is nearest: in a directory with no repository it has no instance, so a
+/// refresh there has nothing to re-execute, and says so instead of claiming ok.
+#[tokio::test]
+async fn a_nearest_provider_with_no_instance_here_cannot_be_refreshed() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+    let outside = TempDir::new().unwrap();
+    let outside = outside.path().canonicalize().unwrap();
+    let outside = outside.to_str().unwrap();
+
+    for key in ["git", "git.branch"] {
+        let resp = send_recv(&mut s, &refresh(key, outside)).await;
+        assert!(!resp.ok, "refresh {key} should error");
+        assert_eq!(
+            resp.error,
+            Some(format!(
+                "nothing to refresh: {key} has no instance at {outside}"
+            ))
+        );
+    }
+
+    handle.abort();
+}
+
 #[tokio::test]
 async fn a_key_no_source_answers_cannot_be_refreshed() {
     let (_tmp, sock, cache, registry, watchers) = setup();
@@ -203,7 +229,7 @@ async fn a_key_no_source_answers_cannot_be_refreshed() {
 }
 
 #[tokio::test]
-async fn a_global_refresh_of_a_path_scoped_provider_is_ok_and_stays_a_miss() {
+async fn a_global_refresh_without_a_home_repository_has_nothing_to_refresh() {
     // SAFETY: nextest gives every test its own process, so no other thread is
     // reading the environment concurrently. `$HOME` is the global path, and it
     // has to be somewhere that is not a repository for this to mean anything.
@@ -215,10 +241,14 @@ async fn a_global_refresh_of_a_path_scoped_provider_is_ok_and_stays_a_miss() {
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
-    // git declares sources, so the refresh is accepted; each runs at `$HOME`,
-    // finds no work tree, and writes nothing.
+    // git declares sources, but it is nearest and `$HOME` is no work tree: it
+    // has no instance there, so there is nothing to refresh.
     let resp = send_recv(&mut s, &json!({"op": "refresh", "key": "git"})).await;
-    assert!(resp.ok, "refresh git --global: {:?}", resp.error);
+    assert!(!resp.ok, "refresh git --global should error");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("nothing to refresh: git has no instance at ~")
+    );
 
     let resp = send_recv(&mut s, &json!({"op": "get", "key": "git.branch"})).await;
     assert!(resp.ok, "get git.branch --global: {:?}", resp.error);

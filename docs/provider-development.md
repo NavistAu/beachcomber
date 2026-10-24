@@ -29,11 +29,10 @@ Every source implements:
 pub trait Source: Send + Sync {
     fn metadata(&self) -> &SourceMetadata;
     fn execute(&self, dir: Option<&str>) -> Result<SourceResult, String>;
-    /// The instance answering for `dir`: `Some(root)`, or `None` for the one
-    /// instance at `~`.
+    /// The root `dir` finds: `Some(root)`, or `None` when it finds nothing.
     fn root(&self, dir: &str) -> Result<Option<String>, String> {
         let _ = dir;
-        Ok(None)  // default: one instance, at ~
+        Ok(None)  // default: no root, one instance, at ~
     }
     /// True when `root` can name a directory (a Source that overrides `root`
     /// overrides this too); decides where a relative `watch` can resolve.
@@ -47,9 +46,14 @@ pub trait Source: Send + Sync {
 
 **`Source::execute(dir)`** runs the source and returns `Ok(SourceResult { fields: HashMap<String, Value> })`. `dir` is the instance's working directory: its root, or `$HOME` for the instance at `~`. Called on a blocking thread pool (`tokio::task::spawn_blocking`), so it may safely call `std::process::Command`, `std::fs::read_to_string`, and other blocking operations. `Err(message)` is a failure: nothing is written and the scheduler counts it toward `failback`. `Ok` with an empty `fields` map is a result — the Source has nothing to report here — and it replaces what the instance stored before, so a Source never leaves stale values behind by reporting nothing.
 
-**`Source::root(dir)`** says which instance answers for `dir`. A Source whose records depend on a project (git, mise, direnv, asdf, terraform, python) walks up from `dir` to its marker and returns that directory, or `None` when it finds none; the default returns `None` for every directory, which is a Source with one instance, at `~`. A root equal to `$HOME` is the instance at `~`. An `Err` is a root that could not be worked out, and it fails the read — it is never answered from the instance at `~`.
+**`Source::root(dir)`** says which instance answers for `dir`. A Source whose records depend on a project (git, mise, direnv, asdf, terraform, python) walks up from `dir` to its marker and returns that directory, or `None` when it finds none; the default returns `None` for every directory, which is a Source with no root: one instance, at `~`. A root equal to `$HOME` is the instance at `~`, and is not the same as finding nothing (see below). An `Err` is a root that could not be worked out, and it fails the read — it is never answered from the instance at `~`.
 
-A read of `p.<key>` from directory `D` asks the nearest instance first (`R1 = root(D)`). If the key is missing there, it asks the parent of that root (`root(parent(R1))`), and so on, ending at the instance at `~` and never past it. A namespace read takes every instance on the way and merges them, the nearer winning per leaf. That is how `mise` is a single Source: inside a project `mise.node` is the project's, and `mise.go`, which only the global config sets, is found at `~`.
+A Source's instances combine in one of two ways, set by `nearest` in its metadata (`| nearest` on a config Source's `return` line):
+
+- **Cascade** (the default). A read of `p.<key>` from directory `D` asks the nearest instance first (`R1 = root(D)`). If the key is missing there, it asks the parent of that root (`root(parent(R1))`), and so on, ending at the instance at `~` and never past it; finding no root continues to `~`. A namespace read takes every instance on the way and merges them, the nearer winning per leaf. That is how `mise` is a single Source: inside a project `mise.node` is the project's, and `mise.go`, which only the global config sets, is found at `~`.
+- **Nearest.** The instance `root(D)` finds answers alone. A key it lacks is absent: no outer instance fills in, and the walk does not move up. If no root is found there is no instance at all: nothing runs and nothing is read, and `~` is not a fallback. Finding `$HOME` itself is an instance (the one at `~`). That is how `git` works: inside a nested repository `git.branch_parent` is the inner repository's or absent, never the superproject's, and in a directory outside any repository there are no git values.
+
+Choose nearest when the instance is *the one you are in* (git, direnv, a Python venv, a terraform root); keep cascade when instances are layers of one setting (mise, asdf's `.tool-versions`). A Source with no root has its one instance at `~` either way. Records written by `put`, and the `config:` seeds, merge up the directory chain whatever a Source does.
 
 ### SourceMetadata fields
 
@@ -62,6 +66,7 @@ pub struct SourceMetadata {
     pub fsevents_reinstate: bool,    // default true for Watch / WatchAndPoll
     pub decay: Option<u8>,           // decay steps before eviction; None takes the `_.decay` prototype
     pub budget_execute: Duration,    // how long one execute may take before it is reported slow
+    pub nearest: bool,               // the nearest instance answers alone; false cascades up to ~
 }
 ```
 
@@ -118,7 +123,7 @@ Consumers still use `comb get git.branch .` as before — the registry's `field 
 Before writing code, answer these questions for each logical group of fields:
 
 1. How do these fields change? (filesystem event, timer, or both)
-2. Does it have a root? (no root: one instance total, at `~`; a root: one instance per project root, plus the one at `~` the read falls back to)
+2. Does it have a root? (no root: one instance total, at `~`; a root: one instance per project root. Then: do the instances cascade, each filling in what the nearer lacks up to `~` (`nearest: false`), or does the nearest one answer alone (`nearest: true`)?)
 3. Do I need absolute-path watches? (e.g., watching `~/.config/mise/config.toml`)
 
 Use this decision table:
@@ -171,6 +176,7 @@ fn config_meta() -> SourceMetadata {
         decay: None,
         // How long one execute may take before the engine reports it slow.
         budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        nearest: false,
     }
 }
 
@@ -470,8 +476,10 @@ Example:
 
 ```toml
 [daemon.providers.git.sources.status]
-return = "{{ result | watch('.git/index') | poll('120s', 6) | failback(5, '2s') }}"
+return = "{{ result | watch('.git/index') | poll('120s', 6) | failback(5, '2s') | nearest }}"
 ```
+
+The line replaces everything the Source declares, `nearest` included: git, direnv, python and terraform Sources are nearest, so a retune of one says `| nearest` again or the Source cascades.
 
 A config Source sets its own schedule on the same line (`poll`, `watch`, `ttl`, `failback`, `budget`).
 
@@ -677,7 +685,7 @@ result.version = "{{ data }}"
 return = "{{ result | watch('VERSION') }}"
 ```
 
-The daemon keeps the root each directory resolved to, so a `root` line (it may run a command) is rendered once per directory rather than per request. The kept answer is dropped when the instance it named is evicted (it has gone cold and decayed away); the next read of that directory looks the root up again. A marker created or removed while the instance is alive is therefore not noticed until then. A `root` line that fails is answered with the same error for a few seconds rather than re-run on every request.
+The daemon keeps the root each directory resolved to, so a `root` line (it may run a command) is rendered once per directory rather than per request. The kept answer is dropped when the instance it named is evicted (it has gone cold and decayed away); the next read of that directory looks the root up again. A marker created or removed while the instance is alive is therefore not noticed until then. A `root` line that fails is answered with the same error for a few seconds rather than re-run on every request. A `root` that finds nothing (renders none) is kept for the same few seconds only: there is no instance whose eviction would clear it, so a marker created in the meantime is found by the first read after that, and a `| nearest` Source then gets its instance.
 
 ### When to write a built-in
 

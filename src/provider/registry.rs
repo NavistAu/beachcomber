@@ -7,6 +7,7 @@ use crate::provider::{
     FailbackConfig, InvalidationStrategy, Provider, ProviderMetadata, Source, SourceMetadata,
     SourceResult, Value, is_sentinel,
 };
+use crate::query::Found;
 use crate::scheduler::lifecycle::{DEFAULT_FAILBACK_COUNT, DEFAULT_FAILBACK_INTERVAL_SECS};
 use crate::shape::Retune;
 use crate::shape::decorators::EngineDefaults;
@@ -67,7 +68,7 @@ impl DaemonRead for RegistryReader {
             .read_merged(
                 &plan.provider,
                 plan.requested_path.as_deref(),
-                &crate::query::roots_of(&instances),
+                &instances,
                 &registry,
                 Layers::All,
             )
@@ -115,8 +116,10 @@ impl Source for Retuned {
     }
 }
 
-/// How long a failed `root` line's error is answered again without re-running it.
-const ROOT_ERROR_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long a failed `root` line's error, and the nothing a nearest Source's
+/// `root` found, are answered again without re-running the line. Both are timed
+/// on tokio's clock, so a test drives them with `tokio::time::advance`.
+const ROOT_RETRY_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct ProviderRegistry {
     /// (provider_name, source_name) → Arc-wrapped Source trait object.
@@ -133,12 +136,14 @@ pub struct ProviderRegistry {
     static_names: DashMap<String, ()>,
     /// The `root` of a config Source, by (provider, source, directory): the
     /// line is rendered once per directory (it may run a command) and kept
-    /// until the registry is replaced.
-    roots: DashMap<(String, String, String), Option<String>>,
+    /// until the instance it names is evicted. The second half is when the
+    /// answer lapses: set only for the nothing a nearest Source's root found,
+    /// which no instance's eviction would ever clear.
+    roots: DashMap<(String, String, String), (Found, Option<tokio::time::Instant>)>,
     /// A `root` line that failed, by (provider, source, directory), with when
-    /// and what it said: answered again for [`ROOT_ERROR_TTL`] rather than
+    /// and what it said: answered again for [`ROOT_RETRY_TTL`] rather than
     /// re-run, so a slow failing line costs its timeout once, not per request.
-    root_errors: DashMap<(String, String, String), (std::time::Instant, String)>,
+    root_errors: DashMap<(String, String, String), (tokio::time::Instant, String)>,
     /// Consecutive failures and failback backoff, per instance. The scheduler
     /// and the inline cold-miss path both record here, so an instance in
     /// backoff is skipped by either.
@@ -201,28 +206,51 @@ impl ProviderRegistry {
     }
 
     /// The kept root of the Source for `dir`, if it has been rendered: never
-    /// renders. `Some(root)` is the answer ([`Self::instance_root`]'s).
-    pub fn kept_root(&self, provider: &str, source: &str, dir: &str) -> Option<Option<String>> {
-        self.roots
-            .get(&(provider.to_string(), source.to_string(), dir.to_string()))
-            .map(|root| root.clone())
+    /// renders. `Some(found)` is the answer ([`Self::instance_root`]'s). The
+    /// nothing a nearest Source's root found is kept for [`ROOT_RETRY_TTL`]
+    /// only: the Source has no instance in that case, so no eviction would
+    /// clear it, and a marker created since should be found. For a cascading
+    /// Source nothing found is the instance at `~`, and is kept like any root.
+    pub fn kept_root(&self, provider: &str, source: &str, dir: &str) -> Option<Found> {
+        let key = (provider.to_string(), source.to_string(), dir.to_string());
+        let kept = self.roots.get(&key)?;
+        let (found, lapses) = &*kept;
+        if lapses.is_some_and(|at| tokio::time::Instant::now() >= at) {
+            drop(kept);
+            self.roots.remove(&key);
+            return None;
+        }
+        Some(found.clone())
     }
 
-    /// The instance of `provider`'s Source `source` that answers for `dir`:
-    /// `Some(root)`, or `None` for the one instance at `~`. A root equal to
-    /// `$HOME` is the instance at `~` ([`crate::query::normalise_path`]).
-    ///
-    /// A config Source renders its `root` line once per directory and the
-    /// answer is kept until the instance it names is evicted
-    /// ([`Self::forget_roots`]); an error is kept for [`ROOT_ERROR_TTL`] only.
-    /// May run a command: callers on an async worker go through
-    /// [`Self::renders_root`] and [`Self::kept_root`] first.
-    pub fn instance_root(
+    /// A walk for `provider`'s Source `source` from `dir` (the plan's
+    /// `requested_path`), shaped by the Source's `nearest` setting. A Source
+    /// that is not known, or has no root, cascades: its one instance is `~`.
+    pub fn instance_walk(
         &self,
         provider: &str,
         source: &str,
-        dir: &str,
-    ) -> Result<Option<String>, String> {
+        dir: Option<&str>,
+    ) -> crate::query::InstanceWalk {
+        let nearest = self
+            .source(provider, source)
+            .is_some_and(|s| s.has_root() && s.metadata().nearest);
+        crate::query::InstanceWalk::new(dir, nearest)
+    }
+
+    /// What `provider`'s Source `source` finds as its root for `dir`:
+    /// [`Found::At`] a directory, [`Found::Home`] when that is `$HOME` (the
+    /// instance at `~`, see [`crate::query::normalise_path`]), or
+    /// [`Found::Nothing`]. What nothing means is the walk's
+    /// ([`crate::query::InstanceWalk`]).
+    ///
+    /// A config Source renders its `root` line once per directory and the
+    /// answer is kept until the instance it names is evicted
+    /// ([`Self::forget_roots`]); an error, and the nothing a nearest Source's
+    /// root found, are kept for [`ROOT_RETRY_TTL`] only.
+    /// May run a command: callers on an async worker go through
+    /// [`Self::renders_root`] and [`Self::kept_root`] first.
+    pub fn instance_root(&self, provider: &str, source: &str, dir: &str) -> Result<Found, String> {
         if let Some(kept) = self.kept_root(provider, source, dir) {
             return Ok(kept);
         }
@@ -231,7 +259,7 @@ impl ProviderRegistry {
             .ok_or_else(|| format!("{provider}.{source}: no such source"))?;
         let error_key = (provider.to_string(), source.to_string(), dir.to_string());
         if let Some(failed) = self.root_errors.get(&error_key) {
-            if failed.0.elapsed() < ROOT_ERROR_TTL {
+            if failed.0.elapsed() < ROOT_RETRY_TTL {
                 return Err(failed.1.clone());
             }
             drop(failed);
@@ -246,18 +274,31 @@ impl ProviderRegistry {
             && self.renders_root(provider, source)
         {
             self.root_errors
-                .insert(error_key, (std::time::Instant::now(), msg.clone()));
+                .insert(error_key, (tokio::time::Instant::now(), msg.clone()));
         }
         let root = match found? {
             // A root that is the directory asked about is already canonical.
-            Some(root) if root == dir => Some(root),
-            Some(root) => crate::query::normalise_path(Some(&root)),
-            None => None,
+            Some(root) if root == dir && !crate::query::is_home(&root) => Found::At(root),
+            Some(root) => match crate::query::normalise_path(Some(&root)) {
+                Some(root) => Found::At(root),
+                None => Found::Home,
+            },
+            None => Found::Nothing,
         };
         if self.renders_root(provider, source) {
+            let now = tokio::time::Instant::now();
+            let lapses = (root == Found::Nothing && src.has_root() && src.metadata().nearest)
+                .then(|| now + ROOT_RETRY_TTL);
+            // Lapsed answers are never read again: sweep them as new ones come
+            // in, so a long-lived daemon does not hold one per directory ever
+            // asked about.
+            if lapses.is_some() {
+                self.roots
+                    .retain(|_, (_, lapses)| lapses.is_none_or(|at| now < at));
+            }
             self.roots.insert(
                 (provider.to_string(), source.to_string(), dir.to_string()),
-                root.clone(),
+                (root.clone(), lapses),
             );
         }
         Ok(root)
@@ -269,8 +310,15 @@ impl ProviderRegistry {
     /// once the instance it named has gone cold. A marker created or removed
     /// while the instance lives is not seen until then.
     pub fn forget_roots(&self, provider: &str, source: &str, root: Option<&str>) {
-        self.roots
-            .retain(|(p, s, _), kept| !(p == provider && s == source && kept.as_deref() == root));
+        self.roots.retain(|(p, s, _), (kept, _)| {
+            // Home and Nothing are both answered by the instance at `~`: for
+            // a Source that cascades, nothing found is served there.
+            let instance = match kept {
+                Found::At(at) => Some(at.as_str()),
+                Found::Home | Found::Nothing => None,
+            };
+            !(p == provider && s == source && instance == root)
+        });
     }
 
     /// Register a provider. Validates metadata, builds the field→source and sentinel maps,
@@ -723,6 +771,7 @@ impl ProviderRegistry {
                     meta.failback = recorded.failback;
                     meta.decay = recorded.decay;
                     meta.budget_execute = recorded.budget_execute;
+                    meta.nearest = recorded.nearest;
                 }
             });
             if line.is_some()
@@ -762,6 +811,11 @@ impl ProviderRegistry {
                 "{at} return: watch({}) is relative, but {provider}.{source} has one instance; \
                  use an absolute path",
                 listed.join(", ")
+            ));
+        }
+        if !rooted && meta.nearest {
+            return Err(format!(
+                "{at} return: {provider}.{source} has one instance; nearest has no effect"
             ));
         }
         self.providers[provider]
@@ -839,6 +893,7 @@ mod tests {
             fsevents_reinstate: false,
             decay: None,
             budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+            nearest: false,
         }
     }
 
@@ -1012,25 +1067,136 @@ result.x = "{{ data }}"
             "[daemon.providers.demo.sources.s]\nroot = \"{{ lup('.root') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
         );
 
-        assert_eq!(reg.instance_root("demo", "s", sub_str), Ok(None));
+        assert_eq!(reg.instance_root("demo", "s", sub_str), Ok(Found::Nothing));
         std::fs::write(sub.join(".root"), "").unwrap();
         assert_eq!(
             reg.instance_root("demo", "s", sub_str),
-            Ok(None),
+            Ok(Found::Nothing),
             "the answer is kept while its instance lives"
         );
         reg.forget_roots("demo", "s", Some("/elsewhere"));
         assert_eq!(
             reg.instance_root("demo", "s", sub_str),
-            Ok(None),
+            Ok(Found::Nothing),
             "another instance going cold says nothing about this one"
         );
         reg.forget_roots("demo", "s", None);
         assert_eq!(
             reg.instance_root("demo", "s", sub_str),
-            Ok(Some(sub_str.to_string())),
+            Ok(Found::At(sub_str.to_string())),
             "once the instance it resolved to is gone, the root is looked up again"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_root_that_found_nothing_is_looked_up_again_after_the_retry_ttl() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let sub = base.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let sub_str = sub.to_str().unwrap();
+        let reg = registry_from(
+            "[daemon.providers.demo.sources.s]\nroot = \"{{ lup('.root') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\nreturn = \"{{ result | nearest }}\"\n",
+        );
+
+        assert_eq!(reg.instance_root("demo", "s", sub_str), Ok(Found::Nothing));
+        std::fs::write(sub.join(".root"), "").unwrap();
+        tokio::time::advance(ROOT_RETRY_TTL - std::time::Duration::from_secs(1)).await;
+        assert_eq!(
+            reg.instance_root("demo", "s", sub_str),
+            Ok(Found::Nothing),
+            "nothing found is answered again within the ttl"
+        );
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        assert_eq!(
+            reg.instance_root("demo", "s", sub_str),
+            Ok(Found::At(sub_str.to_string())),
+            "a marker created since is found once the ttl has passed"
+        );
+        // A root that was found is kept for as long as its instance lives.
+        tokio::time::advance(ROOT_RETRY_TTL * 10).await;
+        std::fs::remove_file(sub.join(".root")).unwrap();
+        assert_eq!(
+            reg.instance_root("demo", "s", sub_str),
+            Ok(Found::At(sub_str.to_string()))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn nothing_found_by_a_cascading_root_is_kept_and_lapsed_answers_are_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let (a, b) = (base.join("a"), base.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let (a, b) = (a.to_str().unwrap(), b.to_str().unwrap());
+        let root = "root = \"{{ lup('.root') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n";
+        let reg = registry_from(&format!(
+            "[daemon.providers.casc.sources.s]\n{root}\n\
+             [daemon.providers.near.sources.s]\n{root}return = \"{{{{ result | nearest }}}}\"\n"
+        ));
+
+        // A cascading Source's nothing is its instance at `~`: kept until that
+        // instance is evicted, however long it takes.
+        assert_eq!(reg.instance_root("casc", "s", a), Ok(Found::Nothing));
+        std::fs::write(std::path::Path::new(a).join(".root"), "").unwrap();
+        tokio::time::advance(ROOT_RETRY_TTL * 10).await;
+        assert_eq!(reg.instance_root("casc", "s", a), Ok(Found::Nothing));
+
+        // A nearest Source's lapsed nothing is swept when another is kept, so
+        // directories asked about once do not pile up.
+        assert_eq!(reg.instance_root("near", "s", b), Ok(Found::Nothing));
+        assert_eq!(reg.roots.len(), 2);
+        tokio::time::advance(ROOT_RETRY_TTL).await;
+        let c = base.join("c");
+        std::fs::create_dir_all(&c).unwrap();
+        assert_eq!(
+            reg.instance_root("near", "s", c.to_str().unwrap()),
+            Ok(Found::Nothing)
+        );
+        assert_eq!(
+            reg.roots.len(),
+            2,
+            "the lapsed answer for b went when c's was kept"
+        );
+    }
+
+    #[test]
+    fn a_retune_replaces_nearest_with_the_lines_setting() {
+        let reg = registry_from(
+            "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('15s') }}\"\n\
+             [daemon.providers.mise.sources.tools]\nreturn = \"{{ result | poll('15s') | nearest }}\"\n",
+        );
+        assert!(
+            !source_meta(&reg, "git", "diff").nearest,
+            "git.diff declared nearest, and its own line does not say it"
+        );
+        assert!(source_meta(&reg, "mise", "tools").nearest);
+        assert!(
+            source_meta(&reg, "git", "head").nearest,
+            "a Source with no return keeps what it declares"
+        );
+    }
+
+    #[test]
+    fn built_in_sources_with_a_root_declare_how_their_instances_combine() {
+        let reg = ProviderRegistry::with_defaults();
+        let mut rooted = Vec::new();
+        for (provider, metas) in reg.registered_sources() {
+            for sm in metas {
+                let source = reg.source(&provider, &sm.name).unwrap();
+                if source.has_root() {
+                    rooted.push((provider.clone(), sm.name.clone(), sm.nearest));
+                } else {
+                    assert!(!sm.nearest, "{provider}.{}: no root to be nearest", sm.name);
+                }
+            }
+        }
+        assert!(!rooted.is_empty());
+        for (provider, source, nearest) in rooted {
+            let want = matches!(provider.as_str(), "git" | "direnv" | "python" | "terraform");
+            assert_eq!(nearest, want, "{provider}.{source}");
+        }
     }
 
     #[test]

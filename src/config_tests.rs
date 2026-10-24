@@ -1361,6 +1361,33 @@ fn a_misspelled_builtin_source_says_what_the_provider_has() {
     );
 }
 
+/// `nearest` chooses between instances; a Source with one instance has no
+/// choice to make, so the line that says it is a load error, whether the Source
+/// is a built-in retuned or a config Source with no root.
+#[test]
+fn nearest_on_a_source_with_one_instance_is_a_load_error() {
+    let errors = source_errors(
+        "[daemon.providers.hostname.sources.host]\nreturn = \"{{ result | nearest }}\"\n",
+    );
+    assert_eq!(
+        errors,
+        vec![
+            "[daemon.providers.hostname.sources.host] return: hostname.host has one instance; \
+             nearest has no effect"
+                .to_string()
+        ]
+    );
+    let errors = source_errors(
+        "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n\
+         return = \"{{ result | nearest }}\"\n",
+    );
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("nearest has no effect") && errors[0].contains("demo.s"),
+        "{errors:?}"
+    );
+}
+
 /// A Source with one instance has no directory to resolve a relative watch
 /// path against, so a retune to one is a load error rather than a Source
 /// that quietly never refreshes.

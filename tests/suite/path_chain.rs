@@ -352,6 +352,7 @@ fn source_meta(name: &str, field: &str) -> SourceMetadata {
         fsevents_reinstate: false,
         decay: None,
         budget_execute: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        nearest: false,
     }
 }
 
@@ -385,6 +386,66 @@ fn two_scope_registry() -> ProviderRegistry {
 
 fn fields(pairs: Vec<(&str, Value)>) -> HashMap<String, Value> {
     pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+}
+
+/// `mix` has a nearest Source and a cascading one, both rooted at the
+/// directory asked about, so the cascading one also reaches every ancestor.
+struct MixedProvider;
+
+impl Provider for MixedProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        let mut near = source_meta("near", "nf");
+        near.nearest = true;
+        ProviderMetadata {
+            name: "mix".to_string(),
+            sources: vec![near, source_meta("casc", "cf")],
+        }
+    }
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        self.metadata()
+            .sources
+            .into_iter()
+            .map(|meta| Box::new(InertSource { meta, rooted: true }) as Box<dyn Source>)
+            .collect()
+    }
+}
+
+/// A nearest Source's records stored at an outer root are not part of a read
+/// from a nested root, even though a cascading sibling of the provider reaches
+/// that outer root: each Source's records are read at its own instances only.
+#[tokio::test]
+async fn a_nearest_sources_outer_records_do_not_surface_through_a_cascading_sibling() {
+    let mut reg = ProviderRegistry::new();
+    reg.register(Box::new(MixedProvider)).unwrap();
+    let f = Fixture::start(reg);
+    let outer = f.path("ws/project");
+    let nested = f.path("ws/project/foo");
+
+    f.cache.put_source(
+        "mix",
+        Some(&outer),
+        "near",
+        fields(vec![("nf", Value::String("outer-near".into()))]),
+        Schedule::default(),
+    );
+    f.cache.put_source(
+        "mix",
+        Some(&outer),
+        "casc",
+        fields(vec![("cf", Value::String("outer-casc".into()))]),
+        Schedule::default(),
+    );
+
+    let mut s = f.connect().await;
+    let whole = data(send_recv(&mut s, get_at("mix", &nested)).await, "namespace");
+    assert_eq!(
+        whole,
+        serde_json::json!({"cf": "outer-casc"}),
+        "the cascading Source's outer record shows; the nearest Source's does not"
+    );
+    let resp = send_recv(&mut s, get_at("mix.nf", &nested)).await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert!(resp.data.is_none(), "{:?}", resp.data);
 }
 
 // ── coldness and `--force` are decided per source ────────────────────────────
@@ -1404,6 +1465,174 @@ async fn a_nested_repo_never_reads_the_outer_repos_branch() {
     );
 }
 
+/// A repository nested in another is a different repository: git is nearest,
+/// so the inner repo's read is answered by its own instance alone and never
+/// has a field filled in from the superproject's.
+#[tokio::test]
+async fn a_nested_repo_shows_only_its_own_values() {
+    if !has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let f = Fixture::defaults();
+    // The outer repo is on a branch forked from main, so it has a
+    // `branch_parent`; the inner one is detached, so it has none.
+    let outer = GitRepoFixture::new().with_branch_from("feat", "main");
+    let inner = outer.create_subdir("inner");
+    outer.git_in(&inner, &["init", "--initial-branch=innerbr"]);
+    outer.git_in(
+        &inner,
+        &[
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "x",
+        ],
+    );
+    outer.git_in(&inner, &["checkout", "--detach"]);
+    let inner = inner.to_str().unwrap();
+
+    let mut s = f.connect().await;
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.branch_parent", outer.path_str())).await,
+            "outer parent"
+        ),
+        serde_json::json!("main"),
+        "the outer repo has a parent branch to leak"
+    );
+
+    let resp = send_recv(&mut s, get_at("git.branch_parent", inner)).await;
+    assert!(resp.ok, "a miss is ok=true: {:?}", resp.error);
+    assert!(
+        resp.data.is_none(),
+        "the detached inner repo has no parent branch, and the outer's is not its own: {:?}",
+        resp.data
+    );
+
+    let whole = data(send_recv(&mut s, get_at("git", inner)).await, "inner repo");
+    assert_eq!(whole["detached"], serde_json::json!(true), "{whole}");
+    assert_eq!(whole["branch"], serde_json::json!(""), "{whole}");
+    assert!(
+        whole.get("branch_parent").is_none(),
+        "nothing of the outer repo shows in the inner one: {whole}"
+    );
+}
+
+/// `put` records merge up the path chain whatever a Source does: they are found
+/// where the nearest Source has no instance, and where its one instance lacks
+/// the key.
+#[tokio::test]
+async fn a_put_on_a_nearest_provider_is_found_up_the_path_chain() {
+    if !has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let f = Fixture::defaults();
+    let mut s = f.connect().await;
+    let ws = f.path("ws");
+    let repo = f.path("ws/repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git_at(Path::new(&repo), &["init", "--initial-branch=main"]);
+
+    send_recv(
+        &mut s,
+        put_at("git.note", serde_json::json!("from-ws"), &ws),
+    )
+    .await;
+
+    // No repository at `ws/other`: git has no instance there, and the put at
+    // `ws` is still what the chain gives.
+    let other = f.path("ws/other");
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.note", &other)).await,
+            "no instance"
+        ),
+        serde_json::json!("from-ws")
+    );
+    // In the repository, git's one instance has no `note`: the put is found.
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.note", &repo)).await,
+            "key missing at R1"
+        ),
+        serde_json::json!("from-ws")
+    );
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.branch", &repo)).await,
+            "R1 answers its own"
+        ),
+        serde_json::json!("main")
+    );
+}
+
+/// With a repository at `$HOME`, a directory under it that is not a repository
+/// is served by the `$HOME` repo: the walk found `$HOME`, which is an instance.
+#[tokio::test]
+async fn a_directory_without_a_repo_reads_the_home_repo() {
+    if !has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let f = Fixture::defaults();
+    git_at(&f.home, &["init", "--initial-branch=homebr"]);
+    let sub = f.path("ws/project/foo");
+
+    let mut s = f.connect().await;
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.branch", &sub)).await,
+            "field read"
+        ),
+        serde_json::json!("homebr")
+    );
+    let whole = data(
+        send_recv(&mut s, get_at("git", &sub)).await,
+        "namespace read",
+    );
+    assert_eq!(whole["branch"], serde_json::json!("homebr"), "{whole}");
+}
+
+/// A directory outside `$HOME` with no repository above it has no git values,
+/// and nothing is created for it: git does not fall back to the instance at
+/// `~`.
+#[tokio::test]
+async fn a_directory_outside_home_and_any_repo_has_no_git_values() {
+    let f = Fixture::defaults();
+    let outside_tmp = tempfile::tempdir().unwrap();
+    let outside = outside_tmp.path().canonicalize().unwrap();
+    let outside = outside.to_str().unwrap();
+
+    let mut s = f.connect().await;
+    for key in ["git.branch", "git"] {
+        let resp = send_recv(&mut s, get_at(key, outside)).await;
+        assert!(resp.ok, "{key}: a miss is ok=true: {:?}", resp.error);
+        assert!(resp.data.is_none(), "{key}: {:?}", resp.data);
+    }
+
+    let rows = data(
+        send_recv(&mut s, serde_json::json!({"op": "status"})).await,
+        "status",
+    );
+    let git_rows: Vec<&serde_json::Value> = rows
+        .as_array()
+        .expect("status returns an array")
+        .iter()
+        .filter(|row| row["provider"] == "git")
+        .collect();
+    assert!(git_rows.is_empty(), "no git instance exists: {git_rows:?}");
+    assert!(
+        f.cache.get_entry("git", None).is_none(),
+        "nothing ran for git at ~ either"
+    );
+}
+
 // ── a repository at $HOME is served from the global entry ────────────────────
 
 /// `git`, with the host's configuration shut out (see `common::git`).
@@ -1720,41 +1949,20 @@ async fn refresh_at_the_global_entry_writes_nothing_without_a_home_repository() 
     }
     let (_home_dir, _sock_dir, _home, sock) = daemon_at_a_temp_home().await;
 
+    // git is nearest and there is no repository at `$HOME`: no instance, so
+    // there is nothing to refresh, said so and not claimed as done.
     let mut s = UnixStream::connect(&sock).await.unwrap();
     let resp = send_recv(&mut s, serde_json::json!({"op": "refresh", "key": "git"})).await;
-    assert!(resp.ok, "refresh: {:?}", resp.error);
-
-    // The refresh executes asynchronously, so give it a window to produce a row
-    // and require that none appears. The inner poll's own deadline is longer
-    // than the outer one, so the outer timeout is what ends this.
-    //
-    // The poll gets a connection of its own, which is then dropped: the timeout
-    // cancels `poll_until_async` wherever it happens to be, and if that is
-    // between a request's `write_all` and its `read_line` the response is left
-    // unread on the wire for whatever reads that connection next. On a shared
-    // connection the assertions below would then read the abandoned `status`
-    // reply instead of their own.
-    let wrote = {
-        let mut probe = UnixStream::connect(&sock).await.unwrap();
-        tokio::time::timeout(
-            Duration::from_millis(400),
-            crate::common::poll::poll_until_async(
-                "git rows after a global refresh",
-                "any row",
-                Duration::from_secs(30),
-                Duration::from_millis(20),
-                async || git_rows(&mut probe).await,
-                |rows| !rows.is_empty(),
-            ),
-        )
-        .await
-    };
+    assert!(!resp.ok, "refresh should error");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("nothing to refresh: git has no instance at ~")
+    );
     assert!(
-        wrote.is_err(),
-        "a refresh outside a work tree must write nothing, got {wrote:?}"
+        git_rows(&mut s).await.is_empty(),
+        "no instance was created, so no row exists"
     );
 
-    let mut s = UnixStream::connect(&sock).await.unwrap();
     let resp = send_recv(&mut s, get("git")).await;
     assert!(resp.data.is_none(), "still a miss, got {:?}", resp.data);
     let resp = send_recv(&mut s, get("git.lines_added")).await;

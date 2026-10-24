@@ -583,6 +583,110 @@ result = "{{ data }}"
     assert_eq!(get_at(&d, &deep, &["demo.zz"]), None, "a key nobody has");
 }
 
+/// A config Source over `vals.json`: the whole node is the nearest marker's
+/// file. `return` is the line under test; `nearest` appends `| nearest`.
+fn vals_config(provider: &str, nearest: bool) -> String {
+    let decorator = if nearest { " | nearest" } else { "" };
+    format!(
+        r#"
+[daemon.providers.{provider}.sources.s]
+root = "{{{{ lup('vals.json') | dirname }}}}"
+data = "{{{{ exec('cat vals.json') | fromjson }}}}"
+result = "{{{{ data }}}}"
+return = "{{{{ result | watch('vals.json'){decorator} }}}}"
+"#
+    )
+}
+
+/// `outer/vals.json` has `a` and `b`; `outer/inner/vals.json` only `a`.
+/// Returns the directory to read from, below `inner`.
+fn nested_markers(setup: &Setup) -> PathBuf {
+    let outer = setup.home.join("outer");
+    let deep = outer.join("inner/sub");
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(
+        outer.join("vals.json"),
+        r#"{"a": "outer-a", "b": "outer-b"}"#,
+    )
+    .unwrap();
+    std::fs::write(outer.join("inner/vals.json"), r#"{"a": "inner-a"}"#).unwrap();
+    deep
+}
+
+#[test]
+fn a_nearest_config_source_is_answered_by_its_nearest_root_alone() {
+    let setup = Setup::new(&[("config.toml", &vals_config("demo", true))]);
+    let deep = nested_markers(&setup);
+    let d = setup.daemon();
+
+    assert_eq!(get_at(&d, &deep, &["demo.a"]), Some(json!("inner-a")));
+    assert_eq!(
+        get_at(&d, &deep, &["demo.b"]),
+        None,
+        "b is missing at the nearest root, and the outer root does not fill in"
+    );
+    assert_eq!(
+        get_at(&d, &deep, &["demo"]),
+        Some(json!({"a": "inner-a"})),
+        "the namespace read is the nearest instance only"
+    );
+}
+
+#[test]
+fn the_same_config_source_without_nearest_cascades() {
+    let setup = Setup::new(&[("config.toml", &vals_config("demo", false))]);
+    let deep = nested_markers(&setup);
+    let d = setup.daemon();
+
+    assert_eq!(get_at(&d, &deep, &["demo.a"]), Some(json!("inner-a")));
+    assert_eq!(get_at(&d, &deep, &["demo.b"]), Some(json!("outer-b")));
+    assert_eq!(
+        get_at(&d, &deep, &["demo"]),
+        Some(json!({"a": "inner-a", "b": "outer-b"}))
+    );
+}
+
+#[test]
+fn a_nearest_config_source_whose_root_renders_none_has_no_instance() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        &format!(
+            "{}{}",
+            vals_config("near", true),
+            r#"
+[daemon.providers.casc.sources.s]
+root = "{{ lup('vals.json') | dirname }}"
+data = "{{ 1 }}"
+result.z = "ran"
+"#
+        ),
+    )]);
+    let d = setup.daemon();
+    let bare = setup.home.join("bare/dir");
+    std::fs::create_dir_all(&bare).unwrap();
+
+    assert_eq!(
+        get_at(&d, &bare, &["near"]),
+        None,
+        "no marker: no instance, so no value"
+    );
+    assert_eq!(
+        get_at(&d, &bare, &["casc.z"]),
+        Some(json!("ran")),
+        "a Source that cascades is served by its instance at ~ instead"
+    );
+    assert_eq!(
+        warm_instances(&d, "near"),
+        vec![],
+        "nothing was created or kept warm for the nearest Source"
+    );
+    assert_eq!(
+        warm_instances(&d, "casc"),
+        vec![("s".to_string(), None)],
+        "the cascading Source has its instance at ~"
+    );
+}
+
 #[test]
 fn a_root_line_that_fails_to_render_fails_the_read_with_its_error() {
     let setup = Setup::new(&[(
