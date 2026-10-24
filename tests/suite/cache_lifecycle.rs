@@ -429,7 +429,16 @@ result.x = "{{ data }}"
     };
 
     // The caller runs, as a poll of it does, and calls the callee.
-    let ran = source_call(&registry, &cache, "caller", "s", None, Cold::Run).expect("runs");
+    // A run is blocking work: it takes its instance's turn on a blocking thread.
+    let ran = {
+        let (registry, cache) = (registry.clone(), cache.clone());
+        tokio::task::spawn_blocking(move || {
+            source_call(&registry, &cache, "caller", "s", None, Cold::Run)
+        })
+        .await
+        .unwrap()
+    }
+    .expect("runs");
     assert!(ran.is_some());
     let snapshots = handle.get_lifecycle_snapshots().await;
     assert!(

@@ -30,6 +30,58 @@ pub struct ConfigLoad {
 pub struct ConfigSources {
     pub providers: Vec<(String, Vec<ConfigSource>)>,
     pub retunes: Vec<Retune>,
+    /// The plugin libraries the Sources' lines call, on the configured search
+    /// path.
+    pub plugins: Option<Arc<PluginSet>>,
+}
+
+/// The registry the daemon is serving from, and the one place it is swapped.
+/// Whoever serves a request or handles a message takes [`Self::current`] once
+/// and uses that registry throughout, so a reload in the middle cannot mix two.
+///
+/// Cloning gives another handle on the same slot; a bare registry converts to a
+/// handle of its own, for an embedder or a test that never reloads. A `watch`
+/// channel rather than an `arc-swap` dependency: a request pays one read lock
+/// and one `Arc` clone, never one per lookup, and a long-lived reader (a
+/// `watch` stream) can wait for the next registry with [`Self::subscribe`].
+#[derive(Clone)]
+pub struct RegistryHandle(Arc<tokio::sync::watch::Sender<Arc<ProviderRegistry>>>);
+
+impl RegistryHandle {
+    pub fn new(registry: Arc<ProviderRegistry>) -> Self {
+        Self(Arc::new(tokio::sync::watch::Sender::new(registry)))
+    }
+
+    /// The registry now in force.
+    pub fn current(&self) -> Arc<ProviderRegistry> {
+        self.0.borrow().clone()
+    }
+
+    /// Put `next` in force. Whoever already took [`Self::current`] keeps the
+    /// registry they took until they are done with it.
+    pub fn replace(&self, next: Arc<ProviderRegistry>) {
+        self.0.send_replace(next);
+    }
+
+    /// A receiver that wakes when [`Self::replace`] puts another registry in
+    /// force.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<Arc<ProviderRegistry>> {
+        self.0.subscribe()
+    }
+}
+
+impl std::fmt::Debug for RegistryHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("RegistryHandle")
+            .field(&self.current())
+            .finish()
+    }
+}
+
+impl From<Arc<ProviderRegistry>> for RegistryHandle {
+    fn from(registry: Arc<ProviderRegistry>) -> Self {
+        Self::new(registry)
+    }
 }
 
 /// The daemon's own read of a provider node, for a config Source's
@@ -127,6 +179,16 @@ impl DaemonRead for RegistryReader {
     }
 }
 
+impl std::fmt::Debug for ProviderRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut names = self.provider_names();
+        names.sort();
+        f.debug_struct("ProviderRegistry")
+            .field("providers", &names)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A ring in the calls between Sources, as the Sources round it with the first
 /// repeated at the end; the first found in name order.
 fn find_ring(
@@ -220,7 +282,7 @@ pub struct ProviderRegistry {
     /// declaration order. They answer for the provider node.
     sentinel_sources: HashMap<String, Vec<String>>,
     /// Static namespace names registered via `comb put`. Orthogonal to the source model.
-    static_names: DashMap<String, ()>,
+    static_names: Arc<DashMap<String, ()>>,
     /// The `root` of a config Source, by (provider, source, directory): the
     /// line is rendered once per directory (it may run a command) and kept
     /// until the instance it names is evicted. The second half is when the
@@ -249,11 +311,42 @@ pub struct ProviderRegistry {
     data_calls: Vec<(String, String, Called)>,
     /// One turn per instance for the callers that find it cold at once; an
     /// entry lives only while someone holds it.
-    cold_locks: DashMap<(String, String, Option<String>), Arc<ColdLock>>,
+    cold_locks: Arc<ColdLocks>,
     /// The instances each instance's last run called, by (provider, source,
     /// root): demanding an instance demands what it calls, so a Source called
     /// only by one that is decaying decays with it.
     callees: DashMap<(String, String, Option<String>), CalleeMap>,
+    /// The plugin libraries this registry's Sources call, when any config
+    /// Source was built. A reload reuses the set, so a library loaded once
+    /// stays loaded for the daemon's life and is never closed under a running
+    /// call.
+    plugins: Option<Arc<PluginSet>>,
+    /// What each config Source is made of, apart from when it runs: its `root`,
+    /// `data` and `result` lines as resolved, `_` prototypes included. A reload
+    /// compares them to tell a Source whose body changed from one that was only
+    /// rescheduled.
+    definitions: HashMap<(String, String), String>,
+    /// Which Sources a reload has retired since this registry was built; shared
+    /// by every registry of a daemon, so a run holding an old one is told too.
+    retirements: Arc<Retirements>,
+    /// The reload epoch this registry was put in force at (see [`Retirements`]).
+    born: std::sync::atomic::AtomicU64,
+}
+
+/// The Sources a reload removed or changed, by the reload epoch that did it.
+/// A run that began under a registry older than that epoch holds a result
+/// computed from a body that is no longer in force. The write of a result takes
+/// the read side ([`ProviderRegistry::unless_retired`]) and a reload the write
+/// side, so a write is either finished before the reload evicts or skipped.
+#[derive(Default)]
+struct Retirements {
+    gate: std::sync::RwLock<RetiredAt>,
+}
+
+#[derive(Default)]
+struct RetiredAt {
+    epoch: u64,
+    at: HashMap<(String, String), u64>,
 }
 
 /// The turn for a cold instance a call needs.
@@ -263,8 +356,15 @@ pub struct ColdLock {
     pub finished: std::sync::atomic::AtomicU64,
     /// How the last run went.
     /// A failure is its message and whether it is a fault of the lines.
-    pub last: std::sync::Mutex<Option<Result<(), (String, bool)>>>,
+    /// Held for as long as a run of the instance is under way, so the next
+    /// caller waits its turn. A read of a read-always Source takes no turn: it
+    /// is cheap, and runs on every read.
+    pub last: tokio::sync::Mutex<Option<Result<(), (String, bool)>>>,
 }
+
+/// The turn for each cold instance, by (provider, source, root); an entry lives
+/// only while someone holds it.
+type ColdLocks = DashMap<(String, String, Option<String>), Arc<ColdLock>>;
 
 /// The instances a run called: (provider, source) to the roots reached.
 pub type CalleeMap = HashMap<(String, String), Vec<Option<String>>>;
@@ -282,7 +382,7 @@ impl ProviderRegistry {
             providers: HashMap::new(),
             declared_sources: HashMap::new(),
             sentinel_sources: HashMap::new(),
-            static_names: DashMap::new(),
+            static_names: Arc::new(DashMap::new()),
             roots: DashMap::new(),
             root_errors: DashMap::new(),
             failures: Arc::default(),
@@ -294,8 +394,12 @@ impl ProviderRegistry {
             config_sources: HashSet::new(),
             rendered_roots: HashSet::new(),
             data_calls: Vec::new(),
-            cold_locks: DashMap::new(),
+            cold_locks: Arc::default(),
             callees: DashMap::new(),
+            plugins: None,
+            definitions: HashMap::new(),
+            retirements: Arc::default(),
+            born: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -350,6 +454,95 @@ impl ProviderRegistry {
     pub fn forget_callees(&self, provider: &str, source: &str, root: Option<&str>) {
         self.callees
             .remove(&(provider.into(), source.into(), root.map(str::to_string)));
+    }
+
+    /// Forget what every instance of a Source was known to call.
+    pub fn forget_callees_of(&self, provider: &str, source: &str) {
+        self.callees
+            .retain(|(p, s, _), _| !(p == provider && s == source));
+    }
+
+    /// The Sources `next` removes, disables, enables or changes the body of,
+    /// and the Sources that call them, transitively (by what their last runs
+    /// called): what they stored was computed from an answer that goes. A
+    /// provider switched on again is as changed as one switched off: a call to
+    /// it was a miss and now is not.
+    pub fn retired_by(&self, next: &Self) -> HashSet<(String, String)> {
+        let mut out: HashSet<(String, String)> = self
+            .sources
+            .keys()
+            .filter(|(p, s)| {
+                self.is_disabled(p) != next.is_disabled(p)
+                    || next.source(p, s).is_none()
+                    || self.definition(p, s) != next.definition(p, s)
+            })
+            .cloned()
+            .collect();
+        // By Source, not instance: a call that reached no instance (a disabled
+        // provider, a nearest Source with no root) is a dependency too.
+        let mut callers: HashMap<(String, String), Vec<(String, String)>> = HashMap::new();
+        for entry in self.callees.iter() {
+            let (provider, source, _) = entry.key();
+            for callee in entry.value().keys() {
+                callers
+                    .entry(callee.clone())
+                    .or_default()
+                    .push((provider.clone(), source.clone()));
+            }
+        }
+        let mut pending: Vec<_> = out.iter().cloned().collect();
+        while let Some(callee) = pending.pop() {
+            for caller in callers.get(&callee).into_iter().flatten() {
+                if out.insert(caller.clone()) {
+                    pending.push(caller.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Retire `sources` as `next` takes over from this registry: from here a
+    /// run that began under this registry (or any older) skips its write for
+    /// them. Waits for the writes in progress.
+    pub fn retire(&self, next: &Self, sources: &HashSet<(String, String)>) {
+        let mut gate = self
+            .retirements
+            .gate
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        gate.epoch += 1;
+        let epoch = gate.epoch;
+        for source in sources {
+            gate.at.insert(source.clone(), epoch);
+        }
+        next.born.store(epoch, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Run `write` (a result's write into the cache) unless a reload has retired
+    /// the Source since this registry was put in force; `None` when skipped.
+    /// Holds the read side of the reload's gate while it runs.
+    pub fn unless_retired<R>(
+        &self,
+        provider: &str,
+        source: &str,
+        write: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let gate = self
+            .retirements
+            .gate
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let born = self.born.load(std::sync::atomic::Ordering::SeqCst);
+        // Nothing retired (the common case): no key to build.
+        if !gate.at.is_empty()
+            && gate
+                .at
+                .get(&(provider.to_string(), source.to_string()))
+                .is_some_and(|&epoch| epoch > born)
+        {
+            return None;
+        }
+        Some(write())
     }
 
     /// The lifecycle keys of the instances called, by the keys of the
@@ -671,6 +864,7 @@ impl ProviderRegistry {
                 self.rendered_roots.insert(key.clone());
             }
             self.config_sources.insert(key.clone());
+            self.definitions.insert(key.clone(), source.definition());
             self.sources.insert(key, Arc::new(source));
         }
         self.providers.insert(provider.to_string(), meta);
@@ -756,6 +950,7 @@ impl ProviderRegistry {
             Ok(ConfigSources {
                 providers: out,
                 retunes,
+                plugins: Some(plugins),
             })
         } else {
             Err(errors)
@@ -865,7 +1060,7 @@ impl ProviderRegistry {
 
     /// Returns true if the name was registered as a static namespace.
     pub fn is_static_namespace(&self, name: &str) -> bool {
-        self.static_names.contains_key(name)
+        !self.is_registered(name) && self.static_names.contains_key(name)
     }
 
     /// Register a static namespace: one no code or config registered, where
@@ -1000,7 +1195,12 @@ impl ProviderRegistry {
         let builtins: Vec<(String, String)> = registry.sources.keys().cloned().collect();
         let mut sources_built = true;
         match registry.config_sources(config, vars) {
-            Ok(ConfigSources { providers, retunes }) => {
+            Ok(ConfigSources {
+                providers,
+                retunes,
+                plugins,
+            }) => {
+                registry.plugins = plugins;
                 for (name, sources) in providers {
                     if let Err(e) = registry.register_config_sources(&name, sources) {
                         errors.push(e);
@@ -1045,7 +1245,67 @@ impl ProviderRegistry {
             errors.extend(registry.check_calls());
         }
         errors.extend(config.errors());
+        // What the reseed could not plan (a `template` line that renders no
+        // table): the same refusal a reload makes, so startup, `comb check
+        // config` and the config watch all see it. What the load and the
+        // per-file rules already said is not said twice.
+        for e in crate::daemon::seed::plan_errors(config, &registry) {
+            if !errors.contains(&e) {
+                errors.push(e);
+            }
+        }
         ConfigLoad { registry, errors }
+    }
+
+    /// Make `self`, freshly loaded from the configuration that replaces
+    /// `previous`, the registry to put in force: bound to `cache` and carrying
+    /// over what a reload must not lose.
+    ///
+    /// - The plugin libraries `previous` has loaded, which stay loaded for the
+    ///   daemon's life and are never closed under a call that is running.
+    /// - The failure state, which belongs to the instances: a Source that
+    ///   survives keeps its count and backoff. The scheduler resets the ones
+    ///   whose schedule changed and drops those of Sources that are gone.
+    /// - The static namespaces `put` created, the same set for every registry
+    ///   so a `put` racing the reload is not lost, and the namespace of a
+    ///   provider that has gone but still holds puts.
+    /// - What each surviving Source's instances were last known to call.
+    ///
+    /// The kept roots are not carried over: roots may have changed, and this
+    /// registry renders them afresh. Its `comb.<p>` reader is its own, bound
+    /// to it here.
+    pub fn adopt(mut self, previous: &Self, cache: &Arc<Cache>) -> Arc<Self> {
+        if let (Some(mine), Some(theirs)) = (&self.plugins, &previous.plugins) {
+            mine.adopt_loaded(theirs);
+        }
+        self.failures = Arc::clone(&previous.failures);
+        // A run under way at a reload still holds its instance's turn; a
+        // caller on this registry waits for it as one on the last would.
+        self.cold_locks = Arc::clone(&previous.cold_locks);
+        self.static_names = Arc::clone(&previous.static_names);
+        self.retirements = Arc::clone(&previous.retirements);
+        for entry in previous.callees.iter() {
+            let (provider, source, _) = entry.key();
+            if self
+                .sources
+                .contains_key(&(provider.clone(), source.clone()))
+            {
+                self.callees
+                    .insert(entry.key().clone(), entry.value().clone());
+            }
+        }
+        for name in cache.names_with_puts() {
+            self.register_static(&name);
+        }
+        self.share(cache)
+    }
+
+    /// What a config Source is made of apart from its schedule (see the
+    /// `definitions` field); `None` for a built-in or an unknown Source.
+    pub fn definition(&self, provider: &str, source: &str) -> Option<&str> {
+        self.definitions
+            .get(&(provider.to_string(), source.to_string()))
+            .map(String::as_str)
     }
 
     /// Every Source a line calls exists: a `data` line's and a provider's
@@ -1513,6 +1773,21 @@ result.x = "{{ data }}"
             reg.roots.len(),
             2,
             "the lapsed answer for b went when c's was kept"
+        );
+    }
+
+    #[test]
+    fn a_turn_for_a_cold_instance_survives_a_reload() {
+        let src =
+            "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n";
+        let cache = Arc::new(crate::cache::Cache::new());
+        let before = registry_from(src).share(&cache);
+        let turn = before.cold_lock("demo", "s", None);
+
+        let after = registry_from(src).adopt(&before, &cache);
+        assert!(
+            Arc::ptr_eq(&turn, &after.cold_lock("demo", "s", None)),
+            "a caller on the new registry waits for the run the old one has under way"
         );
     }
 
@@ -2145,7 +2420,7 @@ result.y = "{{ data }}"
         // The runner holds the turn; the waiter has passed the backoff check
         // and is blocked on it.
         let lock = registry.cold_lock("p", "t", None);
-        let held = lock.last.lock().unwrap();
+        let held = lock.last.blocking_lock();
         let waiter = {
             let (registry, cache) = (registry.clone(), cache.clone());
             std::thread::spawn(move || source_call(&registry, &cache, "p", "t", None, Cold::Run))

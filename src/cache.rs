@@ -1638,6 +1638,86 @@ impl Cache {
         }
     }
 
+    /// Remove `source`'s contribution at every path it is stored at, whether or
+    /// not the scheduler keeps a lifecycle entry for the instance.
+    pub fn remove_source_everywhere(&self, provider: &str, source: &str) {
+        let paths: Vec<Option<String>> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.value().sources.contains_key(source))
+            .filter_map(|entry| {
+                let mut parts = entry.key().splitn(2, '\0');
+                (parts.next() == Some(provider)).then(|| parts.next().map(str::to_string))
+            })
+            .collect();
+        for path in paths {
+            self.remove_source(provider, path.as_deref(), source);
+        }
+    }
+
+    /// The provider names that hold a `put` anywhere (facets excluded): a
+    /// namespace a reload removes from configuration but whose puts remain.
+    pub fn names_with_puts(&self) -> std::collections::HashSet<String> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.value().sources.contains_key(PUT_SOURCE))
+            .map(|entry| {
+                let key = entry.key();
+                key.split('\0').next().unwrap_or(key).to_string()
+            })
+            .filter(|name| !name.contains(':'))
+            .collect()
+    }
+
+    /// Rewrite what is stored about `source`'s schedule at `path` — the poll
+    /// interval its staleness is measured against and the `:cache` keys —
+    /// without touching its records: a Source retuned in place. Nothing is
+    /// written for a Source with no record there.
+    pub fn restamp_schedule(
+        &self,
+        provider: &str,
+        path: Option<&str>,
+        source_name: &str,
+        schedule: Schedule,
+    ) {
+        let fields: Vec<String> = {
+            let Some(mut entry) = self.entries.get_mut(&make_cache_key(provider, path)) else {
+                return;
+            };
+            let Some(src) = entry.sources.get_mut(source_name) else {
+                return;
+            };
+            src.expected_interval_secs = schedule.poll.map(|(secs, _)| secs);
+            src.fields.keys().cloned().collect()
+        };
+        let facet_key = make_cache_key(&cache_facet_of(provider), path);
+        let stored = schedule.stored_keys();
+        if stored.is_empty() {
+            if let Some(mut entry) = self.entries.get_mut(&facet_key) {
+                entry.sources.remove(source_name);
+            }
+            self.entries
+                .remove_if(&facet_key, |_, entry| entry.sources.is_empty());
+        } else {
+            let per_field = fields
+                .into_iter()
+                .map(|f| (f, Value::Object(stored.clone())))
+                .collect();
+            self.insert_source_map(
+                facet_key,
+                source_name,
+                CacheSourceEntry {
+                    fields: per_field,
+                    last_refreshed: Instant::now(),
+                    expected_interval_secs: None,
+                },
+            );
+        }
+        if let Some(ref watchers) = self.watchers {
+            watchers.notify(provider, path);
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

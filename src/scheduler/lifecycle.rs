@@ -69,14 +69,14 @@ pub struct DecayTimer {
     pub step_deadline: Instant,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StrategyKind {
     Poll,
     Watch,
     WatchAndPoll,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceLifecycleConfig {
     pub strategy_kind: StrategyKind,
     /// Some for Poll/WatchAndPoll, None for pure Watch.
@@ -256,6 +256,29 @@ impl LifecycleRegistry {
                 }
             },
         }
+    }
+
+    /// Bring an existing entry's configuration to `config` and keep everything
+    /// else: its state, its demand clock and (with the new interval) its poll
+    /// timer. An Active entry's window is measured again from its last demand.
+    /// Returns whether there was an entry.
+    pub fn retune(&mut self, key: &Key, config: SourceLifecycleConfig) -> bool {
+        let Some(entry) = self.entries.get_mut(key) else {
+            return false;
+        };
+        entry.poll_timer = match (config.poll_interval, entry.poll_timer.take()) {
+            (Some(interval), Some(timer)) => Some(PollTimer { interval, ..timer }),
+            (Some(interval), None) => Some(PollTimer {
+                last_fired: entry.decay_timer.last_demand,
+                interval,
+            }),
+            (None, _) => None,
+        };
+        if entry.state == LifecycleState::Active {
+            entry.decay_timer.step_deadline = entry.decay_timer.last_demand + config.lifespan();
+        }
+        entry.config = config;
+        true
     }
 
     pub fn on_fsevent(&mut self, key: Key, now: Instant) -> FseventOutcome {

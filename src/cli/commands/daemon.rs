@@ -148,7 +148,7 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
         }
 
         // The config self-watch is spawned by `run_daemon_with_cancel`, which
-        // owns the cache and registry a facet-only change re-seeds in place.
+        // owns the cache and registry a providers change reloads in place.
 
         let our_start_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

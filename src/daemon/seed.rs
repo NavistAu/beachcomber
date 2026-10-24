@@ -29,7 +29,8 @@
 use crate::cache::{CONFIG_SOURCE_PREFIX, Cache};
 use crate::config::Config;
 use crate::provider::Value;
-use crate::provider::registry::ProviderRegistry;
+use crate::provider::registry::{ProviderRegistry, RegistryHandle};
+use crate::scheduler::{SchedulerHandle, SchedulerMessage};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,7 +41,9 @@ use tokio_util::sync::CancellationToken;
 /// order.
 type Writes = Vec<(String, Value)>;
 
-/// Seed the config-seeded tables of `config`'s files and watch them for changes.
+/// Seed the config-seeded tables of `config`'s files and watch them for changes:
+/// an edit under `providers` reloads the registry and reseeds in place
+/// ([`reload_providers`]), a bare `[daemon]` or `[client]` key cancels `cancel`.
 ///
 /// Both halves are gated on `Config::config_path`, which only
 /// `Config::load_from` sets: a daemon handed a `Config` built in memory (an
@@ -56,15 +59,16 @@ type Writes = Vec<(String, Value)>;
 /// not about the native backend should not pay it.
 pub fn spawn_config_seeding(
     cache: &Arc<Cache>,
-    registry: &Arc<ProviderRegistry>,
+    registry: &RegistryHandle,
     config: &Config,
     cancel: &CancellationToken,
     polling_watch: Option<Duration>,
+    scheduler: &SchedulerHandle,
 ) {
     let Some(config_path) = config.config_file().map(|p| p.to_path_buf()) else {
         return;
     };
-    seed_facets(cache, registry, config.composed_layers());
+    seed_facets(cache, &registry.current(), config.composed_layers());
 
     // The watch stops on the daemon's own shutdown token — its closure holds
     // the cache and the registry, so a watch outliving the daemon would keep
@@ -74,6 +78,12 @@ pub fn spawn_config_seeding(
     let restart = stop.clone();
     let cache = cache.clone();
     let registry = registry.clone();
+    let scheduler = scheduler.clone();
+    // The last registry sent to the scheduler, which the registry handle lags
+    // until the scheduler has handled the message: the next edit adopts from
+    // this one, so two edits in quick succession do not lose what the first
+    // carried.
+    let mut last = registry.current();
     let (interval, fs_events) = match polling_watch {
         None => (super::config_watch::CONFIG_WATCH_POLL_INTERVAL, true),
         Some(_) => (Duration::from_millis(50), false),
@@ -83,10 +93,10 @@ pub fn spawn_config_seeding(
         interval,
         fs_events,
         stop,
-        move |kind, changed| match kind {
-            // What was compared and reseeded is what the gate validated.
-            super::config_watch::ChangeKind::FacetsOnly => {
-                reseed_facets(&cache, &registry, changed.composed_layers());
+        move |kind, changed, loaded| match kind {
+            // What was compared and reloaded is what the gate validated.
+            super::config_watch::ChangeKind::Providers => {
+                reload_providers(&cache, &registry, &scheduler, &mut last, changed, loaded);
             }
             super::config_watch::ChangeKind::Settings => {
                 tracing::info!("configuration settings changed; shutting down for restart");
@@ -94,6 +104,48 @@ pub fn spawn_config_seeding(
             }
         },
     );
+}
+
+/// Apply a change under `[daemon.providers]` or `[client.providers]` in place.
+/// `loaded` is the registry the gate built from `changed`; it is made the one
+/// to serve from ([`ProviderRegistry::adopt`]) and the seed is planned for it,
+/// and only when both are sound does anything change: on any error the whole
+/// reload is abandoned, the errors logged, the running registry and seed kept.
+/// Then the template and `cache` facets are reseeded and the scheduler is told
+/// to put the registry in force and bring its lifecycle entries to match.
+/// Requests and scheduler runs that took the previous registry finish on it.
+/// `last` is the registry the previous reload sent, or the one in force before
+/// any (the handle lags the scheduler); it becomes `next` once sent.
+/// The reseed comes before the scheduler's message so that when it compares
+/// each entry's schedule with the new configuration the decay tables it
+/// resolves from are the new ones.
+pub fn reload_providers(
+    cache: &Arc<Cache>,
+    registry: &RegistryHandle,
+    scheduler: &SchedulerHandle,
+    last: &mut Arc<ProviderRegistry>,
+    changed: &Config,
+    loaded: ProviderRegistry,
+) {
+    let next = loaded.adopt(last, cache);
+    let (planned, errors) = plan(changed.composed_layers(), &next);
+    if !errors.is_empty() {
+        for e in &errors {
+            tracing::error!("{e}");
+        }
+        tracing::error!(
+            "configuration changed but cannot be seeded ({} error(s)); keeping the current \
+             providers and seed",
+            errors.len()
+        );
+        return;
+    }
+    apply_reseed(cache, &next, planned);
+    scheduler.send_blocking(SchedulerMessage::Reload {
+        next: Arc::clone(&next),
+        registry: registry.clone(),
+    });
+    *last = next;
 }
 
 /// Write every seeded table of every layer into the cache, one `write_static`
@@ -115,38 +167,13 @@ pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, layers: &[(PathBu
     }
 }
 
-/// Re-seed in place, with no restart. The new layers are validated first: on
-/// any error nothing is touched and the previous seed keeps being served, the
-/// errors logged (`comb check config` reports the same ones from the client
-/// side). Otherwise each facet namespace is swapped under one write guard — its
-/// `config:` records dropped and the new ones applied together, so no
-/// concurrent `get` can see the gap between them.
-///
-/// The consequences, in the order an operator meets them: a leaf edited in a
-/// file takes effect on the next read; a leaf deleted from a file disappears; a
-/// leaf a later file overrides stays overridden; and a `put` record is left
-/// exactly as it is and stays on top, because only `config:` labels are
-/// dropped and the `put` layer reads above them.
-/// A `watch` wakes either way — `Cache::reseed_static` notifies the namespace
-/// whenever it drops or writes anything.
-pub fn reseed_facets(
-    cache: &Cache,
-    registry: &ProviderRegistry,
-    layers: &[(PathBuf, toml::Value)],
-) {
-    let (mut planned, errors) = plan(layers, registry);
-    if !errors.is_empty() {
-        for e in &errors {
-            tracing::error!("{}", e);
-        }
-        tracing::error!(
-            "configuration seeded tables changed but are not valid ({} error(s)); \
-             keeping the current seed",
-            errors.len()
-        );
-        return;
-    }
+/// Every error planning the seed of `config`'s layers over `registry` has.
+pub fn plan_errors(config: &Config, registry: &ProviderRegistry) -> Vec<String> {
+    plan(config.composed_layers(), registry).1
+}
 
+/// Swap in a plan that [`plan`] made without errors.
+fn apply_reseed(cache: &Cache, registry: &ProviderRegistry, mut planned: HashMap<String, Writes>) {
     // A namespace the layers no longer mention still holds the records the last
     // seed left there: visit it with an empty write list so the drop happens.
     for namespace in cache.global_namespaces_with_label_prefix(CONFIG_SOURCE_PREFIX) {
@@ -338,5 +365,58 @@ mod tests {
             "a built-in no file names has the abstract template: {:?}",
             planned.keys().collect::<Vec<_>>()
         );
+    }
+
+    /// A reload whose providers load but whose seed cannot be planned is
+    /// abandoned whole: the registry in force, the cache and the scheduler are
+    /// all as they were. The next sound one goes through.
+    #[test]
+    fn a_reload_whose_seed_cannot_be_planned_changes_nothing() {
+        let config_of = |text: &str| {
+            Config::from_layers(vec![crate::daemon::defaults::comb_layer(), layer(text)])
+        };
+        let cache = Arc::new(Cache::new());
+        let registry = RegistryHandle::new(Arc::new(ProviderRegistry::with_defaults()));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let scheduler = SchedulerHandle::new(tx);
+        let before = registry.current();
+        let mut last = before.clone();
+
+        // A Source that loads, beside a `template` line that renders a number.
+        let broken = config_of(
+            "[daemon.providers.etest]\ntemplate = \"{{ 1 }}\"\n\n\
+             [daemon.providers.etest.sources.u]\ndata = \"{{ 5 }}\"\nresult.u1 = \"{{ data }}\"\n",
+        );
+        let loaded = ProviderRegistry::load(&broken, &Default::default());
+        assert!(
+            loaded.errors.iter().any(|e| e.contains("etest template")),
+            "the load that gates startup and the watch refuses it too: {:?}",
+            loaded.errors
+        );
+        reload_providers(
+            &cache,
+            &registry,
+            &scheduler,
+            &mut last,
+            &broken,
+            loaded.registry,
+        );
+        assert!(Arc::ptr_eq(&before, &registry.current()));
+        assert!(rx.try_recv().is_err(), "the scheduler is told nothing");
+        assert!(cache.is_empty(), "and nothing is seeded");
+
+        let sound = config_of(
+            "[daemon.providers.etest.sources.u]\ndata = \"{{ 5 }}\"\nresult.u1 = \"{{ data }}\"\n",
+        );
+        let loaded = ProviderRegistry::load(&sound, &Default::default());
+        reload_providers(
+            &cache,
+            &registry,
+            &scheduler,
+            &mut last,
+            &sound,
+            loaded.registry,
+        );
+        assert!(matches!(rx.try_recv(), Ok(SchedulerMessage::Reload { .. })));
     }
 }

@@ -3,8 +3,9 @@
 //! `comb get`, so they cover the layers (defaults, `config.toml`, `conf.d`),
 //! the moments each line runs at, and whose environment `data` sees.
 //!
-//! A `sources` edit restarts the daemon (reload arrives with a later task), so
-//! a layer scenario is a daemon started over the files as they are.
+//! A scenario here is a daemon started over the files as they are. An edit
+//! under `providers` reloads a running daemon in place; that is covered in
+//! `config_self_watch.rs`.
 
 use crate::common::daemon::TestDaemon;
 use crate::common::poll::poll_until;

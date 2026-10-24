@@ -221,7 +221,7 @@ fn layers_tolerate_a_missing_main_config_file() {
 }
 
 #[test]
-fn settings_only_strips_exactly_the_seeded_tables() {
+fn settings_only_strips_both_providers_roots() {
     let composed: toml::Value = toml::from_str(
         r#"
 [daemon]
@@ -229,6 +229,9 @@ log_level = "debug"
 
 [daemon.providers.git.cache._]
 decay = 2
+
+[daemon.providers.git.sources.diff]
+return = "{{ result | poll('5s') }}"
 
 [client]
 bogus = 1
@@ -255,7 +258,7 @@ template.branch = "{{ git.branch }}"
     );
     assert!(
         settings["daemon"].get("providers").is_none(),
-        "a decay table is not a setting, and leaves no empty shell behind"
+        "nothing under [daemon.providers] is a setting, Sources included"
     );
     assert_eq!(settings["daemon"]["log_level"].as_str(), Some("debug"));
 }
@@ -582,25 +585,6 @@ fn a_client_that_is_not_a_table_is_an_error() {
     assert_eq!(
         seeded_errors("client = \"oops\"\n"),
         vec!["[client] must be a table".to_string()]
-    );
-}
-
-#[test]
-fn settings_only_keeps_a_non_cache_sibling_as_a_setting() {
-    let composed: toml::Value = toml::from_str(
-        "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('5s') }}\"\n\n\
-         [daemon.providers.git.cache._]\ndecay = 2\n",
-    )
-    .unwrap();
-    let settings = Config::settings_only(composed);
-    assert_eq!(
-        settings["daemon"]["providers"]["git"]["sources"]["diff"]["return"].as_str(),
-        Some("{{ result | poll('5s') }}")
-    );
-    assert!(
-        settings["daemon"]["providers"]["git"]
-            .get("cache")
-            .is_none()
     );
 }
 

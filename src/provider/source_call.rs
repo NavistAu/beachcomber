@@ -159,33 +159,39 @@ pub fn record_outcome(
         return Err(format!("{provider}.{source_name}: no such source"));
     };
     let meta = source.metadata();
-    let mut failures = registry.failures.lock().unwrap();
-    let state = failures
-        .entry(instance_key(provider, source_name, root))
-        .or_insert_with(|| {
-            crate::scheduler::FailureState::new(
-                meta.failback.reattempts,
-                std::time::Duration::from_secs(meta.failback.interval_secs),
-            )
-        });
-    match outcome {
-        Ok(result) => {
-            state.record_success();
-            drop(failures);
-            cache.put_source(
-                provider,
-                root,
-                source_name,
-                result.fields,
-                crate::cache::Schedule::of(meta),
-            );
-            Ok(())
-        }
-        Err(e) => {
-            state.record_failure();
-            Err(e)
-        }
-    }
+    // A reload that retired this Source since the registry was taken makes the
+    // result stale: neither it nor its failure counts, and nothing is written.
+    registry
+        .unless_retired(provider, source_name, || {
+            let mut failures = registry.failures.lock().unwrap();
+            let state = failures
+                .entry(instance_key(provider, source_name, root))
+                .or_insert_with(|| {
+                    crate::scheduler::FailureState::new(
+                        meta.failback.reattempts,
+                        std::time::Duration::from_secs(meta.failback.interval_secs),
+                    )
+                });
+            match outcome {
+                Ok(result) => {
+                    state.record_success();
+                    drop(failures);
+                    cache.put_source(
+                        provider,
+                        root,
+                        source_name,
+                        result.fields,
+                        crate::cache::Schedule::of(meta),
+                    );
+                    Ok(())
+                }
+                Err(e) => {
+                    state.record_failure();
+                    Err(e)
+                }
+            }
+        })
+        .unwrap_or(Ok(()))
 }
 
 /// A Source's record as a call finds it, and how old it is.
@@ -244,7 +250,12 @@ pub fn source_call(
         )));
     }
     // A disabled provider produces nothing, and nothing of it runs: a miss.
+    // The call is noted all the same, with no instance: what the caller stored
+    // depends on the answer, and switching the provider on changes it.
     if registry.is_disabled(provider) {
+        if cold == Cold::Run {
+            note_call(provider, source, &[]);
+        }
         return Ok(None);
     }
     let entry = crate::query::normalise_path(entry);
@@ -270,7 +281,7 @@ pub fn source_call(
             let lock = registry.cold_lock(provider, source, root);
             let arrived = lock.finished.load(std::sync::atomic::Ordering::SeqCst);
             let outcome = {
-                let mut last = lock.last.lock().unwrap_or_else(|e| e.into_inner());
+                let mut last = lock.last.blocking_lock();
                 if cache.has_provider_records_for(provider, root, source)
                     // A run that failed while this caller waited may have put
                     // the instance into backoff, whether or not it finished

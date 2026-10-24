@@ -6,21 +6,19 @@
 //! covers binary freshness); the user-facing contract lives in the website
 //! configuration reference.
 //!
-//! Not every change is a restart. A change that touches only
-//! `[client.providers]` or a `[daemon.providers.<p>.cache]` table is reported
-//! as [`ChangeKind::FacetsOnly`] and the daemon re-seeds them in place;
-//! anything else is [`ChangeKind::Settings`] and the daemon restarts, because
-//! settings are read once at startup. That includes a
-//! `[daemon.providers.<p>.sources]` edit: Sources are built at startup, and
-//! reloading them in place is a later change. The classifier is the composed TOML with
-//! those tables removed (`Config::settings_only`), compared before and after.
-//! (Reload does not track provider registration, in either direction: a
-//! provider newly named only in `[client.providers]` or `[daemon.providers]`
-//! is seeded at once but is not registered, and so not listed, until the next
-//! restart; one whose last mention is removed stays registered and listed until
-//! then.) Because the
-//! facet case leaves the process running, the watch re-arms after every call
-//! rather than firing once and exiting.
+//! Not every change is a restart. A change that touches only what is under
+//! `[daemon.providers]` or `[client.providers]` — Sources, `return` and
+//! `template` lines, `cache` tables, `enabled`, a provider newly named or no
+//! longer named — is reported as [`ChangeKind::Providers`] and the daemon
+//! applies it in place: it builds the new registry (the load that gated the
+//! edit), plans the reseed, swaps both in, brings the scheduler's lifecycle
+//! entries to match and reseeds the template and `cache` facets. A change to a bare key of `[daemon]` or `[client]` (`socket_path`,
+//! `log_level`, `plugin.path`, `budget.execute`, the watchdog keys,
+//! `idle_shutdown_secs`) is [`ChangeKind::Settings`] and the daemon restarts,
+//! because those are read once at startup. The classifier is the composed TOML
+//! with both `providers` roots removed (`Config::settings_only`), compared
+//! before and after. Because the providers case leaves the process running,
+//! the watch re-arms after every call rather than firing once and exiting.
 //!
 //! The watch targets the config path its caller passes — the directory the
 //! running `Config` was loaded from (`Config::config_dir`), never a path
@@ -68,6 +66,7 @@
 //! the config directory case above, just one level down.
 
 use crate::config::Config;
+use crate::provider::registry::ProviderRegistry;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
@@ -76,15 +75,16 @@ use tokio_util::sync::CancellationToken;
 pub const CONFIG_WATCH_POLL_INTERVAL: Duration = crate::singleton::SELF_WATCH_POLL_INTERVAL;
 
 /// What a configuration change turned out to be, decided by comparing the
-/// composed *settings* — the deep-merged TOML with the config-seeded tables
+/// composed *settings* — the deep-merged TOML with both `providers` roots
 /// removed (`Config::settings_only`) — before and after.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
-    /// Only `[client.providers]` or a `[daemon.providers.<p>.cache]` table
-    /// differs. The daemon re-seeds them in place and keeps serving.
-    FacetsOnly,
-    /// Something outside the seeded tables differs. The daemon restarts, because
-    /// settings are read once at startup.
+    /// The bare keys of `[daemon]` and `[client]` are as they were: only what
+    /// is under `[daemon.providers]` or `[client.providers]` can differ. The
+    /// daemon reloads in place and keeps serving.
+    Providers,
+    /// A bare key of `[daemon]` or `[client]` differs. The daemon restarts,
+    /// because those are read once at startup.
     Settings,
 }
 
@@ -127,7 +127,7 @@ fn composed_snapshot(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path)
 /// Each time the composed set changes and parses as valid config, calls
 /// `on_change` with the
 /// kind of change (after a 200ms debounce on the fs-event path) and **keeps
-/// watching** — a facet-only change is handled in place, so there is no process
+/// watching** — a providers change is handled in place, so there is no process
 /// exit to end the watch. A change that fails to parse logs a warning naming the
 /// error and changes nothing: the daemon never restarts into a config that would
 /// fail startup.
@@ -140,7 +140,9 @@ fn composed_snapshot(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path)
 /// Cancelling `stop` ends the thread, at the latest one `poll_interval` later.
 /// Returns its `JoinHandle` so a caller that needs to know it has gone can wait
 /// for it; the daemon does not, because its own exit is what cancels the token.
-pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind, &Config) + Send + 'static>(
+pub fn spawn_config_self_watch_with<
+    F: FnMut(ChangeKind, &Config, ProviderRegistry) + Send + 'static,
+>(
     config_path: PathBuf,
     poll_interval: Duration,
     fs_events: bool,
@@ -324,7 +326,7 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind, &Config) + Send + 'stat
 /// cleanly is reported and the watch re-arms; an invalid change is logged and
 /// polling continues. Ends when `stop` is cancelled.
 #[allow(clippy::too_many_arguments)]
-fn poll_loop<F: FnMut(ChangeKind, &Config)>(
+fn poll_loop<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
     config_path: &Path,
     defaults_dir: &Path,
     conf_d_dir: &Path,
@@ -358,7 +360,7 @@ fn poll_loop<F: FnMut(ChangeKind, &Config)>(
 /// change that fails the parse gate must not be re-detected on every subsequent
 /// tick, and a further edit landing while the gate runs must still differ from
 /// the snapshot so it fires on the next one.
-fn check_snapshot<F: FnMut(ChangeKind, &Config)>(
+fn check_snapshot<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
     config_path: &Path,
     defaults_dir: &Path,
     conf_d_dir: &Path,
@@ -380,7 +382,7 @@ fn check_snapshot<F: FnMut(ChangeKind, &Config)>(
 /// leaving `settings` holding the new snapshot. A missing main config file is
 /// nothing, not a failure. If any composed file cannot be read or parsed, or
 /// breaks a rule, logs the errors and fires nothing.
-fn try_fire<F: FnMut(ChangeKind, &Config)>(
+fn try_fire<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
     config_path: &Path,
     settings: &mut toml::Value,
     on_change: &mut F,
@@ -388,7 +390,9 @@ fn try_fire<F: FnMut(ChangeKind, &Config)>(
     // The checks startup runs, so a config the daemon would refuse to start on
     // is never restarted into. The running daemon keeps its configuration.
     let config = Config::load_from(config_path);
-    let errors = composed_errors(&config);
+    let vars = std::env::vars().collect();
+    let loaded = ProviderRegistry::load(&config, &vars);
+    let errors = loaded.errors;
     if !errors.is_empty() {
         for e in &errors {
             tracing::error!("{e}");
@@ -402,23 +406,16 @@ fn try_fire<F: FnMut(ChangeKind, &Config)>(
     }
     let next = settings_of(&config);
     let kind = if next == *settings {
-        ChangeKind::FacetsOnly
+        ChangeKind::Providers
     } else {
         ChangeKind::Settings
     };
     *settings = next;
     tracing::info!("config file changed and parses cleanly ({kind:?})");
-    on_change(kind, &config);
+    on_change(kind, &config, loaded.registry);
 }
 
-/// What startup would refuse the composed configuration for: the one loader's
-/// errors (`ProviderRegistry::load`).
-fn composed_errors(config: &Config) -> Vec<String> {
-    let vars = std::env::vars().collect();
-    crate::provider::registry::ProviderRegistry::load(config, &vars).errors
-}
-
-/// The composed configuration with the seeded tables removed — the half a
+/// The composed configuration with both `providers` roots removed — the half a
 /// change has to touch for a restart to be warranted. Read from the layers the
 /// `Config` was composed from, so what is compared is what was validated.
 fn settings_of(config: &Config) -> toml::Value {
@@ -472,7 +469,7 @@ mod tests {
         /// What `try_fire` reports for the files as they are now.
         fn fire(&mut self) -> Vec<ChangeKind> {
             let mut got = Vec::new();
-            try_fire(&self.config, &mut self.settings, &mut |kind, _| {
+            try_fire(&self.config, &mut self.settings, &mut |kind, _, _| {
                 got.push(kind)
             });
             got
@@ -480,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_return_in_conf_d_reports_nothing_and_fixing_it_reports_a_restart() {
+    fn a_bad_return_in_conf_d_reports_nothing_and_fixing_it_reports_a_reload() {
         let mut dir = Dir::new(SOURCE);
         dir.write(
             "conf.d/10-mine.toml",
@@ -496,7 +493,7 @@ mod tests {
             "conf.d/10-mine.toml",
             "[daemon.providers.demo.sources.s]\nreturn = \"{{ result | poll('9s') }}\"\n",
         );
-        assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
+        assert_eq!(dir.fire(), vec![ChangeKind::Providers]);
     }
 
     #[test]
@@ -522,23 +519,40 @@ mod tests {
             "[client.providers.x]\ntemplate.a = \"1\"\n",
         );
         let mut seen = Vec::new();
-        try_fire(&dir.config, &mut dir.settings, &mut |kind, config| {
+        try_fire(&dir.config, &mut dir.settings, &mut |kind, config, _| {
             seen.push((kind, config.composed_layers().len()));
         });
         assert_eq!(
             seen,
-            vec![(ChangeKind::FacetsOnly, 2)],
+            vec![(ChangeKind::Providers, 2)],
             "config.toml and the drop-in"
         );
     }
 
     #[test]
-    fn an_enabled_edit_is_a_settings_change() {
+    fn an_enabled_edit_is_a_providers_change() {
         let mut dir = Dir::new(SOURCE);
         dir.write(
             "conf.d/10-off.toml",
             "[daemon.providers.git]\nenabled = false\n",
         );
+        assert_eq!(dir.fire(), vec![ChangeKind::Providers]);
+    }
+
+    #[test]
+    fn a_source_or_return_edit_is_a_providers_change() {
+        let mut dir = Dir::new(SOURCE);
+        dir.write(
+            "conf.d/10-mine.toml",
+            "[daemon.providers.demo.sources.s]\nreturn = \"{{ result | poll('9s') }}\"\n",
+        );
+        assert_eq!(dir.fire(), vec![ChangeKind::Providers]);
+    }
+
+    #[test]
+    fn a_bare_daemon_key_is_a_settings_change() {
+        let mut dir = Dir::new(SOURCE);
+        dir.write("conf.d/10-c.toml", "[daemon]\nidle_shutdown_secs = 600\n");
         assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
     }
 
@@ -587,6 +601,6 @@ mod tests {
             "conf.d/10-t.toml",
             "[client.providers.x]\ntemplate.a = \"1\"\n",
         );
-        assert_eq!(dir.fire(), vec![ChangeKind::FacetsOnly]);
+        assert_eq!(dir.fire(), vec![ChangeKind::Providers]);
     }
 }

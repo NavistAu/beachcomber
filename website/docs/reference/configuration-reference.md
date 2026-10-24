@@ -187,9 +187,19 @@ The decay depth is seeded the same way, from the daemon root: `[daemon.providers
 
 Every leaf is loaded into the cache at daemon start, labelled with the file it came from — `comb status` shows its source as `config:~/.config/beachcomber/conf.d/10-mine.toml`. Layers are loaded in composition order, so a leaf two files set carries the later file's label and value, while a leaf only the earlier file set keeps its own.
 
-**Seeded tables reload without a restart.** A configuration change that touches only `[client.providers]` or `[daemon.providers.<p>.cache]` tables is applied in place: every `config:`-labelled record is dropped and all layers are loaded again, so an edited leaf takes effect on the next read, a leaf deleted from its file disappears, and a `watch` on the affected key wakes. Records written by `comb put` are untouched. A change that touches anything else still restarts the daemon.
+**An edit under `providers` reloads without a restart.** A configuration change that touches only what is under `[daemon.providers]` or `[client.providers]` — Sources, `template`, `result` and `return` lines, `cache` tables, `enabled`, a provider newly named or no longer named — is applied in place. The daemon builds the new set of providers from the composed files, swaps it in, and reseeds the `template` and `cache` facets: every `config:`-labelled record is dropped and all layers are loaded again, so an edited leaf takes effect on the next read, a leaf deleted from its file disappears, and a `watch` on the affected key wakes. Records written by `comb put` are untouched. Only a change to a bare key of `[daemon]` or `[client]` (`socket_path`, `log_level`, `plugin.path`, `budget.execute`, the watchdog keys, `idle_shutdown_secs`, …) restarts the daemon, because those are read once at startup.
 
-The reload is all or nothing, twice over. The edited files are checked against the rules above before anything is touched, so an edit that breaks one of them changes nothing at all — the previous values keep being served and the error is logged (and shown by `comb check config`) until the file is fixed. And each namespace's old and new records are swapped together, so a `comb get` running concurrently with the reload never sees a value momentarily missing.
+What a reload does to what is already running, instance by instance:
+
+- A Source that is no longer there, whose provider is now `enabled = false`, or whose body changed (its `root`, `data` and `result` lines, `_` prototypes included) is evicted: its records and stored `:cache` keys go, with its watches and the roots and failure state kept for it. A Source that still exists runs on the next read that asks for it, so an edited body takes effect at once rather than when its records next expire; a changed `root` evicts the instances of the old one.
+- A Source whose schedule changed (`poll`, `watch`, `failback`, `ttl`, `budget`, `nearest`, or the decay depth that applies to it, so an edit to `cache._.decay` retunes every instance of the provider) is retuned in place: it keeps its records, its place in the lifecycle and its failure count, takes the new schedule, registers its new watches at once and restamps the schedule stored with its records (`<p>:cache`), without running. A failback change starts its failure count afresh.
+- Every other Source keeps its records, its timers and its watches. Its failure count and backoff carry over.
+- Every `root` is worked out afresh on its next read.
+- The plugin libraries stay loaded for the daemon's life: a reload never closes one, and does not look at the files again.
+- A request in flight finishes on the providers it started with, and so does a run the daemon has under way: it reads the Sources it calls through them. A run that a reload overtook (its Source was evicted or retuned) writes nothing and is run again under the new providers. A `watch` stream follows the reload: it works out again what it reads.
+- Puts are untouched, and the namespace of a removed provider that still holds puts stays reachable as a static namespace.
+
+The reload is all or nothing, twice over. The edited files are checked against the rules above, and the providers they declare are built, before anything is touched, so an edit that breaks one of them changes nothing at all — the previous values keep being served and the error is logged (and shown by `comb check config`) until the file is fixed. And each namespace's old and new records are swapped together, so a `comb get` running concurrently with the reload never sees a value momentarily missing.
 
 ### Templates and value expressions
 
@@ -291,14 +301,14 @@ Composition rules:
 - A `conf.d` file that fails to parse is **skipped** (with a warning naming
   the file) rather than blocking daemon startup — the rest of the composed
   set still loads.
-- Config changes take effect via **automatic daemon restart** — no manual
-  restart. Changes to `config.toml`, any `conf.d/*.toml` or any
-  `defaults/*.toml` file (including files added or removed) trigger the
-  daemon's config self-watch, which acts
-  only once the *whole* composed set parses cleanly; an edit that doesn't parse
-  is ignored with a logged warning. The one change that does **not** restart is
-  an edit confined to the [seeded tables](#template-facets) themselves (`[client.providers]` and `[daemon.providers.<p>.cache]`), which is
-  applied in place.
+- Config changes take effect **without a manual restart**. Changes to
+  `config.toml`, any `conf.d/*.toml` or any `defaults/*.toml` file (including
+  files added or removed) trigger the daemon's config self-watch, which acts
+  only once the *whole* composed set parses cleanly and its providers load; an
+  edit that doesn't is ignored with a logged error. An edit confined to
+  `[daemon.providers]` or `[client.providers]` is [applied in place](#template-facets);
+  a change to a bare key of `[daemon]` or `[client]` restarts the daemon
+  automatically.
 
 ## Config field summary
 

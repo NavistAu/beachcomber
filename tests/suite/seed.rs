@@ -24,18 +24,18 @@ use tokio_util::sync::CancellationToken;
 
 // ── fixture ──────────────────────────────────────────────────────────────────
 
-struct Env {
+pub(crate) struct Env {
     _home: TempDir,
     _cfg: TempDir,
     _sock: TempDir,
-    cfg_dir: PathBuf,
-    sock: PathBuf,
+    pub(crate) cfg_dir: PathBuf,
+    pub(crate) sock: PathBuf,
 }
 
 impl Env {
     /// Point `$HOME` and `$XDG_CONFIG_HOME` at fresh temp roots, then write
     /// `config.toml` and the named `conf.d` drop-ins.
-    fn new(main: &str, drop_ins: &[(&str, &str)]) -> Env {
+    pub(crate) fn new(main: &str, drop_ins: &[(&str, &str)]) -> Env {
         let home = TempDir::new().unwrap();
         // SAFETY: nextest gives every test its own process, so no other thread
         // is reading the environment concurrently.
@@ -78,6 +78,23 @@ impl Env {
         beachcomber::daemon::start_in_process_polling(self.sock.clone(), Config::load())
     }
 
+    /// [`Self::start`] with a token the test holds, so it can tell a daemon
+    /// that was told to shut down (as it does to restart) from one that was not.
+    pub(crate) fn start_with(
+        &self,
+        cancel: CancellationToken,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        beachcomber::daemon::DaemonReady,
+    ) {
+        beachcomber::daemon::start_in_process_polling_with(
+            self.sock.clone(),
+            Config::load(),
+            cancel,
+            None,
+        )
+    }
+
     /// Start and wait for the socket; panics if the daemon refuses to start.
     async fn serve(&self) -> tokio::task::JoinHandle<()> {
         let (handle, ready) = self.start();
@@ -85,7 +102,7 @@ impl Env {
         handle
     }
 
-    async fn connect(&self) -> UnixStream {
+    pub(crate) async fn connect(&self) -> UnixStream {
         UnixStream::connect(&self.sock).await.unwrap()
     }
 
@@ -93,19 +110,22 @@ impl Env {
         format!("config:{}", self.cfg_dir.join(rel).display())
     }
 
-    fn drop_in(&self, name: &str) -> PathBuf {
+    pub(crate) fn drop_in(&self, name: &str) -> PathBuf {
         self.cfg_dir.join("conf.d").join(name)
     }
 }
 
 /// Rewrite a config file and stamp its mtime into the future, so the watch's
 /// poll sees the change whatever the clock's granularity.
-fn rewrite(path: &Path, body: &str) {
+pub(crate) fn rewrite(path: &Path, body: &str) {
     std::fs::write(path, body).unwrap();
     crate::common::mtime::touch_future(path);
 }
 
-async fn send_recv(stream: &mut UnixStream, request: serde_json::Value) -> serde_json::Value {
+pub(crate) async fn send_recv(
+    stream: &mut UnixStream,
+    request: serde_json::Value,
+) -> serde_json::Value {
     let mut line = request.to_string();
     line.push('\n');
     stream.write_all(line.as_bytes()).await.unwrap();
@@ -785,8 +805,30 @@ template.version = "v1"
 template.title = "t2"
 "#;
 
-/// An invalid edit changes nothing: `reseed_facets` refuses the layers when
-/// called directly, which is settled once the call returns. (The watch's gate
+/// Reload `layers` as the watch does: the registry its gate would have loaded
+/// from them, adopted and sent to a scheduler that is never run. The facets are
+/// reseeded before the message is sent, so the call is settled once it returns.
+fn reload(
+    cache: &Arc<Cache>,
+    handle: &beachcomber::provider::registry::RegistryHandle,
+    sink: &beachcomber::scheduler::SchedulerHandle,
+    last: &mut Arc<ProviderRegistry>,
+    layers: Vec<(PathBuf, toml::Value)>,
+) {
+    let changed = Config::from_layers(layers);
+    let loaded = ProviderRegistry::load(&changed, &HashMap::new());
+    beachcomber::daemon::seed::reload_providers(
+        cache,
+        handle,
+        sink,
+        last,
+        &changed,
+        loaded.registry,
+    );
+}
+
+/// An invalid edit changes nothing: a reload refuses the layers when called
+/// directly, which is settled once the call returns. (The watch's gate
 /// reports no such edit at all; `config_watch.rs` tests that.)
 #[test]
 fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
@@ -813,7 +855,11 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
     assert_eq!(leaf("title"), Some(CacheValue::String("t1".into())));
 
     let (tx, rx) = std::sync::mpsc::channel();
-    let (watch_cache, watch_registry) = (cache.clone(), registry.clone());
+    let handle = beachcomber::provider::registry::RegistryHandle::new(registry.clone());
+    let (sink_tx, _sink_rx) = tokio::sync::mpsc::channel(16);
+    let sink = beachcomber::scheduler::SchedulerHandle::new(sink_tx);
+    let mut last = registry.clone();
+    let (watch_cache, watch_handle, watch_sink) = (cache.clone(), handle.clone(), sink.clone());
     let (watch_cfg, watch_conf_d, watch_defaults) = (cfg.clone(), conf_d.clone(), defaults.clone());
     let stop = CancellationToken::new();
     beachcomber::daemon::config_watch::spawn_config_self_watch_with(
@@ -821,12 +867,13 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
         Duration::from_millis(20),
         false,
         stop.clone(),
-        move |kind, _| {
-            if kind == beachcomber::daemon::config_watch::ChangeKind::FacetsOnly {
+        move |kind, _, _| {
+            if kind == beachcomber::daemon::config_watch::ChangeKind::Providers {
                 let layers =
                     Config::read_layers(Some(&watch_defaults), Some(&watch_cfg), &watch_conf_d)
                         .layers;
-                beachcomber::daemon::seed::reseed_facets(&watch_cache, &watch_registry, &layers);
+                let mut last = watch_handle.current();
+                reload(&watch_cache, &watch_handle, &watch_sink, &mut last, layers);
             }
             let _ = tx.send(kind);
         },
@@ -834,7 +881,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
 
     std::fs::write(&drop_in, RESEED_INVALID).unwrap();
     crate::common::mtime::touch_future(&drop_in);
-    beachcomber::daemon::seed::reseed_facets(&cache, &registry, &layers());
+    reload(&cache, &handle, &sink, &mut last, layers());
     assert_eq!(
         leaf("title"),
         Some(CacheValue::String("t1".into())),
@@ -1272,4 +1319,77 @@ async fn comb_check_config_renders_both_views_as_one_list() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(out.status.code(), Some(0), "all passed exits 0");
+}
+
+/// Two edits back to back, before the scheduler has put the first registry in
+/// force: the second is adopted from the first, not from the registry the
+/// handle still serves, so what the first carried is not lost. The scheduler is
+/// stood in for by a queue the test reads the `Reload`s from.
+#[test]
+fn a_second_edit_adopts_from_the_registry_the_first_sent() {
+    use beachcomber::provider::registry::RegistryHandle;
+    use beachcomber::scheduler::{SchedulerHandle, SchedulerMessage};
+
+    let tmp = TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    let source = |name: &str| {
+        format!(
+            "[daemon.providers.p.sources.{name}]\ndata = \"{{{{ 1 }}}}\"\nresult.{name} = \"{{{{ data }}}}\"\n\
+             return = \"{{{{ result | poll('10m') }}}}\"\n"
+        )
+    };
+    let layers = |toml: String| vec![(cfg.clone(), toml::from_str::<toml::Value>(&toml).unwrap())];
+
+    let cache = Arc::new(Cache::new());
+    let first = Config::from_layers(layers(source("a")));
+    let registry = ProviderRegistry::load(&first, &HashMap::new())
+        .registry
+        .adopt(&ProviderRegistry::new(), &cache);
+    let handle = RegistryHandle::new(registry.clone());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let sink = SchedulerHandle::new(tx);
+    let mut last = registry;
+
+    reload(
+        &cache,
+        &handle,
+        &sink,
+        &mut last,
+        layers(source("a") + &source("b")),
+    );
+    let Ok(SchedulerMessage::Reload {
+        next: first_sent, ..
+    }) = rx.try_recv()
+    else {
+        panic!("the first edit sends a Reload");
+    };
+    // What the first registry has learned since: `a` was seen calling `b`.
+    first_sent.set_callees(
+        ("p", "a", None),
+        HashMap::from([(("p".to_string(), "b".to_string()), vec![None])]),
+    );
+    assert!(
+        Arc::ptr_eq(&handle.current(), &handle.current())
+            && handle.current().callers_of().is_empty(),
+        "the handle still serves the registry before the first edit"
+    );
+
+    reload(
+        &cache,
+        &handle,
+        &sink,
+        &mut last,
+        layers(source("a") + &source("b") + &source("c")),
+    );
+    let Ok(SchedulerMessage::Reload {
+        next: second_sent, ..
+    }) = rx.try_recv()
+    else {
+        panic!("the second edit sends a Reload");
+    };
+    assert_eq!(
+        second_sent.callers_of().len(),
+        1,
+        "the second registry carries what the first had learned"
+    );
 }

@@ -6,7 +6,7 @@ pub mod seed;
 use crate::boundaries::spawn::{DaemonSpawner, RealDaemonSpawner};
 use crate::cache::Cache;
 use crate::config::Config;
-use crate::provider::registry::ProviderRegistry;
+use crate::provider::registry::{ProviderRegistry, RegistryHandle};
 use crate::scheduler::{Scheduler, SchedulerMessage};
 use crate::server::Server;
 use crate::watcher_registry::WatcherRegistry;
@@ -143,18 +143,20 @@ async fn run_daemon_with_cancel(
     }
     let registry = load.registry.share(&cache);
 
-    // Facet tables seed their namespaces before the socket is served, so the
-    // first `get` already sees them, and the same files are watched for changes:
-    // a facet-only edit re-seeds in place, anything else cancels `cancel` and
-    // the daemon restarts.
-    seed::spawn_config_seeding(&cache, &registry, &config, &cancel, polling_watch);
-
     let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
         registry.clone(),
         config.clone(),
         watchers.clone(),
     );
+
+    // Facet tables seed their namespaces before the socket is served, so the
+    // first `get` already sees them, and the same files are watched for changes:
+    // an edit under `providers` reloads in place, a bare `[daemon]` or
+    // `[client]` key cancels `cancel` and the daemon restarts.
+    let registry = RegistryHandle::new(registry);
+    seed::spawn_config_seeding(&cache, &registry, &config, &cancel, polling_watch, &handle);
+
     match polling_watch {
         // Daemon path: probe fs-event delivery before trusting the native
         // backend (canon provider_source.md §"Watch backend health").

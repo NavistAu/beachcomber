@@ -72,6 +72,21 @@ impl PluginSet {
             .map_err(|e| format!("plugin(): {symbol} in {name}: returned invalid JSON: {e}"))
     }
 
+    /// Take over the libraries `from` has loaded. The set is `Arc`s of loaded
+    /// images, so a library one set let go of stays open here: a reload
+    /// replaces the set the Sources call through without ever closing a
+    /// library, or loading one a second time.
+    pub fn adopt_loaded(&self, from: &PluginSet) {
+        let theirs = from.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut mine = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        for (name, lib) in &theirs.by_name {
+            mine.by_name.insert(name.clone(), lib.clone());
+        }
+        for (image, lib) in &theirs.by_image {
+            mine.by_image.insert(*image, lib.clone());
+        }
+    }
+
     fn library(&self, name: &str) -> Result<Arc<dyn LoadedLibrary>, String> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(lib) = state.by_name.get(name) {

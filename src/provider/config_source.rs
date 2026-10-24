@@ -213,6 +213,16 @@ fn kind(value: &Json) -> &'static str {
 }
 
 impl ConfigSource {
+    /// What the Source is made of apart from when it runs: its `root`, `data`
+    /// and `result` lines as resolved, `_` prototypes included. Two Sources
+    /// with the same definition compute the same records.
+    pub fn definition(&self) -> String {
+        format!(
+            "root: {:?}\ndata: {:?}\nresult: {:?}",
+            self.spec.root, self.spec.data, self.spec.result
+        )
+    }
+
     pub fn new(
         spec: ConfigSourceSpec,
         env: Arc<HashMap<String, String>>,

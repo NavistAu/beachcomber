@@ -98,3 +98,69 @@ fn registry_sources_for_key() {
         "field 'name' on hostname should belong to source 'host'"
     );
 }
+
+/// A reload builds the next registry whole, carrying over only what belongs to
+/// the daemon's life rather than to the configuration: the failure state, the
+/// static namespaces `put` made (the same set for every registry). The kept
+/// roots are not carried; the integration test `a_reload_clears_kept_roots`
+/// covers that.
+#[test]
+fn an_adopted_registry_carries_what_outlives_the_configuration() {
+    use crate::cache::Cache;
+    use crate::config::Config;
+    use std::sync::Arc;
+
+    let cache = Arc::new(Cache::new());
+    let config = Config::from_toml(
+        "[daemon.providers.p.sources.s]\ndata = \"{{ 1 }}\"\nresult.f = \"{{ data }}\"\n",
+    );
+    let old = ProviderRegistry::with_config(&config, &Default::default())
+        .unwrap()
+        .share(&cache);
+    assert!(old.register_static("kept"));
+
+    let next = ProviderRegistry::with_config(&config, &Default::default())
+        .unwrap()
+        .adopt(&old, &cache);
+    assert!(Arc::ptr_eq(&old.failures, &next.failures));
+    assert!(next.is_static_namespace("kept"), "a put's namespace stays");
+    assert!(next.register_static("later"));
+    assert!(
+        old.is_static_namespace("later"),
+        "and a namespace made on either registry is seen by both"
+    );
+    assert!(next.is_registered("p"), "and the config is read afresh");
+}
+
+/// The definition of a config Source is its body, not its schedule: an edit to
+/// `data`, `result` or `root` changes it, an edit to the `return` line does not.
+#[test]
+fn a_definition_is_the_body_and_not_the_schedule() {
+    use crate::config::Config;
+    let load = |data: &str, root: &str, poll: &str| {
+        let root = if root.is_empty() {
+            String::new()
+        } else {
+            format!("root = \"{root}\"\n")
+        };
+        ProviderRegistry::with_config(
+            &Config::from_toml(&format!(
+                "[daemon.providers.p.sources.s]\n{root}data = \"{data}\"\n\
+                 result.f = \"{{{{ data }}}}\"\nreturn = \"{{{{ result | poll('{poll}') }}}}\"\n"
+            )),
+            &Default::default(),
+        )
+        .unwrap()
+    };
+    let base = load("{{ 1 }}", "", "5s");
+    let same = base.definition("p", "s");
+    assert!(same.is_some());
+    assert_eq!(load("{{ 1 }}", "", "9s").definition("p", "s"), same);
+    assert_ne!(load("{{ 2 }}", "", "5s").definition("p", "s"), same);
+    assert_ne!(
+        load("{{ 1 }}", "{{ exec('pwd') }}", "5s").definition("p", "s"),
+        same,
+        "a changed root is a changed definition"
+    );
+    assert_eq!(base.definition("git", "head"), None, "a built-in has none");
+}

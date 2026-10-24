@@ -586,37 +586,24 @@ impl Config {
         names
     }
 
-    /// The composed value with the config-seeded tables removed: the half of
-    /// configuration a change has to touch for a restart to be warranted. That
-    /// is `[client.providers]` and every `[daemon.providers.<p>.cache]` table.
+    /// The composed value with both `providers` roots removed: the bare keys
+    /// of `[daemon]` and `[client]`, which the process reads once at startup.
     /// The config self-watch compares this before and after
-    /// (`crate::daemon::config_watch::ChangeKind`). Only the two roots exist
+    /// (`crate::daemon::config_watch::ChangeKind`): a difference restarts the
+    /// daemon, and a change to anything under `[daemon.providers]` or
+    /// `[client.providers]` is applied in place. Only the two roots exist
     /// (`crate::shape::seeded::read` refuses any other), so nothing else is kept.
     pub fn settings_only(mut composed: toml::Value) -> toml::Value {
         if let Some(table) = composed.as_table_mut() {
             table.retain(|root, _| root == "client" || root == "daemon");
-        }
-        if let Some(client) = composed.get_mut("client").and_then(|v| v.as_table_mut()) {
-            client.remove("providers");
-            if client.is_empty() {
-                composed.as_table_mut().map(|t| t.remove("client"));
-            }
-        }
-        if let Some(daemon) = composed.get_mut("daemon").and_then(|v| v.as_table_mut()) {
-            if let Some(providers) = daemon.get_mut("providers").and_then(|v| v.as_table_mut()) {
-                for (_, provider) in providers.iter_mut() {
-                    if let Some(table) = provider.as_table_mut() {
-                        table.remove("cache");
-                    }
+            for root in ["client", "daemon"] {
+                let Some(bare) = table.get_mut(root).and_then(|v| v.as_table_mut()) else {
+                    continue;
+                };
+                bare.remove("providers");
+                if bare.is_empty() {
+                    table.remove(root);
                 }
-                providers.retain(|_, v| !v.as_table().is_some_and(|t| t.is_empty()));
-            }
-            if daemon
-                .get("providers")
-                .and_then(|v| v.as_table())
-                .is_some_and(|t| t.is_empty())
-            {
-                daemon.remove("providers");
             }
         }
         composed

@@ -1,7 +1,7 @@
 use crate::cache::{Cache, Layers, MergedRead};
 use crate::config::Config;
 use crate::protocol::{self, IntrospectSubject, Request, Response};
-use crate::provider::registry::ProviderRegistry;
+use crate::provider::registry::{ProviderRegistry, RegistryHandle};
 use crate::provider::source_call::{in_failback_backoff, record_outcome};
 use crate::query::{Ask, Found, Instance, InstanceWalk, KeyParse, QueryPlan};
 use crate::scheduler::{
@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 pub struct Server {
     socket_path: PathBuf,
     cache: Arc<Cache>,
-    registry: Arc<ProviderRegistry>,
+    registry: RegistryHandle,
     scheduler: Option<SchedulerHandle>,
     watchers: Arc<WatcherRegistry>,
     start_instant: Instant,
@@ -40,14 +40,14 @@ impl Server {
     pub fn new(
         socket_path: PathBuf,
         cache: Arc<Cache>,
-        registry: Arc<ProviderRegistry>,
+        registry: impl Into<RegistryHandle>,
         scheduler: Option<SchedulerHandle>,
         watchers: Arc<WatcherRegistry>,
     ) -> Self {
         Self {
             socket_path,
             cache,
-            registry,
+            registry: registry.into(),
             scheduler,
             watchers,
             start_instant: Instant::now(),
@@ -61,7 +61,7 @@ impl Server {
     pub fn new_with_config(
         socket_path: PathBuf,
         cache: Arc<Cache>,
-        registry: Arc<ProviderRegistry>,
+        registry: impl Into<RegistryHandle>,
         scheduler: Option<SchedulerHandle>,
         watchers: Arc<WatcherRegistry>,
         config: Config,
@@ -69,7 +69,7 @@ impl Server {
         Self {
             socket_path,
             cache,
-            registry,
+            registry: registry.into(),
             scheduler,
             watchers,
             start_instant: Instant::now(),
@@ -129,7 +129,7 @@ impl Server {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
                     let cache = Arc::clone(&self.cache);
-                    let registry = Arc::clone(&self.registry);
+                    let registry = self.registry.clone();
                     let scheduler = self.scheduler.clone();
                     let watchers = self.watchers.clone();
                     let start_instant = self.start_instant;
@@ -178,7 +178,7 @@ impl Server {
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     cache: Arc<Cache>,
-    registry: Arc<ProviderRegistry>,
+    registry: RegistryHandle,
     scheduler: Option<SchedulerHandle>,
     watchers: Arc<WatcherRegistry>,
     start_instant: Instant,
@@ -222,10 +222,13 @@ async fn handle_connection(
             }
             Ok(request) => {
                 requests_total.fetch_add(1, Ordering::Relaxed);
+                // One registry for the whole request: a reload part-way
+                // through cannot mix two.
+                let current = registry.current();
                 let response = handle_request(
                     &request,
                     &cache,
-                    &registry,
+                    &current,
                     scheduler.as_ref(),
                     &mut context_path,
                     start_instant,
@@ -366,27 +369,141 @@ async fn handle_watch(
     path: Option<String>,
     context_path: &Option<String>,
     cache: &Cache,
-    registry: &Arc<ProviderRegistry>,
+    handle: &RegistryHandle,
     scheduler: Option<&SchedulerHandle>,
     watchers: &Arc<WatcherRegistry>,
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) {
     let requested = path.as_deref().or(context_path.as_deref());
-    let plan = match QueryPlan::build(&key, requested, registry) {
-        Ok(plan) => plan,
+    // A reload puts another registry in force; the watch's plan was made under
+    // the one before it, so it is made again. Subscribed before the first plan
+    // is made, so a reload during it is not missed.
+    let mut swapped = handle.subscribe();
+    let registry = swapped.borrow_and_update().clone();
+    let mut setup = match watch_setup(&key, requested, registry, cache, scheduler, watchers).await {
+        Ok(setup) => setup,
         Err(msg) => {
             let _ = write_watch_line(writer, &Response::error(msg)).await;
             return;
         }
     };
+
+    // Send initial value
+    let initial = setup.read(cache);
+    if write_watch_line(writer, &initial).await.is_err() {
+        return;
+    }
+
+    // Both halves decide whether a frame is new. A template edited on its own
+    // changes what the client renders just as much as a value does, so a frame
+    // whose only change is the template is still a frame.
+    let mut last = (initial.data.clone(), initial.template.clone());
+
+    // Stream loop. A watch owns its connection for its whole lifetime — after
+    // the initial request the client never writes again — so any completion
+    // of the read races the write-triggered path: `Ok(0)` EOF, an error, or
+    // even `Ok(n>0)` (a protocol-violating extra write) all mean this
+    // connection is done being useful, and the watch ends. This is what lets
+    // a dead client's watch drop at once instead of lingering until the next
+    // write to the watched key. ("At once" has one hole: a `sched.send` into
+    // a full scheduler queue parks this task until the queue drains.)
+    //
+    // The `notified()` future MUST be constructed inside the loop: a
+    // `notify_one` landing mid-write stores a permit that the next fresh
+    // `notified().await` consumes. Hoisting it out re-registers nothing and
+    // becomes a genuine lost-wakeup bug.
+    let mut probe = [0u8; 1];
+    loop {
+        tokio::select! {
+            _ = setup.chain_watch.changed.notified() => {
+                // Signal ongoing demand
+                if !setup.layered && let Some(sched) = scheduler {
+                    demand_watched(sched, &setup.provider_name, &setup.instances, &setup.called).await;
+                }
+            }
+            changed = swapped.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let registry = swapped.borrow_and_update().clone();
+                setup = match watch_setup(&key, requested, registry, cache, scheduler, watchers).await {
+                    Ok(setup) => setup,
+                    Err(msg) => {
+                        let _ = write_watch_line(writer, &Response::error(msg)).await;
+                        break;
+                    }
+                };
+            }
+            r = reader.read(&mut probe) => {
+                match r {
+                    Ok(0) => debug!("watch ended: client closed the connection"),
+                    Ok(n) => debug!("watch closed: client wrote {n} unexpected byte(s)"),
+                    Err(e) => debug!("watch read ended: {e}"),
+                }
+                break;
+            }
+        }
+
+        let response = setup.read(cache);
+
+        // Field-level filtering: skip if neither half changed.
+        let current = (response.data.clone(), response.template.clone());
+        if current == last {
+            continue;
+        }
+        last = current;
+
+        if write_watch_line(writer, &response).await.is_err() {
+            break; // Client disconnected
+        }
+    }
+}
+
+/// What a `watch` follows, made under one registry: the plan for its key, the
+/// instances it reads and those its provider's lines call, and the
+/// subscription to every entry the read walks. Made again when a reload puts
+/// another registry in force.
+struct WatchSetup {
+    registry: Arc<ProviderRegistry>,
+    plan: QueryPlan,
+    provider_name: String,
+    requested_path: Option<String>,
+    /// A layer facet is a plain read: a watch on one warms nothing.
+    layered: bool,
+    instances: Vec<Instance>,
+    called: Vec<(String, Vec<Instance>)>,
+    chain_watch: ChainWatch,
+}
+
+impl WatchSetup {
+    fn read(&self, cache: &Cache) -> Response {
+        read_watch_value(
+            cache,
+            &self.registry,
+            &self.plan.target,
+            self.requested_path.as_deref(),
+            &self.instances,
+            self.plan.layers,
+        )
+    }
+}
+
+/// Make a watch's [`WatchSetup`] under `registry`, signal demand for what it
+/// reads and refresh its read-always Sources. The error is for the client.
+async fn watch_setup(
+    key: &str,
+    requested: Option<&str>,
+    registry: Arc<ProviderRegistry>,
+    cache: &Cache,
+    scheduler: Option<&SchedulerHandle>,
+    watchers: &Arc<WatcherRegistry>,
+) -> Result<WatchSetup, String> {
+    let plan = QueryPlan::build(key, requested, &registry)?;
     let provider_name = plan.provider.clone();
 
     // Facet syntax is checked on the provider segment (mirrors the Get path).
-    if let Err(msg) = crate::query::parse_facet(&provider_name) {
-        let _ = write_watch_line(writer, &Response::error(msg)).await;
-        return;
-    }
+    crate::query::parse_facet(&provider_name)?;
 
     // Both halves resolve up the chain from the directory the caller named; the
     // provider's own records sit at the instances the read reaches — see
@@ -398,28 +515,18 @@ async fn handle_watch(
 
     // A watch follows the whole chain of every Source it reads: it cannot stop
     // at the first hit, because a later change can make a nearer instance miss.
-    let instances = match all_instances(registry, &plan).await {
-        Ok(instances) => instances,
-        Err(msg) => {
-            warn!("watch {key}: {msg}");
-            let _ = write_watch_line(writer, &Response::error(msg)).await;
-            return;
-        }
-    };
-    let reached = instances.clone();
+    let instances = all_instances(&registry, &plan).await.inspect_err(|msg| {
+        warn!("watch {key}: {msg}");
+    })?;
 
     // The Sources the provider's lines call: their chains are followed too.
     let called = if layered || registry.lines().all_calls(&provider_name).is_empty() {
         Vec::new()
     } else {
-        match called_instances(registry, &provider_name, requested_path.as_deref()).await {
-            Ok((called, _)) => called,
-            Err(msg) => {
-                warn!("watch {key}: {msg}");
-                let _ = write_watch_line(writer, &Response::error(msg)).await;
-                return;
-            }
-        }
+        called_instances(&registry, &provider_name, requested_path.as_deref())
+            .await
+            .map(|(called, _)| called)
+            .inspect_err(|msg| warn!("watch {key}: {msg}"))?
     };
 
     // Signal demand for every instance on the chains (source-aware: a field
@@ -440,11 +547,13 @@ async fn handle_watch(
     let chain_watch = {
         let changed = Arc::new(tokio::sync::Notify::new());
         let mut tasks = Vec::new();
-        let mut links: Vec<(String, Option<String>)> =
-            crate::query::read_chain(requested_path.as_deref(), &crate::query::roots_of(&reached))
-                .into_iter()
-                .map(|layer| (provider_name.clone(), layer))
-                .collect();
+        let mut links: Vec<(String, Option<String>)> = crate::query::read_chain(
+            requested_path.as_deref(),
+            &crate::query::roots_of(&instances),
+        )
+        .into_iter()
+        .map(|layer| (provider_name.clone(), layer))
+        .collect();
         // A change to a Source the lines call changes what they give.
         for (called_provider, instances) in &called {
             links.extend(
@@ -474,12 +583,12 @@ async fn handle_watch(
         ChainWatch { tasks, changed }
     };
 
-    // Re-execute any read-always source(s) for the initial snapshot so the
-    // first value is fresh off disk, not stale cache.
+    // Re-execute any read-always source(s) for the snapshot so the value is
+    // fresh off disk, not stale cache.
     if !layered {
         for instance in &instances {
             maybe_read_always(
-                registry,
+                &registry,
                 cache,
                 &provider_name,
                 &instance.source,
@@ -489,76 +598,16 @@ async fn handle_watch(
         }
     }
 
-    // Send initial value
-    let initial = read_watch_value(
-        cache,
+    Ok(WatchSetup {
         registry,
-        &plan.target,
-        requested_path.as_deref(),
-        &reached,
-        plan.layers,
-    );
-    if write_watch_line(writer, &initial).await.is_err() {
-        return;
-    }
-
-    // Both halves decide whether a frame is new. A template edited on its own
-    // changes what the client renders just as much as a value does, so a frame
-    // whose only change is the template is still a frame.
-    let mut last = (initial.data.clone(), initial.template.clone());
-
-    // Stream loop. A watch owns its connection for its whole lifetime — after
-    // the initial request the client never writes again — so any completion
-    // of the read races the write-triggered path: `Ok(0)` EOF, an error, or
-    // even `Ok(n>0)` (a protocol-violating extra write) all mean this
-    // connection is done being useful, and the watch ends. This is what lets
-    // a dead client's watch drop at once instead of lingering until the next
-    // write to the watched key. ("At once" has one hole: a `sched.send` into
-    // a full scheduler queue parks this task until the queue drains.)
-    //
-    // The `notified()` future MUST be constructed inside the loop: a
-    // `notify_one` landing mid-write stores a permit that the next fresh
-    // `notified().await` consumes. Hoisting it out re-registers nothing and
-    // becomes a genuine lost-wakeup bug.
-    let mut probe = [0u8; 1];
-    loop {
-        tokio::select! {
-            _ = chain_watch.changed.notified() => {
-                // Signal ongoing demand
-                if !layered && let Some(sched) = scheduler {
-                    demand_watched(sched, &provider_name, &instances, &called).await;
-                }
-
-                let response = read_watch_value(
-                    cache,
-                    registry,
-                    &plan.target,
-                    requested_path.as_deref(),
-                    &reached,
-                    plan.layers,
-                );
-
-                // Field-level filtering: skip if neither half changed.
-                let current = (response.data.clone(), response.template.clone());
-                if current == last {
-                    continue;
-                }
-                last = current;
-
-                if write_watch_line(writer, &response).await.is_err() {
-                    break; // Client disconnected
-                }
-            }
-            r = reader.read(&mut probe) => {
-                match r {
-                    Ok(0) => debug!("watch ended: client closed the connection"),
-                    Ok(n) => debug!("watch closed: client wrote {n} unexpected byte(s)"),
-                    Err(e) => debug!("watch read ended: {e}"),
-                }
-                break;
-            }
-        }
-    }
+        plan,
+        provider_name,
+        requested_path,
+        layered,
+        instances,
+        called,
+        chain_watch,
+    })
 }
 
 /// Signal a watch's demand: the instances it reads, and those of the Sources
@@ -639,6 +688,7 @@ async fn inline_execute_source(
     source_name: &str,
     root: Option<&str>,
     forced: bool,
+    skip_if_stored: bool,
 ) -> Result<bool, String> {
     let Some(source) = registry.source(provider, source_name) else {
         return Ok(false);
@@ -652,30 +702,69 @@ async fn inline_execute_source(
         );
         return Ok(false);
     }
-    let dir = crate::query::instance_dir(root);
-    let src_clone = std::sync::Arc::clone(&source);
-    let Ok((outcome, failed_call)) = tokio::task::spawn_blocking(move || {
-        crate::provider::source_call::ran(|| src_clone.execute(dir.as_deref()))
-    })
-    .await
-    else {
-        return Ok(false);
-    };
-    match record_outcome(registry, cache, provider, source_name, root, outcome) {
-        Ok(()) => Ok(true),
-        Err(e) => {
-            warn!("Source '{provider}.{source_name}' failed: {e}");
-            // A run that failed because a Source it calls failed, or called
-            // itself, is a fault in the lines, not in the world: the read
-            // shows it, as it shows a `root` that fails. Any other failure is
-            // a miss, and the read goes on to the rest of the chain.
-            if failed_call.is_some() {
-                Err(e)
-            } else {
-                Ok(false)
+    // One run of an instance at a time, whoever asks: a call from another
+    // Source's lines takes the same turn. A read-always Source is cheap and
+    // runs on every read, so it takes none.
+    let turn = (!source.read_always()).then(|| registry.cold_lock(provider, source_name, root));
+    let result = async {
+        let mut held = None;
+        let mut arrived = 0;
+        if let Some(turn) = &turn {
+            arrived = turn.finished.load(std::sync::atomic::Ordering::SeqCst);
+            held = Some(turn.last.lock().await);
+        }
+        if skip_if_stored && held.is_some() {
+            // The run this read waited for stored the instance, or failed it.
+            if cache.has_provider_records_for(provider, root, source_name) {
+                return Ok(true);
+            }
+            if in_failback_backoff(registry, provider, source_name, root) {
+                return Ok(false);
+            }
+            if let (Some(turn), Some(Some(Err((message, fault))))) = (&turn, held.as_deref())
+                && turn.finished.load(std::sync::atomic::Ordering::SeqCst) > arrived
+            {
+                return if *fault {
+                    Err(message.clone())
+                } else {
+                    Ok(false)
+                };
+            }
+        }
+        let dir = crate::query::instance_dir(root);
+        let src_clone = std::sync::Arc::clone(&source);
+        let Ok((outcome, failed_call)) = tokio::task::spawn_blocking(move || {
+            crate::provider::source_call::ran(|| src_clone.execute(dir.as_deref()))
+        })
+        .await
+        else {
+            return Ok(false);
+        };
+        let recorded = record_outcome(registry, cache, provider, source_name, root, outcome)
+            .map_err(|e| (e, failed_call.is_some()));
+        if let (Some(turn), Some(held)) = (&turn, held.as_mut()) {
+            **held = Some(recorded.clone());
+            turn.finished
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        match recorded {
+            Ok(()) => Ok(true),
+            Err((e, fault)) => {
+                warn!("Source '{provider}.{source_name}' failed: {e}");
+                // A run that failed because a Source it calls failed, or
+                // called itself, is a fault in the lines, not in the world:
+                // the read shows it, as it shows a `root` that fails. Any
+                // other failure is a miss, and the read goes on to the rest
+                // of the chain.
+                if fault { Err(e) } else { Ok(false) }
             }
         }
     }
+    .await;
+    if let Some(turn) = turn {
+        registry.release_cold(provider, source_name, root, turn);
+    }
+    result
 }
 
 /// How far a read goes to bring a Source up to date before it is read.
@@ -737,7 +826,16 @@ async fn warm_source(
     } else if !source.read_always() && cache.has_provider_records_for(provider, root, source_name) {
         return Ok(false);
     }
-    inline_execute_source(registry, cache, provider, source_name, root, forced).await?;
+    inline_execute_source(
+        registry,
+        cache,
+        provider,
+        source_name,
+        root,
+        forced,
+        !drop_first,
+    )
+    .await?;
     Ok(true)
 }
 
@@ -759,7 +857,8 @@ async fn maybe_read_always(
         && src.read_always()
     {
         // The failure is logged; a watch has no read to fail.
-        let _ = inline_execute_source(registry, cache, provider, source_name, root, false).await;
+        let _ =
+            inline_execute_source(registry, cache, provider, source_name, root, false, false).await;
     }
 }
 
@@ -1561,6 +1660,7 @@ async fn handle_request(
                     provider_name,
                     &first.source,
                     first.root.as_deref(),
+                    false,
                     false,
                 )
                 .await
@@ -2548,6 +2648,66 @@ fn handle_introspect_procs(duration_secs: Option<u64>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A read that finds a Source's instance cold while a call is already
+    /// running it waits for that run and reads what it stored, rather than
+    /// running the Source a second time beside it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_read_waits_for_the_run_that_has_its_instance() {
+        use crate::cache::{Cache, Schedule};
+        use crate::provider::Value;
+        use std::collections::HashMap;
+
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("runs");
+        let registry = ProviderRegistry::with_config(
+            &crate::config_tests::with_shipped_defaults(&format!(
+                "[daemon.providers.demo.sources.s]\n\
+                 data = \"{{{{ exec(['sh', '-c', 'echo run >> {}; echo 1']) | trim }}}}\"\n\
+                 result.v = \"{{{{ data }}}}\"\n",
+                runs.display()
+            )),
+            &Default::default(),
+        )
+        .unwrap();
+        let cache = Cache::new();
+
+        // Another caller is running the instance: it holds its turn.
+        let turn = registry.cold_lock("demo", "s", None);
+        let running = turn.last.lock().await;
+
+        let mut warm = Box::pin(warm_source(
+            &registry,
+            &cache,
+            "demo",
+            "s",
+            None,
+            Warm::Cold,
+        ));
+        tokio::select! {
+            biased;
+            done = &mut warm => panic!("the read ran the Source beside the other run: {done:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        // That run finishes and stores its result, as a call does.
+        cache.put_source(
+            "demo",
+            None,
+            "s",
+            HashMap::from([("v".to_string(), Value::Int(1))]),
+            Schedule::default(),
+        );
+        turn.finished
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        drop(running);
+
+        warm.await.expect("the read goes on");
+        assert!(
+            !runs.exists(),
+            "the Source ran once, in the other caller: the read found it stored"
+        );
+    }
 
     #[test]
     fn read_watch_value_field_target_finds_field() {
