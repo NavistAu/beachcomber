@@ -60,7 +60,7 @@ fn truncate_filter(value: String, length: u32) -> String {
 /// Comb values store colours as `#rrggbb` hex (e.g. scanline's published
 /// theme, config-file palettes) because hex is the one canonical
 /// representation every consumer can parse. A consumer rendering to a
-/// terminal — a shell prompt, a statusline virtual field, `comb eval`
+/// terminal — a shell prompt, a statusline template, `comb eval`
 /// piped into a prompt string — needs SGR instead, so the conversion
 /// happens here, at the point of use, rather than by storing colours in
 /// two formats.

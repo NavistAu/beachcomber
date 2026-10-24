@@ -547,6 +547,10 @@ A colon is allowed only in the provider segment (`git:cache.branch`); `git.branc
 
 beachcomber runs with sensible defaults and requires no configuration. The optional config file lives at `~/.config/beachcomber/config.toml`.
 
+The file has two roots. `[daemon]` is the daemon's: its settings (`socket_path`, `log_level`, `plugin.path`, `budget.execute`, ...) and `providers`, where a provider's Sources, its `template`/`result`/`return` lines, its `cache` (decay) and `enabled` live. `[client]` is what clients render: `providers.<p>.template`. A provider exists if either root names it. Configuration is read only from `$XDG_CONFIG_HOME/beachcomber` (`defaults/`, `config.toml`, `conf.d/`, `env`); `$XDG_CONFIG_DIRS` is not consulted.
+
+A provider is a namespace made of **Sources**, and a Source is a jinja function: `root` says which directory an instance answers for (empty is the one instance at `~`), `data` is the body, `result` shapes it into fields, and `return` says when it runs again (`poll`, `watch`, `ttl`, `failback`, `budget`, `nearest`). A table named `_` is a prototype: a Source's own line wins whole, an absent line takes the nearest `_`'s, and `| super` extends it. The abstract provider and Source ship in `defaults/00-comb.toml`.
+
 ```toml
 # ~/.config/beachcomber/config.toml
 
@@ -693,6 +697,8 @@ A table naming a built-in Rust Source takes `return` only; `root`, `data` and `r
 | `return` | string | no | What the Source hands out, decorated: `poll(interval, count)`, `watch(path, …)`, `ttl(interval)`, `failback(count, interval)`, `budget(interval)`, `nearest` (the nearest instance answers alone instead of cascading up to `~`; see Rooted Sources). Absent, it takes the nearest `_` Source's (`defaults/00-comb.toml` ships `poll('60s', 12) \| failback(3, '1s')`). `\| super` extends that line instead of replacing it. |
 
 A `data` line, and a provider's `result` and `return` lines, may call a Source (`daemon.providers.<provider>.sources.<source>()`; a Source also calls a sibling, `sources.<source>()`), as in `return = "{{ result | merge(daemon.providers.gitstats.sources.repo()) | facet('template', template) }}"`. A call gives the called Source's stored record as a read from the same directory would find it. A Source with nothing stored is run inline, once, by the read or refresh that needs it, and is kept warm while it is called; its own failure is the caller's miss. Sources that call each other in a ring are a load error; were one run anyway, it fails the read with `sources: <p>.<s> calls itself`.
+
+**The engine.** A Source's lines can call `exec` (a string under `sh -c`, or a list as argv), `url`, `plugin` (on `[daemon.plugin] path`), `read`, `lup`, `fromjson`, `fromini`, `merge`, `map` over objects, `pluck`, `dirname` and `tojson`; the full table is in the [configuration reference](https://beachcomber.sh/docs/reference/configuration-reference#the-engine--what-a-sources-lines-can-call). **Decay is data**: `[daemon.providers._.cache._] decay = 4` ships in `defaults/00-comb.toml`, and `[daemon.providers.<p>.cache._] decay = N` or `comb put '<p>:cache._.decay' N` sets it for one provider (1 to 16). **An edit under `providers` reloads in place**; only the bare `[daemon]`/`[client]` keys restart the daemon.
 
 A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources, and to a built-in Source's `return` only through `| super`: a built-in with no `return` of its own keeps its Rust schedule.
 
@@ -1248,7 +1254,7 @@ data = "{{ exec('cat ' ~ env.HOME ~ '/demo.json') | fromjson }}"
 result = "{{ data }}"
 ```
 
-`exec('…')` runs a string under `sh -c` with the daemon's environment; `exec(['cmd', 'arg'])` runs one argument per element, with no shell. Without a `return` line, the Source takes the abstract Source's schedule: polled every 60 seconds while queried, backed off after repeated failures.
+`exec('…')` runs a string under `sh -c` with the daemon's environment; `exec(['cmd', 'arg'])` runs one argument per element, with no shell. `$BAR` inside the string is expanded by the shell, which the engine cannot see (a future `cache()` hash would miss it): prefer `exec('cmd ' ~ env.bar)`. Without a `return` line, the Source takes the abstract Source's schedule: polled every 60 seconds while queried, backed off after repeated failures.
 
 ### Output Formats
 

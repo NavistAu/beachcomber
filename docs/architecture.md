@@ -49,7 +49,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/provider/registry.rs` | `ProviderRegistry`: `HashMap<String, Arc<dyn Provider>>`; `declared_sources` map (`HashMap<(provider, field), source_name>`) walked by `sources_for_key` (nearest declared ancestor of a key, then sentinel fields); built-in registration; validation at registration |
 | `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
 | `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, pure-watch global, `host` source |
-| `src/provider/git.rs` | `GitProvider`: five sources — `head` (fsevent, `.git`), `refs` (fsevent, `.git`), `diff` (poll, 30s), `lineage` (poll, 60s), `status` (fsevent_poll, `.git/index`) |
+| `src/provider/git.rs` | `GitProvider`: five sources — `head` (watch, `.git`), `refs` (watch, `.git`), `diff` (poll, 30s), `lineage` (poll, 60s), `status` (watch + poll, `.git/index`) |
 | `src/provider/config_source.rs` | `ConfigSource`: a Source whose `root`, `data` and `result` are jinja lines on the daemon's engine (`exec`, `url`, `plugin`); built from `[daemon.providers.<p>.sources.<s>]` by `src/shape/build.rs` |
 | `src/client.rs` | `Client` (one-shot) and `ClientSession` (persistent) for consumer-side socket communication |
 
@@ -95,6 +95,35 @@ fallback to `~`.
 
 Cache keys use `provider\0root` for a rooted instance and bare `provider` for the
 instance at `~`. A single provider can own both kinds of entries simultaneously.
+
+### Config shape and reload
+
+Configuration has two roots. `[daemon]` holds settings and `providers`; `[client]`
+holds `providers.<p>.template`. A provider exists if either root names it. The
+shape layer (`src/shape/`) builds providers from the composed files
+(`defaults/*.toml`, `config.toml`, `conf.d/*.toml`): a config Source is a jinja
+function (`root`, `data`, `result`, `return`) whose `_` prototypes and `| super`
+chains are resolved at load, its decorators (`poll`, `watch`, `ttl`, `failback`,
+`budget`, `nearest`) become the Source's `InvalidationStrategy` and failback, and
+a provider's own `template`/`result`/`return` lines are checked at load too (they
+do no IO). A built-in Source takes only a `return`, which replaces its schedule.
+`enabled = false` makes the registry treat the provider as having no Sources.
+
+A Source's lines may call other Sources (`sources.<s>()`,
+`daemon.providers.<p>.sources.<s>()`). Calls are found at load, so an unknown
+callee or a ring is a load error. At run time a call answers with the callee's
+stored record, and a callee with nothing stored runs inline once for the read or
+refresh that needs it; the scheduler demands what a Source's last run called, so
+callees stay warm and decay with their callers. Decay depth is data: the
+`<p>:cache._.decay` prototype is read when a lifecycle registers.
+
+The config self-watch classifies each change. An edit confined to
+`[daemon.providers]` or `[client.providers]` reloads in place: the new providers
+are built once, the facet reseed is planned, and only if both succeed are they
+swapped in and the scheduler's lifecycle entries brought to match (Sources whose
+body changed or that are gone are evicted; Sources whose schedule changed are
+retuned in place; the rest are untouched). A change to a bare `[daemon]` or
+`[client]` key restarts the daemon.
 
 ---
 

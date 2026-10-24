@@ -27,11 +27,11 @@ Different fields within a provider may need different refresh rates or different
 
 | Source | Strategy | Fields produced |
 |---|---|---|
-| `head` | fsevent on `.git/` | `branch`, `detached` |
-| `refs` | fsevent on `.git/` | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
+| `head` | watch on `.git/` | `branch`, `detached` |
+| `refs` | watch on `.git/` | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
 | `diff` | poll 30s | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
 | `lineage` | poll 60s | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
-| `status` | fsevent on `.git/index` + poll 60s | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
+| `status` | watch on `.git/index` + poll 60s | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
 
 Branch information changes when `.git/HEAD` or `.git/refs/` is written — a filesystem event is the right trigger. Diff line counts need a subprocess call that is slower, so polling once every 30 seconds is a better fit.
 

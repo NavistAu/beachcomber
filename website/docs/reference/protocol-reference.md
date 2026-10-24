@@ -99,6 +99,8 @@ Response:
 {"op":"introspect","subject":"watches"}
 ```
 
+`introspect providers` lists each provider with `name`, `source` (`static`, `builtin` or `unknown`), `sources` (each with `name`, `fields` and `invalidation`), `invalidation`, `in_backoff` and `disabled`. A provider carries no `scope`: whether a Source has a root is a question asked of a directory. `disabled` is true for a provider switched off with `[daemon.providers.<p>] enabled = false`, and its `invalidation` then reads `disabled`. `introspect config` returns `path` (the `config.toml` that was loaded, or null), `parsed`, `errors`, `config_source_count` (the config Sources declared under `[daemon.providers.<p>.sources.<s>]`) and `verdicts`.
+
 **`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…` — the same dotted address `get` takes — and the write replaces whatever a put left at that node; `"data": null` removes it. A `put` replaces the node at that directory, hiding Source and seed values beneath it; removing the put shows them again. `data` at a namespace root must be a JSON object; below the root, any JSON. An optional `ttl` duration string (e.g. `"30s"`) marks entries stale if the writer stops updating. An optional `path` scopes the entry to a directory.
 
 ```json

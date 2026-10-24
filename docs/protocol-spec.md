@@ -556,6 +556,31 @@ or clients: a resolved `comb watch` opens one `Watch` subscription per
 dependency its key's resolution reads, so a single client can read as more
 than 1.
 
+**Response (subject=providers):** `data.providers` is one object per
+provider, sorted by name:
+
+```json
+{"name": "git", "source": "builtin",
+ "sources": [{"name": "head", "fields": [{"name": "branch", "type": "string"}],
+              "invalidation": "watch .git/HEAD"}],
+ "invalidation": "watch .git/HEAD", "in_backoff": null, "disabled": false}
+```
+
+A provider carries no `scope`: whether a Source has a root is a question asked
+of a directory, not a property of the provider. `source` is `static` (a
+namespace with no Sources), `builtin` or `unknown`. `disabled` is true for a
+provider switched off with `[daemon.providers.<p>] enabled = false`; its
+`invalidation`, and each Source's, then reads `disabled`, because nothing of it
+runs. `data.verdicts` leads with the provider count.
+
+**Response (subject=config):** `data` is `{path, parsed, errors,
+config_source_count, verdicts}`. `path` is the `config.toml` that was loaded, or
+null when the file does not exist (configuration is read only from
+`$XDG_CONFIG_HOME/beachcomber`: `defaults/`, `config.toml`, `conf.d/`).
+`config_source_count` is the number of `[daemon.providers.<p>.sources.<s>]`
+tables that declare a config Source (prototypes and built-in retunes are not
+counted).
+
 Other subjects return different shapes; see `src/server.rs` for the current
 authoritative shape of each subject. Per-subject typed documentation is
 Phase 3+ work.

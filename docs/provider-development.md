@@ -92,10 +92,10 @@ pub struct ProviderMetadata {
 `git` decomposes into five sources with different strategies:
 
 ```
-git.head    → fsevent, rooted at the repository, watches .git/ (pure file read of HEAD, no subprocess)
+git.head    → watch, rooted at the repository, watches .git/ (pure file read of HEAD, no subprocess)
               fields: branch, detached
 
-git.refs    → fsevent, rooted at the repository, watches .git/
+git.refs    → watch, rooted at the repository, watches .git/
               fields: commit, tag, ahead, behind, upstream, state, state_step, state_total,
                       stash, last_commit_age_secs, commit_summary, push_ahead, push_behind
 
@@ -106,11 +106,11 @@ git.lineage → poll 60s, rooted at the repository
               fields: branch_parent, lines_added_parent, lines_removed_parent,
                       branch_default, lines_added_default, lines_removed_default
 
-git.status  → fsevent_poll (watches .git/index + polls every 60s), rooted at the repository
+git.status  → watch + poll (watches .git/index + polls every 60s), rooted at the repository
               fields: staged, unstaged, untracked, conflicted, dirty
 ```
 
-This decomposition allows git branch lookups (hot path, fsevent-driven) to stay fresh without dragging along the slower diff computation.
+This decomposition allows git branch lookups (hot path, watch-driven) to stay fresh without dragging along the slower diff computation.
 
 Consumers still use `comb get git.branch .` as before — the registry's `field → source` map routes the query to the `head` source transparently.
 
@@ -130,11 +130,11 @@ Use this decision table:
 
 | Signal | Root | Use |
 |---|---|---|
-| File changes only | with or without | `fsevent` |
+| File changes only | with or without | `watch` |
 | Timer only | with or without | `poll` |
-| File changes + safety timer | with or without | `fsevent_poll` |
-| Truly static (hostname, uname, user) | none | `fsevent` (pure-watch, one instance) |
-| Global config file watch (mise config dir) | none | `fsevent` + `abs_paths` |
+| File changes + safety timer | with or without | `watch + poll` |
+| Truly static (hostname, uname, user) | none | `watch` (pure-watch, one instance) |
+| Global config file watch (mise config dir) | none | `watch` + `abs_paths` |
 
 **Pure-watch** sources with no root use the `Watch` strategy: no poll of their own. They execute once on first demand and only re-execute when an fs event fires on their registered `abs_paths`. Like every Source they decay once nothing reads them — a watch-only Source's Active window is the default poll lifespan, 60 s × 12 (12 minutes after its last read), after which its watches are dropped — and the next read runs them again. Suitable for values that can only change when a specific file is written: hostname (requires reboot), username (requires reboot), uname (requires reboot), mise global config.
 
@@ -686,6 +686,16 @@ return = "{{ result | watch('VERSION') }}"
 ```
 
 The daemon keeps the root each directory resolved to, so a `root` line (it may run a command) is rendered once per directory rather than per request. The kept answer is dropped when the instance it named is evicted (it has gone cold and decayed away); the next read of that directory looks the root up again. A marker created or removed while the instance is alive is therefore not noticed until then. A `root` line that fails is answered with the same error for a few seconds rather than re-run on every request. A `root` that finds nothing (renders none) is kept for the same few seconds only: there is no instance whose eviction would clear it, so a marker created in the meantime is found by the first read after that, and a `| nearest` Source then gets its instance.
+
+An empty `root` (or none) is the one instance at `~`. Instances cascade by default (a key the nearest instance lacks is looked for at the parent of its root, up to `~`); `| nearest` on `return` makes the nearest instance answer alone.
+
+Three things a config Source relies on beyond its own table:
+
+- **Prototypes.** A table named `_` (`[daemon.providers.<p>.sources._]` for one provider's Sources, `[daemon.providers._.sources._]` for all) holds defaults. A Source's own `root`, `data`, `result` or `return` line wins whole; an absent line takes the nearest `_`'s; `| super` on a `return` extends the `_` line instead of replacing it. The abstract Source (`poll('60s', 12) | failback(3, '1s')`) ships in `defaults/00-comb.toml`.
+- **The engine.** `data` can call `exec`, `url`, `plugin`, `read`, `lup`, `fromjson`, `fromini`, `merge`, `map` over objects, `pluck`, `dirname` and `tojson` (the table is in the configuration reference). An `exec` string is run by `sh -c`, so `$BAR` in it is invisible to the engine, and to a future `cache()` hash of the line: prefer `exec('cmd ' ~ env.bar)`.
+- **Calling a Source.** `sources.<s>()` reads a sibling's stored record and `daemon.providers.<q>.sources.<s>()` any provider's. A Source with nothing stored is run inline, once, by the read or refresh that needs it (a cold call); a ring of Sources calling each other is a load error; a called Source stays warm and decays with its callers.
+
+A provider is switched off with `[daemon.providers.<p>] enabled = false`: no Source of it runs, a read is a miss with no template half, and puts under it stay readable. An edit under `providers` reloads in place; only the bare `[daemon]` and `[client]` keys restart the daemon. Decay depth is data (`[daemon.providers._.cache._] decay = 4` ships), settable per provider or by `put`.
 
 ### When to write a built-in
 

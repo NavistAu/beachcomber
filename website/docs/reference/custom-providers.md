@@ -13,7 +13,7 @@ data = "{{ exec('cat ' ~ env.HOME ~ '/demo.json') | fromjson }}"
 result = "{{ data }}"
 ```
 
-`exec('…')` runs a string under `sh -c` with the daemon's environment; `exec(['cmd', 'arg'])` runs one argument per element, with no shell. Without a `return` line, the Source takes the abstract Source's schedule: polled every 60 seconds while queried, backed off after repeated failures.
+`exec('…')` runs a string under `sh -c` with the daemon's environment; `exec(['cmd', 'arg'])` runs one argument per element, with no shell. `$BAR` inside the string is expanded by the shell, which the engine cannot see (a future `cache()` hash would miss it): prefer `exec('cmd ' ~ env.bar)`. Without a `return` line, the Source takes the abstract Source's schedule: polled every 60 seconds while queried, backed off after repeated failures.
 
 ## Output Formats
 

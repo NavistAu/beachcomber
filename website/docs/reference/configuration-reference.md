@@ -7,6 +7,10 @@ title: Configuration Reference
 
 beachcomber runs with sensible defaults and requires no configuration. The optional config file lives at `~/.config/beachcomber/config.toml`.
 
+The file has two roots. `[daemon]` is the daemon's: its settings (`socket_path`, `log_level`, `plugin.path`, `budget.execute`, ...) and `providers`, where a provider's Sources, its `template`/`result`/`return` lines, its `cache` (decay) and `enabled` live. `[client]` is what clients render: `providers.<p>.template`. A provider exists if either root names it; one named only in a root is a provider with no Sources. Nothing else is a root: `[providers]`, `[lifecycle]`, `[failback]` and `[tree]` are errors.
+
+A provider is a namespace made of **Sources**. A Source is a jinja function: `root` says which directory an instance answers for, `data` runs on the daemon's engine (below) and gets its body, `result` shapes that into fields, and `return` says when it runs again (`poll`, `watch`, `ttl`, `failback`, `budget`, `nearest`). A table named `_` is a prototype: a Source's own line wins whole, an absent line takes the nearest `_`'s, and `| super` extends it instead. The abstract provider and the abstract Source ship in `defaults/00-comb.toml`, so a Source you write says only what differs.
+
 ```toml
 # ~/.config/beachcomber/config.toml
 
@@ -119,6 +123,30 @@ result.value = "{{ data.rates.AUD }}"               # a single nested value
 return = "{{ result | poll('86400s') }}"
 ```
 
+### The engine — what a Source's lines can call
+
+A Source's `data` and `result` lines run on one jinja engine in the daemon. `env` is the daemon's own environment (its `env_file` included, never the caller's), `comb.<provider>` reads stored records, and these functions and filters are added to minijinja's built-ins. A Source's `return` is not on this engine: it sees `result` and the schedule decorators (`poll`, `watch`, `ttl`, `failback`, `budget`, `nearest`, `super`) alone.
+
+| Name | What it does |
+|---|---|
+| `exec(cmd, timeout_ms=10000, stdin=none, sh='sh')`, `cmd \| exec()` | Runs one command and returns its stdout (at most one trailing newline stripped). A **string** runs under `sh -c`; a **list** is argv with no shell, each element one argument. More than one positional argument is an error. The child's environment is `env`. |
+| `url(address, method='GET', headers={}, body=none, timeout_ms=10000)` | The response body as text; a non-2xx status fails the Source. Daemon only. |
+| `plugin(name, symbol, args...)` | Calls `const char* symbol(const char* input)` in `lib<name>` found on `[daemon.plugin] path`. Daemon only. |
+| `path \| read` | The file's text (`~` is `$HOME`, a relative path is against the instance's directory), or none when it is missing. |
+| `lup(name, all=false, files=false, dirs=false, follow=true, git=false, root=false)` | The nearest path called `name` at or above the instance's directory (stopping at `~`), or none: `root = "{{ lup('.git') \| dirname }}"`. |
+| `text \| fromjson`, `text \| fromini` | Parse JSON, or INI (`section -> {key: string}`), into a value. |
+| `a \| merge(b, ...)`, `merge(a, b, ...)`, `merge(list)` | Deep-merge objects; the last wins. |
+| `obj \| map('filter', args...)` | Apply a filter to each value of an object, keeping its keys (a list maps as jinja's `map` does). |
+| `value \| pluck('a.b[0]')` | Deep get; none on any miss. |
+| `path \| dirname` | All but the last component; none stays none. |
+| `value \| tojson` | Serialise, for `exec(..., stdin=...)`. |
+
+`$BAR` inside an `exec` string is expanded by the shell from the child's environment, so the engine never sees it: a Source whose lines are hashed (a future `cache()`) cannot tell `$BAR` changed. Prefer `exec('cmd ' ~ env.bar)` (quote the value if it may hold spaces), so that what the command reads is written in the line.
+
+**Instances.** `root` renders the directory an instance answers for. An empty `root` (or none) is the one instance at `~`. A read from a directory asks the nearest instance first; by default a key missing there is looked for at the parent of that root, and so on up to `~` (cascade, per leaf, the nearer winning). `| nearest` on `return` makes the nearest instance answer alone: a key it lacks is absent, and a directory with no root has no instance (see [Where an instance lives](/docs/concepts/providers#where-an-instance-lives)). `git`, `direnv`, `python` and `terraform` are nearest; `mise` and `asdf` cascade.
+
+**Decay is data.** How many steps an entry decays through before it is evicted is a number in the `:cache` facet, not a fixed ladder. It ships as `[daemon.providers._.cache._] decay = 4`; set it for one provider with `[daemon.providers.<p>.cache._] decay = N`, or at runtime with `comb put '<p>:cache._.decay' N` (`'*:cache._.decay'` for all), 1 to 16.
+
 ### A provider's own lines — `template`, `result`, `return`
 
 `[daemon.providers.<p>]` takes three jinja lines of its own. An absent one comes whole from `[daemon.providers._]`, the abstract provider the shipped `defaults/00-comb.toml` writes:
@@ -162,7 +190,7 @@ enabled = false
 - **`enabled = false` wins over a `result` or `return` on the same provider.** Neither is read (both are still checked at load). Two meanings for one provider would be two ways to do one thing, and layered files make a conflict an error nobody can fix from where they are: a drop-in that disables a provider need not know what an earlier file wrote.
 - **It is a bool, and a layer may take it back.** Layers replace the key like any other, so a later `enabled = true` re-enables the provider. A value that is not a boolean is an error, and so is `enabled` on `[daemon.providers._]`, which applies to every provider: name the provider. A table that holds only `enabled` for a name no built-in, Source or client template gives a provider is an error too (`no provider is named 'gti'`).
 
-A provider line sees only its own names: `template` sees `client` and `_`, `result` sees `sources`, `daemon` and `_`, `return` sees `result`, `template`, `daemon` and `_` (`result` is also the value piped in by a `| super`; a `return` reaches its provider's own records through `result`, which keeps the `put` and `config:` layers over the Sources). The lines run on every read and do no IO: `exec`, `read`, `lup`, `url` and `plugin` are load errors in them. Schedule decorators (`poll`, `watch`, `ttl`, `failback`, `budget`, `nearest`) belong to a Source's `return`; on a provider's line they are a load error. A line that fails to render makes that layer of the provider's records (for `result`) or its template half (for `return`) a miss, and is logged once per distinct failure (after 256 distinct failures one line says further ones are suppressed).
+A provider line sees only its own names: `template` sees `client` and `_`, `result` sees `sources`, `daemon` and `_`, `return` sees `result`, `template`, `daemon` and `_` (`result` is also the value piped in by a `| super`; a `return` reaches its provider's own records through `result`, which keeps the `put` and `config:` layers over the Sources). The lines run on every read and do no IO: `exec`, `read`, `lup`, `url` and `plugin` are load errors in them. Schedule decorators (`poll`, `watch`, `ttl`, `failback`, `budget`, `nearest`) belong to a Source's `return`; on a provider's line they are a load error. A `result` line that fails to render makes that layer of the provider's records a miss; a `return` line that fails makes the whole read a miss, data and template half both. Either is logged once per distinct failure (after 256 distinct failures one line says further ones are suppressed).
 
 ### Template facets
 
@@ -224,7 +252,7 @@ bar = "{{ comb.git.branch | truncate(12) }}"
 | literal text and/or more than one tag | a string | `"{{ git.branch }}{% if git.dirty %}*{% endif %}"` → `main*` |
 | no tags at all | its own literal text | `"env.HOME"` → the string `env.HOME` |
 
-Inside an expression, `comb.<provider>.<field>` is the raw cached value; `<provider>.<field>` is that field as `comb get` would resolve it (templates included, recursively, cycle-detected); `env.X` is the caller's environment. A missing ref is undefined and falsy. Filters: minijinja's built-ins plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson`.
+Inside an expression, `comb.<provider>.<field>` is the raw cached value; `<provider>.<field>` is that field as `comb get` would resolve it (templates included, recursively, cycle-detected); `env.X` is the caller's environment. A missing ref is undefined and falsy. Filters: minijinja's built-ins plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson`; the engine's `merge`, `map` over objects, `pluck`, `dirname`, `fromini`, `read`, `lup` and `exec` render on the client too, while `url` and `plugin` exist only on the daemon.
 
 **Errors.** A template that does not compile, or a cycle, is a configuration error: a single-leaf query fails, and a namespace query fails naming the leaf (`comb g scanline` exits 2 with `scanline.widgets.foo: …`). A runtime failure — a failed or disabled `exec()` — fails a single-leaf query but is omitted from a namespace object.
 
@@ -298,9 +326,12 @@ Composition rules:
   concatenated).
 - `config.toml` itself is optional; `conf.d/*.toml` files compose fine with
   no main file present.
-- A `conf.d` file that fails to parse is **skipped** (with a warning naming
-  the file) rather than blocking daemon startup — the rest of the composed
-  set still loads.
+- A file that is not valid TOML is an **error** naming the file, in
+  `config.toml`, `conf.d/` or `defaults/`: the daemon refuses to start on it
+  and `comb check config` fails. It is never skipped.
+- Configuration is read only from `$XDG_CONFIG_HOME/beachcomber` (default
+  `~/.config/beachcomber`): `defaults/`, `config.toml`, `conf.d/` and the
+  `env` file beside them. `$XDG_CONFIG_DIRS` is not consulted.
 - Config changes take effect **without a manual restart**. Changes to
   `config.toml`, any `conf.d/*.toml` or any `defaults/*.toml` file (including
   files added or removed) trigger the daemon's config self-watch, which acts

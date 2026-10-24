@@ -13,32 +13,34 @@ Each provider declares one or more **sources** — independent units of executio
 
 | Provider | Source | Strategy | Root | Fields |
 |---|---|---|---|---|
-| `asdf` | `tools` | fsevent | project | `tools` (object keyed by tool name) |
-| `aws_profiles` | `config_file` | fsevent_poll 60s (`~/.aws/config`) | none | one object per profile name (`default`, `staging`, …), each `{ region }` |
+| `asdf` | `tools` | watch | project | `tools` (object keyed by tool name) |
+| `aws_profiles` | `config_file` | watch + poll 60s (`~/.aws/config`) | none | one object per profile name (`default`, `staging`, …), each `{ region }` |
 | `battery` | `state` | poll 30s | none | `percent`, `charging`, `status`, `time_remaining_secs` (macOS) |
 | `battery` | `level` | poll 30s | none | `percent`, `charging`, `status_raw` (Linux) |
 | `battery` | `upower` | poll 60s | none | `time_remaining_secs`, `status` (Linux, requires UPower) |
-| `direnv` | `state` | fsevent | project | `status`, `allowed` |
+| `direnv` | `state` | watch | project | `status`, `allowed` |
 | `gcloud_configs` | `config_dir` | poll 60s | none | `active_config`, plus one object per configuration name, each `{ project, account }` |
-| `git` | `head` | fsevent | project | `branch`, `detached` |
-| `git` | `refs` | fsevent | project | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
+| `git` | `head` | watch | project | `branch`, `detached` |
+| `git` | `refs` | watch | project | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
 | `git` | `diff` | poll 30s | project | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
 | `git` | `lineage` | poll 60s | project | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
-| `git` | `status` | fsevent_poll | project | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
-| `hostname` | `host` | fsevent (pure-watch) | none | `name`, `short` |
+| `git` | `status` | watch + poll | project | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
+| `hostname` | `host` | watch (pure-watch) | none | `name`, `short` |
 | `load` | `loadavg` | poll 10s | none | `one`, `five`, `fifteen` |
-| `mise` | `tools` | fsevent | project | tool versions, one field per tool: the project's, and for a tool it does not set the global config's, found at the instance at `~` |
+| `mise` | `tools` | watch | project | tool versions, one field per tool: the project's, and for a tool it does not set the global config's, found at the instance at `~` |
 | `network` | `interfaces` | poll 10s | none | `interface`, `ip`, `vpn_active`, `vpn_name`, `ssid`, `online` |
-| `python` | `venv` | fsevent | project | `venv`, `local_venv_name`, `venv_version` (`venv_name` and `version` are [templates](#template-backed-namespaces) over them) |
+| `python` | `venv` | watch | project | `venv`, `local_venv_name`, `venv_version` (`venv_name` and `version` are [templates](#template-backed-namespaces) over them) |
 | `sudo` | `state` | poll 30s | none | `active` |
-| `terraform` | `state` | fsevent | project | `workspace` |
-| `uname` | `system` | fsevent (pure-watch) | none | `sysname`, `release`, `version`, `machine` |
+| `terraform` | `state` | watch | project | `workspace` |
+| `uname` | `system` | watch (pure-watch) | none | `sysname`, `release`, `version`, `machine` |
 | `uptime` | `time` | poll 60s | none | `seconds`, `days`, `hours`, `minutes` |
-| `user` | `name` | fsevent (pure-watch) | none | `name`, `uid` |
+| `user` | `name` | watch (pure-watch) | none | `name`, `uid` |
 
 **Pure-watch global** sources execute once on first demand and re-execute only when a registered filesystem path changes. They have no poll, so they decay by the default poll lifespan (60 s × 12 after the last read) and run again on the next read.
 
-**fsevent_poll** sources watch files for quick invalidation and also poll on a timer as a backstop.
+**watch + poll** sources watch files for quick invalidation and also poll on a timer as a backstop.
+
+**Instances.** A project-rooted source has one instance per project root, plus the one at `~` for a directory with no root of its own. `git`, `direnv`, `python` and `terraform` answer from their nearest instance alone (`| nearest`): a nested repository shows only its own values, and a directory outside any repository has no git values. `mise` and `asdf` cascade: each leaf comes from the nearest instance that has it, up to `~`. Retune any of them with `[daemon.providers.<p>.sources.<s>] return = ...`, or switch the provider off with `[daemon.providers.<p>] enabled = false`.
 
 ## System
 

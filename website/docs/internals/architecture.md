@@ -77,6 +77,61 @@ The registry maps a key to its Source by walking the key: the Source of the near
 
 **Watch registration** — per `(provider, path, source)`. Each source declares relative `patterns` (matched within the instance's root) and/or absolute `abs_paths` (e.g., `$XDG_CONFIG_HOME/mise`). The `expand_abs_path()` helper expands `~`, `$HOME`, and XDG env vars at registration time.
 
+### Provider execution
+
+Sources implement `Source::execute(dir) -> Result<SourceResult, String>`. The scheduler calls
+each source independently via `tokio::task::spawn_blocking`. Source results are
+written to `CacheEntry.sources[source_name]`; sibling sources in the same
+cache entry are untouched.
+
+A Source has one *instance* per root. `Source::root(dir)` names the instance that
+answers for a directory — `Some(root)`, or `None` for the one instance at `~` (an
+empty `root` line on a config Source) — and a Source that does not override it has
+only the instance at `~`. Each instance is its own lifecycle key and cache
+sub-entry, `(provider, root, source)`.
+
+A read walks a Source's instances: the nearest first (`root(dir)`), then, if the key
+is missing there, the parent of that root (`root(parent(root))`), ending at the
+instance at `~`. `mise` is one Source (`tools`) this way: inside a project
+`mise.node` is the project's, and `mise.go`, set only in the global config, is found
+at `~`. A namespace read merges every instance on the way, the nearer winning.
+That is a *cascade*, the default. A `nearest` Source (git, direnv, python,
+terraform) is answered by the instance `root(dir)` finds alone: a missing key is
+absent, the walk does not move up, and finding no root means no instance, with no
+fallback to `~`.
+
+Cache keys use `provider\0root` for a rooted instance and bare `provider` for the
+instance at `~`. A single provider can own both kinds of entries simultaneously.
+
+### Config shape and reload
+
+Configuration has two roots. `[daemon]` holds settings and `providers`; `[client]`
+holds `providers.<p>.template`. A provider exists if either root names it. The
+shape layer (`src/shape/`) builds providers from the composed files
+(`defaults/*.toml`, `config.toml`, `conf.d/*.toml`): a config Source is a jinja
+function (`root`, `data`, `result`, `return`) whose `_` prototypes and `| super`
+chains are resolved at load, its decorators (`poll`, `watch`, `ttl`, `failback`,
+`budget`, `nearest`) become the Source's `InvalidationStrategy` and failback, and
+a provider's own `template`/`result`/`return` lines are checked at load too (they
+do no IO). A built-in Source takes only a `return`, which replaces its schedule.
+`enabled = false` makes the registry treat the provider as having no Sources.
+
+A Source's lines may call other Sources (`sources.<s>()`,
+`daemon.providers.<p>.sources.<s>()`). Calls are found at load, so an unknown
+callee or a ring is a load error. At run time a call answers with the callee's
+stored record, and a callee with nothing stored runs inline once for the read or
+refresh that needs it; the scheduler demands what a Source's last run called, so
+callees stay warm and decay with their callers. Decay depth is data: the
+`<p>:cache._.decay` prototype is read when a lifecycle registers.
+
+The config self-watch classifies each change. An edit confined to
+`[daemon.providers]` or `[client.providers]` reloads in place: the new providers
+are built once, the facet reseed is planned, and only if both succeed are they
+swapped in and the scheduler's lifecycle entries brought to match (Sources whose
+body changed or that are gone are evicted; Sources whose schedule changed are
+retuned in place; the rest are untouched). A change to a bare `[daemon]` or
+`[client]` key restarts the daemon.
+
 ---
 
 ## 3. Request Lifecycle: `comb get git.branch .`
