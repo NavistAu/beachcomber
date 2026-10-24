@@ -831,19 +831,39 @@ impl Cache {
         let now = Instant::now();
         let stored = schedule.stored_keys();
         if !stored.is_empty() {
-            let per_field = fields
-                .keys()
-                .map(|f| (f.clone(), Value::Object(stored.clone())))
-                .collect();
-            self.insert_source_map(
-                make_cache_key(&cache_facet_of(provider), path),
-                source_name,
-                CacheSourceEntry {
-                    fields: per_field,
-                    last_refreshed: now,
-                    expected_interval_secs: None,
-                },
-            );
+            let facet_key = make_cache_key(&cache_facet_of(provider), path);
+            // A record rewritten with the schedule it already carries (a
+            // read-always Source, on every read) only has its clock moved.
+            let unchanged = self
+                .entries
+                .get_mut(&facet_key)
+                .and_then(|mut entry| {
+                    let held = entry.sources.get_mut(source_name)?;
+                    let same = held.fields.len() == fields.len()
+                        && fields.keys().all(|f| {
+                            matches!(held.fields.get(f), Some(Value::Object(o)) if *o == stored)
+                        });
+                    if same {
+                        held.last_refreshed = now;
+                    }
+                    Some(same)
+                })
+                .unwrap_or(false);
+            if !unchanged {
+                let per_field = fields
+                    .keys()
+                    .map(|f| (f.clone(), Value::Object(stored.clone())))
+                    .collect();
+                self.insert_source_map(
+                    facet_key,
+                    source_name,
+                    CacheSourceEntry {
+                        fields: per_field,
+                        last_refreshed: now,
+                        expected_interval_secs: None,
+                    },
+                );
+            }
         }
         self.insert_source_map(
             make_cache_key(provider, path),
