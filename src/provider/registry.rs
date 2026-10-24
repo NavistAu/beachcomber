@@ -706,7 +706,16 @@ impl ProviderRegistry {
                 .insert(error_key, (tokio::time::Instant::now(), msg.clone()));
         }
         let root = match found? {
-            // A root that is the directory asked about is already canonical.
+            // A built-in finds its root by walking up from `dir`, which is
+            // canonical: an ancestor of it is too, and only `~` is special.
+            Some(root) if !self.renders_root(provider, source) => {
+                if crate::query::is_home(&root) {
+                    Found::Home
+                } else {
+                    Found::At(root)
+                }
+            }
+            // A rendered root is whatever the line says: canonicalise it.
             Some(root) if root == dir && !crate::query::is_home(&root) => Found::At(root),
             Some(root) => match crate::query::normalise_path(Some(&root)) {
                 Some(root) => Found::At(root),
