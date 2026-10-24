@@ -250,7 +250,7 @@ comb p myapp:template.greeting '"hello {{ env.USER }}"'
 
 `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root any JSON is legal, so `comb p myapp.deploy.count 3` and `comb p myapp.status '"healthy"'` are both fine. `data` is required: `comb p myapp` is a usage error, and removal is the JSON value `null`. A nested `null` inside `data` is an absent leaf, not `""`. Arrays are stored and returned as objects keyed by index.
 
-**TTL:** `--ttl` (at least `1s`; not with `null`) makes the put a lifecycle entry of its own, one per put address: `comb p --ttl 300 build.status passing` and `comb p --ttl 60 build.eta 4m` expire independently, and a re-put without `--ttl` drops the expiry. `comb g build:cache.status` shows its `poll` and `decay`.
+**TTL:** `--ttl` (at least `1s`; not with `null`) makes the put a lifecycle entry of its own, one per put address: `comb p --ttl 300 build.status '"passing"'` and `comb p --ttl 60 build.eta '"4m"'` expire independently, and a re-put without `--ttl` drops the expiry. `comb g build:cache.status` shows its `poll` and `decay`.
 
 **Decay depth:** the one `:cache` key a put may write is a decay prototype — `comb p '*:cache._.decay' 3` for every provider, `comb p 'git:cache._.decay' 6` for one, `--path` to scope either to a directory and below. The nearest prototype wins.
 

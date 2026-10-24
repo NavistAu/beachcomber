@@ -363,8 +363,8 @@ removing the put shows that layer at once.
 
 `ttl` (`"30s"`, `"5m"`, at least 1s) makes the put a lifecycle entry of its own:
 it is valid for the ttl, readable but `stale` for one decay step, then evicted.
-Each put address (key and directory) has its own lifecycle, so `put --ttl 300
-build.status passing` and `put --ttl 60 build.eta 4m` expire independently, and
+Each put address (key and directory) has its own lifecycle, so `comb put --ttl 300
+build.status '"passing"'` and `comb put --ttl 60 build.eta '"4m"'` expire independently, and
 a re-put without a `ttl` drops the expiry. `status` shows such a row as any
 lifecycle entry, source `put`; `<p>:cache.<node>` reports its `poll` and `decay`.
 

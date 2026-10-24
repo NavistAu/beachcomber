@@ -397,7 +397,7 @@ comb g myapp                 # → full JSON
 
 A put sits above the Source in the layer order, so it hides Source and seed values at that directory — `comb p git '{"note":1}'` makes `comb g git` answer just `note` there, until the put is removed. The Source keeps refreshing its own layer beneath it (`comb g git:source`).
 
-`--ttl` (at least `1s`, not with `null`) makes the put a lifecycle entry of its own. Each put address has its own lifecycle, so `comb p --ttl 300 build.status passing` and `comb p --ttl 60 build.eta 4m` expire independently, and a re-put without `--ttl` drops the expiry.
+`--ttl` (at least `1s`, not with `null`) makes the put a lifecycle entry of its own. Each put address has its own lifecycle, so `comb p --ttl 300 build.status '"passing"'` and `comb p --ttl 60 build.eta '"4m"'` expire independently, and a re-put without `--ttl` drops the expiry.
 
 ### `comb r` (refresh) `<key> [path] [--path <path>] [--global]`
 
