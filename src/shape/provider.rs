@@ -15,6 +15,11 @@
 //!   is what the provider answers; the facets it attaches with
 //!   `facet(name, obj)` ride beside the data, and only `template` is consumed.
 //!
+//! `result` and `return` may also call another provider's Source,
+//! `daemon.providers.<p>.sources.<s>()`. The lines render without IO, so the
+//! call is answered from what is stored; the read that renders them first
+//! warms what they call.
+//!
 //! `| super` pipes a value into the line one step up the chain, and is
 //! meaningful on `return` alone: a `template` or `result` line is the whole
 //! value, and takes nothing piped in.
@@ -39,9 +44,11 @@ use crate::cache::{
     COMPUTED_PREFIX, Cache, Layers, MergedRead, RecordFreshness, merge_layer, merge_read,
     note_records, walk_leaves,
 };
-use crate::engine::{FACET_SINK, FacetSink, provider_engine_env};
+use crate::engine::{CallFn, Calls, FACET_SINK, FacetSink, provider_engine_env};
 use crate::provider::Value;
 use crate::provider::registry::ProviderRegistry;
+use crate::provider::source_call::{CallOutcome, Called, CalledRecord, called_in};
+use crate::provider::source_call::{Cold, source_call};
 use crate::shape::decorators::named_decorators;
 use crate::shape::prototype::{Kind, Link, chain, super_chain};
 use dashmap::DashSet;
@@ -101,9 +108,8 @@ impl Key {
     fn sees(self) -> &'static [&'static str] {
         match self {
             Key::Template => &["client", "_"],
-            Key::Result => &["sources", "_"],
-            // `sources` and `daemon` arrive with Source calls.
-            Key::Return => &["result", "template", "_"],
+            Key::Result => &["sources", "daemon", "_"],
+            Key::Return => &["result", "template", "daemon", "_"],
         }
     }
 }
@@ -141,6 +147,14 @@ pub struct Chains {
     /// Whether any line of the `return` chain reads `result` / `template`.
     return_reads_result: bool,
     return_reads_template: bool,
+    /// The other providers' Sources the `result` and `return` lines call,
+    /// as `(provider, source)`, each once: together, and by line.
+    calls: Vec<(String, String)>,
+    /// Whether `calls` is not empty: the one flag a read of a provider that
+    /// calls nothing looks at.
+    has_calls: bool,
+    result_calls: Vec<(String, String)>,
+    return_calls: Vec<(String, String)>,
 }
 
 impl Chains {
@@ -231,6 +245,26 @@ fn chains(env: &Environment<'_>, providers: &toml::Table, name: &str) -> Chains 
         .filter_map(|line| undeclared_names(env, line, false).ok())
         .flatten()
         .collect();
+    let calls_of = |key: Key| -> Vec<(String, String)> {
+        let found: BTreeSet<(String, String)> = lines[key.index()]
+            .iter()
+            .flat_map(|line| called_in(env, line).unwrap_or_default())
+            .filter_map(|called| match called {
+                Called::Of(provider, source) => Some((provider, source)),
+                Called::Sibling(_) => None,
+            })
+            .collect();
+        found.into_iter().collect()
+    };
+    let result_calls = calls_of(Key::Result);
+    let return_calls = calls_of(Key::Return);
+    let calls: Vec<(String, String)> = result_calls
+        .iter()
+        .chain(&return_calls)
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let return_kind = match lines[Key::Return.index()].first() {
         None => ReturnKind::Identity,
         Some(line) => return_kind_of(line),
@@ -245,6 +279,10 @@ fn chains(env: &Environment<'_>, providers: &toml::Table, name: &str) -> Chains 
         result_default,
         return_reads_result: reads.contains("result"),
         return_reads_template: reads.contains("template"),
+        has_calls: !calls.is_empty(),
+        calls,
+        result_calls,
+        return_calls,
     }
 }
 
@@ -314,6 +352,9 @@ pub struct ProviderLines {
     env: Environment<'static>,
     own: HashMap<String, Arc<Chains>>,
     shared: Arc<Chains>,
+    /// Whether any provider's lines call a Source: when none does, a read looks
+    /// no further.
+    any_calls: bool,
     logged: DashSet<String>,
     /// Whether the log said that it stopped remembering failures.
     suppressed: AtomicBool,
@@ -327,15 +368,17 @@ impl ProviderLines {
     pub fn new(providers: &toml::Table) -> Result<Self, Vec<String>> {
         let mut env = provider_engine_env();
         env.add_filter("super", step_up);
-        let own = providers
+        let own: HashMap<String, Arc<Chains>> = providers
             .keys()
             .map(|name| (name.clone(), Arc::new(chains(&env, providers, name))))
             .collect();
         let shared = Arc::new(chains(&env, providers, "_"));
+        let any_calls = shared.has_calls || own.values().any(|c| c.has_calls);
         let lines = Self {
             env,
             own,
             shared,
+            any_calls,
             logged: DashSet::new(),
             suppressed: AtomicBool::new(false),
         };
@@ -377,6 +420,25 @@ impl ProviderLines {
                         ));
                         continue;
                     }
+                    match called_in(&self.env, line) {
+                        Err(e) => {
+                            errors.insert(format!("{at}: {e}"));
+                            continue;
+                        }
+                        Ok(called) if *path == "[daemon.providers._]" => {
+                            if let Some(Called::Sibling(source)) =
+                                called.iter().find(|c| matches!(c, Called::Sibling(_)))
+                            {
+                                errors.insert(format!(
+                                    "{at}: sources.{source}(): the abstract provider applies to \
+                                     every provider, so it cannot name one of their Sources: use \
+                                     merge(sources)"
+                                ));
+                                continue;
+                            }
+                        }
+                        Ok(_) => {}
+                    }
                     match undeclared_names(&self.env, line, false) {
                         Err(e) => {
                             errors.insert(format!("{at}: {e}"));
@@ -396,6 +458,45 @@ impl ProviderLines {
             }
         }
         errors.into_iter().collect()
+    }
+
+    /// Every Source a `result` or `return` line calls, with the line's place
+    /// (`[daemon.providers.p] result`) and, for a call to `sources.<s>()`, the
+    /// provider whose own table the line is in: for the load to check against
+    /// the Sources that exist.
+    pub fn calls(&self) -> Vec<(String, Option<String>, Called)> {
+        let mut found = BTreeSet::new();
+        let owned = self.own.iter().map(|(n, c)| (Some(n.as_str()), c));
+        for (name, chains) in owned.chain(std::iter::once((None, &self.shared))) {
+            for key in [Key::Result, Key::Return] {
+                for Level { path, line } in chains.of(key) {
+                    let owner = name
+                        .filter(|n| *n != "_" && *path == format!("[daemon.providers.{n}]"))
+                        .map(str::to_string);
+                    for called in called_in(&self.env, line).unwrap_or_default() {
+                        found.insert((format!("{path} {}", key.name()), owner.clone(), called));
+                    }
+                }
+            }
+        }
+        found.into_iter().collect()
+    }
+
+    /// The other providers' Sources `provider`'s `result` line calls, as
+    /// `(provider, source)`.
+    pub fn result_calls(&self, provider: &str) -> &[(String, String)] {
+        &self.own.get(provider).unwrap_or(&self.shared).result_calls
+    }
+
+    /// Whether `provider`'s `result` or `return` line calls any Source.
+    pub fn has_calls(&self, provider: &str) -> bool {
+        self.any_calls && self.own.get(provider).unwrap_or(&self.shared).has_calls
+    }
+
+    /// The other providers' Sources `provider`'s `result` and `return` lines
+    /// call: what a read brings up to date before the lines render.
+    pub fn all_calls(&self, provider: &str) -> &[(String, String)] {
+        &self.own.get(provider).unwrap_or(&self.shared).calls
     }
 
     /// The resolved chains of `provider`: its own when the configuration has a
@@ -492,6 +593,7 @@ impl ProviderLines {
         provider: &str,
         at: Option<&str>,
         bound: &[Bound<'_>],
+        call: &dyn Fn(&str, &str) -> CallOutcome,
         out: &mut MergedRead,
     ) -> Result<bool, String> {
         if self.chains_for(provider).result_default {
@@ -514,7 +616,13 @@ impl ProviderLines {
             })
             .collect();
         let sources = MjValue::from_object(crate::engine::Sources::new(calls));
-        let evaluated = self.eval(provider, Key::Result, vec![("sources", sources)])?;
+        let mut vars = vec![("sources", sources)];
+        let called = self.result_calls(provider);
+        let used = Used::default();
+        if !called.is_empty() {
+            vars.push(("daemon", daemon_of(called, call, &used)));
+        }
+        let evaluated = self.eval(provider, Key::Result, vars)?;
         let Some(value) = evaluated.value else {
             return Ok(false);
         };
@@ -530,7 +638,7 @@ impl ProviderLines {
         if fields.is_empty() {
             return Ok(false);
         }
-        let inputs: Vec<Input> = bound
+        let mut inputs: Vec<Input> = bound
             .iter()
             .filter_map(|b| {
                 let (held, fresh) = b.held.as_ref()?;
@@ -541,6 +649,7 @@ impl ProviderLines {
                 Some(Input::new(held, records))
             })
             .collect();
+        inputs.extend(used.inputs());
         let records = attribute(&fields, &inputs, at, "result");
         merge_read(&mut out.fields, &mut out.records, &fields, &records, "");
         Ok(true)
@@ -554,6 +663,7 @@ impl ProviderLines {
         provider: &str,
         result: Option<MergedRead>,
         template: impl FnOnce() -> Option<HashMap<String, Value>>,
+        call: &dyn Fn(&str, &str) -> CallOutcome,
     ) -> Returned {
         let chains = self.chains_for(provider);
         match chains.return_kind {
@@ -581,7 +691,12 @@ impl ProviderLines {
         if chains.return_reads_template {
             vars.push(("template", as_value(template().as_ref())));
         }
-        let evaluated = match self.eval(provider, Key::Return, vars) {
+        let used = Used::default();
+        if !chains.return_calls.is_empty() {
+            vars.push(("daemon", daemon_of(&chains.return_calls, call, &used)));
+        }
+        let prepared = self.eval(provider, Key::Return, vars);
+        let evaluated = match prepared {
             Ok(evaluated) => evaluated,
             Err(message) => {
                 self.note_error(&message);
@@ -609,10 +724,11 @@ impl ProviderLines {
             {
                 Some(Value::Object(fields)) if fields.is_empty() => None,
                 Some(Value::Object(fields)) => {
-                    let inputs: Vec<Input> = result
+                    let mut inputs: Vec<Input> = result
                         .iter()
                         .map(|r| Input::new(&r.fields, r.records.clone()))
                         .collect();
+                    inputs.extend(used.inputs());
                     let records = attribute(&fields, &inputs, None, "return");
                     Some(MergedRead { fields, records })
                 }
@@ -645,17 +761,63 @@ pub fn returned_over(
     path: Option<&str>,
     result: Option<MergedRead>,
 ) -> Returned {
-    registry.lines().returned(provider, result, || {
-        cache
-            .read_merged(
-                &format!("{provider}:template"),
-                path,
-                &[],
-                registry,
-                Layers::All,
-            )
-            .map(|facet| facet.fields)
-    })
+    registry.lines().returned(
+        provider,
+        result,
+        || {
+            cache
+                .read_merged(
+                    &format!("{provider}:template"),
+                    path,
+                    &[],
+                    registry,
+                    Layers::All,
+                )
+                .map(|facet| facet.fields)
+        },
+        &|p, s| source_call(registry, cache, p, s, path, Cold::Skip),
+    )
+}
+
+/// The records of the Sources a line called, as it called them.
+#[derive(Clone, Default)]
+struct Used(Arc<std::sync::Mutex<Vec<CalledRecord>>>);
+
+impl Used {
+    /// Each as an input to the line's output: only its age counts.
+    fn inputs(&self) -> Vec<Input> {
+        let used = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        used.iter().map(Input::called).collect()
+    }
+}
+
+/// `daemon`, over the Sources a line calls. Their records are read now, stored
+/// only (the line renders on the read path and runs nothing); a read that
+/// failed fails the line only if the line calls it.
+fn daemon_of(
+    called: &[(String, String)],
+    call: &dyn Fn(&str, &str) -> CallOutcome,
+    used: &Used,
+) -> MjValue {
+    let records: HashMap<(String, String), CallOutcome> = called
+        .iter()
+        .map(|(p, s)| ((p.clone(), s.clone()), call(p, s)))
+        .collect();
+    let used = used.clone();
+    let answer: CallFn = Arc::new(
+        move |p, s| match records.get(&(p.to_string(), s.to_string())) {
+            Some(Ok(Some(record))) => {
+                used.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(record.clone());
+                Ok(Some(record.value.clone()))
+            }
+            Some(Err(e)) => Err(e.clone()),
+            _ => Ok(None),
+        },
+    );
+    Calls::daemon(answer)
 }
 
 /// How a name is used in a line.
@@ -766,6 +928,20 @@ struct Input {
 }
 
 impl Input {
+    /// A called Source's record: it holds no leaf of its own to attribute, but
+    /// what a line computes from it is as old as it is.
+    fn called(record: &CalledRecord) -> Self {
+        let mut leaves = Vec::new();
+        if let Some(Value::Object(fields)) = Value::from_json(&record.value) {
+            walk_leaves("", Value::Object(fields), &mut leaves);
+        }
+        Self {
+            leaves: leaves.into_iter().collect(),
+            records: HashMap::new(),
+            oldest: Some(record.fresh.clone()),
+        }
+    }
+
     fn new(fields: &HashMap<String, Value>, records: HashMap<String, RecordFreshness>) -> Self {
         let mut leaves = Vec::new();
         walk_leaves("", Value::Object(fields.clone()), &mut leaves);
@@ -1368,7 +1544,9 @@ mod tests {
         );
         let result = read_of(&[("a", 5), ("b", 6)], &fresh("one", 30));
         let tmpl = HashMap::from([("t".to_string(), Value::String("{{ 1 }}".into()))]);
-        let got = lines.returned("demo", Some(result), || Some(tmpl.clone()));
+        let got = lines.returned("demo", Some(result), || Some(tmpl.clone()), &|_, _| {
+            Ok(None)
+        });
         let read = got.read.expect("a value");
         assert_eq!(read.fields["x"], Value::Int(1));
         assert_eq!(read.fields["b"], Value::Int(6));
@@ -1390,20 +1568,31 @@ mod tests {
     fn the_identity_returns_hand_the_data_on_untouched() {
         let lines = lines("");
         let here = fresh("one", 0);
-        let got = lines.returned("demo", Some(read_of(&[("a", 1)], &here)), || None);
+        let got = lines.returned(
+            "demo",
+            Some(read_of(&[("a", 1)], &here)),
+            || None,
+            &|_, _| Ok(None),
+        );
         assert_eq!(got.read.unwrap().fields["a"], Value::Int(1));
         assert!(got.template.is_none(), "no facet to attach");
-        let got = lines.returned("demo", None, || {
-            Some(HashMap::from([("t".to_string(), Value::Int(1))]))
-        });
+        let got = lines.returned(
+            "demo",
+            None,
+            || Some(HashMap::from([("t".to_string(), Value::Int(1))])),
+            &|_, _| Ok(None),
+        );
         assert!(got.read.is_none());
         assert!(
             got.template.is_some(),
             "a template answers where the data does not"
         );
-        let got = self::lines("[demo]\nreturn = \"{{ result }}\"").returned("demo", None, || {
-            panic!("a return that never reads the template does not ask for it")
-        });
+        let got = self::lines("[demo]\nreturn = \"{{ result }}\"").returned(
+            "demo",
+            None,
+            || panic!("a return that never reads the template does not ask for it"),
+            &|_, _| Ok(None),
+        );
         assert!(got.template.is_none());
     }
 
@@ -1411,14 +1600,24 @@ mod tests {
     fn a_return_that_fails_or_gives_no_map_is_a_miss_logged_once() {
         let here = fresh("one", 0);
         let lines = lines("[demo]\nreturn = \"{{ 1 // 0 }}\"");
-        let got = lines.returned("demo", Some(read_of(&[("a", 1)], &here)), || None);
+        let got = lines.returned(
+            "demo",
+            Some(read_of(&[("a", 1)], &here)),
+            || None,
+            &|_, _| Ok(None),
+        );
         assert!(got.read.is_none(), "no silent fallback to the data");
         assert!(got.template.is_none());
         let message = lines.eval("demo", Key::Return, vec![]).unwrap_err();
         assert!(!lines.note_error(&message), "already logged by the first");
 
         let lines = self::lines("[demo]\nreturn = \"{{ 5 }}\"");
-        let got = lines.returned("demo", Some(read_of(&[("a", 1)], &here)), || None);
+        let got = lines.returned(
+            "demo",
+            Some(read_of(&[("a", 1)], &here)),
+            || None,
+            &|_, _| Ok(None),
+        );
         assert!(got.read.is_none(), "a return that is not a map is a miss");
         assert!(
             !lines.note_error("demo return: a provider's return is a map of fields"),
@@ -1443,5 +1642,67 @@ mod tests {
     fn a_dict_literal_does_not_end_a_tag_early() {
         let errs = errors("[demo]\nresult = \"{{ {'a': {'b': 1}} | merge(exec('x')) }}\"");
         assert!(errs[0].contains("is not available"), "{errs:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn what_a_line_computes_from_a_called_record_is_as_old_as_it() {
+        let lines =
+            lines("[demo]\nreturn = \"{{ result | merge(daemon.providers.q.sources.t()) }}\"");
+        let old = fresh("t", 100);
+        let record = CalledRecord {
+            value: json!({"now": 5}),
+            fresh: old.clone(),
+        };
+        let got = lines.returned(
+            "demo",
+            Some(read_of(&[("a", 1)], &fresh("one", 0))),
+            || None,
+            &|p, s| {
+                assert_eq!((p, s), ("q", "t"));
+                Ok(Some(record.clone()))
+            },
+        );
+        let read = got.read.expect("a value");
+        assert_eq!(read.fields["now"], Value::Int(5));
+        assert_eq!(
+            read.records["now"].last_refreshed, old.last_refreshed,
+            "a leaf from a called record is as old as the record"
+        );
+    }
+
+    #[test]
+    fn a_call_that_fails_fails_the_line_only_if_the_line_makes_it() {
+        let lines = self::lines(
+            "[demo]\nreturn = \"{{ {'x': 1} if true else daemon.providers.q.sources.t() }}\"",
+        );
+        let got = lines.returned("demo", None, || None, &|_, _| Err("boom".into()));
+        assert_eq!(got.read.expect("a value").fields["x"], Value::Int(1));
+        let lines = self::lines("[demo]\nreturn = \"{{ daemon.providers.q.sources.t() }}\"");
+        let got = lines.returned("demo", None, || None, &|_, _| Err("boom".into()));
+        assert!(got.read.is_none(), "a call the line makes fails it");
+    }
+
+    #[test]
+    fn sources_is_not_a_name_a_return_sees() {
+        let errs = errors("[demo]\nreturn = \"{{ merge(sources) }}\"");
+        assert!(
+            errs.len() == 1 && errs[0].contains("unknown name 'sources'"),
+            "{errs:?}"
+        );
+    }
+
+    #[test]
+    fn the_abstract_provider_cannot_call_a_source_by_name() {
+        for key in ["result", "return"] {
+            let errs = errors(&format!("[_]\n{key} = \"{{{{ sources.head() }}}}\""));
+            assert!(
+                errs.iter().any(|e| e.starts_with(&format!(
+                    "[daemon.providers._] {key}: sources.head(): the abstract provider applies to \
+                     every provider"
+                )) && e.ends_with("use merge(sources)")),
+                "{key}: {errs:?}"
+            );
+        }
+        assert!(errors("[_]\nresult = \"{{ merge(sources) }}\"").is_empty());
     }
 }

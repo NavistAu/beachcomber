@@ -11,6 +11,7 @@ pub mod mise;
 pub mod network;
 pub mod python;
 pub mod registry;
+pub mod source_call;
 pub mod sudo;
 pub mod terraform;
 pub mod uname;

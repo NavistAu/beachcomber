@@ -2,6 +2,7 @@ use crate::cache::{Cache, Layers, MergedRead};
 use crate::config::Config;
 use crate::protocol::{self, IntrospectSubject, Request, Response};
 use crate::provider::registry::ProviderRegistry;
+use crate::provider::source_call::{in_failback_backoff, record_outcome};
 use crate::query::{Ask, Found, Instance, InstanceWalk, KeyParse, QueryPlan};
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
@@ -286,7 +287,11 @@ async fn root_for(
 /// The roots found so far by one request, so Sources that find theirs the same
 /// way ([`crate::provider::Source::root_key`]) ask once per directory.
 #[derive(Default)]
-struct RootMemo(HashMap<(String, String, String), Found>);
+struct RootMemo {
+    known: HashMap<(String, String, String), Found>,
+    /// Whether any root was rendered for the first time.
+    rendered: bool,
+}
 
 /// The next instance of `walk`'s chain, or `None` when the chain is over.
 async fn next_instance(
@@ -304,11 +309,13 @@ async fn next_instance(
                 .source(provider, source)
                 .map_or_else(|| source.to_string(), |s| s.root_key());
             let key = (provider.to_string(), how, dir.clone());
-            match memo.0.get(&key) {
+            match memo.known.get(&key) {
                 Some(known) => known.clone(),
                 None => {
+                    memo.rendered |= registry.renders_root(provider, source)
+                        && registry.kept_root(provider, source, &dir).is_none();
                     let found = root_for(registry, provider, source, &dir).await?;
-                    memo.0.insert(key, found.clone());
+                    memo.known.insert(key, found.clone());
                     found
                 }
             }
@@ -401,15 +408,24 @@ async fn handle_watch(
     };
     let reached = instances.clone();
 
+    // The Sources the provider's lines call: their chains are followed too.
+    let called = if layered || registry.lines().all_calls(&provider_name).is_empty() {
+        Vec::new()
+    } else {
+        match called_instances(registry, &provider_name, requested_path.as_deref()).await {
+            Ok((called, _)) => called,
+            Err(msg) => {
+                warn!("watch {key}: {msg}");
+                let _ = write_watch_line(writer, &Response::error(msg)).await;
+                return;
+            }
+        }
+    };
+
     // Signal demand for every instance on the chains (source-aware: a field
     // demands only its owning Source).
     if !layered && let Some(sched) = scheduler {
-        sched
-            .send(SchedulerMessage::QueryActivity {
-                provider: provider_name.clone(),
-                instances: instances.clone(),
-            })
-            .await;
+        demand_watched(sched, &provider_name, &instances, &called).await;
     }
 
     // Subscribe to every entry the read walk visits, not just the addressed
@@ -424,11 +440,22 @@ async fn handle_watch(
     let chain_watch = {
         let changed = Arc::new(tokio::sync::Notify::new());
         let mut tasks = Vec::new();
-        let links: Vec<(String, Option<String>)> =
+        let mut links: Vec<(String, Option<String>)> =
             crate::query::read_chain(requested_path.as_deref(), &crate::query::roots_of(&reached))
                 .into_iter()
                 .map(|layer| (provider_name.clone(), layer))
                 .collect();
+        // A change to a Source the lines call changes what they give.
+        for (called_provider, instances) in &called {
+            links.extend(
+                crate::query::read_chain(
+                    requested_path.as_deref(),
+                    &crate::query::roots_of(instances),
+                )
+                .into_iter()
+                .map(|layer| (called_provider.clone(), layer)),
+            );
+        }
         for (namespace, layer) in links {
             let mut sub = watchers.subscribe(namespace.as_str(), layer.as_deref());
             let changed = Arc::clone(&changed);
@@ -499,12 +526,7 @@ async fn handle_watch(
             _ = chain_watch.changed.notified() => {
                 // Signal ongoing demand
                 if !layered && let Some(sched) = scheduler {
-                    sched
-                        .send(SchedulerMessage::QueryActivity {
-                            provider: provider_name.clone(),
-                            instances: instances.clone(),
-                        })
-                        .await;
+                    demand_watched(sched, &provider_name, &instances, &called).await;
                 }
 
                 let response = read_watch_value(
@@ -539,6 +561,30 @@ async fn handle_watch(
     }
 }
 
+/// Signal a watch's demand: the instances it reads, and those of the Sources
+/// its provider's lines call.
+async fn demand_watched(
+    scheduler: &SchedulerHandle,
+    provider: &str,
+    instances: &[Instance],
+    called: &[(String, Vec<Instance>)],
+) {
+    scheduler
+        .send(SchedulerMessage::QueryActivity {
+            provider: provider.to_string(),
+            instances: instances.to_vec(),
+        })
+        .await;
+    for (called_provider, instances) in called {
+        scheduler
+            .send(SchedulerMessage::QueryActivity {
+                provider: called_provider.clone(),
+                instances: instances.clone(),
+            })
+            .await;
+    }
+}
+
 /// Counts one open `watch` for as long as its stream is live.
 struct WatchGuard(Arc<AtomicUsize>);
 
@@ -570,36 +616,6 @@ impl Drop for ChainWatch {
     }
 }
 
-/// The lifecycle and failure key of one instance of a Source.
-fn instance_key(
-    provider: &str,
-    source_name: &str,
-    root: Option<&str>,
-) -> crate::scheduler::lifecycle::Key {
-    crate::scheduler::lifecycle::Key {
-        provider: provider.to_string(),
-        path: root.map(str::to_string),
-        source: source_name.to_string(),
-        node: String::new(),
-    }
-}
-
-/// Whether the instance has failed enough times in a row that its failback
-/// holds it back until the backoff ends.
-fn in_failback_backoff(
-    registry: &ProviderRegistry,
-    provider: &str,
-    source_name: &str,
-    root: Option<&str>,
-) -> bool {
-    registry
-        .failures
-        .lock()
-        .unwrap()
-        .get(&instance_key(provider, source_name, root))
-        .is_some_and(|state| state.is_suppressed())
-}
-
 /// Cold-miss inline-execute: synchronously run one instance of a Source to
 /// populate the cache, then let the caller re-read. Mirrors the scheduler's
 /// execute_source path (spawn_blocking + cache.put_source) but runs in the
@@ -623,11 +639,10 @@ async fn inline_execute_source(
     source_name: &str,
     root: Option<&str>,
     forced: bool,
-) -> bool {
+) -> Result<bool, String> {
     let Some(source) = registry.source(provider, source_name) else {
-        return false;
+        return Ok(false);
     };
-    let key = instance_key(provider, source_name, root);
     // An instance in failback backoff is left alone by a read, as the
     // scheduler leaves it alone; only an explicit `--force` or `refresh` tries
     // it again.
@@ -635,34 +650,32 @@ async fn inline_execute_source(
         debug!(
             "Source '{provider}.{source_name}' at {root:?} is in failback backoff: not run by this read"
         );
-        return false;
+        return Ok(false);
     }
-    let schedule = crate::cache::Schedule::of(source.metadata());
     let dir = crate::query::instance_dir(root);
     let src_clone = std::sync::Arc::clone(&source);
-    let outcome = tokio::task::spawn_blocking(move || src_clone.execute(dir.as_deref())).await;
-    let mut failures = registry.failures.lock().unwrap();
-    let state = failures.entry(key).or_insert_with(|| {
-        crate::scheduler::FailureState::new(
-            source.metadata().failback.reattempts,
-            std::time::Duration::from_secs(source.metadata().failback.interval_secs),
-        )
-    });
-    let result = match outcome {
-        Ok(Ok(r)) => {
-            state.record_success();
-            r
-        }
-        Ok(Err(e)) => {
-            state.record_failure();
-            warn!("Source '{provider}.{source_name}' failed: {e}");
-            return false;
-        }
-        Err(_) => return false,
+    let Ok((outcome, failed_call)) = tokio::task::spawn_blocking(move || {
+        crate::provider::source_call::ran(|| src_clone.execute(dir.as_deref()))
+    })
+    .await
+    else {
+        return Ok(false);
     };
-    drop(failures);
-    cache.put_source(provider, root, source_name, result.fields, schedule);
-    true
+    match record_outcome(registry, cache, provider, source_name, root, outcome) {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            warn!("Source '{provider}.{source_name}' failed: {e}");
+            // A run that failed because a Source it calls failed, or called
+            // itself, is a fault in the lines, not in the world: the read
+            // shows it, as it shows a `root` that fails. Any other failure is
+            // a miss, and the read goes on to the rest of the chain.
+            if failed_call.is_some() {
+                Err(e)
+            } else {
+                Ok(false)
+            }
+        }
+    }
 }
 
 /// How far a read goes to bring a Source up to date before it is read.
@@ -701,9 +714,9 @@ async fn warm_source(
     source_name: &str,
     root: Option<&str>,
     warm: Warm,
-) -> bool {
+) -> Result<bool, String> {
     let Some(source) = registry.source(provider, source_name) else {
-        return false;
+        return Ok(false);
     };
     let forced = matches!(warm, Warm::Always);
     // An instance in failback backoff keeps what it has: nothing is dropped
@@ -712,7 +725,7 @@ async fn warm_source(
         debug!(
             "Source '{provider}.{source_name}' at {root:?} is in failback backoff: not run by this read"
         );
-        return false;
+        return Ok(false);
     }
     let drop_first = match warm {
         Warm::Always => true,
@@ -722,10 +735,10 @@ async fn warm_source(
     if drop_first {
         cache.remove_source(provider, root, source_name);
     } else if !source.read_always() && cache.has_provider_records_for(provider, root, source_name) {
-        return false;
+        return Ok(false);
     }
-    inline_execute_source(registry, cache, provider, source_name, root, forced).await;
-    true
+    inline_execute_source(registry, cache, provider, source_name, root, forced).await?;
+    Ok(true)
 }
 
 /// Re-execute a source inline if it is `read_always`, refreshing the cache
@@ -745,8 +758,70 @@ async fn maybe_read_always(
     if let Some(src) = registry.source(provider, source_name)
         && src.read_always()
     {
-        inline_execute_source(registry, cache, provider, source_name, root, false).await;
+        // The failure is logged; a watch has no read to fail.
+        let _ = inline_execute_source(registry, cache, provider, source_name, root, false).await;
     }
+}
+
+/// The instances, by provider, of the Sources `provider`'s `result` and
+/// `return` lines call, as a read from `dir` reaches them, and whether a `root`
+/// was rendered for the first time to find them. A `root` that needs rendering
+/// is rendered here, off the async workers.
+async fn called_instances(
+    registry: &Arc<ProviderRegistry>,
+    provider: &str,
+    dir: Option<&str>,
+) -> Result<(Vec<(String, Vec<Instance>)>, bool), String> {
+    let called: Vec<(String, String)> = registry.lines().all_calls(provider).to_vec();
+    let mut out: Vec<(String, Vec<Instance>)> = Vec::new();
+    let mut memo = RootMemo::default();
+    for (called_provider, source) in &called {
+        let mut walk = registry.instance_walk(called_provider, source, dir);
+        let mut found = Vec::new();
+        while let Some(root) =
+            next_instance(&mut walk, registry, called_provider, source, &mut memo).await?
+        {
+            found.push(Instance {
+                source: source.clone(),
+                root,
+            });
+        }
+        match out.iter_mut().find(|(p, _)| p == called_provider) {
+            Some((_, instances)) => instances.extend(found),
+            None => out.push((called_provider.clone(), found)),
+        }
+    }
+    Ok((out, memo.rendered))
+}
+
+/// Bring up to date, as `how` says, every Source of another provider that
+/// `provider`'s `result` and `return` lines call, at each instance a read from
+/// `dir` reaches, and say which those were and whether the read must be made
+/// again: a Source ran, or a root was resolved that the first read did not
+/// have. What the lines then render over is stored.
+async fn warm_called(
+    registry: &Arc<ProviderRegistry>,
+    cache: &Cache,
+    provider: &str,
+    dir: Option<&str>,
+    how: Warm,
+) -> Result<(Vec<(String, Vec<Instance>)>, bool), String> {
+    let (called, resolved) = called_instances(registry, provider, dir).await?;
+    let mut ran = resolved;
+    for (called_provider, instances) in &called {
+        for instance in instances {
+            ran |= warm_source(
+                registry,
+                cache,
+                called_provider,
+                &instance.source,
+                instance.root.as_deref(),
+                how,
+            )
+            .await?;
+        }
+    }
+    Ok((called, ran))
 }
 
 /// What a climb does at each instance it reaches.
@@ -878,7 +953,7 @@ async fn climb(
             }
             if let Climb::Warm(how) = mode {
                 out.ran |=
-                    warm_source(registry, cache, provider, &w.name, root.as_deref(), how).await;
+                    warm_source(registry, cache, provider, &w.name, root.as_deref(), how).await?;
             }
             out.reached.push(Instance {
                 source: w.name.clone(),
@@ -1414,16 +1489,62 @@ async fn handle_request(
                 }
             };
 
+            // The Sources the provider's lines call are brought up to date
+            // before the lines render, which do no IO: a cold one runs here,
+            // once. After the provider's own, so a callee that reads the
+            // provider (`comb.<p>`) finds it warm. A provider whose lines call
+            // nothing pays nothing.
+            let called = if plan.layers != crate::cache::Layers::Put
+                && registry.lines().has_calls(provider_name)
+            {
+                match warm_called(
+                    registry,
+                    cache,
+                    provider_name,
+                    plan.requested_path.as_deref(),
+                    how,
+                )
+                .await
+                {
+                    Ok((called, changed)) => {
+                        // The first read of the lines found no root resolved
+                        // for the called Sources, or them cold: read again.
+                        if changed {
+                            merged = cache.read_merged(
+                                provider_name,
+                                plan.requested_path.as_deref(),
+                                &visited,
+                                registry,
+                                plan.layers,
+                            );
+                        }
+                        called
+                    }
+                    Err(msg) => {
+                        warn!("get {key}: {msg}");
+                        return Response::error(msg);
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+
             // A source whose map exists without holding this address is still
             // worth one attempt — `warm_source` only knows whether the instance
             // has *anything* cached. Only a field read can tell: a namespace
             // read has no single address to miss.
-            if let KeyParse::Field(_, field) = &plan.target
-                && registry.reads_by_default(provider_name)
-                && lookup_merged(&merged, field).is_none()
-                && !ran
-                && let Some(first) = reached.first()
-                && inline_execute_source(
+            let retry = match &plan.target {
+                KeyParse::Field(_, field)
+                    if registry.reads_by_default(provider_name)
+                        && lookup_merged(&merged, field).is_none()
+                        && !ran =>
+                {
+                    reached.first()
+                }
+                _ => None,
+            };
+            if let Some(first) = retry {
+                match inline_execute_source(
                     registry,
                     cache,
                     provider_name,
@@ -1432,18 +1553,37 @@ async fn handle_request(
                     false,
                 )
                 .await
-            {
-                merged = cache.read_merged(
-                    provider_name,
-                    plan.requested_path.as_deref(),
-                    &visited,
-                    registry,
-                    plan.layers,
-                );
+                {
+                    Ok(true) => {
+                        merged = cache.read_merged(
+                            provider_name,
+                            plan.requested_path.as_deref(),
+                            &visited,
+                            registry,
+                            plan.layers,
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(msg) => {
+                        warn!("get {key}: {msg}");
+                        return Response::error(msg);
+                    }
+                }
             }
 
             // Demand every instance the read reached, so each is kept warm and,
-            // the first time, its schedule is registered.
+            // the first time, its schedule is registered. The Sources the
+            // lines call are kept warm the same way, while they are called.
+            if let Some(sched) = scheduler {
+                for (called_provider, instances) in called {
+                    sched
+                        .send(SchedulerMessage::QueryActivity {
+                            provider: called_provider,
+                            instances,
+                        })
+                        .await;
+                }
+            }
             if let Some(sched) = scheduler
                 && !reached.is_empty()
             {
@@ -1541,7 +1681,7 @@ async fn handle_request(
                 }
                 None => {
                     for instance in &instances {
-                        warm_source(
+                        let warmed = warm_source(
                             registry,
                             cache,
                             provider_name,
@@ -1550,6 +1690,10 @@ async fn handle_request(
                             Warm::Always,
                         )
                         .await;
+                        if let Err(msg) = warmed {
+                            warn!("refresh {key}: {msg}");
+                            return Response::error(msg);
+                        }
                     }
                 }
             }

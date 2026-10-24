@@ -116,6 +116,8 @@ return = "{{ result | nearest | super }}"
 
 Records written by `put`, and the `config:` seeds, merge up the directory chain whichever a Source does. The cache key of a rooted instance is `provider\0root`.
 
+A Source may call another: `sources.<source>()` for a sibling, `daemon.providers.<provider>.sources.<source>()` for any provider's, and a provider's `result` and `return` lines may call the latter: `return = "{{ result | merge(daemon.providers.gitstats.sources.repo()) | facet('template', template) }}"`. A call reads the called Source's stored record for the same directory, and a Source with nothing stored yet is run inline, once, by the read or refresh that needs it. A called Source is kept warm while it is called. Its own failure is the caller's miss. Sources that call each other in a ring do not load; were one run anyway, it fails the read with `sources: <p>.<s> calls itself`.
+
 The Rust-side metadata that describes a built-in (its invalidation strategy, how it finds its root, watch patterns) is internal to the daemon: it is what `return` replaces, not something a config file names. `comb get <provider>:cache.<field>` shows the `poll`, `watch` and `decay` a record registered with.
 
 ## comb status — source on the wire

@@ -287,6 +287,19 @@ impl LifecycleRegistry {
     }
 
     pub fn tick(&mut self, now: Instant) -> TickActions {
+        self.tick_holding(now, &HashMap::new())
+    }
+
+    /// [`Self::tick`], where an instance that would be evicted stays, at its
+    /// last decay step, while any of the instances `callers_of` names for it
+    /// is still here and not itself being evicted: a Source called by a caller
+    /// that still has a lifecycle is not left behind by it. It goes the tick
+    /// after its callers have.
+    pub fn tick_holding(
+        &mut self,
+        now: Instant,
+        callers_of: &HashMap<Key, Vec<Key>>,
+    ) -> TickActions {
         let mut actions = TickActions::default();
 
         for (key, entry) in self.entries.iter_mut() {
@@ -338,6 +351,32 @@ impl LifecycleRegistry {
                     // Last decay step → Evicted.
                     actions.evictions.push(key.clone());
                 }
+            }
+        }
+
+        while !callers_of.is_empty() {
+            let leaving: std::collections::HashSet<&Key> = actions.evictions.iter().collect();
+            let held: Vec<Key> = actions
+                .evictions
+                .iter()
+                .filter(|key| {
+                    callers_of.get(*key).is_some_and(|callers| {
+                        callers
+                            .iter()
+                            .any(|c| self.entries.contains_key(c) && !leaving.contains(c))
+                    })
+                })
+                .cloned()
+                .collect();
+            if held.is_empty() {
+                break;
+            }
+            for key in held {
+                if let Some(entry) = self.entries.get_mut(&key) {
+                    let step = 1u32 << entry.config.decay;
+                    entry.decay_timer.step_deadline = now + entry.config.lifespan() * step;
+                }
+                actions.evictions.retain(|k| *k != key);
             }
         }
 
@@ -935,6 +974,55 @@ mod tests {
         let actions = reg.tick(t0 + Duration::from_secs(30));
         assert_eq!(actions.evictions, vec![key.clone()]);
         assert_eq!(reg.state(&key), None);
+    }
+
+    /// A callee that would be evicted while a caller that names it still has a
+    /// lifecycle stays at its last decay step; it goes the tick after its
+    /// callers have, and a caller leaving in the same tick holds nothing.
+    #[test]
+    fn a_callee_outlives_no_caller_but_is_held_by_one() {
+        let (callee, caller) = (test_key_global("callee"), test_key_global("caller"));
+        let callers_of = HashMap::from([(callee.clone(), vec![caller.clone()])]);
+        let mut reg = LifecycleRegistry::new();
+        let t0 = Instant::now();
+        // The callee would be gone at 30 s; the caller has three polls (30 s
+        // Active) and one decay step of 60 s.
+        reg.on_demand(callee.clone(), ten_second_poll(1), t0);
+        let mut longer = ten_second_poll(1);
+        longer.poll_count = 3;
+        reg.on_demand(caller.clone(), longer, t0);
+
+        let at = |s| t0 + Duration::from_secs(s);
+        reg.tick_holding(at(10), &callers_of);
+        let held = reg.tick_holding(at(30), &callers_of);
+        assert!(held.evictions.is_empty(), "{held:?}");
+        assert_eq!(reg.state(&callee), Some(&LifecycleState::Decay(1)));
+        assert_eq!(reg.state(&caller), Some(&LifecycleState::Decay(1)));
+
+        // Held again at the end of the step it was given.
+        let held = reg.tick_holding(at(50), &callers_of);
+        assert!(held.evictions.is_empty(), "{held:?}");
+        assert_eq!(reg.state(&callee), Some(&LifecycleState::Decay(1)));
+
+        // The caller leaves at 90 s; the callee, due, is not held by a caller
+        // that is leaving, and goes in the same tick.
+        let gone = reg.tick_holding(at(90), &callers_of);
+        assert!(gone.evictions.contains(&caller), "{gone:?}");
+        assert!(gone.evictions.contains(&callee), "{gone:?}");
+        assert!(reg.is_empty());
+    }
+
+    /// With the caller already gone, the callee is evicted as any other.
+    #[test]
+    fn a_callee_whose_caller_has_no_lifecycle_is_evicted() {
+        let (callee, caller) = (test_key_global("callee"), test_key_global("caller"));
+        let callers_of = HashMap::from([(callee.clone(), vec![caller])]);
+        let mut reg = LifecycleRegistry::new();
+        let t0 = Instant::now();
+        reg.on_demand(callee.clone(), ten_second_poll(1), t0);
+        reg.tick_holding(t0 + Duration::from_secs(10), &callers_of);
+        let actions = reg.tick_holding(t0 + Duration::from_secs(30), &callers_of);
+        assert_eq!(actions.evictions, vec![callee]);
     }
 
     /// Depth 2: Decay(1), Decay(2), then evicted.

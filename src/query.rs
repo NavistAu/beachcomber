@@ -336,6 +336,34 @@ impl InstanceWalk {
     }
 }
 
+impl InstanceWalk {
+    /// Walk to the end, nearest first, asking `resolve` what the Source's
+    /// `root` finds for each directory. `Ok(None)` when `resolve` returned
+    /// `None`, a root it cannot answer yet: the chain is not known. The request
+    /// path walks a step at a time instead ([`InstanceWalk::ask`] and
+    /// [`InstanceWalk::step`]), since resolving a root there may need to wait.
+    pub fn collect(
+        mut self,
+        mut resolve: impl FnMut(&str) -> Result<Option<Found>, String>,
+    ) -> Result<Option<Vec<Option<String>>>, String> {
+        let mut chain = Vec::new();
+        loop {
+            let answer = match self.ask() {
+                Ask::Done => return Ok(Some(chain)),
+                Ask::Home => Found::Home,
+                Ask::Root(dir) => match resolve(&dir)? {
+                    Some(found) => found,
+                    None => return Ok(None),
+                },
+            };
+            match self.step(answer)? {
+                Some(root) => chain.push(root),
+                None => return Ok(Some(chain)),
+            }
+        }
+    }
+}
+
 /// Every instance of `provider`'s Source `source` that a read at `dir` can
 /// reach, nearest first. A cascading Source ends with the instance at `~`
 /// (`None`), and one with no root has the one-instance chain `[None]`; a
@@ -349,19 +377,10 @@ pub fn instance_chain(
     source: &str,
     dir: Option<&str>,
 ) -> Result<Vec<Option<String>>, String> {
-    let mut walk = registry.instance_walk(provider, source, dir);
-    let mut chain = Vec::new();
-    loop {
-        let answer = match walk.ask() {
-            Ask::Done => return Ok(chain),
-            Ask::Home => Found::Home,
-            Ask::Root(dir) => registry.instance_root(provider, source, &dir)?,
-        };
-        match walk.step(answer)? {
-            Some(root) => chain.push(root),
-            None => return Ok(chain),
-        }
-    }
+    registry
+        .instance_walk(provider, source, dir)
+        .collect(|root_dir| registry.instance_root(provider, source, root_dir).map(Some))
+        .map(Option::unwrap_or_default)
 }
 
 /// Every instance of every Source `demand` selects, for a read at `dir`:

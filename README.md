@@ -685,10 +685,12 @@ A table naming a built-in Rust Source takes `return` only; `root`, `data` and `r
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `data` | string | yes | The body: a jinja line that runs on the daemon, usually `exec('command')`. Sees `env` (the daemon's own), `comb.<provider>` and `_`. |
+| `data` | string | yes | The body: a jinja line that runs on the daemon, usually `exec('command')`. Sees `env` (the daemon's own), `comb.<provider>`, `sources.<source>()` (a sibling Source), `daemon.providers.<provider>.sources.<source>()` (any provider's Source) and `_`. |
 | `result` | string, or table of strings | yes | `result = "{{ data }}"` owns the whole provider node; `result.<field> = "{{ … }}"` lines declare fields, each over `data`. |
 | `root` | string | no | The directory an instance answers for, e.g. `{{ lup('.git') \| dirname }}`. Empty (the default) is the one instance at `~`; on a `\| nearest` Source, a `root` that renders none means no instance. |
 | `return` | string | no | What the Source hands out, decorated: `poll(interval, count)`, `watch(path, …)`, `ttl(interval)`, `failback(count, interval)`, `budget(interval)`, `nearest` (the nearest instance answers alone instead of cascading up to `~`; see Rooted Sources). Absent, it takes the nearest `_` Source's (`defaults/00-comb.toml` ships `poll('60s', 12) \| failback(3, '1s')`). `\| super` extends that line instead of replacing it. |
+
+A `data` line, and a provider's `result` and `return` lines, may call a Source (`daemon.providers.<provider>.sources.<source>()`; a Source also calls a sibling, `sources.<source>()`), as in `return = "{{ result | merge(daemon.providers.gitstats.sources.repo()) | facet('template', template) }}"`. A call gives the called Source's stored record as a read from the same directory would find it. A Source with nothing stored is run inline, once, by the read or refresh that needs it, and is kept warm while it is called; its own failure is the caller's miss. Sources that call each other in a ring are a load error; were one run anyway, it fails the read with `sources: <p>.<s> calls itself`.
 
 A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources, and to a built-in Source's `return` only through `| super`: a built-in with no `return` of its own keeps its Rust schedule.
 

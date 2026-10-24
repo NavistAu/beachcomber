@@ -239,6 +239,10 @@ pub enum Layers {
     Cache,
 }
 
+/// What a provider's `result` line calls in other providers' Sources, by
+/// `(provider, source)`: the record, or why it could not be read.
+type CalledRecords = HashMap<(String, String), crate::provider::source_call::CallOutcome>;
+
 /// What a chain-resolved read of one namespace found: see [`Cache::read_merged`],
 /// which is the only thing that builds one.
 #[derive(Debug, Clone)]
@@ -1218,6 +1222,7 @@ impl Cache {
         namespace: &str,
         registry: &ProviderRegistry,
         visited: &[Instance],
+        called: &CalledRecords,
         out: &mut MergedRead,
     ) -> bool {
         let Some(declared) = registry.provider_sources(namespace) else {
@@ -1248,13 +1253,50 @@ impl Cache {
         }
 
         let lines = registry.lines();
-        match lines.assemble(namespace, at, &bound, out) {
+        let call = |provider: &str, source: &str| {
+            called
+                .get(&(provider.to_string(), source.to_string()))
+                .cloned()
+                .unwrap_or(Ok(None))
+        };
+        match lines.assemble(namespace, at, &bound, &call, out) {
             Ok(merged) => merged,
             Err(message) => {
                 lines.note_error(&message);
                 false
             }
         }
+    }
+
+    /// What the `result` line of `namespace` calls in other providers'
+    /// Sources, read for the directory the read stands in: stored records only,
+    /// a read on the read path running nothing. Read before a layer's entry is
+    /// held, as the read of a Source takes entries itself.
+    fn result_calls(
+        &self,
+        namespace: &str,
+        requested: Option<&str>,
+        registry: &ProviderRegistry,
+    ) -> CalledRecords {
+        let lines = registry.lines();
+        if !lines.has_calls(namespace) {
+            return CalledRecords::new();
+        }
+        lines
+            .result_calls(namespace)
+            .iter()
+            .map(|(p, s)| {
+                let record = crate::provider::source_call::source_call(
+                    registry,
+                    self,
+                    p,
+                    s,
+                    requested,
+                    crate::provider::source_call::Cold::Skip,
+                );
+                ((p.clone(), s.clone()), record)
+            })
+            .collect()
     }
 
     /// Deep-merge the maps of `entry` whose name `wanted` accepts, in
@@ -1332,6 +1374,12 @@ impl Cache {
             records: HashMap::new(),
         };
         let mut found = false;
+        // The calls are made from the directory read, the same at every layer.
+        let called = if layers != Layers::Put {
+            self.result_calls(namespace, requested, registry)
+        } else {
+            CalledRecords::new()
+        };
         // A provider with no Sources is a provider all the same: its `result`
         // is read once, at the global entry (it has no instances), with
         // `sources` empty. The layers below merge over it.
@@ -1340,7 +1388,15 @@ impl Cache {
                 .provider_sources(namespace)
                 .is_some_and(<[_]>::is_empty)
         {
-            found |= Self::merge_provider_records(None, None, namespace, registry, &[], &mut out);
+            found |= Self::merge_provider_records(
+                None,
+                None,
+                namespace,
+                registry,
+                &[],
+                &called,
+                &mut out,
+            );
         }
         for layer in chain.iter().rev() {
             let Some(entry) = self
@@ -1367,6 +1423,7 @@ impl Cache {
                     namespace,
                     registry,
                     visited,
+                    &called,
                     target,
                 );
             }

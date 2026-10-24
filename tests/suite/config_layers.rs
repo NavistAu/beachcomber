@@ -1309,3 +1309,446 @@ result.a = "{{ data }}"
     assert_eq!(get(&d, "bad.a"), None, "the data is not served around it");
     assert_eq!(get(&d, "bad"), None);
 }
+
+#[test]
+fn a_provider_result_can_merge_another_providers_source() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.gitstats.sources.repo]
+data = "{{ 7 }}"
+result.commits = "{{ data }}"
+
+[daemon.providers.report]
+return = "{{ result | merge(daemon.providers.gitstats.sources.repo()) | facet('template', template) }}"
+
+[daemon.providers.report.sources.own]
+data = "{{ 2 }}"
+result.mine = "{{ data }}"
+
+[daemon.providers.layered]
+result = "{{ merge(sources) | merge(daemon.providers.gitstats.sources.repo()) }}"
+
+[daemon.providers.layered.sources.own]
+data = "{{ 3 }}"
+result.mine = "{{ data }}"
+"#,
+    )]);
+    let d = setup.daemon();
+    // Warm: the called Source has been read before the lines call it.
+    assert_eq!(get(&d, "gitstats.commits"), Some(json!(7)));
+    assert_eq!(
+        get(&d, "report"),
+        Some(json!({"mine": 2, "commits": 7})),
+        "a return merges its own Sources with another provider's Source"
+    );
+    assert_eq!(
+        get(&d, "layered"),
+        Some(json!({"mine": 3, "commits": 7})),
+        "and so does a result"
+    );
+}
+
+#[test]
+fn a_cold_source_call_executes_once_inline() {
+    let setup = Setup::new(&[]);
+    let from_data = setup.home.join("from_data.count");
+    let from_return = setup.home.join("from_return.count");
+    let body = |count: &Path| {
+        format!(
+            "{{{{ exec(['sh', '-c', 'echo run >> {} ; echo 5']) | trim }}}}",
+            count.display()
+        )
+    };
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.a.sources.s]
+data = "{{{{ daemon.providers.b.sources.t().v ~ '-' ~ daemon.providers.b.sources.t().v }}}}"
+result.x = "{{{{ data }}}}"
+
+[daemon.providers.b.sources.t]
+data = "{data_body}"
+result.v = "{{{{ data }}}}"
+
+[daemon.providers.c]
+return = "{{{{ merge(daemon.providers.d.sources.u(), daemon.providers.d.sources.u()) }}}}"
+
+[daemon.providers.c.sources.own]
+data = "{{{{ 1 }}}}"
+result.mine = "{{{{ data }}}}"
+
+[daemon.providers.d.sources.u]
+data = "{return_body}"
+result.w = "{{{{ data }}}}"
+"#,
+            data_body = body(&from_data),
+            return_body = body(&from_return),
+        ),
+    );
+    let d = setup.daemon();
+
+    assert_eq!(get(&d, "a.x"), Some(json!("5-5")), "the cold Source ran");
+    assert_eq!(runs(&from_data), 1, "once for the read, not per call site");
+    assert_eq!(get(&d, "a.x"), Some(json!("5-5")));
+    assert_eq!(runs(&from_data), 1, "and its record is stored");
+
+    assert_eq!(get(&d, "c"), Some(json!({"w": "5"})));
+    assert_eq!(runs(&from_return), 1, "a provider line's call runs it once");
+}
+
+/// A Source that appends a line to `count` each time it runs and answers how
+/// many runs there have been.
+fn counting_source(count: &Path) -> String {
+    format!(
+        "data = \"{{{{ exec(['sh', '-c', 'echo run >> {c} ; wc -l < {c}']) | trim }}}}\"\nresult.v = \"{{{{ data }}}}\"\n",
+        c = count.display()
+    )
+}
+
+#[test]
+fn a_source_called_from_a_return_is_demanded_with_the_read() {
+    let setup = Setup::new(&[]);
+    let count = setup.home.join("clock.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.clock.sources.t]
+{}return = "{{{{ result | poll('1s') }}}}"
+
+[daemon.providers.report]
+return = "{{{{ result | merge(daemon.providers.clock.sources.t()) }}}}"
+
+[daemon.providers.report.sources.own]
+data = "{{{{ 2 }}}}"
+result.mine = "{{{{ data }}}}"
+"#,
+            counting_source(&count)
+        ),
+    );
+    let d = setup.daemon();
+    assert_eq!(get(&d, "report"), Some(json!({"mine": 2, "v": "1"})));
+    assert_eq!(
+        warm_instances(&d, "clock"),
+        vec![("t".to_string(), None)],
+        "the Source a line calls is demanded by the read that called it"
+    );
+    // Its own schedule runs it again; a refresh stands in for a poll.
+    let out = d
+        .comb(&d.home)
+        .args(["refresh", "clock"])
+        .output()
+        .expect("run comb refresh");
+    assert!(out.status.success(), "{out:?}");
+    poll_until(
+        "the called Source",
+        "run again",
+        Duration::from_secs(20),
+        Duration::from_millis(100),
+        || get(&d, "report"),
+        |v| *v == Some(json!({"mine": 2, "v": "2"})),
+    );
+}
+
+#[test]
+fn a_source_called_from_a_data_line_is_demanded_with_its_caller() {
+    let setup = Setup::new(&[]);
+    let count = setup.home.join("clock2.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.clock2.sources.t]
+{}return = "{{{{ result | poll('1s') }}}}"
+
+[daemon.providers.viadata.sources.s]
+data = "{{{{ daemon.providers.clock2.sources.t().v }}}}"
+result.x = "{{{{ data }}}}"
+"#,
+            counting_source(&count)
+        ),
+    );
+    let d = setup.daemon();
+    assert_eq!(get(&d, "viadata.x"), Some(json!("1")));
+    assert_eq!(
+        warm_instances(&d, "clock2"),
+        vec![("t".to_string(), None)],
+        "the caller's read demanded what its run called"
+    );
+}
+
+#[test]
+fn a_callee_is_warmed_after_the_provider_it_reads() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.cr]
+return = "{{ result | merge(daemon.providers.seer.sources.t()) }}"
+
+[daemon.providers.cr.sources.own]
+data = "{{ 2 }}"
+result.mine = "{{ data }}"
+
+[daemon.providers.seer.sources.t]
+data = "{{ comb.cr.mine or 'cold' }}"
+result.seen = "{{ data }}"
+"#,
+    )]);
+    let d = setup.daemon();
+    assert_eq!(
+        get(&d, "cr"),
+        Some(json!({"mine": 2, "seen": 2})),
+        "on the first read the callee finds the provider already warm"
+    );
+}
+
+#[test]
+fn a_refresh_runs_a_shared_cold_source_once() {
+    let setup = Setup::new(&[]);
+    let count = setup.home.join("shared.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.shared.sources.t]
+data = "{{{{ exec(['sh', '-c', 'sleep 0.3; echo run >> {}; echo 1']) | trim }}}}"
+result.v = "{{{{ data }}}}"
+
+[daemon.providers.callers.sources.one]
+data = "{{{{ daemon.providers.shared.sources.t().v }}}}"
+result.x1 = "{{{{ data }}}}"
+
+[daemon.providers.callers.sources.two]
+data = "{{{{ daemon.providers.shared.sources.t().v }}}}"
+result.x2 = "{{{{ data }}}}"
+"#,
+            count.display()
+        ),
+    );
+    let d = setup.daemon();
+    let out = d
+        .comb(&d.home)
+        .args(["refresh", "callers"])
+        .output()
+        .expect("run comb refresh");
+    assert!(out.status.success(), "{out:?}");
+    poll_until(
+        "both callers",
+        "both stored",
+        Duration::from_secs(20),
+        Duration::from_millis(100),
+        || get(&d, "callers"),
+        |v| *v == Some(json!({"x1": "1", "x2": "1"})),
+    );
+    assert_eq!(
+        runs(&count),
+        1,
+        "one run for the refresh, not one per caller"
+    );
+}
+
+/// The frames of a `watch` of a key.
+struct Watch {
+    lines: std::io::BufReader<std::os::unix::net::UnixStream>,
+}
+
+impl Watch {
+    fn open(d: &TestDaemon, key: &str) -> Self {
+        use std::io::Write;
+        let mut stream = std::os::unix::net::UnixStream::connect(&d.socket.path).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        writeln!(stream, "{}", json!({"op": "watch", "key": key})).unwrap();
+        Watch {
+            lines: std::io::BufReader::new(stream),
+        }
+    }
+
+    /// The data of the next frame.
+    fn next(&mut self) -> Value {
+        use std::io::BufRead;
+        let mut line = String::new();
+        self.lines.read_line(&mut line).expect("a watch frame");
+        serde_json::from_str::<Value>(&line).expect("a frame")["data"].clone()
+    }
+}
+
+#[test]
+fn a_watch_wakes_when_a_source_its_lines_call_changes() {
+    let setup = Setup::new(&[]);
+    let count = setup.home.join("tick.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.tick.sources.t]
+data = "{{{{ exec(['sh', '-c', 'echo run >> {}; wc -l < {}']) | trim }}}}"
+result.n = "{{{{ data }}}}"
+
+[daemon.providers.seen]
+return = "{{{{ daemon.providers.tick.sources.t() }}}}"
+"#,
+            count.display(),
+            count.display()
+        ),
+    );
+    let d = setup.daemon();
+    assert_eq!(get(&d, "seen"), Some(json!({"n": "1"})));
+    let mut watch = Watch::open(&d, "seen");
+    assert_eq!(watch.next(), json!({"n": "1"}));
+    let out = d
+        .comb(&d.home)
+        .args(["refresh", "tick"])
+        .output()
+        .expect("run comb refresh");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        watch.next(),
+        json!({"n": "2"}),
+        "the called Source ran again, and the watch followed"
+    );
+}
+
+#[test]
+fn a_called_nearest_source_answers_from_its_nearest_root_alone() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        &format!(
+            r#"{}
+[daemon.providers.rep.sources.c]
+root = "{{{{ lup('.here') | dirname }}}}"
+data = "{{{{ daemon.providers.near.sources.s() }}}}"
+result = "{{{{ data }}}}"
+
+[daemon.providers.nores]
+result = "{{{{ daemon.providers.near.sources.s() }}}}"
+"#,
+            vals_config("near", true)
+        ),
+    )]);
+    let deep = nested_markers(&setup);
+    std::fs::write(setup.home.join("outer/inner/.here"), "").unwrap();
+    let d = setup.daemon();
+    assert_eq!(
+        get_at(&d, &deep, &["rep"]),
+        Some(json!({"a": "inner-a"})),
+        "from a rooted caller: the nearest instance, and the outer one does not fill in"
+    );
+    assert_eq!(
+        get_at(&d, &deep, &["nores"]),
+        Some(json!({"a": "inner-a"})),
+        "a provider with no Sources calls from the directory read, not a layer's root"
+    );
+}
+
+#[test]
+fn a_called_sources_own_failure_is_the_callers_miss() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.bad.sources.t]
+data = "{{ exec('exit 3') }}"
+result.v = "{{ data }}"
+return = "{{ result | failback(1, '1h') }}"
+
+[daemon.providers.viadata.sources.s]
+data = "{{ daemon.providers.bad.sources.t().v }}"
+result.x = "{{ data }}"
+
+[daemon.providers.viareturn]
+return = "{{ result | merge(daemon.providers.bad.sources.t()) }}"
+
+[daemon.providers.viareturn.sources.own]
+data = "{{ 2 }}"
+result.mine = "{{ data }}"
+"#,
+    )]);
+    let d = setup.daemon();
+    for _ in 0..2 {
+        let out = d
+            .comb(&d.home)
+            .args(["get", "-f", "json", "viadata.x"])
+            .output()
+            .expect("run comb get");
+        assert!(!out.status.success());
+        assert!(
+            !String::from_utf8_lossy(&out.stderr).contains("exit"),
+            "a miss, not the callee's error: {out:?}"
+        );
+        assert_eq!(
+            get(&d, "viareturn"),
+            Some(json!({"mine": 2})),
+            "a line whose call finds nothing answers without it"
+        );
+    }
+}
+
+#[test]
+fn a_call_goes_on_up_the_chain_past_an_instance_that_fails() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        &format!(
+            r#"{}
+[daemon.providers.rep.sources.c]
+root = "{{{{ lup('.here') | dirname }}}}"
+data = "{{{{ daemon.providers.demo.sources.s() }}}}"
+result = "{{{{ data }}}}"
+"#,
+            vals_config("demo", false)
+        ),
+    )]);
+    let deep = nested_markers(&setup);
+    std::fs::write(setup.home.join("outer/inner/.here"), "").unwrap();
+    // The nearer instance of the called Source cannot run.
+    std::fs::write(setup.home.join("outer/inner/vals.json"), "not json").unwrap();
+    let d = setup.daemon();
+    let direct = get_at(&d, &deep, &["demo"]);
+    assert_eq!(
+        direct,
+        Some(json!({"a": "outer-a", "b": "outer-b"})),
+        "a direct read carries on to the outer instance"
+    );
+    assert_eq!(
+        get_at(&d, &deep, &["rep"]),
+        direct,
+        "a call answers as the direct read from the same directory does"
+    );
+}
+
+#[test]
+fn get_force_runs_the_sources_a_providers_lines_call_again() {
+    let setup = Setup::new(&[]);
+    let count = setup.home.join("tick.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.tick.sources.t]
+data = "{{{{ exec(['sh', '-c', 'echo run >> {}; wc -l < {}']) | trim }}}}"
+result.n = "{{{{ data }}}}"
+
+[daemon.providers.seen]
+return = "{{{{ daemon.providers.tick.sources.t() }}}}"
+"#,
+            count.display(),
+            count.display()
+        ),
+    );
+    let d = setup.daemon();
+    assert_eq!(get(&d, "seen"), Some(json!({"n": "1"})));
+    assert_eq!(get(&d, "seen"), Some(json!({"n": "1"})), "warm: not run");
+    let out = d
+        .comb(&d.home)
+        .args(["get", "--force", "-f", "json", "seen"])
+        .output()
+        .expect("run comb get --force");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&out.stdout).unwrap(),
+        json!({"n": "2"}),
+        "--force re-ran the called Source"
+    );
+}

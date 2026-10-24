@@ -3,6 +3,7 @@ use crate::cache::{Cache, Layers};
 use crate::config::Config;
 use crate::engine::PluginSet;
 use crate::provider::config_source::{ConfigSource, DaemonRead, lint_lines};
+use crate::provider::source_call::Called;
 use crate::provider::{
     FailbackConfig, InvalidationStrategy, Provider, ProviderMetadata, Source, SourceMetadata,
     SourceResult, Value, is_sentinel,
@@ -41,6 +42,41 @@ pub struct RegistryReader {
 }
 
 impl DaemonRead for RegistryReader {
+    fn ran_calling(&self, provider: &str, source: &str, dir: Option<&str>, called: CalleeMap) {
+        if let Some((registry, _)) = self.bound.get()
+            && let Some(registry) = registry.upgrade()
+        {
+            let root = crate::query::normalise_path(dir);
+            registry.set_callees((provider, source, root.as_deref()), called);
+        }
+    }
+
+    /// Runs a cold instance inline: the caller is a Source's `data` line, on a
+    /// blocking thread.
+    fn call(
+        &self,
+        provider: &str,
+        source: &str,
+        dir: Option<&str>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let Some((registry, cache)) = self.bound.get() else {
+            debug_assert!(false, "a config Source read from a registry never shared");
+            return Ok(None);
+        };
+        let Some(registry) = registry.upgrade() else {
+            return Ok(None);
+        };
+        crate::provider::source_call::source_call(
+            &registry,
+            cache,
+            provider,
+            source,
+            dir,
+            crate::provider::source_call::Cold::Run,
+        )
+        .map(|record| record.map(|r| r.value))
+    }
+
     /// Never executes a Source. `dir` is a directory; `$HOME` addresses the
     /// global entry, as `QueryPlan` normalises it. It reads every instance up
     /// each Source's chain from `dir`, as a whole-provider read does.
@@ -89,6 +125,41 @@ impl DaemonRead for RegistryReader {
         );
         Ok(returned.read.map(|m| m.fields))
     }
+}
+
+/// A ring in the calls between Sources, as the Sources round it with the first
+/// repeated at the end; the first found in name order.
+fn find_ring(
+    edges: &std::collections::BTreeMap<(String, String), Vec<(String, String)>>,
+) -> Option<Vec<(String, String)>> {
+    fn visit(
+        node: &(String, String),
+        edges: &std::collections::BTreeMap<(String, String), Vec<(String, String)>>,
+        path: &mut Vec<(String, String)>,
+        done: &mut HashSet<(String, String)>,
+    ) -> Option<Vec<(String, String)>> {
+        if let Some(at) = path.iter().position(|n| n == node) {
+            let mut ring = path[at..].to_vec();
+            ring.push(node.clone());
+            return Some(ring);
+        }
+        if done.contains(node) {
+            return None;
+        }
+        path.push(node.clone());
+        for next in edges.get(node).into_iter().flatten() {
+            if let Some(ring) = visit(next, edges, path, done) {
+                return Some(ring);
+            }
+        }
+        path.pop();
+        done.insert(node.clone());
+        None
+    }
+    let mut done = HashSet::new();
+    edges
+        .keys()
+        .find_map(|node| visit(node, edges, &mut Vec::new(), &mut done))
 }
 
 /// A built-in Rust Source with other metadata: what its `return` line (or the
@@ -172,7 +243,31 @@ pub struct ProviderRegistry {
     config_sources: HashSet<(String, String)>,
     /// The config Sources with a `root` line, as (provider, source).
     rendered_roots: HashSet<(String, String)>,
+    /// The Sources each config Source's `data` line calls, as (provider,
+    /// source, called): checked against the Sources that exist once all are
+    /// registered.
+    data_calls: Vec<(String, String, Called)>,
+    /// One turn per instance for the callers that find it cold at once; an
+    /// entry lives only while someone holds it.
+    cold_locks: DashMap<(String, String, Option<String>), Arc<ColdLock>>,
+    /// The instances each instance's last run called, by (provider, source,
+    /// root): demanding an instance demands what it calls, so a Source called
+    /// only by one that is decaying decays with it.
+    callees: DashMap<(String, String, Option<String>), CalleeMap>,
 }
+
+/// The turn for a cold instance a call needs.
+#[derive(Default)]
+pub struct ColdLock {
+    /// How many runs have finished.
+    pub finished: std::sync::atomic::AtomicU64,
+    /// How the last run went.
+    /// A failure is its message and whether it is a fault of the lines.
+    pub last: std::sync::Mutex<Option<Result<(), (String, bool)>>>,
+}
+
+/// The instances a run called: (provider, source) to the roots reached.
+pub type CalleeMap = HashMap<(String, String), Vec<Option<String>>>;
 
 impl Default for ProviderRegistry {
     fn default() -> Self {
@@ -198,6 +293,9 @@ impl ProviderRegistry {
             ),
             config_sources: HashSet::new(),
             rendered_roots: HashSet::new(),
+            data_calls: Vec::new(),
+            cold_locks: DashMap::new(),
+            callees: DashMap::new(),
         }
     }
 
@@ -205,6 +303,111 @@ impl ProviderRegistry {
     /// facets that ride beside it, are made of.
     pub fn lines(&self) -> &ProviderLines {
         &self.lines
+    }
+
+    /// The turn to take before running a cold instance a call needs; give it
+    /// back with [`Self::release_cold`].
+    pub fn cold_lock(&self, provider: &str, source: &str, root: Option<&str>) -> Arc<ColdLock> {
+        self.cold_locks
+            .entry((provider.into(), source.into(), root.map(str::to_string)))
+            .or_default()
+            .clone()
+    }
+
+    /// Give back a turn; the entry goes once no one else holds it.
+    pub fn release_cold(
+        &self,
+        provider: &str,
+        source: &str,
+        root: Option<&str>,
+        lock: Arc<ColdLock>,
+    ) {
+        drop(lock);
+        self.cold_locks.remove_if(
+            &(provider.into(), source.into(), root.map(str::to_string)),
+            |_, held| Arc::strong_count(held) == 1,
+        );
+    }
+
+    /// Replace what the instance `caller` (provider, source, root) is known
+    /// to call with what its last run called: a callee it no longer calls is
+    /// no longer demanded with it. Nothing called removes the entry.
+    pub fn set_callees(&self, caller: (&str, &str, Option<&str>), called: CalleeMap) {
+        let key = (
+            caller.0.to_string(),
+            caller.1.to_string(),
+            caller.2.map(str::to_string),
+        );
+        if called.is_empty() {
+            self.callees.remove(&key);
+        } else {
+            self.callees.insert(key, called);
+        }
+    }
+
+    /// Forget what the instance at `root` called: the scheduler calls this
+    /// beside [`Self::forget_roots`] when the instance is evicted.
+    pub fn forget_callees(&self, provider: &str, source: &str, root: Option<&str>) {
+        self.callees
+            .remove(&(provider.into(), source.into(), root.map(str::to_string)));
+    }
+
+    /// The lifecycle keys of the instances called, by the keys of the
+    /// instances that call them: a callee is held while any of its callers is.
+    pub fn callers_of(
+        &self,
+    ) -> HashMap<crate::scheduler::lifecycle::Key, Vec<crate::scheduler::lifecycle::Key>> {
+        use crate::provider::source_call::instance_key;
+        let mut out: HashMap<_, Vec<_>> = HashMap::new();
+        for entry in self.callees.iter() {
+            let (provider, source, root) = entry.key();
+            let caller = instance_key(provider, source, root.as_deref());
+            for ((cp, cs), roots) in entry.value() {
+                for callee_root in roots {
+                    out.entry(instance_key(cp, cs, callee_root.as_deref()))
+                        .or_default()
+                        .push(caller.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// `instances` of `provider`, and the instances they called, and those
+    /// theirs: what a demand for them is a demand for.
+    pub fn with_callees(
+        &self,
+        provider: &str,
+        instances: &[crate::query::Instance],
+    ) -> Vec<(String, crate::query::Instance)> {
+        if self.callees.is_empty() {
+            return instances
+                .iter()
+                .map(|i| (provider.to_string(), i.clone()))
+                .collect();
+        }
+        let mut out: Vec<(String, crate::query::Instance)> = Vec::new();
+        let mut pending: Vec<(String, crate::query::Instance)> = instances
+            .iter()
+            .map(|i| (provider.to_string(), i.clone()))
+            .collect();
+        while let Some((p, instance)) = pending.pop() {
+            if out.iter().any(|(op, oi)| *op == p && *oi == instance) {
+                continue;
+            }
+            let key = (p.clone(), instance.source.clone(), instance.root.clone());
+            if let Some(called) = self.callees.get(&key) {
+                for ((cp, cs), roots) in called.iter() {
+                    for root in roots {
+                        pending
+                            .push((cp.clone(), crate::query::Instance::new(cs, root.as_deref())));
+                    }
+                }
+            }
+            out.push((p, instance));
+        }
+        out.reverse();
+        out
     }
 
     /// Share the registry the way a running daemon does: behind an `Arc`,
@@ -452,6 +655,12 @@ impl ProviderRegistry {
         }
         for source in sources {
             let key = (provider.to_string(), source.metadata().name.clone());
+            self.data_calls.extend(
+                source
+                    .calls()
+                    .iter()
+                    .map(|c| (key.0.clone(), key.1.clone(), c.clone())),
+            );
             if source.has_root() {
                 self.rendered_roots.insert(key.clone());
             }
@@ -783,6 +992,7 @@ impl ProviderRegistry {
 
         // ── Config Sources, and the built-ins a return retunes ────────────────
         let builtins: Vec<(String, String)> = registry.sources.keys().cloned().collect();
+        let mut sources_built = true;
         match registry.config_sources(config, vars) {
             Ok(ConfigSources { providers, retunes }) => {
                 for (name, sources) in providers {
@@ -792,7 +1002,10 @@ impl ProviderRegistry {
                 }
                 errors.extend(registry.retune_builtins(config, &builtins, &retunes));
             }
-            Err(e) => errors.extend(e),
+            Err(e) => {
+                sources_built = false;
+                errors.extend(e);
+            }
         }
 
         // ── Providers only the config names ───────────────────────────────────
@@ -804,8 +1017,66 @@ impl ProviderRegistry {
             registry.register_config_named(&name);
         }
 
+        // A Source that did not build is not registered, and every call to it
+        // would be a second error for the same fault.
+        if sources_built {
+            errors.extend(registry.check_calls());
+        }
         errors.extend(config.errors());
         ConfigLoad { registry, errors }
+    }
+
+    /// Every Source a line calls exists: a `data` line's and a provider's
+    /// `result` and `return`. Naming one that does not is a load error, naming
+    /// what is missing. So is a ring of Sources that call each other: every
+    /// call is named in a line, so the ring is known before anything runs.
+    fn check_calls(&self) -> Vec<String> {
+        let missing = |provider: &str, source: &str| -> Option<String> {
+            if !self.providers.contains_key(provider) {
+                return Some(format!("daemon.providers.{provider}: no such provider"));
+            }
+            (!self
+                .sources
+                .contains_key(&(provider.to_string(), source.to_string())))
+            .then(|| format!("daemon.providers.{provider}.sources.{source}: no such source"))
+        };
+        let mut errors = std::collections::BTreeSet::new();
+        let mut edges: std::collections::BTreeMap<(String, String), Vec<(String, String)>> =
+            Default::default();
+        for (provider, source, called) in &self.data_calls {
+            let target = match called {
+                Called::Sibling(s) => (provider.clone(), s.clone()),
+                Called::Of(p, s) => (p.clone(), s.clone()),
+            };
+            if let Some(what) = missing(&target.0, &target.1) {
+                errors.insert(format!("{provider}.{source}: data: {what}"));
+            } else {
+                edges
+                    .entry((provider.clone(), source.clone()))
+                    .or_default()
+                    .push(target);
+            }
+        }
+        for (at, owner, called) in self.lines.calls() {
+            let (provider, source) = match called {
+                Called::Of(p, s) => (p, s),
+                Called::Sibling(s) => match owner {
+                    Some(p) => (p, s),
+                    None => continue,
+                },
+            };
+            if let Some(what) = missing(&provider, &source) {
+                errors.insert(format!("{at}: {what}"));
+            }
+        }
+        if let Some(ring) = find_ring(&edges) {
+            let named: Vec<String> = ring.iter().map(|(p, s)| format!("{p}.{s}")).collect();
+            errors.insert(format!(
+                "Sources call each other in a ring: {}",
+                named.join(" -> ")
+            ));
+        }
+        errors.into_iter().collect()
     }
 
     /// Every built-in Source runs on `[daemon] budget.execute`; one whose
@@ -1553,5 +1824,306 @@ result.y = "{{ data }}"
         assert!(!reg.register_static("hostname"));
         assert!(reg.register_static("myvar"));
         assert!(reg.is_static_namespace("myvar"));
+    }
+
+    #[test]
+    fn a_call_to_an_unknown_provider_or_source_is_a_load_error() {
+        let config = crate::config::Config::from_toml(
+            "[daemon.providers.p.sources.s]\n\
+             data = \"{{ daemon.providers.nope.sources.t() ~ daemon.providers.p.sources.zip() \
+             ~ sources.gone() }}\"\n\
+             result.a = \"{{ data }}\"\n\
+             [daemon.providers.q]\n\
+             result = \"{{ merge(sources) | merge(daemon.providers.nope.sources.t()) \
+             | merge(sources.nope()) }}\"\n\
+             return = \"{{ result | merge(daemon.providers.p.sources.zap()) }}\"\n",
+        );
+        let errors = ProviderRegistry::load(&config, &Default::default()).errors;
+        assert_eq!(
+            errors,
+            vec![
+                "[daemon.providers.q] result: daemon.providers.nope: no such provider",
+                "[daemon.providers.q] result: daemon.providers.q.sources.nope: no such source",
+                "[daemon.providers.q] return: daemon.providers.p.sources.zap: no such source",
+                "p.s: data: daemon.providers.nope: no such provider",
+                "p.s: data: daemon.providers.p.sources.gone: no such source",
+                "p.s: data: daemon.providers.p.sources.zip: no such source",
+            ]
+        );
+    }
+
+    const RING: &str = "[daemon.providers.cyc.sources.a]\n\
+         data = \"{{ sources.b().xb }}\"\n\
+         result.xa = \"{{ data }}\"\n\
+         [daemon.providers.cyc.sources.b]\n\
+         data = \"{{ daemon.providers.other.sources.c().xc }}\"\n\
+         result.xb = \"{{ data }}\"\n\
+         [daemon.providers.other.sources.c]\n\
+         data = \"{{ daemon.providers.cyc.sources.a().xa }}\"\n\
+         result.xc = \"{{ data }}\"\n";
+
+    #[test]
+    fn sources_that_call_each_other_in_a_ring_are_a_load_error() {
+        let config = crate::config::Config::from_toml(RING);
+        let errors = ProviderRegistry::load(&config, &Default::default()).errors;
+        assert_eq!(
+            errors,
+            vec!["Sources call each other in a ring: cyc.a -> cyc.b -> other.c -> cyc.a"]
+        );
+    }
+
+    #[test]
+    fn a_ring_that_got_past_the_load_check_fails_when_run() {
+        let config = crate::config::Config::from_toml(RING);
+        let mut registry = ProviderRegistry::with_defaults();
+        let built = registry
+            .config_sources(&config, &Default::default())
+            .expect("the lines are fine");
+        for (name, sources) in built.providers {
+            registry.register_config_sources(&name, sources).unwrap();
+        }
+        let cache = Arc::new(Cache::new());
+        let registry = registry.share(&cache);
+        let err = crate::provider::source_call::source_call(
+            &registry,
+            &cache,
+            "cyc",
+            "a",
+            None,
+            crate::provider::source_call::Cold::Run,
+        )
+        .unwrap_err();
+        assert!(err.contains("sources: cyc.a calls itself"), "{err}");
+        assert!(err.matches("(in <expression>").count() <= 1, "{err}");
+    }
+
+    #[test]
+    fn a_call_on_the_read_path_never_renders_a_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let renders = dir.path().join("renders");
+        let config = crate::config::Config::from_toml(&format!(
+            "[daemon.providers.p.sources.s]\n\
+             root = \"{{{{ exec(['sh', '-c', 'echo r >> {}; echo {}']) | trim }}}}\"\n\
+             data = \"{{{{ 1 }}}}\"\n\
+             result.a = \"{{{{ data }}}}\"\n",
+            renders.display(),
+            dir.path().canonicalize().unwrap().display(),
+        ));
+        let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
+        let cache = Arc::new(Cache::new());
+        let registry = registry.share(&cache);
+        use crate::provider::source_call::{Cold, source_call};
+        let at = dir.path().canonicalize().unwrap();
+        let at = at.to_str().unwrap();
+        let skipped = source_call(&registry, &cache, "p", "s", Some(at), Cold::Skip).unwrap();
+        assert!(skipped.is_none(), "an unresolved instance is a miss");
+        assert!(!renders.exists(), "the root line was not rendered");
+        let ran = source_call(&registry, &cache, "p", "s", Some(at), Cold::Run).unwrap();
+        assert!(
+            ran.is_some() && renders.exists(),
+            "a call that may run does"
+        );
+        let skipped = source_call(&registry, &cache, "p", "s", Some(at), Cold::Skip).unwrap();
+        assert!(skipped.is_some(), "and then the root is kept, and read");
+    }
+
+    #[test]
+    fn a_source_that_did_not_build_is_not_reported_again_by_each_call() {
+        let config = crate::config::Config::from_toml(
+            "[daemon.providers.p.sources.a]\n\
+             data = \"{{ 1 }}\"\n\
+             result.x = \"{{ nowhere }}\"\n\
+             [daemon.providers.q.sources.b]\n\
+             data = \"{{ daemon.providers.p.sources.a() }}\"\n\
+             result.y = \"{{ data }}\"\n",
+        );
+        let errors = ProviderRegistry::load(&config, &Default::default()).errors;
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("p.a: "), "{errors:?}");
+    }
+
+    #[test]
+    fn callers_waiting_for_a_failing_cold_source_share_its_one_run() {
+        use crate::provider::source_call::{Cold, source_call};
+        let dir = tempfile::tempdir().unwrap();
+        let count = dir.path().join("runs");
+        let config = crate::config::Config::from_toml(&format!(
+            "[daemon.providers.p.sources.t]\n\
+             data = \"{{{{ exec(['sh', '-c', 'sleep 0.3; echo run >> {}; exit 3']) }}}}\"\n\
+             result.v = \"{{{{ data }}}}\"\n",
+            count.display()
+        ));
+        let cache = Arc::new(Cache::new());
+        let registry = ProviderRegistry::with_config(&config, &Default::default())
+            .unwrap()
+            .share(&cache);
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let callers: Vec<_> = (0..3)
+            .map(|_| {
+                let (registry, cache, start) = (registry.clone(), cache.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    source_call(&registry, &cache, "p", "t", None, Cold::Run)
+                })
+            })
+            .collect();
+        for caller in callers {
+            assert!(
+                caller.join().unwrap().unwrap().is_none(),
+                "a failed instance is a miss, not an error"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&count).unwrap().lines().count(),
+            1,
+            "the callers that waited did not each run it again"
+        );
+        assert!(
+            registry.cold_locks.is_empty(),
+            "no lock is kept past its callers"
+        );
+    }
+
+    /// The instances a demand for `p.a` is a demand for, as source names.
+    fn demanded_with(
+        registry: &ProviderRegistry,
+        source: &str,
+        root: &Option<String>,
+    ) -> Vec<String> {
+        let mut names: Vec<String> = registry
+            .with_callees("p", &[crate::query::Instance::new(source, root.as_deref())])
+            .into_iter()
+            .map(|(p, i)| format!("{p}.{}", i.source))
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn calling_registry(flag: &std::path::Path) -> (Arc<ProviderRegistry>, Arc<Cache>) {
+        let config = crate::config::Config::from_toml(&format!(
+            "[daemon.providers.p.sources.b]\n\
+             data = \"{{{{ 1 }}}}\"\n\
+             result.vb = \"{{{{ data }}}}\"\n\
+             [daemon.providers.p.sources.c]\n\
+             data = \"{{{{ 2 }}}}\"\n\
+             result.vc = \"{{{{ data }}}}\"\n\
+             [daemon.providers.p.sources.a]\n\
+             data = \"{{{{ sources.b().vb if 'b' in exec(['cat', '{}']) else sources.c().vc }}}}\"\n\
+             result.va = \"{{{{ data }}}}\"\n",
+            flag.display()
+        ));
+        let cache = Arc::new(Cache::new());
+        let registry = ProviderRegistry::with_config(&config, &Default::default())
+            .unwrap()
+            .share(&cache);
+        (registry, cache)
+    }
+
+    #[test]
+    fn a_caller_demands_only_what_its_last_run_called() {
+        let dir = tempfile::tempdir().unwrap();
+        let flag = dir.path().join("flag");
+        std::fs::write(&flag, "b").unwrap();
+        let (registry, _cache) = calling_registry(&flag);
+        let at = dir.path().to_str().unwrap();
+        let root = crate::query::normalise_path(Some(at));
+        let a = registry.source("p", "a").unwrap();
+
+        a.execute(Some(at)).unwrap();
+        assert_eq!(demanded_with(&registry, "a", &root), ["p.a", "p.b"]);
+
+        // The branch that called `b` is not taken: `b` is no longer demanded
+        // by a read of `a`.
+        std::fs::write(&flag, "c").unwrap();
+        a.execute(Some(at)).unwrap();
+        assert_eq!(demanded_with(&registry, "a", &root), ["p.a", "p.c"]);
+    }
+
+    #[test]
+    fn a_run_that_fails_replaces_what_the_caller_called_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let flag = dir.path().join("flag");
+        std::fs::write(&flag, "b").unwrap();
+        let (registry, _cache) = calling_registry(&flag);
+        let at = dir.path().to_str().unwrap();
+        let root = crate::query::normalise_path(Some(at));
+        let a = registry.source("p", "a").unwrap();
+        a.execute(Some(at)).unwrap();
+        assert_eq!(demanded_with(&registry, "a", &root), ["p.a", "p.b"]);
+
+        // `cat` of a file that is gone fails the line before any call is made.
+        std::fs::remove_file(&flag).unwrap();
+        assert!(a.execute(Some(at)).is_err());
+        assert_eq!(demanded_with(&registry, "a", &root), ["p.a"]);
+    }
+
+    #[test]
+    fn what_an_instance_called_is_forgotten_when_it_is_evicted() {
+        let dir = tempfile::tempdir().unwrap();
+        let flag = dir.path().join("flag");
+        std::fs::write(&flag, "b").unwrap();
+        let (registry, _cache) = calling_registry(&flag);
+        let at = dir.path().to_str().unwrap();
+        let root = crate::query::normalise_path(Some(at));
+        registry
+            .source("p", "a")
+            .unwrap()
+            .execute(Some(at))
+            .unwrap();
+        assert_eq!(registry.callers_of().len(), 1);
+
+        registry.forget_callees("p", "a", Some("/elsewhere"));
+        assert_eq!(registry.callers_of().len(), 1, "another instance's");
+        registry.forget_callees("p", "a", root.as_deref());
+        assert!(registry.callers_of().is_empty());
+        assert_eq!(demanded_with(&registry, "a", &root), ["p.a"]);
+    }
+
+    /// A caller that was waiting for the turn while a run failed finds the
+    /// instance in backoff when it gets the turn, and does not run it again.
+    #[test]
+    fn a_waiter_does_not_rerun_an_instance_a_run_just_failed() {
+        use crate::provider::source_call::{Cold, instance_key, source_call};
+        let config = crate::config::Config::from_toml(
+            "[daemon.providers.p.sources.t]\n\
+             data = \"{{ 1 }}\"\n\
+             result.v = \"{{ data }}\"\n",
+        );
+        let home = tempfile::tempdir().unwrap();
+        let vars = HashMap::from([("HOME".to_string(), home.path().display().to_string())]);
+        let cache = Arc::new(Cache::new());
+        let registry = ProviderRegistry::with_config(&config, &vars)
+            .unwrap()
+            .share(&cache);
+
+        // The runner holds the turn; the waiter has passed the backoff check
+        // and is blocked on it.
+        let lock = registry.cold_lock("p", "t", None);
+        let held = lock.last.lock().unwrap();
+        let waiter = {
+            let (registry, cache) = (registry.clone(), cache.clone());
+            std::thread::spawn(move || source_call(&registry, &cache, "p", "t", None, Cold::Run))
+        };
+        while Arc::strong_count(&lock) < 3 {
+            std::thread::yield_now();
+        }
+        // The run that failed ends: the instance goes into backoff.
+        registry
+            .failures
+            .lock()
+            .unwrap()
+            .entry(instance_key("p", "t", None))
+            .or_insert_with(|| {
+                crate::scheduler::FailureState::new(1, std::time::Duration::from_secs(3600))
+            })
+            .record_failure();
+        drop(held);
+
+        assert!(waiter.join().unwrap().unwrap().is_none());
+        // A run would have succeeded and stored its record.
+        assert!(
+            !cache.has_provider_records_for("p", None, "t"),
+            "the waiter did not run the instance that had just failed"
+        );
     }
 }

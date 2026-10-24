@@ -852,8 +852,11 @@ impl Scheduler {
                         }
                         Some(SchedulerMessage::QueryActivity { provider, instances }) => {
                             let now = Instant::now();
-                            for instance in &instances {
-                                let Some(sm) = self.registry.source_metadata(&provider, &instance.source) else {
+                            // A demand for an instance is a demand for the
+                            // instances it calls.
+                            let demanded = self.registry.with_callees(&provider, &instances);
+                            for (provider, instance) in &demanded {
+                                let Some(sm) = self.registry.source_metadata(provider, &instance.source) else {
                                     continue;
                                 };
                                 let root = instance.root.clone();
@@ -863,7 +866,7 @@ impl Scheduler {
                                     source: sm.name.clone(),
                                     node: String::new(),
                                 };
-                                let cfg = source_lifecycle_config(&self.cache, &provider, root.as_deref(), sm);
+                                let cfg = source_lifecycle_config(&self.cache, provider, root.as_deref(), sm);
                                 let outcome = lifecycle.on_demand(key.clone(), cfg, now);
 
                                 // The instance's schedule registers when it is
@@ -874,9 +877,9 @@ impl Scheduler {
                                     outcome.watch_registration,
                                     WatchAction::Register | WatchAction::Reinstate
                                 ) {
-                                    let src = self.registry.source(&provider, &sm.name);
+                                    let src = self.registry.source(provider, &sm.name);
                                     for (watch_path, sub) in instance_watches(
-                                        &provider,
+                                        provider,
                                         sm,
                                         root.as_deref(),
                                         src.as_deref(),
@@ -901,8 +904,8 @@ impl Scheduler {
                                 if matches!(outcome.transition, StateTransition::NewlyActive) {
                                     // Cold → Active: execute to populate the cache,
                                     // at the instance the lifecycle key names.
-                                    if self.cache.get_source(&provider, root.as_deref(), &sm.name).is_none() {
-                                        self.execute_source(&provider, &sm.name, root.as_deref());
+                                    if self.cache.get_source(provider, root.as_deref(), &sm.name).is_none() {
+                                        self.execute_source(provider, &sm.name, root.as_deref());
                                     }
                                 }
                             }
@@ -967,7 +970,7 @@ impl Scheduler {
                 // Poll tick — check which subscriptions are due.
                 _ = tick.tick() => {
                     self.heartbeat.fetch_add(1, Ordering::Relaxed);
-                    let actions = lifecycle.tick(Instant::now());
+                    let actions = lifecycle.tick_holding(Instant::now(), &self.registry.callers_of());
 
                     for key in &actions.polls_due {
                         debug!(
@@ -993,9 +996,7 @@ impl Scheduler {
                         // Evict only this source's contribution; the entry is removed
                         // only when its last source evicts (canon: lifecycle is keyed
                         // per (provider, path, source)).
-                        evict(&self.cache, key);
-                        self.registry
-                            .forget_roots(&key.provider, &key.source, key.path.as_deref());
+                        on_evicted(&self.cache, &self.registry, key);
                         drop_watches_for_key(key, &mut watch_paths, &mut fs_watcher);
                     }
 
@@ -1090,8 +1091,11 @@ impl Scheduler {
                         }
                         Some(SchedulerMessage::QueryActivity { provider, instances }) => {
                             let now = Instant::now();
-                            for instance in &instances {
-                                let Some(sm) = self.registry.source_metadata(&provider, &instance.source) else {
+                            // A demand for an instance is a demand for the
+                            // instances it calls.
+                            let demanded = self.registry.with_callees(&provider, &instances);
+                            for (provider, instance) in &demanded {
+                                let Some(sm) = self.registry.source_metadata(provider, &instance.source) else {
                                     continue;
                                 };
                                 let root = instance.root.clone();
@@ -1101,15 +1105,15 @@ impl Scheduler {
                                     source: sm.name.clone(),
                                     node: String::new(),
                                 };
-                                let cfg = source_lifecycle_config(&self.cache, &provider, root.as_deref(), sm);
+                                let cfg = source_lifecycle_config(&self.cache, provider, root.as_deref(), sm);
                                 let outcome = lifecycle.on_demand(key.clone(), cfg, now);
 
                                 // No filesystem watching in this path.
                                 let _ = outcome.watch_registration;
 
                                 if matches!(outcome.transition, StateTransition::NewlyActive)
-                                    && self.cache.get_source(&provider, root.as_deref(), &sm.name).is_none() {
-                                        self.execute_source(&provider, &sm.name, root.as_deref());
+                                    && self.cache.get_source(provider, root.as_deref(), &sm.name).is_none() {
+                                        self.execute_source(provider, &sm.name, root.as_deref());
                                     }
                             }
                             last_activity = now;
@@ -1122,7 +1126,7 @@ impl Scheduler {
                 }
                 _ = tick.tick() => {
                     self.heartbeat.fetch_add(1, Ordering::Relaxed);
-                    let actions = lifecycle.tick(Instant::now());
+                    let actions = lifecycle.tick_holding(Instant::now(), &self.registry.callers_of());
 
                     for key in &actions.polls_due {
                         if key.source == crate::cache::PUT_SOURCE {
@@ -1142,9 +1146,7 @@ impl Scheduler {
                         // Evict only this source's contribution; the entry is removed
                         // only when its last source evicts (canon: lifecycle is keyed
                         // per (provider, path, source)).
-                        evict(&self.cache, key);
-                        self.registry
-                            .forget_roots(&key.provider, &key.source, key.path.as_deref());
+                        on_evicted(&self.cache, &self.registry, key);
                     }
 
                     for (key, new_state) in &actions.transitions {
@@ -1358,6 +1360,14 @@ fn evict(cache: &Cache, key: &lifecycle::Key) {
     } else {
         cache.remove_source(&key.provider, key.path.as_deref(), &key.source);
     }
+}
+
+/// An instance left the lifecycle: take its records, the roots kept for it and
+/// what it was known to call.
+fn on_evicted(cache: &Cache, registry: &ProviderRegistry, key: &lifecycle::Key) {
+    evict(cache, key);
+    registry.forget_roots(&key.provider, &key.source, key.path.as_deref());
+    registry.forget_callees(&key.provider, &key.source, key.path.as_deref());
 }
 
 /// Resolve affected lifecycle keys from a set of changed paths using watch_paths + patterns.
@@ -1741,6 +1751,46 @@ mod tests {
             &root,
             Path::new("/proj"),
         ));
+    }
+
+    /// An instance that leaves the lifecycle takes with it what it was known
+    /// to call, and an instance of the same Source elsewhere keeps its own.
+    #[test]
+    fn an_evicted_instance_forgets_what_it_called() {
+        let config = crate::config::Config::from_toml(
+            "[daemon.providers.p.sources.b]\n\
+             data = \"{{ 1 }}\"\n\
+             result.vb = \"{{ data }}\"\n\
+             [daemon.providers.p.sources.a]\n\
+             data = \"{{ sources.b().vb }}\"\n\
+             result.va = \"{{ data }}\"\n",
+        );
+        let cache = Arc::new(Cache::new());
+        let registry = ProviderRegistry::with_config(&config, &Default::default())
+            .unwrap()
+            .share(&cache);
+        let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = registry.source("p", "a").unwrap();
+        let mut keys = Vec::new();
+        for dir in [&one, &two] {
+            let at = dir.path().to_str().unwrap();
+            a.execute(Some(at)).unwrap();
+            keys.push(lifecycle::Key {
+                provider: "p".into(),
+                path: crate::query::normalise_path(Some(at)),
+                source: "a".into(),
+                node: String::new(),
+            });
+        }
+        assert_eq!(registry.callers_of().values().next().unwrap().len(), 2);
+
+        on_evicted(&cache, &registry, &keys[0]);
+        assert_eq!(
+            registry.callers_of().values().next().unwrap(),
+            &[keys[1].clone()]
+        );
+        on_evicted(&cache, &registry, &keys[1]);
+        assert!(registry.callers_of().is_empty());
     }
 }
 

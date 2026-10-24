@@ -11,12 +11,20 @@
 //! | line | sees |
 //! |---|---|
 //! | `root` | `env`, `_` |
-//! | `data` | `env`, `comb`, `_` |
+//! | `data` | `env`, `comb`, `sources`, `daemon`, `_` |
 //! | `result.*` | `data`, `_` |
 //!
 //! A name outside that list is a load error, not a silent `none`.
+//!
+//! `data` calls other Sources: `sources.<s>()` for a sibling and
+//! `daemon.providers.<p>.sources.<s>()` for any provider's. A call answers
+//! with the called Source's record as a read from this instance's directory
+//! would find it (see [`crate::provider::source_call`]); one that has nothing
+//! stored is run inline, once. A Source cannot call itself, and a cycle through
+//! others is an error when it runs.
 
-use crate::engine::{PluginSet, daemon_engine_env};
+use crate::engine::{CallFn, Calls, PluginSet, daemon_engine_env};
+use crate::provider::source_call::{Called, Running, called_in};
 use crate::provider::{
     FieldSchema, FieldType, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
@@ -45,6 +53,23 @@ pub trait DaemonRead: Send + Sync {
         provider: &str,
         dir: Option<&str>,
     ) -> Result<Option<HashMap<String, Value>>, String>;
+
+    /// A run of the Source at `dir` has ended having called `called`: what the
+    /// daemon takes that instance to call from now on, in place of what its
+    /// last run called.
+    fn ran_calling(
+        &self,
+        provider: &str,
+        source: &str,
+        dir: Option<&str>,
+        called: crate::provider::registry::CalleeMap,
+    );
+
+    /// The record of `provider`'s Source `source` as a read from `dir` would
+    /// find it (`None`: nothing stored), running a cold instance inline once.
+    /// The caller is a `data` line, on a blocking thread.
+    fn call(&self, provider: &str, source: &str, dir: Option<&str>)
+    -> Result<Option<Json>, String>;
 }
 
 /// The `result` of a Source.
@@ -68,7 +93,7 @@ pub struct ConfigSourceSpec {
 }
 
 const ROOT_NAMES: &[&str] = &["env", "_"];
-const DATA_NAMES: &[&str] = &["env", "comb", "_"];
+const DATA_NAMES: &[&str] = &["env", "comb", "sources", "daemon", "_"];
 const RESULT_NAMES: &[&str] = &["data", "_"];
 
 pub struct ConfigSource {
@@ -79,12 +104,41 @@ pub struct ConfigSource {
     reader: Arc<dyn DaemonRead>,
     /// The providers the `data` line reads through `comb`, each once.
     comb_providers: Vec<String>,
+    /// The Sources the `data` line calls.
+    calls: Vec<Called>,
 }
 
 /// `<provider>.<source>: <stage>: <message>`: the one shape of every error,
 /// at load and at run.
 fn stage_error(spec: &ConfigSourceSpec, stage: &str, message: impl std::fmt::Display) -> String {
-    format!("{}.{}: {stage}: {message}", spec.provider, spec.name)
+    format!(
+        "{}.{}: {stage}: {}",
+        spec.provider,
+        spec.name,
+        without_engine_frame(&message.to_string())
+    )
+}
+
+/// `message` without the frame the engine put round an error it raised: a
+/// leading `invalid operation: ` and a trailing ` (in <expression>:1)`. Only
+/// those two places, once: the text between is the error's own, a command's
+/// stderr included, and is not touched. A render that fails because a Source it
+/// calls failed would otherwise show the frame once per Source down the chain.
+fn without_engine_frame(message: &str) -> String {
+    let body = message
+        .strip_prefix("invalid operation: ")
+        .unwrap_or(message);
+    if let Some(open) = body.rfind(" (in <")
+        && let Some(rest) = body[open..].strip_suffix(')')
+        && let Some((place, line)) = rest[" (in <".len()..].split_once(">:")
+        && !place.is_empty()
+        && place.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+        && !line.is_empty()
+        && line.chars().all(|c| c.is_ascii_digit())
+    {
+        return body[..open].to_string();
+    }
+    body.to_string()
 }
 
 /// The load check of a Source's lines: every name a line reads is one its
@@ -134,6 +188,13 @@ pub fn lint_lines(
                  a whole are not supported"
             ));
         }
+        if used.contains("sources") {
+            return Err(format!(
+                "{who}: data: a sibling Source is called, sources.<source>(); sources[...] and \
+                 sources as a whole are not supported"
+            ));
+        }
+        called_in(&probe, data).map_err(|e| format!("{who}: data: {e}"))?;
     }
     Ok(())
 }
@@ -211,6 +272,17 @@ impl ConfigSource {
             .into_iter()
             .collect();
 
+        let who = format!("{}.{}", spec.provider, spec.name);
+        let calls = called_in(&engine(&env, &plugins, None), &spec.data)
+            .map_err(|e| format!("{who}: data: {e}"))?;
+        let itself = |c: &Called| match c {
+            Called::Sibling(s) => *s == spec.name,
+            Called::Of(p, s) => *p == spec.provider && *s == spec.name,
+        };
+        if calls.iter().any(itself) {
+            return Err(format!("{who}: data: {who} cannot call itself"));
+        }
+
         let recorded = &spec.recorded;
         // With no `root` there is one instance, at `~`, and no directory a
         // relative watch path could be resolved against: it would watch
@@ -252,7 +324,13 @@ impl ConfigSource {
             plugins,
             reader,
             comb_providers,
+            calls,
         })
+    }
+
+    /// The Sources the `data` line calls.
+    pub fn calls(&self) -> &[Called] {
+        &self.calls
     }
 
     /// The `~` instance's directory: the daemon's own `HOME`.
@@ -287,7 +365,23 @@ impl ConfigSource {
         Ok(comb.into())
     }
 
+    /// Run the lines, and when the run ends, however it ends, say what it
+    /// called: that, and no more, is what this instance calls.
     fn run(&self, path: Option<&str>) -> Result<SourceResult, String> {
+        let running = Running::enter(&self.spec.provider, &self.spec.name);
+        let result = self.run_lines(path);
+        if !self.calls.is_empty() {
+            self.reader.ran_calling(
+                &self.spec.provider,
+                &self.spec.name,
+                path,
+                running.take_calls(),
+            );
+        }
+        result
+    }
+
+    fn run_lines(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let cwd: PathBuf = match path {
             Some(p) => p.into(),
             None => self
@@ -301,7 +395,17 @@ impl ConfigSource {
                 })?
                 .into(),
         };
-        let jinja = engine(&self.env, &self.plugins, Some(cwd));
+        let mut jinja = engine(&self.env, &self.plugins, Some(cwd));
+        if !self.calls.is_empty() {
+            let (reader, dir) = (self.reader.clone(), path.map(str::to_string));
+            let call: CallFn =
+                Arc::new(move |provider, source| reader.call(provider, source, dir.as_deref()));
+            jinja.add_global(
+                "sources",
+                Calls::sources_of(&self.spec.provider, call.clone()),
+            );
+            jinja.add_global("daemon", Calls::daemon(call));
+        }
         let data_context = json!({
             "env": &*self.env,
             "comb": self.comb(path)?,
@@ -413,9 +517,38 @@ mod tests {
     struct FakeReader {
         calls: Mutex<Vec<(String, Option<String>)>>,
         answer: HashMap<String, HashMap<String, Value>>,
+        /// `(provider, source, dir)` of each Source call.
+        called: Mutex<Vec<(String, String, Option<String>)>>,
+        records: HashMap<(String, String), Json>,
     }
 
     impl DaemonRead for FakeReader {
+        fn ran_calling(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+            _: crate::provider::registry::CalleeMap,
+        ) {
+        }
+
+        fn call(
+            &self,
+            provider: &str,
+            source: &str,
+            dir: Option<&str>,
+        ) -> Result<Option<Json>, String> {
+            self.called.lock().unwrap().push((
+                provider.to_string(),
+                source.to_string(),
+                dir.map(str::to_string),
+            ));
+            Ok(self
+                .records
+                .get(&(provider.to_string(), source.to_string()))
+                .cloned())
+        }
+
         fn read(
             &self,
             provider: &str,
@@ -829,6 +962,17 @@ mod tests {
     fn a_comb_read_error_fails_the_data_render() {
         struct Failing;
         impl DaemonRead for Failing {
+            fn ran_calling(
+                &self,
+                _: &str,
+                _: &str,
+                _: Option<&str>,
+                _: crate::provider::registry::CalleeMap,
+            ) {
+            }
+            fn call(&self, _: &str, _: &str, _: Option<&str>) -> Result<Option<Json>, String> {
+                Ok(None)
+            }
             fn read(
                 &self,
                 _provider: &str,
@@ -882,13 +1026,13 @@ mod tests {
                 "comb",
             ),
             (
-                spec(None, "{{ sources.other() }}", fields(&[("a", "1")])),
-                "data:",
+                spec(None, "x", fields(&[("a", "{{ sources.other() }}")])),
+                "result.a:",
                 "sources",
             ),
             (
-                spec(None, "{{ daemon.x }}", fields(&[("a", "1")])),
-                "data:",
+                spec(Some("{{ daemon.x }}"), "x", fields(&[("a", "1")])),
+                "root:",
                 "daemon",
             ),
             (
@@ -965,5 +1109,87 @@ mod tests {
         let err = src.run(None).unwrap_err();
         assert!(!err.contains("secret-token"), "{err}");
         assert!(err.starts_with("demo.s: result: "), "{err}");
+    }
+
+    #[test]
+    fn sources_call_reads_a_siblings_record() {
+        let reader = Arc::new(FakeReader {
+            records: HashMap::from([
+                (("demo".into(), "other".into()), json!({"x": 4})),
+                (("zed".into(), "t".into()), json!({"y": 5})),
+            ]),
+            ..Default::default()
+        });
+        let src = build(
+            spec(
+                None,
+                "{{ sources.other().x + daemon.providers.zed.sources.t().y }}",
+                fields(&[("out", "{{ data }}")]),
+            ),
+            reader.clone(),
+        );
+        let got = src.execute(Some("/w")).unwrap().fields;
+        assert_eq!(got.get("out"), Some(&Value::Int(9)));
+        assert_eq!(
+            *reader.called.lock().unwrap(),
+            vec![
+                (
+                    "demo".to_string(),
+                    "other".to_string(),
+                    Some("/w".to_string())
+                ),
+                ("zed".to_string(), "t".to_string(), Some("/w".to_string())),
+            ],
+            "each call asks for the Source at the directory this one runs for"
+        );
+    }
+
+    #[test]
+    fn a_source_calling_itself_is_a_load_error() {
+        for line in [
+            "{{ sources.s().x }}",
+            "{{ daemon.providers.demo.sources.s().x }}",
+        ] {
+            let err = new_err(spec(None, line, fields(&[("a", "{{ data }}")])));
+            assert_eq!(err, "demo.s: data: demo.s cannot call itself", "{line}");
+        }
+        // Another provider's Source of the same name is not itself.
+        source(spec(
+            None,
+            "{{ daemon.providers.other.sources.s() }}",
+            fields(&[("a", "{{ data }}")]),
+        ));
+    }
+
+    #[test]
+    fn a_source_is_called_the_one_way() {
+        for line in ["{{ sources }}", "{{ sources['b'] }}", "{{ daemon }}"] {
+            let err = new_err(spec(None, line, fields(&[("a", "{{ data }}")])));
+            assert!(err.starts_with("demo.s: data: "), "{line}: {err}");
+        }
+    }
+
+    #[test]
+    fn only_the_engines_own_frame_is_taken_off_an_error() {
+        assert_eq!(
+            without_engine_frame("invalid operation: boom (in <expression>:1)"),
+            "boom"
+        );
+        assert_eq!(
+            without_engine_frame("invalid operation: boom (in <template>:12)"),
+            "boom"
+        );
+        for kept in [
+            "sh said invalid operation: nope (in the middle) and went on",
+            "a command wrote (in <expression>:1) in its stderr and then more",
+            "plain",
+        ] {
+            assert_eq!(without_engine_frame(kept), kept);
+        }
+        assert_eq!(
+            without_engine_frame("invalid operation: x: invalid operation: y (in <expression>:1)"),
+            "x: invalid operation: y",
+            "once: the text between is the error's own"
+        );
     }
 }

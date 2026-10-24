@@ -315,6 +315,112 @@ impl Object for SourceCall {
     }
 }
 
+/// What a call to a Source gives: its record, none when it has nothing, or why
+/// it could not be read.
+pub type CallResult = Result<Option<serde_json::Value>, String>;
+
+/// What answers a call to a Source: `(provider, source)` to its record, or
+/// none when it has nothing.
+pub type CallFn = Arc<dyn Fn(&str, &str) -> CallResult + Send + Sync>;
+
+/// Where in `daemon.providers.<p>.sources.<s>` a [`Calls`] stands.
+#[derive(Clone)]
+enum Level {
+    Daemon,
+    Providers,
+    Provider(String),
+    Sources(String),
+}
+
+/// The callable tree a line reads Sources through: `daemon.providers.<p>.
+/// sources.<s>()`, and, from a Source's `data` line, `sources.<s>()` over its
+/// own provider's. A call gives the Source's record (none when it has none);
+/// what a call does when the Source has nothing stored is `call`'s.
+pub struct Calls {
+    call: CallFn,
+    level: Level,
+}
+
+impl Calls {
+    /// `daemon`.
+    pub fn daemon(call: CallFn) -> MjValue {
+        MjValue::from_object(Self {
+            call,
+            level: Level::Daemon,
+        })
+    }
+
+    /// `sources`, over `provider`'s Sources.
+    pub fn sources_of(provider: &str, call: CallFn) -> MjValue {
+        MjValue::from_object(Self {
+            call,
+            level: Level::Sources(provider.to_string()),
+        })
+    }
+}
+
+impl std::fmt::Debug for Calls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Calls")
+    }
+}
+
+impl Object for Calls {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Plain
+    }
+
+    fn get_value(self: &Arc<Self>, key: &MjValue) -> Option<MjValue> {
+        let key = key.as_str()?;
+        let level = match &self.level {
+            Level::Daemon if key == "providers" => Level::Providers,
+            Level::Providers => Level::Provider(key.to_string()),
+            Level::Provider(p) if key == "sources" => Level::Sources(p.clone()),
+            Level::Sources(p) => {
+                return Some(MjValue::from_object(Call {
+                    call: self.call.clone(),
+                    provider: p.clone(),
+                    source: key.to_string(),
+                }));
+            }
+            _ => return None,
+        };
+        Some(MjValue::from_object(Self {
+            call: self.call.clone(),
+            level,
+        }))
+    }
+}
+
+/// One Source of [`Calls`], callable.
+struct Call {
+    call: CallFn,
+    provider: String,
+    source: String,
+}
+
+impl std::fmt::Debug for Call {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Call({}.{})", self.provider, self.source)
+    }
+}
+
+impl Object for Call {
+    fn repr(self: &Arc<Self>) -> ObjectRepr {
+        ObjectRepr::Plain
+    }
+
+    fn call(self: &Arc<Self>, _state: &State<'_, '_>, args: &[MjValue]) -> Result<MjValue, Error> {
+        if !args.is_empty() {
+            return Err(op_error("a Source takes no arguments"));
+        }
+        match (self.call)(&self.provider, &self.source).map_err(op_error)? {
+            Some(record) => Ok(MjValue::from_serialize(record)),
+            None => Ok(MjValue::from(())),
+        }
+    }
+}
+
 /// The address without userinfo, query or fragment: tokens like
 /// `user:token@` or `?api_key=` must not reach the daemon's logs.
 fn redacted(address: &str) -> String {

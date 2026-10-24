@@ -388,3 +388,69 @@ async fn integration_repeated_queries_keep_data_warm() {
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;
 }
+
+/// A Source that is called is demanded when its caller is read, and only then:
+/// a run of the caller (a poll of a caller that is decaying) does not keep it
+/// at full speed, so the two decay together.
+#[tokio::test]
+async fn a_called_sources_demand_follows_its_callers_reads() {
+    use beachcomber::provider::source_call::{Cold, source_call};
+    use beachcomber::scheduler::lifecycle::Key;
+
+    let config = Config::from_toml(
+        r#"
+[daemon.providers.callee.sources.t]
+data = "{{ 1 }}"
+result.v = "{{ data }}"
+
+[daemon.providers.caller.sources.s]
+data = "{{ daemon.providers.callee.sources.t().v }}"
+result.x = "{{ data }}"
+"#,
+    );
+    let cache = Arc::new(Cache::new());
+    let registry = ProviderRegistry::with_config(&config, &Default::default())
+        .expect("loads")
+        .share(&cache);
+    let (handle, mut scheduler) = Scheduler::new(
+        cache.clone(),
+        registry.clone(),
+        config,
+        Arc::new(WatcherRegistry::new()),
+    );
+    scheduler.use_polling_watcher(Duration::from_millis(50));
+    let sched_task = tokio::spawn(async move { scheduler.run().await });
+
+    let key = |provider: &str, source: &str| Key {
+        provider: provider.into(),
+        path: None,
+        source: source.into(),
+        node: String::new(),
+    };
+
+    // The caller runs, as a poll of it does, and calls the callee.
+    let ran = source_call(&registry, &cache, "caller", "s", None, Cold::Run).expect("runs");
+    assert!(ran.is_some());
+    let snapshots = handle.get_lifecycle_snapshots().await;
+    assert!(
+        !snapshots.contains_key(&key("callee", "t")),
+        "a run of the caller is not a read: it demands nothing"
+    );
+
+    // A read of the caller demands it, and what it calls with it.
+    handle
+        .send(SchedulerMessage::QueryActivity {
+            provider: "caller".into(),
+            instances: vec![Instance::new("s", None)],
+        })
+        .await;
+    let snapshots = handle.get_lifecycle_snapshots().await;
+    for (provider, source) in [("caller", "s"), ("callee", "t")] {
+        let snapshot = snapshots
+            .get(&key(provider, source))
+            .unwrap_or_else(|| panic!("{provider}.{source} is demanded with its caller"));
+        assert_eq!(snapshot.decay, 0, "{provider}.{source} starts Active");
+    }
+
+    sched_task.abort();
+}
