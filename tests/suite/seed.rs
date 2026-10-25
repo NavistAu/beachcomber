@@ -765,6 +765,65 @@ async fn a_facet_only_edit_re_seeds_in_place_and_leaves_put_records_alone() {
     );
 }
 
+/// The `age_ms` of the `status` row for `provider`.`field`.
+async fn row_age(stream: &mut UnixStream, provider: &str, field: &str) -> u64 {
+    let resp = send_recv(stream, json!({"op": "status"})).await;
+    resp["data"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter().find_map(|r| {
+                (r["provider"] == json!(provider) && r["field"] == json!(field))
+                    .then(|| r["age_ms"].as_u64())
+                    .flatten()
+            })
+        })
+        .unwrap_or_else(|| panic!("no {provider}.{field} row: {resp}"))
+}
+
+/// A reload reseeds every namespace, but a file whose records in a namespace
+/// come back unchanged keeps their age: AGE says when that configuration
+/// last changed, not when the daemon last reloaded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reload_keeps_the_age_of_records_it_did_not_change() {
+    let e = Env::new(
+        "[client.providers.other]\ntemplate.x = \"kept\"\n",
+        &[("10-mine.toml", RESEED_V1)],
+    );
+    let _h = e.serve().await;
+    let mut s = e.connect().await;
+
+    crate::common::poll::poll_until_async(
+        "other:template.x",
+        "an age the reload could visibly reset",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        async || row_age(&mut s, "other:template", "x").await,
+        |age| *age >= 300,
+    )
+    .await;
+    rewrite(&e.drop_in("10-mine.toml"), RESEED_V2);
+    crate::common::poll::poll_until_async(
+        "scanline:template.title",
+        "the edited value",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        async || data(&mut s, "scanline:template.title").await,
+        |v| *v == json!("t2"),
+    )
+    .await;
+
+    let untouched = row_age(&mut s, "other:template", "x").await;
+    let edited = row_age(&mut s, "scanline:template", "title").await;
+    assert!(
+        untouched >= 300,
+        "another file's unchanged record keeps its age, got {untouched} ms"
+    );
+    assert!(
+        edited < untouched,
+        "the edited file's records restamp ({edited} ms vs {untouched} ms)"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_watch_wakes_on_a_config_edit() {
     let e = Env::new("", &[("10-mine.toml", RESEED_V1)]);

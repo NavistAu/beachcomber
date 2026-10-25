@@ -1129,6 +1129,11 @@ impl Cache {
     ///
     /// An empty `writes` is a removal: the namespace's config records go and
     /// nothing replaces them.
+    ///
+    /// A label whose records here come back exactly as they were keeps its
+    /// time: a record's age says when its file last changed it, not when the
+    /// daemon last reloaded. Ages are per label map, so an edit to one leaf
+    /// of a file restamps that file's other records in this namespace too.
     pub fn reseed_static(
         &self,
         namespace: &str,
@@ -1158,10 +1163,25 @@ impl Cache {
         match self.entries.entry(key) {
             dashmap::Entry::Occupied(mut occupied) => {
                 let entry = occupied.get_mut();
+                let before: HashMap<String, (HashMap<String, Value>, Instant)> = entry
+                    .sources
+                    .iter()
+                    .filter(|(name, _)| {
+                        is_static_label(name) && name.starts_with(drop_label_prefix)
+                    })
+                    .map(|(name, src)| (name.clone(), (src.fields.clone(), src.last_refreshed)))
+                    .collect();
                 changed |= drop_labelled(entry, drop_label_prefix);
                 for (label, leaves) in planned {
                     changed |= !leaves.is_empty();
                     apply_static_write(entry, &label, "", leaves, None, now);
+                }
+                for (name, src) in entry.sources.iter_mut() {
+                    if let Some((fields, at)) = before.get(name)
+                        && *fields == src.fields
+                    {
+                        src.last_refreshed = *at;
+                    }
                 }
                 if occupied.get().sources.is_empty() {
                     occupied.remove();
