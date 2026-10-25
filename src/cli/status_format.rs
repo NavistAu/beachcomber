@@ -1011,15 +1011,32 @@ pub struct ChildMark {
     pub template: bool,
 }
 
+/// The branch glyph of a row hanging under the one above: `├─`, or `└─` for
+/// the last, and `|-` / `` `- `` under `--ascii`. Every tree comb draws
+/// (`status --tree`, `check config --origins`) uses it.
+pub fn tree_branch(last: bool, ascii: bool) -> &'static str {
+    match (last, ascii) {
+        (false, false) => "\u{251c}\u{2500}",
+        (true, false) => "\u{2514}\u{2500}",
+        (false, true) => "|-",
+        (true, true) => "`-",
+    }
+}
+
+/// `s` dimmed when colour is on, as a shadowed tree row is.
+pub fn dim(s: &str, color_enabled: bool) -> String {
+    ansi::wrap(s, ansi::Color::Dim, color_enabled)
+}
+
+/// `s` in bold when colour is on, as a table's header is.
+pub fn bold(s: &str, color_enabled: bool) -> String {
+    ansi::wrap(s, ansi::Color::Bold, color_enabled)
+}
+
 impl ChildMark {
     /// The branch glyph that leads the FIELD cell.
     fn glyph(self, ascii: bool) -> &'static str {
-        match (self.last, ascii) {
-            (false, false) => "\u{251c}\u{2500}",
-            (true, false) => "\u{2514}\u{2500}",
-            (false, true) => "|-",
-            (true, true) => "`-",
-        }
+        tree_branch(self.last, ascii)
     }
 
     /// The FIELD cell: the branch glyph, hanging under the field name above,
@@ -1284,7 +1301,7 @@ fn row_is_tainted(row: &CacheRow, path: &str, value: &str) -> bool {
 /// range — to the replacement character. Every stand-in is exactly one char
 /// wide, so sanitizing never shifts a column. `--ascii` collapses the lot to
 /// `?`, the pictures being non-ASCII themselves.
-fn sanitize_cell(s: &str, ascii: bool) -> String {
+pub fn sanitize_cell(s: &str, ascii: bool) -> String {
     if !s.chars().any(char::is_control) {
         return s.to_string();
     }

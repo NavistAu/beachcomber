@@ -472,6 +472,7 @@ comb c                   # aggregate across all subjects
 comb c daemon            # daemon health: pid, version, uptime, request counts, watchers
 comb c providers         # provider health and failure-suppress state
 comb c config            # validate config file syntax
+comb c config --origins  # every config key, the file that set it, what it overrode
 comb c cache             # cache entries, staleness, hit/miss summary
 comb c lifecycle         # keys in the decay/drain sequence
 comb c watches           # active filesystem watch registrations
@@ -483,6 +484,18 @@ comb c procs             # 1-minute process snapshot, categorize against provide
 Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
 
 `comb c config` validates the composed configuration locally as well as relaying the daemon's view, and reports the managed `defaults/` directory without writing any defaults (a `.comb-probe.<pid>` write probe is created and removed to test writability): `[PASS] local    defaults <dir> (9 files, comb <version>)` when every shipped file is current, `[WARN]` when shipped files are missing or stale (the daemon writes them on its next start) or when the directory holds files `comb` did not write, and `[FAIL]` when the directory is not writable.
+
+`comb c config --origins [KEY]` shows how the composed configuration came together instead, read from the files with no daemon (so it works when the daemon cannot start). Every leaf of the composition — `[daemon]` settings, Source and provider lines, `_` prototypes, `enabled`, `cache._.decay`, `[client.providers.*] template.*` — is a row: its key in key form (`daemon.providers.git.sources._.return`, a name holding a `.` as `template['a.b']`), the file that set it, and its value. Beneath it, every earlier file that set the same leaf and was overridden is marked `shadowed`, the one it overrode first: `conf.d/` files from last to first, then `config.toml`, then `defaults/`. A setting no file sets but `comb` gives a value of its own (`daemon.log_level`, `daemon.provider_timeout_secs`, `daemon.budget.execute`, `daemon.plugin.path`) shows `default` as its file. `KEY` limits the rows to that key and what is below it (`--origins daemon.providers.git`, `--origins 'client.providers.aws.template.profile'`).
+
+```
+$ comb c config --origins client.providers.aws.template.profile
+  KEY                                    FILE                                       VALUE
+  client.providers.aws.template.profile  ~/.config/beachcomber/conf.d/10-mine.toml  {{ env.MY_PROFILE or 'mine' }}
+  ├─ shadowed                            ~/.config/beachcomber/config.toml          {{ 'from-config' }}
+  └─ shadowed                            ~/.config/beachcomber/defaults/aws.toml    {{ env.AWS_PROFILE or … }}
+```
+
+`-f json` prints one object per leaf, `{"key", "value", "file", "shadowed": [{"file", "value"}…]}`, with `file` the absolute path or `null` for a default; `--color auto|always|never` (`NO_COLOR` honoured) and `--ascii` work as for `comb status --tree`, which this view draws like. A file that cannot be read or parsed, or breaks a rule, is reported beneath the rows as `comb c config` reports it (on stderr beside `-f json`) and exits `2`; the files that did load are still shown.
 
 `--connect-timeout <DURATION>` bounds how long the check keeps trying to reach the daemon before reporting it unreachable (default `1s`; `0` for a single attempt, or e.g. `250ms`, `2s`). Retries start 5ms apart and double, so a daemon that is mid-restart is reached as soon as it binds. The option is accepted before or after the subcommand: `comb c --connect-timeout 0 daemon`.
 

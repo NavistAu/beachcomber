@@ -37,7 +37,36 @@ pub enum CheckCommands {
     /// Check daemon connectivity and stats
     Daemon,
     /// Show config path and parse status
-    Config,
+    Config {
+        /// Show how the composed configuration came together instead: every
+        /// key, the file that set it, and the earlier files it overrode
+        /// (marked shadowed). With KEY, only that key and what is below it.
+        /// Read from the files; needs no daemon
+        #[arg(long, value_name = "KEY", num_args = 0..=1, default_missing_value = "")]
+        origins: Option<String>,
+        /// Output format for --origins
+        #[arg(
+            short,
+            long,
+            value_name = "FORMAT",
+            default_value = "human",
+            value_parser = ["human", "json"],
+            requires = "origins"
+        )]
+        format: String,
+        /// Colour for --origins: auto, always or never
+        #[arg(
+            long,
+            value_name = "WHEN",
+            default_value = "auto",
+            value_parser = ["auto", "always", "never"],
+            requires = "origins"
+        )]
+        color: String,
+        /// ASCII glyphs for --origins
+        #[arg(long, requires = "origins")]
+        ascii: bool,
+    },
     /// Check provider health and lifecycle state
     Providers,
     /// Check cache entry counts and staleness
@@ -75,10 +104,20 @@ pub fn run_check(
         "procs",
     ];
 
+    if let Some(CheckCommands::Config {
+        origins: Some(key),
+        format,
+        color,
+        ascii,
+    }) = &check_cmd
+    {
+        return run_origins(config, key, format, color, *ascii);
+    }
+
     let (subjects, procs_duration): (Vec<&str>, Option<u64>) = match &check_cmd {
         None | Some(CheckCommands::All) => (ALL_SUBJECTS.to_vec(), None),
         Some(CheckCommands::Daemon) => (vec!["daemon"], None),
-        Some(CheckCommands::Config) => (vec!["config"], None),
+        Some(CheckCommands::Config { .. }) => (vec!["config"], None),
         Some(CheckCommands::Providers) => (vec!["providers"], None),
         Some(CheckCommands::Cache) => (vec!["cache"], None),
         Some(CheckCommands::Lifecycle) => (vec!["lifecycle"], None),
@@ -89,6 +128,56 @@ pub fn run_check(
     };
 
     let worst = run_check_subjects(config, &subjects, procs_duration, connect_timeout);
+    ExitCode::from(worst)
+}
+
+/// `comb check config --origins [KEY]`: how the composed configuration came
+/// together, read from the files with no daemon. A file that could not be
+/// read or parsed, or breaks a rule, is reported as `check config` reports it
+/// — in the human table's place beneath it, or on stderr beside JSON — and
+/// fails the check; the files that did load are still shown.
+fn run_origins(config: &Config, key: &str, format: &str, color: &str, ascii: bool) -> ExitCode {
+    use crate::cli::config_origins;
+    use crate::cli::status_format::{ColorMode, resolve_color};
+    use std::io::IsTerminal;
+
+    let origins = match config_origins::select(config_origins::origins(config), key) {
+        Ok(origins) => origins,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::from(2);
+        }
+    };
+    let errors: Vec<serde_json::Value> = config
+        .errors()
+        .into_iter()
+        .map(|e| serde_json::json!({"level": "FAIL", "message": e}))
+        .collect();
+    let (error_lines, worst) = render_verdicts(&errors, Some(LOCAL_VIEW));
+
+    if format == "json" {
+        print!("{}", config_origins::render_json(&origins));
+        eprint!("{error_lines}");
+    } else {
+        let mode = match color {
+            "always" => ColorMode::Always,
+            "never" => ColorMode::Never,
+            _ => ColorMode::Auto,
+        };
+        let color = resolve_color(
+            mode,
+            std::env::var("NO_COLOR").is_ok(),
+            std::io::stdout().is_terminal(),
+        );
+        if origins.is_empty() {
+            println!("  (nothing in the configuration is at or below {key})");
+        } else {
+            print!("{}", config_origins::render_human(&origins, color, ascii));
+        }
+        if !error_lines.is_empty() {
+            print!("\nConfig\n{error_lines}");
+        }
+    }
     ExitCode::from(worst)
 }
 

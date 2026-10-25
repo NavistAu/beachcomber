@@ -326,6 +326,9 @@ Composition rules:
   concatenated).
 - `config.toml` itself is optional; `conf.d/*.toml` files compose fine with
   no main file present.
+- `comb check config --origins [KEY]` shows the result: every key, the file
+  that set it, and each earlier file it overrode, marked `shadowed`; a setting
+  no file sets shows `default` (see [CLI Commands](/docs/reference/cli-commands)).
 - A file that is not valid TOML is an **error** naming the file, in
   `config.toml`, `conf.d/` or `defaults/`: the daemon refuses to start on it
   and `comb check config` fails. It is never skipped.
