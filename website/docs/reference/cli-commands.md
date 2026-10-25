@@ -40,7 +40,7 @@ Query a value. Returns cached data immediately. On a cold cache (first query for
 
 **Flags:** `--force` (trigger immediate recomputation before returning), `--wait` (block until a fresh value arrives), `--path <dir>` (query a directory other than the current one), `--global` (query the global entry, `$HOME`). Multiple keys can be passed in a single connection (variadic).
 
-**Path:** with no `--path` and no trailing path positional, `get` queries the current working directory. A read at a directory resolves data stored by `put` (and by config) up the directory chain to `$HOME`, the nearest write winning; a provider's own data stays where its source scope puts it. `--global` reads `$HOME` alone and cannot be combined with a path.
+**Path:** after at least one key, a last argument that starts with `/`, `~` or `.` is the directory to read from (`comb g git.branch .`, `comb g git "$PWD"`); no key starts with those, so a key holding a `/` (`mise.npm:@scope/pkg`) is always a key, and a lone argument is always a key. A leading `~` the shell left unexpanded (it was quoted) is `$HOME`. With no `--path` and no such argument, `get` queries the current working directory. A read at a directory resolves data stored by `put` (and by config) up the directory chain to `$HOME`, the nearest write winning; a provider's own data stays where its source scope puts it. `--global` reads `$HOME` alone and cannot be combined with a path.
 
 **Key addressing forms:**
 

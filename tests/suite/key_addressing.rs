@@ -441,6 +441,46 @@ result."c.d" = "{{ data }}"
         }
     }
 
+    /// A key holding a `/` is a key, alone or last: only an argument that
+    /// starts with `/`, `~` or `.` is the directory.
+    #[test]
+    fn a_key_holding_a_slash_is_never_taken_for_the_directory() {
+        let (d, cwd) = mise_daemon();
+        let gopls = "mise['go:golang.org/x/tools/gopls']";
+
+        let alone = d.comb(&cwd).args(["get", gopls]).assert().success();
+        assert_eq!(
+            String::from_utf8_lossy(&alone.get_output().stdout),
+            "0.16.0"
+        );
+
+        let last = d
+            .comb(&cwd)
+            .args(["get", "mise.cargo:x", gopls])
+            .assert()
+            .success();
+        assert_eq!(
+            String::from_utf8_lossy(&last.get_output().stdout),
+            "1.0\n0.16.0\n"
+        );
+    }
+
+    /// A quoted `~` the shell did not expand is still `$HOME`.
+    #[test]
+    fn a_quoted_tilde_directory_is_home() {
+        let d = TestDaemon::spawn();
+        let cwd = project(&d);
+        put(&d, &cwd, "p", r#"{"a":1}"#);
+
+        let elsewhere = d.home.join("ws");
+        let out = d
+            .comb(&elsewhere)
+            .args(["get", "p.a", "~/ws/project"])
+            .assert()
+            .success();
+        assert_eq!(String::from_utf8_lossy(&out.get_output().stdout), "1");
+    }
+
     /// `--tree` finds the layers of a row whose field is quoted: the field
     /// is an address, walked by its segments, not split on its dots.
     #[test]

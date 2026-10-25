@@ -16,24 +16,21 @@ use libbeachcomber::resolve::{Inputs, ResolveError, Slot, resolve};
 use serde_json::Value;
 use std::process::ExitCode;
 
-/// Returns true if `s` looks like a filesystem path rather than a provider key.
-///
-/// A positional is treated as a path when it:
-/// - equals `.` literally
-/// - starts with `.` (relative dot-prefix like `./subdir`)
-/// - starts with `~` (home-relative)
-/// - starts with `/` (absolute)
-/// - contains `/` anywhere (e.g., `some/dir`)
+/// Whether `s` is a directory rather than a key: it starts with `/`, `~` or
+/// `.`. No key can — a key's head is a provider name, and a provider name
+/// holds no `.` and starts with neither `/` nor `~` — so this is syntax, not
+/// a guess. A key may hold a `/` anywhere after its head
+/// (`mise.npm:@scope/pkg`).
 pub fn is_path_like(s: &str) -> bool {
-    s == "." || s.starts_with('.') || s.starts_with('~') || s.starts_with('/') || s.contains('/')
+    s.starts_with(['/', '~', '.'])
 }
 
 /// Separate keys from an optional trailing path positional.
 ///
-/// Rules:
-/// 1. If `--path` flag was already set, all positionals are keys.
-/// 2. Otherwise, if the last positional is path-like (per `is_path_like`), pop it as the path.
-/// 3. If still no path, return `None` — the caller should default to CWD.
+/// 1. With `--path`, every positional is a key.
+/// 2. Otherwise, when more than one positional is given and the last is a
+///    directory (per `is_path_like`), it is the path.
+/// 3. Otherwise there is no path, and the caller reads the current directory.
 pub fn split_keys_and_path(
     mut positionals: Vec<String>,
     explicit_path: Option<String>,
@@ -41,7 +38,8 @@ pub fn split_keys_and_path(
     if explicit_path.is_some() {
         return (positionals, explicit_path);
     }
-    if let Some(last) = positionals.last()
+    if positionals.len() > 1
+        && let Some(last) = positionals.last()
         && is_path_like(last)
     {
         let path = positionals.pop();
@@ -284,14 +282,14 @@ mod path_disambiguation_tests {
     }
 
     #[test]
-    fn slash_containing_is_path_like() {
-        assert!(is_path_like("some/dir"));
-        assert!(is_path_like("a/b/c"));
+    fn a_key_holding_a_slash_is_not_path_like() {
+        assert!(!is_path_like("mise.npm:@scope/pkg"));
+        assert!(!is_path_like("mise['go:golang.org/x/tools/gopls']"));
+        assert!(!is_path_like("some/dir"));
     }
 
     #[test]
     fn provider_key_is_not_path_like() {
-        // Keys contain `.` but not `/` or any path prefix.
         assert!(!is_path_like("git.branch"));
         assert!(!is_path_like("hostname.name"));
         assert!(!is_path_like("git"));
@@ -367,6 +365,23 @@ mod path_disambiguation_tests {
         // `comb get git` — bare provider name, no dot, no slash
         let (ks, path) = split_keys_and_path(keys(&["git"]), None);
         assert_eq!(ks, vec!["git"]);
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn a_lone_positional_is_a_key_whatever_it_looks_like() {
+        // `comb get mise.npm:@scope/pkg` and even `comb get .` name a key.
+        for only in ["mise.npm:@scope/pkg", "."] {
+            let (ks, path) = split_keys_and_path(keys(&[only]), None);
+            assert_eq!(ks, vec![only]);
+            assert!(path.is_none());
+        }
+    }
+
+    #[test]
+    fn a_trailing_key_holding_a_slash_stays_a_key() {
+        let (ks, path) = split_keys_and_path(keys(&["git.branch", "mise.npm:@scope/pkg"]), None);
+        assert_eq!(ks, vec!["git.branch", "mise.npm:@scope/pkg"]);
         assert!(path.is_none());
     }
 

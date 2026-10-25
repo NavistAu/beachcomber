@@ -296,6 +296,14 @@ fn cli_path(global: bool, requested: Option<String>) -> Result<Option<String>, E
             ExitCode::from(2)
         })
     };
+    // A `~` the shell left alone (it was quoted) means what it would have
+    // expanded to; without this `'~/x'` is relative and lands under the cwd.
+    let requested = requested.map(|p| match (p.strip_prefix('~'), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) if rest.is_empty() || rest.starts_with('/') => {
+            format!("{home}{rest}")
+        }
+        _ => p,
+    });
     Ok(Some(match requested {
         Some(p) if std::path::Path::new(&p).is_relative() => {
             cwd()?.join(p).to_string_lossy().into_owned()
