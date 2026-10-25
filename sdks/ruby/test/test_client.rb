@@ -105,12 +105,15 @@ class TestClient < Minitest::Test
   end
 
   # The daemon's refusal reaches the caller in its own words — the same text
-  # `comb refresh` prints — directly after this SDK's own prefix, with no
-  # `server error: ` from the envelope between them.
+  # `comb refresh` prints — as the ABI's message, with no prefix or kind of
+  # this SDK's woven in. (The ABI notes the mock daemon's version skew after
+  # it; the library's version is `library_version`.)
   def test_refresh_refusal_is_the_daemons_words
     @server.enqueue('{"ok":false,"error":"nothing to refresh: sp has no sources"}')
     err = assert_raises(Beachcomber::ServerError) { @client.refresh('sp') }
-    assert err.message.start_with?('beachcomber: nothing to refresh: sp has no sources'), err.message
+    assert err.message.start_with?('nothing to refresh: sp has no sources'), err.message
+    refute_includes err.message, 'kind='
+    assert_equal Beachcomber::FFI.version, err.library_version
   end
 
   # --- status ---
@@ -141,21 +144,30 @@ class TestClient < Minitest::Test
 
   def test_exec_is_disabled_by_default
     err = assert_raises(Beachcomber::ServerError) do
-      @client.eval_expression("{{ exec(['printf', 'x']) }}", cwd: '/tmp')
+      @client.eval("{{ exec(['printf', 'x']) }}", cwd: '/tmp')
     end
     assert_includes err.message, 'exec() is disabled in this context'
   end
 
   def test_exec_option_reaches_the_library
     client = Beachcomber::Client.new(socket_path: @server.path, exec: true)
-    assert_equal 'x', client.eval_expression("{{ exec(['printf', 'x']) }}", cwd: '/tmp')
+    assert_equal 'x', client.eval("{{ exec(['printf', 'x']) }}", cwd: '/tmp')
   end
 
   # --- protocol errors ---
 
-  def test_malformed_json_raises_protocol_error
+  def test_malformed_json_raises_parse_error
     @server.enqueue('not json at all')
-    assert_raises(Beachcomber::ProtocolError) { @client.get('git.branch') }
+    assert_raises(Beachcomber::ParseError) { @client.get('git.branch') }
+  end
+
+  # --- close ---
+
+  def test_close_frees_the_client_and_is_idempotent
+    client = Beachcomber::Client.new(socket_path: @server.path)
+    client.close
+    client.close
+    assert_raises(Beachcomber::IoError) { client.get('git.branch') }
   end
 
   # --- session ---

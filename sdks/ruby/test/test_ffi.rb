@@ -97,7 +97,7 @@ class TestFFI < Minitest::Test
       ENV['PATH'] = dir # no `comb` anywhere on PATH
       ENV['BEACHCOMBER_LIB'] = '/no/such/file.dylib'
 
-      err = assert_raises(Beachcomber::LibraryNotFound) { Beachcomber::FFI.load! }
+      err = assert_raises(Beachcomber::LibraryNotFoundError) { Beachcomber::FFI.load! }
       assert_includes err.message, '/no/such/file.dylib'
       assert_includes err.message, Beachcomber::FFI::LIB_BASENAME
     end

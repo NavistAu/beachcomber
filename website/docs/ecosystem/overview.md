@@ -30,18 +30,16 @@ Shelling out to `comb g.` is fine for one-off queries from shell scripts, prompt
 - **Typed results** — scalar/object dispatch in idiomatic types for each language.
 - **Lower latency** — skip `exec`/`fork` overhead; SDK `get` is ~15 µs vs ~34 µs for the CLI.
 
-## Feature matrix
+## One API
 
-All SDKs cover the common read path as well as `put` and `watch`.
+Every SDK follows one table — the same operations under the same names, the same arguments, the same value shapes and the same error kinds — written out in [`docs/sdk-api.md`](https://github.com/NavistAu/beachcomber/blob/main/docs/sdk-api.md) and checked by each SDK's own tests against [`sdks/api.json`](https://github.com/NavistAu/beachcomber/blob/main/sdks/api.json). Names follow the language's casing (`set_context`, `setContext`, `SetContext`).
 
-| SDK | `get` | `refresh` | `context` / session | `status` | `put` | `watch` |
-|---|---|---|---|---|---|---|
-| Rust | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Python | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Node.js | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Go | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Lua | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Ruby | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| C | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Object | Methods |
+|---|---|
+| Client | `get`, `eval`, `watch`, `put`, `refresh`, `status`, `hello`, `introspect`, `session`, `close` |
+| Session | `set_context`, `get`, `put`, `refresh`, `close` |
+| Watch stream | `next_event`, `cancel`, `close` |
+
+A client takes `socket_path`, `timeout_ms`, `connect_timeout_ms`, `autostart` and `exec`, each with the library's default when left out. `get` answers the value `comb get` prints, and null on a miss. Each failure is one error type per kind (`daemon_not_running`, `timeout`, `server_error`, …), carrying the kind, the library's message and the library's version. The Rust crate is the library itself, and the C SDK is its ABI.
 
 Need a language that isn't listed? The [protocol](../reference/protocol-reference.md) is newline-delimited JSON over a Unix socket — any language that can open a socket can be a client in a few dozen lines.

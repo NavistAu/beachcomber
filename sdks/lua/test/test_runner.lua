@@ -86,6 +86,8 @@ require("test.test_client")(suite, test, skip, assert_eq, assert_true, assert_ni
 require("test.test_ops")(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
 require("test.test_subprocess")(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
 require("test.test_timeouts")(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
+require("test.test_api_surface")(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
+require("test.test_closed")(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
 
 -- ── Summary ──────────────────────────────────────────────────────────────────
 

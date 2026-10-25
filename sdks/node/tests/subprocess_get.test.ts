@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { daemonAvailable, spawnDaemon, type TestDaemon } from './helpers.js';
 import { unwrap } from '../src/envelope.js';
-import { ServerError, UnsupportedTransportError } from '../src/errors.js';
+import { ServerError, UnsupportedError } from '../src/errors.js';
 import { createSubprocessTransport } from '../src/subprocess_transport.js';
 import type { ClientHandle, Transport } from '../src/transport.js';
 
@@ -116,7 +116,7 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
   it("a daemon rejection is a ServerError in the daemon's words", async () => {
     await assert.rejects(
       () => get('a:b:c.x', '/tmp'),
-      (err: unknown) => err instanceof ServerError && err.serverMessage.startsWith('invalid facet key: a:b:c'),
+      (err: unknown) => err instanceof ServerError && err.message.startsWith('invalid facet key: a:b:c'),
     );
   });
 
@@ -166,7 +166,7 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
   it("--force on a static namespace is the daemon's refusal", async () => {
     await assert.rejects(
       () => get('sp.n', '/tmp', BC_GET_FORCE),
-      (err: unknown) => err instanceof ServerError && err.serverMessage.startsWith('cannot --force static namespace'),
+      (err: unknown) => err instanceof ServerError && err.message.startsWith('cannot --force static namespace'),
     );
     assert.equal(lastArgv(), 'get -f json sp.n --path /tmp --force');
   });
@@ -174,7 +174,7 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
   it("a caller's env cannot be honoured and is refused, naming the FFI transport", async () => {
     await assert.rejects(
       () => tp.get(handle, 'sp.t', '/tmp', JSON.stringify({ A: 'x' }), 0),
-      (err: unknown) => err instanceof UnsupportedTransportError && /FFI transport/.test(err.message),
+      (err: unknown) => err instanceof UnsupportedError && /FFI transport/.test(err.message),
     );
   });
 
@@ -213,8 +213,8 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
       () => get('bad.grp', '/tmp'),
       (err: unknown) =>
         err instanceof ServerError &&
-        /^bad\.grp\.leaf: /.test(err.serverMessage) &&
-        !/^error: /m.test(err.serverMessage),
+        /^bad\.grp\.leaf: /.test(err.message) &&
+        !/^error: /m.test(err.message),
     );
   });
 });

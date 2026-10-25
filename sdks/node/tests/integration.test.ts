@@ -3,7 +3,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { daemonAvailable, spawnDaemon, type TestDaemon } from './helpers.js';
 import { Client } from '../src/client.js';
-import { ServerError } from '../src/errors.js';
+import { ServerError, TimeoutError } from '../src/errors.js';
 
 const skip = !daemonAvailable();
 
@@ -86,14 +86,20 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
 
   it("refresh of a static namespace is the daemon's refusal, in its own words", async () => {
     await client.put('itest_static', { v: 1 }, { path: '/tmp' });
-    // `serverMessage` is the daemon's words alone — the same text `comb
-    // refresh` prints and the subprocess tier reports — with no `server
-    // error: ` prefix from the envelope.
+    // `message` is the daemon's words alone — the same text `comb refresh`
+    // prints and the subprocess tier reports — with neither a prefix nor the
+    // library's version, which is `libraryVersion`.
     await assert.rejects(
       () => client.refresh('itest_static', '/tmp'),
-      (err: unknown) =>
-        err instanceof ServerError &&
-        err.serverMessage.startsWith('nothing to refresh: itest_static has no sources'),
+      (err: unknown) => {
+        if (!(err instanceof ServerError)) return false;
+        assert.equal(err.kind, 'server_error');
+        assert.match(err.message, /^nothing to refresh: itest_static has no sources/);
+        assert.ok(!err.message.includes(String(err.libraryVersion)), err.message);
+        assert.equal(typeof err.libraryVersion, 'string');
+        assert.ok((err.libraryVersion as string).length > 0);
+        return true;
+      },
     );
   });
 
@@ -121,10 +127,10 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
   it('introspect{daemon} returns pid and version', async () => {
     const resp = await client.introspect('daemon');
     assert.equal(resp.subject, 'daemon');
-    if (resp.subject === 'daemon') {
-      assert.ok(resp.daemon.pid > 0);
-      assert.ok(resp.daemon.version.length > 0);
-    }
+    assert.equal(resp.other, null);
+    assert.ok(resp.daemon);
+    assert.ok(resp.daemon.pid > 0);
+    assert.ok(resp.daemon.version.length > 0);
   });
 
   it('session get/put/setContext works over one connection', async () => {
@@ -172,6 +178,13 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     assert.deepEqual(value, { lit: 1, t: 'hi' });
   });
 
+  it('eval without a cwd reads the global entry', async () => {
+    await client.put('itest_evalwhere', { v: 'global' });
+    await client.put('itest_evalwhere', { v: 'tmp' }, { path: '/tmp' });
+    assert.equal(await client.eval('{{ itest_evalwhere.v }}'), 'global');
+    assert.equal(await client.eval('{{ itest_evalwhere.v }}', { cwd: '/tmp' }), 'tmp');
+  });
+
   it('eval renders a template stored nowhere', async () => {
     const value = await client.eval("{{ 'x-' ~ env.FOO }}", { cwd: '/tmp', env: { FOO: 'bar' } });
     assert.equal(value, 'x-bar');
@@ -207,6 +220,34 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     assert.equal(done, false);
     assert.equal(value?.data, 7);
     stream.close();
+  });
+
+  it('watch without a cwd watches the global entry', async () => {
+    await client.put('itest_watchwhere', { v: 'global' });
+    await client.put('itest_watchwhere', { v: 'tmp' }, { path: '/tmp' });
+    const stream = await client.watch('itest_watchwhere.v');
+    try {
+      assert.deepEqual(await stream.nextEvent(), { data: 'global' });
+    } finally {
+      stream.close();
+    }
+  });
+
+  it('nextEvent: a timeout is a TimeoutError, and a cancelled stream ends in null', async () => {
+    await client.put('itest_watchnext', { v: 1 }, { path: '/tmp' });
+    const stream = await client.watch('itest_watchnext.v', { cwd: '/tmp' });
+    try {
+      assert.deepEqual(await stream.nextEvent(5000), { data: 1 });
+      await assert.rejects(
+        () => stream.nextEvent(50),
+        (err: unknown) => err instanceof TimeoutError && err.kind === 'timeout',
+      );
+      stream.cancel();
+      assert.equal(await stream.nextEvent(5000), null);
+      assert.equal(await stream.nextEvent(5000), null, 'an ended stream stays ended');
+    } finally {
+      stream.close();
+    }
   });
 
   it('watch yields the resolved value and refires on a template edit', async () => {

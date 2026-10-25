@@ -22,6 +22,15 @@
 -- into an Error.unsupported() naming this transport, and a conformance
 -- runner skips (never silently passes) a fixture that needs one.
 --
+-- A session is this backend's own: there is no connection to keep between
+-- spawns, so `session_open` hands back a handle that remembers its
+-- directory (`set_context`) and passes it as `--path` to each `get`, `put`
+-- and `refresh` that names none — what the ffi tier's `bc_session_*` do,
+-- and what the Node SDK's subprocess session does.
+--
+-- `status` is one `comb status -f json`; a failure to run it is a
+-- `server_error` carrying the CLI's stderr, never an empty list.
+--
 -- Timeouts: `io.popen` cannot bound or kill a spawned `comb`, and `comb`
 -- has no flag for a connect budget, so `timeout_ms` and `connect_timeout_ms`
 -- cannot be honoured here. `M.new` refuses either with an "unsupported"
@@ -128,9 +137,9 @@ end
 -- so it is collapsed back to nil right here: plain nil means "no path
 -- scope", the same way it always has.
 local function status_rows(comb_bin)
-  local out, ok = run(comb_bin .. " status -f json")
+  local out, ok, err = run(comb_bin .. " status -f json")
   if not ok then
-    return {}
+    return nil, ((err or ""):gsub("%s+$", ""))
   end
   local rows = {}
   for line in (out or ""):gmatch("[^\n]+") do
@@ -254,8 +263,44 @@ function Backend:refresh(key, path)
 end
 
 function Backend:status()
-  local rows = status_rows(self._comb)
+  local rows, err = status_rows(self._comb)
+  if not rows then
+    return { ok = false, error = { kind = "server_error", message = err ~= "" and err or "comb status failed" } }
+  end
   return { ok = true, data = rows }
+end
+
+-- ── Session: a directory remembered between spawns (the header comment) ──
+
+local Session = {}
+Session.__index = Session
+
+function Backend:session_open()
+  return setmetatable({ _backend = self, _path = nil }, Session)
+end
+
+function Session:set_context(path)
+  self._path = path
+  return { ok = true }
+end
+
+function Session:get(key, cwd, env, flags)
+  if cwd == nil then cwd = self._path end
+  return self._backend:get(key, cwd, env, flags)
+end
+
+function Session:put(key, data, ttl, path)
+  if path == nil then path = self._path end
+  return self._backend:put(key, data, ttl, path)
+end
+
+function Session:refresh(key, path)
+  if path == nil then path = self._path end
+  return self._backend:refresh(key, path)
+end
+
+function Session:close()
+  -- Nothing held between spawns.
 end
 
 -- hello / introspect / eval / watch_open intentionally absent.

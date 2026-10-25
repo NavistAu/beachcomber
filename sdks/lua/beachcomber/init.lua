@@ -84,6 +84,7 @@ M.discovery   = require("beachcomber.discovery")
 M.json        = require("beachcomber.json")
 M.Error       = require("beachcomber.error")
 M.Client      = client_mod.Client
+M.Session     = client_mod.Session
 M.WatchStream = require("beachcomber.watch_stream")
 
 --- Sentinel for a JSON null value nested inside put()'d data or a value

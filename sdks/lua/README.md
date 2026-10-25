@@ -3,7 +3,10 @@
 Lua client for the [beachcomber](https://github.com/NavistAu/beachcomber)
 daemon. A binding over `libbeachcomber`'s C ABI
 (`libbeachcomber-ffi/include/beachcomber.h`), not a hand-rolled socket
-protocol.
+protocol. It follows the SDK API table in
+[`docs/sdk-api.md`](../../docs/sdk-api.md) — the same operations, names,
+value shapes and error kinds as every other SDK — and its test suite checks
+its surface against the table's machine-readable form, `sdks/api.json`.
 
 ---
 
@@ -38,8 +41,9 @@ surface for `hello` or `introspect`; `eval` is not wired over this tier;
 header comment: piped through `io.popen`, the CLI's stdout buffering means a
 `read("*l")` blocks forever even though the daemon already sent the event).
 Those `Client` methods return `nil, err` with `err.kind == "unsupported"`
-over `subprocess`; get/put/refresh/status/context all work over
-either transport. `refresh` over `subprocess` is one `comb refresh <key>`,
+over `subprocess`; get/put/refresh/status and a session all work over
+either transport. A session over `subprocess` keeps its directory between
+spawns and passes it as `--path`, as the Node SDK's subprocess session does. `refresh` over `subprocess` is one `comb refresh <key>`,
 the daemon's op itself, and its refusal (`nothing to refresh: <key> has no
 sources`) is the error message. `get` over `subprocess` is one `comb get -f
 json <key>`, so its answer is the resolver's — the rendered value, the
@@ -105,11 +109,13 @@ if git then print(git.branch) end  -- "main"
 local tpl = client:get('git:template.branch')
 
 -- refresh (force recompute)
-client:refresh('git', '/my/repo')
+client:refresh('git', { path = '/my/repo' })
 
--- default directory — applies to later calls made without one
-client:set_context('/my/repo')
-local branch2 = client:get('git.branch')
+-- a session keeps a directory of its own for the calls that name none
+local s = client:session()
+s:set_context('/my/repo')
+local branch2 = s:get('git.branch')
+s:close()
 
 -- daemon cache status rows
 local rows = client:status()
@@ -177,45 +183,47 @@ stored, `p:put.x` and `p:source.x` those layers' values. `key` is
 
 | `opts` field | Meaning |
 |---|---|
-| `cwd` | The directory the read addresses (`~` is home, a relative path is against this process's working directory). Default: the `set_context()` path, else the global entry. |
+| `cwd` | The directory the read addresses (`~` is home, a relative path is against this process's working directory). Default: the global entry. |
 | `env` | The caller's environment for `env.*` refs. `nil` (the default) means none: every `env.*` is absent. ffi transport only. |
 | `force` | Re-execute every Source the read demands first (`comb get --force`). |
 | `wait` | Re-execute a stale entry inline before answering (`comb get --wait`). |
 
-### `Client:refresh(key [, path])` → `true | nil, Error`
+### `Client:refresh(key [, opts])` → `true | nil, Error`
 
 Re-execute the Sources `key` demands — every Source of the namespace for a
 bare `provider`, the one Source owning the field for `provider.field`. A key
 that names no Source (a `put`-created namespace, a facet key, an unknown
 name, a field no Source owns) is an error. Over `ffi` this is `bc_refresh`;
-over `subprocess` it is one `comb refresh <key>`.
-
-### `Client:set_context(path)` → `true`
-
-Set the default path used by later calls that don't pass one explicitly.
-Client-side (works identically over both transports).
+over `subprocess` it is one `comb refresh <key>`. `opts.path` is the
+directory; `nil` is the global entry.
 
 ### `Client:status()` → `table[] | nil, Error`
 
-Cache rows (one per warm cache entry): `provider`, `field`, `path`,
-`value`, `age_ms`, `stale`, plus lifecycle fields.
+Cache rows (one per warm cache entry), with the fields
+`libbeachcomber::protocol::CacheRow` defines: `provider`, `path`
+(`nil` for the global entry), `source`, `field`, `value`, `age_ms`,
+`stale`, plus lifecycle fields. A status that cannot be read is
+`nil, Error` on either transport, never an empty list.
 
-### `Client:put(key, data [, ttl [, path]])` → `true | false, Error`
+### `Client:put(key, data [, opts])` → `true | nil, Error`
 
-Write a static-data entry's value. `data = nil` (or `beachcomber.null`) removes the node.
+Write a static-data entry's value. `data = nil` (or `beachcomber.null`)
+removes the node. `opts.ttl` (e.g. `"30s"`), `opts.path` (`nil`: the
+global entry).
 
 ### `Client:hello()` → `table {protocol_version, daemon_version} | nil, Error`
-### `Client:introspect(subject [, duration_secs])` → `table {subject, daemon, other} | nil, Error`
+### `Client:introspect(subject [, opts])` → `table {subject, daemon} or {subject, other} | nil, Error`
 
-ffi transport only — `Error{kind="unsupported"}` over subprocess.
+`opts.duration_secs` is the `procs` subject's only option. ffi transport
+only — `Error{kind="unsupported"}` over subprocess.
 
 ### `Client:eval(template_str [, opts])` → `value | nil, Error`
 
 Renders a template that is stored nowhere — the same value `comb eval`
 prints (`bc_eval`), every ref resolved as it would be inside a stored
-template, so `eval("{{ p.f }}")` and `get("p.f")` agree. `opts.cwd`
-(default: the context path, then `"."`), `opts.env` (the caller's
-environment for `env.*` refs). ffi transport only.
+template, so `eval("{{ p.f }}")` and `get("p.f")` agree. `opts.cwd` and
+`opts.env` as `Client:get` takes them (no `cwd` is the global entry). ffi
+transport only.
 
 `template_str` accepts a single `{{ expr }}` tag, or literal text/several
 tags — the former keeps the expression's natural type, the latter is
@@ -225,33 +233,47 @@ always a string (a source with no tags at all is its literal text).
 
 ffi transport only. Watches the key's *value* — what `Client:get`
 answers for it — so a template edited under the watch fires it just as a
-changed cache record does. `opts` is `Client:eval`'s: `opts.cwd`
-(default: context path, then `"."`), `opts.env`.
+changed cache record does. `opts.cwd` and `opts.env` as `Client:get`
+takes them.
 
-`stream:next_event([timeout_ms])` → event table `{data}` carrying the
-resolved value (`nil` for a miss), or `nil` on eof/cancelled, or `nil,
-Error` on a real error; `-1` (default) blocks indefinitely, `0` polls, `>0`
-waits that long. `stream:cancel()`, `stream:close()`, `stream:each()` for a
-for-loop.
+`stream:next_event([timeout_ms])` → the event table `{data}` carrying the
+value (`nil` data is a miss, not the end); `nil` with no Error once the
+stream has ended (the daemon closed it, or it was cancelled); `nil, Error`
+of kind `"timeout"` when `timeout_ms` ran out with no event; `nil, Error`
+when the stream failed. No `timeout_ms` waits indefinitely, `0` polls.
+`stream:cancel()` ends the stream (safe while another thread waits in
+`next_event`); `stream:close()` cancels it and releases the handle; both
+return `true`. `for event in stream:each() do … end` iterates it, and
+raises the Error if the stream fails.
 
-### `Client:session()` → session object | nil, Error
+### `Client:session()` → `Session | nil, Error`
 
-Advanced: a persistent connection with a directory of its own
-(`bc_session_*`). Its `get(key, cwd, env, flags)` is `bc_session_get`, and
-returns the backend's response table (`{ok, data, error}`); a `nil` cwd is
-the session's directory. Most callers want `set_context()` instead — it
-works over either transport by keeping the default path client-side. ffi
-transport only.
+A session: one connection (`bc_session_*`) and a directory of its own.
+Over `subprocess` there is no connection to keep, and the session remembers
+its directory between spawns.
 
-### `Client:close()`
+| Method | Answers |
+|---|---|
+| `s:set_context(path)` | `true`. Later calls that name no directory address `path`. |
+| `s:get(key [, opts])` | As `Client:get`; no `opts.cwd` is the session's directory, else the global entry. |
+| `s:put(key, data [, opts])` | As `Client:put`; no `opts.path` is the session's directory. |
+| `s:refresh(key [, opts])` | As `Client:refresh`; no `opts.path` is the session's directory. |
+| `s:close()` | `true`. |
+
+### `Client:close()` → `true`
 
 ### `Error`
 
-Every failing call returns `nil, Error` (or `false, Error` for
-put). `Error.kind` is a machine-readable slug mirroring the ABI
-envelope's `error.kind` (`"server_error"`, `"daemon_not_running"`,
-`"unsupported"` for a capability the active transport lacks, ...);
-`Error.message` is human-readable; `tostring(err)` gives both.
+Every method returns its value or `nil, Error`; a miss is `nil` with no
+Error, and a method that answers nothing (`put`, `refresh`,
+`set_context`, `close`) returns `true`. An Error carries `kind`, a slug
+from `Error.KINDS` (the table's: the ABI's `daemon_not_running`,
+`connection_failed`, `io_error`, `parse_error`, `server_error`, `timeout`,
+`bad_flags`, `busy`, `panic`, `version_skew`, and this SDK's own
+`library_not_found`, `library_symbol` and `unsupported`); `message`, the
+ABI's message as it came; and `library_version`, the loaded library's
+`bc_version()` (`nil` over `subprocess`, which loads none).
+`tostring(err)` gives kind and message. Branch on `kind`.
 
 ---
 
@@ -269,9 +291,10 @@ envelope's `error.kind` (`"server_error"`, `"daemon_not_running"`,
 Every candidate tried is remembered: if none load, the error names all of
 them, in order — a missing library is a broken install, not a silent
 downgrade to `subprocess` (see "Transport" above). Every symbol the ABI
-declares is verified at load time, not on first use; a missing symbol's
-error names the symbol and the loaded library's `bc_version()`, so a
-version-skew install error is diagnosable at a glance.
+declares is verified at load time, not on first use; a missing symbol is a
+`library_symbol` Error naming the symbol, with the loaded library's
+`bc_version()` as its `library_version`, so a version-skew install error is
+diagnosable at a glance.
 
 ### subprocess transport: `comb` discovery
 
@@ -287,8 +310,8 @@ rather than the process environment.
 ```
 beachcomber/
   init.lua               -- entry point, transport selection, comb.connect()
-  client.lua              -- transport-agnostic Client
-  error.lua                -- idiomatic Error (kind + message)
+  client.lua              -- transport-agnostic Client and Session
+  error.lua                -- Error (kind, message, library_version) and Error.KINDS
   watch_stream.lua         -- WatchStream wrapping a backend watch handle
   ffi.lua                  -- LuaJIT ffi: cdef, library discovery/load/symbol check
   ffi_backend.lua           -- backend implementation over ffi.lua

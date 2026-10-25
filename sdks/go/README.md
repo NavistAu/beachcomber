@@ -13,15 +13,20 @@ stdlib-only, but the entire ABI surface here fits `purego`'s supported
 shape (pointer/integer arguments, pointer or small-integer returns, no
 callbacks into Go), so a cgo binding was never needed.
 
+It follows the SDK API table every beachcomber SDK follows,
+[`docs/sdk-api.md`](../../docs/sdk-api.md): the same operations, arguments,
+value shapes and error kinds, in Go's casing. Its own tests check its
+public surface against the table's machine-readable form, `../api.json`.
+
 ## Requirements
 
 - Go 1.21+
 - A `comb` daemon — one is autostarted on demand when none is running
   (the shared library's default; disable with
   `NewClient(beachcomber.WithAutostart(false))`). Autostart applies only
-  to `NewClient`'s auto-discovered socket path: the library never
-  autostarts for an explicit path, so `NewClientWithPath` fails its
-  first call with `ErrDaemonNotRunning` when nothing serves that socket
+  to an auto-discovered socket path: the library never autostarts for
+  `WithSocketPath`, so a client given one fails its first call with
+  `ErrConnectionFailed` when nothing serves that socket
 - `libbeachcomber.{so,dylib}` discoverable — see "Library discovery" below
 
 ## Installation
@@ -48,31 +53,31 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer client.Close()
 
-	// What `comb get git.branch` prints in that directory.
-	result, err := client.Get("git.branch", "/path/to/repo", nil)
+	// What `comb get git.branch` prints in that directory; nil on a miss.
+	branch, err := client.Get("git.branch", "/path/to/repo", nil)
 	if err != nil {
 		if errors.Is(err, beachcomber.ErrDaemonNotRunning) {
 			log.Fatal("comb daemon is not running")
 		}
 		log.Fatal(err)
 	}
-	if result.IsHit() {
-		branch, _ := result.GetString("")
-		fmt.Println(branch) // "main"
+	if s, ok := branch.(string); ok {
+		fmt.Println(s) // "main"
 	}
 
-	// Full provider query (returns an object)
-	result, err = client.Get("git", "/path/to/repo", nil)
+	// Full provider query: a map[string]interface{}
+	git, err := client.Get("git", "/path/to/repo", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if branch, ok := result.GetString("branch"); ok {
-		fmt.Println(branch)
+	if m, ok := git.(map[string]interface{}); ok {
+		fmt.Println(m["branch"])
 	}
 
 	// The template itself, unrendered: a facet, read like any key
-	result, err = client.Get("git:template.branch", "", nil)
+	tmpl, err := client.Get("git:template.branch", "", nil)
 
 	// Force recomputation
 	if err := client.Refresh("git", "/path/to/repo"); err != nil {
@@ -96,16 +101,6 @@ branch, err := sess.Get("git.branch", "", nil)
 dirty, err := sess.Get("git.dirty", "", nil)
 ```
 
-## Custom socket path
-
-```go
-client := beachcomber.NewClientWithPath("/tmp/beachcomber-1000/sock")
-```
-
-Unlike `NewClient`, `NewClientWithPath` never fails from the caller's point
-of view — a library discovery/validation failure is recorded and surfaced
-on the client's first operation instead.
-
 ## Client options
 
 Each option is passed to the library's `bc_client_new` as it is given; this
@@ -114,14 +109,24 @@ default.
 
 | Option | Library default | Meaning |
 |---|---|---|
+| `WithSocketPath(path string)` | `$BEACHCOMBER_SOCKET`, else `/tmp/beachcomber-<uid>/sock` | The daemon's socket. |
 | `WithTimeoutMs(ms uint64)` | 100 | How long one read or write on the socket may take. 0 is refused (`parse_error` on the first call). |
 | `WithConnectTimeoutMs(ms uint64)` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
 | `WithAutostart(enabled bool)` | on | Start a daemon when none serves the auto-discovered socket. |
 | `WithExec(enabled bool)` | off | Whether a template this client renders may call `exec()`. |
 
 ```go
-c, err := beachcomber.NewClient(beachcomber.WithTimeoutMs(500), beachcomber.WithConnectTimeoutMs(0))
+c, err := beachcomber.NewClient(
+	beachcomber.WithSocketPath("/tmp/beachcomber-1000/sock"),
+	beachcomber.WithTimeoutMs(500),
+	beachcomber.WithConnectTimeoutMs(0),
+)
 ```
+
+`NewClient` locates and validates `libbeachcomber` (see "Library
+discovery"), so a broken install is reported here, as `ErrLibraryNotFound`
+or `ErrLibrarySymbol`; a malformed option is the library's to refuse, on the
+client's first call.
 
 ## API
 
@@ -133,21 +138,21 @@ For latency-sensitive use, prefer `Session`.
 
 | Method | Description |
 |---|---|
-| `NewClient() (*Client, error)` | Auto-discovers the daemon socket path. May fail immediately: library discovery/validation happens here. |
-| `NewClientWithPath(socketPath string) *Client` | Uses an explicit socket path. Never fails immediately; errors surface on first use. |
-| `Get(key, cwd string, env map[string]string, flags ...GetFlag) (*Result, error)` | The value `comb get` prints for this key, cwd and env — the daemon holds the templates, the client renders them; a bare provider name is the whole merged namespace. `flags` are `beachcomber.Force` and `beachcomber.Wait`. |
+| `NewClient(options ...Option) (*Client, error)` | Make a client (see "Client options"). |
+| `Get(key, cwd string, env map[string]string, flags ...GetFlag) (any, error)` | The value `comb get` prints for this key, cwd and env, `nil` on a miss — the daemon holds the templates, the client renders them; a bare provider name is the whole merged namespace. `flags` are `beachcomber.Force` and `beachcomber.Wait`. |
 | `Refresh(key, path string) error` | Force recomputation. |
 | `Put(key string, data interface{}, ttl, path string) error` | Write a value into the cache as static data. `data` is marshalled to JSON. |
 | `Status() ([]CacheRow, error)` | Cache rows from the daemon. |
 | `Hello() (*HelloInfo, error)` | Protocol/daemon version handshake. |
-| `Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)` | Inspect a daemon subsystem. |
-| `Eval(templateStr, cwd string, env map[string]string) (*Result, error)` | Render a template stored nowhere — the same value `comb eval` prints. |
+| `Introspect(subject IntrospectSubject, durationSecs ...uint64) (*IntrospectResponse, error)` | Inspect a daemon subsystem. A duration, which `SubjectProcs` reads, is sent as given, 0 included; left out, the daemon's default applies. |
+| `Eval(templateStr, cwd string, env map[string]string) (any, error)` | Render a template stored nowhere — the same value `comb eval` prints, `nil` when it renders nothing. |
 | `Watch(key, cwd string, env map[string]string) (*WatchStream, error)` | Subscribe to a key's value, what `Get` answers. |
 | `Session() (*Session, error)` | Open a persistent connection. |
+| `Close() error` | Free the client. Idempotent; a call after it fails with `ErrIo`. |
 
 `Get`'s `cwd` is the directory the read addresses: `~` is the home
 directory, a relative path is against this process's working directory,
-and `""` is the global entry. `Eval` and `Watch` require `cwd`. `env` is
+and `""` is the global entry; `Eval` and `Watch` read it the same way. `env` is
 optional (`nil` for "not supplied") — a `nil` `env` makes every `env.*`
 reference absent. The unrendered halves are facets, read like any key:
 `Get("p:template.x", …)` is the template as stored, `Get("p:put.x", …)` and
@@ -168,39 +173,28 @@ calls it then fails with `exec() is disabled in this context`.
 ### `Session`
 
 Obtained via `client.Session()`. Not safe for concurrent use from multiple
-goroutines — the underlying library guards it with a mutex and returns a
-`busy` `*ServerError` to a concurrent caller rather than blocking or
-interleaving requests; create one `Session` per goroutine.
+goroutines — the underlying library guards it with a mutex and returns an
+`*Error` of kind `busy` (`ErrBusy`) to a concurrent caller rather than
+blocking or interleaving requests; create one `Session` per goroutine.
+`Status`, `Hello` and `Introspect` address no directory and need no
+connection of their own, so they are the `Client`'s alone.
 
 | Method | Description |
 |---|---|
-| `Get(key, cwd string, env map[string]string, flags ...GetFlag) (*Result, error)` | `Client.Get` on this session's connection; `cwd == ""` is the session's directory when `SetContext` has set one, else the global entry. |
+| `Get(key, cwd string, env map[string]string, flags ...GetFlag) (any, error)` | `Client.Get` on this session's connection; `cwd == ""` is the session's directory when `SetContext` has set one, else the global entry. |
 | `SetContext(path string) error` | Set this session's directory: every later `Get` with `cwd == ""`, and `Put` and `Refresh` with `path == ""`, address it. |
 | `Put(key string, data interface{}, ttl, path string) error` | Write on this session's connection. |
 | `Refresh(key, path string) error` | Recompute on this session's connection, at `path` or the session's directory. |
-| `Hello() (*HelloInfo, error)` | Delegates to the parent `Client`. |
-| `Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)` | Delegates to the parent `Client`. |
-| `Status() ([]CacheRow, error)` | Delegates to the parent `Client`. |
-| `Close() error` | Close and free the session handle. |
+| `Close() error` | Close and free the session handle. Idempotent; a call after it fails with `ErrIo`. |
 
-### `Result`
+### Values
 
-`Get` and `Eval` return the value in a `Result`: `Data` is the value, or
-`nil` on a miss.
-
-| Method | Description |
-|---|---|
-| `IsHit() bool` | The read answered a value. |
-| `IsMiss() bool` | Nothing answers at the address. |
-| `GetString(field string) (string, bool)` | Extract a string; `field == ""` reads `Data` itself when it's a scalar. |
-| `GetInt(field string) (int64, bool)` | Extract an integer (truncated from the underlying `float64`). |
-| `GetFloat(field string) (float64, bool)` | Extract a numeric field. |
-| `GetBool(field string) (bool, bool)` | Extract a boolean. |
-| `RawJSON() []byte` | The JSON value backing this `Result`. |
-
-Fields: `OK bool`, `Data interface{}`. Construction always succeeds — an
-`ok:false` envelope becomes a `*ServerError` instead of a `Result`, so every
-`Result` you hold represents success.
+`Get` and `Eval` answer the value itself, as `encoding/json` decodes it
+into an `interface{}`: a `string`, `float64`, `bool`,
+`map[string]interface{}` or `[]interface{}`, and `nil` on a miss. There is
+no wrapper. `CacheRow`, `HelloInfo`, `DaemonHealth` (with `ReaperStatus`
+and `Verdict`), `IntrospectResponse` and `WatchEvent` are typed, with the
+fields the table lists.
 
 ### `WatchStream`
 
@@ -212,41 +206,58 @@ if err != nil {
 defer stream.Close()
 
 for {
-	ev, err := stream.NextEvent()
+	ev, err := stream.NextEvent() // NextEvent(ms) waits at most ms
 	if err != nil {
 		log.Fatal(err)
 	}
 	if ev == nil {
 		break // stream ended
 	}
-	fmt.Println(ev.Data)
+	fmt.Println(ev.Data) // nil is a miss, not the end
 }
 ```
 
+| Method | Description |
+|---|---|
+| `NextEvent(timeoutMs ...int32) (*WatchEvent, error)` | The next event. No argument waits indefinitely; `NextEvent(ms)` that runs out with no event is an `ErrTimeout` error. `nil, nil` once the stream has ended. |
+| `Cancel() error` | End the stream; a `NextEvent` waiting on another goroutine returns `nil, nil`. |
+| `Close() error` | Cancel and free the watch handle. |
+
 ### Key format
 
-- `"git"` — full provider, `Result.Data` is a `map[string]interface{}`
-- `"git.branch"` — single field, `Result.Data` is a scalar
+- `"git"` — full provider, `Get` answers a `map[string]interface{}`
+- `"git.branch"` — single field, `Get` answers a scalar
 
 ## Errors
 
-Every error this SDK returns is one of three types:
+Every error this SDK returns is an `*Error`: `Kind` is the stable slug the
+table names, `Message` the library's words unchanged (or the SDK's own for
+the three kinds it raises itself), and `LibraryVersion` the loaded
+library's `bc_version()`. `err.Error()` is the message alone.
 
-| Type | When returned |
-|---|---|
-| `*ServerError` | The library reported an `ok:false` envelope — either the daemon rejected the request, or the ABI itself did (bad flags, a busy handle, a caught panic, version skew). Carries `Kind` (the envelope's stable, machine-readable slug), `Message`, and `LibVersion`. |
-| `*ProtocolError` | A response could not be parsed — malformed JSON or a response missing fields this SDK requires. Never comes from an `ok:false` envelope. |
-| `*LibraryError` | Failure to locate, load, or validate `libbeachcomber` itself — discovery exhausted every candidate, or a loaded library is missing a required symbol. `Message` names every location tried, or the missing symbol. |
+One sentinel per kind matches an `*Error` of that kind with `errors.Is`:
 
-`errors.Is(err, beachcomber.ErrDaemonNotRunning)` reports `true` for a
-`*ServerError` whose `Kind` is `daemon_not_running` (no override socket
-path, none found by auto-discovery) or `connection_failed` (an explicit
-socket path, e.g. via `NewClientWithPath`, that nothing is listening on) —
-both were a single case in this SDK before the ABI made the distinction.
+| Sentinel | Kind | When |
+|---|---|---|
+| `ErrDaemonNotRunning` | `daemon_not_running` | No daemon answers, and none was started. |
+| `ErrConnectionFailed` | `connection_failed` | A `WithSocketPath` socket could not be connected to. |
+| `ErrIo` | `io_error` | A read or write on the socket failed, or the client or session is closed. |
+| `ErrParse` | `parse_error` | A request, a response or a template could not be read. |
+| `ErrServer` | `server_error` | The daemon refused the request, or a template failed to render. |
+| `ErrTimeout` | `timeout` | A read or write ran out `timeout_ms`, or `NextEvent(ms)` ran out. |
+| `ErrBadFlags` | `bad_flags` | A flag bit the ABI does not define was set. |
+| `ErrBusy` | `busy` | A session or watch is in use by another caller. |
+| `ErrPanic` | `panic` | The library panicked; the panic was caught at the boundary. |
+| `ErrVersionSkew` | `version_skew` | The daemon is a different version from the library. |
+| `ErrLibraryNotFound` | `library_not_found` | No `libbeachcomber` was found where discovery looks. |
+| `ErrLibrarySymbol` | `library_symbol` | The library found lacks a function this SDK calls. |
+| `ErrUnsupported` | `unsupported` | A transport cannot do this operation. This SDK has one transport, which can do every operation. |
 
-Check `ServerError.Kind`, not `err.Error()`'s text, for programmatic
-handling — it mirrors the C ABI envelope's `error.kind` (see
-`libbeachcomber-ffi/src/envelope.rs`).
+```go
+if errors.Is(err, beachcomber.ErrTimeout) { … }
+var e *beachcomber.Error
+if errors.As(err, &e) { log.Printf("%s: %s (library %s)", e.Kind, e.Message, e.LibraryVersion) }
+```
 
 ## Library discovery
 
@@ -259,16 +270,17 @@ At first use, `libbeachcomber` is located, in order:
 3. The platform default dynamic-linker search path (a bare filename, left
    for `dlopen` to resolve).
 
-If none resolve, `*LibraryError` names every location tried. Every required
-`bc_*` symbol is checked at load time, not on first use; a loaded library
-missing one also returns `*LibraryError`, naming the missing symbol(s) and
-the library's own `bc_version()`. Discovery and validation happen once per
+If none resolve, `NewClient` returns `ErrLibraryNotFound`, naming every
+location tried. Every required `bc_*` symbol is checked at load time, not on
+first use; a loaded library missing one returns `ErrLibrarySymbol`, naming
+the missing symbol(s), with the library's own `bc_version()` in
+`LibraryVersion`. Discovery and validation happen once per
 process (`sync.Once`) and are cached for the lifetime of the program.
 
 ## Socket discovery
 
 Once the library is loaded, the daemon socket path is resolved by
-`libbeachcomber` itself (not this SDK) for `NewClient`
+`libbeachcomber` itself (not this SDK) when no `WithSocketPath` is given
 (`bc_socket_path` in the C ABI returns it):
 
 1. `$BEACHCOMBER_SOCKET` — if set and non-empty.
@@ -277,7 +289,7 @@ Once the library is loaded, the daemon socket path is resolved by
 This mirrors the daemon's bind path: a single stable path per user, so
 singleton enforcement is per-user rather than per-session. No
 session-scoped environment (`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted.
-Pass an explicit path to `NewClientWithPath` to override it directly.
+Pass `WithSocketPath` to override it directly.
 
 ## Development / testing
 

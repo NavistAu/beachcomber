@@ -7,11 +7,13 @@ import (
 	"github.com/ebitengine/purego"
 )
 
-// Session holds a handle to a persistent daemon connection (bc_session_open).
-// It is not safe for concurrent use from multiple goroutines: the underlying
-// library guards it with a mutex and returns a "busy" *ServerError to a
-// concurrent caller rather than blocking or interleaving requests — create
-// one Session per goroutine instead.
+// Session holds a handle to a persistent daemon connection (bc_session_open)
+// and a directory of its own (SetContext). It is not safe for concurrent use
+// from multiple goroutines: the underlying library guards it with a mutex
+// and returns an *Error of kind busy to a concurrent caller rather than
+// blocking or interleaving requests — create one Session per goroutine
+// instead. Status, Hello and Introspect address no directory and need no
+// connection of their own, so they are the Client's alone.
 //
 // A session is obtained via [Client.Session]:
 //
@@ -19,18 +21,25 @@ import (
 //	if err != nil { … }
 //	defer sess.Close()
 type Session struct {
-	// client backs Hello/Introspect/Status, which take no path and have no
-	// session-level ABI equivalent: they fall back to a fresh connection via
-	// the parent Client, exactly as if called directly on it.
-	client *Client
 	lib    *nativeLib
-	handle uintptr // BcSession*
+	handle uintptr // BcSession*; 0 once closed
+}
+
+// open is the error every operation on a closed session returns.
+func (s *Session) open() error {
+	if s.handle == 0 {
+		return &Error{Kind: "io_error", Message: "the session is closed", LibraryVersion: s.lib.version}
+	}
+	return nil
 }
 
 // Get is [Client.Get] on this session's persistent connection: the same
-// rendered value, the same flags. cwd "" is this session's directory
-// (SetContext) when it has one, else the global entry.
-func (s *Session) Get(key, cwd string, env map[string]string, flags ...GetFlag) (*Result, error) {
+// value, the same flags. cwd "" is this session's directory (SetContext)
+// when it has one, else the global entry.
+func (s *Session) Get(key, cwd string, env map[string]string, flags ...GetFlag) (interface{}, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
 	keyBuf, cwdBuf, envBuf := cBytes(key), optBytes(cwd), jsonMapBytes(env)
 	data, err := s.lib.call(s.lib.bcSessionGet, s.handle, ptrOf(keyBuf), ptrOf(cwdBuf), ptrOf(envBuf), flagBits(flags))
 	runtime.KeepAlive(keyBuf)
@@ -39,12 +48,16 @@ func (s *Session) Get(key, cwd string, env map[string]string, flags ...GetFlag) 
 	if err != nil {
 		return nil, err
 	}
-	return resultFromScalarData(data)
+	v, err := decodeValue(data)
+	return v, s.lib.stamp(err)
 }
 
 // Refresh forces the daemon to recompute the given provider/key at path, or
 // at the session's directory (SetContext) when path is "".
 func (s *Session) Refresh(key string, path string) error {
+	if err := s.open(); err != nil {
+		return err
+	}
 	keyBuf, pathBuf := cBytes(key), optBytes(path)
 	_, err := s.lib.call(s.lib.bcSessionRefresh, s.handle, ptrOf(keyBuf), ptrOf(pathBuf))
 	runtime.KeepAlive(keyBuf)
@@ -53,28 +66,29 @@ func (s *Session) Refresh(key string, path string) error {
 }
 
 // SetContext sets this session's directory: every later Get that passes cwd
-// "", and Put and Refresh that pass path "", address it. The session keeps it
-// and sends it with each request.
+// "", and every Put and Refresh that passes path "", addresses it. The
+// session keeps it and sends it with each request.
 func (s *Session) SetContext(path string) error {
+	if err := s.open(); err != nil {
+		return err
+	}
 	pathBuf := cBytes(path)
 	_, err := s.lib.call(s.lib.bcSessionSetContext, s.handle, ptrOf(pathBuf))
 	runtime.KeepAlive(pathBuf)
 	return err
 }
 
-// Hello returns the daemon's protocol and build versions. See the Session
-// doc comment: this uses a fresh connection, not this session's.
-func (s *Session) Hello() (*HelloInfo, error) {
-	return s.client.Hello()
-}
-
 // Put stores data into the cache as static data on this session's persistent
 // connection. data should be a JSON object. ttl and path are optional; pass
-// "" to omit them.
+// "" to omit them (path "" is the session's directory, else the global
+// entry).
 func (s *Session) Put(key string, data interface{}, ttl, path string) error {
+	if err := s.open(); err != nil {
+		return err
+	}
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
-		return &ProtocolError{msg: "marshal put data: " + err.Error()}
+		return s.lib.stamp(parseError("beachcomber: marshal put data: " + err.Error()))
 	}
 	keyBuf, dataBuf, ttlBuf, pathBuf := cBytes(key), cBytes(string(dataJSON)), optBytes(ttl), optBytes(path)
 	_, err = s.lib.call(s.lib.bcSessionPut, s.handle, ptrOf(keyBuf), ptrOf(dataBuf), ptrOf(ttlBuf), ptrOf(pathBuf))
@@ -85,19 +99,8 @@ func (s *Session) Put(key string, data interface{}, ttl, path string) error {
 	return err
 }
 
-// Introspect runs a diagnostic query. See the Session doc comment: this uses
-// a fresh connection, not this session's.
-func (s *Session) Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error) {
-	return s.client.Introspect(subject, durationSecs)
-}
-
-// Status returns cache rows from the daemon. See the Session doc comment:
-// this uses a fresh connection, not this session's.
-func (s *Session) Status() ([]CacheRow, error) {
-	return s.client.Status()
-}
-
-// Close closes and frees the underlying session handle.
+// Close closes and frees the underlying session handle. Every later
+// operation on it fails with kind io_error; Close itself is idempotent.
 func (s *Session) Close() error {
 	if s.handle != 0 {
 		purego.SyscallN(s.lib.bcSessionClose, s.handle)

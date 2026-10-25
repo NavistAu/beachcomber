@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from libbeachcomber import Client, ConnectionFailedError, DaemonNotRunning, ServerError
+from libbeachcomber import Client, ConnectionFailedError, DaemonNotRunningError, ServerError
+from libbeachcomber import TimeoutError as CombTimeoutError
+from libbeachcomber import _native
 from libbeachcomber.types import IntrospectSubject
 
 
@@ -130,7 +132,7 @@ def test_daemon_not_running_raises_with_kind(tmp_path, monkeypatch: pytest.Monke
     monkeypatch.setenv("BEACHCOMBER_SOCKET", str(tmp_path / "no-such-socket"))
     bad_client = Client(timeout_ms=200, autostart=False)
     try:
-        with pytest.raises(DaemonNotRunning) as excinfo:
+        with pytest.raises(DaemonNotRunningError) as excinfo:
             bad_client.get("git.branch")
         assert excinfo.value.kind == "daemon_not_running"
     finally:
@@ -201,13 +203,48 @@ def test_watch_yields_initial_value(client: Client) -> None:
         assert event.data == 1
 
 
-def test_watch_timeout_zero_returns_none_when_nothing_new(client: Client) -> None:
+def test_a_watch_timeout_is_the_timeout_error(client: Client) -> None:
     client.put("watchwidget2", {"v": 1})
     with client.watch("watchwidget2.v", cwd="/tmp") as stream:
         first = stream.next_event()
         assert first is not None
-        second = stream.next_event(timeout_ms=0)
-        assert second is None
+        with pytest.raises(CombTimeoutError) as excinfo:
+            stream.next_event(timeout_ms=0)
+        assert excinfo.value.kind == "timeout"
+
+
+def test_a_cancelled_watch_has_ended(client: Client) -> None:
+    client.put("watchwidget3", {"v": 1})
+    with client.watch("watchwidget3.v", cwd="/tmp") as stream:
+        assert stream.next_event() is not None
+        stream.cancel()
+        assert stream.next_event() is None
+        assert list(stream) == []
+
+
+def test_watch_without_a_cwd_watches_the_global_entry(client: Client) -> None:
+    client.put("watchglobal", {"v": "global"})
+    client.put("watchglobal", {"v": "tmp"}, path="/tmp")
+    with client.watch("watchglobal.v") as stream:
+        event = stream.next_event()
+        assert event is not None
+        assert event.data == "global"
+
+
+def test_eval_without_a_cwd_reads_the_global_entry(client: Client) -> None:
+    client.put("evalglobal", {"v": "global"})
+    client.put("evalglobal", {"v": "tmp"}, path="/tmp")
+    assert client.eval("{{ evalglobal.v }}") == "global"
+    assert client.eval("{{ evalglobal.v }}", cwd="/tmp") == "tmp"
+
+
+def test_an_errors_message_is_the_abis_alone(client: Client) -> None:
+    with pytest.raises(ServerError) as excinfo:
+        client.get("a:b:c.x")
+    err = excinfo.value
+    assert str(err) == err.message
+    assert "version" not in err.message
+    assert err.library_version == _native.get_lib().version
 
 
 def test_watch_yields_the_resolved_value_and_refires_on_a_template_edit(

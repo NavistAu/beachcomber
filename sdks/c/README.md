@@ -93,7 +93,10 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
 - Every call returns a caller-owned, NUL-terminated `char *` JSON envelope
   — `{"ok":true,"data":...}` or `{"ok":false,"error":{"kind":...,"message":...}}`
   — except `bc_version()` (static, never freed) and the handle constructors
-  (`bc_client_new`, `bc_session_open`, `bc_watch_open`).
+  (`bc_client_new`, `bc_session_open`, `bc_watch_open`). `data` is always
+  present, and for `bc_get`, `bc_session_get` and `bc_eval` a `null` is a
+  miss. The `kind` slugs, and the one API every other
+  SDK builds on these functions, are in `docs/sdk-api.md`.
 - Free every other returned string with `bc_string_free()`.
 - `BcClient` (`bc_get`/`bc_put`/`bc_refresh`/`bc_status`/
   `bc_introspect`/`bc_hello`/`bc_eval`/`bc_watch_open`)

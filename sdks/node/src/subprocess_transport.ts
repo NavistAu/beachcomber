@@ -29,7 +29,7 @@
  *
  * Two things a `get` takes cannot cross the spawn. A spawned `comb` renders
  * with its own environment, so a caller-supplied `env` cannot be honoured:
- * a call that passes one throws `UnsupportedTransportError` naming the FFI
+ * a call that passes one throws `UnsupportedError` naming the FFI
  * transport. With no `env`, the spawned `comb` inherits this process's
  * environment and renders with it, where the FFI tier renders with none.
  * And the CLI renders with `exec()` on, so the client's `exec` option has no
@@ -50,7 +50,7 @@
  *
  * Rather than fake structured data from scraped human-readable text or
  * silently return the wrong answer, all of these ops throw
- * `UnsupportedTransportError` naming the FFI transport as the
+ * `UnsupportedError` naming the FFI transport as the
  * full-fidelity path.
  *
  * `refresh` is one spawn of `comb refresh <key> [--path P | --global]`: the
@@ -64,7 +64,7 @@
  * bounds each spawned `comb` (it is killed past it), the nearest a process
  * spawn has to the FFI tier's per-read timeout; unset, a spawn runs until
  * `comb` returns. `connectTimeoutMs` has no `comb` flag to carry it, so a
- * client constructed with it is refused with `UnsupportedTransportError`
+ * client constructed with it is refused with `UnsupportedError`
  * naming the FFI transport, rather than silently ignored.
  *
  * `comb get` and `comb put` both default an omitted `--path` to the CLI
@@ -75,7 +75,7 @@
  */
 
 import { spawnSync } from 'child_process';
-import { UnsupportedTransportError } from './errors.js';
+import { IoError, LibraryNotFoundError, TimeoutError, UnsupportedError } from './errors.js';
 import type { Envelope } from './envelope.js';
 import type { NewClientOptions, Transport } from './transport.js';
 
@@ -91,7 +91,7 @@ interface SubprocessSessionHandle {
 }
 
 function unsupported(op: string): never {
-  throw new UnsupportedTransportError(
+  throw new UnsupportedError(
     `${op} is not supported over the subprocess transport (no koffi available). ` +
       `Install the optional 'koffi' peer dependency for the full-fidelity FFI transport.`,
   );
@@ -116,7 +116,14 @@ function runComb(
     encoding: 'utf8',
   });
   if (result.error) {
-    throw new UnsupportedTransportError(`failed to spawn '${combBin}': ${result.error.message}`);
+    // The spawn itself failed: no `comb` to run, a `timeoutMs` that ran out,
+    // or the spawn's own I/O.
+    const code = (result.error as NodeJS.ErrnoException).code;
+    const message = `failed to spawn '${combBin}': ${result.error.message}`;
+    const identity = `subprocess:${combBin}`;
+    if (code === 'ENOENT') throw new LibraryNotFoundError(message, identity);
+    if (code === 'ETIMEDOUT') throw new TimeoutError(message, identity);
+    throw new IoError(message, identity);
   }
   return { code: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
@@ -240,7 +247,7 @@ export function createSubprocessTransport(): Transport {
 
     newClient(options: NewClientOptions): SubprocessClientHandle {
       if (options.connectTimeoutMs !== undefined) {
-        throw new UnsupportedTransportError(
+        throw new UnsupportedError(
           'connectTimeoutMs is not supported over the subprocess transport: comb has no flag ' +
             "to carry it. Install the optional 'koffi' peer dependency for the FFI transport, which honours it.",
         );

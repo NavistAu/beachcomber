@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Client } from '../src/client.js';
-import { ConnectionFailedError, UnsupportedTransportError } from '../src/errors.js';
+import { ConnectionFailedError, UnsupportedError } from '../src/errors.js';
 import { clientOptionsJson, koffiAvailable } from '../src/ffi_transport.js';
 import { createSubprocessTransport } from '../src/subprocess_transport.js';
 
@@ -57,7 +57,7 @@ describe('timeouts over the subprocess transport', () => {
   it('refuses connectTimeoutMs, which comb has no flag for', () => {
     assert.throws(
       () => createSubprocessTransport().newClient({ connectTimeoutMs: 0 }),
-      (err: unknown) => err instanceof UnsupportedTransportError && /FFI transport/.test(err.message),
+      (err: unknown) => err instanceof UnsupportedError && /FFI transport/.test(err.message),
     );
   });
 });

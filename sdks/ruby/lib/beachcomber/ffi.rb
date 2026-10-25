@@ -31,7 +31,9 @@ module Beachcomber
       when /linux/i
         'libbeachcomber.so'
       else
-        raise Beachcomber::Error, "unsupported platform: #{RbConfig::CONFIG['host_os']}"
+        raise Beachcomber::LibraryNotFoundError.new(
+          "unsupported platform: #{RbConfig::CONFIG['host_os']}", library_version: nil,
+        )
       end
 
     # The 22 bc_* symbols this binding calls, checked at load (not on first
@@ -104,8 +106,9 @@ module Beachcomber
       handle = try_open(LIB_BASENAME)
       return finish_load!(handle, LIB_BASENAME) if handle
 
-      raise Beachcomber::LibraryNotFound,
-            "could not locate #{LIB_BASENAME}; tried: #{tried.join(', ')}"
+      raise Beachcomber::LibraryNotFoundError.new(
+        "could not locate #{LIB_BASENAME}; tried: #{tried.join(', ')}", library_version: nil,
+      )
     end
 
     def self.try_open(path)
@@ -136,9 +139,10 @@ module Beachcomber
       missing = REQUIRED_SYMBOLS.reject { |sym| symbol_present?(sym) }
       return if missing.empty?
 
-      raise Beachcomber::MissingSymbol,
-            "#{@library_path} is missing required symbol(s): #{missing.join(', ')} " \
-            "(bc_version=#{safe_version_for_error})"
+      raise Beachcomber::LibrarySymbolError.new(
+        "#{@library_path} is missing required symbol(s): #{missing.join(', ')}",
+        library_version: safe_version_for_error,
+      )
     end
     private_class_method :check_symbols!
 
@@ -192,6 +196,14 @@ module Beachcomber
       ptr.null? ? '' : ptr.to_s
     end
 
+    # The build version of the library already loaded, or nil when none is:
+    # never loads one, so an error raised while loading can ask for it.
+    def self.loaded_version
+      return nil unless defined?(@fn) && @fn
+
+      version
+    end
+
     # Calls a void*(...)-returning bc_* function, reads the NUL-terminated
     # JSON result, frees it via bc_string_free, and returns the raw JSON
     # string. Not for bc_version, whose result must never be freed.
@@ -199,7 +211,7 @@ module Beachcomber
       load!
       fn = @fn.fetch(sym) { raise ArgumentError, "unknown bc_* function #{sym}" }
       ptr = fn.call(*args)
-      raise Beachcomber::Error, "unexpected NULL pointer from #{sym}" if ptr.nil? || ptr.null?
+      raise Beachcomber::IoError, "NULL returned from #{sym}" if ptr.nil? || ptr.null?
 
       json = ptr.to_s
       @fn[:bc_string_free].call(ptr)

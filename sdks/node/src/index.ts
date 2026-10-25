@@ -1,8 +1,9 @@
 /**
  * beachcomber Node.js client SDK
  *
- * A binding over the beachcomber C ABI (`libbeachcomber.{so,dylib}`), using
- * `koffi` (an optional peer dependency) for direct FFI when available, and
+ * A binding over the beachcomber C ABI (`libbeachcomber.{so,dylib}`) that
+ * follows the one SDK API table (docs/sdk-api.md), using `koffi` (an
+ * optional peer dependency) for direct FFI when available, and
  * falling back to shelling out to `comb` otherwise. Check
  * `client.transport()` to see which one is active.
  *
@@ -32,7 +33,7 @@ export {
   WatchStream,
   type ClientOptions,
   type GetOptions,
-  type ResolveOptions,
+  type ReadOptions,
   type HelloInfo,
   type CacheRow,
   type DaemonHealth,
@@ -46,18 +47,18 @@ export { libraryCandidates, platformLibraryName, resolveCombOnPath } from './dis
 export {
   CombError,
   type CombErrorKind,
-  DaemonNotRunning,
-  ServerError,
+  DaemonNotRunningError,
+  ConnectionFailedError,
+  IoError,
   ParseError,
+  ServerError,
+  TimeoutError,
   BadFlagsError,
   BusyError,
   PanicError,
   VersionSkewError,
-  ConnectionFailedError,
-  IoErrorError,
-  TimeoutError,
-  LibraryDiscoveryError,
-  MissingSymbolError,
-  UnsupportedTransportError,
+  LibraryNotFoundError,
+  LibrarySymbolError,
+  UnsupportedError,
 } from './errors.js';
 export type { Envelope, WatchNextResult, WatchOutcome } from './envelope.js';

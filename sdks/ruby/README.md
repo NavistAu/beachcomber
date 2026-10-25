@@ -56,6 +56,10 @@ options you give and adds none of its own.
 
 ## API
 
+This SDK follows the SDK API table, [`docs/sdk-api.md`](https://github.com/NavistAu/beachcomber/blob/main/docs/sdk-api.md):
+the same methods, arguments, value shapes and error kinds as every other
+SDK, checked against `sdks/api.json` by `test/test_api_surface.rb`.
+
 ### `Beachcomber::Client`
 
 Opens a fresh socket connection for each call. Simple and stateless.
@@ -63,27 +67,27 @@ Opens a fresh socket connection for each call. Simple and stateless.
 | Method | Description |
 |--------|-------------|
 | `get(key, cwd: nil, env: nil, force: false, wait: false)` | The value `comb get` prints for this key, cwd and env; `nil` on a miss. |
-| `refresh(key, path: nil)` | Force recomputation. Returns `nil`. |
-| `hello` | Handshake. Returns a `HelloInfo`. |
+| `eval(template, cwd: nil, env: nil)` | Render a template stored nowhere — the same value `comb eval` prints. |
+| `watch(key, cwd: nil, env: nil)` | Subscribe to a key's value — what `get` answers for it — and receive it again whenever it changes. Returns a `WatchStream` (Enumerable). |
 | `put(key, data, ttl: nil, path: nil)` | Write a value into the cache; `nil` removes the node. Returns `nil`. |
-| `introspect(subject, duration_secs: nil)` | Inspect a daemon subsystem. Returns an `IntrospectResponse`. |
-| `watch(key, cwd:, env: nil)` | Subscribe to a key's value — what `get` answers for it. Returns a `WatchStream` (Enumerable). |
+| `refresh(key, path: nil)` | Force recomputation. Returns `nil`. |
 | `status` | Daemon cache status as typed rows. Returns `Array<CacheRow>`. |
+| `hello` | Handshake. Returns a `HelloInfo`. |
+| `introspect(subject, duration_secs: nil)` | Inspect a daemon subsystem. Returns an `IntrospectResponse`. |
 | `session { \|s\| }` | Open a persistent connection (see below). |
-| `eval_expression(template_str, cwd:, env: nil)` | Render a template stored nowhere — the same value `comb eval` prints. |
+| `close` | Free the client's handle. Idempotent; an operation on a closed client raises `IOError`. |
 
 `get` returns the bare value. The daemon holds the templates
 (`<provider>:template`, seeded from configuration or `put`) and the client
 renders them: a plain field is its cached value, a templated one is
 rendered, and a bare provider name is the whole merged namespace.
-`cwd: nil` is the global entry. The unrendered halves are facets, read like
-any key: `p:template.x` is the template as stored, `p:put.x` and
-`p:source.x` those layers' values.
+`cwd: nil` is the global entry, for `get`, `eval` and `watch` alike. The
+unrendered halves are facets, read like any key: `p:template.x` is the
+template as stored, `p:put.x` and `p:source.x` those layers' values.
 
-`eval_expression` and `watch` require `cwd`. `template_str` (and each
-stored template) accepts a single `{{ expr }}` tag, or literal
-text/several tags — the former keeps the expression's natural type, the
-latter is always a string (a source with no tags at all is its literal
+`template` (and each stored template) accepts a single `{{ expr }}` tag, or
+literal text/several tags — the former keeps the expression's natural type,
+the latter is always a string (a source with no tags at all is its literal
 text).
 
 `exec()` inside a template runs only on a client created with
@@ -109,12 +113,32 @@ end
 |--------|-------------|
 | `set_context(path)` | Set this session's directory: a `get` with no `cwd`, and a `put` or `refresh` with no `path`, address it. |
 | `get(key, cwd: nil, env: nil, force: false, wait: false)` | `Client#get` on this connection; `cwd: nil` is the session's directory, else the global entry. |
-| `refresh(key, path: nil)` | Force recomputation. |
-| `hello` | Handshake. Returns a `HelloInfo`. |
-| `put(key, data, ttl: nil, path: nil)` | Write a value into the cache; `nil` removes the node. |
-| `introspect(subject, duration_secs: nil)` | Inspect a daemon subsystem. Returns an `IntrospectResponse`. |
-| `status` | Daemon cache status as typed rows. Returns `Array<CacheRow>`. |
+| `put(key, data, ttl: nil, path: nil)` | `Client#put` on this connection; `path: nil` is the session's directory. |
+| `refresh(key, path: nil)` | `Client#refresh` on this connection; `path: nil` is the session's directory. |
 | `close` | Close the connection (called automatically by `Client#session`). |
+
+`status`, `hello` and `introspect` address no directory and need no
+connection of their own, so they are the client's alone.
+
+### `Beachcomber::WatchStream`
+
+| Method | Description |
+|--------|-------------|
+| `next_event(timeout_ms = nil)` | The next `WatchEvent`, waiting indefinitely when `timeout_ms` is nil (0 polls once). `nil` once the stream has ended; a wait that runs out raises `Beachcomber::TimeoutError`, and the stream stays open. |
+| `cancel` | End the stream; safe from another thread while one waits in `next_event`. |
+| `close` | Cancel and free the stream. Idempotent. |
+| `each { \|event\| }` | Yield each event until the stream ends. |
+
+An event's `data` is the value `get` answers at that moment; a `nil` `data`
+is a miss, not the end of the stream.
+
+### Typed shapes
+
+`CacheRow`, `HelloInfo`, `DaemonHealth` (with `ReaperStatus` and `Verdict`),
+`IntrospectResponse` and `WatchEvent` are Structs with exactly the fields
+`libbeachcomber::protocol` defines; a field the library leaves out is `nil`.
+A row's `kind` and `failure`, and an introspect subject other than `daemon`,
+are the JSON the library hands on.
 
 ### Key format
 
@@ -123,13 +147,26 @@ end
 
 ### Errors
 
-| Class | When raised |
-|-------|-------------|
-| `Beachcomber::DaemonNotRunning` | Socket unreachable (daemon not started). |
-| `Beachcomber::ServerError` | Daemon returns `ok: false`. |
-| `Beachcomber::ProtocolError` | Response is not valid JSON or unexpected format. |
+Every error is a `Beachcomber::CombError < StandardError`, one subclass per
+kind, with `kind` (the slug), `message` (the library's message, unchanged)
+and `library_version` (the loaded library's version, `nil` when none was
+loaded).
 
-All inherit from `Beachcomber::Error < StandardError`.
+| Class | `kind` | When raised |
+|-------|--------|-------------|
+| `DaemonNotRunningError` | `daemon_not_running` | No daemon answers, and none was started. |
+| `ConnectionFailedError` | `connection_failed` | An explicit `socket_path` could not be connected to. |
+| `IoError` | `io_error` | A read or write on the socket failed. |
+| `ParseError` | `parse_error` | A request, a response or a template could not be read. |
+| `ServerError` | `server_error` | The daemon refused the request, or a template failed to render. |
+| `TimeoutError` | `timeout` | A read or write ran out `timeout_ms`, or `next_event` ran out its `timeout_ms`. |
+| `BadFlagsError` | `bad_flags` | A flag bit the library does not define was set. |
+| `BusyError` | `busy` | A session or watch is in use by another caller. |
+| `PanicError` | `panic` | The library panicked; the panic was caught at the boundary. |
+| `VersionSkewError` | `version_skew` | The daemon is a different version from the library. |
+| `LibraryNotFoundError` | `library_not_found` | No `libbeachcomber` was found where discovery looks. |
+| `LibrarySymbolError` | `library_symbol` | The library found lacks a function this SDK calls. |
+| `UnsupportedError` | `unsupported` | An operation this SDK cannot do. |
 
 ## Socket discovery
 

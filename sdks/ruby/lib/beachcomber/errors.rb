@@ -1,127 +1,61 @@
 module Beachcomber
-  # Base class for all Beachcomber errors.
-  class Error < StandardError; end
-
-  # Raised when libbeachcomber cannot be located. Names every location tried,
-  # in order, per the shared discovery contract.
-  class LibraryNotFound < Error; end
-
-  # Raised when a loaded libbeachcomber is missing a required bc_* symbol.
-  # Names the symbol and the bc_version() of what was actually loaded.
-  class MissingSymbol < Error; end
-
-  # Base class for every `ok: false` envelope the library returns, plus the
-  # library-level conditions (bad_flags, busy, panic, version_skew) it can
-  # raise outside the CombError variant set.
+  # The base of every error this SDK raises: one subclass per kind in the
+  # SDK API table (docs/sdk-api.md), each named for its kind.
   #
-  # +kind+ is the stable, machine-readable slug from the envelope's
-  # +error.kind+ field (e.g. "server_error", "daemon_not_running"). The
-  # message always includes the loaded library's bc_version().
-  class CombError < Error
-    attr_reader :kind
+  # +kind+ is the stable, machine-readable slug — the C ABI envelope's
+  # +error.kind+, or one this SDK raises itself (+library_not_found+,
+  # +library_symbol+, +unsupported+). +message+ is the ABI's message,
+  # unchanged. +library_version+ is the loaded library's bc_version(), nil
+  # when no library was loaded.
+  class CombError < StandardError
+    class << self
+      # The kind slug this class stands for; nil on the base class, which
+      # carries a kind this SDK does not know yet.
+      attr_reader :kind
+    end
 
-    def initialize(kind, message)
+    attr_reader :kind, :library_version
+
+    def initialize(message = nil, kind: self.class.kind, library_version: Beachcomber::FFI.loaded_version)
+      super(message)
       @kind = kind
-      super("beachcomber: #{message} (kind=#{kind}, lib_version=#{safe_version})")
-    end
-
-    private
-
-    def safe_version
-      Beachcomber::FFI.version
-    rescue StandardError
-      'unknown'
+      @library_version = library_version
     end
   end
 
-  # FFI-boundary conditions (no CombError variant on the Rust side).
-  class BadFlagsError < CombError
-    def initialize(message)
-      super('bad_flags', message)
-    end
+  # Defines the error class for +kind+, named for it.
+  def self.define_error(name, kind)
+    klass = Class.new(CombError) { @kind = kind }
+    const_set(name, klass)
   end
+  private_class_method :define_error
 
-  class BusyError < CombError
-    def initialize(message)
-      super('busy', message)
-    end
-  end
+  define_error :DaemonNotRunningError, 'daemon_not_running'
+  define_error :ConnectionFailedError, 'connection_failed'
+  define_error :IoError, 'io_error'
+  define_error :ParseError, 'parse_error'
+  define_error :ServerError, 'server_error'
+  define_error :TimeoutError, 'timeout'
+  define_error :BadFlagsError, 'bad_flags'
+  define_error :BusyError, 'busy'
+  define_error :PanicError, 'panic'
+  define_error :VersionSkewError, 'version_skew'
+  define_error :LibraryNotFoundError, 'library_not_found'
+  define_error :LibrarySymbolError, 'library_symbol'
+  define_error :UnsupportedError, 'unsupported'
 
-  class PanicError < CombError
-    def initialize(message)
-      super('panic', message)
-    end
-  end
+  # error.kind slug -> its class.
+  KIND_TO_CLASS = constants.map { |c| const_get(c) }
+                           .select { |c| c.is_a?(Class) && c < CombError }
+                           .to_h { |c| [c.kind, c] }
+                           .freeze
 
-  class VersionSkewError < CombError
-    def initialize(message)
-      super('version_skew', message)
-    end
-  end
-
-  # One class per `CombError` variant on the Rust side (see
-  # libbeachcomber-ffi/src/envelope.rs).
-  class DaemonNotRunning < CombError
-    def initialize(message)
-      super('daemon_not_running', message)
-    end
-  end
-
-  class ConnectionFailedError < CombError
-    def initialize(message)
-      super('connection_failed', message)
-    end
-  end
-
-  class IoError < CombError
-    def initialize(message)
-      super('io_error', message)
-    end
-  end
-
-  # Raised when a response cannot be parsed as valid JSON, or the daemon
-  # rejects malformed input.
-  class ProtocolError < CombError
-    def initialize(message)
-      super('parse_error', message)
-    end
-  end
-
-  # Raised when the daemon returns ok: false for an op it actually executed.
-  class ServerError < CombError
-    def initialize(message)
-      super('server_error', message)
-    end
-  end
-
-  class TimeoutError < CombError
-    def initialize(message)
-      super('timeout', message)
-    end
-  end
-
-  # error.kind slug -> exception class. Kept in sync with
-  # libbeachcomber-ffi/src/envelope.rs's ErrorKind enum.
-  KIND_TO_CLASS = {
-    'bad_flags' => BadFlagsError,
-    'busy' => BusyError,
-    'panic' => PanicError,
-    'version_skew' => VersionSkewError,
-    'daemon_not_running' => DaemonNotRunning,
-    'connection_failed' => ConnectionFailedError,
-    'io_error' => IoError,
-    'parse_error' => ProtocolError,
-    'server_error' => ServerError,
-    'timeout' => TimeoutError,
-  }.freeze
-
-  # Raises the idiomatic exception for an envelope's error.kind/error.message.
-  # An unrecognised kind (future ABI additions) still raises CombError with
-  # that kind preserved, rather than failing to raise at all.
+  # Raises the error for an envelope's error.kind/error.message. A kind
+  # this SDK does not know yet still raises a CombError carrying it.
   def self.raise_for_error(kind, message)
     klass = KIND_TO_CLASS[kind]
     raise klass.new(message) if klass
 
-    raise CombError.new(kind, message)
+    raise CombError.new(message, kind: kind)
   end
 end

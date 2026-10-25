@@ -4,7 +4,7 @@ sidebar_position: 5
 
 # Go SDK
 
-Go client for the beachcomber shell-state daemon. A binding over the shared `libbeachcomber` C ABI, using [`purego`](https://github.com/ebitengine/purego) (vendored) for pure-Go dynamic library loading — no cgo, no wire-protocol code in this SDK. Idiomatic Go with standard error returns.
+Go client for the beachcomber shell-state daemon. A binding over the shared `libbeachcomber` C ABI, using [`purego`](https://github.com/ebitengine/purego) (vendored) for pure-Go dynamic library loading — no cgo, no wire-protocol code in this SDK. Idiomatic Go with standard error returns. It follows the [SDK API table](https://github.com/NavistAu/beachcomber/blob/main/docs/sdk-api.md) every beachcomber SDK follows: the same operations, arguments, value shapes and error kinds, in Go's casing.
 
 ## Requirements
 
@@ -34,14 +34,14 @@ func main() {
     if err != nil {
         log.Fatal(err)
     }
+    defer c.Close()
 
-    result, err := c.Get("git.branch", "/path/to/repo", nil) // what `comb get git.branch` prints there
+    branch, err := c.Get("git.branch", "/path/to/repo", nil) // what `comb get git.branch` prints there; nil on a miss
     if err != nil {
         log.Fatal(err)
     }
-    if result.IsHit() {
-        branch, _ := result.GetString("")
-        fmt.Printf("branch: %s\n", branch)
+    if s, ok := branch.(string); ok {
+        fmt.Printf("branch: %s\n", s)
     }
 }
 ```
@@ -59,8 +59,8 @@ defer sess.Close()
 
 sess.SetContext("/path/to/repo")
 
-branchResult, err := sess.Get("git.branch", "", nil)
-dirtyResult, err  := sess.Get("git.dirty", "", nil)
+branch, err := sess.Get("git.branch", "", nil)
+dirty, err  := sess.Get("git.dirty", "", nil)
 ```
 
 ## API reference
@@ -68,31 +68,32 @@ dirtyResult, err  := sess.Get("git.dirty", "", nil)
 ### `Client`
 
 ```go
-c, err := beachcomber.NewClient()                       // auto-discover socket
-c := beachcomber.NewClientWithPath("/custom/path/sock") // explicit socket path
-c, err := beachcomber.NewClient(beachcomber.WithExec(true)) // templates this client renders may call exec()
+c, err := beachcomber.NewClient()                                       // auto-discover socket
+c, err := beachcomber.NewClient(beachcomber.WithSocketPath("/custom/path/sock")) // explicit socket path
+c, err := beachcomber.NewClient(beachcomber.WithExec(true))             // templates this client renders may call exec()
 c, err := beachcomber.NewClient(beachcomber.WithTimeoutMs(500), beachcomber.WithConnectTimeoutMs(0))
 ```
 
-Each option is passed to the library's `bc_client_new` as it is given; the SDK has no defaults of its own, so an option left out is the library's default.
+Each option is passed to the library's `bc_client_new` as it is given; the SDK has no defaults of its own, so an option left out is the library's default. `NewClient` locates and validates `libbeachcomber`, so a broken install is reported there (`ErrLibraryNotFound`, `ErrLibrarySymbol`). `c.Close()` frees the client; a call after it fails with `ErrIo`.
 
 | Option | Library default | Meaning |
 |---|---|---|
+| `WithSocketPath(path string)` | `$BEACHCOMBER_SOCKET`, else `/tmp/beachcomber-<uid>/sock` | The daemon's socket. |
 | `WithTimeoutMs(ms uint64)` | 100 | How long one read or write on the socket may take. 0 is refused (`parse_error` on the first call). |
 | `WithConnectTimeoutMs(ms uint64)` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
 | `WithAutostart(enabled bool)` | on | Start a daemon when none serves the auto-discovered socket. |
 | `WithExec(enabled bool)` | off | Whether a template this client renders may call `exec()`. |
 
-#### `c.Get(key, cwd string, env map[string]string, flags ...GetFlag) (*Result, error)`
+#### `c.Get(key, cwd string, env map[string]string, flags ...GetFlag) (any, error)`
 
-The value `comb get` prints for this key, cwd and env — the daemon holds the templates, the client renders them; a plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. A miss is a `Result` with `nil` `Data`. `cwd` is the directory the read addresses (`~` is home, a relative path is against this process's working directory); `""` is the global entry. `env` may be `nil`, which makes every `env.*` reference absent. `flags` are `beachcomber.Force` (re-execute every Source the read demands first, as `comb get --force`) and `beachcomber.Wait` (re-execute a stale entry inline, as `comb get --wait`). The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
+The value `comb get` prints for this key, cwd and env, as `encoding/json` decodes it (a `string`, `float64`, `bool`, `map[string]interface{}` or `[]interface{}`) — the daemon holds the templates, the client renders them; a plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. A miss is `nil`. `cwd` is the directory the read addresses (`~` is home, a relative path is against this process's working directory); `""` is the global entry. `env` may be `nil`, which makes every `env.*` reference absent. `flags` are `beachcomber.Force` (re-execute every Source the read demands first, as `comb get --force`) and `beachcomber.Wait` (re-execute a stale entry inline, as `comb get --wait`). The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
 
 ```go
-result, err := c.Get("git.branch", "/path/to/repo", nil)
-result, err := c.Get("hostname", "", nil)                 // the global entry
-result, err := c.Get("git", "/path/to/repo", nil)         // full provider object
-result, err := c.Get("git.branch", "/path/to/repo", nil, beachcomber.Force)
-result, err := c.Get("git:template.branch", "", nil)      // the template, unrendered
+v, err := c.Get("git.branch", "/path/to/repo", nil)
+v, err := c.Get("hostname", "", nil)                 // the global entry
+v, err := c.Get("git", "/path/to/repo", nil)         // full provider object: a map[string]interface{}
+v, err := c.Get("git.branch", "/path/to/repo", nil, beachcomber.Force)
+v, err := c.Get("git:template.branch", "", nil)      // the template, unrendered
 ```
 
 #### `c.Refresh(key, path) error`
@@ -111,17 +112,17 @@ Handshake — returns daemon version, protocol version, and build info.
 
 Write a value into the cache as static data.
 
-#### `c.Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)`
+#### `c.Introspect(subject IntrospectSubject, durationSecs ...uint64) (*IntrospectResponse, error)`
 
-Inspect a daemon subsystem (`"daemon"`, `"providers"`, `"config"`, `"cache"`, `"lifecycle"`, `"watches"`, `"timers"`, `"demand"`, `"procs"`).
+Inspect a daemon subsystem (`"daemon"`, `"providers"`, `"config"`, `"cache"`, `"lifecycle"`, `"watches"`, `"timers"`, `"demand"`, `"procs"`). A duration, which `"procs"` reads, is sent as given, 0 included; left out, the daemon's own default applies.
 
 #### `c.Watch(key, cwd string, env map[string]string) (*WatchStream, error)`
 
-Subscribe to a key's *resolved* value — what `Get` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `cwd` and `env` mean what they mean for `Get`, and `cwd` is required. Returns a `WatchStream`; call `NextEvent()` in a loop and `Close()` when done. `WatchEvent.Data` carries no age or staleness — a value resolved from several cache records has no single one.
+Subscribe to a key's value — what `Get` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `cwd` and `env` mean what they mean for `Get` (`""` is the global entry). Returns a `WatchStream`: `NextEvent()` waits indefinitely and `NextEvent(ms)` at most `ms` milliseconds, returning an `ErrTimeout` error when none arrives; it answers `nil, nil` once the stream has ended. `Cancel()` ends the stream (a `NextEvent` waiting on another goroutine returns `nil, nil`), and `Close()` cancels and frees it. `WatchEvent.Data` is `nil` for a miss, and carries no age or staleness — a value resolved from several cache records has no single one.
 
-#### `c.Eval(templateStr, cwd string, env map[string]string) (*Result, error)`
+#### `c.Eval(templateStr, cwd string, env map[string]string) (any, error)`
 
-`Eval` renders a template stored nowhere — the same value `comb eval` prints, so `Eval("{{ p.f }}", …)` and `Get("p.f", …)` agree. It requires `cwd` (every fetch the render makes addresses it); `env` means what it means for `Get`. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type) or literal text/several tags (always a string — a source with no tags at all is its literal text). `exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
+`Eval` renders a template stored nowhere — the same value `comb eval` prints, decoded as `Get`'s is, `nil` when it renders nothing — so `Eval("{{ p.f }}", …)` and `Get("p.f", …)` agree. `cwd` and `env` mean what they mean for `Get`. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type) or literal text/several tags (always a string — a source with no tags at all is its literal text). `exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
 
 #### `c.Session() (*Session, error)`
 
@@ -131,46 +132,50 @@ Open a persistent connection.
 
 | Method | Description |
 |---|---|
-| `Get(key, cwd string, env map[string]string, flags ...GetFlag) (*Result, error)` | `c.Get` on this session's connection; `cwd == ""` is the session's directory when `SetContext` has set one, else the global entry |
+| `Get(key, cwd string, env map[string]string, flags ...GetFlag) (any, error)` | `c.Get` on this session's connection; `cwd == ""` is the session's directory when `SetContext` has set one, else the global entry |
 | `Refresh(key, path string) error` | Force recomputation |
 | `SetContext(path string) error` | Set this session's directory: every later `Get` with `cwd == ""`, and `Put` and `Refresh` with `path == ""`, address it |
-| `Hello() (*HelloInfo, error)` | Handshake — returns daemon and protocol versions |
 | `Put(key string, data interface{}, ttl, path string) error` | Write a static-data entry |
-| `Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)` | Inspect a daemon subsystem |
-| `Status() ([]CacheRow, error)` | Return typed cache rows |
 | `Close() error` | Close the connection |
 
-### `Result`
+`Status`, `Hello` and `Introspect` address no directory and need no connection of their own, so they are the `Client`'s alone.
 
-`Get` and `Eval` return the value in a `Result`: `Data` is the value, or `nil` on a miss.
+### Values
 
-| Field / method | Type | Description |
-|---|---|---|
-| `OK` | `bool` | `true` when the daemon returned success |
-| `Data` | `interface{}` | The decoded value (string, map, etc.); `nil` on a miss |
-| `IsHit() bool` | — | `true` when `OK && Data != nil` |
-| `IsMiss() bool` | — | `true` when `OK && Data == nil` |
-| `GetString(field string) (string, bool)` | — | Extract a string (pass `""` for scalar results) |
-| `GetInt(field string) (int64, bool)` | — | Extract an integer |
-| `GetFloat(field string) (float64, bool)` | — | Extract a float |
-| `GetBool(field string) (bool, bool)` | — | Extract a boolean |
-| `RawJSON() []byte` | — | The JSON value backing this `Result` |
-
-For full provider queries, pass a field name to the typed accessors:
+`Get` and `Eval` answer the value itself, never a wrapper:
 
 ```go
-result, _ := c.Get("git", "/repo", nil)
-branch, _ := result.GetString("branch")  // "main"
-dirty, _  := result.GetBool("dirty")     // false
+v, _ := c.Get("git", "/repo", nil)
+git, _ := v.(map[string]interface{})
+branch, _ := git["branch"].(string) // "main"
+dirty, _ := git["dirty"].(bool)     // false
 ```
+
+`CacheRow`, `HelloInfo`, `DaemonHealth` (with `ReaperStatus` and `Verdict`), `IntrospectResponse` and `WatchEvent` are typed.
 
 ## Errors
 
-| Error | When returned |
+Every error is an `*Error`: `Kind` (the table's slug), `Message` (the library's words unchanged) and `LibraryVersion`; `err.Error()` is the message alone. One sentinel per kind matches it with `errors.Is`:
+
+| Sentinel | Kind |
 |---|---|
-| `ErrDaemonNotRunning` | Unix socket cannot be reached |
-| `*ServerError` | Daemon responded with `ok: false` |
-| `*ProtocolError` | Response could not be parsed |
+| `ErrDaemonNotRunning` | `daemon_not_running` |
+| `ErrConnectionFailed` | `connection_failed` |
+| `ErrIo` | `io_error` |
+| `ErrParse` | `parse_error` |
+| `ErrServer` | `server_error` |
+| `ErrTimeout` | `timeout` |
+| `ErrBadFlags` | `bad_flags` |
+| `ErrBusy` | `busy` |
+| `ErrPanic` | `panic` |
+| `ErrVersionSkew` | `version_skew` |
+| `ErrLibraryNotFound` | `library_not_found` |
+| `ErrLibrarySymbol` | `library_symbol` |
+| `ErrUnsupported` | `unsupported` |
+
+```go
+if errors.Is(err, beachcomber.ErrConnectionFailed) { … } // an explicit socket nobody serves
+```
 
 ## Wire protocol reference
 

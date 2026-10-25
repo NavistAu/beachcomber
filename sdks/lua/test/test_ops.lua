@@ -69,12 +69,12 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
   suite("Client:put")
 
-  test("put forwards key, data, ttl, path", function()
+  test("put forwards key, data, and the ttl and path options", function()
     local seen
     local backend = make_backend({
       put = function(_, key, data, ttl, path) seen = { key = key, data = data, ttl = ttl, path = path }; return { ok = true } end,
     })
-    local ok, err = Client.new(backend):put("mykey", { color = "blue" }, "60s", "/p")
+    local ok, err = Client.new(backend):put("mykey", { color = "blue" }, { ttl = "60s", path = "/p" })
     assert_nil(err)
     assert_true(ok)
     assert_eq(seen.key, "mykey")
@@ -83,13 +83,14 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(seen.path, "/p")
   end)
 
-  test("put returns false+Error on backend error", function()
+  test("put returns nil, Error on backend error, as every method does", function()
     local backend = make_backend({
       put = function() return { ok = false, error = { kind = "server_error", message = "must be a JSON object" } } end,
     })
     local ok, err = Client.new(backend):put("mykey", "not-an-object")
-    assert_eq(ok, false)
-    assert_true(tostring(err):find("object", 1, true) ~= nil)
+    assert_nil(ok)
+    assert_eq(err.kind, "server_error")
+    assert_eq(err.message, "must be a JSON object")
   end)
 
   test("put(key, nil) forwards a nil data, which encodes as null", function()
@@ -97,7 +98,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     local backend = make_backend({
       put = function(_, key, data, ttl, path) seen = { called = true, key = key, data = data, path = path }; return { ok = true } end,
     })
-    local ok, err = Client.new(backend):put("mykey", nil, nil, "/somepath")
+    local ok, err = Client.new(backend):put("mykey", nil, { path = "/somepath" })
     assert_nil(err)
     assert_true(ok)
     assert_true(seen.called)
@@ -133,12 +134,12 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(result.other.entries, 5)
   end)
 
-  test("introspect forwards subject and duration_secs", function()
+  test("introspect forwards subject and the duration_secs option", function()
     local seen
     local backend = make_backend({
       introspect = function(_, subject, duration_secs) seen = { subject = subject, duration_secs = duration_secs }; return { ok = true, data = {} } end,
     })
-    Client.new(backend):introspect("timers", 30)
+    Client.new(backend):introspect("timers", { duration_secs = 30 })
     assert_eq(seen.subject, "timers")
     assert_eq(seen.duration_secs, 30)
   end)
@@ -199,20 +200,70 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(ev.data, 42)
   end)
 
-  test("watch defaults its cwd to the context path, then \".\"", function()
+  test("watch with no opts is the global entry and no environment", function()
     local opened_with
     local backend = make_backend({
-      watch_open = function(_, key, cwd)
-        opened_with = cwd
+      watch_open = function(_, key, cwd, env)
+        opened_with = { cwd = cwd, env = env }
         return { next_event = function() return nil, nil, "eof" end, close = function() end }
       end,
     })
-    local client = Client.new(backend)
-    client:watch("k")
-    assert_eq(opened_with, ".")
-    client:set_context("/ctx")
-    client:watch("k")
-    assert_eq(opened_with, "/ctx")
+    Client.new(backend):watch("k")
+    assert_nil(opened_with.cwd, "no cwd is the global entry, not \".\"")
+    assert_nil(opened_with.env, "no env is none, not an empty table")
+  end)
+
+  test("eval with no opts is the global entry and no environment", function()
+    local seen
+    local backend = make_backend({
+      eval = function(_, template, cwd, env) seen = { cwd = cwd, env = env }; return { ok = true, data = 1 } end,
+    })
+    assert_eq(Client.new(backend):eval("{{ 1 }}"), 1)
+    assert_nil(seen.cwd, "no cwd is the global entry, not \".\"")
+    assert_nil(seen.env, "no env is none, not an empty table")
+  end)
+
+  test("WatchStream:next_event with no timeout waits indefinitely", function()
+    local seen
+    local watch_handle = { next_event = function(_, timeout_ms) seen = timeout_ms; return { data = 1 }, nil, "event" end }
+    local stream = Client.new(make_backend({ watch_open = function() return watch_handle end })):watch("k")
+    stream:next_event()
+    assert_eq(seen, -1)
+    stream:next_event(250)
+    assert_eq(seen, 250)
+  end)
+
+  test("WatchStream:next_event returns nil, a timeout Error when the wait runs out", function()
+    local watch_handle = { next_event = function() return nil, nil, "timeout" end }
+    local stream = Client.new(make_backend({ watch_open = function() return watch_handle end })):watch("k")
+    local ev, err = stream:next_event(10)
+    assert_nil(ev)
+    assert_not_nil(err, "a timeout is not the end of the stream")
+    assert_eq(err.kind, "timeout")
+  end)
+
+  test("WatchStream:next_event returns nil (no error) once cancelled", function()
+    local watch_handle = { next_event = function() return nil, nil, "cancelled" end }
+    local stream = Client.new(make_backend({ watch_open = function() return watch_handle end })):watch("k")
+    local ev, err = stream:next_event()
+    assert_nil(ev)
+    assert_nil(err)
+  end)
+
+  test("WatchStream:cancel and close answer true", function()
+    local watch_handle = { next_event = function() return nil, nil, "eof" end, cancel = function() end, close = function() end }
+    local stream = Client.new(make_backend({ watch_open = function() return watch_handle end })):watch("k")
+    assert_eq(stream:cancel(), true)
+    assert_eq(stream:close(), true)
+  end)
+
+  test("WatchStream:each raises the Error a failing stream returns, rather than ending quietly", function()
+    local Error = require("beachcomber.error")
+    local watch_handle = { next_event = function() return nil, Error.new("io_error", "gone"), "error" end }
+    local stream = Client.new(make_backend({ watch_open = function() return watch_handle end })):watch("k")
+    local ok, err = pcall(function() for _ in stream:each() do end end)
+    assert_eq(ok, false)
+    assert_eq(err.kind, "io_error")
   end)
 
   test("WatchStream:next_event returns nil, Error on outcome=error", function()

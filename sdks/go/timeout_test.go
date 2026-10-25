@@ -18,7 +18,7 @@ import (
 func optionKeys(t *testing.T, options ...beachcomber.Option) map[string]interface{} {
 	t.Helper()
 	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(beachcomber.OptionsJSONForTest("", options...)), &m); err != nil {
+	if err := json.Unmarshal([]byte(beachcomber.OptionsJSONForTest(options...)), &m); err != nil {
 		t.Fatalf("options_json is not an object: %v", err)
 	}
 	return m
@@ -56,15 +56,17 @@ func TestClient_ConnectTimeoutMs_ZeroIsOneAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	c := beachcomber.NewClientWithPath(filepath.Join(dir, "sock"),
+	c, err := beachcomber.NewClient(beachcomber.WithSocketPath(filepath.Join(dir, "sock")),
 		beachcomber.WithAutostart(false), beachcomber.WithConnectTimeoutMs(0))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
 
 	started := time.Now()
 	_, err = c.Hello()
 	took := time.Since(started)
 
-	var se *beachcomber.ServerError
-	if !errors.As(err, &se) || se.Kind != "connection_failed" {
+	if !errors.Is(err, beachcomber.ErrConnectionFailed) {
 		t.Fatalf("Hello() error = %v, want kind connection_failed", err)
 	}
 	if took >= 250*time.Millisecond {

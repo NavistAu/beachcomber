@@ -1,20 +1,22 @@
-"""Unit tests for envelope-error -> exception mapping.
-
-Pure: no native library or daemon required.
+"""Unit tests for envelope-error -> exception mapping, and for the payloads
+that are not the shape their op answers. Pure: no native library or daemon
+required.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from libbeachcomber.client import _parse_cache_rows
 from libbeachcomber.exceptions import (
     BadFlagsError,
     BusyError,
     CombError,
     ConnectionFailedError,
-    DaemonNotRunning,
+    DaemonNotRunningError,
+    IoError,
     PanicError,
-    ProtocolError,
+    ParseError,
     ServerError,
     TimeoutError,
     VersionSkewError,
@@ -25,52 +27,38 @@ from libbeachcomber.exceptions import (
 @pytest.mark.parametrize(
     "kind,expected_cls",
     [
-        ("daemon_not_running", DaemonNotRunning),
+        ("daemon_not_running", DaemonNotRunningError),
         ("connection_failed", ConnectionFailedError),
+        ("io_error", IoError),
+        ("parse_error", ParseError),
         ("server_error", ServerError),
         ("timeout", TimeoutError),
         ("busy", BusyError),
         ("bad_flags", BadFlagsError),
         ("panic", PanicError),
         ("version_skew", VersionSkewError),
-        ("io_error", ProtocolError),
-        ("parse_error", ProtocolError),
     ],
 )
 def test_known_kind_maps_to_expected_subclass(kind: str, expected_cls: type) -> None:
     exc = exception_for_envelope_error(kind, "boom", "1.2.3")
-    assert isinstance(exc, expected_cls)
+    assert type(exc) is expected_cls
     assert exc.kind == kind
 
 
-def test_message_includes_library_version() -> None:
+def test_the_message_is_the_abis_and_the_version_a_field_of_its_own() -> None:
     exc = exception_for_envelope_error("server_error", "bad request", "9.9.9")
-    assert "boom" not in str(exc)
-    assert "bad request" in str(exc)
-    assert "9.9.9" in str(exc)
+    assert str(exc) == "bad request"
+    assert exc.message == "bad request"
+    assert exc.library_version == "9.9.9"
 
 
-def test_unknown_kind_falls_back_to_base_combrror_with_kind_preserved() -> None:
+def test_unknown_kind_falls_back_to_base_comberror_with_kind_preserved() -> None:
     exc = exception_for_envelope_error("something_new", "boom", "1.0.0")
     assert type(exc) is CombError
     assert exc.kind == "something_new"
+    assert exc.library_version == "1.0.0"
 
 
-def test_server_error_exposes_message_attribute_for_conformance_runner() -> None:
-    exc = exception_for_envelope_error("server_error", "no such key", "1.0.0")
-    assert isinstance(exc, ServerError)
-    assert "no such key" in exc.message
-
-
-def test_all_combrror_subclasses_carry_a_kind_class_attribute() -> None:
-    for cls in (
-        DaemonNotRunning,
-        ConnectionFailedError,
-        ServerError,
-        TimeoutError,
-        BusyError,
-        BadFlagsError,
-        PanicError,
-        VersionSkewError,
-    ):
-        assert cls.kind is not None
+def test_a_status_payload_that_is_not_an_array_is_a_parse_error() -> None:
+    with pytest.raises(ParseError):
+        _parse_cache_rows({"not": "rows"})

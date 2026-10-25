@@ -169,16 +169,21 @@ local function run_op(client, descriptor, resolve_ctx)
     return { ok = true, data = value }
 
   elseif op == "refresh" then
-    local ok, err = client:refresh(args.key, args.path)
+    local ok, err = client:refresh(args.key, { path = args.path })
     if not ok then return fail(err) end
     return { ok = true }
 
   elseif op == "context" then
-    client:set_context(args.path)
+    -- A directory is a session's: set it on one, which keeps it.
+    local session, err = client:session()
+    if not session then return fail(err) end
+    local ok, serr = session:set_context(args.path)
+    session:close()
+    if not ok then return fail(serr) end
     return { ok = true }
 
   elseif op == "put" then
-    local ok, err = client:put(args.key, args.data, args.ttl, args.path)
+    local ok, err = client:put(args.key, args.data, { ttl = args.ttl, path = args.path })
     if not ok then return fail(err) end
     return { ok = true }
 
@@ -188,7 +193,7 @@ local function run_op(client, descriptor, resolve_ctx)
     return { ok = true, data = rows }
 
   elseif op == "introspect" then
-    local result, err = client:introspect(args.subject, args.duration_secs)
+    local result, err = client:introspect(args.subject, { duration_secs = args.duration_secs })
     if not result then return fail(err) end
     if args.subject == "daemon" then
       return { ok = true, data = result.daemon }

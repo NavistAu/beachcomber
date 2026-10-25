@@ -165,12 +165,12 @@ function Backend:hello()
 end
 
 function Backend:eval(template_str, cwd, env_vars)
-  local env_json = json.encode(env_vars or {})
-  local ptr = self._C.bc_eval(self._client, template_str, cwd, env_json)
+  local ptr = self._C.bc_eval(self._client, template_str, cwd, env_json_of(env_vars))
   return unwrap_value(decode(self._C, ptr))
 end
 
--- ── Session (advanced: a persistent connection with a directory of its own) ──
+-- ── Session: a persistent connection with a directory of its own ──
+-- beachcomber.client's Session wraps this handle into the table's surface.
 
 local Session = {}
 Session.__index = Session
@@ -218,14 +218,15 @@ end
 local Watch = {}
 Watch.__index = Watch
 
+--- A NULL `cwd` watches the global entry and a nil `env_vars` is no
+-- environment, as for Backend:get.
 function Backend:watch_open(key, cwd, env_vars)
-  local env_json = json.encode(env_vars or {})
-  local wptr = self._C.bc_watch_open(self._client, key, cwd, env_json)
+  local wptr = self._C.bc_watch_open(self._client, key, cwd, env_json_of(env_vars))
   if wptr == nil then
-    return nil, Error.new("io_error", "bc_watch_open returned NULL (allocation failure)")
+    return nil, Error.new("io_error", "bc_watch_open returned NULL (allocation failure)", self._version)
   end
   ffi.gc(wptr, self._C.bc_watch_free)
-  return setmetatable({ _C = self._C, _w = wptr }, Watch)
+  return setmetatable({ _C = self._C, _w = wptr, _version = self._version }, Watch)
 end
 
 --- @param timeout_ms number?  -1 (default) blocks indefinitely, 0 polls, >0 waits that long.
@@ -237,7 +238,7 @@ function Watch:next_event(timeout_ms)
   local ptr = self._C.bc_watch_next(self._w, timeout_ms)
   local env = decode(self._C, ptr)
   if not env.ok then
-    return nil, Error.from(env.error), "error"
+    return nil, Error.from(env.error, self._version), "error"
   end
   if env.outcome == "event" then
     local data = env.data

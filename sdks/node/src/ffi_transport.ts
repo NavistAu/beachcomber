@@ -3,15 +3,15 @@
  *
  * Implements the seven-point common contract from the plan's Phase 4 header:
  * ordered library discovery, loud discovery failure, symbols checked at
- * load (not first use), `bc_version()` read on load and included in every
- * error, `ok:false` envelopes turned into idiomatic errors, and every
+ * load (not first use), `bc_version()` read on load and carried by every
+ * error as `libraryVersion`, `ok:false` envelopes turned into idiomatic errors, and every
  * `char *` freed via `bc_string_free` (via koffi's disposable-type
  * mechanism) except `bc_version()`'s static string.
  */
 
 import { createRequire } from 'module';
 import { libraryCandidates } from './discovery.js';
-import { errorFromEnvelope, LibraryDiscoveryError, MissingSymbolError } from './errors.js';
+import { errorFromEnvelope, LibraryNotFoundError, LibrarySymbolError } from './errors.js';
 import type { Envelope, WatchNextResult, WatchOutcome } from './envelope.js';
 import type { NewClientOptions, Transport } from './transport.js';
 
@@ -94,7 +94,7 @@ function loadLibrary(): { lib: import('koffi').LibraryHandle; version: string } 
   }
 
   if (!lib) {
-    throw new LibraryDiscoveryError(
+    throw new LibraryNotFoundError(
       `could not locate libbeachcomber; tried, in order:\n${tried.join('\n')}`,
     );
   }
@@ -103,7 +103,7 @@ function loadLibrary(): { lib: import('koffi').LibraryHandle; version: string } 
   try {
     bcVersion = lib.func('bc_version', 'str', []);
   } catch (e) {
-    throw new MissingSymbolError(
+    throw new LibrarySymbolError(
       `loaded library is missing required symbol 'bc_version': ${e instanceof Error ? e.message : String(e)}`,
     );
   }
@@ -120,8 +120,9 @@ function bindSymbols(lib: import('koffi').LibraryHandle, koffi: typeof import('k
   try {
     bcStringFreeRaw = lib.func('bc_string_free', 'void', ['void *']);
   } catch (e) {
-    throw new MissingSymbolError(
-      `loaded library (bc_version ${version}) is missing required symbol 'bc_string_free': ${e instanceof Error ? e.message : String(e)}`,
+    throw new LibrarySymbolError(
+      `loaded library is missing required symbol 'bc_string_free': ${e instanceof Error ? e.message : String(e)}`,
+      version,
     );
   }
   const BcString = koffi.disposable('BcString', 'str', bcStringFreeRaw);
@@ -155,8 +156,9 @@ function bindSymbols(lib: import('koffi').LibraryHandle, koffi: typeof import('k
     try {
       fns[name] = lib.func(name, ret, args) as (...a: unknown[]) => unknown;
     } catch (e) {
-      throw new MissingSymbolError(
-        `loaded library (bc_version ${version}) is missing required symbol '${name}': ${e instanceof Error ? e.message : String(e)}`,
+      throw new LibrarySymbolError(
+        `loaded library is missing required symbol '${name}': ${e instanceof Error ? e.message : String(e)}`,
+        version,
       );
     }
   }
@@ -179,13 +181,13 @@ function parseEnvelope(raw: unknown): Envelope {
   return JSON.parse(text) as Envelope;
 }
 
-function parseWatchNext(raw: unknown): WatchNextResult {
+function parseWatchNext(raw: unknown, version: string): WatchNextResult {
   const text = String(raw);
   const v = JSON.parse(text) as
     | { ok: true; outcome: WatchOutcome; data?: unknown }
     | { ok: false; error: { kind: string; message: string } };
   if (!v.ok) {
-    throw errorFromEnvelope(v.error);
+    throw errorFromEnvelope(v.error, version);
   }
   if (v.outcome === 'event') {
     // The payload is the resolved value itself (null for a miss).
@@ -238,7 +240,7 @@ export function createFfiTransport(): Transport {
       return parseEnvelope(await callAsync(fns.bc_hello, handle));
     },
     async evaluate(handle, templateStr, cwd, envJson) {
-      return parseEnvelope(await callAsync(fns.bc_eval, handle, templateStr, cwd, nullIfUndefined(envJson)));
+      return parseEnvelope(await callAsync(fns.bc_eval, handle, templateStr, nullIfUndefined(cwd), nullIfUndefined(envJson)));
     },
 
     openSession(handle) {
@@ -274,11 +276,11 @@ export function createFfiTransport(): Transport {
     },
 
     openWatch(handle, key, cwd, envJson) {
-      return fns.bc_watch_open(handle, key, cwd, nullIfUndefined(envJson));
+      return fns.bc_watch_open(handle, key, nullIfUndefined(cwd), nullIfUndefined(envJson));
     },
     async watchNext(watch, timeoutMs) {
       const raw = await callAsync(fns.bc_watch_next, watch, timeoutMs);
-      return parseWatchNext(raw);
+      return parseWatchNext(raw, version);
     },
     watchCancel(watch) {
       fns.bc_watch_cancel(watch);

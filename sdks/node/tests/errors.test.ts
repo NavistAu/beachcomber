@@ -1,53 +1,32 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  errorFromEnvelope,
-  BadFlagsError,
-  BusyError,
-  PanicError,
-  VersionSkewError,
-  DaemonNotRunning,
-  ConnectionFailedError,
-  IoErrorError,
-  ParseError,
-  ServerError,
-  TimeoutError,
-  CombError,
-} from '../src/errors.js';
+import { errorFromEnvelope, CombError, ParseError, ServerError } from '../src/errors.js';
+import { parseCacheRows } from '../src/parse.js';
 
-describe('errorFromEnvelope', () => {
-  const cases: Array<[string, unknown]> = [
-    ['bad_flags', BadFlagsError],
-    ['busy', BusyError],
-    ['panic', PanicError],
-    ['version_skew', VersionSkewError],
-    ['daemon_not_running', DaemonNotRunning],
-    ['connection_failed', ConnectionFailedError],
-    ['io_error', IoErrorError],
-    ['parse_error', ParseError],
-    ['server_error', ServerError],
-    ['timeout', TimeoutError],
-  ];
-
-  for (const [kind, ctor] of cases) {
-    it(`maps kind "${kind}" to ${(ctor as { name: string }).name}`, () => {
-      const err = errorFromEnvelope({ kind, message: 'boom' });
-      assert.ok(err instanceof (ctor as new (...a: never[]) => Error));
-      assert.ok(err instanceof CombError);
-      assert.equal((err as CombError).kind, kind);
-    });
-  }
-
-  it('falls back to the generic CombError for an unrecognised kind, preserving it', () => {
-    const err = errorFromEnvelope({ kind: 'something_new', message: 'boom' });
+// One class per kind is the API surface test's (tests/api_surface.test.ts);
+// these are the rest of docs/sdk-api.md's error rules.
+describe('errors', () => {
+  it('an unrecognised kind is a bare CombError, the kind kept as it came', () => {
+    const err = errorFromEnvelope({ kind: 'something_new', message: 'boom' }, '1.0.0');
     assert.ok(err instanceof CombError);
+    assert.equal(err.constructor, CombError);
     assert.equal(err.kind, 'something_new');
     assert.equal(err.message, 'boom');
+    assert.equal(err.libraryVersion, '1.0.0');
   });
 
-  it('every error is a CombError with a kind property, not just a message', () => {
-    const err = errorFromEnvelope({ kind: 'server_error', message: 'unknown provider: foo' });
-    assert.equal(err.kind, 'server_error');
-    assert.match(err.message, /unknown provider: foo/);
+  it("the message is the library's words alone, and the version a field of its own", () => {
+    const err = errorFromEnvelope({ kind: 'server_error', message: 'unknown provider: foo' }, '0.9.1');
+    assert.ok(err instanceof ServerError);
+    assert.equal(err.message, 'unknown provider: foo');
+    assert.equal(err.libraryVersion, '0.9.1');
+    assert.equal(err.name, 'ServerError');
+  });
+
+  it('status data that is not an array is a ParseError, not an empty list', () => {
+    assert.throws(
+      () => parseCacheRows({ not: 'rows' }, '0.9.1'),
+      (err: unknown) => err instanceof ParseError && err.kind === 'parse_error' && err.libraryVersion === '0.9.1',
+    );
   });
 });

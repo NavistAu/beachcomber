@@ -54,7 +54,7 @@ export interface Transport {
   evaluate(
     handle: ClientHandle,
     templateStr: string,
-    cwd: string,
+    cwd: string | undefined,
     envJson: string | undefined,
   ): Promise<Envelope>;
 
@@ -80,7 +80,7 @@ export interface Transport {
   openWatch(
     handle: ClientHandle,
     key: string,
-    cwd: string,
+    cwd: string | undefined,
     envJson: string | undefined,
   ): WatchHandle;
   watchNext(watch: WatchHandle, timeoutMs: number): Promise<WatchNextResult>;

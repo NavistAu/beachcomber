@@ -6,6 +6,8 @@ sidebar_position: 4
 
 Node.js/TypeScript client for the beachcomber shell state daemon. A binding over the shared `libbeachcomber` C ABI, not a hand-rolled wire-protocol client: `koffi` (an optional peer dependency) gives direct FFI access to the native library when installed; without it, the SDK falls back to shelling out to `comb` (~5ms per call vs ~0.3ms via FFI). Published on [npm](https://www.npmjs.com/package/libbeachcomber).
 
+It follows the one SDK API table every beachcomber SDK follows ([`docs/sdk-api.md`](https://github.com/NavistAu/beachcomber/blob/develop/docs/sdk-api.md)): the same operations, names, value shapes and error kinds, in camelCase.
+
 ## Requirements
 
 - Node.js 18+
@@ -53,7 +55,7 @@ default.
 | `exec` | off | Whether a template this client renders may call `exec()`; a template that calls it without the option fails with `exec() is disabled in this context`. |
 
 Over the subprocess transport `timeoutMs` bounds each spawned `comb`, and
-`connectTimeoutMs` is refused with `UnsupportedTransportError`: `comb` has
+`connectTimeoutMs` is refused with `UnsupportedError`: `comb` has
 no flag to carry it.
 
 #### `client.get(key, opts?)`
@@ -72,7 +74,7 @@ const workspace = await client.get('myapp.workspace', { cwd: '/some/repo', env: 
 
 The unrendered halves are facets, read like any key: `git:template.branch` is the template as stored, `myapp:put.workspace` and `git:source.branch` those layers' values.
 
-Over the subprocess fallback a `get` is one `comb get -f json`, which renders with that process's own environment: a `get` that passes `env` throws `UnsupportedTransportError`, and one without renders with this process's environment, with `exec()` on.
+Over the subprocess fallback a `get` is one `comb get -f json`, which renders with that process's own environment: a `get` that passes `env` throws `UnsupportedError`, and one without renders with this process's environment, with `exec()` on.
 
 #### `client.refresh(key, path?)`
 
@@ -84,7 +86,7 @@ await client.refresh('git', '/some/repo');
 
 #### `client.status()`
 
-Return typed cache rows as `CacheRow[]` (one per warm cache entry).
+Return typed cache rows as `CacheRow[]` (one per warm cache entry): `provider`, `path`, `source`, `field`, `value`, `ageMs`, `stale`, `kind`, `pollIntervalSecs`, `pollCount`, `fseventsReinstate`, `pollsElapsed`, `nextPollInSecs` and `failure`, a field with no value undefined. Status data that is not an array is a `ParseError`.
 
 #### `client.hello()`
 
@@ -96,15 +98,15 @@ Write a value into the cache as static data. Omit `data` or pass `null` to clear
 
 #### `client.introspect(subject, opts?)`
 
-Inspect a daemon subsystem (`"daemon"` | `"providers"` | `"config"` | `"cache"` | `"lifecycle"` | `"watches"` | `"timers"` | `"demand"` | `"procs"`).
+Inspect a daemon subsystem (`"daemon"` | `"providers"` | `"config"` | `"cache"` | `"lifecycle"` | `"watches"` | `"timers"` | `"demand"` | `"procs"`). The response is `{ subject, daemon, other }`: `daemon` is the typed `DaemonHealth` (its `reaper` `null` when the daemon has none) for the `daemon` subject and `null` otherwise; `other` is any other subject's JSON, `null` for `daemon`.
 
-#### `client.watch(key, opts)`
+#### `client.watch(key, opts?)`
 
-Subscribe to a key's value — what `get(key, opts)` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `opts.cwd` and `opts.env` mean what they mean for `get`, except that `opts.cwd` is required. Returns a `WatchStream` (async iterable) yielding `WatchEvent` values, whose `data` is the value — `null` for a miss. FFI transport only: the subprocess fallback tier does not implement `watch`, joining `eval` there.
+Subscribe to a key's value — what `get(key, opts)` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `opts` is `{ cwd?, env? }`, read as `get` reads them: no `cwd` watches the global entry. Returns a `WatchStream`: `nextEvent(timeoutMs?)` resolves the next `WatchEvent` (whose `data` is the value, `null` for a miss), or `null` once the stream has ended; a `timeoutMs` that runs out with no event rejects with `TimeoutError`, and omitted it waits indefinitely. `cancel()` ends the stream, `close()` ends and releases it, and `for await (const event of stream)` iterates until the end. FFI transport only: the subprocess fallback tier does not implement `watch`, joining `eval` there.
 
-#### `client.eval(templateStr, opts)`
+#### `client.eval(templateStr, opts?)`
 
-Render a template that is stored nowhere — the same value `comb eval` prints. Every ref resolves exactly as it would inside a stored template, so `eval('{{ p.f }}')` and `get('p.f')` agree. `opts.cwd` is **required**, read as `get` reads it; `opts.env` is optional. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string — a source with no tags at all is its literal text). FFI transport only.
+Render a template that is stored nowhere — the same value `comb eval` prints. Every ref resolves exactly as it would inside a stored template, so `eval('{{ p.f }}')` and `get('p.f')` agree. `opts` is `{ cwd?, env? }`, read as `get` reads them: no `cwd` is the global entry. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string — a source with no tags at all is its literal text). FFI transport only.
 
 ```typescript
 const value = await client.eval('{{ myapp.workspace }}', {
@@ -126,17 +128,27 @@ await session.refresh('git');
 session.close();
 ```
 
-`setContext` sets the session's directory: every later `get` that names no `cwd`, and `put` and `refresh` that name no `path`, address it. `session.get` takes the same `opts` as `client.get`.
+`setContext` sets the session's directory: every later `get` that names no `cwd`, and `put` and `refresh` that name no `path`, address it. `session.get` takes the same `opts` as `client.get`. A session has `setContext`, `get`, `put`, `refresh` and `close`; `status`, `hello` and `introspect` are the client's alone.
 
 ## Errors
 
-| Class | When thrown |
-|---|---|
-| `DaemonNotRunning` | Socket does not exist or connection was refused |
-| `ServerError` | Daemon responded with `{"ok":false,"error":"..."}` |
-| `ParseError` | Response was not valid JSON or not an object |
+One class per error kind, each extending `CombError` (which extends `Error`) and carrying `kind` (the slug), `message` (the library's words, unchanged) and `libraryVersion` (the library that raised it).
 
-All extend `CombError` which extends `Error`.
+| Class | `kind` | When thrown |
+|---|---|---|
+| `DaemonNotRunningError` | `daemon_not_running` | No daemon answers, and none was started |
+| `ConnectionFailedError` | `connection_failed` | An explicit `socketPath` could not be connected to |
+| `IoError` | `io_error` | A read or write on the socket failed |
+| `ParseError` | `parse_error` | A request, a response or a template could not be read |
+| `ServerError` | `server_error` | The daemon refused the request, or a template failed to render |
+| `TimeoutError` | `timeout` | A read or write ran out `timeoutMs`, or `nextEvent` ran out its timeout |
+| `BadFlagsError` | `bad_flags` | A flag bit the ABI does not define was set |
+| `BusyError` | `busy` | A session or watch is in use by another caller |
+| `PanicError` | `panic` | The native library panicked (caught at the FFI boundary) |
+| `VersionSkewError` | `version_skew` | The daemon is a different version from the library |
+| `LibraryNotFoundError` | `library_not_found` | No `libbeachcomber` was found (FFI), or no `comb` to spawn (subprocess) |
+| `LibrarySymbolError` | `library_symbol` | The loaded library lacks a required `bc_*` function |
+| `UnsupportedError` | `unsupported` | The subprocess transport cannot do this operation |
 
 ## Wire protocol reference
 

@@ -108,35 +108,81 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     local backend = make_backend({
       refresh = function(_, key, path) seen = { key = key, path = path }; return { ok = true } end,
     })
-    local ok, err = Client.new(backend):refresh("git", "/repo")
+    local ok, err = Client.new(backend):refresh("git", { path = "/repo" })
     assert_nil(err)
     assert_true(ok)
     assert_eq(seen.key, "git")
     assert_eq(seen.path, "/repo")
   end)
 
-  suite("Client:set_context")
+  suite("Client:session")
 
-  test("set_context supplies the cwd of a later get that names none", function()
-    local seen_cwd
-    local backend = make_backend({
-      get = function(_, key, cwd) seen_cwd = cwd; return { ok = true } end,
-    })
-    local c = Client.new(backend)
-    c:set_context("/some/dir")
-    c:get("git.branch")
-    assert_eq(seen_cwd, "/some/dir")
+  --- A backend whose session handle records what it was asked, answering
+  -- each op with `answers[op]` (a response table) or ok.
+  local function session_backend(answers)
+    local calls = {}
+    local handle = {}
+    for _, op in ipairs({ "get", "put", "refresh", "set_context" }) do
+      handle[op] = function(_, ...)
+        calls[#calls + 1] = { op = op, args = { ... }, n = select("#", ...) }
+        return (answers or {})[op] or { ok = true }
+      end
+    end
+    handle.close = function() calls[#calls + 1] = { op = "close" } end
+    return make_backend({ session_open = function() return handle end }), calls
+  end
+
+  test("a client keeps no directory of its own: set_context is a session's", function()
+    assert_nil(Client.set_context, "set_context is a session's, not the client's")
   end)
 
-  test("an explicit cwd overrides the context default", function()
-    local seen_cwd
-    local backend = make_backend({
-      get = function(_, key, cwd) seen_cwd = cwd; return { ok = true } end,
+  test("a session's get answers the value, like the client's", function()
+    local backend, calls = session_backend({ get = { ok = true, data = "main" } })
+    local s = Client.new(backend):session()
+    local value, err = s:get("git.branch", { env = { A = "x" }, force = true })
+    assert_nil(err)
+    assert_eq(value, "main")
+    assert_eq(calls[1].op, "get")
+    assert_eq(calls[1].args[1], "git.branch")
+    assert_nil(calls[1].args[2], "no cwd: the session's directory, which the handle keeps")
+    assert_eq(calls[1].args[3].A, "x")
+    assert_eq(calls[1].args[4].force, true)
+  end)
+
+  test("a session's miss is nil with no Error, and its failure nil, Error", function()
+    local backend = session_backend({
+      get = { ok = false, error = { kind = "busy", message = "in use" } },
     })
-    local c = Client.new(backend)
-    c:set_context("/context/dir")
-    c:get("git.branch", { cwd = "/explicit/dir" })
-    assert_eq(seen_cwd, "/explicit/dir")
+    local s = Client.new(backend):session()
+    local value, err = s:get("k")
+    assert_nil(value)
+    assert_eq(err.kind, "busy")
+    assert_eq(err.message, "in use")
+    backend = session_backend({ get = { ok = true } })
+    value, err = Client.new(backend):session():get("k")
+    assert_nil(value)
+    assert_nil(err)
+  end)
+
+  test("a session's set_context, put, refresh and close answer true", function()
+    local backend, calls = session_backend()
+    local s = Client.new(backend):session()
+    assert_eq(s:set_context("/repo"), true)
+    assert_eq(s:put("k", { v = 1 }, { ttl = "5s", path = "/p" }), true)
+    assert_eq(s:refresh("k", { path = "/p" }), true)
+    assert_eq(s:close(), true)
+    assert_eq(calls[1].args[1], "/repo")
+    assert_eq(calls[2].args[3], "5s")
+    assert_eq(calls[2].args[4], "/p")
+    assert_eq(calls[3].args[2], "/p")
+    assert_eq(calls[4].op, "close")
+  end)
+
+  test("a session's put failure is nil, Error", function()
+    local backend = session_backend({ put = { ok = false, error = { kind = "server_error", message = "no" } } })
+    local ok, err = Client.new(backend):session():put("k", 1)
+    assert_nil(ok)
+    assert_eq(err.kind, "server_error")
   end)
 
   -- ── Client:status ─────────────────────────────────────────────────────────
@@ -152,10 +198,20 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(#result, 2)
   end)
 
-  test("status returns empty array when data is nil", function()
+  test("status data that is not a list is a parse_error, not an empty list", function()
     local backend = make_backend({ status = function() return { ok = true } end })
-    local result = Client.new(backend):status()
-    assert_eq(#result, 0)
+    local result, err = Client.new(backend):status()
+    assert_nil(result)
+    assert_eq(err.kind, "parse_error")
+  end)
+
+  test("a row stored at the global entry has a nil path, whichever tier read it", function()
+    local null = require("beachcomber.json").NULL
+    local backend = make_backend({
+      status = function() return { ok = true, data = { { provider = "p", path = null } } } end,
+    })
+    local rows = Client.new(backend):status()
+    assert_nil(rows[1].path)
   end)
 
   test("status returns nil+Error on backend error", function()
@@ -286,7 +342,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "refresh of a static namespace is the daemon's words alone",
     "the facets read the unrendered halves",
     "get takes force and wait",
-    "get with no cwd reads at the set_context directory",
+    "a session's get with no cwd reads at its directory",
     "get with no cwd and no context reads the global entry",
   }
   if not has_ffi then
@@ -340,6 +396,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
         -- appends ` (client is …, daemon is …)`.
         local refusal = "nothing to refresh: revstatic has no sources"
         assert_true(err.message:sub(1, #refusal) == refusal, err.message)
+        assert_eq(err.library_version, backend:version(), "the library's version is its own field")
       end)
 
       test(live_tests[5], function()
@@ -364,12 +421,13 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
       test(live_tests[7], function()
         assert_true(c:put("revctx", { v = "global" }))
-        assert_true(c:put("revctx", { v = "tmp" }, nil, "/tmp"))
-        local in_tmp = Client.new(backend)
-        in_tmp:set_context("/tmp")
-        local value, err = in_tmp:get("revctx.v")
+        assert_true(c:put("revctx", { v = "tmp" }, { path = "/tmp" }))
+        local s = c:session()
+        assert_eq(s:set_context("/tmp"), true)
+        local value, err = s:get("revctx.v")
         assert_nil(err)
         assert_eq(value, "tmp")
+        assert_eq(s:close(), true)
       end)
 
       test(live_tests[8], function()

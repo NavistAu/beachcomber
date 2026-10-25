@@ -94,6 +94,8 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "a key is asked alone, in one spawn",
     "a facet key reads the unrendered half",
     "a caller's env cannot be honoured: get with env is unsupported",
+    "a session over this tier keeps its directory and sends it as --path",
+    "a status that cannot run is nil, Error, not an empty list",
   }
   if not comb_bin then
     for _, name in ipairs(names) do skip(name, "no comb built") end
@@ -113,16 +115,16 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   -- tempdir are always cleaned up, whatever fails (the Node suite's `after`).
   local ran, failure = pcall(function()
   os.execute("mkdir -p " .. proj)
-  assert_true(c:put("sp", { n = 1, s = "str", o = { k = "v" } }, nil, "/tmp"))
-  assert_true(c:put("sp:template", { t = "{{ 1 + 1 }}" }, nil, "/tmp"))
+  assert_true(c:put("sp", { n = 1, s = "str", o = { k = "v" } }, { path = "/tmp" }))
+  assert_true(c:put("sp:template", { t = "{{ 1 + 1 }}" }, { path = "/tmp" }))
   assert_true(c:put("spg", { g = 1 }))
-  assert_true(c:put("bad", { n = 1 }, nil, "/tmp"))
+  assert_true(c:put("bad", { n = 1 }, { path = "/tmp" }))
   assert_true(c:put("bad:template", {
     bad = "{{ bad.bad }}",
     cyc = "{{ bad.cyc }}",
     ex = '{{ exec("definitely-missing-cmd-4f2a") }}',
     grp = { leaf = "{{ bad.grp.leaf }}" },
-  }, nil, "/tmp"))
+  }, { path = "/tmp" }))
 
   test(names[1], function()
     local value, err = c:get("sp.n", { cwd = "/tmp" })
@@ -267,6 +269,33 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(err.message:sub(1, 14), "bad.grp.leaf: ")
   end)
 
+  test(names[24], function()
+    local s, serr = c:session()
+    assert_nil(serr)
+    local value, err = s:get("sp.n")
+    assert_nil(err)
+    assert_nil(value, "no directory yet: the global entry")
+    assert_eq(last_argv(guard), "get -f json sp.n --global")
+    assert_eq(s:set_context("/tmp"), true)
+    value, err = s:get("sp.n")
+    assert_nil(err)
+    assert_eq(value, 1)
+    assert_eq(last_argv(guard), "get -f json sp.n --path /tmp")
+    assert_eq(s:put("sess", { v = 1 }), true)
+    assert_eq(last_argv(guard), "put sess {\"v\":1} --path /tmp")
+    value = s:get("spg.g", { cwd = guard.home })
+    assert_eq(value, 1, "an explicit cwd wins over the session's directory")
+    assert_eq(s:close(), true)
+  end)
+
+  test(names[25], function()
+    local failing = require("beachcomber.subprocess_backend").new({ comb_bin = "false" })
+    local rows, err = Client.new(failing):status()
+    assert_nil(rows)
+    assert_not_nil(err)
+    assert_eq(err.kind, "server_error")
+  end)
+
   test(names[19], function()
     local ok, err = c:refresh("hostname")
     assert_nil(err)
@@ -275,7 +304,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   end)
 
   test(names[20], function()
-    local ok, err = c:refresh("sp", "/tmp")
+    local ok, err = c:refresh("sp", { path = "/tmp" })
     assert_nil(ok)
     assert_eq(err.kind, "server_error")
     assert_eq(err.message, "nothing to refresh: sp has no sources", "the daemon's words alone")

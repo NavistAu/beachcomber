@@ -119,7 +119,7 @@ func loadNativeLib() (*nativeLib, error) {
 		break
 	}
 	if handle == 0 {
-		return nil, &LibraryError{Message: fmt.Sprintf(
+		return nil, &Error{Kind: "library_not_found", Message: fmt.Sprintf(
 			"beachcomber: could not locate libbeachcomber; tried, in order: %s",
 			strings.Join(attempts, "; "),
 		)}
@@ -156,9 +156,10 @@ func loadNativeLib() (*nativeLib, error) {
 		*dst[name] = addr
 	}
 	if len(missing) > 0 {
-		return nil, &LibraryError{
-			Message:    fmt.Sprintf("beachcomber: %s is missing required symbol(s): %s", loadedPath, strings.Join(missing, ", ")),
-			LibVersion: l.version,
+		return nil, &Error{
+			Kind:           "library_symbol",
+			Message:        fmt.Sprintf("beachcomber: %s is missing required symbol(s): %s", loadedPath, strings.Join(missing, ", ")),
+			LibraryVersion: l.version,
 		}
 	}
 	return l, nil
@@ -252,23 +253,38 @@ func (l *nativeLib) takeString(ptr uintptr) string {
 }
 
 // call invokes the bc_* function at fnAddr, frees its returned string, and
-// decodes the ordinary {"ok":...} envelope. ok:false becomes a *ServerError
-// carrying the envelope's machine-readable Kind and this library's version.
+// decodes the ordinary {"ok":...} envelope. ok:false becomes an *Error
+// carrying the envelope's kind and message as they are, and this library's
+// version.
 func (l *nativeLib) call(fnAddr uintptr, args ...uintptr) (json.RawMessage, error) {
 	r1, _, _ := purego.SyscallN(fnAddr, args...)
 	s := l.takeString(r1)
 	var env wireEnvelope
 	if err := json.Unmarshal([]byte(s), &env); err != nil {
-		return nil, &ProtocolError{msg: "malformed envelope: " + err.Error()}
+		return nil, l.stamp(parseError("malformed envelope: " + err.Error()))
 	}
 	if !env.OK {
-		kind, msg := "", s
-		if env.Error != nil {
-			kind, msg = env.Error.Kind, env.Error.Message
-		}
-		return nil, &ServerError{Kind: kind, Message: msg, LibVersion: l.version}
+		return nil, l.envelopeError(env.Error, s)
 	}
 	return env.Data, nil
+}
+
+// envelopeError is an ok:false envelope's error, as an *Error. An envelope
+// with no error object is one this SDK cannot read.
+func (l *nativeLib) envelopeError(e *wireError, body string) error {
+	if e == nil {
+		return l.stamp(parseError("an ok:false envelope with no error: " + body))
+	}
+	return &Error{Kind: e.Kind, Message: e.Message, LibraryVersion: l.version}
+}
+
+// stamp sets this library's version on an *Error that carries none, and
+// passes any other error through.
+func (l *nativeLib) stamp(err error) error {
+	if e, ok := err.(*Error); ok && e.LibraryVersion == "" {
+		e.LibraryVersion = l.version
+	}
+	return err
 }
 
 // watchEnvelope is bc_watch_next's five-outcome envelope shape (see
@@ -286,7 +302,7 @@ func (l *nativeLib) callWatch(fnAddr uintptr, args ...uintptr) (watchEnvelope, e
 	s := l.takeString(r1)
 	var env watchEnvelope
 	if err := json.Unmarshal([]byte(s), &env); err != nil {
-		return watchEnvelope{}, &ProtocolError{msg: "malformed watch envelope: " + err.Error()}
+		return watchEnvelope{}, l.stamp(parseError("malformed watch envelope: " + err.Error()))
 	}
 	return env, nil
 }

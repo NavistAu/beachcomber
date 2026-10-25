@@ -42,7 +42,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
 // Dynamic import is async; use top-level async IIFE.
 (async () => {
   const { Client, WatchStream } = await import(DIST_CLIENT);
-  const { ServerError, UnsupportedTransportError } = await import(DIST_ERRORS);
+  const { UnsupportedError } = await import(DIST_ERRORS);
 
   // ---------------------------------------------------------------------------
   // Fixture discovery
@@ -258,16 +258,11 @@ if (!fs.existsSync(DIST_CLIENT)) {
           });
           let event = null;
           try {
-            for await (const ev of stream) {
-              event = ev;
-              stream.close();
-              break;
-            }
+            event = await stream.nextEvent(5000);
           } catch (err) {
-            if (!event) {
-              return makeError(err instanceof Error ? err.message : String(err));
-            }
-            // Had an event before close threw — treat as success.
+            return makeError(err instanceof Error ? err.message : String(err));
+          } finally {
+            stream.close();
           }
           if (event) {
             return makeOk({
@@ -308,7 +303,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
       // The active transport lacks this op (the subprocess tier's hello,
       // introspect, eval and watch, and a get with an env): the fixture is skipped by the
       // main loop, never failed on a documented gap or passed vacuously.
-      if (err instanceof UnsupportedTransportError) throw err;
+      if (err instanceof UnsupportedError) throw err;
       return makeError(err instanceof Error ? err.message : String(err));
     }
   }
@@ -512,7 +507,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
           console.log(`  pass [${fixture.name}]`);
         }
       } catch (err) {
-        if (err instanceof UnsupportedTransportError) {
+        if (err instanceof UnsupportedError) {
           console.log(`  SKIP [${fixture.name}]: ${err.message}`);
           skipped++;
           continue;

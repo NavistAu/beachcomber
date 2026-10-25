@@ -8,6 +8,8 @@ Lua client for the beachcomber daemon. A binding over `libbeachcomber`'s C ABI, 
 
 Two transports, selected automatically by `comb.connect()`: under LuaJIT (including Neovim, which always ships LuaJIT), `ffi` calls straight into the shared library (~0.3ms/call); under PUC Lua 5.1–5.4, which has no `ffi`, the SDK falls back to shelling out to the `comb` binary (~5ms/call). Call `client:transport()` to see which one is active.
 
+It follows the [SDK API table](https://github.com/NavistAu/beachcomber/blob/main/docs/sdk-api.md) every SDK follows: the same operations, names, value shapes and error kinds, which its test suite checks against `sdks/api.json`. Every method returns its value or `nil, err`; a miss is `nil` with no error, and a method that answers nothing returns `true`. Optional arguments are an options table.
+
 ## Requirements
 
 - Lua 5.1+ or LuaJIT (Neovim-compatible)
@@ -49,11 +51,13 @@ if git then print(git.branch) end  -- "main"
 local tpl = client:get('git:template.branch')
 
 -- refresh (force recompute)
-client:refresh('git', '/my/repo')
+client:refresh('git', { path = '/my/repo' })
 
--- persistent context — the directory of every later call that names none
-client:set_context('/my/repo')
-local branch2 = client:get('git.branch')  -- reads at the context path
+-- a session keeps a directory of its own for the calls that name none
+local s = client:session()
+s:set_context('/my/repo')
+local branch2 = s:get('git.branch')  -- reads at the session's directory
+s:close()
 
 -- daemon cache status rows
 local rows = client:status()
@@ -86,49 +90,53 @@ Connect to the daemon and return a `Client`.
 
 The subprocess transport cannot bound a spawned `comb`, so `comb.connect` refuses `timeout_ms` and `connect_timeout_ms` there: it returns `nil` and an `unsupported` error naming the `ffi` transport.
 
-Returns `nil, error_message` on failure.
+Returns `nil, err` on failure.
 
 ### `Client:get(key [, opts])` → `value | nil, error`
 
 The value `comb get` prints for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace; a miss is `nil` with no error. The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `key` is `"provider"` or `"provider.field"`.
 
-`opts.cwd` is the directory the read addresses (default: the context path, else the global entry); `opts.env` is the caller's environment for `env.*` refs (default: none, so every `env.*` is absent); `opts.force` re-executes every Source the read demands first and `opts.wait` re-executes a stale entry inline, as `comb get --force`/`--wait` do. A template that calls `exec()` needs `exec = true` on the connect. Over `subprocess` a spawned `comb` renders with its own environment: `opts.env` is an `"unsupported"` error there, and a `get` without it sees this process's environment.
+`opts.cwd` is the directory the read addresses (default: the global entry); `opts.env` is the caller's environment for `env.*` refs (default: none, so every `env.*` is absent); `opts.force` re-executes every Source the read demands first and `opts.wait` re-executes a stale entry inline, as `comb get --force`/`--wait` do. A template that calls `exec()` needs `exec = true` on the connect. Over `subprocess` a spawned `comb` renders with its own environment: `opts.env` is an `"unsupported"` error there, and a `get` without it sees this process's environment.
 
-### `Client:refresh(key [, path])` → `true | nil, error`
+### `Client:refresh(key [, opts])` → `true | nil, error`
 
-Re-execute the Sources `key` demands — every Source of the namespace for a bare `provider`, the one Source owning the field for `provider.field`. A key that names no Source (a `put`-created namespace, a facet key, an unknown name, a field no Source owns) is an error. Over `subprocess` this is one `comb refresh <key>`; the daemon's refusal comes back as `err.kind == "server_error"` in the daemon's words.
-
-### `Client:set_context(path)` → `true | nil, error`
-
-Set the default working-directory path for this connection.
+Re-execute the Sources `key` demands — every Source of the namespace for a bare `provider`, the one Source owning the field for `provider.field`. A key that names no Source (a `put`-created namespace, a facet key, an unknown name, a field no Source owns) is an error. Over `subprocess` this is one `comb refresh <key>`; the daemon's refusal comes back as `err.kind == "server_error"` in the daemon's words. `opts.path` is the directory (default: the global entry).
 
 ### `Client:status()` → `table[] | nil, error`
 
-Return typed cache rows (one per warm cache entry) as an array of tables with `provider`, `field`, `value`, `age_ms`, and `stale` keys.
+Return the cache rows (one per warm cache entry) as an array of tables with the fields `libbeachcomber::protocol::CacheRow` defines — `provider`, `path` (`nil` for the global entry), `source`, `field`, `value`, `age_ms`, `stale` and the lifecycle fields. A status that cannot be read is `nil, err` on either transport, never an empty list.
 
 ### `Client:hello()` → `table | nil, error`
 
 Handshake — returns a table with `daemon_version` and `protocol_version` fields.
 
-### `Client:put(key, data, ttl, path)` → `true | nil, error`
+### `Client:put(key, data [, opts])` → `true | nil, error`
 
-Write a value into the cache as static data. Pass `nil` (or `beachcomber.null`) for `data` to remove the node.
+Write a value into the cache as static data. Pass `nil` (or `beachcomber.null`) for `data` to remove the node. `opts.ttl` (e.g. `"30s"`), `opts.path` (default: the global entry).
 
-### `Client:introspect(subject, duration_secs)` → `table | nil, error`
+### `Client:introspect(subject [, opts])` → `table | nil, error`
 
-Inspect a daemon subsystem. `subject` is a string: `"daemon"`, `"providers"`, `"config"`, `"cache"`, `"lifecycle"`, `"watches"`, `"timers"`, `"demand"`, or `"procs"`.
+Inspect a daemon subsystem. `subject` is a string: `"daemon"`, `"providers"`, `"config"`, `"cache"`, `"lifecycle"`, `"watches"`, `"timers"`, `"demand"`, or `"procs"`; `opts.duration_secs` is the `procs` subject's only option. Answers `{subject, daemon}` for `"daemon"` and `{subject, other}` for the rest.
 
 ### `Client:watch(key [, opts])` → `WatchStream | nil, error`
 
-Subscribe to a key's *resolved* value — what `Client:get` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `opts.cwd` (default: the context path, then `"."`), `opts.env` — same shape as `eval`'s opts. Returns a `WatchStream` — call `:next()` to receive `WatchEvent` tables (whose `data` carries no age or staleness) and `:close()` when done. `ffi` transport only.
+Subscribe to a key's value — what `Client:get` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `opts.cwd` and `opts.env` as `Client:get` takes them. Returns a `WatchStream`. `stream:next_event([timeout_ms])` answers the event `{data}` (whose `data` carries no age or staleness; `nil` data is a miss), `nil` with no error once the stream has ended, or `nil, err` of kind `"timeout"` when `timeout_ms` ran out; no `timeout_ms` waits indefinitely. `stream:cancel()` ends it, `stream:close()` cancels and releases it, and `for event in stream:each() do … end` iterates it. `ffi` transport only.
 
 ### `Client:eval(template_str [, opts])` → `value | nil, error`
 
-Render a template that is stored nowhere — the same value `comb eval` prints, every ref resolved as it would be inside a stored template, so `eval("{{ p.f }}")` and `get("p.f")` agree. `opts.cwd` (default: the context path, then `"."`), `opts.env` (the caller's environment for `env.*` refs). `ffi` transport only.
+Render a template that is stored nowhere — the same value `comb eval` prints, every ref resolved as it would be inside a stored template, so `eval("{{ p.f }}")` and `get("p.f")` agree. `opts.cwd` and `opts.env` as `Client:get` takes them (no `cwd` is the global entry). `ffi` transport only.
 
-### `Client:close()`
+### `Client:session()` → `Session | nil, error`
 
-Close the underlying socket.
+A session: one connection and a directory of its own. `s:set_context(path)` sets the directory; `s:get(key [, opts])`, `s:put(key, data [, opts])` and `s:refresh(key [, opts])` are the client's, addressing that directory when they name none; `s:close()` closes it. Over `subprocess` there is no connection to keep, and the session remembers its directory between spawns.
+
+### `Client:close()` → `true`
+
+Release the client.
+
+### Errors
+
+An `err` carries `kind`, one of `Error.KINDS` — the ABI's `daemon_not_running`, `connection_failed`, `io_error`, `parse_error`, `server_error`, `timeout`, `bad_flags`, `busy`, `panic` and `version_skew`, and this SDK's own `library_not_found`, `library_symbol` and `unsupported`; `message`, the ABI's message as it came; and `library_version`, the loaded library's version (`nil` over `subprocess`). Branch on `kind`.
 
 ## Wire protocol reference
 

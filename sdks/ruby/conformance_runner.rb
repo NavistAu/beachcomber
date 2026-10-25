@@ -148,7 +148,7 @@ class ConformanceRunner
     daemon = DaemonHandle.new(@comb_bin)
     daemon.start
     begin
-      @client = Beachcomber::Client.new(socket_path: daemon.socket_path)
+      @client = Beachcomber::Client.new(socket_path: daemon.socket_path, timeout_ms: 5000)
       @default_cwd = File.dirname(daemon.socket_path)
 
       run_setup(fixture['setup'] || [])
@@ -162,6 +162,7 @@ class ConformanceRunner
       @errors << "#{name}: unexpected exception: #{e.class}: #{e.message}"
       puts "FAIL  #{name}"
     ensure
+      @client&.close
       daemon.stop
     end
   end
@@ -206,7 +207,7 @@ class ConformanceRunner
       [event, nil]
     when 'eval'
       cwd = fixture['cwd'] || @default_cwd
-      value = @client.eval_expression(args['template'], cwd: cwd, env: fixture['env'])
+      value = @client.eval(args['template'], cwd: cwd, env: fixture['env'])
       [value, nil]
     else
       raise "unknown op in fixture: #{op.inspect}"

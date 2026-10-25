@@ -29,9 +29,9 @@ class TestOps < Minitest::Test
   # The shared client parses hello's response strictly: protocol_version and
   # daemon_version must both be present (libbeachcomber::parse_hello_response),
   # unlike the pre-ABI Ruby client which defaulted missing fields to "".
-  def test_hello_missing_data_fields_raises_protocol_error
+  def test_hello_missing_data_fields_raises_parse_error
     @server.enqueue('{"ok":true,"data":{}}')
-    assert_raises(Beachcomber::ProtocolError) { @client.hello }
+    assert_raises(Beachcomber::ParseError) { @client.hello }
   end
 
   # --- put ---
@@ -189,7 +189,7 @@ class TestOps < Minitest::Test
 
   def test_status_raises_protocol_error_when_data_not_array
     @server.enqueue('{"ok":true,"data":{"not":"an array"}}')
-    assert_raises(Beachcomber::ProtocolError) { @client.status }
+    assert_raises(Beachcomber::ParseError) { @client.status }
   end
 
   # --- get flags ---
@@ -291,7 +291,34 @@ class TestOps < Minitest::Test
     stream.close
   end
 
-  # --- get / eval_expression ---
+  # A wait that runs out with no event is the timeout error, not the end of
+  # the stream: the stream is still open, and a later change still arrives.
+  def test_next_event_that_runs_out_its_timeout_raises_timeout_error
+    enqueue_many('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    stream = @client.watch('git.branch', cwd: '/repo')
+    stream.next_event
+    err = assert_raises(Beachcomber::TimeoutError) { stream.next_event(0) }
+    assert_equal 'timeout', err.kind
+    stream.close
+  end
+
+  def test_watch_without_cwd_watches_the_global_entry
+    enqueue_many('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    stream = @client.watch('git.branch')
+    stream.next_event
+    stream.close
+    refute_empty watch_requests
+    assert(watch_requests.none? { |r| r.key?('path') }, watch_requests.inspect)
+  end
+
+  def test_close_is_idempotent
+    enqueue_many('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    stream = @client.watch('git.branch', cwd: '/repo')
+    stream.close
+    stream.close
+  end
+
+  # --- get / eval ---
   # (the daemon holds the template, answered on the `get` for the key; the
   # client renders it, and env.* refs never touch the daemon)
 
@@ -315,23 +342,20 @@ class TestOps < Minitest::Test
     assert_equal 'main', @client.get('git.branch', cwd: '/repo')
   end
 
-  def test_eval_expression_evaluates_raw_template
-    result = @client.eval_expression('{{ env.X | truncate(3) }}', cwd: '/tmp', env: { 'X' => 'abcdefgh' })
+  def test_eval_evaluates_raw_template
+    result = @client.eval('{{ env.X | truncate(3) }}', cwd: '/tmp', env: { 'X' => 'abcdefgh' })
     assert_equal 'abc...', result
   end
 
-  # --- session additions ---
-
-  def test_session_hello
-    @server.enqueue('{"ok":true,"data":{"protocol_version":"2","daemon_version":"1.0.0"}}')
-    result = nil
-    @client.session do |s|
-      result = s.hello
-    end
-    assert_instance_of Beachcomber::HelloInfo, result
-    assert_equal '2',     result.protocol_version
-    assert_equal '1.0.0', result.daemon_version
+  def test_eval_without_cwd_reads_the_global_entry
+    @server.enqueue('{"ok":true,"data":"x","age_ms":0,"stale":false}')
+    assert_equal 'x', @client.eval('{{ p.f }}')
+    req = @server.requests.last
+    assert_equal 'get', req['op']
+    refute req.key?('path'), req.inspect
   end
+
+  # --- session additions ---
 
   def test_session_put
     @server.enqueue('{"ok":true}')
@@ -343,26 +367,6 @@ class TestOps < Minitest::Test
     assert_equal 'put',     req['op']
     assert_equal 'mykey',   req['key']
     assert_equal 'myvalue', req['data']
-  end
-
-  def test_session_introspect
-    @server.enqueue('{"ok":true,"data":{"items":[]}}')
-    result = nil
-    @client.session do |s|
-      result = s.introspect('cache')
-    end
-    assert_instance_of Beachcomber::IntrospectResponse, result
-    assert_equal 'cache', result.subject
-  end
-
-  def test_session_status
-    @server.enqueue('{"ok":true,"data":[{"provider":"git","field":"branch","path":null,"source":"source(head)","value":"main","age_ms":50,"stale":false}]}')
-    rows = nil
-    @client.session do |s|
-      rows = s.status
-    end
-    assert_equal 1, rows.size
-    assert_instance_of Beachcomber::CacheRow, rows.first
   end
 
   def test_session_get_takes_flags_and_env

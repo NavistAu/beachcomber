@@ -101,14 +101,15 @@ function M.load(opts)
   for _, name in ipairs(REQUIRED_SYMBOLS) do
     local ok = pcall(function() return lib[name] end)
     if not ok then
-      local version = "unknown"
+      local version
       local vok, vptr = pcall(function() return lib.bc_version() end)
       if vok and vptr ~= nil then
         version = ffi.string(vptr)
       end
       return nil, Error.new(
-        "missing_symbol",
-        string.format("library is missing required symbol %q (loaded library reports bc_version()=%q)", name, version)
+        "library_symbol",
+        string.format("library is missing required symbol %q", name),
+        version
       )
     end
   end

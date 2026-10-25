@@ -23,7 +23,7 @@ import threading
 from typing import Any, Optional
 
 from . import discovery
-from .exceptions import LibraryDiscoveryError, LibrarySymbolError, ProtocolError, exception_for_envelope_error
+from .exceptions import LibraryNotFoundError, LibrarySymbolError, ParseError, exception_for_envelope_error
 
 # name -> (argtypes, restype). Pointer-returning functions use c_void_p
 # (not c_char_p) so the raw address survives for bc_string_free — ctypes'
@@ -113,8 +113,7 @@ class NativeLib:
                     except Exception:
                         version = None
                 raise LibrarySymbolError(
-                    f"{self.path} is missing required symbol {name!r} "
-                    f"(loaded library version: {version if version is not None else 'unknown'})"
+                    f"{self.path} is missing required symbol {name!r}", version
                 )
         for name, (argtypes, restype) in _SYMBOLS.items():
             fn = getattr(self._cdll, name)
@@ -137,27 +136,19 @@ class NativeLib:
 
     def _decode_envelope(self, ptr: Optional[int]) -> dict:
         if not ptr:
-            raise ProtocolError(
-                f"native call returned NULL (beachcomber lib version: {self.version})"
-            )
+            raise ParseError("native call returned NULL", self.version)
         raw = ctypes.cast(ptr, ctypes.c_char_p).value
         self._cdll.bc_string_free(ptr)
         if raw is None:
-            raise ProtocolError(
-                f"native call returned an empty envelope (beachcomber lib version: {self.version})"
-            )
+            raise ParseError("native call returned an empty envelope", self.version)
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise ProtocolError(
-                f"envelope is not valid UTF-8: {exc} (beachcomber lib version: {self.version})"
-            ) from exc
+            raise ParseError(f"envelope is not valid UTF-8: {exc}", self.version) from exc
         try:
             return json.loads(text)
         except json.JSONDecodeError as exc:
-            raise ProtocolError(
-                f"malformed envelope JSON: {exc} (beachcomber lib version: {self.version})"
-            ) from exc
+            raise ParseError(f"malformed envelope JSON: {exc}", self.version) from exc
 
     def call(self, name: str, *args: Any) -> Any:
         """Call an ordinary ``{"ok":..., "data"/"error":...}`` envelope
@@ -215,6 +206,6 @@ def _load() -> NativeLib:
             continue
         return NativeLib(cdll, candidate.path)
 
-    raise LibraryDiscoveryError(
+    raise LibraryNotFoundError(
         "could not load libbeachcomber; tried, in order:\n" + "\n".join(tried)
     )

@@ -2,8 +2,11 @@ package beachcomber_test
 
 import (
 	"errors"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	beachcomber "github.com/NavistAu/beachcomber/sdks/go"
 )
@@ -14,46 +17,42 @@ import (
 
 func TestClient_Get_Miss(t *testing.T) {
 	c := requireClient(t)
-	result, err := c.Get("nonexistent.provider", "", nil)
+	v, err := c.Get("nonexistent.provider", "", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !result.IsMiss() {
-		t.Fatalf("an unknown provider is a miss, got %+v", result)
+	if v != nil {
+		t.Fatalf("an unknown provider is a miss (nil), got %#v", v)
 	}
 }
 
 func TestClient_Get_Hostname_Hit(t *testing.T) {
 	c := requireClient(t)
-	result, err := c.Get("hostname.short", "", nil)
+	v, err := c.Get("hostname.short", "", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !result.IsHit() {
-		t.Fatal("expected IsHit() = true for hostname.short")
-	}
-	if _, ok := result.GetString(""); !ok {
-		t.Error("expected hostname.short to decode as a string")
+	if _, ok := v.(string); !ok {
+		t.Errorf("hostname.short = %#v, want the bare string", v)
 	}
 }
 
-func TestClient_Get_ServerError_HasKindAndVersion(t *testing.T) {
+// A failure is an *Error whose message is the library's words alone: the
+// kind and the library's version are fields of their own.
+func TestClient_Get_ErrorHasKindAndVersionApartFromItsMessage(t *testing.T) {
 	c := requireClient(t)
 	// An invalid facet key (two colons) is refused by the daemon; an address
 	// nothing answers, however deep, is a miss, not an error.
 	_, err := c.Get("a:b:c.x", "", nil)
-	if err == nil {
-		t.Fatal("expected an error for an invalid facet key")
+	var e *beachcomber.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("expected *Error, got %T: %v", err, err)
 	}
-	var se *beachcomber.ServerError
-	if !errors.As(err, &se) {
-		t.Fatalf("expected *ServerError, got %T: %v", err, err)
+	if e.Kind == "" || e.LibraryVersion == "" {
+		t.Errorf("Kind = %q, LibraryVersion = %q, want both set", e.Kind, e.LibraryVersion)
 	}
-	if se.Kind == "" {
-		t.Error("ServerError.Kind should be populated")
-	}
-	if se.LibVersion == "" {
-		t.Error("ServerError.LibVersion should be populated")
+	if err.Error() != e.Message || strings.Contains(err.Error(), e.LibraryVersion) {
+		t.Errorf("Error() = %q, want the message %q alone", err.Error(), e.Message)
 	}
 }
 
@@ -66,15 +65,12 @@ func TestClient_PutThenGet(t *testing.T) {
 	if err := c.Put("mykey", map[string]interface{}{"val": float64(42)}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Get("mykey", "", nil)
+	v, err := c.Get("mykey", "", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !result.IsHit() {
-		t.Fatal("expected IsHit() = true after Put")
-	}
-	if v, ok := result.GetFloat("val"); !ok || v != 42 {
-		t.Errorf("val = (%v, %v), want (42, true)", v, ok)
+	if want := map[string]interface{}{"val": float64(42)}; !reflect.DeepEqual(v, want) {
+		t.Errorf("Get() = %#v, want %#v", v, want)
 	}
 }
 
@@ -86,12 +82,12 @@ func TestClient_PutNilRemovesTheNode(t *testing.T) {
 	if err := c.Put("gonilrm", nil, "", ""); err != nil {
 		t.Fatalf("Put nil: %v", err)
 	}
-	result, err := c.Get("gonilrm.val", "", nil)
+	v, err := c.Get("gonilrm.val", "", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if result.IsHit() {
-		t.Fatal("expected a miss after Put(key, nil)")
+	if v != nil {
+		t.Fatalf("expected a miss after Put(key, nil), got %#v", v)
 	}
 }
 
@@ -102,12 +98,12 @@ func TestClient_Get_RendersAPutTemplateWithTheCallersEnv(t *testing.T) {
 	if err := c.Put("filters:template", map[string]interface{}{"based": "{{ env.PYVAR | basename }}"}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Get("filters.based", "", map[string]string{"PYVAR": "/foo/bar/baz"})
+	v, err := c.Get("filters.based", "", map[string]string{"PYVAR": "/foo/bar/baz"})
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if s, ok := result.GetString(""); !ok || s != "baz" {
-		t.Errorf("Get() = (%q, %v), want (\"baz\", true)", s, ok)
+	if v != "baz" {
+		t.Errorf("Get() = %#v, want \"baz\"", v)
 	}
 }
 
@@ -126,12 +122,12 @@ func TestClient_Get_FacetsReadTheUnrenderedHalves(t *testing.T) {
 		"tpl2:template.v": "{{ 2 }}",
 		"tpl2:put.v":      float64(1),
 	} {
-		result, err := c.Get(key, "", nil)
+		v, err := c.Get(key, "", nil)
 		if err != nil {
 			t.Fatalf("Get(%q): %v", key, err)
 		}
-		if result.Data != want {
-			t.Errorf("Get(%q) = %#v, want %#v", key, result.Data, want)
+		if v != want {
+			t.Errorf("Get(%q) = %#v, want %#v", key, v, want)
 		}
 	}
 }
@@ -142,12 +138,12 @@ func TestClient_Get_PastATemplateStringWalksIntoItsValue(t *testing.T) {
 	if err := c.Put("tpl3:template", map[string]interface{}{"t": "{{ {'x': 5} }}"}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Get("tpl3.t.x", "", nil)
+	v, err := c.Get("tpl3.t.x", "", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if v, ok := result.GetFloat(""); !ok || v != 5 {
-		t.Errorf("Get() = %#v, want 5", result.Data)
+	if v != float64(5) {
+		t.Errorf("Get() = %#v, want 5", v)
 	}
 }
 
@@ -161,12 +157,12 @@ func TestClient_Get_ReadsAtCwd(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 	for cwd, want := range map[string]string{"": "global", "/tmp": "tmp"} {
-		result, err := c.Get("gocwd.v", cwd, nil)
+		v, err := c.Get("gocwd.v", cwd, nil)
 		if err != nil {
 			t.Fatalf("Get at %q: %v", cwd, err)
 		}
-		if s, _ := result.GetString(""); s != want {
-			t.Errorf("Get at %q = %#v, want %q", cwd, result.Data, want)
+		if v != want {
+			t.Errorf("Get at %q = %#v, want %q", cwd, v, want)
 		}
 	}
 }
@@ -179,7 +175,7 @@ func TestClient_Refresh(t *testing.T) {
 }
 
 // A put-created namespace has no Source to re-execute, so the daemon
-// refuses; ServerError.Message is its words alone — the same text `comb
+// refuses; Error.Message is its words alone — the same text `comb
 // refresh` prints — with no `server error: ` prefix from the envelope.
 func TestClient_Refresh_RefusalIsTheDaemonsWords(t *testing.T) {
 	c := requireClient(t)
@@ -187,15 +183,15 @@ func TestClient_Refresh_RefusalIsTheDaemonsWords(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 	err := c.Refresh("sourceless", "")
-	var se *beachcomber.ServerError
-	if !errors.As(err, &se) {
-		t.Fatalf("expected *ServerError, got %T: %v", err, err)
+	var e *beachcomber.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("expected *Error, got %T: %v", err, err)
 	}
-	if se.Kind != "server_error" {
-		t.Errorf("Kind = %q, want server_error", se.Kind)
+	if !errors.Is(err, beachcomber.ErrServer) {
+		t.Errorf("Kind = %q, want server_error", e.Kind)
 	}
-	if !strings.HasPrefix(se.Message, "nothing to refresh: sourceless has no sources") {
-		t.Errorf("Message = %q, want the daemon's words alone", se.Message)
+	if !strings.HasPrefix(e.Message, "nothing to refresh: sourceless has no sources") {
+		t.Errorf("Message = %q, want the daemon's words alone", e.Message)
 	}
 }
 
@@ -259,7 +255,7 @@ func TestClient_Hello(t *testing.T) {
 
 func TestClient_Introspect_Daemon(t *testing.T) {
 	c := requireClient(t)
-	resp, err := c.Introspect(beachcomber.SubjectDaemon, 0)
+	resp, err := c.Introspect(beachcomber.SubjectDaemon)
 	if err != nil {
 		t.Fatalf("Introspect: %v", err)
 	}
@@ -273,7 +269,7 @@ func TestClient_Introspect_Daemon(t *testing.T) {
 
 func TestClient_Introspect_NonDaemon(t *testing.T) {
 	c := requireClient(t)
-	resp, err := c.Introspect(beachcomber.SubjectProviders, 0)
+	resp, err := c.Introspect(beachcomber.SubjectProviders)
 	if err != nil {
 		t.Fatalf("Introspect: %v", err)
 	}
@@ -282,6 +278,23 @@ func TestClient_Introspect_NonDaemon(t *testing.T) {
 	}
 	if resp.Other == nil {
 		t.Error("Other should be populated for a non-daemon subject")
+	}
+}
+
+// A duration given is sent, 0 included: a procs sample asked for 0 seconds
+// answers at once, where the daemon's own default samples for 2. Whether the
+// sample itself succeeds depends on the host (macOS needs eslogger's
+// privileges), so only a transport failure is one here.
+func TestClient_Introspect_AnExplicitZeroDurationIsSent(t *testing.T) {
+	c := requireClient(t)
+	started := time.Now()
+	_, err := c.Introspect(beachcomber.SubjectProcs, 0)
+	took := time.Since(started)
+	if err != nil && !errors.Is(err, beachcomber.ErrServer) {
+		t.Fatalf("Introspect: %v", err)
+	}
+	if took >= time.Second {
+		t.Errorf("a 0s procs sample took %v: the 0 was not sent", took)
 	}
 }
 
@@ -331,8 +344,8 @@ func TestClient_Watch_ResolvedValueAndTemplateRefire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextEvent: %v", err)
 	}
-	if ev == nil || ev.Data != got.Data {
-		t.Fatalf("first event %v must equal Get's %v", ev, got.Data)
+	if ev == nil || ev.Data != got {
+		t.Fatalf("first event %v must equal Get's %v", ev, got)
 	}
 
 	if err := c.Put("gowatchtpl:template", map[string]interface{}{"f": "{{ env.GO_WATCH_TPL }}!"}, "", ""); err != nil {
@@ -344,6 +357,68 @@ func TestClient_Watch_ResolvedValueAndTemplateRefire(t *testing.T) {
 	}
 	if ev == nil || ev.Data != "v1!" {
 		t.Fatalf("expected the re-rendered value, got %v", ev)
+	}
+}
+
+// NextEvent(ms) that runs out with no event is a timeout, not the end of
+// the stream; Cancel ends it, and NextEvent then answers nil, nil.
+func TestWatchStream_TimeoutIsAnErrorAndCancelEndsTheStream(t *testing.T) {
+	c := requireClient(t)
+	ws, err := c.Watch("hostname.short", "", nil)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer ws.Close()
+	if ev, err := ws.NextEvent(); err != nil || ev == nil {
+		t.Fatalf("first NextEvent = %v, %v; want the initial event", ev, err)
+	}
+
+	ev, err := ws.NextEvent(50)
+	if !errors.Is(err, beachcomber.ErrTimeout) {
+		t.Fatalf("NextEvent(50) = %v, %v; want a timeout error", ev, err)
+	}
+
+	if err := ws.Cancel(); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	ev, err = ws.NextEvent()
+	if ev != nil || err != nil {
+		t.Errorf("after Cancel, NextEvent = %v, %v; want nil, nil", ev, err)
+	}
+}
+
+// Watch and Eval read cwd "" as Get does: the global entry, not this
+// process's working directory.
+func TestClient_EvalAndWatch_NoCwdIsTheGlobalEntry(t *testing.T) {
+	c := requireClient(t)
+	if err := c.Put("gonocwd", map[string]interface{}{"v": "global"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := c.Put("gonocwd", map[string]interface{}{"v": "tmp"}, "", "/tmp"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	// This process's working directory is where cwd "" would read if it were
+	// sent as an empty path rather than NULL.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir("/tmp"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(wd) })
+
+	v, err := c.Eval("{{ gonocwd.v }}", "", nil)
+	if err != nil || v != "global" {
+		t.Errorf("Eval at cwd \"\" = %#v, %v; want \"global\"", v, err)
+	}
+	ws, err := c.Watch("gonocwd.v", "", nil)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer ws.Close()
+	if ev, err := ws.NextEvent(); err != nil || ev == nil || ev.Data != "global" {
+		t.Errorf("Watch at cwd \"\" first event = %v, %v; want \"global\"", ev, err)
 	}
 }
 
@@ -362,12 +437,12 @@ func TestSession_GetAndSetContext(t *testing.T) {
 	if err := c.Put("sessionprobe", map[string]interface{}{"v": float64(7)}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := sess.Get("sessionprobe", "", nil)
+	v, err := sess.Get("sessionprobe", "", nil)
 	if err != nil {
 		t.Fatalf("Session.Get: %v", err)
 	}
-	if !result.IsHit() {
-		t.Fatal("expected IsHit() = true")
+	if want := map[string]interface{}{"v": float64(7)}; !reflect.DeepEqual(v, want) {
+		t.Fatalf("Session.Get = %#v, want %#v", v, want)
 	}
 
 	if err := sess.SetContext("/tmp"); err != nil {
@@ -397,23 +472,23 @@ func TestSession_Get_RendersAtTheSessionsDirectory(t *testing.T) {
 	}
 	env := map[string]string{"WHO": "me"}
 
-	result, err := sess.Get("gors.t", "", env)
+	v, err := sess.Get("gors.t", "", env)
 	if err != nil {
 		t.Fatalf("Session.Get: %v", err)
 	}
-	if s, _ := result.GetString(""); s != "me@global" {
-		t.Errorf("before SetContext: %#v, want \"me@global\"", result.Data)
+	if v != "me@global" {
+		t.Errorf("before SetContext: %#v, want \"me@global\"", v)
 	}
 
 	if err := sess.SetContext("/tmp"); err != nil {
 		t.Fatalf("SetContext: %v", err)
 	}
-	result, err = sess.Get("gors.t", "", env)
+	v, err = sess.Get("gors.t", "", env)
 	if err != nil {
 		t.Fatalf("Session.Get: %v", err)
 	}
-	if s, _ := result.GetString(""); s != "me@tmp" {
-		t.Errorf("after SetContext: %#v, want \"me@tmp\"", result.Data)
+	if v != "me@tmp" {
+		t.Errorf("after SetContext: %#v, want \"me@tmp\"", v)
 	}
 }
 
@@ -428,16 +503,16 @@ func TestSession_Put(t *testing.T) {
 	if err := sess.Put("sessionenv", map[string]interface{}{"color": "red"}, "", ""); err != nil {
 		t.Fatalf("Session.Put: %v", err)
 	}
-	result, err := sess.Get("sessionenv", "", nil)
+	v, err := sess.Get("sessionenv.color", "", nil)
 	if err != nil {
 		t.Fatalf("Session.Get: %v", err)
 	}
-	if s, _ := result.GetString("color"); s != "red" {
-		t.Errorf("color = %q, want red", s)
+	if v != "red" {
+		t.Errorf("color = %#v, want red", v)
 	}
 }
 
-func TestSession_DelegatedOps(t *testing.T) {
+func TestSession_Refresh(t *testing.T) {
 	c := requireClient(t)
 	sess, err := c.Session()
 	if err != nil {
@@ -445,15 +520,6 @@ func TestSession_DelegatedOps(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if _, err := sess.Hello(); err != nil {
-		t.Errorf("Session.Hello: %v", err)
-	}
-	if _, err := sess.Status(); err != nil {
-		t.Errorf("Session.Status: %v", err)
-	}
-	if _, err := sess.Introspect(beachcomber.SubjectDaemon, 0); err != nil {
-		t.Errorf("Session.Introspect: %v", err)
-	}
 	if err := sess.Refresh("hostname", ""); err != nil {
 		t.Errorf("Session.Refresh: %v", err)
 	}
@@ -468,21 +534,50 @@ func TestSession_Close(t *testing.T) {
 	if err := sess.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
+	if err := sess.Close(); err != nil {
+		t.Errorf("a second Close: %v", err)
+	}
+	if _, err := sess.Get("hostname.short", "", nil); !errors.Is(err, beachcomber.ErrIo) {
+		t.Errorf("Get on a closed session = %v, want an io_error", err)
+	}
+}
+
+// Close frees the client: Close again is a no-op, and an operation after it
+// fails rather than reaching the library with a freed handle.
+func TestClient_Close(t *testing.T) {
+	c := requireClient(t)
+	if err := c.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	if err := c.Close(); err != nil {
+		t.Errorf("a second Close: %v", err)
+	}
+	if _, err := c.Get("hostname.short", "", nil); !errors.Is(err, beachcomber.ErrIo) {
+		t.Errorf("Get on a closed client = %v, want an io_error", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
 // Daemon not running
 // ---------------------------------------------------------------------------
 
-func TestClient_Get_DaemonNotRunning(t *testing.T) {
+// An explicit socket nobody serves is connection_failed, its own kind, not
+// folded into daemon_not_running.
+func TestClient_Get_AnExplicitSocketNobodyServesIsConnectionFailed(t *testing.T) {
 	requireBuiltArtifacts(t)
-	c := beachcomber.NewClientWithPath(t.TempDir() + "/nonexistent.sock")
-	_, err := c.Get("git.branch", "", nil)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	c, err := beachcomber.NewClient(
+		beachcomber.WithSocketPath(t.TempDir()+"/nonexistent.sock"),
+		beachcomber.WithConnectTimeoutMs(0),
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
 	}
-	if !errors.Is(err, beachcomber.ErrDaemonNotRunning) {
-		t.Errorf("expected ErrDaemonNotRunning, got %T: %v", err, err)
+	_, err = c.Get("git.branch", "", nil)
+	if !errors.Is(err, beachcomber.ErrConnectionFailed) {
+		t.Errorf("expected ErrConnectionFailed, got %T: %v", err, err)
+	}
+	if errors.Is(err, beachcomber.ErrDaemonNotRunning) {
+		t.Errorf("connection_failed must not match ErrDaemonNotRunning: %v", err)
 	}
 }
 
@@ -498,12 +593,12 @@ func TestNewClient_AutoDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	result, err := c.Get("hostname.short", "", nil)
+	v, err := c.Get("hostname.short", "", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !result.IsHit() {
-		t.Error("expected IsHit() = true")
+	if v == nil {
+		t.Error("expected a value, got a miss")
 	}
 }
 
@@ -519,15 +614,12 @@ func TestClient_Get_BareProviderIsTheMergedNamespace(t *testing.T) {
 	if err := c.Put("ns:template", map[string]interface{}{"t": "{{ env.NS }}"}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Get("ns", "/", map[string]string{"NS": "hi"})
+	v, err := c.Get("ns", "/", map[string]string{"NS": "hi"})
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if v, ok := result.GetFloat("lit"); !ok || v != 1 {
-		t.Errorf("lit = (%v, %v), want (1, true)", v, ok)
-	}
-	if s, ok := result.GetString("t"); !ok || s != "hi" {
-		t.Errorf("t = (%q, %v), want (\"hi\", true)", s, ok)
+	if want := map[string]interface{}{"lit": float64(1), "t": "hi"}; !reflect.DeepEqual(v, want) {
+		t.Errorf("Get() = %#v, want %#v", v, want)
 	}
 }
 
@@ -536,23 +628,23 @@ func TestClient_Get_MissIsNilData(t *testing.T) {
 	if err := c.Put("ns2", map[string]interface{}{"v": float64(1)}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Get("ns2.nope", "/", nil)
+	v, err := c.Get("ns2.nope", "/", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !result.IsMiss() {
-		t.Errorf("Get() = %+v, want a miss", result)
+	if v != nil {
+		t.Errorf("Get() = %#v, want a miss", v)
 	}
 }
 
 func TestClient_Eval(t *testing.T) {
 	c := requireClient(t)
-	result, err := c.Eval("{{ env.FOO | truncate(2) }}", "/", map[string]string{"FOO": "hello"})
+	v, err := c.Eval("{{ env.FOO | truncate(2) }}", "/", map[string]string{"FOO": "hello"})
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
-	if s, ok := result.GetString(""); !ok || s != "he..." {
-		t.Errorf("Eval() = (%q, %v), want (\"he...\", true)", s, ok)
+	if v != "he..." {
+		t.Errorf("Eval() = %#v, want \"he...\"", v)
 	}
 }
 
@@ -561,10 +653,10 @@ func TestClient_Eval(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestWithExec_ReachesTheOptionsJSON(t *testing.T) {
-	if got := beachcomber.OptionsJSONForTest("/tmp/s"); strings.Contains(got, `"exec"`) {
+	if got := beachcomber.OptionsJSONForTest(beachcomber.WithSocketPath("/tmp/s")); strings.Contains(got, `"exec"`) {
 		t.Errorf("exec is off by default, but options_json = %s", got)
 	}
-	got := beachcomber.OptionsJSONForTest("/tmp/s", beachcomber.WithExec(true))
+	got := beachcomber.OptionsJSONForTest(beachcomber.WithSocketPath("/tmp/s"), beachcomber.WithExec(true))
 	if !strings.Contains(got, `"exec":true`) {
 		t.Errorf("options_json = %s, want it to carry \"exec\":true", got)
 	}
@@ -576,26 +668,29 @@ func TestClient_Get_ExecIsDisabledWithoutTheOption(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 	_, err := c.Get("execns.out", "/", nil)
-	var se *beachcomber.ServerError
-	if !errors.As(err, &se) {
-		t.Fatalf("expected *ServerError, got %T: %v", err, err)
+	var e *beachcomber.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("expected *Error, got %T: %v", err, err)
 	}
-	if !strings.Contains(se.Error(), "exec() is disabled in this context") {
-		t.Errorf("error = %q, want the disabled-exec message", se.Error())
+	if !strings.Contains(e.Error(), "exec() is disabled in this context") {
+		t.Errorf("error = %q, want the disabled-exec message", e.Error())
 	}
 }
 
 func TestClient_Get_ExecRunsWithTheOption(t *testing.T) {
 	sock := startDaemon(t)
-	c := beachcomber.NewClientWithPath(sock, beachcomber.WithExec(true))
+	c, err := beachcomber.NewClient(beachcomber.WithSocketPath(sock), beachcomber.WithExec(true))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
 	if err := c.Put("execns2:template", map[string]interface{}{"out": "{{ exec(['printf', 'x']) }}"}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Get("execns2.out", "/", nil)
+	v, err := c.Get("execns2.out", "/", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if s, ok := result.GetString(""); !ok || s != "x" {
-		t.Errorf("Get() = (%q, %v), want (\"x\", true)", s, ok)
+	if v != "x" {
+		t.Errorf("Get() = %#v, want \"x\"", v)
 	}
 }

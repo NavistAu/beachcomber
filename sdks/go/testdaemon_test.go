@@ -112,5 +112,10 @@ func startDaemon(t *testing.T) string {
 // requireClient starts a fresh daemon and returns a Client wired to it.
 func requireClient(t *testing.T) *beachcomber.Client {
 	t.Helper()
-	return beachcomber.NewClientWithPath(startDaemon(t))
+	c, err := beachcomber.NewClient(beachcomber.WithSocketPath(startDaemon(t)))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c
 }

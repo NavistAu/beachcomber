@@ -1,6 +1,9 @@
 # beachcomber Python SDK
 
 Python client for the [beachcomber](https://github.com/NavistAu/beachcomber) (`comb`) shell-state daemon.
+It follows the SDK API table ([`docs/sdk-api.md`](../../docs/sdk-api.md)): the
+same methods, options, value shapes and error kinds as every other SDK, which
+`tests/test_api_surface.py` checks against [`sdks/api.json`](../api.json).
 
 ## Requirements
 
@@ -77,7 +80,7 @@ with client.session() as session:
 
 ## Eval
 
-`client.eval(template_str, cwd, env=None)` renders a template that is
+`client.eval(template_str, cwd=None, env=None)` renders a template that is
 stored nowhere — the same value `comb eval` prints; `eval("{{ p.f }}")` and
 `get("p.f")` agree. The template accepts a single `{{ expr }}` tag, or
 literal text/several tags — the former keeps the expression's natural type,
@@ -87,6 +90,28 @@ text).
 `exec()` inside a template runs only on a client created with
 `Client(exec=True)`; it is off by default, and a template that calls it
 then fails with `exec() is disabled in this context`.
+
+## Watch
+
+`client.watch(key, cwd=None, env=None)` streams `get`'s value for that key,
+cwd and env, again each time it changes:
+
+```python
+with client.watch("git.branch", cwd="/path/to/repo") as stream:
+    for event in stream:          # ends when the stream does
+        print(event.data)         # None is a miss, not the end
+```
+
+`stream.next_event(timeout_ms=None)` answers the next `WatchEvent`, or
+`None` once the stream has ended; a `timeout_ms` that runs out with no event
+raises `TimeoutError`, and the stream stays open. `stream.cancel()` ends it
+from any thread, and `stream.close()` ends it and frees it.
+
+`status()`, `hello()` and `introspect(subject, duration_secs=None)` are the
+client's; a session has none of them. `status()` answers typed `CacheRow`s,
+`hello()` a `HelloInfo`, and `introspect()` an `IntrospectResponse` whose
+`daemon` is a typed `DaemonHealth` (with its `ReaperStatus` and `Verdict`s)
+for the `daemon` subject and whose `other` is the JSON for the rest.
 
 ## Client options
 
@@ -117,7 +142,7 @@ order:
 2. `../lib/<libname>` relative to the `comb` binary resolved on `$PATH`.
 3. The platform default dynamic-linker search path.
 
-If none resolve, `LibraryDiscoveryError` is raised naming every location
+If none resolve, `LibraryNotFoundError` is raised naming every location
 tried — there is no silent fallback to spawning `comb` as a subprocess.
 
 ## Socket discovery
@@ -129,25 +154,28 @@ directly.
 
 ## Exceptions
 
-Every exception is a `CombError` subclass with a `.kind` attribute — a
-stable, machine-readable slug matching the C ABI envelope's `error.kind`
-(see `libbeachcomber/exceptions.py`), so callers should not need to
-string-match `str(exc)`.
+Every exception is one `CombError` subclass per error kind, carrying
+`.kind` (the slug, matching the C ABI envelope's `error.kind`), `.message`
+(the ABI's message, unchanged — `str(exc)` is the same) and
+`.library_version` (the loaded library's `bc_version()`), so callers should
+not need to string-match `str(exc)`.
 
 | Exception | `.kind` | When raised |
 |---|---|---|
-| `DaemonNotRunning` | `daemon_not_running` | Daemon unreachable and autostart failed/disabled |
-| `ConnectionFailedError` | `connection_failed` | An explicit `socket_path` couldn't be dialed |
-| `ServerError` | `server_error` | Daemon returns `ok: false` for a request-level reason |
-| `ProtocolError` | `io_error` / `parse_error` / `None` | I/O failure, malformed response, or bad envelope |
-| `TimeoutError` | `timeout` | Operation timed out |
-| `BusyError` | `busy` | A session/watch handle already in use by another caller |
-| `BadFlagsError` | `bad_flags` | Unrecognised bit set in a `get` flags argument |
-| `VersionSkewError` | `version_skew` | Daemon version doesn't match the loaded library's |
-| `PanicError` | `panic` | The native library panicked |
-| `LibraryDiscoveryError` | `library_discovery` | No candidate location yielded a loadable library |
-| `LibrarySymbolError` | `library_symbol` | Loaded library is missing a required `bc_*` symbol |
-| `CombError` | varies | Base class for all SDK errors |
+| `DaemonNotRunningError` | `daemon_not_running` | No daemon answers, and none was started |
+| `ConnectionFailedError` | `connection_failed` | An explicit `socket_path` could not be connected to |
+| `IoError` | `io_error` | A read or write on the socket failed |
+| `ParseError` | `parse_error` | A request, a response or a template could not be read |
+| `ServerError` | `server_error` | The daemon refused the request, or a template failed to render |
+| `TimeoutError` | `timeout` | A read or write ran out `timeout_ms`, or `next_event` ran out its `timeout_ms` |
+| `BadFlagsError` | `bad_flags` | A flag bit the ABI does not define was set |
+| `BusyError` | `busy` | A session or watch is in use by another caller |
+| `PanicError` | `panic` | The library panicked; the panic was caught at the boundary |
+| `VersionSkewError` | `version_skew` | The daemon is a different version from the library |
+| `LibraryNotFoundError` | `library_not_found` | No `libbeachcomber` was found where discovery looks |
+| `LibrarySymbolError` | `library_symbol` | The library found lacks a function this SDK calls |
+| `UnsupportedError` | `unsupported` | A transport cannot do this operation (never raised here: this SDK has one transport) |
+| `CombError` | varies | Base class for all of them |
 
 ## Running tests
 

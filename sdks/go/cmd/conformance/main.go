@@ -267,7 +267,11 @@ func runFixture(f fixture, combBin string) (bool, string) {
 	}
 	defer stopDaemon(cmd)
 
-	client := beachcomber.NewClientWithPath(sockPath, beachcomber.WithTimeoutMs(5000))
+	client, err := beachcomber.NewClient(beachcomber.WithSocketPath(sockPath), beachcomber.WithTimeoutMs(5000))
+	if err != nil {
+		return false, "client: " + err.Error()
+	}
+	defer client.Close()
 
 	// Run setup ops (no expectations checked).
 	for _, op := range f.Setup {
@@ -339,19 +343,19 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 	switch op.Op {
 	case "get":
 		key, _ := op.Args["key"].(string)
-		r, err := c.Get(key, readCwd(f, tmpDir), f.Env)
+		v, err := c.Get(key, readCwd(f, tmpDir), f.Env)
 		if err != nil {
 			return nil, nil, err
 		}
-		return &opResult{data: r.Data}, nil, nil
+		return &opResult{data: v}, nil, nil
 
 	case "eval":
 		template, _ := op.Args["template"].(string)
-		r, err := c.Eval(template, readCwd(f, tmpDir), f.Env)
+		v, err := c.Eval(template, readCwd(f, tmpDir), f.Env)
 		if err != nil {
 			return nil, nil, err
 		}
-		return &opResult{data: r.Data}, nil, nil
+		return &opResult{data: v}, nil, nil
 
 	case "hello":
 		info, err := c.Hello()
@@ -410,11 +414,11 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 	case "introspect":
 		subjectStr, _ := op.Args["subject"].(string)
 		subject := beachcomber.IntrospectSubject(subjectStr)
-		var durSecs uint64
+		var durSecs []uint64
 		if d, ok := op.Args["duration_secs"].(float64); ok {
-			durSecs = uint64(d)
+			durSecs = append(durSecs, uint64(d))
 		}
-		resp, err := c.Introspect(subject, durSecs)
+		resp, err := c.Introspect(subject, durSecs...)
 		if err != nil {
 			return nil, nil, err
 		}
