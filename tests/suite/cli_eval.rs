@@ -223,3 +223,62 @@ fn eval_fg_filter_escapes_pass_through_unstripped() {
         .success()
         .stdout(predicates::str::contains("\x1b[38;2;0;255;0mhi\x1b[0m"));
 }
+
+// ── `-f`: the value formats `get` and `watch` take ───────────────────────────
+
+/// `eval -f json` keeps a number a number, where text cannot tell it from a
+/// string.
+#[test]
+fn eval_f_json_keeps_a_number() {
+    let d = TestDaemon::spawn();
+    d.comb(Path::new("/"))
+        .args(["eval", "-f", "json", "{{ 1 + 1 }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("2\n"));
+    d.comb(Path::new("/"))
+        .args(["eval", "-f", "json", "n={{ 1 + 1 }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("\"n=2\"\n"));
+}
+
+/// An absent value is `null` under json, as `get -f json` prints one, and
+/// nothing under text.
+#[test]
+fn eval_f_json_of_an_absent_value_is_null() {
+    let d = TestDaemon::spawn();
+    d.comb(Path::new("/"))
+        .args(["eval", "-f", "json", "{{ none }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("null\n"));
+}
+
+/// `eval -f sh` prints shell assignments for an object's fields, as `get`
+/// does; the `e.j` suffix spells json.
+#[test]
+fn eval_f_sh_and_the_json_suffix() {
+    let d = TestDaemon::spawn();
+    d.comb(Path::new("/"))
+        .args(["eval", "-f", "sh", "{{ {'a': 'x y'} }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("a='x y'\n"));
+    d.comb(Path::new("/"))
+        .args(["e.j", "{{ 3 }}"])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("3\n"));
+}
+
+/// A format `eval` has no use for is refused, naming the ones it has.
+#[test]
+fn eval_refuses_a_format_it_does_not_have() {
+    let d = TestDaemon::spawn();
+    d.comb(Path::new("/"))
+        .args(["eval", "-f", "csv", "{{ 1 }}"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("eval has no 'csv' format"));
+}

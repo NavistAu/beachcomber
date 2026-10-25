@@ -234,7 +234,7 @@ kind from a newer library is a bare `CombError` with the kind kept.
 and watch — all with exact envelope fidelity.
 
 **Subprocess (`comb` CLI fallback)** covers `get`, `put`,
-`refresh`, `status`, and session context. `timeoutMs` bounds each spawned
+`refresh`, `status`, `eval`, and session context. `timeoutMs` bounds each spawned
 `comb`, with no default of its own; `connectTimeoutMs` is refused. `get` is one `comb get -f json
 <key> [--path P | --global] [--force] [--wait]`: the value `comb get`
 prints, the same value the FFI tier answers — the directory chain up to
@@ -250,9 +250,11 @@ true`. `refresh` is one `comb
 refresh <key> [--path P | --global]`, the daemon's op itself; its refusal
 (`nothing to refresh: <key> has no sources`) is the `ServerError`'s `message`,
 the daemon's own words — the same text the FFI transport reports. The tier
-does **not** implement `hello`, `introspect`, `eval`, or `watch`: `comb`
-has no CLI surface for `hello` or `introspect`, and `eval` and `watch` are not
-built over the spawn yet.
+does **not** implement `hello`, `introspect` or `watch`: `comb` has no CLI
+surface for `hello` or `introspect`, and `watch` is not built over the spawn
+yet. `eval` is one `comb eval -f json [--path P | --global] -- <template>`,
+spawned as `get` is; a template that does not compile is a `server_error`
+here, where the FFI tier reports `parse_error`.
 Those calls throw `UnsupportedError` rather than silently
 returning wrong data. An omitted `cwd` or `path` means the global entry,
 as under FFI (the transport passes `--global`).

@@ -141,6 +141,13 @@ pub const WATCH: Formats = Formats {
     templates: true,
 };
 
+/// `eval`: the value, as text, json or shell assignments.
+pub const EVAL: Formats = Formats {
+    command: "eval",
+    presets: &[Preset::Text, Preset::Json, Preset::Sh],
+    templates: false,
+};
+
 /// `status`: rows.
 pub const STATUS: Formats = Formats {
     command: "status",
@@ -227,6 +234,11 @@ pub fn watch_format(value: &str) -> Result<Format, String> {
     WATCH.parse(value)
 }
 
+/// `-f` for `eval`, as clap's value parser.
+pub fn eval_format(value: &str) -> Result<Format, String> {
+    EVAL.parse(value)
+}
+
 /// `-f` for `status`, as clap's value parser.
 pub fn status_format(value: &str) -> Result<Format, String> {
     STATUS.parse(value)
@@ -287,6 +299,7 @@ fn formats_of(command: &str) -> Option<&'static Formats> {
     match command {
         "get" | "g" => Some(&GET),
         "watch" | "w" => Some(&WATCH),
+        "eval" | "e" => Some(&EVAL),
         "status" | "s" => Some(&STATUS),
         _ => None,
     }

@@ -438,9 +438,11 @@ Ctrl-C to stop.
 
 **Exit codes:** `0` — the watch ends cleanly once nothing is left that could ever answer (every subscription the daemon held has closed). `2` — error (daemon unreachable, an env key, a key whose resolution fails).
 
-## `comb e` (eval) `<template> [path] [-p <path>] [--global]`
+## `comb e` (eval) `<template> [path] [-p <path>] [--global] [-f <format>]`
 
 Evaluate a value expression against cached provider data, resolving every referenced key in a single connection. `comb eval` renders through the same `libbeachcomber::resolve` as `comb get`, so `comb e '{{ p.f }}'` and `comb g p.f` agree by construction — and like `get` it always uses the daemon, even for an expression with no daemon refs.
+
+`-f` takes the value formats `get` prints in: `text` (the default), `json` or `sh` (`e.j` and `e.s` spell the last two). `-f json` keeps a number a number and prints `null` for an absent value, which is how an SDK's subprocess tier reads an `eval`. Any other format is refused.
 
 A value expression is written in one of two forms:
 

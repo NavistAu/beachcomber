@@ -240,6 +240,29 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     }
   });
 
+  // Target T3.6: a get with an env costs about what one without does. The
+  // numbers are reported, never asserted (a spawn's time is the machine's).
+  it('timing: a get with an env against one without (reported)', async (t) => {
+    const runs = 30;
+    const median = async (envJson: string | undefined): Promise<number> => {
+      const times: number[] = [];
+      for (let i = 0; i < runs; i++) {
+        const start = process.hrtime.bigint();
+        unwrap(await tp.get(handle, 'sp.n', '/tmp', envJson, 0));
+        times.push(Number(process.hrtime.bigint() - start) / 1e6);
+      }
+      times.sort((a, b) => a - b);
+      return times[Math.floor(runs / 2)] as number;
+    };
+    await median(undefined); // warm the daemon and the file cache
+    const without = await median(undefined);
+    const withEnv = await median(JSON.stringify({ A: 'x', PATH: '/usr/bin:/bin' }));
+    t.diagnostic(
+      `get p50: ${without.toFixed(2)} ms without an env, ${withEnv.toFixed(2)} ms with one ` +
+        `(${(withEnv - without).toFixed(2)} ms more)`,
+    );
+  });
+
   it("a template that cannot resolve is the resolver's error, not a null hit", async () => {
     await assert.rejects(
       () => get('bad.bad', '/tmp'),

@@ -8,7 +8,8 @@ use beachcomber::cli::commands::refresh::run_refresh;
 use beachcomber::cli::commands::watch::run_watch;
 use beachcomber::cli::exit::Outcome;
 use beachcomber::cli::output_format::{
-    Format, GET, STATUS, WATCH, get_format, rewrite_suffix, status_format, watch_format,
+    EVAL, Format, GET, STATUS, WATCH, eval_format, get_format, rewrite_suffix, status_format,
+    watch_format,
 };
 use beachcomber::cli::style::{ColorChoice, Glyphs, Style};
 use beachcomber::config::Config;
@@ -250,6 +251,8 @@ enum Commands {
         at: Option<String>,
         #[command(flatten)]
         path: PathArgs,
+        #[arg(short, long, default_value = "text", value_parser = eval_format, help = EVAL.help())]
+        format: Format,
     },
     /// Detect installed tools and show integration snippets
     #[command(visible_alias = "i")]
@@ -479,6 +482,7 @@ fn run(cli: Cli) -> Outcome {
             template,
             at,
             path: PathArgs { path, global },
+            format,
         } => {
             // `eval` is a query like `get`, so it addresses the same path: the
             // one given, the global entry, else the caller's directory.
@@ -486,7 +490,7 @@ fn run(cli: Cli) -> Outcome {
                 Ok(p) => p,
                 Err(code) => return code,
             };
-            beachcomber::cli::commands::eval::run_eval(&config, &template, path.as_deref())
+            beachcomber::cli::commands::eval::run_eval(&config, &template, path.as_deref(), format)
         }
         Commands::Init => run_init(),
         Commands::Check {

@@ -41,7 +41,12 @@
  *   otherwise draw nothing into a pipe): the rule `EngineCtx::colour` has.
  * - **`exec()`.** `--no-exec` unless the client was made with `exec: true`.
  *
- * `eval` is not implemented over this tier yet.
+ * `eval` is one spawn of `comb eval -f json [--path P | --global] --
+ * <template>`, spawned as `get` is. Exit 0 is an answer: the value on
+ * stdout, `null` when the template renders nothing. Exit 2 is an error,
+ * whose message is the CLI's; unlike over FFI the tier cannot tell a template
+ * that does not compile (`parse_error`) from one that fails to render, so
+ * both are `server_error`.
  *
  * `watch` went the same way in Plan 4 Task 3, when it became a *resolved*
  * watch: every event is what `get` answers, re-read with the caller's own
@@ -223,6 +228,32 @@ function cliGet(
   return { ok: true, data: trimmed === '' ? null : JSON.parse(trimmed) };
 }
 
+/**
+ * The value of `template`, shaped as `bc_eval`'s envelope, from one
+ * `comb eval -f json` (the file header).
+ */
+function cliEval(
+  handle: SubprocessClientHandle,
+  template: string,
+  path_: string | undefined,
+  envJson: string | undefined,
+): Envelope {
+  const vars = renderVars(envJson);
+  const args = [...colourArgs(vars), ...execArgs(handle), 'eval', '-f', 'json', ...pathArgs(path_), '--', template];
+  const { code, stdout, stderr } = runComb(handle, args, vars);
+  if (code !== 0) {
+    const text = stderr.trim();
+    // The CLI failed before answering at all: no daemon, a bad argument.
+    if (text === '' || text.startsWith('error: daemon:')) return envelopeFromFailure(stderr);
+    // The daemon answered, or the resolver failed: a server error in the
+    // CLI's words, without its `error: ` lead.
+    const line = text.split('\n')[0] as string;
+    return { ok: false, error: { kind: 'server_error', message: line.replace(/^error: (<eval>: )?/, '') } };
+  }
+  const trimmed = stdout.trim();
+  return { ok: true, data: trimmed === '' ? null : JSON.parse(trimmed) };
+}
+
 function cliPut(
   handle: SubprocessClientHandle,
   key: string,
@@ -319,8 +350,8 @@ export function createSubprocessTransport(): Transport {
     async hello() {
       unsupported('hello');
     },
-    async evaluate() {
-      unsupported('eval');
+    async evaluate(handle, templateStr, cwd, envJson) {
+      return cliEval(handle as SubprocessClientHandle, templateStr, cwd, envJson);
     },
 
     openSession(handle): SubprocessSessionHandle {

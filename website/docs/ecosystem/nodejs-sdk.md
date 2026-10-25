@@ -74,7 +74,7 @@ const workspace = await client.get('myapp.workspace', { cwd: '/some/repo', env: 
 
 The unrendered halves are facets, read like any key: `git:template.branch` is the template as stored, `myapp:put.workspace` and `git:source.branch` those layers' values.
 
-Over the subprocess fallback a `get` is one `comb get -f json`, which renders with that process's own environment: a `get` that passes `env` throws `UnsupportedError`, and one without renders with this process's environment, with `exec()` on.
+Over the subprocess fallback a `get` is one `comb get -f json`, and an `eval` one `comb eval -f json`. The call's `env` map is the spawned `comb`'s whole environment (with no map, this process's), `--socket` carries `socketPath` or `$BEACHCOMBER_SOCKET`, `--color` follows `NO_COLOR` in the render's environment, and `--no-exec` goes unless the client was made with `exec: true`, so it renders as the FFI transport does.
 
 #### `client.refresh(key, path?)`
 

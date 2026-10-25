@@ -13,9 +13,11 @@
 //! always requires the daemon (design §2) — there is no daemon-skip path.
 //!
 //! The result prints through `libbeachcomber::render::render_value` — the
-//! same renderer `comb get -f text` uses.
+//! same renderer `comb get` uses, in the value format `-f` names (text,
+//! json or sh).
 
 use crate::cli::exit::Outcome;
+use crate::cli::output_format::Format;
 use crate::config::Config;
 use libbeachcomber::resolve::{Slot, eval};
 
@@ -23,7 +25,7 @@ use libbeachcomber::resolve::{Slot, eval};
 /// `--path`, the trailing positional, or the current directory. A render's
 /// `exec()`, `lup()` and `read` run in the directory it addresses, `$HOME` for
 /// the global entry — the resolver's rule, the same for every surface.
-pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> Outcome {
+pub fn run_eval(config: &Config, template: &str, path: Option<&str>, format: Format) -> Outcome {
     // `comb` always requires the daemon (design §2, outcome 22).
     let socket_path = match crate::cli::connect::connect(config) {
         Ok(socket) => socket,
@@ -52,7 +54,10 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> Outcome 
                 libbeachcomber::render::render_value(
                     "",
                     value.as_ref(),
-                    libbeachcomber::render::Format::Text
+                    format
+                        .preset()
+                        .and_then(|p| p.value_format())
+                        .expect("eval's formats are value formats")
                 )
             );
             if value.is_some() {
