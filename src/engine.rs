@@ -7,7 +7,8 @@
 
 use crate::boundaries::http;
 use crate::boundaries::library::{LibraryLoader, LoadedLibrary};
-use libbeachcomber::engine::{EngineCtx, build_engine_env, expand_tilde, merge_values, op_error};
+use libbeachcomber::engine::{EngineCtx, build_engine_env, merge_values, op_error};
+use libbeachcomber::path::expand_tilde;
 use minijinja::value::{Enumerator, Kwargs, Object, ObjectRepr, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error, State};
 use std::collections::HashMap;

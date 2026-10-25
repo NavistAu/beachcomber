@@ -541,20 +541,19 @@ pub fn watch_abs_paths(strategy: &InvalidationStrategy) -> Vec<String> {
     }
 }
 
-/// Expand `~`, `$HOME`, `$XDG_CONFIG_HOME`, `$XDG_DATA_HOME`, `$XDG_STATE_HOME`,
-/// `$XDG_CACHE_HOME`. Falls back to platform XDG defaults (e.g. `$HOME/.config`
-/// when `XDG_CONFIG_HOME` is unset). Returns `None` if `$HOME` is unset and no
-/// platform fallback applies. Sources call this in `metadata()` so the
-/// scheduler receives canonical absolute paths.
+/// Expand a leading `~` ([`libbeachcomber::path::expand_tilde`]) and `$HOME`,
+/// `$XDG_CONFIG_HOME`, `$XDG_DATA_HOME`, `$XDG_STATE_HOME`, `$XDG_CACHE_HOME`.
+/// Falls back to platform XDG defaults (e.g. `$HOME/.config` when
+/// `XDG_CONFIG_HOME` is unset). Returns `None` if `$HOME` is unset and no
+/// platform fallback applies, or for a `~user` path. Sources call this in
+/// `metadata()` so the scheduler receives canonical absolute paths.
 pub fn expand_abs_path(s: &str) -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
+    let s = libbeachcomber::path::expand_tilde(s, Some(&home)).ok()?;
+    let s = s.to_string_lossy();
     let mut out = String::new();
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '~' && (out.is_empty() || out.ends_with('/')) {
-            out.push_str(&home);
-            continue;
-        }
         if c == '$' {
             // Read variable name (alphanumeric + underscore)
             let mut name = String::new();
@@ -1004,6 +1003,14 @@ mod tests {
                 std::env::set_var("XDG_CONFIG_HOME", v);
             }
         }
+    }
+
+    #[test]
+    fn expand_abs_path_expands_only_a_leading_tilde() {
+        assert_eq!(
+            expand_abs_path("/a/~/b").unwrap().to_string_lossy(),
+            "/a/~/b"
+        );
     }
 
     #[test]

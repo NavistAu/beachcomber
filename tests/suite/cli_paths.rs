@@ -7,6 +7,7 @@
 //! read at the current directory instead would be a miss.
 
 use crate::common::daemon::TestDaemon;
+use predicates::prelude::*;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -240,4 +241,23 @@ fn a_trailing_directory_starts_with_slash_tilde_or_dot_on_every_command() {
     }
     ok(&d, ws, &["put", "p.k", "1", "./project"]);
     assert_eq!(ok(&d, ws, &["get", "p.k", "./project"]), "1");
+}
+
+/// `~user` is not expanded anywhere: as a directory it is an error naming
+/// it, never a directory called `~bob` under the current one.
+#[test]
+fn a_tilde_user_directory_is_an_error_on_every_command() {
+    let d = TestDaemon::spawn();
+    let (_project, cwd) = dirs(&d);
+    for args in [
+        &["get", "x.v", "--path", "~bob/x"][..],
+        &["put", "x.v", "1", "-p", "~bob/x"],
+        &["eval", "{{ 1 }}", "~bob/x"],
+    ] {
+        d.comb(&cwd)
+            .args(args)
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains("~bob/x").and(predicates::str::contains("~user")));
+    }
 }

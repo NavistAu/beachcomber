@@ -338,7 +338,7 @@ impl Config {
             Some(dirs) => dirs
                 .into_iter()
                 .map(|dir| {
-                    libbeachcomber::engine::expand_tilde(dir, home)
+                    libbeachcomber::path::expand_tilde(dir, home)
                         .map_err(|e| format!("[daemon.plugin] path entry {e}"))
                 })
                 .collect(),
@@ -831,7 +831,13 @@ impl Config {
     /// A `Config` with no file behind it reads nothing ambient.
     pub fn env_file_path(&self) -> Option<PathBuf> {
         match &self.daemon.env_file {
-            Some(p) => Some(PathBuf::from(shellexpand(p))),
+            Some(p) => match home_relative(p) {
+                Ok(path) => Some(path),
+                Err(e) => {
+                    tracing::warn!("[daemon] env_file {e}");
+                    None
+                }
+            },
             None => self.config_path.as_deref().map(|p| p.with_file_name("env")),
         }
     }
@@ -907,7 +913,7 @@ impl Config {
     pub fn resolve_socket_path_with_source(&self) -> (PathBuf, SocketPathSource) {
         // 1. Config-file override (highest priority)
         if let Some(ref path) = self.daemon.socket_path {
-            return (PathBuf::from(path), SocketPathSource::ConfigOverride);
+            return (configured_socket(path), SocketPathSource::ConfigOverride);
         }
 
         // 2. BEACHCOMBER_SOCKET env var
@@ -932,7 +938,7 @@ impl Config {
     /// other (fratricide).
     pub fn resolve_reaper_socket_path(&self) -> PathBuf {
         if let Some(ref path) = self.daemon.socket_path {
-            return PathBuf::from(path);
+            return configured_socket(path);
         }
         Self::default_socket_path()
     }
@@ -961,14 +967,16 @@ impl Config {
     }
 }
 
-/// Expand ~ to $HOME in a path string.
-fn shellexpand(path: &str) -> String {
-    if path.starts_with("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return format!("{}{}", home, &path[1..]);
-    }
-    path.to_string()
+/// A configured path with a leading `~` written as this process's `$HOME`.
+fn home_relative(path: &str) -> Result<PathBuf, libbeachcomber::path::PathError> {
+    libbeachcomber::path::expand_tilde(path, std::env::var("HOME").ok().as_deref())
+}
+
+/// `[daemon] socket_path`, `~` expanded. Validation refuses a `~user` there,
+/// so the only failure left is a `~` with no `$HOME`, which names no
+/// directory: the text as written is all there is to try.
+fn configured_socket(path: &str) -> PathBuf {
+    home_relative(path).unwrap_or_else(|_| PathBuf::from(path))
 }
 
 #[cfg(test)]
@@ -987,6 +995,16 @@ mod tests {
                 let path = cfg.resolve_socket_path();
                 assert_eq!(path, std::path::PathBuf::from("/explicit/test/path.sock"));
             },
+        );
+    }
+
+    #[test]
+    fn a_config_socket_path_expands_a_leading_tilde() {
+        let home = std::env::var("HOME").expect("HOME set");
+        let cfg = Config::from_toml("[daemon]\nsocket_path = \"~/s.sock\"\n");
+        assert_eq!(
+            cfg.resolve_socket_path(),
+            std::path::Path::new(&home).join("s.sock")
         );
     }
 

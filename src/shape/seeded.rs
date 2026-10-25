@@ -199,7 +199,13 @@ impl Reader {
                 "providers" | "plugin" => {}
                 "socket_path" | "env_file" => match value.as_str() {
                     Some("") => self.err(format!("[daemon] {key} must not be empty")),
-                    Some(_) => {}
+                    Some(path) => {
+                        if let Err(e @ libbeachcomber::path::PathError::OtherUser(_)) =
+                            libbeachcomber::path::expand_tilde(path, Some("/"))
+                        {
+                            self.err(format!("[daemon] {key} {e}"));
+                        }
+                    }
                     None => self.err(format!(
                         "[daemon] {key} must be a string, not {}",
                         value.type_str()

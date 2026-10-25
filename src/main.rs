@@ -304,12 +304,18 @@ fn cli_path(global: bool, requested: Option<String>) -> Result<Option<String>, O
     };
     // A `~` the shell left alone (it was quoted) means what it would have
     // expanded to; without this `'~/x'` is relative and lands under the cwd.
-    let requested = requested.map(|p| match (p.strip_prefix('~'), std::env::var("HOME")) {
-        (Some(rest), Ok(home)) if rest.is_empty() || rest.starts_with('/') => {
-            format!("{home}{rest}")
-        }
-        _ => p,
-    });
+    let requested = match requested {
+        Some(p) => Some(
+            libbeachcomber::path::expand_tilde(&p, std::env::var("HOME").ok().as_deref())
+                .map_err(|e| {
+                    beachcomber::cli::report::error_named(e);
+                    Outcome::Error
+                })?
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        None => None,
+    };
     Ok(Some(match requested {
         Some(p) if std::path::Path::new(&p).is_relative() => {
             cwd()?.join(p).to_string_lossy().into_owned()

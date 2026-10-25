@@ -115,7 +115,7 @@ fn read(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
     let Some(p) = path.as_str() else {
         return Err(op_error("read(): the path must be a string"));
     };
-    let full = resolve_path(ctx, p);
+    let full = resolve_path(ctx, p).map_err(|e| op_error(format!("read(): {e}")))?;
     match std::fs::read_to_string(&full) {
         Ok(text) => Ok(MjValue::from(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(none()),
@@ -123,31 +123,14 @@ fn read(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
     }
 }
 
-/// `p` with a leading `~` (alone, or before a `/`) written as `home`. Any
-/// other `p` is returned as is; a `~` with no `home` is an error, not a
-/// relative path that happens to start with a tilde.
-pub fn expand_tilde(p: &str, home: Option<&str>) -> Result<PathBuf, String> {
-    match p.strip_prefix('~') {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') => match home {
-            Some(home) => Ok(PathBuf::from(format!("{home}{rest}"))),
-            None => Err(format!("{p}: HOME is not set")),
-        },
-        _ => Ok(PathBuf::from(p)),
-    }
-}
-
-/// `p` with a leading `~` replaced by `ctx.env["HOME"]` (when set); any other
-/// `p` is returned as is.
-pub fn expand_home(ctx: &EngineCtx, p: &str) -> PathBuf {
-    expand_tilde(p, ctx.env.get("HOME").map(String::as_str)).unwrap_or_else(|_| PathBuf::from(p))
-}
-
-fn resolve_path(ctx: &EngineCtx, p: &str) -> PathBuf {
-    let expanded = expand_home(ctx, p);
-    match &ctx.cwd {
+/// `p` as the render reads it: a leading `~` is `ctx.env["HOME"]`
+/// ([`crate::path::expand_tilde`]), and a relative path is against `ctx.cwd`.
+fn resolve_path(ctx: &EngineCtx, p: &str) -> Result<PathBuf, crate::path::PathError> {
+    let expanded = crate::path::expand_tilde(p, ctx.env.get("HOME").map(String::as_str))?;
+    Ok(match &ctx.cwd {
         Some(cwd) => cwd.join(expanded),
         None => expanded,
-    }
+    })
 }
 
 /// `lup(name, all=false, files=false, dirs=false, follow=true, git=false,
@@ -686,6 +669,13 @@ mod tests {
         let (_d, root, ctx) = repo();
         std::fs::write(root.join("home.txt"), "h").unwrap();
         assert_eq!(eval_in(ctx, "'~/home.txt' | read").unwrap(), "h");
+    }
+
+    #[test]
+    fn read_of_tilde_user_is_an_error_not_a_relative_file() {
+        let (_d, _root, ctx) = repo();
+        let err = eval_in(ctx, "'~bob/x' | read").unwrap_err();
+        assert!(err.contains("~bob/x") && err.contains("~user"), "{err}");
     }
 
     #[test]
