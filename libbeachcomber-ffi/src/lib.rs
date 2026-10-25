@@ -9,12 +9,10 @@ use std::time::Duration;
 
 pub mod envelope;
 
-use envelope::{ErrorKind, FfiError, WatchOutcome, call_ffi, call_watch_next};
-use libbeachcomber::resolve::{self, FetchError, Inputs, ResolveError, Slot};
-use libbeachcomber::watch::{ResolvedWatch, WatchError, WatchOutcome as LibWatchOutcome};
-use libbeachcomber::{
-    CacheRow, ClientFetch, CombResult, DaemonHealth, IntrospectResponse, IntrospectSubject,
-};
+use envelope::{FfiError, WatchOutcome, call_ffi, call_watch_next, kind};
+use libbeachcomber::resolve::{self, Inputs, Slot};
+use libbeachcomber::watch::{ResolvedWatch, WatchOutcome as LibWatchOutcome};
+use libbeachcomber::{CacheRow, CombResult, DaemonHealth, IntrospectResponse, IntrospectSubject};
 use std::collections::HashMap;
 
 /// Opaque client handle returned by [`bc_client_new`].
@@ -77,12 +75,8 @@ unsafe fn build_client(options_json: *const c_char) -> Result<libbeachcomber::Cl
         ClientOptions::default()
     } else {
         let raw = unsafe { CStr::from_ptr(options_json) }.to_string_lossy();
-        serde_json::from_str::<ClientOptions>(&raw).map_err(|e| {
-            FfiError::new(
-                ErrorKind::ParseError,
-                format!("malformed options_json: {e}"),
-            )
-        })?
+        serde_json::from_str::<ClientOptions>(&raw)
+            .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed options_json: {e}")))?
     };
 
     let default_config = libbeachcomber::ClientConfig::default();
@@ -144,7 +138,7 @@ fn check_get_flags(flags: u32) -> Result<(), FfiError> {
     let unknown = flags & !BC_GET_KNOWN_FLAGS;
     if unknown != 0 {
         return Err(FfiError::new(
-            ErrorKind::BadFlags,
+            kind::BAD_FLAGS,
             format!("unknown flag bits set: {unknown:#x}"),
         ));
     }
@@ -182,16 +176,13 @@ unsafe fn client_arc(client: *mut BcClient) -> Result<Arc<libbeachcomber::Client
 unsafe fn required_str<'a>(ptr: *const c_char, name: &str) -> Result<&'a str, FfiError> {
     if ptr.is_null() {
         return Err(FfiError::new(
-            ErrorKind::ParseError,
+            kind::PARSE_ERROR,
             format!("{name} must not be NULL"),
         ));
     }
-    unsafe { CStr::from_ptr(ptr) }.to_str().map_err(|e| {
-        FfiError::new(
-            ErrorKind::ParseError,
-            format!("{name} is not valid UTF-8: {e}"),
-        )
-    })
+    unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("{name} is not valid UTF-8: {e}")))
 }
 
 /// # Safety
@@ -206,7 +197,7 @@ unsafe fn optional_str<'a>(ptr: *const c_char) -> Result<Option<&'a str>, FfiErr
         .map(Some)
         .map_err(|e| {
             FfiError::new(
-                ErrorKind::ParseError,
+                kind::PARSE_ERROR,
                 format!("argument is not valid UTF-8: {e}"),
             )
         })
@@ -305,7 +296,7 @@ fn introspect_subject_from_str(name: &str) -> Result<IntrospectSubject, FfiError
         "demand" => Ok(IntrospectSubject::Demand),
         "procs" => Ok(IntrospectSubject::Procs),
         other => Err(FfiError::new(
-            ErrorKind::ParseError,
+            kind::PARSE_ERROR,
             format!("unknown introspect subject: {other}"),
         )),
     }
@@ -368,9 +359,8 @@ pub unsafe extern "C" fn bc_put(
         let c = unsafe { client_ref(client) }?;
         let key = unsafe { required_str(key, "key") }?;
         let json_data = unsafe { required_str(json_data, "json_data") }?;
-        let data: serde_json::Value = serde_json::from_str(json_data).map_err(|e| {
-            FfiError::new(ErrorKind::ParseError, format!("malformed json_data: {e}"))
-        })?;
+        let data: serde_json::Value = serde_json::from_str(json_data)
+            .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed json_data: {e}")))?;
         let ttl = unsafe { optional_str(ttl) }?;
         let path = unsafe { optional_str(path) }?;
         c.put(key, data, ttl, path)?;
@@ -437,10 +427,7 @@ pub unsafe extern "C" fn bc_introspect(
         let options_json = unsafe { optional_str(options_json) }?;
         let options: IntrospectOptions = match options_json {
             Some(s) => serde_json::from_str(s).map_err(|e| {
-                FfiError::new(
-                    ErrorKind::ParseError,
-                    format!("malformed options_json: {e}"),
-                )
+                FfiError::new(kind::PARSE_ERROR, format!("malformed options_json: {e}"))
             })?,
             None => IntrospectOptions::default(),
         };
@@ -476,29 +463,7 @@ fn parse_env_json(json: Option<&str>) -> Result<HashMap<String, String>, FfiErro
     match json {
         None => Ok(HashMap::new()),
         Some(s) => serde_json::from_str(s)
-            .map_err(|e| FfiError::new(ErrorKind::ParseError, format!("malformed env_json: {e}"))),
-    }
-}
-
-/// A resolution failure as an envelope error.
-///
-/// A template that does not compile, cycles or runs past the depth limit is
-/// configuration someone has to go and edit — the caller's input being
-/// malformed, `parse_error`. A failure while rendering (`exec()` disabled or
-/// failed) is `server_error`, and so is the daemon refusing the key itself,
-/// in the daemon's own words. A transport failure keeps the kind its
-/// `CombError` gave it — `daemon_not_running`, `timeout`, … — which
-/// [`ClientFetch`] recorded when it reported the failure.
-fn resolve_error(e: ResolveError, fetch: &mut ClientFetch<'_>) -> FfiError {
-    match e {
-        ResolveError::Config(m) => FfiError::new(ErrorKind::ParseError, m),
-        ResolveError::Runtime(m) => FfiError::new(ErrorKind::ServerError, m),
-        ResolveError::Fetch(FetchError::Rejected(m)) => FfiError::new(ErrorKind::ServerError, m),
-        ResolveError::Fetch(FetchError::Transport(_)) => fetch
-            .transport
-            .take()
-            .map(FfiError::from)
-            .expect("ClientFetch records the CombError behind every Transport"),
+            .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed env_json: {e}"))),
     }
 }
 
@@ -515,7 +480,7 @@ unsafe fn resolution_dir(cwd: *const c_char) -> Result<(String, Slot), FfiError>
     }
     let dir = unsafe { required_str(cwd, "cwd") }?;
     let dir = libbeachcomber::path::normalise_here(Some(dir))
-        .map_err(|e| FfiError::new(ErrorKind::ParseError, e.to_string()))?;
+        .map_err(|e| FfiError::new(kind::PARSE_ERROR, e.to_string()))?;
     Ok((dir.clone(), Slot::Path(dir)))
 }
 
@@ -562,11 +527,10 @@ pub unsafe extern "C" fn bc_resolve(
             wait: false,
             allow_exec: c.allow_exec(),
         };
-        let mut fetch = ClientFetch::new(c);
-        match resolve::resolve(key, &inputs, &mut fetch) {
+        match resolve::resolve(key, &inputs, &mut { c }) {
             Ok(Some(value)) => Ok(value),
             Ok(None) => Ok(serde_json::Value::Null),
-            Err(e) => Err(resolve_error(e, &mut fetch)),
+            Err(e) => Err(e.into()),
         }
     })
 }
@@ -607,10 +571,9 @@ pub unsafe extern "C" fn bc_eval(
             wait: false,
             allow_exec: c.allow_exec(),
         };
-        let mut fetch = ClientFetch::new(c);
-        match resolve::eval(template_str, &inputs, &mut fetch) {
+        match resolve::eval(template_str, &inputs, &mut { c }) {
             Ok(value) => Ok(value.unwrap_or(serde_json::Value::Null)),
-            Err(e) => Err(resolve_error(e, &mut fetch)),
+            Err(e) => Err(e.into()),
         }
     })
 }
@@ -646,7 +609,7 @@ unsafe fn session_lock<'a>(
     match handle.state.try_lock() {
         Ok(guard) => Ok(guard),
         Err(std::sync::TryLockError::WouldBlock) => Err(FfiError::new(
-            ErrorKind::Busy,
+            kind::BUSY,
             "session handle is in use by another caller",
         )),
         Err(std::sync::TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
@@ -737,9 +700,8 @@ pub unsafe extern "C" fn bc_session_put(
     call_ffi(move || {
         let key = unsafe { required_str(key, "key") }?;
         let json_data = unsafe { required_str(json_data, "json_data") }?;
-        let data: serde_json::Value = serde_json::from_str(json_data).map_err(|e| {
-            FfiError::new(ErrorKind::ParseError, format!("malformed json_data: {e}"))
-        })?;
+        let data: serde_json::Value = serde_json::from_str(json_data)
+            .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed json_data: {e}")))?;
         let ttl = unsafe { optional_str(ttl) }?;
         let path = unsafe { optional_str(path) }?;
         let mut guard = unsafe { session_lock(session) }?;
@@ -795,28 +757,6 @@ pub unsafe extern "C" fn bc_session_set_context(
 }
 
 // ── Watch (Task 3.7) ────────────────────────────────────────────────────
-
-/// A watch failure as an envelope error.
-///
-/// The same classification [`resolve_error`] makes of a resolution, plus the
-/// two failures only a watch has: a key that cannot be watched at all, which
-/// is the caller's input being wrong (`parse_error`, in the library's own
-/// words — no daemon was involved in deciding it), and a transport failure,
-/// which keeps the kind its `CombError` gave it.
-fn watch_error(e: WatchError) -> FfiError {
-    match e {
-        WatchError::EnvKey(m) => FfiError::new(ErrorKind::ParseError, m),
-        WatchError::Resolve(ResolveError::Config(m)) => FfiError::new(ErrorKind::ParseError, m),
-        WatchError::Resolve(ResolveError::Runtime(m)) => FfiError::new(ErrorKind::ServerError, m),
-        WatchError::Resolve(ResolveError::Fetch(FetchError::Rejected(m))) => {
-            FfiError::new(ErrorKind::ServerError, m)
-        }
-        WatchError::Resolve(ResolveError::Fetch(FetchError::Transport(m))) => {
-            FfiError::new(ErrorKind::IoError, m)
-        }
-        WatchError::Transport(e) => FfiError::from(e),
-    }
-}
 
 /// Opaque handle to a watch.
 ///
@@ -885,7 +825,7 @@ pub unsafe extern "C" fn bc_watch_open(
             wait: false,
             allow_exec: c.allow_exec(),
         };
-        ResolvedWatch::open_owned(c, key, &inputs).map_err(watch_error)
+        ResolvedWatch::open_owned(c, key, &inputs).map_err(FfiError::from)
     })();
     // A watch that never opened has no wait to interrupt; the flag exists
     // only so `bc_watch_cancel` stays null-safe-simple on every handle.
@@ -952,7 +892,7 @@ pub unsafe extern "C" fn bc_watch_next(w: *mut BcWatch, timeout_ms: i32) -> *mut
             Ok(guard) => guard,
             Err(std::sync::TryLockError::WouldBlock) => {
                 return Err(FfiError::new(
-                    ErrorKind::Busy,
+                    kind::BUSY,
                     "watch handle is in use by another caller",
                 ));
             }
@@ -979,7 +919,7 @@ pub unsafe extern "C" fn bc_watch_next(w: *mut BcWatch, timeout_ms: i32) -> *mut
                 // The failure ended the watch: replacing the handle's
                 // `ResolvedWatch` with it is what makes every later call
                 // report it again instead of polling on.
-                let err = watch_error(e);
+                let err = FfiError::from(e);
                 *guard = Err(err.clone());
                 Err(err)
             }

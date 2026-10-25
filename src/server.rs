@@ -2113,7 +2113,7 @@ async fn handle_request(
                 rest: None,
             }
         }
-        Request::Status => {
+        Request::Status {} => {
             let mut rows = cache.list_rows();
 
             let (lifecycle, failures) = if let Some(sched) = scheduler {
@@ -2269,7 +2269,7 @@ async fn handle_request(
             };
             layers_response(cache, registry, &plan, &instances)
         }
-        Request::Hello => {
+        Request::Hello {} => {
             let data = serde_json::json!({
                 "protocol_version": crate::protocol::PROTOCOL_VERSION,
                 "daemon_version": env!("BEACHCOMBER_VERSION"),

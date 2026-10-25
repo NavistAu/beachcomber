@@ -8,9 +8,7 @@ use crate::common::daemon::DaemonGuard;
 
 use libbeachcomber::resolve::{self, Inputs, Slot};
 use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
-use libbeachcomber::{
-    Client, ClientConfig, ClientFetch, CombResult, IntrospectResponse, IntrospectSubject,
-};
+use libbeachcomber::{Client, ClientConfig, CombResult, IntrospectResponse, IntrospectSubject};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -373,8 +371,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
         // fixture's `setup` `put`s to `<p>:template` seed them.
         "resolve" => {
             let key = descriptor.args["key"].as_str().unwrap_or("");
-            let mut fetch = ClientFetch::new(client);
-            match resolve::resolve(key, &resolve.inputs(), &mut fetch) {
+            match resolve::resolve(key, &resolve.inputs(), &mut { client }) {
                 Ok(Some(v)) => CanonicalResponse {
                     ok: true,
                     data: Some(v),
@@ -400,8 +397,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
         }
         "eval" => {
             let template = descriptor.args["template"].as_str().unwrap_or("");
-            let mut fetch = ClientFetch::new(client);
-            match resolve::eval(template, &resolve.inputs(), &mut fetch) {
+            match resolve::eval(template, &resolve.inputs(), &mut { client }) {
                 Ok(v) => CanonicalResponse {
                     ok: true,
                     data: v,

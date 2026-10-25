@@ -7,6 +7,7 @@ mod eval_classify;
 mod get_formatted;
 mod resolve;
 mod response_ok_checking;
+mod timeouts;
 mod typed_shapes;
 mod version_skew;
 mod watch_resolved;

@@ -1,5 +1,4 @@
 use crate::protocol::Response;
-use libbeachcomber::resolve::{Fetch, FetchError, Got};
 use libbeachcomber::{CombError, IntrospectResponse, IntrospectSubject};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -191,57 +190,6 @@ pub struct Client {
     connect_timeout: Duration,
 }
 
-/// A persistent connection to the beachcomber daemon.
-/// Reuses a single Unix socket connection across multiple requests,
-/// avoiding the per-request connect/disconnect overhead.
-pub struct ClientSession {
-    session: libbeachcomber::Session,
-}
-
-impl ClientSession {
-    pub fn connect(socket_path: &Path) -> std::io::Result<Self> {
-        let session = build_client(socket_path)
-            .session()
-            .map_err(comb_error_to_io)?;
-        Ok(Self { session })
-    }
-
-    /// The layers a read of `key` from `path` consults, per leaf (the
-    /// `layers` op); `None` is a miss.
-    pub fn layers(
-        &mut self,
-        key: &str,
-        path: Option<&str>,
-    ) -> std::io::Result<Option<serde_json::Value>> {
-        self.session.layers(key, path).map_err(comb_error_to_io)
-    }
-}
-
-/// The CLI's transport for [`libbeachcomber::resolve`]: one daemon `get` per
-/// node on this session's connection.
-///
-/// A node with nothing in it — no `data`, no `template` — is a miss. A key the
-/// daemon rejected (`ok: false`: an invalid facet) is
-/// `Rejected` with the daemon's own words, for the resolver to decide whether
-/// it is the caller's key (an error) or a ref inside a template (falsy). Every
-/// other failure is the transport's, worded as `comb_error_to_io` words it for
-/// every other op.
-impl Fetch for ClientSession {
-    fn get(
-        &mut self,
-        key: &str,
-        path: Option<&str>,
-        force: bool,
-        wait: bool,
-    ) -> Result<Option<Got>, FetchError> {
-        match self.session.get_node(key, path, force, wait) {
-            Ok(got) => Ok((got != Got::default()).then_some(got)),
-            Err(CombError::ServerError(msg)) => Err(FetchError::Rejected(msg)),
-            Err(e) => Err(FetchError::Transport(comb_error_to_io(e).to_string())),
-        }
-    }
-}
-
 impl Client {
     pub fn new(socket_path: PathBuf) -> Self {
         Self::with_connect_timeout(socket_path, libbeachcomber::DEFAULT_CONNECT_TIMEOUT)
@@ -260,9 +208,11 @@ impl Client {
         build_client(&self.socket_path).with_connect_timeout(self.connect_timeout)
     }
 
-    /// Open a persistent session that reuses a single connection for multiple requests.
-    pub fn connect(&self) -> std::io::Result<ClientSession> {
-        ClientSession::connect(&self.socket_path)
+    /// Open a persistent session that reuses a single connection for
+    /// multiple requests. The session is also the CLI's transport for
+    /// [`libbeachcomber::resolve`].
+    pub fn connect(&self) -> Result<libbeachcomber::Session, CombError> {
+        build_client(&self.socket_path).session()
     }
 
     /// Store `data` at `key`, replacing whatever is stored at that address.

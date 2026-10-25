@@ -48,7 +48,10 @@ All requests are a single line of JSON with an `"op"` discriminator:
 {"op": "<op_name>", ...}
 ```
 
-Additional fields vary per op (see Op reference).
+Additional fields vary per op (see Op reference). A field the op does not
+take is refused — `{"ok":false,"error":"invalid request: unknown field
+`format`, expected …"}` — never silently ignored, on every op including
+`status` and `hello`.
 
 ## Response envelope
 
@@ -675,12 +678,9 @@ the wire. `comb get -f text`/`-f sh` and `comb watch -f text`/`-f sh` still
 work — the CLI renders locally from the JSON response — only the wire
 contract changed.
 
-This was a breaking change (semantics, not framing): a request that still
-sets `"format": "text"` or `"format": "sh"` is not rejected — `Get`/`Watch`
-requests have never rejected unrecognised fields — it is simply ignored,
-and the caller gets a normal JSON response instead of the rendered text/sh
-form it may have expected. Clients that depended on server-side rendering
-must render locally after this change.
+This was a breaking change: a request that still sets `"format": "text"` or
+`"format": "sh"` is refused, as every field an op does not take is. Clients
+that depended on server-side rendering must render locally.
 
 The removed sub-protocol was also unsound: a stored value that began with
 `error:` was indistinguishable on the wire from a genuine failure (both

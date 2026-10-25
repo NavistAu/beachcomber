@@ -6,7 +6,7 @@ use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic::AssertUnwindSafe;
 
-use beachcomber::envelope::{ErrorKind, FfiError, bc_string_free, call_ffi};
+use beachcomber::envelope::{FfiError, bc_string_free, call_ffi, kind};
 use libbeachcomber::CombError;
 use serde_json::json;
 
@@ -30,17 +30,30 @@ fn success_round_trips() {
 
 #[test]
 fn every_error_kind_serialises_its_slug() {
+    let io = || std::io::Error::other("x");
     let cases = [
-        (ErrorKind::BadFlags, "bad_flags"),
-        (ErrorKind::Busy, "busy"),
-        (ErrorKind::Panic, "panic"),
-        (ErrorKind::VersionSkew, "version_skew"),
-        (ErrorKind::DaemonNotRunning, "daemon_not_running"),
-        (ErrorKind::ConnectionFailed, "connection_failed"),
-        (ErrorKind::IoError, "io_error"),
-        (ErrorKind::ParseError, "parse_error"),
-        (ErrorKind::ServerError, "server_error"),
-        (ErrorKind::Timeout, "timeout"),
+        (kind::BAD_FLAGS, "bad_flags"),
+        (kind::BUSY, "busy"),
+        (kind::PANIC, "panic"),
+        (kind::VERSION_SKEW, "version_skew"),
+        (
+            FfiError::from(CombError::DaemonNotRunning).kind,
+            "daemon_not_running",
+        ),
+        (
+            FfiError::from(CombError::ConnectionFailed(io())).kind,
+            "connection_failed",
+        ),
+        (FfiError::from(CombError::IoError(io())).kind, "io_error"),
+        (
+            FfiError::from(CombError::ParseError("x".into())).kind,
+            "parse_error",
+        ),
+        (
+            FfiError::from(CombError::ServerError("x".into())).kind,
+            "server_error",
+        ),
+        (FfiError::from(CombError::Timeout).kind, "timeout"),
     ];
     for (kind, slug) in cases {
         let ptr = call_ffi(move || Err(FfiError::new(kind, "boom")));
@@ -57,12 +70,12 @@ fn every_error_kind_serialises_its_slug() {
 fn a_server_error_envelope_carries_the_daemons_words_alone() {
     let refusal = "nothing to refresh: fx2 has no sources";
     let err = FfiError::from(CombError::ServerError(refusal.to_string()));
-    assert_eq!(err.kind, ErrorKind::ServerError);
+    assert_eq!(err.kind, "server_error");
     assert_eq!(err.message, refusal, "no `server error: ` prefix");
 
     // Every other variant keeps its Display, which names the condition.
     let err = FfiError::from(CombError::Timeout);
-    assert_eq!(err.kind, ErrorKind::Timeout);
+    assert_eq!(err.kind, "timeout");
     assert_eq!(err.message, "operation timed out");
 }
 

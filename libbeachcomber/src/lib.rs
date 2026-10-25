@@ -290,21 +290,6 @@ fn detect_skew(hello: &HelloInfo) -> Option<VersionSkew> {
     }
 }
 
-/// Send a `hello` request on `stream` and compare the daemon's reported
-/// version against this build's. Used once per connection, at the point
-/// each connection is established, so the check costs one extra
-/// request/response round trip rather than one per op.
-fn probe_version_skew(stream: &mut UnixStream) -> Result<Option<VersionSkew>, CombError> {
-    let request = serde_json::json!({ "op": "hello" });
-    let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-    stream.write_all(msg.as_bytes())?;
-
-    let mut line = String::new();
-    BufReader::new(&mut *stream).read_line(&mut line)?;
-    let hello = parse_hello_response(&line)?;
-    Ok(detect_skew(&hello))
-}
-
 /// Discriminator used by the status formatter to choose rendering strategy.
 /// Mirrors `beachcomber::cache::RowKind` for the wire format.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -535,17 +520,7 @@ impl WatchStream {
     /// `read_frame_with_timeout` rather than through `next_event`,
     /// reuses the same parsing instead of duplicating it.
     pub fn parse_line(line: &str) -> Result<WatchEvent, CombError> {
-        let resp: serde_json::Value =
-            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !ok {
-            let error = resp
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error")
-                .to_string();
-            return Err(CombError::ServerError(error));
-        }
+        let resp = envelope(line, None)?;
         let data = match resp.get("data") {
             Some(serde_json::Value::Null) | None => None,
             Some(d) => Some(CombData::from_json(d.clone())),
@@ -637,9 +612,52 @@ impl std::fmt::Display for CombError {
 
 impl std::error::Error for CombError {}
 
+/// Two failures are the same when they are the same kind and say the same
+/// thing; an I/O error has no equality of its own.
+impl PartialEq for CombError {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind() == other.kind() && self.to_string() == other.to_string()
+    }
+}
+
+impl Eq for CombError {}
+
+impl CombError {
+    /// The stable slug naming this failure ([`kind`]): what the C ABI's
+    /// `error.kind` carries, and what an SDK's error classes are named for.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            CombError::DaemonNotRunning => kind::DAEMON_NOT_RUNNING,
+            CombError::ConnectionFailed(_) => kind::CONNECTION_FAILED,
+            CombError::IoError(_) => kind::IO_ERROR,
+            CombError::ParseError(_) => kind::PARSE_ERROR,
+            CombError::ServerError(_) => kind::SERVER_ERROR,
+            CombError::Timeout => kind::TIMEOUT,
+        }
+    }
+}
+
+/// The stable failure slugs: [`CombError::kind`],
+/// [`resolve::ResolveError::kind`] and [`watch::WatchError::kind`] answer with
+/// these.
+pub mod kind {
+    pub const DAEMON_NOT_RUNNING: &str = "daemon_not_running";
+    pub const CONNECTION_FAILED: &str = "connection_failed";
+    pub const IO_ERROR: &str = "io_error";
+    pub const PARSE_ERROR: &str = "parse_error";
+    pub const SERVER_ERROR: &str = "server_error";
+    pub const TIMEOUT: &str = "timeout";
+}
+
+/// An I/O failure on a request. A read or write that ran out the client's
+/// timeout is [`CombError::Timeout`], whichever op it was and on whichever
+/// connection; anything else is [`CombError::IoError`].
 impl From<std::io::Error> for CombError {
     fn from(e: std::io::Error) -> Self {
-        CombError::IoError(e)
+        match e.kind() {
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => CombError::Timeout,
+            _ => CombError::IoError(e),
+        }
     }
 }
 
@@ -718,17 +736,18 @@ impl Client {
         self.version_skew.get().and_then(|s| s.as_ref())
     }
 
-    /// Probe `stream` for version skew if not already known, via a
-    /// trailing `hello` exchange *after* the caller's own request/response
-    /// on the connection — never before it. Checked once per `Client`, not
-    /// per op. Probe failures are swallowed (skew stays unknown) so a
-    /// connection that only ever answers the caller's own request is
-    /// unaffected.
-    fn probe_skew_after(&self, stream: &mut UnixStream) {
+    /// One request on a fresh connection, answered: the reply's envelope.
+    /// The first call also probes for version skew, with a trailing `hello`
+    /// *after* the caller's own exchange — never before it — so it is checked
+    /// once per `Client`, not per op, and a probe failure leaves the skew
+    /// unknown rather than failing the op.
+    fn call(&self, request: &serde_json::Value) -> Result<serde_json::Value, CombError> {
+        let mut conn = self.open()?;
+        let line = conn.exchange(request)?;
         if self.version_skew.get().is_none() {
-            let skew = probe_version_skew(stream).unwrap_or(None);
-            let _ = self.version_skew.set(skew);
+            let _ = self.version_skew.set(conn.skew());
         }
+        envelope(&line, self.skew_ref())
     }
 
     /// Override the socket path (bypassing auto-discovery). Primarily
@@ -763,8 +782,9 @@ impl Client {
 
     /// Query a key with optional flags.
     ///
-    /// `force = true`: evict the cache entry and re-execute the provider before returning.
-    /// `wait = true`: reserved for T14; currently a no-op.
+    /// `force = true`: re-execute every Source the key demands before
+    /// answering. `wait = true`: a stale entry is re-executed inline before
+    /// answering; a fresh one is served as it is.
     pub fn get_with_flags(
         &self,
         key: &str,
@@ -772,10 +792,7 @@ impl Client {
         force: bool,
         wait: bool,
     ) -> Result<CombResult, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-
-        self.send_recv(&mut stream, &get_request(key, path, force, wait)?)
+        self.get_node(key, path, force, wait).map(CombResult::from)
     }
 
     /// Query one node and return both halves of the daemon's answer — the
@@ -790,11 +807,8 @@ impl Client {
         force: bool,
         wait: bool,
     ) -> Result<resolve::Got, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-
-        let line = self.send_recv_line(&mut stream, &get_request(key, path, force, wait)?)?;
-        parse_node(&line, self.skew_ref())
+        self.call(&get_request(key, path, force, wait)?)
+            .map(parse_node)
     }
 
     /// Query a single key, rendered by the daemon as plain text.
@@ -849,64 +863,17 @@ impl Client {
         ttl: Option<&str>,
         path: Option<&str>,
     ) -> Result<(), CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-
-        let mut request = serde_json::json!({
-            "op": "put",
-            "key": key,
-            "data": data,
-        });
-        if let Some(t) = ttl {
-            request["ttl"] = serde_json::json!(t);
-        }
-        if let Some(p) = wire_path(path)? {
-            request["path"] = serde_json::json!(p);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        self.probe_skew_after(reader.get_mut());
-        check_ok(&line, self.skew_ref())?;
-        Ok(())
+        self.call(&put_request(key, data, ttl, path)?).map(|_| ())
     }
 
     /// Trigger recomputation of a provider. Fire-and-forget.
     pub fn refresh(&self, key: &str, path: Option<&str>) -> Result<(), CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-
-        let mut request = serde_json::json!({ "op": "refresh", "key": key });
-        if let Some(p) = wire_path(path)? {
-            request["path"] = serde_json::json!(p);
-        }
-
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        self.probe_skew_after(reader.get_mut());
-        check_ok(&line, self.skew_ref())?;
-        Ok(())
+        self.call(&refresh_request(key, path)?).map(|_| ())
     }
 
     /// List all cache entries currently held by the daemon.
     pub fn status(&self) -> Result<Vec<CacheRow>, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-        let request = serde_json::json!({ "op": "status" });
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        self.probe_skew_after(reader.get_mut());
-        parse_cache_rows(&line, self.skew_ref())
+        parse_cache_rows(self.call(&status_request())?)
     }
 
     /// The layers a read of `key` from `path` consults, per leaf: a tree
@@ -919,10 +886,7 @@ impl Client {
         key: &str,
         path: Option<&str>,
     ) -> Result<Option<serde_json::Value>, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-        let line = self.send_recv_line(&mut stream, &layers_request(key, path)?)?;
-        parse_layers(&line, self.skew_ref())
+        self.call(&layers_request(key, path)?).map(parse_layers)
     }
 
     /// Run an introspect query. `duration_secs` is only consulted by the
@@ -932,22 +896,10 @@ impl Client {
         subject: IntrospectSubject,
         duration_secs: Option<u64>,
     ) -> Result<IntrospectResponse, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-        let mut request = serde_json::json!({
-            "op": "introspect",
-            "subject": subject.wire_name(),
-        });
-        if let Some(d) = duration_secs {
-            request["duration_secs"] = serde_json::json!(d);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        self.probe_skew_after(reader.get_mut());
-        parse_introspect(subject, &line, self.skew_ref())
+        parse_introspect(
+            subject,
+            self.call(&introspect_request(subject, duration_secs))?,
+        )
     }
 
     /// Subscribe to changes on a key. Returns a stream that blocks on
@@ -958,16 +910,10 @@ impl Client {
     /// connection into streaming mode once a watch is issued — no other
     /// ops can share that connection afterward.
     pub fn watch(&self, key: &str, path: Option<&str>) -> Result<WatchStream, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-        let mut request = serde_json::json!({ "op": "watch", "key": key });
-        if let Some(p) = wire_path(path)? {
-            request["path"] = serde_json::json!(p);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
+        let mut conn = self.open()?;
+        conn.send(&watch_request(key, path)?)?;
         Ok(WatchStream {
-            reader: BufReader::new(stream),
+            reader: conn.reader,
             pending: Vec::new(),
         })
     }
@@ -985,17 +931,7 @@ impl Client {
 
     /// Ask the daemon for its protocol and build versions.
     pub fn hello(&self) -> Result<HelloInfo, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-
-        let request = serde_json::json!({ "op": "hello" });
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        let info = parse_hello_response(&line)?;
+        let info = self.open()?.hello()?;
         if self.version_skew.get().is_none() {
             let _ = self.version_skew.set(detect_skew(&info));
         }
@@ -1004,9 +940,7 @@ impl Client {
 
     /// Open a persistent session for multiple queries on one connection.
     pub fn session(&self) -> Result<Session, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let stream = self.connect(&socket_path)?;
-        Ok(Session::new(stream))
+        Ok(Session::new(self.open()?))
     }
 
     fn find_or_start_socket(&self) -> Result<PathBuf, CombError> {
@@ -1037,47 +971,17 @@ impl Client {
         }
     }
 
-    fn connect(&self, path: &Path) -> Result<UnixStream, CombError> {
-        let stream = connect_with_retry_for(path, self.connect_timeout)
+    /// A connection to the daemon, with this client's timeout on every read
+    /// and write.
+    fn open(&self) -> Result<Conn, CombError> {
+        let socket = self.find_or_start_socket()?;
+        let stream = connect_with_retry_for(&socket, self.connect_timeout)
             .map_err(CombError::ConnectionFailed)?;
         stream.set_read_timeout(Some(self.config.timeout))?;
         stream.set_write_timeout(Some(self.config.timeout))?;
-        Ok(stream)
-    }
-
-    fn send_recv(
-        &self,
-        stream: &mut UnixStream,
-        request: &serde_json::Value,
-    ) -> Result<CombResult, CombError> {
-        let line = self.send_recv_line(stream, request)?;
-        parse_response(&line, self.skew_ref())
-    }
-
-    /// Send one request and read its one response line, probing for version
-    /// skew afterwards. The parse is the caller's, so a `get` can be read as
-    /// a [`CombResult`] or as a [`resolve::Got`].
-    fn send_recv_line(
-        &self,
-        stream: &mut UnixStream,
-        request: &serde_json::Value,
-    ) -> Result<String, CombError> {
-        let msg = format!("{}\n", serde_json::to_string(request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut
-            {
-                CombError::Timeout
-            } else {
-                CombError::IoError(e)
-            }
-        })?;
-        self.probe_skew_after(reader.get_mut());
-        Ok(line)
+        Ok(Conn {
+            reader: BufReader::new(stream),
+        })
     }
 }
 
@@ -1089,32 +993,7 @@ impl Default for Client {
 
 /// [`resolve::Fetch`] over a [`Client`]: one daemon `get` per node, each on
 /// its own connection.
-///
-/// A node with nothing in it — no `data`, no `template` — is a miss. A key
-/// the daemon rejected (`ok: false`: an invalid facet)
-/// is [`FetchError::Rejected`](resolve::FetchError::Rejected) in the daemon's
-/// own words. Every other failure is the transport's: it is reported as
-/// [`FetchError::Transport`](resolve::FetchError::Transport) and the
-/// [`CombError`] behind it is kept in [`transport`](Self::transport), so a
-/// surface that classifies failures by type (the C ABI's `error.kind`) reads
-/// the error rather than parsing its message back.
-pub struct ClientFetch<'a> {
-    client: &'a Client,
-    /// The failure behind the last `Transport` this fetch returned.
-    pub transport: Option<CombError>,
-}
-
-impl<'a> ClientFetch<'a> {
-    /// A fetch over `client`, with no failure recorded yet.
-    pub fn new(client: &'a Client) -> Self {
-        Self {
-            client,
-            transport: None,
-        }
-    }
-}
-
-impl resolve::Fetch for ClientFetch<'_> {
+impl resolve::Fetch for &Client {
     fn get(
         &mut self,
         key: &str,
@@ -1122,15 +1001,78 @@ impl resolve::Fetch for ClientFetch<'_> {
         force: bool,
         wait: bool,
     ) -> Result<Option<resolve::Got>, resolve::FetchError> {
-        match self.client.get_node(key, path, force, wait) {
-            Ok(got) => Ok((got != resolve::Got::default()).then_some(got)),
-            Err(CombError::ServerError(msg)) => Err(resolve::FetchError::Rejected(msg)),
-            Err(e) => {
-                let message = e.to_string();
-                self.transport = Some(e);
-                Err(resolve::FetchError::Transport(message))
-            }
-        }
+        fetched(self.get_node(key, path, force, wait))
+    }
+}
+
+/// [`resolve::Fetch`] over a [`Session`]: one daemon `get` per node on its
+/// connection. The path is the resolver's — `None` is the global entry — and
+/// never the session's own directory.
+impl resolve::Fetch for Session {
+    fn get(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        force: bool,
+        wait: bool,
+    ) -> Result<Option<resolve::Got>, resolve::FetchError> {
+        fetched(
+            get_request(key, path, force, wait)
+                .and_then(|request| self.call(&request))
+                .map(parse_node),
+        )
+    }
+}
+
+/// A node as [`resolve`] reads it. Nothing in it — no `data`, no `template` —
+/// is a miss. A key the daemon rejected (`ok: false`: an invalid facet) is
+/// [`Rejected`](resolve::FetchError::Rejected) in the daemon's own words; any
+/// other failure is the transport's, the [`CombError`] kept as it was.
+fn fetched(
+    node: Result<resolve::Got, CombError>,
+) -> Result<Option<resolve::Got>, resolve::FetchError> {
+    match node {
+        Ok(got) => Ok((got != resolve::Got::default()).then_some(got)),
+        Err(CombError::ServerError(msg)) => Err(resolve::FetchError::Rejected(msg)),
+        Err(e) => Err(resolve::FetchError::Transport(e)),
+    }
+}
+
+/// One connection to the daemon: a request line out, its response line back.
+/// Every op on a [`Client`] or a [`Session`] is one [`Conn::exchange`].
+struct Conn {
+    reader: BufReader<UnixStream>,
+}
+
+impl Conn {
+    /// Write one request line.
+    fn send(&mut self, request: &serde_json::Value) -> Result<(), CombError> {
+        self.reader
+            .get_mut()
+            .write_all(format!("{request}\n").as_bytes())?;
+        Ok(())
+    }
+
+    /// Send one request and read its one response line.
+    fn exchange(&mut self, request: &serde_json::Value) -> Result<String, CombError> {
+        self.send(request)?;
+        let mut line = String::new();
+        self.reader.read_line(&mut line)?;
+        Ok(line)
+    }
+
+    /// The daemon's `hello`.
+    fn hello(&mut self) -> Result<HelloInfo, CombError> {
+        parse_hello(envelope(
+            &self.exchange(&serde_json::json!({ "op": "hello" }))?,
+            None,
+        )?)
+    }
+
+    /// The version skew a `hello` on this connection shows, if any; unknown
+    /// (`None`) when the probe itself fails.
+    fn skew(&mut self) -> Option<VersionSkew> {
+        self.hello().ok().and_then(|info| detect_skew(&info))
     }
 }
 
@@ -1139,7 +1081,7 @@ impl resolve::Fetch for ClientFetch<'_> {
 /// More efficient than individual `Client::get` calls when querying
 /// multiple values in sequence (one connection vs. N connections).
 pub struct Session {
-    reader: BufReader<UnixStream>,
+    conn: Conn,
     /// Whether a version-skew probe has run yet on this connection.
     skew_checked: bool,
     /// Version skew, if any, discovered via a trailing `hello` exchange
@@ -1152,9 +1094,9 @@ pub struct Session {
 }
 
 impl Session {
-    fn new(stream: UnixStream) -> Self {
+    fn new(conn: Conn) -> Self {
         Self {
-            reader: BufReader::new(stream),
+            conn,
             skew_checked: false,
             version_skew: None,
             context: None,
@@ -1168,15 +1110,16 @@ impl Session {
         self.version_skew.as_ref()
     }
 
-    /// Probe for version skew after the caller's own request/response, if
-    /// not already known this connection. Never sent before the caller's
-    /// own request — see `Client::probe_skew_after` for why.
-    fn probe_skew_after(&mut self) {
-        if self.skew_checked {
-            return;
+    /// One request on this connection, answered: the reply's envelope. The
+    /// first call probes for version skew after the caller's own exchange,
+    /// as [`Client`]'s does, once per connection.
+    fn call(&mut self, request: &serde_json::Value) -> Result<serde_json::Value, CombError> {
+        let line = self.conn.exchange(request)?;
+        if !self.skew_checked {
+            self.skew_checked = true;
+            self.version_skew = self.conn.skew();
         }
-        self.skew_checked = true;
-        self.version_skew = probe_version_skew(self.reader.get_mut()).unwrap_or(None);
+        envelope(&line, self.version_skew.as_ref())
     }
 
     /// Query a single key on this persistent connection. Raw, like
@@ -1185,10 +1128,8 @@ impl Session {
         self.get_with_flags(key, path, false, false)
     }
 
-    /// Query a key with optional flags on this persistent connection.
-    ///
-    /// `force = true`: evict the cache entry and re-execute the provider before returning.
-    /// `wait = true`: reserved for T14; currently a no-op.
+    /// Query a key with optional flags on this persistent connection — see
+    /// [`Client::get_with_flags`].
     pub fn get_with_flags(
         &mut self,
         key: &str,
@@ -1196,9 +1137,7 @@ impl Session {
         force: bool,
         wait: bool,
     ) -> Result<CombResult, CombError> {
-        let line =
-            self.send_recv_line(&get_request(key, self.path_or_context(path), force, wait)?)?;
-        parse_response(&line, self.version_skew.as_ref())
+        self.get_node(key, path, force, wait).map(CombResult::from)
     }
 
     /// Query one node on this persistent connection and return both halves
@@ -1210,22 +1149,8 @@ impl Session {
         force: bool,
         wait: bool,
     ) -> Result<resolve::Got, CombError> {
-        let line =
-            self.send_recv_line(&get_request(key, self.path_or_context(path), force, wait)?)?;
-        parse_node(&line, self.version_skew.as_ref())
-    }
-
-    /// Send one request on this connection and read its one response line,
-    /// probing for version skew afterwards — the [`Client::send_recv_line`]
-    /// of a session.
-    fn send_recv_line(&mut self, request: &serde_json::Value) -> Result<String, CombError> {
-        let msg = format!("{}\n", serde_json::to_string(request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        Ok(line)
+        let request = get_request(key, self.path_or_context(path), force, wait)?;
+        self.call(&request).map(parse_node)
     }
 
     /// Query a single key on this persistent connection, rendered by the
@@ -1294,52 +1219,19 @@ impl Session {
         ttl: Option<&str>,
         path: Option<&str>,
     ) -> Result<(), CombError> {
-        let mut request = serde_json::json!({
-            "op": "put",
-            "key": key,
-            "data": data,
-        });
-        if let Some(t) = ttl {
-            request["ttl"] = serde_json::json!(t);
-        }
-        if let Some(p) = wire_path(self.path_or_context(path))? {
-            request["path"] = serde_json::json!(p);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        check_ok(&line, self.version_skew.as_ref())?;
-        Ok(())
+        let request = put_request(key, data, ttl, self.path_or_context(path))?;
+        self.call(&request).map(|_| ())
     }
 
     /// Trigger recomputation.
     pub fn refresh(&mut self, key: &str, path: Option<&str>) -> Result<(), CombError> {
-        let mut request = serde_json::json!({ "op": "refresh", "key": key });
-        if let Some(p) = wire_path(self.path_or_context(path))? {
-            request["path"] = serde_json::json!(p);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        check_ok(&line, self.version_skew.as_ref())?;
-        Ok(())
+        let request = refresh_request(key, self.path_or_context(path))?;
+        self.call(&request).map(|_| ())
     }
 
     /// List all cache entries currently held by the daemon.
     pub fn status(&mut self) -> Result<Vec<CacheRow>, CombError> {
-        let request = serde_json::json!({ "op": "status" });
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        parse_cache_rows(&line, self.version_skew.as_ref())
+        parse_cache_rows(self.call(&status_request())?)
     }
 
     /// [`Client::layers`] on this session's connection.
@@ -1348,39 +1240,25 @@ impl Session {
         key: &str,
         path: Option<&str>,
     ) -> Result<Option<serde_json::Value>, CombError> {
-        let line = self.send_recv_line(&layers_request(key, self.path_or_context(path))?)?;
-        parse_layers(&line, self.version_skew.as_ref())
+        let request = layers_request(key, self.path_or_context(path))?;
+        self.call(&request).map(parse_layers)
     }
 
+    /// [`Client::introspect`] on this session's connection.
     pub fn introspect(
         &mut self,
         subject: IntrospectSubject,
         duration_secs: Option<u64>,
     ) -> Result<IntrospectResponse, CombError> {
-        let mut request = serde_json::json!({
-            "op": "introspect",
-            "subject": subject.wire_name(),
-        });
-        if let Some(d) = duration_secs {
-            request["duration_secs"] = serde_json::json!(d);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        parse_introspect(subject, &line, self.version_skew.as_ref())
+        parse_introspect(
+            subject,
+            self.call(&introspect_request(subject, duration_secs))?,
+        )
     }
 
     /// Ask the daemon for its protocol and build versions.
     pub fn hello(&mut self) -> Result<HelloInfo, CombError> {
-        let request = serde_json::json!({ "op": "hello" });
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        let info = parse_hello_response(&line)?;
+        let info = self.conn.hello()?;
         if !self.skew_checked {
             self.skew_checked = true;
             self.version_skew = detect_skew(&info);
@@ -1413,11 +1291,56 @@ fn get_request(
     Ok(request)
 }
 
-/// Parse a response line's `{"ok": ...}` envelope, returning the raw JSON
-/// value on success. On `ok:false`, returns `ServerError` with the
-/// daemon's message — appended with `skew`, if known, so a failure on a
-/// connection with detected version skew names both versions.
-fn check_ok(line: &str, skew: Option<&VersionSkew>) -> Result<serde_json::Value, CombError> {
+fn put_request(
+    key: &str,
+    data: serde_json::Value,
+    ttl: Option<&str>,
+    path: Option<&str>,
+) -> Result<serde_json::Value, CombError> {
+    let mut request = serde_json::json!({ "op": "put", "key": key, "data": data });
+    if let Some(t) = ttl {
+        request["ttl"] = serde_json::json!(t);
+    }
+    if let Some(p) = wire_path(path)? {
+        request["path"] = serde_json::json!(p);
+    }
+    Ok(request)
+}
+
+fn refresh_request(key: &str, path: Option<&str>) -> Result<serde_json::Value, CombError> {
+    let mut request = serde_json::json!({ "op": "refresh", "key": key });
+    if let Some(p) = wire_path(path)? {
+        request["path"] = serde_json::json!(p);
+    }
+    Ok(request)
+}
+
+fn watch_request(key: &str, path: Option<&str>) -> Result<serde_json::Value, CombError> {
+    let mut request = serde_json::json!({ "op": "watch", "key": key });
+    if let Some(p) = wire_path(path)? {
+        request["path"] = serde_json::json!(p);
+    }
+    Ok(request)
+}
+
+fn status_request() -> serde_json::Value {
+    serde_json::json!({ "op": "status" })
+}
+
+fn introspect_request(subject: IntrospectSubject, duration_secs: Option<u64>) -> serde_json::Value {
+    let mut request = serde_json::json!({ "op": "introspect", "subject": subject.wire_name() });
+    if let Some(d) = duration_secs {
+        request["duration_secs"] = serde_json::json!(d);
+    }
+    request
+}
+
+/// The one reading of a response line's `{"ok": ...}` envelope, for every op
+/// and every watch frame: the response object on success. On `ok:false`,
+/// `ServerError` with the daemon's message — appended with `skew`, if known,
+/// so a failure on a connection with detected version skew names both
+/// versions.
+fn envelope(line: &str, skew: Option<&VersionSkew>) -> Result<serde_json::Value, CombError> {
     let resp: serde_json::Value =
         serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
     let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -1435,19 +1358,11 @@ fn check_ok(line: &str, skew: Option<&VersionSkew>) -> Result<serde_json::Value,
     Ok(resp)
 }
 
-/// Parse a `get` response into a classified [`CombResult`]: [`parse_node`]
-/// plus [`From<resolve::Got>`](CombResult::from) — one wire parser.
-fn parse_response(line: &str, skew: Option<&VersionSkew>) -> Result<CombResult, CombError> {
-    parse_node(line, skew).map(CombResult::from)
-}
-
-/// Parse a `get` response into both halves the daemon returned. Every field
-/// is copied when present and left `None` when absent, so a miss is
-/// `Got::default()`; `ok:false` is `ServerError` via [`check_ok`].
-fn parse_node(line: &str, skew: Option<&VersionSkew>) -> Result<resolve::Got, CombError> {
-    let resp = check_ok(line, skew)?;
+/// A `get` response's both halves. Every field is copied when present and
+/// left `None` when absent, so a miss is `Got::default()`.
+fn parse_node(resp: serde_json::Value) -> resolve::Got {
     let present = |name: &str| resp.get(name).filter(|v| !v.is_null()).cloned();
-    Ok(resolve::Got {
+    resolve::Got {
         data: present("data"),
         template: present("template"),
         rest: resp
@@ -1459,7 +1374,7 @@ fn parse_node(line: &str, skew: Option<&VersionSkew>) -> Result<resolve::Got, Co
             .and_then(|v| v.as_u64())
             .map(|v| v as u128),
         stale: resp.get("stale").and_then(|v| v.as_bool()),
-    })
+    }
 }
 
 fn layers_request(key: &str, path: Option<&str>) -> Result<serde_json::Value, CombError> {
@@ -1478,16 +1393,11 @@ fn wire_path(path: Option<&str>) -> Result<Option<String>, CombError> {
         .transpose()
 }
 
-fn parse_layers(
-    line: &str,
-    skew: Option<&VersionSkew>,
-) -> Result<Option<serde_json::Value>, CombError> {
-    let resp = check_ok(line, skew)?;
-    Ok(resp.get("data").filter(|v| !v.is_null()).cloned())
+fn parse_layers(resp: serde_json::Value) -> Option<serde_json::Value> {
+    resp.get("data").filter(|v| !v.is_null()).cloned()
 }
 
-fn parse_cache_rows(line: &str, skew: Option<&VersionSkew>) -> Result<Vec<CacheRow>, CombError> {
-    let resp = check_ok(line, skew)?;
+fn parse_cache_rows(resp: serde_json::Value) -> Result<Vec<CacheRow>, CombError> {
     let arr = resp
         .get("data")
         .and_then(|v| v.as_array())
@@ -1495,18 +1405,7 @@ fn parse_cache_rows(line: &str, skew: Option<&VersionSkew>) -> Result<Vec<CacheR
     arr.iter().map(CacheRow::from_json).collect()
 }
 
-fn parse_hello_response(line: &str) -> Result<HelloInfo, CombError> {
-    let resp: serde_json::Value =
-        serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-    let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-    if !ok {
-        let error = resp
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error")
-            .to_string();
-        return Err(CombError::ServerError(error));
-    }
+fn parse_hello(resp: serde_json::Value) -> Result<HelloInfo, CombError> {
     let data = resp
         .get("data")
         .ok_or_else(|| CombError::ParseError("hello response missing data field".into()))?;
@@ -1611,10 +1510,8 @@ fn parse_daemon_health(data: &serde_json::Value) -> Result<DaemonHealth, CombErr
 
 fn parse_introspect(
     subject: IntrospectSubject,
-    line: &str,
-    skew: Option<&VersionSkew>,
+    resp: serde_json::Value,
 ) -> Result<IntrospectResponse, CombError> {
-    let resp = check_ok(line, skew)?;
     let data = resp.get("data").cloned().unwrap_or(serde_json::Value::Null);
     match subject {
         IntrospectSubject::Daemon => Ok(IntrospectResponse::Daemon(parse_daemon_health(&data)?)),
@@ -1626,12 +1523,53 @@ fn parse_introspect(
 mod tests {
     use super::*;
 
-    /// `parse_response` classifies the eight response shapes of the one-tree
+    /// A `get` response line read as a client reads it.
+    fn node_of(line: &str) -> Result<resolve::Got, CombError> {
+        envelope(line, None).map(parse_node)
+    }
+
+    fn response_of(line: &str) -> Result<CombResult, CombError> {
+        node_of(line).map(CombResult::from)
+    }
+
+    /// Every failure has its slug, and a read or write that ran out its
+    /// timeout is a timeout, not an I/O error.
+    #[test]
+    fn every_failure_has_its_kind() {
+        let io = |k| std::io::Error::new(k, "x");
+        for (e, slug) in [
+            (CombError::DaemonNotRunning, "daemon_not_running"),
+            (
+                CombError::ConnectionFailed(io(std::io::ErrorKind::ConnectionRefused)),
+                "connection_failed",
+            ),
+            (
+                CombError::IoError(io(std::io::ErrorKind::BrokenPipe)),
+                "io_error",
+            ),
+            (CombError::ParseError("x".into()), "parse_error"),
+            (CombError::ServerError("x".into()), "server_error"),
+            (CombError::Timeout, "timeout"),
+            (
+                CombError::from(io(std::io::ErrorKind::WouldBlock)),
+                "timeout",
+            ),
+            (CombError::from(io(std::io::ErrorKind::TimedOut)), "timeout"),
+            (
+                CombError::from(io(std::io::ErrorKind::BrokenPipe)),
+                "io_error",
+            ),
+        ] {
+            assert_eq!(e.kind(), slug, "{e:?}");
+        }
+    }
+
+    /// A `get` response classifies into the eight response shapes of the one-tree
     /// design §3.4: `data` present is a `Hit` carrying whatever template
     /// half came with it; a template alone is a `Template`, with `rest` when
     /// the walk stopped at a string; neither is a `Miss`; `ok:false` is a
-    /// server error. And it is `parse_node` plus `From<Got>` — the two
-    /// parsers cannot disagree.
+    /// server error. And it is the `Got` plus `From<Got>` — the two readings
+    /// cannot disagree.
     #[test]
     fn parse_response_carries_the_template_half() {
         use serde_json::json;
@@ -1693,15 +1631,15 @@ mod tests {
             (r#"{"ok":true}"#, CombResult::Miss),
         ];
         for (line, expected) in shapes {
-            let parsed = parse_response(line, None).expect("an ok response parses");
+            let parsed = response_of(line).expect("an ok response parses");
             assert_eq!(parsed, expected, "{line}");
             assert_eq!(
-                CombResult::from(parse_node(line, None).unwrap()),
+                CombResult::from(node_of(line).unwrap()),
                 parsed,
-                "parse_response is parse_node plus From<Got>: {line}"
+                "a CombResult is a Got, classified: {line}"
             );
         }
-        match parse_response(r#"{"ok":false,"error":"invalid key"}"#, None) {
+        match response_of(r#"{"ok":false,"error":"invalid key"}"#) {
             Err(CombError::ServerError(m)) => assert_eq!(m, "invalid key"),
             other => panic!("a rejected key must be a server error, got {other:?}"),
         }
@@ -1709,25 +1647,23 @@ mod tests {
         // The accessors: a `Template` is neither a hit nor a miss, and both
         // halves are reachable from whichever variant carries them.
         let template_only =
-            parse_response(r#"{"ok":true,"template":"{{ x }}","rest":"cpu"}"#, None).unwrap();
+            response_of(r#"{"ok":true,"template":"{{ x }}","rest":"cpu"}"#).unwrap();
         assert!(!template_only.is_hit());
         assert!(!template_only.is_miss());
         assert_eq!(template_only.template(), Some(&json!("{{ x }}")));
         assert_eq!(template_only.rest(), Some("cpu"));
-        let both = parse_response(
-            r#"{"ok":true,"data":1,"age_ms":0,"stale":false,"template":"{{ 2 }}"}"#,
-            None,
-        )
-        .unwrap();
+        let both =
+            response_of(r#"{"ok":true,"data":1,"age_ms":0,"stale":false,"template":"{{ 2 }}"}"#)
+                .unwrap();
         assert!(both.is_hit());
         assert_eq!(both.template(), Some(&json!("{{ 2 }}")));
         assert_eq!(both.rest(), None);
-        let miss = parse_response(r#"{"ok":true}"#, None).unwrap();
+        let miss = response_of(r#"{"ok":true}"#).unwrap();
         assert!(miss.is_miss());
         assert_eq!(miss.template(), None);
     }
 
-    /// `parse_node` keeps both halves: the eight response shapes of the
+    /// A `get` response read as a `Got` keeps both halves: the eight response shapes of the
     /// one-tree design §3.4 — a template leaf, a template group, data plus a
     /// tree, data plus a template, data alone, a template plus `rest`, a
     /// miss, and a rejected key.
@@ -1736,7 +1672,7 @@ mod tests {
         use resolve::Got;
         use serde_json::json;
 
-        let node = |line: &str| parse_node(line, None).expect("an ok response parses");
+        let node = |line: &str| node_of(line).expect("an ok response parses");
 
         assert_eq!(
             node(r#"{"ok":true,"template":"{{ env.SCANLINE_FOO }}"}"#),
@@ -1795,7 +1731,7 @@ mod tests {
             }
         );
         assert_eq!(node(r#"{"ok":true}"#), Got::default());
-        match parse_node(r#"{"ok":false,"error":"invalid key"}"#, None) {
+        match node_of(r#"{"ok":false,"error":"invalid key"}"#) {
             Err(CombError::ServerError(m)) => assert_eq!(m, "invalid key"),
             other => panic!("a rejected key must be a server error, got {other:?}"),
         }

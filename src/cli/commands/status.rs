@@ -41,7 +41,7 @@ fn render_template_rows(
     rows: &[CacheRow],
     cwd: &str,
     env: &HashMap<String, String>,
-    session: &mut crate::client::ClientSession,
+    session: &mut libbeachcomber::Session,
     filters: &[String],
 ) -> Vec<CacheRow> {
     let chain = crate::query::path_chain(Some(cwd));
@@ -147,7 +147,7 @@ const TREE_PRESETS: [Preset; 3] = [Preset::Human, Preset::Table, Preset::Json];
 fn layer_stacks(
     rows: &[CacheRow],
     cwd: &str,
-    session: &mut crate::client::ClientSession,
+    session: &mut libbeachcomber::Session,
 ) -> Vec<Option<Vec<crate::cache::LayerRecord>>> {
     let canonical = std::fs::canonicalize(cwd)
         .map(|p| p.to_string_lossy().into_owned())

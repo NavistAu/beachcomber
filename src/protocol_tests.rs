@@ -27,20 +27,13 @@ fn parse_get_request_global() {
 }
 
 /// Task 1.8 retired the wire-level `format` field from `Get`/`Watch`. A
-/// stale client that still sends one is not rejected — unrecognised fields
-/// on these requests have never been an error — the field is simply
-/// ignored and the request behaves exactly like one that omitted it.
+/// client that still sends one is refused: a field an op does not take is
+/// an error, never silently ignored.
 #[test]
-fn parse_get_request_with_stale_format_field_is_ignored() {
+fn a_get_request_with_the_retired_format_field_is_refused() {
     let json = r#"{"op": "get", "key": "git.branch", "path": "/project", "format": "text"}"#;
-    let req: Request = serde_json::from_str(json).unwrap();
-    match req {
-        Request::Get { key, path, .. } => {
-            assert_eq!(key, "git.branch");
-            assert_eq!(path.as_deref(), Some("/project"));
-        }
-        _ => panic!("Expected Get request"),
-    }
+    let err = serde_json::from_str::<Request>(json).expect_err("refused");
+    assert!(err.to_string().contains("unknown field `format`"), "{err}");
 }
 
 #[test]
@@ -152,21 +145,6 @@ fn parse_watch_request() {
         Request::Watch { key, path } => {
             assert_eq!(key, "git.branch");
             assert_eq!(path.as_deref(), Some("/home/user/project"));
-        }
-        _ => panic!("Expected Watch request"),
-    }
-}
-
-/// Task 1.8 retired the wire-level `format` field from `Get`/`Watch`. A
-/// stale client that still sends one is not rejected — the field is simply
-/// ignored and the request behaves exactly like one that omitted it.
-#[test]
-fn parse_watch_request_with_stale_format_field_is_ignored() {
-    let json = r#"{"op":"watch","key":"git.branch","format":"text"}"#;
-    let req: Request = serde_json::from_str(json).unwrap();
-    match req {
-        Request::Watch { key, .. } => {
-            assert_eq!(key, "git.branch");
         }
         _ => panic!("Expected Watch request"),
     }

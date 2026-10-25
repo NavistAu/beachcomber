@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 /// See `docs/protocol-spec.md` for what counts as additive vs breaking.
 pub const PROTOCOL_VERSION: &str = "1.0";
 
+/// A field an op does not take is refused, never ignored: a retired or
+/// misspelt field is an error the client hears.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "op", rename_all = "lowercase")]
+#[serde(tag = "op", rename_all = "lowercase", deny_unknown_fields)]
 pub enum Request {
     Get {
         key: String,
@@ -21,7 +23,10 @@ pub enum Request {
         #[serde(default)]
         path: Option<String>,
     },
-    Status,
+    /// An empty struct variant, not a unit one, so a field it does not take
+    /// is refused like any other op's (`deny_unknown_fields` passes unit
+    /// variants by).
+    Status {},
     Put {
         key: String,
         data: serde_json::Value,
@@ -43,7 +48,7 @@ pub enum Request {
     /// First op a client should send on a new connection. Returns the
     /// daemon's protocol version and build version so clients can verify
     /// compatibility before sending further ops.
-    Hello,
+    Hello {},
     /// The stack of layers a read of `key` from `path` consults, per leaf:
     /// a tree shaped like the value with an ordered array at each leaf.
     /// Warms nothing and signals no demand. CLI-only (`comb status --tree`):

@@ -111,18 +111,30 @@ impl Inputs<'_> {
 /// rejected is an error the caller hears, in the daemon's own words; a ref
 /// inside a template naming a rejected key is a missing ref, and canon says a
 /// missing ref is falsy at any depth.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum FetchError {
-    /// The daemon could not be asked.
-    Transport(String),
+    /// The daemon could not be asked: the transport's failure, as it was.
+    Transport(crate::CombError),
     /// The daemon refused the key, with its reason.
     Rejected(String),
+}
+
+impl FetchError {
+    /// The failure's slug ([`crate::kind`]): a transport failure keeps its
+    /// own; a refused key is the daemon's, `server_error`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            FetchError::Transport(e) => e.kind(),
+            FetchError::Rejected(_) => crate::kind::SERVER_ERROR,
+        }
+    }
 }
 
 impl std::fmt::Display for FetchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FetchError::Transport(m) | FetchError::Rejected(m) => f.write_str(m),
+            FetchError::Transport(e) => e.fmt(f),
+            FetchError::Rejected(m) => f.write_str(m),
         }
     }
 }
@@ -143,7 +155,7 @@ pub trait Fetch {
 }
 
 /// Why a resolution failed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ResolveError {
     /// A template that does not compile, a cycle, or the depth limit — the
     /// message names the field, and someone has to go and edit it.
@@ -152,6 +164,22 @@ pub enum ResolveError {
     Runtime(String),
     /// The daemon could not be asked, or refused the key being resolved.
     Fetch(FetchError),
+}
+
+impl ResolveError {
+    /// The failure's slug ([`crate::kind`]), the one classification every
+    /// surface reports. A template that does not compile, cycles or runs past
+    /// the depth limit is configuration someone has to go and edit — the
+    /// caller's input, `parse_error`. A failure while rendering is
+    /// `server_error`, as is the daemon refusing the key; a transport failure
+    /// keeps its own.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ResolveError::Config(_) => crate::kind::PARSE_ERROR,
+            ResolveError::Runtime(_) => crate::kind::SERVER_ERROR,
+            ResolveError::Fetch(e) => e.kind(),
+        }
+    }
 }
 
 impl std::fmt::Display for ResolveError {
@@ -268,7 +296,8 @@ struct Resolver<'a> {
     /// directory, the only ones an `exec()` child sees.
     engine: Arc<EngineCtx>,
     fetch: &'a mut dyn Fetch,
-    memo: HashMap<(String, Option<String>), Result<Option<Got>, FetchError>>,
+    /// The daemon's answers so far: a node, or its refusal of the key.
+    memo: HashMap<(String, Option<String>), Result<Option<Got>, String>>,
     order: Fetched,
     stack: Frames,
     /// The age of the oldest cached value used so far ([`Traced`]).
@@ -368,18 +397,22 @@ impl<'a> Resolver<'a> {
     /// resolution, so nothing about it is kept.
     fn fetch(&mut self, key: &str) -> Result<Option<Got>, ResolveError> {
         let coord = (key.to_string(), self.inputs.path().map(str::to_string));
+        let rejected = |m| ResolveError::Fetch(FetchError::Rejected(m));
         if let Some(answer) = self.memo.get(&coord) {
-            return answer.clone().map_err(ResolveError::Fetch);
+            return answer.clone().map_err(rejected);
         }
-        let answer = self
-            .fetch
-            .get(key, coord.1.as_deref(), self.inputs.force, self.inputs.wait);
-        if let Err(FetchError::Transport(_)) = &answer {
-            return answer.map_err(ResolveError::Fetch);
-        }
+        let answer =
+            match self
+                .fetch
+                .get(key, coord.1.as_deref(), self.inputs.force, self.inputs.wait)
+            {
+                Ok(got) => Ok(got),
+                Err(FetchError::Rejected(m)) => Err(m),
+                Err(e @ FetchError::Transport(_)) => return Err(ResolveError::Fetch(e)),
+            };
         self.memo.insert(coord.clone(), answer.clone());
         self.order.push(coord);
-        answer.map_err(ResolveError::Fetch)
+        answer.map_err(rejected)
     }
 
     /// [`Self::fetch`] for a ref inside a template: a key the daemon rejected

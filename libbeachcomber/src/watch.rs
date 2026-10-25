@@ -22,7 +22,7 @@
 //! [`ResolvedWatch::cancel_handle`] end a wait from another thread.
 
 use crate::resolve::{FetchError, Inputs, ResolveError, Slot, resolve_traced};
-use crate::{Client, ClientFetch, CombError, WatchStream};
+use crate::{Client, CombError, WatchStream};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -80,6 +80,19 @@ impl std::fmt::Display for WatchError {
 }
 
 impl std::error::Error for WatchError {}
+
+impl WatchError {
+    /// The failure's slug ([`crate::kind`]). A watch on `env` is the
+    /// caller's input, `parse_error`; the rest classify as a resolution and
+    /// a transport do.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            WatchError::EnvKey(_) => crate::kind::PARSE_ERROR,
+            WatchError::Resolve(e) => e.kind(),
+            WatchError::Transport(e) => e.kind(),
+        }
+    }
+}
 
 /// The [`Client`] a watch drives: borrowed, or owned by the watch itself.
 ///
@@ -238,12 +251,12 @@ impl<'a> ResolvedWatch<'a> {
             });
         }
 
-        let mut fetch = ClientFetch::new(&client);
+        let mut fetch: &Client = &client;
         let resolved = {
             let borrowed = inputs.as_inputs();
             resolve_traced(key, &borrowed, &mut fetch).map(|t| (t.value, t.deps))
         };
-        let (last, deps) = resolved.map_err(|e| watch_error(e, &mut fetch))?;
+        let (last, deps) = resolved.map_err(watch_error)?;
 
         let mut streams = Vec::new();
         for (dep_key, dep_path) in &deps {
@@ -387,12 +400,12 @@ impl<'a> ResolvedWatch<'a> {
     /// Resolve again, move the subscriptions onto that resolution's deps, and
     /// report whether the value changed.
     fn reresolve(&mut self) -> Result<bool, WatchError> {
-        let mut fetch = ClientFetch::new(&self.client);
+        let mut fetch: &Client = &self.client;
         let resolved = {
             let inputs = self.inputs.as_reresolve_inputs();
             resolve_traced(&self.key, &inputs, &mut fetch).map(|t| (t.value, t.deps))
         };
-        let (value, deps) = resolved.map_err(|e| watch_error(e, &mut fetch))?;
+        let (value, deps) = resolved.map_err(watch_error)?;
 
         // Subscriptions follow the latest resolution: a key it no longer
         // reads is dropped, a key it has started reading is opened.
@@ -482,16 +495,12 @@ fn frame_value(frame: &str) -> Result<Option<JsonValue>, WatchError> {
         .map_err(WatchError::Transport)
 }
 
-/// A resolution failure as a watch reports it. A fetch that could not reach
-/// the daemon is the transport's, and [`ClientFetch`] kept the error behind
-/// it, so a caller classifying failures by type reads it rather than parsing
-/// a message back.
-fn watch_error(e: ResolveError, fetch: &mut ClientFetch<'_>) -> WatchError {
-    match (&e, fetch.transport.take()) {
-        (ResolveError::Fetch(FetchError::Transport(_)), Some(transport)) => {
-            WatchError::Transport(transport)
-        }
-        _ => WatchError::Resolve(e),
+/// A resolution failure as a watch reports it: a fetch that could not reach
+/// the daemon is the transport's, with the error behind it.
+fn watch_error(e: ResolveError) -> WatchError {
+    match e {
+        ResolveError::Fetch(FetchError::Transport(transport)) => WatchError::Transport(transport),
+        e => WatchError::Resolve(e),
     }
 }
 

@@ -534,3 +534,40 @@ async fn a_path_that_is_not_absolute_is_refused_on_every_op() {
 
     handle.abort();
 }
+
+/// A request names only the fields its op takes. A field the op does not
+/// know — a retired one, a typo — is refused, never silently ignored.
+#[tokio::test]
+async fn a_request_field_the_op_does_not_take_is_refused() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    for request in [
+        serde_json::json!({"op": "get", "key": "hostname", "format": "text"}),
+        serde_json::json!({"op": "put", "key": "rp", "data": {"a": 1}, "tll": "1m"}),
+        serde_json::json!({"op": "refresh", "key": "hostname", "fource": true}),
+        serde_json::json!({"op": "status", "verbose": true}),
+        serde_json::json!({"op": "hello", "client": "x"}),
+    ] {
+        let mut stream = UnixStream::connect(&sock).await.unwrap();
+        stream
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let response: Response = serde_json::from_str(&line).unwrap();
+        assert!(!response.ok, "{request} must be refused: {line}");
+        assert!(
+            response
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("unknown field")),
+            "{request}: {line}"
+        );
+    }
+
+    handle.abort();
+}

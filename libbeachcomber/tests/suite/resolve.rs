@@ -18,6 +18,11 @@ const CWD: &str = "/tmp";
 
 // ── A map-backed Fetch ────────────────────────────────────────────────────────
 
+/// The failure `MapFetch` reports for a key it was told fails.
+fn transport_failure(key: &str) -> libbeachcomber::CombError {
+    libbeachcomber::CombError::IoError(std::io::Error::other(format!("transport failed for {key}")))
+}
+
 /// One call to [`Fetch::get`], recorded in order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Call {
@@ -66,7 +71,7 @@ impl Fetch for MapFetch {
             wait,
         });
         if self.fails.iter().any(|k| k == key) {
-            return Err(FetchError::Transport(format!("transport failed for {key}")));
+            return Err(FetchError::Transport(transport_failure(key)));
         }
         if self.rejects.iter().any(|k| k == key) {
             return Err(FetchError::Rejected(format!("invalid facet key: {key}")));
@@ -1156,9 +1161,7 @@ fn a_fetch_error_stops_the_resolution_where_it_happened() {
     let err = resolve("k", &inputs(&env), &mut f).unwrap_err();
     assert_eq!(
         err,
-        ResolveError::Fetch(FetchError::Transport(
-            "transport failed for boom.x".to_string()
-        ))
+        ResolveError::Fetch(FetchError::Transport(transport_failure("boom.x")))
     );
     assert_eq!(f.keys(), vec!["k", "boom.x"]);
 }
@@ -1535,8 +1538,8 @@ fn a_transport_failure_in_a_lazy_read_fails_the_resolution() {
     );
     f.fails.push("down".to_string());
     match resolve("k.t", &inputs(&env), &mut f) {
-        Err(ResolveError::Fetch(FetchError::Transport(m))) => {
-            assert!(m.contains("down"), "{m}")
+        Err(ResolveError::Fetch(FetchError::Transport(e))) => {
+            assert!(e.to_string().contains("down"), "{e}")
         }
         other => panic!("expected the transport failure, got {other:?}"),
     }

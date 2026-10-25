@@ -146,7 +146,7 @@ match result {
 The one client-side resolver — the function `comb get`, `comb eval`, `bc_resolve`/`bc_eval` and every SDK answer from. `get` returns what the daemon stores; `resolve` returns what `comb get` prints: the daemon holds templates as data (`<provider>:template`, seeded from configuration or `put`) and never evaluates one, so the client renders them with the caller's environment and directory. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `Ok(None)` is a miss; `Err(ResolveError::Config)` is a template that does not compile or cycles, `Runtime` a failed or disabled `exec()`, `Fetch` a daemon the library could not ask or a key it refused.
 
 ```rust
-use libbeachcomber::{Client, ClientFetch};
+use libbeachcomber::Client;
 use libbeachcomber::resolve::{resolve, Inputs, Slot};
 use std::collections::HashMap;
 
@@ -160,11 +160,11 @@ let inputs = Inputs {
     wait: false,
     allow_exec: client.allow_exec(),
 };
-let value = resolve("python.version", &inputs, &mut ClientFetch::new(&client))?;
+let value = resolve("python.version", &inputs, &mut &client)?;
 // Option<serde_json::Value> — the same value `comb get python.version` prints here
 ```
 
-`resolve::eval(template_str, &inputs, &mut fetch)` renders a template that is stored nowhere, the same way `comb eval` does. The library reads no ambient state: every input is in `Inputs`, and `ClientFetch` is the `Fetch` over a `Client`.
+`resolve::eval(template_str, &inputs, &mut fetch)` renders a template that is stored nowhere, the same way `comb eval` does. The library reads no ambient state: every input is in `Inputs`. The `Fetch` is a `&Client` (one connection per node) or a `Session` (one connection for the whole resolution). A failure classifies with `kind()` — `CombError`, `ResolveError` and `WatchError` alike — into the slugs the C ABI's `error.kind` carries; a read or write that runs out the client's timeout is `CombError::Timeout` on every op, on a client and a session alike.
 
 ## Socket discovery
 

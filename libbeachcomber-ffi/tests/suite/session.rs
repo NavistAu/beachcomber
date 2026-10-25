@@ -218,3 +218,41 @@ fn a_sessions_directory_is_sent_with_put_get_and_refresh() {
     unsafe { bc_session_close(session) };
     unsafe { bc_client_free(client) };
 }
+
+/// A daemon that does not answer within `timeout_ms` is `kind: "timeout"`
+/// on a session as on a client, for a read and a write alike.
+#[test]
+fn a_slow_session_get_and_a_slow_put_report_timeout() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("sock");
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming().flatten() {
+            held.push(stream);
+        }
+    });
+    let options = cs(&format!(
+        r#"{{"socket_path":"{}","autostart":false,"timeout_ms":50}}"#,
+        sock.display()
+    ));
+    let client = unsafe { bc_client_new(options.as_ptr()) };
+
+    let session = unsafe { bc_session_open(client) };
+    let get = read(unsafe { bc_session_get(session, cs("p.x").as_ptr(), ptr::null(), 0) });
+    assert_eq!(get["error"]["kind"], "timeout", "{get}");
+
+    let put = read(unsafe {
+        beachcomber::bc_put(
+            client,
+            cs("p").as_ptr(),
+            cs(r#"{"x":1}"#).as_ptr(),
+            ptr::null(),
+            ptr::null(),
+        )
+    });
+    assert_eq!(put["error"]["kind"], "timeout", "{put}");
+
+    unsafe { bc_session_close(session) };
+    unsafe { bc_client_free(client) };
+}

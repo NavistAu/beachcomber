@@ -151,7 +151,7 @@ so a binding can tell the cases apart without string matching:
 | `io_error` | Socket read/write failure |
 | `parse_error` | Malformed response from the daemon |
 | `server_error` | Daemon returned `ok: false` |
-| `timeout` | The call exceeded its timeout |
+| `timeout` | The call exceeded its timeout — any op, on a client or a session |
 | `bad_flags` | An unrecognised bit was set in a `flags` argument |
 | `busy` | The handle's connection is already in use by another caller |
 | `version_skew` | The daemon's reported version doesn't match this library's |
