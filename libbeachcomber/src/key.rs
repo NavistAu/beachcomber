@@ -8,7 +8,8 @@
 //! - `.seg` — any characters but `.`, `[` and `]`: `git.branch`,
 //!   `mise.cargo:cargo-nextest`, `mise.npm:@scope/pkg`;
 //! - `[n]` — an array index, the same segment as `.n`: `p.list[0]` is
-//!   `p.list.0`;
+//!   `p.list.0`, and a negative one counts from the end (`p.list[-1]`, as in
+//!   jinja);
 //! - `['…']` or `["…"]` — a quoted key, where a backslash escapes only the
 //!   quote and the backslash: `mise['go:golang.org/x/tools/gopls']`.
 //!
@@ -145,23 +146,62 @@ fn parse_bracket(text: &str, chars: &mut Chars<'_>) -> Option<String> {
         let start = chars.peek().map(|&(i, _)| i)?;
         let mut end = start;
         while let Some(&(i, c)) = chars.peek() {
-            if !c.is_ascii_digit() {
+            if !(c.is_ascii_digit() || (c == '-' && i == start)) {
                 break;
             }
             end = i + c.len_utf8();
             chars.next();
         }
-        let digits = &text[start..end];
-        let canonical = digits == "0" || (!digits.is_empty() && !digits.starts_with('0'));
-        if !canonical {
-            return None;
-        }
-        digits.to_string()
+        let index = &text[start..end];
+        canonical_index(index)?;
+        index.to_string()
     };
     match chars.next()? {
         (_, ']') => Some(segment),
         _ => None,
     }
+}
+
+/// The signed value of an index segment written canonically: decimal digits
+/// with no leading zero (`0`, `12`), or a `-` before such digits other than
+/// `0` (`-1`). Anything else (`01`, `-0`, `+1`) is no index.
+fn canonical_index(segment: &str) -> Option<i64> {
+    let digits = segment.strip_prefix('-').unwrap_or(segment);
+    let canonical = !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && (digits == "0" || !digits.starts_with('0'))
+        && !(segment.starts_with('-') && digits == "0");
+    canonical.then(|| segment.parse().ok()).flatten()
+}
+
+/// `segment` as a position in an array of `len` elements: a canonical
+/// decimal counts from the front, and is returned whatever `len` (the bound,
+/// and whether one past the end appends, is the caller's); a negative one
+/// counts from the back, and is `None` past the front. Any segment that is
+/// not a canonical index is `None`. The one reading of an array index every
+/// walk shares — keys, `pluck`, a rendered value, a write.
+pub fn array_index(segment: &str, len: usize) -> Option<usize> {
+    let n = canonical_index(segment)?;
+    if n >= 0 {
+        usize::try_from(n).ok()
+    } else {
+        len.checked_sub(usize::try_from(n.unsigned_abs()).ok()?)
+    }
+}
+
+/// Why `name` cannot name a provider or a Source, or `None` when it can. A
+/// provider name is a key's head, so it ends at no `.` or `[`, holds a `:`
+/// only before a facet, and is never a directory; `*` and a leading `<` are
+/// the abstract provider's and a sentinel field's. One rule for a config
+/// table, a `put` and a Source. The [`reserved`] words are refused apart.
+pub fn name_error(name: &str) -> Option<&'static str> {
+    let bad = name.is_empty()
+        || name.contains([':', '.', '[', ']', '*'])
+        || name.starts_with(['/', '~', '<']);
+    bad.then_some(
+        "a name is non-empty, holds no ':', '.', '[', ']' or '*', and does not start with \
+         '/', '~' or '<'",
+    )
 }
 
 /// Whether `segment` must be written `['…']`.
@@ -260,14 +300,19 @@ pub fn reserved(name: &str) -> Option<String> {
     Some(format!("'{name}' is reserved: {meaning}"))
 }
 
-/// Refuse a head whose base is [`reserved`]. `*:cache` is the one such head a
-/// key names: the abstract provider's decay prototype.
+/// Refuse a head whose base no provider could have: a [`reserved`] word, or a
+/// name [`name_error`] refuses. `*:cache` is the one such head a key names: the
+/// abstract provider's decay prototype. The same rule decides a config table's
+/// provider name, so a key names exactly the providers that can exist.
 pub fn check_head(head: &str) -> Result<(), String> {
     if head == "*:cache" {
         return Ok(());
     }
     let base = head.split_once(':').map_or(head, |(base, _)| base);
-    reserved(base).map_or(Ok(()), Err)
+    match reserved(base).or_else(|| name_error(base).map(str::to_string)) {
+        Some(reason) => Err(format!("invalid provider name '{base}': {reason}")),
+        None => Ok(()),
+    }
 }
 
 /// Parse the facet syntax of a head: `base:facet`. `Ok(None)` for a plain
@@ -369,7 +414,7 @@ mod tests {
     fn malformed_keys_are_invalid() {
         for key in [
             "", ".x", "[0]", "p..a", "p.", "p.a.", "p]", "p.a]b", "p[", "p['a", "p['a'", "p['a']x",
-            "p[01]", "p[-1]", "p[x]", "/tmp/x", "~/ws", "~",
+            "p[01]", "p[-0]", "p[-01]", "p[-]", "p[x]", "/tmp/x", "~/ws", "~",
         ] {
             assert_eq!(
                 split_key(key),
@@ -464,6 +509,32 @@ mod tests {
         assert_eq!(check_head("*:cache"), Ok(()));
         for head in ["git", "git:cache", "environment", "combo", "my_env"] {
             assert_eq!(check_head(head), Ok(()), "{head}");
+        }
+    }
+
+    #[test]
+    fn a_negative_index_counts_from_the_end() {
+        assert_eq!(split("p.l[-1]"), ("p".into(), segs(&["l", "-1"])));
+        assert_eq!(split("p.l.-1"), ("p".into(), segs(&["l", "-1"])));
+        assert_eq!(array_index("-1", 3), Some(2));
+        assert_eq!(array_index("-3", 3), Some(0));
+        assert_eq!(array_index("-4", 3), None);
+        assert_eq!(array_index("0", 3), Some(0));
+        assert_eq!(array_index("5", 3), Some(5), "the bound is the caller's");
+        for not_an_index in ["01", "-0", "-01", "+1", "x", "", " 1"] {
+            assert_eq!(array_index(not_an_index, 3), None, "{not_an_index:?}");
+        }
+    }
+
+    #[test]
+    fn one_name_rule() {
+        for ok in ["git", "a-b", "9x", "bad key", "Hostname", "x/y", "my_env"] {
+            assert_eq!(name_error(ok), None, "{ok}");
+        }
+        for bad in [
+            "", "a:b", "a.b", "a[b", "a]b", "a*b", "*", "/x", "~x", "<x>",
+        ] {
+            assert!(name_error(bad).is_some(), "{bad:?}");
         }
     }
 

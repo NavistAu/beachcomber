@@ -672,7 +672,7 @@ fn is_array_element(fields: &HashMap<String, Value>, node: &str) -> bool {
     matches!(
         crate::provider::lookup_path(fields, &up),
         Some(Value::Array(items))
-            if crate::provider::index_of(&below).is_some_and(|i| i < items.len())
+            if crate::provider::index_of(&below, items.len()).is_some_and(|i| i < items.len())
     )
 }
 
@@ -682,7 +682,9 @@ fn is_array_element(fields: &HashMap<String, Value>, node: &str) -> bool {
 fn in_the_way(value: &Value, segment: &str) -> bool {
     match value {
         Value::Object(_) => false,
-        Value::Array(items) => crate::provider::index_of(segment).is_none_or(|i| i > items.len()),
+        Value::Array(items) => {
+            crate::provider::index_of(segment, items.len()).is_none_or(|i| i > items.len())
+        }
         _ => true,
     }
 }

@@ -169,24 +169,19 @@ pub fn lookup_path<'a>(fields: &'a HashMap<String, Value>, path: &str) -> Option
 }
 
 /// The node one segment below `value`: an object's member, or an array's
-/// element at a decimal index.
+/// element at an index ([`libbeachcomber::key::array_index`]).
 pub fn child<'a>(value: &'a Value, segment: &str) -> Option<&'a Value> {
     match value {
         Value::Object(map) => map.get(segment),
-        Value::Array(items) => items.get(index_of(segment)?),
+        Value::Array(items) => items.get(index_of(segment, items.len())?),
         _ => None,
     }
 }
 
-/// `segment` as an array index: canonical decimal only (`0`, `12`; never
-/// `01` or `+1`), as the key grammar writes it.
-pub fn index_of(segment: &str) -> Option<usize> {
-    let canonical = segment == "0" || (!segment.starts_with('0') && !segment.is_empty());
-    if canonical && segment.bytes().all(|b| b.is_ascii_digit()) {
-        segment.parse().ok()
-    } else {
-        None
-    }
+/// `segment` as a position in an array of `len` elements, by the key
+/// grammar's one rule.
+pub fn index_of(segment: &str, len: usize) -> Option<usize> {
+    libbeachcomber::key::array_index(segment, len)
 }
 
 /// Write `value` at a canonical address, creating intermediate
@@ -226,7 +221,7 @@ pub fn insert_path(fields: &mut HashMap<String, Value>, tail: &str, value: Value
 /// at the slot becomes an object too, so the walk can go on through it.
 fn slot_for<'a>(node: &'a mut Value, segment: &str) -> &'a mut Value {
     let index = match &*node {
-        Value::Array(items) => index_of(segment).filter(|i| *i <= items.len()),
+        Value::Array(items) => index_of(segment, items.len()).filter(|i| *i <= items.len()),
         _ => None,
     };
     let slot = match (node, index) {
@@ -258,7 +253,7 @@ fn slot_for<'a>(node: &'a mut Value, segment: &str) -> &'a mut Value {
 /// object if it cannot hold the segment.
 fn place(node: &mut Value, segment: &str, value: Value) {
     if let Value::Array(items) = node
-        && let Some(i) = index_of(segment).filter(|i| *i <= items.len())
+        && let Some(i) = index_of(segment, items.len()).filter(|i| *i <= items.len())
     {
         if i == items.len() {
             items.push(value);
@@ -280,7 +275,10 @@ fn place(node: &mut Value, segment: &str, value: Value) {
 fn child_mut<'a>(node: &'a mut Value, segment: &str) -> Option<&'a mut Value> {
     match node {
         Value::Object(map) => map.get_mut(segment),
-        Value::Array(items) => items.get_mut(index_of(segment)?),
+        Value::Array(items) => {
+            let i = index_of(segment, items.len())?;
+            items.get_mut(i)
+        }
         _ => None,
     }
 }
@@ -291,7 +289,7 @@ fn take_child(node: &mut Value, segment: &str) -> Option<Value> {
     match node {
         Value::Object(map) => map.remove(segment),
         Value::Array(items) => {
-            let i = index_of(segment).filter(|i| *i < items.len())?;
+            let i = index_of(segment, items.len()).filter(|i| *i < items.len())?;
             Some(items.remove(i))
         }
         _ => None,

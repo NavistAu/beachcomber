@@ -54,24 +54,16 @@ pub struct Seeded {
 /// says which root: `_`, the prototype's name, is a provider only in the
 /// daemon root's `cache` prototype and never in the client's.
 pub fn provider_name_error(root: &str, name: &str, client: bool) -> Option<String> {
-    if name.is_empty() {
-        return Some(format!("empty provider name in [{root}]"));
-    }
-    // A name is a key's head (`libbeachcomber::key`): it ends at the first
-    // `.` or `[`, holds a `:` only before a facet, and is never a directory.
-    if name.contains([':', '.', '[', ']']) || name.starts_with(['/', '~']) {
-        return Some(format!(
-            "invalid provider name '{name}' in [{root}]: a name holds no ':', '.', '[' or ']', \
-             and does not start with '/' or '~'"
-        ));
-    }
-    // `_` is the daemon root's prototype table; every other reserved word,
-    // and `_` in the client root, is the one rule keys and `put` follow.
+    // `_` is the daemon root's prototype table; every other name follows the
+    // one rule keys and `put` follow (`libbeachcomber::key`).
     if name == "_" && !client {
         return None;
     }
-    libbeachcomber::key::reserved(name)
-        .map(|reason| format!("invalid provider name '{name}' in [{root}]: {reason}"))
+    let reason = libbeachcomber::key::reserved(name)
+        .or_else(|| libbeachcomber::key::name_error(name).map(str::to_string))?;
+    Some(format!(
+        "invalid provider name '{name}' in [{root}]: {reason}"
+    ))
 }
 
 struct Reader {
@@ -400,11 +392,8 @@ impl Reader {
                 ));
                 continue;
             }
-            if name.is_empty() || name.contains(['.', ':', '*']) || name.starts_with('<') {
-                self.err(format!(
-                    "invalid Source name '{name}' in {at}: a name is non-empty, holds no '.', \
-                     ':' or '*' and does not start with '<'"
-                ));
+            if let Some(reason) = libbeachcomber::key::name_error(name) {
+                self.err(format!("invalid Source name '{name}' in {at}: {reason}"));
                 continue;
             }
             self.source(provider, name, source);

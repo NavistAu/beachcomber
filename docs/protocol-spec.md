@@ -242,6 +242,7 @@ spellings, so a key reads the same here as in a template:
 - `.seg` — any characters but `.`, `[` and `]`: `git.branch`,
   `mise.cargo:cargo-nextest`, `mise.npm:@scope/pkg`;
 - `[n]` — an array index, the same segment as `.n`: `p.list[0]` is `p.list.0`;
+  a negative index counts from the end (`p.list[-1]`, `p.list.-1`);
 - `['…']` or `["…"]` — a quoted segment, where a backslash escapes only the quote
   and the backslash: `mise['go:golang.org/x/tools/gopls']`.
 

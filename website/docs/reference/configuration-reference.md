@@ -137,7 +137,7 @@ A Source's `data` and `result` lines run on one jinja engine in the daemon. `env
 | `text \| fromjson`, `text \| fromini` | Parse JSON, or INI (`section -> {key: string}`), into a value. |
 | `a \| merge(b, ...)`, `merge(a, b, ...)`, `merge(list)` | Deep-merge objects; the last wins. |
 | `obj \| map('filter', args...)` | Apply a filter to each value of an object, keeping its keys (a list maps as jinja's `map` does). |
-| `value \| pluck('a.b[0]')` | Deep get; none on any miss. |
+| `value \| pluck('a.b[0]')` | Deep get; none on any miss. The path is a key's address, in the key grammar `comb get` reads: `[-1]` is the last element, `['a.b']` a name holding a dot, and a path `comb get` refuses (`[01]`) is an error. |
 | `path \| dirname` | All but the last component; none stays none. |
 | `value \| tojson` | Serialise, for `exec(..., stdin=...)`. |
 
@@ -207,7 +207,7 @@ version = "{{ python.version }}"
 That is `python:template.venv_name` and `python:template.widgets.version`. A provider exists if either root names it: one named only under `[client.providers]` or `[daemon.providers]` is a provider with no Sources. The rules are checked file by file, because seeding is, and enforced at daemon startup, on reload and by `comb check config`; each error names its file:
 
 - `[client]` holds only `providers`, and `[client.providers.<p>]` holds only `template`; any other key is `unknown key '<k>' in [client]` (or `[client.providers.<p>]`). `[daemon.providers.<p>]` holds `cache`, `sources`, `enabled` (a boolean; [not on `_`](#switching-a-provider-off--enabled--false)) and the three lines above, and nothing else.
-- Nesting is tables only. A quoted key containing a `.` (`"a.b" = "…"`) is one name, not a path, and reads as the quoted segment `t['a.b']`; an empty key is an **error**. A provider name is the head of a key, so it holds no `:`, `.`, `[` or `]` and does not start with `/` or `~`; and it is none of the reserved words `env`, `comb`, `_` and `*`, which mean something of their own in every key and template (`_` is the daemon root's prototype table, `[daemon.providers._]`).
+- Nesting is tables only. A quoted key containing a `.` (`"a.b" = "…"`) is one name, not a path, and reads as the quoted segment `t['a.b']`; an empty key is an **error**. A provider name is the head of a key, so it holds no `:`, `.`, `[`, `]` or `*` and does not start with `/`, `~` or `<` — the same rule a `put`, a key and a Source name follow — and it is none of the reserved words `env`, `comb`, `_` and `*`, which mean something of their own in every key and template (`_` is the daemon root's prototype table, `[daemon.providers._]`).
 - A template leaf that is neither a string nor a table is not a value expression: an **error**.
 - The colon-table form `[providers."<p>:template"]` is gone with the whole `[providers]` root: it is `unknown table [providers]`, which says templates live in `[client.providers.<p>] template.<leaf>` and decay in `[daemon.providers.<p>.cache._]`.
 

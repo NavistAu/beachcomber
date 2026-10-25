@@ -674,24 +674,13 @@ fn walk(value: JsonValue, rest: &str) -> Option<JsonValue> {
         current = match current {
             JsonValue::Object(mut fields) => fields.remove(segment)?,
             JsonValue::Array(mut items) => {
-                let index = decimal_index(segment)?;
+                let index = crate::key::array_index(segment, items.len())?;
                 (index < items.len()).then(|| items.swap_remove(index))?
             }
             _ => return None,
         };
     }
     Some(current)
-}
-
-/// The canonical spelling of a decimal index (spec §4.2 "array by decimal
-/// index"): ASCII digits only, no leading zero unless the segment is exactly
-/// `0`. Any other spelling (`01`, `+0`, `1 `) misses.
-fn decimal_index(segment: &str) -> Option<usize> {
-    let canonical = segment == "0"
-        || (!segment.is_empty()
-            && !segment.starts_with('0')
-            && segment.bytes().all(|b| b.is_ascii_digit()));
-    canonical.then(|| segment.parse().ok()).flatten()
 }
 
 /// Drop from `data` every address `tree` holds a string leaf at. Those
@@ -713,23 +702,29 @@ fn prune_template_owned(data: &mut Map<String, JsonValue>, tree: &Map<String, Js
     }
 }
 
-/// Insert `value` at the dotted `path` under `map`, creating the objects
-/// between. A scalar already sitting on the path is left alone — a field of a
-/// scalar is not navigable either way.
-fn insert_at(map: &mut Map<String, JsonValue>, path: &str, value: JsonValue) {
-    match path.split_once('.') {
-        None => {
-            map.insert(path.to_string(), value);
-        }
-        Some((head, tail)) => {
-            let entry = map
-                .entry(head.to_string())
-                .or_insert_with(|| JsonValue::Object(Map::new()));
-            if let JsonValue::Object(inner) = entry {
-                insert_at(inner, tail, value);
-            }
-        }
+/// Insert `value` at the key `key` under `map` — its head, then each segment
+/// of its address — creating the objects between. A scalar already sitting on
+/// the path is left alone — a field of a scalar is not navigable either way.
+fn insert_at(map: &mut Map<String, JsonValue>, key: &str, value: JsonValue) {
+    let Ok((head, address)) = crate::key::split_key(key) else {
+        return;
+    };
+    let mut path = vec![std::borrow::Cow::Borrowed(head)];
+    path.extend(crate::key::segments(&address));
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let mut cursor = map;
+    for segment in parents {
+        let entry = cursor
+            .entry(segment.to_string())
+            .or_insert_with(|| JsonValue::Object(Map::new()));
+        let JsonValue::Object(inner) = entry else {
+            return;
+        };
+        cursor = inner;
     }
+    cursor.insert(last.to_string(), value);
 }
 
 /// Merge `over` into `base`, `over` winning per leaf: the rendered tree wins

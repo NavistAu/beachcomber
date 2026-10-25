@@ -519,8 +519,18 @@ async fn names_that_spell_a_prototype_or_nothing_are_not_provider_names() {
             "invalid provider name 'env' in [client.providers]: 'env' is reserved: \
              env.X is the caller's environment",
         ),
-        ("client", "", "empty provider name in [client.providers]"),
-        ("daemon", "", "empty provider name in [daemon.providers]"),
+        (
+            "client",
+            "",
+            "invalid provider name '' in [client.providers]: a name is non-empty, holds no ':', \
+             '.', '[', ']' or '*', and does not start with '/', '~' or '<'",
+        ),
+        (
+            "daemon",
+            "",
+            "invalid provider name '' in [daemon.providers]: a name is non-empty, holds no ':', \
+             '.', '[', ']' or '*', and does not start with '/', '~' or '<'",
+        ),
     ] {
         let e = Env::new(&format!("[{root}.providers.\"{name}\"]\n"), &[]);
         refuses_to_start(&e, "config.toml", msg).await;
@@ -531,14 +541,14 @@ async fn names_that_spell_a_prototype_or_nothing_are_not_provider_names() {
 /// reads as an address and never looks like a directory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_name_the_key_grammar_cannot_head_is_not_a_provider_name() {
-    for name in ["a[b", "a]b", "/abs", "~home"] {
+    for name in ["a[b", "a]b", "/abs", "~home", "<x>", "a*b"] {
         let e = Env::new(&format!("[client.providers.\"{name}\"]\n"), &[]);
         refuses_to_start(
             &e,
             "config.toml",
             &format!(
-                "invalid provider name '{name}' in [client.providers]: a name holds no ':', '.', \
-                 '[' or ']', and does not start with '/' or '~'"
+                "invalid provider name '{name}' in [client.providers]: a name is non-empty, holds \
+                 no ':', '.', '[', ']' or '*', and does not start with '/', '~' or '<'"
             ),
         )
         .await;

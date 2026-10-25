@@ -574,4 +574,72 @@ result."c.d" = "{{ data }}"
             "one key for the dotted name: {resp:#}"
         );
     }
+
+    /// A negative index counts from the end, in a key as in `pluck`: the two
+    /// read one grammar, so a path one accepts the other does too.
+    #[test]
+    fn a_negative_index_reads_from_the_end_in_get_and_in_pluck() {
+        let d = TestDaemon::spawn();
+        let cwd = project(&d);
+        put(&d, &cwd, "p", r#"{"l":[1,2,3]}"#);
+
+        assert_eq!(get(&d, &cwd, &["p.l[-1]"]), "3");
+        assert_eq!(get(&d, &cwd, &["p.l.-3"]), "1");
+        assert_eq!(get(&d, &cwd, &["p.l[-4]"]), "");
+
+        let eval = |src: &str| {
+            let out = d.comb(&cwd).args(["eval", src]).output().unwrap();
+            (
+                out.status.code(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            )
+        };
+        assert_eq!(eval("{{ comb.p.l | pluck('[-1]') }}").1, "3");
+        let (code, _, err) = eval("{{ comb.p.l | pluck('[01]') }}");
+        assert_eq!(
+            code,
+            Some(2),
+            "a key comb get refuses, pluck refuses: {err}"
+        );
+        assert!(err.contains("pluck()"), "{err}");
+    }
+
+    /// The `:cache` facet answers every leaf of a node, a leaf whose name
+    /// holds a `.` included.
+    #[test]
+    fn the_cache_facet_answers_a_leaf_whose_name_holds_a_dot() {
+        let d = TestDaemon::spawn();
+        let cwd = project(&d);
+        put(&d, &cwd, "p", r#"{"a.b":5,"o":{"x":1}}"#);
+
+        let out = d
+            .comb(&cwd)
+            .args(["get", "-f", "json", "--path"])
+            .arg(&cwd)
+            .arg("p:cache")
+            .assert()
+            .success();
+        let tree: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+        assert_eq!(tree["a.b"]["source"], "put", "{tree:#}");
+        assert_eq!(tree["o"]["x"]["source"], "put", "{tree:#}");
+    }
+
+    /// `put` names a provider by the rule configuration does.
+    #[test]
+    fn put_refuses_the_names_config_refuses() {
+        let d = TestDaemon::spawn();
+        let cwd = project(&d);
+        for head in ["<x>", "a*b"] {
+            d.comb(&cwd)
+                .args(["put", &format!("{head}.v"), "1"])
+                .assert()
+                .code(2)
+                .stderr(predicates::str::contains(format!(
+                    "invalid provider name '{head}'"
+                )));
+        }
+        put(&d, &cwd, "a-b", r#"{"v":1}"#);
+        assert_eq!(get(&d, &cwd, &["a-b.v"]), "1");
+    }
 }

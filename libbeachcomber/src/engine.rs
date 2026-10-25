@@ -227,62 +227,23 @@ fn dirname(path: MjValue) -> Result<MjValue, Error> {
     Ok(MjValue::from(dir))
 }
 
-enum Step {
-    Key(String),
-    Index(i64),
-}
-
-/// Parse a pluck path: names joined by `.`, `[n]` for a list index, `["k.y"]`
-/// for a key holding a dot.
-fn parse_path(path: &str) -> Result<Vec<Step>, Error> {
-    let bad = || op_error(format!("pluck(): malformed path '{path}'"));
-    let mut steps = Vec::new();
-    let mut rest = path;
-    let mut first = true;
-    while !rest.is_empty() {
-        if let Some(inner) = rest.strip_prefix('[') {
-            let (step, after) =
-                if let Some(q) = inner.chars().next().filter(|c| *c == '"' || *c == '\'') {
-                    let body = &inner[1..];
-                    let end = body.find(q).ok_or_else(bad)?;
-                    let after = body[end + 1..].strip_prefix(']').ok_or_else(bad)?;
-                    (Step::Key(body[..end].to_string()), after)
-                } else {
-                    let end = inner.find(']').ok_or_else(bad)?;
-                    let n = inner[..end].trim().parse::<i64>().map_err(|_| bad())?;
-                    (Step::Index(n), &inner[end + 1..])
-                };
-            steps.push(step);
-            rest = after;
-        } else {
-            if !first {
-                rest = rest.strip_prefix('.').ok_or_else(bad)?;
-            }
-            let end = rest.find(['.', '[']).unwrap_or(rest.len());
-            if end == 0 {
-                return Err(bad());
-            }
-            steps.push(Step::Key(rest[..end].to_string()));
-            rest = &rest[end..];
-        }
-        first = false;
-    }
-    Ok(steps)
-}
-
-/// `v | pluck(path)`: deep get, `none` on any miss.
+/// `v | pluck(path)`: deep get, `none` on any miss. `path` is an address
+/// in the key grammar ([`crate::key`]), the one `comb get` reads: names
+/// joined by `.`, `[n]` for an index (negative from the end), `['k.y']` for a
+/// name holding a dot. A path the grammar cannot read is an error.
 fn pluck(value: MjValue, path: String) -> Result<MjValue, Error> {
+    let segments = crate::key::parse_address(&path)
+        .ok_or_else(|| op_error(format!("pluck(): malformed path '{path}'")))?;
     let mut cur = value;
-    for step in parse_path(&path)? {
-        cur = match (step, cur.kind()) {
-            (Step::Key(k), ValueKind::Map) => cur.get_attr(&k)?,
-            (Step::Index(n), ValueKind::Seq) => {
-                let len = cur.len().unwrap_or(0) as i64;
-                let i = if n < 0 { len + n } else { n };
-                if i < 0 || i >= len {
-                    return Ok(none());
+    for segment in segments {
+        cur = match cur.kind() {
+            ValueKind::Map => cur.get_attr(&segment)?,
+            ValueKind::Seq => {
+                let len = cur.len().unwrap_or(0);
+                match crate::key::array_index(&segment, len).filter(|i| *i < len) {
+                    Some(i) => cur.get_item_by_index(i)?,
+                    None => return Ok(none()),
                 }
-                cur.get_item_by_index(i as usize)?
             }
             _ => return Ok(none()),
         };
@@ -854,8 +815,15 @@ mod tests {
         assert_eq!(p("node[5]"), "none");
         assert_eq!(p("a[0]"), "none");
         assert_eq!(p("node.version"), "none");
-        let err = eval(&format!("({data}) | pluck('a[')")).unwrap_err();
-        assert!(err.contains("pluck()"), "unexpected error: {err}");
+        assert_eq!(
+            p("node.-1.version"),
+            "20.0.0",
+            "an index is .n as well as [n]"
+        );
+        for malformed in ["a[", "node[01]", "node[-0]", "a..b"] {
+            let err = eval(&format!("({data}) | pluck('{malformed}')")).unwrap_err();
+            assert!(err.contains("pluck()"), "{malformed}: {err}");
+        }
     }
 
     #[test]

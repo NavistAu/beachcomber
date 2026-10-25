@@ -73,7 +73,7 @@ A key is jinja's own address syntax, so a key reads the same here as in a templa
 | Spelling | Example | Notes |
 |---|---|---|
 | `.seg` | `git.branch`, `mise.cargo:cargo-nextest`, `mise.npm:@scope/pkg` | Any characters but `.`, `[` and `]` — a colon below the provider is just a character |
-| `[n]` | `p.list[0]` | An array index; the same as `p.list.0` |
+| `[n]` | `p.list[0]`, `p.list[-1]` | An array index; the same as `p.list.0`. A negative index counts from the end, as in jinja |
 | `['…']` / `["…"]` | `'mise["go:golang.org/x/tools/gopls"]'` | A quoted segment, for a name holding `.`, `[` or `]`; a backslash escapes only the quote and the backslash |
 
 Brackets are the one quoting form; quote the whole key for the shell (`comb g 'p["a.b"]'`). Every address comb prints — `comb g` text lines, the `comb s` FIELD column, error messages — is in canonical form and can be typed back as a key: a segment that needs quoting prints as `['…']`, as in `['go:golang.org/x/tools/gopls']=0.16.0`.

@@ -1420,13 +1420,7 @@ fn cache_facet_node(
     leaf: &dyn Fn(&str) -> Option<serde_json::Value>,
 ) -> Option<serde_json::Value> {
     use crate::provider::Value;
-    let child = |key: &str| {
-        if tail.is_empty() {
-            key.to_string()
-        } else {
-            format!("{tail}.{key}")
-        }
-    };
+    let child = |key: &str| libbeachcomber::key::push(tail, key);
     match (value, template) {
         (_, Some(serde_json::Value::Object(group))) => {
             let data = match value {
@@ -1869,7 +1863,7 @@ async fn handle_request(
                 crate::query::demanded_source_names(registry, provider_name, &plan.demand);
             let addressed = match &plan.target {
                 KeyParse::Provider(p) => p.clone(),
-                KeyParse::Field(p, f) => format!("{p}.{f}"),
+                KeyParse::Field(p, f) => libbeachcomber::key::join(p, f),
             };
             if registry.is_disabled(provider_name) {
                 return Response::error(format!("nothing to refresh: {provider_name} is disabled"));
