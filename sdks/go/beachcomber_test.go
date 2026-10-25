@@ -181,6 +181,26 @@ func TestClient_Refresh_RefusalIsTheDaemonsWords(t *testing.T) {
 	}
 }
 
+func TestClient_StatusRowSaysWhenItPollsNext(t *testing.T) {
+	c := requireClient(t)
+	if err := c.Put("statusttl", map[string]interface{}{"x": float64(1)}, "1m", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	rows, err := c.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	for _, r := range rows {
+		if r.Provider == "statusttl" {
+			if r.NextPollInSecs == nil {
+				t.Errorf("a ttl row says when it polls next: %+v", r)
+			}
+			return
+		}
+	}
+	t.Errorf("statusttl not found in Status() rows: %+v", rows)
+}
+
 func TestClient_Status(t *testing.T) {
 	c := requireClient(t)
 	if err := c.Put("statusprobe", map[string]interface{}{"x": float64(1)}, "", ""); err != nil {

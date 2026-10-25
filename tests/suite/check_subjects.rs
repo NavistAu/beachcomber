@@ -44,8 +44,11 @@ async fn introspect_daemon_returns_expected_fields() {
         data.get("socket_path").and_then(|v| v.as_str()).is_some(),
         "socket_path missing or not a string"
     );
-    // config_path may be null but must be present
-    assert!(data.get("config_path").is_some(), "config_path key absent");
+    // config_path is absent when no file was loaded, as every absent field is.
+    assert!(
+        data.get("config_path").is_none_or(|v| v.is_string()),
+        "config_path is a path or absent: {data}"
+    );
     assert!(
         data.get("requests_total")
             .and_then(|v| v.as_u64())
@@ -692,8 +695,9 @@ fn check_daemon_reports_watch_backend() {
 // --- Reaper health surfacing (canon singleton.md invariant 13) ---
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn introspect_daemon_reaper_null_when_not_attached() {
-    // Embedded/test servers never attach reaper health; the field is null.
+async fn introspect_daemon_reaper_absent_when_not_attached() {
+    // Embedded/test servers never attach reaper health; the field is
+    // omitted, as every absent field is.
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client
@@ -702,8 +706,8 @@ async fn introspect_daemon_reaper_null_when_not_attached() {
     assert!(resp.ok);
     let data = resp.data.expect("payload");
     assert!(
-        data.get("reaper").expect("reaper key present").is_null(),
-        "reaper must be null when health is not attached"
+        data.get("reaper").is_none(),
+        "reaper must be absent when health is not attached: {data}"
     );
 
     handle.abort();

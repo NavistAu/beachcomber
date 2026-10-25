@@ -317,18 +317,9 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
         }
         "introspect" => {
             let subject_name = descriptor.args["subject"].as_str().unwrap_or("daemon");
-            let subject = match subject_name {
-                "daemon" => IntrospectSubject::Daemon,
-                "providers" => IntrospectSubject::Providers,
-                "config" => IntrospectSubject::Config,
-                "cache" => IntrospectSubject::Cache,
-                "lifecycle" => IntrospectSubject::Lifecycle,
-                "watches" => IntrospectSubject::Watches,
-                "timers" => IntrospectSubject::Timers,
-                "demand" => IntrospectSubject::Demand,
-                "procs" => IntrospectSubject::Procs,
-                other => panic!("unknown introspect subject in fixture: {other}"),
-            };
+            let subject: IntrospectSubject = subject_name
+                .parse()
+                .unwrap_or_else(|e| panic!("in fixture: {e}"));
             let dur = descriptor.args["duration_secs"].as_u64();
             match client.introspect(subject, dur) {
                 Ok(IntrospectResponse::Daemon(health)) => CanonicalResponse {

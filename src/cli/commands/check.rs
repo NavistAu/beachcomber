@@ -11,10 +11,10 @@
 //! one module and avoids a cross-binary-to-library dependency inversion.
 
 use crate::cli::exit::Outcome;
-use crate::cli::introspect_types::{DaemonIntrospect, Verdict};
 use crate::cli::style::Style;
 use crate::config::Config;
 use clap::Subcommand;
+use libbeachcomber::protocol::{DaemonHealth, Verdict};
 use std::time::Duration;
 
 /// `check procs --duration`: the one duration grammar, in whole seconds of at
@@ -371,11 +371,11 @@ fn render_subject(
     // Build per-subject header and detail lines before verdict lines.
     match subject {
         "daemon" => {
-            // Parse into DaemonIntrospect once so all field accesses are typed.
+            // Parse into DaemonHealth once so all field accesses are typed.
             // This prevents the class of bug (e.g. `comb kill` reading a pid
             // out of a Status response that changed shape) by failing loudly at
             // the serde boundary rather than silently returning a wrong default.
-            match serde_json::from_value::<DaemonIntrospect>(payload.clone()) {
+            match serde_json::from_value::<DaemonHealth>(payload.clone()) {
                 Ok(d) => {
                     let uptime_fmt = secs(d.uptime_secs);
                     let (vlines, vworst) = render_typed_verdicts(&d.verdicts);

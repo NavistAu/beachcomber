@@ -485,8 +485,12 @@ present when the row's lifecycle discriminator is known: `{"kind":
 otherwise; omitted when unknown. A handful of further optional fields
 (`poll_interval_secs`, `poll_count`, `fsevents_reinstate`,
 `polls_elapsed`, `next_poll_in_secs`, `failure`) are omitted here and carry
-diagnostic detail `comb status` renders as columns; see `src/cache.rs`'s
-`CacheRow` for the authoritative field list.
+diagnostic detail `comb status` renders as columns; see
+`libbeachcomber::protocol::CacheRow` for the authoritative field list. Every
+request, response and payload on this page is a type in
+`libbeachcomber::protocol`: the daemon writes them, and `bc_status` and
+`bc_introspect` hand them to the SDKs as written, a field with no value
+omitted.
 
 **Note:** `data` is an array of cache rows, NOT a daemon-health object.
 Daemon-health information lives on `Introspect{daemon}`. This was a breaking
@@ -564,12 +568,17 @@ Subjects: `daemon`, `providers`, `config`, `cache`, `lifecycle`, `watches`,
     "in_flight": 0,
     "active_watchers": 3,
     "cache_entries": 42,
+    "watch_backend": "native",
+    "reaper": {"armed": true, "visibility": "system-wide", "sweeps": 12, "reaped": 0, "kill_denied": 0},
     "verdicts": [{"level": "PASS", "message": "daemon responsive"}]
   },
   "age_ms": 0,
   "stale": false
 }
 ```
+
+`config_path` is omitted when no configuration file was loaded, and `reaper`
+on an embedded server that has none.
 
 `active_watchers` counts open `Watch` connections, not distinct watched keys
 or clients: a resolved `comb watch` opens one `Watch` subscription per

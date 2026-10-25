@@ -56,6 +56,7 @@ type CacheRow struct {
 	PollCount         *uint32
 	FseventsReinstate *bool
 	PollsElapsed      *uint64
+	NextPollInSecs    *uint64                // seconds until the next scheduled poll; nil when it has none
 	Failure           map[string]interface{} // e.g. {"consecutive_failures":3}
 	Source            string                 // owning source name within the provider; empty when not set
 }

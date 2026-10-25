@@ -251,6 +251,10 @@ func parseCacheRowsFromData(raw json.RawMessage) ([]CacheRow, error) {
 			pInt := uint64(p)
 			row.PollsElapsed = &pInt
 		}
+		if p, ok := m["next_poll_in_secs"].(float64); ok {
+			pInt := uint64(p)
+			row.NextPollInSecs = &pInt
+		}
 		if f, ok := m["failure"].(map[string]interface{}); ok {
 			row.Failure = f
 		}

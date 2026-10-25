@@ -94,6 +94,12 @@ def test_status_returns_cache_rows(client: Client) -> None:
     assert any(r.provider == "widget5" for r in rows)
 
 
+def test_a_status_row_says_when_it_polls_next(client: Client) -> None:
+    client.put("widget5ttl", {"v": 1}, ttl="1m")
+    row = next(r for r in client.status() if r.provider == "widget5ttl")
+    assert isinstance(row.next_poll_in_secs, int)
+
+
 def test_hello_reports_versions(client: Client) -> None:
     info = client.hello()
     assert info.protocol_version

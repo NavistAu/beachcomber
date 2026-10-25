@@ -53,7 +53,6 @@ fn every_client_op_that_waits_too_long_is_a_timeout() {
     );
     assert_timeout("refresh", client.refresh("p", None));
     assert_timeout("status", client.status());
-    assert_timeout("layers", client.layers("p", None));
     assert_timeout(
         "introspect",
         client.introspect(IntrospectSubject::Daemon, None),

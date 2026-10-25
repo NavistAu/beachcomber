@@ -2293,99 +2293,87 @@ fn handle_introspect_daemon(
     reaper: Option<&crate::singleton::ReaperHealth>,
     loaded_config: Option<&std::path::Path>,
 ) -> Response {
-    let config_path = loaded_config
-        .map(|p| serde_json::Value::String(p.to_string_lossy().into_owned()))
-        .unwrap_or(serde_json::Value::Null);
+    use crate::protocol::{DaemonHealth, ReaperStatus, Verdict};
+    let verdict = |level: &str, message: String| Verdict {
+        level: level.to_string(),
+        message,
+    };
 
     let uptime_secs = start_instant.elapsed().as_secs();
 
-    let mut verdicts = vec![serde_json::json!({"level": "PASS", "message": "daemon responsive"})];
+    let mut verdicts = vec![verdict("PASS", "daemon responsive".to_string())];
 
     if in_flight_count > 50 {
-        verdicts.push(serde_json::json!({
-            "level": "WARN",
-            "message": format!("{in_flight_count} in-flight requests (threshold 50)")
-        }));
+        verdicts.push(verdict(
+            "WARN",
+            format!("{in_flight_count} in-flight requests (threshold 50)"),
+        ));
     } else {
-        verdicts.push(serde_json::json!({
-            "level": "PASS",
-            "message": format!("in_flight={in_flight_count}")
-        }));
+        verdicts.push(verdict("PASS", format!("in_flight={in_flight_count}")));
     }
 
     // Canon provider_source.md invariant 16: watch degradation is observable.
     if watch_backend == "native" {
-        verdicts.push(serde_json::json!({
-            "level": "PASS",
-            "message": "watch backend: native fs events"
-        }));
+        verdicts.push(verdict(
+            "PASS",
+            "watch backend: native fs events".to_string(),
+        ));
     } else {
-        verdicts.push(serde_json::json!({
-            "level": "WARN",
-            "message": format!(
+        verdicts.push(verdict("WARN", format!(
                 "watch backend: {watch_backend} — kernel fs events undelivered; watch invalidation degraded to polling"
-            )
-        }));
+            )));
     }
 
     // Canon singleton.md invariant 13: reaper capability is never silently
     // degraded. `reaper` is None for embedded/test servers (field omitted).
-    let reaper_json = reaper.map(|health| {
+    let reaper = reaper.map(|health| {
         use std::sync::atomic::Ordering::Relaxed;
         let armed = health.armed.load(Relaxed);
         let visibility_ok = health.visibility_ok.load(Relaxed);
         let kill_denied = health.kill_denied_total.load(Relaxed);
 
         if !armed {
-            verdicts.push(serde_json::json!({
-                "level": "PASS",
-                "message": "reaper: not armed (side daemon)"
-            }));
+            verdicts.push(verdict("PASS", "reaper: not armed (side daemon)".to_string()));
         } else if visibility_ok {
-            verdicts.push(serde_json::json!({
-                "level": "PASS",
-                "message": "reaper: armed, system-wide process visibility"
-            }));
+            verdicts.push(verdict("PASS", "reaper: armed, system-wide process visibility".to_string()));
         } else {
-            verdicts.push(serde_json::json!({
-                "level": "WARN",
-                "message": "reaper visibility degraded: PID 1 not visible in process enumeration — this daemon runs confined (sandbox-spawned?) and cannot police daemons outside its confinement; restart it from an unconfined shell"
-            }));
+            verdicts.push(verdict("WARN", "reaper visibility degraded: PID 1 not visible in process enumeration — this daemon runs confined (sandbox-spawned?) and cannot police daemons outside its confinement; restart it from an unconfined shell".to_string()));
         }
         if armed && kill_denied > 0 {
-            verdicts.push(serde_json::json!({
-                "level": "WARN",
-                "message": format!(
+            verdicts.push(verdict("WARN", format!(
                     "reaper: {kill_denied} kill attempt(s) denied by the OS — orphans visible but unsignalable"
-                )
-            }));
+                )));
         }
 
-        serde_json::json!({
-            "armed": armed,
-            "visibility": if visibility_ok { "system-wide" } else { "confined" },
-            "sweeps": health.sweeps_total.load(Relaxed),
-            "reaped": health.reaped_total.load(Relaxed),
-            "kill_denied": kill_denied,
-        })
+        ReaperStatus {
+            armed,
+            visibility: if visibility_ok { "system-wide" } else { "confined" }.to_string(),
+            sweeps: health.sweeps_total.load(Relaxed),
+            reaped: health.reaped_total.load(Relaxed),
+            kill_denied,
+        }
     });
 
-    let data = serde_json::json!({
-        "pid": std::process::id(),
-        "version": env!("BEACHCOMBER_VERSION"),
-        "uptime_secs": uptime_secs,
-        "socket_path": socket_path.to_string_lossy().as_ref(),
-        "config_path": config_path,
-        "requests_total": requests_total.load(Ordering::Relaxed),
-        "in_flight": in_flight_count,
-        "active_watchers": active_watchers,
-        "cache_entries": cache_entries,
-        "watch_backend": watch_backend,
-        "reaper": reaper_json,
-        "verdicts": verdicts,
-    });
+    let health = DaemonHealth {
+        pid: i64::from(std::process::id()),
+        version: env!("BEACHCOMBER_VERSION").to_string(),
+        uptime_secs,
+        socket_path: socket_path.to_string_lossy().into_owned(),
+        config_path: loaded_config.map(|p| p.to_string_lossy().into_owned()),
+        requests_total: requests_total.load(Ordering::Relaxed),
+        in_flight: in_flight_count,
+        active_watchers,
+        cache_entries,
+        watch_backend: watch_backend.to_string(),
+        reaper,
+        verdicts,
+    };
 
-    Response::ok(data, 0, false)
+    Response::ok(
+        serde_json::to_value(health).expect("daemon health serialises"),
+        0,
+        false,
+    )
 }
 
 fn summarize_invalidation(strategy: &crate::provider::InvalidationStrategy) -> String {

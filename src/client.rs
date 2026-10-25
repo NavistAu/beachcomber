@@ -76,110 +76,13 @@ fn unit_to_response(r: Result<(), CombError>) -> std::io::Result<Response> {
     to_response(r, |_| Response::miss())
 }
 
-fn row_kind_from_lib(k: libbeachcomber::RowKind) -> crate::cache::RowKind {
-    match k {
-        libbeachcomber::RowKind::Lifecycle {
-            decay,
-            depth,
-            watches_files,
-        } => crate::cache::RowKind::Lifecycle {
-            decay,
-            depth,
-            watches_files,
-        },
-        libbeachcomber::RowKind::Once => crate::cache::RowKind::Once,
-        libbeachcomber::RowKind::Static => crate::cache::RowKind::Static,
-        libbeachcomber::RowKind::Transient => crate::cache::RowKind::Transient,
-    }
-}
-
-fn failure_from_lib(f: libbeachcomber::FailureSnapshot) -> crate::cache::FailureSnapshot {
-    crate::cache::FailureSnapshot {
-        consecutive_failures: f.consecutive_failures,
-        suppressed_until_unix_ms: f.suppressed_until_unix_ms,
-    }
-}
-
-/// Map `libbeachcomber`'s wire-mirroring `CacheRow` onto this crate's own
-/// `CacheRow` (used throughout `cli::status_format`). `field`/`source` are
-/// non-optional here because the daemon always sets them; `libbeachcomber`
-/// carries them as `Option` since it has no such guarantee about its wire
-/// input.
-fn cache_row_from_lib(r: libbeachcomber::CacheRow) -> crate::cache::CacheRow {
-    crate::cache::CacheRow {
-        shadowed: false,
-        provider: r.provider,
-        path: r.path,
-        source: r.source.unwrap_or_default(),
-        field: r.field.unwrap_or_default(),
-        value: r.value,
-        age_ms: Some(r.age_ms as u128),
-        stale: r.stale,
-        kind: r.kind.map(row_kind_from_lib),
-        poll_interval_secs: r.poll_interval_secs,
-        poll_count: r.poll_count,
-        fsevents_reinstate: r.fsevents_reinstate,
-        polls_elapsed: r.polls_elapsed,
-        next_poll_in_secs: r.next_poll_in_secs,
-        failure: r.failure.map(failure_from_lib),
-    }
-}
-
-/// Map the wire subject name (as used by `cli/commands/check.rs` and
-/// `cli/commands/status.rs`) onto `libbeachcomber`'s typed `IntrospectSubject`.
-fn subject_from_str(s: &str) -> Option<IntrospectSubject> {
-    Some(match s {
-        "daemon" => IntrospectSubject::Daemon,
-        "providers" => IntrospectSubject::Providers,
-        "config" => IntrospectSubject::Config,
-        "cache" => IntrospectSubject::Cache,
-        "lifecycle" => IntrospectSubject::Lifecycle,
-        "watches" => IntrospectSubject::Watches,
-        "timers" => IntrospectSubject::Timers,
-        "demand" => IntrospectSubject::Demand,
-        "procs" => IntrospectSubject::Procs,
-        _ => return None,
-    })
-}
-
-/// Rebuild the wire-format JSON payload for a `Daemon` introspect response
-/// from its typed shape, so the existing raw-JSON-payload callers
-/// (`cli/commands/check.rs`, `cli/commands/status.rs`) don't need to change
-/// their field access.
-fn daemon_health_to_json(h: &libbeachcomber::DaemonHealth) -> serde_json::Value {
-    let reaper = h.reaper.as_ref().map(|r| {
-        serde_json::json!({
-            "armed": r.armed,
-            "visibility": r.visibility,
-            "sweeps": r.sweeps,
-            "reaped": r.reaped,
-            "kill_denied": r.kill_denied,
-        })
-    });
-    let verdicts: Vec<serde_json::Value> = h
-        .verdicts
-        .iter()
-        .map(|v| serde_json::json!({"level": v.level, "message": v.message}))
-        .collect();
-    serde_json::json!({
-        "pid": h.pid,
-        "version": h.version,
-        "uptime_secs": h.uptime_secs,
-        "socket_path": h.socket_path,
-        "config_path": h.config_path,
-        "requests_total": h.requests_total,
-        "in_flight": h.in_flight,
-        "active_watchers": h.active_watchers,
-        "cache_entries": h.cache_entries,
-        "watch_backend": h.watch_backend,
-        "reaper": reaper,
-        "verdicts": verdicts,
-    })
-}
-
 fn introspect_to_response(r: Result<IntrospectResponse, CombError>) -> std::io::Result<Response> {
     to_response(r, |v| match v {
-        IntrospectResponse::Daemon(h) => Response::ok(daemon_health_to_json(&h), 0, false),
+        IntrospectResponse::Daemon(h) => Response::ok(
+            serde_json::to_value(h).expect("daemon health serialises"),
+            0,
+            false,
+        ),
         IntrospectResponse::Other(value) => Response::ok(value, 0, false),
     })
 }
@@ -230,36 +133,28 @@ impl Client {
         unit_to_response(self.inner().refresh(key, path))
     }
 
-    /// List all cache entries currently held by the daemon, mapped onto
-    /// this crate's own `CacheRow` (used by `cli::status_format`).
+    /// List all cache entries currently held by the daemon.
     pub fn status(&self) -> std::io::Result<Vec<crate::cache::CacheRow>> {
-        self.inner()
-            .status()
-            .map(|rows| rows.into_iter().map(cache_row_from_lib).collect())
-            .map_err(comb_error_to_io)
+        self.inner().status().map_err(comb_error_to_io)
     }
 
     /// Run an introspect query. `subject` is the wire subject name
     /// (`"daemon"`, `"providers"`, `"config"`, ...); `duration_secs` is
     /// only consulted by the `procs` subject.
     ///
-    /// Returns a `Response` shaped like the pre-adapter wire response, so
-    /// the existing raw-JSON-payload callers (`cli/commands/check.rs`,
-    /// `cli/commands/status.rs`) keep their field access unchanged: the
-    /// `daemon` subject is rebuilt from its typed shape (see
-    /// `daemon_health_to_json`), every other subject's
-    /// `IntrospectResponse::Other` payload passes through as-is.
+    /// Returns a `Response` shaped like the wire response, so the
+    /// raw-JSON-payload callers (`cli/commands/check.rs`,
+    /// `cli/commands/status.rs`) keep their field access: the `daemon`
+    /// subject is its typed payload serialised as the wire carries it, every
+    /// other subject's payload passes through as-is.
     pub fn introspect(
         &self,
         subject: &str,
         duration_secs: Option<u64>,
     ) -> std::io::Result<Response> {
-        let subject = subject_from_str(subject).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("unknown introspect subject: {subject}"),
-            )
-        })?;
+        let subject: IntrospectSubject = subject
+            .parse()
+            .map_err(|e: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         introspect_to_response(self.inner().introspect(subject, duration_secs))
     }
 }

@@ -54,6 +54,7 @@ module Beachcomber
         poll_count: row['poll_count'],
         fsevents_reinstate: row['fsevents_reinstate'],
         polls_elapsed: row['polls_elapsed'],
+        next_poll_in_secs: row['next_poll_in_secs'],
         failure: row['failure'],
         source: row['source'],
       )

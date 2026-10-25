@@ -119,6 +119,7 @@ class TestOps < Minitest::Test
         in_flight: 2,
         active_watchers: 1,
         cache_entries: 42,
+        watch_backend: 'native',
         verdicts: [{ level: 'ok', message: 'all good' }],
       }
     }.to_json
@@ -170,8 +171,8 @@ class TestOps < Minitest::Test
     payload = {
       ok: true,
       data: [
-        { provider: 'git', field: 'branch', path: '/repo', value: 'main', age_ms: 100, stale: false },
-        { provider: 'git', field: 'dirty',  path: '/repo', value: true,   age_ms: 200, stale: true  },
+        { provider: 'git', field: 'branch', path: '/repo', source: 'source(head)', value: 'main', age_ms: 100, stale: false },
+        { provider: 'git', field: 'dirty',  path: '/repo', source: 'source(dirty)', value: true, age_ms: 200, stale: true },
       ]
     }.to_json
     @server.enqueue(payload)
@@ -363,7 +364,7 @@ class TestOps < Minitest::Test
   end
 
   def test_session_status
-    @server.enqueue('{"ok":true,"data":[{"provider":"git","field":"branch","path":null,"value":"main","age_ms":50,"stale":false}]}')
+    @server.enqueue('{"ok":true,"data":[{"provider":"git","field":"branch","path":null,"source":"source(head)","value":"main","age_ms":50,"stale":false}]}')
     rows = nil
     @client.session do |s|
       rows = s.status
@@ -394,6 +395,7 @@ class TestOps < Minitest::Test
           provider: 'git',
           field: 'branch',
           path: '/repo',
+          source: 'source(head)',
           value: 'main',
           age_ms: 100,
           stale: false,
@@ -401,6 +403,7 @@ class TestOps < Minitest::Test
           poll_interval_secs: 30,
           poll_count: 3,
           fsevents_reinstate: false,
+          next_poll_in_secs: 12,
         }
       ]
     }.to_json
@@ -412,6 +415,7 @@ class TestOps < Minitest::Test
     assert git.poll_interval_secs > 0
     assert git.poll_count > 0
     refute_nil git.fsevents_reinstate
+    assert_equal 12, git.next_poll_in_secs
   end
 
   # --- IntrospectSubject constants ---

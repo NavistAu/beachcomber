@@ -28,6 +28,7 @@ pub mod filters;
 pub mod key;
 mod lazy;
 pub mod path;
+pub mod protocol;
 pub mod render;
 pub mod resolve;
 pub mod socket;
@@ -40,6 +41,12 @@ pub mod watch;
 /// `BEACHCOMBER_VERSION` (see `build-common/version.rs`) so the two always
 /// report the same string.
 pub const VERSION: &str = env!("BEACHCOMBER_VERSION");
+
+pub use protocol::{
+    CacheRow, DaemonHealth, FailureSnapshot, HelloInfo, IntrospectSubject, ReaperStatus, RowKind,
+    Verdict,
+};
+use protocol::{Request, Response};
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -252,13 +259,6 @@ impl CombData {
     }
 }
 
-/// Protocol and build version information returned by the daemon on `hello`.
-#[derive(Debug, Clone)]
-pub struct HelloInfo {
-    pub protocol_version: String,
-    pub daemon_version: String,
-}
-
 /// Reported when this client's build identity differs from the daemon's,
 /// discovered via `hello` on the connection's first use. Not fatal — a
 /// running older daemon is a normal state mid-upgrade — but callers can
@@ -287,186 +287,6 @@ fn detect_skew(hello: &HelloInfo) -> Option<VersionSkew> {
             ours: VERSION.to_string(),
             theirs: hello.daemon_version.clone(),
         })
-    }
-}
-
-/// Discriminator used by the status formatter to choose rendering strategy.
-/// Mirrors `beachcomber::cache::RowKind` for the wire format.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RowKind {
-    Lifecycle {
-        decay: u8,
-        depth: u8,
-        watches_files: bool,
-    },
-    Once,
-    Static,
-    Transient,
-}
-
-/// Failure state for a cache entry embedded in status rows.
-/// Mirrors `beachcomber::cache::FailureSnapshot` for the wire format.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct FailureSnapshot {
-    pub consecutive_failures: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suppressed_until_unix_ms: Option<u64>,
-}
-
-/// One row of the daemon's cache as returned by the `status` op.
-#[derive(Debug, Clone)]
-pub struct CacheRow {
-    pub provider: String,
-    pub field: Option<String>,
-    pub path: Option<String>,
-    pub value: serde_json::Value,
-    pub age_ms: u64,
-    pub stale: bool,
-    /// Phase 2.7: lifecycle classification of this cache entry.
-    pub kind: Option<RowKind>,
-    /// Phase 2.7: how often the provider is polled, in seconds.
-    pub poll_interval_secs: Option<u64>,
-    /// Phase 2.7: number of polls before a demanded key decays.
-    pub poll_count: Option<u32>,
-    /// Phase 2.7: whether FSEvents will reinstate watching after a miss.
-    pub fsevents_reinstate: Option<bool>,
-    /// Number of polls that have fired in the current lifecycle step.
-    pub polls_elapsed: Option<u32>,
-    /// Seconds until this source's next scheduled poll.
-    pub next_poll_in_secs: Option<u64>,
-    /// Phase 2.7: failure state if the provider has been failing.
-    pub failure: Option<FailureSnapshot>,
-    /// Phase 5: source name within the provider that owns this field.
-    pub source: Option<String>,
-}
-
-impl CacheRow {
-    /// Parse a `CacheRow` from the daemon's wire-format JSON object.
-    /// Unknown fields are silently ignored.
-    pub fn from_wire(v: &serde_json::Value) -> Result<Self, CombError> {
-        let provider = v
-            .get("provider")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| CombError::ParseError("cache row missing provider".into()))?
-            .to_string();
-        let field = v
-            .get("field")
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string());
-        let path = v
-            .get("path")
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string());
-        let value = v.get("value").cloned().unwrap_or(serde_json::Value::Null);
-        let age_ms = v.get("age_ms").and_then(|x| x.as_u64()).unwrap_or(0);
-        let stale = v.get("stale").and_then(|x| x.as_bool()).unwrap_or(false);
-        let kind = v
-            .get("kind")
-            .and_then(|x| serde_json::from_value(x.clone()).ok());
-        let poll_interval_secs = v.get("poll_interval_secs").and_then(|x| x.as_u64());
-        let poll_count = v
-            .get("poll_count")
-            .and_then(|x| x.as_u64().map(|n| n as u32));
-        let fsevents_reinstate = v.get("fsevents_reinstate").and_then(|x| x.as_bool());
-        let polls_elapsed = v
-            .get("polls_elapsed")
-            .and_then(|x| x.as_u64().map(|n| n as u32));
-        let next_poll_in_secs = v.get("next_poll_in_secs").and_then(|x| x.as_u64());
-        let failure = v
-            .get("failure")
-            .and_then(|x| serde_json::from_value(x.clone()).ok());
-        let source = v
-            .get("source")
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string());
-        Ok(CacheRow {
-            provider,
-            field,
-            path,
-            value,
-            age_ms,
-            stale,
-            kind,
-            poll_interval_secs,
-            poll_count,
-            fsevents_reinstate,
-            polls_elapsed,
-            next_poll_in_secs,
-            failure,
-            source,
-        })
-    }
-
-    fn from_json(v: &serde_json::Value) -> Result<Self, CombError> {
-        Self::from_wire(v)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Verdict {
-    pub level: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct DaemonHealth {
-    pub pid: i64,
-    pub version: String,
-    pub uptime_secs: u64,
-    pub socket_path: String,
-    pub config_path: Option<String>,
-    pub requests_total: u64,
-    pub in_flight: u64,
-    pub active_watchers: u64,
-    pub cache_entries: u64,
-    /// "native", "polling", "disabled", or "unknown"; absent from pre-0.8 daemons.
-    pub watch_backend: Option<String>,
-    /// Reaper capability snapshot (canon `singleton.md` invariant 13).
-    /// `None` when reaper health isn't attached (embedded/test servers).
-    pub reaper: Option<ReaperStatus>,
-    pub verdicts: Vec<Verdict>,
-}
-
-/// Reaper capability snapshot embedded in `introspect{daemon}`.
-/// Mirrors the `reaper_json` shape built by `server.rs`.
-#[derive(Debug, Clone)]
-pub struct ReaperStatus {
-    pub armed: bool,
-    /// "system-wide" or "confined".
-    pub visibility: String,
-    pub sweeps: u64,
-    pub reaped: u64,
-    pub kill_denied: u64,
-}
-
-/// Introspect subjects. See `docs/protocol-spec.md` for shape details.
-#[derive(Debug, Clone, Copy)]
-pub enum IntrospectSubject {
-    Daemon,
-    Providers,
-    Config,
-    Cache,
-    Lifecycle,
-    Watches,
-    Timers,
-    Demand,
-    Procs,
-}
-
-impl IntrospectSubject {
-    fn wire_name(&self) -> &'static str {
-        match self {
-            Self::Daemon => "daemon",
-            Self::Providers => "providers",
-            Self::Config => "config",
-            Self::Cache => "cache",
-            Self::Lifecycle => "lifecycle",
-            Self::Watches => "watches",
-            Self::Timers => "timers",
-            Self::Demand => "demand",
-            Self::Procs => "procs",
-        }
     }
 }
 
@@ -521,16 +341,10 @@ impl WatchStream {
     /// reuses the same parsing instead of duplicating it.
     pub fn parse_line(line: &str) -> Result<WatchEvent, CombError> {
         let resp = envelope(line, None)?;
-        let data = match resp.get("data") {
-            Some(serde_json::Value::Null) | None => None,
-            Some(d) => Some(CombData::from_json(d.clone())),
-        };
-        let age_ms = resp.get("age_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-        let stale = resp.get("stale").and_then(|v| v.as_bool()).unwrap_or(false);
         Ok(WatchEvent {
-            data,
-            age_ms,
-            stale,
+            data: resp.data.map(CombData::from_json),
+            age_ms: resp.age_ms.unwrap_or(0) as u64,
+            stale: resp.stale.unwrap_or(false),
         })
     }
 
@@ -741,7 +555,7 @@ impl Client {
     /// *after* the caller's own exchange — never before it — so it is checked
     /// once per `Client`, not per op, and a probe failure leaves the skew
     /// unknown rather than failing the op.
-    fn call(&self, request: &serde_json::Value) -> Result<serde_json::Value, CombError> {
+    fn call(&self, request: &Request) -> Result<Response, CombError> {
         let mut conn = self.open()?;
         let line = conn.exchange(request)?;
         if self.version_skew.get().is_none() {
@@ -873,20 +687,7 @@ impl Client {
 
     /// List all cache entries currently held by the daemon.
     pub fn status(&self) -> Result<Vec<CacheRow>, CombError> {
-        parse_cache_rows(self.call(&status_request())?)
-    }
-
-    /// The layers a read of `key` from `path` consults, per leaf: a tree
-    /// shaped like the value with an ordered array of
-    /// `{label, facet?, path, value, age_ms, stale, answered?}` at each leaf
-    /// (a leaf key answers with its array). `None` is a miss. Warms nothing.
-    /// Used by `comb status --tree`; no SDK binds it.
-    pub fn layers(
-        &self,
-        key: &str,
-        path: Option<&str>,
-    ) -> Result<Option<serde_json::Value>, CombError> {
-        self.call(&layers_request(key, path)?).map(parse_layers)
+        parse_cache_rows(self.call(&Request::Status {})?)
     }
 
     /// Run an introspect query. `duration_secs` is only consulted by the
@@ -1046,15 +847,16 @@ struct Conn {
 
 impl Conn {
     /// Write one request line.
-    fn send(&mut self, request: &serde_json::Value) -> Result<(), CombError> {
+    fn send(&mut self, request: &Request) -> Result<(), CombError> {
+        let line = serde_json::to_string(request).expect("a request serialises");
         self.reader
             .get_mut()
-            .write_all(format!("{request}\n").as_bytes())?;
+            .write_all(format!("{line}\n").as_bytes())?;
         Ok(())
     }
 
     /// Send one request and read its one response line.
-    fn exchange(&mut self, request: &serde_json::Value) -> Result<String, CombError> {
+    fn exchange(&mut self, request: &Request) -> Result<String, CombError> {
         self.send(request)?;
         let mut line = String::new();
         self.reader.read_line(&mut line)?;
@@ -1063,10 +865,7 @@ impl Conn {
 
     /// The daemon's `hello`.
     fn hello(&mut self) -> Result<HelloInfo, CombError> {
-        parse_hello(envelope(
-            &self.exchange(&serde_json::json!({ "op": "hello" }))?,
-            None,
-        )?)
+        parse_hello(envelope(&self.exchange(&Request::Hello {})?, None)?)
     }
 
     /// The version skew a `hello` on this connection shows, if any; unknown
@@ -1113,7 +912,7 @@ impl Session {
     /// One request on this connection, answered: the reply's envelope. The
     /// first call probes for version skew after the caller's own exchange,
     /// as [`Client`]'s does, once per connection.
-    fn call(&mut self, request: &serde_json::Value) -> Result<serde_json::Value, CombError> {
+    fn call(&mut self, request: &Request) -> Result<Response, CombError> {
         let line = self.conn.exchange(request)?;
         if !self.skew_checked {
             self.skew_checked = true;
@@ -1231,10 +1030,14 @@ impl Session {
 
     /// List all cache entries currently held by the daemon.
     pub fn status(&mut self) -> Result<Vec<CacheRow>, CombError> {
-        parse_cache_rows(self.call(&status_request())?)
+        parse_cache_rows(self.call(&Request::Status {})?)
     }
 
-    /// [`Client::layers`] on this session's connection.
+    /// The layers a read of `key` from `path` consults, per leaf: a tree
+    /// shaped like the value with an ordered array of
+    /// `{label, facet?, path, value, age_ms, stale, answered?}` at each leaf
+    /// (a leaf key answers with its array). `None` is a miss. Warms nothing.
+    /// A diagnostic for `comb status --tree`; no SDK binds it.
     pub fn layers(
         &mut self,
         key: &str,
@@ -1269,26 +1072,20 @@ impl Session {
 
 // --- Internal helpers ---
 
-/// The `get` request every query sends: `path`, `force` and `wait` are
-/// present only when set, so the wire form is the same whichever of
-/// `get_with_flags` or `get_node` builds it, on either transport.
+/// The `get` request every query sends, whichever of `get_with_flags`,
+/// `get_node` or a [`resolve::Fetch`] builds it, on either transport.
 fn get_request(
     key: &str,
     path: Option<&str>,
     force: bool,
     wait: bool,
-) -> Result<serde_json::Value, CombError> {
-    let mut request = serde_json::json!({ "op": "get", "key": key });
-    if let Some(p) = wire_path(path)? {
-        request["path"] = serde_json::json!(p);
-    }
-    if force {
-        request["force"] = serde_json::json!(true);
-    }
-    if wait {
-        request["wait"] = serde_json::json!(true);
-    }
-    Ok(request)
+) -> Result<Request, CombError> {
+    Ok(Request::Get {
+        key: key.to_string(),
+        path: wire_path(path)?,
+        force,
+        wait,
+    })
 }
 
 fn put_request(
@@ -1296,93 +1093,41 @@ fn put_request(
     data: serde_json::Value,
     ttl: Option<&str>,
     path: Option<&str>,
-) -> Result<serde_json::Value, CombError> {
-    let mut request = serde_json::json!({ "op": "put", "key": key, "data": data });
-    if let Some(t) = ttl {
-        request["ttl"] = serde_json::json!(t);
-    }
-    if let Some(p) = wire_path(path)? {
-        request["path"] = serde_json::json!(p);
-    }
-    Ok(request)
+) -> Result<Request, CombError> {
+    Ok(Request::Put {
+        key: key.to_string(),
+        data,
+        ttl: ttl.map(str::to_string),
+        path: wire_path(path)?,
+    })
 }
 
-fn refresh_request(key: &str, path: Option<&str>) -> Result<serde_json::Value, CombError> {
-    let mut request = serde_json::json!({ "op": "refresh", "key": key });
-    if let Some(p) = wire_path(path)? {
-        request["path"] = serde_json::json!(p);
-    }
-    Ok(request)
+fn refresh_request(key: &str, path: Option<&str>) -> Result<Request, CombError> {
+    Ok(Request::Refresh {
+        key: key.to_string(),
+        path: wire_path(path)?,
+    })
 }
 
-fn watch_request(key: &str, path: Option<&str>) -> Result<serde_json::Value, CombError> {
-    let mut request = serde_json::json!({ "op": "watch", "key": key });
-    if let Some(p) = wire_path(path)? {
-        request["path"] = serde_json::json!(p);
-    }
-    Ok(request)
+fn watch_request(key: &str, path: Option<&str>) -> Result<Request, CombError> {
+    Ok(Request::Watch {
+        key: key.to_string(),
+        path: wire_path(path)?,
+    })
 }
 
-fn status_request() -> serde_json::Value {
-    serde_json::json!({ "op": "status" })
+fn layers_request(key: &str, path: Option<&str>) -> Result<Request, CombError> {
+    Ok(Request::Layers {
+        key: key.to_string(),
+        path: wire_path(path)?,
+    })
 }
 
-fn introspect_request(subject: IntrospectSubject, duration_secs: Option<u64>) -> serde_json::Value {
-    let mut request = serde_json::json!({ "op": "introspect", "subject": subject.wire_name() });
-    if let Some(d) = duration_secs {
-        request["duration_secs"] = serde_json::json!(d);
+fn introspect_request(subject: IntrospectSubject, duration_secs: Option<u64>) -> Request {
+    Request::Introspect {
+        subject,
+        duration_secs,
     }
-    request
-}
-
-/// The one reading of a response line's `{"ok": ...}` envelope, for every op
-/// and every watch frame: the response object on success. On `ok:false`,
-/// `ServerError` with the daemon's message — appended with `skew`, if known,
-/// so a failure on a connection with detected version skew names both
-/// versions.
-fn envelope(line: &str, skew: Option<&VersionSkew>) -> Result<serde_json::Value, CombError> {
-    let resp: serde_json::Value =
-        serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-    let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-    if !ok {
-        let mut error = resp
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error")
-            .to_string();
-        if let Some(s) = skew {
-            error = format!("{error} ({s})");
-        }
-        return Err(CombError::ServerError(error));
-    }
-    Ok(resp)
-}
-
-/// A `get` response's both halves. Every field is copied when present and
-/// left `None` when absent, so a miss is `Got::default()`.
-fn parse_node(resp: serde_json::Value) -> resolve::Got {
-    let present = |name: &str| resp.get(name).filter(|v| !v.is_null()).cloned();
-    resolve::Got {
-        data: present("data"),
-        template: present("template"),
-        rest: resp
-            .get("rest")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        age_ms: resp
-            .get("age_ms")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u128),
-        stale: resp.get("stale").and_then(|v| v.as_bool()),
-    }
-}
-
-fn layers_request(key: &str, path: Option<&str>) -> Result<serde_json::Value, CombError> {
-    let mut request = serde_json::json!({ "op": "layers", "key": key });
-    if let Some(p) = wire_path(path)? {
-        request["path"] = serde_json::json!(p);
-    }
-    Ok(request)
 }
 
 /// The `path` a request carries: [`path::normalise_here`], so `~` and a
@@ -1393,129 +1138,64 @@ fn wire_path(path: Option<&str>) -> Result<Option<String>, CombError> {
         .transpose()
 }
 
-fn parse_layers(resp: serde_json::Value) -> Option<serde_json::Value> {
-    resp.get("data").filter(|v| !v.is_null()).cloned()
+/// The one reading of a response line, for every op and every watch frame:
+/// the [`Response`] on success. On `ok:false`, `ServerError` with the
+/// daemon's message — appended with `skew`, if known, so a failure on a
+/// connection with detected version skew names both versions.
+fn envelope(line: &str, skew: Option<&VersionSkew>) -> Result<Response, CombError> {
+    let resp: Response =
+        serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
+    if !resp.ok {
+        let mut error = resp.error.unwrap_or_else(|| "unknown error".to_string());
+        if let Some(s) = skew {
+            error = format!("{error} ({s})");
+        }
+        return Err(CombError::ServerError(error));
+    }
+    Ok(resp)
 }
 
-fn parse_cache_rows(resp: serde_json::Value) -> Result<Vec<CacheRow>, CombError> {
-    let arr = resp
-        .get("data")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| CombError::ParseError("status response data is not an array".into()))?;
-    arr.iter().map(CacheRow::from_json).collect()
+/// A `get` response's both halves, each `None` when absent, so a miss is
+/// `Got::default()`.
+fn parse_node(resp: Response) -> resolve::Got {
+    resolve::Got {
+        data: resp.data,
+        template: resp.template,
+        rest: resp.rest,
+        age_ms: resp.age_ms,
+        stale: resp.stale,
+    }
 }
 
-fn parse_hello(resp: serde_json::Value) -> Result<HelloInfo, CombError> {
+fn parse_layers(resp: Response) -> Option<serde_json::Value> {
+    resp.data
+}
+
+/// A response's `data` as the payload type its op answers with.
+fn payload<T: serde::de::DeserializeOwned>(resp: Response, op: &str) -> Result<T, CombError> {
     let data = resp
-        .get("data")
-        .ok_or_else(|| CombError::ParseError("hello response missing data field".into()))?;
-    let protocol_version = data
-        .get("protocol_version")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| CombError::ParseError("hello response missing protocol_version".into()))?
-        .to_string();
-    let daemon_version = data
-        .get("daemon_version")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| CombError::ParseError("hello response missing daemon_version".into()))?
-        .to_string();
-    Ok(HelloInfo {
-        protocol_version,
-        daemon_version,
-    })
+        .data
+        .ok_or_else(|| CombError::ParseError(format!("{op} response has no data")))?;
+    serde_json::from_value(data).map_err(|e| CombError::ParseError(format!("{op} response: {e}")))
 }
 
-fn parse_daemon_health(data: &serde_json::Value) -> Result<DaemonHealth, CombError> {
-    let pid = data
-        .get("pid")
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| CombError::ParseError("daemon health missing pid".into()))?;
-    let version = data
-        .get("version")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| CombError::ParseError("daemon health missing version".into()))?
-        .to_string();
-    let uptime_secs = data
-        .get("uptime_secs")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let socket_path = data
-        .get("socket_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let config_path = data
-        .get("config_path")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let requests_total = data
-        .get("requests_total")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let in_flight = data.get("in_flight").and_then(|v| v.as_u64()).unwrap_or(0);
-    let active_watchers = data
-        .get("active_watchers")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let cache_entries = data
-        .get("cache_entries")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let watch_backend = data
-        .get("watch_backend")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let reaper = data
-        .get("reaper")
-        .filter(|r| !r.is_null())
-        .map(|r| ReaperStatus {
-            armed: r.get("armed").and_then(|v| v.as_bool()).unwrap_or(false),
-            visibility: r
-                .get("visibility")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            sweeps: r.get("sweeps").and_then(|v| v.as_u64()).unwrap_or(0),
-            reaped: r.get("reaped").and_then(|v| v.as_u64()).unwrap_or(0),
-            kill_denied: r.get("kill_denied").and_then(|v| v.as_u64()).unwrap_or(0),
-        });
-    let verdicts = data
-        .get("verdicts")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| {
-                    let level = v.get("level")?.as_str()?.to_string();
-                    let message = v.get("message")?.as_str()?.to_string();
-                    Some(Verdict { level, message })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(DaemonHealth {
-        pid,
-        version,
-        uptime_secs,
-        socket_path,
-        config_path,
-        requests_total,
-        in_flight,
-        active_watchers,
-        cache_entries,
-        watch_backend,
-        reaper,
-        verdicts,
-    })
+fn parse_cache_rows(resp: Response) -> Result<Vec<CacheRow>, CombError> {
+    payload(resp, "status")
+}
+
+fn parse_hello(resp: Response) -> Result<HelloInfo, CombError> {
+    payload(resp, "hello")
 }
 
 fn parse_introspect(
     subject: IntrospectSubject,
-    resp: serde_json::Value,
+    resp: Response,
 ) -> Result<IntrospectResponse, CombError> {
-    let data = resp.get("data").cloned().unwrap_or(serde_json::Value::Null);
     match subject {
-        IntrospectSubject::Daemon => Ok(IntrospectResponse::Daemon(parse_daemon_health(&data)?)),
-        _ => Ok(IntrospectResponse::Other(data)),
+        IntrospectSubject::Daemon => Ok(IntrospectResponse::Daemon(payload(resp, "introspect")?)),
+        _ => Ok(IntrospectResponse::Other(
+            resp.data.unwrap_or(serde_json::Value::Null),
+        )),
     }
 }
 

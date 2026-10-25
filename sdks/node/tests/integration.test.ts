@@ -108,6 +108,14 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     assert.ok(rows.some((r) => r.provider === 'itest_status'));
   });
 
+  it('a status row says when it polls next', async () => {
+    await client.put('itest_status_ttl', { k: 'v' }, { ttl: '1m' });
+    const rows = await client.status();
+    const row = rows.find((r) => r.provider === 'itest_status_ttl');
+    assert.ok(row, 'the ttl row');
+    assert.equal(typeof row.nextPollInSecs, 'number');
+  });
+
   it('hello returns protocol and daemon version', async () => {
     const info = await client.hello();
     assert.ok(info.protocolVersion.length > 0);

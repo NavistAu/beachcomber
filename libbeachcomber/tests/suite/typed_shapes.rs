@@ -195,6 +195,7 @@ fn status_row_exposes_lifecycle_fields() {
     let wire = serde_json::json!({
         "provider": "git",
         "field": "branch",
+        "source": "source(head)",
         "path": "/tmp",
         "value": "main",
         "age_ms": 100u64,
@@ -206,7 +207,7 @@ fn status_row_exposes_lifecycle_fields() {
         "failure": {"consecutive_failures": 0}
     });
 
-    let row = CacheRow::from_wire(&wire).expect("from_wire");
+    let row: CacheRow = serde_json::from_value(wire).expect("a wire row");
     assert!(row.kind.is_some(), "kind must be populated");
     match row.kind.unwrap() {
         RowKind::Lifecycle {

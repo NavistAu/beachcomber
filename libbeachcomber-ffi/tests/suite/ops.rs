@@ -276,6 +276,65 @@ fn status_returns_an_array_envelope() {
     unsafe { bc_client_free(client) };
 }
 
+/// A `bc_status` row is the daemon's row: the same fields, `next_poll_in_secs`
+/// among them, and an absent one omitted rather than `null` — one schema, not
+/// a copy of it kept in step by hand.
+#[test]
+fn status_rows_are_the_daemons_rows() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    read(unsafe { bc_get(client, cs("hostname").as_ptr(), ptr::null(), 0) });
+    let put = read(unsafe {
+        bc_put(
+            client,
+            cs("polled").as_ptr(),
+            cs(r#"{"x":1}"#).as_ptr(),
+            cs("1m").as_ptr(),
+            ptr::null(),
+        )
+    });
+    assert_eq!(put["ok"], true, "{put}");
+
+    let wire = {
+        use std::io::{BufRead, Write};
+        let mut stream = std::os::unix::net::UnixStream::connect(&daemon.path).unwrap();
+        stream.write_all(b"{\"op\":\"status\"}\n").unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(stream)
+            .read_line(&mut line)
+            .unwrap();
+        serde_json::from_str::<serde_json::Value>(&line).unwrap()["data"].clone()
+    };
+    let abi = read(unsafe { bc_status(client) })["data"].clone();
+
+    let shape = |rows: &serde_json::Value| -> Vec<(String, Vec<String>)> {
+        let mut shape: Vec<_> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                let id = format!("{}.{}", row["provider"], row["field"]);
+                let mut keys: Vec<String> = row.as_object().unwrap().keys().cloned().collect();
+                keys.sort();
+                (id, keys)
+            })
+            .collect();
+        shape.sort();
+        shape
+    };
+    assert!(!shape(&wire).is_empty(), "hostname left rows: {wire}");
+    assert_eq!(shape(&abi), shape(&wire));
+    assert!(
+        wire.as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row.get("next_poll_in_secs").is_some()),
+        "a row with a ttl says when it polls next: {wire}"
+    );
+
+    unsafe { bc_client_free(client) };
+}
+
 #[test]
 fn introspect_daemon_subject() {
     let daemon = DaemonGuard::spawn();

@@ -24,6 +24,8 @@ export interface CacheRow {
   pollIntervalSecs?: number;
   pollCount?: number;
   pollsElapsed?: number;
+  /** Seconds until the next scheduled poll; undefined when it has none. */
+  nextPollInSecs?: number;
   fseventsReinstate?: boolean;
   failure?: { consecutive_failures: number; suppressed_until_unix_ms?: number };
   /** Owning source name within the provider; undefined when not present on the wire. */

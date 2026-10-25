@@ -175,6 +175,7 @@ function parseCacheRows(data: unknown): CacheRow[] {
       pollIntervalSecs: r['poll_interval_secs'] != null ? Number(r['poll_interval_secs']) : undefined,
       pollCount: r['poll_count'] != null ? Number(r['poll_count']) : undefined,
       pollsElapsed: r['polls_elapsed'] != null ? Number(r['polls_elapsed']) : undefined,
+      nextPollInSecs: r['next_poll_in_secs'] != null ? Number(r['next_poll_in_secs']) : undefined,
       fseventsReinstate: r['fsevents_reinstate'] != null ? Boolean(r['fsevents_reinstate']) : undefined,
       failure: r['failure'] != null ? (r['failure'] as CacheRow['failure']) : undefined,
       source: r['source'] != null ? String(r['source']) : undefined,

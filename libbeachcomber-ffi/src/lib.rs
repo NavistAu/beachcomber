@@ -12,7 +12,7 @@ pub mod envelope;
 use envelope::{FfiError, WatchOutcome, call_ffi, call_watch_next, kind};
 use libbeachcomber::resolve::{self, Inputs, Slot};
 use libbeachcomber::watch::{ResolvedWatch, WatchOutcome as LibWatchOutcome};
-use libbeachcomber::{CacheRow, CombResult, DaemonHealth, IntrospectResponse, IntrospectSubject};
+use libbeachcomber::{CombResult, IntrospectResponse, IntrospectSubject};
 use std::collections::HashMap;
 
 /// Opaque client handle returned by [`bc_client_new`].
@@ -234,72 +234,10 @@ fn combresult_to_json(result: CombResult) -> serde_json::Value {
     inner
 }
 
-fn cache_row_to_json(r: &CacheRow) -> serde_json::Value {
-    serde_json::json!({
-        "provider": r.provider,
-        "field": r.field,
-        "path": r.path,
-        "value": r.value,
-        "age_ms": r.age_ms,
-        "stale": r.stale,
-        "kind": r.kind,
-        "poll_interval_secs": r.poll_interval_secs,
-        "poll_count": r.poll_count,
-        "fsevents_reinstate": r.fsevents_reinstate,
-        "polls_elapsed": r.polls_elapsed,
-        "failure": r.failure,
-        "source": r.source,
-    })
-}
-
-fn daemon_health_to_json(h: &DaemonHealth) -> serde_json::Value {
-    serde_json::json!({
-        "pid": h.pid,
-        "version": h.version,
-        "uptime_secs": h.uptime_secs,
-        "socket_path": h.socket_path,
-        "config_path": h.config_path,
-        "requests_total": h.requests_total,
-        "in_flight": h.in_flight,
-        "active_watchers": h.active_watchers,
-        "cache_entries": h.cache_entries,
-        "watch_backend": h.watch_backend,
-        "reaper": h.reaper.as_ref().map(|r| serde_json::json!({
-            "armed": r.armed,
-            "visibility": r.visibility,
-            "sweeps": r.sweeps,
-            "reaped": r.reaped,
-            "kill_denied": r.kill_denied,
-        })),
-        "verdicts": h.verdicts.iter().map(|v| serde_json::json!({
-            "level": v.level,
-            "message": v.message,
-        })).collect::<Vec<_>>(),
-    })
-}
-
 /// Recognised keys of `bc_introspect`'s `options_json` argument.
 #[derive(serde::Deserialize, Default)]
 struct IntrospectOptions {
     duration_secs: Option<u64>,
-}
-
-fn introspect_subject_from_str(name: &str) -> Result<IntrospectSubject, FfiError> {
-    match name {
-        "daemon" => Ok(IntrospectSubject::Daemon),
-        "providers" => Ok(IntrospectSubject::Providers),
-        "config" => Ok(IntrospectSubject::Config),
-        "cache" => Ok(IntrospectSubject::Cache),
-        "lifecycle" => Ok(IntrospectSubject::Lifecycle),
-        "watches" => Ok(IntrospectSubject::Watches),
-        "timers" => Ok(IntrospectSubject::Timers),
-        "demand" => Ok(IntrospectSubject::Demand),
-        "procs" => Ok(IntrospectSubject::Procs),
-        other => Err(FfiError::new(
-            kind::PARSE_ERROR,
-            format!("unknown introspect subject: {other}"),
-        )),
-    }
 }
 
 /// Query a single key, raw. `path` is nullable (global providers). `flags` is
@@ -401,9 +339,7 @@ pub unsafe extern "C" fn bc_refresh(
 pub unsafe extern "C" fn bc_status(client: *mut BcClient) -> *mut c_char {
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
-        let rows = c.status()?;
-        let arr: Vec<serde_json::Value> = rows.iter().map(cache_row_to_json).collect();
-        Ok(serde_json::Value::Array(arr))
+        Ok(serde_json::to_value(c.status()?).expect("status rows serialise"))
     })
 }
 
@@ -423,7 +359,9 @@ pub unsafe extern "C" fn bc_introspect(
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let subject = unsafe { required_str(subject, "subject") }?;
-        let subject = introspect_subject_from_str(subject)?;
+        let subject: IntrospectSubject = subject
+            .parse()
+            .map_err(|e: String| FfiError::new(kind::PARSE_ERROR, e))?;
         let options_json = unsafe { optional_str(options_json) }?;
         let options: IntrospectOptions = match options_json {
             Some(s) => serde_json::from_str(s).map_err(|e| {
@@ -432,7 +370,9 @@ pub unsafe extern "C" fn bc_introspect(
             None => IntrospectOptions::default(),
         };
         match c.introspect(subject, options.duration_secs)? {
-            IntrospectResponse::Daemon(health) => Ok(daemon_health_to_json(&health)),
+            IntrospectResponse::Daemon(health) => {
+                Ok(serde_json::to_value(health).expect("daemon health serialises"))
+            }
             IntrospectResponse::Other(v) => Ok(v),
         }
     })

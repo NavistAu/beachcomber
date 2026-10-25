@@ -100,6 +100,7 @@ def _parse_cache_rows(data: Any) -> list[CacheRow]:
                 poll_count=row.get("poll_count"),
                 fsevents_reinstate=row.get("fsevents_reinstate"),
                 polls_elapsed=row.get("polls_elapsed"),
+                next_poll_in_secs=row.get("next_poll_in_secs"),
                 failure=row.get("failure"),
                 source=row.get("source"),
             )
