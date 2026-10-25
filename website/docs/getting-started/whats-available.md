@@ -56,7 +56,7 @@ Some of the most useful keys are not daemon providers but **templates**: value e
 | `python` | Interpreter version and venv name in effect — `$PYENV_VERSION`, mise, asdf, then the venv | `comb g python.version .` |
 | `terraform` | Workspace in effect — `$TF_WORKSPACE`, else the cached workspace | `comb g terraform.workspace .` |
 | `conda` | Active conda env (`$CONDA_DEFAULT_ENV`) | `comb g conda.env` |
-| `op` | Whether a 1Password service-account token is in the shell | `comb g op.signed_in` |
+| `op` | Whether a 1Password service-account token is in the shell | `comb g op.service_account` |
 | `kubecontext` | Current kubectl context and namespace, via `kubectl` | `comb g kubecontext.context` |
 | `talos` | Current talosctl context, via `talosctl` | `comb g talos.context` |
 

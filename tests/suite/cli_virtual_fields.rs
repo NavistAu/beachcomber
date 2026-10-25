@@ -257,29 +257,29 @@ fn a_ref_walks_into_the_object_it_fetched() {
     assert_eq!(get(&d, &cwd, &[], "t.v"), "val");
 }
 
-// ── op.signed_in: a bool, never the token ─────────────────────────────────────
+// ── op.service_account: a bool, never the token ───────────────────────────────
 
 #[test]
-fn op_signed_in_is_bool_true_when_token_set() {
+fn op_service_account_is_bool_true_when_token_set() {
     let (d, cwd) = daemon();
     let token = "service-account-token-xyz";
     let env = [("OP_SERVICE_ACCOUNT_TOKEN", token)];
 
     assert_eq!(
-        get_json(&d, &cwd, &env, "op.signed_in"),
+        get_json(&d, &cwd, &env, "op.service_account"),
         serde_json::json!(true)
     );
     // Security: the token itself never appears in the output.
-    let text = get(&d, &cwd, &env, "op.signed_in");
+    let text = get(&d, &cwd, &env, "op.service_account");
     assert_eq!(text, "true");
     assert!(!text.contains(token));
 }
 
 #[test]
-fn op_signed_in_is_bool_false_when_token_unset() {
+fn op_service_account_is_bool_false_when_token_unset() {
     let (d, cwd) = daemon();
     assert_eq!(
-        get_json(&d, &cwd, &[], "op.signed_in"),
+        get_json(&d, &cwd, &[], "op.service_account"),
         serde_json::json!(false)
     );
 }

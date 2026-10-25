@@ -197,7 +197,7 @@ A `comb g` namespace need not have a Source behind it: a provider named only in 
 | `python` | `defaults/python.toml` | `version`, `venv_name` | `$PYENV_VERSION`/`$MISE_PYTHON_VERSION`, `comb.mise.python`, `comb.asdf.python`, `comb.python.venv_version`; `comb.python.local_venv_name`, `$VIRTUAL_ENV` |
 | `terraform` | `defaults/terraform.toml` | `workspace` | `$TF_WORKSPACE`, falling back to the cached `comb.terraform.workspace` — a template at a cached field's path wins on read |
 | `conda` | `defaults/conda.toml` | `env` | `$CONDA_DEFAULT_ENV` |
-| `op` | `defaults/op.toml` | `signed_in` (bool) | whether `$OP_SERVICE_ACCOUNT_TOKEN` is set — never the token itself |
+| `op` | `defaults/op.toml` | `service_account` (bool) | whether `$OP_SERVICE_ACCOUNT_TOKEN` is set — never the token itself |
 | `kubecontext` | `defaults/kubecontext.toml` | `context`, `namespace` | `exec('kubectl config …')` |
 | `talos` | `defaults/talos.toml` | `context` | `exec(['talosctl', 'config', 'info', …])` |
 
