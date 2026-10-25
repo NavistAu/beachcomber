@@ -209,7 +209,7 @@ module Beachcomber
     #   a relative path is against this process's working directory); nil is
     #   the global entry
     # @param env [Hash, nil] the caller's environment for `env.*` refs; nil
-    #   means none (every `env.*` is absent)
+    #   is the calling process's environment, as `comb` renders
     # @param force [Boolean] re-execute every Source the read demands first
     # @param wait [Boolean] re-execute a stale entry inline before answering
     # @return [Object, nil] the value, or nil on a miss

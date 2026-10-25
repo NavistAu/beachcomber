@@ -143,7 +143,7 @@ end
 --                      home, a relative path is against this process's
 --                      working directory); nil is the global entry.
 --                      opts.env: the caller's environment for env.* refs;
---                      nil means none (every env.* is absent).
+--                      nil is the calling process's environment, as comb renders.
 --                      opts.force: re-execute every Source the read demands first.
 --                      opts.wait: re-execute a stale entry inline before answering.
 -- @return value, or nil on a miss (no Error), or nil, Error

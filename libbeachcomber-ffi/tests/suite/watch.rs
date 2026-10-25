@@ -95,6 +95,26 @@ struct SendPtr<T>(*mut T);
 unsafe impl<T> Send for SendPtr<T> {}
 unsafe impl<T> Sync for SendPtr<T> {}
 
+/// A watch opened with no `env_json` renders with this process's environment,
+/// as `bc_get` does.
+#[test]
+fn a_watch_with_no_env_reads_the_process_home() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    put_static(client, "watchenv:template", r#"{"home":"{{ env.HOME }}"}"#);
+    let watch = open_watch(client, "watchenv.home", None);
+
+    let v = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(
+        v["data"],
+        serde_json::json!(std::env::var("HOME").unwrap()),
+        "{v}"
+    );
+
+    unsafe { bc_watch_free(watch) };
+    unsafe { bc_client_free(client) };
+}
+
 #[test]
 fn watch_next_first_call_yields_an_event_outcome() {
     // A provider key is resolved once at open, so the very first

@@ -64,7 +64,7 @@ already present at `../../target/debug`. Override `BC_LIB_DIR` /
 int main(void) {
     BcClient *c = bc_client_new(NULL);   /* default socket discovery */
 
-    /* What `comb get git.branch` prints there; NULL env_json is "no environment" */
+    /* What `comb get git.branch` prints there; NULL env_json is the calling process's environment */
     char *r = bc_get(c, "git.branch", "/path/to/repo", NULL, 0);
     printf("%s\n", r);
     /* {"ok":true,"data":"main"}

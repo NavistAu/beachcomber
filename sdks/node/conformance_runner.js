@@ -70,7 +70,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
           expect: v.expect,
           // `get`/`eval`/`watch`-op context: the caller's env vars and cwd
           // (see tests/conformance/README.md).
-          env: v.env && typeof v.env === 'object' ? v.env : {},
+          env: v.env && typeof v.env === 'object' ? v.env : undefined,
           cwd: typeof v.cwd === 'string' ? v.cwd : null,
           sourcePath: filePath,
         });

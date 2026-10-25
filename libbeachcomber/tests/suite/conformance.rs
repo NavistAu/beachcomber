@@ -98,7 +98,12 @@ fn load_fixtures() -> Vec<Fixture> {
                 test: parse_op(&v["test"]).expect("test op required"),
                 expect: v["expect"].clone(),
                 source_path: path,
-                env_vars: parse_str_map(&v["env"]),
+                // A fixture with no `env` is a call with none: the process's.
+                env_vars: if v["env"].is_null() {
+                    libbeachcomber::env::process()
+                } else {
+                    parse_str_map(&v["env"])
+                },
                 cwd: v["cwd"].as_str().map(|s| s.to_string()),
             });
         }

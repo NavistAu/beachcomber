@@ -352,11 +352,11 @@ pub unsafe extern "C" fn bc_hello(client: *mut BcClient) -> *mut c_char {
 // ── Resolution (Task 3.5) ──────────────────────────────────────────────
 
 /// Parses a nullable `env_json` argument. `None` (NULL) means "no env
-/// supplied" — every `env.*` reference then resolves to `""`, matching the
-/// evaluator's own miss semantics on an empty map. Values must be strings.
+/// supplied": the call renders with the calling process's environment, as
+/// `comb` does ([`libbeachcomber::env::process`]). Values must be strings.
 fn parse_env_json(json: Option<&str>) -> Result<HashMap<String, String>, FfiError> {
     match json {
-        None => Ok(HashMap::new()),
+        None => Ok(libbeachcomber::env::process()),
         Some(s) => serde_json::from_str(s)
             .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed env_json: {e}"))),
     }
@@ -449,7 +449,7 @@ fn get_value(
 /// `comb get --global` does. Every fetch the read makes addresses that
 /// directory, and a template's `exec`, `lup` and `read` run in it (in
 /// `$HOME` from `env_json` for the global entry).
-/// `env_json` is nullable, meaning "no environment": every `env.*` is absent.
+/// `env_json` is nullable: NULL renders with the calling process's environment, as `comb` does.
 /// `flags` is a bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit
 /// set yields a `bad_flags` envelope.
 /// `exec()` inside a template runs only on a client created with
@@ -721,7 +721,7 @@ pub struct BcWatch {
 /// `cwd` and `env_json` mean what they mean for [`bc_get`]: `cwd` is
 /// both the directory every subscription is opened at and the one every
 /// re-resolution runs in, and NULL watches the global entry. `env_json` is
-/// nullable, meaning "no environment": every `env.*` is absent.
+/// nullable: NULL renders with the calling process's environment, as `comb` does.
 /// `exec()` inside a template runs only on a client created with
 /// `{"exec":true}`.
 ///

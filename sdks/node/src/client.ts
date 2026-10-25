@@ -238,7 +238,7 @@ export interface ReadOptions {
    * against this process's working directory). Omitted, the global entry.
    */
   cwd?: string;
-  /** The caller's environment for `env.*` references. Omitted, none: every `env.*` is absent. */
+  /** The caller's environment for `env.*` references. Omitted, the calling process's environment. */
   env?: Record<string, string>;
 }
 

@@ -184,7 +184,7 @@ stored, `p:put.x` and `p:source.x` those layers' values. `key` is
 | `opts` field | Meaning |
 |---|---|
 | `cwd` | The directory the read addresses (`~` is home, a relative path is against this process's working directory). Default: the global entry. |
-| `env` | The caller's environment for `env.*` refs. `nil` (the default) means none: every `env.*` is absent. ffi transport only. |
+| `env` | The caller's environment for `env.*` refs. `nil` (the default) is the calling process's environment, as `comb` renders. ffi transport only. |
 | `force` | Re-execute every Source the read demands first (`comb get --force`). |
 | `wait` | Re-execute a stale entry inline before answering (`comb get --wait`). |
 

@@ -519,3 +519,58 @@ fn a_relative_cwd_is_the_callers_directory() {
 
     unsafe { bc_client_free(client) };
 }
+
+// ── a call with no env renders with the process environment ──────────────────
+
+/// A `bc_get` that passes no `env_json` renders `env.*` from this process, as
+/// `comb get` does.
+#[test]
+fn a_get_with_no_env_reads_the_process_home() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    put(
+        client,
+        "noenv:template",
+        r#"{"home":"{{ env.HOME }}"}"#,
+        None,
+    );
+
+    let v = resolve(client, "noenv.home", "/tmp", None);
+    assert_eq!(hit(&v), &serde_json::json!(std::env::var("HOME").unwrap()));
+
+    // An explicit map is the whole environment: HOME is absent from it.
+    let v = resolve(client, "noenv.home", "/tmp", Some("{}"));
+    assert_eq!(hit(&v), &serde_json::Value::Null, "{v}");
+
+    unsafe { bc_client_free(client) };
+}
+
+/// `bc_eval` with no `env_json` is the same.
+#[test]
+fn an_eval_with_no_env_reads_the_process_home() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+
+    let v = eval(client, "{{ env.HOME }}", "/tmp", None);
+    assert_eq!(hit(&v), &serde_json::json!(std::env::var("HOME").unwrap()));
+
+    unsafe { bc_client_free(client) };
+}
+
+/// An `exec()` child of a call with no env inherits this process's `PATH`: a
+/// child's environment is exactly the render's `env`.
+#[test]
+fn an_exec_child_of_a_call_with_no_env_inherits_the_process_path() {
+    let daemon = DaemonGuard::spawn();
+    let json = format!(
+        r#"{{"socket_path":"{}","autostart":false,"timeout_ms":2000,"exec":true}}"#,
+        daemon.path.display()
+    );
+    let opts = cs(&json);
+    let client = unsafe { bc_client_new(opts.as_ptr()) };
+
+    let v = eval(client, r#"{{ exec('echo "$PATH"') | trim }}"#, "/tmp", None);
+    assert_eq!(hit(&v), &serde_json::json!(std::env::var("PATH").unwrap()));
+
+    unsafe { bc_client_free(client) };
+}

@@ -349,7 +349,7 @@ func flagBits(flags []GetFlag) uintptr {
 // cwd is the directory the read addresses: "~" is the home directory and a
 // relative path is against this process's working directory; "" is the
 // global entry. env is the caller's environment for env.* references; nil
-// means none supplied, so every env.* is absent. flags are [Force] and
+// means the calling process's environment, as comb has. flags are [Force] and
 // [Wait].
 func (c *Client) Get(key, cwd string, env map[string]string, flags ...GetFlag) (interface{}, error) {
 	if err := c.open(); err != nil {

@@ -112,8 +112,8 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
   the whole merged namespace; a miss is `data: null`. `cwd` is the directory
   the read addresses, read as `comb get --path` reads one (`~` is the home
   directory, a relative path is against the process's working directory);
-  NULL is the global entry. `env_json` is nullable ("no environment": every
-  `env.*` is absent). `flags` is a bitmask: `BC_GET_FORCE`, `BC_GET_WAIT`;
+  NULL is the global entry. `env_json` is nullable (NULL is the calling process's
+  environment, as `comb` renders). `flags` is a bitmask: `BC_GET_FORCE`, `BC_GET_WAIT`;
   any other bit set is rejected (`kind: "bad_flags"`).
 - The unrendered halves are facets, read with `bc_get` like any key:
   `p:template.x` is the template as stored, `p:put.x` and `p:source.x`

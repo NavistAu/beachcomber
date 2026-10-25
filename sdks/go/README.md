@@ -153,8 +153,8 @@ For latency-sensitive use, prefer `Session`.
 `Get`'s `cwd` is the directory the read addresses: `~` is the home
 directory, a relative path is against this process's working directory,
 and `""` is the global entry; `Eval` and `Watch` read it the same way. `env` is
-optional (`nil` for "not supplied") — a `nil` `env` makes every `env.*`
-reference absent. The unrendered halves are facets, read like any key:
+optional (`nil` for "not supplied") — a `nil` `env` renders with the calling
+process's environment, as `comb` does. The unrendered halves are facets, read like any key:
 `Get("p:template.x", …)` is the template as stored, `Get("p:put.x", …)` and
 `Get("p:source.x", …)` those layers' values.
 

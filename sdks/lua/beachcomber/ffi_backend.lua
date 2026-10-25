@@ -122,8 +122,8 @@ local function flag_bits(flags)
   return bits
 end
 
---- `env_vars` nil is "no environment" (a NULL `env_json`): every env.* is
--- absent, as the ABI documents.
+--- `env_vars` nil is a NULL `env_json`: the library renders with the calling
+-- process's environment, as the ABI documents.
 local function env_json_of(env_vars)
   if env_vars == nil then return nil end
   return json.encode(env_vars)

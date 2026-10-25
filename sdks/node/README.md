@@ -90,7 +90,7 @@ const fresh  = await client.get('git.branch', { cwd: '/some/repo', force: true, 
 `opts` is `{ cwd?, env?, force?, wait? }`. `cwd` is the directory the read
 addresses (`~` is home, a relative path is against this process's working
 directory); omitted, it is the global entry. `env` is the caller's
-environment for `env.*` refs; omitted, every `env.*` is absent. `force`
+environment for `env.*` refs; omitted, the calling process's environment, as `comb` renders. `force`
 re-executes every Source the read demands first; `wait` re-executes a
 stale entry inline before answering.
 

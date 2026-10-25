@@ -41,8 +41,8 @@ out is the ABI's default.
 `cwd` is the directory a read addresses, read as `comb get --path` reads one:
 `~` is the home directory and a relative path is against the caller's working
 directory. Leaving it out addresses the global entry. `env` is the caller's
-environment for `env.*` references; leaving it out means none, so every
-`env.*` is absent. `force` and `wait` are `comb get --force` and `--wait`.
+environment for `env.*` references; leaving it out is the calling process's
+environment, as `comb` renders with its own. `force` and `wait` are `comb get --force` and `--wait`.
 
 ## Session
 

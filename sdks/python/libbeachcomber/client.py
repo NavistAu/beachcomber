@@ -306,7 +306,7 @@ class Client:
                 path is against this process's working directory). ``None``
                 is the global entry.
             env: The caller's environment for ``env.*`` refs. ``None`` means
-                none supplied (every ``env.*`` is absent).
+                the calling process's environment, as ``comb`` renders.
             force: Re-execute every Source the read demands first.
             wait: Re-execute a stale entry inline before answering.
 

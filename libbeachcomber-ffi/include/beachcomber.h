@@ -183,7 +183,7 @@ char *bc_hello(BcClient *client);
  * `comb get --global` does. Every fetch the read makes addresses that
  * directory, and a template's `exec`, `lup` and `read` run in it (in
  * `$HOME` from `env_json` for the global entry).
- * `env_json` is nullable, meaning "no environment": every `env.*` is absent.
+ * `env_json` is nullable: NULL renders with the calling process's environment, as `comb` does.
  * `flags` is a bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit
  * set yields a `bad_flags` envelope.
  * `exec()` inside a template runs only on a client created with
@@ -307,7 +307,7 @@ char *bc_session_set_context(BcSession *session, const char *path);
  * `cwd` and `env_json` mean what they mean for [`bc_get`]: `cwd` is
  * both the directory every subscription is opened at and the one every
  * re-resolution runs in, and NULL watches the global entry. `env_json` is
- * nullable, meaning "no environment": every `env.*` is absent.
+ * nullable: NULL renders with the calling process's environment, as `comb` does.
  * `exec()` inside a template runs only on a client created with
  * `{"exec":true}`.
  *
