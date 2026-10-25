@@ -922,9 +922,9 @@ impl ProviderRegistry {
         &self,
         config: &Config,
         env: &HashMap<String, String>,
-    ) -> Result<ConfigSources, Vec<String>> {
+    ) -> (ConfigSources, Vec<String>) {
         let Some(providers) = config.daemon().providers.as_table() else {
-            return Ok(ConfigSources::default());
+            return (ConfigSources::default(), Vec::new());
         };
         let mut errors = Vec::new();
         // A bad `[daemon.plugin] path` is one error among the config's: the
@@ -952,18 +952,15 @@ impl ProviderRegistry {
                 errors.push(e);
             }
         }
-        let built = crate::shape::build(
+        // What builds is checked further whatever else does not: one broken
+        // table hides no other.
+        let (built, shape_errors) = crate::shape::build(
             providers,
             &self.registered_sources(),
             &engine_defaults(config),
         );
-        let (decls, retunes) = match built {
-            Ok(built) => (built.decls, built.retunes),
-            Err(e) => {
-                errors.extend(e);
-                return Err(errors);
-            }
-        };
+        errors.extend(shape_errors);
+        let (decls, retunes) = (built.decls, built.retunes);
         let mut out = Vec::new();
         for decl in decls {
             let mut built = Vec::new();
@@ -973,17 +970,20 @@ impl ProviderRegistry {
                     Err(e) => errors.push(e),
                 }
             }
-            out.push((decl.name, built));
+            // A provider none of whose Sources built has their errors; it is
+            // not registered a second time with nothing to say for itself.
+            if !built.is_empty() {
+                out.push((decl.name, built));
+            }
         }
-        if errors.is_empty() {
-            Ok(ConfigSources {
+        (
+            ConfigSources {
                 providers: out,
                 retunes,
                 plugins: Some(plugins),
-            })
-        } else {
-            Err(errors)
-        }
+            },
+            errors,
+        )
     }
 
     /// Replace a registered built-in Source's metadata with `edit` of it. The
@@ -1217,26 +1217,22 @@ impl ProviderRegistry {
 
         // ── Config Sources, and the built-ins a return retunes ────────────────
         let builtins: Vec<(String, String)> = registry.sources.keys().cloned().collect();
-        let mut sources_built = true;
-        match registry.config_sources(config, vars) {
-            Ok(ConfigSources {
-                providers,
+        let (
+            ConfigSources {
+                providers: built,
                 retunes,
                 plugins,
-            }) => {
-                registry.plugins = plugins;
-                for (name, sources) in providers {
-                    if let Err(e) = registry.register_config_sources(&name, sources) {
-                        errors.push(e);
-                    }
-                }
-                errors.extend(registry.retune_builtins(config, &builtins, &retunes));
-            }
-            Err(e) => {
-                sources_built = false;
-                errors.extend(e);
+            },
+            source_errors,
+        ) = registry.config_sources(config, vars);
+        errors.extend(source_errors);
+        registry.plugins = plugins;
+        for (name, sources) in built {
+            if let Err(e) = registry.register_config_sources(&name, sources) {
+                errors.push(e);
             }
         }
+        errors.extend(registry.retune_builtins(config, &builtins, &retunes));
 
         // ── Providers only the config names ───────────────────────────────────
         // A provider exists if either root names it. One named only in
@@ -1263,11 +1259,9 @@ impl ProviderRegistry {
             registry.register_config_named(&name);
         }
 
-        // A Source that did not build is not registered, and every call to it
-        // would be a second error for the same fault.
-        if sources_built {
-            errors.extend(registry.check_calls());
-        }
+        // A Source that did not build is not registered; a call to it is not
+        // a second error for the same fault (`check_calls` knows the tables).
+        errors.extend(registry.check_calls(providers));
         errors.extend(config.errors());
         // What the reseed could not plan (a `template` line that renders no
         // table): the same refusal a reload makes, so startup, `comb check
@@ -1278,7 +1272,18 @@ impl ProviderRegistry {
                 errors.push(e);
             }
         }
-        ConfigLoad { registry, errors }
+        // Every error in one form: `config(<file>): [table] …`, the file the
+        // one that set the table it is about.
+        let mut located: Vec<String> = Vec::with_capacity(errors.len());
+        for e in errors.into_iter().map(|e| config.locate(e)) {
+            if !located.contains(&e) {
+                located.push(e);
+            }
+        }
+        ConfigLoad {
+            registry,
+            errors: located,
+        }
     }
 
     /// Make `self`, freshly loaded from the configuration that replaces
@@ -1336,8 +1341,19 @@ impl ProviderRegistry {
     /// `result` and `return`. Naming one that does not is a load error, naming
     /// what is missing. So is a ring of Sources that call each other: every
     /// call is named in a line, so the ring is known before anything runs.
-    fn check_calls(&self) -> Vec<String> {
+    fn check_calls(&self, providers: &toml::Table) -> Vec<String> {
+        // A Source whose table is there but did not build has its own error.
+        let declared = |provider: &str, source: &str| {
+            providers
+                .get(provider)
+                .and_then(|p| p.get("sources"))
+                .and_then(|s| s.get(source))
+                .is_some()
+        };
         let missing = |provider: &str, source: &str| -> Option<String> {
+            if declared(provider, source) {
+                return None;
+            }
             if !self.providers.contains_key(provider) {
                 return Some(format!("daemon.providers.{provider}: no such provider"));
             }
@@ -1355,7 +1371,9 @@ impl ProviderRegistry {
                 Called::Of(p, s) => (p.clone(), s.clone()),
             };
             if let Some(what) = missing(&target.0, &target.1) {
-                errors.insert(format!("{provider}.{source}: data: {what}"));
+                errors.insert(format!(
+                    "[daemon.providers.{provider}.sources.{source}] data: {what}"
+                ));
             } else {
                 edges
                     .entry((provider.clone(), source.clone()))
@@ -1377,8 +1395,9 @@ impl ProviderRegistry {
         }
         if let Some(ring) = find_ring(&edges) {
             let named: Vec<String> = ring.iter().map(|(p, s)| format!("{p}.{s}")).collect();
+            let (p, s) = &ring[0];
             errors.insert(format!(
-                "Sources call each other in a ring: {}",
+                "[daemon.providers.{p}.sources.{s}] data: Sources call each other in a ring: {}",
                 named.join(" -> ")
             ));
         }
@@ -2179,8 +2198,8 @@ result.y = "{{ data }}"
         assert_eq!(
             load("[daemon.providers.gti]\nenabled = false\n"),
             vec![
-                "[daemon.providers.gti] enabled: no provider is named 'gti' (no built-in, Source \
-                 or template gives it one)"
+                "config(/user.toml): [daemon.providers.gti] enabled: no provider is named 'gti' \
+                 (no built-in, Source or template gives it one)"
             ]
         );
         // Named by a built-in, a client template, or a table of its own lines.
@@ -2210,12 +2229,18 @@ result.y = "{{ data }}"
         assert_eq!(
             errors,
             vec![
-                "[daemon.providers.q] result: daemon.providers.nope: no such provider",
-                "[daemon.providers.q] result: daemon.providers.q.sources.nope: no such source",
-                "[daemon.providers.q] return: daemon.providers.p.sources.zap: no such source",
-                "p.s: data: daemon.providers.nope: no such provider",
-                "p.s: data: daemon.providers.p.sources.gone: no such source",
-                "p.s: data: daemon.providers.p.sources.zip: no such source",
+                "config(<in memory>): [daemon.providers.p.sources.s] data: daemon.providers.nope: \
+                 no such provider",
+                "config(<in memory>): [daemon.providers.p.sources.s] data: \
+                 daemon.providers.p.sources.gone: no such source",
+                "config(<in memory>): [daemon.providers.p.sources.s] data: \
+                 daemon.providers.p.sources.zip: no such source",
+                "config(<in memory>): [daemon.providers.q] result: daemon.providers.nope: no such \
+                 provider",
+                "config(<in memory>): [daemon.providers.q] result: \
+                 daemon.providers.q.sources.nope: no such source",
+                "config(<in memory>): [daemon.providers.q] return: \
+                 daemon.providers.p.sources.zap: no such source",
             ]
         );
     }
@@ -2236,7 +2261,10 @@ result.y = "{{ data }}"
         let errors = ProviderRegistry::load(&config, &Default::default()).errors;
         assert_eq!(
             errors,
-            vec!["Sources call each other in a ring: cyc.a -> cyc.b -> other.c -> cyc.a"]
+            vec![
+                "config(<in memory>): [daemon.providers.cyc.sources.a] data: Sources call each \
+                 other in a ring: cyc.a -> cyc.b -> other.c -> cyc.a"
+            ]
         );
     }
 
@@ -2244,9 +2272,8 @@ result.y = "{{ data }}"
     fn a_ring_that_got_past_the_load_check_fails_when_run() {
         let config = crate::config::Config::from_toml(RING);
         let mut registry = ProviderRegistry::with_defaults();
-        let built = registry
-            .config_sources(&config, &Default::default())
-            .expect("the lines are fine");
+        let (built, errors) = registry.config_sources(&config, &Default::default());
+        assert_eq!(errors, Vec::<String>::new(), "the lines are fine");
         for (name, sources) in built.providers {
             registry.register_config_sources(&name, sources).unwrap();
         }
@@ -2307,7 +2334,10 @@ result.y = "{{ data }}"
         );
         let errors = ProviderRegistry::load(&config, &Default::default()).errors;
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].starts_with("p.a: "), "{errors:?}");
+        assert!(
+            errors[0].starts_with("config(<in memory>): [daemon.providers.p.sources.a] "),
+            "{errors:?}"
+        );
     }
 
     #[test]

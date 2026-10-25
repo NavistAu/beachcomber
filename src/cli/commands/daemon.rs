@@ -16,13 +16,9 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
     // log level it names is not trusted to build the logger.
     let errors = config.errors();
     if !errors.is_empty() {
-        for e in &errors {
-            eprintln!("error: {e}");
+        for line in crate::daemon::refusal(&errors) {
+            eprintln!("{line}");
         }
-        eprintln!(
-            "Config validation failed with {} error(s). Daemon refusing to start.",
-            errors.len()
-        );
         return ExitCode::from(2);
     }
 

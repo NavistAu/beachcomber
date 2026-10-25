@@ -529,7 +529,7 @@ A field's value is the first layer that has it, in this order: the effective **t
 |---|---|
 | `age_ms` | Milliseconds since the value was last computed (0 for a rendered template) |
 | `stale` | Whether the value is past its expected refresh time |
-| `source` | What answered: `put`, `template`, `config:<file>`, or `source(<name>)`, e.g. `source(head)` |
+| `source` | What answered: `put`, `template`, `config(<file>)`, `computed(<line>)`, or `source(<name>)`, e.g. `source(head)` |
 | `poll`, `watch`, `decay` | The lifecycle the entry registered with: poll `{interval, count}`, watched paths, decay steps before eviction |
 
 ```sh

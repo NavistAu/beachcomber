@@ -214,14 +214,22 @@ async fn run_daemon_with_cancel(
     info!("Daemon shut down cleanly");
 }
 
-fn refuse_to_start(errors: &[String]) {
-    for e in errors {
-        tracing::error!("{}", e);
-    }
-    tracing::error!(
+/// What a daemon refusing its configuration says: one line per error, then
+/// the verdict. The same lines whether it refuses before its logger is built
+/// (`comb daemon`, on stderr) or after it (in the log).
+pub fn refusal(errors: &[String]) -> Vec<String> {
+    let mut lines: Vec<String> = errors.iter().map(|e| format!("error: {e}")).collect();
+    lines.push(format!(
         "Config validation failed with {} error(s). Daemon refusing to start.",
         errors.len()
-    );
+    ));
+    lines
+}
+
+fn refuse_to_start(errors: &[String]) {
+    for line in refusal(errors) {
+        tracing::error!("{line}");
+    }
 }
 
 /// Spawn a watchdog task that monitors the scheduler heartbeat.

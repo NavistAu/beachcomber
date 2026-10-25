@@ -969,7 +969,7 @@ fn check_config_fails_a_providers_root_naming_where_it_went() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("[FAIL] local    config:")
+        stdout.contains("[FAIL] local    config(")
             && stdout.contains("unknown table [providers]: a provider's settings are")
             && stdout.contains("templates live in [client.providers.<p>] template.<leaf>"),
         "expected a local FAIL line naming where [providers] went, got:\n{stdout}"

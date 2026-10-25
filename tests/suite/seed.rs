@@ -106,9 +106,9 @@ impl Env {
         UnixStream::connect(&self.sock).await.unwrap()
     }
 
-    /// The stored label of `rel`, which an error message names the file by.
+    /// How an error message names the file `rel`.
     fn label(&self, rel: &str) -> String {
-        format!("config:{}", self.cfg_dir.join(rel).display())
+        format!("config({})", self.cfg_dir.join(rel).display())
     }
 
     /// The label a `status` row presents for `rel`.

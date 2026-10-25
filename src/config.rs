@@ -391,7 +391,8 @@ impl Config {
     fn compose(read: ReadLayers, config_path: Option<PathBuf>) -> Self {
         let ReadLayers { layers, mut errors } = read;
         errors.extend(Self::validate_layers(&layers));
-        let composed = match Composed::deserialize(Self::merged(&layers)) {
+        let merged = Self::merged(&layers);
+        let composed = match Composed::deserialize(merged.clone()) {
             Ok(composed) => composed,
             Err(e) => {
                 if errors.is_empty() {
@@ -399,7 +400,23 @@ impl Config {
                         "config: the composed configuration does not load: {e}"
                     ));
                 }
-                Composed::default()
+                // A setting that does not deserialize (its file's error says
+                // which) leaves the settings at their defaults, but not the
+                // tables: the providers and templates are still checked, so
+                // one mistake hides no other.
+                let table = |root: &str, key: Option<&str>| {
+                    let node = merged.get(root);
+                    let node = match key {
+                        Some(key) => node.and_then(|n| n.get(key)),
+                        None => node,
+                    };
+                    node.cloned().unwrap_or_else(empty_table)
+                };
+                let mut fallback = Composed::default();
+                fallback.daemon.providers = table("daemon", Some("providers"));
+                fallback.daemon.plugin = table("daemon", Some("plugin"));
+                fallback.client = table("client", None);
+                fallback
             }
         };
         let mut config = Config {
@@ -409,9 +426,7 @@ impl Config {
             layers,
             errors: Vec::new(),
         };
-        if errors.is_empty() {
-            errors.extend(config.watchdog_errors());
-        }
+        errors.extend(config.watchdog_errors());
         config.errors = errors;
         config
     }
@@ -425,7 +440,7 @@ impl Config {
     }
 
     /// A configuration from the text of one layer that has no file, labelled
-    /// `config:<in memory>`: what an embedder or a test builds. Text that is
+    /// `config(<in memory>)`: what an embedder or a test builds. Text that is
     /// not TOML is an error in [`Self::errors`], as a file's would be.
     pub fn from_toml(text: &str) -> Self {
         let path = PathBuf::from("<in memory>");
@@ -474,9 +489,9 @@ impl Config {
             .collect::<Vec<_>>()
             .join("; ");
         if reason.is_empty() || at.contains(&reason) {
-            format!("{}: {at}", Self::config_label(file))
+            format!("{}: {at}", Self::error_label(file))
         } else {
-            format!("{}: {at}: {reason}", Self::config_label(file))
+            format!("{}: {at}: {reason}", Self::error_label(file))
         }
     }
 
@@ -515,10 +530,8 @@ impl Config {
                 Ok(c) => c,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => {
-                    out.errors.push(format!(
-                        "{}: could not read: {e}",
-                        Self::config_label(&file)
-                    ));
+                    out.errors
+                        .push(format!("{}: could not read: {e}", Self::error_label(&file)));
                     continue;
                 }
             };
@@ -558,13 +571,21 @@ impl Config {
                 .iter()
                 .rev()
                 .find(|(_, layer)| layer.get("daemon").and_then(|d| d.get(key)).is_some())
-                .map(|(file, _)| Self::config_label(file))
+                .map(|(file, _)| Self::error_label(file))
                 .unwrap_or_default()
         };
         let (interval, threshold) = (
             self.daemon.watchdog_interval_duration(),
             self.daemon.watchdog_threshold.as_deref(),
         );
+        // A value that does not parse is its file's error; the two are judged
+        // together only when each says something.
+        let unread = |text: Option<&str>| {
+            text.is_some_and(|t| parse_whole_seconds(t).is_none_or(|d| d.is_zero()))
+        };
+        if unread(self.daemon.watchdog_interval.as_deref()) || unread(threshold) {
+            return Vec::new();
+        }
         match (interval, threshold) {
             (None, Some(t)) => vec![format!(
                 "{}: [daemon] watchdog_threshold ({t}) is set without watchdog_interval: the \
@@ -578,10 +599,10 @@ impl Config {
                     .is_some_and(|t| t < i) =>
             {
                 vec![format!(
-                    "[daemon] watchdog_threshold ({}, set in {}) is below watchdog_interval \
-                     ({}, set in {}): the watchdog would restart a healthy scheduler",
-                    threshold.unwrap_or_default(),
+                    "{}: [daemon] watchdog_threshold ({}) is below watchdog_interval ({}, set in \
+                     {}): the watchdog would restart a healthy scheduler",
                     set_by("watchdog_threshold"),
+                    threshold.unwrap_or_default(),
                     self.daemon.watchdog_interval.as_deref().unwrap_or_default(),
                     set_by("watchdog_interval"),
                 )]
@@ -648,6 +669,42 @@ impl Config {
             }
         }
         composed
+    }
+
+    /// How an error names the file `path`: its label as every surface shows
+    /// it, `config(~/.config/beachcomber/conf.d/10-mine.toml)`.
+    pub fn error_label(path: &Path) -> String {
+        crate::cache::presented_label(&Self::config_label(path))
+    }
+
+    /// `message`, an error about a table of this configuration
+    /// (`[daemon.providers.p.sources.s] data: …`), named by the file that set
+    /// that table last: `config(<file>): [daemon.providers.p.sources.s] data:
+    /// …`, the form every configuration error takes. A message that already
+    /// names its file, or that names no table, is returned as it is.
+    pub fn locate(&self, message: String) -> String {
+        if message.starts_with("config(") {
+            return message;
+        }
+        let Some(table) = message
+            .strip_prefix('[')
+            .and_then(|rest| rest.split_once(']'))
+            .map(|(table, _)| table)
+        else {
+            return message;
+        };
+        let path: Vec<&str> = table.split('.').collect();
+        let file = self.layers.iter().rev().find_map(|(file, layer)| {
+            let mut node = Some(layer);
+            for segment in &path {
+                node = node.and_then(|n| n.get(*segment));
+            }
+            node.map(|_| file)
+        });
+        match file {
+            Some(file) => format!("{}: {message}", Self::error_label(file)),
+            None => message,
+        }
     }
 
     /// The static source label for a record seeded from `path`: `config:` plus
@@ -1023,7 +1080,7 @@ mod tests {
         let errors = config.errors();
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(
-            errors[0].starts_with("config:") && errors[0].contains("01-bad.toml: "),
+            errors[0].starts_with("config(") && errors[0].contains("01-bad.toml): "),
             "{errors:?}"
         );
         assert!(!errors[0].contains('\n'), "one line per error: {errors:?}");
@@ -1032,7 +1089,7 @@ mod tests {
         std::fs::write(&main, "[daemon]\nsocket_path = \n").unwrap();
         let errors = Config::load_from(&main).errors();
         assert!(
-            errors.iter().any(|e| e.contains("config.toml: ")),
+            errors.iter().any(|e| e.contains("config.toml): ")),
             "{errors:?}"
         );
     }

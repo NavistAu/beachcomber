@@ -7,7 +7,7 @@ use tempfile::TempDir;
 // ── Parsing the settings ─────────────────────────────────────────────────────
 
 /// A `Config` composed from one layer that has no file, labelled
-/// `config:<in memory>`: what a test builds when it wants the checks to run.
+/// `config(<in memory>)`: what a test builds when it wants the checks to run.
 fn in_memory(text: &str) -> Config {
     Config::from_toml(text)
 }
@@ -214,7 +214,7 @@ fn layers_skip_a_file_that_does_not_parse() {
         read.errors
     );
     assert!(
-        read.errors[0].starts_with("config:") && read.errors[0].contains("10-broken.toml: "),
+        read.errors[0].starts_with("config(") && read.errors[0].contains("10-broken.toml): "),
         "{:?}",
         read.errors
     );
@@ -307,7 +307,7 @@ fn seeded_errors(toml_str: &str) -> Vec<String> {
         .errors
         .into_iter()
         .map(|e| {
-            e.strip_prefix("config:/f.toml: ")
+            e.strip_prefix("config(/f.toml): ")
                 .unwrap_or_else(|| panic!("an error carries its file's label: {e}"))
                 .to_string()
         })
@@ -395,7 +395,7 @@ fn an_unknown_key_under_plugin_is_an_error() {
     assert_eq!(config.daemon().log_level, LevelFilter::DEBUG);
     assert_eq!(
         config.errors(),
-        vec!["config:<in memory>: [daemon] plugin must be a table".to_string()]
+        vec!["config(<in memory>): [daemon] plugin must be a table".to_string()]
     );
 }
 
@@ -576,10 +576,10 @@ fn an_error_names_its_file_and_each_file_is_checked_on_its_own() {
     assert_eq!(
         errors,
         vec![
-            "config:/a.toml: [client.providers.zz] template 'width' is integer, not a value \
+            "config(/a.toml): [client.providers.zz] template 'width' is integer, not a value \
              expression or a group."
                 .to_string(),
-            "config:/c.toml: [client.providers.zz] template 'width' is integer, not a value \
+            "config(/c.toml): [client.providers.zz] template 'width' is integer, not a value \
              expression or a group."
                 .to_string(),
         ]
@@ -652,6 +652,60 @@ fn source_errors(user: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Every load error names the file that wrote what it is about, then its
+/// table, in one form: a Source's lint and its calls as much as the file
+/// check.
+#[test]
+fn a_load_error_names_its_file_and_its_table() {
+    assert_eq!(
+        source_errors(
+            "[daemon.providers.p.sources.s]\ndata = \"{{ nope }}\"\nresult.x = \"{{ data }}\"\n"
+        ),
+        vec![
+            "config(/user.toml): [daemon.providers.p.sources.s] data: unknown name 'nope' (this \
+             line sees env, comb, sources, daemon, _)"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        source_errors("[daemon.providers.p.sources.s]\nresult.x = \"{{ 1 }}\"\n"),
+        vec!["config(/user.toml): [daemon.providers.p.sources.s] has no data line".to_string()]
+    );
+    assert_eq!(
+        source_errors(
+            "[daemon.providers.p.sources.s]\ndata = \"{{ daemon.providers.q.sources.t() }}\"\n\
+             result.x = \"{{ data }}\"\n"
+        ),
+        vec![
+            "config(/user.toml): [daemon.providers.p.sources.s] data: daemon.providers.q: no \
+             such provider"
+                .to_string()
+        ]
+    );
+}
+
+/// The daemon's refusal and `comb check config` list everything wrong at
+/// once: a mistyped setting hides no Source, and a broken Source hides no
+/// other.
+#[test]
+fn every_stage_reports_at_once() {
+    let errors = source_errors(
+        "[daemon]\nsocket_path = 3\n\
+         [daemon.providers.p.sources.s]\nresult.x = \"{{ 1 }}\"\n\
+         [daemon.providers.q.sources.t]\ndata = \"{{ nope }}\"\nresult.x = \"{{ data }}\"\n",
+    );
+    for want in [
+        "config(/user.toml): [daemon] socket_path must be a string",
+        "config(/user.toml): [daemon.providers.p.sources.s] has no data line",
+        "config(/user.toml): [daemon.providers.q.sources.t] data: unknown name 'nope'",
+    ] {
+        assert!(
+            errors.iter().any(|e| e.starts_with(want)),
+            "{want}: {errors:#?}"
+        );
+    }
+}
+
 fn shipped_registry(user: &str) -> ProviderRegistry {
     let config = with_shipped_defaults(user);
     ProviderRegistry::with_config(&config, &Default::default())
@@ -719,8 +773,9 @@ fn a_schedule_decorator_on_a_provider_line_is_a_load_error() {
         let errors = source_errors(&user);
         assert_eq!(errors.len(), 1, "{line}: {errors:?}");
         assert!(
-            errors[0].starts_with(&format!("[daemon.providers.demo] {key}: "))
-                && errors[0].contains("schedule decorator"),
+            errors[0].starts_with(&format!(
+                "config(/user.toml): [daemon.providers.demo] {key}: "
+            )) && errors[0].contains("schedule decorator"),
             "{line}: {errors:?}"
         );
     }
@@ -920,7 +975,7 @@ fn a_type_error_is_a_load_error_not_the_default_config() {
     let errors = config.errors();
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
-        errors[0].contains("config.toml: [daemon] timeout must be"),
+        errors[0].contains("config.toml): [daemon] timeout must be"),
         "{errors:?}"
     );
     assert_eq!(
@@ -954,7 +1009,7 @@ fn a_wrongly_typed_source_in_an_in_memory_config_is_an_error() {
     let errors = ProviderRegistry::load(&config, &Default::default()).errors;
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
-        errors[0].starts_with("config:<in memory>: ")
+        errors[0].starts_with("config(<in memory>): ")
             && errors[0].contains("data must be a string"),
         "{errors:?}"
     );
@@ -1051,8 +1106,8 @@ fn the_watchdog_keys_are_whole_seconds_of_at_least_one() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
         errors[0].contains(
-            "watchdog_threshold (10s, set in config:/user.toml) is below watchdog_interval \
-             (30s, set in config:/user.toml)"
+            "config(/user.toml): [daemon] watchdog_threshold (10s) is below watchdog_interval (30s, set in \
+             config(/user.toml))"
         ),
         "{errors:?}"
     );
@@ -1069,8 +1124,8 @@ fn the_watchdog_keys_are_whole_seconds_of_at_least_one() {
     ]);
     let errors = config.errors();
     assert!(
-        errors[0].contains("(10s, set in config:/b.toml)")
-            && errors[0].contains("(30s, set in config:/a.toml)"),
+        errors[0].starts_with("config(/b.toml): [daemon] watchdog_threshold (10s)")
+            && errors[0].contains("(30s, set in config(/a.toml))"),
         "{errors:?}"
     );
     // A threshold with no interval has nothing to check against.
@@ -1139,7 +1194,11 @@ fn a_builtin_source_accepts_only_return() {
     );
     assert_eq!(
         errors,
-        vec!["git.diff is a built-in Source: only return can be set".to_string()]
+        vec![
+            "config(/user.toml): [daemon.providers.git.sources.diff] is a built-in Source: only return can \
+             be set"
+                .to_string()
+        ]
     );
     // return alone loads.
     assert_eq!(
@@ -1152,7 +1211,7 @@ fn a_builtin_source_accepts_only_return() {
     assert_eq!(
         source_errors("[daemon.providers.git.sources.diff]\nfoo = \"x\"\n"),
         vec![
-            "config:/user.toml: unknown key 'foo' in [daemon.providers.git.sources.diff]"
+            "config(/user.toml): unknown key 'foo' in [daemon.providers.git.sources.diff]"
                 .to_string()
         ]
     );
@@ -1162,7 +1221,8 @@ fn a_builtin_source_accepts_only_return() {
     );
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
-        errors[0].starts_with("[daemon.providers.git.sources.diff] return: poll()"),
+        errors[0]
+            .starts_with("config(/user.toml): [daemon.providers.git.sources.diff] return: poll()"),
         "{errors:?}"
     );
 }
@@ -1202,7 +1262,7 @@ fn a_broken_prototype_return_line_is_a_load_error_naming_its_table() {
     );
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
-        errors[0].starts_with("[daemon.providers._.sources._] return: poll()"),
+        errors[0].starts_with("config(/user.toml): [daemon.providers._.sources._] return: poll()"),
         "{errors:?}"
     );
 }
@@ -1225,7 +1285,8 @@ return = "{{ result | super }}"
         "the prototype and the Source agree: {errors:?}"
     );
     assert!(
-        errors[0].starts_with("[daemon.providers.demo.sources._] return: poll()"),
+        errors[0]
+            .starts_with("config(/user.toml): [daemon.providers.demo.sources._] return: poll()"),
         "{errors:?}"
     );
 }
@@ -1271,7 +1332,7 @@ fn a_wrong_type_in_a_prototype_is_the_file_checks_alone() {
     );
     assert_eq!(
         source_errors(user),
-        vec![format!("config:/user.toml: {}", file[0])],
+        vec![format!("config(/user.toml): {}", file[0])],
         "reported once, by the file check: the build does not report it a second time, \
          naming the Source's table"
     );
@@ -1512,7 +1573,8 @@ fn a_misspelled_builtin_source_says_what_the_provider_has() {
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
         errors[0].starts_with(
-            "[daemon.providers.git.sources.dif]: git has no Source 'dif' (its Sources: "
+            "config(/user.toml): [daemon.providers.git.sources.dif]: git has no Source 'dif' (its \
+             Sources: "
         ) && errors[0].contains("diff")
             && errors[0].ends_with("a new Source needs data and result"),
         "{errors:?}"
@@ -1530,8 +1592,8 @@ fn nearest_on_a_source_with_one_instance_is_a_load_error() {
     assert_eq!(
         errors,
         vec![
-            "[daemon.providers.hostname.sources.host] return: hostname.host has one instance; \
-             nearest has no effect"
+            "config(/user.toml): [daemon.providers.hostname.sources.host] return: hostname.host has one \
+             instance; nearest has no effect"
                 .to_string()
         ]
     );
@@ -1557,8 +1619,8 @@ fn a_retune_that_watches_nothing_is_a_load_error() {
     assert_eq!(
         errors,
         vec![
-            "[daemon.providers.hostname.sources.host] return: watch('etc/hosts') is relative, \
-             but hostname.host has one instance; use an absolute path"
+            "config(/user.toml): [daemon.providers.hostname.sources.host] return: watch('etc/hosts') is \
+             relative, but hostname.host has one instance; use an absolute path"
                 .to_string()
         ]
     );
@@ -1604,7 +1666,7 @@ log_level = ",
     )
     .errors();
     assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].starts_with("config:<in memory>: "), "{errors:?}");
+    assert!(errors[0].starts_with("config(<in memory>): "), "{errors:?}");
     assert!(!errors[0].contains('\n'), "one line per error: {errors:?}");
 }
 

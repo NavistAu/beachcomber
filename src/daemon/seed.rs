@@ -243,6 +243,7 @@ fn plan_templates(
     let mut errors = Vec::new();
     for ((file, layer), read) in layers.iter().zip(reads) {
         let label = Config::config_label(file);
+        let shown = Config::error_label(file);
         let client = layer
             .get("client")
             .and_then(|c| serde_json::to_value(c).ok())
@@ -256,7 +257,7 @@ fn plan_templates(
                         .push((label.clone(), value));
                 }
                 Ok(None) => {}
-                Err(e) => errors.push(format!("{label}: {e}")),
+                Err(e) => errors.push(format!("{shown}: {e}")),
             }
         }
     }
@@ -286,7 +287,7 @@ mod tests {
         let (planned, errors) = plan(&layers, &ProviderRegistry::new());
         assert_eq!(errors.len(), 1, "the bad one is reported once: {errors:?}");
         assert!(
-            errors[0].starts_with("config:/f.toml: [client.providers.bad] template 'n'"),
+            errors[0].starts_with("config(/f.toml): [client.providers.bad] template 'n'"),
             "{errors:?}"
         );
         let mut namespaces: Vec<&str> = planned
@@ -346,7 +347,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.starts_with("config:/f.toml: git template: ")),
+                .any(|e| e.starts_with("config(/f.toml): git template: ")),
             "{errors:?}"
         );
     }

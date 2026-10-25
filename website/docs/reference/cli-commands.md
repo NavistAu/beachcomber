@@ -138,7 +138,7 @@ comb g.j git:source .            # → what the Source computed, even where a pu
 |--------|------|-------------|
 | `age_ms` | int | Milliseconds since the value was last computed (0 for a rendered template) |
 | `stale` | bool | Whether the value is past its expected refresh time |
-| `source` | string | What answered: `put`, `template`, `config:<file>`, or `source(<name>)` such as `source(head)` |
+| `source` | string | What answered: `put`, `template`, `config(<file>)`, `computed(<line>)`, or `source(<name>)` such as `source(head)` |
 | `poll` | object | `{interval, count}` — present for polled Sources and `--ttl` puts |
 | `watch` | array | Watched paths — present for watching Sources |
 | `decay` | int | Decay steps before eviction (default 4) |

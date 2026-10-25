@@ -257,23 +257,23 @@ pub fn lint_lines(
     }
     for (stage, line, allowed) in lines {
         let names =
-            undeclared_names(&probe, line, false).map_err(|e| format!("{who}: {stage}: {e}"))?;
+            undeclared_names(&probe, line, false).map_err(|e| format!("{who} {stage}: {e}"))?;
         if let Some(name) = names.iter().find(|n| !allowed.contains(&n.as_str())) {
             return Err(format!(
-                "{who}: {stage}: unknown name '{name}' (this line sees {})",
+                "{who} {stage}: unknown name '{name}' (this line sees {})",
                 allowed.join(", ")
             ));
         }
     }
     if let Some(data) = data {
-        let used = undeclared_names(&probe, data, true).map_err(|e| format!("{who}: data: {e}"))?;
+        let used = undeclared_names(&probe, data, true).map_err(|e| format!("{who} data: {e}"))?;
         if used.contains("sources") {
             return Err(format!(
-                "{who}: data: a sibling Source is called, sources.<source>(); sources[...] and \
+                "{who} data: a sibling Source is called, sources.<source>(); sources[...] and \
                  sources as a whole are not supported"
             ));
         }
-        called_in(&probe, data).map_err(|e| format!("{who}: data: {e}"))?;
+        called_in(&probe, data).map_err(|e| format!("{who} data: {e}"))?;
     }
     Ok(())
 }
@@ -308,22 +308,27 @@ impl ConfigSource {
         plugins: Arc<PluginSet>,
         reader: Arc<dyn DaemonRead>,
     ) -> Result<Self, String> {
+        // A load error names the Source's table, as every configuration error
+        // does; a run's error (`stage_error`) names the Source.
+        let at = format!("[daemon.providers.{}.sources.{}]", spec.provider, spec.name);
+        let load_error = |stage: &str, message: &str| format!("{at} {stage}: {message}");
         let fields = match &spec.result {
             ResultSpec::Whole(_) => vec![FieldSchema {
                 name: "<node>".into(),
                 field_type: FieldType::Object,
             }],
             ResultSpec::Fields(pairs) if pairs.is_empty() => {
-                return Err(stage_error(&spec, "result", "declares no fields"));
+                return Err(load_error("result", "declares no fields"));
             }
             ResultSpec::Fields(pairs) => {
                 let mut fields = Vec::new();
                 for (name, _) in pairs {
                     if name.is_empty() || name.starts_with('<') {
-                        return Err(stage_error(
-                            &spec,
+                        return Err(load_error(
                             "result",
-                            format!("field name '{name}' must be non-empty and not start with '<'"),
+                            &format!(
+                                "field name '{name}' must be non-empty and not start with '<'"
+                            ),
                         ));
                     }
                     fields.push(FieldSchema {
@@ -342,7 +347,7 @@ impl ConfigSource {
         };
 
         lint_lines(
-            &format!("{}.{}", spec.provider, spec.name),
+            &at,
             spec.root.as_deref(),
             Some(&spec.data),
             Some(&spec.result),
@@ -367,13 +372,13 @@ impl ConfigSource {
 
         let who = format!("{}.{}", spec.provider, spec.name);
         let calls = called_in(&engine(&env, &plugins, None), &spec.data)
-            .map_err(|e| format!("{who}: data: {e}"))?;
+            .map_err(|e| load_error("data", &e))?;
         let itself = |c: &Called| match c {
             Called::Sibling(s) => *s == spec.name,
             Called::Of(p, s) => *p == spec.provider && *s == spec.name,
         };
         if calls.iter().any(itself) {
-            return Err(format!("{who}: data: {who} cannot call itself"));
+            return Err(load_error("data", &format!("{who} cannot call itself")));
         }
 
         let recorded = &spec.recorded;
@@ -384,7 +389,7 @@ impl ConfigSource {
                 recorded.nearest,
             )
         {
-            return Err(stage_error(&spec, "return", problem));
+            return Err(load_error("return", &problem));
         }
         let meta = SourceMetadata {
             name: spec.name.clone(),
@@ -916,7 +921,7 @@ mod tests {
         let err = new_err(sp.clone());
         assert!(
             err.starts_with(
-                "demo.s: return: watch('.git/HEAD') is relative, but demo.s has one instance"
+                "[daemon.providers.demo.sources.s] return: watch('.git/HEAD') is relative, but demo.s has one instance"
             ),
             "{err}"
         );
@@ -1133,7 +1138,8 @@ mod tests {
         for (sp, stage, name) in cases {
             let err = new_err(sp);
             assert!(
-                err.starts_with(&format!("demo.s: {stage} ")) && err.contains(name),
+                err.starts_with(&format!("[daemon.providers.demo.sources.s] {stage} "))
+                    && err.contains(name),
                 "{err}"
             );
         }
@@ -1237,7 +1243,10 @@ mod tests {
             (spec(None, "x", ResultSpec::Whole("{{ ".into())), "result"),
         ] {
             let err = new_err(sp);
-            assert!(err.starts_with(&format!("demo.s: {stage}: ")), "{err}");
+            assert!(
+                err.starts_with(&format!("[daemon.providers.demo.sources.s] {stage}: ")),
+                "{err}"
+            );
         }
     }
 
@@ -1247,7 +1256,10 @@ mod tests {
         assert!(err.contains("no fields"), "{err}");
         for bad in ["", "<node>"] {
             let err = new_err(spec(None, "x", fields(&[(bad, "1")])));
-            assert!(err.starts_with("demo.s: result: "), "{bad}: {err}");
+            assert!(
+                err.starts_with("[daemon.providers.demo.sources.s] result: "),
+                "{bad}: {err}"
+            );
         }
         // A name holding a `.` is one field, read as `['a.b']`.
         source(spec(None, "x", fields(&[("a.b", "1")])));
@@ -1306,7 +1318,10 @@ mod tests {
             "{{ daemon.providers.demo.sources.s().x }}",
         ] {
             let err = new_err(spec(None, line, fields(&[("a", "{{ data }}")])));
-            assert_eq!(err, "demo.s: data: demo.s cannot call itself", "{line}");
+            assert_eq!(
+                err, "[daemon.providers.demo.sources.s] data: demo.s cannot call itself",
+                "{line}"
+            );
         }
         // Another provider's Source of the same name is not itself.
         source(spec(
@@ -1320,7 +1335,10 @@ mod tests {
     fn a_source_is_called_the_one_way() {
         for line in ["{{ sources }}", "{{ sources['b'] }}", "{{ daemon }}"] {
             let err = new_err(spec(None, line, fields(&[("a", "{{ data }}")])));
-            assert!(err.starts_with("demo.s: data: "), "{line}: {err}");
+            assert!(
+                err.starts_with("[daemon.providers.demo.sources.s] data: "),
+                "{line}: {err}"
+            );
         }
     }
 

@@ -437,7 +437,7 @@ impl Reader {
 
 /// Read one layer: the file it came from (for the label) and its parsed TOML.
 pub fn read(file: &Path, layer: &toml::Value) -> Seeded {
-    read_labelled(Config::config_label(file), layer)
+    read_labelled(Config::error_label(file), layer)
 }
 
 /// [`read`] for a layer with a label of its own: a configuration built in

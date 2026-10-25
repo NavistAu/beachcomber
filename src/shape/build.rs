@@ -137,11 +137,14 @@ pub fn prototype_lines(providers: &toml::Table) -> Vec<PrototypeLines> {
 /// what its `| super` reaches in `<p>.sources._` and `_.sources._`. With no
 /// `return` of its own it is not touched: the `_` lines apply to config
 /// Sources only.
+///
+/// What builds is returned beside every error found, so a table that does
+/// not build hides none of the others: each is checked further on its own.
 pub fn build(
     providers: &toml::Table,
     existing: &HashMap<String, Vec<SourceMetadata>>,
     defaults: &EngineDefaults,
-) -> Result<Built, Vec<String>> {
+) -> (Built, Vec<String>) {
     let mut errors: BTreeSet<String> = BTreeSet::new();
     let mut err = |e: String| {
         errors.insert(e);
@@ -184,9 +187,7 @@ pub fn build(
                     .iter()
                     .any(|k| stable.contains_key(*k))
                 {
-                    err(format!(
-                        "{provider}.{source} is a built-in Source: only return can be set"
-                    ));
+                    err(format!("{at} is a built-in Source: only return can be set"));
                 } else if stable.contains_key("return") {
                     let links = chain(providers, Kind::Source, provider, source);
                     // A line of the wrong type is the file check's error: skip.
@@ -265,9 +266,5 @@ pub fn build(
         });
     }
 
-    if errors.is_empty() {
-        Ok(Built { decls, retunes })
-    } else {
-        Err(errors.into_iter().collect())
-    }
+    (Built { decls, retunes }, errors.into_iter().collect())
 }
