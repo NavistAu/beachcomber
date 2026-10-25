@@ -1,16 +1,16 @@
 //! Handler for the `kill` subcommand.
 
+use crate::cli::exit::Outcome;
 use crate::cli::introspect_types::DaemonIntrospect;
 use crate::daemon::{is_daemon_running, pid_path_for_socket};
 use crate::pid_check::pid_is_our_daemon;
 use std::fs;
 use std::path::Path;
-use std::process::ExitCode;
 
-pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> ExitCode {
+pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> Outcome {
     if !is_daemon_running(socket_path) {
         println!("Daemon is not running.");
-        return ExitCode::SUCCESS;
+        return Outcome::Done;
     }
 
     let pid_path = pid_path_for_socket(socket_path);
@@ -18,7 +18,7 @@ pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> ExitCode {
         Ok(pid) => pid,
         Err(msg) => {
             crate::cli::report::error("daemon", msg);
-            return ExitCode::from(2);
+            return Outcome::Error;
         }
     };
 
@@ -28,10 +28,10 @@ pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> ExitCode {
         if err.raw_os_error() == Some(libc::ESRCH) {
             let _ = fs::remove_file(&pid_path);
             println!("Daemon process was already stopped.");
-            return ExitCode::SUCCESS;
+            return Outcome::Done;
         }
         crate::cli::report::error("daemon", format_args!("could not signal pid {pid}: {err}"));
-        return ExitCode::from(2);
+        return Outcome::Error;
     }
 
     // Poll until the socket stops responding.
@@ -39,7 +39,7 @@ pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> ExitCode {
     while std::time::Instant::now() < deadline {
         if !is_daemon_running(socket_path) {
             println!("Daemon stopped (pid {pid}).");
-            return ExitCode::SUCCESS;
+            return Outcome::Done;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
@@ -51,7 +51,7 @@ pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> ExitCode {
             crate::config::display_duration(timeout)
         ),
     );
-    ExitCode::from(1)
+    Outcome::Error
 }
 
 /// Find the pid of the running daemon. Asks the daemon itself via

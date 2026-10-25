@@ -7,30 +7,30 @@
 //! its own words. `comb get --force` is the read-and-refresh form; this is
 //! the re-execution alone.
 
+use crate::cli::exit::Outcome;
 use crate::config::Config;
-use std::process::ExitCode;
 
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
 /// an absolute path — the one given, or the current directory.
-pub fn run_refresh(config: &Config, key: &str, path: Option<&str>) -> ExitCode {
+pub fn run_refresh(config: &Config, key: &str, path: Option<&str>) -> Outcome {
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
         crate::cli::report::daemon_start(e);
-        return ExitCode::from(2);
+        return Outcome::Error;
     }
 
     match crate::client::Client::new(socket_path).refresh(key, path) {
-        Ok(resp) if resp.ok => ExitCode::SUCCESS,
+        Ok(resp) if resp.ok => Outcome::Done,
         // The daemon's own words for a key it refused.
         Ok(resp) => {
             crate::cli::report::error(key, resp.error.unwrap_or_default());
-            ExitCode::from(2)
+            Outcome::Error
         }
         Err(e) => {
             crate::cli::report::daemon_unreachable(e);
-            ExitCode::from(2)
+            Outcome::Error
         }
     }
 }

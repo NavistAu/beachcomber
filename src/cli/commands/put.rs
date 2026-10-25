@@ -2,8 +2,8 @@
 //!
 //! Moved from `src/main.rs` in Task 2.4.
 
+use crate::cli::exit::Outcome;
 use crate::config::Config;
-use std::process::ExitCode;
 
 pub fn run_put(
     config: &Config,
@@ -11,13 +11,13 @@ pub fn run_put(
     data_str: &str,
     ttl: Option<std::time::Duration>,
     path: Option<&str>,
-) -> ExitCode {
+) -> Outcome {
     // A ttl is whole seconds of at least one; refused here, before a daemon
     // is started for a put that cannot happen.
     let ttl = match ttl {
         Some(d) if d.subsec_nanos() != 0 || d.is_zero() => {
             crate::cli::report::error("--ttl", "must be a whole number of seconds, at least 1s");
-            return ExitCode::from(2);
+            return Outcome::Error;
         }
         Some(d) => Some(format!("{}s", d.as_secs())),
         None => None,
@@ -27,7 +27,7 @@ pub fn run_put(
 
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
         crate::cli::report::daemon_start(e);
-        return ExitCode::from(2);
+        return Outcome::Error;
     }
 
     let client = crate::client::Client::new(socket_path);
@@ -36,7 +36,7 @@ pub fn run_put(
         Ok(v) => v,
         Err(e) => {
             crate::cli::report::error(key, format_args!("invalid JSON: {e}"));
-            return ExitCode::from(2);
+            return Outcome::Error;
         }
     };
 
@@ -46,15 +46,15 @@ pub fn run_put(
     match client.put(key, data, ttl.as_deref(), path) {
         Ok(response) => {
             if response.ok {
-                ExitCode::SUCCESS
+                Outcome::Done
             } else {
                 crate::cli::report::error(key, response.error.unwrap_or_default());
-                ExitCode::from(2)
+                Outcome::Error
             }
         }
         Err(e) => {
             crate::cli::report::daemon_unreachable(e);
-            ExitCode::from(2)
+            Outcome::Error
         }
     }
 }

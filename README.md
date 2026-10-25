@@ -317,8 +317,8 @@ comb g.j git:cache.branch .    # → {"age_ms": 1240, "stale": false, "source": 
 ```
 
 **Exit codes:**
-- `0` — success; also a miss under `text`/`sh`, which print nothing
-- `2` — a miss under `json`, `csv`, `tsv` or `fmt` (`error: <key>: no data (cache miss)` on stderr)
+- `0` — success, a miss included in every format: `text` prints nothing, `json` prints `null`, and a miss among several keys holds its place
+- `1` — a miss under `--strict` (or `BEACHCOMBER_STRICT=1`)
 - `2` — error (daemon unreachable, invalid key, a template that does not compile or cycles — named in the message)
 
 ### `comb s` (status)

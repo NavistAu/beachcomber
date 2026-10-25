@@ -60,7 +60,8 @@ impl Setup {
     }
 }
 
-/// `comb get -f json <args>` from `cwd`: the parsed value, or `None` on a miss.
+/// `comb get -f json <args>` from `cwd`: the parsed value, or `None` on a miss
+/// (`null`) or an error.
 fn get_at(d: &TestDaemon, cwd: &Path, args: &[&str]) -> Option<Value> {
     let out = d
         .comb(cwd)
@@ -68,10 +69,13 @@ fn get_at(d: &TestDaemon, cwd: &Path, args: &[&str]) -> Option<Value> {
         .args(args)
         .output()
         .expect("run comb get");
-    out.status.success().then(|| {
-        serde_json::from_slice(&out.stdout)
-            .unwrap_or_else(|e| panic!("get {args:?}: not JSON ({e}): {:?}", out.stdout))
-    })
+    out.status
+        .success()
+        .then(|| {
+            serde_json::from_slice::<Value>(&out.stdout)
+                .unwrap_or_else(|e| panic!("get {args:?}: not JSON ({e}): {:?}", out.stdout))
+        })
+        .filter(|v| !v.is_null())
 }
 
 fn get(d: &TestDaemon, key: &str) -> Option<Value> {
@@ -348,6 +352,7 @@ result.m = "{{ data.m }}"
         out.status
             .success()
             .then(|| serde_json::from_slice::<Value>(&out.stdout).unwrap())
+            .filter(|v| !v.is_null())
     };
     assert_eq!(
         get_as_caller("demo.h"),
@@ -1745,7 +1750,7 @@ result.mine = "{{ data }}"
             .args(["get", "-f", "json", "viadata.x"])
             .output()
             .expect("run comb get");
-        assert!(!out.status.success());
+        assert!(out.status.success() && out.stdout == b"null\n", "{out:?}");
         assert!(
             !String::from_utf8_lossy(&out.stderr).contains("exit"),
             "a miss, not the callee's error: {out:?}"
@@ -2205,7 +2210,7 @@ fn refresh_wait_and_force_of_a_disabled_provider() {
         .output()
         .unwrap();
     assert!(
-        !out.status.success(),
+        out.status.success() && out.stdout == b"null\n",
         "--wait is a miss, not a run: {out:?}"
     );
     assert_eq!(runs(&off_count), 0);

@@ -6,6 +6,7 @@ use beachcomber::cli::commands::kill::run_kill;
 use beachcomber::cli::commands::put::run_put;
 use beachcomber::cli::commands::refresh::run_refresh;
 use beachcomber::cli::commands::watch::run_watch;
+use beachcomber::cli::exit::Outcome;
 use beachcomber::cli::output_format::{
     Format, GET, STATUS, WATCH, get_format, rewrite_suffix, status_format, watch_format,
 };
@@ -85,6 +86,15 @@ fn status_after_help() -> String {
         g.f TEMPLATE (a template)."
 )]
 struct Cli {
+    /// A read that finds nothing exits 1 rather than 0 (`get`, `eval`)
+    #[arg(
+        long,
+        global = true,
+        env = "BEACHCOMBER_STRICT",
+        value_parser = clap::builder::FalseyValueParser::new(),
+        hide_env_values = true
+    )]
+    strict: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -284,14 +294,14 @@ enum Commands {
 /// cwd is read only when it is needed — an absolute path must keep working from
 /// a directory that no longer exists — and when it is needed and unreadable the
 /// answer is an error, never a silent read of the global entry.
-fn cli_path(global: bool, requested: Option<String>) -> Result<Option<String>, ExitCode> {
+fn cli_path(global: bool, requested: Option<String>) -> Result<Option<String>, Outcome> {
     if global {
         return Ok(None);
     }
     let cwd = || {
         std::env::current_dir().map_err(|e| {
             beachcomber::cli::report::error("current directory", e);
-            ExitCode::from(2)
+            Outcome::Error
         })
     };
     // A `~` the shell left alone (it was quoted) means what it would have
@@ -352,11 +362,16 @@ fn main() -> ExitCode {
         Ok(args) => args,
         Err(e) => {
             beachcomber::cli::report::error_named(e);
-            return ExitCode::from(2);
+            return Outcome::Error.code(false);
         }
     };
     let cli = Cli::parse_from(args);
+    let strict = cli.strict;
+    run(cli).code(strict)
+}
 
+/// Run the command `cli` names.
+fn run(cli: Cli) -> Outcome {
     // Only the daemon writes the managed defaults, and it does so before
     // `Config::load()` reads the directory, so the defaults it seeds are this
     // binary's. A directory it cannot write is a refusal to start (spec §3.3).
@@ -369,7 +384,7 @@ fn main() -> ExitCode {
                 "daemon",
                 format_args!("could not write managed defaults to {}: {e}", dir.display()),
             );
-            return ExitCode::from(2);
+            return Outcome::Error;
         }
     }
     let config = Config::load();
@@ -398,7 +413,7 @@ fn main() -> ExitCode {
             // refuses it) or from a trailing positional.
             if global && resolved_path.is_some() {
                 beachcomber::cli::report::error("--global", "cannot be combined with a path");
-                return ExitCode::from(2);
+                return Outcome::Error;
             }
             let effective_path = match cli_path(global, resolved_path) {
                 Ok(p) => p,

@@ -133,14 +133,14 @@ fn cli_get(daemon: &TestDaemon, cwd: &Path, key: &str) -> Class {
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     match out.status.code() {
+        Some(0) if stdout == "null\n" => {
+            assert!(stderr.is_empty(), "a miss is not an error, got {stderr:?}");
+            Class::Miss
+        }
         Some(0) => Class::Hit(
             serde_json::from_str(&stdout)
                 .unwrap_or_else(|e| panic!("comb get -f json {key}: not JSON ({e}): {stdout:?}")),
         ),
-        Some(2) if stderr.contains("no data (cache miss)") => {
-            assert!(stdout.is_empty(), "a miss prints nothing, got {stdout:?}");
-            Class::Miss
-        }
         Some(2) => Class::Error(stderr.trim_end().to_string()),
         code => panic!("comb get {key}: unexpected exit {code:?}; stderr {stderr:?}"),
     }

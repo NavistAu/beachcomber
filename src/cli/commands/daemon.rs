@@ -1,12 +1,12 @@
 //! Handler for the `daemon` subcommand.
 
+use crate::cli::exit::Outcome;
 use crate::config::Config;
 use std::fs;
 use std::path::PathBuf;
-use std::process::ExitCode;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) -> ExitCode {
+pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) -> Outcome {
     // Captured before any startup work: a parent that dies during startup must
     // still be noticed, and once we are re-parented getppid() no longer names it.
     let parent_pid = unsafe { libc::getppid() };
@@ -19,7 +19,7 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
         for line in crate::daemon::refusal(&errors) {
             eprintln!("{line}");
         }
-        return ExitCode::from(2);
+        return Outcome::Error;
     }
 
     // Ensure log directory exists.
@@ -63,7 +63,7 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
 
     if exit_with_parent && parent_pid == 1 {
         tracing::info!("--exit-with-parent but the parent is already gone (ppid 1); exiting");
-        return ExitCode::SUCCESS;
+        return Outcome::Done;
     }
 
     let pid_path = socket_path.with_file_name("pid");
@@ -71,7 +71,7 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
         Ok(h) => h,
         Err(e) => {
             tracing::error!("failed to hash current binary for singleton identity: {e}");
-            return ExitCode::FAILURE;
+            return Outcome::Error;
         }
     };
     let _singleton_lock = match crate::singleton::acquire_or_supersede(
@@ -85,11 +85,11 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
             tracing::info!(
                 "another daemon with the same binary is already running; exiting silently"
             );
-            return ExitCode::SUCCESS;
+            return Outcome::Done;
         }
         Err(e) => {
             tracing::error!("failed to acquire singleton lock: {e}");
-            return ExitCode::FAILURE;
+            return Outcome::Error;
         }
     };
 
@@ -232,9 +232,9 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
         // managed-defaults write does, so a supervisor can tell a refused
         // start from a clean stop.
         if ready.await.is_err() {
-            return ExitCode::from(2);
+            return Outcome::Error;
         }
-        ExitCode::SUCCESS
+        Outcome::Done
     })
 }
 

@@ -55,6 +55,16 @@ A template rendered for a read runs its `exec()`, `lup()` and `read` in the dire
 
 Every duration comb takes — `put --ttl`, `kill --timeout`, `check --connect-timeout`, `check procs --duration`, the `[daemon]` duration keys and the `poll`, `ttl`, `failback` and `budget` decorators — is written the same way: a whole number with an optional unit, `ms`, `s`, `m` or `h`, a bare number being seconds (`250ms`, `30s`, `2m`, `60`; in config a TOML integer is seconds too). Anything else is refused in the same words, before a daemon is started. What each one may be is its own: a ttl is whole seconds of at least `1s`, a poll interval at least `1s`, a `budget` at least `1ms`, a `--connect-timeout` of `0` is a single attempt.
 
+## Exit codes
+
+Every command exits the same way, whatever its format — the format is applied last and never decides the code:
+
+- `0` — done. A read that found nothing, a miss, is done too: `text` prints nothing, `json` prints `null`, and a miss among several keys holds its place.
+- `1` — a miss, under `--strict` (`get` and `eval`); and `check` finding something worth a look (`WARN`).
+- `2` — an error: the daemon unreachable or refusing, a key the grammar cannot read, a template that does not compile, a failed `exec()`, a `kill` the daemon outlived, a `check` `FAIL`.
+
+`--strict` is a global flag, accepted before or after the command (`comb --strict g git.branch`, `comb g git.branch --strict`); `BEACHCOMBER_STRICT=1` sets it (`0`, `false`, `no`, `off` or empty leave it off), and the flag wins.
+
 ## `comb g` (get) `<key>... [path] [-p <path>] [--global] [-f format]`
 
 Query a value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay. `comb get` is a client of `libbeachcomber::resolve`, the same function behind `comb eval` and every SDK's `resolve`: it always needs the daemon, even for a key (`env.HOME`) it answers without a request.
@@ -159,9 +169,9 @@ comb g.j git:source .            # → what the Source computed, even where a pu
 
 Only a colon in the provider's own segment names a facet (`git:cache`); below it a colon is an ordinary character, so `git.branch:age` is a miss like any unknown field. A key the grammar cannot read — `p..a`, `p['a`, `p[01]`, a provider starting with `/` or `~` — is `invalid key: <key>`, exit `2`.
 
-**Exit codes:**
-- `0` — success; also a miss under `text`/`sh`, which print nothing (e.g. `git` queried outside a git repository)
-- `2` — a miss under `json`, `csv`, `tsv` or a template (`error: <key>: no data (cache miss)` on stderr)
+**Exit codes** ([as for every command](#exit-codes)):
+- `0` — success, a miss included in every format (e.g. `git` queried outside a git repository): `text` prints nothing, `json` prints `null`, and a miss among several keys holds its place
+- `1` — a miss under `--strict`
 - `2` — error (daemon unreachable, invalid key, a template that does not compile or cycles — the message names the field)
 
 ## `comb s` (status)
@@ -455,7 +465,7 @@ programmatic consumer: `bc_eval`, and so every SDK's `eval`, hands back a typed
 value (bool, number, object, array). A template is always a string in all of
 them.
 
-**Exit codes:** `0` on success, `2` on error.
+**Exit codes:** `0` on success, an absent value included (it prints nothing); `1` for an absent value under `--strict`; `2` on error.
 
 ### `exec()` — running a command from an expression
 
@@ -527,7 +537,7 @@ $ comb c config --origins client.providers.aws.template.profile
 
 `--connect-timeout <DURATION>` bounds how long the check keeps trying to reach the daemon before reporting it unreachable (default `1s`; `0` for a single attempt, or any [duration](#durations), e.g. `250ms`, `2s`). Retries start 5ms apart and double, so a daemon that is mid-restart is reached as soon as it binds. The option is accepted before or after the subcommand: `comb c --connect-timeout 0 daemon`.
 
-**Exit codes:** `0` if healthy, `1` if unhealthy, `2` on error.
+**Exit codes:** `0` if healthy, `1` if something is worth a look (a `WARN`), `2` on a `FAIL` or an error.
 
 ## `comb d` (daemon) `[--socket <path>] [--no-reap]`
 
@@ -560,4 +570,4 @@ comb kill --socket /tmp/beachcomber-debug.sock   # target a custom socket
 
 The command queries the daemon for its PID via `introspect{subject:"daemon"}`, so it works even when the PID file is stale or missing.
 
-**Exit codes:** `0` on success (including no-op), `1` if the daemon didn't exit within `--timeout`, `2` on error (pid could not be determined, signal failed).
+**Exit codes:** `0` on success (including no-op), `2` on error (the daemon did not exit within `--timeout`, its pid could not be determined, the signal failed).

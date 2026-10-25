@@ -10,10 +10,10 @@
 //! variant in `main.rs` can reference it.  This keeps all check-related code in
 //! one module and avoids a cross-binary-to-library dependency inversion.
 
+use crate::cli::exit::Outcome;
 use crate::cli::introspect_types::{DaemonIntrospect, Verdict};
 use crate::config::Config;
 use clap::Subcommand;
-use std::process::ExitCode;
 use std::time::Duration;
 
 /// `check procs --duration`: the one duration grammar, in whole seconds of at
@@ -94,7 +94,7 @@ pub fn run_check(
     config: &Config,
     check_cmd: Option<CheckCommands>,
     connect_timeout: Duration,
-) -> ExitCode {
+) -> Outcome {
     const ALL_SUBJECTS: &[&str] = &[
         "daemon",
         "config",
@@ -130,8 +130,7 @@ pub fn run_check(
         Some(CheckCommands::Procs { duration }) => (vec!["procs"], Some(*duration)),
     };
 
-    let worst = run_check_subjects(config, &subjects, procs_duration, connect_timeout);
-    ExitCode::from(worst)
+    run_check_subjects(config, &subjects, procs_duration, connect_timeout)
 }
 
 /// `comb check config --origins [KEY]`: how the composed configuration came
@@ -145,7 +144,7 @@ fn run_origins(
     format: &crate::cli::output_format::Format,
     color: &str,
     ascii: bool,
-) -> ExitCode {
+) -> Outcome {
     use crate::cli::config_origins;
     use crate::cli::output_format::{Format, Preset};
     use crate::cli::status_format::{ColorMode, resolve_color};
@@ -155,7 +154,7 @@ fn run_origins(
         Ok(origins) => origins,
         Err(e) => {
             crate::cli::report::error_named(e);
-            return ExitCode::from(2);
+            return Outcome::Error;
         }
     };
     let errors: Vec<serde_json::Value> = config
@@ -188,7 +187,7 @@ fn run_origins(
             print!("\nConfig\n{error_lines}");
         }
     }
-    ExitCode::from(worst)
+    worst
 }
 
 /// `connect_timeout` bounds the whole search for a daemon: a check exists to
@@ -199,10 +198,10 @@ pub fn run_check_subjects(
     subjects: &[&str],
     procs_duration: Option<u64>,
     connect_timeout: Duration,
-) -> u8 {
+) -> Outcome {
     let socket_path = config.resolve_socket_path();
     let client = crate::client::Client::with_connect_timeout(socket_path, connect_timeout);
-    let mut worst = 0u8;
+    let mut worst = Outcome::Done;
 
     for &subject in subjects {
         let duration = if subject == "procs" {
@@ -240,7 +239,7 @@ pub fn run_check_subjects(
                 let err = resp.error.as_deref().unwrap_or("unknown error");
                 let line = verdict_line("FAIL", daemon_view(&local), err);
                 print!("\n{title}\n{local_lines}{line}");
-                worst = worst.max(2);
+                worst = worst.max(Outcome::Error);
             }
             Err(e) => {
                 let title = subject_title(subject);
@@ -250,7 +249,7 @@ pub fn run_check_subjects(
                     &format!("daemon not responding: {e}"),
                 );
                 print!("\n{title}\n{local_lines}{line}");
-                worst = worst.max(2);
+                worst = worst.max(Outcome::Error);
                 // No point continuing if daemon is unreachable.
                 break;
             }
@@ -261,8 +260,7 @@ pub fn run_check_subjects(
 }
 
 /// Validate the config file against the built-in providers, as
-/// `run_daemon_with_cancel` does at startup. Returns the verdict lines and the
-/// worst exit code they imply.
+/// `run_daemon_with_cancel` does at startup.
 ///
 /// The provider set is `ProviderRegistry::load`'s. A Source's `plugin()` calls
 /// are linted, not run, so nothing is `dlopen`ed in the checking process.
@@ -366,7 +364,7 @@ fn subject_title(subject: &str) -> &'static str {
 }
 
 /// Render a subject's introspect payload into a formatted block.
-/// Returns (text, worst_exit_code): PASS/INFO=0, WARN=1, FAIL=2.
+/// Returns the text and the worst of its verdicts ([`Outcome::of_level`]).
 ///
 /// `local` carries verdicts the client produced itself rather than reading off
 /// the daemon — only `config` has any. They join the block's own verdict list
@@ -375,14 +373,14 @@ fn render_subject(
     subject: &str,
     payload: &serde_json::Value,
     local: &[serde_json::Value],
-) -> (String, u8) {
+) -> (String, Outcome) {
     let verdicts = payload
         .get("verdicts")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
 
-    let mut worst: u8 = 0;
+    let mut worst = Outcome::Done;
     let mut lines = String::new();
 
     // Build per-subject header and detail lines before verdict lines.
@@ -423,7 +421,7 @@ fn render_subject(
                     lines.push_str(&format!(
                         "  [FAIL] could not parse introspect{{daemon}} response: {e}\n"
                     ));
-                    worst = worst.max(2);
+                    worst = worst.max(Outcome::Error);
                 }
             }
         }
@@ -476,7 +474,7 @@ fn render_subject(
                     lines.push_str(&format!(
                         "  [WARN] {source:<8} {name:<12} fields={fields_str:<30} {invalidation} — in backoff {elapsed}s (stage={stage})\n"
                     ));
-                    worst = worst.max(1);
+                    worst = worst.max(Outcome::Warning);
                 } else {
                     lines.push_str(&format!(
                         "  [PASS] {source:<8} {name:<12} fields={fields_str:<30} {invalidation}\n"
@@ -527,11 +525,11 @@ fn render_subject(
                 ));
             } else {
                 lines.push_str(&verdict_line("FAIL", daemon, "parsed FAILED"));
-                worst = worst.max(2);
+                worst = worst.max(Outcome::Error);
             }
             for err in &errors {
                 lines.push_str(&verdict_line("FAIL", daemon, err));
-                worst = worst.max(2);
+                worst = worst.max(Outcome::Error);
             }
             lines.push_str(&vlines);
             lines.push_str(&local_lines);
@@ -553,7 +551,7 @@ fn render_subject(
             lines.push_str(&format!("  [PASS] entries   {total} total\n"));
             if stale > 0 {
                 lines.push_str(&format!("  [WARN] stale     {stale} stale entries\n"));
-                worst = worst.max(1);
+                worst = worst.max(Outcome::Warning);
             } else {
                 lines.push_str("  [PASS] stale     none\n");
             }
@@ -593,7 +591,7 @@ fn render_subject(
                     lines.push_str(&format!(
                         "  [WARN] {label}   stage={stage} elapsed={elapsed}s\n"
                     ));
-                    worst = worst.max(1);
+                    worst = worst.max(Outcome::Warning);
                 }
             }
             lines.push_str(&vlines);
@@ -611,7 +609,7 @@ fn render_subject(
             lines.push_str(&format!("Watches ({} paths)\n", paths.len()));
             if paths.is_empty() {
                 lines.push_str("  [WARN] not watching any paths\n");
-                worst = worst.max(1);
+                worst = worst.max(Outcome::Warning);
             } else {
                 let home = crate::home::Home::from_env();
                 for path in &paths {
@@ -655,7 +653,7 @@ fn render_subject(
                     lines.push_str(&format!(
                         "  [WARN] {label}   interval={interval}s  last={last}s ago  OVERDUE\n"
                     ));
-                    worst = worst.max(1);
+                    worst = worst.max(Outcome::Warning);
                 } else {
                     lines.push_str(&format!(
                         "  [PASS] {label}   interval={interval}s  last={last}s ago\n"
@@ -735,7 +733,7 @@ fn render_subject(
                         lines.push_str(&format!(
                             "  [WARN] {cmd:<20} {count:>8}  beachcomber can replace\n"
                         ));
-                        worst = worst.max(1);
+                        worst = worst.max(Outcome::Warning);
                     }
                     Some(false) => {
                         lines.push_str(&format!("  [INFO] {cmd:<20} {count:>8}\n"));
@@ -750,14 +748,14 @@ fn render_subject(
                     "  [WARN] {} command(s) could be replaced by `comb get`\n",
                     suggestions.len()
                 ));
-                worst = worst.max(1);
+                worst = worst.max(Outcome::Warning);
             }
             lines.push_str(&vlines);
         }
         other => {
             lines.push_str(&format!("Unknown subject: {other}\n"));
             lines.push_str("  [FAIL] no renderer for this subject\n");
-            worst = 2;
+            worst = Outcome::Error;
         }
     }
 
@@ -771,7 +769,7 @@ fn render_subject(
     let fail_count = counted()
         .filter(|v| v.get("level").and_then(|l| l.as_str()) == Some("FAIL"))
         .count();
-    if worst >= 1 {
+    if worst >= Outcome::Warning {
         lines.push('\n');
         match (fail_count, warn_count) {
             (f, _) if f > 0 => lines.push_str(&format!("({f} failure(s))\n")),
@@ -784,21 +782,16 @@ fn render_subject(
     (lines, worst)
 }
 
-/// Render verdicts array into formatted lines and the worst exit code.
-/// PASS/INFO = 0, WARN = 1, FAIL = 2. `tag` names the view that produced them,
+/// Render verdicts array into formatted lines and the worst of them
+/// ([`Outcome::of_level`]). `tag` names the view that produced them,
 /// for a subject whose block carries more than one.
-fn render_verdicts(verdicts: &[serde_json::Value], tag: Option<&str>) -> (String, u8) {
+fn render_verdicts(verdicts: &[serde_json::Value], tag: Option<&str>) -> (String, Outcome) {
     let mut out = String::new();
-    let mut worst: u8 = 0;
+    let mut worst = Outcome::Done;
     for v in verdicts {
         let level = v.get("level").and_then(|l| l.as_str()).unwrap_or("INFO");
         let msg = v.get("message").and_then(|m| m.as_str()).unwrap_or("");
-        let code = match level {
-            "FAIL" => 2,
-            "WARN" => 1,
-            _ => 0,
-        };
-        worst = worst.max(code);
+        worst = worst.max(Outcome::of_level(level));
         // Only emit verdicts that aren't already captured by the per-subject rendering above.
         // We include them for completeness but callers may suppress if they prefer.
         out.push_str(&verdict_line(level, tag, msg));
@@ -830,13 +823,13 @@ fn verdict_line(level: &str, tag: Option<&str>, msg: &str) -> String {
 
 /// Typed variant of render_verdicts for subjects parsed into structured types.
 /// Accepts `&[Verdict]` directly so the caller never needs to touch raw JSON.
-fn render_typed_verdicts(verdicts: &[Verdict]) -> (String, u8) {
+fn render_typed_verdicts(verdicts: &[Verdict]) -> (String, Outcome) {
     let mut out = String::new();
-    let mut worst: u8 = 0;
+    let mut worst = Outcome::Done;
     for v in verdicts {
         let level = &v.level;
         let msg = &v.message;
-        worst = worst.max(v.severity());
+        worst = worst.max(Outcome::of_level(&v.level));
         out.push_str(&format!("  [{level}] {msg}\n"));
     }
     (out, worst)

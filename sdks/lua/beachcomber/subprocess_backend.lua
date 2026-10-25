@@ -201,14 +201,14 @@ function Backend:name()
 end
 
 --- One `comb get -f json` for the value and its `:cache` answer (the
--- header comment): exit 0 is a hit; exit 2 with the CLI's miss line for
--- `key` (`error: <key>: no data (cache miss)`) is a miss; exit 2 with
--- another `error: <key>: ` line is that error — the daemon's refusal, or the
--- resolver's own (a template that does not compile, a cycle, a failed
--- `exec()`). Exit 2 with a null value slot and an `error: <key>.<leaf>` line
--- is a leaf of a group failing; an absent rendered value is the miss line,
--- so that slot is never a hit. Exit 2 with the value slot filled is a
--- rendered value whose `:cache` slot missed on its own — a hit with age 0.
+-- header comment): exit 0 is an answer — a null value slot is a miss,
+-- anything else a hit, aged by its `:cache` slot (a rendered value has none,
+-- so age 0). Exit 2 is an error, reported as `error: <who>: <why>`: an
+-- `error: <key>: ` line is the daemon's refusal of `key` or the resolver's
+-- own error (a template that does not compile, a cycle, a failed `exec()`);
+-- with a null value slot, an `error: <key>.<leaf>` line is a leaf of a group
+-- failing. Exit 2 with the value slot filled is a `:cache` slot that failed
+-- on its own — still a hit, with age 0.
 function Backend:get(key, path, flags)
   flags = flags or {}
   local cache_key = cache_key_of(key)
@@ -226,9 +226,6 @@ function Backend:get(key, path, flags)
   if not ok then
     err = err or ""
     local own = line_after(err, "error: " .. key .. ": ")
-    if own == "no data (cache miss)" then
-      return { ok = true, data = nil } -- miss
-    end
     if own then
       return { ok = false, error = { kind = "server_error", message = own } }
     end
@@ -256,10 +253,12 @@ function Backend:get(key, path, flags)
       end
       return { ok = false, error = { kind = "server_error", message = message } }
     end
-    -- Only the `:cache` slot missed: `key` itself rendered.
+    -- Only the `:cache` slot failed: `key` itself answered.
   end
 
-  if value == json.NULL then value = nil end -- a null the daemon answers a facet miss with, as the ffi backend collapses it
+  if (meta or type(decoded) == "table") and (value == nil or value == json.NULL) then
+    return { ok = true, data = nil } -- miss
+  end
   if meta then
     return { ok = true, data = value, age_ms = 0, stale = false }
   end

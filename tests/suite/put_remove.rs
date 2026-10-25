@@ -225,7 +225,8 @@ fn comb_put_json_null_removes() {
     d.comb(cwd)
         .args(["get", "-f", "json", "ns.a"])
         .assert()
-        .failure();
+        .success()
+        .stdout("null\n");
 }
 
 #[test]

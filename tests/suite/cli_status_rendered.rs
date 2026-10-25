@@ -844,7 +844,8 @@ result.b = "{{ 'src-b' }}"
     comb(&d, &cwd)
         .args(["get", "-f", "json", "s.b"])
         .assert()
-        .code(2);
+        .success()
+        .stdout("null\n");
 
     let rows = rows_of(&d, &cwd, "s", &[]);
     assert!(

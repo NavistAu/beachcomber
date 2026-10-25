@@ -202,8 +202,8 @@ fn a_cascade_falls_through_to_the_cache_when_env_is_empty() {
     assert_eq!(get(&d, &cwd, &[], "t.v"), "staging");
 }
 
-/// `key` is absent: under text a miss prints nothing and succeeds; under
-/// json it is the miss error, since there is no value to print.
+/// `key` is absent: a miss, which under text prints nothing and under json
+/// prints `null`, and succeeds in both.
 fn assert_absent(d: &TestDaemon, cwd: &Path, key: &str) {
     comb(d, cwd, &[])
         .args(["get", key])
@@ -214,11 +214,9 @@ fn assert_absent(d: &TestDaemon, cwd: &Path, key: &str) {
     comb(d, cwd, &[])
         .args(["get", "-f", "json", key])
         .assert()
-        .code(2)
-        .stdout(predicates::str::is_empty())
-        .stderr(predicates::str::contains(format!(
-            "error: {key}: no data (cache miss)"
-        )));
+        .success()
+        .stdout("null\n")
+        .stderr(predicates::str::is_empty());
 }
 
 #[test]

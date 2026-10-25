@@ -16,22 +16,22 @@
 //! `field_resolution.md` invariant 8). A frame is one line; a miss is no
 //! line at all, because there is no value to print.
 
+use crate::cli::exit::Outcome;
 use crate::cli::output_format::{Format, template_locals};
 use crate::config::Config;
 use libbeachcomber::render::{Format as ValueFormat, render_frame, render_value};
 use libbeachcomber::resolve::{Inputs, Slot, eval_with};
 use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
-use std::process::ExitCode;
 
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
 /// `--path`, the trailing positional, or the current directory.
-pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format) -> ExitCode {
+pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format) -> Outcome {
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
         crate::cli::report::daemon_start(e);
-        return ExitCode::from(2);
+        return Outcome::Error;
     }
 
     let client = crate::client::build_client(&socket_path);
@@ -61,7 +61,7 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
             Ok(session) => Some(session),
             Err(e) => {
                 crate::cli::report::daemon_unreachable(e);
-                return ExitCode::from(2);
+                return Outcome::Error;
             }
         },
         Format::Preset(_) => None,
@@ -71,7 +71,7 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
         Ok(w) => w,
         Err(e) => {
             crate::cli::report::watch_error(key, &e);
-            return ExitCode::from(2);
+            return Outcome::Error;
         }
     };
 
@@ -96,22 +96,22 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
                 };
                 if let Err(e) = frame.map(|frame| print!("{frame}")) {
                     crate::cli::report::error_named(e);
-                    return ExitCode::from(2);
+                    return Outcome::Error;
                 }
             }
             // A miss carries no value, so there is nothing to print. The
             // watch stays open: a later `put` can give the key a value.
             Ok(WatchOutcome::Value(None)) => {}
             // Nothing left that could ever answer.
-            Ok(WatchOutcome::Eof) => return ExitCode::SUCCESS,
+            Ok(WatchOutcome::Eof) => return Outcome::Done,
             // `next(None)` has no deadline and this watch's cancel handle is
             // never set, so neither is reachable today — but looping here
             // instead of returning would busy-spin forever if either ever
             // became reachable, so treat both as the watch being over.
-            Ok(WatchOutcome::Timeout | WatchOutcome::Cancelled) => return ExitCode::SUCCESS,
+            Ok(WatchOutcome::Timeout | WatchOutcome::Cancelled) => return Outcome::Done,
             Err(e) => {
                 crate::cli::report::watch_error(key, &e);
-                return ExitCode::from(2);
+                return Outcome::Error;
             }
         }
     }

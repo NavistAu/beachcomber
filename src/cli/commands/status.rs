@@ -3,6 +3,7 @@
 //! Moved from `src/main.rs` in Task 2.3.
 
 use crate::cache::{CacheRow, RowKind};
+use crate::cli::exit::Outcome;
 use crate::cli::output_format::{Format, Preset};
 use crate::cli::status_format::{
     ColorMode, RenderOpts, apply_filters, apply_sort, default_depth, flatten_rows, render_preset,
@@ -12,7 +13,6 @@ use crate::config::Config;
 use libbeachcomber::resolve::{Inputs, Slot, eval_with, resolve_traced};
 use std::collections::HashMap;
 use std::io::IsTerminal;
-use std::process::ExitCode;
 
 /// The namespace facet holding value expressions (canon
 /// `field_resolution.md` "Facet").
@@ -233,14 +233,14 @@ pub fn run_status(
     ascii: bool,
     depth: Option<usize>,
     tree: bool,
-) -> ExitCode {
+) -> Outcome {
     if tree && !format.preset().is_some_and(|p| TREE_PRESETS.contains(&p)) {
         let named = format.preset().map_or("a template", Preset::name);
         crate::cli::report::error(
             "--tree",
             format_args!("works with the human, table and json formats, not {named}"),
         );
-        return ExitCode::from(2);
+        return Outcome::Error;
     }
     // A layer belongs to a leaf, so a tree destructures every value to its
     // leaves unless --depth says otherwise.
@@ -251,7 +251,7 @@ pub fn run_status(
 
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
         crate::cli::report::daemon_start(e);
-        return ExitCode::from(2);
+        return Outcome::Error;
     }
 
     let is_tty = std::io::stdout().is_terminal();
@@ -331,18 +331,24 @@ pub fn run_status(
                 }
                 (_, Err(e)) if tree => {
                     crate::cli::report::daemon_unreachable(e);
-                    return ExitCode::from(2);
+                    return Outcome::Error;
                 }
                 _ => None,
             };
-            let rows = apply_filters(rows, filters).unwrap_or_else(|e| {
-                crate::cli::report::error("--filter", e);
-                std::process::exit(2);
-            });
-            let rows = apply_sort(rows, sort_col).unwrap_or_else(|e| {
-                crate::cli::report::error("--sort", e);
-                std::process::exit(2);
-            });
+            let rows = match apply_filters(rows, filters) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    crate::cli::report::error("--filter", e);
+                    return Outcome::Error;
+                }
+            };
+            let rows = match apply_sort(rows, sort_col) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    crate::cli::report::error("--sort", e);
+                    return Outcome::Error;
+                }
+            };
             let out = match (&stacks, format) {
                 (_, Format::Template(template)) if !tree => {
                     let cwd = std::env::current_dir()
@@ -361,7 +367,7 @@ pub fn run_status(
                         Ok(session) => session,
                         Err(e) => {
                             crate::cli::report::daemon_unreachable(e);
-                            return ExitCode::from(2);
+                            return Outcome::Error;
                         }
                     };
                     let mut render = |src: &str, locals: &serde_json::Map<_, _>| {
@@ -371,7 +377,7 @@ pub fn run_status(
                         Ok(out) => out,
                         Err(e) => {
                             crate::cli::report::error_named(e);
-                            return ExitCode::from(2);
+                            return Outcome::Error;
                         }
                     }
                 }
@@ -426,11 +432,11 @@ pub fn run_status(
                     }
                 }
             }
-            ExitCode::SUCCESS
+            Outcome::Done
         }
         Err(e) => {
             crate::cli::report::daemon_unreachable(e);
-            ExitCode::from(2)
+            Outcome::Error
         }
     }
 }

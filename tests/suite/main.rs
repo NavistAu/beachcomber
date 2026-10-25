@@ -12,6 +12,7 @@ mod check_subjects;
 mod cli_durations;
 mod cli_eval;
 mod cli_exec;
+mod cli_exit;
 mod cli_ffi_equivalence;
 mod cli_formats;
 mod cli_get_multikey_force;

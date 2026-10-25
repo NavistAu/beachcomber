@@ -17,18 +17,6 @@ pub struct Verdict {
     pub message: String,
 }
 
-impl Verdict {
-    /// Map the verdict level to the exit-code severity used by `comb check`.
-    /// FAIL → 2, WARN → 1, everything else → 0.
-    pub fn severity(&self) -> u8 {
-        match self.level.as_str() {
-            "FAIL" => 2,
-            "WARN" => 1,
-            _ => 0,
-        }
-    }
-}
-
 /// Typed payload for `{"op":"introspect","subject":"daemon"}`.
 ///
 /// Field names and types mirror the server-side serialisation in

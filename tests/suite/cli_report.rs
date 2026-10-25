@@ -22,10 +22,6 @@ fn diagnostics(d: &TestDaemon, args: &[&str]) -> String {
 fn every_failure_is_an_error_line_naming_its_subject() {
     let d = TestDaemon::spawn();
     let cases: &[(&[&str], &str)] = &[
-        (
-            &["get", "-f", "json", "--global", "nosuch.x"],
-            "error: nosuch.x: no data (cache miss)\n",
-        ),
         (&["get", "--global", "a:b:c.x"], "error: a:b:c.x: "),
         (
             &["put", "--global", "rp.x", "{bad"],

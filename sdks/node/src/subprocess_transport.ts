@@ -173,16 +173,14 @@ function freshness(node: unknown): { ageMs: number; stale: boolean } {
  * The node at `key`, shaped as `bc_get`'s envelope
  * (`{"ok":true,"data":{"data":...,"age_ms":...,"stale":...}}`, the three
  * null on a miss), from one `comb get -f json` for the value and its `:cache`
- * answer (the file header). Exit 0 is a hit. The CLI reports every error
- * as `error: <who>: <why>`. Exit 2 with the miss line for `key`
- * (`error: <key>: no data (cache miss)`) is a miss; with another
- * `error: <key>: ` line it is that error — the daemon's refusal, or the
- * resolver's own (a template that does not compile, a cycle, a failed
- * `exec()`). Exit 2 with a null value slot and an `error: <key>.<leaf>` line
- * is a leaf of a group failing; an absent rendered value is the miss line,
- * so that slot is never a hit.
- * Exit 2 with the value slot filled is a rendered value whose `:cache` slot
- * missed on its own — a hit with age 0.
+ * answer (the file header). Exit 0 is an answer: a null value slot is a miss,
+ * anything else a hit, aged by its `:cache` slot (a rendered value has none,
+ * so age 0). Exit 2 is an error, reported as `error: <who>: <why>`: an
+ * `error: <key>: ` line is the daemon's refusal of `key` or the resolver's
+ * own error (a template that does not compile, a cycle, a failed `exec()`);
+ * with a null value slot, an `error: <key>.<leaf>` line is a leaf of a group
+ * failing. Exit 2 with the value slot filled is a `:cache` slot that failed
+ * on its own — still a hit, with age 0.
  */
 function cliGet(
   handle: SubprocessClientHandle,
@@ -210,9 +208,6 @@ function cliGet(
     // `<key>`'s prefix.
     const prefix = `error: ${key}: `;
     const own = lines.find((line) => line.startsWith(prefix))?.slice(prefix.length);
-    if (own === 'no data (cache miss)') {
-      return { ok: true, data: { data: null, age_ms: null, stale: null } };
-    }
     if (own !== undefined) {
       // The daemon refused `key`, or the resolver failed on it: a server error
       // whatever the words say — never a transport kind, which
@@ -237,7 +232,10 @@ function cliGet(
       // The CLI failed before answering at all (no daemon, a bad argument).
       return envelopeFromFailure(stderr);
     }
-    // Only the `:cache` slot missed: `key` itself rendered.
+    // Only the `:cache` slot failed: `key` itself answered.
+  }
+  if (value === null || value === undefined) {
+    return { ok: true, data: { data: null, age_ms: null, stale: null } };
   }
   if (meta) return { ok: true, data: { data: value, age_ms: 0, stale: false } };
   const { ageMs, stale } = freshness((decoded as unknown[])[1]);

@@ -1,12 +1,12 @@
+use crate::cli::exit::Outcome;
 use std::path::PathBuf;
-use std::process::ExitCode;
 
 struct DetectedTool {
     name: &'static str,
     snippet: &'static str,
 }
 
-pub fn run_init() -> ExitCode {
+pub fn run_init() -> Outcome {
     let home = std::env::var("HOME").unwrap_or_default();
     // Fix 4: use unwrap_or_else to avoid eager allocation.
     let xdg_config = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{home}/.config"));
@@ -142,5 +142,5 @@ source <(curl -fsSL https://beachcomber.sh/scripts/chpwd.sh)
         println!("Full integration guides: https://beachcomber.sh");
     }
 
-    ExitCode::SUCCESS
+    Outcome::Done
 }

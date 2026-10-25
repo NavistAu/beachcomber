@@ -89,15 +89,11 @@ fn get_json_finds_put_created_virtual_without_explicit_path() {
 
 // ── single_key_get_error_paths_always_write_stderr ────────────────────────────
 
-/// Regression test: every branch of `run_get`'s per-key `resolve()` loop that
-/// sets the error flag must also write something to stderr. A miss under a
-/// structured format takes the `Ok(None)` arm, which prints "no data (cache
-/// miss)"; before the fix that arm set the flag with no accompanying
-/// `eprintln!`, so the process exited 2 with zero bytes on both stdout and
-/// stderr — indistinguishable from a hang or a swallowed panic. This exercises
-/// a genuine miss (an unknown field on an existing static namespace,
-/// path-matched on both ends) rather than a routing bug, to isolate the
-/// "silent failure" defect from "wrong routing".
+/// Regression test: a single-key `get` that exits 2 always explains itself on
+/// stderr — once, a miss under a structured format exited 2 with zero bytes
+/// on both stdout and stderr, indistinguishable from a hang or a swallowed
+/// panic. A genuine miss (an unknown field on an existing static namespace,
+/// path-matched on both ends) is not an error at all: it is `null`, exit 0.
 #[test]
 fn single_key_get_error_paths_always_write_stderr() {
     let d = TestDaemon::spawn();
@@ -107,16 +103,19 @@ fn single_key_get_error_paths_always_write_stderr() {
         .assert()
         .success();
 
+    d.comb(Path::new("/"))
+        .args(["get", "myvirtual2.nosuchfield", "-f", "json", "--path", "/"])
+        .assert()
+        .success()
+        .stdout("null\n")
+        .stderr(predicates::str::is_empty());
+
     let out = d
         .comb(Path::new("/"))
-        .args(["get", "myvirtual2.nosuchfield", "-f", "json", "--path", "/"])
+        .args(["get", "a:b:c.x", "-f", "json", "--path", "/"])
         .output()
         .unwrap();
-
-    assert!(
-        !out.status.success(),
-        "querying a nonexistent field must fail, not silently succeed"
-    );
+    assert_eq!(out.status.code(), Some(2));
     assert!(
         !out.stderr.is_empty(),
         "a non-zero exit from a single-key get must always explain itself on stderr"

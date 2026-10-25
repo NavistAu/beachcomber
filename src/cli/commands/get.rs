@@ -8,12 +8,12 @@
 //! it is, `env.*` is answered from the environment. This module only renders
 //! what comes back, per output format.
 
-use crate::cli::output_format::{Format, Preset, template_locals};
+use crate::cli::exit::Outcome;
+use crate::cli::output_format::{Format, template_locals};
 use crate::config::Config;
 use libbeachcomber::render::{Format as ValueFormat, render_value, render_values};
 use libbeachcomber::resolve::{Inputs, Slot, eval_with, resolve};
 use serde_json::Value;
-use std::process::ExitCode;
 
 /// Whether `s` is a directory rather than a key: it starts with `/`, `~` or
 /// `.`. No key can — a key's head is a provider name, and a provider name
@@ -56,7 +56,7 @@ pub fn run_get(
     format: Format,
     force: bool,
     wait: bool,
-) -> ExitCode {
+) -> Outcome {
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
@@ -64,13 +64,13 @@ pub fn run_get(
     // no request (`env.HOME`) included.
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
         crate::cli::report::daemon_start(e);
-        return ExitCode::from(2);
+        return Outcome::Error;
     }
     let mut session = match crate::client::Client::new(socket_path).connect() {
         Ok(s) => s,
         Err(e) => {
             crate::cli::report::daemon_unreachable(e);
-            return ExitCode::from(2);
+            return Outcome::Error;
         }
     };
 
@@ -92,26 +92,20 @@ pub fn run_get(
     };
 
     // One slot per key, `None` where it produced no value, so a multi-key
-    // document keeps its positions. Under `text`/`sh` a miss is the empty
-    // string — nothing to print, not a failure — so a value embeds in a prompt
-    // verbatim. Under every structured format it is an error: there is no
-    // value to put in the document.
-    let plain = matches!(format, Format::Preset(Preset::Text | Preset::Sh));
+    // document keeps its positions. What the keys came to is decided here,
+    // before any format is applied: a miss is a miss in every format.
     let mut slots: Vec<(&str, Option<Value>)> = Vec::with_capacity(keys.len());
-    let mut any_error = false;
+    let mut outcome = Outcome::Done;
     for key in keys {
         let value = match resolve(key, &inputs, &mut session) {
             Ok(Some(value)) => Some(value),
             Ok(None) => {
-                if !plain {
-                    crate::cli::report::error(key, "no data (cache miss)");
-                    any_error = true;
-                }
+                outcome = outcome.max(Outcome::Miss);
                 None
             }
             Err(e) => {
                 crate::cli::report::resolve_error(key, &e);
-                any_error = true;
+                outcome = Outcome::Error;
                 None
             }
         };
@@ -135,8 +129,8 @@ pub fn run_get(
                 .value_format()
                 .expect("get's formats are value formats");
             Ok(match slots.as_slice() {
-                // A single miss prints nothing: its error is the answer.
-                [(_, None)] => String::new(),
+                // A key that failed has no answer to print: its error is it.
+                [_] if outcome == Outcome::Error => String::new(),
                 [(key, value)] => render_value(key, value.as_ref(), format),
                 many => {
                     let slots: Vec<(&str, Option<&Value>)> =
@@ -150,14 +144,10 @@ pub fn run_get(
         Ok(out) => print!("{out}"),
         Err(e) => {
             crate::cli::report::error_named(e);
-            return ExitCode::from(2);
+            return Outcome::Error;
         }
     }
-    if any_error {
-        ExitCode::from(2)
-    } else {
-        ExitCode::SUCCESS
-    }
+    outcome
 }
 
 #[cfg(test)]

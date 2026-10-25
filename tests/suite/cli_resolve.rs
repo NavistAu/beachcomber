@@ -124,7 +124,7 @@ fn an_address_past_a_template_walks_into_the_rendered_object() {
     assert_eq!(stdout(&d, &cwd, &["scanline.stats.cpu"]), "40");
 
     // A key the rendered object does not hold is a miss: under `text` the
-    // empty string and exit 0, under `json` an error that explains itself.
+    // empty string, under `json` `null`, and exit 0 in both.
     comb(&d, &cwd)
         .args(["get", "scanline.stats.nope"])
         .assert()
@@ -134,9 +134,9 @@ fn an_address_past_a_template_walks_into_the_rendered_object() {
     comb(&d, &cwd)
         .args(["get", "-f", "json", "scanline.stats.nope"])
         .assert()
-        .code(2)
-        .stdout(predicates::str::is_empty())
-        .stderr(predicates::str::contains("no data (cache miss)"));
+        .success()
+        .stdout("null\n")
+        .stderr(predicates::str::is_empty());
 }
 
 #[test]
@@ -461,11 +461,9 @@ fn assert_absent_with_path(d: &TestDaemon, cwd: &Path, path: &str, key: &str) {
         .env("PATH", path)
         .args(["get", "-f", "json", key])
         .assert()
-        .code(2)
-        .stdout(predicates::str::is_empty())
-        .stderr(predicates::str::contains(format!(
-            "error: {key}: no data (cache miss)"
-        )));
+        .success()
+        .stdout("null\n")
+        .stderr(predicates::str::is_empty());
 }
 
 /// `kubecontext.context` is `defaults/kubecontext.toml`'s template — the same
@@ -655,8 +653,9 @@ fn an_unknown_provider_is_a_miss() {
     comb(&d, &cwd)
         .args(["get", "-f", "json", "nope.x"])
         .assert()
-        .code(2)
-        .stdout(predicates::str::is_empty());
+        .code(0)
+        .stdout("null\n")
+        .stderr(predicates::str::is_empty());
 }
 
 #[test]
@@ -708,9 +707,9 @@ fn multi_key_output_keeps_its_shape_per_format_and_a_miss_reports_itself() {
         ),
         "scanline.lit,format\n1,%H:%M\n"
     );
-    // A miss under a structured format is an error for that key alone and
-    // the others still render — with the document keeping one slot per key:
-    // `null` in the array, an empty cell in the row.
+    // A miss under a structured format holds its place and the others still
+    // render — one slot per key: `null` in the array, an empty cell in the
+    // row — and it is a miss, not an error, so the command exits 0.
     let out = comb(&d, &cwd)
         .args([
             "get",
@@ -721,10 +720,8 @@ fn multi_key_output_keeps_its_shape_per_format_and_a_miss_reports_itself() {
             "scanline.widgets.foo",
         ])
         .assert()
-        .code(2)
-        .stderr(predicates::str::contains(
-            "error: scanline.nope: no data (cache miss)",
-        ));
+        .success()
+        .stderr(predicates::str::is_empty());
     let parsed: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
     assert_eq!(parsed, serde_json::json!([1, null, "hi"]));
 
@@ -738,10 +735,8 @@ fn multi_key_output_keeps_its_shape_per_format_and_a_miss_reports_itself() {
             "scanline.widgets.foo",
         ])
         .assert()
-        .code(2)
-        .stderr(predicates::str::contains(
-            "error: scanline.nope: no data (cache miss)",
-        ));
+        .success()
+        .stderr(predicates::str::is_empty());
     assert_eq!(
         String::from_utf8(out.get_output().stdout.clone()).unwrap(),
         "scanline.lit,scanline.nope,scanline.widgets.foo\n1,,hi\n"
