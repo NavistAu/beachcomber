@@ -190,6 +190,18 @@ Every client renders templates through `libbeachcomber::resolve`, so its cost is
 
 **Rule for future changes:** Both memos live for one top-level call and no longer. A memo across calls would hand one caller's `env` and directory to the next: each of scanline's widgets reads its own `env.SCANLINE_WIDTH`.
 
+#### 3.2 Share the caller's environment across renders
+
+**Problem:** So that `env[var]` and `env | items` work, every render put the caller's whole environment into its context: a fresh JSON object of every variable, converted again into an engine value. With 140 variables that was more than half of the status line's render time.
+
+**Fix:** The environment is one engine value per resolution, built once in name order in `Resolver::new`; each render's context holds that value, and minijinja values are reference-counted, so binding it copies nothing.
+
+**Result:** the status line with 140 variables 17 → 8.0 ms a render, within 1 ms of a minimal environment's 7.0 ms. `resolve/widget/140` 1.4 → 0.48 ms.
+
+**What remains:** a resolution still copies the environment twice, once into `EngineCtx` (the environment of `exec()`, `read` and `lup`) and once into the template value. That is once per resolution, not per render: `resolve/env_read/140` is about 70 µs above `resolve/env_read/1`, before and after.
+
+**Rule for future changes:** What every render of a resolution reads the same — the environment, the directory — is built once in `Resolver::new`, never in `bind` or per render.
+
 ---
 
 ## Current Performance Profile

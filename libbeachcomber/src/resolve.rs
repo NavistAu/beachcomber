@@ -28,7 +28,7 @@ use crate::lazy::{Bridge, LazyNode, Prefetch};
 use crate::virtual_fields::{Ref, mj_to_json};
 use minijinja::value::Value as MjValue;
 use serde_json::{Map, Value as JsonValue};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, mpsc};
 
 /// One node as the daemon returned it: the `get` response of design §3.4.
@@ -300,6 +300,10 @@ struct Resolver<'a> {
     /// What every render of this resolution runs in: the caller's `env` and
     /// directory, the only ones an `exec()` child sees.
     engine: Arc<EngineCtx>,
+    /// The caller's environment as a template reads it, `env`: built once,
+    /// and shared by every render rather than copied into each — an engine
+    /// value is reference-counted, so binding it is a pointer copy.
+    env: MjValue,
     fetch: &'a mut dyn Fetch,
     /// The daemon's answers so far: a node, or its refusal of the key.
     memo: HashMap<Coord, Result<Option<Got>, String>>,
@@ -321,6 +325,9 @@ impl<'a> Resolver<'a> {
                 cwd: inputs.dir().map(Into::into),
                 allow_exec: inputs.allow_exec,
             }),
+            // In name order, so `env | items` and a loop over `env` read the
+            // same order every run.
+            env: MjValue::from_serialize(inputs.env.iter().collect::<BTreeMap<_, _>>()),
             fetch,
             memo: HashMap::new(),
             resolved: HashMap::new(),
@@ -506,12 +513,19 @@ impl<'a> Resolver<'a> {
         if refs.contains(&Ref::Dynamic("comb".to_string())) {
             return self.render_with_lazy_comb(src, key, bound, &refs);
         }
-        evaluate(
-            src,
-            key,
-            MjValue::from_serialize(&bound),
-            self.engine.clone(),
-        )
+        evaluate(src, key, self.context(None, bound), self.engine.clone())
+    }
+
+    /// The context a render evaluates against: the caller's environment as
+    /// `env`, a lazy `comb` when the render has one, and every name `bound`
+    /// holds. A name `bound` holds wins: a local called `env` is that local.
+    fn context(&self, comb: Option<LazyNode>, bound: Map<String, JsonValue>) -> MjValue {
+        let env = (!bound.contains_key("env")).then(|| ("env".to_string(), self.env.clone()));
+        let comb = comb.map(|node| ("comb".to_string(), MjValue::from_object(node)));
+        let bound = bound
+            .into_iter()
+            .map(|(name, value)| (name, MjValue::from_serialize(&value)));
+        env.into_iter().chain(comb).chain(bound).collect()
     }
 
     /// Render with `comb` a lazy node.
@@ -535,11 +549,7 @@ impl<'a> Resolver<'a> {
             _ => None,
         };
         let comb = LazyNode::comb(bridge.clone(), prefetched, Arc::new(Prefetch::of(refs)));
-        let mut context: Vec<(String, MjValue)> = vec![("comb".into(), MjValue::from_object(comb))];
-        for (name, value) in bound {
-            context.push((name, MjValue::from_serialize(&value)));
-        }
-        let context: MjValue = context.into_iter().collect();
+        let context = self.context(Some(comb), bound);
         let engine = self.engine.clone();
 
         std::thread::scope(|scope| {
@@ -622,8 +632,9 @@ impl<'a> Resolver<'a> {
 
     /// Bind every ref a source names into the context it evaluates against.
     ///
-    /// `env` is the caller's whole environment, as a Source's `data` line sees
-    /// the daemon's: an unset variable is simply not there, so `env.X`,
+    /// `env` is not bound here: every render's context holds the caller's
+    /// whole environment ([`Self::context`]), as a Source's `data` line sees
+    /// the daemon's — an unset variable is simply not there, so `env.X`,
     /// `env['X']` and `env | items` read it alike. A daemon miss binds
     /// nothing — not the value, and not the object that would have enclosed
     /// it — so `default` and `or` fire on it; a key the daemon rejects is the
@@ -632,20 +643,13 @@ impl<'a> Resolver<'a> {
     /// bound first.
     fn bind(&mut self, refs: &[Ref]) -> Result<Map<String, JsonValue>, ResolveError> {
         let mut top = Map::new();
-        let caller: Map<String, JsonValue> = self
-            .inputs
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), JsonValue::String(v.clone())))
-            .collect();
-        top.insert("env".to_string(), JsonValue::Object(caller));
         top.insert("comb".to_string(), JsonValue::Object(Map::new()));
 
         for r in refs {
             match r {
                 Ref::Env(_) => {}
-                // `env` is bound whole above, and `comb` is the lazy node a
-                // render with `comb[...]` binds.
+                // `env` is in every render's context, and `comb` is the lazy
+                // node a render with `comb[...]` binds.
                 Ref::Dynamic(name) if name == "env" || name == "comb" => {}
                 // Any other name used other than by attribute — `git[field]`,
                 // `scanline | items` — is that whole node, resolved. It wins

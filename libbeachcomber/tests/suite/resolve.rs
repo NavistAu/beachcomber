@@ -1476,6 +1476,69 @@ fn the_caller_environment_is_bound_whole() {
     assert!(f.log.is_empty(), "the environment asks the daemon nothing");
 }
 
+/// Every way a template reads the caller's environment, in a render with an
+/// eager context, one with a lazy `comb[...]`, a leaf of a group, and a
+/// template another one reads — each sees the whole environment, and an
+/// unset variable is undefined in all of them.
+#[test]
+fn every_form_of_env_reads_the_caller_environment() {
+    let vars = env_of(&[("A", "1"), ("B", "2")]);
+    let forms = [
+        ("{{ env.A }}", "1"),
+        ("{{ env['A'] }}", "1"),
+        ("{% set n = 'B' %}{{ env[n] }}", "2"),
+        (
+            "{% for k, v in env | items %}{{ k }}={{ v }};{% endfor %}",
+            "A=1;B=2;",
+        ),
+        ("{% for k in env %}{{ k }},{% endfor %}", "A,B,"),
+        ("{{ env | length }}", "2"),
+        ("{{ env.NOPE is defined }}", "false"),
+        ("{{ env['NOPE'] is undefined }}", "true"),
+        ("{{ env.NOPE | default('fb') }}", "fb"),
+        ("[{{ env.NOPE }}]", "[]"),
+    ];
+    let lazy = "{{ comb['nope'] | default('') }}";
+    for (src, want) in forms {
+        let mut f = MapFetch::default();
+        assert_eq!(
+            render_eval(&format!("{src}{lazy}"), &mut f, &vars),
+            Some(json!(want)),
+            "with a lazy comb: {src}"
+        );
+        // A string result, whichever form: one tag of text renders the same.
+        let as_text = |v: Option<Value>| v.map(|v| v.as_str().map_or(v.to_string(), String::from));
+        f.seed("t.leaf", Some(CWD), tmpl(json!(src)))
+            .seed("t", Some(CWD), tmpl(json!({ "leaf": src })))
+            .seed("t.outer", Some(CWD), tmpl(json!("{{ t.leaf }}")));
+        let i = inputs(&vars);
+        assert_eq!(
+            as_text(eval(src, &i, &mut f).unwrap()),
+            Some(want.to_string()),
+            "{src}"
+        );
+        assert_eq!(
+            as_text(resolve("t", &i, &mut f).unwrap().map(|g| g["leaf"].clone())),
+            Some(want.to_string()),
+            "a group's leaf: {src}"
+        );
+        assert_eq!(
+            as_text(resolve("t.outer", &i, &mut f).unwrap()),
+            Some(want.to_string()),
+            "read by another template: {src}"
+        );
+    }
+    // Whole, the environment is an object of strings; an unset variable is
+    // absent, not `""`.
+    let mut f = MapFetch::default();
+    assert_eq!(
+        render_eval("{{ env }}", &mut f, &vars),
+        Some(json!({ "A": "1", "B": "2" }))
+    );
+    assert_eq!(render_eval("{{ env.NOPE }}", &mut f, &vars), None);
+    assert!(f.log.is_empty(), "the environment asks the daemon nothing");
+}
+
 #[test]
 fn what_a_lazy_read_fetched_is_a_dependency() {
     let env = spec_env();
