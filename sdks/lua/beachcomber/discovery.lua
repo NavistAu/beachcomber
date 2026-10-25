@@ -48,23 +48,31 @@ local function shq(v)
   return "'" .. tostring(v):gsub("'", "'\\''") .. "'"
 end
 
---- The first `comb` on `path` (a `$PATH`-style string; default `$PATH`)
--- that is an executable regular file, as found (symlinks unresolved). An
--- empty entry is skipped, and a `comb` that is not executable, or is a
+--- The first executable regular file called `name` on `path` (a
+-- `$PATH`-style string; default `$PATH`), as found (symlinks unresolved). An
+-- empty entry is skipped, and a `name` that is not executable, or is a
 -- directory, is passed over.
+-- @param name string
 -- @param path string?
 -- @return string|nil
-function M.find_comb_on_path(path)
+function M.find_on_path(name, path)
   path = path or os.getenv("PATH") or ""
-  local script = "P=" .. shq(path) .. "; IFS=:; for d in $P; do "
-    .. "[ -n \"$d\" ] && [ -f \"$d/comb\" ] && [ -x \"$d/comb\" ] "
-    .. "&& { printf '%s\\n' \"$d/comb\"; break; }; done"
+  local script = "P=" .. shq(path) .. "; N=" .. shq(name) .. "; IFS=:; for d in $P; do "
+    .. "[ -n \"$d\" ] && [ -f \"$d/$N\" ] && [ -x \"$d/$N\" ] "
+    .. "&& { printf '%s\\n' \"$d/$N\"; break; }; done"
   local pipe = io.popen("/bin/sh -c " .. shq(script) .. " 2>/dev/null", "r")
   if not pipe then return nil end
   local found = pipe:read("*l")
   pipe:close()
   if found == nil or found == "" then return nil end
   return found
+end
+
+--- The first `comb` on `path`: [`find_on_path`] of `comb`.
+-- @param path string?
+-- @return string|nil
+function M.find_comb_on_path(path)
+  return M.find_on_path("comb", path)
 end
 
 --- The library's file name on platform `os_name` (LuaJIT's `ffi.os`):

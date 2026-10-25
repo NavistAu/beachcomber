@@ -14,13 +14,10 @@
 --
 -- Capability ceiling: `comb` has no CLI surface for `hello` or `introspect`
 -- (no subcommand exposes protocol/daemon version or a structured
--- introspection query). `eval` is not wired over this tier: a spawned
--- `comb eval <template> <cwd>` would render through the same
--- libbeachcomber::resolve the ffi tier's bc_eval does, but with its own
--- environment, the same limit `get` documents below. These methods are
--- absent from this backend table; beachcomber.client turns a missing method
--- into an Error.unsupported() naming this transport, and a conformance
--- runner skips (never silently passes) a fixture that needs one.
+-- introspection query). Those methods are absent from this backend table;
+-- beachcomber.client turns a missing method into an Error.unsupported()
+-- naming this transport, and a conformance runner skips (never silently
+-- passes) a fixture that needs one.
 --
 -- A session is this backend's own: there is no connection to keep between
 -- spawns, so `session_open` hands back a handle that remembers its
@@ -50,14 +47,31 @@
 -- A facet key reads like any other (`p:template.x` is the template as
 -- stored).
 --
--- Where it parts from the ffi tier: a spawned `comb` renders with its own
--- environment, and this process can only hand it whole. So a caller's
--- `env` cannot be honoured — `get` with one is an "unsupported" error
--- naming the ffi transport, and nothing is spawned — and a `get` without
--- one renders with this process's environment, where the ffi tier's has no
--- `env.*` at all. The CLI renders with `exec()` on, so the client's `exec`
--- option has no effect on this tier; a caller that must not spawn
--- processes from a template needs the ffi transport.
+-- The spawned `comb` is made to render as the ffi tier does:
+--
+--   * Environment. A call's `env` map is the spawned comb's whole
+--     environment: the command runs as `env -i K=V …`, every pair
+--     shell-escaped, so `env.*` and an `exec()` child see exactly the map.
+--     With no map the spawn inherits this process's environment, which is
+--     what the ffi tier renders with too. The command is the absolute path
+--     to comb, since `env -i` leaves no `$PATH` to find it by.
+--   * Socket. `--socket <p>` whenever the client has a `socket_path` or this
+--     process has `$BEACHCOMBER_SOCKET`: the order `bc_socket_path` picks in.
+--     The map can therefore never point the tier at another daemon.
+--   * Colour. `--color never` when the render's environment sets a non-empty
+--     `NO_COLOR`, else `--color always` (the template filters would otherwise
+--     draw nothing into a pipe): the rule `EngineCtx::colour` has.
+--   * `exec()`. `--no-exec` unless the client was made with `exec = true`.
+--
+-- `eval` is one spawn of `comb eval -f json [--path P | --global] --
+-- <template>`, spawned as `get` is. Exit 0 is an answer: the value, or
+-- `null` when the template renders nothing. Exit 2 is an error, in the CLI's
+-- words; unlike the ffi tier this one cannot tell a template that does not
+-- compile (`parse_error`) from one that fails to render, so both are
+-- `server_error`.
+--
+-- `watch` stays refused: `io.popen` has no timed read and no cancel, so
+-- `next_event(timeout_ms)` and `cancel` could not be honoured.
 
 local json = require("beachcomber.json")
 local discovery = require("beachcomber.discovery")
@@ -69,6 +83,33 @@ Backend.__index = Backend
 local function shell_escape(s)
   if s == nil then return "''" end
   return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
+--- The command line for one spawn: `args` (already escaped, may be empty)
+-- after comb's global flags, run under `env` alone when a map is given (the
+-- header comment). `rendering` adds `--color` and `--no-exec`.
+local function command(self, args, env, rendering)
+  local parts = {}
+  if env ~= nil then
+    local names = {}
+    for name in pairs(env) do names[#names + 1] = name end
+    table.sort(names)
+    parts[#parts + 1] = "env -i"
+    for _, name in ipairs(names) do
+      parts[#parts + 1] = shell_escape(name .. "=" .. tostring(env[name]))
+    end
+  end
+  parts[#parts + 1] = shell_escape(self._bin)
+  if self._socket then
+    parts[#parts + 1] = "--socket " .. shell_escape(self._socket)
+  end
+  if rendering then
+    local no_colour
+    if env ~= nil then no_colour = env.NO_COLOR else no_colour = os.getenv("NO_COLOR") end
+    parts[#parts + 1] = "--color " .. ((no_colour ~= nil and no_colour ~= "") and "never" or "always")
+    if not self._exec then parts[#parts + 1] = "--no-exec" end
+  end
+  return table.concat(parts, " ") .. args
 end
 
 --- The `--path`/`--global` argument for a call scoped to `path`.
@@ -136,8 +177,8 @@ end
 -- sentinel rather than Lua nil (see beachcomber.json's M.NULL doc comment),
 -- so it is collapsed back to nil right here: plain nil means "no path
 -- scope", the same way it always has.
-local function status_rows(comb_bin)
-  local out, ok, err = run(comb_bin .. " status -f json")
+local function status_rows(backend)
+  local out, ok, err = run(command(backend, " status -f json", nil, true))
   if not ok then
     return nil, ((err or ""):gsub("%s+$", ""))
   end
@@ -175,11 +216,14 @@ function M.new(opts)
       "comb binary not found on $PATH (required for the subprocess transport)"
     )
   end
-  local prefix = ""
-  if opts.socket_path then
-    prefix = "BEACHCOMBER_SOCKET=" .. shell_escape(opts.socket_path) .. " "
+  -- Absolute, where this process's $PATH finds it: a spawn under `env -i`
+  -- has no $PATH of its own.
+  if not comb_bin:find("/", 1, true) then
+    comb_bin = discovery.find_on_path(comb_bin) or comb_bin
   end
-  return setmetatable({ _comb = prefix .. comb_bin }, Backend)
+  local socket = opts.socket_path or os.getenv("BEACHCOMBER_SOCKET")
+  if socket == "" then socket = nil end
+  return setmetatable({ _bin = comb_bin, _socket = socket, _exec = opts.exec == true }, Backend)
 end
 
 function Backend:name()
@@ -193,13 +237,8 @@ end
 -- cycle, a failed `exec()`), an `error: <key>.<leaf>: ` line a leaf of a
 -- group failing, and anything else the CLI failing before it asked at all.
 function Backend:get(key, cwd, env, flags)
-  if env ~= nil then
-    return { ok = false, error = Error.new("unsupported",
-      "get with an env is not supported over the subprocess transport: a spawned comb "
-        .. "renders with its own environment; the ffi transport (LuaJIT) honours it") }
-  end
   flags = flags or {}
-  local cmd = self._comb .. " get -f json " .. shell_escape(key) .. path_arg(cwd)
+  local cmd = command(self, " get -f json " .. shell_escape(key) .. path_arg(cwd), env, true)
   if flags.force then cmd = cmd .. " --force" end
   if flags.wait then cmd = cmd .. " --wait" end
   local out, ok, err = run(cmd)
@@ -231,12 +270,34 @@ function Backend:get(key, cwd, env, flags)
   return { ok = true, data = value }
 end
 
+--- One `comb eval -f json` (the header comment).
+function Backend:eval(template, cwd, env)
+  local cmd = command(self, " eval -f json" .. path_arg(cwd) .. " -- " .. shell_escape(template), env, true)
+  local out, ok, err = run(cmd)
+  if not ok then
+    err = (err or ""):gsub("%s+$", "")
+    -- The CLI failed before answering at all: no daemon, a bad argument.
+    if err == "" or err:sub(1, #"error: daemon:") == "error: daemon:" then
+      return { ok = false, error = { kind = "server_error", message = err ~= "" and err or "comb eval failed" } }
+    end
+    local first = err:match("^[^\n]*")
+    first = first:gsub("^error: <eval>: ", ""):gsub("^error: ", "")
+    return { ok = false, error = { kind = "server_error", message = first } }
+  end
+  local value = json.decode(out or "")
+  if value == nil then
+    return { ok = false, error = { kind = "parse_error", message = "malformed comb eval output: " .. tostring(out) } }
+  end
+  if value == json.NULL then value = nil end
+  return { ok = true, data = value }
+end
+
 function Backend:put(key, data, ttl, path)
   local encoded, enc_err = json.encode(data)
   if not encoded then
     return { ok = false, error = { kind = "parse_error", message = "json encode error: " .. tostring(enc_err) } }
   end
-  local cmd = self._comb .. " put " .. shell_escape(key) .. " " .. shell_escape(encoded) .. path_arg(path)
+  local cmd = command(self, " put " .. shell_escape(key) .. " " .. shell_escape(encoded) .. path_arg(path))
   if ttl then cmd = cmd .. " --ttl " .. shell_escape(ttl) end
   local _, ok, err = run(cmd)
   if not ok then
@@ -252,7 +313,7 @@ end
 -- same Sources but then *reads*, so it answers a sourceless key with a
 -- different refusal and an unowned field with a plain miss.
 function Backend:refresh(key, path)
-  local cmd = self._comb .. " refresh " .. shell_escape(key) .. path_arg(path)
+  local cmd = command(self, " refresh " .. shell_escape(key) .. path_arg(path))
   local _, ok, err = run(cmd)
   if not ok then
     err = err or ""
@@ -263,7 +324,7 @@ function Backend:refresh(key, path)
 end
 
 function Backend:status()
-  local rows, err = status_rows(self._comb)
+  local rows, err = status_rows(self)
   if not rows then
     return { ok = false, error = { kind = "server_error", message = err ~= "" and err or "comb status failed" } }
   end
@@ -303,21 +364,14 @@ function Session:close()
   -- Nothing held between spawns.
 end
 
--- hello / introspect / eval / watch_open intentionally absent.
+-- hello / introspect / watch_open intentionally absent.
 --
 -- hello / introspect: no CLI surface exposes them.
 --
--- eval: not wired over this tier (see the header comment).
---
--- watch: `comb watch <key> -f json` was tried and rejected. Piped through
--- `io.popen` (not a tty), the daemon-CLI process's stdout is block- rather
--- than line-buffered, so `pipe:read("*l")` blocks indefinitely even though
--- the process has already written (and would eventually flush) the first
--- event — confirmed by hand against a live daemon: the same command run
--- attached to a real terminal prints its first line immediately. Shipping
--- that as "watch" would be a binding that silently hangs forever, which is
--- worse than the honest Error.unsupported() every other missing op here
--- gets. Buffering behaviour is CLI-side (out of scope: sdks/lua/** only).
+-- watch: `io.popen` has no timed read and no cancel, so `next_event(timeout_ms)`
+-- and `cancel` could not be honoured. (The old reason given here, block
+-- buffering of a piped `comb watch`, was wrong: its stdout is line-buffered,
+-- and the hang seen was a key that missed, which printed nothing.)
 --
 -- beachcomber.client turns each missing method into
 -- Error.unsupported("<name>", "subprocess").

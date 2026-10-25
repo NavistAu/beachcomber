@@ -16,8 +16,7 @@
 -- whose op the active transport's backend doesn't implement (Error.kind ==
 -- "unsupported") is reported SKIP, never PASS or FAIL — see
 -- tests/conformance/README.md's note on partial `eval` support. Over the
--- subprocess transport that is hello, introspect, eval, watch, and a `get`
--- whose fixture carries an `env` (a spawned comb renders with its own).
+-- subprocess transport that is hello, introspect and watch.
 --
 -- Invoke:
 --   COMB_BIN=/path/to/comb lua sdks/lua/conformance_runner.lua
@@ -369,7 +368,7 @@ local function run_fixture(fixture)
 
   local resolve_ctx = {
     cwd = fixture.cwd or guard.tmpdir,
-    env = fixture.env, -- nil when the fixture has none: no environment
+    env = fixture.env, -- nil when the fixture has none: the process environment
   }
 
   for i, step in ipairs(fixture.setup or {}) do

@@ -36,26 +36,29 @@ mysterious 5ms-per-call slowdown. Call `client:transport()` any time you
 need to know which one you got.
 
 **Capability ceiling of the subprocess transport.** `comb` has no CLI
-surface for `hello` or `introspect`; `eval` is not wired over this tier;
-`watch` was tried and rejected (see `beachcomber/subprocess_backend.lua`'s
-header comment: piped through `io.popen`, the CLI's stdout buffering means a
-`read("*l")` blocks forever even though the daemon already sent the event).
-Those `Client` methods return `nil, err` with `err.kind == "unsupported"`
-over `subprocess`; get/put/refresh/status and a session all work over
-either transport. A session over `subprocess` keeps its directory between
-spawns and passes it as `--path`, as the Node SDK's subprocess session does. `refresh` over `subprocess` is one `comb refresh <key>`,
-the daemon's op itself, and its refusal (`nothing to refresh: <key> has no
-sources`) is the error message. `get` over `subprocess` is one `comb get -f
-json <key>`, so its answer is the resolver's — the rendered value, the
+surface for `hello` or `introspect`, and `watch` is refused: `io.popen` has no
+timed read and no cancel, so `next_event(timeout_ms)` and `cancel` could not
+be honoured. Those `Client` methods return `nil, err` with `err.kind ==
+"unsupported"` over `subprocess`; get/put/refresh/status/eval and a session
+all work over either transport. A session over `subprocess` keeps its
+directory between spawns and passes it as `--path`, as the Node SDK's
+subprocess session does. `refresh` over `subprocess` is one `comb refresh
+<key>`, the daemon's op itself, and its refusal (`nothing to refresh: <key>
+has no sources`) is the error message. `get` over `subprocess` is one `comb
+get -f json <key>`, so its answer is the resolver's: the rendered value, the
 directory chain up to `$HOME`, `$HOME` as the global entry, force/wait, the
-daemon's refusals. A spawned `comb` renders with its own environment, and
-this process can only hand it whole, so two things differ from the ffi
-tier: a `get` that passes `opts.env` is `err.kind == "unsupported"` (nothing
-is spawned), and a `get` without one renders with this process's
-environment, where the ffi tier's has no `env.*` at all. The CLI renders
-with `exec()` on, so the `exec` option has no effect over `subprocess`; a
-caller that must not spawn processes from a template, or that needs its own
-`env`, needs the ffi transport.
+daemon's refusals. `eval` is one `comb eval -f json -- <template>`; a
+template that does not compile is `err.kind == "server_error"` there, where
+the ffi tier reports `parse_error`.
+
+The spawned `comb` renders as the ffi tier does. A call's `opts.env` is its
+whole environment (the command runs as `env -i K=V …`, with the absolute path
+to `comb`; with no `env` it is this process's), so `env.*` and an `exec()`
+child see exactly the map. `--socket` carries `socket_path`, else
+`$BEACHCOMBER_SOCKET`, so the map cannot point the tier at another daemon.
+`--color never` goes when the render's environment sets a non-empty
+`NO_COLOR`, else `--color always`. And `--no-exec` goes unless the client was
+connected with `exec = true`.
 
 ---
 
@@ -134,7 +137,7 @@ local client = comb.connect({
   timeout_ms  = 2000,                                -- ffi transport
   connect_timeout_ms = 0,                            -- ffi transport
   autostart   = true,                                -- ffi transport
-  exec        = true,                                -- ffi transport: templates may call exec()
+  exec        = true,                                -- templates may call exec()
   library_path = '/opt/beachcomber/lib/libbeachcomber.dylib', -- ffi: as $BEACHCOMBER_LIB, the only candidate
   comb_bin     = '/opt/beachcomber/bin/comb',                 -- subprocess: override discovery
 })
@@ -184,7 +187,7 @@ stored, `p:put.x` and `p:source.x` those layers' values. `key` is
 | `opts` field | Meaning |
 |---|---|
 | `cwd` | The directory the read addresses (`~` is home, a relative path is against this process's working directory). Default: the global entry. |
-| `env` | The caller's environment for `env.*` refs. `nil` (the default) is the calling process's environment, as `comb` renders. ffi transport only. |
+| `env` | The caller's environment for `env.*` refs. `nil` (the default) is the calling process's environment, as `comb` renders. |
 | `force` | Re-execute every Source the read demands first (`comb get --force`). |
 | `wait` | Re-execute a stale entry inline before answering (`comb get --wait`). |
 

@@ -50,8 +50,8 @@ local M = {}
 --                               (connect returns nil, an "unsupported" Error):
 --                               io.popen cannot bound a spawned comb.
 --   opts.autostart     boolean ffi transport: auto-spawn the daemon on demand.
---   opts.exec          boolean ffi transport: whether a template this client
---                               renders (get/eval) may call exec(). Off by
+--   opts.exec          boolean whether a template this client renders (get/eval)
+--                               may call exec(). Off by
 --                               default: a template that calls it then fails with
 --                               "exec() is disabled in this context".
 --   opts.library_path  string  ffi transport: as $BEACHCOMBER_LIB, the only candidate.
