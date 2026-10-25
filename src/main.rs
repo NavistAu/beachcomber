@@ -128,6 +128,12 @@ enum Commands {
         /// orphaned). The flag only needs to be visible in argv.
         #[arg(long)]
         no_reap: bool,
+        /// Write a newline to this inherited file descriptor once the socket
+        /// is served (or a daemon of this build already serves it), then close
+        /// it. A daemon that exits first closes it unwritten. How comb and
+        /// every SDK know a daemon they started is up.
+        #[arg(long, value_name = "FD", value_parser = clap::value_parser!(i32).range(3..))]
+        ready_fd: Option<i32>,
     },
     /// Query one or more cached values.
     ///
@@ -388,9 +394,10 @@ fn run(cli: Cli) -> Outcome {
             exit_with_parent,
             // Read by the reaping canonical daemon from our argv, not by us.
             no_reap: _,
+            ready_fd,
         } => {
             let socket_path = config.resolve_socket_path();
-            run_daemon(socket_path, config, exit_with_parent)
+            run_daemon(socket_path, config, exit_with_parent, ready_fd)
         }
         Commands::Get {
             keys,

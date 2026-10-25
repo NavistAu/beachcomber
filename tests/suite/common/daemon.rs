@@ -1,8 +1,16 @@
-use crate::common::poll::poll_until;
 use crate::common::socket::IsolatedSocket;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::time::Duration;
+
+/// Run `cmd`, a `comb daemon` command line, and return once the daemon says
+/// it serves ([`libbeachcomber::spawn::launch`], the readiness pipe every
+/// spawn waits on). Its stderr is the test's own. The `Child` is the
+/// caller's to kill and wait.
+#[allow(dead_code)]
+pub fn launch(cmd: &mut Command) -> Child {
+    libbeachcomber::spawn::launch(cmd, None, libbeachcomber::spawn::READY_TIMEOUT)
+        .unwrap_or_else(|e| panic!("comb daemon did not start: {e}"))
+}
 
 /// Point `cmd` at a throwaway `$HOME`, `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME`
 /// (= `<home>/.local/state`) and `$BEACHCOMBER_SOCKET` (= `sock`), with
@@ -57,27 +65,15 @@ impl TestDaemon {
     #[allow(dead_code)]
     pub fn spawn_in(socket: IsolatedSocket, home: PathBuf, xdg: PathBuf) -> Self {
         std::fs::create_dir_all(&home).expect("create temp HOME");
-        // The Child is stored in the returned struct and wait()ed in the Drop impl.
-        #[allow(clippy::zombie_processes)]
         // `--exit-with-parent`: the daemon self-terminates if this test process
         // dies without running `Drop` (e.g. nextest SIGKILLs a timed-out test),
         // so a daemon can never be orphaned. Drop below still handles the normal
         // and panic-unwind paths.
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
-        let process = isolate(&mut cmd, &home, &xdg, &socket.path)
+        isolate(&mut cmd, &home, &xdg, &socket.path)
             .args(["daemon", "--exit-with-parent", "--socket"])
-            .arg(&socket.path)
-            .spawn()
-            .expect("spawn comb daemon");
-
-        poll_until(
-            &format!("daemon socket at {:?}", socket.path),
-            "the daemon to bind it",
-            Duration::from_secs(5),
-            Duration::from_millis(50),
-            || socket.path.exists(),
-            |exists| *exists,
-        );
+            .arg(&socket.path);
+        let process = launch(&mut cmd);
         Self {
             socket,
             home,

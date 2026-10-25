@@ -3,14 +3,34 @@
 use crate::cli::exit::Outcome;
 use crate::config::Config;
 use std::fs;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
+use std::os::fd::{FromRawFd, RawFd};
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) -> Outcome {
+pub fn run_daemon(
+    socket_path: PathBuf,
+    config: Config,
+    exit_with_parent: bool,
+    ready_fd: Option<RawFd>,
+) -> Outcome {
     // Captured before any startup work: a parent that dies during startup must
     // still be noticed, and once we are re-parented getppid() no longer names it.
     let parent_pid = unsafe { libc::getppid() };
+    // A daemon outlives whoever reads what it writes: a reader gone away (a
+    // spawner that stopped waiting on `--ready-fd`) is an EPIPE on the write,
+    // never a signal that kills it. A command it runs starts with the default.
+    // SAFETY: setting a disposition to SIG_IGN installs no handler.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+    let ready = match ready_fd.map(Ready::adopt).transpose() {
+        Ok(ready) => ready,
+        Err(e) => {
+            crate::cli::report::error("daemon", e);
+            return Outcome::Error;
+        }
+    };
     let log_path = Config::log_path();
 
     // A configuration with errors is refused before anything is set up: the
@@ -94,6 +114,10 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
             tracing::info!(
                 "another daemon with the same binary is already running; exiting silently"
             );
+            // It serves this socket, which is what a spawner waits to hear.
+            if let Some(ready) = ready {
+                ready.signal();
+            }
             return Outcome::Done;
         }
         Err(e) => {
@@ -239,22 +263,59 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
             });
         }
 
-        let (handle, ready) = crate::daemon::start_in_process_with_reaper(
+        let (handle, serving) = crate::daemon::start_in_process_with_reaper(
             socket_path,
             config,
             cancel,
             Some(reaper_health),
         );
+        // The socket is bound the moment `serving` resolves: say so on
+        // `--ready-fd`. A daemon that never serves drops it unwritten.
+        let served = tokio::spawn(async move {
+            let served = serving.await.is_ok();
+            if let Some(ready) = ready.filter(|_| served) {
+                ready.signal();
+            }
+            served
+        });
         handle.await.ok();
         // A daemon that never signalled readiness never served: config
         // validation refused it or the bind failed. Exit 2, as a failed
         // managed-defaults write does, so a supervisor can tell a refused
         // start from a clean stop.
-        if ready.await.is_err() {
+        if !served.await.unwrap_or(false) {
             return Outcome::Error;
         }
         Outcome::Done
     })
+}
+
+/// The pipe a spawner handed this daemon (`--ready-fd`), written once the
+/// socket is served.
+struct Ready(std::fs::File);
+
+impl Ready {
+    /// Take `fd` over, close-on-exec, so no command the daemon runs holds it
+    /// open past the daemon's exit. A number that names no open descriptor
+    /// is refused.
+    fn adopt(fd: RawFd) -> Result<Self, String> {
+        // SAFETY: `fcntl` only reads and sets the descriptor's flags; it
+        // fails with EBADF on a number that is not open.
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+            return Err(format!(
+                "--ready-fd {fd}: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        // SAFETY: `fd` is open, and was handed to this process to own.
+        Ok(Self(unsafe { std::fs::File::from_raw_fd(fd) }))
+    }
+
+    /// Write the newline and close the pipe. A spawner that stopped waiting
+    /// is no concern of the daemon's.
+    fn signal(mut self) {
+        let _ = self.0.write_all(b"\n");
+    }
 }
 
 /// Cancel `cancel` when this daemon's parent process dies, detected via

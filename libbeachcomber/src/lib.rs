@@ -605,7 +605,7 @@ impl Client {
             return Err(CombError::DaemonNotRunning);
         }
         // The same spawn the CLI makes: the first `comb` on PATH, its stderr
-        // in the daemon's log, one backoff.
+        // in the daemon's log, waited for until it says it serves.
         let comb = spawn::find_comb().ok_or(CombError::DaemonNotRunning)?;
         let log = spawn::log_path();
         let how = spawn::Spawn {
@@ -615,8 +615,15 @@ impl Client {
         };
         match spawn::ensure(&path, &how) {
             Ok(()) => Ok(path),
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Err(CombError::DaemonNotRunning),
-            Err(e) => Err(CombError::ConnectionFailed(e)),
+            // A daemon that exited first or never came up is not running;
+            // what it said is in its log.
+            Err(spawn::Error::Exited { .. } | spawn::Error::TimedOut(_)) => {
+                Err(CombError::DaemonNotRunning)
+            }
+            Err(spawn::Error::Socket(why)) => Err(CombError::ConnectionFailed(
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, why),
+            )),
+            Err(spawn::Error::Io(e)) => Err(CombError::ConnectionFailed(e)),
         }
     }
 

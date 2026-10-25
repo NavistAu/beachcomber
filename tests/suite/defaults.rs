@@ -14,7 +14,6 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::Duration;
 use tempfile::TempDir;
 
 /// A version for the writer tests: what matters is that it is not what any
@@ -537,26 +536,13 @@ fn comb_check_config_reports_the_defaults_directory() {
     assert!(!defaults.exists(), "the check created nothing");
 
     // After a daemon has started: every shipped file is present at this version.
-    let mut daemon = isolate(
-        &mut std::process::Command::new(exe),
-        tmp.path(),
-        tmp.path(),
-        &sock,
-    )
-    .args(["daemon", "--exit-with-parent", "--socket"])
-    .arg(&sock)
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null())
-    .spawn()
-    .expect("spawn daemon");
-    crate::common::poll::poll_until(
-        "the spawned `comb daemon`'s socket path",
-        "the daemon to have bound its socket",
-        Duration::from_secs(5),
-        Duration::from_millis(20),
-        || sock.exists(),
-        |bound| *bound,
-    );
+    let mut cmd = std::process::Command::new(exe);
+    isolate(&mut cmd, tmp.path(), tmp.path(), &sock)
+        .args(["daemon", "--exit-with-parent", "--socket"])
+        .arg(&sock)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut daemon = crate::common::daemon::launch(&mut cmd);
     let out = isolate(
         &mut std::process::Command::new(exe),
         tmp.path(),

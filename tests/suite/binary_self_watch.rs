@@ -43,25 +43,13 @@ async fn daemon_shuts_down_when_binary_touched() {
     std::fs::copy(src, &target).expect("copy binary");
 
     let sock = tmpdir.path().join("sock");
-    let mut child = isolate(
-        &mut std::process::Command::new(&target),
-        tmpdir.path(),
-        tmpdir.path(),
-        &sock,
-    )
-    .args(["daemon", "--socket", sock.to_str().unwrap()])
-    .spawn()
-    .expect("spawn daemon");
-
-    // Wait for socket to exist.
-    poll_until(
-        &format!("daemon socket at {sock:?}"),
-        "the daemon to bind it",
-        std::time::Duration::from_secs(5),
-        std::time::Duration::from_millis(50),
-        || sock.exists(),
-        |exists| *exists,
-    );
+    let mut cmd = std::process::Command::new(&target);
+    isolate(&mut cmd, tmpdir.path(), tmpdir.path(), &sock).args([
+        "daemon",
+        "--socket",
+        sock.to_str().unwrap(),
+    ]);
+    let mut child = crate::common::daemon::launch(&mut cmd);
 
     // Touch the binary (changes mtime).
     std::process::Command::new("touch")

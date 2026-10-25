@@ -2,7 +2,7 @@
 // and the `comb check` CLI aggregation behaviour.
 // Uses the in-process test daemon pattern from tests/suite/put_remove.rs.
 
-use crate::common::daemon::isolate;
+use crate::common::daemon::{isolate, launch};
 use crate::common::poll::poll_until;
 use beachcomber::client::Client;
 use beachcomber::config::Config;
@@ -646,26 +646,11 @@ fn check_daemon_reports_watch_backend() {
     let exe = comb_binary();
 
     // The daemon writes managed defaults under `$XDG_CONFIG_HOME` on start.
-    let mut daemon = isolate(
-        &mut std::process::Command::new(&exe),
-        tmp.path(),
-        tmp.path(),
-        &sock,
-    )
-    .args(["daemon", "--exit-with-parent", "--socket"])
-    .arg(&sock)
-    .spawn()
-    .expect("spawn daemon");
-
-    poll_until(
-        "the spawned `comb daemon`'s socket path",
-        "the daemon to have bound its socket",
-        std::time::Duration::from_secs(5),
-        std::time::Duration::from_millis(20),
-        || sock.exists(),
-        |bound| *bound,
-    );
-    assert!(sock.exists(), "daemon never bound socket");
+    let mut cmd = std::process::Command::new(&exe);
+    isolate(&mut cmd, tmp.path(), tmp.path(), &sock)
+        .args(["daemon", "--exit-with-parent", "--socket"])
+        .arg(&sock);
+    let mut daemon = launch(&mut cmd);
 
     let output = isolate(
         &mut std::process::Command::new(&exe),
@@ -831,26 +816,11 @@ async fn env_override_daemon_does_not_arm_reaper() {
 
     let exe = comb_binary();
 
-    let mut daemon = isolate(
-        &mut std::process::Command::new(&exe),
-        tmp.path(),
-        tmp.path(),
-        &sock,
-    )
-    .args(["daemon", "--exit-with-parent", "--socket"])
-    .arg(&sock)
-    .spawn()
-    .expect("spawn daemon");
-
-    poll_until(
-        "the spawned `comb daemon`'s socket path",
-        "the daemon to have bound its socket",
-        std::time::Duration::from_secs(5),
-        std::time::Duration::from_millis(20),
-        || sock.exists(),
-        |bound| *bound,
-    );
-    assert!(sock.exists(), "daemon never bound socket");
+    let mut cmd = std::process::Command::new(&exe);
+    isolate(&mut cmd, tmp.path(), tmp.path(), &sock)
+        .args(["daemon", "--exit-with-parent", "--socket"])
+        .arg(&sock);
+    let mut daemon = launch(&mut cmd);
 
     let client = Client::new(sock.clone());
     let resp = client

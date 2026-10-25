@@ -23,8 +23,8 @@ pub fn connect(config: &Config) -> Result<PathBuf, Outcome> {
         }
         return Err(Outcome::Error);
     }
-    let start = || -> std::io::Result<()> {
-        let binary = std::env::current_exe()?;
+    let start = || -> Result<(), libbeachcomber::spawn::Error> {
+        let binary = std::env::current_exe().map_err(libbeachcomber::spawn::Error::Io)?;
         let log = Config::log_path();
         let spawn = libbeachcomber::spawn::Spawn {
             binary: &binary,
