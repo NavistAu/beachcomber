@@ -31,9 +31,10 @@ const TEMPLATE_SOURCE: &str = "template";
 /// `comb get`, with `exec()` on: `comb status` is one of the surfaces that
 /// opted in (canon `field_resolution.md` invariant 15).
 ///
-/// A leaf that resolves to nothing is not a row. A leaf that fails carries
-/// its failure as its value — the cell is where the user looks for it, and a
-/// broken expression is exactly what this view exists to show.
+/// A leaf that resolves to nothing is a row with a null value, which the
+/// default `value!=-` filter hides. A leaf that fails carries its failure as
+/// its value — the cell is where the user looks for it, and a broken
+/// expression is exactly what this view exists to show.
 fn render_template_rows(
     rows: &[CacheRow],
     cwd: &str,
@@ -78,7 +79,7 @@ fn render_template_rows(
     for (provider, field) in addrs {
         let value = match resolve(&format!("{provider}.{field}"), &inputs, session) {
             Ok(Some(value)) => value,
-            Ok(None) => continue,
+            Ok(None) => serde_json::Value::Null,
             Err(e) => serde_json::Value::String(e.to_string()),
         };
         out.push(CacheRow {
@@ -125,7 +126,8 @@ fn collect_leaves(
 pub fn run_status(
     config: &Config,
     format: Option<&str>,
-    filters: &[String],
+    user_filters: &[String],
+    all: bool,
     sort_col: &str,
     no_trunc: bool,
     max_width_arg: Option<&str>,
@@ -133,6 +135,7 @@ pub fn run_status(
     ascii: bool,
     depth: Option<usize>,
 ) -> ExitCode {
+    let filters = &crate::cli::status_format::effective_filters(user_filters, all);
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 

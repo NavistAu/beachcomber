@@ -444,6 +444,104 @@ fn multiple_filters_and_together() {
     assert_eq!(out[0].field, "branch");
 }
 
+fn facet_rows() -> Vec<CacheRow> {
+    let mut rows = sample_rows();
+    let mut tpl = rows[0].clone();
+    tpl.provider = "git:template".into();
+    tpl.source = "config:/c/config.toml".into();
+    tpl.value = serde_json::json!("{{ env.B }}");
+    let mut absent = rows[0].clone();
+    absent.source = "template".into();
+    absent.field = "nothing".into();
+    absent.value = serde_json::Value::Null;
+    rows.push(tpl);
+    rows.push(absent);
+    rows
+}
+
+#[test]
+fn not_equal_negates_a_filter() {
+    let out = apply_filters(sample_rows(), &["provider!=git".to_string()]).unwrap();
+    assert!(!out.is_empty());
+    assert!(out.iter().all(|r| r.provider != "git"));
+}
+
+#[test]
+fn provider_matches_the_base_name_of_a_facet_row() {
+    let out = apply_filters(facet_rows(), &["provider=git".to_string()]).unwrap();
+    assert!(out.iter().any(|r| r.provider == "git:template"));
+    assert!(out.iter().all(|r| r.provider.starts_with("git")));
+}
+
+#[test]
+fn facet_dash_is_no_facet_and_a_name_or_star_selects_facet_rows() {
+    let none = apply_filters(facet_rows(), &["facet=-".to_string()]).unwrap();
+    assert!(none.iter().all(|r| !r.provider.contains(':')));
+    let tpl = apply_filters(facet_rows(), &["facet=template".to_string()]).unwrap();
+    assert_eq!(tpl.len(), 1);
+    assert_eq!(tpl[0].provider, "git:template");
+    let any = apply_filters(facet_rows(), &["facet=*".to_string()]).unwrap();
+    assert_eq!(any.len(), 1);
+}
+
+#[test]
+fn source_globs_the_displayed_label() {
+    let out = apply_filters(facet_rows(), &["source=config*".to_string()]).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].provider, "git:template");
+}
+
+#[test]
+fn value_dash_is_absent_and_a_glob_matches_only_present_values() {
+    let absent = apply_filters(facet_rows(), &["value=-".to_string()]).unwrap();
+    assert_eq!(absent.len(), 1);
+    assert_eq!(absent[0].field, "nothing");
+    let present = apply_filters(facet_rows(), &["value=*".to_string()]).unwrap();
+    assert!(present.iter().all(|r| !r.value.is_null()));
+    assert_eq!(present.len(), facet_rows().len() - 1);
+    let main = apply_filters(facet_rows(), &["value=ma*".to_string()]).unwrap();
+    assert_eq!(main.len(), 1);
+}
+
+#[test]
+fn the_defaults_hide_facets_and_absent_values_unless_their_key_is_named() {
+    use beachcomber::cli::status_format::effective_filters;
+    let shown = apply_filters(facet_rows(), &effective_filters(&[], false)).unwrap();
+    assert!(
+        shown
+            .iter()
+            .all(|r| !r.provider.contains(':') && !r.value.is_null())
+    );
+    assert_eq!(shown.len(), sample_rows().len());
+
+    // Naming the key, with either operator, replaces its default only.
+    let facets = effective_filters(&["facet=template".to_string()], false);
+    assert_eq!(
+        facets,
+        vec!["facet=template".to_string(), "value!=-".to_string()]
+    );
+    let absent = effective_filters(&["value!=x".to_string()], false);
+    assert_eq!(absent, vec!["value!=x".to_string(), "facet=-".to_string()]);
+
+    // --all drops both.
+    assert!(effective_filters(&[], true).is_empty());
+    let all = apply_filters(facet_rows(), &effective_filters(&[], true)).unwrap();
+    assert_eq!(all.len(), facet_rows().len());
+}
+
+#[test]
+fn an_absent_value_shows_as_null_in_the_table() {
+    let rows: Vec<CacheRow> = facet_rows()
+        .into_iter()
+        .filter(|r| r.value.is_null())
+        .collect();
+    let out = render_preset("table", &rows, &RenderOpts::default());
+    assert!(
+        out.lines().nth(1).is_some_and(|l| l.contains(" null ")),
+        "{out}"
+    );
+}
+
 // --- Sort tests ---
 
 #[test]

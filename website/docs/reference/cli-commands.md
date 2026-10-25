@@ -126,7 +126,7 @@ A colon is allowed only in the provider segment; `git.branch:age` is an `invalid
 
 ## `comb s` (status)
 
-Show all warm cache entries as a table — one row per provider field. SOURCE names what produced each row's value, and the `TTL` column encodes each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, Active-window poll count, and whether filesystem events will reinstate the entry to Active (`◉`).
+Show the warm cache as a table — one row per provider field, the values a read would answer. Facet rows (`aws:template`, `*:cache`) and absent values are hidden unless asked for (see [Filters](#filters)). SOURCE names what produced each row's value, and the `TTL` column encodes each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, Active-window poll count, and whether filesystem events will reinstate the entry to Active (`◉`).
 
 For a live view, ask for colour explicitly — under `watch` and `viddy` stdout is a pipe, so `--color=auto` (the default) resolves to no colour:
 
@@ -144,6 +144,9 @@ git       branch   head    main     /repo   14s    46s  ★     60s×12 ◉
 git       dirty    status  true     /repo   14s    46s  ★     60s×12 ◉
 hostname  short    host    artemis  -        3h      -  ---
 
+# Every row, facets and absent values included
+comb s -a
+
 # Filter to entries in a specific lifecycle state
 comb s --filter=lifecycle=active
 comb s --filter=lifecycle=decay1
@@ -158,17 +161,46 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (`human` (default), `tsv`, `json`, `csv`, `table`, `sh`), `--filter <key=value>` (keys: `provider`, `path`, `field`, `stale`, `lifecycle`, `fsevents_reinstate`; e.g. `--filter=lifecycle=active`, `--filter=provider=git`, `--filter=fsevents_reinstate=true`), `--sort <default|provider|path|field|value|age|stale>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
+**Flags:** `--format <preset>` (`human` (default), `tsv`, `json`, `csv`, `table`, `sh`), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--sort <default|provider|path|field|value|age|stale>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
+
+### Filters
+
+`--filter` takes `key=value` or `key!=value`, repeatable; a row is shown when it matches every filter. `*` is a glob in any value, and `-` means none for `facet`, `path` and `value`.
+
+| Key | Matches |
+|-----|---------|
+| `provider` | the provider's base name — `aws` matches `aws` and `aws:template` |
+| `facet` | the facet after the colon (`template`, `cache`); `*` any facet; `-` none |
+| `path` | the row's directory; `-` the global entry |
+| `field` | the field, exactly (destructured names included) |
+| `source` | the SOURCE label shown |
+| `value` | the value shown; `-` absent. A glob matches present values only, so `value=*` is "not absent" |
+| `stale` | `true` / `false` |
+| `lifecycle` | `active`, `decay<N>`, `once`, `static`, `template` |
+| `fsevents_reinstate` | `true` / `false` |
+
+Two filters apply by default: `facet=-` hides facet rows, which are data *about* a provider rather than values a read answers, and `value!=-` hides absent values. A filter you give on either key, with either operator, replaces that key's default; `-a`/`--all` drops both.
+
+```sh
+comb s                              # values only
+comb s -a                           # everything
+comb s --filter facet=template      # the template records
+comb s --filter facet='*'           # every facet row
+comb s --filter value=-             # only absent values
+comb s --filter provider!=mise      # everything but mise
+```
+
+An absent value is a template leaf that rendered nothing — a Source stores no absent field. Its row shows `null` in VALUE (dimmed with colour on) and `"value": null` in `json`.
 
 ### SOURCE, and the caller's rendered template leaves
 
 SOURCE sits between FIELD and VALUE and names what produced the row: a Source of the provider (`head`, `refs`, `status`, …), the static label `put`, a config-seeded record's `config:<file>`, or `template` for a row this CLI computed itself, from the caller's own directory and environment.
 
-The daemon holds a template (`[client.providers.<p>] template.*`, the managed `defaults/`, or a `comb p <p>:template.<f>`) as data and never evaluates it, so `status` used to show a column of raw expressions — `{{ env.SCANLINE_FOO }}` — where the point of looking is to see what a prompt would actually get. Every template leaf visible from the caller's directory (its own path, an ancestor up to `$HOME`, or the global entry) is now resolved exactly as `comb get` would resolve it and added as its own row, beside the raw template row and any cached value at the same address:
+The daemon holds a template (`[client.providers.<p>] template.*`, the managed `defaults/`, or a `comb p <p>:template.<f>`) as data and never evaluates it, so `status` used to show a column of raw expressions — `{{ env.SCANLINE_FOO }}` — where the point of looking is to see what a prompt would actually get. Every template leaf visible from the caller's directory (its own path, an ancestor up to `$HOME`, or the global entry) is now resolved exactly as `comb get` would resolve it and added as its own row, beside any cached value at the same address — and beside the raw template row, which `-a` shows:
 
 ```sh
 $ comb p scanline:template.greeting '"hi {{ env.USER }}"'
-$ USER=jane comb s --filter='provider=scanline*'
+$ USER=jane comb s -a --filter=provider=scanline
 PROVIDER            FIELD     SOURCE    VALUE               PATH          AGE  POLL  TTL
 scanline:template   greeting  put       hi {{ env.USER }}   ~/ws/project  0s      -  ---
 scanline            greeting  template  hi jane             ~/ws/project  0s      -  ---
@@ -176,7 +208,7 @@ scanline            greeting  template  hi jane             ~/ws/project  0s    
 
 A cached field with a template over it shows **both** rows at that same address — `git.branch` cached by the `head` Source plus a `git:template.branch` override both list, so the raw cached value and the effective rendered one are visible side by side rather than one hiding the other. A leaf whose expression fails to render shows the failure text as its value instead of dropping the row.
 
-A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lead-in (`> ` under `--ascii`) when it's off. In the structured formats (`json`, `tsv`, `csv`, `sh`, a custom `-f fmt` context) it carries `kind: template` and `source: template`, and it's selectable on its own with `--filter lifecycle=template`. `--filter provider=<name>` that rules a provider out entirely skips resolving that provider's templates — and any `exec()` inside them — rather than rendering them only to discard the rows afterward.
+A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lead-in (`> ` under `--ascii`) when it's off. In the structured formats (`json`, `tsv`, `csv`, `sh`, a custom `-f fmt` context) it carries `kind: template` and `source: template`, and it's selectable on its own with `--filter lifecycle=template`. A `provider` filter that rules a provider out entirely skips resolving that provider's templates — and any `exec()` inside them — rather than rendering them only to discard the rows afterward.
 
 Rendering resolves with this shell's own environment and directory, and `exec()` is enabled — `status` is one of the surfaces canon `field_resolution.md` invariant 15 names, alongside `comb get`, `comb eval` and `comb watch`.
 

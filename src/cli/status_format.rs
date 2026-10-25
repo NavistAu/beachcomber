@@ -978,6 +978,10 @@ const H_POLL: usize = 6;
 /// cell truncates from the head, like PATH does.
 const MAX_SOURCE_WIDTH: usize = 24;
 
+/// What the human and table presets show for an absent value: a template leaf
+/// that rendered nothing (shown with `--all` or `--filter value=-`).
+const ABSENT_TEXT: &str = "null";
+
 /// The glyph that marks a rendered row's VALUE cell when colour is off.
 ///
 /// A rendered row is computed here, from this shell's environment and
@@ -1226,7 +1230,11 @@ fn render_table(
 
     for row in rows {
         let path = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
-        let value = value_to_string(&row.value);
+        let value = if row.value.is_null() {
+            ABSENT_TEXT.to_string()
+        } else {
+            value_to_string(&row.value)
+        };
         // Sanitizing swaps one char for one char, so it never changes a
         // natural width. Only the taint marker does.
         let taint_width = if row_is_tainted(row, &path, &value) {
@@ -1411,7 +1419,11 @@ fn render_table(
         // the other way round, so a truncation can't leave half an escape
         // sequence intact.
         let path_raw = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
-        let value_raw = value_to_string(&arrayify(&row.value));
+        let value_raw = if row.value.is_null() {
+            ABSENT_TEXT.to_string()
+        } else {
+            value_to_string(&arrayify(&row.value))
+        };
         let tainted = row_is_tainted(row, &path_raw, &value_raw);
 
         let ell = ellipsis(ascii);
@@ -1527,7 +1539,9 @@ fn render_table(
             // full reset, so on-screen only the cell's opening brace stays
             // cyan — the row is marked by that lead-in plus its SOURCE, not
             // by an unbroken cyan span.
-            let body = if matches!(row.kind, Some(crate::cache::RowKind::Template)) {
+            let body = if row.value.is_null() {
+                ansi::wrap(&body, ansi::Color::Dim, true)
+            } else if matches!(row.kind, Some(crate::cache::RowKind::Template)) {
                 let body = if body.starts_with(['{', '[']) {
                     highlight_json(&body)
                 } else {
@@ -1657,44 +1671,112 @@ fn render_table(
 // Filter and sort helpers (T30 / T31)
 // ---------------------------------------------------------------------------
 
-/// Apply a list of `key=value` filter strings to `rows`, returning only the rows
-/// that match ALL predicates (AND semantics).
+/// The filters `comb status` applies on a key the user gave none on: facet
+/// rows (`aws:template`, `*:cache`) and absent values are hidden, so the
+/// default table is the values a read would answer. `--all` drops them.
+pub const DEFAULT_FILTERS: [&str; 2] = ["facet=-", "value!=-"];
+
+/// The filters to apply: `user`'s, plus each [`DEFAULT_FILTERS`] entry whose
+/// key `user` does not name (with either operator), unless `all`.
+pub fn effective_filters(user: &[String], all: bool) -> Vec<String> {
+    let mut out = user.to_vec();
+    if all {
+        return out;
+    }
+    for default in DEFAULT_FILTERS {
+        let key = split_filter(default).map(|(k, _, _)| k);
+        let named = user
+            .iter()
+            .any(|f| split_filter(f).map(|(k, _, _)| k) == key);
+        if !named {
+            out.push(default.to_string());
+        }
+    }
+    out
+}
+
+/// A row's provider without its facet: `aws` for `aws:template`.
+pub fn row_base(provider: &str) -> &str {
+    provider.split_once(':').map_or(provider, |(base, _)| base)
+}
+
+/// A row's facet: `template` for `aws:template`, none for `aws`.
+pub fn row_facet(provider: &str) -> Option<&str> {
+    provider.split_once(':').map(|(_, facet)| facet)
+}
+
+/// The SOURCE label a row displays, which `--filter source=` matches.
+pub fn display_source(row: &CacheRow) -> String {
+    row.source.clone()
+}
+
+/// Apply a list of `key=value` / `key!=value` filter strings to `rows`,
+/// returning only the rows that match ALL of them (AND semantics).
 ///
-/// Supported keys: `provider`, `path`, `field`, `stale`.
+/// Keys: `provider` (the base name, exact or `*` glob), `facet` (a name or
+/// glob, `-` for none), `path` (glob, `-` for none), `field`, `source` (glob
+/// over the displayed label), `value` (glob over the displayed value, `-` for
+/// absent), `stale`, `lifecycle`, `fsevents_reinstate`. `!=` negates.
 /// Returns `Err` if any filter string uses an unknown key or invalid value.
 pub fn apply_filters(rows: Vec<CacheRow>, filters: &[String]) -> Result<Vec<CacheRow>, String> {
-    let preds: Vec<Predicate> = filters
+    let filters: Vec<Filter> = filters
         .iter()
         .map(|s| parse_filter(s))
         .collect::<Result<_, _>>()?;
     Ok(rows
         .into_iter()
-        .filter(|r| preds.iter().all(|p| p.matches(r)))
+        .filter(|r| filters.iter().all(|f| f.matches(r)))
         .collect())
 }
 
-/// Whether `provider` could survive every `provider=`/`provider=<glob>`
-/// predicate in `filters`. Used to skip resolving (and `exec()`ing) a
-/// template row's leaves before rendering, when `--filter provider=` has
-/// already ruled the provider out — `apply_filters` runs the real,
-/// authoritative filter afterward, over the rendered rows, so a filter
-/// string this can't parse or a predicate it doesn't recognise is not this
-/// function's error to raise: it answers "could still pass" and lets
-/// `apply_filters` give the answer, and the syntax error, its usual way.
+/// Whether `provider` (a base name) could survive every `provider` filter
+/// in `filters`. Used to skip resolving (and `exec()`ing) a template row's
+/// leaves before rendering, when `--filter provider` has already ruled the
+/// provider out — `apply_filters` runs the real, authoritative filter
+/// afterward, over the rendered rows, so a filter string this can't parse or
+/// a predicate it doesn't recognise is not this function's error to raise:
+/// it answers "could still pass" and lets `apply_filters` give the answer,
+/// and the syntax error, its usual way.
 pub fn provider_could_pass(filters: &[String], provider: &str) -> bool {
     filters.iter().all(|f| match parse_filter(f) {
-        Ok(Predicate::ProviderEq(v)) => provider == v,
-        Ok(Predicate::ProviderGlob(pat)) => simple_glob_match(&pat, provider),
+        Ok(
+            filter @ Filter {
+                predicate: Predicate::Provider(_),
+                ..
+            },
+        ) => filter.matches_base(provider),
         _ => true,
     })
 }
 
+/// `key=value` or `key!=value`, split into its key, whether it is negated,
+/// and its value.
+fn split_filter(s: &str) -> Option<(&str, bool, &str)> {
+    let eq = s.find('=')?;
+    let (key, negate) = match s[..eq].strip_suffix('!') {
+        Some(key) => (key, true),
+        None => (&s[..eq], false),
+    };
+    Some((key, negate, &s[eq + 1..]))
+}
+
+struct Filter {
+    predicate: Predicate,
+    negate: bool,
+}
+
 enum Predicate {
-    ProviderEq(String),
-    ProviderGlob(String),
-    PathGlob(String),
-    PathDash,
-    FieldEq(String),
+    /// The provider's base name, exact or glob.
+    Provider(String),
+    /// The facet: a name or glob, or none (`-`).
+    Facet(Option<String>),
+    /// The path: a glob, or none (`-`).
+    Path(Option<String>),
+    Field(String),
+    /// The displayed SOURCE label, as a glob.
+    Source(String),
+    /// The displayed value as a glob, or absent (`-`).
+    Value(Option<String>),
     Stale(bool),
     /// Match Lifecycle rows with the given decay level (0=active, 1-4=decayN).
     LifecycleDecay(u8),
@@ -1708,54 +1790,64 @@ enum Predicate {
     FseventsReinstate(bool),
 }
 
-fn parse_filter(s: &str) -> Result<Predicate, String> {
-    let (k, v) = s
-        .split_once('=')
-        .ok_or_else(|| format!("filter must be key=value: {s}"))?;
-    match k {
-        "provider" => {
-            if v.contains('*') {
-                Ok(Predicate::ProviderGlob(v.to_string()))
-            } else {
-                Ok(Predicate::ProviderEq(v.to_string()))
-            }
-        }
-        "path" => {
-            if v == "-" {
-                Ok(Predicate::PathDash)
-            } else {
-                Ok(Predicate::PathGlob(v.to_string()))
-            }
-        }
-        "field" => Ok(Predicate::FieldEq(v.to_string())),
+fn parse_filter(s: &str) -> Result<Filter, String> {
+    let (k, negate, v) =
+        split_filter(s).ok_or_else(|| format!("filter must be key=value or key!=value: {s}"))?;
+    let dash = |v: &str| (v != "-").then(|| v.to_string());
+    let predicate = match k {
+        "provider" => Predicate::Provider(v.to_string()),
+        "facet" => Predicate::Facet(dash(v)),
+        "path" => Predicate::Path(dash(v)),
+        "field" => Predicate::Field(v.to_string()),
+        "source" => Predicate::Source(v.to_string()),
+        "value" => Predicate::Value(dash(v)),
         "stale" => match v {
-            "true" => Ok(Predicate::Stale(true)),
-            "false" => Ok(Predicate::Stale(false)),
-            other => Err(format!("stale= must be true or false, got {other}")),
+            "true" => Predicate::Stale(true),
+            "false" => Predicate::Stale(false),
+            other => return Err(format!("stale= must be true or false, got {other}")),
         },
         "lifecycle" => match v {
-            "active" => Ok(Predicate::LifecycleDecay(0)),
-            "once" => Ok(Predicate::LifecycleOnce),
-            "static" => Ok(Predicate::LifecycleStatic),
-            "template" => Ok(Predicate::LifecycleTemplate),
+            "active" => Predicate::LifecycleDecay(0),
+            "once" => Predicate::LifecycleOnce,
+            "static" => Predicate::LifecycleStatic,
+            "template" => Predicate::LifecycleTemplate,
             other => match other
                 .strip_prefix("decay")
                 .and_then(|n| n.parse::<u8>().ok())
             {
-                Some(n) if n >= 1 => Ok(Predicate::LifecycleDecay(n)),
-                _ => Err(format!(
-                    "lifecycle= must be active|decay<N>|once|static|template, got {other}"
-                )),
+                Some(n) if n >= 1 => Predicate::LifecycleDecay(n),
+                _ => {
+                    return Err(format!(
+                        "lifecycle= must be active|decay<N>|once|static|template, got {other}"
+                    ));
+                }
             },
         },
         "fsevents_reinstate" => match v {
-            "true" => Ok(Predicate::FseventsReinstate(true)),
-            "false" => Ok(Predicate::FseventsReinstate(false)),
-            other => Err(format!(
-                "fsevents_reinstate= must be true or false, got {other}"
-            )),
+            "true" => Predicate::FseventsReinstate(true),
+            "false" => Predicate::FseventsReinstate(false),
+            other => {
+                return Err(format!(
+                    "fsevents_reinstate= must be true or false, got {other}"
+                ));
+            }
         },
-        other => Err(format!("unknown filter key: {other}")),
+        other => return Err(format!("unknown filter key: {other}")),
+    };
+    Ok(Filter { predicate, negate })
+}
+
+impl Filter {
+    fn matches(&self, r: &CacheRow) -> bool {
+        self.predicate.matches(r) != self.negate
+    }
+
+    /// A `provider` filter against a bare base name.
+    fn matches_base(&self, base: &str) -> bool {
+        match &self.predicate {
+            Predicate::Provider(pat) => simple_glob_match(pat, base) != self.negate,
+            _ => true,
+        }
     }
 }
 
@@ -1763,13 +1855,22 @@ impl Predicate {
     fn matches(&self, r: &CacheRow) -> bool {
         use crate::cache::RowKind;
         match self {
-            Predicate::ProviderEq(v) => &r.provider == v,
-            Predicate::ProviderGlob(pat) => simple_glob_match(pat, &r.provider),
-            Predicate::PathGlob(pat) => {
+            Predicate::Provider(pat) => simple_glob_match(pat, row_base(&r.provider)),
+            Predicate::Facet(None) => row_facet(&r.provider).is_none(),
+            Predicate::Facet(Some(pat)) => {
+                row_facet(&r.provider).is_some_and(|f| simple_glob_match(pat, f))
+            }
+            Predicate::Path(None) => r.path.is_none(),
+            Predicate::Path(Some(pat)) => {
                 r.path.as_deref().is_some_and(|p| simple_glob_match(pat, p))
             }
-            Predicate::PathDash => r.path.is_none(),
-            Predicate::FieldEq(v) => &r.field == v,
+            Predicate::Field(v) => &r.field == v,
+            Predicate::Source(pat) => simple_glob_match(pat, &display_source(r)),
+            Predicate::Value(None) => r.value.is_null(),
+            // A glob matches a present value only: `value=*` is "not absent".
+            Predicate::Value(Some(pat)) => {
+                !r.value.is_null() && simple_glob_match(pat, &value_to_string(&r.value))
+            }
             Predicate::Stale(b) => r.stale == *b,
             Predicate::LifecycleDecay(target) => matches!(
                 &r.kind,

@@ -135,9 +135,15 @@ enum Commands {
         /// Output format: human (default), tsv, json, csv, table, sh
         #[arg(long, short = 'f', default_value = "", hide_default_value = true)]
         format: String,
-        /// Filter rows (e.g. provider=git, path=/home/*, stale=true); repeatable, AND semantics
+        /// Filter rows: KEY=VALUE or KEY!=VALUE, repeatable, all must match. Keys: provider (base
+        /// name), facet, path, field, source, value, stale, lifecycle, fsevents_reinstate; `*` globs,
+        /// and `-` means none for facet, path and value. Without a filter on that key, facet=- and
+        /// value!=- apply: facet rows and absent values are hidden.
         #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
         filter: Vec<String>,
+        /// Show every row: drop the default facet=- and value!=- filters
+        #[arg(long, short = 'a')]
+        all: bool,
         /// Sort by column: default, provider, path, field, value, age, stale (default: default)
         #[arg(long, default_value = "default")]
         sort: String,
@@ -375,6 +381,7 @@ fn main() -> ExitCode {
         Commands::Status {
             format,
             filter,
+            all,
             sort,
             no_trunc,
             max_width,
@@ -391,6 +398,7 @@ fn main() -> ExitCode {
                 &config,
                 fmt,
                 &filter,
+                all,
                 &sort,
                 no_trunc,
                 max_width.as_deref(),

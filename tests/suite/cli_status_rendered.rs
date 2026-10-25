@@ -87,7 +87,11 @@ fn rendered_leaves_sit_beside_the_raw_templates_and_the_cached_data() {
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
-    let out = status(&d, &cwd, &["--color", "never", "--ascii", "--no-trunc"]);
+    let out = status(
+        &d,
+        &cwd,
+        &["--all", "--color", "never", "--ascii", "--no-trunc"],
+    );
 
     // The rendered leaves: SOURCE `template`, VALUE marked with the glyph
     // that stands in for the cyan the colour build uses.
@@ -102,6 +106,82 @@ fn rendered_leaves_sit_beside_the_raw_templates_and_the_cached_data() {
     );
     // And a plain static record is unmarked, with its own SOURCE.
     assert_row(&out, "scanline lit put 1 ");
+}
+
+/// Facet rows are data about a provider, not values a read answers: hidden
+/// unless `--all` or a `facet` filter asks for them.
+#[test]
+fn facet_rows_are_hidden_unless_asked_for() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    seed_scanline(&d, &cwd);
+
+    let shown = json_rows(&d, &cwd, &[]);
+    assert!(
+        shown
+            .iter()
+            .all(|r| !r["provider"].as_str().unwrap().contains(':')),
+        "no facet row by default: {shown:#?}"
+    );
+    assert!(
+        shown
+            .iter()
+            .any(|r| r["provider"] == "scanline" && r["field"] == "widgets.foo"),
+        "the rendered value is still there, from the hidden template: {shown:#?}"
+    );
+
+    let all = json_rows(&d, &cwd, &["--all"]);
+    assert!(
+        all.iter().any(|r| r["provider"] == "scanline:template"),
+        "--all shows the facet rows: {all:#?}"
+    );
+
+    let templates = json_rows(&d, &cwd, &["--filter", "facet=template"]);
+    assert!(!templates.is_empty());
+    assert!(
+        templates
+            .iter()
+            .all(|r| r["provider"].as_str().unwrap().ends_with(":template")),
+        "facet=template is the template records alone: {templates:#?}"
+    );
+}
+
+/// A leaf that renders nothing is a null row: hidden by the default
+/// `value!=-`, shown by `--filter value=-` or `--all`.
+#[test]
+fn an_absent_leaf_is_a_null_row_shown_only_when_asked() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    put(&d, &cwd, &["t:template.nothing", r#""{{ none }}""#]);
+    put(&d, &cwd, &["t:template.some", r#""{{ 'x' }}""#]);
+
+    let shown = json_rows(&d, &cwd, &["--filter", "provider=t"]);
+    assert!(
+        !shown.iter().any(|r| r["field"] == "nothing"),
+        "an absent leaf is hidden by default: {shown:#?}"
+    );
+    assert!(shown.iter().any(|r| r["field"] == "some"));
+
+    let absent = json_rows(&d, &cwd, &["--filter", "provider=t", "--filter", "value=-"]);
+    assert_eq!(absent.len(), 1, "only the absent leaf: {absent:#?}");
+    assert_eq!(absent[0]["field"], "nothing");
+    assert!(absent[0]["value"].is_null());
+    assert_eq!(absent[0]["kind"]["kind"], "template");
+
+    let out = status(
+        &d,
+        &cwd,
+        &[
+            "-a",
+            "--filter",
+            "provider=t",
+            "--color",
+            "never",
+            "--ascii",
+            "--no-trunc",
+        ],
+    );
+    assert_row(&out, "t nothing template > null ");
 }
 
 #[test]
@@ -259,7 +339,7 @@ fn a_template_put_at_another_path_is_not_rendered_here() {
         &["offstage:template.leaf", r#""{{ \"nope\" }}""#],
     );
 
-    let rows = json_rows(&d, &cwd, &[]);
+    let rows = json_rows(&d, &cwd, &["-a"]);
     // The template is data, so its raw row is still listed…
     assert!(
         rows.iter().any(|r| r["provider"] == "offstage:template"),
