@@ -430,17 +430,18 @@ fn transport_failure_keeps_its_kind() {
 /// cycle guard does not bound it — no field repeats. Before the depth limit
 /// a ~2000-link chain ran the native stack out inside the cdylib, which is a
 /// SIGSEGV in the *host* process: not an error the caller can catch, and not
-/// something `call_ffi`'s panic guard sees. The limit makes this an envelope:
-/// a `Config` failure naming the field, so `parse_error`.
+/// something `call_ffi`'s panic guard sees. The limit (128 links) makes this
+/// an envelope: a `Config` failure naming the field, so `parse_error`. A
+/// chain of 130 crosses it; a longer one stops at the same link.
 #[test]
 fn bc_eval_deeply_nested_templates_error_rather_than_crash() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
 
-    let mut leaves: Vec<String> = (0..1999)
+    let mut leaves: Vec<String> = (0..129)
         .map(|i| format!(r#""f{i}":"{{{{ chain.f{} }}}}""#, i + 1))
         .collect();
-    leaves.push(r#""f1999":"{{ comb.leaf.v }}""#.to_string());
+    leaves.push(r#""f129":"{{ comb.leaf.v }}""#.to_string());
     put(
         client,
         "chain:template",

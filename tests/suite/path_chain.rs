@@ -1844,7 +1844,9 @@ async fn watch_follows_the_whole_chain() {
     // failure rather than a parse error on the next read.
     send_recv(&mut s, put("my", serde_json::json!({"b": 9}))).await;
     line.clear();
-    let shadowed = tokio::time::timeout(Duration::from_millis(250), frames.read_line(&mut line));
+    // A real change written next as a sentinel would not do: the watch
+    // collapses its wakeups into one, so it would send only the second.
+    let shadowed = tokio::time::timeout(Duration::from_millis(50), frames.read_line(&mut line));
     let timed_out = shadowed.await.is_err();
     assert!(
         timed_out && line.is_empty(),

@@ -200,7 +200,7 @@ fn timeout_returns_err() {
         .create();
 
     let url = format!("{}/slow", server.url());
-    let result = fetch("GET", &url, &[], None, Duration::from_millis(100));
+    let result = fetch("GET", &url, &[], None, Duration::from_millis(20));
 
     // Unblock before asserting: an unwinding assert would otherwise drop the
     // server (which joins its handler) ahead of the sender.

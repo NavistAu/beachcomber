@@ -506,7 +506,7 @@ fn check_connect_timeout_bounds_the_search() {
         &tmp.path().join("cfg"),
         &tmp.path().join("no-daemon.sock"),
     )
-    .args(["check", "daemon", "--connect-timeout", "300ms"])
+    .args(["check", "daemon", "--connect-timeout", "100ms"])
     .output()
     .expect("run comb check daemon");
     let elapsed = start.elapsed();
@@ -519,7 +519,7 @@ fn check_connect_timeout_bounds_the_search() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert!(
-        elapsed >= std::time::Duration::from_millis(300),
+        elapsed >= std::time::Duration::from_millis(100),
         "should keep trying for the whole budget; elapsed={elapsed:?}"
     );
 }

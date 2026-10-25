@@ -2388,10 +2388,14 @@ result.y = "{{ data }}"
         use crate::provider::source_call::{Cold, source_call};
         let dir = tempfile::tempdir().unwrap();
         let count = dir.path().join("runs");
+        // The run waits for `go`, which the test makes once every caller holds
+        // the instance's turn: one running it, two waiting on it.
+        let go = dir.path().join("go");
         let config = crate::config::Config::from_toml(&format!(
             "[daemon.providers.p.sources.t]\n\
-             data = \"{{{{ exec(['sh', '-c', 'sleep 0.3; echo run >> {}; exit 3']) }}}}\"\n\
+             data = \"{{{{ exec(['sh', '-c', 'while [ ! -e {} ]; do sleep 0.01; done; echo run >> {}; exit 3']) }}}}\"\n\
              result.v = \"{{{{ data }}}}\"\n",
+            go.display(),
             count.display()
         ));
         let cache = Arc::new(Cache::new());
@@ -2408,6 +2412,22 @@ result.y = "{{ data }}"
                 })
             })
             .collect();
+        let holders = || {
+            registry
+                .cold_locks
+                .get(&("p".to_string(), "t".to_string(), None))
+                .map(|lock| Arc::strong_count(&lock) - 1)
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while holders() != Some(3) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "three callers hold the turn: {:?}",
+                holders()
+            );
+            std::thread::yield_now();
+        }
+        std::fs::write(&go, "").unwrap();
         for caller in callers {
             assert!(
                 caller.join().unwrap().unwrap().is_none(),

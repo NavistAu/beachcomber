@@ -1523,7 +1523,7 @@ result.mine = "{{{{ data }}}}"
         "the called Source",
         "run again",
         Duration::from_secs(20),
-        Duration::from_millis(100),
+        Duration::from_millis(10),
         || get(&d, "report"),
         |v| *v == Some(json!({"mine": 2, "v": "2"})),
     );
@@ -1585,12 +1585,15 @@ result.seen = "{{ data }}"
 fn a_refresh_runs_a_shared_cold_source_once() {
     let setup = Setup::new(&[]);
     let count = setup.home.join("shared.count");
+    // The shared run waits for `go`, which is made once both callers run: the
+    // caller that did not start it finds it cold, and must wait for it.
+    let go = setup.home.join("go");
     setup.write(
         "config.toml",
         &format!(
             r#"
 [daemon.providers.shared.sources.t]
-data = "{{{{ exec(['sh', '-c', 'sleep 0.3; echo run >> {}; echo 1']) | trim }}}}"
+data = "{{{{ exec(['sh', '-c', 'while [ ! -e {go} ]; do sleep 0.01; done; echo run >> {count}; echo 1']) | trim }}}}"
 result.v = "{{{{ data }}}}"
 
 [daemon.providers.callers.sources.one]
@@ -1601,7 +1604,8 @@ result.x1 = "{{{{ data }}}}"
 data = "{{{{ daemon.providers.shared.sources.t().v }}}}"
 result.x2 = "{{{{ data }}}}"
 "#,
-            count.display()
+            go = go.display(),
+            count = count.display()
         ),
     );
     let d = setup.daemon();
@@ -1612,10 +1616,19 @@ result.x2 = "{{{{ data }}}}"
         .expect("run comb refresh");
     assert!(out.status.success(), "{out:?}");
     poll_until(
+        "introspect daemon",
+        "both callers in flight",
+        Duration::from_secs(20),
+        Duration::from_millis(10),
+        || introspect(&d, "daemon")["in_flight"].as_u64(),
+        |n| *n == Some(2),
+    );
+    std::fs::write(&go, "").unwrap();
+    poll_until(
         "both callers",
         "both stored",
         Duration::from_secs(20),
-        Duration::from_millis(100),
+        Duration::from_millis(10),
         || get(&d, "callers"),
         |v| *v == Some(json!({"x1": "1", "x2": "1"})),
     );

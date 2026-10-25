@@ -15,7 +15,7 @@ fn poll_catches_binary_replacement_when_fs_events_are_dead() {
     let (tx, rx) = std::sync::mpsc::channel();
     beachcomber::singleton::spawn_binary_self_watch_with(
         fake_bin.clone(),
-        std::time::Duration::from_millis(100),
+        std::time::Duration::from_millis(10),
         false, // fs events dead — the poll is the only mechanism
         move || {
             let _ = tx.send(());

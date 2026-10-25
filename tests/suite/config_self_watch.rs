@@ -20,6 +20,13 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
+/// How often a watch-thread test's watch polls.
+const POLL_MS: u64 = 10;
+
+/// How long a watch-thread test listens for a change that must not come:
+/// eight polls.
+const SILENCE: Duration = Duration::from_millis(8 * POLL_MS);
+
 /// Spawn a watch over `cfg` polling every `ms` milliseconds with the fs-event
 /// fast path off, and hand back its thread plus a channel of the changes it
 /// reports. Every test here wants exactly this; only the two that pin the stop
@@ -75,7 +82,7 @@ fn poll_restarts_on_valid_config_change_when_fs_events_are_dead() {
     let cfg = tmp.path().join("config.toml");
     std::fs::write(&cfg, "[daemon]\n").unwrap();
 
-    let (_watch, rx) = watch(cfg.clone(), 100);
+    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
     std::fs::write(&cfg, "[daemon]\nlog_level = \"debug\"\n").unwrap();
     touch_future(&cfg);
@@ -90,14 +97,14 @@ fn poll_ignores_invalid_config_change_and_keeps_running() {
     let cfg = tmp.path().join("config.toml");
     std::fs::write(&cfg, "[daemon]\n").unwrap();
 
-    let (_watch, rx) = watch(cfg.clone(), 100);
+    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
     // Not valid TOML.
     std::fs::write(&cfg, "this is not [ valid toml").unwrap();
     touch_future(&cfg);
 
-    // Give the poll several intervals to notice and (wrongly) fire; it must not.
-    let result = rx.recv_timeout(Duration::from_millis(800));
+    // Give the poll eight intervals to notice and (wrongly) fire; it must not.
+    let result = rx.recv_timeout(SILENCE);
     assert!(
         result.is_err(),
         "daemon must not restart into a config that fails to parse"
@@ -113,7 +120,7 @@ fn config_file_created_after_daemon_start_is_picked_up() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = tmp.path().join("config.toml"); // does not exist yet
 
-    let (_watch, rx) = watch(cfg.clone(), 100);
+    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
     std::fs::write(&cfg, "[daemon]\n").unwrap();
     touch_future(&cfg);
@@ -127,9 +134,9 @@ fn config_file_that_never_appears_never_restarts() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = tmp.path().join("never-written.toml");
 
-    let (_watch, rx) = watch(cfg.clone(), 100);
+    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
-    let result = rx.recv_timeout(Duration::from_millis(500));
+    let result = rx.recv_timeout(SILENCE);
     assert!(
         result.is_err(),
         "no config file ever appeared; daemon must not restart"
@@ -148,7 +155,7 @@ fn conf_d_file_change_triggers_restart() {
     let drop_in = conf_d.join("01-drop-in.toml");
     std::fs::write(&drop_in, "[daemon]\nlog_level = \"debug\"\n").unwrap();
 
-    let (_watch, rx) = watch(cfg.clone(), 100);
+    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
     std::fs::write(&drop_in, "[daemon]\nlog_level = \"trace\"\n").unwrap();
     touch_future(&drop_in);
@@ -167,12 +174,12 @@ fn conf_d_invalid_edit_does_not_restart() {
     let drop_in = conf_d.join("01-drop-in.toml");
     std::fs::write(&drop_in, "[daemon]\nlog_level = \"debug\"\n").unwrap();
 
-    let (_watch, rx) = watch(cfg.clone(), 100);
+    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
     std::fs::write(&drop_in, "this is not [ valid toml").unwrap();
     touch_future(&drop_in);
 
-    let result = rx.recv_timeout(Duration::from_millis(800));
+    let result = rx.recv_timeout(SILENCE);
     assert!(
         result.is_err(),
         "daemon must not restart when a conf.d drop-in fails to parse"
@@ -192,7 +199,7 @@ fn conf_d_only_change_restarts_without_a_main_config_file() {
     let drop_in = conf_d.join("01-drop-in.toml");
     std::fs::write(&drop_in, "[daemon]\nlog_level = \"debug\"\n").unwrap();
 
-    let (_watch, rx) = watch(cfg.clone(), 100);
+    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
     std::fs::write(&drop_in, "[daemon]\nlog_level = \"trace\"\n").unwrap();
     touch_future(&drop_in);
@@ -209,7 +216,7 @@ fn new_file_appearing_in_conf_d_triggers_restart() {
     let conf_d = tmp.path().join("conf.d");
     std::fs::create_dir(&conf_d).unwrap();
 
-    let (_watch, rx) = watch(cfg.clone(), 100);
+    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
     let new_file = conf_d.join("02-new.toml");
     std::fs::write(&new_file, "[daemon]\nlog_level = \"warn\"\n").unwrap();
@@ -234,7 +241,7 @@ fn a_change_is_judged_against_the_configuration_the_daemon_loaded() {
     std::fs::write(&cfg, "[daemon]\nlog_level = \"debug\"\n").unwrap();
     touch_future(&cfg);
 
-    let (_watch, rx) = watch_from(&running, 50, CancellationToken::new());
+    let (_watch, rx) = watch_from(&running, POLL_MS, CancellationToken::new());
 
     std::fs::write(
         &cfg,
@@ -255,7 +262,7 @@ fn the_watch_re_arms_and_reports_every_change() {
     let cfg = tmp.path().join("config.toml");
     std::fs::write(&cfg, "[daemon]\n").unwrap();
 
-    let (_watch, rx) = watch(cfg.clone(), 50);
+    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
     std::fs::write(&cfg, "[daemon]\nlog_level = \"debug\"\n").unwrap();
     touch_future(&cfg);
@@ -284,7 +291,7 @@ fn a_client_template_edit_reseeds_in_place() {
     )
     .unwrap();
 
-    let (_watch, rx) = watch(cfg.clone(), 50);
+    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
     std::fs::write(
         &cfg,
@@ -323,7 +330,7 @@ fn an_edit_is_seen_behind_another_file_stamped_into_the_future() {
     let other = conf_d.join("02-other.toml");
     std::fs::write(&other, "[daemon]\nlog_level = \"debug\"\n").unwrap();
 
-    let (_watch, rx) = watch(cfg.clone(), 50);
+    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
     std::fs::write(&other, "[daemon]\nlog_level = \"trace\"\n").unwrap();
     touch_future(&other);
@@ -334,7 +341,7 @@ fn an_edit_is_seen_behind_another_file_stamped_into_the_future() {
         "an edit to one file must be seen even while another is stamped an hour ahead"
     );
     assert!(
-        rx.recv_timeout(Duration::from_millis(400)).is_err(),
+        rx.recv_timeout(SILENCE).is_err(),
         "and the file stamped ahead must not re-trigger on every tick"
     );
 }
@@ -348,7 +355,7 @@ fn cancelling_the_stop_token_ends_the_watch_thread() {
     std::fs::write(&cfg, "[daemon]\n").unwrap();
 
     let stop = CancellationToken::new();
-    let (thread, rx) = watch_until(cfg.clone(), 50, stop.clone());
+    let (thread, rx) = watch_until(cfg.clone(), POLL_MS, stop.clone());
 
     // Alive and reporting first, so the silence below means something.
     std::fs::write(&cfg, "[daemon]\nlog_level = \"debug\"\n").unwrap();
@@ -372,7 +379,7 @@ fn cancelling_the_stop_token_ends_the_watch_thread() {
     std::fs::write(&cfg, "[daemon]\nlog_level = \"trace\"\n").unwrap();
     touch_future(&cfg);
     assert!(
-        rx.recv_timeout(Duration::from_millis(400)).is_err(),
+        rx.recv_timeout(SILENCE).is_err(),
         "a stopped watch must report nothing"
     );
 }
@@ -395,7 +402,7 @@ fn a_fixed_return_in_conf_d_reloads() {
     std::fs::create_dir_all(&conf_d).unwrap();
     let mine = conf_d.join("10-mine.toml");
 
-    let (_watch, rx) = watch(cfg.clone(), 50);
+    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
 
     std::fs::write(
         &mine,

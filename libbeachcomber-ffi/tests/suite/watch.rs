@@ -205,7 +205,8 @@ fn a_put_to_the_template_fires_the_watch() {
 }
 
 /// A watch only emits when *its* value changes. A `put` to an unrelated
-/// namespace touches no key this resolution read, so the wait runs out.
+/// namespace touches no key this resolution read, so the next emission is the
+/// watched key's own change.
 #[test]
 fn a_put_to_an_unrelated_key_does_not_fire_the_watch() {
     let daemon = DaemonGuard::spawn();
@@ -217,10 +218,11 @@ fn a_put_to_an_unrelated_key_does_not_fire_the_watch() {
     assert_eq!(first["data"], serde_json::json!("v1"), "{first}");
 
     put_static(client, "watch_elsewhere_test", r#"{"other":"v9"}"#);
+    put_static(client, "watch_unrelated_test", r#"{"field":"v2"}"#);
 
-    let v = read(unsafe { bc_watch_next(watch, 300) });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(v["outcome"], serde_json::json!("timeout"), "{v}");
+    let v = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(v["outcome"], serde_json::json!("event"), "{v}");
+    assert_eq!(v["data"], serde_json::json!("v2"), "{v}");
 
     unsafe { bc_watch_free(watch) };
     unsafe { bc_client_free(client) };
@@ -413,7 +415,7 @@ fn watch_cancel_from_another_thread_unblocks_a_pending_next() {
     std::thread::scope(|scope| {
         let blocked = scope.spawn(|| read(unsafe { bc_watch_next(watch_ptr.0, -1) }));
 
-        std::thread::sleep(std::time::Duration::from_millis(75));
+        std::thread::sleep(std::time::Duration::from_millis(10));
         unsafe { bc_watch_cancel(watch_ptr.0) };
 
         let v = blocked.join().unwrap();

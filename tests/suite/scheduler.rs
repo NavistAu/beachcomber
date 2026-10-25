@@ -235,7 +235,7 @@ async fn a_poll_source_registers_no_watch_and_a_watch_source_matches_only_its_pa
         beachcomber::config::Config::default(),
         Arc::new(WatcherRegistry::new()),
     );
-    scheduler.use_polling_watcher(Duration::from_millis(50));
+    scheduler.use_polling_watcher(Duration::from_millis(10));
     let sched_task = tokio::spawn(async move { scheduler.run().await });
 
     // Demand at `root`: both sources go Cold -> Active and run once, and the

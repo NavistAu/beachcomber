@@ -854,62 +854,70 @@ async fn a_facet_only_edit_re_seeds_in_place_and_leaves_put_records_alone() {
     );
 }
 
-/// The `age_ms` of the `status` row for `provider`.`field`.
-async fn row_age(stream: &mut UnixStream, provider: &str, field: &str) -> u64 {
-    let resp = send_recv(stream, json!({"op": "status"})).await;
-    resp["data"]
-        .as_array()
-        .and_then(|rows| {
-            rows.iter().find_map(|r| {
-                (r["provider"] == json!(provider) && r["field"] == json!(field))
-                    .then(|| r["age_ms"].as_u64())
-                    .flatten()
-            })
-        })
-        .unwrap_or_else(|| panic!("no {provider}.{field} row: {resp}"))
-}
-
 /// A reload reseeds every namespace, but a file whose records in a namespace
 /// come back unchanged keeps their age: AGE says when that configuration
-/// last changed, not when the daemon last reloaded.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_reload_keeps_the_age_of_records_it_did_not_change() {
-    let e = Env::new(
-        "[client.providers.other]\ntemplate.x = \"kept\"\n",
-        &[("10-mine.toml", RESEED_V1)],
-    );
-    let _h = e.serve().await;
-    let mut s = e.connect().await;
+/// last changed, not when the daemon last reloaded. The records' stamps are
+/// compared across a reload called directly, so no age has to grow first.
+#[test]
+fn a_reload_keeps_the_age_of_records_it_did_not_change() {
+    let tmp = TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    std::fs::write(&cfg, "[client.providers.other]\ntemplate.x = \"kept\"\n").unwrap();
+    let conf_d = tmp.path().join("conf.d");
+    std::fs::create_dir(&conf_d).unwrap();
+    let drop_in = conf_d.join("10-mine.toml");
+    std::fs::write(&drop_in, RESEED_V1).unwrap();
+    // The managed defaults carry the line that writes `[client.providers]`
+    // templates into `<p>:template`.
+    let defaults = tmp.path().join("defaults");
+    beachcomber::daemon::defaults::write_managed_defaults(&defaults, env!("CARGO_PKG_VERSION"))
+        .unwrap();
+    let layers = || Config::read_layers(Some(&defaults), Some(&cfg), &conf_d).layers;
 
-    crate::common::poll::poll_until_async(
-        "other:template.x",
-        "an age the reload could visibly reset",
-        Duration::from_secs(5),
-        Duration::from_millis(20),
-        async || row_age(&mut s, "other:template", "x").await,
-        |age| *age >= 300,
-    )
-    .await;
-    rewrite(&e.drop_in("10-mine.toml"), RESEED_V2);
-    crate::common::poll::poll_until_async(
-        "scanline:template.title",
-        "the edited value",
-        Duration::from_secs(5),
-        Duration::from_millis(20),
-        async || data(&mut s, "scanline:template.title").await,
-        |v| *v == json!("t2"),
-    )
-    .await;
+    let cache = Arc::new(Cache::new());
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+    beachcomber::daemon::seed::seed_facets(&cache, &registry, &layers());
+    // When `namespace`'s records from `file` were last written.
+    let stamp = |namespace: &str, file: &str| {
+        let entry = cache.get_entry(namespace, None).expect(namespace);
+        let found = entry
+            .sources
+            .iter()
+            .find(|(label, _)| label.ends_with(file))
+            .map(|(_, records)| records.last_refreshed);
+        found.unwrap_or_else(|| {
+            panic!(
+                "no {file} records in {namespace}: {:?}",
+                entry.sources.keys()
+            )
+        })
+    };
+    let untouched = stamp("other:template", "config.toml");
+    let edited = stamp("scanline:template", "10-mine.toml");
 
-    let untouched = row_age(&mut s, "other:template", "x").await;
-    let edited = row_age(&mut s, "scanline:template", "title").await;
-    assert!(
-        untouched >= 300,
-        "another file's unchanged record keeps its age, got {untouched} ms"
+    let handle = beachcomber::provider::registry::RegistryHandle::new(registry.clone());
+    let (sink_tx, _sink_rx) = tokio::sync::mpsc::channel(16);
+    let sink = beachcomber::scheduler::SchedulerHandle::new(sink_tx);
+    let mut last = registry.clone();
+    std::fs::write(&drop_in, RESEED_V2).unwrap();
+    reload(&cache, &handle, &sink, &mut last, layers());
+
+    let title = cache
+        .read_merged("scanline:template", None, &[], &registry, Layers::All)
+        .and_then(|read| read.fields.get("title").cloned());
+    assert_eq!(
+        title,
+        Some(CacheValue::String("t2".into())),
+        "the edit applied"
+    );
+    assert_eq!(
+        stamp("other:template", "config.toml"),
+        untouched,
+        "another file's unchanged record keeps its age"
     );
     assert!(
-        edited < untouched,
-        "the edited file's records restamp ({edited} ms vs {untouched} ms)"
+        stamp("scanline:template", "10-mine.toml") > edited,
+        "the edited file's records restamp"
     );
 }
 

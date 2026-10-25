@@ -464,14 +464,14 @@ mod tests {
         // `sleep` never reads stdin, so a 256 KiB payload (past the pipe
         // buffer) blocks the write until something reads it or the pipe
         // breaks. If the deadline were computed (or the write performed)
-        // before threading, this would time out at ~3s instead of ~200ms.
+        // before threading, this would time out at ~3s instead of ~50ms.
         let payload = "x".repeat(256 * 1024);
         let req = ExecRequest {
             cmd: "sh",
             label: None,
             args: &["-c".to_string(), "sleep 3".to_string()],
             stdin: Some(&payload),
-            timeout: Duration::from_millis(200),
+            timeout: Duration::from_millis(50),
             env: &test_env(),
             cwd: None,
         };
@@ -482,7 +482,7 @@ mod tests {
             "took {:?}",
             start.elapsed()
         );
-        assert!(err.contains("timed out after 200ms"), "{err}");
+        assert!(err.contains("timed out after 50ms"), "{err}");
     }
 
     #[test]
@@ -553,7 +553,7 @@ mod tests {
             label: None,
             args: &["-c".to_string(), "sleep 5".to_string()],
             stdin: None,
-            timeout: Duration::from_millis(100),
+            timeout: Duration::from_millis(20),
             env: &test_env(),
             cwd: None,
         };
@@ -564,7 +564,7 @@ mod tests {
             "took {:?}",
             start.elapsed()
         );
-        assert!(err.contains("timed out after 100ms"), "{err}");
+        assert!(err.contains("timed out after 20ms"), "{err}");
     }
 
     #[test]

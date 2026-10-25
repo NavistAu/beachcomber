@@ -386,8 +386,8 @@ mod tests {
     fn exec_timeout_is_a_duration() {
         assert_eq!(eval("exec('echo hi', timeout='2s')").unwrap(), "hi");
         assert_eq!(eval("exec('echo hi', timeout=2)").unwrap(), "hi");
-        let err = eval("exec('sleep 2', timeout='100ms')").unwrap_err();
-        assert!(err.contains("timed out after 100ms"), "{err}");
+        let err = eval("exec('sleep 2', timeout='10ms')").unwrap_err();
+        assert!(err.contains("timed out after 10ms"), "{err}");
         for bad in ["'x'", "'0s'", "true"] {
             let err = eval(&format!("exec('echo hi', timeout={bad})")).unwrap_err();
             assert!(err.contains("exec(): timeout="), "{bad}: {err}");

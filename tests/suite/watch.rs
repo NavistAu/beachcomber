@@ -254,10 +254,14 @@ async fn watch_filters_unchanged_field() {
         Schedule::poll(60, 1),
     );
 
-    // Should NOT receive any update — branch didn't change
+    // Should NOT receive any update — branch didn't change. On this
+    // single-threaded runtime the watch task handles the wake as soon as this
+    // task waits, so a frame it wrongly sent is here long before 50ms. (A
+    // real change written next as a sentinel would not do: two writes with
+    // no wait between wake the watch once, and it sends only the second.)
     line.clear();
     let result = tokio::time::timeout(
-        std::time::Duration::from_millis(200),
+        std::time::Duration::from_millis(50),
         reader.read_line(&mut line),
     )
     .await;
@@ -672,7 +676,9 @@ async fn watch_stays_open_while_client_is_connected() {
     .expect("timed out waiting for initial value")
     .unwrap();
 
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(300);
+    // A disconnect is seen at EOF, not on a timer: a short window is enough
+    // to show an idle, connected client keeps its watch.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(50);
     loop {
         assert_eq!(
             active_watchers(&sock).await,
@@ -683,7 +689,7 @@ async fn watch_stays_open_while_client_is_connected() {
             break;
         }
         // sleep-justified: proving the watch does NOT close has no condition to poll_until — sample active_watchers across the wait window instead.
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
     drop(reader);

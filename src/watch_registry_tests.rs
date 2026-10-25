@@ -15,9 +15,10 @@ async fn no_notification_for_different_key() {
     let registry = Arc::new(WatcherRegistry::new());
     let mut rx = registry.subscribe("git", None);
     registry.notify("battery", None);
-    let result = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
-    assert!(
-        result.is_err(),
+    // `notify` sends before it returns, so an empty channel now is an answer.
+    assert_eq!(
+        rx.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty),
         "Should not receive notification for different key"
     );
 }
@@ -30,8 +31,10 @@ async fn path_scoped_notifications() {
     registry.notify("git", Some("/proj-a"));
     let result_a = tokio::time::timeout(std::time::Duration::from_millis(100), rx_a.recv()).await;
     assert!(result_a.is_ok());
-    let result_b = tokio::time::timeout(std::time::Duration::from_millis(50), rx_b.recv()).await;
-    assert!(result_b.is_err());
+    assert_eq!(
+        rx_b.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    );
 }
 
 #[tokio::test]

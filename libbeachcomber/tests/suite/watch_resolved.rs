@@ -161,18 +161,23 @@ fn a_provider_key_emits_the_resolved_value_and_follows_its_template() {
             None,
         )
         .expect("put another spelling");
-    match w.next(Some(Duration::from_millis(500))) {
-        Ok(WatchOutcome::Timeout) => {}
-        other => panic!("only a changed value is emitted, not every frame; got {other:?}"),
-    }
-
     writer
         .put("unrelated", json!({"k": 1}), None, None)
         .expect("put unrelated");
-    match w.next(Some(Duration::from_millis(500))) {
-        Ok(WatchOutcome::Timeout) => {}
-        other => panic!("a key this resolution never read must not wake the watch; got {other:?}"),
-    }
+    // Neither is an emission, so the next one is the next change of value.
+    writer
+        .put(
+            "scanline:template.widgets.foo",
+            json!("{{ 'bye' }}"),
+            None,
+            None,
+        )
+        .expect("put a change");
+    assert_eq!(
+        value(w.next(Some(SOON))),
+        Some(json!("bye")),
+        "only a changed value is emitted, not every frame or an unread key's put"
+    );
 }
 
 /// The subscription set is the latest resolution's: a ref the template names

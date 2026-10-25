@@ -270,7 +270,7 @@ fn an_inline_run_is_cut_off_at_the_sources_timeout() {
 [daemon.providers.t.sources.main]
 data = "{{ exec('sleep 5', timeout='6s') }}"
 result.v = "{{ data }}"
-return = "{{ result | timeout('300ms') }}"
+return = "{{ result | timeout('50ms') }}"
 "#,
     )
     .unwrap();
@@ -282,7 +282,7 @@ return = "{{ result | timeout('300ms') }}"
     d.comb(&cwd).args(["get", "t.v"]).assert().success();
     assert!(
         started.elapsed() < Duration::from_secs(3),
-        "the read waited {:?} for a run its Source cuts off at 300ms",
+        "the read waited {:?} for a run its Source cuts off at 50ms",
         started.elapsed()
     );
 }
