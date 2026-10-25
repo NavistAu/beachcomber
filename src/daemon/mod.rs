@@ -56,11 +56,17 @@ pub fn start_in_process_with_reaper(
     start_in_process_inner(socket_path, config, cancel, reaper, None, None)
 }
 
-/// Test seam: an in-process daemon whose provider file-watching polls every
-/// 50ms instead of registering kernel watches, with the watch self-test
-/// skipped. Kernel FSEvents registration costs ~1.2s per `watch()` call on
-/// macOS — paid once by the self-test and again per watched path — so a test
-/// that is not about the native backend should not start one.
+/// How often a test daemon's file watching polls (the polling seam below):
+/// a stat of each watched path, so a test sees a write within milliseconds.
+#[cfg(any(test, feature = "test-helpers"))]
+pub const TEST_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Test seam: an in-process daemon whose file watching — its providers' and
+/// its own configuration's — polls every [`TEST_POLL_INTERVAL`] instead of
+/// registering kernel watches, with the watch self-test skipped. Kernel
+/// FSEvents registration costs ~1.2s per `watch()` call on macOS — paid once
+/// by the self-test and again per watched path — so a test that is not about
+/// the native backend should not start one.
 #[cfg(any(test, feature = "test-helpers"))]
 pub fn start_in_process_polling(
     socket_path: PathBuf,
@@ -82,7 +88,7 @@ pub fn start_in_process_polling_with(
         config,
         cancel,
         reaper,
-        Some(std::time::Duration::from_millis(50)),
+        Some(TEST_POLL_INTERVAL),
         None,
     )
 }
@@ -101,7 +107,7 @@ pub fn start_in_process_polling_sampling(
         config,
         CancellationToken::new(),
         None,
-        Some(std::time::Duration::from_millis(50)),
+        Some(TEST_POLL_INTERVAL),
         Some(procs),
     )
 }

@@ -470,7 +470,7 @@ impl Live {
             what,
             &format!("{key} to read {want}"),
             Duration::from_secs(10),
-            Duration::from_millis(20),
+            Duration::from_millis(5),
             async || self.value(key, path).await,
             |v| *v == want,
         )
@@ -492,7 +492,7 @@ impl Live {
             "status",
             &format!("no rows left for {provider}"),
             Duration::from_secs(10),
-            Duration::from_millis(20),
+            Duration::from_millis(5),
             async || self.rows(provider).await,
             |n| *n == 0,
         )
@@ -506,7 +506,7 @@ impl Live {
             "introspect demand",
             &format!("an entry for {provider}.{source}"),
             Duration::from_secs(10),
-            Duration::from_millis(20),
+            Duration::from_millis(5),
             async || {
                 let resp = send_recv(
                     &mut self.s,
@@ -570,7 +570,7 @@ async fn editing_a_return_line_reloads_without_restart() {
         "git:cache.lines_added",
         "the new poll, 15s x 8",
         Duration::from_secs(10),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || poll_of(&mut live, "git:cache.lines_added", p).await,
         |poll| *poll == retuned_poll(),
     )
@@ -655,7 +655,7 @@ async fn a_broken_providers_edit_changes_nothing() {
         "git:cache.lines_added",
         "the fixed poll, 15s x 8",
         Duration::from_secs(10),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || poll_of(&mut live, "git:cache.lines_added", p).await,
         |poll| *poll == retuned_poll(),
     )
@@ -780,8 +780,21 @@ result.n = "{{ data }}"
     );
     live.until("demo:template.a", "demo:template.a", None, json!("1"))
         .await;
-    assert_eq!(live.value("demo.n", Some(at)).await, json!(1));
-    assert_eq!(lines(), 2, "a reload forgets the kept roots");
+    // The reload seeds the template a moment before the scheduler puts the
+    // new registry in force: until then a read still finds the kept root.
+    poll_until_async(
+        "the root's renders",
+        "a read after the reload to render it again",
+        Duration::from_secs(10),
+        Duration::from_millis(5),
+        async || {
+            assert_eq!(live.value("demo.n", Some(at)).await, json!(1));
+            lines()
+        },
+        |n| *n >= 2,
+    )
+    .await;
+    assert_eq!(lines(), 2, "a reload forgets the kept roots, once");
     live.assert_same_daemon().await;
 }
 
@@ -796,7 +809,7 @@ fn home() -> PathBuf {
 fn gated(poll: &str) -> String {
     format!(
         "[daemon.providers.demo.sources.s]\n\
-         data = \"{{{{ exec('while [ ! -f $HOME/go ]; do sleep 0.05; done; cat $HOME/val') | trim }}}}\"\n\
+         data = \"{{{{ exec('while [ ! -f $HOME/go ]; do sleep 0.01; done; cat $HOME/val') | trim }}}}\"\n\
          result.n = \"{{{{ data }}}}\"\n\
          return = \"{{{{ result | poll('{poll}') }}}}\"\n"
     )
@@ -818,7 +831,7 @@ impl Live {
             "introspect daemon",
             &format!("{want} run(s) in flight"),
             Duration::from_secs(10),
-            Duration::from_millis(20),
+            Duration::from_millis(5),
             async || self.in_flight().await,
             |n| *n == want,
         )
@@ -844,7 +857,7 @@ impl Live {
             "introspect providers",
             &format!("{name} listed: {listed}"),
             Duration::from_secs(10),
-            Duration::from_millis(20),
+            Duration::from_millis(5),
             async || self.lists(name).await,
             |l| *l == listed,
         )
@@ -1001,7 +1014,7 @@ async fn a_rescheduled_sources_run_in_flight_does_not_restore_the_old_schedule()
         "demo:cache.n",
         "the new poll, stored at the reload",
         Duration::from_secs(10),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || live.value("demo:cache.n", None).await["poll"]["interval"].clone(),
         |interval| *interval == json!("660s"),
     )
@@ -1058,7 +1071,7 @@ async fn a_retune_keeps_the_instance_and_restamps_its_schedule_without_a_run() {
         "demo:cache.n",
         "the new poll",
         Duration::from_secs(10),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || live.value("demo:cache.n", None).await["poll"]["interval"].clone(),
         |interval| *interval == json!("660s"),
     )
@@ -1086,9 +1099,36 @@ async fn a_retuned_sources_new_watch_fires_without_a_new_demand() {
         "demo:cache.n",
         "the Source to be watched",
         Duration::from_secs(10),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || live.value("demo:cache.n", None).await.get("watch").cloned(),
         |w| w.is_some(),
+    )
+    .await;
+    // The facet is restamped a moment before the file is watched, in the
+    // same reload: wait for the scheduler to list the watch as active, so the
+    // write below is a change to the file it watches and not its first sight
+    // of it.
+    poll_until_async(
+        "introspect watches",
+        &format!("{} to be watched", watched.display()),
+        Duration::from_secs(10),
+        Duration::from_millis(5),
+        async || {
+            send_recv(
+                &mut live.s,
+                json!({"op": "introspect", "subject": "watches"}),
+            )
+            .await["data"]["watches"]
+                .clone()
+        },
+        |watches| {
+            watches.as_array().is_some_and(|watches| {
+                watches.iter().any(|w| {
+                    w["state"] == "active"
+                        && w["path"].as_str().is_some_and(|p| p.ends_with("/val"))
+                })
+            })
+        },
     )
     .await;
     std::fs::write(&watched, "b").unwrap();
@@ -1096,7 +1136,7 @@ async fn a_retuned_sources_new_watch_fires_without_a_new_demand() {
         "status demo.n",
         "the watch to refresh the Source",
         Duration::from_secs(10),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || live.stored("demo", "n").await,
         |v| *v == Some(json!("b")),
     )
@@ -1148,7 +1188,7 @@ async fn a_removed_providers_puts_stay_reachable() {
         "demo.n",
         "the Source's field gone",
         Duration::from_secs(10),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || live.value("demo.n", None).await,
         |v| v.is_null(),
     )
@@ -1190,7 +1230,7 @@ impl Live {
             "started",
             "the held run to have begun",
             Duration::from_secs(10),
-            Duration::from_millis(20),
+            Duration::from_millis(5),
             async || home().join("started").exists(),
             |began| *began,
         )

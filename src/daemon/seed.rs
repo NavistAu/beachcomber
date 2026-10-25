@@ -70,9 +70,9 @@ struct Plan {
 /// read afresh, validated, and re-seeded.
 ///
 /// `polling_watch` mirrors the scheduler's file-watch seam: an in-process
-/// daemon takes the mtime backstop on a short interval, because registering a
-/// kernel fs-event watch costs about 1.2s per call on macOS and a test that is
-/// not about the native backend should not pay it.
+/// daemon takes the mtime backstop alone, polled at that interval, because
+/// registering a kernel fs-event watch costs about 1.2s per call on macOS and
+/// a test that is not about the native backend should not pay it.
 pub fn spawn_config_seeding(
     cache: &Arc<Cache>,
     registry: &RegistryHandle,
@@ -102,7 +102,7 @@ pub fn spawn_config_seeding(
     let mut last = registry.current();
     let (interval, fs_events) = match polling_watch {
         None => (super::config_watch::CONFIG_WATCH_POLL_INTERVAL, true),
-        Some(_) => (Duration::from_millis(50), false),
+        Some(interval) => (interval, false),
     };
     super::config_watch::spawn_config_self_watch_with(
         config,

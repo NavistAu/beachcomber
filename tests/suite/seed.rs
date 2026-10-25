@@ -299,7 +299,7 @@ async fn removing_the_file_that_answers_shows_the_one_it_overrode() {
         "aws:template.profile",
         "the record the drop-in overrode",
         Duration::from_secs(5),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || data(&mut s, "aws:template.profile").await,
         |v| *v == json!("from-main"),
     )
@@ -744,7 +744,7 @@ async fn a_decay_table_removed_on_reload_drops_the_seed() {
         "git:cache._.decay",
         "a miss, once the table is gone from the file",
         Duration::from_secs(5),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || data(&mut s, "git:cache._.decay").await,
         |v| v.is_null(),
     )
@@ -773,7 +773,7 @@ async fn a_decay_edit_re_seeds_in_place() {
         "git:cache._.decay",
         "the edited decay",
         Duration::from_secs(5),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || data(&mut s, "git:cache._.decay").await,
         |v| *v == json!(3),
     )
@@ -818,7 +818,7 @@ async fn a_facet_only_edit_re_seeds_in_place_and_leaves_put_records_alone() {
         "scanline:template.title",
         "the edited value",
         Duration::from_secs(5),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || data(&mut s, "scanline:template.title").await,
         |v| *v == json!("t2"),
     )
@@ -841,7 +841,7 @@ async fn a_facet_only_edit_re_seeds_in_place_and_leaves_put_records_alone() {
         "scanline:template.version",
         "a miss, once the leaf is gone from the file",
         Duration::from_secs(5),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || data(&mut s, "scanline:template.version").await,
         |v| v.is_null(),
     )
@@ -1026,7 +1026,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
     let stop = CancellationToken::new();
     beachcomber::daemon::config_watch::spawn_config_self_watch_with(
         &Config::load_from(&cfg),
-        Duration::from_millis(20),
+        Duration::from_millis(10),
         false,
         stop.clone(),
         move |kind, _, _| {
@@ -1091,7 +1091,7 @@ async fn a_namespace_removed_from_config_disappears() {
         "other:template.keeper",
         "the edit that proves the re-seed ran",
         Duration::from_secs(5),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || data(&mut s, "other:template.keeper").await,
         |v| *v == json!("k2"),
     )
@@ -1131,7 +1131,7 @@ async fn a_put_record_wins_over_config_on_re_seed() {
         "scanline:template.title",
         "the edit that proves the re-seed ran",
         Duration::from_secs(5),
-        Duration::from_millis(20),
+        Duration::from_millis(5),
         async || data(&mut s, "scanline:template.title").await,
         |v| *v == json!("t2"),
     )
