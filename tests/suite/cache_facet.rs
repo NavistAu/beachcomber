@@ -114,7 +114,7 @@ async fn the_cache_facet_of_a_source_leaf_names_the_source_and_its_schedule() {
     assert_eq!(leaf["stale"], json!(false));
     assert_eq!(leaf["source"], json!("source(head)"));
     // head is a Watch Source on `.git`; an array is an index-keyed object.
-    assert_eq!(leaf["watch"], json!({"0": ".git"}), "{leaf}");
+    assert_eq!(leaf["watch"], json!([".git"]), "{leaf}");
     assert!(leaf.get("poll").is_none(), "head does not poll: {leaf}");
     // An in-process daemon loads no managed defaults: the lifecycle default.
     assert_eq!(leaf["decay"], json!(4));
@@ -155,7 +155,7 @@ async fn a_retuned_builtin_shows_its_new_poll_in_the_cache_facet() {
     // A sibling the line does not name keeps its own schedule.
     assert!(get(&mut s, "git.branch", Some(p)).await.ok);
     let branch = get(&mut s, "git:cache.branch", Some(p)).await.data.unwrap();
-    assert_eq!(branch["watch"], json!({"0": ".git"}), "{branch}");
+    assert_eq!(branch["watch"], json!([".git"]), "{branch}");
     handle.abort();
 }
 

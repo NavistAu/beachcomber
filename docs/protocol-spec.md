@@ -287,7 +287,7 @@ tree of its leaves' answers.
 
 ```json
 {"age_ms": 1200, "stale": false, "source": "source(head)",
- "watch": {"0": ".git"}, "decay": 4}
+ "watch": [".git"], "decay": 4}
 ```
 
 - `age_ms`, `stale`, `source` are derived at the read. `source` is `put`,
@@ -298,7 +298,7 @@ tree of its leaves' answers.
   `template`). A miss is a miss.
 - `poll` (`{interval, count}`), `watch` and `decay` are stored: written when a
   Source registers or a `put` carries a `ttl`, and read back here. `watch` is an
-  index-keyed object, since arrays are returned as objects keyed by index.
+  array of patterns.
 - `decay` is the number of decay steps before eviction. It is data: a Source
   takes the nearest `_` prototype, looking at each directory from the requested
   one up to `$HOME` for `<p>:cache._.decay` and then `*:cache._.decay` (every
@@ -372,8 +372,15 @@ itself be a facet address (`<provider>:<facet>`; invalid facet syntax is
 `data` is required. A put **replaces** the node it addresses: nothing merges
 implicitly, so `put my '{"b":2}'` states all of `my` at that directory, and
 `put my.b 2` replaces only `my.b`. `null` means absent: `data: null` removes the
-node, and a `null` inside `data` is an absent leaf, never `""`. Arrays are
-stored and returned as objects keyed by index.
+node, and a `null` inside `data` is an absent leaf, never `""`. An array is
+stored and returned as an array, and is a leaf: a put of an array at an address
+replaces whatever is there whole, and a nearer layer's array replaces a farther
+one's whole. A `null` element is absent and the array closes up behind it
+(`[1, null, 3]` is `[1, 3]`). An element is addressed by decimal index
+(`my.list.0`, `my.list[0]`): a put at an index inside the put's own array
+replaces that element, at one past its end appends, and `null` there removes it
+and closes the array up; a put at any other index, or into an array another
+layer holds, writes the address as an object like any other node.
 
 A put sits above the Source in the layer order, so it hides Source and seed
 values at its node. The Source keeps refreshing its own layer beneath it, and

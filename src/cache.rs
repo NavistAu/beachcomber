@@ -175,16 +175,9 @@ impl Schedule {
             keys.insert("decay".to_string(), Value::Int(i64::from(decay)));
         }
         if !self.watch.is_empty() {
-            // An array is an object keyed by decimal index (`Value::from_json`).
             keys.insert(
                 "watch".to_string(),
-                Value::Object(
-                    self.watch
-                        .iter()
-                        .enumerate()
-                        .map(|(i, p)| (i.to_string(), Value::String(p.clone())))
-                        .collect(),
-                ),
+                Value::Array(self.watch.iter().cloned().map(Value::String).collect()),
             );
         }
         keys
@@ -601,7 +594,23 @@ fn apply_static_write(
         // would survive the drop and never be written, leaving a phantom empty
         // static map (and, at the root, an entry the caller's emptiness check
         // would no longer remove).
-        drop_put_subtree(entry, node, (!leaves.is_empty()).then_some(label));
+        //
+        // An array element being written is emptied in place instead:
+        // removing it would close the array up and shift the element after it
+        // into the address being written.
+        let element = !leaves.is_empty()
+            && entry
+                .sources
+                .get(PUT_SOURCE)
+                .is_some_and(|src| is_array_element(&src.fields, node));
+        if element {
+            entry.puts.retain(|addr, _| !is_at_or_below(addr, node));
+            if let Some(src) = entry.sources.get_mut(PUT_SOURCE) {
+                crate::provider::insert_path(&mut src.fields, node, Value::Object(HashMap::new()));
+            }
+        } else {
+            drop_put_subtree(entry, node, (!leaves.is_empty()).then_some(label));
+        }
     }
 
     // Every `config:` file keeps its own records, a record two files set
@@ -624,13 +633,15 @@ fn apply_static_write(
             expected_interval_secs: (!is_put).then_some(interval_secs).flatten(),
         });
     if is_put {
-        // A scalar standing on the way to `node` is about to become an object:
-        // the address that stamped it no longer states that value.
+        // A value standing in the way of `node` is about to become an object
+        // (`provider::insert_path`): the address that stamped it no longer
+        // states that value. An array the next segment indexes is written
+        // into, not replaced, and keeps its stamp.
         let mut at = node.to_string();
         while let Some(up) = libbeachcomber::key::parent(&at).filter(|up| !up.is_empty()) {
+            let below = libbeachcomber::key::last(&at).unwrap_or_default();
             at = up;
-            if crate::provider::lookup_path(&src.fields, &at)
-                .is_some_and(|v| !matches!(v, Value::Object(_)))
+            if crate::provider::lookup_path(&src.fields, &at).is_some_and(|v| in_the_way(v, &below))
             {
                 entry.puts.remove(&at);
             }
@@ -649,6 +660,30 @@ fn apply_static_write(
     src.last_refreshed = now;
     if !is_put && interval_secs.is_some() {
         src.expected_interval_secs = interval_secs;
+    }
+}
+
+/// Whether `node` names an element inside an array `fields` holds.
+fn is_array_element(fields: &HashMap<String, Value>, node: &str) -> bool {
+    let Some(up) = libbeachcomber::key::parent(node).filter(|up| !up.is_empty()) else {
+        return false;
+    };
+    let below = libbeachcomber::key::last(node).unwrap_or_default();
+    matches!(
+        crate::provider::lookup_path(fields, &up),
+        Some(Value::Array(items))
+            if crate::provider::index_of(&below).is_some_and(|i| i < items.len())
+    )
+}
+
+/// Whether a write to the child `segment` of `value` replaces `value` rather
+/// than writing into it: anything but an object, or an array the segment
+/// indexes (inside it, or one past its end).
+fn in_the_way(value: &Value, segment: &str) -> bool {
+    match value {
+        Value::Object(_) => false,
+        Value::Array(items) => crate::provider::index_of(segment).is_none_or(|i| i > items.len()),
+        _ => true,
     }
 }
 
@@ -2997,7 +3032,7 @@ mod tests {
             json(&map["dirty"]),
             serde_json::json!({
                 "poll": {"interval": "30s", "count": 3},
-                "watch": {"0": ".git/index", "1": "/etc/x"},
+                "watch": [".git/index", "/etc/x"],
             })
         );
         assert!(stored(&cache, "git", None).is_none());

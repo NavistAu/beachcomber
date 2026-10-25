@@ -61,6 +61,10 @@ pub enum Value {
     Int(i64),
     Bool(bool),
     Float(f64),
+    /// A list: a leaf of the tree. A nearer or later layer's array replaces
+    /// it whole, as a scalar would; its elements are addressed by decimal
+    /// index (`p.list.0`, `p.list[0]`).
+    Array(Vec<Value>),
     Object(HashMap<String, Value>),
 }
 
@@ -82,10 +86,9 @@ impl Value {
     /// `docs/canon/field_resolution.md` invariant 12 promising depth-independent
     /// addressing.
     ///
-    /// Objects become [`Value::Object`]. Arrays become [`Value::Object`] keyed by
-    /// decimal index, matching how array segments are already addressed by path
-    /// elsewhere. Null is absent: `None`, and a null object member or array
-    /// element is omitted (surviving elements keep their original index keys).
+    /// Objects become [`Value::Object`] and arrays [`Value::Array`]. Null is
+    /// absent: `None`, and a null object member or array element is omitted —
+    /// an array's surviving elements close up, so `[1, null, 3]` is `[1, 3]`.
     /// Depth is capped at [`MAX_JSON_DEPTH`].
     pub fn from_json(value: &serde_json::Value) -> Option<Value> {
         Self::from_json_at(value, 0)
@@ -115,11 +118,10 @@ impl Value {
                     .filter_map(|(k, v)| Some((k.clone(), Self::from_json_at(v, depth + 1)?)))
                     .collect(),
             ),
-            serde_json::Value::Array(items) => Value::Object(
+            serde_json::Value::Array(items) => Value::Array(
                 items
                     .iter()
-                    .enumerate()
-                    .filter_map(|(i, v)| Some((i.to_string(), Self::from_json_at(v, depth + 1)?)))
+                    .filter_map(|v| Self::from_json_at(v, depth + 1))
                     .collect(),
             ),
         })
@@ -131,6 +133,7 @@ impl Value {
             Value::Int(n) => n.to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Float(f) => f.to_string(),
+            Value::Array(_) => serde_json::to_string(self).unwrap_or_default(),
             Value::Object(map) => {
                 let mut items: Vec<String> = map
                     .iter()
@@ -153,121 +156,227 @@ impl Value {
 /// `path` is a canonical address ([`libbeachcomber::key`]): a field whose name
 /// holds a `.` is the segment `['a.b']`, never the literal text `a.b`.
 ///
-/// Returns `None` if a segment is absent, or if the walk lands on a non-Object
-/// before the path is consumed.
+/// Returns `None` if a segment is absent, or if the walk lands on a scalar
+/// before the path is consumed. An array is walked by decimal index.
 pub fn lookup_path<'a>(fields: &'a HashMap<String, Value>, path: &str) -> Option<&'a Value> {
     let segments = libbeachcomber::key::segments(path);
     let (head, rest) = segments.split_first()?;
     let mut current = fields.get(head.as_ref())?;
     for segment in rest {
-        match current {
-            Value::Object(map) => current = map.get(segment.as_ref())?,
-            _ => return None,
-        }
+        current = child(current, segment)?;
     }
     Some(current)
+}
+
+/// The node one segment below `value`: an object's member, or an array's
+/// element at a decimal index.
+pub fn child<'a>(value: &'a Value, segment: &str) -> Option<&'a Value> {
+    match value {
+        Value::Object(map) => map.get(segment),
+        Value::Array(items) => items.get(index_of(segment)?),
+        _ => None,
+    }
+}
+
+/// `segment` as an array index: canonical decimal only (`0`, `12`; never
+/// `01` or `+1`), as the key grammar writes it.
+pub fn index_of(segment: &str) -> Option<usize> {
+    let canonical = segment == "0" || (!segment.starts_with('0') && !segment.is_empty());
+    if canonical && segment.bytes().all(|b| b.is_ascii_digit()) {
+        segment.parse().ok()
+    } else {
+        None
+    }
 }
 
 /// Write `value` at a canonical address, creating intermediate
 /// [`Value::Object`]s.
 ///
 /// The counterpart of [`lookup_path`] for writes. Whatever occupies the final
-/// segment is replaced. A non-object sitting on an intermediate segment is
-/// replaced by a fresh object too — the tail names an address, and a scalar in
-/// the way is simply what currently occupies a prefix of it.
+/// segment is replaced. An array is written into by decimal index: an index
+/// inside it replaces that element, the index one past its end appends, and
+/// any other segment finds the array in the way. Whatever is in the way of the
+/// address — a scalar, or an array the segment cannot index — is replaced by a
+/// fresh object, since the tail names an address and that value is simply
+/// what currently occupies a prefix of it.
 ///
 /// An empty tail is a no-op: the root is a map, not a node.
 ///
 /// Iterative: a tail's segment count is caller-supplied, so recursing once per
 /// segment would put the stack at its mercy.
 pub fn insert_path(fields: &mut HashMap<String, Value>, tail: &str, value: Value) {
-    if tail.is_empty() {
+    let segments = libbeachcomber::key::segments(tail);
+    let Some((last, parents)) = segments.split_last() else {
         return;
+    };
+    let mut root = Value::Object(std::mem::take(fields));
+    let mut cursor = &mut root;
+    for segment in parents {
+        cursor = slot_for(cursor, segment);
     }
-    let mut cursor = fields;
-    let mut segments = libbeachcomber::key::segments(tail).into_iter().peekable();
-    while let Some(segment) = segments.next() {
-        if segments.peek().is_none() {
-            cursor.insert(segment.into_owned(), value);
-            return;
-        }
-        let slot = cursor
-            .entry(segment.into_owned())
-            .or_insert_with(|| Value::Object(HashMap::new()));
-        if !matches!(slot, Value::Object(_)) {
-            *slot = Value::Object(HashMap::new());
-        }
-        if let Value::Object(map) = slot {
-            cursor = map;
-        } else {
-            return;
-        }
+    place(cursor, last, value);
+    if let Value::Object(map) = root {
+        *fields = map;
     }
 }
 
-/// Remove the node at a canonical address, pruning intermediate objects the removal
+/// The node `segment` names below `node`, made to exist: an array element by
+/// index (one past the end appends an object), else an object member, with
+/// `node` turned into an object if it cannot hold the segment. A scalar found
+/// at the slot becomes an object too, so the walk can go on through it.
+fn slot_for<'a>(node: &'a mut Value, segment: &str) -> &'a mut Value {
+    let index = match &*node {
+        Value::Array(items) => index_of(segment).filter(|i| *i <= items.len()),
+        _ => None,
+    };
+    let slot = match (node, index) {
+        (Value::Array(items), Some(i)) => {
+            if i == items.len() {
+                items.push(Value::Object(HashMap::new()));
+            }
+            &mut items[i]
+        }
+        (node, _) => {
+            if !matches!(node, Value::Object(_)) {
+                *node = Value::Object(HashMap::new());
+            }
+            let Value::Object(map) = node else {
+                unreachable!("made an object above")
+            };
+            map.entry(segment.to_string())
+                .or_insert_with(|| Value::Object(HashMap::new()))
+        }
+    };
+    if !matches!(slot, Value::Object(_) | Value::Array(_)) {
+        *slot = Value::Object(HashMap::new());
+    }
+    slot
+}
+
+/// Set `value` as the child `segment` of `node`: an array element by index
+/// (one past the end appends), else an object member, `node` becoming an
+/// object if it cannot hold the segment.
+fn place(node: &mut Value, segment: &str, value: Value) {
+    if let Value::Array(items) = node
+        && let Some(i) = index_of(segment).filter(|i| *i <= items.len())
+    {
+        if i == items.len() {
+            items.push(value);
+        } else {
+            items[i] = value;
+        }
+        return;
+    }
+    if !matches!(node, Value::Object(_)) {
+        *node = Value::Object(HashMap::new());
+    }
+    if let Value::Object(map) = node {
+        map.insert(segment.to_string(), value);
+    }
+}
+
+/// The child `segment` names below `node`, for writing: an object member or an
+/// array element by index.
+fn child_mut<'a>(node: &'a mut Value, segment: &str) -> Option<&'a mut Value> {
+    match node {
+        Value::Object(map) => map.get_mut(segment),
+        Value::Array(items) => items.get_mut(index_of(segment)?),
+        _ => None,
+    }
+}
+
+/// Take the child `segment` names out of `node`. An array closes up behind
+/// the element it loses.
+fn take_child(node: &mut Value, segment: &str) -> Option<Value> {
+    match node {
+        Value::Object(map) => map.remove(segment),
+        Value::Array(items) => {
+            let i = index_of(segment).filter(|i| *i < items.len())?;
+            Some(items.remove(i))
+        }
+        _ => None,
+    }
+}
+
+/// How many children a container holds; a scalar holds none.
+fn size(node: &Value) -> usize {
+    match node {
+        Value::Object(map) => map.len(),
+        Value::Array(items) => items.len(),
+        _ => 0,
+    }
+}
+
+/// Remove the node at a canonical address, pruning the containers the removal
 /// leaves empty. Returns the removed value, or `None` if nothing is stored
-/// there — including when a non-object sits on an intermediate segment, since
-/// then the addressed node does not exist.
+/// there — including when a scalar sits on an intermediate segment, since
+/// then the addressed node does not exist. An array element is removed by
+/// index, and the elements after it close up.
 ///
 /// Iterative, for the same reason [`insert_path`] is. Three linear passes: one
-/// to size each map on the path, one to take the node, one to drop the
-/// ancestors the removal emptied. A map empties only if it held exactly the
-/// one child on the path, so the sizes say up front how far the pruning
+/// to size each container on the path, one to take the node, one to drop the
+/// ancestors the removal emptied. A container empties only if it held exactly
+/// the one child on the path, so the sizes say up front how far the pruning
 /// reaches and a single removal there takes the whole empty chain.
 pub fn remove_path(fields: &mut HashMap<String, Value>, tail: &str) -> Option<Value> {
-    if tail.is_empty() {
-        return None;
-    }
     let owned = libbeachcomber::key::segments(tail);
     let segments: Vec<&str> = owned.iter().map(|s| s.as_ref()).collect();
     let (last, parents) = segments.split_last()?;
 
     let mut sizes: Vec<usize> = Vec::with_capacity(segments.len());
     {
-        let mut cursor = &*fields;
-        for segment in parents {
-            sizes.push(cursor.len());
-            match cursor.get(*segment) {
-                Some(Value::Object(map)) => cursor = map,
-                _ => return None,
+        let mut root = HashMap::new();
+        std::mem::swap(&mut root, fields);
+        let root = Value::Object(root);
+        let found = (|| {
+            let mut cursor = &root;
+            for segment in parents {
+                sizes.push(size(cursor));
+                cursor = child(cursor, segment)?;
             }
+            sizes.push(size(cursor));
+            child(cursor, last).map(|_| ())
+        })();
+        if let Value::Object(map) = root {
+            *fields = map;
         }
-        sizes.push(cursor.len());
-        if !cursor.contains_key(*last) {
-            return None;
-        }
+        found?;
     }
 
-    let mut cursor = &mut *fields;
-    for segment in parents {
-        let Some(Value::Object(map)) = cursor.get_mut(*segment) else {
-            return None;
-        };
-        cursor = map;
-    }
-    let removed = cursor.remove(*last)?;
-
-    // `cut` is the shallowest ancestor entry the removal empties out.
-    let mut cut = parents.len();
-    while cut > 0 && sizes[cut] == 1 {
-        cut -= 1;
-    }
-    if cut < parents.len() {
-        let mut cursor = &mut *fields;
-        for segment in &parents[..cut] {
-            let Some(Value::Object(map)) = cursor.get_mut(*segment) else {
-                return Some(removed);
-            };
-            cursor = map;
+    let mut root = Value::Object(std::mem::take(fields));
+    let removed = (|| {
+        let mut cursor = &mut root;
+        for segment in parents {
+            cursor = child_mut(cursor, segment)?;
         }
-        cursor.remove(parents[cut]);
+        let removed = take_child(cursor, last)?;
+
+        // `cut` is the shallowest ancestor the removal empties out.
+        let mut cut = parents.len();
+        while cut > 0 && sizes[cut] == 1 {
+            cut -= 1;
+        }
+        if cut < parents.len() {
+            let mut cursor = &mut root;
+            for segment in &parents[..cut] {
+                match child_mut(cursor, segment) {
+                    Some(next) => cursor = next,
+                    None => return Some(removed),
+                }
+            }
+            take_child(cursor, parents[cut]);
+        }
+        Some(removed)
+    })();
+    if let Value::Object(map) = root {
+        *fields = map;
     }
-    Some(removed)
+    removed
 }
 
 /// Merge `overlay` into `base`, recursing into objects present on both sides.
-/// Any non-object on either side replaces what `base` holds.
+/// Anything else on either side — a scalar, or an array, which is a leaf —
+/// replaces what `base` holds.
 ///
 /// This is how a cache entry's source maps combine on read: the maps hold
 /// disjoint records, so merge order never decides a value — only which

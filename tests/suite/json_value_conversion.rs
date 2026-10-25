@@ -52,14 +52,14 @@ fn assert_fixture_shape(r: &SourceResult) {
         other => panic!("widget.nested must be an Object, got {other:?}"),
     }
 
-    // Arrays become objects keyed by decimal index, so `items.0` addresses.
-    match r.fields.get("items") {
-        Some(Value::Object(m)) => {
-            assert_eq!(m.get("0"), Some(&Value::String("a".into())));
-            assert_eq!(m.get("1"), Some(&Value::String("b".into())));
-        }
-        other => panic!("items must be an Object, got {other:?}"),
-    }
+    // Arrays stay arrays, and `items.0` addresses an element by index.
+    assert_eq!(
+        r.fields.get("items"),
+        Some(&Value::Array(vec![
+            Value::String("a".into()),
+            Value::String("b".into())
+        ]))
+    );
 }
 
 #[test]

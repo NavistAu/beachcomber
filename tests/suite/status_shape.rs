@@ -2893,16 +2893,7 @@ fn three_flexible_columns_share_the_budget_by_priority() {
 }
 
 #[test]
-fn human_renders_index_keyed_objects_as_arrays() {
-    // The daemon stores arrays as objects keyed "0".."n-1"; the human table
-    // shows them back as arrays. Non-contiguous keys stay objects, nesting
-    // converts recursively, and >9 elements order numerically (not "10"<"2").
-    let mut row = sample_lifecycle_row();
-    row.value = serde_json::json!({
-        "0": {"0": "a", "1": "b"},
-        "1": {"x": 1, "2": 2},
-        "2": "c"
-    });
+fn human_renders_an_array_as_an_array_and_a_digit_keyed_object_as_an_object() {
     let opts = RenderOpts {
         is_tty: false,
         no_color: true,
@@ -2911,28 +2902,17 @@ fn human_renders_index_keyed_objects_as_arrays() {
         ascii: true,
         depth: Some(1),
     };
+    let mut row = sample_lifecycle_row();
+    row.value = serde_json::json!([["a", "b"], {"x": 1}, "c"]);
     let out = render_preset("human", std::slice::from_ref(&row), &opts);
-    assert!(
-        out.contains(r#"[["a","b"],{"2":2,"x":1},"c"]"#),
-        "contiguous index keys render as arrays, others stay objects: {out}"
-    );
+    assert!(out.contains(r#"[["a","b"],{"x":1},"c"]"#), "{out}");
 
-    let mut big = sample_lifecycle_row();
-    big.value = serde_json::json!({
-        "0":0,"1":1,"2":2,"3":3,"4":4,"5":5,"6":6,"7":7,"8":8,"9":9,"10":10,"11":11
-    });
-    let out = render_preset("human", &[big.clone()], &opts);
-    assert!(
-        out.contains("[0,1,2,3,4,5,6,7,8,9,10,11]"),
-        "12-element array orders numerically: {out}"
-    );
-
-    // Machine presets keep the stored (raw) object form.
-    let json_out = render_preset("json", &[big], &opts);
-    assert!(
-        json_out.contains(r#""10":10"#) && !json_out.contains("[0,1"),
-        "json preset keeps index-keyed objects verbatim: {json_out}"
-    );
+    // An object whose keys happen to be digits is an object: arrays are
+    // values of their own, so nothing has to be guessed back into one.
+    let mut digits = sample_lifecycle_row();
+    digits.value = serde_json::json!({"0": "a", "1": "b"});
+    let out = render_preset("human", &[digits], &opts);
+    assert!(out.contains(r#"{"0":"a","1":"b"}"#), "{out}");
 }
 
 #[test]

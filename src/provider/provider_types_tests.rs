@@ -112,12 +112,11 @@ fn from_json_drops_null_members_and_elements() {
         panic!("object")
     };
     assert!(!top.contains_key("a"));
-    let Some(Value::Object(arr)) = top.get("arr") else {
-        panic!("arr")
-    };
-    assert_eq!(arr.len(), 2);
-    assert_eq!(arr.get("0"), Some(&Value::Int(1)));
-    assert_eq!(arr.get("2"), Some(&Value::Int(3)));
+    // A null element is absent, and the list closes up behind it.
+    assert_eq!(
+        top.get("arr"),
+        Some(&Value::Array(vec![Value::Int(1), Value::Int(3)]))
+    );
     let Some(Value::Object(o)) = top.get("o") else {
         panic!("o")
     };

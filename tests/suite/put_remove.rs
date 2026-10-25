@@ -176,7 +176,8 @@ async fn a_nested_null_is_absent_from_the_replacing_put() {
         )
         .unwrap();
     assert!(r.ok, "{:?}", r.error);
-    assert_eq!(got(&sock, "ns.arr.1"), None);
+    // A null element is absent, and the list closes up behind it.
+    assert_eq!(got(&sock, "ns.arr"), Some(serde_json::json!([1, 3])));
     assert_eq!(got(&sock, "ns.objs.0.x"), None);
     assert_eq!(got(&sock, "ns.arr.0"), Some(serde_json::json!(1)));
     assert_eq!(

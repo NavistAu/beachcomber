@@ -140,7 +140,7 @@ comb g.j git:source .            # → what the Source computed, even where a pu
 | `stale` | bool | Whether the value is past its expected refresh time |
 | `source` | string | What answered: `put`, `template`, `config:<file>`, or `source(<name>)` such as `source(head)` |
 | `poll` | object | `{interval, count}` — present for polled Sources and `--ttl` puts |
-| `watch` | object | Watched paths, keyed by index — present for watching Sources |
+| `watch` | array | Watched paths — present for watching Sources |
 | `decay` | int | Decay steps before eviction (default 4) |
 
 Only a colon in the provider's own segment names a facet (`git:cache`); below it a colon is an ordinary character, so `git.branch:age` is a miss like any unknown field. A key the grammar cannot read — `p..a`, `p['a`, `p[01]`, a provider starting with `/` or `~` — is `invalid key: <key>`, exit `2`.

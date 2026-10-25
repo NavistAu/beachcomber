@@ -140,7 +140,7 @@ result.b = "{{ data }}"
     assert!(plain.get("watch").is_none(), "{plain}");
 
     let own = get(&d, "demo:cache.b").expect("demo:cache.b");
-    assert_eq!(own["watch"], json!({"0": "/etc/hosts"}), "{own}");
+    assert_eq!(own["watch"], json!(["/etc/hosts"]), "{own}");
     assert!(
         own.get("poll").is_none(),
         "the Source's own return replaces the abstract one whole, poll included: {own}"

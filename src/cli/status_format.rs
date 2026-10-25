@@ -1595,7 +1595,7 @@ fn render_table(
         let value_raw = if row.value.is_null() {
             ABSENT_TEXT.to_string()
         } else {
-            value_to_string(&arrayify(&row.value))
+            value_to_string(&row.value)
         };
         let tainted = row_is_tainted(row, &path_raw, &value_raw);
 
@@ -2264,34 +2264,6 @@ fn truncate_path(s: &str, max: usize, ell: &str) -> String {
         }
     }
     truncate_tail(s, max, ell)
-}
-
-/// Re-render index-keyed objects as JSON arrays, recursively. The daemon
-/// stores arrays as objects keyed `"0".."n-1"` (`Value::from_json` — its
-/// value model has no array type), so blobs read back as `{"0":..,"1":..}`.
-/// The human/table presets show them as the arrays they were; machine
-/// presets keep the stored form. Cosmetic and lossy in one direction: an
-/// object genuinely keyed by contiguous decimal strings displays as an
-/// array too — indistinguishable by construction.
-fn arrayify(v: &serde_json::Value) -> serde_json::Value {
-    match v {
-        serde_json::Value::Object(map) => {
-            let contiguous =
-                !map.is_empty() && (0..map.len()).all(|i| map.contains_key(&i.to_string()));
-            if contiguous {
-                serde_json::Value::Array(
-                    (0..map.len())
-                        .map(|i| arrayify(&map[&i.to_string()]))
-                        .collect(),
-                )
-            } else {
-                serde_json::Value::Object(
-                    map.iter().map(|(k, c)| (k.clone(), arrayify(c))).collect(),
-                )
-            }
-        }
-        other => other.clone(),
-    }
 }
 
 /// Truncate to at most `max` characters keeping both edges. Used for FIELD:

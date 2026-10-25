@@ -1146,7 +1146,21 @@ fn freshness(read: &MergedRead, rest: &str) -> Option<(u128, bool)> {
         oldest = Some(oldest.map_or(age, |o| o.max(age)));
         stale |= record.is_stale();
     }
-    oldest.map(|age| (age, stale))
+    if oldest.is_some() {
+        return oldest.map(|age| (age, stale));
+    }
+    // Inside a leaf — an array's element: the record is the array's own.
+    let mut at = rest.to_string();
+    while let Some(up) = libbeachcomber::key::parent(&at) {
+        if let Some(record) = read.records.get(&up) {
+            return Some((record.age_ms(), record.is_stale()));
+        }
+        if up.is_empty() {
+            break;
+        }
+        at = up;
+    }
+    None
 }
 
 /// What the template half of a `get` found. `Default` is "nothing attached",

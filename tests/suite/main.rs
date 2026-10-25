@@ -1,5 +1,6 @@
 mod common;
 
+mod arrays;
 mod auto_shutdown;
 mod binary_self_watch;
 mod boundaries_http_real;
