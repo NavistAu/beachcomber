@@ -69,6 +69,15 @@ typedef struct BcWatch BcWatch;
 const char *bc_version(void);
 
 /**
+ * The socket a client created with no `socket_path` option connects to —
+ * `$BEACHCOMBER_SOCKET` if set and non-empty, else `/tmp/beachcomber-<uid>/sock`
+ * — as `{"ok": true, "data": "<path>"}`. The one resolution comb itself uses
+ * (`libbeachcomber::socket::resolve`), less the config file's
+ * `socket_path`, which only the CLI and daemon read.
+ */
+char *bc_socket_path(void);
+
+/**
  * Creates a new client handle. `options_json` is nullable; recognised keys
  * are `socket_path`, `timeout_ms`, `autostart` and `exec` — whether a
  * template this client resolves (`bc_resolve`, `bc_eval`) may call `exec()`,

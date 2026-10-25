@@ -4,13 +4,6 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 #[test]
-fn pid_file_path() {
-    let sock = PathBuf::from("/tmp/beachcomber-501/sock");
-    let pid = daemon::pid_path_for_socket(&sock);
-    assert_eq!(pid, PathBuf::from("/tmp/beachcomber-501/daemon.pid"));
-}
-
-#[test]
 fn is_daemon_responsive_when_no_socket() {
     let path = PathBuf::from("/tmp/nonexistent-beachcomber-test/sock");
     assert!(

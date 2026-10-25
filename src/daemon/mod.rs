@@ -17,17 +17,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 // ---------------------------------------------------------------------------
-// Pure-logic re-exports for callers that import directly from `crate::daemon`.
-// ---------------------------------------------------------------------------
-
-/// Derive the PID-file path for a given socket path.
-///
-/// Delegates to the pure implementation in `lifecycle`.
-pub fn pid_path_for_socket(socket_path: &Path) -> PathBuf {
-    lifecycle::pid_path_for_socket(socket_path)
-}
-
-// ---------------------------------------------------------------------------
 // OS-bound: socket connectivity check
 // ---------------------------------------------------------------------------
 
@@ -294,8 +283,6 @@ fn spawn_watchdog(
 pub fn fork_daemon(binary_path: &str, socket_path: &Path, no_reap: bool) -> std::io::Result<()> {
     use std::process::Command;
 
-    let pid_path = pid_path_for_socket(socket_path);
-
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -321,13 +308,10 @@ pub fn fork_daemon(binary_path: &str, socket_path: &Path, no_reap: bool) -> std:
     if no_reap {
         cmd.arg("--no-reap");
     }
-    let child = cmd
-        .stdin(std::process::Stdio::null())
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::from(log_file))
         .spawn()?;
-
-    std::fs::write(&pid_path, child.id().to_string())?;
 
     Ok(())
 }
@@ -362,17 +346,12 @@ pub fn wait_for_daemon(socket_path: &Path, max_attempts: u32) -> bool {
 ///
 /// If not running, forks it and waits up to 8 attempts for the socket to
 /// appear. `no_reap` must be true when `socket_path` was resolved from
-/// `$BEACHCOMBER_SOCKET` (`SocketPathSource::EnvVar`) so the forked daemon is
+/// `$BEACHCOMBER_SOCKET` or `--socket` ([`libbeachcomber::socket::SocketSource::no_reap`]) so the forked daemon is
 /// flagged exempt from reaping (canon singleton.md §"Env-override spawns are
 /// flagged").
 pub fn ensure_daemon(socket_path: &Path, no_reap: bool) -> std::io::Result<()> {
     ensure_daemon_with(&RealDaemonSpawner, socket_path, no_reap)
 }
-
-/// Maximum usable unix socket path length in bytes, exclusive. `sun_path` is
-/// 104 bytes on macOS (108 on Linux); use the conservative bound on both so
-/// behavior is uniform.
-pub const MAX_SOCKET_PATH_BYTES: usize = 104;
 
 /// Injection-point variant of `ensure_daemon` — accepts any `DaemonSpawner`.
 ///
@@ -385,17 +364,8 @@ pub fn ensure_daemon_with(
 ) -> std::io::Result<()> {
     // Pre-flight: a path the kernel cannot bind (SUN_LEN) would fork a daemon
     // doomed to fail; surface the real cause here instead of a spawn timeout.
-    if socket_path.as_os_str().len() >= MAX_SOCKET_PATH_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "socket path is {} bytes; unix sockets are limited to {} (SUN_LEN): {}",
-                socket_path.as_os_str().len(),
-                MAX_SOCKET_PATH_BYTES,
-                socket_path.display()
-            ),
-        ));
-    }
+    libbeachcomber::socket::check_length(socket_path)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
     if !lifecycle::needs_fork(is_daemon_running(socket_path)) {
         return Ok(());

@@ -6,8 +6,8 @@
 /// `MockDaemonSpawner` is only generated under `cfg(test)` (inside the crate),
 /// and mockall is a dev-dependency — not available to external test binaries.
 use beachcomber::boundaries::spawn::DaemonSpawner;
-use beachcomber::daemon::{ensure_daemon_with, lifecycle::pid_path_for_socket};
-use std::path::{Path, PathBuf};
+use beachcomber::daemon::ensure_daemon_with;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -61,23 +61,6 @@ impl DaemonSpawner for RecordingSpawner {
         self.wait_called.fetch_add(1, Ordering::SeqCst);
         self.wait_returns
     }
-}
-
-// ---------------------------------------------------------------------------
-// Pure: pid_path_for_socket
-// ---------------------------------------------------------------------------
-
-#[test]
-fn pid_path_replaces_extension() {
-    // Canonical case from the task spec.
-    let p = pid_path_for_socket(&PathBuf::from("/tmp/foo.sock"));
-    assert_eq!(p, PathBuf::from("/tmp/daemon.pid"));
-}
-
-#[test]
-fn pid_path_replaces_directory_socket_name() {
-    let p = pid_path_for_socket(&PathBuf::from("/tmp/beachcomber-501/sock"));
-    assert_eq!(p, PathBuf::from("/tmp/beachcomber-501/daemon.pid"));
 }
 
 // ---------------------------------------------------------------------------

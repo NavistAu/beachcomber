@@ -547,11 +547,11 @@ $ comb c config --origins client.providers.aws.template.profile
 
 **Exit codes:** `0` if healthy, `1` if something is worth a look (a `WARN`), `2` on a `FAIL` or an error.
 
-## `comb d` (daemon) `[--socket <path>] [--no-reap]`
+## `comb d` (daemon) `[--no-reap]`
 
 Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.
 
-Socket path resolution order: `daemon.socket_path` in config → `BEACHCOMBER_SOCKET` env var → `/tmp/beachcomber-<uid>/sock`.
+Socket path resolution order, the same for every command and every SDK: the global `--socket <PATH>` flag (any command takes it, before or after the subcommand) → `daemon.socket_path` in config → `BEACHCOMBER_SOCKET` env var → `/tmp/beachcomber-<uid>/sock`. The SDKs read no config file, so for them it is the variable, then the default (`bc_socket_path` returns it).
 
 ```sh
 # Run with debug logging
@@ -565,7 +565,7 @@ The daemon exits cleanly on SIGINT (Ctrl+C) or SIGTERM. Prefer `comb kill` from 
 
 **One daemon per user.** The daemon whose socket matches its own resolution above is the *canonical* daemon. It removes orphaned `comb daemon` processes (reparented to PID 1, on sockets nothing resolves) at startup and hourly. A foreground debug run under your shell is never touched; a daemon you run under a supervisor on a *non-default* socket is parented to PID 1, so mark it exempt with `--no-reap`. Full rules in the repo's `docs/canon/singleton.md`.
 
-## `comb k` (kill) `[--timeout <duration>] [--socket <path>]`
+## `comb k` (kill) `[--timeout <duration>]`
 
 Stop the running daemon. Sends `SIGTERM` and waits for the daemon to exit; the next `comb` query will socket-activate a fresh daemon. No-op if the daemon is not running.
 
@@ -573,9 +573,9 @@ Stop the running daemon. Sends `SIGTERM` and waits for the daemon to exit; the n
 comb kill                 # default 5s timeout
 comb k                    # short form
 comb kill --timeout 30s   # wait longer on slow shutdowns
-comb kill --socket /tmp/beachcomber-debug.sock   # target a custom socket
+comb kill --socket /tmp/beachcomber-debug.sock   # target a custom socket (the global flag)
 ```
 
-The command queries the daemon for its PID via `introspect{subject:"daemon"}`, so it works even when the PID file is stale or missing.
+The command asks the daemon for its PID (`introspect{subject:"daemon"}`); there is no PID file to go stale.
 
 **Exit codes:** `0` on success (including no-op), `2` on error (the daemon did not exit within `--timeout`, its pid could not be determined, the signal failed).

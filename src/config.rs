@@ -103,15 +103,6 @@ fn deserialize_duration_text<'de, D: serde::Deserializer<'de>>(
     })
 }
 
-/// Which resolution step supplied a socket path
-/// (canon singleton.md §"Canonical socket path resolution").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SocketPathSource {
-    ConfigOverride,
-    EnvVar,
-    Default,
-}
-
 /// The configuration: settings composed from layers, and everything wrong
 /// with them. Built only by [`Config::load_from`], [`Config::from_layers`] and
 /// [`Config::from_toml`] (or `Default`, which is valid by construction), so
@@ -147,6 +138,9 @@ pub struct Config {
     /// file that could not be read or parsed, a rule a file breaks, a value
     /// the composition cannot hold.
     errors: Vec<String>,
+    /// The CLI's `--socket`: not configuration, but the one setting that beats
+    /// it ([`Config::resolve_socket_path_with_source`]).
+    socket_flag: Option<PathBuf>,
 }
 
 /// What the composed layers deserialize to: the two roots. Private, so the
@@ -242,6 +236,7 @@ impl Default for Config {
             layers: Vec::new(),
             composed: empty_table(),
             errors: Vec::new(),
+            socket_flag: None,
         }
     }
 }
@@ -432,6 +427,7 @@ impl Config {
             layers,
             composed: merged,
             errors: Vec::new(),
+            socket_flag: None,
         };
         errors.extend(config.watchdog_errors());
         config.errors = errors;
@@ -907,28 +903,20 @@ impl Config {
         self.resolve_socket_path_with_source().0
     }
 
-    /// Full canonical resolution, also reporting which step supplied the path.
-    /// Auto-spawn uses the source to flag `$BEACHCOMBER_SOCKET`-derived daemons
-    /// `--no-reap` (canon singleton.md §"Env-override spawns are flagged").
-    pub fn resolve_socket_path_with_source(&self) -> (PathBuf, SocketPathSource) {
-        // 1. Config-file override (highest priority)
-        if let Some(ref path) = self.daemon.socket_path {
-            return (configured_socket(path), SocketPathSource::ConfigOverride);
-        }
+    /// The socket, and which step chose it ([`libbeachcomber::socket::resolve`]):
+    /// `--socket`, then `[daemon] socket_path`, then `$BEACHCOMBER_SOCKET`,
+    /// then the per-user default. Auto-spawn flags a daemon on a socket this
+    /// process chose (`--socket`, `$BEACHCOMBER_SOCKET`) `--no-reap`.
+    pub fn resolve_socket_path_with_source(
+        &self,
+    ) -> (PathBuf, libbeachcomber::socket::SocketSource) {
+        let configured = self.daemon.socket_path.as_deref().map(configured_socket);
+        libbeachcomber::socket::resolve(self.socket_flag.as_deref(), configured.as_deref())
+    }
 
-        // 2. BEACHCOMBER_SOCKET env var
-        if let Some(env_path) = std::env::var_os("BEACHCOMBER_SOCKET") {
-            let p = std::path::PathBuf::from(env_path);
-            if !p.as_os_str().is_empty() {
-                return (p, SocketPathSource::EnvVar);
-            }
-        }
-
-        // 3. Stable per-user default. Consults no session-scoped environment
-        // (TMPDIR, XDG_RUNTIME_DIR): singleton enforcement is per-socket-path,
-        // so session-scoped inputs yield one daemon per session, not per user.
-        // See docs/canon/singleton.md §"Canonical socket path resolution".
-        (Self::default_socket_path(), SocketPathSource::Default)
+    /// The CLI's `--socket`, which beats every other way of naming the socket.
+    pub fn set_socket_flag(&mut self, socket: Option<PathBuf>) {
+        self.socket_flag = socket;
     }
 
     /// Env-free resolution backing the reaper role (canon singleton.md §"Who
@@ -940,14 +928,7 @@ impl Config {
         if let Some(ref path) = self.daemon.socket_path {
             return configured_socket(path);
         }
-        Self::default_socket_path()
-    }
-
-    pub(crate) fn default_socket_path() -> PathBuf {
-        let uid = unsafe { libc::getuid() };
-        PathBuf::from("/tmp")
-            .join(format!("beachcomber-{uid}"))
-            .join("sock")
+        libbeachcomber::socket::default_path()
     }
 
     /// The daemon's log file, under the XDG state home. No setting moves it,

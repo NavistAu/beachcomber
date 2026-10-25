@@ -4,22 +4,6 @@
 //! OS-bound work (filesystem access, socket polling, process spawning) lives in
 //! `crate::daemon` (`src/daemon/mod.rs`).
 
-use std::path::{Path, PathBuf};
-
-/// Derive the PID-file path that corresponds to a given socket path.
-///
-/// The PID file always lives in the same directory as the socket, named `daemon.pid`.
-///
-/// ```
-/// # use std::path::{Path, PathBuf};
-/// # use beachcomber::daemon::lifecycle::pid_path_for_socket;
-/// let p = pid_path_for_socket(Path::new("/tmp/beachcomber-501/sock"));
-/// assert_eq!(p, PathBuf::from("/tmp/beachcomber-501/daemon.pid"));
-/// ```
-pub fn pid_path_for_socket(socket_path: &Path) -> PathBuf {
-    socket_path.with_file_name("daemon.pid")
-}
-
 /// The outcome of a single wait-poll iteration.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WaitDecision {
@@ -67,34 +51,6 @@ pub fn should_exit_on_reparent(initial_ppid: i32, current_ppid: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    // --- pid_path_for_socket ---
-
-    #[test]
-    fn pid_path_replaces_filename_with_daemon_pid() {
-        let sock = PathBuf::from("/tmp/beachcomber-501/sock");
-        assert_eq!(
-            pid_path_for_socket(&sock),
-            PathBuf::from("/tmp/beachcomber-501/daemon.pid")
-        );
-    }
-
-    #[test]
-    fn pid_path_for_deep_socket() {
-        let sock = PathBuf::from("/run/user/1000/beachcomber/sock");
-        assert_eq!(
-            pid_path_for_socket(&sock),
-            PathBuf::from("/run/user/1000/beachcomber/daemon.pid")
-        );
-    }
-
-    #[test]
-    fn pid_path_for_socket_with_extension() {
-        // Socket files can have an extension; we replace the whole filename.
-        let sock = PathBuf::from("/tmp/foo.sock");
-        assert_eq!(pid_path_for_socket(&sock), PathBuf::from("/tmp/daemon.pid"));
-    }
 
     // --- next_wait_decision ---
 

@@ -247,7 +247,7 @@ pub fn run_status(
     let depth = depth.or(tree.then_some(0));
     let filters = &crate::cli::status_format::effective_filters(user_filters, all);
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
+    let spawn_no_reap = socket_source.no_reap();
 
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
         crate::cli::report::daemon_start(e);

@@ -789,21 +789,16 @@ impl beachcomber::boundaries::socket::SocketProbe for FakeProbe {
 }
 
 #[test]
-fn cleanup_orphan_corpse_removes_socket_and_pid_files() {
+fn cleanup_orphan_corpse_removes_socket_and_pid_file() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("sock");
     std::fs::write(&sock, b"").unwrap();
     std::fs::write(tmp.path().join("pid"), b"{}").unwrap();
-    std::fs::write(tmp.path().join("daemon.pid"), b"123").unwrap();
 
     let removed = beachcomber::singleton::cleanup_orphan_corpse(&FakeProbe(false), &sock);
     assert!(removed);
     assert!(!sock.exists(), "socket corpse removed");
     assert!(!tmp.path().join("pid").exists(), "pid file removed");
-    assert!(
-        !tmp.path().join("daemon.pid").exists(),
-        "daemon.pid removed"
-    );
 }
 
 #[test]
@@ -846,22 +841,29 @@ fn reaper_resolution_honors_config_override() {
 
 #[test]
 fn resolve_socket_path_reports_source() {
-    use beachcomber::config::SocketPathSource;
+    use libbeachcomber::socket::SocketSource;
 
-    let cfg = Config::from_toml("[daemon]\nsocket_path = \"/etc/comb/sock\"\n");
+    let mut cfg = Config::from_toml("[daemon]\nsocket_path = \"/etc/comb/sock\"\n");
     assert_eq!(
         cfg.resolve_socket_path_with_source().1,
-        SocketPathSource::ConfigOverride
+        SocketSource::Config
+    );
+    // `--socket` beats the configured path, and is spared reaping like the
+    // environment's.
+    cfg.set_socket_flag(Some(PathBuf::from("/flag/sock")));
+    assert_eq!(
+        cfg.resolve_socket_path_with_source(),
+        (PathBuf::from("/flag/sock"), SocketSource::Flag)
     );
 
     let cfg = Config::default();
     let (_, source) = temp_env::with_vars([("BEACHCOMBER_SOCKET", Some("/custom/sock"))], || {
         cfg.resolve_socket_path_with_source()
     });
-    assert_eq!(source, SocketPathSource::EnvVar);
+    assert_eq!(source, SocketSource::Env);
 
     let (_, source) = temp_env::with_vars([("BEACHCOMBER_SOCKET", None::<&str>)], || {
         cfg.resolve_socket_path_with_source()
     });
-    assert_eq!(source, SocketPathSource::Default);
+    assert_eq!(source, SocketSource::Default);
 }

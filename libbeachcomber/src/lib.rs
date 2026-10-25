@@ -30,6 +30,7 @@ mod lazy;
 pub mod path;
 pub mod render;
 pub mod resolve;
+pub mod socket;
 pub mod virtual_fields;
 pub mod watch;
 
@@ -1012,7 +1013,7 @@ impl Client {
             return Ok(p.clone());
         }
 
-        let path = socket_path();
+        let (path, _) = socket::resolve(None, None);
 
         // Check if daemon is listening
         if UnixStream::connect(&path).is_ok() {
@@ -1624,50 +1625,15 @@ fn parse_introspect(
     }
 }
 
-/// Find the beachcomber socket path.
-///
-/// Mirrors the daemon's bind-path resolution (`Config::resolve_socket_path`),
-/// minus the config-file step which is daemon-only:
-///   1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
-///   2. `/tmp/beachcomber-<uid>/sock`
-///
-/// There is no existence probe, and no session-scoped environment is
-/// consulted (`$TMPDIR`, `$XDG_RUNTIME_DIR`): the result is the single stable
-/// per-user path the daemon binds. Non-standard setups point clients at the
-/// daemon via `BEACHCOMBER_SOCKET`.
-pub fn socket_path() -> PathBuf {
-    if let Some(env_path) = std::env::var_os("BEACHCOMBER_SOCKET")
-        && !env_path.is_empty()
-    {
-        return PathBuf::from(env_path);
-    }
-
-    let uid = unsafe { libc::getuid() };
-    PathBuf::from("/tmp")
-        .join(format!("beachcomber-{}", uid))
-        .join("sock")
-}
-
-/// Maximum usable unix socket path length in bytes, exclusive (`sun_path` is
-/// 104 bytes on macOS, 108 on Linux; conservative bound used on both).
-const MAX_SOCKET_PATH_BYTES: usize = 104;
-
 /// Attempt to start the comb daemon via socket activation.
 fn start_daemon(socket_path: &Path) -> Result<(), CombError> {
     use std::process::Command;
 
     // Pre-flight: a path the kernel cannot bind (SUN_LEN) would fork a daemon
     // doomed to fail; surface the real cause instead of a spawn timeout.
-    if socket_path.as_os_str().len() >= MAX_SOCKET_PATH_BYTES {
-        return Err(CombError::ConnectionFailed(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "socket path is {} bytes; unix sockets are limited to {} (SUN_LEN)",
-                socket_path.as_os_str().len(),
-                MAX_SOCKET_PATH_BYTES
-            ),
-        )));
-    }
+    socket::check_length(socket_path).map_err(|e| {
+        CombError::ConnectionFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+    })?;
 
     // Find comb binary
     let comb = which_comb().ok_or(CombError::DaemonNotRunning)?;
@@ -1683,7 +1649,8 @@ fn start_daemon(socket_path: &Path) -> Result<(), CombError> {
     // A spawn whose path came from $BEACHCOMBER_SOCKET is a deliberate
     // override daemon: flag it --no-reap so the reaping daemon spares it
     // (canon singleton.md §"Env-override spawns are flagged").
-    if socket_path_is_env_override(socket_path) {
+    let (default, source) = socket::resolve(None, None);
+    if source.no_reap() && default == socket_path {
         cmd.arg("--no-reap");
     }
     cmd.stdin(std::process::Stdio::null())
@@ -1693,15 +1660,6 @@ fn start_daemon(socket_path: &Path) -> Result<(), CombError> {
         .map_err(CombError::ConnectionFailed)?;
 
     Ok(())
-}
-
-/// True when `socket_path` matches the value of `$BEACHCOMBER_SOCKET` — i.e.
-/// the path being spawned at was supplied by the env override rather than the
-/// per-user default.
-fn socket_path_is_env_override(socket_path: &Path) -> bool {
-    std::env::var_os("BEACHCOMBER_SOCKET")
-        .filter(|v| !v.is_empty())
-        .is_some_and(|v| Path::new(&v) == socket_path)
 }
 
 fn which_comb() -> Option<PathBuf> {

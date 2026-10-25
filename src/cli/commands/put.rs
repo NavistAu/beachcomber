@@ -23,7 +23,7 @@ pub fn run_put(
         None => None,
     };
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
+    let spawn_no_reap = socket_source.no_reap();
 
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
         crate::cli::report::daemon_start(e);

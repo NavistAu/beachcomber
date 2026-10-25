@@ -458,7 +458,7 @@ Stop the running daemon. The daemon will socket-activate again on the next clien
 ```sh
 comb k                           # stop the daemon (waits up to 5s for exit)
 comb kill --timeout 10           # wait up to 10s for exit
-comb kill --socket /tmp/other.sock  # target a specific socket
+comb kill --socket /tmp/other.sock  # target a specific socket (--socket is global)
 ```
 
 ### `comb c` (check) `[subcommand]`

@@ -41,7 +41,7 @@ export {
   type Verdict,
   type WatchEvent,
 } from './client.js';
-export { discoverSocketPath, getUid, libraryCandidates, platformLibraryName, resolveCombOnPath } from './discovery.js';
+export { libraryCandidates, platformLibraryName, resolveCombOnPath } from './discovery.js';
 export {
   CombError,
   type CombErrorKind,

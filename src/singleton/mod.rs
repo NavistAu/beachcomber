@@ -427,7 +427,7 @@ pub fn reap_sweep_with(
 }
 
 /// Remove a reaped orphan's corpse files: the socket itself and the sibling
-/// `pid` / `daemon.pid` files. Probes first and NEVER unlinks a serving
+/// `pid` file. Probes first and NEVER unlinks a serving
 /// socket — a racing respawn that re-bound the path between kill and cleanup
 /// keeps its socket (canon §"Corpse cleanup", invariant 14). Returns true if
 /// anything was removed.
@@ -440,11 +440,7 @@ pub fn cleanup_orphan_corpse(
         return false;
     }
     let mut removed = false;
-    for path in [
-        socket.to_path_buf(),
-        socket.with_file_name("pid"),
-        socket.with_file_name("daemon.pid"),
-    ] {
+    for path in [socket.to_path_buf(), socket.with_file_name("pid")] {
         match std::fs::remove_file(&path) {
             Ok(()) => removed = true,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

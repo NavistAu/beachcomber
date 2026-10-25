@@ -352,7 +352,7 @@ Composition rules:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `socket_path` | string | (see resolution order) | Unix socket path. Resolution order: this key → `BEACHCOMBER_SOCKET` env var → `/tmp/beachcomber-<uid>/sock` |
+| `socket_path` | string | (see resolution order) | Unix socket path. Resolution order: the CLI's `--socket` flag → this key → `BEACHCOMBER_SOCKET` env var → `/tmp/beachcomber-<uid>/sock` |
 | `log_level` | string | `"info"` | Tracing log level |
 | `timeout` | duration, at least `1ms` | `"10s"` | How long one run of a Source may take before it is cut off, for every Source whose `return` does not name `timeout(...)` |
 | `env_file` | string | `env` beside `config.toml` | Path to env file loaded at startup; `comb check config` reads it too, so it checks with the variables the daemon would have |

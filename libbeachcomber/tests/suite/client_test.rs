@@ -21,21 +21,14 @@ fn client_with_config() {
 
 #[test]
 fn socket_path_defaults_under_tmp_and_honours_the_env() {
-    let default = temp_env::with_var(
-        "BEACHCOMBER_SOCKET",
-        None::<&str>,
-        libbeachcomber::socket_path,
-    );
+    let resolve = || libbeachcomber::socket::resolve(None, None).0;
+    let default = temp_env::with_var("BEACHCOMBER_SOCKET", None::<&str>, resolve);
     let uid = unsafe { libc::getuid() };
     assert_eq!(
         default,
         std::path::PathBuf::from(format!("/tmp/beachcomber-{uid}/sock"))
     );
-    let set = temp_env::with_var(
-        "BEACHCOMBER_SOCKET",
-        Some("/custom/sock"),
-        libbeachcomber::socket_path,
-    );
+    let set = temp_env::with_var("BEACHCOMBER_SOCKET", Some("/custom/sock"), resolve);
     assert_eq!(set, std::path::PathBuf::from("/custom/sock"));
 }
 

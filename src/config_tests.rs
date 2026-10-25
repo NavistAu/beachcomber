@@ -72,7 +72,7 @@ fn default_config() {
 
 #[test]
 fn socket_path_resolves_xdg_default() {
-    let path = Config::default_socket_path();
+    let path = libbeachcomber::socket::default_path();
     assert!(
         path.to_string_lossy().contains("beachcomber"),
         "Socket path should include 'beachcomber': {path:?}",

@@ -25,6 +25,7 @@ mod cli_paths;
 mod cli_refresh;
 mod cli_report;
 mod cli_resolve;
+mod cli_socket;
 mod cli_status_rendered;
 mod cli_style;
 mod cli_virtual_fields;

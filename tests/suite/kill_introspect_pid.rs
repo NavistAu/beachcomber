@@ -81,23 +81,23 @@ async fn status_op_does_not_contain_pid_field() {
     );
 }
 
-#[test]
-fn query_daemon_pid_request_string_is_exact() {
-    // Contract: query_daemon_pid sends this exact line. If kill.rs drifts
-    // back to the old "status" op, grep will catch it, but this test locks
-    // the expectation in a machine-checkable form.
-    let src = std::fs::read_to_string("src/cli/commands/kill.rs").unwrap();
-    assert!(
-        src.contains(r#"{\"op\":\"introspect\",\"subject\":\"daemon\"}"#),
-        "src/cli/commands/kill.rs must send introspect{{daemon}} from query_daemon_pid"
-    );
-    // The old behavior must be gone from the PID-lookup path. query_daemon_pid
-    // is the only site in kill.rs that sends a raw wire op as a byte literal;
-    // if status is still there in that context it's a regression.
-    let op_status_bytes = r#"b"{\"op\":\"status\"}\n""#;
-    assert!(
-        !src.contains(op_status_bytes),
-        "src/cli/commands/kill.rs must no longer send the literal {op_status_bytes} \
-         (old comb kill pid lookup)"
-    );
+/// `comb kill` asks the daemon for its pid through the client's
+/// `introspect{daemon}`: the pid it reads is the serving process's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kill_reads_the_pid_the_daemon_reports() {
+    let tmp = TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    server.spawn().unwrap();
+
+    let pid = tokio::task::spawn_blocking(move || {
+        beachcomber::cli::commands::kill::resolve_daemon_pid(&sock)
+    })
+    .await
+    .unwrap()
+    .expect("the daemon reports its pid");
+    assert_eq!(pid as u32, std::process::id());
 }

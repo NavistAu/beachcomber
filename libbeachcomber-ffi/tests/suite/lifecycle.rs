@@ -47,3 +47,24 @@ fn client_new_with_well_formed_options_succeeds() {
 fn client_free_null_is_a_no_op() {
     unsafe { bc_client_free(ptr::null_mut()) };
 }
+
+/// `bc_socket_path` is the socket a client with no `socket_path` option
+/// connects to: `$BEACHCOMBER_SOCKET` when set, else the per-user default.
+#[test]
+fn socket_path_is_the_one_resolution() {
+    let read = || {
+        let ptr = beachcomber::bc_socket_path();
+        let body = unsafe { std::ffi::CStr::from_ptr(ptr) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        unsafe { beachcomber::envelope::bc_string_free(ptr) };
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()
+    };
+    // SAFETY: nextest runs every test in its own process.
+    unsafe { std::env::set_var("BEACHCOMBER_SOCKET", "/env/sock") };
+    assert_eq!(read()["data"], serde_json::json!("/env/sock"));
+    unsafe { std::env::remove_var("BEACHCOMBER_SOCKET") };
+    let default = libbeachcomber::socket::default_path();
+    assert_eq!(read()["data"], serde_json::json!(default.to_string_lossy()));
+}

@@ -253,8 +253,8 @@ process (`sync.Once`) and are cached for the lifetime of the program.
 ## Socket discovery
 
 Once the library is loaded, the daemon socket path is resolved by
-`libbeachcomber` itself (not this SDK) for `NewClient`. This SDK also
-exposes the same resolution standalone via `DiscoverSocketPath()`:
+`libbeachcomber` itself (not this SDK) for `NewClient`
+(`bc_socket_path` in the C ABI returns it):
 
 1. `$BEACHCOMBER_SOCKET` — if set and non-empty.
 2. `/tmp/beachcomber-<uid>/sock`.

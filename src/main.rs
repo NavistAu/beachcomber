@@ -99,6 +99,10 @@ struct Cli {
     /// ASCII glyphs only (no Unicode box drawing, marks or ellipsis)
     #[arg(long, global = true)]
     ascii: bool,
+    /// The daemon's socket. Beats `[daemon] socket_path` and
+    /// `$BEACHCOMBER_SOCKET`, which it matches
+    #[arg(long, global = true, value_name = "PATH")]
+    socket: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -108,9 +112,6 @@ enum Commands {
     /// Run the daemon (usually auto-launched via socket activation)
     #[command(visible_alias = "d")]
     Daemon {
-        /// Override socket path
-        #[arg(long)]
-        socket: Option<PathBuf>,
         /// Exit automatically when the spawning parent process dies. Used by the
         /// test harness so a daemon never outlives the test that spawned it —
         /// even when the test process is SIGKILLed (which skips normal cleanup).
@@ -276,9 +277,6 @@ enum Commands {
             value_parser = beachcomber::config::duration_arg
         )]
         timeout: std::time::Duration,
-        /// Override socket path (derives the pid file path)
-        #[arg(long)]
-        socket: Option<PathBuf>,
     },
 }
 
@@ -374,16 +372,16 @@ fn run(cli: Cli) -> Outcome {
             return Outcome::Error;
         }
     }
-    let config = Config::load();
+    let mut config = Config::load();
+    config.set_socket_flag(cli.socket);
 
     match cli.command {
         Commands::Daemon {
-            socket,
             exit_with_parent,
             // Read by the reaping canonical daemon from our argv, not by us.
             no_reap: _,
         } => {
-            let socket_path = socket.unwrap_or_else(|| config.resolve_socket_path());
+            let socket_path = config.resolve_socket_path();
             run_daemon(socket_path, config, exit_with_parent)
         }
         Commands::Get {
@@ -490,9 +488,6 @@ fn run(cli: Cli) -> Outcome {
             connect_timeout,
             check_cmd,
         } => run_check(&config, check_cmd, connect_timeout, style),
-        Commands::Kill { timeout, socket } => {
-            let socket_path = socket.unwrap_or_else(|| config.resolve_socket_path());
-            run_kill(&socket_path, timeout)
-        }
+        Commands::Kill { timeout } => run_kill(&config.resolve_socket_path(), timeout),
     }
 }

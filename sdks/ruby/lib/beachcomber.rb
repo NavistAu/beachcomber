@@ -2,7 +2,6 @@ require_relative 'beachcomber/errors'
 require_relative 'beachcomber/ffi'
 require_relative 'beachcomber/result'
 require_relative 'beachcomber/types'
-require_relative 'beachcomber/discovery'
 require_relative 'beachcomber/watch_stream'
 require_relative 'beachcomber/client'
 

@@ -25,7 +25,7 @@ use libbeachcomber::resolve::{Inputs, Slot, eval};
 /// the global entry — the resolver's rule, the same for every surface.
 pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> Outcome {
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
+    let spawn_no_reap = socket_source.no_reap();
 
     // `comb` always requires the daemon (design §2, outcome 22).
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {

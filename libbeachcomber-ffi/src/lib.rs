@@ -46,6 +46,21 @@ pub extern "C" fn bc_version() -> *const c_char {
         .as_ptr()
 }
 
+/// The socket a client created with no `socket_path` option connects to —
+/// `$BEACHCOMBER_SOCKET` if set and non-empty, else `/tmp/beachcomber-<uid>/sock`
+/// — as `{"ok": true, "data": "<path>"}`. The one resolution comb itself uses
+/// (`libbeachcomber::socket::resolve`), less the config file's
+/// `socket_path`, which only the CLI and daemon read.
+#[unsafe(no_mangle)]
+pub extern "C" fn bc_socket_path() -> *mut c_char {
+    call_ffi(|| {
+        let (path, _) = libbeachcomber::socket::resolve(None, None);
+        Ok(serde_json::Value::String(
+            path.to_string_lossy().into_owned(),
+        ))
+    })
+}
+
 /// Recognised keys of `bc_client_new`'s `options_json` argument.
 #[derive(serde::Deserialize, Default)]
 struct ClientOptions {

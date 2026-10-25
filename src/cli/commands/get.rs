@@ -58,7 +58,7 @@ pub fn run_get(
     wait: bool,
 ) -> Outcome {
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
+    let spawn_no_reap = socket_source.no_reap();
 
     // `comb` always requires the daemon (design §2), a key whose answer needs
     // no request (`env.HOME`) included.
