@@ -890,8 +890,9 @@ impl Scheduler {
         // Watch paths that are being monitored: path -> subscriptions
         let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
 
-        // Idle shutdown tracking.
-        let mut last_activity = Instant::now();
+        // Idle shutdown tracking, on the runtime's clock like the tick that
+        // checks it, so a test with paused time sees the daemon go idle.
+        let mut last_activity = tokio::time::Instant::now();
         let idle_shutdown = self.config.daemon().idle_shutdown();
 
         // Tick every second to check poll timers.
@@ -916,11 +917,11 @@ impl Scheduler {
                         Some(SchedulerMessage::Refresh { provider, instances }) => {
                             debug!("Refresh: provider={} instances={:?}", provider, instances);
                             self.refresh_sources(&provider, &instances);
-                            last_activity = Instant::now();
+                            last_activity = tokio::time::Instant::now();
                         }
                         Some(SchedulerMessage::PutWritten { provider, path, node, ttl_secs }) => {
                             apply_put_written(&mut lifecycle, &provider, path.as_deref(), &node, ttl_secs, Instant::now());
-                            last_activity = Instant::now();
+                            last_activity = tokio::time::Instant::now();
                         }
                         Some(SchedulerMessage::Reload { next, registry }) => {
                             let watches = self.reload(next, &registry, &mut lifecycle);
@@ -940,7 +941,7 @@ impl Scheduler {
                                     key.path.as_deref(),
                                 );
                             }
-                            last_activity = Instant::now();
+                            last_activity = tokio::time::Instant::now();
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
                             let status = build_status(
@@ -1035,7 +1036,7 @@ impl Scheduler {
                                     }
                                 }
                             }
-                            last_activity = now;
+                            last_activity = tokio::time::Instant::now();
                         }
                     }
                 }
@@ -1056,7 +1057,7 @@ impl Scheduler {
                             self.execute_source(&key.provider, &key.source, key.path.as_deref());
                         }
                     }
-                    last_activity = Instant::now();
+                    last_activity = tokio::time::Instant::now();
                 }
 
                 // Watch self-test verdict (canon provider_source.md §"Watch backend health").
