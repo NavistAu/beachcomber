@@ -1,14 +1,19 @@
-//! Text and terminal styling: `truncate`, `fg`, `bg`, `bold` and `dim`.
+//! Text and terminal styling: `truncate`, the colour filters `fg` and `bg`, the
+//! attributes `bold`, `dim`, `italic`, `underline` and `invert`, and
+//! `hyperlink`.
 //!
 //! All are pure string transforms (no filesystem, network or process access),
 //! so unlike `exec()` they need no `allow_exec` gating and are on every
-//! surface. The colour filters draw escapes only when the render's `env` does
-//! not set `NO_COLOR` ([`EngineCtx::colour`]).
+//! surface. A colour is a name, a palette index or `#rrggbb` ([`crate::term`]),
+//! drawn at the depth the render's `env` says its terminal has. With
+//! `NO_COLOR` set to something there ([`EngineCtx::colour`]) no item emits an
+//! escape sequence.
 
 use super::{UNDEFINED, is_absent, text};
-use crate::engine::EngineCtx;
-use minijinja::value::Value as MjValue;
-use minijinja::{Environment, Error, ErrorKind};
+use crate::engine::{EngineCtx, op_error};
+use crate::term::{Colour, Depth, Ground, sgr};
+use minijinja::value::{Value as MjValue, ValueKind};
+use minijinja::{Environment, Error};
 use std::sync::Arc;
 
 /// Run `style` over the text of `value`; absent is undefined.
@@ -23,37 +28,9 @@ fn styled(
     style(text(name, value)?).map(MjValue::from)
 }
 
-pub(super) fn add_truncate(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
-    env.add_filter("truncate", |value: MjValue, length: u32| {
+pub(super) fn add_truncate(jinja: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+    jinja.add_filter("truncate", |value: MjValue, length: u32| {
         styled("truncate", &value, |s| Ok(truncate_filter(s, length)))
-    });
-}
-
-pub(super) fn add_fg(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let colour = ctx.colour();
-    env.add_filter("fg", move |value: MjValue, color: String| {
-        styled("fg", &value, |s| fg_filter(s, color, colour))
-    });
-}
-
-pub(super) fn add_bg(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let colour = ctx.colour();
-    env.add_filter("bg", move |value: MjValue, color: String| {
-        styled("bg", &value, |s| bg_filter(s, color, colour))
-    });
-}
-
-pub(super) fn add_bold(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let colour = ctx.colour();
-    env.add_filter("bold", move |value: MjValue| {
-        styled("bold", &value, |s| Ok(bold_filter(s, colour)))
-    });
-}
-
-pub(super) fn add_dim(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let colour = ctx.colour();
-    env.add_filter("dim", move |value: MjValue| {
-        styled("dim", &value, |s| Ok(dim_filter(s, colour)))
     });
 }
 
@@ -67,110 +44,130 @@ fn truncate_filter(value: String, length: u32) -> String {
     }
 }
 
-// ── fg/bg: hex colour → truecolor SGR ──────────────────────────────────────
-
-/// `{{ text | fg("#rrggbb") }}` — wrap `text` in a 24-bit foreground SGR
-/// escape (`\x1b[38;2;R;G;Bm` ... `\x1b[0m`).
-///
-/// Comb values store colours as `#rrggbb` hex (e.g. scanline's published
-/// theme, config-file palettes) because hex is the one canonical
-/// representation every consumer can parse. A consumer rendering to a
-/// terminal — a shell prompt, a statusline template, `comb eval`
-/// piped into a prompt string — needs SGR instead, so the conversion
-/// happens here, at the point of use, rather than by storing colours in
-/// two formats.
-///
-/// Empty input text returns empty string with no escapes emitted at all,
-/// so a conditional colour segment composes cleanly: `{{ x | fg(c) }}`
-/// contributes nothing when `x` is empty rather than an orphan pair of
-/// escapes around nothing.
-///
-/// An unparseable colour is a filter error (`ErrorKind::InvalidOperation`,
-/// naming the offending value), not silent passthrough — a typo'd colour
-/// must be visible rather than rendering the text uncoloured with no sign
-/// anything went wrong.
-fn fg_filter(value: String, color: String, colour: bool) -> Result<String, Error> {
-    sgr_wrap(value, &color, 38, colour)
+pub(super) fn add_fg(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    add_ground(jinja, ctx, "fg", Ground::Fore);
 }
 
-/// `{{ text | bg("#rrggbb") }}` — [`fg_filter`]'s sibling for the
-/// background SGR parameter (`48;2` instead of `38;2`). Same colour
-/// parsing, same empty-input and error behaviour.
-fn bg_filter(value: String, color: String, colour: bool) -> Result<String, Error> {
-    sgr_wrap(value, &color, 48, colour)
+pub(super) fn add_bg(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    add_ground(jinja, ctx, "bg", Ground::Back);
 }
 
-/// Shared body of `fg`/`bg`: parse `color` and wrap non-empty `value` in
-/// the SGR escape pair for `sgr_code` (38 for foreground, 48 for
-/// background).
-fn sgr_wrap(value: String, color: &str, sgr_code: u8, colour: bool) -> Result<String, Error> {
-    if value.is_empty() {
-        return Ok(String::new());
+fn add_ground(
+    jinja: &mut Environment<'_>,
+    ctx: &Arc<EngineCtx>,
+    name: &'static str,
+    ground: Ground,
+) {
+    let (on, depth) = (ctx.colour(), ctx.depth());
+    jinja.add_filter(name, move |value: MjValue, colour: MjValue| {
+        // The colour is checked first, so an empty or absent subject does not
+        // hide a typo.
+        let colour = colour_arg(name, &colour)?;
+        styled(name, &value, |s| Ok(paint(&s, colour, ground, depth, on)))
+    });
+}
+
+pub(super) fn add_bold(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    add_attribute(jinja, ctx, "bold", 1);
+}
+
+pub(super) fn add_dim(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    add_attribute(jinja, ctx, "dim", 2);
+}
+
+pub(super) fn add_italic(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    add_attribute(jinja, ctx, "italic", 3);
+}
+
+pub(super) fn add_underline(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    add_attribute(jinja, ctx, "underline", 4);
+}
+
+pub(super) fn add_invert(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    add_attribute(jinja, ctx, "invert", 7);
+}
+
+fn add_attribute(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>, name: &'static str, code: u8) {
+    let on = ctx.colour();
+    jinja.add_filter(name, move |value: MjValue| {
+        styled(name, &value, |s| Ok(attribute(s, code, on)))
+    });
+}
+
+pub(super) fn add_hyperlink(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    let on = ctx.colour();
+    jinja.add_function("hyperlink", move |url: MjValue, label: MjValue| {
+        hyperlink(&url, &label, on)
+    });
+}
+
+/// A colour argument: `none` (or undefined) is no colour; a string is a name or
+/// `#rrggbb`; an integer 0-255 is a palette index.
+fn colour_arg(name: &str, value: &MjValue) -> Result<Option<Colour>, Error> {
+    if is_absent(value) {
+        return Ok(None);
     }
-    let name = if sgr_code == 38 { "fg" } else { "bg" };
-    let (r, g, b) = parse_hex_color(name, color)?;
-    if !colour {
-        return Ok(value);
+    let parsed = match value.kind() {
+        ValueKind::String => Colour::parse(value.as_str().unwrap_or_default()).ok(),
+        ValueKind::Number => value.as_i64().and_then(|n| Colour::index(n).ok()),
+        _ => None,
+    };
+    let shown = match value.as_str() {
+        Some(s) => format!("{s:?}"),
+        None => value.to_string(),
+    };
+    parsed.map(Some).ok_or_else(|| {
+        op_error(format!(
+            "{name}(): unknown colour {shown}: use a name (red, bright_red), 0-255 or #rrggbb"
+        ))
+    })
+}
+
+/// `text` in `colour` on `ground`, closed with a reset; the text itself with
+/// no colour, empty text or colour off.
+fn paint(text: &str, colour: Option<Colour>, ground: Ground, depth: Depth, on: bool) -> String {
+    match colour {
+        Some(c) if on && !text.is_empty() => sgr(&c.params(ground, depth), text),
+        _ => text.to_string(),
     }
-    Ok(format!("\x1b[{sgr_code};2;{r};{g};{b}m{value}\x1b[0m"))
 }
 
-// ── bold/dim: SGR attributes ───────────────────────────────────────────────
-
-/// `{{ text | bold }}` — wrap `text` in the bold SGR pair
-/// (`\x1b[1m` ... `\x1b[0m`).
-///
-/// The attribute counterpart of [`fg_filter`]/[`bg_filter`]: a terminal
-/// consumer needs bold and dim as often as it needs colour, and neither is
-/// expressible as a colour argument. Kept as its own filter rather than a
-/// keyword on `fg` so bold text with no colour of its own — a session name,
-/// a heading — needs no placeholder colour, and so the four compose in any
-/// order: `{{ x | fg(c) | bg(d) | bold }}` nests to one cell style.
-///
-/// Empty input returns empty with no escapes at all, same as `fg`/`bg`, so
-/// a conditional segment contributes nothing rather than leaving a stray
-/// attribute escape that would bleed into whatever follows it.
-fn bold_filter(value: String, colour: bool) -> String {
-    sgr_attr(value, 1, colour)
-}
-
-/// `{{ text | dim }}` — [`bold_filter`]'s sibling for the dim/faint SGR
-/// attribute (`2` instead of `1`). Same empty-input behaviour.
-fn dim_filter(value: String, colour: bool) -> String {
-    sgr_attr(value, 2, colour)
-}
-
-/// Shared body of `bold`/`dim`: wrap non-empty `value` in the SGR pair for
-/// `code`. The closer is a full reset (`0`) rather than the attribute's own
-/// off-code (`22`), matching `fg`/`bg` — every one of these filters ends its
-/// segment by returning the terminal to a known default state, which is what
-/// makes them safe to concatenate in any order.
-fn sgr_attr(value: String, code: u8, colour: bool) -> String {
-    if value.is_empty() || !colour {
-        return value;
+/// `text` in SGR attribute `code`, closed with a full reset (`0`) rather than
+/// the attribute's own off-code, like the colours: every styling filter ends
+/// its segment at a known default state, which is what makes them safe to
+/// concatenate in any order.
+fn attribute(text: String, code: u8, on: bool) -> String {
+    if text.is_empty() || !on {
+        return text;
     }
-    format!("\x1b[{code}m{value}\x1b[0m")
+    sgr(&code.to_string(), &text)
 }
 
-/// Parse a `#rrggbb` or bare `rrggbb` colour (case-insensitive — a stored
-/// value may arrive already stripped of its `#`) into its RGB bytes.
-///
-/// Anything else — wrong length, non-hex digits, `rgb()`/named colours —
-/// is an `InvalidOperation` error naming the value that failed to parse,
-/// so a typo surfaces at render time instead of silently passing the text
-/// through uncoloured.
-fn parse_hex_color(name: &str, color: &str) -> Result<(u8, u8, u8), Error> {
-    let hex = color.strip_prefix('#').unwrap_or(color);
-    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(Error::new(
-            ErrorKind::InvalidOperation,
-            format!("{name}(): invalid colour {color:?}: expected #rrggbb hex"),
-        ));
+/// `hyperlink(url, text)`: `text` as an OSC 8 link to `url`. Absent text is
+/// undefined, an absent or empty `url` leaves the text unlinked, and a `url`
+/// that is not a string, or holds a control character, is an error.
+fn hyperlink(url: &MjValue, label: &MjValue, on: bool) -> Result<MjValue, Error> {
+    let url = if is_absent(url) {
+        None
+    } else {
+        let u = url
+            .as_str()
+            .ok_or_else(|| op_error("hyperlink(): the url must be a string"))?;
+        if u.chars().any(char::is_control) {
+            return Err(op_error("hyperlink(): the url holds a control character"));
+        }
+        Some(u)
+    };
+    if is_absent(label) {
+        return Ok(UNDEFINED);
     }
-    let r = u8::from_str_radix(&hex[0..2], 16).expect("validated hex digits");
-    let g = u8::from_str_radix(&hex[2..4], 16).expect("validated hex digits");
-    let b = u8::from_str_radix(&hex[4..6], 16).expect("validated hex digits");
-    Ok((r, g, b))
+    let label = text("hyperlink", label)?;
+    Ok(MjValue::from(match url {
+        Some(u) if on && !u.is_empty() && !label.is_empty() => {
+            format!("\x1b]8;;{u}\x1b\\{label}\x1b]8;;\x1b\\")
+        }
+        _ => label,
+    }))
 }
 
 #[cfg(test)]
@@ -178,136 +175,219 @@ mod tests {
     use super::*;
     use crate::engine::build_pure_engine_env;
 
-    #[test]
-    fn fg_wraps_with_correct_sgr() {
-        assert_eq!(
-            fg_filter("x".to_string(), "#ff0080".to_string(), true).unwrap(),
-            "\x1b[38;2;255;0;128mx\x1b[0m"
-        );
+    /// `expr` rendered with `vars` as the render's environment.
+    fn eval(vars: &[(&str, &str)], expr: &str) -> Result<String, String> {
+        let ctx = EngineCtx {
+            env: vars
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        let jinja = build_pure_engine_env(Arc::new(ctx));
+        jinja
+            .compile_expression(expr)
+            .and_then(|e| e.eval(MjValue::UNDEFINED))
+            .map(|v| v.to_string())
+            .map_err(|e| e.to_string())
     }
 
+    const TRUE: &[(&str, &str)] = &[("COLORTERM", "truecolor")];
+
     #[test]
-    fn bg_wraps_with_correct_sgr() {
+    fn fg_and_bg_wrap_with_correct_sgr() {
         assert_eq!(
-            bg_filter("x".to_string(), "#ff0080".to_string(), true).unwrap(),
+            eval(TRUE, "'x' | fg('#ff0080')").unwrap(),
+            "\x1b[38;2;255;0;128mx\x1b[0m"
+        );
+        assert_eq!(
+            eval(TRUE, "'x' | bg('#ff0080')").unwrap(),
             "\x1b[48;2;255;0;128mx\x1b[0m"
         );
-    }
-
-    #[test]
-    fn hex_parsing_is_case_insensitive() {
         assert_eq!(
-            fg_filter("x".to_string(), "#FF0080".to_string(), true).unwrap(),
+            eval(TRUE, "'x' | fg('#FF0080')").unwrap(),
             "\x1b[38;2;255;0;128mx\x1b[0m"
         );
     }
 
     #[test]
-    fn hash_prefix_is_optional() {
+    fn rrggbb_renders_the_same_bytes_as_before() {
         assert_eq!(
-            fg_filter("x".to_string(), "ff0080".to_string(), true).unwrap(),
-            "\x1b[38;2;255;0;128mx\x1b[0m"
+            eval(TRUE, r##""a" | fg("#a6e22e") | bg("#3e3d32") | bold"##).unwrap(),
+            "\x1b[1m\x1b[48;2;62;61;50m\x1b[38;2;166;226;46ma\x1b[0m\x1b[0m\x1b[0m"
         );
     }
 
     #[test]
-    fn invalid_colour_errors_naming_the_value() {
-        let err = fg_filter("x".to_string(), "not-a-colour".to_string(), true).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-        assert!(
-            err.to_string().contains("not-a-colour"),
-            "error should name the offending value, got: {err}"
+    fn colours_by_name_index_and_depth() {
+        assert_eq!(eval(&[], "'x' | fg('red')").unwrap(), "\x1b[31mx\x1b[0m");
+        assert_eq!(
+            eval(&[], "'x' | bg('bright_blue')").unwrap(),
+            "\x1b[104mx\x1b[0m"
+        );
+        assert_eq!(
+            eval(&[("TERM", "xterm-256color")], "'x' | bg(236)").unwrap(),
+            "\x1b[48;5;236mx\x1b[0m"
+        );
+        // Without COLORTERM or a 256 TERM the render is 16-colour.
+        assert_eq!(
+            eval(&[], "'x' | fg('#ff0000')").unwrap(),
+            "\x1b[91mx\x1b[0m"
+        );
+        assert_eq!(
+            eval(&[("TERM", "xterm-256color")], "'x' | fg('#ff0000')").unwrap(),
+            "\x1b[38;5;196mx\x1b[0m"
+        );
+        assert_eq!(eval(&[], "'x' | fg(236)").unwrap(), "\x1b[30mx\x1b[0m");
+    }
+
+    #[test]
+    fn bare_hex_is_an_unknown_colour() {
+        let err = eval(TRUE, "'x' | fg('ff0080')").unwrap_err();
+        assert!(err.contains("fg(): unknown colour \"ff0080\""), "{err}");
+        for bad in [
+            "'#fff'",
+            "'#ff00801'",
+            "'rgb(1,2,3)'",
+            "'Red'",
+            "256",
+            "-1",
+            "1.5",
+            "true",
+            "[1]",
+        ] {
+            assert!(eval(TRUE, &format!("'x' | bg({bad})")).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_bad_colour_errs_on_empty_and_absent_text() {
+        for subject in ["''", "none", "missing"] {
+            let err = eval(TRUE, &format!("{subject} | fg('nonsense')")).unwrap_err();
+            assert!(err.contains("fg(): unknown colour \"nonsense\""), "{err}");
+        }
+        // With colour off the colour is still checked.
+        assert!(eval(&[("NO_COLOR", "1")], "'x' | fg('nope')").is_err());
+    }
+
+    #[test]
+    fn empty_and_absent_text_emit_nothing() {
+        assert_eq!(eval(TRUE, "'' | fg('red')").unwrap(), "");
+        assert_eq!(eval(TRUE, "'' | bold").unwrap(), "");
+        assert_eq!(
+            eval(TRUE, "(none | fg('red')) is undefined").unwrap(),
+            "true"
+        );
+        assert_eq!(eval(TRUE, "(missing | bold) is undefined").unwrap(), "true");
+    }
+
+    #[test]
+    fn none_applies_no_colour() {
+        assert_eq!(eval(TRUE, "'x' | fg(none)").unwrap(), "x");
+        assert_eq!(eval(TRUE, "'x' | bg(missing)").unwrap(), "x");
+        assert_eq!(
+            eval(TRUE, "'x' | fg(none) | bold").unwrap(),
+            "\x1b[1mx\x1b[0m"
         );
     }
 
     #[test]
-    fn wrong_length_hex_errors() {
-        assert!(fg_filter("x".to_string(), "#fff".to_string(), true).is_err());
-        assert!(fg_filter("x".to_string(), "#ff00801".to_string(), true).is_err());
+    fn italic_underline_invert() {
+        for (filter, code) in [
+            ("italic", 3),
+            ("underline", 4),
+            ("invert", 7),
+            ("bold", 1),
+            ("dim", 2),
+        ] {
+            assert_eq!(
+                eval(&[], &format!("'x' | {filter}")).unwrap(),
+                format!("\x1b[{code}mx\x1b[0m")
+            );
+            assert_eq!(eval(&[], &format!("'' | {filter}")).unwrap(), "");
+            assert_eq!(
+                eval(&[("NO_COLOR", "1")], &format!("'x' | {filter}")).unwrap(),
+                "x"
+            );
+        }
     }
 
     #[test]
-    fn empty_text_emits_no_escapes() {
+    fn colour_off_hands_the_text_back() {
+        let off = &[("NO_COLOR", "1"), ("COLORTERM", "truecolor")];
+        assert_eq!(eval(off, "'x' | fg('#ff0080')").unwrap(), "x");
+        assert_eq!(eval(off, "'x' | bg(3) | bold").unwrap(), "x");
+        // An empty NO_COLOR is not set.
         assert_eq!(
-            fg_filter(String::new(), "#ff0080".to_string(), true).unwrap(),
-            ""
-        );
-        assert_eq!(
-            bg_filter(String::new(), "#ff0080".to_string(), true).unwrap(),
-            ""
-        );
-    }
-
-    #[test]
-    fn empty_text_with_invalid_colour_still_short_circuits() {
-        // Empty-input short-circuit happens before colour parsing, so a
-        // template that conditionally colours empty text never trips over
-        // an otherwise-invalid placeholder colour.
-        assert_eq!(
-            fg_filter(String::new(), "nonsense".to_string(), true).unwrap(),
-            ""
+            eval(&[("NO_COLOR", "")], "'x' | fg('red')").unwrap(),
+            "\x1b[31mx\x1b[0m"
         );
     }
 
     #[test]
-    fn filters_compose_via_concatenation() {
-        let env = build_pure_engine_env(Default::default());
-        let expr = env
-            .compile_expression(r##"("a" | fg("#ff0000")) ~ ("b" | fg("#00ff00"))"##)
-            .unwrap();
-        let out = expr.eval(minijinja::Value::UNDEFINED).unwrap();
+    fn filters_compose_and_nest() {
         assert_eq!(
-            out.as_str().unwrap(),
+            eval(TRUE, r##"("a" | fg("#ff0000")) ~ ("b" | fg("#00ff00"))"##).unwrap(),
             "\x1b[38;2;255;0;0ma\x1b[0m\x1b[38;2;0;255;0mb\x1b[0m"
         );
-    }
-
-    #[test]
-    fn bold_and_dim_wrap_with_their_sgr_attribute() {
-        assert_eq!(bold_filter("x".to_string(), true), "\x1b[1mx\x1b[0m");
-        assert_eq!(dim_filter("x".to_string(), true), "\x1b[2mx\x1b[0m");
-    }
-
-    #[test]
-    fn bold_and_dim_empty_text_emits_no_escapes() {
-        assert_eq!(bold_filter(String::new(), true), "");
-        assert_eq!(dim_filter(String::new(), true), "");
-    }
-
-    #[test]
-    fn colour_off_hands_the_text_back_and_still_checks_the_colour() {
         assert_eq!(
-            fg_filter("x".to_string(), "#ff0080".to_string(), false).unwrap(),
-            "x"
-        );
-        assert_eq!(bold_filter("x".to_string(), false), "x");
-        assert!(fg_filter("x".to_string(), "nope".to_string(), false).is_err());
-    }
-
-    #[test]
-    fn bold_composes_over_fg() {
-        let env = build_pure_engine_env(Default::default());
-        let expr = env
-            .compile_expression(r##""x" | fg("#ff0000") | bold"##)
-            .unwrap();
-        let out = expr.eval(minijinja::Value::UNDEFINED).unwrap();
-        assert_eq!(
-            out.as_str().unwrap(),
+            eval(TRUE, r##""x" | fg("#ff0000") | bold"##).unwrap(),
             "\x1b[1m\x1b[38;2;255;0;0mx\x1b[0m\x1b[0m"
         );
+        assert_eq!(
+            eval(TRUE, r##""x" | fg("#ff0000") | bg("#0000ff")"##).unwrap(),
+            "\x1b[48;2;0;0;255m\x1b[38;2;255;0;0mx\x1b[0m\x1b[0m"
+        );
     }
 
     #[test]
-    fn fg_nests_inside_bg() {
-        let env = build_pure_engine_env(Default::default());
-        let expr = env
-            .compile_expression(r##""x" | fg("#ff0000") | bg("#0000ff")"##)
-            .unwrap();
-        let out = expr.eval(minijinja::Value::UNDEFINED).unwrap();
-        // bg wraps the fg-wrapped string as its input text: escapes nest.
+    fn hyperlink_wraps_text_in_osc_8() {
         assert_eq!(
-            out.as_str().unwrap(),
-            "\x1b[48;2;0;0;255m\x1b[38;2;255;0;0mx\x1b[0m\x1b[0m"
+            eval(&[], "hyperlink('https://x.test/1', '#1')").unwrap(),
+            "\x1b]8;;https://x.test/1\x1b\\#1\x1b]8;;\x1b\\"
         );
+        assert_eq!(
+            eval(&[], "hyperlink('u', 7)").unwrap(),
+            "\x1b]8;;u\x1b\\7\x1b]8;;\x1b\\"
+        );
+    }
+
+    #[test]
+    fn hyperlink_absent_text_is_undefined_and_absent_url_is_the_text() {
+        for text in ["none", "missing"] {
+            assert_eq!(
+                eval(&[], &format!("hyperlink('u', {text}) is undefined")).unwrap(),
+                "true"
+            );
+        }
+        assert_eq!(eval(&[], "hyperlink(none, 'text')").unwrap(), "text");
+        assert_eq!(eval(&[], "hyperlink(missing, 'text')").unwrap(), "text");
+        assert_eq!(eval(&[], "hyperlink('u', '')").unwrap(), "");
+    }
+
+    #[test]
+    fn hyperlink_errors_and_colour_off() {
+        let err = eval(&[], "hyperlink(3, 'x')").unwrap_err();
+        assert!(
+            err.contains("hyperlink(): the url must be a string"),
+            "{err}"
+        );
+        let err = eval(&[], "hyperlink('a\\u001b[0m', 'x')").unwrap_err();
+        assert!(
+            err.contains("hyperlink(): the url holds a control character"),
+            "{err}"
+        );
+        // A bad url is an error even with no text.
+        assert!(eval(&[], "hyperlink(3, none)").is_err());
+        assert_eq!(
+            eval(&[("NO_COLOR", "1")], "hyperlink('u', 'text')").unwrap(),
+            "text"
+        );
+    }
+
+    #[test]
+    fn truncate_cuts_characters_for_now() {
+        assert_eq!(eval(&[], "'abcdef' | truncate(3)").unwrap(), "abc...");
+        assert_eq!(eval(&[], "'abc' | truncate(3)").unwrap(), "abc");
     }
 }

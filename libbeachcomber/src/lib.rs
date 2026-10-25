@@ -34,6 +34,7 @@ pub mod render;
 pub mod resolve;
 pub mod socket;
 pub mod spawn;
+pub mod term;
 pub mod virtual_fields;
 pub mod watch;
 

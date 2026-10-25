@@ -243,6 +243,7 @@ fn eval_fg_filter_escapes_pass_through_unstripped() {
 
     d.comb(Path::new("/"))
         .env("FOO", "hi")
+        .env("COLORTERM", "truecolor")
         .args(["eval", "{{ env.FOO | fg('#00ff00') }}"])
         .assert()
         .success()

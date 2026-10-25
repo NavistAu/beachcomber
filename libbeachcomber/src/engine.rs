@@ -34,7 +34,12 @@ impl EngineCtx {
     /// Whether the colour filters draw escapes: unless the render's `env`
     /// sets `NO_COLOR` to something.
     pub fn colour(&self) -> bool {
-        self.env.get("NO_COLOR").is_none_or(|v| v.is_empty())
+        crate::term::colour_on(&self.env)
+    }
+
+    /// How many colours the render's terminal shows, from its `env`.
+    pub fn depth(&self) -> crate::term::Depth {
+        crate::term::Depth::of(&self.env)
     }
 }
 

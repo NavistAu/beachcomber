@@ -81,6 +81,12 @@ fn the_template_filters_follow_the_color_setting() {
     let d = TestDaemon::spawn();
     let tpl = r##"{{ "x" | fg("#ff0000") }}{{ "y" | bold }}"##;
     let coloured = "\x1b[38;2;255;0;0mx\x1b[0m\x1b[1my\x1b[0m";
+    // The colour depth is the caller's terminal: 24-bit says so.
+    let run = |d: &TestDaemon, args: &[&str], envs: &[(&str, &str)]| {
+        let mut all = vec![("COLORTERM", "truecolor")];
+        all.extend_from_slice(envs);
+        run(d, args, &all)
+    };
 
     let (_, out) = run(&d, &["eval", "--global", tpl], &[]);
     assert_eq!(
@@ -141,4 +147,29 @@ fn the_daemon_log_has_no_ansi_without_a_terminal() {
     let _ = child.wait();
     assert!(!line.is_empty(), "the daemon logged nothing");
     assert!(!line.contains(ESC), "{line:?}");
+}
+
+/// A colour is drawn at the depth the caller's terminal has: `COLORTERM`, else
+/// `TERM`, else 16 colours.
+#[test]
+fn colours_follow_the_terminal_depth() {
+    let d = TestDaemon::spawn();
+    let tpl = r##"{{ "x" | fg("#ff0000") }}{{ "y" | bg(236) }}{{ "z" | fg("green") }}"##;
+    let eval = |envs: &[(&str, &str)]| {
+        let mut all = vec![("COLORTERM", ""), ("TERM", "dumb")];
+        all.extend_from_slice(envs);
+        run(&d, &["eval", "--global", tpl], &all).1
+    };
+    assert_eq!(
+        eval(&[("COLORTERM", "truecolor")]),
+        "\x1b[38;2;255;0;0mx\x1b[0m\x1b[48;5;236my\x1b[0m\x1b[32mz\x1b[0m"
+    );
+    assert_eq!(
+        eval(&[("TERM", "xterm-256color")]),
+        "\x1b[38;5;196mx\x1b[0m\x1b[48;5;236my\x1b[0m\x1b[32mz\x1b[0m"
+    );
+    assert_eq!(
+        eval(&[]),
+        "\x1b[91mx\x1b[0m\x1b[40my\x1b[0m\x1b[32mz\x1b[0m"
+    );
 }

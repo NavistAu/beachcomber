@@ -67,7 +67,27 @@ error that names it.
 | item | meaning |
 |---|---|
 | `s \| truncate(n)` | the first `n` characters, then `...` |
-| `s \| fg(colour)`, `s \| bg(colour)` | a `#rrggbb` colour as a terminal escape; empty text gives empty text |
-| `s \| bold`, `s \| dim` | the SGR attribute |
+| `s \| fg(colour)`, `s \| bg(colour)` | the text in a foreground or background colour (below) |
+| `s \| bold`, `dim`, `italic`, `underline`, `invert` | SGR attributes 1, 2, 3, 4 and 7 |
+| `hyperlink(url, text)` | `text` as an OSC 8 terminal link to `url`; absent `text` is undefined, an absent `url` leaves the text unlinked, and a `url` that is not a string or holds a control character is an error |
 
-With `NO_COLOR` set to something in the render's `env`, the colour filters emit no escapes.
+Every styling filter closes with a full reset (`\e[0m`), emits nothing for empty text, and nests as it is written:
+`x | fg(c) | bg(d) | bold`.
+
+**Colours.** A colour is one of:
+
+- a name: `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, and each with a `bright_` prefix
+  (`bright_red`);
+- an integer 0-255, an index in the 256-colour palette;
+- a string `#rrggbb`, 24-bit.
+
+Nothing else parses: not a bare `rrggbb`, not `#rgb`, not `rgb()`. An unknown colour is an error
+(`fg(): unknown colour "nope": ...`), checked before the text, so an empty or absent subject does not hide a typo. A
+colour of `none` applies no colour.
+
+**Depth.** The colour is drawn at the depth the render's terminal variables say: a `COLORTERM` of `truecolor` or
+`24bit` is 24-bit, else a `TERM` containing `256color` is 256 colours, else 16. A colour deeper than the terminal is
+mapped to the nearest one it has. A caller that wants 24-bit colour passes `COLORTERM` (and `TERM`) in the render's
+environment; `comb eval` and `comb get` pass the process environment. Without them the render is 16-colour.
+
+With `NO_COLOR` set to something in the render's environment, no item emits an escape sequence, `hyperlink` included.

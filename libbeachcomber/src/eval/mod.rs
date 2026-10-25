@@ -544,7 +544,20 @@ mod tests {
     #[test]
     fn render_template_fg_filter_wraps_in_truecolor_sgr() {
         let ctx = serde_json::json!({"git": {"branch": "main"}});
-        let out = render_template("{{ git.branch | fg('#00ff00') }}", &ctx).unwrap();
+        let tpl = "{{ git.branch | fg('#00ff00') }}";
+        // With no terminal in the render's environment the colour is 16-colour.
+        let out = render_template(tpl, &ctx).unwrap();
+        assert_eq!(out, "\x1b[92mmain\x1b[0m");
+        let truecolor = crate::engine::EngineCtx {
+            env: [("COLORTERM".to_string(), "truecolor".to_string())].into(),
+            ..Default::default()
+        };
+        let out = super::render_template_with(
+            tpl,
+            minijinja::Value::from_serialize(&ctx),
+            std::sync::Arc::new(truecolor),
+        )
+        .unwrap();
         assert_eq!(out, "\x1b[38;2;0;255;0mmain\x1b[0m");
     }
 }
