@@ -41,7 +41,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240, "stale": false}
 {"ok": true, "data": "main", "age_ms": 1240, "stale": false}
 {"ok": true, "data": null, "stale": false}
-{"ok": false, "error": "invalid facet key: a:b:c"}
+{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, put, source or cache)"}
 ```
 
 **Fields:**

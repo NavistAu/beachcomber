@@ -497,11 +497,9 @@ async fn watch_setup(
     scheduler: Option<&SchedulerHandle>,
     watchers: &Arc<WatcherRegistry>,
 ) -> Result<WatchSetup, String> {
+    // The plan refuses a facet outside the closed set, as for every op.
     let plan = QueryPlan::build(key, requested, &registry)?;
     let provider_name = plan.provider.clone();
-
-    // Facet syntax is checked on the provider segment (mirrors the Get path).
-    crate::query::parse_facet(&provider_name)?;
 
     // Both halves resolve up the chain from the directory the caller named; the
     // provider's own records sit at the instances the read reaches — see
@@ -1664,11 +1662,9 @@ async fn handle_request(
             };
             let provider_name = plan.provider.as_str();
 
-            // Facet syntax is checked on the provider segment produced by the plan.
-            let facet = match crate::query::parse_facet(provider_name) {
-                Ok(facet) => facet,
-                Err(msg) => return Response::error(msg),
-            };
+            // The plan has refused a facet outside the closed set; what is
+            // left on the provider segment is the template facet or none.
+            let facet = crate::query::parse_facet(provider_name).ok().flatten();
 
             // `p:cache` reports on what is cached: nothing is warmed, no demand
             // is signalled, and no template is attached. It reports the records
@@ -1852,9 +1848,6 @@ async fn handle_request(
                 Err(msg) => return Response::error(msg),
             };
             let provider_name = plan.provider.as_str();
-            if let Err(msg) = crate::query::parse_facet(provider_name) {
-                return Response::error(msg);
-            }
             if plan.layers != crate::cache::Layers::All {
                 return Response::error(format!(
                     "cannot refresh {key}: a layer facet is read-only"
@@ -1952,24 +1945,22 @@ async fn handle_request(
             }
             let node = node.as_str();
 
-            if let Some(base) = namespace
-                .strip_suffix(":put")
-                .or_else(|| namespace.strip_suffix(":source"))
-            {
-                return Response::error(format!(
-                    "{base}:put and {base}:source are read-only; write {base}.<node>"
-                ));
-            }
-
-            // Facet syntax is checked on the namespace segment.
-            if let Err(msg) = crate::query::parse_facet(namespace) {
-                return Response::error(msg);
-            }
+            // The facet a put names is one of the four, and only two of them
+            // are written to.
+            use libbeachcomber::key::Facet;
+            let facet = match libbeachcomber::key::split_facet(namespace) {
+                Ok((base, Some(Facet::Put | Facet::Source))) => {
+                    return Response::error(format!(
+                        "{base}:put and {base}:source are read-only; write {base}.<node>"
+                    ));
+                }
+                Ok((_, facet)) => facet,
+                Err(msg) => return Response::error(msg),
+            };
 
             // The one `:cache` key a put may write is a decay prototype. The
             // rest is derived at a read or stored by the daemon.
-            let is_cache_facet = namespace.ends_with(":cache");
-            if is_cache_facet {
+            if facet == Some(Facet::Cache) {
                 let derived = ["age_ms", "stale", "source"]
                     .iter()
                     .any(|k| libbeachcomber::key::last(node).as_deref() == Some(k));
@@ -1994,7 +1985,7 @@ async fn handle_request(
             // A template is linted as a configured one is: one that does not
             // compile is refused. A name no provider has is not, since a later
             // put may make that provider.
-            if namespace.ends_with(":template") {
+            if facet == Some(Facet::Template) {
                 let engine = libbeachcomber::engine::build_engine_env(Default::default());
                 let at = libbeachcomber::key::join(namespace, node);
                 let refused = crate::daemon::seed::lint_template_tree(&engine, data, &at, &[])

@@ -166,7 +166,7 @@ Read a cached value.
 
 **Response (error):**
 ```json
-{"ok": false, "error": "invalid facet key: a:b:c"}
+{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, put, source or cache)"}
 ```
 
 #### Freshness
@@ -261,8 +261,10 @@ spellings, so a key reads the same here as in a template:
 
 Brackets are the one quoting form. Only a colon in the head names a facet; below
 it a colon is an ordinary character, so `git.branch:age` is an ordinary miss.
-There are no metadata suffixes. A facet name matches `[A-Za-z0-9_-]+`; a second
-colon in the head is `invalid facet key: <key>`. Anything else the grammar
+There are no metadata suffixes. The facets are a closed set — `template`, `put`,
+`source` and `cache` — and any other name after the colon, a second colon in the
+head or an empty provider before it is `invalid facet key: <head> (a facet is
+template, put, source or cache)`, on every op. Anything else the grammar
 cannot read is `invalid key: <key>`: an empty head or segment (`p..a`, a
 trailing `.`), a head starting with `/` or `~`, a stray `]`, an unterminated
 bracket or quote, an index that is not a canonical decimal (`[01]`).
@@ -341,9 +343,9 @@ The key selects which Sources run, exactly as it selects which a `get` warms:
 Source that owns `branch`. Each runs at the instance that answers for the
 requested directory — the root its `root` names for it, or the one instance at
 `~` for a Source with no root — so `path` is optional and is only consulted by
-Sources that have a root. Invalid facet syntax on the key is the same
+Sources that have a root. A facet outside the closed set is the same
 error `get`/`put`/`watch` give: `{"ok": false, "error": "invalid facet key:
-<key>"}`.
+<head> (a facet is template, put, source or cache)"}`.
 
 A key that names no Source has nothing to re-execute and is an **error**: a
 static namespace (one created by `put` or a config seed), an unknown name, or a
@@ -365,8 +367,9 @@ refresh — the config watcher does that.
 
 Store static data at any node of the tree. `key` is `namespace` or
 `namespace.node…` — the same address `get` takes, and `namespace` may
-itself be a facet address (`<provider>:<facet>`; invalid facet syntax is
-`invalid facet key: <key>`, the same check `get`/`refresh`/`watch` apply).
+itself be a facet address (`<provider>:<facet>`; a facet outside the closed
+set is `invalid facet key: <head> …`, the same check `get`/`refresh`/`watch`
+apply). Of the facets, `put` writes only `template` and a `cache` `_.decay`.
 `data` is required. A put **replaces** the node it addresses: nothing merges
 implicitly, so `put my '{"b":2}'` states all of `my` at that directory, and
 `put my.b 2` replaces only `my.b`. `null` means absent: `data: null` removes the
@@ -431,7 +434,7 @@ invalid, `invalid request: missing field `data``.)
 ```
 
 **Error cases:**
-- Invalid facet syntax on the namespace segment: `{"ok": false, "error": "invalid facet key: <key>"}`
+- A facet outside the closed set on the namespace segment: `{"ok": false, "error": "invalid facet key: <head> (a facet is template, put, source or cache)"}`
 - A key the grammar cannot read: `{"ok": false, "error": "invalid key: <key>"}`
 - A write to a layer facet: `<p>:put and <p>:source are read-only; write <p>.<node>`
 - A write to `<p>:cache` other than `_.decay`, or a `_.decay` that is not a positive integer: see "The `:cache` facet"
@@ -729,9 +732,10 @@ The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs
 - **Static namespace** — a namespace no provider or config registers; every
   record in it is static.
 - **Facet** — `provider:facet`, a namespace holding data about a provider
-  (e.g. `git:template`), addressed like any namespace. `template` is the facet a
-  `Get` resolves for its template half; `put` and `source` are the read-only
-  layer facets; `cache` is the daemon's metadata (see "The `:cache` facet").
+  (e.g. `git:template`), addressed like any namespace. There are four, and no
+  other: `template` is the facet a `Get` resolves for its template half; `put`
+  and `source` are the read-only layer facets; `cache` is the daemon's metadata
+  (see "The `:cache` facet").
 - **Cache row** — one line of `Status` output: `{provider, path, source,
   field, value, age_ms, stale, kind}`.
 - **Invalidation strategy** — how a Source decides when to re-execute

@@ -231,9 +231,26 @@ impl Object for FacetSink {
 /// The context name a render's [`FacetSink`] is bound to.
 pub const FACET_SINK: &str = "facets__";
 
+/// Why `name` cannot be the name `facet()` attaches, or `None` when it is one
+/// of the closed set. A literal name is checked at load too.
+pub fn facet_name_error(name: &str) -> Option<String> {
+    libbeachcomber::key::Facet::from_name(name)
+        .is_none()
+        .then(|| {
+            format!(
+                "facet(): '{name}' is not a facet ({})",
+                libbeachcomber::key::Facet::LIST
+            )
+        })
+}
+
 /// `result | facet(name, obj)`: hands `result` on and attaches `obj` as the
-/// facet `name` beside it. An `obj` that is none attaches nothing.
+/// facet `name` beside it. An `obj` that is none attaches nothing. `name` is
+/// one of the facets; only `template` is read off a `return`.
 fn facet(state: &State, input: MjValue, name: String, obj: MjValue) -> Result<MjValue, Error> {
+    if let Some(message) = facet_name_error(&name) {
+        return Err(op_error(message));
+    }
     let sink = state.lookup(FACET_SINK);
     let Some(sink) = sink
         .as_ref()

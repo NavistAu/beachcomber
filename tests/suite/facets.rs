@@ -1,7 +1,6 @@
-//! Facet key syntax (`provider:facet`), checked at the request boundary in
-//! `handle_request`/`handle_watch` via `query::parse_facet`. See
-//! `docs/canon/field_resolution.md` "Facet" and
-//! `docs/canon/provider_source.md` "Cache entry" for the canon this pins.
+//! Facet keys (`provider:facet`), checked at the request boundary by
+//! `libbeachcomber::key::split_facet`: the facets are `template`, `put`,
+//! `source` and `cache`, and no other.
 
 use crate::common::git::{GitRepoFixture, has_git};
 use beachcomber::cache::Cache;
@@ -28,6 +27,11 @@ fn setup() -> (
     (tmp, sock, cache, registry, watchers)
 }
 
+/// The daemon's words for a head whose facet is not one of the four.
+fn invalid_facet(head: &str) -> String {
+    format!("invalid facet key: {head} (a facet is template, put, source or cache)")
+}
+
 async fn send_recv(stream: &mut UnixStream, request: &str) -> Response {
     stream
         .write_all(format!("{request}\n").as_bytes())
@@ -39,9 +43,8 @@ async fn send_recv(stream: &mut UnixStream, request: &str) -> Response {
     serde_json::from_str(&line).unwrap()
 }
 
-// (a) + (b): a facet key (`provider:facet`) round-trips through `put`/`get`
-// exactly like any other static-namespace key — the colon is just part of the
-// provider name.
+// (a) + (b): the template facet round-trips through `put`/`get`, read back as
+// it was stored: a facet key has no template half of its own.
 
 #[tokio::test]
 async fn put_then_get_field_on_facet_key() {
@@ -53,18 +56,18 @@ async fn put_then_get_field_on_facet_key() {
 
     let put = send_recv(
         &mut stream,
-        r#"{"op":"put","key":"myapp:notes","data":{"x":1}}"#,
+        r#"{"op":"put","key":"myapp:template","data":{"x":"{{ 1 }}"}}"#,
     )
     .await;
     assert!(put.ok, "put to a facet key should succeed: {:?}", put.error);
 
-    let get = send_recv(&mut stream, r#"{"op":"get","key":"myapp:notes.x"}"#).await;
+    let get = send_recv(&mut stream, r#"{"op":"get","key":"myapp:template.x"}"#).await;
     assert!(
         get.ok,
         "get of a facet field should succeed: {:?}",
         get.error
     );
-    assert_eq!(get.data.unwrap(), 1);
+    assert_eq!(get.data.unwrap(), "{{ 1 }}");
 
     handle.abort();
 }
@@ -79,17 +82,65 @@ async fn get_whole_facet_key_returns_object() {
 
     send_recv(
         &mut stream,
-        r#"{"op":"put","key":"myapp:notes","data":{"x":1}}"#,
+        r#"{"op":"put","key":"myapp:template","data":{"x":"{{ 1 }}"}}"#,
     )
     .await;
 
-    let get = send_recv(&mut stream, r#"{"op":"get","key":"myapp:notes"}"#).await;
+    let get = send_recv(&mut stream, r#"{"op":"get","key":"myapp:template"}"#).await;
     assert!(
         get.ok,
         "get of the whole facet should succeed: {:?}",
         get.error
     );
-    assert_eq!(get.data.unwrap(), serde_json::json!({"x": 1}));
+    assert_eq!(get.data.unwrap(), serde_json::json!({"x": "{{ 1 }}"}));
+
+    handle.abort();
+}
+
+// The facets are a closed set: `template`, `put`, `source` and `cache`. Any
+// other name after the colon is refused by every op that takes a key, naming
+// the head as the caller wrote it, and nothing is stored or read.
+
+#[tokio::test]
+async fn an_unknown_facet_is_an_invalid_facet_key_on_every_op() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache.clone(), registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    for (key, head) in [
+        ("myapp:notes", "myapp:notes"),
+        ("myapp:notes.x", "myapp:notes"),
+        ("git:memo.branch", "git:memo"),
+        ("p:Template", "p:Template"),
+        ("p:bogus:put.x", "p:bogus:put"),
+        ("p:bogus:cache", "p:bogus:cache"),
+    ] {
+        let want = Some(invalid_facet(head));
+        for op in ["get", "refresh", "watch", "layers"] {
+            // A watch ends its connection, so each op gets its own.
+            let mut stream = UnixStream::connect(&sock).await.unwrap();
+            let r = send_recv(
+                &mut stream,
+                &serde_json::json!({"op": op, "key": key}).to_string(),
+            )
+            .await;
+            assert!(!r.ok, "{op} {key} must be refused: {r:?}");
+            assert_eq!(r.error, want, "{op} {key}");
+        }
+        let mut stream = UnixStream::connect(&sock).await.unwrap();
+        let r = send_recv(
+            &mut stream,
+            &serde_json::json!({"op": "put", "key": key, "data": {"x": 1}}).to_string(),
+        )
+        .await;
+        assert!(!r.ok, "put {key} must be refused: {r:?}");
+        assert_eq!(r.error, want, "put {key}");
+    }
+    assert!(
+        cache.list_rows().is_empty(),
+        "nothing was stored: {:?}",
+        cache.list_rows()
+    );
 
     handle.abort();
 }
@@ -108,7 +159,7 @@ async fn get_two_colons_is_invalid_facet() {
     assert!(!resp.ok, "two colons should be rejected as a facet key");
     assert_eq!(
         resp.error.as_deref(),
-        Some("invalid facet key: a:b:c"),
+        Some(invalid_facet("a:b:c").as_str()),
         "got: {:?}",
         resp.error
     );
@@ -127,7 +178,7 @@ async fn get_empty_facet_name_is_invalid() {
     assert!(!resp.ok, "an empty facet name should be rejected");
     assert_eq!(
         resp.error.as_deref(),
-        Some("invalid facet key: a:"),
+        Some(invalid_facet("a:").as_str()),
         "got: {:?}",
         resp.error
     );
@@ -149,7 +200,7 @@ async fn get_facet_name_with_bad_chars_is_invalid() {
     );
     assert_eq!(
         resp.error.as_deref(),
-        Some("invalid facet key: a:b!"),
+        Some(invalid_facet("a:b!").as_str()),
         "got: {:?}",
         resp.error
     );
@@ -180,7 +231,7 @@ async fn watch_two_colons_is_invalid_facet_before_subscribing() {
     assert!(!resp.ok, "watch on an invalid facet key should error");
     assert_eq!(
         resp.error.as_deref(),
-        Some("invalid facet key: a:b:c"),
+        Some(invalid_facet("a:b:c").as_str()),
         "got: {:?}",
         resp.error
     );
@@ -203,7 +254,7 @@ async fn refresh_two_colons_is_invalid_facet() {
     assert!(!resp.ok, "refresh on an invalid facet key should error");
     assert_eq!(
         resp.error.as_deref(),
-        Some("invalid facet key: a:b:c"),
+        Some(invalid_facet("a:b:c").as_str()),
         "got: {:?}",
         resp.error
     );
@@ -335,7 +386,7 @@ async fn status_row_for_facet_key_put_is_static() {
 
     let put = send_recv(
         &mut stream,
-        r#"{"op":"put","key":"myapp:notes","data":{"x":1}}"#,
+        r#"{"op":"put","key":"myapp:template","data":{"x":"{{ 1 }}"}}"#,
     )
     .await;
     assert!(put.ok, "put should succeed: {:?}", put.error);
@@ -347,7 +398,7 @@ async fn status_row_for_facet_key_put_is_static() {
 
     let row = rows
         .iter()
-        .find(|r| r["provider"] == "myapp:notes")
+        .find(|r| r["provider"] == "myapp:template")
         .expect("a status row for the facet key must be present");
     assert_eq!(row["source"], "put", "row source must be 'put', got {row}");
     assert_eq!(
@@ -549,7 +600,7 @@ async fn a_second_colon_after_a_layer_facet_is_an_invalid_facet_key() {
         )
         .await;
         assert!(!r.ok, "get {key} must be refused: {r:?}");
-        assert_eq!(r.error, Some(format!("invalid facet key: {key}")));
+        assert_eq!(r.error, Some(invalid_facet(key)));
     }
 
     handle.abort();

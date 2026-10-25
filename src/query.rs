@@ -493,24 +493,24 @@ pub struct QueryPlan {
 }
 
 /// Split a `:put`, `:source` or `:cache` layer facet off the head of a key:
-/// `git:source.branch` is `("git.branch", Source)`. Any other key is returned
-/// unchanged with every layer.
-pub fn split_layer_facet(key: &str) -> (std::borrow::Cow<'_, str>, crate::cache::Layers) {
+/// `git:source.branch` is `("git.branch", Source)`. A plain key, or one
+/// naming the template facet, is returned unchanged with every layer. A head
+/// whose facet is not one of the four is [`parse_facet`]'s error, naming the
+/// head as written.
+pub fn split_layer_facet(
+    key: &str,
+) -> Result<(std::borrow::Cow<'_, str>, crate::cache::Layers), String> {
     use crate::cache::Layers;
-    let segment = libbeachcomber::key::head_of(key);
-    let rest = &key[segment.len()..];
-    for (suffix, layers) in [
-        (":put", Layers::Put),
-        (":source", Layers::Source),
-        (":cache", Layers::Cache),
-    ] {
-        if let Some(base) = segment.strip_suffix(suffix)
-            && !base.is_empty()
-        {
-            return (format!("{base}{rest}").into(), layers);
-        }
-    }
-    (key.into(), Layers::All)
+    use libbeachcomber::key::Facet;
+    let head = libbeachcomber::key::head_of(key);
+    let (base, facet) = libbeachcomber::key::split_facet(head)?;
+    let layers = match facet {
+        Some(Facet::Put) => Layers::Put,
+        Some(Facet::Source) => Layers::Source,
+        Some(Facet::Cache) => Layers::Cache,
+        None | Some(Facet::Template) => return Ok((key.into(), Layers::All)),
+    };
+    Ok((format!("{base}{}", &key[head.len()..]).into(), layers))
 }
 
 impl QueryPlan {
@@ -522,7 +522,7 @@ impl QueryPlan {
         registry: &ProviderRegistry,
     ) -> Result<QueryPlan, String> {
         validate_key(raw_key)?;
-        let (key, layers) = split_layer_facet(raw_key);
+        let (key, layers) = split_layer_facet(raw_key)?;
         let requested_path = normalise_path(path_hint)?;
         let target = parse_key(&key)?;
 
@@ -719,9 +719,27 @@ mod tests {
 
     #[test]
     fn a_layer_facet_splits_off_a_bracketed_key() {
-        let (key, layers) = split_layer_facet("mise:cache['go:x.y']");
+        let (key, layers) = split_layer_facet("mise:cache['go:x.y']").unwrap();
         assert_eq!(key, "mise['go:x.y']");
         assert_eq!(layers, crate::cache::Layers::Cache);
+    }
+
+    #[test]
+    fn build_refuses_a_facet_outside_the_closed_set_naming_the_head_as_written() {
+        let reg = ProviderRegistry::with_defaults();
+        for (key, head) in [
+            ("p:notes.x", "p:notes"),
+            ("p:bogus:put.x", "p:bogus:put"),
+            ("p:bogus:source", "p:bogus:source"),
+            ("p:bogus:cache.x", "p:bogus:cache"),
+        ] {
+            let err = QueryPlan::build(key, None, &reg).unwrap_err();
+            assert_eq!(
+                err,
+                format!("invalid facet key: {head} (a facet is template, put, source or cache)"),
+                "{key}"
+            );
+        }
     }
 
     #[test]

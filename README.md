@@ -537,7 +537,7 @@ comb g.j git:source .         # the Source's whole answer, ignoring any put over
 
 `age_ms`, `stale` and `source` are derived at the read and cannot be written. The one `:cache` key you can put is a decay prototype: `comb put '*:cache._.decay' 3` sets the decay depth (default 4) for every provider, `comb put 'git:cache._.decay' 6` for one, and `--path` scopes either to a directory and below.
 
-Only a colon in the provider's own segment names a facet (`git:cache.branch`); below it a colon is an ordinary character (`mise.cargo:cargo-nextest`), so `git.branch:age` is a miss. Keys take jinja's subscripts too: `p.list[0]`, and `'mise["go:golang.org/x/tools/gopls"]'` for a name holding a `.`.
+Only a colon in the provider's own segment names a facet (`git:cache.branch`), and the four above are the only facets: `git:memo` or `git:notes` is `invalid facet key` on every command, `comb put` included. Below the provider's segment a colon is an ordinary character (`mise.cargo:cargo-nextest`), so `git.branch:age` is a miss. Keys take jinja's subscripts too: `p.list[0]`, and `'mise["go:golang.org/x/tools/gopls"]'` for a name holding a `.`.
 
 ---
 
@@ -1740,7 +1740,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240, "stale": false}
 {"ok": true, "data": "main", "age_ms": 1240, "stale": false}
 {"ok": true, "data": null, "age_ms": null, "stale": false}
-{"ok": false, "error": "invalid facet key: a:b:c"}
+{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, put, source or cache)"}
 ```
 
 **Fields:**

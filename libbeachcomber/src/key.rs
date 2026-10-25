@@ -2,7 +2,8 @@
 //! the templates share.
 //!
 //! A key is a **head** and an **address** below it. The head is a provider
-//! name, optionally `name:facet`; it runs to the first `.` or `[`. The address
+//! name, optionally `name:facet` with one of the four [`Facet`]s; it runs to
+//! the first `.` or `[`. The address
 //! is a run of segments, each written one of three ways:
 //!
 //! - `.seg` — any characters but `.`, `[` and `]`: `git.branch`,
@@ -315,27 +316,62 @@ pub fn check_head(head: &str) -> Result<(), String> {
     }
 }
 
-/// Parse the facet syntax of a head: `base:facet`. `Ok(None)` for a plain
-/// provider name, `Ok(Some(facet))` for a valid facet key, and an
-/// `invalid facet key` error for more than one colon, an empty base or facet,
-/// a facet holding anything but ASCII letters, digits, `_` and `-`, or a facet
-/// named `put` or `source` — the layer facets a request key splits off before
-/// this check and a config table cannot be.
-pub fn parse_facet(head: &str) -> Result<Option<&str>, String> {
-    let Some((base, facet)) = head.split_once(':') else {
-        return Ok(None);
-    };
-    let valid = !base.is_empty()
-        && !facet.is_empty()
-        && facet
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        && !matches!(facet, "put" | "source");
-    if valid {
-        Ok(Some(facet))
-    } else {
-        Err(format!("invalid facet key: {head}"))
+/// A facet: what a colon in a key's head names (`git:cache`), a part of the
+/// tree that is about the provider rather than its data. The set is closed.
+/// Every facet has the provider's shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Facet {
+    /// `<p>:template`: the templates the client renders.
+    Template,
+    /// `<p>:put`: what `put` and the `config:` seeds stored. Read-only.
+    Put,
+    /// `<p>:source`: what the provider's Sources produced. Read-only.
+    Source,
+    /// `<p>:cache`: the daemon's metadata. Only a `_.decay` is written.
+    Cache,
+}
+
+impl Facet {
+    /// Every facet, in the order the docs list them.
+    pub const ALL: [Facet; 4] = [Facet::Template, Facet::Put, Facet::Source, Facet::Cache];
+
+    /// What every refusal of a facet name says the facets are.
+    pub const LIST: &'static str = "a facet is template, put, source or cache";
+
+    /// The name a key writes after the colon.
+    pub fn name(self) -> &'static str {
+        match self {
+            Facet::Template => "template",
+            Facet::Put => "put",
+            Facet::Source => "source",
+            Facet::Cache => "cache",
+        }
     }
+
+    /// The facet `name` names, or `None` for a name outside the set.
+    pub fn from_name(name: &str) -> Option<Facet> {
+        Self::ALL.into_iter().find(|facet| facet.name() == name)
+    }
+}
+
+/// Split a head into its base and the [`Facet`] after its colon: `git` is
+/// `("git", None)`, `git:cache` is `("git", Some(Cache))`. Refused, as
+/// `invalid facet key: <head> (`[`Facet::LIST`]`)`: more than one colon, an
+/// empty base, and a facet name outside the closed set. The one rule for a
+/// facet, on every op and in config.
+pub fn split_facet(head: &str) -> Result<(&str, Option<Facet>), String> {
+    let Some((base, name)) = head.split_once(':') else {
+        return Ok((head, None));
+    };
+    match Facet::from_name(name) {
+        Some(facet) if !base.is_empty() => Ok((base, Some(facet))),
+        _ => Err(format!("invalid facet key: {head} ({})", Facet::LIST)),
+    }
+}
+
+/// The facet a head names, if any, by [`split_facet`]'s rule.
+pub fn parse_facet(head: &str) -> Result<Option<Facet>, String> {
+    split_facet(head).map(|(_, facet)| facet)
 }
 
 #[cfg(test)]
@@ -541,10 +577,40 @@ mod tests {
     #[test]
     fn parse_facet_keeps_its_rules() {
         assert_eq!(parse_facet("myapp"), Ok(None));
-        assert_eq!(parse_facet("scanline:template"), Ok(Some("template")));
-        assert_eq!(parse_facet("a:my_facet-2"), Ok(Some("my_facet-2")));
-        for bad in ["a:b:c", ":facet", "base:", "a:b!", "a:put", "a:source"] {
-            assert!(parse_facet(bad).is_err(), "{bad}");
+        assert_eq!(split_facet("myapp"), Ok(("myapp", None)));
+        for (head, facet) in [
+            ("scanline:template", Facet::Template),
+            ("a:put", Facet::Put),
+            ("a:source", Facet::Source),
+            ("a:cache", Facet::Cache),
+        ] {
+            assert_eq!(parse_facet(head), Ok(Some(facet)), "{head}");
+            assert_eq!(Facet::from_name(facet.name()), Some(facet));
+        }
+        assert_eq!(split_facet("*:cache"), Ok(("*", Some(Facet::Cache))));
+    }
+
+    #[test]
+    fn the_facets_are_a_closed_set() {
+        for bad in [
+            "a:my_facet-2",
+            "a:memo",
+            "a:notes",
+            "a:Template",
+            "a:templates",
+            "a:b:c",
+            "a:put:x",
+            ":template",
+            "base:",
+            "a:b!",
+        ] {
+            assert_eq!(
+                parse_facet(bad),
+                Err(format!(
+                    "invalid facet key: {bad} (a facet is template, put, source or cache)"
+                )),
+                "{bad}"
+            );
         }
     }
 }

@@ -174,7 +174,7 @@ fn client_get_formatted_reports_daemon_rejection() {
     match result {
         Err(CombError::ServerError(msg)) => {
             assert_eq!(
-                msg, "invalid facet key: a:b:c",
+                msg, "invalid facet key: a:b:c (a facet is template, put, source or cache)",
                 "the wire's `error: ` line prefix must be stripped, matching the bare \
                  message ServerError carries for the JSON-per-line ops"
             );

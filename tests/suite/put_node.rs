@@ -851,8 +851,8 @@ async fn a_put_object_at_the_provider_node_hides_unlisted_source_fields() {
     handle.abort();
 }
 
-/// A facet namespace is an ordinary namespace with a colon in it, so it takes
-/// a node the same way. The key splits on its first dot, never on the colon.
+/// A facet namespace takes a node the same way a namespace does. The key
+/// splits on its first dot, never on the colon.
 #[tokio::test]
 async fn put_at_a_node_under_a_facet_namespace() {
     let (_tmp, sock, cache, registry, watchers) = setup();

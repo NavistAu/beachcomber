@@ -44,7 +44,7 @@ use crate::cache::{
     COMPUTED_PREFIX, Cache, Layers, MergedRead, RecordFreshness, merge_layer, merge_read,
     note_records, walk_leaves,
 };
-use crate::engine::{CallFn, Calls, FACET_SINK, FacetSink, provider_engine_env};
+use crate::engine::{CallFn, Calls, FACET_SINK, FacetSink, facet_name_error, provider_engine_env};
 use crate::provider::Value;
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::source_call::{CallOutcome, Called, CalledRecord, called_in};
@@ -476,6 +476,13 @@ impl ProviderLines {
                         ));
                         continue;
                     }
+                    if let Some(message) = literal_facet_names(line)
+                        .into_iter()
+                        .find_map(facet_name_error)
+                    {
+                        errors.insert(format!("{at}: {message}"));
+                        continue;
+                    }
                     match called_in(&self.env, line) {
                         Err(e) => {
                             errors.insert(format!("{at}: {e}"));
@@ -877,6 +884,30 @@ enum Use {
     /// Followed by `(`.
     Call,
     Both,
+}
+
+/// The facet names `line` writes as a literal first argument of `facet(...)`,
+/// so a name outside the set is a load error where it is written. A text
+/// scan, like [`named_decorators`]; a name computed in the line is checked
+/// when it renders.
+fn literal_facet_names(line: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    for (at, _) in line.match_indices("facet") {
+        if line[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.') {
+            continue;
+        }
+        let Some(args) = line[at + "facet".len()..].trim_start().strip_prefix('(') else {
+            continue;
+        };
+        let args = args.trim_start();
+        let Some(quote) = args.chars().next().filter(|c| matches!(c, '\'' | '"')) else {
+            continue;
+        };
+        if let Some(end) = args[1..].find(quote) {
+            found.push(&args[1..1 + end]);
+        }
+    }
+    found
 }
 
 /// The names `line` calls or pipes into, inside its tags and outside its
@@ -1350,13 +1381,55 @@ mod tests {
 
     #[test]
     fn super_pipes_the_value_into_the_line_above() {
-        let lines = lines("[demo]\nreturn = \"{{ result | facet('mine', 1) | super }}\"");
+        let lines =
+            lines("[demo]\nreturn = \"{{ result | facet('template', {'own': 'x'}) | super }}\"");
         let got = returned(&lines, "demo");
-        let names: Vec<_> = got.facets.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, vec!["mine", "template"], "the abstract's runs after");
+        assert_eq!(
+            got.facets,
+            vec![
+                ("template".to_string(), json!({"own": "x"})),
+                ("template".to_string(), json!({"t": "x"})),
+            ],
+            "the abstract's runs after"
+        );
         assert_eq!(
             serde_json::to_value(got.value.unwrap()).unwrap(),
             json!({"a": 1})
+        );
+    }
+
+    /// The facets are a closed set: a name outside it is a load error where
+    /// the line writes it, and a render error where it is computed.
+    #[test]
+    fn facet_takes_only_a_facet_name() {
+        for line in [
+            "{{ result | facet('mine', 1) }}",
+            "{{ result | facet( \\\"mine\\\", 1) | facet('template', template) }}",
+        ] {
+            let errs = errors(&format!("[demo]\nreturn = \"{line}\""));
+            assert_eq!(
+                errs,
+                vec![
+                    "[daemon.providers.demo] return: facet(): 'mine' is not a facet (a facet is \
+                     template, put, source or cache)"
+                        .to_string()
+                ],
+                "{line}"
+            );
+        }
+        let lines = lines("[demo]\nreturn = \"{{ result | facet(_.name, 1) }}\"");
+        let err = lines
+            .eval(
+                "demo",
+                Key::Return,
+                vec![("result", MjValue::from_serialize(json!({"a": 1})))],
+            )
+            .unwrap_err();
+        assert!(
+            err.contains(
+                "facet(): 'demo' is not a facet (a facet is template, put, source or cache)"
+            ),
+            "{err}"
         );
     }
 
