@@ -45,6 +45,9 @@ error that names it.
 | `a \| merge(b, ...)`, `merge(a, ...)`, `merge(list)` | deep merge, later wins; a `none` leaf removes; an absent operand adds nothing, and with nothing left the result is undefined |
 | `v \| pluck(path)` | deep get by path in the key grammar (`a.b[0]`, `[-1]`, `['k.y']`); any miss is undefined |
 | `obj \| map('filter', arg...)` | applies a filter to each value of an object and keeps the keys; on a list it is jinja's `map` |
+| `obj \| pick(key, ...)` | the object with only the named keys; a key it lacks is skipped; not an object, or a key that is not text, is an error |
+| `obj \| omit(key, ...)` | the object without the named keys; errors as `pick` |
+| `n \| clamp(lo, hi)` | `n` held to `lo..=hi`; a `none` bound is open (`(w - 6) \| clamp(0, none)`); a bound or subject that is not a number, or `lo` above `hi`, is an error |
 
 ### Paths
 
