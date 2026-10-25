@@ -1,4 +1,4 @@
-//! `comb get -f json` and `bc_resolve` answer identically (design
+//! `comb get -f json` and `bc_get` answer identically (design
 //! `2026-09-05-one-tree-resolution-design.md` §10 "FFI and SDKs", outcome 24).
 //!
 //! Both surfaces are clients of `libbeachcomber::resolve`; this is the test
@@ -19,7 +19,7 @@
 use crate::common::daemon::{TestDaemon, isolate};
 use crate::common::git::has_git;
 use libbeachcomber_ffi::envelope::bc_string_free;
-use libbeachcomber_ffi::{BcClient, bc_client_free, bc_client_new, bc_eval, bc_hello, bc_resolve};
+use libbeachcomber_ffi::{BcClient, bc_client_free, bc_client_new, bc_eval, bc_get, bc_hello};
 use serde_json::{Value, json};
 use std::ffi::{CStr, CString, c_char};
 use std::path::Path;
@@ -210,12 +210,12 @@ fn classify_envelope(v: Value) -> Class {
     }
 }
 
-fn ffi_resolve(client: *mut BcClient, key: &str, cwd: &str, env: &str) -> Class {
+fn ffi_get(client: *mut BcClient, key: &str, cwd: &str, env: &str) -> Class {
     let key = cs(key);
     let cwd = cs(cwd);
     let env = cs(env);
     classify_envelope(envelope(unsafe {
-        bc_resolve(client, key.as_ptr(), cwd.as_ptr(), env.as_ptr())
+        bc_get(client, key.as_ptr(), cwd.as_ptr(), env.as_ptr(), 0)
     }))
 }
 
@@ -244,7 +244,7 @@ fn text_of(v: &Value) -> String {
 // ── the test ─────────────────────────────────────────────────────────────────
 
 #[test]
-fn comb_get_json_and_bc_resolve_answer_identically() {
+fn comb_get_json_and_bc_get_answer_identically() {
     let daemon = TestDaemon::spawn();
     let git = has_git();
     if !git {
@@ -312,7 +312,7 @@ fn comb_get_json_and_bc_resolve_answer_identically() {
             continue;
         }
         let cli = cli_get(&daemon, &cwd, key);
-        let ffi = ffi_resolve(client, key, cwd_str, &env);
+        let ffi = ffi_get(client, key, cwd_str, &env);
         table.push(format!(
             "{key:24} cli={:5} ffi={:5}",
             cli.name(),
@@ -416,7 +416,7 @@ fn comb_get_json_and_bc_resolve_answer_identically() {
     eprintln!("observed classes:\n  {}", table.join("\n  "));
     assert!(
         report.is_empty(),
-        "{} disagreement(s) between comb get -f json and bc_resolve:\n  {}",
+        "{} disagreement(s) between comb get -f json and bc_get:\n  {}",
         report.len(),
         report.join("\n  ")
     );

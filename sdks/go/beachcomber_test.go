@@ -14,7 +14,7 @@ import (
 
 func TestClient_Get_Miss(t *testing.T) {
 	c := requireClient(t)
-	result, err := c.Get("nonexistent.provider", "")
+	result, err := c.Get("nonexistent.provider", "", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestClient_Get_Miss(t *testing.T) {
 
 func TestClient_Get_Hostname_Hit(t *testing.T) {
 	c := requireClient(t)
-	result, err := c.Get("hostname.short", "")
+	result, err := c.Get("hostname.short", "", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestClient_Get_ServerError_HasKindAndVersion(t *testing.T) {
 	c := requireClient(t)
 	// An invalid facet key (two colons) is refused by the daemon; an address
 	// nothing answers, however deep, is a miss, not an error.
-	_, err := c.Get("a:b:c.x", "")
+	_, err := c.Get("a:b:c.x", "", nil)
 	if err == nil {
 		t.Fatal("expected an error for an invalid facet key")
 	}
@@ -66,7 +66,7 @@ func TestClient_PutThenGet(t *testing.T) {
 	if err := c.Put("mykey", map[string]interface{}{"val": float64(42)}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Get("mykey", "")
+	result, err := c.Get("mykey", "", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestClient_PutNilRemovesTheNode(t *testing.T) {
 	if err := c.Put("gonilrm", nil, "", ""); err != nil {
 		t.Fatalf("Put nil: %v", err)
 	}
-	result, err := c.Get("gonilrm.val", "")
+	result, err := c.Get("gonilrm.val", "", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -95,25 +95,25 @@ func TestClient_PutNilRemovesTheNode(t *testing.T) {
 	}
 }
 
-// The template half (design §3.4): Get returns both halves, unrendered.
-func TestClient_Get_TemplateOnlyIsNeitherHitNorMiss(t *testing.T) {
+// Get is the value `comb get` prints: a template-only node renders, with the
+// caller's environment.
+func TestClient_Get_RendersAPutTemplateWithTheCallersEnv(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("tpl1:template", map[string]interface{}{"t": "{{ 1 }}"}, "", ""); err != nil {
+	if err := c.Put("filters:template", map[string]interface{}{"based": "{{ env.PYVAR | basename }}"}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Get("tpl1.t", "")
+	result, err := c.Get("filters.based", "", map[string]string{"PYVAR": "/foo/bar/baz"})
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if result.Template != "{{ 1 }}" {
-		t.Errorf("Template = %v, want \"{{ 1 }}\"", result.Template)
-	}
-	if result.Data != nil || result.IsHit() || result.IsMiss() {
-		t.Errorf("template-only node: Data=%v IsHit=%v IsMiss=%v, want nil/false/false", result.Data, result.IsHit(), result.IsMiss())
+	if s, ok := result.GetString(""); !ok || s != "baz" {
+		t.Errorf("Get() = (%q, %v), want (\"baz\", true)", s, ok)
 	}
 }
 
-func TestClient_Get_CarriesBothHalves(t *testing.T) {
+// A template wins over the cached value it shares an address with; the
+// unrendered halves are facets, read like any key.
+func TestClient_Get_FacetsReadTheUnrenderedHalves(t *testing.T) {
 	c := requireClient(t)
 	if err := c.Put("tpl2", map[string]interface{}{"v": float64(1)}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -121,35 +121,53 @@ func TestClient_Get_CarriesBothHalves(t *testing.T) {
 	if err := c.Put("tpl2:template", map[string]interface{}{"v": "{{ 2 }}"}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Get("tpl2.v", "")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if !result.IsHit() {
-		t.Fatal("expected IsHit() = true")
-	}
-	if v, ok := result.GetFloat(""); !ok || v != 1 {
-		t.Errorf("Data = %v, want 1", result.Data)
-	}
-	if result.Template != "{{ 2 }}" {
-		t.Errorf("Template = %v, want \"{{ 2 }}\"", result.Template)
-	}
-	if result.Rest != "" {
-		t.Errorf("Rest = %q, want \"\"", result.Rest)
+	for key, want := range map[string]interface{}{
+		"tpl2.v":          float64(2),
+		"tpl2:template.v": "{{ 2 }}",
+		"tpl2:put.v":      float64(1),
+	} {
+		result, err := c.Get(key, "", nil)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", key, err)
+		}
+		if result.Data != want {
+			t.Errorf("Get(%q) = %#v, want %#v", key, result.Data, want)
+		}
 	}
 }
 
-func TestClient_Get_PastATemplateStringSetsRest(t *testing.T) {
+// An address past a template string walks into what the string renders to.
+func TestClient_Get_PastATemplateStringWalksIntoItsValue(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("tpl3:template", map[string]interface{}{"t": "{{ 1 }}"}, "", ""); err != nil {
+	if err := c.Put("tpl3:template", map[string]interface{}{"t": "{{ {'x': 5} }}"}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Get("tpl3.t.x", "")
+	result, err := c.Get("tpl3.t.x", "", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if result.Template != "{{ 1 }}" || result.Rest != "x" {
-		t.Errorf("Template=%v Rest=%q, want \"{{ 1 }}\"/\"x\"", result.Template, result.Rest)
+	if v, ok := result.GetFloat(""); !ok || v != 5 {
+		t.Errorf("Get() = %#v, want 5", result.Data)
+	}
+}
+
+// cwd is the directory the read addresses; "" is the global entry.
+func TestClient_Get_ReadsAtCwd(t *testing.T) {
+	c := requireClient(t)
+	if err := c.Put("gocwd", map[string]interface{}{"v": "global"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := c.Put("gocwd", map[string]interface{}{"v": "tmp"}, "", "/tmp"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	for cwd, want := range map[string]string{"": "global", "/tmp": "tmp"} {
+		result, err := c.Get("gocwd.v", cwd, nil)
+		if err != nil {
+			t.Fatalf("Get at %q: %v", cwd, err)
+		}
+		if s, _ := result.GetString(""); s != want {
+			t.Errorf("Get at %q = %#v, want %q", cwd, result.Data, want)
+		}
 	}
 }
 
@@ -206,7 +224,7 @@ func TestClient_Status(t *testing.T) {
 	if err := c.Put("statusprobe", map[string]interface{}{"x": float64(1)}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if _, err := c.Get("statusprobe", ""); err != nil {
+	if _, err := c.Get("statusprobe", "", nil); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	rows, err := c.Status()
@@ -288,7 +306,7 @@ func TestClient_Watch_NextEvent(t *testing.T) {
 	}
 }
 
-// The first event is what Resolve answers for the same key, cwd and env —
+// The first event is what Get answers for the same key, cwd and env —
 // template rendered, environment applied — and a put to the template the
 // value is rendered from fires the watch again.
 func TestClient_Watch_ResolvedValueAndTemplateRefire(t *testing.T) {
@@ -298,9 +316,9 @@ func TestClient_Watch_ResolvedValueAndTemplateRefire(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 
-	resolved, err := c.Resolve("gowatchtpl.f", "/tmp", env)
+	got, err := c.Get("gowatchtpl.f", "/tmp", env)
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Get: %v", err)
 	}
 
 	ws, err := c.Watch("gowatchtpl.f", "/tmp", env)
@@ -313,8 +331,8 @@ func TestClient_Watch_ResolvedValueAndTemplateRefire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextEvent: %v", err)
 	}
-	if ev == nil || ev.Data != resolved.Data {
-		t.Fatalf("first event %v must equal Resolve's %v", ev, resolved.Data)
+	if ev == nil || ev.Data != got.Data {
+		t.Fatalf("first event %v must equal Get's %v", ev, got.Data)
 	}
 
 	if err := c.Put("gowatchtpl:template", map[string]interface{}{"f": "{{ env.GO_WATCH_TPL }}!"}, "", ""); err != nil {
@@ -344,7 +362,7 @@ func TestSession_GetAndSetContext(t *testing.T) {
 	if err := c.Put("sessionprobe", map[string]interface{}{"v": float64(7)}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := sess.Get("sessionprobe", "")
+	result, err := sess.Get("sessionprobe", "", nil)
 	if err != nil {
 		t.Fatalf("Session.Get: %v", err)
 	}
@@ -354,6 +372,48 @@ func TestSession_GetAndSetContext(t *testing.T) {
 
 	if err := sess.SetContext("/tmp"); err != nil {
 		t.Fatalf("SetContext: %v", err)
+	}
+}
+
+// Session.Get is Client.Get on the session's connection: a template renders
+// with the call's environment, at the session's directory once SetContext
+// has set one, and at the global entry before.
+func TestSession_Get_RendersAtTheSessionsDirectory(t *testing.T) {
+	c := requireClient(t)
+	sess, err := c.Session()
+	if err != nil {
+		t.Fatalf("Session: %v", err)
+	}
+	defer sess.Close()
+
+	if err := sess.Put("gors:template", map[string]interface{}{"t": "{{ env.WHO }}@{{ gors.where }}"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := sess.Put("gors", map[string]interface{}{"where": "global"}, "", ""); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := sess.Put("gors", map[string]interface{}{"where": "tmp"}, "", "/tmp"); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	env := map[string]string{"WHO": "me"}
+
+	result, err := sess.Get("gors.t", "", env)
+	if err != nil {
+		t.Fatalf("Session.Get: %v", err)
+	}
+	if s, _ := result.GetString(""); s != "me@global" {
+		t.Errorf("before SetContext: %#v, want \"me@global\"", result.Data)
+	}
+
+	if err := sess.SetContext("/tmp"); err != nil {
+		t.Fatalf("SetContext: %v", err)
+	}
+	result, err = sess.Get("gors.t", "", env)
+	if err != nil {
+		t.Fatalf("Session.Get: %v", err)
+	}
+	if s, _ := result.GetString(""); s != "me@tmp" {
+		t.Errorf("after SetContext: %#v, want \"me@tmp\"", result.Data)
 	}
 }
 
@@ -368,7 +428,7 @@ func TestSession_Put(t *testing.T) {
 	if err := sess.Put("sessionenv", map[string]interface{}{"color": "red"}, "", ""); err != nil {
 		t.Fatalf("Session.Put: %v", err)
 	}
-	result, err := sess.Get("sessionenv", "")
+	result, err := sess.Get("sessionenv", "", nil)
 	if err != nil {
 		t.Fatalf("Session.Get: %v", err)
 	}
@@ -417,7 +477,7 @@ func TestSession_Close(t *testing.T) {
 func TestClient_Get_DaemonNotRunning(t *testing.T) {
 	requireBuiltArtifacts(t)
 	c := beachcomber.NewClientWithPath(t.TempDir() + "/nonexistent.sock")
-	_, err := c.Get("git.branch", "")
+	_, err := c.Get("git.branch", "", nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -438,7 +498,7 @@ func TestNewClient_AutoDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	result, err := c.Get("hostname.short", "")
+	result, err := c.Get("hostname.short", "", nil)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -448,26 +508,10 @@ func TestNewClient_AutoDiscovery(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Resolve / Eval
+// Get / Eval
 // ---------------------------------------------------------------------------
 
-// The daemon holds the template; the client renders it with the env the
-// caller passes — the same value `comb get filters.based` prints.
-func TestClient_Resolve_RendersAPutTemplate(t *testing.T) {
-	c := requireClient(t)
-	if err := c.Put("filters:template", map[string]interface{}{"based": "{{ env.PYVAR | basename }}"}, "", ""); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	result, err := c.Resolve("filters.based", "/", map[string]string{"PYVAR": "/foo/bar/baz"})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if s, ok := result.GetString(""); !ok || s != "baz" {
-		t.Errorf("Resolve() = (%q, %v), want (\"baz\", true)", s, ok)
-	}
-}
-
-func TestClient_Resolve_BareProviderIsTheMergedNamespace(t *testing.T) {
+func TestClient_Get_BareProviderIsTheMergedNamespace(t *testing.T) {
 	c := requireClient(t)
 	if err := c.Put("ns", map[string]interface{}{"lit": float64(1)}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -475,9 +519,9 @@ func TestClient_Resolve_BareProviderIsTheMergedNamespace(t *testing.T) {
 	if err := c.Put("ns:template", map[string]interface{}{"t": "{{ env.NS }}"}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Resolve("ns", "/", map[string]string{"NS": "hi"})
+	result, err := c.Get("ns", "/", map[string]string{"NS": "hi"})
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Get: %v", err)
 	}
 	if v, ok := result.GetFloat("lit"); !ok || v != 1 {
 		t.Errorf("lit = (%v, %v), want (1, true)", v, ok)
@@ -487,17 +531,17 @@ func TestClient_Resolve_BareProviderIsTheMergedNamespace(t *testing.T) {
 	}
 }
 
-func TestClient_Resolve_MissIsNilData(t *testing.T) {
+func TestClient_Get_MissIsNilData(t *testing.T) {
 	c := requireClient(t)
 	if err := c.Put("ns2", map[string]interface{}{"v": float64(1)}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Resolve("ns2.nope", "/", nil)
+	result, err := c.Get("ns2.nope", "/", nil)
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Get: %v", err)
 	}
 	if !result.IsMiss() {
-		t.Errorf("Resolve() = %+v, want a miss", result)
+		t.Errorf("Get() = %+v, want a miss", result)
 	}
 }
 
@@ -526,12 +570,12 @@ func TestWithExec_ReachesTheOptionsJSON(t *testing.T) {
 	}
 }
 
-func TestClient_Resolve_ExecIsDisabledWithoutTheOption(t *testing.T) {
+func TestClient_Get_ExecIsDisabledWithoutTheOption(t *testing.T) {
 	c := requireClient(t)
 	if err := c.Put("execns:template", map[string]interface{}{"out": "{{ exec(['printf', 'x']) }}"}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	_, err := c.Resolve("execns.out", "/", nil)
+	_, err := c.Get("execns.out", "/", nil)
 	var se *beachcomber.ServerError
 	if !errors.As(err, &se) {
 		t.Fatalf("expected *ServerError, got %T: %v", err, err)
@@ -541,17 +585,17 @@ func TestClient_Resolve_ExecIsDisabledWithoutTheOption(t *testing.T) {
 	}
 }
 
-func TestClient_Resolve_ExecRunsWithTheOption(t *testing.T) {
+func TestClient_Get_ExecRunsWithTheOption(t *testing.T) {
 	sock := startDaemon(t)
 	c := beachcomber.NewClientWithPath(sock, beachcomber.WithExec(true))
 	if err := c.Put("execns2:template", map[string]interface{}{"out": "{{ exec(['printf', 'x']) }}"}, "", ""); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	result, err := c.Resolve("execns2.out", "/", nil)
+	result, err := c.Get("execns2.out", "/", nil)
 	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+		t.Fatalf("Get: %v", err)
 	}
 	if s, ok := result.GetString(""); !ok || s != "x" {
-		t.Errorf("Resolve() = (%q, %v), want (\"x\", true)", s, ok)
+		t.Errorf("Get() = (%q, %v), want (\"x\", true)", s, ok)
 	}
 }

@@ -2,8 +2,8 @@
 //! `bc_watch_free`.
 //!
 //! Since Plan 4 Task 3 a watch is a *resolved* watch: `bc_watch_open` takes
-//! the same `cwd`/`env_json` pair `bc_resolve` does, every event is the
-//! value `bc_resolve` would return for that key, and the fan-in underneath
+//! the same `cwd`/`env_json` pair `bc_get` does, every event is the
+//! value `bc_get` would return for that key, and the fan-in underneath
 //! subscribes to every key the resolution read plus the provider's
 //! `<p>:template`, so editing a template the value is rendered from fires
 //! the watch.
@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use beachcomber::envelope::bc_string_free;
 use beachcomber::{
-    BcClient, BcWatch, bc_client_free, bc_client_new, bc_put, bc_resolve, bc_watch_cancel,
+    BcClient, BcWatch, bc_client_free, bc_client_new, bc_get, bc_put, bc_watch_cancel,
     bc_watch_free, bc_watch_next, bc_watch_open,
 };
 
@@ -149,21 +149,22 @@ fn watch_next_works_after_the_client_that_opened_it_is_freed() {
 }
 
 /// The equivalence Plan 3 models the whole surface on: a watch's first event
-/// is exactly what `bc_resolve` returns for the same key, `cwd` and
+/// is exactly what `bc_get` returns for the same key, `cwd` and
 /// `env_json` — template rendered, environment applied.
 #[test]
-fn watch_first_event_equals_bc_resolve_of_the_same_key() {
+fn watch_first_event_equals_bc_get_of_the_same_key() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     let env = r#"{"EQ_VALUE":"rendered"}"#;
     put_static(client, "eqprov:template", r#"{"f":"{{ env.EQ_VALUE }}"}"#);
 
     let resolved = read(unsafe {
-        bc_resolve(
+        bc_get(
             client,
             cs("eqprov.f").as_ptr(),
             cs(CWD).as_ptr(),
             cs(env).as_ptr(),
+            0,
         )
     });
     assert_eq!(resolved["ok"], serde_json::json!(true), "{resolved}");
@@ -174,7 +175,7 @@ fn watch_first_event_equals_bc_resolve_of_the_same_key() {
     assert_eq!(v["outcome"], serde_json::json!("event"), "{v}");
     assert_eq!(
         v["data"], resolved["data"],
-        "the first event must be bc_resolve's answer"
+        "the first event must be bc_get's answer"
     );
 
     unsafe { bc_watch_free(watch) };
@@ -320,7 +321,7 @@ fn watch_open_on_an_env_key_is_refused() {
 }
 
 /// `bc_watch_open` with a NULL `cwd` watches the global entry, as
-/// `bc_resolve` reads it: the first event is the value put there.
+/// `bc_get` reads it: the first event is the value put there.
 #[test]
 fn watch_open_with_null_cwd_watches_the_global_entry() {
     let daemon = DaemonGuard::spawn();
@@ -343,7 +344,7 @@ fn watch_open_with_null_cwd_watches_the_global_entry() {
 }
 
 /// Malformed `env_json` (not valid JSON) is the same deferred parse error as
-/// `bc_resolve` gives it, surfaced on the first `bc_watch_next`.
+/// `bc_get` gives it, surfaced on the first `bc_watch_next`.
 #[test]
 fn watch_open_with_malformed_env_json_is_a_parse_error() {
     let daemon = DaemonGuard::spawn();

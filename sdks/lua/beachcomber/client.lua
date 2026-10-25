@@ -1,23 +1,21 @@
---- Transport-agnostic Client and Result for the beachcomber Lua SDK.
+--- Transport-agnostic Client for the beachcomber Lua SDK.
 --
 -- `Client` wraps a "backend" — either `beachcomber.ffi_backend` (LuaJIT
 -- `ffi` over the cdylib) or `beachcomber.subprocess_backend` (shells out
--- to `comb`; the sanctioned PUC Lua fallback) — and exposes the public API
--- surface unchanged from the pre-ABI raw-socket implementation:
--- get/get_with_flags/refresh/set_context/status/hello/put/
--- introspect/watch/close, plus Result:is_hit()/get_str(). `transport()` is
--- new: every method above works identically regardless of which value it
--- returns, but a caller that cares about latency can check it rather than
--- discover a 5ms-per-call transport in a profile.
+-- to `comb`; the sanctioned PUC Lua fallback) — and exposes one surface
+-- over both: get/eval/watch/put/refresh/set_context/status/hello/
+-- introspect/session/close. `transport()` reports which backend is active,
+-- so a caller that cares about latency can check it rather than discover a
+-- 5ms-per-call transport in a profile.
 --
--- A backend implements: name(), get(key,path,flags), put(key,data,ttl,path),
--- status(), close(), and optionally
+-- A backend implements: name(), get(key,cwd,env,flags),
+-- put(key,data,ttl,path), status(), close(), and optionally
 -- refresh(key,path), introspect(subject,duration_secs), hello(),
--- resolve(key,cwd,env),
 -- eval(template,cwd,env), watch_open(key,cwd,env) — each returning a
--- canonical response table `{ok, data, age_ms, stale, error={kind,message}}`.
--- A backend that omits an optional method signals the capability doesn't
--- exist over that transport; Client turns that into Error.unsupported().
+-- canonical response table `{ok, data, error={kind,message}}`, where `data`
+-- of a get or eval is the value itself (nil on a miss). A backend that omits
+-- an optional method signals the capability doesn't exist over that
+-- transport; Client turns that into Error.unsupported().
 
 local WatchStream = require("beachcomber.watch_stream")
 local Error = require("beachcomber.error")
@@ -37,64 +35,6 @@ function Client:transport()
   return self._backend:name()
 end
 
--- ── Result ────────────────────────────────────────────────────────────────
-
-local Result = {}
-Result.__index = Result
-
---- The result of a `get`: the node as the daemon holds it — both halves,
--- nothing rendered. A node may hold a cached value (`data`), a template
--- (`template`), or both. A template-only Result is an address whose value
--- `Client:resolve` renders: this is the raw half — `resolve(key, {cwd, env})`
--- is how you get the value. Such a Result is neither a hit (no value until
--- it is rendered) nor a miss (something is stored there).
---
--- Fields: `data` (nil when nothing is cached), `age_ms`/`stale` (meaningful
--- only with `data`), `template` (the template in effect at the address,
--- unrendered: a string for a leaf, a table for a group; nil when none is in
--- effect), `rest` (the address left over when the template walk stopped at
--- a string — `get("p.t.x")` where `p.t` is a template string gives the
--- template of `p.t` and `rest == "x"`; nil otherwise). Over the subprocess
--- transport `template` and `rest` are always nil — see
--- beachcomber.subprocess_backend.
---
--- @param resp table  Canonical response `{data, age_ms, stale, template, rest}` (ok=true).
--- @return Result
-function Result.new(resp)
-  return setmetatable({
-    data     = resp.data,
-    age_ms   = resp.age_ms or 0,
-    stale    = resp.stale or false,
-    template = resp.template,
-    rest     = resp.rest,
-  }, Result)
-end
-
---- Return true when the cache contains a value (cache hit).
-function Result:is_hit()
-  return self.data ~= nil
-end
-
---- Return true when nothing is stored at the address: no cached value and
--- no template. A template-only Result is not a miss.
-function Result:is_miss()
-  return self.data == nil and self.template == nil
-end
-
---- Get a string field from object data (convenience for whole-provider gets).
--- @param field string
--- @return string|nil value, or nil, error_message
-function Result:get_str(field)
-  if type(self.data) ~= "table" then
-    return nil, "result data is not an object"
-  end
-  local v = self.data[field]
-  if v == nil then
-    return nil, "field not found: " .. tostring(field)
-  end
-  return tostring(v)
-end
-
 -- ── Internal ─────────────────────────────────────────────────────────────
 
 --- The effective path for a call: an explicit argument wins; otherwise the
@@ -107,30 +47,29 @@ end
 
 -- ── Client methods ───────────────────────────────────────────────────────
 
---- Query a node raw — both halves, nothing rendered.
+--- The value `comb get` prints for this key, cwd and env (via bc_get).
 --
--- The Result carries the cached value (`data`) and the template in effect
--- at the address (`template`), whichever exist. A template-only Result is
--- an address whose value `Client:resolve` renders — this is the raw half;
--- `resolve(key, {cwd, env})` is how you get the value. `is_hit()` is "data
--- present"; `is_miss()` is "no data and no template".
--- @param key string    Provider key, e.g. "git.branch" or "git"
--- @param path string?  Optional working-directory path
--- @return Result, or nil, Error
-function Client:get(key, path)
-  return self:get_with_flags(key, path, false, false)
-end
-
---- Query a cached value with optional force/wait flags.
--- @param key   string    Provider key
--- @param path  string?   Optional working-directory path
--- @param force boolean?  Force recomputation before returning
--- @param wait  boolean?  Wait for a fresh value if stale
--- @return Result, or nil, Error
-function Client:get_with_flags(key, path, force, wait)
-  local resp = self._backend:get(key, self:_path(path), { force = force, wait = wait })
+-- The daemon holds the templates (`<provider>:template`, seeded from
+-- configuration or put); this client renders them. A plain field is its
+-- cached value, a templated one is rendered, and a bare provider name is
+-- the whole merged namespace. The unrendered halves are facets, read like
+-- any key: "p:template.x" is the template as stored, "p:put.x" and
+-- "p:source.x" those layers' values.
+-- @param key  string  "provider.field" or a bare provider name
+-- @param opts table?  opts.cwd: the directory the read addresses (`~` is
+--                      home, a relative path is against this process's
+--                      working directory); default the set_context() path,
+--                      else the global entry.
+--                      opts.env: the caller's environment for env.* refs;
+--                      nil means none (every env.* is absent).
+--                      opts.force: re-execute every Source the read demands first.
+--                      opts.wait: re-execute a stale entry inline before answering.
+-- @return value, or nil on a miss (no Error), or nil, Error
+function Client:get(key, opts)
+  opts = opts or {}
+  local resp = self._backend:get(key, self:_path(opts.cwd), opts.env, { force = opts.force, wait = opts.wait })
   if not resp.ok then return nil, Error.from(resp.error) end
-  return Result.new(resp)
+  return resp.data
 end
 
 --- Force recomputation of a provider.
@@ -206,35 +145,15 @@ function Client:introspect(subject, duration_secs)
   return { subject = subject, daemon = nil, other = resp.data }
 end
 
---- Resolve `key` to the same value `comb get` returns for this key, cwd and
--- env (via bc_resolve). The daemon holds the templates
--- (`<provider>:template`, seeded from configuration or put); this client
--- renders them. A plain field is its cached value, a templated one is
--- rendered, and a bare provider name is the whole merged namespace. A miss
--- is nil with no Error.
--- @param key  string  "provider.field" or a bare provider name
--- @param opts table?  opts.cwd (default: context path, then "."), opts.env
---                      (the caller's environment for env.* refs)
--- @return value, or nil, Error
-function Client:resolve(key, opts)
-  if not self._backend.resolve then
-    return nil, Error.unsupported("resolve", self:transport())
-  end
-  opts = opts or {}
-  local cwd = opts.cwd or self._context_path or "."
-  local resp = self._backend:resolve(key, cwd, opts.env or {})
-  if not resp.ok then return nil, Error.from(resp.error) end
-  return resp.data
-end
-
 --- Render a template that is stored nowhere — the same value `comb eval`
 -- prints (via bc_eval). Every ref resolves exactly as it would inside a
--- stored template, so eval("{{ p.f }}") and resolve("p.f") agree.
+-- stored template, so eval("{{ p.f }}") and get("p.f") agree.
 -- template_str accepts a single "{{ expr }}" tag, or literal text/several
 -- tags — the former keeps the expression's natural type, the latter is
 -- always a string (a source with no tags at all is its literal text).
 -- @param template_str string
--- @param opts table?  Same shape as Client:resolve's opts.
+-- @param opts table?  opts.cwd (default: context path, then "."), opts.env
+--                      (the caller's environment for env.* refs)
 -- @return value, or nil, Error
 function Client:eval(template_str, opts)
   if not self._backend.eval then
@@ -247,13 +166,12 @@ function Client:eval(template_str, opts)
   return resp.data
 end
 
---- Subscribe to a key's *value* — what Client:resolve answers for it — and
+--- Subscribe to a key's *value* — what Client:get answers for it — and
 -- receive it again whenever it changes, so a template edited under the watch
 -- fires it just as a changed cache record does. Returns a WatchStream.
 -- @param key  string  "provider.field" or a bare provider name
--- @param opts table?  Same shape as Client:resolve's opts: opts.cwd (default:
---                      context path, then "."), opts.env (the caller's
---                      environment for env.* refs)
+-- @param opts table?  opts.cwd (default: context path, then "."), opts.env
+--                      (the caller's environment for env.* refs)
 -- @return WatchStream, or nil, Error
 function Client:watch(key, opts)
   if not self._backend.watch_open then
@@ -285,5 +203,4 @@ end
 
 return {
   Client = Client,
-  Result = Result,
 }

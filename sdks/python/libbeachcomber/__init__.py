@@ -5,16 +5,15 @@ Quick start::
     from beachcomber import Client
 
     client = Client()
-    result = client.get("git.branch", path="/path/to/repo")
-    if result.is_hit:
-        print(result.data)        # "main"
-        print(result.age_ms)      # 234
-        print(result.stale)       # False
+    # What `comb get git.branch` prints there; None on a miss.
+    branch = client.get("git.branch", cwd="/path/to/repo")
 
     # Full provider object
-    result = client.get("git", path="/path/to/repo")
-    if result.is_hit:
-        print(result["branch"])   # subscript into dict data
+    git = client.get("git", cwd="/path/to/repo")
+    print(git["branch"])
+
+    # The template itself, unrendered: a facet, read like any key
+    client.get("git:template.branch")
 
     # Force recomputation
     client.refresh("git", path="/path/to/repo")
@@ -44,7 +43,6 @@ from .exceptions import (
     TimeoutError,
     VersionSkewError,
 )
-from .result import CombResult
 from .types import (
     CacheRow,
     DaemonHealth,
@@ -59,7 +57,6 @@ __all__ = [
     "Client",
     "Session",
     "WatchStream",
-    "CombResult",
     "CombError",
     "DaemonNotRunning",
     "ConnectionFailedError",

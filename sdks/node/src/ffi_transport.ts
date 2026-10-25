@@ -27,7 +27,7 @@ export function koffiAvailable(): boolean {
   }
 }
 
-// The 22 bc_* symbols the ABI exposes today (see libbeachcomber-ffi/include/beachcomber.h).
+// The bc_* symbols this binding calls (see libbeachcomber-ffi/include/beachcomber.h).
 // bc_version and bc_string_free are bound separately since they need special handling
 // (bc_version's result must never be freed; bc_string_free is itself the free function).
 const OP_SYMBOLS = [
@@ -39,7 +39,6 @@ const OP_SYMBOLS = [
   'bc_status',
   'bc_introspect',
   'bc_hello',
-  'bc_resolve',
   'bc_eval',
   'bc_session_open',
   'bc_session_close',
@@ -113,17 +112,16 @@ function bindSymbols(lib: import('koffi').LibraryHandle, koffi: typeof import('k
   const sig: Record<(typeof OP_SYMBOLS)[number], [Spec, Spec[]]> = {
     bc_client_new: [BcClient, ['str']],
     bc_client_free: ['void', [BcClient]],
-    bc_get: [BcString, [BcClient, 'str', 'str', 'uint32']],
+    bc_get: [BcString, [BcClient, 'str', 'str', 'str', 'uint32']],
     bc_put: [BcString, [BcClient, 'str', 'str', 'str', 'str']],
     bc_refresh: [BcString, [BcClient, 'str', 'str']],
     bc_status: [BcString, [BcClient]],
     bc_introspect: [BcString, [BcClient, 'str', 'str']],
     bc_hello: [BcString, [BcClient]],
-    bc_resolve: [BcString, [BcClient, 'str', 'str', 'str']],
     bc_eval: [BcString, [BcClient, 'str', 'str', 'str']],
     bc_session_open: [BcSession, [BcClient]],
     bc_session_close: ['void', [BcSession]],
-    bc_session_get: [BcString, [BcSession, 'str', 'str', 'uint32']],
+    bc_session_get: [BcString, [BcSession, 'str', 'str', 'str', 'uint32']],
     bc_session_put: [BcString, [BcSession, 'str', 'str', 'str', 'str']],
     bc_session_refresh: [BcString, [BcSession, 'str', 'str']],
     bc_session_set_context: [BcString, [BcSession, 'str']],
@@ -205,8 +203,10 @@ export function createFfiTransport(): Transport {
       fns.bc_client_free(handle);
     },
 
-    async get(handle, key, path, flags) {
-      return parseEnvelope(await callAsync(fns.bc_get, handle, key, nullIfUndefined(path), flags));
+    async get(handle, key, cwd, envJson, flags) {
+      return parseEnvelope(
+        await callAsync(fns.bc_get, handle, key, nullIfUndefined(cwd), nullIfUndefined(envJson), flags),
+      );
     },
     async put(handle, key, jsonData, ttl, path) {
       return parseEnvelope(
@@ -227,9 +227,6 @@ export function createFfiTransport(): Transport {
     async hello(handle) {
       return parseEnvelope(await callAsync(fns.bc_hello, handle));
     },
-    async resolve(handle, key, cwd, envJson) {
-      return parseEnvelope(await callAsync(fns.bc_resolve, handle, key, cwd, nullIfUndefined(envJson)));
-    },
     async evaluate(handle, templateStr, cwd, envJson) {
       return parseEnvelope(await callAsync(fns.bc_eval, handle, templateStr, cwd, nullIfUndefined(envJson)));
     },
@@ -240,9 +237,9 @@ export function createFfiTransport(): Transport {
     closeSession(session) {
       fns.bc_session_close(session);
     },
-    async sessionGet(session, key, path, flags) {
+    async sessionGet(session, key, cwd, envJson, flags) {
       return parseEnvelope(
-        await callAsync(fns.bc_session_get, session, key, nullIfUndefined(path), flags),
+        await callAsync(fns.bc_session_get, session, key, nullIfUndefined(cwd), nullIfUndefined(envJson), flags),
       );
     },
     async sessionPut(session, key, jsonData, ttl, path) {

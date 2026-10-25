@@ -218,6 +218,10 @@ templates from `<repo>/sub`.
 
 `template` is a JSON tree whose string leaves are value expressions the
 **client** renders and whose objects are groups. The daemon never renders one.
+The client is `libbeachcomber::resolve`: `comb get`, `bc_get` and every SDK's
+`get` answer with the rendered value, and none of them hands back this
+two-halved response. A caller that wants the template unrendered reads it as a
+facet, `<provider>:template.<field>`, like any other key.
 Walking the key through that tree:
 
 - landing on an object or a string with the key consumed → that node is

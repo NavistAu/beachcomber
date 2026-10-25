@@ -68,7 +68,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
           setup: Array.isArray(v.setup) ? v.setup : [],
           test: v.test,
           expect: v.expect,
-          // `resolve`/`eval`-op context: the caller's env vars and cwd
+          // `get`/`eval`/`watch`-op context: the caller's env vars and cwd
           // (see tests/conformance/README.md).
           env: v.env && typeof v.env === 'object' ? v.env : {},
           cwd: typeof v.cwd === 'string' ? v.cwd : null,
@@ -158,12 +158,12 @@ if (!fs.existsSync(DIST_CLIENT)) {
    * Canonical response shape used by expectation checking.
    * Mirrors the Rust conformance runner's CanonicalResponse.
    */
-  function makeOk({ data = null, dataAsText = null, ageMs = null, stale = null, template = null, rest = null } = {}) {
-    return { ok: true, data, dataAsText, ageMs, stale, template, rest, error: null };
+  function makeOk({ data = null, dataAsText = null } = {}) {
+    return { ok: true, data, dataAsText, error: null };
   }
 
   function makeError(message) {
-    return { ok: false, data: null, dataAsText: null, ageMs: null, stale: null, template: null, rest: null, error: message };
+    return { ok: false, data: null, dataAsText: null, error: message };
   }
 
   function valueAsText(v) {
@@ -179,9 +179,9 @@ if (!fs.existsSync(DIST_CLIENT)) {
 
     try {
       switch (op) {
-        case 'resolve': {
+        case 'get': {
           const key = args.key || '';
-          const data = await client.resolve(key, {
+          const data = await client.get(key, {
             cwd: resolveCtx.cwd,
             env: resolveCtx.env,
           });
@@ -208,28 +208,6 @@ if (!fs.existsSync(DIST_CLIENT)) {
             daemon_version: info.daemonVersion,
           };
           return makeOk({ data });
-        }
-
-        case 'get': {
-          const key = args.key || '';
-          const pathArg = args.path;
-          const result = await client.get(key, pathArg);
-          // The template half rides along on a hit and is the whole of a
-          // template-only result; the SDK leaves both undefined when absent.
-          const template = result.template === undefined ? null : result.template;
-          const rest = result.rest === undefined ? null : result.rest;
-          if (result.isHit) {
-            return makeOk({
-              data: result.data,
-              dataAsText: result.getString(),
-              ageMs: result.ageMs,
-              stale: result.stale,
-              template,
-              rest,
-            });
-          } else {
-            return makeOk({ template, rest });
-          }
         }
 
         case 'refresh': {
@@ -292,8 +270,6 @@ if (!fs.existsSync(DIST_CLIENT)) {
             // Had an event before close threw — treat as success.
           }
           if (event) {
-            // A watch event carries a resolved value, which can come from
-            // several records at once: no age, no staleness.
             return makeOk({
               data: event.data,
               dataAsText: valueAsText(event.data),
@@ -330,22 +306,17 @@ if (!fs.existsSync(DIST_CLIENT)) {
       }
     } catch (err) {
       // The active transport lacks this op (the subprocess tier's hello,
-      // introspect, resolve, eval and watch): the fixture is skipped by the
+      // introspect, eval and watch, and a get with an env): the fixture is skipped by the
       // main loop, never failed on a documented gap or passed vacuously.
       if (err instanceof UnsupportedTransportError) throw err;
       return makeError(err instanceof Error ? err.message : String(err));
     }
   }
 
-  /** True when a `get` fixture asserts the template half of the node. */
-  function assertsTemplateHalf(expect) {
-    return expect.status === 'template' || expect.template_equals !== undefined || expect.rest_equals !== undefined;
-  }
-
   // Ops this runner's binding can execute. A fixture using any op outside
   // this set must be skipped, not failed — the binding doesn't implement it.
   const SUPPORTED_OPS = new Set([
-    'hello', 'get', 'refresh', 'put', 'status', 'context', 'watch', 'introspect', 'resolve', 'eval',
+    'hello', 'get', 'refresh', 'put', 'status', 'context', 'watch', 'introspect', 'eval',
   ]);
 
   function unsupportedOp(fixture) {
@@ -380,8 +351,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
   // fixture asserting something the harness doesn't actually check.
   const KNOWN_EXPECT_KEYS = new Set([
     'status', 'data_type', 'data_equals', 'data_as_text', 'data_contains_field',
-    'data_field_equals', 'age_ms_present', 'stale', 'error_contains',
-    'template_equals', 'rest_equals',
+    'data_field_equals', 'error_contains',
   ]);
 
   function checkExpect(fixture, resp) {
@@ -407,14 +377,6 @@ if (!fs.existsSync(DIST_CLIENT)) {
         case 'miss':
           if (!resp.ok) failures.push(`status=miss expected but got error: ${resp.error}`);
           else if (resp.data !== null) failures.push('status=miss expected but data was present');
-          else if (resp.template !== null) failures.push('status=miss expected but a template was present');
-          break;
-        // A template-only node: no data, a template in effect. Neither a
-        // hit nor a miss — `resolve` renders it.
-        case 'template':
-          if (!resp.ok) failures.push(`status=template expected but got error: ${resp.error}`);
-          else if (resp.data !== null) failures.push('status=template expected but data was present');
-          else if (resp.template === null) failures.push('status=template expected but no template was present');
           break;
         case 'error':
           if (resp.ok) failures.push('status=error expected but response was ok');
@@ -473,40 +435,11 @@ if (!fs.existsSync(DIST_CLIENT)) {
       }
     }
 
-    // age_ms_present
-    if (expect.age_ms_present !== undefined) {
-      const actual = resp.ageMs !== null;
-      if (actual !== expect.age_ms_present) {
-        failures.push(`age_ms_present=${expect.age_ms_present} expected but got ${actual}`);
-      }
-    }
-
-    // stale
-    if (expect.stale !== undefined) {
-      if (resp.stale !== expect.stale) {
-        failures.push(`stale=${expect.stale} expected but got ${resp.stale}`);
-      }
-    }
-
     // error_contains
     if (expect.error_contains !== undefined) {
       const actual = resp.error ?? '';
       if (!actual.includes(expect.error_contains)) {
         failures.push(`error_contains=${JSON.stringify(expect.error_contains)} expected but error was ${JSON.stringify(actual)}`);
-      }
-    }
-
-    // template_equals
-    if (expect.template_equals !== undefined) {
-      if (resp.template === null || !deepEqual(resp.template, expect.template_equals)) {
-        failures.push(`template_equals failed: expected ${JSON.stringify(expect.template_equals)}, got ${JSON.stringify(resp.template)}`);
-      }
-    }
-
-    // rest_equals
-    if (expect.rest_equals !== undefined) {
-      if (resp.rest !== expect.rest_equals) {
-        failures.push(`rest_equals=${JSON.stringify(expect.rest_equals)} expected but got ${JSON.stringify(resp.rest)}`);
       }
     }
 
@@ -546,19 +479,9 @@ if (!fs.existsSync(DIST_CLIENT)) {
         if (transportUsed === null) {
           transportUsed = client.transport();
         }
-        // The subprocess transport renders the template half of a node
-        // instead of returning it (see src/subprocess_transport.ts): its
-        // `get` is not unsupported — it answers, with the rendered value
-        // and no `template` — so a fixture that asserts the template half
-        // is skipped explicitly rather than failing on a documented
-        // divergence or passing vacuously.
-        if (fixture.test.op === 'get' && assertsTemplateHalf(fixture.expect) && client.transport() === 'subprocess') {
-          console.log(`  SKIP [${fixture.name}]: the subprocess transport renders the template half of a get instead of returning it`);
-          skipped++;
-          continue;
-        }
-        // `resolve` is client-side: cwd defaults to this fixture's private
-        // temp dir (matching the Rust reference runner) when not declared.
+        // `get`, `eval` and `watch` read at a directory: cwd defaults to
+        // this fixture's private temp dir (matching the Rust reference
+        // runner) when not declared.
         const resolveCtx = {
           env: fixture.env,
           cwd: fixture.cwd ?? daemon.tmpDir,

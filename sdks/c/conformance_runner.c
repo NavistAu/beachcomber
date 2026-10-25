@@ -28,20 +28,16 @@
  *     "description": "...",
  *     "setup": [ { "op": "put", "args": {...} } ],
  *     "test":  { "op": "get",  "args": {...} },
- *     "env": { "VAR": "value" },                 // resolve/eval fixtures only
- *     "cwd": "/some/path",                       // resolve/eval fixtures only
+ *     "env": { "VAR": "value" },                 // get/eval/watch fixtures only
+ *     "cwd": "/some/path",                       // get/eval/watch fixtures only
  *     "expect": {
- *       "status": "hit"|"miss"|"template"|"ok"|"error",
+ *       "status": "hit"|"miss"|"ok"|"error",
  *       "data_type": "string"|"number"|"bool"|"object"|"array"|"null",
  *       "data_equals": <json>,
  *       "data_as_text": "...",
  *       "data_contains_field": "...",
  *       "data_field_equals": { "field": "...", "value": <json> },
- *       "age_ms_present": true|false,
- *       "stale": true|false,
- *       "error_contains": "...",
- *       "template_equals": <json>,
- *       "rest_equals": "..."
+ *       "error_contains": "..."
  *     }
  *   }
  */
@@ -103,15 +99,14 @@ static void report_skip(const char *name, const char *op) {
     g_skip++;
 }
 
-/* Every op the fixture format defines is implemented directly over the ABI
- * (bc_resolve and bc_eval give us the two client-side ops, "resolve" and
- * "eval"). Kept as an explicit allow-list, rather than assuming, so a future
+/* Every op the fixture format defines is implemented directly over the ABI.
+ * Kept as an explicit allow-list, rather than assuming, so a future
  * op the ABI doesn't yet cover skips loudly instead of crashing into a
  * NULL. */
 static int op_supported(const char *op) {
     static const char *supported[] = {
         "hello", "get", "refresh", "put", "status", "context", "watch",
-        "introspect", "resolve", "eval", NULL
+        "introspect", "eval", NULL
     };
     for (int i = 0; supported[i]; i++) {
         if (strcmp(op, supported[i]) == 0) return 1;
@@ -222,7 +217,7 @@ static int collect_fixtures(const char *dir,
 /*
  * serialise_node: serialise a parsed json_node_t back into a malloc'd JSON
  * string. Used to turn fixture "data" (put) and "env" (resolve/eval) blocks
- * into the JSON text bc_put / bc_resolve / bc_eval expect.
+ * into the JSON text bc_put / bc_get / bc_eval expect.
  */
 static char *serialise_node(const json_node_t *node) {
     if (!node) return NULL;
@@ -517,7 +512,25 @@ static void stop_daemon(daemon_proc_t *dp) {
  * ---------------------------------------------------------------------- */
 
 /*
- * default_cwd: the directory `resolve`/`eval`/`watch` fixtures get when they don't
+ * The directory a get/eval/watch op reads at: the fixture's "cwd", else
+ * default_cwd.
+ */
+static const char *fixture_cwd(const json_node_t *fixture_root, const char *default_cwd) {
+    const char *cwd = json_as_str(json_get(fixture_root, "cwd"));
+    return cwd ? cwd : default_cwd;
+}
+
+/*
+ * The caller's environment a get/eval/watch op reads with, as the JSON text
+ * the ABI takes, or NULL for none. Caller frees.
+ */
+static char *fixture_env(const json_node_t *fixture_root) {
+    json_node_t *env_node = json_get(fixture_root, "env");
+    return (env_node && env_node->type == JSON_OBJECT) ? serialise_node(env_node) : NULL;
+}
+
+/*
+ * default_cwd: the directory `get`/`eval`/`watch` fixtures get when they don't
  * declare their own "cwd" — this run's shared per-run temp directory (real,
  * existing, but otherwise inert; fixtures that care about a specific cwd
  * always declare one explicitly).
@@ -545,7 +558,13 @@ static char *run_op(BcClient *client, BcSession *session,
         json_node_t *wait  = args ? json_get(args, "wait")  : NULL;
         if (force && force->type == JSON_BOOL && force->val.boolean) flags |= BC_GET_FORCE;
         if (wait  && wait->type  == JSON_BOOL && wait->val.boolean)  flags |= BC_GET_WAIT;
-        return bc_session_get(session, key ? key : "", path, flags);
+        /* cwd / env are fixture-level fields, not op args — see
+         * tests/conformance/README.md's "get" section. */
+        char *env_json = fixture_env(fixture_root);
+        char *result = bc_session_get(session, key ? key : "",
+                                      fixture_cwd(fixture_root, default_cwd), env_json, flags);
+        free(env_json);
+        return result;
     }
 
     if (strcmp(op_str, "refresh") == 0) {
@@ -585,53 +604,24 @@ static char *run_op(BcClient *client, BcSession *session,
     }
 
     if (strcmp(op_str, "watch") == 0) {
-        /* A watch is a resolved watch: the same fixture-level cwd / env
-         * "resolve" takes, and every event is the value bc_resolve would
-         * answer. */
-        const char *cwd = json_as_str(json_get(fixture_root, "cwd"));
-        if (!cwd) cwd = default_cwd;
-
-        json_node_t *env_node = json_get(fixture_root, "env");
-        char *env_json = (env_node && env_node->type == JSON_OBJECT)
-                              ? serialise_node(env_node)
-                              : NULL;
-
-        BcWatch *w = bc_watch_open(client, key ? key : "", cwd, env_json);
+        /* A watch is of the value: the same fixture-level cwd / env "get"
+         * takes, and every event is the value bc_get would answer. */
+        char *env_json = fixture_env(fixture_root);
+        BcWatch *w = bc_watch_open(client, key ? key : "",
+                                   fixture_cwd(fixture_root, default_cwd), env_json);
         char *result = bc_watch_next(w, WATCH_TIMEOUT_MS);
         bc_watch_free(w);
         free(env_json);
         return result;
     }
 
-    if (strcmp(op_str, "resolve") == 0) {
-        /* cwd / env are fixture-level fields, not op args — see
-         * tests/conformance/README.md's "resolve" section. */
-        const char *cwd = json_as_str(json_get(fixture_root, "cwd"));
-        if (!cwd) cwd = default_cwd;
-
-        json_node_t *env_node = json_get(fixture_root, "env");
-        char *env_json = (env_node && env_node->type == JSON_OBJECT)
-                              ? serialise_node(env_node)
-                              : NULL;
-
-        char *result = bc_resolve(client, key ? key : "", cwd, env_json);
-        free(env_json);
-        return result;
-    }
-
     if (strcmp(op_str, "eval") == 0) {
-        /* Same fixture-level cwd / env as "resolve" — see
+        /* Same fixture-level cwd / env as "get" — see
          * tests/conformance/README.md's "eval" section. */
-        const char *cwd = json_as_str(json_get(fixture_root, "cwd"));
-        if (!cwd) cwd = default_cwd;
-
-        json_node_t *env_node = json_get(fixture_root, "env");
-        char *env_json = (env_node && env_node->type == JSON_OBJECT)
-                              ? serialise_node(env_node)
-                              : NULL;
-
+        char *env_json = fixture_env(fixture_root);
         const char *template_str = args ? json_as_str(json_get(args, "template")) : NULL;
-        char *result = bc_eval(client, template_str ? template_str : "", cwd, env_json);
+        char *result = bc_eval(client, template_str ? template_str : "",
+                               fixture_cwd(fixture_root, default_cwd), env_json);
         free(env_json);
         return result;
     }
@@ -661,8 +651,7 @@ static const char *stringify_scalar(const json_node_t *n, char *buf, size_t buf_
 static int is_known_expect_key(const char *key) {
     static const char *known[] = {
         "status", "data_type", "data_equals", "data_as_text",
-        "data_contains_field", "data_field_equals", "age_ms_present",
-        "stale", "error_contains", "template_equals", "rest_equals",
+        "data_contains_field", "data_field_equals", "error_contains",
     };
     for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
         if (strcmp(key, known[i]) == 0) return 1;
@@ -671,7 +660,7 @@ static int is_known_expect_key(const char *key) {
 }
 
 static int check_expect(const char *name, const json_node_t *expect,
-                        const char *op_str, char *envelope_json) {
+                        char *envelope_json) {
     if (!expect) {
         report_pass(name);
         return 1;
@@ -703,8 +692,7 @@ static int check_expect(const char *name, const json_node_t *expect,
     const char *status = json_as_str(json_get(expect, "status"));
 
     if (status && strcmp(status, "ok") != 0 && strcmp(status, "hit") != 0 &&
-        strcmp(status, "miss") != 0 && strcmp(status, "template") != 0 &&
-        strcmp(status, "error") != 0) {
+        strcmp(status, "miss") != 0 && strcmp(status, "error") != 0) {
         report_fail(name, "unknown expect status \"%s\"", status);
         json_free(root);
         return 0;
@@ -741,29 +729,10 @@ static int check_expect(const char *name, const json_node_t *expect,
         return 0;
     }
 
-    /* Only "get" wraps its payload as
-     * {"data":{"data":<value>,"age_ms":...,"stale":...}}; every other op's
-     * envelope "data" field IS the value — a watch event included, since
-     * Plan 4 Task 3 made it the resolved value rather than one address's
-     * frame. A "get" payload also carries "template" and "rest" — the
-     * template half — only when set. */
-    json_node_t *data = json_get(root, "data");
-    json_node_t *value = data;
-    json_node_t *age_node = NULL;
-    json_node_t *stale_node = NULL;
-    json_node_t *template_node = NULL;
-    json_node_t *rest_node = NULL;
-    int is_nested = strcmp(op_str, "get") == 0;
-    if (is_nested && data && data->type == JSON_OBJECT) {
-        value = json_get(data, "data");
-        age_node = json_get(data, "age_ms");
-        stale_node = json_get(data, "stale");
-        template_node = json_get(data, "template");
-        rest_node = json_get(data, "rest");
-    }
-
+    /* Every op's envelope "data" field IS the value: a get's, an eval's and
+     * a watch event's alike. */
+    json_node_t *value = json_get(root, "data");
     int is_null = !value || value->type == JSON_NULL;
-    int has_template = template_node && template_node->type != JSON_NULL;
 
     if (status) {
         if (strcmp(status, "hit") == 0 && is_null) {
@@ -773,23 +742,6 @@ static int check_expect(const char *name, const json_node_t *expect,
         }
         if (strcmp(status, "miss") == 0 && !is_null) {
             report_fail(name, "expected status=miss but data is present");
-            json_free(root);
-            return 0;
-        }
-        if (strcmp(status, "miss") == 0 && has_template) {
-            report_fail(name, "expected status=miss but a template is present");
-            json_free(root);
-            return 0;
-        }
-        /* A template-only node: no data, a template in effect. Neither a
-         * hit nor a miss — bc_resolve renders it. */
-        if (strcmp(status, "template") == 0 && !is_null) {
-            report_fail(name, "expected status=template but data is present");
-            json_free(root);
-            return 0;
-        }
-        if (strcmp(status, "template") == 0 && !has_template) {
-            report_fail(name, "expected status=template but no template is present");
             json_free(root);
             return 0;
         }
@@ -867,59 +819,6 @@ static int check_expect(const char *name, const json_node_t *expect,
         }
     }
 
-    /* age_ms_present. A fresh hit legitimately has age_ms=0, so this checks
-     * key presence (age_node != NULL) rather than a truthy/nonzero value —
-     * combresult_to_json emits "age_ms" on both Hit and Miss. */
-    json_node_t *amp = json_get(expect, "age_ms_present");
-    if (amp && amp->type == JSON_BOOL) {
-        int want = amp->val.boolean;
-        int got = age_node != NULL;
-        if (want && !got) {
-            report_fail(name, "age_ms_present: expected age_ms to be present");
-            json_free(root);
-            return 0;
-        }
-        if (!want && got) {
-            report_fail(name, "age_ms_present: expected age_ms to be absent");
-            json_free(root);
-            return 0;
-        }
-    }
-
-    /* stale */
-    json_node_t *stale_expect = json_get(expect, "stale");
-    if (stale_expect && stale_expect->type == JSON_BOOL) {
-        int want = stale_expect->val.boolean;
-        int got = stale_node && stale_node->type == JSON_BOOL && stale_node->val.boolean;
-        if (want != got) {
-            report_fail(name, "stale: expected %d, got %d", want, got);
-            json_free(root);
-            return 0;
-        }
-    }
-
-    /* template_equals: deep-equality on the template half */
-    json_node_t *te = json_get(expect, "template_equals");
-    if (te) {
-        if (!has_template || !nodes_equal(template_node, te)) {
-            report_fail(name, "template_equals mismatch");
-            json_free(root);
-            return 0;
-        }
-    }
-
-    /* rest_equals */
-    const char *re = json_as_str(json_get(expect, "rest_equals"));
-    if (re) {
-        const char *got = json_as_str(rest_node);
-        if (!got || strcmp(got, re) != 0) {
-            report_fail(name, "rest_equals: expected \"%s\", got \"%s\"",
-                        re, got ? got : "(null)");
-            json_free(root);
-            return 0;
-        }
-    }
-
     report_pass(name);
     json_free(root);
     return 1;
@@ -990,11 +889,10 @@ static int run_fixture(const char *fixture_path,
     }
 
     json_node_t *test_node = json_get(root, "test");
-    const char *op_str = test_node ? json_as_str(json_get(test_node, "op")) : "";
     char *result = run_op(client, session, test_node, root, sock_dir);
 
     json_node_t *expect = json_get(root, "expect");
-    int passed = check_expect(name, expect, op_str, result);
+    int passed = check_expect(name, expect, result);
 
     bc_string_free(result);
     bc_session_close(session);

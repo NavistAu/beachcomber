@@ -1,11 +1,11 @@
 {
-  "name": "resolve_cascade_falls_through_to_comb",
+  "name": "get_cascade_falls_through_to_comb",
   "description": "env.X or comb.P.F cascade falls through to the comb term when env is absent. The template and the seed are put globally while the query runs at a cwd, so this also pins the chain resolution a static record gets: the global entry is the last link of every path's chain (canon field_resolution.md §\"Path resolution\").",
   "cwd": "/nonexistent/proj",
   "setup": [
     { "op": "put", "args": { "key": "myapp:template", "data": { "workspace": "{{ env.MYAPP_ENV or comb.myappcache.workspace }}" } } },
     { "op": "put", "args": { "key": "myappcache", "data": { "workspace": "cache-env" } } }
   ],
-  "test": { "op": "resolve", "args": { "key": "myapp.workspace" } },
+  "test": { "op": "get", "args": { "key": "myapp.workspace" } },
   "expect": { "status": "hit", "data_type": "string", "data_equals": "cache-env" }
 }

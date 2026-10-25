@@ -34,120 +34,6 @@ export type {
 const BC_GET_FORCE = 1 << 0;
 const BC_GET_WAIT = 1 << 1;
 
-// ---- CombResult ----
-
-/**
- * The result of a `get`: the node as the daemon holds it — both halves,
- * nothing rendered. A node may hold a cached value (`data`), a template
- * (`template`), or both. A template-only result is an address whose value
- * `resolve` renders: this is the raw half — `resolve(key, { cwd, env })` is
- * how you get the value. Such a result is neither a hit (no value until it
- * is rendered) nor a miss (something is stored there).
- *
- * Check `isHit` before accessing `data`, `ageMs`, and `stale`.
- * Convenience accessors (`getString`, `getNumber`, `getBool`) safely coerce
- * the data value and return `undefined` when the cast is not possible.
- */
-export interface CombResult {
-  ok: boolean;
-  /** Present on a cache hit, undefined when nothing is cached. */
-  data: unknown;
-  /** Age of the cached value in milliseconds (0 when nothing is cached). */
-  ageMs: number;
-  /** True when the cached value is considered stale (false when nothing is cached). */
-  stale: boolean;
-  /**
-   * The template in effect at the address, unrendered: a string for a leaf,
-   * an object for a group of templates. `undefined` when none is in effect.
-   */
-  readonly template: unknown;
-  /**
-   * The address left over when the template walk stopped at a string —
-   * `get("p.t.x")` where `p.t` is a template string gives the template of
-   * `p.t` and `rest === "x"`. `undefined` otherwise.
-   */
-  readonly rest: string | undefined;
-  /** True when the cache had a value for this key. */
-  isHit: boolean;
-  /** True when nothing is stored at the address: no value and no template. */
-  isMiss: boolean;
-  /**
-   * Return the data (or a named field within an object result) as a string.
-   * @param field  Optional field name for object results (e.g. "branch" from "git").
-   */
-  getString(field?: string): string | undefined;
-  /**
-   * Return the data (or a named field within an object result) as a number.
-   */
-  getNumber(field?: string): number | undefined;
-  /**
-   * Return the data (or a named field within an object result) as a boolean.
-   */
-  getBool(field?: string): boolean | undefined;
-}
-
-function pickField(data: unknown, field?: string): unknown {
-  if (field !== undefined && typeof data === 'object' && data !== null && !Array.isArray(data)) {
-    return (data as Record<string, unknown>)[field];
-  }
-  return data;
-}
-
-/** bc_get's payload: `template`/`rest` are present only when set. */
-export interface GetResultShape {
-  data: unknown;
-  age_ms: number | null;
-  stale: boolean | null;
-  template?: unknown;
-  rest?: string;
-}
-
-/** Exported for the transport tests, which drive a transport without a `Client`. */
-export function makeCombResult(raw: GetResultShape): CombResult {
-  // The ABI sets age_ms/stale to null whenever data is absent (a miss, or a
-  // template-only node); a Hit always carries an age. That is the reliable
-  // hit signal, since the data value itself may legitimately be JSON null
-  // on a hit.
-  const isHit = raw.age_ms !== null;
-  const data = isHit ? raw.data : undefined;
-  const ageMs = raw.age_ms ?? 0;
-  const stale = raw.stale ?? false;
-  const template = raw.template;
-  const rest = raw.rest;
-
-  return {
-    ok: true,
-    data,
-    ageMs,
-    stale,
-    template,
-    rest,
-    isHit,
-    isMiss: !isHit && template === undefined,
-    getString(field?: string): string | undefined {
-      const v = pickField(data, field);
-      if (v === undefined || v === null) return undefined;
-      if (typeof v === 'string') return v;
-      if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-      return JSON.stringify(v);
-    },
-    getNumber(field?: string): number | undefined {
-      const v = pickField(data, field);
-      if (typeof v === 'number') return v;
-      if (typeof v === 'string') {
-        const n = Number(v);
-        return isNaN(n) ? undefined : n;
-      }
-      return undefined;
-    },
-    getBool(field?: string): boolean | undefined {
-      const v = pickField(data, field);
-      if (typeof v === 'boolean') return v;
-      return undefined;
-    },
-  };
-}
-
 // ---- Parse helpers ----
 
 function parseHello(data: unknown): HelloInfo {
@@ -226,11 +112,15 @@ function parseIntrospect(subject: IntrospectSubject, data: unknown): IntrospectR
   return { subject, other: data ?? null } as IntrospectResponse;
 }
 
-function flagsOf(opts?: { force?: boolean; wait?: boolean }): number {
+function flagsOf(opts: GetOptions): number {
   let flags = 0;
-  if (opts?.force) flags |= BC_GET_FORCE;
-  if (opts?.wait) flags |= BC_GET_WAIT;
+  if (opts.force) flags |= BC_GET_FORCE;
+  if (opts.wait) flags |= BC_GET_WAIT;
   return flags;
+}
+
+function envJsonOf(env: Record<string, string> | undefined): string | undefined {
+  return env !== undefined ? JSON.stringify(env) : undefined;
 }
 
 // ---- WatchStream ----
@@ -238,9 +128,9 @@ function flagsOf(opts?: { force?: boolean; wait?: boolean }): number {
 /**
  * An AsyncIterable that yields WatchEvent values from an open watch handle.
  *
- * Each event is the resolved value of the watched key — what `comb get`
- * would print for it — re-resolved whenever any key the resolution reads
- * changes, including the provider's template tree.
+ * Each event is the value of the watched key — what `comb get` would print
+ * for it, and what `Client.get` answers — read again whenever any key the
+ * read depends on changes, including the provider's template tree.
  *
  * Iterate with `for await (const event of stream)`. Call `stream.close()`
  * to stop watching.
@@ -295,30 +185,23 @@ export class Session {
     private readonly handle: SessionHandle,
   ) {}
 
-  /** Set the default path for subsequent queries on this connection. */
+  /**
+   * Set this session's directory: every later `get` that names no `cwd`, and
+   * `put` and `refresh` that name no `path`, address it.
+   */
   async setContext(repoPath: string): Promise<void> {
     unwrap(await this.tp.sessionSetContext(this.handle, repoPath));
   }
 
   /**
-   * Query a key, raw — both halves, as `Client.get` describes. If
-   * `setContext` has been called, `path` can be omitted.
+   * `Client.get` on this session's connection. An omitted `cwd` is this
+   * session's directory (`setContext`) when it has one, else the global
+   * entry.
    */
-  async get(key: string, path?: string): Promise<CombResult> {
-    const result = unwrap(await this.tp.sessionGet(this.handle, key, path, 0)) as GetResultShape;
-    return makeCombResult(result);
-  }
-
-  /** Query a key with optional force/wait flags. */
-  async getWithFlags(
-    key: string,
-    path?: string,
-    opts?: { force?: boolean; wait?: boolean },
-  ): Promise<CombResult> {
-    const result = unwrap(
-      await this.tp.sessionGet(this.handle, key, path, flagsOf(opts)),
-    ) as GetResultShape;
-    return makeCombResult(result);
+  async get(key: string, opts: GetOptions = {}): Promise<unknown> {
+    return unwrap(
+      await this.tp.sessionGet(this.handle, key, opts.cwd, envJsonOf(opts.env), flagsOf(opts)),
+    );
   }
 
   /**
@@ -374,17 +257,33 @@ export interface ClientOptions {
   /** Whether the underlying client may auto-start the daemon. Default: true. */
   autostart?: boolean;
   /**
-   * Whether a template this client resolves (`resolve`, `eval`) may call
+   * Whether a template this client renders (`get`, `eval`) may call
    * `exec()`. Default: false — a template that calls it then fails with
    * `exec() is disabled in this context`.
    */
   exec?: boolean;
 }
 
+/** The inputs of a `get`: the directory, the caller's environment and the read's flags. */
+export interface GetOptions {
+  /**
+   * The directory the read addresses (`~` is home, a relative path is
+   * against this process's working directory). Omitted, the global entry.
+   */
+  cwd?: string;
+  /** The caller's environment for `env.*` references. Omitted, none: every `env.*` is absent. */
+  env?: Record<string, string>;
+  /** Re-execute every Source the read demands before answering. */
+  force?: boolean;
+  /** Re-execute a stale entry inline before answering. */
+  wait?: boolean;
+}
+
+/** The inputs of an `eval` or a `watch`. */
 export interface ResolveOptions {
-  /** Required: every fetch the resolution makes addresses `cwd`. Never defaults to the process's own cwd. */
+  /** Required: every fetch the read makes addresses `cwd`, read as `get` reads it. */
   cwd: string;
-  /** The caller's environment for `env.*` references. Absent references resolve to `""`. */
+  /** The caller's environment for `env.*` references. Omitted, none: every `env.*` is absent. */
   env?: Record<string, string>;
 }
 
@@ -414,36 +313,22 @@ export class Client {
   }
 
   /**
-   * Read a node from the daemon, raw — both halves, nothing rendered.
+   * The value `comb get` prints for this key, cwd and env.
    *
-   * The result carries the cached value (`data`) and the template in
-   * effect at the address (`template`), whichever exist. A template-only
-   * result is an address whose value `resolve` renders — this is the raw
-   * half; `resolve(key, { cwd, env })` is how you get the value. `isHit`
-   * is "data present"; `isMiss` is "no data and no template".
+   * The daemon holds the templates (`<provider>:template`, seeded from
+   * configuration or `put`); this client renders them. A plain field is
+   * its cached value, a templated one is rendered, and a bare provider
+   * name is the whole merged namespace. The unrendered halves are facets,
+   * read like any key: `"p:template.x"` is the template as stored,
+   * `"p:put.x"` and `"p:source.x"` those layers' values.
    *
-   * @param key   Provider key, e.g. `"git.branch"` or `"git"`.
-   * @param path  Optional repository/working-directory path.
+   * @param key   `"provider.field"`, or a bare provider name.
+   * @param opts  `cwd` (omitted: the global entry), `env` (omitted: no
+   *              environment), and the `force`/`wait` flags.
+   * @returns     The value, or `null` on a miss.
    */
-  async get(key: string, path?: string): Promise<CombResult> {
-    const result = unwrap(await this.tp.get(this.handle, key, path, 0)) as GetResultShape;
-    return makeCombResult(result);
-  }
-
-  /**
-   * Read a cached value with optional force/wait flags.
-   *
-   * @param key   Provider key.
-   * @param path  Optional path.
-   * @param opts  Optional flags: force recomputation, wait for fresh value.
-   */
-  async getWithFlags(
-    key: string,
-    path?: string,
-    opts?: { force?: boolean; wait?: boolean },
-  ): Promise<CombResult> {
-    const result = unwrap(await this.tp.get(this.handle, key, path, flagsOf(opts))) as GetResultShape;
-    return makeCombResult(result);
+  async get(key: string, opts: GetOptions = {}): Promise<unknown> {
+    return unwrap(await this.tp.get(this.handle, key, opts.cwd, envJsonOf(opts.env), flagsOf(opts)));
   }
 
   /**
@@ -495,23 +380,9 @@ export class Client {
   }
 
   /**
-   * Resolve `key` to the same value `comb get` returns for this key, cwd
-   * and env. The daemon holds the templates (`<provider>:template`, seeded
-   * from configuration or `put`); this client renders them. A plain field
-   * is its cached value, a templated one is rendered, and a bare provider
-   * name is the whole merged namespace. A miss is `null`. `cwd` is
-   * required: this library never falls back to the process's own working
-   * directory.
-   */
-  async resolve(key: string, opts: ResolveOptions): Promise<unknown> {
-    const envJson = opts.env !== undefined ? JSON.stringify(opts.env) : undefined;
-    return unwrap(await this.tp.resolve(this.handle, key, opts.cwd, envJson));
-  }
-
-  /**
    * Render a template that is stored nowhere — the same value `comb eval`
    * prints. Every ref resolves exactly as it would inside a stored
-   * template, so `eval("{{ p.f }}")` and `resolve("p.f")` agree.
+   * template, so `eval("{{ p.f }}")` and `get("p.f")` agree.
    *
    * `templateStr` accepts a single `{{ expr }}` tag, or literal
    * text/several tags — the former keeps the expression's natural type,
@@ -519,26 +390,23 @@ export class Client {
    * literal text).
    */
   async eval(templateStr: string, opts: ResolveOptions): Promise<unknown> {
-    const envJson = opts.env !== undefined ? JSON.stringify(opts.env) : undefined;
-    return unwrap(await this.tp.evaluate(this.handle, templateStr, opts.cwd, envJson));
+    return unwrap(await this.tp.evaluate(this.handle, templateStr, opts.cwd, envJsonOf(opts.env)));
   }
 
   /**
-   * Watch a key's *value* — what `resolve` answers for it — and receive it
+   * Watch a key's *value* — what `get` answers for it — and receive it
    * again whenever it changes, so a template edited under the watch fires it
    * just as a changed cache record does. The stream is an
    * AsyncIterable<WatchEvent>; call `stream.close()` to stop watching.
    *
-   * `cwd` and `env` mean what they mean for `resolve`, and for the same
-   * reason: this library never falls back to the process's own working
-   * directory or environment.
+   * `cwd` and `env` mean what they mean for `get`, except that `cwd` is
+   * required here.
    *
    * @param key   Provider key, e.g. `"git.branch"`.
-   * @param opts  `cwd` (required) and `env`, as `resolve` takes them.
+   * @param opts  `cwd` (required) and `env`, as `get` reads them.
    */
   async watch(key: string, opts: ResolveOptions): Promise<WatchStream> {
-    const envJson = opts.env !== undefined ? JSON.stringify(opts.env) : undefined;
-    const handle = this.tp.openWatch(this.handle, key, opts.cwd, envJson);
+    const handle = this.tp.openWatch(this.handle, key, opts.cwd, envJsonOf(opts.env));
     return new WatchStream(this.tp, handle);
   }
 

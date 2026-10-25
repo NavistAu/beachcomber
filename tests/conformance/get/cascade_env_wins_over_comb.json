@@ -1,5 +1,5 @@
 {
-  "name": "resolve_cascade_env_wins_over_comb",
+  "name": "get_cascade_env_wins_over_comb",
   "description": "env.X or comb.P.F cascade takes the env term when both env and comb are present. This fixture proves env precedence only; that the comb term is reachable at all is its sibling cascade_falls_through_to_comb's job.",
   "env": { "MYAPP_ENV": "prod-env" },
   "cwd": "/nonexistent/proj",
@@ -7,6 +7,6 @@
     { "op": "put", "args": { "key": "myapp:template", "data": { "workspace": "{{ env.MYAPP_ENV or comb.myappcache.workspace }}" } } },
     { "op": "put", "args": { "key": "myappcache", "data": { "workspace": "cache-env" } } }
   ],
-  "test": { "op": "resolve", "args": { "key": "myapp.workspace" } },
+  "test": { "op": "get", "args": { "key": "myapp.workspace" } },
   "expect": { "status": "hit", "data_type": "string", "data_equals": "prod-env" }
 }

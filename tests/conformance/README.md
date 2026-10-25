@@ -28,8 +28,7 @@ conformance run in the same commit.
   "expect": {
     "status": "hit",
     "data_type": "number",
-    "data_equals": 1,
-    "stale": false
+    "data_equals": 1
   }
 }
 ```
@@ -43,8 +42,8 @@ conformance run in the same commit.
 | `setup` | no | array of op descriptors to run first (ignored for expectations) |
 | `test` | yes | the op descriptor whose response is asserted |
 | `expect` | yes | assertions — see below |
-| `env` | no | object mapping env var name to string value. The caller's environment for `resolve` and `eval` fixtures — the only source of `env.*`. Defaults to empty. |
-| `cwd` | no | string. The directory a `resolve` or `eval` fixture runs at: every daemon query the resolution makes addresses it. Defaults to the runner's per-fixture temp directory. |
+| `env` | no | object mapping env var name to string value. The caller's environment for `get`, `eval` and `watch` fixtures — the only source of `env.*`. Defaults to empty. |
+| `cwd` | no | string. The directory a `get`, `eval` or `watch` fixture reads at: every daemon query the read makes addresses it. Defaults to the runner's per-fixture temp directory. |
 
 There is no `virtual` block. A fixture declares a template the way any
 caller does — by a `setup` `put` to `<provider>:template`:
@@ -59,20 +58,20 @@ daemon is the only source of templates; the resolver takes no overrides.
 ### Op descriptor
 
 ```json
-{ "op": "<hello|get|refresh|context|put|status|watch|introspect|resolve|eval>", "args": {...} }
+{ "op": "<hello|get|refresh|context|put|status|watch|introspect|eval>", "args": {...} }
 ```
 
 `args` matches the wire request body for that op (minus `op` itself). See
 `docs/protocol-spec.md` for each op's request schema.
 
-### The `resolve` op
+### The `get` op
 
-`resolve` is not a wire op. It exercises the client-side resolver
-(`libbeachcomber::resolve`, the one every SDK's `resolve` binds through the
-C ABI's `bc_resolve`): the daemon answers each `get` with the cached value
-and the template in effect at the address, and the client renders the
-template with the fixture's `env` and `cwd`. `args.key` is the only
-argument, and it resolves exactly as `comb get <key>` does:
+`get` is what `comb get` prints, the same in every SDK: the client-side
+resolver (`libbeachcomber::resolve`, which every SDK's `get` binds through
+the C ABI's `bc_get`) asks the daemon for each node — the cached value and
+the template in effect at the address — and renders the template with the
+fixture's `env` and `cwd`. `args.key` is the only argument, and it resolves
+exactly as `comb get <key>` does:
 
 - `"provider.field"` — the cached value, or, where a template is in effect
   at that address, the rendered template. Refs of the form `comb.P.F` /
@@ -87,11 +86,15 @@ argument, and it resolves exactly as `comb get <key>` does:
 A miss — nothing stored or templated at the address — is `ok=true`, data
 absent. An all-empty cascade is `""`, a hit.
 
-A `resolve` fixture typically seeds cache values and templates via `setup`
-`put` ops, supplies `env`/`cwd` as needed, and asserts the resolved value and
-its `data_type`.
+The unrendered halves are facets, read like any key: `p:template.x` is the
+template as stored, `p:put.x` and `p:source.x` those layers' values. No SDK
+exposes the raw wire read.
 
-Daemon queries a `resolve` makes are scoped to the fixture's `cwd`. A
+A `get` fixture typically seeds cache values and templates via `setup`
+`put` ops, supplies `env`/`cwd` as needed, and asserts the value and its
+`data_type`.
+
+Daemon queries a `get` makes are scoped to the fixture's `cwd`. A
 pathless (global) `setup` `put` is still visible to them: a read at a path
 resolves static records up the directory chain, and the global entry is the
 last link of every chain (canon `field_resolution.md` §"Path resolution").
@@ -102,7 +105,7 @@ Seed with `args.path` only when the fixture is about path-keyed data.
 `eval` is not a wire op either. It renders one **value expression** that is
 stored nowhere, every ref resolved as it would be inside a stored template —
 so `{ "op": "eval", "args": { "template": "{{ p.f }}" } }` and
-`{ "op": "resolve", "args": { "key": "p.f" } }` agree by construction.
+`{ "op": "get", "args": { "key": "p.f" } }` agree by construction.
 `args.template` is the only argument:
 
 ```json
@@ -123,15 +126,13 @@ A missing or unknown ref is falsy at any depth, never an error: an absent
 `env.*`, a cache miss, and a daemon-rejected key (invalid facet syntax)
 all evaluate falsy, so `{{ nope.field or "x" }}` is `"x"`.
 
-`env` and `cwd` apply exactly as they do for `resolve`, with the same chain
+`env` and `cwd` apply exactly as they do for `get`, with the same chain
 resolution. `exec()` is disabled: the runners build their client without the
 `exec` option, as an SDK user does by default.
 
-**Not every runner supports `resolve`/`eval`.** A runner whose binding
-doesn't implement them must **skip** those fixtures and report them as
-skipped, never as passed — a silent skip that reads as a pass is worse than
-no fixture. The Lua runner skips both when it falls back to its subprocess
-transport, which has no client-side resolver.
+**Not every runner supports `eval`.** A runner whose binding doesn't
+implement it must **skip** those fixtures and report them as skipped, never
+as passed — a silent skip that reads as a pass is worse than no fixture.
 
 ### Expectation kinds
 
@@ -140,33 +141,18 @@ uptime — those vary per run.
 
 | Key | Meaning |
 |---|---|
-| `status` | "hit" (ok=true, data present), "miss" (ok=true, neither data nor template present), "template" (ok=true, data absent, template present — a template-only node, neither a hit nor a miss), "ok" (ok=true, data not asserted), "error" (ok=false) |
+| `status` | "hit" (ok=true, data present), "miss" (ok=true, data absent), "ok" (ok=true, data not asserted), "error" (ok=false) |
 | `data_type` | "string", "number", "bool", "object", "array", "null" |
 | `data_equals` | exact deep-equality match on data |
 | `data_as_text` | data interpreted as text (scalar stringification, or field-less object with a single value) equals this |
 | `data_contains_field` | data is an object containing this field |
 | `data_field_equals` | `{ "field": "<name>", "value": <json> }` — data.field deep-equals |
-| `age_ms_present` | boolean — age_ms is (not) null |
-| `stale` | boolean — stale equals this |
 | `error_contains` | ok=false and response.error contains this substring |
-| `template_equals` | exact deep-equality match on a `get`'s template half (a string for a leaf, an object for a group); fails when no template is present |
-| `rest_equals` | string — a `get`'s `rest`, the address left over past a template string, equals this; fails when absent |
 
 Multiple expectations in the same `expect` block are AND-combined. A
 fixture using a key outside this table must **fail** in every runner, never
 be ignored — otherwise it can pass vacuously; the same goes for a `status`
-value outside the five above.
-
-### The template half of `get`
-
-`get` returns the node as the daemon holds it — both halves, nothing
-rendered (design §3.4): `data` is the cached value, `template` the template
-in effect at the address, `rest` the address left over when the template
-walk stopped at a string. The runner reads them off the SDK's typed result
-(`template`/`rest` fields under each language's idiom). A runner whose
-transport cannot see the template half must skip fixtures that assert it
-(the `template` status, `template_equals`, `rest_equals`), reported as
-skipped — the Lua runner does so over its subprocess transport.
+value outside the four above.
 
 ## Isolation
 
@@ -199,8 +185,6 @@ tests/conformance/
 ├── introspect/
 │   └── *.json
 ├── mapping/
-│   └── *.json
-├── resolve/
 │   └── *.json
 └── eval/
     └── *.json

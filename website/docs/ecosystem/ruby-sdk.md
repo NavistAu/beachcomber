@@ -20,18 +20,21 @@ require 'beachcomber'
 client = Beachcomber::Client.new          # auto-discovers socket
 # client = Beachcomber::Client.new(socket_path: '/custom/path')
 # client = Beachcomber::Client.new(timeout: 0.5)  # 500 ms
-# client = Beachcomber::Client.new(exec: true)    # templates this client resolves may call exec()
+# client = Beachcomber::Client.new(exec: true)    # templates this client renders may call exec()
 
-result = client.get('git.branch', path: '/path/to/repo')
-if result.hit?
-  puts result.data    # "main"
-  puts result.age_ms  # 42
-  puts result.stale?  # false
-end
+# What `comb get git.branch` prints in that directory; nil on a miss
+branch = client.get('git.branch', cwd: '/path/to/repo')   # "main"
 
-# Hash data: full provider query
-result = client.get('git', path: '/path/to/repo')
-puts result['branch'] if result.hit?
+# A full provider (a Hash)
+git = client.get('git', cwd: '/path/to/repo')
+puts git['branch']
+
+# The caller's environment for env.* refs, and the force/wait flags
+client.get('aws.profile', cwd: '/path/to/repo', env: ENV.to_h)
+client.get('git.branch', cwd: '/path/to/repo', force: true, wait: true)
+
+# The template itself, unrendered: a facet, read like any key
+client.get('aws:template.profile')
 ```
 
 ## Sessions
@@ -40,9 +43,9 @@ Persistent connections avoid per-call socket overhead when making multiple queri
 
 ```ruby
 client.session do |s|
-  s.set_context('/path/to/repo')   # sets default path for this connection
-  r1 = s.get('git.branch')
-  r2 = s.get('git.dirty')
+  s.set_context('/path/to/repo')   # this session's directory
+  branch = s.get('git.branch')     # reads there
+  dirty = s.get('git.dirty')
   s.refresh('git')
 end
 # connection closed automatically
@@ -56,50 +59,32 @@ Opens a fresh socket connection for each call. Simple and stateless.
 
 | Method | Description |
 |--------|-------------|
-| `get(key, path: nil)` | Read a node raw — both halves, nothing rendered. Returns a `Result`. |
-| `get_with_flags(key, path: nil, force: false, wait: false)` | Read with protocol flags. Returns a `Result`. |
+| `get(key, cwd: nil, env: nil, force: false, wait: false)` | The value `comb get` prints for this key, cwd and env; `nil` on a miss. |
 | `refresh(key, path: nil)` | Force recomputation. Returns `nil`. |
 | `hello` | Handshake. Returns a `HelloInfo`. |
 | `put(key, data, ttl: nil, path: nil)` | Write a value into the cache; `nil` removes the node. Returns `nil`. |
 | `introspect(subject, duration_secs: nil)` | Inspect a daemon subsystem. Returns an `IntrospectResponse`. |
-| `watch(key, cwd:, env: nil)` | Subscribe to a key's *resolved* value — what `resolve` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `cwd` is required, matching `resolve`. Returns a `WatchStream` (Enumerable) whose events carry no age or staleness. |
+| `watch(key, cwd:, env: nil)` | Subscribe to a key's value — what `get` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `cwd` is required. Returns a `WatchStream` (Enumerable) whose events carry no age or staleness. |
 | `status` | Daemon cache status as typed rows. Returns `Array<CacheRow>`. |
 | `session { \|s\| }` | Open a persistent connection (see above). |
-| `resolve(key, cwd:, env: nil)` | The same value `comb get` returns for this key, cwd and env — the daemon holds the templates, the client renders them; a bare provider name is the whole merged namespace. |
 | `eval_expression(template_str, cwd:, env: nil)` | Render a template stored nowhere — the same value `comb eval` prints. |
 
-`resolve` and `eval_expression` require `cwd`. `template_str` (and each stored template) accepts a single `{{ expr }}` tag, or literal text/several tags — the former keeps the expression's natural type, the latter is always a string (a source with no tags at all is its literal text). `exec()` inside a template runs only on a client created with `Beachcomber::Client.new(exec: true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
+`get` returns the bare value. The daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them: a plain field is its cached value, a templated one is rendered, and a bare provider name is the whole merged namespace. `cwd: nil` is the global entry. The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values.
+
+`eval_expression` and `watch` require `cwd`. `template_str` (and each stored template) accepts a single `{{ expr }}` tag, or literal text/several tags — the former keeps the expression's natural type, the latter is always a string (a source with no tags at all is its literal text). `exec()` inside a template runs only on a client created with `Beachcomber::Client.new(exec: true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
 
 ### `Beachcomber::Session`
 
 | Method | Description |
 |--------|-------------|
-| `set_context(path)` | Set default path for subsequent queries. |
-| `get(key, path: nil)` | Read a cached value. |
-| `get_with_flags(key, path: nil, force: false, wait: false)` | Read with protocol flags. |
+| `set_context(path)` | Set this session's directory: a `get` with no `cwd`, and a `put` or `refresh` with no `path`, address it. |
+| `get(key, cwd: nil, env: nil, force: false, wait: false)` | `Client#get` on this connection; `cwd: nil` is the session's directory, else the global entry. |
 | `refresh(key, path: nil)` | Force recomputation. |
 | `hello` | Handshake. Returns a `HelloInfo`. |
 | `put(key, data, ttl: nil, path: nil)` | Write a value into the cache; `nil` removes the node. |
 | `introspect(subject, duration_secs: nil)` | Inspect a daemon subsystem. Returns an `IntrospectResponse`. |
 | `status` | Daemon cache status as typed rows. Returns `Array<CacheRow>`. |
 | `close` | Close the connection (called automatically by `Client#session`). |
-
-### `Beachcomber::Result`
-
-`get` returns the node as the daemon holds it — both halves, nothing rendered. A node may hold a cached value (`data`), a template (`template`), or both. A template-only result is neither a hit nor a miss: it is an address whose value `resolve` renders — `get` is the raw half, `resolve(key, cwd:, env:)` is how you get the value.
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `ok?` | Boolean | Daemon reported success. |
-| `hit?` | Boolean | Success and data is present. |
-| `miss?` | Boolean | Success and neither data nor a template is present. |
-| `stale?` | Boolean | Data exists but is stale. |
-| `data` | Object/nil | Decoded payload (String, Hash, Array, …). |
-| `age_ms` | Integer | Age of the cached value in milliseconds. |
-| `template` | String/Hash/nil | The template in effect at the address, unrendered: a String for a leaf, a Hash for a group. `nil` when none is in effect. |
-| `rest` | String/nil | The address left over when the template walk stopped at a string — `get('p.t.x')` where `p.t` is a template string gives the template of `p.t` and `rest == 'x'`. |
-| `error` | String/nil | Error message when `ok?` is false. |
-| `[](key)` | Object/nil | Delegates to `data` hash. Raises `TypeError` if data is not a Hash. |
 
 ### Key format
 

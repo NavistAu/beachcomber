@@ -2,52 +2,30 @@ package beachcomber
 
 import "encoding/json"
 
-// Result wraps a successful library response. Data holds the decoded
-// payload; its concrete type is whatever encoding/json unmarshals into (map,
-// slice, scalar). Construction always succeeds — an ok:false envelope
+// Result wraps a successful read: Data is the value Get or Eval answered,
+// decoded into whatever encoding/json unmarshals it to (map, slice, scalar),
+// or nil on a miss. Construction always succeeds — an ok:false envelope
 // becomes a *ServerError instead of a Result, so every Result you hold
 // represents success.
-//
-// Get returns the node as the daemon holds it — both halves, nothing
-// rendered. A node may hold a cached value (Data), a template (Template),
-// or both. A template-only Result is an address whose value Resolve
-// renders: this is the raw half — Resolve(key, cwd, env) is how you get the
-// value. Such a Result is neither a hit (no value until it is rendered) nor
-// a miss (something is stored there).
 type Result struct {
-	OK    bool
-	Data  interface{}
-	AgeMs uint64
-	Stale bool
+	OK   bool
+	Data interface{}
 
-	// Template is the template in effect at the address, unrendered: a
-	// string for a leaf, a map for a group of templates. nil when none is
-	// in effect.
-	Template interface{}
-	// Rest is the address left over when the template walk stopped at a
-	// string — Get("p.t.x") where p.t is a template string gives the
-	// template of p.t and Rest "x". "" otherwise.
-	Rest string
-
-	// raw preserves the JSON payload actually parsed (the get-result's
-	// {"data":...,"age_ms":...,"stale":...,"template":...,"rest":...}
-	// shape, or the resolved value for Resolve/Eval) for callers that need
-	// it. Unlike the pre-ABI SDK this is not a full wire response line —
-	// the library returns the envelope's data field only, with "ok"
-	// already stripped by the binding.
+	// raw preserves the JSON value actually parsed — the envelope's data
+	// field, with "ok" already stripped by the binding — for callers that
+	// need it.
 	raw []byte
 }
 
-// IsHit reports whether the response carried data (a cache hit).
+// IsHit reports whether the read answered a value.
 func (r *Result) IsHit() bool {
 	return r.OK && r.Data != nil
 }
 
-// IsMiss reports whether nothing is stored at the address: the response
-// was successful and carried neither data nor a template. A template-only
-// Result is not a miss.
+// IsMiss reports whether nothing answers at the address: the read
+// succeeded and its value is absent.
 func (r *Result) IsMiss() bool {
-	return r.OK && r.Data == nil && r.Template == nil
+	return r.OK && r.Data == nil
 }
 
 // RawJSON returns the JSON payload backing this Result (see the raw field's
@@ -138,52 +116,12 @@ func (r *Result) getFloat(field string) (float64, bool) {
 
 // ---------------------------------------------------------------------------
 // Parse helpers — decode an envelope's already-unwrapped "data" field into
-// typed results. See combresult_to_json / cache_row_to_json / etc. in
-// libbeachcomber-ffi/src/lib.rs for the wire shapes these mirror.
+// typed results. See libbeachcomber-ffi/src/lib.rs for the wire shapes
+// these mirror.
 // ---------------------------------------------------------------------------
 
-// getResultWire is bc_get / bc_session_get's data shape: data with
-// age_ms/stale when the node holds a value (null otherwise), and template/
-// rest present only when set.
-type getResultWire struct {
-	Data     json.RawMessage `json:"data"`
-	AgeMs    *uint64         `json:"age_ms"`
-	Stale    *bool           `json:"stale"`
-	Template json.RawMessage `json:"template"`
-	Rest     string          `json:"rest"`
-}
-
-func resultFromGetData(raw json.RawMessage) (*Result, error) {
-	var w getResultWire
-	if err := json.Unmarshal(raw, &w); err != nil {
-		return nil, &ProtocolError{msg: "malformed get result: " + err.Error()}
-	}
-	r := &Result{OK: true, raw: raw, Rest: w.Rest}
-	if w.AgeMs != nil {
-		r.AgeMs = *w.AgeMs
-	}
-	if w.Stale != nil {
-		r.Stale = *w.Stale
-	}
-	if len(w.Data) > 0 && string(w.Data) != "null" {
-		var d interface{}
-		if err := json.Unmarshal(w.Data, &d); err != nil {
-			return nil, &ProtocolError{msg: "malformed get data: " + err.Error()}
-		}
-		r.Data = d
-	}
-	if len(w.Template) > 0 && string(w.Template) != "null" {
-		var t interface{}
-		if err := json.Unmarshal(w.Template, &t); err != nil {
-			return nil, &ProtocolError{msg: "malformed get template: " + err.Error()}
-		}
-		r.Template = t
-	}
-	return r, nil
-}
-
-// resultFromScalarData decodes a bare JSON value (Resolve/Eval's data field
-// — no age_ms/stale wrapper) into a Result.
+// resultFromScalarData decodes the value Get and Eval answer (the
+// envelope's data field, null on a miss) into a Result.
 func resultFromScalarData(raw json.RawMessage) (*Result, error) {
 	r := &Result{OK: true, raw: raw}
 	if len(raw) > 0 && string(raw) != "null" {

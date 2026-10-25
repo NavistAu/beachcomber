@@ -27,22 +27,25 @@ uv add libbeachcomber
 ## Quick start
 
 ```python
+import os
+
 from beachcomber import Client
 
 client = Client()
 
-# Read a single field
-result = client.get("git.branch", path="/path/to/repo")
-if result.is_hit:
-    print(result.data)    # "main"
-    print(result.age_ms)  # 234
-    print(result.stale)   # False
+# What `comb get git.branch` prints in that directory; None on a miss
+branch = client.get("git.branch", cwd="/path/to/repo")   # "main"
 
-# Read a full provider (returns dict)
-result = client.get("git", path="/path/to/repo")
-if result.is_hit:
-    print(result["branch"])  # "main"
-    print(result["dirty"])   # False
+# A full provider (a dict)
+git = client.get("git", cwd="/path/to/repo")
+print(git["branch"], git["dirty"])
+
+# The caller's environment for env.* refs, and the force/wait flags
+client.get("aws.profile", cwd="/path/to/repo", env=dict(os.environ))
+client.get("git.branch", cwd="/path/to/repo", force=True, wait=True)
+
+# The template itself, unrendered: a facet, read like any key
+client.get("aws:template.profile")
 
 # Force recomputation
 client.refresh("git", path="/path/to/repo")
@@ -85,16 +88,12 @@ This mirrors the daemon's bind path; no session-scoped environment (`$TMPDIR`, `
 ```python
 client = Client()
 client = Client(socket_path="/custom/path")
-client = Client(exec=True)   # templates this client resolves may call exec(); off by default
+client = Client(exec=True)   # templates this client renders may call exec(); off by default
 ```
 
-#### `client.get(key, path=None)`
+#### `client.get(key, cwd=None, env=None, force=False, wait=False)` / `client.eval(template_str, cwd, env=None)`
 
-Read a node raw — both halves, nothing rendered. Returns a `Result` (see below).
-
-#### `client.resolve(key, cwd, env=None)` / `client.eval(template_str, cwd, env=None)`
-
-`resolve` returns the same value `comb get` returns for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `eval` renders a template that is stored nowhere — the same value `comb eval` prints. Both `cwd` arguments are required. The template accepts a single `{{ expr }}` tag, or literal text/several tags — the former keeps the expression's natural type, the latter is always a string (a source with no tags at all is its literal text). `exec()` inside a template runs only on a `Client(exec=True)`; otherwise it fails with `exec() is disabled in this context`.
+`get` returns the value `comb get` prints for this key, cwd and env — the bare value, `None` on a miss: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `cwd=None` is the global entry; `force` re-executes every Source the read demands first, and `wait` re-executes a stale entry inline. The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `eval` renders a template that is stored nowhere — the same value `comb eval` prints. The template accepts a single `{{ expr }}` tag, or literal text/several tags — the former keeps the expression's natural type, the latter is always a string (a source with no tags at all is its literal text). `exec()` inside a template runs only on a `Client(exec=True)`; otherwise it fails with `exec() is disabled in this context`.
 
 #### `client.refresh(key, path=None)`
 
@@ -118,31 +117,11 @@ Inspect a daemon subsystem. `subject` is an `IntrospectSubject` enum value (`DAE
 
 #### `client.watch(key, cwd, env=None)`
 
-Subscribe to a key's *resolved* value — the same value `resolve(key, cwd, env)` returns — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `cwd` is required, matching `resolve`'s semantics. Returns a `WatchStream` (context manager / iterator) yielding `WatchEvent` instances, whose `data` carries no `age_ms`/`stale` — a value resolved from several cache records has no single age or staleness.
-
-#### `client.get_with_flags(key, path=None, force=False, wait=False)`
-
-Read a cached value with optional protocol flags: `force` triggers recomputation before returning; `wait` blocks until a fresh value is available.
+Subscribe to a key's value — the same value `get(key, cwd, env)` returns — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `cwd` is required. Returns a `WatchStream` (context manager / iterator) yielding `WatchEvent` instances, whose `data` carries no `age_ms`/`stale` — a value resolved from several cache records has no single age or staleness.
 
 #### `client.session()`
 
 Returns a context manager that yields a `Session` for persistent connections.
-
-### `Result`
-
-`get` returns the node as the daemon holds it — both halves, nothing rendered. A node may hold a cached value (`data`), a template (`template`), or both. A template-only result is neither a hit nor a miss: it is an address whose value `resolve` renders — `get` is the raw half, `resolve(key, cwd, env)` is how you get the value.
-
-| Attribute | Type | Description |
-|---|---|---|
-| `is_hit` | `bool` | `True` when the cache had a value |
-| `is_miss` | `bool` | `True` when nothing is stored at the address: no value **and** no template |
-| `data` | `Any` | Cached value (scalar or dict); `None` when nothing is cached |
-| `age_ms` | `int` | Cache age in milliseconds |
-| `stale` | `bool` | Whether the value is stale |
-| `template` | `Any` | The template in effect at the address, unrendered: a string for a leaf, a dict for a group; `None` when none is in effect |
-| `rest` | `Optional[str]` | The address left over when the template walk stopped at a string — `get("p.t.x")` where `p.t` is a template string gives the template of `p.t` and `rest == "x"` |
-
-For full provider results, `result["field"]` delegates to the underlying dict.
 
 ## Exceptions
 

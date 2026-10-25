@@ -254,7 +254,7 @@ async fn store_with_path_scope() {
 // the nearest winning (`docs/canon/field_resolution.md` §"Path resolution").
 // The pathless entry is the global one, the last link of every chain, so data a
 // pathless `put` stored stays reachable from any directory — which is what
-// every SDK's bc_eval/bc_resolve needs, since they supply a cwd unconditionally.
+// every SDK's bc_get/bc_eval needs, since they supply a cwd unconditionally.
 //
 // This is layering, not a fallback: the chain is always merged, so a nearer
 // record shadows a farther one record by record rather than one whole entry
@@ -424,7 +424,7 @@ async fn records_merge_across_the_chain() {
     handle.abort();
 }
 
-/// A `context` op sets the connection's path — the SDKs' bc_eval/bc_resolve
+/// A `context` op sets the connection's path — the SDKs' bc_get/bc_eval
 /// path. It reaches the chain exactly as an explicit `--path` does.
 #[tokio::test]
 async fn global_put_is_visible_from_a_directory_below_it() {

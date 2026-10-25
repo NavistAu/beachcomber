@@ -1,13 +1,26 @@
 {
-  "name": "get_past_a_template_string_carries_the_leftover_address_as_rest",
-  "description": "When the address walks past a template string, the string is the template and the unused remainder is rest: fx3.t.a addresses a key inside what fx3.t renders to.",
+  "name": "get_past_a_template_string_walks_into_what_it_renders",
+  "description": "An address that runs past a template string addresses a key inside what the string renders to: fx3.t.a is the a of fx3.t's value.",
   "setup": [
-    { "op": "put", "args": { "key": "fx3:template", "data": { "t": "{{ {'a': 1} }}" } } }
+    {
+      "op": "put",
+      "args": {
+        "key": "fx3:template",
+        "data": {
+          "t": "{{ {'a': 1} }}"
+        }
+      }
+    }
   ],
-  "test": { "op": "get", "args": { "key": "fx3.t.a" } },
+  "test": {
+    "op": "get",
+    "args": {
+      "key": "fx3.t.a"
+    }
+  },
   "expect": {
-    "status": "template",
-    "template_equals": "{{ {'a': 1} }}",
-    "rest_equals": "a"
+    "status": "hit",
+    "data_type": "number",
+    "data_equals": 1
   }
 }

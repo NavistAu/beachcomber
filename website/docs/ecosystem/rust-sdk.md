@@ -143,7 +143,7 @@ match result {
 
 ### `libbeachcomber::resolve`
 
-The one client-side resolver — the function `comb get`, `comb eval`, `bc_resolve`/`bc_eval` and every SDK answer from. `get` returns what the daemon stores; `resolve` returns what `comb get` prints: the daemon holds templates as data (`<provider>:template`, seeded from configuration or `put`) and never evaluates one, so the client renders them with the caller's environment and directory. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `Ok(None)` is a miss; `Err(ResolveError::Config)` is a template that does not compile or cycles, `Runtime` a failed or disabled `exec()`, `Fetch` a daemon the library could not ask or a key it refused.
+The one client-side resolver — the function `comb get`, `comb eval`, `bc_get`/`bc_eval` and every SDK's `get` and `eval` answer from. This crate's `Client::get` returns what the daemon stores, and is the fetch the resolver reads through; `resolve` returns what `comb get` prints, and is what every SDK's `get` is: the daemon holds templates as data (`<provider>:template`, seeded from configuration or `put`) and never evaluates one, so the client renders them with the caller's environment and directory. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `Ok(None)` is a miss; `Err(ResolveError::Config)` is a template that does not compile or cycles, `Runtime` a failed or disabled `exec()`, `Fetch` a daemon the library could not ask or a key it refused.
 
 ```rust
 use libbeachcomber::Client;

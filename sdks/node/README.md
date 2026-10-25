@@ -31,12 +31,9 @@ import { Client } from 'libbeachcomber';
 const client = new Client();
 console.log(client.transport()); // "ffi" or "subprocess"
 
-const result = await client.get('git.branch', '/path/to/repo');
-if (result.isHit) {
-  console.log(result.getString());  // e.g. "main"
-  console.log(result.ageMs);        // e.g. 1234
-  console.log(result.stale);        // false
-}
+// What `comb get git.branch` prints there; null on a miss.
+const branch = await client.get('git.branch', { cwd: '/path/to/repo' });
+console.log(branch); // e.g. "main"
 ```
 
 ## API
@@ -47,7 +44,7 @@ if (result.isHit) {
 const client = new Client();
 const client = new Client({ socketPath: '/custom/path' });
 const client = new Client({ socketPath: '/custom/path', timeoutMs: 2000, autostart: true });
-const client = new Client({ exec: true }); // templates this client resolves may call exec()
+const client = new Client({ exec: true }); // templates this client renders may call exec()
 ```
 
 `exec` is off by default: a template that calls `exec()` on a client
@@ -57,17 +54,35 @@ without it fails with `exec() is disabled in this context`.
 
 Returns `"ffi"` or `"subprocess"` — which transport this client is using.
 
-#### `client.get(key, path?)`
+#### `client.get(key, opts?)`
 
-Read a node raw — both halves, nothing rendered.
+The value `comb get` prints for this key, cwd and env: the daemon holds the
+templates (`<provider>:template`, seeded from configuration or `put`) and
+the client renders them. A plain field is its cached value, a templated one
+is rendered, and a bare provider name is the whole merged namespace; a miss
+is `null`.
 
 ```typescript
-const result = await client.get('git.branch', '/some/repo');
-const result = await client.get('hostname');          // global provider, no path needed
-const result = await client.get('git', '/some/repo'); // full provider (returns object)
+const branch = await client.get('git.branch', { cwd: '/some/repo' });
+const host   = await client.get('hostname.short');        // no cwd: the global entry
+const git    = await client.get('git', { cwd: '/some/repo' }); // full provider (an object)
+const fresh  = await client.get('git.branch', { cwd: '/some/repo', force: true, wait: true });
 ```
 
-Returns a `CombResult` (see below).
+`opts` is `{ cwd?, env?, force?, wait? }`. `cwd` is the directory the read
+addresses (`~` is home, a relative path is against this process's working
+directory); omitted, it is the global entry. `env` is the caller's
+environment for `env.*` refs; omitted, every `env.*` is absent. `force`
+re-executes every Source the read demands first; `wait` re-executes a
+stale entry inline before answering.
+
+The unrendered halves are facets, read like any key:
+
+```typescript
+await client.get('git:template.branch'); // the template, as stored
+await client.get('myapp:put.workspace'); // the value a put stored
+await client.get('git:source.branch');   // the value a Source produced
+```
 
 #### `client.refresh(key, path?)`
 
@@ -90,17 +105,12 @@ Daemon protocol/version info, and internal daemon introspection
 (`"daemon" | "providers" | "config" | "cache" | "lifecycle" | "watches" |
 "timers" | "demand" | "procs"`). **FFI transport only**.
 
-#### `client.resolve(key, opts)` / `client.eval(templateStr, opts)`
+#### `client.eval(templateStr, opts)`
 
-`resolve` returns the same value `comb get` returns for this key, cwd and
-env: the daemon holds the templates (`<provider>:template`, seeded from
-configuration or `put`) and the client renders them. A plain field is its
-cached value, a templated one is rendered, and a bare provider name is the
-whole merged namespace; a miss is `null`. `eval` renders a template that
-is stored nowhere — the same value `comb eval` prints. `opts.cwd` is
-**required**: this library never falls back to the process's own working
-directory, and every fetch the resolution makes addresses it. `opts.env`
-is optional. **FFI transport only**.
+Render a template that is stored nowhere — the same value `comb eval`
+prints. Every ref resolves exactly as it would inside a stored template, so
+`eval('{{ p.f }}')` and `get('p.f')` agree. `opts.cwd` is **required**, and
+read as `get` reads it; `opts.env` is optional. **FFI transport only**.
 
 `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's
 natural type), or literal text/several tags (always a string — a source
@@ -108,10 +118,11 @@ with no tags at all is its literal text).
 
 ```typescript
 await client.put('myapp:template', { workspace: '{{ env.MYAPP_ENV or comb.myappcache.workspace }}' });
-const value = await client.resolve('myapp.workspace', {
+const workspace = await client.get('myapp.workspace', {
   cwd: '/some/repo',
   env: { MYAPP_ENV: 'prod' },
 });
+const same = await client.eval('{{ myapp.workspace }}', { cwd: '/some/repo', env: { MYAPP_ENV: 'prod' } });
 ```
 
 #### `client.session()`
@@ -122,63 +133,34 @@ efficient when querying multiple keys in sequence.
 
 ```typescript
 const session = await client.session();
-await session.setContext('/some/repo');   // optional — sets default path
+await session.setContext('/some/repo');   // optional — sets the session's directory
 const branch = await session.get('git.branch');
 const dirty  = await session.get('git.dirty');
 session.close();
 ```
 
-`setContext` sets the session's directory: every later `get`, `put` and
-`refresh` that names no path addresses it.
+`setContext` sets the session's directory: every later `get` that names no
+`cwd`, and `put` and `refresh` that name no `path`, address it. `session.get`
+takes the same `opts` as `client.get`.
 
 #### `client.watch(key, { cwd, env? })`
 
-Watch a key's *value* — what `resolve` answers for it — and receive it
+Watch a key's *value* — what `get` answers for it — and receive it
 again whenever it changes, so a template edited under the watch fires it
 just as a changed cache record does. `cwd` and `env` mean what they mean
-for `resolve`. The stream is an `AsyncIterable<WatchEvent>`; call
+for `get`, except that `cwd` is required here. The stream is an `AsyncIterable<WatchEvent>`; call
 `stream.close()` to stop watching.
 
 ```typescript
 const stream = await client.watch('git.branch', { cwd: '/some/repo' });
 for await (const event of stream) {
-  console.log(event.data); // the resolved value, null for a miss
+  console.log(event.data); // the value, null for a miss
 }
 ```
 
 #### `client.close()`
 
 Release the underlying client handle (FFI only; a no-op under subprocess).
-
-### `CombResult`
-
-`get` returns the node as the daemon holds it — both halves, nothing
-rendered. A node may hold a cached value (`data`), a template (`template`),
-or both. A template-only result is neither a hit nor a miss: it is an
-address whose value `resolve` renders — `get` is the raw half,
-`resolve(key, { cwd, env })` is how you get the value.
-
-| Property / method | Type | Description |
-|---|---|---|
-| `isHit` | `boolean` | `true` when the cache had a value |
-| `isMiss` | `boolean` | `true` when nothing is stored at the address: no value **and** no template |
-| `data` | `unknown` | Raw data (undefined when nothing is cached) |
-| `ageMs` | `number` | Cache age in milliseconds (0 when nothing is cached) |
-| `stale` | `boolean` | Whether the value is stale (false when nothing is cached) |
-| `template` | `unknown` | The template in effect at the address, unrendered: a string for a leaf, an object for a group (undefined when none is in effect) |
-| `rest` | `string \| undefined` | The address left over when the template walk stopped at a string — `get('p.t.x')` where `p.t` is a template string gives the template of `p.t` and `rest === 'x'` |
-| `getString(field?)` | `string \| undefined` | Data as a string; picks a named field from object results |
-| `getNumber(field?)` | `number \| undefined` | Data as a number |
-| `getBool(field?)` | `boolean \| undefined` | Data as a boolean |
-
-For full provider queries (e.g. `key = "git"`), the data is an object.
-Use the `field` argument to pick a field:
-
-```typescript
-const result = await client.get('git', '/repo');
-result.getString('branch');   // "main"
-result.getBool('dirty');      // false
-```
 
 ### Errors
 
@@ -205,32 +187,30 @@ programmatic handling.
 ## Transports and their limits
 
 **FFI (`koffi`)** implements the full ABI: `get`, `put`,
-`refresh`, `status`, `hello`, `introspect`, `resolve`, `eval`, sessions,
+`refresh`, `status`, `hello`, `introspect`, `eval`, sessions,
 and watch — all with exact envelope fidelity.
 
 **Subprocess (`comb` CLI fallback)** covers `get`, `put`,
-`refresh`, `status`, and session context. `get` is one `comb get
--f json <key> <p>:cache.<rest>`, so its answer is the resolver's — the
-directory chain up to `$HOME`, `$HOME` as the global entry, the `:cache`
-facet's `age_ms` and `stale`, `force`/`wait`, the daemon's refusals — with one divergence:
-`comb get` *resolves*, so a template-backed key returns its **rendered**
-value where the FFI tier returns the raw template half. A result from
-this tier never carries `template` or `rest`; a template-only node is a
-hit holding the rendered value (age 0, not stale — it has no cached
-freshness of its own). The CLI renders with `exec()` on, so the client's
-`exec` option has no effect here — a caller that must not spawn processes
-from a template, or that needs the raw template half, needs the FFI
-transport. `refresh` is one `comb refresh <key> [--path P | --global]`,
-the daemon's op itself; its refusal (`nothing to refresh: <key> has no
-sources`) is `ServerError.serverMessage`, the daemon's own words — the
-same text the FFI transport reports. The tier does
-**not** implement `hello`, `introspect`, `resolve`, `eval`, or `watch`:
-`comb` has no CLI surface for `hello` or `introspect`, and `resolve`/`eval`
-are not wired over this tier (`comb get`/`comb eval` resolve through the
-same library, so a shell-out would be faithful — nobody has needed it).
+`refresh`, `status`, and session context. `get` is one `comb get -f json
+<key> [--path P | --global] [--force] [--wait]`: the value `comb get`
+prints, the same value the FFI tier answers — the directory chain up to
+`$HOME`, `$HOME` as the global entry, `force`/`wait`, the daemon's
+refusals. Two things cannot cross the spawn. A spawned `comb` renders with
+its own environment, so a `get` that passes `env` throws
+`UnsupportedTransportError`; with no `env` it renders with this process's
+environment, where the FFI tier renders with none. And the CLI renders
+with `exec()` on, so the client's `exec` option has no effect here. A
+caller that needs either needs the FFI transport. `refresh` is one `comb
+refresh <key> [--path P | --global]`, the daemon's op itself; its refusal
+(`nothing to refresh: <key> has no sources`) is `ServerError.serverMessage`,
+the daemon's own words — the same text the FFI transport reports. The tier
+does **not** implement `hello`, `introspect`, `eval`, or `watch`: `comb`
+has no CLI surface for `hello` or `introspect`, and `comb eval` and `comb
+watch` read their environment from their own process, so the `env` a
+caller passes could not be honoured.
 Those calls throw `UnsupportedTransportError` rather than silently
-returning wrong data. An omitted `path` means the global entry, as under
-FFI (the transport passes `--global`).
+returning wrong data. An omitted `cwd` or `path` means the global entry,
+as under FFI (the transport passes `--global`).
 
 ## Library discovery (FFI transport)
 

@@ -6,8 +6,8 @@
 -- own freshly-spawned daemon on a private socket (tests/conformance/
 -- README.md, "Isolation": fixtures may reuse provider keys such as
 -- `myappcache` across files, so a shared daemon leaks cache state between
--- them — see e.g. resolve/cascade_falls_through_to_comb.json and
--- resolve/cascade_miss_is_absent.json, which both `put` the same
+-- them — see e.g. get/cascade_falls_through_to_comb.json and
+-- get/cascade_miss_is_absent.json, which both `put` the same
 -- key with different values and would otherwise observe each other's
 -- writes depending on run order).
 --
@@ -15,7 +15,9 @@
 -- init.lua): "ffi" under LuaJIT, "subprocess" under PUC Lua. A fixture
 -- whose op the active transport's backend doesn't implement (Error.kind ==
 -- "unsupported") is reported SKIP, never PASS or FAIL — see
--- tests/conformance/README.md's note on partial `resolve` support.
+-- tests/conformance/README.md's note on partial `eval` support. Over the
+-- subprocess transport that is hello, introspect, eval, watch, and a `get`
+-- whose fixture carries an `env` (a spawned comb renders with its own).
 --
 -- Invoke:
 --   COMB_BIN=/path/to/comb lua sdks/lua/conformance_runner.lua
@@ -146,8 +148,8 @@ end
 -- ── Op dispatch ──────────────────────────────────────────────────────────────
 
 --- Run one op descriptor {op=, args=} through the Client's public API and
--- return a canonical response table {ok, data, age_ms, stale, error}.
--- `resolve_ctx` supplies the fixture's top-level cwd/env for the `resolve`,
+-- return a canonical response table {ok, data, error}.
+-- `resolve_ctx` supplies the fixture's top-level cwd/env for the `get`,
 -- `eval` and `watch` ops (see tests/conformance/README.md).
 local function run_op(client, descriptor, resolve_ctx)
   local op, args = descriptor.op, descriptor.args or {}
@@ -162,9 +164,9 @@ local function run_op(client, descriptor, resolve_ctx)
     return { ok = true, data = { protocol_version = info.protocol_version, daemon_version = info.daemon_version } }
 
   elseif op == "get" then
-    local r, err = client:get_with_flags(args.key, args.path, args.force, args.wait)
-    if not r then return fail(err) end
-    return { ok = true, data = r.data, age_ms = r.age_ms, stale = r.stale, template = r.template, rest = r.rest }
+    local value, err = client:get(args.key, { cwd = resolve_ctx.cwd, env = resolve_ctx.env })
+    if value == nil and err then return fail(err) end
+    return { ok = true, data = value }
 
   elseif op == "refresh" then
     local ok, err = client:refresh(args.key, args.path)
@@ -204,11 +206,6 @@ local function run_op(client, descriptor, resolve_ctx)
     -- A watch event carries a resolved value, which can come from several
     -- records at once: no age, no staleness.
     return { ok = true, data = ev.data }
-
-  elseif op == "resolve" then
-    local value, err = client:resolve(args.key, { cwd = resolve_ctx.cwd, env = resolve_ctx.env })
-    if value == nil and err then return fail(err) end
-    return { ok = true, data = value }
 
   elseif op == "eval" then
     local value, err = client:eval(args.template, { cwd = resolve_ctx.cwd, env = resolve_ctx.env })
@@ -259,15 +256,8 @@ end
 -- asserting something the harness doesn't actually check.
 local KNOWN_EXPECT_KEYS = {
   status = true, data_type = true, data_equals = true, data_as_text = true,
-  data_contains_field = true, data_field_equals = true, age_ms_present = true,
-  stale = true, error_contains = true, template_equals = true, rest_equals = true,
+  data_contains_field = true, data_field_equals = true, error_contains = true,
 }
-
---- True when the fixture asserts anything about the template half of a
--- `get` — the `template` status or either template expectation key.
-local function asserts_template_half(expect)
-  return expect.status == "template" or expect.template_equals ~= nil or expect.rest_equals ~= nil
-end
 
 --- @return true, or false, reason_string
 local function check_expect(resp, expect)
@@ -295,21 +285,6 @@ local function check_expect(resp, expect)
     end
     if resp.data ~= nil then
       return false, "status=miss expected but data was present: " .. tostring(resp.data)
-    end
-    if resp.template ~= nil then
-      return false, "status=miss expected but a template was present: " .. tostring(resp.template)
-    end
-  elseif status == "template" then
-    -- A template-only node: no data, a template in effect. Neither a hit
-    -- nor a miss — `resolve` renders it.
-    if not resp.ok then
-      return false, "status=template expected but response was error: " .. tostring(resp.error and resp.error.message)
-    end
-    if resp.data ~= nil then
-      return false, "status=template expected but data was present: " .. tostring(resp.data)
-    end
-    if resp.template == nil then
-      return false, "status=template expected but no template was present"
     end
   elseif status == "error" then
     if resp.ok then
@@ -363,31 +338,6 @@ local function check_expect(resp, expect)
     end
   end
 
-  if expect.age_ms_present ~= nil then
-    local present = type(resp.age_ms) == "number"
-    if present ~= expect.age_ms_present then
-      return false, "age_ms_present=" .. tostring(expect.age_ms_present) .. " expected but got " .. tostring(present)
-    end
-  end
-
-  if expect.stale ~= nil then
-    if resp.stale ~= expect.stale then
-      return false, "stale=" .. tostring(expect.stale) .. " expected but got " .. tostring(resp.stale)
-    end
-  end
-
-  if expect.template_equals ~= nil then
-    if resp.template == nil or not deep_equal(resp.template, expect.template_equals) then
-      return false, "template_equals failed: expected " .. tostring(expect.template_equals) .. ", got " .. tostring(resp.template)
-    end
-  end
-
-  if expect.rest_equals ~= nil then
-    if resp.rest ~= expect.rest_equals then
-      return false, "rest_equals=" .. tostring(expect.rest_equals) .. " expected but got " .. tostring(resp.rest)
-    end
-  end
-
   return true
 end
 
@@ -404,7 +354,7 @@ local function run_fixture(fixture)
 
   local resolve_ctx = {
     cwd = fixture.cwd or guard.tmpdir,
-    env = fixture.env or {},
+    env = fixture.env, -- nil when the fixture has none: no environment
   }
 
   for i, step in ipairs(fixture.setup or {}) do
@@ -414,18 +364,6 @@ local function run_fixture(fixture)
       stop_daemon(guard)
       return "fail", string.format("setup step %d (%s) failed: %s", i, step.op, tostring(resp.error and resp.error.message))
     end
-  end
-
-  -- The subprocess transport renders the template half of a node instead
-  -- of returning it (see beachcomber.subprocess_backend's header): its
-  -- `get` is not unsupported — it answers, with the rendered value and
-  -- `template = nil` — so a fixture that asserts the template half is
-  -- skipped here explicitly rather than failing on a documented divergence
-  -- or passing vacuously.
-  if fixture.test.op == "get" and asserts_template_half(fixture.expect) and client:transport() == "subprocess" then
-    client:close()
-    stop_daemon(guard)
-    return "skip", "the subprocess transport renders the template half of a get instead of returning it"
   end
 
   local resp = run_op(client, fixture.test, resolve_ctx)

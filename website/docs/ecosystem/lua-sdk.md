@@ -37,26 +37,23 @@ if not client then
   error("beachcomber: " .. err)
 end
 
--- get a single field
-local result = client:get('git.branch', '/my/repo')
-if result:is_hit() then
-  print(result.data)    -- "main"
-  print(result.age_ms)  -- 1234
-  print(result.stale)   -- false
-end
+-- get a single field: what `comb get git.branch` prints there, nil on a miss
+local branch = client:get('git.branch', { cwd = '/my/repo' })
+if branch then print(branch) end  -- "main"
 
--- get a full provider (returns object)
-local r = client:get('git', '/my/repo')
-if r:is_hit() then
-  print(r:get_str('branch'))  -- "main"
-end
+-- get a full provider (returns a table)
+local git = client:get('git', { cwd = '/my/repo' })
+if git then print(git.branch) end  -- "main"
+
+-- the template itself, unrendered: a facet, read like any key
+local tpl = client:get('git:template.branch')
 
 -- refresh (force recompute)
 client:refresh('git', '/my/repo')
 
--- persistent context — path applies to all subsequent queries
+-- persistent context — the directory of every later call that names none
 client:set_context('/my/repo')
-local r2 = client:get('git.branch')  -- uses context path
+local branch2 = client:get('git.branch')  -- reads at the context path
 
 -- daemon cache status rows
 local rows = client:status()
@@ -82,14 +79,16 @@ Connect to the daemon and return a `Client`.
 | Option | Type | Description |
 |---|---|---|
 | `socket_path` | string | Override automatic socket discovery |
-| `exec` | boolean | `ffi` transport: let templates this client resolves call `exec()`. Off by default — a template that calls it then fails with `exec() is disabled in this context` |
+| `exec` | boolean | `ffi` transport: let templates this client renders call `exec()`. Off by default — a template that calls it then fails with `exec() is disabled in this context` |
 | `backend` | module | Override the socket backend (advanced) |
 
 Returns `nil, error_message` on failure.
 
-### `Client:get(key [, path])` → `Result | nil, error`
+### `Client:get(key [, opts])` → `value | nil, error`
 
-Read a node raw — both halves, nothing rendered (see `Result`). `key` is `"provider"` or `"provider.field"`. `path` overrides any connection context.
+The value `comb get` prints for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace; a miss is `nil` with no error. The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `key` is `"provider"` or `"provider.field"`.
+
+`opts.cwd` is the directory the read addresses (default: the context path, else the global entry); `opts.env` is the caller's environment for `env.*` refs (default: none, so every `env.*` is absent); `opts.force` re-executes every Source the read demands first and `opts.wait` re-executes a stale entry inline, as `comb get --force`/`--wait` do. A template that calls `exec()` needs `exec = true` on the connect. Over `subprocess` a spawned `comb` renders with its own environment: `opts.env` is an `"unsupported"` error there, and a `get` without it sees this process's environment.
 
 ### `Client:refresh(key [, path])` → `true | nil, error`
 
@@ -117,38 +116,15 @@ Inspect a daemon subsystem. `subject` is a string: `"daemon"`, `"providers"`, `"
 
 ### `Client:watch(key [, opts])` → `WatchStream | nil, error`
 
-Subscribe to a key's *resolved* value — what `Client:resolve` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `opts.cwd` (default: the context path, then `"."`), `opts.env` — same shape as `resolve`'s opts. Returns a `WatchStream` — call `:next()` to receive `WatchEvent` tables (whose `data` carries no age or staleness) and `:close()` when done. `ffi` transport only.
+Subscribe to a key's *resolved* value — what `Client:get` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `opts.cwd` (default: the context path, then `"."`), `opts.env` — same shape as `eval`'s opts. Returns a `WatchStream` — call `:next()` to receive `WatchEvent` tables (whose `data` carries no age or staleness) and `:close()` when done. `ffi` transport only.
 
-### `Client:get_with_flags(key, path, force, wait)` → `Result | nil, error`
-
-Read a cached value with optional `force` (recompute) or `wait` (block for fresh value) flags.
-
-### `Client:resolve(key [, opts])` → `value | nil, error`
 ### `Client:eval(template_str [, opts])` → `value | nil, error`
 
-`resolve` returns the same value `comb get` returns for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace; a miss is `nil` with no error. `eval` renders a template that is stored nowhere — the same value `comb eval` prints. `opts.cwd` (default: the context path, then `"."`), `opts.env` (the caller's environment for `env.*` refs). A template that calls `exec()` needs `exec = true` on the connect. `ffi` transport only.
+Render a template that is stored nowhere — the same value `comb eval` prints, every ref resolved as it would be inside a stored template, so `eval("{{ p.f }}")` and `get("p.f")` agree. `opts.cwd` (default: the context path, then `"."`), `opts.env` (the caller's environment for `env.*` refs). `ffi` transport only.
 
 ### `Client:close()`
 
 Close the underlying socket.
-
-### `Result`
-
-`get` returns the node as the daemon holds it — both halves, nothing rendered. A node may hold a cached value (`data`), a template (`template`), or both. A template-only result is neither a hit nor a miss: it is an address whose value `resolve` renders — `get` is the raw half, `resolve(key, {cwd, env})` is how you get the value. The template half is `ffi` transport only: over `subprocess`, `template` and `rest` are always `nil` and a template-only node reads as a miss.
-
-| Field | Type | Description |
-|---|---|---|
-| `data` | any | Cached value; `nil` when nothing is cached |
-| `age_ms` | number | Age of the cached value in milliseconds |
-| `stale` | boolean | True when past TTL but no fresh value yet |
-| `template` | string\|table\|nil | The template in effect at the address, unrendered: a string for a leaf, a table for a group; `nil` when none is in effect |
-| `rest` | string\|nil | The address left over when the template walk stopped at a string — `get("p.t.x")` where `p.t` is a template string gives the template of `p.t` and `rest == "x"` |
-
-| Method | Returns | Description |
-|---|---|---|
-| `result:is_hit()` | boolean | True when `data ~= nil` |
-| `result:is_miss()` | boolean | True when `data == nil` and `template == nil` |
-| `result:get_str(field)` | string\|nil, error | Get a string field from object data |
 
 ## Wire protocol reference
 
@@ -179,9 +155,9 @@ vim.api.nvim_create_autocmd('VimLeavePre', {
 })
 
 local function git_branch()
-  local result, err = client:get('git.branch', vim.fn.getcwd())
-  if not result or not result:is_hit() then return '' end
-  return ' ' .. result.data
+  local branch = client:get('git.branch', { cwd = vim.fn.getcwd() })
+  if not branch then return '' end
+  return ' ' .. branch
 end
 ```
 

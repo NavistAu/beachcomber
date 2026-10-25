@@ -2,7 +2,6 @@ require 'json'
 
 require_relative 'ffi'
 require_relative 'errors'
-require_relative 'result'
 require_relative 'types'
 require_relative 'watch_stream'
 
@@ -14,18 +13,9 @@ module Beachcomber
   module ResponseParsing
     private
 
-    # The payload carries `template` and `rest` only when set, so a plain
-    # hit leaves both nil.
-    def build_result(payload)
-      Result.new(
-        ok: true,
-        data: payload['data'],
-        age_ms: (payload['age_ms'] || 0).to_i,
-        stale: payload['stale'] == true,
-        error: nil,
-        template: payload['template'],
-        rest: payload['rest'],
-      )
+    # The +flags+ bitmask +bc_get+ and +bc_session_get+ take.
+    def get_flags(force, wait)
+      (force ? Beachcomber::FFI::GET_FORCE : 0) | (wait ? Beachcomber::FFI::GET_WAIT : 0)
     end
 
     def parse_hello(data)
@@ -100,15 +90,14 @@ module Beachcomber
   end
 
   # Session holds a persistent connection to the daemon, held open by the
-  # shared library, for {#get}/{#get_with_flags}/{#put}/{#refresh}, and a
-  # directory of its own ({#set_context}) that each of them sends when given
-  # no path.
+  # shared library, for {#get}/{#put}/{#refresh}, and a directory of its own
+  # ({#set_context}) that each of them reads at when given no directory.
   #
   # Obtain a Session via {Client#session}:
   #
   #   client.session do |s|
   #     s.set_context('/repo')
-  #     r = s.get('git.branch')
+  #     branch = s.get('git.branch')
   #   end
   #
   # {#status}, {#hello} and {#introspect} take no path and have no
@@ -127,8 +116,8 @@ module Beachcomber
       @closed = false
     end
 
-    # Sets this session's directory: every later {#get}, {#get_with_flags},
-    # {#put} and {#refresh} that names no path addresses it. The session
+    # Sets this session's directory: every later {#get} that names no +cwd+,
+    # and {#put} and {#refresh} that name no path, address it. The session
     # keeps it and sends it with each request.
     #
     # @param path [String]
@@ -137,25 +126,18 @@ module Beachcomber
       nil
     end
 
-    # Reads a node raw — both halves, as {Client#get} describes.
+    # {Client#get} on this session's persistent connection. +cwd: nil+ is
+    # this session's directory ({#set_context}) when it has one, else the
+    # global entry.
     #
     # @param key [String] e.g. "git.branch" or "git"
-    # @param path [String, nil] optional working-directory override
-    # @return [Result]
-    def get(key, path: nil)
-      build_result(Beachcomber::FFI.call!(:bc_session_get, @handle, key, path, 0))
-    end
-
-    # Reads a cached value with protocol flags.
-    #
-    # @param key [String]
-    # @param path [String, nil]
-    # @param force [Boolean] bypass cache and recompute
-    # @param wait [Boolean] block until a fresh value is available
-    # @return [Result]
-    def get_with_flags(key, path: nil, force: false, wait: false)
-      flags = (force ? Beachcomber::FFI::GET_FORCE : 0) | (wait ? Beachcomber::FFI::GET_WAIT : 0)
-      build_result(Beachcomber::FFI.call!(:bc_session_get, @handle, key, path, flags))
+    # @param cwd [String, nil]
+    # @param env [Hash, nil] the caller's environment for `env.*` refs
+    # @param force [Boolean]
+    # @param wait [Boolean]
+    # @return [Object, nil] the value, or nil on a miss
+    def get(key, cwd: nil, env: nil, force: false, wait: false)
+      Beachcomber::FFI.call!(:bc_session_get, @handle, key, cwd, json_or_nil(env), get_flags(force, wait))
     end
 
     # Forces the daemon to recompute a provider/key.
@@ -221,8 +203,8 @@ module Beachcomber
   # Examples:
   #
   #   client = Beachcomber::Client.new
-  #   result = client.get('git.branch', path: '/repo')
-  #   puts result.data if result.hit?
+  #   branch = client.get('git.branch', cwd: '/repo') # nil on a miss
+  #   client.get('git:template.branch')               # the template, unrendered
   class Client
     include ResponseParsing
 
@@ -235,8 +217,8 @@ module Beachcomber
     #   (autostart on); pass false to disable. The library only autostarts
     #   when the socket path is auto-discovered — never for an explicit
     #   socket_path.
-    # @param exec [Boolean] whether a template this client resolves
-    #   ({#resolve}, {#eval_expression}) may call +exec()+. Off by default:
+    # @param exec [Boolean] whether a template this client renders
+    #   ({#get}, {#eval_expression}) may call +exec()+. Off by default:
     #   a template that calls it then fails with
     #   "exec() is disabled in this context".
     def initialize(socket_path: nil, timeout: DEFAULT_TIMEOUT, autostart: nil, exec: false)
@@ -254,33 +236,27 @@ module Beachcomber
       proc { Beachcomber::FFI.free_client(handle) }
     end
 
-    # Reads a node from the daemon, raw — both halves, nothing rendered.
+    # The value `comb get` prints for this key, cwd and env. The daemon holds
+    # the templates (`<provider>:template`, seeded from configuration or
+    # {#put}); this client renders them. A plain field is its cached value,
+    # a templated one is rendered, and a bare provider name is the whole
+    # merged namespace. The unrendered halves are facets, read like any key:
+    # <tt>"p:template.x"</tt> is the template as stored, <tt>"p:put.x"</tt>
+    # and <tt>"p:source.x"</tt> those layers' values.
     #
-    # The Result carries the cached value (+data+) and the template in
-    # effect at the address (+template+), whichever exist. A template-only
-    # result is an address whose value {#resolve} renders — this is the raw
-    # half; <tt>resolve(key, cwd:, env:)</tt> is how you get the value.
-    #
-    # @param key [String] e.g. "git.branch" or "git"
-    # @param path [String, nil] optional working-directory context
-    # @return [Result] hit? when a cached value exists, miss? when neither a
-    #   value nor a template does
+    # @param key [String] "provider.field" or a bare provider name
+    # @param cwd [String, nil] the directory the read addresses (`~` is home,
+    #   a relative path is against this process's working directory); nil is
+    #   the global entry
+    # @param env [Hash, nil] the caller's environment for `env.*` refs; nil
+    #   means none (every `env.*` is absent)
+    # @param force [Boolean] re-execute every Source the read demands first
+    # @param wait [Boolean] re-execute a stale entry inline before answering
+    # @return [Object, nil] the value, or nil on a miss
     # @raise [Beachcomber::DaemonNotRunning] when the socket cannot be reached
     # @raise [Beachcomber::ServerError] when the daemon returns ok: false
-    def get(key, path: nil)
-      build_result(Beachcomber::FFI.call!(:bc_get, @handle, key, path, 0))
-    end
-
-    # Reads a cached value with protocol flags.
-    #
-    # @param key [String]
-    # @param path [String, nil]
-    # @param force [Boolean] bypass cache and recompute
-    # @param wait [Boolean] block until a fresh value is available
-    # @return [Result]
-    def get_with_flags(key, path: nil, force: false, wait: false)
-      flags = (force ? Beachcomber::FFI::GET_FORCE : 0) | (wait ? Beachcomber::FFI::GET_WAIT : 0)
-      build_result(Beachcomber::FFI.call!(:bc_get, @handle, key, path, flags))
+    def get(key, cwd: nil, env: nil, force: false, wait: false)
+      Beachcomber::FFI.call!(:bc_get, @handle, key, cwd, json_or_nil(env), get_flags(force, wait))
     end
 
     # Forces the daemon to recompute a provider/key.
@@ -329,25 +305,10 @@ module Beachcomber
       parse_introspect(subject.to_s, data)
     end
 
-    # Resolves +key+ to the same value `comb get` returns for this key, cwd
-    # and env. The daemon holds the templates (`<provider>:template`, seeded
-    # from configuration or {#put}); this client renders them. A plain field
-    # is its cached value, a templated one is rendered, and a bare provider
-    # name is the whole merged namespace.
-    #
-    # @param key [String] "provider.field" or a bare provider name
-    # @param cwd [String] required — the library never reads the process's
-    #   own cwd on the caller's behalf.
-    # @param env [Hash, nil] the caller's environment for `env.*` refs
-    # @return [Object, nil] the resolved value, or nil on a miss
-    def resolve(key, cwd:, env: nil)
-      Beachcomber::FFI.call!(:bc_resolve, @handle, key, cwd, json_or_nil(env))
-    end
-
     # Renders a template that is stored nowhere — the same value `comb eval`
     # prints. Every ref resolves exactly as it would inside a stored
     # template, so <tt>eval_expression('{{ p.f }}')</tt> and
-    # <tt>resolve('p.f')</tt> agree.
+    # <tt>get('p.f')</tt> agree.
     #
     # +template+ accepts a single <tt>{{ expr }}</tt> tag, or literal
     # text/several tags — the former keeps the expression's natural type,
@@ -355,21 +316,21 @@ module Beachcomber
     # literal text).
     #
     # @param template [String]
-    # @param cwd [String] required, matching {#resolve}
+    # @param cwd [String] required, read as {#get} reads it
     # @param env [Hash, nil]
     # @return [Object]
     def eval_expression(template, cwd:, env: nil)
       Beachcomber::FFI.call!(:bc_eval, @handle, template, cwd, json_or_nil(env))
     end
 
-    # Opens a persistent watch on the *value* of +key+ — what {#resolve}
+    # Opens a persistent watch on the *value* of +key+ — what {#get}
     # answers for it — and emits it again whenever it changes. A template
     # edited under the watch fires it just as a changed cache record does.
     # Returns a WatchStream (Enumerable). The caller is responsible for
     # closing the stream.
     #
     # @param key [String] "provider.field" or a bare provider name
-    # @param cwd [String] required, matching {#resolve} — the directory
+    # @param cwd [String] required, read as {#get} reads it — the directory
     #   every subscription addresses and every re-resolution runs at
     # @param env [Hash, nil] the caller's environment for `env.*` refs
     # @return [WatchStream]

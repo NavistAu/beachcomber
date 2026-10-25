@@ -25,17 +25,21 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     assert.equal(client.transport(), 'ffi');
   });
 
-  it('put then get round-trips a value as a hit', async () => {
+  it('put then get round-trips the value', async () => {
     await client.put('itest_v', { greeting: 'hi' }, { path: '/tmp' });
-    const result = await client.get('itest_v.greeting', '/tmp');
-    assert.equal(result.isHit, true);
-    assert.equal(result.data, 'hi');
-    assert.equal(typeof result.ageMs, 'number');
+    assert.equal(await client.get('itest_v.greeting', { cwd: '/tmp' }), 'hi');
+  });
+
+  it('get without a cwd reads the global entry', async () => {
+    await client.put('itest_where', { v: 'global' });
+    await client.put('itest_where', { v: 'tmp' }, { path: '/tmp' });
+    assert.equal(await client.get('itest_where.v'), 'global');
+    assert.equal(await client.get('itest_where.v', { cwd: '/tmp' }), 'tmp');
   });
 
   it('get on an invalid facet key throws ServerError with kind server_error', async () => {
     await assert.rejects(
-      () => client.get('a:b:c.x', '/tmp'),
+      () => client.get('a:b:c.x', { cwd: '/tmp' }),
       (err: unknown) => {
         if (!(err instanceof ServerError)) return false;
         assert.equal(err.kind, 'server_error');
@@ -45,47 +49,39 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     );
   });
 
-  it('put(key, null) removes the node', async () => {
+  it('put(key, null) removes the node: get is null', async () => {
     await client.put('itest_putremove', { x: 1 }, { path: '/tmp' });
     await client.put('itest_putremove', null, { path: '/tmp' });
-    const result = await client.get('itest_putremove.x', '/tmp');
-    assert.equal(result.isMiss, true);
+    assert.equal(await client.get('itest_putremove.x', { cwd: '/tmp' }), null);
   });
 
-  // The template half (design §3.4): get returns both halves, unrendered.
-  it('get on a template-only node is neither a hit nor a miss', async () => {
+  // `get` is what `comb get` prints: a template renders, with the caller's
+  // environment, and wins over the value it shares an address with.
+  it('get renders a template-only node', async () => {
     await client.put('itest_tpl1:template', { t: '{{ 1 }}' });
-    const result = await client.get('itest_tpl1.t');
-    assert.equal(result.template, '{{ 1 }}');
-    assert.equal(result.data, undefined);
-    assert.equal(result.isHit, false);
-    assert.equal(result.isMiss, false);
+    assert.equal(await client.get('itest_tpl1.t'), 1);
   });
 
-  it('get carries both halves when a node has data and a template', async () => {
+  it("get renders a put template with the caller's env", async () => {
+    await client.put('itest_tplenv:template', { t: "{{ 'hi-' ~ env.ITEST_WHO }}" });
+    assert.equal(await client.get('itest_tplenv.t', { env: { ITEST_WHO: 'me' } }), 'hi-me');
+  });
+
+  it('a template wins, and the facets read what is stored', async () => {
     await client.put('itest_tpl2', { v: 1 });
     await client.put('itest_tpl2:template', { v: '{{ 2 }}' });
-    const result = await client.get('itest_tpl2.v');
-    assert.equal(result.isHit, true);
-    assert.equal(result.isMiss, false);
-    assert.equal(result.data, 1);
-    assert.equal(result.template, '{{ 2 }}');
-    assert.equal(result.rest, undefined);
+    assert.equal(await client.get('itest_tpl2.v'), 2);
+    assert.equal(await client.get('itest_tpl2:template.v'), '{{ 2 }}');
+    assert.equal(await client.get('itest_tpl2:put.v'), 1);
   });
 
-  it('get past a template string carries the leftover address as rest', async () => {
-    await client.put('itest_tpl3:template', { t: '{{ 1 }}' });
-    const result = await client.get('itest_tpl3.t.x');
-    assert.equal(result.template, '{{ 1 }}');
-    assert.equal(result.rest, 'x');
+  it('get past a template string walks into what it renders', async () => {
+    await client.put('itest_tpl3:template', { t: "{{ {'x': 5} }}" });
+    assert.equal(await client.get('itest_tpl3.t.x'), 5);
   });
 
-  it('a plain hit carries no template half', async () => {
-    await client.put('itest_tpl4', { v: 'plain' });
-    const result = await client.get('itest_tpl4.v');
-    assert.equal(result.isHit, true);
-    assert.equal(result.template, undefined);
-    assert.equal(result.rest, undefined);
+  it('get takes the force and wait flags', async () => {
+    assert.notEqual(await client.get('hostname.short', { force: true, wait: true }), null);
   });
 
   it("refresh of a static namespace is the daemon's refusal, in its own words", async () => {
@@ -134,34 +130,45 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
   it('session get/put/setContext works over one connection', async () => {
     const session = await client.session();
     try {
-      await session.setContext('/tmp');
-      // The daemon's `put` op does not consult connection context (only
-      // `get`/`refresh` do) — an explicit path is required here regardless.
       await session.put('itest_session', { n: 42 }, { path: '/tmp' });
-      // `get` omits `path` and picks up '/tmp' from setContext above.
-      const result = await session.get('itest_session.n');
-      assert.equal(result.isHit, true);
-      assert.equal(result.data, 42);
+      await session.setContext('/tmp');
+      // `get` names no cwd and reads at '/tmp' from setContext above.
+      assert.equal(await session.get('itest_session.n'), 42);
     } finally {
       session.close();
     }
   });
 
-  it('resolve renders a template the daemon holds', async () => {
+  it("session get renders at the session's directory, with the caller's env", async () => {
+    await client.put('itest_sesstpl:template', { t: '{{ env.ITEST_WHO }}@{{ itest_sesstpl.where }}' });
+    await client.put('itest_sesstpl', { where: 'global' });
+    await client.put('itest_sesstpl', { where: 'tmp' }, { path: '/tmp' });
+    const session = await client.session();
+    try {
+      const env = { ITEST_WHO: 'me' };
+      assert.equal(await session.get('itest_sesstpl.t', { env }), 'me@global');
+      await session.setContext('/tmp');
+      assert.equal(await session.get('itest_sesstpl.t', { env }), 'me@tmp');
+    } finally {
+      session.close();
+    }
+  });
+
+  it('get renders a template the daemon holds', async () => {
     // The daemon holds the template; the client renders it with the env the
     // caller passes — the same value `comb get filters.itest_based` prints.
     await client.put('filters:template', { itest_based: '{{ env.ITEST_PYVAR | basename }}' });
-    const value = await client.resolve('filters.itest_based', {
+    const value = await client.get('filters.itest_based', {
       cwd: '/tmp',
       env: { ITEST_PYVAR: '/foo/bar/baz' },
     });
     assert.equal(value, 'baz');
   });
 
-  it('resolve on a bare provider is the whole merged namespace', async () => {
+  it('get on a bare provider is the whole merged namespace', async () => {
     await client.put('itest_ns', { lit: 1 });
     await client.put('itest_ns:template', { t: '{{ env.ITEST_NS }}' });
-    const value = await client.resolve('itest_ns', { cwd: '/tmp', env: { ITEST_NS: 'hi' } });
+    const value = await client.get('itest_ns', { cwd: '/tmp', env: { ITEST_NS: 'hi' } });
     assert.deepEqual(value, { lit: 1, t: 'hi' });
   });
 
@@ -173,7 +180,7 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
   it('exec() is disabled on a client without the option', async () => {
     await client.put('itest_exec:template', { out: "{{ exec(['printf', 'x']) }}" });
     await assert.rejects(
-      () => client.resolve('itest_exec.out', { cwd: '/tmp' }),
+      () => client.get('itest_exec.out', { cwd: '/tmp' }),
       (err: unknown) => {
         if (!(err instanceof ServerError)) return false;
         assert.match(err.message, /exec\(\) is disabled in this context/);
@@ -186,7 +193,7 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     await client.put('itest_exec2:template', { out: "{{ exec(['printf', 'x']) }}" });
     const execClient = new Client({ socketPath: daemon.sockPath, timeoutMs: 5000, exec: true });
     try {
-      assert.equal(await execClient.resolve('itest_exec2.out', { cwd: '/tmp' }), 'x');
+      assert.equal(await execClient.get('itest_exec2.out', { cwd: '/tmp' }), 'x');
     } finally {
       execClient.close();
     }
@@ -203,12 +210,12 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
   });
 
   it('watch yields the resolved value and refires on a template edit', async () => {
-    // The event is what `resolve` answers for the same key, cwd and env,
+    // The event is what `get` answers for the same key, cwd and env,
     // and the template the value is rendered from is watched alongside the
     // addressed key.
     const env = { NODE_WATCH_TPL: 'v1' };
     await client.put('nodewatchtpl:template', { f: '{{ env.NODE_WATCH_TPL }}' });
-    const resolved = await client.resolve('nodewatchtpl.f', { cwd: '/tmp', env });
+    const resolved = await client.get('nodewatchtpl.f', { cwd: '/tmp', env });
 
     const stream = await client.watch('nodewatchtpl.f', { cwd: '/tmp', env });
     const iterator = stream[Symbol.asyncIterator]();

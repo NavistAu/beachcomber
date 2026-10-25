@@ -37,7 +37,7 @@ type opDescriptor struct {
 }
 
 type expectBlock struct {
-	Status            string      `json:"status"`       // hit|miss|template|ok|error
+	Status            string      `json:"status"`       // hit|miss|ok|error
 	DataType          string      `json:"data_type"`    // string|number|bool|object|array|null
 	DataEquals        interface{} `json:"data_equals"`  // exact deep-equality
 	DataAsText        string      `json:"data_as_text"` // scalar stringification
@@ -46,11 +46,7 @@ type expectBlock struct {
 		Field string      `json:"field"`
 		Value interface{} `json:"value"`
 	} `json:"data_field_equals"`
-	AgeMsPresent   *bool       `json:"age_ms_present"`
-	Stale          *bool       `json:"stale"`
-	ErrorContains  string      `json:"error_contains"`
-	TemplateEquals interface{} `json:"template_equals"` // exact deep-equality on the template half
-	RestEquals     *string     `json:"rest_equals"`
+	ErrorContains string `json:"error_contains"`
 }
 
 type fixture struct {
@@ -59,8 +55,8 @@ type fixture struct {
 	Setup       []opDescriptor    `json:"setup"`
 	Test        opDescriptor      `json:"test"`
 	Expect      expectBlock       `json:"expect"`
-	Env         map[string]string `json:"env"` // resolve/eval fixtures: env.* refs
-	Cwd         string            `json:"cwd"` // resolve/eval fixtures: the cwd every fetch addresses; defaults to the per-fixture temp dir
+	Env         map[string]string `json:"env"` // get/eval/watch fixtures: env.* refs
+	Cwd         string            `json:"cwd"` // get/eval/watch fixtures: the cwd every fetch addresses; defaults to the per-fixture temp dir
 	path        string            // source file path (not in JSON)
 }
 
@@ -124,7 +120,7 @@ func main() {
 var supportedOps = map[string]bool{
 	"hello": true, "get": true, "refresh": true, "put": true,
 	"status": true, "context": true, "watch": true, "introspect": true,
-	"resolve": true, "eval": true,
+	"eval": true,
 }
 
 // unsupportedOp returns the first op in f (setup or test) this runner can't
@@ -275,7 +271,7 @@ func runFixture(f fixture, combBin string) (bool, string) {
 
 	// Run setup ops (no expectations checked).
 	for _, op := range f.Setup {
-		if err := runOp(client, op, nil, &f.Expect); err != nil {
+		if err := runOp(client, op, f, tmpDir); err != nil {
 			// Setup errors are non-fatal only if the test op will reveal them.
 			_ = err
 		}
@@ -288,17 +284,21 @@ func runFixture(f fixture, combBin string) (bool, string) {
 
 // opResult holds the SDK result for a non-watch op.
 type opResult struct {
-	data     interface{}
-	ageMs    uint64
-	ageMsSet bool // true when the daemon response contained an age_ms key (checked in the raw JSON; the value 0 is a real age)
-	stale    bool
-	template interface{} // a get's template half; nil when none is in effect
-	rest     string      // the address left over past a template string; "" when none
+	data interface{}
 }
 
-// runOp executes a setup op. If expect is non-nil (for error ops in setup) it
-// is ignored here. Returns error only for fatal dial/write problems.
-func runOp(c *beachcomber.Client, op opDescriptor, _ *opResult, _ *expectBlock) error {
+// readCwd is the directory a get, eval or watch fixture reads at: its own
+// cwd, else the fixture's per-run temp directory.
+func readCwd(f fixture, tmpDir string) string {
+	if f.Cwd != "" {
+		return f.Cwd
+	}
+	return tmpDir
+}
+
+// runOp executes a setup op; its result is not checked. Returns error only
+// for fatal dial/write problems.
+func runOp(c *beachcomber.Client, op opDescriptor, f fixture, tmpDir string) error {
 	switch op.Op {
 	case "put":
 		key, _ := op.Args["key"].(string)
@@ -308,8 +308,7 @@ func runOp(c *beachcomber.Client, op opDescriptor, _ *opResult, _ *expectBlock) 
 		return c.Put(key, data, ttl, path)
 	case "get":
 		key, _ := op.Args["key"].(string)
-		path, _ := op.Args["path"].(string)
-		_, err := c.Get(key, path)
+		_, err := c.Get(key, readCwd(f, tmpDir), f.Env)
 		return err
 	case "refresh":
 		key, _ := op.Args["key"].(string)
@@ -334,17 +333,13 @@ func runOp(c *beachcomber.Client, op opDescriptor, _ *opResult, _ *expectBlock) 
 //   - serverErr (error) when the daemon returns an error
 //
 // tmpDir is the fixture's per-run temp directory, used as the default cwd
-// for resolve fixtures that don't declare their own.
+// for get, eval and watch fixtures that don't declare their own.
 func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *beachcomber.WatchEvent, error) {
 	op := f.Test
 	switch op.Op {
-	case "resolve":
+	case "get":
 		key, _ := op.Args["key"].(string)
-		cwd := f.Cwd
-		if cwd == "" {
-			cwd = tmpDir
-		}
-		r, err := c.Resolve(key, cwd, f.Env)
+		r, err := c.Get(key, readCwd(f, tmpDir), f.Env)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -352,11 +347,7 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 
 	case "eval":
 		template, _ := op.Args["template"].(string)
-		cwd := f.Cwd
-		if cwd == "" {
-			cwd = tmpDir
-		}
-		r, err := c.Eval(template, cwd, f.Env)
+		r, err := c.Eval(template, readCwd(f, tmpDir), f.Env)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -372,15 +363,6 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 			"daemon_version":   info.DaemonVersion,
 		}
 		return &opResult{data: m}, nil, nil
-
-	case "get":
-		key, _ := op.Args["key"].(string)
-		path, _ := op.Args["path"].(string)
-		r, err := c.Get(key, path)
-		if err != nil {
-			return nil, nil, err
-		}
-		return resultFromSDK(r), nil, nil
 
 	case "refresh":
 		key, _ := op.Args["key"].(string)
@@ -447,11 +429,7 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 
 	case "watch":
 		key, _ := op.Args["key"].(string)
-		cwd := f.Cwd
-		if cwd == "" {
-			cwd = tmpDir
-		}
-		ws, err := c.Watch(key, cwd, f.Env)
+		ws, err := c.Watch(key, readCwd(f, tmpDir), f.Env)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -464,26 +442,6 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 	}
 
 	return nil, nil, fmt.Errorf("unknown op: %s", op.Op)
-}
-
-func resultFromSDK(r *beachcomber.Result) *opResult {
-	or := &opResult{
-		data:     r.Data,
-		stale:    r.Stale,
-		template: r.Template,
-		rest:     r.Rest,
-	}
-	// Presence must come from the wire, not the value: age_ms=0 is a real
-	// age (put-then-get within the same millisecond), so AgeMs > 0 misreads
-	// it as absent. Probe the raw JSON for the key instead.
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(r.RawJSON(), &probe); err == nil {
-		if _, ok := probe["age_ms"]; ok {
-			or.ageMs = r.AgeMs
-			or.ageMsSet = true
-		}
-	}
-	return or
 }
 
 func daemonHealthToMap(d *beachcomber.DaemonHealth) map[string]interface{} {
@@ -515,24 +473,12 @@ func daemonHealthToMap(d *beachcomber.DaemonHealth) map[string]interface{} {
 func checkExpect(exp expectBlock, r *opResult, we *beachcomber.WatchEvent, serverErr error) (bool, string) {
 	// Unify the two result forms into one common shape for assertion.
 	var data interface{}
-	var ageMs uint64
-	var ageMsSet bool
-	var stale bool
-	var template interface{}
-	var rest string
 	isError := serverErr != nil
 
 	if we != nil {
-		// A watch event carries a resolved value, which can come from several
-		// records at once: no age, no staleness.
 		data = we.Data
 	} else if r != nil {
 		data = r.data
-		ageMs = r.ageMs
-		ageMsSet = r.ageMsSet
-		stale = r.stale
-		template = r.template
-		rest = r.rest
 	}
 
 	// status assertion
@@ -550,21 +496,6 @@ func checkExpect(exp expectBlock, r *opResult, we *beachcomber.WatchEvent, serve
 		}
 		if data != nil {
 			return false, fmt.Sprintf("expected miss (no data), got data: %v", data)
-		}
-		if template != nil {
-			return false, fmt.Sprintf("expected miss (no template), got template: %v", template)
-		}
-	case "template":
-		// A template-only node: no data, a template in effect. Neither a
-		// hit nor a miss — Resolve renders it.
-		if isError {
-			return false, "expected template, got error: " + serverErr.Error()
-		}
-		if data != nil {
-			return false, fmt.Sprintf("expected template-only (no data), got data: %v", data)
-		}
-		if template == nil {
-			return false, "expected a template, got none"
 		}
 	case "ok":
 		if isError {
@@ -636,37 +567,6 @@ func checkExpect(exp expectBlock, r *opResult, we *beachcomber.WatchEvent, serve
 		}
 		if !deepEqual(val, exp.DataFieldEquals.Value) {
 			return false, fmt.Sprintf("data_field_equals: field %q = %v, want %v", exp.DataFieldEquals.Field, val, exp.DataFieldEquals.Value)
-		}
-	}
-
-	// age_ms_present assertion
-	if exp.AgeMsPresent != nil {
-		if *exp.AgeMsPresent && !ageMsSet {
-			return false, fmt.Sprintf("age_ms_present=true but age_ms=%d", ageMs)
-		}
-		if !*exp.AgeMsPresent && ageMsSet {
-			return false, fmt.Sprintf("age_ms_present=false but age_ms=%d", ageMs)
-		}
-	}
-
-	// stale assertion
-	if exp.Stale != nil {
-		if stale != *exp.Stale {
-			return false, fmt.Sprintf("stale: got %v, want %v", stale, *exp.Stale)
-		}
-	}
-
-	// template_equals assertion
-	if exp.TemplateEquals != nil {
-		if template == nil || !deepEqual(template, exp.TemplateEquals) {
-			return false, fmt.Sprintf("template_equals: got %v, want %v", template, exp.TemplateEquals)
-		}
-	}
-
-	// rest_equals assertion
-	if exp.RestEquals != nil {
-		if rest != *exp.RestEquals {
-			return false, fmt.Sprintf("rest_equals: got %q, want %q", rest, *exp.RestEquals)
 		}
 	}
 

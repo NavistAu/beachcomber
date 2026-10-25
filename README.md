@@ -275,7 +275,7 @@ All commands are subcommands of `comb`. The daemon is socket-activated — you n
 
 ### `comb g` (get) `<key> [path]`
 
-Query a value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay. Any node of the tree is addressable at any depth, and a key backed by a template (the managed `defaults/`, a `[client.providers.<p>] template.*` table, or a `comb p <p>:template.<f>`) is rendered here with this shell's environment — `comb g` resolves through `libbeachcomber::resolve`, the same function every SDK's `resolve` calls, and always needs the daemon.
+Query a value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay. Any node of the tree is addressable at any depth, and a key backed by a template (the managed `defaults/`, a `[client.providers.<p>] template.*` table, or a `comb p <p>:template.<f>`) is rendered here with this shell's environment — `comb g` resolves through `libbeachcomber::resolve`, the same function every SDK's `get` calls, and always needs the daemon.
 
 ```sh
 # Format suffixes on the command control output format
@@ -1002,10 +1002,9 @@ local comb = require('beachcomber')
 local client = comb.connect()
 
 local function git_branch()
-    local cwd = vim.fn.getcwd()
-    local result = client:get('git.branch', cwd)
-    if result and result:is_hit() then
-        return ' ' .. result.data
+    local branch = client:get('git.branch', { cwd = vim.fn.getcwd() })
+    if branch then
+        return ' ' .. branch
     end
     return ''
 end
@@ -1103,15 +1102,15 @@ from beachcomber import Client
 
 client = Client()
 
-# Single field
-result = client.get("git.branch", path="/path/to/repo")
-if result.is_hit:
-    print(f"Branch: {result.data}")
+# Single field: what `comb get git.branch` prints there, None on a miss
+branch = client.get("git.branch", cwd="/path/to/repo")
+if branch is not None:
+    print(f"Branch: {branch}")
 
-# Full provider with field access
-result = client.get("git", path="/path/to/repo")
-if result.is_hit:
-    print(f"Branch: {result['branch']}, dirty: {result['dirty']}")
+# Full provider: a dict
+git = client.get("git", cwd="/path/to/repo")
+if git is not None:
+    print(f"Branch: {git['branch']}, dirty: {git['dirty']}")
 
 # Persistent session for multiple queries
 with client.session() as s:

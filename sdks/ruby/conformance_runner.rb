@@ -89,12 +89,12 @@ end
 class ConformanceRunner
   # Ops this runner's binding can execute. A fixture using any op outside
   # this set must be skipped, not failed — the binding doesn't implement it.
-  SUPPORTED_OPS = %w[hello get refresh put status context watch introspect resolve eval].freeze
+  SUPPORTED_OPS = %w[hello get refresh put status context watch introspect eval].freeze
 
-  # Ops that are not wire ops: their "result" is the resolved/evaluated value
-  # itself (a String/Hash/Array/true/nil), not a typed Result/HelloInfo/etc.
-  # wrapper, so status and data extraction special-case them.
-  RAW_VALUE_OPS = %w[resolve eval].freeze
+  # Ops whose "result" is the value itself (a String/Hash/Array/true/nil),
+  # not a typed HelloInfo/etc. wrapper, so status and data extraction
+  # special-case them.
+  RAW_VALUE_OPS = %w[get eval].freeze
 
   # Every expectation kind documented in tests/conformance/README.md. A
   # fixture using a key outside this set fails loudly rather than being
@@ -102,8 +102,7 @@ class ConformanceRunner
   # asserting something the harness doesn't actually check.
   KNOWN_EXPECT_KEYS = %w[
     status data_type data_equals data_as_text data_contains_field
-    data_field_equals age_ms_present stale error_contains
-    template_equals rest_equals
+    data_field_equals error_contains
   ].freeze
 
   def initialize(comb_bin)
@@ -129,7 +128,7 @@ class ConformanceRunner
   end
 
   # Each fixture runs against a fresh daemon instance (tests/conformance/
-  # README.md's isolation contract) — resolve fixtures in particular reuse
+  # README.md's isolation contract) — get fixtures in particular reuse
   # provider keys (e.g. "myappcache") across files, so a shared daemon would
   # leak cache state between them.
   def run_fixture(fixture)
@@ -178,8 +177,9 @@ class ConformanceRunner
     args = step['args'] || {}
     case op
     when 'get'
-      result = @client.get(args['key'], path: args['path'])
-      [result, nil]
+      cwd = fixture['cwd'] || @default_cwd
+      value = @client.get(args['key'], cwd: cwd, env: fixture['env'])
+      [value, nil]
     when 'refresh'
       @client.refresh(args['key'], path: args['path'])
       [nil, nil]
@@ -204,10 +204,6 @@ class ConformanceRunner
       event  = stream.next_event
       stream.close
       [event, nil]
-    when 'resolve'
-      cwd = fixture['cwd'] || @default_cwd
-      value = @client.resolve(args['key'], cwd: cwd, env: fixture['env'])
-      [value, nil]
     when 'eval'
       cwd = fixture['cwd'] || @default_cwd
       value = @client.eval_expression(args['template'], cwd: cwd, env: fixture['env'])
@@ -240,18 +236,6 @@ class ConformanceRunner
     if expect.key?('data_as_text')
       check_data_as_text(name, expect['data_as_text'], result, op)
     end
-    if expect.key?('age_ms_present')
-      check_age_ms_present(name, expect['age_ms_present'], result, op)
-    end
-    if expect.key?('stale')
-      check_stale(name, expect['stale'], result, op)
-    end
-    if expect.key?('template_equals')
-      check_template_equals(name, expect['template_equals'], result)
-    end
-    if expect.key?('rest_equals')
-      check_rest_equals(name, expect['rest_equals'], result)
-    end
 
     if @errors.any? { |e| e.start_with?(name) }
       @failed += 1
@@ -281,7 +265,7 @@ class ConformanceRunner
     end
   end
 
-  # See RAW_VALUE_OPS: `resolve` and `eval` hand back a raw JSON scalar, so
+  # See RAW_VALUE_OPS: `get` and `eval` hand back the value itself, so
   # status/data extraction special-case them rather than trying to duck-type
   # that scalar against the wrapper types below.
   #
@@ -304,17 +288,9 @@ class ConformanceRunner
         if RAW_VALUE_OPS.include?(op)
           result.nil?
         else
-          result.respond_to?(:miss?) && result.miss?
+          result.respond_to?(:data) && result.data.nil?
         end
       miss ? nil : "expected status miss but got #{result.inspect}"
-    when 'template'
-      # A template-only node: no data, a template in effect. Neither a hit
-      # nor a miss — `resolve` renders it.
-      return "expected status template but got #{result.inspect}" unless result.is_a?(Beachcomber::Result)
-      return "expected template-only but data was present: #{result.data.inspect}" unless result.data.nil?
-      return 'expected a template but none was present' if result.template.nil?
-
-      nil
     when 'error'
       # If we got here without raising, that's a failure — caller handles raises separately
       "expected status error but op succeeded with #{result.inspect}"
@@ -323,26 +299,10 @@ class ConformanceRunner
     end
   end
 
-  def check_template_equals(name, expected, result)
-    actual = result.is_a?(Beachcomber::Result) ? result.template : nil
-    unless actual == expected
-      @errors << "#{name}: template_equals expected #{expected.inspect}, got #{actual.inspect}"
-    end
-  end
-
-  def check_rest_equals(name, expected, result)
-    actual = result.is_a?(Beachcomber::Result) ? result.rest : nil
-    unless actual == expected
-      @errors << "#{name}: rest_equals expected #{expected.inspect}, got #{actual.inspect}"
-    end
-  end
-
   def extract_data(result, op)
     return result if RAW_VALUE_OPS.include?(op)
 
     case result
-    when Beachcomber::Result
-      result.data
     when Beachcomber::HelloInfo
       { 'protocol_version' => result.protocol_version, 'daemon_version' => result.daemon_version }
     when Beachcomber::IntrospectResponse
@@ -428,41 +388,6 @@ class ConformanceRunner
     actual = as_text(data) || ''
     unless actual == expected
       @errors << "#{name}: data_as_text expected #{expected.inspect}, got #{actual.inspect}"
-    end
-  end
-
-  # age_ms is present exactly when the response is a cache hit (get) —
-  # mirroring the reference runner's CanonicalResponse, where every other op
-  # leaves age_ms as None. Ruby's Result#age_ms is never nil (it defaults a
-  # missing wire value to 0), so presence can't be read off the accessor
-  # directly — it has to be derived from the op/result shape the same way the
-  # reference does. A watch event carries a resolved value, which can come
-  # from several records at once and so has no age.
-  def check_age_ms_present(name, expected, result, op)
-    actual =
-      case op
-      when 'get'
-        result.respond_to?(:hit?) ? result.hit? : false
-      else
-        false
-      end
-    unless actual == expected
-      @errors << "#{name}: age_ms_present expected #{expected.inspect}, got #{actual.inspect}"
-    end
-  end
-
-  # stale is only meaningful alongside a get hit — same reasoning as
-  # check_age_ms_present.
-  def check_stale(name, expected, result, op)
-    actual =
-      case op
-      when 'get'
-        result.respond_to?(:hit?) && result.hit? ? result.stale? : nil
-      else
-        nil
-      end
-    unless actual == expected
-      @errors << "#{name}: stale expected #{expected.inspect}, got #{actual.inspect}"
     end
   end
 

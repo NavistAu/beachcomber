@@ -1,9 +1,9 @@
 {
-  "name": "resolve_cascade_miss_is_absent",
+  "name": "get_cascade_miss_is_absent",
   "description": "env.X or comb.P.F cascade is absent, not an error and not an empty string, when both terms miss: null means absent, never \"\".",
   "setup": [
     { "op": "put", "args": { "key": "myapp:template", "data": { "workspace": "{{ env.MYAPP_ENV or comb.myappcache.workspace }}" } } }
   ],
-  "test": { "op": "resolve", "args": { "key": "myapp.workspace" } },
+  "test": { "op": "get", "args": { "key": "myapp.workspace" } },
   "expect": { "status": "miss" }
 }

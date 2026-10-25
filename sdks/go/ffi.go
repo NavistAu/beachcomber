@@ -32,7 +32,7 @@ import (
 var requiredSymbolNames = []string{
 	"bc_client_new", "bc_client_free",
 	"bc_get", "bc_put", "bc_refresh", "bc_status", "bc_introspect", "bc_hello",
-	"bc_resolve", "bc_eval",
+	"bc_eval",
 	"bc_session_open", "bc_session_close", "bc_session_get", "bc_session_put", "bc_session_refresh",
 	"bc_session_set_context",
 	"bc_watch_open", "bc_watch_next", "bc_watch_cancel", "bc_watch_free",
@@ -49,7 +49,7 @@ type nativeLib struct {
 
 	bcClientNew, bcClientFree                            uintptr
 	bcGet, bcPut, bcRefresh, bcStatus, bcIntrospect      uintptr
-	bcHello, bcResolve, bcEval                           uintptr
+	bcHello, bcEval                                      uintptr
 	bcSessionOpen, bcSessionClose, bcSessionGet          uintptr
 	bcSessionPut, bcSessionRefresh, bcSessionSetContext  uintptr
 	bcWatchOpen, bcWatchNext, bcWatchCancel, bcWatchFree uintptr
@@ -138,7 +138,7 @@ func loadNativeLib() (*nativeLib, error) {
 		"bc_client_new": &l.bcClientNew, "bc_client_free": &l.bcClientFree,
 		"bc_get": &l.bcGet, "bc_put": &l.bcPut,
 		"bc_refresh": &l.bcRefresh, "bc_status": &l.bcStatus, "bc_introspect": &l.bcIntrospect,
-		"bc_hello": &l.bcHello, "bc_resolve": &l.bcResolve, "bc_eval": &l.bcEval,
+		"bc_hello": &l.bcHello, "bc_eval": &l.bcEval,
 		"bc_session_open": &l.bcSessionOpen, "bc_session_close": &l.bcSessionClose,
 		"bc_session_get": &l.bcSessionGet, "bc_session_put": &l.bcSessionPut,
 		"bc_session_refresh": &l.bcSessionRefresh, "bc_session_set_context": &l.bcSessionSetContext,

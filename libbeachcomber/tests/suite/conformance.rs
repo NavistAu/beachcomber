@@ -8,7 +8,7 @@ use crate::common::daemon::DaemonGuard;
 
 use libbeachcomber::resolve::{self, Inputs, Slot};
 use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
-use libbeachcomber::{Client, ClientConfig, CombResult, IntrospectResponse, IntrospectSubject};
+use libbeachcomber::{Client, ClientConfig, IntrospectResponse, IntrospectSubject};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -23,14 +23,14 @@ struct Fixture {
     test: OpDescriptor,
     expect: Value,
     source_path: PathBuf,
-    /// `resolve`/`eval` op context, parsed from the fixture's top-level
+    /// `get`/`eval`/`watch` op context, parsed from the fixture's top-level
     /// `env`/`cwd`. Templates are not fixture context: a fixture declares
     /// one by a `setup` `put` to `<provider>:template`, like any caller.
     env_vars: HashMap<String, String>,
     cwd: Option<String>,
 }
 
-/// Per-fixture context a `resolve` or `eval` op is evaluated against.
+/// Per-fixture context a `get`, `eval` or `watch` op is evaluated against.
 struct ResolveCtx<'a> {
     env_vars: &'a HashMap<String, String>,
     cwd: &'a str,
@@ -38,7 +38,7 @@ struct ResolveCtx<'a> {
 
 impl ResolveCtx<'_> {
     /// The resolver's inputs: the fixture's `cwd` is the slot every fetch
-    /// addresses (the convention `bc_resolve`/`bc_eval` follow), and `exec()`
+    /// addresses (the convention `bc_get`/`bc_eval` follow), and `exec()`
     /// is off, as it is for an SDK client without the option.
     fn inputs(&self) -> Inputs<'_> {
         Inputs {
@@ -134,13 +134,7 @@ struct CanonicalResponse {
     ok: bool,
     data: Option<Value>,
     data_as_text: Option<String>,
-    age_ms: Option<u64>,
-    stale: Option<bool>,
     error: Option<String>,
-    /// The template half of a `get`: a string leaf or an object tree.
-    template: Option<Value>,
-    /// The address left over past a template string.
-    rest: Option<String>,
 }
 
 fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> CanonicalResponse {
@@ -153,55 +147,27 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     "daemon_version": info.daemon_version,
                 })),
                 data_as_text: None,
-                age_ms: None,
-                stale: None,
                 error: None,
-                template: None,
-                rest: None,
             },
             Err(e) => error_response(e),
         },
+        // `get` is what `comb get` prints, through the one resolver every
+        // surface shares (`libbeachcomber::resolve`): the fixture's `env` is
+        // the caller's environment, its `cwd` the directory every fetch
+        // addresses, and templates come from the daemon — the fixture's
+        // `setup` `put`s to `<p>:template` seed them.
         "get" => {
             let key = descriptor.args["key"].as_str().unwrap_or("");
-            let path = descriptor.args["path"].as_str();
-            match client.get(key, path) {
-                Ok(CombResult::Hit {
-                    data,
-                    age_ms,
-                    stale,
-                    template,
-                    rest,
-                }) => CanonicalResponse {
+            match resolve::resolve(key, &resolve.inputs(), &mut { client }) {
+                Ok(v) => CanonicalResponse {
                     ok: true,
-                    data: Some(data.as_value().clone()),
-                    data_as_text: data.as_text(),
-                    age_ms: Some(age_ms as u64),
-                    stale: Some(stale),
+                    data_as_text: v
+                        .clone()
+                        .and_then(|v| libbeachcomber::CombData::from_json(v).as_text()),
+                    data: v,
                     error: None,
-                    template,
-                    rest,
                 },
-                Ok(CombResult::Template { template, rest }) => CanonicalResponse {
-                    ok: true,
-                    data: None,
-                    data_as_text: None,
-                    age_ms: None,
-                    stale: None,
-                    error: None,
-                    template: Some(template),
-                    rest,
-                },
-                Ok(CombResult::Miss) => CanonicalResponse {
-                    ok: true,
-                    data: None,
-                    data_as_text: None,
-                    age_ms: None,
-                    stale: None,
-                    error: None,
-                    template: None,
-                    rest: None,
-                },
-                Err(e) => error_response(e),
+                Err(e) => err_resp(e.to_string()),
             }
         }
         "refresh" => {
@@ -212,11 +178,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     ok: true,
                     data: None,
                     data_as_text: None,
-                    age_ms: None,
-                    stale: None,
                     error: None,
-                    template: None,
-                    rest: None,
                 },
                 Err(e) => error_response(e),
             }
@@ -232,11 +194,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                         ok: true,
                         data: None,
                         data_as_text: None,
-                        age_ms: None,
-                        stale: None,
                         error: None,
-                        template: None,
-                        rest: None,
                     },
                     Err(e) => error_response(e),
                 },
@@ -253,11 +211,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     ok: true,
                     data: None,
                     data_as_text: None,
-                    age_ms: None,
-                    stale: None,
                     error: None,
-                    template: None,
-                    rest: None,
                 },
                 Err(e) => error_response(e),
             }
@@ -281,11 +235,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     ok: true,
                     data: Some(Value::Array(arr)),
                     data_as_text: None,
-                    age_ms: None,
-                    stale: None,
                     error: None,
-                    template: None,
-                    rest: None,
                 }
             }
             Err(e) => error_response(e),
@@ -303,11 +253,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                         ok: true,
                         data: v,
                         data_as_text: None,
-                        age_ms: None,
-                        stale: None,
                         error: None,
-                        template: None,
-                        rest: None,
                     },
                     Ok(other) => err_resp(format!("watch: unexpected outcome {other:?}")),
                     Err(e) => err_resp(e.to_string()),
@@ -336,56 +282,19 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                         "cache_entries": health.cache_entries,
                     })),
                     data_as_text: None,
-                    age_ms: None,
-                    stale: None,
                     error: None,
-                    template: None,
-                    rest: None,
                 },
                 Ok(IntrospectResponse::Other(v)) => CanonicalResponse {
                     ok: true,
                     data: Some(v),
                     data_as_text: None,
-                    age_ms: None,
-                    stale: None,
                     error: None,
-                    template: None,
-                    rest: None,
                 },
                 Err(e) => error_response(e),
             }
         }
-        // `resolve` and `eval` are the client-side half, through the one
-        // resolver every surface shares (`libbeachcomber::resolve`): the
-        // fixture's `env` is the caller's environment, its `cwd` the slot
-        // every fetch addresses, and templates come from the daemon — the
-        // fixture's `setup` `put`s to `<p>:template` seed them.
-        "resolve" => {
-            let key = descriptor.args["key"].as_str().unwrap_or("");
-            match resolve::resolve(key, &resolve.inputs(), &mut { client }) {
-                Ok(Some(v)) => CanonicalResponse {
-                    ok: true,
-                    data: Some(v),
-                    data_as_text: None,
-                    age_ms: None,
-                    stale: None,
-                    error: None,
-                    template: None,
-                    rest: None,
-                },
-                Ok(None) => CanonicalResponse {
-                    ok: true,
-                    data: None,
-                    data_as_text: None,
-                    age_ms: None,
-                    stale: None,
-                    error: None,
-                    template: None,
-                    rest: None,
-                },
-                Err(e) => err_resp(e.to_string()),
-            }
-        }
+        // `eval` renders a template stored nowhere, with the inputs `get`
+        // reads with.
         "eval" => {
             let template = descriptor.args["template"].as_str().unwrap_or("");
             match resolve::eval(template, &resolve.inputs(), &mut { client }) {
@@ -393,11 +302,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                     ok: true,
                     data: v,
                     data_as_text: None,
-                    age_ms: None,
-                    stale: None,
                     error: None,
-                    template: None,
-                    rest: None,
                 },
                 Err(e) => err_resp(e.to_string()),
             }
@@ -411,11 +316,7 @@ fn error_response(e: libbeachcomber::CombError) -> CanonicalResponse {
         ok: false,
         data: None,
         data_as_text: None,
-        age_ms: None,
-        stale: None,
         error: Some(e.to_string()),
-        template: None,
-        rest: None,
     }
 }
 
@@ -424,11 +325,7 @@ fn err_resp(msg: String) -> CanonicalResponse {
         ok: false,
         data: None,
         data_as_text: None,
-        age_ms: None,
-        stale: None,
         error: Some(msg),
-        template: None,
-        rest: None,
     }
 }
 
@@ -443,11 +340,7 @@ const KNOWN_EXPECT_KEYS: &[&str] = &[
     "data_as_text",
     "data_contains_field",
     "data_field_equals",
-    "age_ms_present",
-    "stale",
     "error_contains",
-    "template_equals",
-    "rest_equals",
 ];
 
 fn check_expect(fixture: &Fixture, resp: &CanonicalResponse) -> Result<(), String> {
@@ -494,25 +387,6 @@ fn check_expect(fixture: &Fixture, resp: &CanonicalResponse) -> Result<(), Strin
                 }
                 if resp.data.is_some() {
                     return Err("status=miss expected but data was present".into());
-                }
-                if resp.template.is_some() {
-                    return Err("status=miss expected but a template was present".into());
-                }
-            }
-            // A template-only node: nothing cached, a template in effect.
-            // Neither a hit nor a miss — `resolve` renders it.
-            "template" => {
-                if !resp.ok {
-                    return Err(format!(
-                        "status=template expected but response was error: {:?}",
-                        resp.error
-                    ));
-                }
-                if resp.data.is_some() {
-                    return Err("status=template expected but data was present".into());
-                }
-                if resp.template.is_none() {
-                    return Err("status=template expected but no template was present".into());
                 }
             }
             "error" => {
@@ -597,26 +471,6 @@ fn check_expect(fixture: &Fixture, resp: &CanonicalResponse) -> Result<(), Strin
         }
     }
 
-    // age_ms_present
-    if let Some(expected) = expect.get("age_ms_present").and_then(|v| v.as_bool()) {
-        let actual = resp.age_ms.is_some();
-        if actual != expected {
-            return Err(format!(
-                "age_ms_present={expected} expected but got {actual}"
-            ));
-        }
-    }
-
-    // stale
-    if let Some(expected) = expect.get("stale").and_then(|v| v.as_bool()) {
-        match resp.stale {
-            Some(actual) if actual == expected => {}
-            other => {
-                return Err(format!("stale={expected} expected but got {other:?}"));
-            }
-        }
-    }
-
     // error_contains
     if let Some(substr) = expect.get("error_contains").and_then(|v| v.as_str()) {
         let actual = resp.error.as_deref().unwrap_or("");
@@ -624,30 +478,6 @@ fn check_expect(fixture: &Fixture, resp: &CanonicalResponse) -> Result<(), Strin
             return Err(format!(
                 "error_contains={substr:?} expected but error was {actual:?}"
             ));
-        }
-    }
-
-    // template_equals
-    if let Some(expected) = expect.get("template_equals") {
-        match &resp.template {
-            Some(actual) if actual == expected => {}
-            other => {
-                return Err(format!(
-                    "template_equals failed: expected {expected}, got {other:?}"
-                ));
-            }
-        }
-    }
-
-    // rest_equals
-    if let Some(expected) = expect.get("rest_equals").and_then(|v| v.as_str()) {
-        match resp.rest.as_deref() {
-            Some(actual) if actual == expected => {}
-            other => {
-                return Err(format!(
-                    "rest_equals={expected:?} expected but got {other:?}"
-                ));
-            }
         }
     }
 
@@ -666,7 +496,7 @@ fn conformance_suite() {
         let guard = DaemonGuard::spawn();
         let client = client_for(&guard.path);
 
-        // Default cwd for `resolve` fixtures that don't declare one: this
+        // Default cwd for fixtures that don't declare one: this
         // fixture's own temp directory (unique per DaemonGuard::spawn()).
         let default_cwd = guard
             .path

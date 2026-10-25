@@ -60,7 +60,7 @@ This module has the same interface as the SDK-based version below, so lualine an
 
 Inside neovim the SDK binds `libbeachcomber` through LuaJIT's `ffi` — no process forking, sub-millisecond calls. This is the recommended approach if you can install the SDK.
 
-The SDK exposes a single `connect()` call that returns a persistent client. Call `client:get(key, path)` to retrieve a cached value. The second argument is the working directory path and is required for providers like `git` that are path-scoped. A template-backed key such as `kubecontext.context` has no cached value — `get` on it is always a miss — so read it with `client:resolve(key, { cwd = ... })`, which renders the template the way `comb get` does; `kubecontext` calls `kubectl` through `exec()`, so connect with `exec = true`.
+The SDK exposes a single `connect()` call that returns a persistent client. Call `client:get(key, { cwd = ... })` to read a value: it returns what `comb get` prints in that directory, or `nil` on a miss. `cwd` is the working directory, and providers like `git` that are path-scoped need it; without one the read addresses the global entry. A template-backed key such as `kubecontext.context` is rendered the way `comb get` renders it; `kubecontext` calls `kubectl` through `exec()`, so connect with `exec = true`.
 
 Create a helper module so the same client is reused across your config:
 
@@ -72,33 +72,27 @@ local client = comb.connect({ exec = true })
 local M = {}
 
 function M.git_branch()
-    local result = client:get('git.branch', vim.fn.getcwd())
-    if result and result:is_hit() then
-        return result.data
-    end
-    return ''
+    return client:get('git.branch', { cwd = vim.fn.getcwd() }) or ''
 end
 
 function M.git_dirty()
-    local result = client:get('git.dirty', vim.fn.getcwd())
-    if result and result:is_hit() and result.data == true then
+    if client:get('git.dirty', { cwd = vim.fn.getcwd() }) == true then
         return '*'
     end
     return ''
 end
 
 function M.battery()
-    local result = client:get('battery.percent')
-    if result and result:is_hit() then
-        return result.data .. '%'
+    local percent = client:get('battery.percent')
+    if percent then
+        return percent .. '%'
     end
     return ''
 end
 
 function M.kube()
-    -- a template, not a cached field: resolve renders it (kubectl via exec())
-    local value = client:resolve('kubecontext.context', { cwd = vim.fn.getcwd() })
-    return value or ''
+    -- a template, not a cached field: get renders it (kubectl via exec())
+    return client:get('kubecontext.context', { cwd = vim.fn.getcwd() }) or ''
 end
 
 return M
@@ -219,7 +213,7 @@ local GitBranch = {
 ## Troubleshooting
 
 - **SDK not found:** if `require('beachcomber')` fails, the SDK is not on neovim's `package.path`. Check `:lua print(package.path)` and ensure the SDK's location is included.
-- **Verify from neovim command line:** `:lua print(require('beachcomber').connect():get('git.branch', vim.fn.getcwd()).data)` should print the branch name. If it prints `nil`, the daemon is not running or the socket cannot be found.
+- **Verify from neovim command line:** `:lua print(require('beachcomber').connect():get('git.branch', { cwd = vim.fn.getcwd() }))` should print the branch name. If it prints `nil`, the daemon is not running or the socket cannot be found.
 - **Without the SDK:** the `vim.fn.system()` approach has no dependency to troubleshoot — if `comb g git.branch .` works in your terminal, it works in neovim.
 
 See the [Troubleshooting](./troubleshooting.md) guide for general diagnostics.

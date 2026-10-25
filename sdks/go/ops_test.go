@@ -12,30 +12,46 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Client.GetWithFlags
+// Client.Get flags
 // ---------------------------------------------------------------------------
 
-func TestClient_GetWithFlags_Force(t *testing.T) {
+func TestClient_Get_Force(t *testing.T) {
 	c := requireClient(t)
-	// force evicts and re-executes a real source; a static namespace has no
-	// source to re-execute from and rejects force outright, so this needs a
-	// builtin.
-	result, err := c.GetWithFlags("hostname.short", "", true, false)
+	// Force re-executes a real Source; a static namespace has no Source to
+	// re-execute and the daemon refuses it, so this needs a builtin.
+	result, err := c.Get("hostname.short", "", nil, beachcomber.Force)
 	if err != nil {
-		t.Fatalf("GetWithFlags: %v", err)
+		t.Fatalf("Get(Force): %v", err)
 	}
 	if !result.IsHit() {
 		t.Error("expected IsHit() = true")
 	}
 }
 
-func TestClient_GetWithFlags_BadFlags(t *testing.T) {
-	// There is no public API surface for passing a reserved flag bit — this
-	// SDK only ever sets bits 0/1 itself — so this exercises the daemon's
-	// own valid range indirectly via the normal path instead.
+func TestClient_Get_ForceAndWait(t *testing.T) {
 	c := requireClient(t)
-	if _, err := c.GetWithFlags("hostname.short", "", true, true); err != nil {
-		t.Fatalf("GetWithFlags(force,wait): %v", err)
+	result, err := c.Get("hostname.short", "", nil, beachcomber.Force, beachcomber.Wait)
+	if err != nil {
+		t.Fatalf("Get(Force, Wait): %v", err)
+	}
+	if !result.IsHit() {
+		t.Error("expected IsHit() = true")
+	}
+}
+
+func TestSession_Get_ForceAndWait(t *testing.T) {
+	c := requireClient(t)
+	sess, err := c.Session()
+	if err != nil {
+		t.Fatalf("Session: %v", err)
+	}
+	defer sess.Close()
+	result, err := sess.Get("hostname.short", "", nil, beachcomber.Force, beachcomber.Wait)
+	if err != nil {
+		t.Fatalf("Session.Get(Force, Wait): %v", err)
+	}
+	if !result.IsHit() {
+		t.Error("expected IsHit() = true")
 	}
 }
 

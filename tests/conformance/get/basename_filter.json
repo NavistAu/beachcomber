@@ -1,10 +1,10 @@
 {
-  "name": "resolve_basename_filter",
+  "name": "get_basename_filter",
   "description": "The basename filter reduces an env-sourced path value to its final component. The template is put to filters:template, as any caller declares one.",
   "setup": [
     { "op": "put", "args": { "key": "filters:template", "data": { "based": "{{ env.PYVAR | basename }}" } } }
   ],
   "env": { "PYVAR": "/foo/bar/baz" },
-  "test": { "op": "resolve", "args": { "key": "filters.based" } },
+  "test": { "op": "get", "args": { "key": "filters.based" } },
   "expect": { "status": "hit", "data_type": "string", "data_equals": "baz" }
 }

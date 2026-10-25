@@ -13,7 +13,8 @@
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
-//	result, err := c.Get("git.branch", "/path/to/repo")
+//	result, err := c.Get("git.branch", "/path/to/repo", nil) // what comb get prints there
+//	tmpl, err := c.Get("git:template.branch", "", nil)      // the template, unrendered
 //
 // For prompts and tools that make many queries per invocation, open a
 // persistent [Session] instead:
@@ -22,7 +23,7 @@
 //	if err != nil { … }
 //	defer sess.Close()
 //	sess.SetContext("/path/to/repo")
-//	result, err := sess.Get("git.branch", "")
+//	result, err := sess.Get("git.branch", "", nil)
 package beachcomber
 
 import (
@@ -207,7 +208,7 @@ func WithAutostart(enabled bool) Option {
 	return func(opts map[string]interface{}) { opts["autostart"] = enabled }
 }
 
-// WithExec sets whether a template this client resolves ([Client.Resolve],
+// WithExec sets whether a template this client renders ([Client.Get],
 // [Client.Eval]) may call exec(). Off by default: a template that calls it
 // then fails with "exec() is disabled in this context".
 func WithExec(enabled bool) Option {
@@ -269,44 +270,76 @@ func (c *Client) finalize() {
 	}
 }
 
-// Get reads a node from the daemon, raw — both halves, nothing rendered.
-//
-// The Result carries the cached value (Data) and the template in effect at
-// the address (Template), whichever exist. A template-only Result is an
-// address whose value Resolve renders — this is the raw half;
-// Resolve(key, cwd, env) is how you get the value. IsHit is "data
-// present"; IsMiss is "no data and no template".
-//
-// key follows the "provider" or "provider.field" format (e.g. "git" or
-// "git.branch"). path is the working directory context; pass "" to omit it.
-func (c *Client) Get(key string, path string) (*Result, error) {
-	return c.GetWithFlags(key, path, false, false)
+// GetFlag is one of the flags a Get takes.
+type GetFlag uint32
+
+const (
+	// Force re-executes every Source the read demands before answering, as
+	// comb get --force.
+	Force GetFlag = 1 << 0 // BC_GET_FORCE
+	// Wait re-executes a stale entry the read demands inline before
+	// answering, as comb get --wait.
+	Wait GetFlag = 1 << 1 // BC_GET_WAIT
+)
+
+// flagBits ORs flags into the bitmask bc_get and bc_session_get take.
+func flagBits(flags []GetFlag) uintptr {
+	var bits GetFlag
+	for _, f := range flags {
+		bits |= f
+	}
+	return uintptr(bits)
 }
 
-// GetWithFlags is like Get but supports force and wait flags.
-func (c *Client) GetWithFlags(key, path string, force, wait bool) (*Result, error) {
+// Get returns the value comb get prints for key at cwd, with env as the
+// caller's environment. The daemon holds the templates ("<provider>:template",
+// seeded from configuration or Put); this client renders them. A plain field
+// is its cached value, a templated one is rendered, and a bare provider name
+// is the whole merged namespace. The unrendered halves are facets, read like
+// any key: "p:template.x" is the template as stored, "p:put.x" and
+// "p:source.x" those layers' values. A miss is a Result with nil Data.
+//
+// cwd is the directory the read addresses: "~" is the home directory and a
+// relative path is against this process's working directory; "" is the
+// global entry. env is the caller's environment for env.* references; nil
+// means none supplied, so every env.* is absent. flags are [Force] and
+// [Wait].
+func (c *Client) Get(key, cwd string, env map[string]string, flags ...GetFlag) (*Result, error) {
 	if c.loadErr != nil {
 		return nil, c.loadErr
 	}
-	keyBuf, pathBuf := cBytes(key), optBytes(path)
-	data, err := c.lib.call(c.lib.bcGet, c.handle, ptrOf(keyBuf), ptrOf(pathBuf), uintptr(getFlags(force, wait)))
+	keyBuf, cwdBuf, envBuf := cBytes(key), optBytes(cwd), jsonMapBytes(env)
+	data, err := c.lib.call(c.lib.bcGet, c.handle, ptrOf(keyBuf), ptrOf(cwdBuf), ptrOf(envBuf), flagBits(flags))
 	runtime.KeepAlive(keyBuf)
-	runtime.KeepAlive(pathBuf)
+	runtime.KeepAlive(cwdBuf)
+	runtime.KeepAlive(envBuf)
 	if err != nil {
 		return nil, err
 	}
-	return resultFromGetData(data)
+	return resultFromScalarData(data)
 }
 
-func getFlags(force, wait bool) uint32 {
-	var f uint32
-	if force {
-		f |= 1 << 0 // BC_GET_FORCE
+// Eval renders a template that is stored nowhere — the same value comb eval
+// prints. Every ref resolves exactly as it would inside a stored template,
+// so Eval("{{ p.f }}") and Get("p.f") agree. cwd and env mean what they mean
+// for Get.
+//
+// templateStr accepts a single "{{ expr }}" tag, or literal text/several
+// tags — the former keeps the expression's natural type, the latter is
+// always a string (a source with no tags at all is its literal text).
+func (c *Client) Eval(templateStr, cwd string, env map[string]string) (*Result, error) {
+	if c.loadErr != nil {
+		return nil, c.loadErr
 	}
-	if wait {
-		f |= 1 << 1 // BC_GET_WAIT
+	tplBuf, cwdBuf, envBuf := cBytes(templateStr), cBytes(cwd), jsonMapBytes(env)
+	data, err := c.lib.call(c.lib.bcEval, c.handle, ptrOf(tplBuf), ptrOf(cwdBuf), ptrOf(envBuf))
+	runtime.KeepAlive(tplBuf)
+	runtime.KeepAlive(cwdBuf)
+	runtime.KeepAlive(envBuf)
+	if err != nil {
+		return nil, err
 	}
-	return f
+	return resultFromScalarData(data)
 }
 
 // Refresh forces the daemon to recompute the given provider/key.
@@ -397,10 +430,10 @@ func (c *Client) Introspect(subject IntrospectSubject, durationSecs uint64) (*In
 	return parseIntrospectFromData(subject, data)
 }
 
-// Watch subscribes to the value of key — what Resolve answers for it — and
+// Watch subscribes to the value of key — what Get answers for it — and
 // emits it again whenever it changes, so a template edited under the watch
 // fires it just as a changed cache record does. cwd and env mean what they
-// mean for Resolve, and for the same reason: this library reads no ambient
+// mean for Get, and for the same reason: this library reads no ambient
 // state on the caller's behalf. cwd is required. The returned stream holds a
 // watch handle; call Close on it to cancel and free it.
 func (c *Client) Watch(key, cwd string, env map[string]string) (*WatchStream, error) {

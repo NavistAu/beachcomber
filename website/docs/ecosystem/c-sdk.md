@@ -64,12 +64,11 @@ already present at `../../target/debug`. Override `BC_LIB_DIR` /
 int main(void) {
     BcClient *c = bc_client_new(NULL);   /* default socket discovery */
 
-    char *r = bc_get(c, "git.branch", "/path/to/repo", 0);
+    /* What `comb get git.branch` prints there; NULL env_json is "no environment" */
+    char *r = bc_get(c, "git.branch", "/path/to/repo", NULL, 0);
     printf("%s\n", r);
-    /* {"ok":true,"data":{"data":"main","age_ms":12,"stale":false}}
-     * or {"ok":true,"data":{"data":null,"age_ms":null,"stale":null,"template":"{{ … }}"}}
-     *    on a template-only node (see "The get envelope" below)
-     * or {"ok":true,"data":{"data":null,"age_ms":null,"stale":null}} on miss
+    /* {"ok":true,"data":"main"}
+     * or {"ok":true,"data":null} on miss
      * or {"ok":false,"error":{"kind":"...","message":"..."}} on error */
     bc_string_free(r);
 
@@ -106,30 +105,8 @@ Every operation returns one of two shapes:
 {"ok": false, "error": {"kind": "...", "message": "..."}}
 ```
 
-`bc_get` / `bc_session_get` nest the read itself one level deeper —
-`data.data` is the value (`null` when nothing is cached), alongside
-`data.age_ms` and `data.stale`, plus `data.template` and `data.rest` when
-set — see "The `get` envelope".
-
-### The `get` envelope
-
-`bc_get` / `bc_session_get` return the node as the daemon holds it — both
-halves, nothing rendered. The inner object has five keys, the last two
-present only when set:
-
-| node | `data` | `age_ms` / `stale` | `template` | `rest` |
-|---|---|---|---|---|
-| value (a hit) | the value | set | only if a template is in effect | only if set |
-| template only | `null` | `null` | a string (leaf) or object (group) | only if set |
-| nothing (a miss) | `null` | `null` | absent | absent |
-
-`template` is the template in effect at the address, unrendered. `rest` is
-the address left over when the template walk stopped at a string:
-`bc_get(c, "p.t.x", …)` where `p.t` is a template string gives `template`
-of `p.t` and `"rest": "x"`. A template-only node is not a miss — something
-is stored there — and not a hit — it has no value until it is rendered. It
-is an address whose value `bc_resolve` renders: `bc_get` is the raw half,
-`bc_resolve(c, key, cwd, env_json)` is how you get the value.
+`bc_get` / `bc_session_get`'s `data` is the value itself — what `comb get`
+prints — or `null` on a miss.
 
 `bc_watch_next` uses a five-outcome shape instead of the plain `data` field,
 so a binding can tell the cases apart without string matching:
@@ -169,7 +146,7 @@ so a binding can tell the cases apart without string matching:
 
 | Function | Description |
 |---|---|
-| `BcClient *bc_client_new(const char *options_json)` | Create a client handle. `options_json` is nullable; recognised keys are `socket_path`, `timeout_ms`, `autostart`, and `exec` (`{"exec":true}` lets templates this client resolves call `exec()`; off by default). Never returns NULL. |
+| `BcClient *bc_client_new(const char *options_json)` | Create a client handle. `options_json` is nullable; recognised keys are `socket_path`, `timeout_ms`, `autostart`, and `exec` (`{"exec":true}` lets templates this client renders call `exec()`; off by default). Never returns NULL. |
 | `void bc_client_free(BcClient *client)` | Free a client handle. Null-safe. |
 
 ### Operations
@@ -178,14 +155,13 @@ so a binding can tell the cases apart without string matching:
 
 | Function | Description |
 |---|---|
-| `char *bc_get(BcClient *c, const char *key, const char *path, uint32_t flags)` | Read a node raw — both halves, nothing rendered (see "The `get` envelope"). `path` is nullable. `flags` is a bitmask of `BC_GET_FORCE` / `BC_GET_WAIT`; any other bit yields `kind: "bad_flags"`. |
 | `char *bc_put(BcClient *c, const char *key, const char *json_data, const char *ttl, const char *path)` | Write a value into the cache as static data. `json_data` must parse as JSON; the JSON value `"null"` removes the node. `ttl` and `path` are nullable. |
 | `char *bc_refresh(BcClient *c, const char *key, const char *path)` | Re-execute the Sources `key` demands, each at the instance that answers for `path`. `path` is nullable. A key naming no Source (a static namespace, a facet, an unknown name, a field no Source owns) errors: `nothing to refresh: <key> has no sources`. |
 | `char *bc_status(BcClient *c)` | List all cache entries currently held by the daemon. |
 | `char *bc_introspect(BcClient *c, const char *subject, const char *options_json)` | Inspect a daemon subsystem. `options_json`'s only recognised key, `duration_secs`, is consulted by the `procs` subject only. |
 | `char *bc_hello(BcClient *c)` | Handshake — daemon and protocol version info. |
 
-### Resolve / eval
+### Get / eval
 
 Both go through `libbeachcomber::resolve`, the same function behind
 `comb get` and `comb eval`: the daemon holds the templates
@@ -194,8 +170,12 @@ client renders them in-process with the `cwd` and `env_json` you pass.
 
 | Function | Description |
 |---|---|
-| `char *bc_resolve(BcClient *c, const char *key, const char *cwd, const char *env_json)` | The same value `comb get` returns for this key, cwd and env. A plain field is its cached value, a templated one is rendered, and a bare provider name is the whole merged namespace; a miss is `data: null`. `cwd` is the directory every fetch the resolution makes addresses, read as `comb get --path` reads one (`~` is home, a relative path is against the process's working directory); NULL is the global entry. `env_json` is nullable ("no environment": every `env.*` is absent). |
-| `char *bc_eval(BcClient *c, const char *template_str, const char *cwd, const char *env_json)` | Render a template that is stored nowhere — the same value `comb eval` prints. `template_str` accepts a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string — a source with no tags at all is its literal text). `cwd` is as for `bc_resolve`, and every daemon ref the expression names is fetched scoped to it. |
+| `char *bc_get(BcClient *c, const char *key, const char *cwd, const char *env_json, uint32_t flags)` | The value `comb get` prints for this key, cwd and env. A plain field is its cached value, a templated one is rendered, and a bare provider name is the whole merged namespace; a miss is `data: null`. `cwd` is the directory every fetch the read makes addresses, read as `comb get --path` reads one (`~` is home, a relative path is against the process's working directory); NULL is the global entry. `env_json` is nullable ("no environment": every `env.*` is absent). `flags` is a bitmask of `BC_GET_FORCE` / `BC_GET_WAIT`; any other bit yields `kind: "bad_flags"`. |
+| `char *bc_eval(BcClient *c, const char *template_str, const char *cwd, const char *env_json)` | Render a template that is stored nowhere — the same value `comb eval` prints. `template_str` accepts a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string — a source with no tags at all is its literal text). `cwd` is as for `bc_get`, and every daemon ref the expression names is fetched scoped to it. |
+
+The unrendered halves are facets, read with `bc_get` like any key:
+`p:template.x` is the template as stored, `p:put.x` and `p:source.x` those
+layers' values. There is no raw read.
 
 `exec()` inside a template runs only on a client created with
 `bc_client_new("{\"exec\":true}")`; it is off by default, and a template
@@ -213,7 +193,7 @@ internal mutex: a concurrent caller gets `kind: "busy"` rather than blocking.
 |---|---|
 | `BcSession *bc_session_open(BcClient *client)` | Open a persistent session on `client`'s connection. Never returns NULL. |
 | `void bc_session_close(BcSession *session)` | Close and free a session handle. Null-safe. |
-| `char *bc_session_get(BcSession *s, const char *key, const char *path, uint32_t flags)` | Same as `bc_get`, on the session's persistent connection. |
+| `char *bc_session_get(BcSession *s, const char *key, const char *cwd, const char *env_json, uint32_t flags)` | Same as `bc_get`, on the session's persistent connection; a NULL `cwd` is the session's directory when it has one. |
 | `char *bc_session_put(BcSession *s, const char *key, const char *json_data, const char *ttl, const char *path)` | Same as `bc_put`, on the session's persistent connection. |
 | `char *bc_session_set_context(BcSession *s, const char *path)` | Set a default path so subsequent queries on this session don't need an explicit `path`. |
 
@@ -221,14 +201,14 @@ internal mutex: a concurrent caller gets `kind: "busy"` rather than blocking.
 BcSession *s = bc_session_open(c);
 char *r = bc_session_set_context(s, "/path/to/repo");
 bc_string_free(r);
-r = bc_session_get(s, "git.branch", NULL, 0);   /* uses the context path */
+r = bc_session_get(s, "git.branch", NULL, NULL, 0);   /* reads at the context path */
 bc_string_free(r);
 bc_session_close(s);
 ```
 
 ### Watch
 
-Opens a watch on the *value* of a key — what `bc_resolve(key, cwd, env_json)`
+Opens a watch on the *value* of a key — what `bc_get(key, cwd, env_json, 0)`
 answers — and emits it again whenever it changes: the fan-in underneath
 subscribes to every key the resolution reads, and a write to a namespace or
 any of its facets wakes its watchers, so a template edited under the watch
@@ -242,7 +222,7 @@ SDK documented as safe to invoke from another thread while a
 
 | Function | Description |
 |---|---|
-| `BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const char *env_json)` | Open a watch on `key`, resolved at `cwd` with `env_json`'s environment — the same two inputs `bc_resolve` takes. `cwd` is as for `bc_resolve` (NULL watches the global entry); `env_json` is nullable ("no environment": every `env.*` is absent). Returns NULL only on allocation failure. |
+| `BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const char *env_json)` | Open a watch on `key`, resolved at `cwd` with `env_json`'s environment — the same two inputs `bc_get` takes. `cwd` is as for `bc_get` (NULL watches the global entry); `env_json` is nullable ("no environment": every `env.*` is absent). Returns NULL only on allocation failure. |
 | `char *bc_watch_next(BcWatch *w, int32_t timeout_ms)` | Wait for the next event. `timeout_ms`: `-1` blocks indefinitely, `0` polls, `>0` waits that long. |
 | `void bc_watch_cancel(BcWatch *w)` | Cancel a pending or future `bc_watch_next` call. Null-safe. Safe to call from another thread. |
 | `void bc_watch_free(BcWatch *w)` | Free a watch handle. Null-safe. |

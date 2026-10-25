@@ -192,39 +192,31 @@ class TestOps < Minitest::Test
     assert_raises(Beachcomber::ProtocolError) { @client.status }
   end
 
-  # --- get_with_flags ---
+  # --- get flags ---
 
-  def test_get_with_flags_sends_force
+  def test_get_sends_force
     @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
-    @client.get_with_flags('git.branch', force: true)
+    @client.get('git.branch', force: true)
     req = @server.requests.last
     assert_equal 'get', req['op']
     assert_equal true,  req['force']
     refute req.key?('wait')
   end
 
-  def test_get_with_flags_sends_wait
+  def test_get_sends_wait
     @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
-    @client.get_with_flags('git.branch', wait: true)
+    @client.get('git.branch', wait: true)
     req = @server.requests.last
     assert_equal true, req['wait']
     refute req.key?('force')
   end
 
-  def test_get_with_flags_omits_flags_by_default
+  def test_get_omits_flags_by_default
     @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
-    @client.get_with_flags('git.branch')
+    @client.get('git.branch')
     req = @server.requests.last
     refute req.key?('force')
     refute req.key?('wait')
-  end
-
-  def test_get_with_flags_returns_result
-    @server.enqueue('{"ok":true,"data":"main","age_ms":55,"stale":false}')
-    result = @client.get_with_flags('git.branch')
-    assert_instance_of Beachcomber::Result, result
-    assert_equal 'main', result.data
-    assert_equal 55,     result.age_ms
   end
 
   # --- watch ---
@@ -299,13 +291,13 @@ class TestOps < Minitest::Test
     stream.close
   end
 
-  # --- resolve / eval_expression ---
+  # --- get / eval_expression ---
   # (the daemon holds the template, answered on the `get` for the key; the
   # client renders it, and env.* refs never touch the daemon)
 
-  def test_resolve_fetches_the_key_at_cwd_and_renders_its_template
+  def test_get_fetches_the_key_at_cwd_and_renders_its_template
     @server.enqueue('{"ok":true,"template":"{{ env.PYVAR | basename }}"}')
-    value = @client.resolve('filters.based', cwd: '/tmp', env: { 'PYVAR' => '/foo/bar/baz' })
+    value = @client.get('filters.based', cwd: '/tmp', env: { 'PYVAR' => '/foo/bar/baz' })
     assert_equal 'baz', value
     req = @server.requests.last
     assert_equal 'get',           req['op']
@@ -313,14 +305,14 @@ class TestOps < Minitest::Test
     assert_equal '/tmp',          req['path']
   end
 
-  def test_resolve_miss_is_nil
+  def test_get_miss_at_cwd_is_nil
     @server.enqueue('{"ok":true}')
-    assert_nil @client.resolve('nope.field', cwd: '/tmp')
+    assert_nil @client.get('nope.field', cwd: '/tmp')
   end
 
-  def test_resolve_plain_field_is_its_cached_value
+  def test_get_plain_field_is_its_cached_value
     @server.enqueue('{"ok":true,"data":"main","age_ms":10,"stale":false}')
-    assert_equal 'main', @client.resolve('git.branch', cwd: '/repo')
+    assert_equal 'main', @client.get('git.branch', cwd: '/repo')
   end
 
   def test_eval_expression_evaluates_raw_template
@@ -373,14 +365,13 @@ class TestOps < Minitest::Test
     assert_instance_of Beachcomber::CacheRow, rows.first
   end
 
-  def test_session_get_with_flags
-    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+  def test_session_get_takes_flags_and_env
+    @server.enqueue('{"ok":true,"template":"{{ env.WHO }}"}')
     result = nil
     @client.session do |s|
-      result = s.get_with_flags('git.branch', force: true)
+      result = s.get('git.branch', env: { 'WHO' => 'me' }, force: true)
     end
-    assert_instance_of Beachcomber::Result, result
-    assert_equal 'main', result.data
+    assert_equal 'me', result
     req = @server.requests.last
     assert_equal true, req['force']
   end

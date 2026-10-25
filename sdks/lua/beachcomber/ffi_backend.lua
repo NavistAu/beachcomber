@@ -3,8 +3,7 @@
 --
 -- Every op mirrors a `bc_*` C function: encode arguments, call, decode the
 -- `char *` JSON envelope, free it via `bc_string_free` (never `bc_version`),
--- and return a canonical response table
--- `{ok, data, age_ms, stale, error={kind,message}}`.
+-- and return a canonical response table `{ok, data, error={kind,message}}`.
 --
 -- See beachcomber.ffi for library discovery/loading/symbol verification.
 
@@ -33,37 +32,11 @@ local function decode(C, ptr)
   return resp
 end
 
---- `bc_get`/`bc_session_get`-shaped result:
--- `{data:{data,age_ms,stale,template?,rest?}}` on ok,
--- `{error:{kind,message}}` otherwise. Flatten to the canonical shape.
--- `template` and `rest` are present only when set, so they pass through
--- as nil otherwise.
---
--- The inner `data` field is where the wire encodes "nothing cached" as a
--- literal JSON null (`"data":null`) — indistinguishable on the wire from a
--- genuine stored null, except that the daemon has no way to store a
--- genuine null (see beachcomber.json's M.NULL doc comment), so this field
--- can only ever mean "no value" here. `age_ms` and `stale` are null with
--- it (a miss, or a template-only node, has no freshness), so all three
--- collapse json.NULL back to plain Lua nil and `Result.new`'s `or 0` /
--- `or false` defaults fire, as every other SDK's do. Nowhere else should.
-local function unwrap_get(env)
-  if not env.ok then
-    return { ok = false, error = env.error }
-  end
-  local d = env.data or {}
-  local data, age_ms, stale = d.data, d.age_ms, d.stale
-  if data == json.NULL then data = nil end
-  if age_ms == json.NULL then age_ms = nil end
-  if stale == json.NULL then stale = nil end
-  return { ok = true, data = data, age_ms = age_ms, stale = stale, template = d.template, rest = d.rest }
-end
-
 --- put/refresh/status/introspect/hello-shaped result: `{data:...}`
 -- on ok. Deliberately does NOT collapse json.NULL — none of these ops
--- encode a "miss" as a literal null the way bc_get/bc_watch_next do (see
--- unwrap_get above), so their `data` stays whatever it decoded to; an op
--- that ever grows that convention should route through its own unwrap
+-- encode a "miss" as a literal null the way bc_get/bc_eval/bc_watch_next do
+-- (see unwrap_value below), so their `data` stays whatever it decoded to; an
+-- op that ever grows that convention should route through its own unwrap
 -- function instead of this one.
 local function plain(env)
   if not env.ok then
@@ -72,13 +45,15 @@ local function plain(env)
   return { ok = true, data = env.data }
 end
 
---- bc_resolve/bc_eval-shaped result: the value itself at top-level `data`,
--- where a miss (`bc_resolve` of an address nothing is stored at) is a
--- literal `"data":null`. Collapse that to Lua nil, the miss the Client
--- documents. bc_eval shares the unwrap so the two ops agree on a top-level
--- null (a template rendering none is absent, the same nil); a null nested
--- inside a rendered object stays json.NULL like any other decoded value.
-local function unwrap_resolve(env)
+--- bc_get/bc_session_get/bc_eval-shaped result: the value itself at
+-- top-level `data`, where a miss (a `bc_get` of an address nothing is stored
+-- at) is a literal `"data":null`. The daemon has no way to store a genuine
+-- null (see beachcomber.json's M.NULL doc comment), so that null can only
+-- mean "no value": collapse it to Lua nil, the miss the Client documents.
+-- bc_eval shares the unwrap so the ops agree on a top-level null (a
+-- template rendering none is absent, the same nil); a null nested inside a
+-- rendered object stays json.NULL like any other decoded value.
+local function unwrap_value(env)
   if not env.ok then
     return { ok = false, error = env.error }
   end
@@ -135,9 +110,16 @@ local function flag_bits(flags)
   return bits
 end
 
-function Backend:get(key, path, flags)
-  local ptr = self._C.bc_get(self._client, key, path, flag_bits(flags))
-  return unwrap_get(decode(self._C, ptr))
+--- `env_vars` nil is "no environment" (a NULL `env_json`): every env.* is
+-- absent, as the ABI documents.
+local function env_json_of(env_vars)
+  if env_vars == nil then return nil end
+  return json.encode(env_vars)
+end
+
+function Backend:get(key, cwd, env_vars, flags)
+  local ptr = self._C.bc_get(self._client, key, cwd, env_json_of(env_vars), flag_bits(flags))
+  return unwrap_value(decode(self._C, ptr))
 end
 
 function Backend:put(key, data, ttl, path)
@@ -170,19 +152,13 @@ function Backend:hello()
   return plain(decode(self._C, ptr))
 end
 
-function Backend:resolve(key, cwd, env_vars)
-  local env_json = json.encode(env_vars or {})
-  local ptr = self._C.bc_resolve(self._client, key, cwd, env_json)
-  return unwrap_resolve(decode(self._C, ptr))
-end
-
 function Backend:eval(template_str, cwd, env_vars)
   local env_json = json.encode(env_vars or {})
   local ptr = self._C.bc_eval(self._client, template_str, cwd, env_json)
-  return unwrap_resolve(decode(self._C, ptr))
+  return unwrap_value(decode(self._C, ptr))
 end
 
--- ── Session (advanced: a persistent connection with server-side context) ──
+-- ── Session (advanced: a persistent connection with a directory of its own) ──
 
 local Session = {}
 Session.__index = Session
@@ -193,9 +169,12 @@ function Backend:session_open()
   return setmetatable({ _C = self._C, _s = sptr }, Session)
 end
 
-function Session:get(key, path, flags)
-  local ptr = self._C.bc_session_get(self._s, key, path, flag_bits(flags))
-  return unwrap_get(decode(self._C, ptr))
+--- bc_session_get: Backend:get on this session's connection. A nil `cwd`
+-- is the session's directory (set_context) when it has one, else the
+-- global entry.
+function Session:get(key, cwd, env_vars, flags)
+  local ptr = self._C.bc_session_get(self._s, key, cwd, env_json_of(env_vars), flag_bits(flags))
+  return unwrap_value(decode(self._C, ptr))
 end
 
 function Session:put(key, data, ttl, path)
@@ -250,7 +229,7 @@ function Watch:next_event(timeout_ms)
   end
   if env.outcome == "event" then
     local data = env.data
-    if data == json.NULL then data = nil end -- see unwrap_get's comment above
+    if data == json.NULL then data = nil end -- see unwrap_value's comment above
     return { data = data }, nil, "event"
   end
   return nil, nil, env.outcome

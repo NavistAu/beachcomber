@@ -7,8 +7,9 @@
 # runner that never executed must never be counted as a passing one.
 #
 # Fixtures whose op a binding cannot execute (the Lua runner's subprocess
-# transport has no client-side resolver, so it skips "resolve" and "eval")
-# are skipped by that runner, not failed, and do not affect this gate's exit
+# transport cannot hand a spawned comb the caller's environment, so it skips
+# the "get" fixtures that carry an "env", and it has no "eval", "watch",
+# "hello" or "introspect") are skipped by that runner, not failed, and do not affect this gate's exit
 # status — but every runner that skipped anything is named, with counts, in
 # the summary.
 #

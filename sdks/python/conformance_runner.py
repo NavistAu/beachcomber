@@ -38,6 +38,14 @@ from libbeachcomber.client import Client  # noqa: E402
 from libbeachcomber.exceptions import CombError, ServerError  # noqa: E402
 from libbeachcomber.types import IntrospectSubject  # noqa: E402
 
+
+class _Value:
+    """A `get` or `eval` answer: the bare value an SDK returns, boxed so the
+    checks below can tell it from the typed results of other ops."""
+
+    def __init__(self, data: Any) -> None:
+        self.data = data
+
 # ---------------------------------------------------------------------------
 # Fixture discovery
 # ---------------------------------------------------------------------------
@@ -153,31 +161,27 @@ def _run_op(
     Returns the raw response data (or None for ops that return nothing),
     or raises CombError / ServerError on failure.
 
-    `resolve_ctx` (consulted for the `resolve`, `eval` and `watch` ops) carries
+    `resolve_ctx` (consulted for the `get`, `eval` and `watch` ops) carries
     the fixture's `env`/`cwd` blocks — see tests/conformance/README.md.
     """
-    if op == "resolve":
+    if op == "get":
         assert resolve_ctx is not None
-        key = args.get("key", "")
-        return client.resolve(
-            key,
-            cwd=resolve_ctx["cwd"],
-            env=resolve_ctx["env"] or None,
+        return _Value(
+            client.get(
+                args.get("key", ""),
+                cwd=resolve_ctx["cwd"],
+                env=resolve_ctx["env"] or None,
+            )
         )
     if op == "eval":
         assert resolve_ctx is not None
-        from libbeachcomber.result import CombResult
-
-        value = client.eval(
-            args.get("template", ""),
-            cwd=resolve_ctx["cwd"],
-            env=resolve_ctx["env"] or None,
+        return _Value(
+            client.eval(
+                args.get("template", ""),
+                cwd=resolve_ctx["cwd"],
+                env=resolve_ctx["env"] or None,
+            )
         )
-        # Client.eval returns the bare value; wrap it the way Client.resolve
-        # already does so the shared expectation checks see one shape.
-        return CombResult(ok=True, data=value, age_ms=0, stale=False)
-    if op == "get":
-        return client.get(**args)
     if op == "refresh":
         client.refresh(**args)
         return None
@@ -218,8 +222,7 @@ def _run_op(
 # asserting something the harness doesn't actually check.
 _KNOWN_EXPECT_KEYS = {
     "status", "data_type", "data_equals", "data_as_text", "data_contains_field",
-    "data_field_equals", "age_ms_present", "stale", "error_contains",
-    "template_equals", "rest_equals",
+    "data_field_equals", "error_contains",
 }
 
 # Ops this runner's binding can execute. A fixture using any op outside this
@@ -233,7 +236,6 @@ _SUPPORTED_OPS = {
     "context",
     "watch",
     "introspect",
-    "resolve",
     "eval",
 }
 
@@ -271,19 +273,14 @@ def _check_expect(
             failures.append(f"expected ok/hit but got error: {error!r}")
             return failures
 
-        # For get results (CombResult).
-        from libbeachcomber.result import CombResult
-        from libbeachcomber.types import HelloInfo, IntrospectResponse, WatchEvent
+        from libbeachcomber.types import WatchEvent
 
         if status == "hit":
-            if isinstance(result, CombResult):
-                if not result.is_hit:
-                    failures.append("expected cache hit but got miss (data is None)")
-            elif isinstance(result, WatchEvent):
+            if isinstance(result, (_Value, WatchEvent)):
                 if result.data is None:
-                    failures.append("expected watch hit but data is None")
+                    failures.append("expected a hit but the value is None")
             else:
-                failures.append(f"expected CombResult or WatchEvent for hit, got {type(result).__name__}")
+                failures.append(f"expected a value or WatchEvent for hit, got {type(result).__name__}")
 
         # data_type check.
         data_type = expect.get("data_type")
@@ -334,35 +331,6 @@ def _check_expect(
                     f"data_field_equals failed for {field!r}: expected {expected_val!r}, got {actual_val!r}"
                 )
 
-        # age_ms_present check.
-        if expect.get("age_ms_present"):
-            age = _extract_age_ms(result)
-            if age is None:
-                failures.append("expected age_ms to be present but it was None/missing")
-
-        # stale check.
-        if "stale" in expect:
-            actual_stale = _extract_stale(result)
-            if actual_stale != expect["stale"]:
-                failures.append(
-                    f"expected stale={expect['stale']!r} but got {actual_stale!r}"
-                )
-
-    elif status == "template":
-        # A template-only node: no data, a template in effect. Neither a
-        # hit nor a miss — `resolve` renders it.
-        if error is not None:
-            failures.append(f"expected template but got error: {error!r}")
-            return failures
-        from libbeachcomber.result import CombResult
-        if not isinstance(result, CombResult):
-            failures.append(f"expected CombResult for template, got {type(result).__name__}")
-            return failures
-        if result.is_hit:
-            failures.append(f"expected template-only but data was present: {result.data!r}")
-        if result.template is None:
-            failures.append("expected a template but none was present")
-
     elif status == "error":
         if error is None:
             failures.append(f"expected an error but op succeeded with result: {result!r}")
@@ -376,48 +344,20 @@ def _check_expect(
     elif status == "miss":
         if error is not None:
             failures.append(f"expected miss but got error: {error!r}")
-        else:
-            from libbeachcomber.result import CombResult
-            if isinstance(result, CombResult) and not result.is_miss:
-                failures.append(
-                    f"expected cache miss but got data={result.data!r} template={result.template!r}"
-                )
+        elif isinstance(result, _Value) and result.data is not None:
+            failures.append(f"expected a miss but got {result.data!r}")
 
     else:
         failures.append(f"unknown expect status: {status!r}")
 
-    # Under every status, not only the ones that expect a template: a
-    # `status: "miss"` fixture carrying `template_equals` must fail, as it
-    # does in the other six runners, never pass on an unchecked key.
-    failures.extend(_check_template_half(expect, result))
-
-    return failures
-
-
-def _check_template_half(expect: dict[str, Any], result: Any) -> list[str]:
-    """`template_equals` / `rest_equals` against a CombResult's template half."""
-    from libbeachcomber.result import CombResult
-
-    failures: list[str] = []
-    if "template_equals" in expect:
-        actual = result.template if isinstance(result, CombResult) else None
-        if actual != expect["template_equals"]:
-            failures.append(
-                f"expected template == {expect['template_equals']!r} but got {actual!r}"
-            )
-    if "rest_equals" in expect:
-        actual = result.rest if isinstance(result, CombResult) else None
-        if actual != expect["rest_equals"]:
-            failures.append(f"expected rest == {expect['rest_equals']!r} but got {actual!r}")
     return failures
 
 
 def _extract_data(result: Any) -> Any:
     """Pull the data value out of typed result objects."""
-    from libbeachcomber.result import CombResult
     from libbeachcomber.types import HelloInfo, IntrospectResponse, WatchEvent
 
-    if isinstance(result, CombResult):
+    if isinstance(result, _Value):
         return result.data
     if isinstance(result, WatchEvent):
         return result.data
@@ -429,25 +369,6 @@ def _extract_data(result: Any) -> Any:
             return dataclasses.asdict(result.daemon)
         return result.other
     return result
-
-
-def _extract_age_ms(result: Any) -> Optional[int]:
-    """A watch event has no age: it carries a resolved value, which can come
-    from several records at once."""
-    from libbeachcomber.result import CombResult
-
-    if isinstance(result, CombResult):
-        return result.age_ms
-    return None
-
-
-def _extract_stale(result: Any) -> Optional[bool]:
-    """See `_extract_age_ms`: a watch event has no staleness either."""
-    from libbeachcomber.result import CombResult
-
-    if isinstance(result, CombResult):
-        return result.stale
-    return None
 
 
 def _check_data_type(data: Any, expected_type: str) -> bool:
@@ -565,7 +486,7 @@ def main() -> int:
     # A fresh daemon per fixture, per tests/conformance/README.md's
     # isolation guarantee ("Each fixture runs against a fresh daemon
     # instance") — a shared daemon would leak cache state (e.g. `put`s from
-    # one fixture's `setup` visible to the next fixture's `resolve` cache
+    # one fixture's `setup` visible to the next fixture's `get` cache
     # refs) across fixtures that happen to reuse a key.
     for fixture_path in fixtures:
         rel = fixture_path.relative_to(_CONFORMANCE_DIR)

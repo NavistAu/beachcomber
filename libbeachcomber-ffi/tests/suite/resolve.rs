@@ -1,4 +1,4 @@
-//! Resolution: `bc_resolve`, `bc_eval`, over `libbeachcomber::resolve`
+//! Resolution: `bc_get`, `bc_eval`, over `libbeachcomber::resolve`
 //! (design `2026-09-05-one-tree-resolution-design.md` §5.3; outcomes 25, 26,
 //! 27). The daemon is the only source of templates — a test declares one by
 //! `bc_put` to `<provider>:template`, or starts the daemon from a config
@@ -12,7 +12,7 @@ use std::path::Path;
 use std::ptr;
 
 use beachcomber::envelope::bc_string_free;
-use beachcomber::{BcClient, bc_client_free, bc_client_new, bc_eval, bc_put, bc_resolve};
+use beachcomber::{BcClient, bc_client_free, bc_client_new, bc_eval, bc_get, bc_put};
 
 fn client_for(sock: &Path) -> *mut BcClient {
     let json = format!(
@@ -57,11 +57,12 @@ fn resolve(client: *mut BcClient, key: &str, cwd: &str, env: Option<&str>) -> se
     let cwd = cs(cwd);
     let env = env.map(cs);
     read(unsafe {
-        bc_resolve(
+        bc_get(
             client,
             key.as_ptr(),
             cwd.as_ptr(),
             env.as_ref().map_or(ptr::null(), |e| e.as_ptr()),
+            0,
         )
     })
 }
@@ -93,11 +94,11 @@ fn error_kind(v: &serde_json::Value) -> &str {
 // ── managed defaults (outcome 24) ────────────────────────────────────────────
 
 /// A daemon started from a config directory holding the managed defaults
-/// serves `python:template.version`, and `bc_resolve("python.version")`
+/// serves `python:template.version`, and `bc_get("python.version")`
 /// renders it with the caller's environment — the same value `comb get
 /// python.version` prints, from the same template.
 #[test]
-fn bc_resolve_renders_a_managed_default_template() {
+fn bc_get_renders_a_managed_default_template() {
     let config_dir = tempfile::tempdir().expect("tempdir");
     comb_daemon::daemon::defaults::write_managed_defaults(
         &config_dir.path().join("defaults"),
@@ -124,7 +125,7 @@ fn bc_resolve_renders_a_managed_default_template() {
 /// disabled-exec failure — a `server_error`, the resolver's runtime fault —
 /// rather than spawning anything.
 #[test]
-fn bc_resolve_of_kubecontext_without_exec_is_the_disabled_error() {
+fn bc_get_of_kubecontext_without_exec_is_the_disabled_error() {
     let config_dir = tempfile::tempdir().expect("tempdir");
     comb_daemon::daemon::defaults::write_managed_defaults(
         &config_dir.path().join("defaults"),
@@ -161,7 +162,7 @@ fn bc_resolve_of_kubecontext_without_exec_is_the_disabled_error() {
 /// `comb get scanline -f json`. An address nothing is stored at is a miss,
 /// `data: null`.
 #[test]
-fn bc_resolve_leaf_group_and_whole_namespace_from_a_put_template() {
+fn bc_get_leaf_group_and_whole_namespace_from_a_put_template() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     let cwd = "/tmp";
@@ -199,7 +200,7 @@ fn bc_resolve_leaf_group_and_whole_namespace_from_a_put_template() {
 /// global entry is the last link of every chain (canon `field_resolution.md`
 /// §"Path resolution").
 #[test]
-fn bc_resolve_comb_ref_template() {
+fn bc_get_comb_ref_template() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
 
@@ -221,7 +222,7 @@ fn bc_resolve_comb_ref_template() {
 /// through when absent; a total miss is absent (`data: null`), not an error
 /// and not `""`.
 #[test]
-fn bc_resolve_env_or_cache_cascade_is_absent_on_a_total_miss() {
+fn bc_get_env_or_cache_cascade_is_absent_on_a_total_miss() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     put(
@@ -248,7 +249,7 @@ fn bc_resolve_env_or_cache_cascade_is_absent_on_a_total_miss() {
 /// A template naming another provider's templated field follows it: `a.x`
 /// references `b.y`, itself a template over `comb.d.w`. `comb.c.z` names no
 /// registered provider — a missing ref, falsy — and is never reached once
-/// `b.y` is truthy. Both `bc_eval` of `{{ a.x }}` and `bc_resolve` of `a.x`
+/// `b.y` is truthy. Both `bc_eval` of `{{ a.x }}` and `bc_get` of `a.x`
 /// reach `deep-value`.
 #[test]
 fn nested_template_dependency_is_followed() {
@@ -401,7 +402,7 @@ fn bc_eval_compile_error_is_parse_error() {
 /// and not a transport failure. Only a ref *inside* a template naming such a
 /// key is falsy (`bc_eval_rejected_ref_is_falsy`).
 #[test]
-fn bc_resolve_rejected_key_is_a_server_error_in_the_daemons_words() {
+fn bc_get_rejected_key_is_a_server_error_in_the_daemons_words() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
 
@@ -489,7 +490,7 @@ fn null_cwd_addresses_the_global_entry() {
     let key = cs("nullcwd.v");
     let src = cs("{{ nullcwd.v }}-{{ nullcwd.w or 'none' }}");
 
-    let v = read(unsafe { bc_resolve(client, key.as_ptr(), ptr::null(), ptr::null()) });
+    let v = read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), ptr::null(), 0) });
     assert_eq!(hit(&v), &serde_json::json!("global"), "{v}");
 
     let v = read(unsafe { bc_eval(client, src.as_ptr(), ptr::null(), ptr::null()) });

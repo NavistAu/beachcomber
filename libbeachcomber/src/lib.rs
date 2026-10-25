@@ -1004,6 +1004,11 @@ impl Session {
         Ok(())
     }
 
+    /// The directory [`set_context`](Self::set_context) set, if any.
+    pub fn context(&self) -> Option<&str> {
+        self.context.as_deref()
+    }
+
     /// The path a request on this session carries: its own, else the
     /// session's directory, else none (the global entry).
     fn path_or_context<'a>(&'a self, path: Option<&'a str>) -> Option<&'a str> {

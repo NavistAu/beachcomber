@@ -14,14 +14,13 @@
 --
 -- Capability ceiling: `comb` has no CLI surface for `hello` or `introspect`
 -- (no subcommand exposes protocol/daemon version or a structured
--- introspection query). `resolve`/`eval` are simply not implemented over
--- this tier — `comb get --path <cwd> -f json` and `comb eval <template>
--- <cwd>` resolve through the same libbeachcomber::resolve the ffi tier's
--- bc_resolve/bc_eval do, so a faithful shell-out exists; nobody has wired
--- it yet. All four methods are absent from this backend table;
--- beachcomber.client turns a missing method into an Error.unsupported()
--- naming this transport, and a conformance runner skips (never silently
--- passes) a fixture that needs one.
+-- introspection query). `eval` is not wired over this tier: a spawned
+-- `comb eval <template> <cwd>` would render through the same
+-- libbeachcomber::resolve the ffi tier's bc_eval does, but with its own
+-- environment, the same limit `get` documents below. These methods are
+-- absent from this backend table; beachcomber.client turns a missing method
+-- into an Error.unsupported() naming this transport, and a conformance
+-- runner skips (never silently passes) a fixture that needs one.
 --
 -- `refresh` is one spawn of `comb refresh <key> [--path P | --global]`: the
 -- daemon's `refresh` op itself, which re-executes only the Sources the key
@@ -29,28 +28,22 @@
 -- daemon's refusal alone on stderr, so that line is the error message here
 -- — the same text a `server_error` envelope carries over the ffi tier.
 --
--- `get` is one spawn: `comb get -f json <key> <p>:cache.<rest>
--- [--path P | --global] [--force] [--wait]` (`<p>:cache` for a bare
--- provider). Multi-key `-f json` prints a JSON array in key order, `null` in
--- a missed key's slot, so the two slots are the value and its `:cache`
--- answer (`age_ms`, `stale`; an object node is a tree of such leaves, read
--- as the largest age and any stale) — the resolver's own answer, with
--- everything the daemon does for a `get`: the directory chain up to `$HOME`,
--- `$HOME` itself as the global entry, `--force`/`--wait` and the daemon's
--- refusals. A facet key (a `:` in the provider segment) is asked for alone and answers
--- with age 0 and not stale.
+-- `get` is one spawn: `comb get -f json <key> [--path P | --global]
+-- [--force] [--wait]`, the value `comb get` prints. It renders through the
+-- same libbeachcomber::resolve the ffi tier's bc_get does, with everything
+-- the daemon does for a `get`: the directory chain up to `$HOME`, `$HOME`
+-- itself as the global entry, `--force`/`--wait` and the daemon's refusals.
+-- A facet key reads like any other (`p:template.x` is the template as
+-- stored).
 --
--- The one divergence from the ffi tier: `comb get` *resolves*, so a
--- template-backed key returns its **rendered** value here where `bc_get`
--- returns the raw template half. A Result from this backend never carries
--- `template` or `rest`, and a template-only node is a hit holding the
--- rendered value rather than the "neither hit nor miss" the ffi tier
--- reports. The CLI renders with `exec()` on, so the client's `exec` option
--- has no effect on this tier; a caller that must not spawn processes from
--- a template, or that needs the raw template half, needs the ffi
--- transport. A rendered value has no cached freshness of its own: its
--- `:cache` slot is a leaf with age 0 and `source` `template`, so it reports
--- age 0 and not stale.
+-- Where it parts from the ffi tier: a spawned `comb` renders with its own
+-- environment, and this process can only hand it whole. So a caller's
+-- `env` cannot be honoured — `get` with one is an "unsupported" error
+-- naming the ffi transport, and nothing is spawned — and a `get` without
+-- one renders with this process's environment, where the ffi tier's has no
+-- `env.*` at all. The CLI renders with `exec()` on, so the client's `exec`
+-- option has no effect on this tier; a caller that must not spawn
+-- processes from a template needs the ffi transport.
 
 local json = require("beachcomber.json")
 local discovery = require("beachcomber.discovery")
@@ -110,8 +103,7 @@ end
 --- The rest of the first line of `stderr` that starts with `prefix`, or nil.
 --
 -- `comb get` prints one `error: <k>: <msg>` line per key that failed: the
--- daemon's refusal, or the resolver's own error. The cache slot's line
--- starts `error: <cache key>: `, so a prefix ending in `: ` never matches it.
+-- daemon's refusal, or the resolver's own error.
 local function line_after(stderr, prefix)
   for line in stderr:gmatch("[^\n]+") do
     if line:sub(1, #prefix) == prefix then
@@ -146,32 +138,6 @@ local function status_rows(comb_bin)
   return rows
 end
 
---- The `:cache` key that answers for `key`'s freshness: `git.branch` ->
--- `git:cache.branch`, `mise['a.b']` -> `mise:cache['a.b']`, `git` ->
--- `git:cache`. The head runs to the first `.` or `[`. A facet key (a `:` in
--- the head) has no such companion and is asked alone (nil); a `:` below the
--- head is part of a segment.
-local function cache_key_of(key)
-  local p, rest = key:match("^([^.%[]*)(.*)$")
-  if p:find(":", 1, true) then return nil end
-  return p .. ":cache" .. rest
-end
-
---- Age and staleness from a `:cache` node: a leaf answer is read as it is; an
--- object node is a tree of them, so the largest `age_ms` and any `stale`
--- across its leaves (what the response envelope reports). A miss is 0/false.
-local function freshness(node)
-  if type(node) ~= "table" then return 0, false end
-  if type(node.age_ms) == "number" then return node.age_ms, node.stale == true end
-  local age, stale = 0, false
-  for _, child in pairs(node) do
-    local a, s = freshness(child)
-    if a > age then age = a end
-    stale = stale or s
-  end
-  return age, stale
-end
-
 local M = {}
 
 --- @param opts table?  opts.comb_bin overrides `comb` discovery (advanced/tests);
@@ -200,28 +166,23 @@ function Backend:name()
   return "subprocess"
 end
 
---- One `comb get -f json` for the value and its `:cache` answer (the
--- header comment): exit 0 is an answer — a null value slot is a miss,
--- anything else a hit, aged by its `:cache` slot (a rendered value has none,
--- so age 0). Exit 2 is an error, reported as `error: <who>: <why>`: an
--- `error: <key>: ` line is the daemon's refusal of `key` or the resolver's
--- own error (a template that does not compile, a cycle, a failed `exec()`);
--- with a null value slot, an `error: <key>.<leaf>` line is a leaf of a group
--- failing. Exit 2 with the value slot filled is a `:cache` slot that failed
--- on its own — still a hit, with age 0.
-function Backend:get(key, path, flags)
+--- One `comb get -f json <key>` (the header comment). Exit 0 is an answer:
+-- the value on stdout, or `null` for a miss. Exit 2 is an error, reported as
+-- `error: <who>: <why>`: an `error: <key>: ` line is the daemon's refusal of
+-- `key` or the resolver's own error (a template that does not compile, a
+-- cycle, a failed `exec()`), an `error: <key>.<leaf>: ` line a leaf of a
+-- group failing, and anything else the CLI failing before it asked at all.
+function Backend:get(key, cwd, env, flags)
+  if env ~= nil then
+    return { ok = false, error = Error.new("unsupported",
+      "get with an env is not supported over the subprocess transport: a spawned comb "
+        .. "renders with its own environment; the ffi transport (LuaJIT) honours it") }
+  end
   flags = flags or {}
-  local cache_key = cache_key_of(key)
-  local meta = cache_key == nil
-  local cmd = self._comb .. " get -f json " .. shell_escape(key)
-  if cache_key then cmd = cmd .. " " .. shell_escape(cache_key) end
-  cmd = cmd .. path_arg(path)
+  local cmd = self._comb .. " get -f json " .. shell_escape(key) .. path_arg(cwd)
   if flags.force then cmd = cmd .. " --force" end
   if flags.wait then cmd = cmd .. " --wait" end
   local out, ok, err = run(cmd)
-  local decoded = json.decode(out or "")
-  local value = decoded
-  if not meta and type(decoded) == "table" then value = decoded[1] end
 
   if not ok then
     err = err or ""
@@ -229,44 +190,25 @@ function Backend:get(key, path, flags)
     if own then
       return { ok = false, error = { kind = "server_error", message = own } }
     end
-    if decoded == nil or value == json.NULL then
-      -- A leaf of a group failed (`error: <key>.<leaf>: <msg>`), or the CLI
-      -- did before answering at all (no daemon, a bad argument). The cache
-      -- slot's line (`error: <cache key>: …`) is not the message.
-      local message
-      local leaf_prefix = "error: " .. key
-      for line in err:gmatch("[^\n]+") do
-        local rest = line:sub(#leaf_prefix + 1, #leaf_prefix + 1)
-        if line:sub(1, #leaf_prefix) == leaf_prefix and (rest == "." or rest == "[") then
-          message = line:sub(#"error: " + 1)
-          break
-        end
+    local message
+    local leaf_prefix = "error: " .. key
+    for line in err:gmatch("[^\n]+") do
+      local rest = line:sub(#leaf_prefix + 1, #leaf_prefix + 1)
+      if line:sub(1, #leaf_prefix) == leaf_prefix and (rest == "." or rest == "[") then
+        message = line:sub(#"error: " + 1)
+        break
       end
-      if not message then
-        local companion = cache_key and ("error: " .. cache_key) or nil
-        local kept = {}
-        for line in err:gmatch("[^\n]+") do
-          if not companion or line:sub(1, #companion) ~= companion then kept[#kept + 1] = line end
-        end
-        message = table.concat(kept, "\n")
-        if message == "" then message = (err:gsub("%s+$", "")) end
-      end
-      return { ok = false, error = { kind = "server_error", message = message } }
     end
-    -- Only the `:cache` slot failed: `key` itself answered.
+    if not message then message = (err:gsub("%s+$", "")) end
+    return { ok = false, error = { kind = "server_error", message = message } }
   end
 
-  if (meta or type(decoded) == "table") and (value == nil or value == json.NULL) then
-    return { ok = true, data = nil } -- miss
-  end
-  if meta then
-    return { ok = true, data = value, age_ms = 0, stale = false }
-  end
-  if type(decoded) ~= "table" then
+  local value = json.decode(out or "")
+  if value == nil then
     return { ok = false, error = { kind = "parse_error", message = "malformed comb get output: " .. tostring(out) } }
   end
-  local age_ms, stale = freshness(decoded[2])
-  return { ok = true, data = value, age_ms = age_ms, stale = stale }
+  if value == json.NULL then value = nil end -- a top-level null is absent, as the ffi backend collapses it
+  return { ok = true, data = value }
 end
 
 function Backend:put(key, data, ttl, path)
@@ -286,10 +228,9 @@ end
 --- One `comb refresh`: exit 0 is the daemon's ok; exit 2 is its refusal,
 -- printed alone on stderr as `error: <key>: <words>` — `nothing to refresh:
 -- <key> has no sources` for a key with no Source behind it — or the CLI's
--- own `error: daemon: …` when it could not reach the daemon. `comb get
--- --force` is not a stand-in: it selects the same Sources but then *reads*,
--- so it answers a sourceless key with a different refusal and an unowned
--- field with a plain miss.
+-- own `error: daemon: …` when it could not reach the daemon. `comb get --force` is not a stand-in: it selects the
+-- same Sources but then *reads*, so it answers a sourceless key with a
+-- different refusal and an unowned field with a plain miss.
 function Backend:refresh(key, path)
   local cmd = self._comb .. " refresh " .. shell_escape(key) .. path_arg(path)
   local _, ok, err = run(cmd)
@@ -306,12 +247,11 @@ function Backend:status()
   return { ok = true, data = rows }
 end
 
--- hello / introspect / resolve / eval / watch_open intentionally absent.
+-- hello / introspect / eval / watch_open intentionally absent.
 --
 -- hello / introspect: no CLI surface exposes them.
 --
--- resolve / eval: not implemented over this tier (see the header comment —
--- `comb get`/`comb eval` would be a faithful shell-out).
+-- eval: not wired over this tier (see the header comment).
 --
 -- watch: `comb watch <key> -f json` was tried and rejected. Piped through
 -- `io.popen` (not a tty), the daemon-CLI process's stdout is block- rather

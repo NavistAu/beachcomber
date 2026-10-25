@@ -1,12 +1,12 @@
 --- Tests for beachcomber.subprocess_backend's `get` and `refresh` against a
 --- live daemon.
 ---
---- The backend asks `comb get -f json <key> <p>:cache.<rest>` for the
---- value and its `:cache` answer (age, staleness) in one spawn (its header comment), so
---- its answer is the resolver's: the directory chain, `$HOME` as the global
---- entry, `--force`/`--wait`, the daemon's refusals — and
---- a template-backed key renders. `refresh` is one `comb refresh <key>`,
---- and its refusal is the daemon's line. Runs under PUC Lua and LuaJIT
+--- The backend's `get` is one `comb get -f json <key>` (its header comment),
+--- so its answer is the resolver's: a template renders, the directory chain,
+--- `$HOME` as the global entry, `--force`/`--wait`, the daemon's refusals.
+--- A caller's `env` cannot be handed to a spawned comb, so `get` with one is
+--- unsupported here. `refresh` is one `comb refresh <key>`, and its refusal
+--- is the daemon's line. Runs under PUC Lua and LuaJIT
 --- alike: the backend is plain Lua over `io.popen`. Needs a comb binary
 --- ($COMB_BIN, or the workspace's own debug build).
 
@@ -71,29 +71,29 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
   local comb_bin = built_comb()
   local names = {
-    "a scalar field is a hit with the raw value",
-    "a string field is a hit with the raw string",
+    "a scalar field is its value",
+    "a string field is its raw string",
     "a bare provider is every field merged into one object",
     "a dotted address drills into the field value",
     "an absent field is a miss, not an error",
     "a daemon rejection is a server_error in the daemon's words",
-    "a template-only node is a hit holding the rendered value, with no template half",
-    "no path reads the global entry",
+    "a template-only node is its rendered value",
+    "no cwd reads the global entry",
     "an ancestor's put is read from a child path (the directory chain)",
     "a path equal to the daemon's $HOME is the global entry",
-    "a colon below the provider segment is part of the field, asked with its :cache slot",
-    "wait reaches the wire as --wait, in one comb get with the :cache slot",
+    "a colon below the provider segment is part of the field",
+    "wait reaches the wire as --wait, in one comb get",
     "--force on a static namespace is the daemon's refusal",
     "a template that cannot resolve is the resolver's error, not a null hit",
     "a namespace read with one bad leaf is the resolver's error, not a null hit",
     "a template cycle is the resolver's error",
     "a failed exec() is a server_error, never a transport kind",
-    "a group whose leaf fails reports the leaf's line, not the companion misses",
+    "a group whose leaf fails reports the leaf's line",
     "refresh of a provider is ok, through comb refresh",
     "refresh of a static namespace is the daemon's refusal, in its words alone",
-    "a leaf asks for its :cache leaf in the same spawn and reports its freshness",
-    "a bare provider asks for its :cache node",
-    "a facet key is asked alone and reports age 0, not stale",
+    "a key is asked alone, in one spawn",
+    "a facet key reads the unrendered half",
+    "a caller's env cannot be honoured: get with env is unsupported",
   }
   if not comb_bin then
     for _, name in ipairs(names) do skip(name, "no comb built") end
@@ -125,161 +125,146 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   }, nil, "/tmp"))
 
   test(names[1], function()
-    local r, err = c:get("sp.n", "/tmp")
+    local value, err = c:get("sp.n", { cwd = "/tmp" })
     assert_nil(err)
-    assert_true(r:is_hit())
-    assert_eq(r.data, 1)
-    assert_eq(type(r.age_ms), "number")
+    assert_eq(value, 1)
   end)
 
   test(names[2], function()
-    local r = c:get("sp.s", "/tmp")
-    assert_true(r:is_hit())
-    assert_eq(r.data, "str")
+    assert_eq(c:get("sp.s", { cwd = "/tmp" }), "str")
   end)
 
   test(names[3], function()
-    local r = c:get("sp", "/tmp")
-    assert_true(r:is_hit())
-    assert_eq(r.data.n, 1)
-    assert_eq(r.data.s, "str")
-    assert_eq(r.data.o.k, "v")
+    local value = c:get("sp", { cwd = "/tmp" })
+    assert_eq(value.n, 1)
+    assert_eq(value.s, "str")
+    assert_eq(value.o.k, "v")
+    assert_eq(value.t, 2, "the namespace's templates render into it")
   end)
 
   test(names[4], function()
-    local r = c:get("sp.o.k", "/tmp")
-    assert_true(r:is_hit())
-    assert_eq(r.data, "v")
+    assert_eq(c:get("sp.o.k", { cwd = "/tmp" }), "v")
   end)
 
   test(names[5], function()
-    local r, err = c:get("sp.nope", "/tmp")
+    local value, err = c:get("sp.nope", { cwd = "/tmp" })
     assert_nil(err)
-    assert_true(r:is_miss())
+    assert_nil(value)
   end)
 
   test(names[6], function()
-    local r, err = c:get("a:b:c.x", "/tmp")
-    assert_nil(r)
+    local value, err = c:get("a:b:c.x", { cwd = "/tmp" })
+    assert_nil(value)
     assert_eq(err.kind, "server_error")
     assert_eq(err.message:sub(1, #"invalid facet key: a:b:c"), "invalid facet key: a:b:c", "the daemon's words alone")
   end)
 
   test(names[7], function()
-    local r, err = c:get("sp.t", "/tmp")
+    local value, err = c:get("sp.t", { cwd = "/tmp" })
     assert_nil(err)
-    assert_true(r:is_hit())
-    assert_eq(r.data, 2)
-    assert_nil(r.template)
-    assert_nil(r.rest)
-    assert_eq(r.age_ms, 0)
-    assert_eq(r.stale, false)
+    assert_eq(value, 2)
   end)
 
   test(names[8], function()
-    local r = c:get("spg.g")
-    assert_true(r:is_hit())
-    assert_eq(r.data, 1)
+    assert_eq(c:get("spg.g"), 1)
+    assert_eq(last_argv(guard), "get -f json spg.g --global")
   end)
 
   test(names[9], function()
     assert_true(c:put("chain", { a = 1 }))
-    local r = c:get("chain.a", proj)
-    assert_true(r:is_hit())
-    assert_eq(r.data, 1)
+    assert_eq(c:get("chain.a", { cwd = proj }), 1)
   end)
 
   test(names[10], function()
-    local r = c:get("spg.g", guard.home)
-    assert_true(r:is_hit())
-    assert_eq(r.data, 1)
+    assert_eq(c:get("spg.g", { cwd = guard.home }), 1)
   end)
 
   test(names[21], function()
-    local r, err = c:get("sp.n", "/tmp")
+    local value, err = c:get("sp.n", { cwd = "/tmp" })
     assert_nil(err)
-    assert_eq(last_argv(guard), "get -f json sp.n sp:cache.n --path /tmp")
-    assert_eq(type(r.age_ms), "number")
-    assert_eq(r.stale, false)
+    assert_eq(value, 1)
+    assert_eq(last_argv(guard), "get -f json sp.n --path /tmp")
   end)
 
   test(names[22], function()
-    local r, err = c:get("sp", "/tmp")
+    local value, err = c:get("sp:template.t", { cwd = "/tmp" })
     assert_nil(err)
-    assert_true(r:is_hit())
-    assert_eq(last_argv(guard), "get -f json sp sp:cache --path /tmp")
-    assert_eq(type(r.age_ms), "number")
+    assert_eq(value, "{{ 1 + 1 }}", "the template as stored")
+    assert_eq(last_argv(guard), "get -f json sp:template.t --path /tmp")
+    value, err = c:get("sp:put.n", { cwd = "/tmp" })
+    assert_nil(err)
+    assert_eq(value, 1, "the stored value")
   end)
 
   test(names[23], function()
-    local r, err = c:get("sp:put.n", "/tmp")
-    assert_nil(err)
-    assert_eq(last_argv(guard), "get -f json sp:put.n --path /tmp")
-    assert_eq(r.age_ms, 0)
-    assert_eq(r.stale, false)
+    local before = last_argv(guard)
+    local value, err = c:get("sp.n", { cwd = "/tmp", env = { A = "x" } })
+    assert_nil(value)
+    assert_eq(err.kind, "unsupported")
+    assert_true(err.message:find("ffi", 1, true) ~= nil, "names the ffi transport: " .. tostring(err.message))
+    assert_eq(last_argv(guard), before, "nothing was spawned")
   end)
 
   test(names[11], function()
-    local r, err = c:get("sp.n:age", "/tmp")
+    local value, err = c:get("sp.n:age", { cwd = "/tmp" })
     assert_nil(err)
-    assert_true(r:is_miss())
-    assert_eq(last_argv(guard), "get -f json sp.n:age sp:cache.n:age --path /tmp")
-    -- A bracketed key keeps its brackets past the head.
-    r, err = c:get("sp['o'].k", "/tmp")
+    assert_nil(value)
+    assert_eq(last_argv(guard), "get -f json sp.n:age --path /tmp")
+    -- A bracketed key keeps its brackets.
+    value, err = c:get("sp['o'].k", { cwd = "/tmp" })
     assert_nil(err)
-    assert_eq(r.data, "v")
-    assert_eq(last_argv(guard), "get -f json sp['o'].k sp:cache['o'].k --path /tmp")
+    assert_eq(value, "v")
+    assert_eq(last_argv(guard), "get -f json sp['o'].k --path /tmp")
   end)
 
   test(names[12], function()
-    local r, err = c:get_with_flags("sp.n", "/tmp", false, true)
+    local value, err = c:get("sp.n", { cwd = "/tmp", wait = true })
     assert_nil(err)
-    assert_true(r:is_hit())
-    assert_eq(last_argv(guard), "get -f json sp.n sp:cache.n --path /tmp --wait")
+    assert_eq(value, 1)
+    assert_eq(last_argv(guard), "get -f json sp.n --path /tmp --wait")
   end)
 
   test(names[13], function()
-    local r, err = c:get_with_flags("sp.n", "/tmp", true, false)
-    assert_nil(r)
+    local value, err = c:get("sp.n", { cwd = "/tmp", force = true })
+    assert_nil(value)
     assert_eq(err.kind, "server_error")
     assert_eq(err.message:sub(1, #"cannot --force static namespace"), "cannot --force static namespace", "the daemon's words alone")
-    assert_eq(last_argv(guard), "get -f json sp.n sp:cache.n --path /tmp --force")
+    assert_eq(last_argv(guard), "get -f json sp.n --path /tmp --force")
   end)
 
   test(names[14], function()
-    local r, err = c:get("bad.bad", "/tmp")
-    assert_nil(r)
+    local value, err = c:get("bad.bad", { cwd = "/tmp" })
+    assert_nil(value)
     assert_eq(err.kind, "server_error")
     assert_true(err.message:find("cycle", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
   end)
 
   test(names[15], function()
-    local r, err = c:get("bad", "/tmp")
-    assert_nil(r)
+    local value, err = c:get("bad", { cwd = "/tmp" })
+    assert_nil(value)
     assert_eq(err.kind, "server_error")
     assert_true(err.message:find("cycle", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
   end)
 
   test(names[16], function()
-    local r, err = c:get("bad.cyc", "/tmp")
-    assert_nil(r)
+    local value, err = c:get("bad.cyc", { cwd = "/tmp" })
+    assert_nil(value)
     assert_eq(err.kind, "server_error")
     assert_true(err.message:find("cycle", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
   end)
 
   test(names[17], function()
-    local r, err = c:get("bad.ex", "/tmp")
-    assert_nil(r)
+    local value, err = c:get("bad.ex", { cwd = "/tmp" })
+    assert_nil(value)
     assert_eq(err.kind, "server_error")
     assert_true(err.message:find("definitely-missing-cmd-4f2a", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
   end)
 
   test(names[18], function()
-    local r, err = c:get("bad.grp", "/tmp")
-    assert_nil(r)
+    local value, err = c:get("bad.grp", { cwd = "/tmp" })
+    assert_nil(value)
     assert_eq(err.kind, "server_error")
     assert_eq(err.message:sub(1, 14), "bad.grp.leaf: ")
-    assert_true(("\n" .. err.message):find("\nerror: ") == nil, "companion miss lines must not be the message: " .. tostring(err))
   end)
 
   test(names[19], function()

@@ -43,7 +43,7 @@ fn get_returns_ok_envelope_for_a_real_key() {
     let client = client_for(&daemon.path);
     let key = cs("hostname.short");
 
-    let v = read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), 0) });
+    let v = read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), ptr::null(), 0) });
     assert_eq!(v["ok"], serde_json::json!(true));
 
     unsafe { bc_client_free(client) };
@@ -55,7 +55,7 @@ fn get_reserved_flag_bit_is_rejected_not_ignored() {
     let client = client_for(&daemon.path);
     let key = cs("hostname.short");
 
-    let v = read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), 1 << 5) });
+    let v = read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), ptr::null(), 1 << 5) });
     assert_eq!(v["ok"], serde_json::json!(false));
     assert_eq!(v["error"]["kind"], serde_json::json!("bad_flags"));
 
@@ -72,6 +72,7 @@ fn get_accepts_the_documented_flag_combination() {
         bc_get(
             client,
             key.as_ptr(),
+            ptr::null(),
             ptr::null(),
             BC_GET_FORCE | BC_GET_WAIT,
         )
@@ -102,9 +103,9 @@ fn put_get_round_trip() {
     });
     assert_eq!(put_v["ok"], serde_json::json!(true));
 
-    let get_v = read(unsafe { bc_get(client, field_key.as_ptr(), ptr::null(), 0) });
+    let get_v = read(unsafe { bc_get(client, field_key.as_ptr(), ptr::null(), ptr::null(), 0) });
     assert_eq!(get_v["ok"], serde_json::json!(true));
-    assert_eq!(get_v["data"]["data"], serde_json::json!("hello"));
+    assert_eq!(get_v["data"], serde_json::json!("hello"));
 
     unsafe { bc_client_free(client) };
 }
@@ -140,28 +141,21 @@ fn bc_put_with_null_data_removes() {
     });
     assert_eq!(v["ok"], serde_json::json!(true));
 
-    let v = read(unsafe { bc_get(client, node_key.as_ptr(), ptr::null(), 0) });
-    assert_eq!(v["data"]["data"], serde_json::Value::Null);
+    let v = read(unsafe { bc_get(client, node_key.as_ptr(), ptr::null(), ptr::null(), 0) });
+    assert_eq!(v["data"], serde_json::Value::Null);
 
     unsafe { bc_client_free(client) };
 }
 
-/// The `get` envelope carries the template half (one-tree design §3.4, plan
-/// 3 design decision 3): keys are added, never changed. A template-only node
-/// is the null triple plus `template`; a valued node with a template has
-/// both; a data-only node and a miss are exactly what they were.
+/// `bc_get` is what `comb get` prints: a template renders, and wins over the
+/// cached value it shares an address with; a miss is `null`. The unrendered
+/// halves are facets, read like any key.
 #[test]
-fn get_envelope_carries_the_template_half() {
+fn get_renders_and_the_facets_read_what_is_stored() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    let keys = |v: &serde_json::Value| -> Vec<String> {
-        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
-        k.sort();
-        k
-    };
-
     let template_ns = cs("p:template");
-    let template_data = cs(r#"{"t":"{{ 1 }}","v":"{{ 2 }}"}"#);
+    let template_data = cs(r#"{"t":"{{ 1 }}","v":"{{ 2 }}","s":"{{ {'x': 3} }}"}"#);
     let ns = cs("p");
     let data = cs(r#"{"v":1,"d":"plain"}"#);
     for (key, body) in [(&template_ns, &template_data), (&ns, &data)] {
@@ -176,42 +170,24 @@ fn get_envelope_carries_the_template_half() {
         });
         assert_eq!(put_v["ok"], serde_json::json!(true), "{put_v}");
     }
+    let get = |key: &str| {
+        let key = cs(key);
+        read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), ptr::null(), 0) })
+    };
 
-    let template_only = cs("p.t");
-    let v = read(unsafe { bc_get(client, template_only.as_ptr(), ptr::null(), 0) });
-    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
-    assert_eq!(keys(&v["data"]), ["age_ms", "data", "stale", "template"]);
-    assert_eq!(v["data"]["data"], serde_json::Value::Null);
-    assert_eq!(v["data"]["template"], serde_json::json!("{{ 1 }}"));
-
-    let past_a_string = cs("p.t.x");
-    let v = read(unsafe { bc_get(client, past_a_string.as_ptr(), ptr::null(), 0) });
-    assert_eq!(
-        keys(&v["data"]),
-        ["age_ms", "data", "rest", "stale", "template"]
-    );
-    assert_eq!(v["data"]["rest"], serde_json::json!("x"));
-
-    let both = cs("p.v");
-    let v = read(unsafe { bc_get(client, both.as_ptr(), ptr::null(), 0) });
-    assert_eq!(keys(&v["data"]), ["age_ms", "data", "stale", "template"]);
-    assert_eq!(v["data"]["data"], serde_json::json!(1));
-    assert_eq!(v["data"]["template"], serde_json::json!("{{ 2 }}"));
-    assert!(v["data"]["age_ms"].is_number(), "{v}");
-    assert!(v["data"]["stale"].is_boolean(), "{v}");
-
-    let data_only = cs("p.d");
-    let v = read(unsafe { bc_get(client, data_only.as_ptr(), ptr::null(), 0) });
-    assert_eq!(keys(&v["data"]), ["age_ms", "data", "stale"]);
-    assert_eq!(v["data"]["data"], serde_json::json!("plain"));
-
-    let miss = cs("p.nope");
-    let v = read(unsafe { bc_get(client, miss.as_ptr(), ptr::null(), 0) });
-    assert_eq!(keys(&v["data"]), ["age_ms", "data", "stale"]);
-    assert_eq!(
-        v["data"],
-        serde_json::json!({"data": null, "age_ms": null, "stale": null})
-    );
+    for (key, value) in [
+        ("p.t", serde_json::json!(1)),
+        ("p.v", serde_json::json!(2)),
+        ("p.s.x", serde_json::json!(3)),
+        ("p.d", serde_json::json!("plain")),
+        ("p.nope", serde_json::Value::Null),
+        ("p:template.v", serde_json::json!("{{ 2 }}")),
+        ("p:put.v", serde_json::json!(1)),
+    ] {
+        let v = get(key);
+        assert_eq!(v["ok"], serde_json::json!(true), "{key}: {v}");
+        assert_eq!(v["data"], value, "{key}: {v}");
+    }
 
     unsafe { bc_client_free(client) };
 }
@@ -283,7 +259,7 @@ fn status_returns_an_array_envelope() {
 fn status_rows_are_the_daemons_rows() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    read(unsafe { bc_get(client, cs("hostname").as_ptr(), ptr::null(), 0) });
+    read(unsafe { bc_get(client, cs("hostname").as_ptr(), ptr::null(), ptr::null(), 0) });
     let put = read(unsafe {
         bc_put(
             client,

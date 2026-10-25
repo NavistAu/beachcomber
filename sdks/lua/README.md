@@ -33,9 +33,8 @@ mysterious 5ms-per-call slowdown. Call `client:transport()` any time you
 need to know which one you got.
 
 **Capability ceiling of the subprocess transport.** `comb` has no CLI
-surface for `hello` or `introspect`; `resolve` and `eval` are not wired over
-this tier (`comb get`/`comb eval` resolve through the same library, so a
-shell-out would be faithful — nobody has needed it); `watch` was tried and rejected (see `beachcomber/subprocess_backend.lua`'s
+surface for `hello` or `introspect`; `eval` is not wired over this tier;
+`watch` was tried and rejected (see `beachcomber/subprocess_backend.lua`'s
 header comment: piped through `io.popen`, the CLI's stdout buffering means a
 `read("*l")` blocks forever even though the daemon already sent the event).
 Those `Client` methods return `nil, err` with `err.kind == "unsupported"`
@@ -43,20 +42,16 @@ over `subprocess`; get/put/refresh/status/context all work over
 either transport. `refresh` over `subprocess` is one `comb refresh <key>`,
 the daemon's op itself, and its refusal (`nothing to refresh: <key> has no
 sources`) is the error message. `get` over `subprocess` is one `comb get -f
-json <key> <p>:cache.<rest>`, so its answer is the resolver's — the
-directory chain up to
-`$HOME`, `$HOME` as the global entry, the `:cache` facet's `age_ms` and
-`stale`, force/wait, the
-daemon's refusals — with one divergence: `comb get` *resolves*, so a
-template-backed key returns its **rendered** value where the ffi tier
-returns the raw template half. The template half of a `get`
-(`Result.template` and `Result.rest`, see `Result` below) is therefore
-ffi-tier only: over `subprocess` both are always `nil`, and a template-only
-node is a hit holding the rendered value (age 0, not stale — it has no
-cached freshness of its own). The CLI renders with `exec()` on, so the
-`exec` option has no effect over `subprocess`; a caller that must not spawn
-processes from a template, or that needs the raw template half, needs the
-ffi transport.
+json <key>`, so its answer is the resolver's — the rendered value, the
+directory chain up to `$HOME`, `$HOME` as the global entry, force/wait, the
+daemon's refusals. A spawned `comb` renders with its own environment, and
+this process can only hand it whole, so two things differ from the ffi
+tier: a `get` that passes `opts.env` is `err.kind == "unsupported"` (nothing
+is spawned), and a `get` without one renders with this process's
+environment, where the ffi tier's has no `env.*` at all. The CLI renders
+with `exec()` on, so the `exec` option has no effect over `subprocess`; a
+caller that must not spawn processes from a template, or that needs its own
+`env`, needs the ffi transport.
 
 ---
 
@@ -98,26 +93,23 @@ end
 
 print(client:transport())  -- "ffi" or "subprocess"
 
--- get a single field
-local result = client:get('git.branch', '/my/repo')
-if result:is_hit() then
-  print(result.data)    -- "main"
-  print(result.age_ms)  -- 1234
-  print(result.stale)   -- false
-end
+-- get a single field: what `comb get git.branch` prints there, nil on a miss
+local branch, err = client:get('git.branch', { cwd = '/my/repo' })
+if branch then print(branch) end  -- "main"
 
--- get a full provider (returns object)
-local r = client:get('git', '/my/repo')
-if r:is_hit() then
-  print(r:get_str('branch'))  -- "main"
-end
+-- get a full provider (returns a table)
+local git = client:get('git', { cwd = '/my/repo' })
+if git then print(git.branch) end  -- "main"
+
+-- the template itself, unrendered: a facet, read like any key
+local tpl = client:get('git:template.branch')
 
 -- refresh (force recompute)
 client:refresh('git', '/my/repo')
 
--- default path — applies to subsequent queries made without an explicit path
+-- default directory — applies to later calls made without one
 client:set_context('/my/repo')
-local r2 = client:get('git.branch')
+local branch2 = client:get('git.branch')
 
 -- daemon cache status rows
 local rows = client:status()
@@ -157,15 +149,23 @@ documented at the top of `beachcomber/client.lua`.
 
 ### `Client:transport()` → `"ffi" | "subprocess"`
 
-### `Client:get(key [, path])` → `Result | nil, Error`
+### `Client:get(key [, opts])` → `value | nil, Error`
 
-Read a node raw — both halves, nothing rendered (see `Result`). `key` is
-`"provider"` or `"provider.field"`. `path` overrides `set_context()`'s
-default, if any.
+The value `comb get` prints for this key, cwd and env (`bc_get`): the
+daemon holds the templates (`<provider>:template`, seeded from
+configuration or `put`) and the client renders them. A plain field is its
+cached value, a templated one is rendered, and a bare provider name is the
+whole merged namespace; a miss is `nil` with no `Error`. The unrendered
+halves are facets, read like any key: `p:template.x` is the template as
+stored, `p:put.x` and `p:source.x` those layers' values. `key` is
+`"provider"` or `"provider.field"`.
 
-### `Client:get_with_flags(key, path, force, wait)` → `Result | nil, Error`
-
-Like `get`, with `bc_get`'s `BC_GET_FORCE` / `BC_GET_WAIT` flags.
+| `opts` field | Meaning |
+|---|---|
+| `cwd` | The directory the read addresses (`~` is home, a relative path is against this process's working directory). Default: the `set_context()` path, else the global entry. |
+| `env` | The caller's environment for `env.*` refs. `nil` (the default) means none: every `env.*` is absent. ffi transport only. |
+| `force` | Re-execute every Source the read demands first (`comb get --force`). |
+| `wait` | Re-execute a stale entry inline before answering (`comb get --wait`). |
 
 ### `Client:refresh(key [, path])` → `true | nil, Error`
 
@@ -194,18 +194,13 @@ Write a static-data entry's value. `data = nil` (or `beachcomber.null`) removes 
 
 ffi transport only — `Error{kind="unsupported"}` over subprocess.
 
-### `Client:resolve(key [, opts])` → `value | nil, Error`
 ### `Client:eval(template_str [, opts])` → `value | nil, Error`
 
-`resolve` returns the same value `comb get` returns for this key, cwd and
-env (`bc_resolve`): the daemon holds the templates (`<provider>:template`,
-seeded from configuration or `put`) and the client renders them. A plain
-field is its cached value, a templated one is rendered, and a bare
-provider name is the whole merged namespace; a miss is `nil` with no
-`Error`. `eval` renders a template that is stored nowhere — the same value
-`comb eval` prints (`bc_eval`). `opts.cwd` (default: the context path,
-then `"."`), `opts.env` (the caller's environment for `env.*` refs). ffi
-transport only.
+Renders a template that is stored nowhere — the same value `comb eval`
+prints (`bc_eval`), every ref resolved as it would be inside a stored
+template, so `eval("{{ p.f }}")` and `get("p.f")` agree. `opts.cwd`
+(default: the context path, then `"."`), `opts.env` (the caller's
+environment for `env.*` refs). ffi transport only.
 
 `template_str` accepts a single `{{ expr }}` tag, or literal text/several
 tags — the former keeps the expression's natural type, the latter is
@@ -213,9 +208,9 @@ always a string (a source with no tags at all is its literal text).
 
 ### `Client:watch(key [, opts])` → `WatchStream | nil, Error`
 
-ffi transport only. Watches the key's *value* — what `Client:resolve`
+ffi transport only. Watches the key's *value* — what `Client:get`
 answers for it — so a template edited under the watch fires it just as a
-changed cache record does. `opts` is `Client:resolve`'s: `opts.cwd`
+changed cache record does. `opts` is `Client:eval`'s: `opts.cwd`
 (default: context path, then `"."`), `opts.env`.
 
 `stream:next_event([timeout_ms])` → event table `{data}` carrying the
@@ -226,34 +221,14 @@ for-loop.
 
 ### `Client:session()` → session object | nil, Error
 
-Advanced: a persistent connection with true server-side context
-(`bc_session_*`). Most callers want `set_context()` instead — it works
-over either transport by keeping the default path client-side. ffi
+Advanced: a persistent connection with a directory of its own
+(`bc_session_*`). Its `get(key, cwd, env, flags)` is `bc_session_get`, and
+returns the backend's response table (`{ok, data, error}`); a `nil` cwd is
+the session's directory. Most callers want `set_context()` instead — it
+works over either transport by keeping the default path client-side. ffi
 transport only.
 
 ### `Client:close()`
-
-### `Result`
-
-`get` returns the node as the daemon holds it — both halves, nothing
-rendered. A node may hold a cached value (`data`), a template (`template`),
-or both. A template-only result is neither a hit nor a miss: it is an
-address whose value `resolve` renders — `get` is the raw half,
-`resolve(key, {cwd, env})` is how you get the value.
-
-| Field | Type | Description |
-|---|---|---|
-| `data` | any | Cached value; `nil` when nothing is cached |
-| `age_ms` | number | Age of the cached value in milliseconds |
-| `stale` | boolean | True when past TTL but no fresh value yet |
-| `template` | string\|table\|nil | The template in effect at the address, unrendered: a string for a leaf, a table for a group; `nil` when none is in effect. Always `nil` over `subprocess`. |
-| `rest` | string\|nil | The address left over when the template walk stopped at a string — `get("p.t.x")` where `p.t` is a template string gives the template of `p.t` and `rest == "x"`. Always `nil` over `subprocess`. |
-
-| Method | Returns | Description |
-|---|---|---|
-| `result:is_hit()` | boolean | True when `data ~= nil` |
-| `result:is_miss()` | boolean | True when `data == nil` and `template == nil` |
-| `result:get_str(field)` | string\|nil, error | Get a string field from object data |
 
 ### `Error`
 
@@ -297,7 +272,7 @@ rather than the process environment.
 ```
 beachcomber/
   init.lua               -- entry point, transport selection, comb.connect()
-  client.lua              -- transport-agnostic Client and Result
+  client.lua              -- transport-agnostic Client
   error.lua                -- idiomatic Error (kind + message)
   watch_stream.lua         -- WatchStream wrapping a backend watch handle
   ffi.lua                  -- LuaJIT ffi: cdef, library discovery/load/symbol check
@@ -344,9 +319,9 @@ vim.api.nvim_create_autocmd('VimLeavePre', {
 })
 
 local function git_branch()
-  local result, err = client:get('git.branch', vim.fn.getcwd())
-  if not result or not result:is_hit() then return '' end
-  return ' ' .. result.data
+  local branch = client:get('git.branch', { cwd = vim.fn.getcwd() })
+  if not branch then return '' end
+  return ' ' .. branch
 end
 ```
 

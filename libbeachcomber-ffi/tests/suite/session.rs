@@ -71,7 +71,7 @@ fn two_thread_session_yields_busy_for_one_and_leaves_the_stream_intact() {
                 barrier.wait();
                 for _ in 0..iters {
                     let v = read(unsafe {
-                        bc_session_get(session_ptr.0, key.as_ptr(), ptr::null(), 0)
+                        bc_session_get(session_ptr.0, key.as_ptr(), ptr::null(), ptr::null(), 0)
                     });
                     if v["ok"] == serde_json::json!(true) {
                         ok_count.fetch_add(1, Ordering::SeqCst);
@@ -96,7 +96,7 @@ fn two_thread_session_yields_busy_for_one_and_leaves_the_stream_intact() {
 
     // The stream must still work after concurrent contention.
     let key = cs("hostname.short");
-    let v = read(unsafe { bc_session_get(session, key.as_ptr(), ptr::null(), 0) });
+    let v = read(unsafe { bc_session_get(session, key.as_ptr(), ptr::null(), ptr::null(), 0) });
     assert_eq!(
         v["ok"],
         serde_json::json!(true),
@@ -120,7 +120,7 @@ fn session_open_on_unreachable_daemon_defers_error_to_first_op() {
     );
 
     let key = cs("hostname.short");
-    let v = read(unsafe { bc_session_get(session, key.as_ptr(), ptr::null(), 0) });
+    let v = read(unsafe { bc_session_get(session, key.as_ptr(), ptr::null(), ptr::null(), 0) });
     assert_eq!(v["ok"], serde_json::json!(false));
     assert_ne!(v["error"]["kind"], serde_json::json!("busy"));
 
@@ -153,7 +153,9 @@ fn bc_client_is_send_and_sync_under_concurrent_ops_from_several_threads() {
                 let key = cs("hostname.short");
                 barrier.wait();
                 for _ in 0..iters {
-                    let v = read(unsafe { bc_get(client_ptr.0, key.as_ptr(), ptr::null(), 0) });
+                    let v = read(unsafe {
+                        bc_get(client_ptr.0, key.as_ptr(), ptr::null(), ptr::null(), 0)
+                    });
                     if v["ok"] == serde_json::json!(true) {
                         ok_count.fetch_add(1, Ordering::SeqCst);
                     } else {
@@ -197,12 +199,12 @@ fn a_sessions_directory_is_sent_with_put_get_and_refresh() {
     assert_eq!(v["ok"], serde_json::json!(true), "{v}");
 
     let leaf = cs("sessctx.v");
-    let v = read(unsafe { bc_session_get(session, leaf.as_ptr(), ptr::null(), 0) });
-    assert_eq!(v["data"]["data"], serde_json::json!("here"), "{v}");
-    let v = read(unsafe { bc_get(client, leaf.as_ptr(), dir.as_ptr(), 0) });
-    assert_eq!(v["data"]["data"], serde_json::json!("here"), "at /tmp: {v}");
-    let v = read(unsafe { bc_get(client, leaf.as_ptr(), ptr::null(), 0) });
-    assert!(v["data"]["data"].is_null(), "not global: {v}");
+    let v = read(unsafe { bc_session_get(session, leaf.as_ptr(), ptr::null(), ptr::null(), 0) });
+    assert_eq!(v["data"], serde_json::json!("here"), "{v}");
+    let v = read(unsafe { bc_get(client, leaf.as_ptr(), dir.as_ptr(), ptr::null(), 0) });
+    assert_eq!(v["data"], serde_json::json!("here"), "at /tmp: {v}");
+    let v = read(unsafe { bc_get(client, leaf.as_ptr(), ptr::null(), ptr::null(), 0) });
+    assert!(v["data"].is_null(), "not global: {v}");
 
     // A refresh of a namespace with no Sources is the daemon's refusal: it
     // reached the daemon through the session.
@@ -239,7 +241,8 @@ fn a_slow_session_get_and_a_slow_put_report_timeout() {
     let client = unsafe { bc_client_new(options.as_ptr()) };
 
     let session = unsafe { bc_session_open(client) };
-    let get = read(unsafe { bc_session_get(session, cs("p.x").as_ptr(), ptr::null(), 0) });
+    let get =
+        read(unsafe { bc_session_get(session, cs("p.x").as_ptr(), ptr::null(), ptr::null(), 0) });
     assert_eq!(get["error"]["kind"], "timeout", "{get}");
 
     let put = read(unsafe {
@@ -252,6 +255,48 @@ fn a_slow_session_get_and_a_slow_put_report_timeout() {
         )
     });
     assert_eq!(put["error"]["kind"], "timeout", "{put}");
+
+    unsafe { bc_session_close(session) };
+    unsafe { bc_client_free(client) };
+}
+
+/// `bc_session_get` is `bc_get` on the session's connection: a template
+/// renders with the call's environment, at the session's directory.
+#[test]
+fn a_session_get_renders_at_the_sessions_directory() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let session = unsafe { bc_session_open(client) };
+    let put = |key: &str, data: &str, path: Option<&str>| {
+        let (key, data, path) = (cs(key), cs(data), path.map(cs));
+        let v = read(unsafe {
+            bc_session_put(
+                session,
+                key.as_ptr(),
+                data.as_ptr(),
+                ptr::null(),
+                path.as_ref().map_or(ptr::null(), |p| p.as_ptr()),
+            )
+        });
+        assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+    };
+    put(
+        "rs:template",
+        r#"{"t":"{{ env.WHO }}@{{ rs.where }}"}"#,
+        None,
+    );
+    put("rs", r#"{"where":"global"}"#, None);
+    put("rs", r#"{"where":"tmp"}"#, Some("/tmp"));
+
+    let key = cs("rs.t");
+    let env = cs(r#"{"WHO":"me"}"#);
+    let v = read(unsafe { bc_session_get(session, key.as_ptr(), ptr::null(), env.as_ptr(), 0) });
+    assert_eq!(v["data"], serde_json::json!("me@global"), "{v}");
+
+    let dir = cs("/tmp");
+    read(unsafe { bc_session_set_context(session, dir.as_ptr()) });
+    let v = read(unsafe { bc_session_get(session, key.as_ptr(), ptr::null(), env.as_ptr(), 0) });
+    assert_eq!(v["data"], serde_json::json!("me@tmp"), "{v}");
 
     unsafe { bc_session_close(session) };
     unsafe { bc_client_free(client) };

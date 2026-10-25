@@ -97,7 +97,7 @@ fn bc_eval_of_a_failing_exec_is_a_server_error() {
 /// The child's environment is the call's `env_json` — the same map `env.X`
 /// reads — never the host process's: `$HOME` is set here and absent there.
 #[test]
-fn bc_resolve_exec_sees_env_json_not_the_host_env() {
+fn bc_eval_exec_sees_env_json_not_the_host_env() {
     assert!(std::env::var_os("HOME").is_some());
     let dir = tempfile::TempDir::new().unwrap();
     let client = client_for(&dir.path().join("nonexistent.sock"), true);

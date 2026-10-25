@@ -25,22 +25,25 @@ uv add beachcomber
 ## Quick start
 
 ```python
+import os
+
 from beachcomber import Client
 
 client = Client()
 
-# Read a single field
-result = client.get("git.branch", path="/path/to/repo")
-if result.is_hit:
-    print(result.data)    # "main"
-    print(result.age_ms)  # 234
-    print(result.stale)   # False
+# What `comb get git.branch` prints in that directory; None on a miss
+branch = client.get("git.branch", cwd="/path/to/repo")   # "main"
 
-# Read a full provider (returns dict)
-result = client.get("git", path="/path/to/repo")
-if result.is_hit:
-    print(result["branch"])  # "main"
-    print(result["dirty"])   # False
+# A full provider (a dict)
+git = client.get("git", cwd="/path/to/repo")
+print(git["branch"], git["dirty"])
+
+# The caller's environment for env.* refs, and the force/wait flags
+client.get("aws.profile", cwd="/path/to/repo", env=dict(os.environ))
+client.get("git.branch", cwd="/path/to/repo", force=True, wait=True)
+
+# The template itself, unrendered: a facet, read like any key
+client.get("aws:template.profile")
 
 # Force recomputation
 client.refresh("git", path="/path/to/repo")
@@ -49,19 +52,16 @@ client.refresh("git", path="/path/to/repo")
 status = client.status()
 ```
 
-## The `get` result
+## `get`
 
-`get` returns the node as the daemon holds it — both halves, nothing
-rendered. `CombResult` carries `data` (the cached value, `None` when nothing
-is cached), `age_ms`/`stale` (meaningful only with `data`), `template` (the
-template in effect at the address, unrendered: a string for a leaf, a dict
-for a group; `None` when none is in effect) and `rest` (the address left
-over when the template walk stopped at a string — `get("p.t.x")` where
-`p.t` is a template string gives `template` of `p.t` and `rest == "x"`).
-`is_hit` is "data present"; `is_miss` is "no data **and** no template". A
-template-only result is neither: it is an address whose value `resolve`
-renders — `get` is the raw half, `resolve(key, cwd, env)` is how you get the
-value.
+`client.get(key, cwd=None, env=None, force=False, wait=False)` returns the
+value `comb get` prints for this key, cwd and env — the bare value, `None`
+on a miss. The daemon holds the templates (`<provider>:template`, seeded
+from configuration or `put`) and the client renders them: a plain field is
+its cached value, a templated one is rendered, and a bare provider name is
+the whole merged namespace. `cwd=None` is the global entry. The unrendered
+halves are facets, read like any key: `p:template.x` is the template as
+stored, `p:put.x` and `p:source.x` those layers' values.
 
 ## Sessions
 
@@ -70,23 +70,18 @@ For multiple queries use a session to reuse a single connection:
 ```python
 with client.session() as session:
     session.set_context("/path/to/repo")
-    branch = session.get("git.branch")
+    branch = session.get("git.branch")   # reads at the session's directory
     dirty = session.get("git.dirty")
     hostname = session.get("hostname")
 ```
 
-## Resolve and eval
+## Eval
 
-`client.resolve(key, cwd, env=None)` returns the same value `comb get`
-returns for this key, cwd and env: the daemon holds the templates
-(`<provider>:template`, seeded from configuration or `put`) and the client
-renders them. A plain field is its cached value, a templated one is
-rendered, and a bare provider name is the whole merged namespace.
 `client.eval(template_str, cwd, env=None)` renders a template that is
-stored nowhere — the same value `comb eval` prints. Both `cwd` arguments
-are required. The template accepts a single `{{ expr }}` tag, or literal
-text/several tags — the former keeps the expression's natural type, the
-latter is always a string (a source with no tags at all is its literal
+stored nowhere — the same value `comb eval` prints; `eval("{{ p.f }}")` and
+`get("p.f")` agree. The template accepts a single `{{ expr }}` tag, or
+literal text/several tags — the former keeps the expression's natural type,
+the latter is always a string (a source with no tags at all is its literal
 text).
 
 `exec()` inside a template runs only on a client created with
@@ -142,3 +137,15 @@ string-match `str(exc)`.
 | `LibraryDiscoveryError` | `library_discovery` | No candidate location yielded a loadable library |
 | `LibrarySymbolError` | `library_symbol` | Loaded library is missing a required `bc_*` symbol |
 | `CombError` | varies | Base class for all SDK errors |
+
+## Running tests
+
+```sh
+cd sdks/python
+uv run --with pytest python -m pytest                # unit and integration tests
+COMB_BIN=/path/to/comb python3 conformance_runner.py # the shared fixtures under tests/conformance/
+```
+
+The integration tests spawn a `comb daemon` and load `libbeachcomber` from
+the workspace's debug build (`../../target/debug/`, made by `cargo build`)
+unless `BEACHCOMBER_LIB` / `COMB_BIN` are set.

@@ -24,19 +24,18 @@ const char *bc_version(void);
 BcClient *bc_client_new(const char *options_json);
 void bc_client_free(BcClient *client);
 
-char *bc_get(BcClient *client, const char *key, const char *path, uint32_t flags);
+char *bc_get(BcClient *client, const char *key, const char *cwd, const char *env_json, uint32_t flags);
 char *bc_put(BcClient *client, const char *key, const char *json_data, const char *ttl, const char *path);
 char *bc_refresh(BcClient *client, const char *key, const char *path);
 char *bc_status(BcClient *client);
 char *bc_introspect(BcClient *client, const char *subject, const char *options_json);
 char *bc_hello(BcClient *client);
 
-char *bc_resolve(BcClient *client, const char *key, const char *cwd, const char *env_json);
 char *bc_eval(BcClient *client, const char *template_str, const char *cwd, const char *env_json);
 
 BcSession *bc_session_open(BcClient *client);
 void bc_session_close(BcSession *session);
-char *bc_session_get(BcSession *session, const char *key, const char *path, uint32_t flags);
+char *bc_session_get(BcSession *session, const char *key, const char *cwd, const char *env_json, uint32_t flags);
 char *bc_session_put(BcSession *session, const char *key, const char *json_data, const char *ttl, const char *path);
 char *bc_session_refresh(BcSession *session, const char *key, const char *path);
 char *bc_session_set_context(BcSession *session, const char *path);
@@ -59,7 +58,7 @@ M.BC_GET_WAIT = 2
 local REQUIRED_SYMBOLS = {
   "bc_version", "bc_client_new", "bc_client_free", "bc_string_free",
   "bc_get", "bc_put", "bc_refresh", "bc_status", "bc_introspect", "bc_hello",
-  "bc_resolve", "bc_eval",
+  "bc_eval",
   "bc_session_open", "bc_session_close", "bc_session_get", "bc_session_put", "bc_session_refresh",
   "bc_session_set_context",
   "bc_watch_open", "bc_watch_next", "bc_watch_cancel", "bc_watch_free",

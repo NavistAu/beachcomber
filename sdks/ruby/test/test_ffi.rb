@@ -34,7 +34,7 @@ class TestFFI < Minitest::Test
   def test_required_symbols_covers_every_op_group
     lifecycle = %w[bc_version bc_client_new bc_client_free bc_string_free]
     ops       = %w[bc_get bc_put bc_refresh bc_status bc_introspect bc_hello]
-    resolution = %w[bc_resolve bc_eval]
+    resolution = %w[bc_eval]
     sessions  = %w[bc_session_open bc_session_get bc_session_put bc_session_set_context bc_session_close]
     watch     = %w[bc_watch_open bc_watch_next bc_watch_cancel bc_watch_free]
 

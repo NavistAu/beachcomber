@@ -1,4 +1,4 @@
---- Tests for Client:hello/put/introspect/resolve/eval/watch, and
+--- Tests for Client:hello/put/introspect/eval/watch, and
 --- for the unsupported-capability path (a backend that omits an optional
 --- method) — against a mock backend, matching test_client.lua's pattern.
 
@@ -149,56 +149,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(err.kind, "unsupported")
   end)
 
-  -- ── resolve / eval ────────────────────────────────────────────────────────
-
-  suite("Client:resolve")
-
-  test("resolve forwards exactly key, cwd, env", function()
-    local seen, nargs
-    local backend = make_backend({
-      resolve = function(_, ...)
-        nargs = select("#", ...)
-        local key, cwd, env = ...
-        seen = { key = key, cwd = cwd, env = env }
-        return { ok = true, data = "baz" }
-      end,
-    })
-    local value, err = Client.new(backend):resolve("filters.based", {
-      cwd = "/tmp", env = { PYVAR = "/foo/bar/baz" },
-    })
-    assert_nil(err)
-    assert_eq(value, "baz")
-    assert_eq(nargs, 3)
-    assert_eq(seen.key, "filters.based")
-    assert_eq(seen.cwd, "/tmp")
-    assert_eq(seen.env.PYVAR, "/foo/bar/baz")
-  end)
-
-  test("resolve miss is nil with no Error", function()
-    local backend = make_backend({
-      resolve = function() return { ok = true, data = nil } end,
-    })
-    local value, err = Client.new(backend):resolve("p.nope", { cwd = "/tmp" })
-    assert_nil(value)
-    assert_nil(err)
-  end)
-
-  test("resolve defaults cwd to the context path", function()
-    local seen_cwd
-    local backend = make_backend({
-      resolve = function(_, key, cwd) seen_cwd = cwd; return { ok = true, data = nil } end,
-    })
-    local c = Client.new(backend)
-    c:set_context("/ctx")
-    c:resolve("myproject")
-    assert_eq(seen_cwd, "/ctx")
-  end)
-
-  test("resolve returns Error.unsupported when the backend omits it", function()
-    local value, err = Client.new(make_backend({})):resolve("x.y")
-    assert_nil(value)
-    assert_eq(err.kind, "unsupported")
-  end)
+  -- ── eval ──────────────────────────────────────────────────────────────────
 
   suite("Client:eval")
 
@@ -248,7 +199,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(ev.data, 42)
   end)
 
-  test("watch defaults its cwd the way resolve does", function()
+  test("watch defaults its cwd to the context path, then \".\"", function()
     local opened_with
     local backend = make_backend({
       watch_open = function(_, key, cwd)

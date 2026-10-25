@@ -12,7 +12,7 @@ pub mod envelope;
 use envelope::{FfiError, WatchOutcome, call_ffi, call_watch_next, kind};
 use libbeachcomber::resolve::{self, Inputs, Slot};
 use libbeachcomber::watch::{ResolvedWatch, WatchOutcome as LibWatchOutcome};
-use libbeachcomber::{CombResult, IntrospectResponse, IntrospectSubject};
+use libbeachcomber::{IntrospectResponse, IntrospectSubject};
 use std::collections::HashMap;
 
 /// Opaque client handle returned by [`bc_client_new`].
@@ -98,7 +98,7 @@ unsafe fn build_client(options_json: *const c_char) -> Result<libbeachcomber::Cl
 
 /// Creates a new client handle. `options_json` is nullable; recognised keys
 /// are `socket_path`, `timeout_ms`, `autostart` and `exec` — whether a
-/// template this client resolves (`bc_resolve`, `bc_eval`) may call `exec()`,
+/// template this client renders (`bc_get`, `bc_eval`) may call `exec()`,
 /// default `false`. Never returns NULL — a malformed `options_json` still
 /// yields a handle, with the parse error deferred to the handle's first
 /// operation rather than failing here.
@@ -126,10 +126,11 @@ pub unsafe extern "C" fn bc_client_free(client: *mut BcClient) {
 
 // ── Operations (Task 3.4) ──────────────────────────────────────────────
 
-/// `bc_get` flag: evict the cache entry and re-execute the provider before
-/// returning.
+/// `bc_get` flag: re-execute every Source the read demands before answering,
+/// as `comb get --force`.
 pub const BC_GET_FORCE: u32 = 1 << 0;
-/// `bc_get` flag: if the entry is stale, wait for inline re-execution.
+/// `bc_get` flag: a stale entry the read demands is re-executed inline before
+/// answering, as `comb get --wait`.
 pub const BC_GET_WAIT: u32 = 1 << 1;
 const BC_GET_KNOWN_FLAGS: u32 = BC_GET_FORCE | BC_GET_WAIT;
 
@@ -203,79 +204,10 @@ unsafe fn optional_str<'a>(ptr: *const c_char) -> Result<Option<&'a str>, FfiErr
         })
 }
 
-/// The `get` envelope's inner object. `data`/`age_ms`/`stale` are always
-/// present (null on anything but a hit); `template` and `rest` appear only
-/// when the node carries them — so a data-only hit and a miss are unchanged
-/// from before the template half existed.
-fn combresult_to_json(result: CombResult) -> serde_json::Value {
-    let mut inner = match &result {
-        CombResult::Hit {
-            data,
-            age_ms,
-            stale,
-            ..
-        } => serde_json::json!({
-            "data": data.as_value(),
-            "age_ms": *age_ms as u64,
-            "stale": stale,
-        }),
-        CombResult::Template { .. } | CombResult::Miss => serde_json::json!({
-            "data": null,
-            "age_ms": null,
-            "stale": null,
-        }),
-    };
-    if let Some(template) = result.template() {
-        inner["template"] = template.clone();
-    }
-    if let Some(rest) = result.rest() {
-        inner["rest"] = serde_json::Value::String(rest.to_string());
-    }
-    inner
-}
-
 /// Recognised keys of `bc_introspect`'s `options_json` argument.
 #[derive(serde::Deserialize, Default)]
 struct IntrospectOptions {
     duration_secs: Option<u64>,
-}
-
-/// Query a single key, raw. `path` is nullable (global providers). `flags` is
-/// a bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit set yields
-/// a `bad_flags` envelope.
-///
-/// The envelope's `data` object is the node as the daemon holds it — nothing
-/// rendered; `bc_resolve` is what renders a template into a value:
-///
-/// | node               | `data`   | `age_ms`/`stale` | `template`        | `rest`      |
-/// |--------------------|----------|------------------|-------------------|-------------|
-/// | value (a hit)      | value    | set              | only if templated | only if set |
-/// | template only      | `null`   | `null`           | string or tree    | only if set |
-/// | nothing (a miss)   | `null`   | `null`           | absent            | absent      |
-///
-/// A template-only node is not a miss: something is stored there, and it
-/// has no value until rendered.
-///
-/// # Safety
-/// `client` must be a valid pointer from [`bc_client_new`]; `key` must be
-/// non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn bc_get(
-    client: *mut BcClient,
-    key: *const c_char,
-    path: *const c_char,
-    flags: u32,
-) -> *mut c_char {
-    call_ffi(move || {
-        let c = unsafe { client_ref(client) }?;
-        check_get_flags(flags)?;
-        let key = unsafe { required_str(key, "key") }?;
-        let path = unsafe { optional_str(path) }?;
-        let force = flags & BC_GET_FORCE != 0;
-        let wait = flags & BC_GET_WAIT != 0;
-        let result = c.get_with_flags(key, path, force, wait)?;
-        Ok(combresult_to_json(result))
-    })
 }
 
 /// Store data into the cache as static data. `json_data` must parse as JSON.
@@ -424,21 +356,79 @@ unsafe fn resolution_dir(cwd: *const c_char) -> Result<(String, Slot), FfiError>
     Ok((dir.clone(), Slot::Path(dir)))
 }
 
-/// Resolve `key` to the value `comb get key` prints at `cwd`, through
+/// The resolution inputs every `bc_get` and `bc_eval` builds: the directory,
+/// the caller's environment and the read's flags.
+struct ReadInputs {
+    cwd: String,
+    slot: Slot,
+    env: HashMap<String, String>,
+    force: bool,
+    wait: bool,
+}
+
+impl ReadInputs {
+    /// # Safety
+    /// `env_json` must be NULL or NUL-terminated.
+    unsafe fn new(
+        dir: (String, Slot),
+        env_json: *const c_char,
+        flags: u32,
+    ) -> Result<Self, FfiError> {
+        check_get_flags(flags)?;
+        let (cwd, slot) = dir;
+        Ok(Self {
+            cwd,
+            slot,
+            env: parse_env_json(unsafe { optional_str(env_json) }?)?,
+            force: flags & BC_GET_FORCE != 0,
+            wait: flags & BC_GET_WAIT != 0,
+        })
+    }
+
+    fn inputs(&self, allow_exec: bool) -> Inputs<'_> {
+        Inputs {
+            cwd: &self.cwd,
+            env: &self.env,
+            slot: self.slot.clone(),
+            force: self.force,
+            wait: self.wait,
+            allow_exec,
+        }
+    }
+}
+
+/// The read every `bc_get` makes: [`libbeachcomber::resolve`] over `fetch`,
+/// a miss `null`.
+fn get_value(
+    key: &str,
+    inputs: &Inputs<'_>,
+    fetch: &mut dyn resolve::Fetch,
+) -> Result<serde_json::Value, FfiError> {
+    match resolve::resolve(key, inputs, fetch) {
+        Ok(value) => Ok(value.unwrap_or(serde_json::Value::Null)),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The value `comb get key` prints at `cwd`, through
 /// [`libbeachcomber::resolve`]: the daemon holds the templates
 /// (`<provider>:template`, seeded from configuration or `put`), and this
 /// client renders them with `env_json` as the caller's environment. A plain
 /// field is its cached value; a templated one is rendered; a bare provider
 /// is the whole merged namespace, as `comb get provider -f json`. A miss is
-/// `data: null`.
+/// `data: null`. The unrendered halves are facets, read like any key:
+/// `p:template.x` is the template as stored, `p:put.x` and `p:source.x`
+/// those layers' values.
 ///
-/// `cwd` is the directory the resolution addresses, read as `comb get --path`
+/// `cwd` is the directory the read addresses, read as `comb get --path`
 /// reads one: `~` is the home directory and a relative path is against the
 /// caller's working directory. NULL addresses the global entry, as
-/// `comb get --global` does. Every fetch the resolution makes addresses that
+/// `comb get --global` does. Every fetch the read makes addresses that
 /// directory, and a template's `exec`, `lup` and `read` run in it (in
 /// `$HOME` from `env_json` for the global entry).
 /// `env_json` is nullable, meaning "no environment": every `env.*` is absent.
+/// `flags` is a bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit
+/// set yields a `bad_flags` envelope.
 /// `exec()` inside a template runs only on a client created with
 /// `{"exec":true}`; otherwise it fails with `exec() is disabled in this
 /// context`.
@@ -448,44 +438,32 @@ unsafe fn resolution_dir(cwd: *const c_char) -> Result<(String, Slot), FfiError>
 /// non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
 /// NUL-terminated.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn bc_resolve(
+pub unsafe extern "C" fn bc_get(
     client: *mut BcClient,
     key: *const c_char,
     cwd: *const c_char,
     env_json: *const c_char,
+    flags: u32,
 ) -> *mut c_char {
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let key = unsafe { required_str(key, "key") }?;
-        let (cwd, slot) = unsafe { resolution_dir(cwd) }?;
-        let env_vars = parse_env_json(unsafe { optional_str(env_json) }?)?;
-        let inputs = Inputs {
-            cwd: &cwd,
-            env: &env_vars,
-            slot,
-            force: false,
-            wait: false,
-            allow_exec: c.allow_exec(),
-        };
-        match resolve::resolve(key, &inputs, &mut { c }) {
-            Ok(Some(value)) => Ok(value),
-            Ok(None) => Ok(serde_json::Value::Null),
-            Err(e) => Err(e.into()),
-        }
+        let read = unsafe { ReadInputs::new(resolution_dir(cwd)?, env_json, flags) }?;
+        get_value(key, &read.inputs(c.allow_exec()), &mut { c })
     })
 }
 
 /// Render a source that is stored nowhere, every ref resolved exactly as it
 /// would be inside a stored template — so `bc_eval("{{ p.f }}")` and
-/// `bc_resolve("p.f")` agree by construction. A source that is exactly one
+/// `bc_get("p.f")` agree by construction. A source that is exactly one
 /// `{{ expr }}` tag keeps the expression's natural type; anything else
 /// (literal text, several tags, a source with no tags at all) is a string.
 /// A missing ref — an absent `env.*`, a daemon miss, a key the daemon
 /// rejects — is falsy at any depth, not an error. A one-tag source whose
 /// value is `none` or undefined is absent: `data: null`, as a miss is for
-/// [`bc_resolve`].
+/// [`bc_get`].
 ///
-/// `cwd`, `env_json` and `exec()` behave as for [`bc_resolve`].
+/// `cwd`, `env_json` and `exec()` behave as for [`bc_get`].
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `template_str`
@@ -501,17 +479,8 @@ pub unsafe extern "C" fn bc_eval(
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let template_str = unsafe { required_str(template_str, "template_str") }?;
-        let (cwd, slot) = unsafe { resolution_dir(cwd) }?;
-        let env_vars = parse_env_json(unsafe { optional_str(env_json) }?)?;
-        let inputs = Inputs {
-            cwd: &cwd,
-            env: &env_vars,
-            slot,
-            force: false,
-            wait: false,
-            allow_exec: c.allow_exec(),
-        };
-        match resolve::eval(template_str, &inputs, &mut { c }) {
+        let read = unsafe { ReadInputs::new(resolution_dir(cwd)?, env_json, 0) }?;
+        match resolve::eval(template_str, &read.inputs(c.allow_exec()), &mut { c }) {
             Ok(value) => Ok(value.unwrap_or(serde_json::Value::Null)),
             Err(e) => Err(e.into()),
         }
@@ -530,6 +499,8 @@ pub unsafe extern "C" fn bc_eval(
 /// reason short of allocation failure.
 pub struct BcSession {
     state: Mutex<Result<libbeachcomber::Session, FfiError>>,
+    /// Whether the client it was opened on allows `exec()` ([`bc_get`]).
+    allow_exec: bool,
 }
 
 /// Locks `session`'s mutex, translating an already-held lock into a `busy`
@@ -566,12 +537,12 @@ unsafe fn session_lock<'a>(
 /// [`bc_client_new`], not yet freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_session_open(client: *mut BcClient) -> *mut BcSession {
-    let state = (|| {
-        let c = unsafe { client_ref(client) }?;
-        c.session().map_err(FfiError::from)
-    })();
+    let client = unsafe { client_ref(client) };
+    let allow_exec = client.as_ref().is_ok_and(|c| c.allow_exec());
+    let state = client.and_then(|c| c.session().map_err(FfiError::from));
     Box::into_raw(Box::new(BcSession {
         state: Mutex::new(state),
+        allow_exec,
     }))
 }
 
@@ -588,36 +559,33 @@ pub unsafe extern "C" fn bc_session_close(session: *mut BcSession) {
     drop(unsafe { Box::from_raw(session) });
 }
 
-/// Query a single key on this session's persistent connection, raw. `flags`
-/// is the same [`BC_GET_FORCE`] / [`BC_GET_WAIT`] bitmask [`bc_get`] takes,
-/// and the envelope's `data` object has the same three shapes:
-///
-/// | node               | `data`   | `age_ms`/`stale` | `template`        | `rest`      |
-/// |--------------------|----------|------------------|-------------------|-------------|
-/// | value (a hit)      | value    | set              | only if templated | only if set |
-/// | template only      | `null`   | `null`           | string or tree    | only if set |
-/// | nothing (a miss)   | `null`   | `null`           | absent            | absent      |
+/// [`bc_get`] on this session's persistent connection: the same rendered
+/// value, the same flags. A NULL `cwd` is this session's directory
+/// ([`bc_session_set_context`]) when it has one, else the global entry.
 ///
 /// # Safety
 /// `session` must be a valid pointer from [`bc_session_open`]; `key` must
-/// be non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
+/// be non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
+/// NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_session_get(
     session: *mut BcSession,
     key: *const c_char,
-    path: *const c_char,
+    cwd: *const c_char,
+    env_json: *const c_char,
     flags: u32,
 ) -> *mut c_char {
     call_ffi(move || {
-        check_get_flags(flags)?;
         let key = unsafe { required_str(key, "key") }?;
-        let path = unsafe { optional_str(path) }?;
+        let allow_exec = unsafe { &*session }.allow_exec;
         let mut guard = unsafe { session_lock(session) }?;
         let sess = guard.as_mut().map_err(|e| e.clone())?;
-        let force = flags & BC_GET_FORCE != 0;
-        let wait = flags & BC_GET_WAIT != 0;
-        let result = sess.get_with_flags(key, path, force, wait)?;
-        Ok(combresult_to_json(result))
+        let dir = match (cwd.is_null(), sess.context()) {
+            (true, Some(dir)) => (dir.to_string(), Slot::Path(dir.to_string())),
+            _ => unsafe { resolution_dir(cwd) }?,
+        };
+        let read = unsafe { ReadInputs::new(dir, env_json, flags) }?;
+        get_value(key, &read.inputs(allow_exec), sess)
     })
 }
 
@@ -673,9 +641,9 @@ pub unsafe extern "C" fn bc_session_refresh(
     })
 }
 
-/// Set this session's directory: every later `bc_session_get`,
-/// `bc_session_put` and `bc_session_refresh` that passes a NULL `path`
-/// addresses it. The session keeps it and sends it with each request; it is
+/// Set this session's directory: every later `bc_session_get` that passes a
+/// NULL `cwd`, and `bc_session_put` and `bc_session_refresh` that pass a NULL
+/// `path`, address it. The session keeps it and sends it with each request; it is
 /// read as every path is (`~` is home, a relative path is against the
 /// process's working directory).
 ///
@@ -721,13 +689,13 @@ pub struct BcWatch {
     ended: AtomicBool,
 }
 
-/// Opens a watch on the *value* of `key` — what `bc_resolve(key, cwd,
-/// env_json)` answers — and emits it again whenever it changes. The fan-in
+/// Opens a watch on the *value* of `key` — what `bc_get(key, cwd,
+/// env_json, 0)` answers — and emits it again whenever it changes. The fan-in
 /// underneath subscribes to every key the resolution read, and a write to a
 /// namespace's template notifies that namespace, so a template edited under
 /// the watch fires it exactly as a changed cache record does.
 ///
-/// `cwd` and `env_json` mean what they mean for [`bc_resolve`]: `cwd` is
+/// `cwd` and `env_json` mean what they mean for [`bc_get`]: `cwd` is
 /// both the directory every subscription is opened at and the one every
 /// re-resolution runs in, and NULL watches the global entry. `env_json` is
 /// nullable, meaning "no environment": every `env.*` is absent.

@@ -4,9 +4,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as path from 'path';
 import { daemonAvailable, spawnDaemon, type TestDaemon } from './helpers.js';
-import { makeCombResult, type GetResultShape } from '../src/client.js';
 import { unwrap } from '../src/envelope.js';
-import { ServerError } from '../src/errors.js';
+import { ServerError, UnsupportedTransportError } from '../src/errors.js';
 import { createSubprocessTransport } from '../src/subprocess_transport.js';
 import type { ClientHandle, Transport } from '../src/transport.js';
 
@@ -15,12 +14,11 @@ const skip = !daemonAvailable();
 const BC_GET_FORCE = 0x1;
 const BC_GET_WAIT = 0x2;
 
-// The subprocess tier asks `comb get -f json <key> <p>:cache.<rest>`
-// for the value and its `:cache` answer (age, staleness) in one spawn, so its answer is
-// the resolver's — the directory chain, `$HOME` as the global entry,
-// `--force`/`--wait`, the daemon's refusals — and a
-// template-backed key renders. These drive the transport directly and
-// unwrap its envelope exactly as `Client.get` does.
+// The subprocess tier's `get` is one `comb get -f json <key> [--path P |
+// --global] [--force] [--wait]`, so its answer is the CLI's — the
+// directory chain, `$HOME` as the global entry, `--force`/`--wait`, the
+// daemon's refusals — and a template-backed key renders. These drive the
+// transport directly and unwrap its envelope exactly as `Client.get` does.
 describe('subprocess transport get against a real daemon', { skip }, () => {
   let daemon: TestDaemon;
   let tp: Transport;
@@ -32,8 +30,8 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     unwrap(await tp.put(handle, key, JSON.stringify(data), undefined, path_));
   }
 
-  async function get(key: string, path_?: string, flags = 0) {
-    return makeCombResult(unwrap(await tp.get(handle, key, path_, flags)) as GetResultShape);
+  async function get(key: string, path_?: string, flags = 0): Promise<unknown> {
+    return unwrap(await tp.get(handle, key, path_, undefined, flags));
   }
 
   function lastArgv(): string {
@@ -88,42 +86,31 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     }
   });
 
-  it('a scalar field is a hit with the raw value', async () => {
-    const r = await get('sp.n', '/tmp');
-    assert.equal(r.isHit, true);
-    assert.equal(r.data, 1);
-    assert.equal(typeof r.ageMs, 'number');
+  it('a scalar field is its value', async () => {
+    assert.equal(await get('sp.n', '/tmp'), 1);
   });
 
   it('put(key, null) removes the node, over the CLI', async () => {
     await put('spnull', { x: 1 }, '/tmp');
-    assert.equal((await get('spnull.x', '/tmp')).isHit, true);
+    assert.equal(await get('spnull.x', '/tmp'), 1);
     await put('spnull', null, '/tmp');
-    assert.equal((await get('spnull.x', '/tmp')).isMiss, true);
+    assert.equal(await get('spnull.x', '/tmp'), null);
   });
 
-  it('a string field is a hit with the raw string', async () => {
-    const r = await get('sp.s', '/tmp');
-    assert.equal(r.isHit, true);
-    assert.equal(r.data, 'str');
+  it('a string field is its string', async () => {
+    assert.equal(await get('sp.s', '/tmp'), 'str');
   });
 
-  it('a bare provider is every field merged into one object', async () => {
-    const r = await get('sp', '/tmp');
-    assert.equal(r.isHit, true);
-    assert.deepEqual(r.data, { n: 1, s: 'str', o: { k: 'v' }, t: 2 });
+  it('a bare provider is every field merged into one object, templates rendered', async () => {
+    assert.deepEqual(await get('sp', '/tmp'), { n: 1, s: 'str', o: { k: 'v' }, t: 2 });
   });
 
   it('a dotted address drills into the field value', async () => {
-    const r = await get('sp.o.k', '/tmp');
-    assert.equal(r.isHit, true);
-    assert.equal(r.data, 'v');
+    assert.equal(await get('sp.o.k', '/tmp'), 'v');
   });
 
-  it('an absent field is a miss, not a throw', async () => {
-    const r = await get('sp.nope', '/tmp');
-    assert.equal(r.isMiss, true);
-    assert.equal(r.isHit, false);
+  it('an absent field is null, not a throw', async () => {
+    assert.equal(await get('sp.nope', '/tmp'), null);
   });
 
   it("a daemon rejection is a ServerError in the daemon's words", async () => {
@@ -133,71 +120,47 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     );
   });
 
-  it('a template-only node is a hit holding the rendered value, with no template half', async () => {
-    const r = await get('sp.t', '/tmp');
-    assert.equal(r.isHit, true);
-    assert.equal(r.data, 2);
-    assert.equal(r.template, undefined);
-    assert.equal(r.rest, undefined);
-    assert.equal(r.ageMs, 0);
-    assert.equal(r.stale, false);
+  it('a template-only node is its rendered value', async () => {
+    assert.equal(await get('sp.t', '/tmp'), 2);
   });
 
   it('no path reads the global entry', async () => {
-    const r = await get('spg.g');
-    assert.equal(r.isHit, true);
-    assert.equal(r.data, 1);
+    assert.equal(await get('spg.g'), 1);
+    assert.equal(lastArgv(), 'get -f json spg.g --global');
   });
 
   it("an ancestor's put is read from a child path (the directory chain)", async () => {
-    const r = await get('chain.a', path.join(daemon.tmpDir, 'proj', 'sub'));
-    assert.equal(r.isHit, true);
-    assert.equal(r.data, 1);
+    assert.equal(await get('chain.a', path.join(daemon.tmpDir, 'proj', 'sub')), 1);
   });
 
   it("a path equal to the daemon's $HOME is the global entry", async () => {
-    const r = await get('spg.g', daemon.tmpDir);
-    assert.equal(r.isHit, true);
-    assert.equal(r.data, 1);
+    assert.equal(await get('spg.g', daemon.tmpDir), 1);
   });
 
-  it('a leaf asks for its :cache leaf in the same spawn and reports its freshness', async () => {
-    const r = await get('sp.n', '/tmp');
-    assert.equal(lastArgv(), 'get -f json sp.n sp:cache.n --path /tmp');
-    assert.equal(typeof r.ageMs, 'number');
-    assert.equal(r.stale, false);
+  it('a key is asked alone, in one spawn', async () => {
+    assert.equal(await get('sp.n', '/tmp'), 1);
+    assert.equal(lastArgv(), 'get -f json sp.n --path /tmp');
   });
 
-  it('a bare provider asks for its :cache node', async () => {
-    const r = await get('sp', '/tmp');
-    assert.equal(r.isHit, true);
-    assert.equal(lastArgv(), 'get -f json sp sp:cache --path /tmp');
-    assert.equal(typeof r.ageMs, 'number');
-  });
-
-  it('a facet key is asked alone and reports age 0, not stale', async () => {
-    const r = await get('sp:put.n', '/tmp');
+  it('a facet key reads the layer as stored', async () => {
+    assert.equal(await get('sp:put.n', '/tmp'), 1);
     assert.equal(lastArgv(), 'get -f json sp:put.n --path /tmp');
-    assert.equal(r.ageMs, 0);
-    assert.equal(r.stale, false);
+    assert.equal(await get('sp:template.t', '/tmp'), '{{ 1 + 1 }}');
   });
 
-  it("a colon below the provider segment is part of the field: it is asked with its :cache slot and misses", async () => {
-    const r = await get('sp.n:age', '/tmp');
-    assert.equal(r.isMiss, true);
-    assert.equal(lastArgv(), 'get -f json sp.n:age sp:cache.n:age --path /tmp');
+  it('a colon below the provider segment is part of the field, and misses', async () => {
+    assert.equal(await get('sp.n:age', '/tmp'), null);
+    assert.equal(lastArgv(), 'get -f json sp.n:age --path /tmp');
   });
 
-  it('a bracketed key keeps its brackets past the head', async () => {
-    const r = await get("sp['o'].k", '/tmp');
-    assert.equal(r.data, 'v');
-    assert.equal(lastArgv(), "get -f json sp['o'].k sp:cache['o'].k --path /tmp");
+  it('a bracketed key keeps its brackets', async () => {
+    assert.equal(await get("sp['o'].k", '/tmp'), 'v');
+    assert.equal(lastArgv(), "get -f json sp['o'].k --path /tmp");
   });
 
-  it('wait reaches the wire as --wait, in one comb get with the :cache slot', async () => {
-    const r = await get('sp.n', '/tmp', BC_GET_WAIT);
-    assert.equal(r.isHit, true);
-    assert.equal(lastArgv(), 'get -f json sp.n sp:cache.n --path /tmp --wait');
+  it('wait reaches the CLI as --wait', async () => {
+    assert.equal(await get('sp.n', '/tmp', BC_GET_WAIT), 1);
+    assert.equal(lastArgv(), 'get -f json sp.n --path /tmp --wait');
   });
 
   it("--force on a static namespace is the daemon's refusal", async () => {
@@ -205,7 +168,14 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
       () => get('sp.n', '/tmp', BC_GET_FORCE),
       (err: unknown) => err instanceof ServerError && err.serverMessage.startsWith('cannot --force static namespace'),
     );
-    assert.equal(lastArgv(), 'get -f json sp.n sp:cache.n --path /tmp --force');
+    assert.equal(lastArgv(), 'get -f json sp.n --path /tmp --force');
+  });
+
+  it("a caller's env cannot be honoured and is refused, naming the FFI transport", async () => {
+    await assert.rejects(
+      () => tp.get(handle, 'sp.t', '/tmp', JSON.stringify({ A: 'x' }), 0),
+      (err: unknown) => err instanceof UnsupportedTransportError && /FFI transport/.test(err.message),
+    );
   });
 
   it("a template that cannot resolve is the resolver's error, not a null hit", async () => {
@@ -238,7 +208,7 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     );
   });
 
-  it("a group whose leaf fails reports the leaf's line, not the companion misses", async () => {
+  it("a group whose leaf fails reports the leaf's line", async () => {
     await assert.rejects(
       () => get('bad.grp', '/tmp'),
       (err: unknown) =>
@@ -263,7 +233,7 @@ describe('subprocess transport classifies a daemon-answered refusal', () => {
     const standIn = path.join(tmpDir, 'comb');
     fs.writeFileSync(
       standIn,
-      `#!/bin/sh\necho '[null,null,null]'\necho 'error: k.x: cannot read: no such file or directory' >&2\nexit 2\n`,
+      `#!/bin/sh\necho 'null'\necho 'error: k.x: cannot read: no such file or directory' >&2\nexit 2\n`,
       { mode: 0o755 },
     );
     process.env['COMB_BIN'] = standIn;
@@ -278,7 +248,7 @@ describe('subprocess transport classifies a daemon-answered refusal', () => {
   it('as server_error, never daemon_not_running', async () => {
     const tp = createSubprocessTransport();
     const handle = tp.newClient({ timeoutMs: 5000 });
-    const env = await tp.get(handle, 'k.x', '/tmp', 0);
+    const env = await tp.get(handle, 'k.x', '/tmp', undefined, 0);
     assert.equal(env.ok, false);
     if (env.ok) return;
     assert.deepEqual(env.error, {

@@ -33,7 +33,7 @@ _SYMBOLS: dict = {
     "bc_client_new": ([ctypes.c_char_p], ctypes.c_void_p),
     "bc_client_free": ([ctypes.c_void_p], None),
     "bc_get": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32],
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32],
         ctypes.c_void_p,
     ),
     "bc_put": (
@@ -47,10 +47,6 @@ _SYMBOLS: dict = {
         ctypes.c_void_p,
     ),
     "bc_hello": ([ctypes.c_void_p], ctypes.c_void_p),
-    "bc_resolve": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
-        ctypes.c_void_p,
-    ),
     "bc_eval": (
         [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
         ctypes.c_void_p,
@@ -58,7 +54,7 @@ _SYMBOLS: dict = {
     "bc_session_open": ([ctypes.c_void_p], ctypes.c_void_p),
     "bc_session_close": ([ctypes.c_void_p], None),
     "bc_session_get": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32],
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32],
         ctypes.c_void_p,
     ),
     "bc_session_put": (

@@ -32,7 +32,13 @@ export interface Transport {
   newClient(options: NewClientOptions): ClientHandle;
   freeClient(handle: ClientHandle): void;
 
-  get(handle: ClientHandle, key: string, path: string | undefined, flags: number): Promise<Envelope>;
+  get(
+    handle: ClientHandle,
+    key: string,
+    cwd: string | undefined,
+    envJson: string | undefined,
+    flags: number,
+  ): Promise<Envelope>;
   put(
     handle: ClientHandle,
     key: string,
@@ -44,7 +50,6 @@ export interface Transport {
   status(handle: ClientHandle): Promise<Envelope>;
   introspect(handle: ClientHandle, subject: string, optionsJson: string | undefined): Promise<Envelope>;
   hello(handle: ClientHandle): Promise<Envelope>;
-  resolve(handle: ClientHandle, key: string, cwd: string, envJson: string | undefined): Promise<Envelope>;
   evaluate(
     handle: ClientHandle,
     templateStr: string,
@@ -57,7 +62,8 @@ export interface Transport {
   sessionGet(
     session: SessionHandle,
     key: string,
-    path: string | undefined,
+    cwd: string | undefined,
+    envJson: string | undefined,
     flags: number,
   ): Promise<Envelope>;
   sessionPut(

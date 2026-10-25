@@ -14,22 +14,39 @@
  * its own process). `hello` and `introspect` have **no** faithful CLI
  * equivalent: `comb` exposes no JSON-emitting subcommand for either.
  *
- * `resolve`/`eval` are not implemented over this tier. Both take an
- * explicit `env` map the caller controls, but a spawned `comb get`/`comb
- * eval` process reads its own environment — and a spawn cannot be given
- * only the caller's `env` without also losing the `HOME`/`XDG_*` that
- * decide where the daemon's config and the global entry are. So the env a
+ * `get` is one spawn: `comb get -f json <key> [--path P | --global]
+ * [--force] [--wait]` — the value `comb get` prints, which is the value
+ * `bc_get` answers over the FFI tier: the same resolver, the directory
+ * chain up to `$HOME`, `$HOME` itself as the global entry, `--force`/`--wait`
+ * and the daemon's refusals. Exit 0 is an answer: the value on stdout, or
+ * `null` for a miss. Exit 2 is an error, reported as `error: <who>: <why>`:
+ * an `error: <key>: ` line is the daemon's refusal of `key` or the
+ * resolver's own error (a template that does not compile, a cycle, a failed
+ * `exec()`), and an `error: <key>.<leaf>: ` line is a leaf of a group
+ * failing.
+ * The same code drives both subprocess tiers
+ * (`sdks/lua/beachcomber/subprocess_backend.lua` is the Lua half).
+ *
+ * Two things a `get` takes cannot cross the spawn. A spawned `comb` renders
+ * with its own environment, so a caller-supplied `env` cannot be honoured:
+ * a call that passes one throws `UnsupportedTransportError` naming the FFI
+ * transport. With no `env`, the spawned `comb` inherits this process's
+ * environment and renders with it, where the FFI tier renders with none.
+ * And the CLI renders with `exec()` on, so the client's `exec` option has no
+ * effect on this tier. A caller that needs either needs the FFI transport.
+ *
+ * `eval` is not implemented over this tier, for the `env` reason above:
+ * `comb eval` reads its environment from its own process, and the `env` a
  * caller hands in could not be honoured faithfully here.
  *
  * `watch` went the same way in Plan 4 Task 3, when it became a *resolved*
- * watch: every event is what `resolve` answers, re-resolved with the
- * caller's own `cwd` and `env`. `comb watch <key> -f json` renders it
- * through the same library, but it reads its environment from its own
- * process, which is exactly why `resolve` is unsupported too. The Lua
+ * watch: every event is what `get` answers, re-read with the caller's own
+ * `cwd` and `env`. `comb watch <key> -f json` renders it through the same
+ * library, but it reads its environment from its own process. The Lua
  * SDK's subprocess backend refuses `watch` for its own, unrelated reason
  * (`comb`'s stdout is block- rather than line-buffered through
  * `io.popen`, so a blocking line read never returns), and the two tiers
- * now agree regardless.
+ * agree regardless.
  *
  * Rather than fake structured data from scraped human-readable text or
  * silently return the wrong answer, all of these ops throw
@@ -41,32 +58,7 @@
  * demands and refuses a key with none behind it. `comb refresh` prints the
  * daemon's refusal alone on stderr, so that line is the error message here
  * — the same text a `server_error` envelope carries over the FFI tier. The
- * same code drives both subprocess tiers
- * (`sdks/lua/beachcomber/subprocess_backend.lua` is the Lua half).
- *
- * `get` is one spawn: `comb get -f json <key> <p>:cache.<rest>
- * [--path P | --global] [--force] [--wait]` (`<p>:cache` for a bare
- * provider). Multi-key `-f json` prints a JSON array in key order, `null` in
- * a missed key's slot, so the two slots are the value and its `:cache`
- * answer (`age_ms`, `stale`; an object node is a tree of such leaves, read
- * as the largest age and any stale) — the resolver's own answer, with
- * everything the daemon does for a `get`: the directory chain up to `$HOME`,
- * `$HOME` itself as the global entry, `--force`/`--wait` and the daemon's
- * refusals. A key carrying a facet (a `:`) is asked for alone and answers
- * with age 0 and not stale. The same code drives both subprocess tiers
- * (`sdks/lua/beachcomber/subprocess_backend.lua` is the Lua half).
- *
- * The one divergence from the FFI tier: `comb get` *resolves*, so a
- * template-backed key returns its **rendered** value here where `bc_get`
- * returns the raw template half. A result from this tier never carries
- * `template` or `rest`, and a template-only node is a hit holding the
- * rendered value rather than the "neither hit nor miss" the FFI tier
- * reports. The CLI renders with `exec()` on, so the client's `exec` option
- * has no effect on this tier; a caller that must not spawn processes from
- * a template, or that needs the raw template half, needs the FFI
- * transport. A rendered value has no cached freshness of its own: its
- * `:cache` slot is a leaf with age 0 and `source` `template`, so it reports
- * age 0 and not stale.
+ * same code drives both subprocess tiers.
  *
  * `comb get` and `comb put` both default an omitted `--path` to the CLI
  * process's own working directory, while an absent `path` here means the
@@ -137,109 +129,47 @@ function pathArgs(path_: string | undefined): string[] {
 }
 
 /**
- * The `:cache` key that answers for `key`'s freshness: `git.branch` →
- * `git:cache.branch`, `mise['a.b']` → `mise:cache['a.b']`, `git` →
- * `git:cache`. The head runs to the first `.` or `[`. A facet key (a `:` in
- * the head) has no such companion and is asked alone; a `:` below the head
- * is part of a segment.
- */
-function cacheKeyOf(key: string): string | undefined {
-  const end = key.search(/[.[]/);
-  const head = end < 0 ? key : key.slice(0, end);
-  if (head.includes(':')) return undefined;
-  return `${head}:cache${key.slice(head.length)}`;
-}
-
-/**
- * Age and staleness from a `:cache` node: a leaf answer is read as it is; an
- * object node is a tree of them, so the largest `age_ms` and any `stale`
- * across its leaves — what the response envelope reports. A miss is `0`/`false`.
- */
-function freshness(node: unknown): { ageMs: number; stale: boolean } {
-  if (typeof node !== 'object' || node === null) return { ageMs: 0, stale: false };
-  const obj = node as Record<string, unknown>;
-  if (typeof obj['age_ms'] === 'number') return { ageMs: obj['age_ms'], stale: obj['stale'] === true };
-  let ageMs = 0;
-  let stale = false;
-  for (const child of Object.values(obj)) {
-    const f = freshness(child);
-    ageMs = Math.max(ageMs, f.ageMs);
-    stale = stale || f.stale;
-  }
-  return { ageMs, stale };
-}
-
-/**
- * The node at `key`, shaped as `bc_get`'s envelope
- * (`{"ok":true,"data":{"data":...,"age_ms":...,"stale":...}}`, the three
- * null on a miss), from one `comb get -f json` for the value and its `:cache`
- * answer (the file header). Exit 0 is an answer: a null value slot is a miss,
- * anything else a hit, aged by its `:cache` slot (a rendered value has none,
- * so age 0). Exit 2 is an error, reported as `error: <who>: <why>`: an
- * `error: <key>: ` line is the daemon's refusal of `key` or the resolver's
- * own error (a template that does not compile, a cycle, a failed `exec()`);
- * with a null value slot, an `error: <key>.<leaf>` line is a leaf of a group
- * failing. Exit 2 with the value slot filled is a `:cache` slot that failed
- * on its own — still a hit, with age 0.
+ * The value at `key`, shaped as `bc_get`'s envelope (`{"ok":true,"data":<value>}`,
+ * `null` on a miss), from one `comb get -f json` (the file header).
  */
 function cliGet(
   handle: SubprocessClientHandle,
   key: string,
   path_: string | undefined,
+  envJson: string | undefined,
   force: boolean,
   wait: boolean,
 ): Envelope {
-  const cacheKey = cacheKeyOf(key);
-  const meta = cacheKey === undefined;
-  const args = ['get', '-f', 'json', key];
-  if (cacheKey !== undefined) args.push(cacheKey);
-  args.push(...pathArgs(path_));
+  if (envJson !== undefined) unsupported('get with an env');
+  const args = ['get', '-f', 'json', key, ...pathArgs(path_)];
   if (force) args.push('--force');
   if (wait) args.push('--wait');
   const { code, stdout, stderr } = runComb(handle.combBin, args, handle);
 
-  const trimmed = stdout.trim();
-  const decoded: unknown = trimmed === '' ? undefined : JSON.parse(trimmed);
-  const value = meta ? decoded : (decoded as unknown[] | undefined)?.[0];
   if (code !== 0) {
     const lines = stderr.split('\n');
-    // The CLI prints one `error: <k>: <msg>` line per key that failed; the
-    // `<cacheKey>` line starts `error: <cacheKey>: `, which never matches
-    // `<key>`'s prefix.
     const prefix = `error: ${key}: `;
     const own = lines.find((line) => line.startsWith(prefix))?.slice(prefix.length);
     if (own !== undefined) {
-      // The daemon refused `key`, or the resolver failed on it: a server error
-      // whatever the words say — never a transport kind, which
+      // The daemon refused `key`, or the resolver failed on it: a server
+      // error whatever the words say — never a transport kind, which
       // `envelopeFromFailure` would guess from them.
       return { ok: false, error: { kind: 'server_error', message: own } };
     }
-    if (value === null) {
-      // A leaf of a group failed: an `error: <key>.<leaf>: <msg>` line. The
-      // daemon answered, so this is a server error whatever the words say.
-      const companion = cacheKey === undefined ? undefined : `error: ${cacheKey}`;
-      const leaf = lines.find(
-        (line) => line.startsWith(`error: ${key}.`) || line.startsWith(`error: ${key}[`),
-      );
-      const ownError =
-        leaf?.slice('error: '.length) ??
-        (lines
-          .filter((line) => companion === undefined || !line.startsWith(companion))
-          .join('\n') || stderr);
-      return { ok: false, error: { kind: 'server_error', message: ownError.trim() } };
+    // A leaf of a group failed. The daemon answered, so this is a server
+    // error whatever the words say — a failed `exec()` names a missing file,
+    // which must not read as the daemon being unreachable.
+    const leaf = lines.find(
+      (line) => line.startsWith(`error: ${key}.`) || line.startsWith(`error: ${key}[`),
+    );
+    if (leaf !== undefined) {
+      return { ok: false, error: { kind: 'server_error', message: leaf.slice('error: '.length).trim() } };
     }
-    if (decoded === undefined) {
-      // The CLI failed before answering at all (no daemon, a bad argument).
-      return envelopeFromFailure(stderr);
-    }
-    // Only the `:cache` slot failed: `key` itself answered.
+    // The CLI failed before answering at all (no daemon, a bad argument).
+    return envelopeFromFailure(stderr);
   }
-  if (value === null || value === undefined) {
-    return { ok: true, data: { data: null, age_ms: null, stale: null } };
-  }
-  if (meta) return { ok: true, data: { data: value, age_ms: 0, stale: false } };
-  const { ageMs, stale } = freshness((decoded as unknown[])[1]);
-  return { ok: true, data: { data: value, age_ms: ageMs, stale } };
+  const trimmed = stdout.trim();
+  return { ok: true, data: trimmed === '' ? null : JSON.parse(trimmed) };
 }
 
 function cliPut(
@@ -312,9 +242,9 @@ export function createSubprocessTransport(): Transport {
       // No resources held.
     },
 
-    async get(handle, key, path_, flags) {
+    async get(handle, key, cwd, envJson, flags) {
       const h = handle as SubprocessClientHandle;
-      return cliGet(h, key, path_, (flags & 0x1) !== 0, (flags & 0x2) !== 0);
+      return cliGet(h, key, cwd, envJson, (flags & 0x1) !== 0, (flags & 0x2) !== 0);
     },
     async put(handle, key, jsonData, ttl, path_) {
       return cliPut(handle as SubprocessClientHandle, key, jsonData, ttl, path_);
@@ -331,9 +261,6 @@ export function createSubprocessTransport(): Transport {
     async hello() {
       unsupported('hello');
     },
-    async resolve() {
-      unsupported('resolve');
-    },
     async evaluate() {
       unsupported('eval');
     },
@@ -344,9 +271,9 @@ export function createSubprocessTransport(): Transport {
     closeSession() {
       // No resources held.
     },
-    async sessionGet(session, key, path_, flags) {
+    async sessionGet(session, key, cwd, envJson, flags) {
       const s = session as SubprocessSessionHandle;
-      return cliGet(s.client, key, path_ ?? s.contextPath, (flags & 0x1) !== 0, (flags & 0x2) !== 0);
+      return cliGet(s.client, key, cwd ?? s.contextPath, envJson, (flags & 0x1) !== 0, (flags & 0x2) !== 0);
     },
     async sessionPut(session, key, jsonData, ttl, path_) {
       const s = session as SubprocessSessionHandle;

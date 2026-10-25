@@ -49,7 +49,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	result, err := client.Get("git.branch", "/path/to/repo")
+	// What `comb get git.branch` prints in that directory.
+	result, err := client.Get("git.branch", "/path/to/repo", nil)
 	if err != nil {
 		if errors.Is(err, beachcomber.ErrDaemonNotRunning) {
 			log.Fatal("comb daemon is not running")
@@ -58,19 +59,20 @@ func main() {
 	}
 	if result.IsHit() {
 		branch, _ := result.GetString("")
-		fmt.Println(branch)      // "main"
-		fmt.Println(result.AgeMs) // 234
-		fmt.Println(result.Stale) // false
+		fmt.Println(branch) // "main"
 	}
 
 	// Full provider query (returns an object)
-	result, err = client.Get("git", "/path/to/repo")
+	result, err = client.Get("git", "/path/to/repo", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if branch, ok := result.GetString("branch"); ok {
 		fmt.Println(branch)
 	}
+
+	// The template itself, unrendered: a facet, read like any key
+	result, err = client.Get("git:template.branch", "", nil)
 
 	// Force recomputation
 	if err := client.Refresh("git", "/path/to/repo"); err != nil {
@@ -90,8 +92,8 @@ if err != nil {
 defer sess.Close()
 
 sess.SetContext("/path/to/repo")
-branch, err := sess.Get("git.branch", "")
-dirty, err := sess.Get("git.dirty", "")
+branch, err := sess.Get("git.branch", "", nil)
+dirty, err := sess.Get("git.dirty", "", nil)
 ```
 
 ## Custom socket path
@@ -116,22 +118,27 @@ For latency-sensitive use, prefer `Session`.
 |---|---|
 | `NewClient() (*Client, error)` | Auto-discovers the daemon socket path. May fail immediately: library discovery/validation happens here. |
 | `NewClientWithPath(socketPath string) *Client` | Uses an explicit socket path. Never fails immediately; errors surface on first use. |
-| `Get(key, path string) (*Result, error)` | Read a node raw — both halves, nothing rendered (see `Result`). |
-| `GetWithFlags(key, path string, force, wait bool) (*Result, error)` | Read with the ABI's `force`/`wait` flags. |
+| `Get(key, cwd string, env map[string]string, flags ...GetFlag) (*Result, error)` | The value `comb get` prints for this key, cwd and env — the daemon holds the templates, the client renders them; a bare provider name is the whole merged namespace. `flags` are `beachcomber.Force` and `beachcomber.Wait`. |
 | `Refresh(key, path string) error` | Force recomputation. |
 | `Put(key string, data interface{}, ttl, path string) error` | Write a value into the cache as static data. `data` is marshalled to JSON. |
 | `Status() ([]CacheRow, error)` | Cache rows from the daemon. |
 | `Hello() (*HelloInfo, error)` | Protocol/daemon version handshake. |
 | `Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)` | Inspect a daemon subsystem. |
-| `Resolve(key, cwd string, env map[string]string) (*Result, error)` | The same value `comb get` returns for this key, cwd and env — the daemon holds the templates, the client renders them; a bare provider name is the whole merged namespace. |
 | `Eval(templateStr, cwd string, env map[string]string) (*Result, error)` | Render a template stored nowhere — the same value `comb eval` prints. |
-| `Watch(key, cwd string, env map[string]string) (*WatchStream, error)` | Subscribe to a key's resolved value. |
+| `Watch(key, cwd string, env map[string]string) (*WatchStream, error)` | Subscribe to a key's value, what `Get` answers. |
 | `Session() (*Session, error)` | Open a persistent connection. |
 
-`Resolve` and `Eval` require `cwd`: every fetch the resolution makes
-addresses it, so the library never falls back to the process's own
-working directory. `env` is optional (`nil` for "not supplied") — a `nil`
-`env` makes every `env.*` reference absent.
+`Get`'s `cwd` is the directory the read addresses: `~` is the home
+directory, a relative path is against this process's working directory,
+and `""` is the global entry. `Eval` and `Watch` require `cwd`. `env` is
+optional (`nil` for "not supplied") — a `nil` `env` makes every `env.*`
+reference absent. The unrendered halves are facets, read like any key:
+`Get("p:template.x", …)` is the template as stored, `Get("p:put.x", …)` and
+`Get("p:source.x", …)` those layers' values.
+
+`Force` re-executes every Source the read demands before answering, as
+`comb get --force`; `Wait` re-executes a stale entry inline, as
+`comb get --wait`.
 
 `templateStr` accepts a single `{{ expr }}` tag, or literal text/several
 tags — the former keeps the expression's natural type, the latter is
@@ -150,11 +157,10 @@ interleaving requests; create one `Session` per goroutine.
 
 | Method | Description |
 |---|---|
-| `Get(key, path string) (*Result, error)` | Read on this session's connection. |
-| `GetWithFlags(key, path string, force, wait bool) (*Result, error)` | Read with flags, on this session's connection. |
-| `SetContext(path string) error` | Set the default path for subsequent queries on this connection. |
+| `Get(key, cwd string, env map[string]string, flags ...GetFlag) (*Result, error)` | `Client.Get` on this session's connection; `cwd == ""` is the session's directory when `SetContext` has set one, else the global entry. |
+| `SetContext(path string) error` | Set this session's directory: every later `Get` with `cwd == ""`, and `Put` and `Refresh` with `path == ""`, address it. |
 | `Put(key string, data interface{}, ttl, path string) error` | Write on this session's connection. |
-| `Refresh(key, path string) error` | Delegates to a fresh connection via the parent `Client` — the ABI exposes only `get`/`put`/`set_context` on a session handle. |
+| `Refresh(key, path string) error` | Recompute on this session's connection, at `path` or the session's directory. |
 | `Hello() (*HelloInfo, error)` | Delegates to the parent `Client`. |
 | `Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error)` | Delegates to the parent `Client`. |
 | `Status() ([]CacheRow, error)` | Delegates to the parent `Client`. |
@@ -162,28 +168,20 @@ interleaving requests; create one `Session` per goroutine.
 
 ### `Result`
 
-`Get` returns the node as the daemon holds it — both halves, nothing
-rendered. A node may hold a cached value (`Data`), a template (`Template`),
-or both. A template-only `Result` is neither a hit nor a miss: it is an
-address whose value `Resolve` renders — `Get` is the raw half,
-`Resolve(key, cwd, env)` is how you get the value.
+`Get` and `Eval` return the value in a `Result`: `Data` is the value, or
+`nil` on a miss.
 
 | Method | Description |
 |---|---|
-| `IsHit() bool` | Successful response carrying data. |
-| `IsMiss() bool` | Successful response carrying neither data nor a template. |
+| `IsHit() bool` | The read answered a value. |
+| `IsMiss() bool` | Nothing answers at the address. |
 | `GetString(field string) (string, bool)` | Extract a string; `field == ""` reads `Data` itself when it's a scalar. |
 | `GetInt(field string) (int64, bool)` | Extract an integer (truncated from the underlying `float64`). |
 | `GetFloat(field string) (float64, bool)` | Extract a numeric field. |
 | `GetBool(field string) (bool, bool)` | Extract a boolean. |
-| `RawJSON() []byte` | The raw JSON payload backing this `Result`. |
+| `RawJSON() []byte` | The JSON value backing this `Result`. |
 
-Fields: `OK bool`, `Data interface{}`, `AgeMs uint64`, `Stale bool`,
-`Template interface{}` (the template in effect at the address, unrendered: a
-string for a leaf, a map for a group; `nil` when none is in effect), `Rest
-string` (the address left over when the template walk stopped at a string —
-`Get("p.t.x", "")` where `p.t` is a template string gives the template of
-`p.t` and `Rest == "x"`; `""` otherwise). Construction always succeeds — an
+Fields: `OK bool`, `Data interface{}`. Construction always succeeds — an
 `ok:false` envelope becomes a `*ServerError` instead of a `Result`, so every
 `Result` you hold represents success.
 
@@ -204,7 +202,7 @@ for {
 	if ev == nil {
 		break // stream ended
 	}
-	fmt.Println(ev.Data, ev.AgeMs, ev.Stale)
+	fmt.Println(ev.Data)
 }
 ```
 

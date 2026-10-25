@@ -8,11 +8,11 @@ import (
 )
 
 // buildResult constructs a *Result by round-tripping through the
-// package-internal get-result decoder (exposed for tests via
-// export_test.go), the same shape bc_get's envelope "data" field carries.
+// package-internal decoder (exposed for tests via export_test.go), from the
+// value bc_get's and bc_eval's envelope "data" field carries.
 func buildResult(t *testing.T, wireJSON string) *beachcomber.Result {
 	t.Helper()
-	r, err := beachcomber.ParseGetResultForTest([]byte(wireJSON))
+	r, err := beachcomber.ParseResultForTest([]byte(wireJSON))
 	if err != nil {
 		t.Fatalf("buildResult: %v (json: %s)", err, wireJSON)
 	}
@@ -20,11 +20,11 @@ func buildResult(t *testing.T, wireJSON string) *beachcomber.Result {
 }
 
 // ---------------------------------------------------------------------------
-// IsHit / IsMiss
+// IsHit / IsMiss: a value, or nothing
 // ---------------------------------------------------------------------------
 
 func TestResult_IsHit_WithData(t *testing.T) {
-	r := buildResult(t, `{"data":"main","age_ms":10,"stale":false}`)
+	r := buildResult(t, `"main"`)
 	if !r.IsHit() {
 		t.Error("expected IsHit() = true")
 	}
@@ -33,73 +33,13 @@ func TestResult_IsHit_WithData(t *testing.T) {
 	}
 }
 
-func TestResult_IsMiss_NoData(t *testing.T) {
-	r := buildResult(t, `{"data":null,"age_ms":null,"stale":null}`)
+func TestResult_IsMiss_Null(t *testing.T) {
+	r := buildResult(t, `null`)
 	if r.IsHit() {
 		t.Error("expected IsHit() = false")
 	}
 	if !r.IsMiss() {
 		t.Error("expected IsMiss() = true")
-	}
-	if r.Template != nil || r.Rest != "" {
-		t.Errorf("a miss carries no template half, got Template=%v Rest=%q", r.Template, r.Rest)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// The template half (libbeachcomber-ffi combresult_to_json's three shapes)
-// ---------------------------------------------------------------------------
-
-func TestResult_TemplateOnly_IsNeitherHitNorMiss(t *testing.T) {
-	r := buildResult(t, `{"data":null,"age_ms":null,"stale":null,"template":"{{ 1 }}"}`)
-	if r.Template != "{{ 1 }}" {
-		t.Errorf("Template = %v, want \"{{ 1 }}\"", r.Template)
-	}
-	if r.Data != nil {
-		t.Errorf("Data = %v, want nil", r.Data)
-	}
-	if r.IsHit() {
-		t.Error("expected IsHit() = false")
-	}
-	if r.IsMiss() {
-		t.Error("expected IsMiss() = false: a template-only node is not a miss")
-	}
-}
-
-func TestResult_BothHalves_IsAHitCarryingTheTemplate(t *testing.T) {
-	r := buildResult(t, `{"data":1,"age_ms":12,"stale":false,"template":"{{ 2 }}","rest":"x"}`)
-	if !r.IsHit() || r.IsMiss() {
-		t.Errorf("expected a hit, got IsHit=%v IsMiss=%v", r.IsHit(), r.IsMiss())
-	}
-	if v, ok := r.GetFloat(""); !ok || v != 1 {
-		t.Errorf("Data = %v, want 1", r.Data)
-	}
-	if r.Template != "{{ 2 }}" {
-		t.Errorf("Template = %v, want \"{{ 2 }}\"", r.Template)
-	}
-	if r.Rest != "x" {
-		t.Errorf("Rest = %q, want \"x\"", r.Rest)
-	}
-}
-
-func TestResult_PlainHit_HasNoTemplateHalf(t *testing.T) {
-	r := buildResult(t, `{"data":"main","age_ms":10,"stale":false}`)
-	if r.Template != nil {
-		t.Errorf("Template = %v, want nil", r.Template)
-	}
-	if r.Rest != "" {
-		t.Errorf("Rest = %q, want \"\"", r.Rest)
-	}
-}
-
-func TestResult_TemplateMayBeAGroup(t *testing.T) {
-	r := buildResult(t, `{"data":null,"age_ms":null,"stale":null,"template":{"a":"{{ 1 }}"}}`)
-	m, ok := r.Template.(map[string]interface{})
-	if !ok || m["a"] != "{{ 1 }}" {
-		t.Errorf("Template = %#v, want map with a=\"{{ 1 }}\"", r.Template)
-	}
-	if r.IsMiss() {
-		t.Error("expected IsMiss() = false")
 	}
 }
 
@@ -108,7 +48,7 @@ func TestResult_TemplateMayBeAGroup(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResult_GetString_ScalarHit(t *testing.T) {
-	r := buildResult(t, `{"data":"main","age_ms":1,"stale":false}`)
+	r := buildResult(t, `"main"`)
 	s, ok := r.GetString("")
 	if !ok || s != "main" {
 		t.Errorf("GetString(\"\") = (%q, %v), want (\"main\", true)", s, ok)
@@ -116,7 +56,7 @@ func TestResult_GetString_ScalarHit(t *testing.T) {
 }
 
 func TestResult_GetString_ObjectField(t *testing.T) {
-	r := buildResult(t, `{"data":{"branch":"main","dirty":true},"age_ms":1,"stale":false}`)
+	r := buildResult(t, `{"branch":"main","dirty":true}`)
 	s, ok := r.GetString("branch")
 	if !ok || s != "main" {
 		t.Errorf("GetString(\"branch\") = (%q, %v), want (\"main\", true)", s, ok)
@@ -124,7 +64,7 @@ func TestResult_GetString_ObjectField(t *testing.T) {
 }
 
 func TestResult_GetString_MissingField(t *testing.T) {
-	r := buildResult(t, `{"data":{"branch":"main"},"age_ms":1,"stale":false}`)
+	r := buildResult(t, `{"branch":"main"}`)
 	_, ok := r.GetString("nonexistent")
 	if ok {
 		t.Error("GetString(\"nonexistent\") should return false")
@@ -132,7 +72,7 @@ func TestResult_GetString_MissingField(t *testing.T) {
 }
 
 func TestResult_GetString_WrongType(t *testing.T) {
-	r := buildResult(t, `{"data":{"count":42},"age_ms":1,"stale":false}`)
+	r := buildResult(t, `{"count":42}`)
 	_, ok := r.GetString("count")
 	if ok {
 		t.Error("GetString on a numeric field should return false")
@@ -140,7 +80,7 @@ func TestResult_GetString_WrongType(t *testing.T) {
 }
 
 func TestResult_GetString_NilData(t *testing.T) {
-	r := buildResult(t, `{"data":null,"age_ms":null,"stale":null}`)
+	r := buildResult(t, `null`)
 	_, ok := r.GetString("x")
 	if ok {
 		t.Error("GetString on nil data should return false")
@@ -152,7 +92,7 @@ func TestResult_GetString_NilData(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResult_GetInt_ScalarHit(t *testing.T) {
-	r := buildResult(t, `{"data":42,"age_ms":1,"stale":false}`)
+	r := buildResult(t, `42`)
 	n, ok := r.GetInt("")
 	if !ok || n != 42 {
 		t.Errorf("GetInt(\"\") = (%d, %v), want (42, true)", n, ok)
@@ -160,7 +100,7 @@ func TestResult_GetInt_ScalarHit(t *testing.T) {
 }
 
 func TestResult_GetInt_ObjectField(t *testing.T) {
-	r := buildResult(t, `{"data":{"staged":3,"branch":"main"},"age_ms":1,"stale":false}`)
+	r := buildResult(t, `{"staged":3,"branch":"main"}`)
 	n, ok := r.GetInt("staged")
 	if !ok || n != 3 {
 		t.Errorf("GetInt(\"staged\") = (%d, %v), want (3, true)", n, ok)
@@ -168,7 +108,7 @@ func TestResult_GetInt_ObjectField(t *testing.T) {
 }
 
 func TestResult_GetFloat_ScalarHit(t *testing.T) {
-	r := buildResult(t, `{"data":3.14,"age_ms":1,"stale":false}`)
+	r := buildResult(t, `3.14`)
 	f, ok := r.GetFloat("")
 	if !ok || f != 3.14 {
 		t.Errorf("GetFloat(\"\") = (%f, %v), want (3.14, true)", f, ok)
@@ -176,7 +116,7 @@ func TestResult_GetFloat_ScalarHit(t *testing.T) {
 }
 
 func TestResult_GetBool_ScalarTrue(t *testing.T) {
-	r := buildResult(t, `{"data":true,"age_ms":1,"stale":false}`)
+	r := buildResult(t, `true`)
 	b, ok := r.GetBool("")
 	if !ok || !b {
 		t.Errorf("GetBool(\"\") = (%v, %v), want (true, true)", b, ok)
@@ -184,7 +124,7 @@ func TestResult_GetBool_ScalarTrue(t *testing.T) {
 }
 
 func TestResult_GetBool_False(t *testing.T) {
-	r := buildResult(t, `{"data":{"detached":false},"age_ms":1,"stale":false}`)
+	r := buildResult(t, `{"detached":false}`)
 	b, ok := r.GetBool("detached")
 	if !ok || b {
 		t.Errorf("GetBool(\"detached\") = (%v, %v), want (false, true)", b, ok)
@@ -192,53 +132,16 @@ func TestResult_GetBool_False(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RawJSON / AgeMs / Stale
+// RawJSON
 // ---------------------------------------------------------------------------
 
 func TestResult_RawJSON(t *testing.T) {
-	wire := `{"data":"main","age_ms":10,"stale":false}`
-	r := buildResult(t, wire)
-	raw := r.RawJSON()
+	r := buildResult(t, `{"branch":"main"}`)
 	var m map[string]interface{}
-	if err := json.Unmarshal(raw, &m); err != nil {
+	if err := json.Unmarshal(r.RawJSON(), &m); err != nil {
 		t.Fatalf("RawJSON is not valid JSON: %v", err)
 	}
-	if m["data"] != "main" {
-		t.Error("RawJSON missing data field")
-	}
-}
-
-func TestResult_AgeAndStale(t *testing.T) {
-	r := buildResult(t, `{"data":"v","age_ms":9999,"stale":true}`)
-	if r.AgeMs != 9999 {
-		t.Errorf("AgeMs = %d, want 9999", r.AgeMs)
-	}
-	if !r.Stale {
-		t.Error("expected Stale = true")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Scalar decoder (Resolve/Eval shape — no age_ms/stale wrapper)
-// ---------------------------------------------------------------------------
-
-func TestScalarResult_String(t *testing.T) {
-	r, err := beachcomber.ParseScalarResultForTest([]byte(`"baz"`))
-	if err != nil {
-		t.Fatalf("ParseScalarResultForTest: %v", err)
-	}
-	s, ok := r.GetString("")
-	if !ok || s != "baz" {
-		t.Errorf("GetString(\"\") = (%q, %v), want (\"baz\", true)", s, ok)
-	}
-}
-
-func TestScalarResult_Null(t *testing.T) {
-	r, err := beachcomber.ParseScalarResultForTest([]byte(`null`))
-	if err != nil {
-		t.Fatalf("ParseScalarResultForTest: %v", err)
-	}
-	if !r.IsMiss() {
-		t.Error("expected IsMiss() = true for null")
+	if m["branch"] != "main" {
+		t.Errorf("RawJSON = %s, want the value as decoded", r.RawJSON())
 	}
 }

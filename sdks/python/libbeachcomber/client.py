@@ -11,9 +11,7 @@ Typical usage::
     from beachcomber import Client
 
     client = Client()
-    result = client.get("git.branch", path="/path/to/repo")
-    if result.is_hit:
-        print(result.data)
+    branch = client.get("git.branch", cwd="/path/to/repo")  # None on a miss
 
 For multiple queries on one connection use a session::
 
@@ -31,7 +29,6 @@ from typing import Any, Generator, Optional
 
 from . import _native
 from .exceptions import CombError
-from .result import CombResult
 from .types import (
     CacheRow,
     DaemonHealth,
@@ -53,21 +50,17 @@ def _opt_json(value: Optional[Any]) -> Optional[str]:
     return json.dumps(value)
 
 
-def _result_from_get_payload(payload: Optional[dict]) -> CombResult:
-    """Build a :class:`CombResult` from a decoded ``bc_get``/``bc_session_get`` payload.
-
-    The payload carries ``template`` and ``rest`` only when set, so a plain
-    hit leaves both ``None``.
-    """
-    if not isinstance(payload, dict):
-        return CombResult(ok=True, data=None, age_ms=0, stale=False)
-    return CombResult(
-        ok=True,
-        data=payload.get("data"),
-        age_ms=int(payload.get("age_ms") or 0),
-        stale=bool(payload.get("stale") or False),
-        template=payload.get("template"),
-        rest=payload.get("rest"),
+def _read_args(
+    cwd: Optional[str], env: Optional[dict], force: bool, wait: bool
+) -> tuple[Optional[bytes], Optional[bytes], int]:
+    """The ``cwd``, ``env_json`` and ``flags`` arguments ``bc_get`` and
+    ``bc_session_get`` take."""
+    env_json = _opt_json(env)
+    flags = (_native.BC_GET_FORCE if force else 0) | (_native.BC_GET_WAIT if wait else 0)
+    return (
+        cwd.encode() if cwd is not None else None,
+        env_json.encode() if env_json is not None else None,
+        flags,
     )
 
 
@@ -225,7 +218,7 @@ class Client:
         timeout: Socket read/write timeout in seconds. Default ``0.1``.
         autostart: Whether to attempt starting the daemon if it isn't
             running. ``None`` leaves the native library's own default.
-        exec: Whether a template this client resolves (:meth:`resolve`,
+        exec: Whether a template this client renders (:meth:`get`,
             :meth:`eval`) may call ``exec()``. Off by default: a template
             that calls it then fails with ``exec() is disabled in this
             context``.
@@ -255,50 +248,46 @@ class Client:
     def __del__(self) -> None:
         self.close()
 
-    def get(self, key: str, path: Optional[str] = None) -> CombResult:
-        """Read a node from the daemon, raw — both halves, nothing rendered.
+    def get(
+        self,
+        key: str,
+        cwd: Optional[str] = None,
+        env: Optional[dict] = None,
+        force: bool = False,
+        wait: bool = False,
+    ) -> Any:
+        """The value ``comb get`` prints for this key, cwd and env.
 
-        The result carries the cached value (``data``) and the template in
-        effect at the address (``template``), whichever exist. A
-        template-only result is an address whose value :meth:`resolve`
-        renders — this is the raw half; ``resolve(key, cwd, env)`` is how
-        you get the value.
+        The daemon holds the templates (``<provider>:template``, seeded from
+        configuration or :meth:`put`); this client renders them. A plain
+        field is its cached value, a templated one is rendered, and a bare
+        provider name is the whole merged namespace. The unrendered halves
+        are facets, read like any key: ``"p:template.x"`` is the template as
+        stored, ``"p:put.x"`` and ``"p:source.x"`` those layers' values.
 
         Args:
-            key: Provider key. Use ``"provider.field"`` for a single
-                scalar (e.g. ``"git.branch"``) or ``"provider"`` for the
-                full provider object (e.g. ``"git"``).
-            path: Working-directory path for per-directory providers.
-                Global providers (e.g. ``"hostname"``) ignore this.
+            key: ``"provider.field"``, or a bare provider name.
+            cwd: The directory the read addresses (``~`` is home, a relative
+                path is against this process's working directory). ``None``
+                is the global entry.
+            env: The caller's environment for ``env.*`` refs. ``None`` means
+                none supplied (every ``env.*`` is absent).
+            force: Re-execute every Source the read demands first.
+            wait: Re-execute a stale entry inline before answering.
 
         Returns:
-            :class:`~beachcomber.result.CombResult` with ``is_hit``
-            ``True`` when a cached value exists, ``is_miss`` ``True`` when
-            neither a value nor a template does.
+            The value, or ``None`` on a miss.
 
         Raises:
             CombError: subclass matching the failure kind (see
                 :mod:`beachcomber.exceptions`).
         """
-        return self.get_with_flags(key, path)
-
-    def get_with_flags(
-        self,
-        key: str,
-        path: Optional[str] = None,
-        force: bool = False,
-        wait: bool = False,
-    ) -> CombResult:
-        """Read a cached value with optional force/wait flags.
-
-        Raises:
-            CombError: subclass matching the failure kind.
-        """
-        flags = (_native.BC_GET_FORCE if force else 0) | (_native.BC_GET_WAIT if wait else 0)
-        payload = self._lib.call(
-            "bc_get", self._ptr, key.encode(), path.encode() if path is not None else None, flags
+        return self._lib.call(
+            "bc_get",
+            self._ptr,
+            key.encode(),
+            *_read_args(cwd, env, force, wait),
         )
-        return _result_from_get_payload(payload)
 
     def refresh(self, key: str, path: Optional[str] = None) -> None:
         """Trigger recomputation of a provider.
@@ -368,45 +357,6 @@ class Client:
         )
         return _parse_introspect(subject, data)
 
-    def resolve(
-        self,
-        key: str,
-        cwd: str,
-        env: Optional[dict] = None,
-    ) -> CombResult:
-        """Resolve ``key`` to the same value ``comb get`` returns for this
-        key, cwd and env.
-
-        The daemon holds the templates (``<provider>:template``, seeded from
-        configuration or :meth:`put`); this client renders them. A plain
-        field is its cached value, a templated one is rendered, and a bare
-        provider name is the whole merged namespace. A miss is ``None``.
-
-        Args:
-            key: ``"provider.field"``, or a bare provider name.
-            cwd: Working directory the resolver evaluates against. Required
-                — this library never reads the process's own working
-                directory on the caller's behalf.
-            env: The caller's environment for ``env.*`` refs. ``None``
-                means none supplied (every ``env.*`` ref is the empty string).
-
-        Returns:
-            :class:`~beachcomber.result.CombResult` — ``age_ms``/``stale``
-            are not meaningful for resolution and are always ``0``/``False``.
-
-        Raises:
-            CombError: subclass matching the failure kind.
-        """
-        env_json = _opt_json(env)
-        value = self._lib.call(
-            "bc_resolve",
-            self._ptr,
-            key.encode(),
-            cwd.encode(),
-            env_json.encode() if env_json is not None else None,
-        )
-        return CombResult(ok=True, data=value, age_ms=0, stale=False)
-
     def eval(
         self,
         template_str: str,
@@ -415,7 +365,7 @@ class Client:
     ) -> Any:
         """Render a template that is stored nowhere — the same value
         ``comb eval`` prints. Every ref resolves exactly as it would inside
-        a stored template, so ``eval("{{ p.f }}")`` and ``resolve("p.f")``
+        a stored template, so ``eval("{{ p.f }}")`` and ``get("p.f")``
         agree.
 
         ``template_str`` accepts a single ``{{ expr }}`` tag, or literal
@@ -425,7 +375,7 @@ class Client:
 
         Args:
             template_str: The template to render.
-            cwd: Required, matching :meth:`resolve`'s ``cwd`` semantics.
+            cwd: Required, matching :meth:`get`'s ``cwd`` semantics.
             env: The caller's environment for ``env.*`` refs.
 
         Raises:
@@ -454,7 +404,7 @@ class Client:
 
         Args:
             key: ``"provider.field"`` or a bare provider name.
-            cwd: Required, matching :meth:`resolve`'s ``cwd`` semantics —
+            cwd: Required, matching :meth:`get`'s ``cwd`` semantics —
                 the directory every subscription addresses and every
                 re-resolution runs at.
             env: The caller's environment for ``env.*`` refs.
@@ -482,7 +432,7 @@ class Client:
 
             with client.session() as session:
                 session.set_context("/my/repo")
-                result = session.get("git.branch")
+                branch = session.get("git.branch")
 
         Raises:
             CombError: subclass matching the failure kind.
@@ -525,8 +475,8 @@ class Session:
         self.close()
 
     def set_context(self, path: str) -> None:
-        """Set this session's directory: every later ``get``, ``put`` and
-        ``refresh`` that names no path addresses it. The session keeps it
+        """Set this session's directory: every later ``get`` that names no
+        ``cwd``, and ``put`` and ``refresh`` that name no path, address it. The session keeps it
         and sends it with each request.
 
         Raises:
@@ -535,36 +485,27 @@ class Session:
         """
         self._lib.call("bc_session_set_context", self._ptr, path.encode())
 
-    def get(self, key: str, path: Optional[str] = None) -> CombResult:
-        """Read a node using the persistent connection — raw, both halves,
-        as :meth:`Client.get` describes.
-
-        Raises:
-            CombError: subclass matching the failure kind.
-        """
-        return self.get_with_flags(key, path)
-
-    def get_with_flags(
+    def get(
         self,
         key: str,
-        path: Optional[str] = None,
+        cwd: Optional[str] = None,
+        env: Optional[dict] = None,
         force: bool = False,
         wait: bool = False,
-    ) -> CombResult:
-        """Read a cached value with optional force/wait flags via the persistent connection.
+    ) -> Any:
+        """:meth:`Client.get` on the persistent connection. ``cwd=None`` is
+        this session's directory (:meth:`set_context`) when it has one, else
+        the global entry.
 
         Raises:
             CombError: subclass matching the failure kind.
         """
-        flags = (_native.BC_GET_FORCE if force else 0) | (_native.BC_GET_WAIT if wait else 0)
-        payload = self._lib.call(
+        return self._lib.call(
             "bc_session_get",
             self._ptr,
             key.encode(),
-            path.encode() if path is not None else None,
-            flags,
+            *_read_args(cwd, env, force, wait),
         )
-        return _result_from_get_payload(payload)
 
     def put(
         self,

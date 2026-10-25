@@ -31,20 +31,24 @@ instead.
 int main(void) {
     BcClient *c = bc_client_new(NULL); /* default socket discovery */
     /* Options JSON keys: socket_path, timeout_ms, autostart, exec —
-     * bc_client_new("{\"exec\":true}") lets templates this client resolves
+     * bc_client_new("{\"exec\":true}") lets templates this client renders
      * call exec(); it is off by default. */
 
-    char *r = bc_get(c, "git.branch", "/path/to/repo", 0);
+    /* The value `comb get git.branch` prints at that directory. NULL cwd is
+     * the global entry; env_json is the caller's environment for env.*. */
+    char *r = bc_get(c, "git.branch", "/path/to/repo", NULL, 0);
     printf("%s\n", r);
-    /* {"ok":true,"data":{"data":"main","age_ms":12,"stale":false}}
-     * or {"ok":true,"data":{"data":null,"age_ms":null,"stale":null,"template":"{{ … }}"}}
-     *    on a template-only node (see "The get envelope" below)
-     * or {"ok":true,"data":{"data":null,"age_ms":null,"stale":null}} on miss
+    /* {"ok":true,"data":"main"}
+     * or {"ok":true,"data":null} on miss
      * or {"ok":false,"error":{"kind":"...","message":"..."}} on error */
     bc_string_free(r);
 
-    /* Force recompute then wait for the fresh value */
-    r = bc_get(c, "git.branch", "/path/to/repo", BC_GET_FORCE | BC_GET_WAIT);
+    /* Re-execute what the read demands, waiting for the fresh value */
+    r = bc_get(c, "git.branch", "/path/to/repo", NULL, BC_GET_FORCE | BC_GET_WAIT);
+    bc_string_free(r);
+
+    /* The template itself, unrendered: a facet, read like any key */
+    r = bc_get(c, "myapp:template.theme", NULL, NULL, 0);
     bc_string_free(r);
 
     /* Put / remove a static-data entry ("null" removes) */
@@ -53,15 +57,11 @@ int main(void) {
     r = bc_put(c, "myapp", "null", NULL, NULL);
     bc_string_free(r);
 
-    /* The same value `comb get myapp.theme` prints at that cwd */
-    r = bc_resolve(c, "myapp.theme", "/path/to/repo", NULL);
-    bc_string_free(r);
-
     /* A persistent connection, for a context set once and reused */
     BcSession *s = bc_session_open(c);
     r = bc_session_set_context(s, "/path/to/repo");
     bc_string_free(r);
-    r = bc_session_get(s, "git.branch", NULL, 0); /* uses the context path */
+    r = bc_session_get(s, "git.branch", NULL, NULL, 0); /* reads at the context path */
     bc_string_free(r);
     bc_session_close(s);
 
@@ -94,24 +94,25 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
   (`bc_client_new`, `bc_session_open`, `bc_watch_open`).
 - Free every other returned string with `bc_string_free()`.
 - `BcClient` (`bc_get`/`bc_put`/`bc_refresh`/`bc_status`/
-  `bc_introspect`/`bc_hello`/`bc_resolve`/`bc_eval`/`bc_watch_open`)
+  `bc_introspect`/`bc_hello`/`bc_eval`/`bc_watch_open`)
   reconnects per call. `BcSession` (`bc_session_open` on a `BcClient`, then
-  `bc_session_get`/`put`/`refresh`/`set_context`) holds one persistent connection, and a directory of its own that a NULL `path` sends —
+  `bc_session_get`/`put`/`refresh`/`set_context`) holds one persistent
+  connection, and a directory of its own that a NULL `cwd` or `path` sends —
   use it when a `set_context` needs to be visible to later calls.
-- `bc_get` / `bc_session_get` take a `flags` bitmask: `BC_GET_FORCE`,
-  `BC_GET_WAIT`. Any other bit set is rejected (`kind: "bad_flags"`). The
-  envelope's `data` object is the node as the daemon holds it — both
-  halves, nothing rendered; see "The `get` envelope" below.
-- `bc_resolve(client, key, cwd, env_json)` returns the same value `comb get`
-  returns for this key, cwd and env: the daemon holds the templates
-  (`<provider>:template`, seeded from configuration or `bc_put`) and the
-  client renders them. A plain field is its cached value, a templated one
-  is rendered, and a bare provider name is the whole merged namespace; a
-  miss is `data: null`. `cwd` is the directory the resolution addresses,
-  read as `comb get --path` reads one (`~` is the home directory, a relative
-  path is against the process's working directory); NULL is the global
-  entry. `env_json` is nullable ("no environment": every `env.*` is absent).
-  Every fetch the resolution makes addresses `cwd`.
+- `bc_get(client, key, cwd, env_json, flags)` / `bc_session_get(session, …)`
+  return the same value `comb get` prints for this key, cwd and env: the
+  daemon holds the templates (`<provider>:template`, seeded from
+  configuration or `bc_put`) and the client renders them. A plain field is
+  its cached value, a templated one is rendered, and a bare provider name is
+  the whole merged namespace; a miss is `data: null`. `cwd` is the directory
+  the read addresses, read as `comb get --path` reads one (`~` is the home
+  directory, a relative path is against the process's working directory);
+  NULL is the global entry. `env_json` is nullable ("no environment": every
+  `env.*` is absent). `flags` is a bitmask: `BC_GET_FORCE`, `BC_GET_WAIT`;
+  any other bit set is rejected (`kind: "bad_flags"`).
+- The unrendered halves are facets, read with `bc_get` like any key:
+  `p:template.x` is the template as stored, `p:put.x` and `p:source.x`
+  those layers' values. There is no raw read.
 - `bc_eval(client, template_str, cwd, env_json)` renders a template that is
   stored nowhere — the same value `comb eval` prints. `template_str`
   accepts a single `{{ expr }}` tag, or literal text/several tags — the
@@ -129,32 +130,6 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
 
 There is no typed C struct layer over the envelope — parse the returned
 JSON with your own JSON library. This SDK does not ship one (see below).
-
-## The `get` envelope
-
-`bc_get` / `bc_session_get` return the node as the daemon holds it — both
-halves, nothing rendered. The inner `data` object has five keys, the last
-two present only when set:
-
-| node | `data` | `age_ms` / `stale` | `template` | `rest` |
-|---|---|---|---|---|
-| value (a hit) | the value | set | only if a template is in effect | only if set |
-| template only | `null` | `null` | a string (leaf) or object (group) | only if set |
-| nothing (a miss) | `null` | `null` | absent | absent |
-
-```json
-{"data": 1, "age_ms": 12, "stale": false, "template": "{{ 2 }}", "rest": "x"}
-{"data": null, "age_ms": null, "stale": null, "template": "{{ env.A }}"}
-{"data": null, "age_ms": null, "stale": null}
-```
-
-`template` is the template in effect at the address, unrendered. `rest` is
-the address left over when the template walk stopped at a string:
-`bc_get(c, "p.t.x", …)` where `p.t` is a template string gives `template`
-of `p.t` and `"rest": "x"`. A template-only node is not a miss — something
-is stored there — and not a hit — it has no value until it is rendered. It
-is an address whose value `bc_resolve` renders: `bc_get` is the raw half,
-`bc_resolve(c, key, cwd, env_json)` is how you get the value.
 
 ## Conformance runner
 

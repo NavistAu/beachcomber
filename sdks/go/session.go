@@ -27,22 +27,19 @@ type Session struct {
 	handle uintptr // BcSession*
 }
 
-// Get reads a node raw — both halves, as Client.Get describes. path=""
-// omits the path field.
-func (s *Session) Get(key string, path string) (*Result, error) {
-	return s.GetWithFlags(key, path, false, false)
-}
-
-// GetWithFlags is like Get but supports force and wait flags.
-func (s *Session) GetWithFlags(key, path string, force, wait bool) (*Result, error) {
-	keyBuf, pathBuf := cBytes(key), optBytes(path)
-	data, err := s.lib.call(s.lib.bcSessionGet, s.handle, ptrOf(keyBuf), ptrOf(pathBuf), uintptr(getFlags(force, wait)))
+// Get is [Client.Get] on this session's persistent connection: the same
+// rendered value, the same flags. cwd "" is this session's directory
+// (SetContext) when it has one, else the global entry.
+func (s *Session) Get(key, cwd string, env map[string]string, flags ...GetFlag) (*Result, error) {
+	keyBuf, cwdBuf, envBuf := cBytes(key), optBytes(cwd), jsonMapBytes(env)
+	data, err := s.lib.call(s.lib.bcSessionGet, s.handle, ptrOf(keyBuf), ptrOf(cwdBuf), ptrOf(envBuf), flagBits(flags))
 	runtime.KeepAlive(keyBuf)
-	runtime.KeepAlive(pathBuf)
+	runtime.KeepAlive(cwdBuf)
+	runtime.KeepAlive(envBuf)
 	if err != nil {
 		return nil, err
 	}
-	return resultFromGetData(data)
+	return resultFromScalarData(data)
 }
 
 // Refresh forces the daemon to recompute the given provider/key at path, or
@@ -55,9 +52,9 @@ func (s *Session) Refresh(key string, path string) error {
 	return err
 }
 
-// SetContext sets this session's directory: every later Get, Put and Refresh
-// that passes path "" addresses it. The session keeps it and sends it with
-// each request.
+// SetContext sets this session's directory: every later Get that passes cwd
+// "", and Put and Refresh that pass path "", address it. The session keeps it
+// and sends it with each request.
 func (s *Session) SetContext(path string) error {
 	pathBuf := cBytes(path)
 	_, err := s.lib.call(s.lib.bcSessionSetContext, s.handle, ptrOf(pathBuf))

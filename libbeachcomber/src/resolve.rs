@@ -3,7 +3,7 @@
 //! The daemon holds templates as data (`provider:template`) and never
 //! evaluates one: rendering needs the caller's environment and directory, so
 //! it is the client's, always. This module is that client half — the single
-//! implementation `comb get`, `comb eval`, `bc_resolve`/`bc_eval` and every
+//! implementation `comb get`, `comb eval`, `bc_get`/`bc_eval` and every
 //! SDK answer from, so they cannot disagree about what a key is worth.
 //!
 //! It deliberately does none of the things a surface does. It opens no

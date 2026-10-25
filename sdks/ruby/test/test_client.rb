@@ -10,93 +10,67 @@ class TestClient < Minitest::Test
     @server.stop
   end
 
-  # --- get ---
+  # --- get: the value `comb get` prints ---
 
-  def test_get_hit
+  def test_get_is_the_value
     @server.enqueue('{"ok":true,"data":"main","age_ms":42,"stale":false}')
-    result = @client.get('git.branch')
-    assert result.hit?
-    assert_equal 'main', result.data
-    assert_equal 42,     result.age_ms
-    refute result.stale?
+    assert_equal 'main', @client.get('git.branch')
   end
 
-  def test_get_miss
+  def test_get_miss_is_nil
     @server.enqueue('{"ok":true}')
-    result = @client.get('git.branch')
-    assert result.miss?
-    assert_nil result.data
+    assert_nil @client.get('git.branch')
   end
 
-  def test_get_null_data_treated_as_miss
+  def test_get_null_data_is_a_miss
     @server.enqueue('{"ok":true,"data":null}')
-    result = @client.get('git.branch')
-    assert result.miss?
+    assert_nil @client.get('git.branch')
   end
 
-  def test_get_with_path
+  def test_get_reads_at_cwd
     @server.enqueue('{"ok":true,"data":"main","age_ms":5,"stale":false}')
-    @client.get('git.branch', path: '/repo')
+    @client.get('git.branch', cwd: '/repo')
     req = @server.requests.last
     assert_equal 'get',    req['op']
     assert_equal 'git.branch', req['key']
     assert_equal '/repo',  req['path']
   end
 
-  def test_get_without_path_omits_field
+  def test_get_without_cwd_is_the_global_entry
     @server.enqueue('{"ok":true}')
     @client.get('git.branch')
     req = @server.requests.last
     refute req.key?('path')
   end
 
+  def test_get_sends_the_force_and_wait_flags
+    @server.enqueue('{"ok":true,"data":"main","age_ms":5,"stale":false}')
+    @client.get('git.branch', force: true, wait: true)
+    req = @server.requests.last
+    assert_equal true, req['force']
+    assert_equal true, req['wait']
+  end
+
   def test_get_hash_data
     @server.enqueue('{"ok":true,"data":{"branch":"main","dirty":false},"age_ms":1,"stale":false}')
-    result = @client.get('git')
-    assert result.hit?
-    assert_equal 'main',  result['branch']
-    assert_equal false,   result['dirty']
+    assert_equal({ 'branch' => 'main', 'dirty' => false }, @client.get('git'))
   end
 
-  def test_get_stale_flag
-    @server.enqueue('{"ok":true,"data":"old","age_ms":9000,"stale":true}')
-    result = @client.get('git.branch')
-    assert result.stale?
-  end
+  # --- a template renders, with the caller's environment ---
 
-  # --- the template half (design §3.4: get returns both halves) ---
-
-  def test_get_template_only_is_neither_hit_nor_miss
+  def test_get_renders_a_template_only_node
     @server.enqueue('{"ok":true,"template":"{{ env.A }}"}')
-    result = @client.get('fx.t')
-    assert_equal '{{ env.A }}', result.template
-    assert_nil result.data
-    refute result.hit?
-    refute result.miss?
+    assert_equal 'x', @client.get('fx.t', env: { 'A' => 'x' })
   end
 
-  def test_get_carries_both_halves
-    @server.enqueue('{"ok":true,"data":1,"age_ms":12,"stale":false,"template":"{{ 2 }}","rest":"x"}')
-    result = @client.get('fx.v')
-    assert result.hit?
-    refute result.miss?
-    assert_equal 1,        result.data
-    assert_equal '{{ 2 }}', result.template
-    assert_equal 'x',      result.rest
+  def test_get_a_template_wins_over_the_value_beside_it
+    @server.enqueue('{"ok":true,"data":1,"age_ms":12,"stale":false,"template":"{{ 2 }}"}')
+    assert_equal 2, @client.get('fx.v')
   end
 
-  def test_get_plain_hit_has_no_template_or_rest
-    @server.enqueue('{"ok":true,"data":"main","age_ms":42,"stale":false}')
-    result = @client.get('git.branch')
-    assert_nil result.template
-    assert_nil result.rest
-  end
-
-  def test_get_template_may_be_a_group
+  def test_get_renders_a_template_group
     @server.enqueue('{"ok":true,"template":{"foo":"{{ 1 }}"}}')
-    result = @client.get('fx.widgets')
-    assert_equal({ 'foo' => '{{ 1 }}' }, result.template)
-    refute result.miss?
+    assert_equal({ 'foo' => 1 }, @client.get('fx.widgets'))
   end
 
   # --- server error ---
@@ -190,8 +164,7 @@ class TestClient < Minitest::Test
     @server.enqueue('{"ok":true,"data":"main","age_ms":1,"stale":false}')
     @client.session do |s|
       assert_instance_of Beachcomber::Session, s
-      r = s.get('git.branch')
-      assert_equal 'main', r.data
+      assert_equal 'main', s.get('git.branch')
     end
   end
 
@@ -202,8 +175,7 @@ class TestClient < Minitest::Test
 
     @client.session do |s|
       s.set_context('/repo')
-      r = s.get('git.branch')
-      assert r.hit?
+      assert_equal 'main', s.get('git.branch')
     end
 
     assert_equal 1, @server.requests.length
@@ -229,13 +201,12 @@ class TestClient < Minitest::Test
     end
     # The server should still accept a new connection (connection was closed).
     @server.enqueue('{"ok":true,"data":"x","age_ms":0,"stale":false}')
-    result = @client.get('git.branch')
-    assert result.hit?
+    assert_equal 'x', @client.get('git.branch')
   end
 
   def test_session_returns_block_value
     @server.enqueue('{"ok":true,"data":"main","age_ms":1,"stale":false}')
-    value = @client.session { |s| s.get('git.branch').data }
+    value = @client.session { |s| s.get('git.branch') }
     assert_equal 'main', value
   end
 

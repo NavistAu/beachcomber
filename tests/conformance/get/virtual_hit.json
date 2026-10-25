@@ -2,12 +2,24 @@
   "name": "get_static_record_returns_value",
   "description": "A put-then-get round trip returns the stored value as a hit.",
   "setup": [
-    { "op": "put", "args": { "key": "fixture_v", "data": { "greeting": "hi" } } }
+    {
+      "op": "put",
+      "args": {
+        "key": "fixture_v",
+        "data": {
+          "greeting": "hi"
+        }
+      }
+    }
   ],
-  "test": { "op": "get", "args": { "key": "fixture_v.greeting" } },
+  "test": {
+    "op": "get",
+    "args": {
+      "key": "fixture_v.greeting"
+    }
+  },
   "expect": {
     "status": "hit",
-    "data_as_text": "hi",
-    "age_ms_present": true
+    "data_as_text": "hi"
   }
 }

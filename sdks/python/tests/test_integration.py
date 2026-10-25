@@ -15,61 +15,49 @@ from libbeachcomber import Client, ConnectionFailedError, DaemonNotRunning, Serv
 from libbeachcomber.types import IntrospectSubject
 
 
-def test_put_then_get_hit(client: Client) -> None:
+def test_put_then_get_is_the_value(client: Client) -> None:
     client.put("widget", {"label": "hello"})
-    result = client.get("widget.label")
-    assert result.is_hit
-    assert result.data == "hello"
-    assert result.age_ms >= 0
-    assert result.stale is False
+    assert client.get("widget.label") == "hello"
 
 
 def test_get_miss_after_put_none(client: Client) -> None:
     client.put("widget1b", {"v": 1})
     client.put("widget1b", None)  # clears via put(data=None)
-    result = client.get("widget1b.v")
-    assert not result.is_hit
-    assert result.data is None
+    assert client.get("widget1b.v") is None
 
 
-def test_get_template_only_node_is_neither_hit_nor_miss(client: Client) -> None:
+def test_get_renders_a_template_only_node(client: Client) -> None:
     client.put("tpl1:template", {"t": "{{ 1 }}"})
-    result = client.get("tpl1.t")
-    assert result.template == "{{ 1 }}"
-    assert result.data is None
-    assert not result.is_hit
-    assert not result.is_miss
+    assert client.get("tpl1.t") == 1
 
 
-def test_get_carries_both_halves(client: Client) -> None:
+def test_get_a_template_wins_and_the_facets_read_what_is_stored(client: Client) -> None:
     client.put("tpl2", {"v": 1})
     client.put("tpl2:template", {"v": "{{ 2 }}"})
-    result = client.get("tpl2.v")
-    assert result.is_hit
-    assert result.data == 1
-    assert result.template == "{{ 2 }}"
-    assert result.rest is None
+    assert client.get("tpl2.v") == 2
+    assert client.get("tpl2:template.v") == "{{ 2 }}"
+    assert client.get("tpl2:put.v") == 1
 
 
-def test_get_past_a_template_string_sets_rest(client: Client) -> None:
-    client.put("tpl3:template", {"t": "{{ 1 }}"})
-    result = client.get("tpl3.t.x")
-    assert result.template == "{{ 1 }}"
-    assert result.rest == "x"
+def test_get_past_a_template_string_walks_into_its_value(client: Client) -> None:
+    client.put("tpl3:template", {"t": "{{ {'x': 5} }}"})
+    assert client.get("tpl3.t.x") == 5
 
 
-def test_get_full_provider_object_subscriptable(client: Client) -> None:
+def test_get_full_provider_object(client: Client) -> None:
     client.put("widget2", {"a": 1, "b": "two"})
-    result = client.get("widget2")
-    assert result["a"] == 1
-    assert result["b"] == "two"
+    assert client.get("widget2") == {"a": 1, "b": "two"}
 
 
 def test_put_none_clears_entry(client: Client) -> None:
     client.put("widget3", {"v": 1})
-    assert client.get("widget3.v").is_hit
+    assert client.get("widget3.v") is not None
     client.put("widget3", None)
-    assert not client.get("widget3.v").is_hit
+    assert client.get("widget3.v") is None
+
+
+def test_get_takes_the_force_and_wait_flags(client: Client) -> None:
+    assert client.get("hostname.short", force=True, wait=True) is not None
 
 
 def test_refresh_of_a_provider_does_not_raise(client: Client) -> None:
@@ -149,25 +137,24 @@ def test_daemon_not_running_raises_with_kind(tmp_path, monkeypatch: pytest.Monke
         bad_client.close()
 
 
-def test_resolve_renders_a_put_template(client: Client) -> None:
+def test_get_renders_with_the_callers_environment(client: Client) -> None:
     # The daemon holds the template; the client renders it with the env the
     # caller passes — the same value `comb get widget.label` prints.
     client.put("widget:template", {"label": "{{ 'resolved-' ~ env.MYVAR }}"})
-    result = client.resolve("widget.label", cwd="/tmp", env={"MYVAR": "x"})
-    assert result.is_hit
-    assert result.data == "resolved-x"
+    assert client.get("widget.label", cwd="/tmp", env={"MYVAR": "x"}) == "resolved-x"
 
 
-def test_resolve_bare_provider_is_the_merged_namespace(client: Client) -> None:
+def test_get_bare_provider_is_the_merged_namespace(client: Client) -> None:
     client.put("widget6", {"lit": 1})
     client.put("widget6:template", {"t": "{{ env.W6 }}"})
-    result = client.resolve("widget6", cwd="/tmp", env={"W6": "hi"})
-    assert result.data == {"lit": 1, "t": "hi"}
+    assert client.get("widget6", cwd="/tmp", env={"W6": "hi"}) == {"lit": 1, "t": "hi"}
 
 
-def test_resolve_miss_is_none(client: Client) -> None:
-    client.put("widget7", {"v": 1})
-    assert client.resolve("widget7.nope", cwd="/tmp").data is None
+def test_get_reads_at_cwd(client: Client) -> None:
+    client.put("widget7", {"v": "global"})
+    client.put("widget7", {"v": "tmp"}, path="/tmp")
+    assert client.get("widget7.v") == "global"
+    assert client.get("widget7.v", cwd="/tmp") == "tmp"
 
 
 def test_eval_raw_expression(client: Client) -> None:
@@ -178,7 +165,7 @@ def test_eval_raw_expression(client: Client) -> None:
 def test_exec_is_disabled_without_the_option(client: Client) -> None:
     client.put("execwidget:template", {"out": "{{ exec(['printf', 'x']) }}"})
     with pytest.raises(ServerError) as excinfo:
-        client.resolve("execwidget.out", cwd="/tmp")
+        client.get("execwidget.out", cwd="/tmp")
     assert "exec() is disabled in this context" in excinfo.value.message
 
 
@@ -186,7 +173,7 @@ def test_exec_runs_on_a_client_with_the_option(client: Client, daemon) -> None:
     client.put("execwidget2:template", {"out": "{{ exec(['printf', 'x']) }}"})
     exec_client = Client(socket_path=daemon.socket_path, timeout=5.0, exec=True)
     try:
-        assert exec_client.resolve("execwidget2.out", cwd="/tmp").data == "x"
+        assert exec_client.get("execwidget2.out", cwd="/tmp") == "x"
     finally:
         exec_client.close()
 
@@ -194,9 +181,16 @@ def test_exec_runs_on_a_client_with_the_option(client: Client, daemon) -> None:
 def test_session_get_put_set_context(client: Client) -> None:
     with client.session() as session:
         session.put("sesswidget", {"v": 42})
-        result = session.get("sesswidget.v")
-        assert result.data == 42
+        assert session.get("sesswidget.v") == 42
+        session.put("sesswidget", {"v": 43}, path="/tmp")
         session.set_context("/tmp")
+        assert session.get("sesswidget.v") == 43
+
+
+def test_session_get_renders_with_the_callers_environment(client: Client) -> None:
+    client.put("sesstpl:template", {"t": "{{ env.WHO }}"})
+    with client.session() as session:
+        assert session.get("sesstpl.t", env={"WHO": "me"}) == "me"
 
 
 def test_watch_yields_initial_value(client: Client) -> None:
@@ -227,7 +221,7 @@ def test_watch_yields_the_resolved_value_and_refires_on_a_template_edit(
         first = stream.next_event()
         assert first is not None
         assert first.data == "v1"
-        assert first.data == client.resolve("watchtpl.f", cwd="/tmp", env=env).data
+        assert first.data == client.get("watchtpl.f", cwd="/tmp", env=env)
 
         client.put("watchtpl:template", {"f": "{{ env.WATCH_TPL }}!"})
         second = stream.next_event(timeout_ms=5000)

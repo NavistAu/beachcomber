@@ -9,13 +9,14 @@
 #include <stdint.h>
 
 /**
- * `bc_get` flag: evict the cache entry and re-execute the provider before
- * returning.
+ * `bc_get` flag: re-execute every Source the read demands before answering,
+ * as `comb get --force`.
  */
 #define BC_GET_FORCE (1 << 0)
 
 /**
- * `bc_get` flag: if the entry is stale, wait for inline re-execution.
+ * `bc_get` flag: a stale entry the read demands is re-executed inline before
+ * answering, as `comb get --wait`.
  */
 #define BC_GET_WAIT (1 << 1)
 
@@ -80,7 +81,7 @@ char *bc_socket_path(void);
 /**
  * Creates a new client handle. `options_json` is nullable; recognised keys
  * are `socket_path`, `timeout_ms`, `autostart` and `exec` — whether a
- * template this client resolves (`bc_resolve`, `bc_eval`) may call `exec()`,
+ * template this client renders (`bc_get`, `bc_eval`) may call `exec()`,
  * default `false`. Never returns NULL — a malformed `options_json` still
  * yields a handle, with the parse error deferred to the handle's first
  * operation rather than failing here.
@@ -98,29 +99,6 @@ BcClient *bc_client_new(const char *options_json);
  * [`bc_client_new`], not yet freed.
  */
 void bc_client_free(BcClient *client);
-
-/**
- * Query a single key, raw. `path` is nullable (global providers). `flags` is
- * a bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit set yields
- * a `bad_flags` envelope.
- *
- * The envelope's `data` object is the node as the daemon holds it — nothing
- * rendered; `bc_resolve` is what renders a template into a value:
- *
- * | node               | `data`   | `age_ms`/`stale` | `template`        | `rest`      |
- * |--------------------|----------|------------------|-------------------|-------------|
- * | value (a hit)      | value    | set              | only if templated | only if set |
- * | template only      | `null`   | `null`           | string or tree    | only if set |
- * | nothing (a miss)   | `null`   | `null`           | absent            | absent      |
- *
- * A template-only node is not a miss: something is stored there, and it
- * has no value until rendered.
- *
- * # Safety
- * `client` must be a valid pointer from [`bc_client_new`]; `key` must be
- * non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
- */
-char *bc_get(BcClient *client, const char *key, const char *path, uint32_t flags);
 
 /**
  * Store data into the cache as static data. `json_data` must parse as JSON.
@@ -179,21 +157,25 @@ char *bc_introspect(BcClient *client, const char *subject, const char *options_j
 char *bc_hello(BcClient *client);
 
 /**
- * Resolve `key` to the value `comb get key` prints at `cwd`, through
+ * The value `comb get key` prints at `cwd`, through
  * [`libbeachcomber::resolve`]: the daemon holds the templates
  * (`<provider>:template`, seeded from configuration or `put`), and this
  * client renders them with `env_json` as the caller's environment. A plain
  * field is its cached value; a templated one is rendered; a bare provider
  * is the whole merged namespace, as `comb get provider -f json`. A miss is
- * `data: null`.
+ * `data: null`. The unrendered halves are facets, read like any key:
+ * `p:template.x` is the template as stored, `p:put.x` and `p:source.x`
+ * those layers' values.
  *
- * `cwd` is the directory the resolution addresses, read as `comb get --path`
+ * `cwd` is the directory the read addresses, read as `comb get --path`
  * reads one: `~` is the home directory and a relative path is against the
  * caller's working directory. NULL addresses the global entry, as
- * `comb get --global` does. Every fetch the resolution makes addresses that
+ * `comb get --global` does. Every fetch the read makes addresses that
  * directory, and a template's `exec`, `lup` and `read` run in it (in
  * `$HOME` from `env_json` for the global entry).
  * `env_json` is nullable, meaning "no environment": every `env.*` is absent.
+ * `flags` is a bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit
+ * set yields a `bad_flags` envelope.
  * `exec()` inside a template runs only on a client created with
  * `{"exec":true}`; otherwise it fails with `exec() is disabled in this
  * context`.
@@ -203,20 +185,24 @@ char *bc_hello(BcClient *client);
  * non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
  * NUL-terminated.
  */
-char *bc_resolve(BcClient *client, const char *key, const char *cwd, const char *env_json);
+char *bc_get(BcClient *client,
+             const char *key,
+             const char *cwd,
+             const char *env_json,
+             uint32_t flags);
 
 /**
  * Render a source that is stored nowhere, every ref resolved exactly as it
  * would be inside a stored template — so `bc_eval("{{ p.f }}")` and
- * `bc_resolve("p.f")` agree by construction. A source that is exactly one
+ * `bc_get("p.f")` agree by construction. A source that is exactly one
  * `{{ expr }}` tag keeps the expression's natural type; anything else
  * (literal text, several tags, a source with no tags at all) is a string.
  * A missing ref — an absent `env.*`, a daemon miss, a key the daemon
  * rejects — is falsy at any depth, not an error. A one-tag source whose
  * value is `none` or undefined is absent: `data: null`, as a miss is for
- * [`bc_resolve`].
+ * [`bc_get`].
  *
- * `cwd`, `env_json` and `exec()` behave as for [`bc_resolve`].
+ * `cwd`, `env_json` and `exec()` behave as for [`bc_get`].
  *
  * # Safety
  * `client` must be a valid pointer from [`bc_client_new`]; `template_str`
@@ -247,21 +233,20 @@ BcSession *bc_session_open(BcClient *client);
 void bc_session_close(BcSession *session);
 
 /**
- * Query a single key on this session's persistent connection, raw. `flags`
- * is the same [`BC_GET_FORCE`] / [`BC_GET_WAIT`] bitmask [`bc_get`] takes,
- * and the envelope's `data` object has the same three shapes:
- *
- * | node               | `data`   | `age_ms`/`stale` | `template`        | `rest`      |
- * |--------------------|----------|------------------|-------------------|-------------|
- * | value (a hit)      | value    | set              | only if templated | only if set |
- * | template only      | `null`   | `null`           | string or tree    | only if set |
- * | nothing (a miss)   | `null`   | `null`           | absent            | absent      |
+ * [`bc_get`] on this session's persistent connection: the same rendered
+ * value, the same flags. A NULL `cwd` is this session's directory
+ * ([`bc_session_set_context`]) when it has one, else the global entry.
  *
  * # Safety
  * `session` must be a valid pointer from [`bc_session_open`]; `key` must
- * be non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
+ * be non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
+ * NUL-terminated.
  */
-char *bc_session_get(BcSession *session, const char *key, const char *path, uint32_t flags);
+char *bc_session_get(BcSession *session,
+                     const char *key,
+                     const char *cwd,
+                     const char *env_json,
+                     uint32_t flags);
 
 /**
  * Store data into the cache as static data on this session's persistent
@@ -290,9 +275,9 @@ char *bc_session_put(BcSession *session,
 char *bc_session_refresh(BcSession *session, const char *key, const char *path);
 
 /**
- * Set this session's directory: every later `bc_session_get`,
- * `bc_session_put` and `bc_session_refresh` that passes a NULL `path`
- * addresses it. The session keeps it and sends it with each request; it is
+ * Set this session's directory: every later `bc_session_get` that passes a
+ * NULL `cwd`, and `bc_session_put` and `bc_session_refresh` that pass a NULL
+ * `path`, address it. The session keeps it and sends it with each request; it is
  * read as every path is (`~` is home, a relative path is against the
  * process's working directory).
  *
@@ -303,13 +288,13 @@ char *bc_session_refresh(BcSession *session, const char *key, const char *path);
 char *bc_session_set_context(BcSession *session, const char *path);
 
 /**
- * Opens a watch on the *value* of `key` — what `bc_resolve(key, cwd,
- * env_json)` answers — and emits it again whenever it changes. The fan-in
+ * Opens a watch on the *value* of `key` — what `bc_get(key, cwd,
+ * env_json, 0)` answers — and emits it again whenever it changes. The fan-in
  * underneath subscribes to every key the resolution read, and a write to a
  * namespace's template notifies that namespace, so a template edited under
  * the watch fires it exactly as a changed cache record does.
  *
- * `cwd` and `env_json` mean what they mean for [`bc_resolve`]: `cwd` is
+ * `cwd` and `env_json` mean what they mean for [`bc_get`]: `cwd` is
  * both the directory every subscription is opened at and the one every
  * re-resolution runs in, and NULL watches the global entry. `env_json` is
  * nullable, meaning "no environment": every `env.*` is absent.

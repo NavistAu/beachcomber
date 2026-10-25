@@ -24,12 +24,9 @@ import { Client } from 'libbeachcomber';
 
 const client = new Client();
 
-const result = await client.get('git.branch', '/path/to/repo');
-if (result.isHit) {
-  console.log(result.getString());  // e.g. "main"
-  console.log(result.ageMs);        // e.g. 1234
-  console.log(result.stale);        // false
-}
+// What `comb get git.branch` prints there; null on a miss.
+const branch = await client.get('git.branch', { cwd: '/path/to/repo' });
+console.log(branch); // e.g. "main"
 ```
 
 ## API reference
@@ -40,20 +37,28 @@ if (result.isHit) {
 const client = new Client();
 const client = new Client({ socketPath: '/custom/path' });
 const client = new Client({ socketPath: '/custom/path', timeoutMs: 2000 });
-const client = new Client({ exec: true }); // templates this client resolves may call exec()
+const client = new Client({ exec: true }); // templates this client renders may call exec()
 ```
 
 `exec` is off by default: a template that calls `exec()` on a client without it fails with `exec() is disabled in this context`.
 
-#### `client.get(key, path?)`
+#### `client.get(key, opts?)`
 
-Read a node raw — both halves, nothing rendered. Returns a `CombResult` (see below).
+The value `comb get` prints for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace; a miss is `null`.
+
+`opts` is `{ cwd?, env?, force?, wait? }`. `cwd` is the directory the read addresses (`~` is home, a relative path is against this process's working directory); omitted, it is the global entry. `env` is the caller's environment for `env.*` refs; omitted, every `env.*` is absent. `force` re-executes every Source the read demands first; `wait` re-executes a stale entry inline before answering.
 
 ```typescript
-const result = await client.get('git.branch', '/some/repo');
-const result = await client.get('hostname');           // global provider, no path needed
-const result = await client.get('git', '/some/repo');  // full provider (returns object)
+const branch = await client.get('git.branch', { cwd: '/some/repo' });
+const host   = await client.get('hostname.short');              // no cwd: the global entry
+const git    = await client.get('git', { cwd: '/some/repo' });  // full provider (an object)
+await client.put('myapp:template', { workspace: '{{ env.MYAPP_ENV or comb.myappcache.workspace }}' });
+const workspace = await client.get('myapp.workspace', { cwd: '/some/repo', env: { MYAPP_ENV: 'prod' } });
 ```
+
+The unrendered halves are facets, read like any key: `git:template.branch` is the template as stored, `myapp:put.workspace` and `git:source.branch` those layers' values.
+
+Over the subprocess fallback a `get` is one `comb get -f json`, which renders with that process's own environment: a `get` that passes `env` throws `UnsupportedTransportError`, and one without renders with this process's environment, with `exec()` on.
 
 #### `client.refresh(key, path?)`
 
@@ -81,19 +86,14 @@ Inspect a daemon subsystem (`"daemon"` | `"providers"` | `"config"` | `"cache"` 
 
 #### `client.watch(key, opts)`
 
-Subscribe to a key's *resolved* value — what `resolve(key, opts)` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `opts.cwd` and `opts.env` mean what they mean for `resolve`, and `opts.cwd` is required. Returns a `WatchStream` (async iterable) yielding `WatchEvent` values, whose `data` carries no `ageMs`/`stale` — a value resolved from several cache records has no single age or staleness. FFI transport only: the subprocess fallback tier does not implement `watch`, joining `resolve`/`eval` there.
+Subscribe to a key's value — what `get(key, opts)` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `opts.cwd` and `opts.env` mean what they mean for `get`, except that `opts.cwd` is required. Returns a `WatchStream` (async iterable) yielding `WatchEvent` values, whose `data` is the value — `null` for a miss. FFI transport only: the subprocess fallback tier does not implement `watch`, joining `eval` there.
 
-#### `client.getWithFlags(key, path?, opts?)`
+#### `client.eval(templateStr, opts)`
 
-Read a cached value with optional `force` (recompute) or `wait` (block for fresh value) flags.
-
-#### `client.resolve(key, opts)` / `client.eval(templateStr, opts)`
-
-`resolve` returns the same value `comb get` returns for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace; a miss is `null`. `eval` renders a template that is stored nowhere — the same value `comb eval` prints. `opts.cwd` is **required** (every fetch the resolution makes addresses it); `opts.env` is optional. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string — a source with no tags at all is its literal text). FFI transport only.
+Render a template that is stored nowhere — the same value `comb eval` prints. Every ref resolves exactly as it would inside a stored template, so `eval('{{ p.f }}')` and `get('p.f')` agree. `opts.cwd` is **required**, read as `get` reads it; `opts.env` is optional. `templateStr` accepts a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string — a source with no tags at all is its literal text). FFI transport only.
 
 ```typescript
-await client.put('myapp:template', { workspace: '{{ env.MYAPP_ENV or comb.myappcache.workspace }}' });
-const value = await client.resolve('myapp.workspace', {
+const value = await client.eval('{{ myapp.workspace }}', {
   cwd: '/some/repo',
   env: { MYAPP_ENV: 'prod' },
 });
@@ -105,37 +105,14 @@ Open a persistent connection. More efficient when querying multiple keys in sequ
 
 ```typescript
 const session = await client.session();
-await session.setContext('/some/repo');   // optional — sets default path
+await session.setContext('/some/repo');   // optional — sets the session's directory
 const branch = await session.get('git.branch');
 const dirty  = await session.get('git.dirty');
 await session.refresh('git');
 session.close();
 ```
 
-### `CombResult`
-
-`get` returns the node as the daemon holds it — both halves, nothing rendered. A node may hold a cached value (`data`), a template (`template`), or both. A template-only result is neither a hit nor a miss: it is an address whose value `resolve` renders — `get` is the raw half, `resolve(key, { cwd, env })` is how you get the value.
-
-| Property / method | Type | Description |
-|---|---|---|
-| `isHit` | `boolean` | `true` when the cache had a value |
-| `isMiss` | `boolean` | `true` when nothing is stored at the address: no value **and** no template |
-| `data` | `unknown` | Raw data (undefined when nothing is cached) |
-| `ageMs` | `number` | Cache age in milliseconds (0 when nothing is cached) |
-| `stale` | `boolean` | Whether the value is stale (false when nothing is cached) |
-| `template` | `unknown` | The template in effect at the address, unrendered: a string for a leaf, an object for a group (undefined when none is in effect) |
-| `rest` | `string \| undefined` | The address left over when the template walk stopped at a string — `get('p.t.x')` where `p.t` is a template string gives the template of `p.t` and `rest === 'x'` |
-| `getString(field?)` | `string \| undefined` | Data as a string; picks a named field from object results |
-| `getNumber(field?)` | `number \| undefined` | Data as a number |
-| `getBool(field?)` | `boolean \| undefined` | Data as a boolean |
-
-For full provider queries (e.g. `key = "git"`), the data is an object. Use the `field` argument to pick a field:
-
-```typescript
-const result = await client.get('git', '/repo');
-result.getString('branch');   // "main"
-result.getBool('dirty');      // false
-```
+`setContext` sets the session's directory: every later `get` that names no `cwd`, and `put` and `refresh` that name no `path`, address it. `session.get` takes the same `opts` as `client.get`.
 
 ## Errors
 

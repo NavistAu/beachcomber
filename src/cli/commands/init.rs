@@ -63,9 +63,9 @@ set -g status-right "#(comb g git.branch .) #(comb g load.one)""##,
         detected.push(DetectedTool {
             name: "Neovim",
             snippet: r#"-- Lua statusline integration (lualine, heirline, etc.):
--- local beachcomber = require('libbeachcomber')
+-- local beachcomber = require('beachcomber')
 -- local client = beachcomber.connect()
--- local branch = client:get_text('git.branch', vim.fn.getcwd())"#,
+-- local branch = client:get('git.branch', { cwd = vim.fn.getcwd() })"#,
         });
     }
 

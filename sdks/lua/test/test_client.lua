@@ -1,94 +1,11 @@
---- Tests for beachcomber.client: Result accessors and Client against a
---- mock backend (the interface documented at the top of
---- beachcomber/client.lua — canonical response tables, not raw sockets).
+--- Tests for beachcomber.client: Client against a mock backend (the
+--- interface documented at the top of beachcomber/client.lua — canonical
+--- response tables, not raw sockets), and the ffi backend against a live
+--- daemon.
 
 return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
   local client_mod = require("beachcomber.client")
   local Client = client_mod.Client
-  local Result = client_mod.Result
-
-  -- ── Result accessors ──────────────────────────────────────────────────────
-
-  suite("Result accessors")
-
-  test("is_hit returns false on miss", function()
-    local r = Result.new({ data = nil })
-    assert_true(not r:is_hit(), "nil data should be a miss")
-    assert_true(r:is_miss(), "no data and no template is a miss")
-    assert_nil(r.data)
-    assert_eq(r.age_ms, 0)
-    assert_eq(r.stale, false)
-    assert_nil(r.template)
-    assert_nil(r.rest)
-  end)
-
-  test("template-only result is neither a hit nor a miss", function()
-    local r = Result.new({ data = nil, template = "{{ 1 }}" })
-    assert_eq(r.template, "{{ 1 }}")
-    assert_nil(r.data)
-    assert_true(not r:is_hit(), "no data is not a hit")
-    assert_true(not r:is_miss(), "a template-only node is not a miss")
-    assert_nil(r.rest)
-  end)
-
-  test("a hit carries the template half when the node has both", function()
-    local r = Result.new({ data = 1, age_ms = 12, stale = false, template = "{{ 2 }}", rest = "x" })
-    assert_true(r:is_hit())
-    assert_true(not r:is_miss())
-    assert_eq(r.data, 1)
-    assert_eq(r.template, "{{ 2 }}")
-    assert_eq(r.rest, "x")
-  end)
-
-  test("a plain hit has no template half", function()
-    local r = Result.new({ data = "main", age_ms = 500, stale = false })
-    assert_true(r:is_hit())
-    assert_nil(r.template)
-    assert_nil(r.rest)
-  end)
-
-  test("is_hit returns true on hit", function()
-    local r = Result.new({ data = "main", age_ms = 500, stale = false })
-    assert_true(r:is_hit())
-    assert_eq(r.data, "main")
-    assert_eq(r.age_ms, 500)
-  end)
-
-  test("is_hit true for numeric 0 data", function()
-    local r = Result.new({ data = 0, age_ms = 10, stale = false })
-    assert_true(r:is_hit())
-  end)
-
-  test("is_hit true for boolean false data", function()
-    local r = Result.new({ data = false, age_ms = 10, stale = false })
-    assert_true(r:is_hit())
-  end)
-
-  test("get_str on object data", function()
-    local r = Result.new({ data = { branch = "main", dirty = false }, age_ms = 100 })
-    local v, err = r:get_str("branch")
-    assert_nil(err)
-    assert_eq(v, "main")
-  end)
-
-  test("get_str missing field", function()
-    local r = Result.new({ data = { branch = "main" } })
-    local v, err = r:get_str("dirty")
-    assert_nil(v)
-    assert_not_nil(err)
-  end)
-
-  test("get_str on non-object data errors", function()
-    local r = Result.new({ data = "main" })
-    local v, err = r:get_str("anything")
-    assert_nil(v)
-    assert_not_nil(err)
-  end)
-
-  test("stale defaults to false", function()
-    local r = Result.new({ data = "main", age_ms = 1000 })
-    assert_eq(r.stale, false)
-  end)
 
   -- ── Mock backend helper ────────────────────────────────────────────────────
 
@@ -99,85 +16,87 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     return backend
   end
 
-  -- ── Client:get / get_with_flags ───────────────────────────────────────────
+  -- ── Client:get ────────────────────────────────────────────────────────────
 
   suite("Client:get")
 
-  test("get returns Result on hit", function()
+  test("get returns the value", function()
     local backend = make_backend({
-      get = function(_, key, path, flags)
-        return { ok = true, data = "main", age_ms = 500, stale = false }
-      end,
+      get = function() return { ok = true, data = "main" } end,
     })
-    local c = Client.new(backend)
-    local r, err = c:get("git.branch", "/repo")
+    local value, err = Client.new(backend):get("git.branch", { cwd = "/repo" })
     assert_nil(err)
-    assert_true(r:is_hit())
-    assert_eq(r.data, "main")
+    assert_eq(value, "main")
   end)
 
-  test("get forwards key and path to the backend", function()
-    local seen
+  test("get forwards exactly key, cwd, env and the flags", function()
+    local seen, nargs
     local backend = make_backend({
-      get = function(_, key, path, flags)
-        seen = { key = key, path = path }
+      get = function(_, ...)
+        nargs = select("#", ...)
+        local key, cwd, env, flags = ...
+        seen = { key = key, cwd = cwd, env = env, flags = flags }
         return { ok = true }
       end,
     })
-    Client.new(backend):get("git.branch", "/myrepo")
+    Client.new(backend):get("git.branch", { cwd = "/myrepo", env = { A = "x" } })
+    assert_eq(nargs, 4)
     assert_eq(seen.key, "git.branch")
-    assert_eq(seen.path, "/myrepo")
+    assert_eq(seen.cwd, "/myrepo")
+    assert_eq(seen.env.A, "x")
+    assert_true(not seen.flags.force)
+    assert_true(not seen.flags.wait)
   end)
 
-  test("get returns miss Result when data is nil", function()
+  test("get with no opts is the global entry and no environment", function()
+    local seen
+    local backend = make_backend({
+      get = function(_, key, cwd, env, flags) seen = { cwd = cwd, env = env }; return { ok = true } end,
+    })
+    Client.new(backend):get("git.branch")
+    assert_nil(seen.cwd, "no cwd and no context is the global entry")
+    assert_nil(seen.env, "no env is passed as none, not as an empty table")
+  end)
+
+  test("get passes force and wait through as the flags table", function()
+    local seen_flags
+    local backend = make_backend({
+      get = function(_, key, cwd, env, flags) seen_flags = flags; return { ok = true } end,
+    })
+    Client.new(backend):get("git.branch", { force = true, wait = true })
+    assert_eq(seen_flags.force, true)
+    assert_eq(seen_flags.wait, true)
+  end)
+
+  test("a miss is nil with no Error", function()
     local backend = make_backend({ get = function() return { ok = true } end })
-    local r = Client.new(backend):get("git.branch")
-    assert_true(not r:is_hit())
-    assert_true(r:is_miss())
-  end)
-
-  test("get passes the backend's template half through", function()
-    local backend = make_backend({
-      get = function() return { ok = true, template = "{{ env.A }}", rest = "x" } end,
-    })
-    local r, err = Client.new(backend):get("fx.t.x")
+    local value, err = Client.new(backend):get("git.branch")
+    assert_nil(value)
     assert_nil(err)
-    assert_eq(r.template, "{{ env.A }}")
-    assert_eq(r.rest, "x")
-    assert_true(not r:is_hit())
-    assert_true(not r:is_miss())
   end)
 
-  test("get passes a template group through as a table", function()
-    local backend = make_backend({
-      get = function() return { ok = true, template = { foo = "{{ 1 }}" } } end,
-    })
-    local r = Client.new(backend):get("fx.widgets")
-    assert_eq(r.template.foo, "{{ 1 }}")
-    assert_true(not r:is_miss())
+  test("false and 0 are values, not misses", function()
+    local backend = make_backend({ get = function() return { ok = true, data = false } end })
+    local value, err = Client.new(backend):get("git.dirty")
+    assert_eq(value, false)
+    assert_nil(err)
   end)
 
   test("get returns nil+Error when backend returns ok=false", function()
     local backend = make_backend({
       get = function() return { ok = false, error = { kind = "server_error", message = "unknown provider: bad" } } end,
     })
-    local r, err = Client.new(backend):get("bad.field")
-    assert_nil(r)
+    local value, err = Client.new(backend):get("bad.field")
+    assert_nil(value)
     assert_not_nil(err)
     assert_eq(err.kind, "server_error")
     assert_true(tostring(err):find("unknown provider", 1, true) ~= nil)
   end)
 
-  suite("Client:get_with_flags")
-
-  test("get_with_flags propagates force/wait as a flags table", function()
-    local seen_flags
-    local backend = make_backend({
-      get = function(_, key, path, flags) seen_flags = flags; return { ok = true } end,
-    })
-    Client.new(backend):get_with_flags("git.branch", nil, true, nil)
-    assert_eq(seen_flags.force, true)
-    assert_true(not seen_flags.wait)
+  test("the raw read and the old names are gone", function()
+    assert_nil(Client.get_with_flags, "get_with_flags is gone: get takes the flags")
+    assert_nil(Client.resolve, "resolve is gone: get renders")
+    assert_nil(client_mod.Result, "Result is gone: get returns the value")
   end)
 
   -- ── Client:refresh / set_context ──────────────────────────────────────────
@@ -198,26 +117,26 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
   suite("Client:set_context")
 
-  test("set_context supplies the default path to a later call with no explicit path", function()
-    local seen_path
+  test("set_context supplies the cwd of a later get that names none", function()
+    local seen_cwd
     local backend = make_backend({
-      get = function(_, key, path) seen_path = path; return { ok = true } end,
+      get = function(_, key, cwd) seen_cwd = cwd; return { ok = true } end,
     })
     local c = Client.new(backend)
     c:set_context("/some/dir")
     c:get("git.branch")
-    assert_eq(seen_path, "/some/dir")
+    assert_eq(seen_cwd, "/some/dir")
   end)
 
-  test("an explicit path argument overrides the context default", function()
-    local seen_path
+  test("an explicit cwd overrides the context default", function()
+    local seen_cwd
     local backend = make_backend({
-      get = function(_, key, path) seen_path = path; return { ok = true } end,
+      get = function(_, key, cwd) seen_cwd = cwd; return { ok = true } end,
     })
     local c = Client.new(backend)
     c:set_context("/context/dir")
-    c:get("git.branch", "/explicit/dir")
-    assert_eq(seen_path, "/explicit/dir")
+    c:get("git.branch", { cwd = "/explicit/dir" })
+    assert_eq(seen_cwd, "/explicit/dir")
   end)
 
   -- ── Client:status ─────────────────────────────────────────────────────────
@@ -313,13 +232,13 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     end)
   end
 
-  -- ── resolve / eval against a live daemon (ffi transport) ──────────────────
-  -- bc_resolve answers a miss as `"data":null`; the binding must hand that
-  -- back as Lua nil (the miss Client:resolve documents), never as the
-  -- json.NULL sentinel. Needs LuaJIT, the built library, and a comb binary
+  -- ── get / eval against a live daemon (ffi transport) ──────────────────────
+  -- bc_get answers a miss as `"data":null`; the binding must hand that back
+  -- as Lua nil (the miss Client:get documents), never as the json.NULL
+  -- sentinel. Needs LuaJIT, the built library, and a comb binary
   -- ($COMB_BIN, or the workspace's own debug build).
 
-  suite("ffi_backend resolve/eval against a live daemon")
+  suite("ffi_backend get/eval against a live daemon")
 
   local function built_comb()
     local env_bin = os.getenv("COMB_BIN")
@@ -361,12 +280,14 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
   local comb_bin = built_comb()
   local live_tests = {
-    "resolve of a missing key is nil with no Error",
+    "get of a missing key is nil with no Error",
     "eval rendering none is nil, not the null sentinel",
-    "resolve renders a put template",
+    "get renders a put template with the caller's environment",
     "refresh of a static namespace is the daemon's words alone",
-    "a miss carries age 0 and stale false, not the null sentinel",
-    "a template-only node carries age 0 and stale false, not the null sentinel",
+    "the facets read the unrendered halves",
+    "get takes force and wait",
+    "get with no cwd reads at the set_context directory",
+    "get with no cwd and no context reads the global entry",
   }
   if not has_ffi then
     for _, name in ipairs(live_tests) do skip(name, "no ffi (PUC Lua)") end
@@ -384,7 +305,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
       test(live_tests[1], function()
         assert_true(c:put("revns", { v = 1 }))
-        local value, err = c:resolve("revns.nope", { cwd = "/tmp" })
+        local value, err = c:get("revns.nope", { cwd = "/tmp" })
         assert_nil(err)
         assert_nil(value)
       end)
@@ -399,7 +320,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
       test(live_tests[3], function()
         assert_true(c:put("revtpl:template", { label = "{{ 'resolved-' ~ env.MYVAR }}" }))
-        local value, err = c:resolve("revtpl.label", { cwd = "/tmp", env = { MYVAR = "x" } })
+        local value, err = c:get("revtpl.label", { cwd = "/tmp", env = { MYVAR = "x" } })
         assert_nil(err)
         assert_eq(value, "resolved-x")
       end)
@@ -417,26 +338,40 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
         assert_true(err.message:sub(1, #refusal) == refusal, err.message)
       end)
 
-      -- bc_get answers a miss and a template-only node with `age_ms` and
-      -- `stale` null; the binding must collapse those so `if r.stale then`
-      -- is false there, as it is in every other SDK.
       test(live_tests[5], function()
-        assert_true(c:put("revmiss", { v = 1 }))
-        local r, err = c:get("revmiss.nope")
+        assert_true(c:put("revhalf", { v = 1 }))
+        assert_true(c:put("revhalf:template", { v = "{{ 2 }}" }))
+        local value, err = c:get("revhalf.v")
         assert_nil(err)
-        assert_true(r:is_miss())
-        assert_eq(r.age_ms, 0)
-        assert_eq(r.stale, false)
+        assert_eq(value, 2, "the template wins over the value beside it")
+        value, err = c:get("revhalf:template.v")
+        assert_nil(err)
+        assert_eq(value, "{{ 2 }}", "the template facet is the template as stored")
+        value, err = c:get("revhalf:put.v")
+        assert_nil(err)
+        assert_eq(value, 1, "the put facet is the stored value")
       end)
 
       test(live_tests[6], function()
-        assert_true(c:put("revfresh:template", { t = "{{ 1 }}" }))
-        local r, err = c:get("revfresh.t")
+        local value, err = c:get("hostname.short", { force = true, wait = true })
         assert_nil(err)
-        assert_eq(r.template, "{{ 1 }}")
-        assert_true(not r:is_hit() and not r:is_miss())
-        assert_eq(r.age_ms, 0)
-        assert_eq(r.stale, false)
+        assert_eq(type(value), "string")
+      end)
+
+      test(live_tests[7], function()
+        assert_true(c:put("revctx", { v = "global" }))
+        assert_true(c:put("revctx", { v = "tmp" }, nil, "/tmp"))
+        local in_tmp = Client.new(backend)
+        in_tmp:set_context("/tmp")
+        local value, err = in_tmp:get("revctx.v")
+        assert_nil(err)
+        assert_eq(value, "tmp")
+      end)
+
+      test(live_tests[8], function()
+        local value, err = c:get("revctx.v")
+        assert_nil(err)
+        assert_eq(value, "global")
       end)
 
       c:close()
