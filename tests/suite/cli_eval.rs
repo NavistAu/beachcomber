@@ -119,6 +119,34 @@ fn eval_of_nested_template_field_matches_get() {
         .stdout(predicates::str::diff(get_out));
 }
 
+/// The addresses `comb get` takes are the ones a template writes: a quoted
+/// segment, a facet head in brackets, a computed provider name, a subscript
+/// of the caller's environment.
+#[test]
+fn eval_reads_the_same_addresses_get_takes() {
+    let d = TestDaemon::spawn();
+    d.comb(Path::new("/"))
+        .args(["put", "--global", "p", r#"{"cargo:x":"1.0","o":{"a b":2}}"#])
+        .assert()
+        .success();
+
+    for (src, want) in [
+        ("{{ comb.p['cargo:x'] }}", "1.0"),
+        ("{{ comb['p'].o['a b'] }}", "2"),
+        ("{{ comb[('p')]['cargo:x'] }}", "1.0"),
+        ("{{ comb['p:put'].o['a b'] }}", "2"),
+        ("{{ p['o']['a b'] }}", "2"),
+        ("{{ env[('PICK')] }}", "picked"),
+    ] {
+        d.comb(Path::new("/"))
+            .env("PICK", "picked")
+            .args(["eval", src])
+            .assert()
+            .success()
+            .stdout(predicates::str::diff(want));
+    }
+}
+
 /// A ref the daemon rejects — `nope` names no registered provider, no `put`,
 /// no template — is a missing ref inside a template, not an error: it binds
 /// nothing, so `or` falls through to its other side (canon: a missing ref is

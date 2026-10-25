@@ -186,13 +186,14 @@ fn discover_refs_template_with_statement_tag() {
         "expected git.dirty in {refs:?}"
     );
 
-    // All four ref kinds are classified the same way in a template as in an
-    // expression, and `cwd` / bare names are ignored.
+    // Every ref kind is classified the same way in a template as in an
+    // expression; `cwd` is ignored, and a name alone is a dynamic ref.
     let refs = refs_set("{% if env.A %}{{ comb.c.z }}{{ comb.p }}{{ cwd }}{{ bare }}{% endif %}");
     let expected: HashSet<Ref> = [
         Ref::Env("A".into()),
         Ref::CombField("c".into(), "z".into()),
         Ref::CombProvider("p".into()),
+        Ref::Dynamic("bare".into()),
     ]
     .into_iter()
     .collect();

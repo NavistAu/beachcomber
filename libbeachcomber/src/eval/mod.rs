@@ -140,11 +140,25 @@ pub fn discover_refs(src: &str) -> Vec<Ref> {
             let Ok(template) = env.template_from_str(src) else {
                 return Vec::new();
             };
-            let mut refs = refs_from_names(template.undeclared_variables(true));
+            let mut refs = refs_from_names(not_globals(&env, template.undeclared_variables(true)));
             refs.sort();
             refs
         }
     }
+}
+
+/// `names` without the engine's own globals: a function called by name
+/// (`exec(...)`, `lup(...)`) is reported as a name read, and it is not one the
+/// context supplies.
+pub(crate) fn not_globals(
+    env: &Environment<'_>,
+    names: impl IntoIterator<Item = String>,
+) -> impl Iterator<Item = String> {
+    let globals: std::collections::HashSet<String> =
+        env.globals().map(|(name, _)| name.to_string()).collect();
+    names
+        .into_iter()
+        .filter(move |name| !globals.contains(name))
 }
 
 /// How deeply one template may reference another before resolution gives up.
@@ -185,7 +199,8 @@ pub(crate) fn too_deep() -> String {
 /// matching how a missing `env.*` and [`crate::render::render_data`] already
 /// render nothing.
 pub fn render_template(src: &str, context: &serde_json::Value) -> Result<String, String> {
-    render_template_with(src, context, Default::default()).map_err(|e| e.to_string())
+    render_template_with(src, MjValue::from_serialize(context), Default::default())
+        .map_err(|e| e.to_string())
 }
 
 /// Why a template render failed, by phase: the source itself does not
@@ -210,15 +225,13 @@ impl std::fmt::Display for RenderError {
 
 pub(crate) fn render_template_with(
     src: &str,
-    context: &serde_json::Value,
+    context: MjValue,
     ctx: Arc<EngineCtx>,
 ) -> Result<String, RenderError> {
     let mut env = build_engine_env(ctx);
     render_none_as_empty(&mut env);
     let template = env.template_from_str(src).map_err(RenderError::Compile)?;
-    template
-        .render(MjValue::from_serialize(context))
-        .map_err(RenderError::Render)
+    template.render(context).map_err(RenderError::Render)
 }
 
 /// Make a `none` printed inside text render as nothing instead of the word
@@ -245,7 +258,16 @@ pub fn eval_line(
     src: &str,
     context: &serde_json::Value,
 ) -> Result<Option<serde_json::Value>, String> {
-    let context = MjValue::from_serialize(context);
+    eval_line_with(env, src, MjValue::from_serialize(context))
+}
+
+/// [`eval_line`] against a context that is already an engine value, so it
+/// may hold objects — a daemon line's lazy `comb`.
+pub fn eval_line_with(
+    env: &Environment<'_>,
+    src: &str,
+    context: MjValue,
+) -> Result<Option<serde_json::Value>, String> {
     match single_tag_expression(src) {
         Some(expr) => {
             let value = env

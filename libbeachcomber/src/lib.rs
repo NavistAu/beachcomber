@@ -25,6 +25,7 @@ pub mod eval;
 mod exec;
 pub mod filters;
 pub mod key;
+mod lazy;
 pub mod render;
 pub mod resolve;
 pub mod virtual_fields;

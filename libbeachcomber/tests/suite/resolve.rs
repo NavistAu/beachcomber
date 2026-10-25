@@ -1251,3 +1251,190 @@ fn a_template_leaf_that_is_not_a_string_is_a_config_error_naming_it() {
         other => panic!("expected a config error, got {other:?}"),
     }
 }
+
+// ── 16. Refs used other than by attribute ─────────────────────────────────────
+//
+// A ref subscripted, filtered or iterated names the node at the end of its
+// literal attribute chain, read whole. `comb` alone is every provider, so
+// `comb[...]` reads the member the render asks for, when it asks.
+
+fn render_eval(src: &str, f: &mut MapFetch, env: &HashMap<String, String>) -> Option<Value> {
+    eval(src, &inputs(env), f).unwrap_or_else(|e| panic!("{src}: {e}"))
+}
+
+#[test]
+fn a_bracketed_comb_head_reads_that_node_whole() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed(
+        "git:cache",
+        Some(CWD),
+        data(json!({"branch": {"age_ms": 7, "source": "source(head)"}})),
+    );
+    assert_eq!(
+        render_eval("{{ comb['git:cache'].branch.age_ms }}", &mut f, &env),
+        Some(json!(7))
+    );
+    assert_eq!(f.keys(), vec!["git:cache"]);
+}
+
+#[test]
+fn a_computed_comb_name_reads_the_provider_it_names() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed("sel.which", Some(CWD), data(json!("qa"))).seed(
+        "qa",
+        Some(CWD),
+        data(json!({"v": "a1"})),
+    );
+    assert_eq!(
+        render_eval("{{ comb[comb.sel.which].v }}", &mut f, &env),
+        Some(json!("a1"))
+    );
+    assert_eq!(f.keys(), vec!["sel.which", "qa"]);
+}
+
+#[test]
+fn a_comb_name_nothing_answers_is_undefined_so_default_fires() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    assert_eq!(
+        render_eval("{{ comb['nope'] | default('fb') }}", &mut f, &env),
+        Some(json!("fb"))
+    );
+    assert_eq!(
+        render_eval("{{ comb['a.b'] is defined }}", &mut f, &env),
+        Some(json!(false)),
+        "a name that is not a provider head names nothing"
+    );
+}
+
+#[test]
+fn a_literal_comb_field_stays_precise_beside_a_computed_name() {
+    // `comb.git.branch` reads `git.branch` alone, never the whole of `git`,
+    // even in a render that also reads `comb[...]` — and a computed member
+    // of that literal head is read alone too.
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed("git.branch", Some(CWD), data(json!("main")))
+        .seed("git.dirty", Some(CWD), data(json!(true)))
+        .seed("qa", Some(CWD), data(json!({"v": "a1"})));
+    assert_eq!(
+        render_eval(
+            "{{ comb.git.branch ~ '/' ~ comb['qa'].v ~ '/' ~ comb['git']['dirty'] }}",
+            &mut f,
+            &env
+        ),
+        Some(json!("main/a1/true"))
+    );
+    let keys = f.keys();
+    assert!(
+        !keys.contains(&"git"),
+        "the whole of git was never read: {keys:?}"
+    );
+    assert!(keys.contains(&"git.branch") && keys.contains(&"git.dirty"));
+}
+
+#[test]
+fn a_subscript_after_a_literal_provider_reads_that_provider_whole() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed(
+        "mise",
+        Some(CWD),
+        data(json!({"cargo:x": "1.0", "go:golang.org/x": "0.16"})),
+    );
+    assert_eq!(
+        render_eval(
+            "{{ comb.mise['cargo:x'] ~ ' ' ~ comb.mise['go:golang.org/x'] }}",
+            &mut f,
+            &env
+        ),
+        Some(json!("1.0 0.16"))
+    );
+    assert_eq!(f.keys(), vec!["mise"]);
+}
+
+#[test]
+fn a_bare_provider_subscripted_is_that_provider_resolved() {
+    let env = spec_env();
+    let mut f = spec_fetch();
+    assert_eq!(
+        render_eval("{{ scanline['widgets']['foo'] }}", &mut f, &env),
+        Some(json!("hi"))
+    );
+    assert_eq!(
+        render_eval("{{ nope['x'] | default('fb') }}", &mut f, &env),
+        Some(json!("fb"))
+    );
+}
+
+#[test]
+fn the_caller_environment_is_bound_whole() {
+    let vars = env_of(&[("A", "1"), ("B", "2")]);
+    let mut f = MapFetch::default();
+    assert_eq!(
+        render_eval("{{ env[('A')] ~ env['B'] }}", &mut f, &vars),
+        Some(json!("12"))
+    );
+    assert_eq!(
+        render_eval(
+            "{% for k, v in env | items %}{{ k }}={{ v }};{% endfor %}",
+            &mut f,
+            &vars
+        ),
+        Some(json!("A=1;B=2;"))
+    );
+    assert_eq!(
+        render_eval("{{ env['NOPE'] | default('fb') }}", &mut f, &vars),
+        Some(json!("fb"))
+    );
+    assert!(f.log.is_empty(), "the environment asks the daemon nothing");
+}
+
+#[test]
+fn what_a_lazy_read_fetched_is_a_dependency() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed("k.t", Some(CWD), tmpl(json!("{{ comb['qa'].v }}")))
+        .seed("qa", Some(CWD), data(json!({"v": "a1"})));
+    let (value, deps) = resolve_with_deps("k.t", &inputs(&env), &mut f).unwrap();
+    assert_eq!(value, Some(json!("a1")));
+    assert_eq!(
+        deps,
+        vec![
+            ("k.t".to_string(), Some(CWD.to_string())),
+            ("qa".to_string(), Some(CWD.to_string())),
+        ]
+    );
+}
+
+#[test]
+fn a_transport_failure_in_a_lazy_read_fails_the_resolution() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed(
+        "k.t",
+        Some(CWD),
+        tmpl(json!("{{ comb['down'].v or 'fb' }}")),
+    );
+    f.fails.push("down".to_string());
+    match resolve("k.t", &inputs(&env), &mut f) {
+        Err(ResolveError::Fetch(FetchError::Transport(m))) => {
+            assert!(m.contains("down"), "{m}")
+        }
+        other => panic!("expected the transport failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_lazy_comb_node_returned_whole_is_its_data() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed("qa", Some(CWD), data(json!({"v": "a1"})));
+    assert_eq!(
+        render_eval("{{ comb['qa'] }}", &mut f, &env),
+        Some(json!({"v": "a1"}))
+    );
+    assert_eq!(render_eval("{{ comb['nope'] }}", &mut f, &env), None);
+}

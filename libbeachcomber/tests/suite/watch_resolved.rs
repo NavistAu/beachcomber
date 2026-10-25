@@ -90,7 +90,7 @@ fn wait_for(w: &mut ResolvedWatch<'_>, expected: impl Into<Option<Value>>) {
 fn env_keys_cannot_be_watched() {
     let client = client_for(Path::new("/nonexistent/beachcomber.sock"));
     let env = shell_env();
-    for key in ["env", "env.HOME"] {
+    for key in ["env", "env.HOME", "env['HOME']"] {
         match ResolvedWatch::open(&client, key, &inputs(&env)) {
             Err(WatchError::EnvKey(message)) => {
                 assert_eq!(message, "env keys cannot be watched", "{key}")
@@ -236,6 +236,65 @@ fn subscriptions_follow_the_deps() {
 
     writer.put("r.v", json!("3"), None, None).expect("put r.v");
     wait_for(&mut w, json!("3"));
+}
+
+/// A template that reads `comb[name]` with a computed name depends on the
+/// provider the name names: that is what the render fetched, so it is what
+/// the watch subscribes, and when the name moves to another provider the
+/// subscription moves with it.
+#[test]
+fn a_computed_comb_name_is_a_dependency_and_moves_with_the_name() {
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
+    let writer = client_for(&guard.path);
+    let env = shell_env();
+
+    writer
+        .put(
+            "scanline:template",
+            json!({"pick": "{{ comb[comb.sel.which].v }}"}),
+            None,
+            None,
+        )
+        .expect("put template");
+    writer
+        .put("sel", json!({"which": "qa"}), None, None)
+        .expect("put sel");
+    writer
+        .put("qa", json!({"v": "a1"}), None, None)
+        .expect("put qa");
+    writer
+        .put("qb", json!({"v": "b1"}), None, None)
+        .expect("put qb");
+
+    let mut w = ResolvedWatch::open(&client, "scanline.pick", &inputs(&env)).expect("open");
+    assert_eq!(value(w.next(Some(SOON))), Some(json!("a1")));
+    assert!(
+        w.deps().contains(&("qa".to_string(), None)),
+        "the provider the computed name named is a dependency: {:?}",
+        w.deps()
+    );
+
+    writer
+        .put("qa", json!({"v": "a2"}), None, None)
+        .expect("put qa");
+    wait_for(&mut w, json!("a2"));
+
+    writer
+        .put("sel", json!({"which": "qb"}), None, None)
+        .expect("repoint sel");
+    wait_for(&mut w, json!("b1"));
+    assert!(
+        w.deps().contains(&("qb".to_string(), None))
+            && !w.deps().contains(&("qa".to_string(), None)),
+        "the dependency moved with the name: {:?}",
+        w.deps()
+    );
+
+    writer
+        .put("qb", json!({"v": "b2"}), None, None)
+        .expect("put qb");
+    wait_for(&mut w, json!("b2"));
 }
 
 /// A watch on a key nothing answers yet follows the template a later `put`

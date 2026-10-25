@@ -30,13 +30,16 @@ use crate::provider::{
 };
 use crate::shape::decorators::Recorded;
 use libbeachcomber::engine::EngineCtx;
-use libbeachcomber::eval::{discover_refs, eval_line, render_none_as_empty, undeclared_names};
+use libbeachcomber::eval::{
+    discover_refs, eval_line, eval_line_with, render_none_as_empty, undeclared_names,
+};
 use libbeachcomber::virtual_fields::Ref;
 use minijinja::Environment;
+use minijinja::value::Value as MjValue;
 use serde_json::{Value as Json, json};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// A daemon-side read of one provider node at a directory entry: put over
 /// source, up the directory chain, never a template. What `comb.<p>` sees.
@@ -70,6 +73,81 @@ pub trait DaemonRead: Send + Sync {
     /// The caller is a `data` line, on a blocking thread.
     fn call(&self, provider: &str, source: &str, dir: Option<&str>)
     -> Result<Option<Json>, String>;
+}
+
+/// A provider's stored records as the JSON a line reads, `Null` for nothing
+/// stored.
+fn representable(provider: &str, node: Option<HashMap<String, Value>>) -> Result<Json, String> {
+    match node {
+        Some(node) => serde_json::to_value(node)
+            .map_err(|e| format!("comb.{provider} is not representable: {e}")),
+        None => Ok(Json::Null),
+    }
+}
+
+/// A `data` line's `comb`: every provider is a member, read at the instance's
+/// directory when the line first asks for it — `comb.<p>`, `comb['<p>']` or a
+/// computed `comb[name]` alike — and kept for the rest of the render. A read
+/// only reads stored records and never runs a Source. An engine object cannot
+/// return an error, so a read that fails is kept and fails the render
+/// afterwards.
+struct LazyComb {
+    reader: Arc<dyn DaemonRead>,
+    dir: Option<String>,
+    /// What has been read, `Null` for nothing stored.
+    read: Mutex<serde_json::Map<String, Json>>,
+    failed: Mutex<Option<String>>,
+}
+
+impl std::fmt::Debug for LazyComb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<comb>")
+    }
+}
+
+impl minijinja::value::Object for LazyComb {
+    fn repr(self: &Arc<Self>) -> minijinja::value::ObjectRepr {
+        minijinja::value::ObjectRepr::Map
+    }
+
+    fn get_value(self: &Arc<Self>, key: &MjValue) -> Option<MjValue> {
+        let name = key.as_str()?;
+        // A member is a provider head; anything else names nothing.
+        if !matches!(libbeachcomber::key::split_key(name), Ok((head, rest)) if head == name && rest.is_empty())
+        {
+            return None;
+        }
+        let mut read = self.read.lock().ok()?;
+        if !read.contains_key(name) {
+            let node = self
+                .reader
+                .read(name, self.dir.as_deref())
+                .map_err(|e| format!("comb.{name}: {e}"))
+                .and_then(|node| representable(name, node));
+            match node {
+                Ok(node) => {
+                    read.insert(name.to_string(), node);
+                }
+                Err(e) => {
+                    if let Ok(mut failed) = self.failed.lock() {
+                        failed.get_or_insert(e);
+                    }
+                    return None;
+                }
+            }
+        }
+        read.get(name)
+            .filter(|node| !node.is_null())
+            .map(MjValue::from_serialize)
+    }
+
+    fn enumerate(self: &Arc<Self>) -> minijinja::value::Enumerator {
+        minijinja::value::Enumerator::NonEnumerable
+    }
+
+    fn is_true(self: &Arc<Self>) -> bool {
+        true
+    }
 }
 
 /// The `result` of a Source.
@@ -182,12 +260,6 @@ pub fn lint_lines(
     }
     if let Some(data) = data {
         let used = undeclared_names(&probe, data, true).map_err(|e| format!("{who}: data: {e}"))?;
-        if used.contains("comb") {
-            return Err(format!(
-                "{who}: data: comb is read as comb.<provider>[.<field>]; comb[...] and comb as \
-                 a whole are not supported"
-            ));
-        }
         if used.contains("sources") {
             return Err(format!(
                 "{who}: data: a sibling Source is called, sources.<source>(); sources[...] and \
@@ -338,26 +410,26 @@ impl ConfigSource {
     }
 
     /// The `data` line's `comb`: one daemon read at `dir` per provider the
-    /// line names; a provider with nothing stored is not bound.
-    fn comb(&self, dir: Option<&str>) -> Result<Json, String> {
-        let mut comb = serde_json::Map::new();
+    /// line names, and a lazy read of any provider `comb[...]` names as the
+    /// render asks for it.
+    fn comb(&self, dir: Option<&str>) -> Result<LazyComb, String> {
+        let mut read = serde_json::Map::new();
         for provider in &self.comb_providers {
-            let read = self
+            let node = self
                 .reader
                 .read(provider, dir)
                 .map_err(|e| stage_error(&self.spec, "data", format!("comb.{provider}: {e}")))?;
-            if let Some(node) = read {
-                let node = serde_json::to_value(node).map_err(|e| {
-                    stage_error(
-                        &self.spec,
-                        "data",
-                        format!("comb.{provider} is not representable: {e}"),
-                    )
-                })?;
-                comb.insert(provider.clone(), node);
-            }
+            read.insert(
+                provider.clone(),
+                representable(provider, node).map_err(|e| stage_error(&self.spec, "data", e))?,
+            );
         }
-        Ok(comb.into())
+        Ok(LazyComb {
+            reader: self.reader.clone(),
+            dir: dir.map(str::to_string),
+            read: Mutex::new(read),
+            failed: Mutex::new(None),
+        })
     }
 
     /// Run the lines, and when the run ends, however it ends, say what it
@@ -401,13 +473,19 @@ impl ConfigSource {
             );
             jinja.add_global("daemon", Calls::daemon(call));
         }
-        let data_context = json!({
-            "env": &*self.env,
-            "comb": self.comb(path)?,
-            "_": self.underscore(),
-        });
-        let data = eval_line(&jinja, &self.spec.data, &data_context)
-            .map_err(|e| stage_error(&self.spec, "data", e))?;
+        let comb = Arc::new(self.comb(path)?);
+        let data_context: MjValue = [
+            ("env", MjValue::from_serialize(&*self.env)),
+            ("comb", MjValue::from_dyn_object(comb.clone())),
+            ("_", MjValue::from_serialize(self.underscore())),
+        ]
+        .into_iter()
+        .collect();
+        let data = eval_line_with(&jinja, &self.spec.data, data_context);
+        if let Some(failed) = comb.failed.lock().ok().and_then(|mut f| f.take()) {
+            return Err(stage_error(&self.spec, "data", failed));
+        }
+        let data = data.map_err(|e| stage_error(&self.spec, "data", e))?;
         let result_context = json!({"data": data, "_": self.underscore()});
 
         match &self.spec.result {
@@ -999,25 +1077,10 @@ mod tests {
 
     #[test]
     fn a_line_may_only_name_what_its_stage_sees() {
-        let cases: [(ConfigSourceSpec, &str, &str); 10] = [
+        let cases: [(ConfigSourceSpec, &str, &str); 7] = [
             (
                 spec(Some("{{ comb.x }}"), "x", fields(&[("a", "1")])),
                 "root:",
-                "comb",
-            ),
-            (
-                spec(None, "{{ comb['aws'].region }}", fields(&[("a", "1")])),
-                "data:",
-                "comb",
-            ),
-            (
-                spec(None, "{{ comb | length }}", fields(&[("a", "1")])),
-                "data:",
-                "comb",
-            ),
-            (
-                spec(None, "{{ comb['aws:put'].region }}", fields(&[("a", "1")])),
-                "data:",
                 "comb",
             ),
             (
@@ -1058,6 +1121,85 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    /// `comb['<p>']` and a computed `comb[name]` read the provider they name,
+    /// lazily, as `comb.<p>` does: stored records at the directory, once per
+    /// render.
+    #[test]
+    fn comb_takes_a_subscript_and_reads_the_provider_it_names() {
+        let reader = Arc::new(FakeReader {
+            answer: HashMap::from([
+                (
+                    "aws".to_string(),
+                    HashMap::from([("region".to_string(), s("eu-1"))]),
+                ),
+                (
+                    "git:template".to_string(),
+                    HashMap::from([("branch".to_string(), s("{{ x }}"))]),
+                ),
+            ]),
+            ..FakeReader::default()
+        });
+        let src = build(
+            spec(
+                None,
+                "{{ comb['aws'].region ~ '/' ~ comb[['a', 'ws'] | join].region ~ '/' ~ \
+                 comb['git:template'].branch ~ '/' ~ (comb['nope'] or 'none') }}",
+                fields(&[("r", "{{ data }}")]),
+            ),
+            reader.clone(),
+        );
+        let got = src.execute(Some("/work/proj")).unwrap().fields;
+        assert_eq!(got.get("r"), Some(&s("eu-1/eu-1/{{ x }}/none")));
+        let mut calls = reader.calls.lock().unwrap().clone();
+        calls.sort();
+        assert_eq!(
+            calls,
+            vec![
+                ("aws".to_string(), Some("/work/proj".to_string())),
+                ("git:template".to_string(), Some("/work/proj".to_string())),
+                ("nope".to_string(), Some("/work/proj".to_string())),
+            ],
+            "each provider is read once, however it is named"
+        );
+    }
+
+    #[test]
+    fn a_lazy_comb_read_error_fails_the_data_render() {
+        struct Failing;
+        impl DaemonRead for Failing {
+            fn ran_calling(
+                &self,
+                _: &str,
+                _: &str,
+                _: Option<&str>,
+                _: crate::provider::registry::CalleeMap,
+            ) {
+            }
+            fn call(&self, _: &str, _: &str, _: Option<&str>) -> Result<Option<Json>, String> {
+                Ok(None)
+            }
+            fn read(
+                &self,
+                _provider: &str,
+                _dir: Option<&str>,
+            ) -> Result<Option<HashMap<String, Value>>, String> {
+                Err("q.s: root: boom".into())
+            }
+        }
+        let src = build(
+            spec(
+                None,
+                "{{ comb['q'].x or 'fallback' }}",
+                fields(&[("r", "{{ data }}")]),
+            ),
+            Arc::new(Failing),
+        );
+        assert_eq!(
+            src.execute(Some("/work")).unwrap_err(),
+            "demo.s: data: comb.q: q.s: root: boom"
+        );
     }
 
     #[test]

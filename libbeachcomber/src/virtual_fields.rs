@@ -28,6 +28,8 @@ use std::collections::HashSet;
 /// - `comb.P` → `CombProvider(P)` (the whole provider object)
 /// - `P.rest…` (P ∉ {env, comb}) → `Resolved(P, "rest…")` (the node at that
 ///   address, resolved — rendered if a template stands there)
+/// - a name alone — `comb[...]`, `git['x']`, a whole name piped to a filter —
+///   → `Dynamic(name)`
 ///
 /// `Ord` is derived: variants sort in declaration order (Env < CombField <
 /// CombProvider < Resolved), then field-wise. Discovery runs off minijinja's
@@ -45,6 +47,11 @@ pub enum Ref {
     /// the whole remaining address (`"widgets.b"`), not one segment: a ref
     /// names a node at any depth, never the group above it.
     Resolved(String, String),
+    /// A top-level name used other than by attribute — `comb[...]`,
+    /// `git['x']`, a whole `env` piped to `items`, or the name alone. What it
+    /// reads is known only as the render asks, so [`crate::resolve`] binds a
+    /// lazy object there.
+    Dynamic(String),
 }
 
 // ── Ref discovery ─────────────────────────────────────────────────────────────
@@ -56,7 +63,8 @@ pub enum Ref {
 /// - `comb.P` → `Ref::CombProvider(P)`
 /// - `cwd` → `None` (path-expression variable)
 /// - `P.rest…` (P ∉ {env, comb, cwd}) → `Ref::Resolved(P, "rest…")`
-/// - bare single name → `None`
+/// - a name alone → `Ref::Dynamic(name)`: minijinja reports a name alone when
+///   it is used other than by attribute (`comb['x']`, `git[k]`, a filter)
 ///
 /// For `env.*` and `comb.*`, segments beyond the second (third for
 /// `comb.*`) are MiniJinja attribute navigation into the fetched value, not
@@ -67,8 +75,10 @@ pub enum Ref {
 /// Shared by [`discover_expression_refs`] and the template discovery path in
 /// [`crate::eval`], so expression and template forms classify identically.
 pub(crate) fn classify_dotted(name: &str) -> Option<Ref> {
-    // Bare name — no ref (includes "cwd").
-    let (first, rest) = name.split_once('.')?;
+    let Some((first, rest)) = name.split_once('.') else {
+        // A name alone is a name used other than by attribute.
+        return (name != "cwd").then(|| Ref::Dynamic(name.to_string()));
+    };
     let mut segments = rest.split('.');
     // `split` yields at least one item, so `second` is always present.
     let second = segments.next()?;
@@ -132,7 +142,10 @@ pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
     let Ok(compiled) = env.compile_expression(expr) else {
         return vec![];
     };
-    let mut refs = refs_from_names(compiled.undeclared_variables(true));
+    let mut refs = refs_from_names(crate::eval::not_globals(
+        &env,
+        compiled.undeclared_variables(true),
+    ));
     refs.sort();
     refs
 }
@@ -148,6 +161,11 @@ pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
 pub(crate) fn mj_to_json(v: MjValue) -> Result<Option<JsonValue>, String> {
     if v.is_undefined() || v.is_none() {
         return Ok(None);
+    }
+    // A lazy ref (`comb['git:cache']`, a provider named alone) yields the
+    // node it stands for, and nothing when nothing is there.
+    if let Some(whole) = crate::lazy::as_whole(&v) {
+        return Ok(whole);
     }
     // Try bool first (minijinja booleans are distinct from strings).
     if v.kind() == minijinja::value::ValueKind::Bool

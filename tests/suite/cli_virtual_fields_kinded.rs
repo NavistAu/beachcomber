@@ -65,12 +65,19 @@ fn discovers_comb_provider_without_field() {
 }
 
 #[test]
-fn bare_name_is_ignored() {
-    // A single-segment name with no dot is not a provider.field ref — must be
-    // ignored. Wrapped in a tag so this reaches `classify_dotted` (a tagless
-    // "somename" is literal text and would find nothing regardless).
-    let refs = discover_refs("{{ somename }}");
-    assert!(refs.is_empty(), "bare name must be ignored; got: {refs:?}");
+fn a_bare_name_is_a_dynamic_ref_and_a_function_is_none() {
+    // A single-segment name is used other than by attribute: the node it
+    // names, read whole. Wrapped in a tag so this reaches `classify_dotted`
+    // (a tagless "somename" is literal text and would find nothing
+    // regardless). A function the engine registers is not a name read.
+    assert_eq!(
+        discover_refs("{{ somename }}"),
+        vec![Ref::Dynamic("somename".into())]
+    );
+    assert_eq!(
+        discover_refs("{{ lup('.git') }}{{ merge({}, {}) }}"),
+        Vec::<Ref>::new()
+    );
 }
 
 #[test]

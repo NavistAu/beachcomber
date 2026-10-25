@@ -24,11 +24,12 @@ use crate::eval::{
     MAX_VIRTUAL_DEPTH, RenderError, discover_refs, render_template_with, single_tag_expression,
     too_deep,
 };
+use crate::lazy::{Bridge, LazyNode, Prefetch};
 use crate::virtual_fields::{Ref, mj_to_json};
 use minijinja::value::Value as MjValue;
 use serde_json::{Map, Value as JsonValue};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 
 /// One node as the daemon returned it: the `get` response of design §3.4.
 ///
@@ -327,37 +328,66 @@ impl<'a> Resolver<'a> {
     }
 
     fn render_frame(&mut self, src: &str, key: &str) -> Result<Option<JsonValue>, ResolveError> {
-        let context = self.bind(&discover_refs(src))?;
-        // The two forms of `crate::eval::classify`: exactly one `{{ expr }}`
-        // takes the typed path, everything else (literal text included)
-        // renders to a string.
-        match single_tag_expression(src) {
-            Some(expr) => {
-                let env = build_engine_env(self.engine.clone());
-                let compiled = env.compile_expression(expr).map_err(|e| {
-                    ResolveError::Config(format!("{key}: expression compile error: {e}"))
-                })?;
-                let value = compiled
-                    .eval(MjValue::from_serialize(&context))
-                    .map_err(|e| {
-                        ResolveError::Runtime(format!("{key}: expression eval error: {e}"))
-                    })?;
-                // A `none` or undefined result is absent, as in the daemon's
-                // lines.
-                mj_to_json(value).map_err(|e| ResolveError::Runtime(format!("{key}: {e}")))
-            }
-            // A source that does not compile is someone's to go and fix; a
-            // failure while rendering is the moment's.
-            None => render_template_with(src, &context, self.engine.clone())
-                .map(|s| Some(JsonValue::String(s)))
-                .map_err(|e| {
-                    let message = format!("{key}: {e}");
-                    match e {
-                        RenderError::Compile(_) => ResolveError::Config(message),
-                        RenderError::Render(_) => ResolveError::Runtime(message),
-                    }
-                }),
+        let refs = discover_refs(src);
+        let bound = self.bind(&refs)?;
+        // `comb[...]` reads what the render asks for, so `comb` is a lazy
+        // node rather than a prefetched value.
+        if refs.contains(&Ref::Dynamic("comb".to_string())) {
+            return self.render_with_lazy_comb(src, key, bound, &refs);
         }
+        evaluate(
+            src,
+            key,
+            MjValue::from_serialize(&bound),
+            self.engine.clone(),
+        )
+    }
+
+    /// Render with `comb` a lazy node.
+    ///
+    /// The render runs on a scoped thread, and this one answers what the node
+    /// asks, each through the same fetch an eager ref uses, until the render
+    /// is over and the node is gone. An error an answer carried is the
+    /// render's, whatever the render made of the nothing the node read
+    /// instead.
+    fn render_with_lazy_comb(
+        &mut self,
+        src: &str,
+        key: &str,
+        mut bound: Map<String, JsonValue>,
+        refs: &[Ref],
+    ) -> Result<Option<JsonValue>, ResolveError> {
+        let (asks, questions) = mpsc::channel();
+        let bridge = Arc::new(Bridge::new(asks));
+        let prefetched = match bound.remove("comb") {
+            Some(JsonValue::Object(map)) => Some(map),
+            _ => None,
+        };
+        let comb = LazyNode::comb(bridge.clone(), prefetched, Arc::new(Prefetch::of(refs)));
+        let mut context: Vec<(String, MjValue)> = vec![("comb".into(), MjValue::from_object(comb))];
+        for (name, value) in bound {
+            context.push((name, MjValue::from_serialize(&value)));
+        }
+        let context: MjValue = context.into_iter().collect();
+        let engine = self.engine.clone();
+
+        std::thread::scope(|scope| {
+            let render = scope.spawn(move || {
+                let out = evaluate(src, key, context, engine);
+                (out, bridge.take_error())
+            });
+            for (asked, reply) in questions {
+                let answer = self.fetch_ref(&asked).map(|g| g.and_then(|g| g.data));
+                let _ = reply.send(answer);
+            }
+            let (out, error) = render
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            match error {
+                Some(e) => Err(e),
+                None => out,
+            }
+        })
     }
 
     /// Render every string leaf of a template tree, keeping its shape.
@@ -417,30 +447,44 @@ impl<'a> Resolver<'a> {
 
     /// Bind every ref a source names into the context it evaluates against.
     ///
-    /// A daemon miss binds nothing — not the value, and not the object that
-    /// would have enclosed it — so `default` and `or` fire on it; a key the
-    /// daemon rejects is the same missing ref. An unset `env.X` binds nothing
-    /// too, as in the daemon's lines. Where a whole
-    /// `comb.P` and a `comb.P.F` disagree, the whole object wins: it is the
-    /// authoritative snapshot, whichever ref is bound first.
-    fn bind(&mut self, refs: &[Ref]) -> Result<JsonValue, ResolveError> {
+    /// `env` is the caller's whole environment, as a Source's `data` line sees
+    /// the daemon's: an unset variable is simply not there, so `env.X`,
+    /// `env['X']` and `env | items` read it alike. A daemon miss binds
+    /// nothing — not the value, and not the object that would have enclosed
+    /// it — so `default` and `or` fire on it; a key the daemon rejects is the
+    /// same missing ref. Where a whole `comb.P` and a `comb.P.F` disagree, the
+    /// whole object wins: it is the authoritative snapshot, whichever ref is
+    /// bound first.
+    fn bind(&mut self, refs: &[Ref]) -> Result<Map<String, JsonValue>, ResolveError> {
         let mut top = Map::new();
-        top.insert("env".to_string(), JsonValue::Object(Map::new()));
+        let caller: Map<String, JsonValue> = self
+            .inputs
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), JsonValue::String(v.clone())))
+            .collect();
+        top.insert("env".to_string(), JsonValue::Object(caller));
         top.insert("comb".to_string(), JsonValue::Object(Map::new()));
 
         for r in refs {
             match r {
-                Ref::Env(var) => {
-                    let Some(value) = self.env_value(var) else {
-                        continue;
-                    };
-                    if let Some(JsonValue::Object(env)) = top.get_mut("env") {
-                        env.insert(var.clone(), JsonValue::String(value));
+                Ref::Env(_) => {}
+                // `env` is bound whole above, and `comb` is the lazy node a
+                // render with `comb[...]` binds.
+                Ref::Dynamic(name) if name == "env" || name == "comb" => {}
+                // Any other name used other than by attribute — `git[field]`,
+                // `scanline | items` — is that whole node, resolved. It wins
+                // over the leaves an attribute ref bound below it.
+                Ref::Dynamic(name) => match self.resolve(name) {
+                    Ok(Some(value)) => {
+                        top.insert(name.clone(), value);
                     }
-                }
+                    Ok(None) | Err(ResolveError::Fetch(FetchError::Rejected(_))) => {}
+                    Err(e) => return Err(e),
+                },
                 Ref::CombField(provider, field) => {
                     let Some(value) = self
-                        .fetch_ref(&format!("{provider}.{field}"))?
+                        .fetch_ref(&crate::key::join(provider, field))?
                         .and_then(|g| g.data)
                     else {
                         continue;
@@ -477,7 +521,7 @@ impl<'a> Resolver<'a> {
                 // attribute walk (`scanline.widgets.b`) finds it. The key
                 // being rejected is, here, a missing ref like any other.
                 Ref::Resolved(provider, rest) => {
-                    let key = format!("{provider}.{rest}");
+                    let key = crate::key::join(provider, rest);
                     let value = match self.resolve(&key) {
                         Ok(Some(value)) => value,
                         Ok(None) | Err(ResolveError::Fetch(FetchError::Rejected(_))) => continue,
@@ -487,7 +531,7 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
-        Ok(JsonValue::Object(top))
+        Ok(top)
     }
 
     /// The caller's `$var`; `None` when unset.
@@ -519,6 +563,42 @@ impl<'a> Resolver<'a> {
         self.stack
             .iter()
             .any(|(k, p)| k == key && p.as_deref() == path)
+    }
+}
+
+/// Evaluate `src` as the node `key` against `context`: exactly one
+/// `{{ expr }}` takes the typed path (`crate::eval::classify`), everything
+/// else, literal text included, renders to a string.
+fn evaluate(
+    src: &str,
+    key: &str,
+    context: MjValue,
+    engine: Arc<EngineCtx>,
+) -> Result<Option<JsonValue>, ResolveError> {
+    match single_tag_expression(src) {
+        Some(expr) => {
+            let env = build_engine_env(engine);
+            let compiled = env.compile_expression(expr).map_err(|e| {
+                ResolveError::Config(format!("{key}: expression compile error: {e}"))
+            })?;
+            let value = compiled
+                .eval(context)
+                .map_err(|e| ResolveError::Runtime(format!("{key}: expression eval error: {e}")))?;
+            // A `none` or undefined result is absent, as in the daemon's
+            // lines.
+            mj_to_json(value).map_err(|e| ResolveError::Runtime(format!("{key}: {e}")))
+        }
+        // A source that does not compile is someone's to go and fix; a
+        // failure while rendering is the moment's.
+        None => render_template_with(src, context, engine)
+            .map(|s| Some(JsonValue::String(s)))
+            .map_err(|e| {
+                let message = format!("{key}: {e}");
+                match e {
+                    RenderError::Compile(_) => ResolveError::Config(message),
+                    RenderError::Render(_) => ResolveError::Runtime(message),
+                }
+            }),
     }
 }
 

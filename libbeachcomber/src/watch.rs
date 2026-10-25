@@ -212,7 +212,7 @@ impl<'a> ResolvedWatch<'a> {
         key: &str,
         inputs: &Inputs<'_>,
     ) -> Result<Self, WatchError> {
-        if key == "env" || key.starts_with("env.") {
+        if namespace(key) == "env" {
             return Err(WatchError::EnvKey("env keys cannot be watched".to_string()));
         }
         let inputs = OwnedInputs::new(inputs);

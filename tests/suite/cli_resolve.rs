@@ -175,6 +175,42 @@ fn a_template_at_a_cached_fields_path_wins_and_the_raw_template_stays_readable()
     );
 }
 
+/// `comb.git.branch` in a template that also reads `comb[...]` still reads
+/// `git.branch` alone: only git's `head` Source runs, so `head`'s fields are
+/// all `git:cache` has.
+#[test]
+fn a_literal_comb_field_beside_a_lazy_comb_still_demands_only_its_own_source() {
+    if !has_git() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let d = TestDaemon::spawn();
+    let repo = GitRepoFixture::new();
+    let cwd = repo.path().to_path_buf();
+    put(
+        &d,
+        &cwd,
+        &[
+            "t:template.v",
+            r#""{{ comb.git.branch ~ (comb['other'].x or '') }}""#,
+        ],
+    );
+
+    assert_eq!(stdout(&d, &cwd, &["t.v"]), "main");
+    let cache = json(&d, &cwd, &["-f", "json", "git:cache"]);
+    let mut fields: Vec<&str> = cache
+        .as_object()
+        .expect("git:cache is a tree")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort();
+    assert!(
+        fields.iter().all(|f| ["branch", "detached"].contains(f)) && fields.contains(&"branch"),
+        "only head ran: {fields:?}"
+    );
+}
+
 // ── outcome 8: text and sh flatten at any depth ──────────────────────────────
 
 #[test]
