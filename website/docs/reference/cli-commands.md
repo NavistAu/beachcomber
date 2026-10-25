@@ -34,11 +34,21 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 | `comb d` | `comb daemon` | — |
 | `comb k` | `comb kill` | — |
 
-## `comb g` (get) `<key>... [path] [--path <path>] [--global] [-f format]`
+## Addressing a directory
+
+`get`, `put`, `refresh`, `watch` and `eval` read or write at a directory, and all five take it the same three ways:
+
+- a trailing `[path]` argument — for `get`, which takes any number of keys, a last argument that starts with `/`, `~` or `.` after at least one key (no key starts so, and a lone argument is always a key); for the others, their optional last argument;
+- `-p <path>` / `--path <path>`;
+- `--global`, the global entry (`$HOME`), which every directory's chain ends at.
+
+The three conflict with one another, and with none the command addresses the current directory. A relative path is the caller's, not the daemon's, and a leading `~` the shell left unexpanded (because it was quoted) is `$HOME`.
+
+## `comb g` (get) `<key>... [path] [-p <path>] [--global] [-f format]`
 
 Query a value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay. `comb get` is a client of `libbeachcomber::resolve`, the same function behind `comb eval` and every SDK's `resolve`: it always needs the daemon, even for a key (`env.HOME`) it answers without a request.
 
-**Flags:** `--force` (trigger immediate recomputation before returning), `--wait` (block until a fresh value arrives), `--path <dir>` (query a directory other than the current one), `--global` (query the global entry, `$HOME`). Multiple keys can be passed in a single connection (variadic).
+**Flags:** `--force` (trigger immediate recomputation before returning), `--wait` (block until a fresh value arrives), `-p`/`--path <dir>` (query a directory other than the current one), `--global` (query the global entry, `$HOME`) — see [Addressing a directory](#addressing-a-directory). Multiple keys can be passed in a single connection (variadic).
 
 **Path:** after at least one key, a last argument that starts with `/`, `~` or `.` is the directory to read from (`comb g git.branch .`, `comb g git "$PWD"`); no key starts with those, so a key holding a `/` (`mise.npm:@scope/pkg`) is always a key, and a lone argument is always a key. A leading `~` the shell left unexpanded (it was quoted) is `$HOME`. With no `--path` and no such argument, `get` queries the current working directory. A read at a directory resolves data stored by `put` (and by config) up the directory chain to `$HOME`, the nearest write winning; a provider's own data stays where its source scope puts it. `--global` reads `$HOME` alone and cannot be combined with a path.
 
@@ -279,7 +289,7 @@ The default output preset is `human` (coloured table) regardless of whether stdo
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts, watch backend). The watch backend line reports `native fs events` when the startup self-test confirmed kernel event delivery, or a WARN with `polling` when it didn't — provider file-watching still works, invalidating on a 1s scan instead of kernel events.
 
-## `comb p` (put) `<key> <json-data> [--ttl <duration>] [--path <path>] [--global]`
+## `comb p` (put) `<key> <json-data> [path] [--ttl <duration>] [-p <path>] [--global]`
 
 Write static data into the cache. External processes use this to expose state to prompt/statusline consumers without writing a Source.
 
@@ -311,7 +321,7 @@ comb p myapp:template.greeting '"hello {{ env.USER }}"'
 
 **Decay depth:** the one `:cache` key a put may write is a decay prototype — `comb p '*:cache._.decay' 3` for every provider, `comb p 'git:cache._.decay' 6` for one, `--path` to scope either to a directory and below. The nearest prototype wins.
 
-**Path:** `put` defaults to the current working directory, exactly as `get` does, so a plain `comb p` followed by a plain `comb g` in the same directory round-trips. `--global` writes `$HOME`, the entry every directory's chain ends at, which is how you publish one value for the whole machine; it cannot be combined with `--path`.
+**Path:** `put` defaults to the current working directory, exactly as `get` does, so a plain `comb p` followed by a plain `comb g` in the same directory round-trips. `--global` writes `$HOME`, the entry every directory's chain ends at, which is how you publish one value for the whole machine; it cannot be combined with a path ([Addressing a directory](#addressing-a-directory)).
 
 ### Session-scoped entries
 
@@ -329,8 +339,7 @@ comb g agent.context_pct "/home/user/project#session-a"   # 42
 
 Reads must pass the exact path the writer used: `project#session-a` is a sibling name, not a child of `project`,
 so a session-scoped path inherits from the parent directory (`/home/user`) and up — never from the plain project
-directory. Use absolute paths: a relative `--path` is resolved against the daemon's working directory, not the
-caller's.
+directory. A relative path is resolved against your directory, as everywhere.
 
 Read back with standard `comb g`:
 
@@ -342,7 +351,7 @@ There is no ownership: storing to a field name a Source already produces is allo
 
 **Exit codes:** `0` on success, `2` on error.
 
-## `comb r` (refresh) `<key> [path] [--path <path>] [--global]`
+## `comb r` (refresh) `<key> [path] [-p <path>] [--global]`
 
 Re-execute the Sources a key demands, each at the instance that answers for the directory, without reading anything back. A bare `provider` re-runs every Source of the namespace; `provider.field` re-runs the one Source that owns the field — and only that one, so `comb r git.commit` runs `refs` and leaves `diff` alone. A Source with no root runs at the one instance at `~` whatever path the request names; a rooted one at the root that answers for the directory given.
 
@@ -361,7 +370,7 @@ A key with no Source behind it — a `put`-created namespace, an unknown name, a
 
 **Exit codes:** `0` on success, `2` on error (the daemon's refusal, or an unreachable daemon).
 
-## `comb w` (watch) `<key> [path] [--path <path>] [--global] [-f format]`
+## `comb w` (watch) `<key> [path] [-p <path>] [--global] [-f format]`
 
 Stream a key's *resolved* value — the value `comb get` would print — printing a new frame each time that value changes. `comb watch` is a client of `libbeachcomber::watch`, the same fan-in behind every SDK's `watch`: it re-resolves the key over every reference the resolution reads. A write to a namespace or to any of its facets wakes that namespace's watchers, so a template edited under the watch fires it just as a changed cache record does. A watch may name any address, including one nothing answers yet (an unknown provider is a miss, as for `get`). Only an actual change in the resolved value emits a frame — a re-resolution that comes out the same value is not one.
 
@@ -381,7 +390,7 @@ Ctrl-C to stop.
 
 **Exit codes:** `0` — the watch ends cleanly once nothing is left that could ever answer (every subscription the daemon held has closed). `2` — error (daemon unreachable, an env key, a key whose resolution fails).
 
-## `comb e` (eval) `<template> [path]`
+## `comb e` (eval) `<template> [path] [-p <path>] [--global]`
 
 Evaluate a value expression against cached provider data, resolving every referenced key in a single connection. `comb eval` renders through the same `libbeachcomber::resolve` as `comb get`, so `comb e '{{ p.f }}'` and `comb g p.f` agree by construction — and like `get` it always uses the daemon, even for an expression with no daemon refs.
 

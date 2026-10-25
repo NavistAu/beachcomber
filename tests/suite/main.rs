@@ -16,6 +16,7 @@ mod cli_get_sh_escape;
 mod cli_get_variadic;
 mod cli_get_wait_propagation;
 mod cli_golden;
+mod cli_paths;
 mod cli_refresh;
 mod cli_resolve;
 mod cli_status_rendered;

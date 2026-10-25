@@ -107,15 +107,12 @@ enum Commands {
     },
     /// Query one or more cached values.
     ///
-    /// Positionals are keys (`provider.field`). If the last positional looks like a path
-    /// (contains `/`, or starts with `.`, `~`, or `/`), it is treated as a path applied to
-    /// every key. Use `--path` to set a path explicitly without ambiguity.
-    /// When no path is given, the CLI's current working directory is used automatically.
-    #[command(visible_alias = "g", mut_arg("path", |a| a.short('p')))]
+    /// Positionals are keys (`provider.field`). After the first, a last positional that starts
+    /// with `/`, `~` or `.` is the directory to address, the same as --path; no key starts so.
+    #[command(visible_alias = "g")]
     Get {
-        /// Provider key(s) (e.g., "hostname.name", "git.branch"). If the last positional
-        /// looks like a path (starts with `.`/`~`/`/`, or contains `/`), it is used as the
-        /// path context instead of a key.
+        /// Keys to read (e.g., "hostname.name", "git.branch"); after the first, a last one
+        /// starting with /, ~ or . is the directory to address, the same as --path
         #[arg(required = true, num_args = 1..)]
         keys: Vec<String>,
         #[command(flatten)]
@@ -178,6 +175,9 @@ enum Commands {
         key: String,
         /// JSON data (an object at the root, any JSON below it); `null` removes the node's put, dropping the entry when none remain; provider records are untouched
         data: String,
+        /// Directory to address, the same as --path
+        #[arg(value_name = "PATH", conflicts_with_all = ["path", "global"])]
+        at: Option<String>,
         /// Expire the node: valid for this long (e.g., "30s", "5m"), stale for one decay step, then removed; the next put renews it. At least 1s; not with null data
         #[arg(long)]
         ttl: Option<String>,
@@ -189,7 +189,7 @@ enum Commands {
     Refresh {
         /// Provider key (e.g., "git" or "git.branch")
         key: String,
-        /// Path context as a positional, the flag's other spelling
+        /// Directory to address, the same as --path
         #[arg(value_name = "PATH", conflicts_with_all = ["path", "global"])]
         at: Option<String>,
         #[command(flatten)]
@@ -200,7 +200,7 @@ enum Commands {
     Watch {
         /// Provider key (e.g., "git.branch")
         key: String,
-        /// Path context as a positional, the flag's other spelling
+        /// Directory to address, the same as --path
         #[arg(value_name = "PATH", conflicts_with_all = ["path", "global"])]
         at: Option<String>,
         #[command(flatten)]
@@ -214,8 +214,11 @@ enum Commands {
     Eval {
         /// Template or expression: `{{ provider.field }}`, or text with several tags
         template: String,
-        /// Path context for directory-scoped providers
-        path: Option<String>,
+        /// Directory to address, the same as --path
+        #[arg(value_name = "PATH", conflicts_with_all = ["path", "global"])]
+        at: Option<String>,
+        #[command(flatten)]
+        path: PathArgs,
     },
     /// Detect installed tools and show integration snippets
     #[command(visible_alias = "i")]
@@ -313,13 +316,15 @@ fn cli_path(global: bool, requested: Option<String>) -> Result<Option<String>, E
     }))
 }
 
-/// `--path` / `--global`, shared by get, put, refresh and watch.
+/// `-p/--path` / `--global`, shared by every command that addresses a
+/// directory — get, put, refresh, watch and eval — beside the trailing
+/// `[PATH]` each takes, so all five say the same thing in the same words.
 #[derive(clap::Args)]
 struct PathArgs {
-    /// Path context for directory-scoped providers (defaults to the current working directory)
-    #[arg(long, value_name = "PATH")]
+    /// Directory to address (default: the current directory)
+    #[arg(short = 'p', long, value_name = "PATH")]
     path: Option<String>,
-    /// Use the global entry ($HOME) instead of a directory
+    /// Address the global entry ($HOME) instead of a directory
     #[arg(long, conflicts_with = "path")]
     global: bool,
 }
@@ -427,10 +432,11 @@ fn main() -> ExitCode {
         Commands::Put {
             key,
             data,
+            at,
             ttl,
             path: PathArgs { path, global },
         } => {
-            let effective_path = match cli_path(global, path) {
+            let effective_path = match cli_path(global, path.or(at)) {
                 Ok(p) => p,
                 Err(code) => return code,
             };
@@ -466,15 +472,18 @@ fn main() -> ExitCode {
             };
             run_watch(&config, &key, effective_path.as_deref(), output_format)
         }
-        Commands::Eval { template, path } => {
+        Commands::Eval {
+            template,
+            at,
+            path: PathArgs { path, global },
+        } => {
             // `eval` is a query like `get`, so it addresses the same path: the
-            // one given, else the caller's directory; it has no `--global`.
-            let path = match cli_path(false, path) {
-                Ok(Some(p)) => p,
-                Ok(None) => unreachable!("eval never asks for the global entry"),
+            // one given, the global entry, else the caller's directory.
+            let path = match cli_path(global, path.or(at)) {
+                Ok(p) => p,
                 Err(code) => return code,
             };
-            beachcomber::cli::commands::eval::run_eval(&config, &template, &path)
+            beachcomber::cli::commands::eval::run_eval(&config, &template, path.as_deref())
         }
         Commands::Init => run_init(),
         Commands::Check {

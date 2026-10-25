@@ -19,10 +19,11 @@ use crate::config::Config;
 use libbeachcomber::resolve::{Inputs, ResolveError, Slot, eval};
 use std::process::ExitCode;
 
-/// `path` is what `main.rs` already settled: the positional argument, or the
-/// current directory (`eval` has no `--path` flag and no `--global`) — always
-/// a real directory, never guessed here.
-pub fn run_eval(config: &Config, template: &str, path: &str) -> ExitCode {
+/// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
+/// `--path`, the trailing positional, or the current directory. A render's
+/// `exec()`, `lup()` and `read` run in that directory, or in the current one
+/// for the global entry.
+pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
@@ -40,10 +41,16 @@ pub fn run_eval(config: &Config, template: &str, path: &str) -> ExitCode {
     };
 
     let env = crate::cli::shell_env();
+    let cwd = match path {
+        Some(p) => p.to_string(),
+        None => std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    };
     let inputs = Inputs {
-        cwd: path,
+        cwd: &cwd,
         env: &env,
-        slot: Slot::Path(path.to_string()),
+        slot: path.map_or(Slot::Global, |p| Slot::Path(p.to_string())),
         force: false,
         wait: false,
         allow_exec: true,
