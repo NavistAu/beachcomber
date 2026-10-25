@@ -1600,3 +1600,22 @@ fn log_level_takes_the_six_names_in_any_case_and_nothing_else() {
         );
     }
 }
+
+/// A TOML parse error keeps its reason: the toml crate puts the line and
+/// column on its first line and the reason further down, and both belong in
+/// the one line a verdict list shows.
+#[test]
+fn a_toml_parse_error_keeps_its_reason() {
+    // A dotted key may not add to a table a `[header]` already created.
+    let text = "[a.b.c]\nx = 1\n[a.b]\nc.y = 2\n";
+    let reason = toml::from_str::<toml::Value>(text)
+        .unwrap_err()
+        .message()
+        .to_string();
+    assert!(!reason.is_empty());
+    let errors = Config::from_toml(text).errors();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("line 4"), "{errors:?}");
+    assert!(errors[0].contains(&reason), "{errors:?}");
+    assert!(!errors[0].contains('\n'), "one line: {errors:?}");
+}

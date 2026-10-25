@@ -474,16 +474,27 @@ impl Config {
         self.config_path.as_deref()
     }
 
-    /// One line for a TOML parse error: the file's label and the error's own
-    /// first line, which carries the line and column. Verdict lists show one
-    /// error per line.
+    /// One line for a TOML parse error: the file's label, the error's own
+    /// first line, which carries the line and column, and the reason, which
+    /// the toml crate puts below its snippet. Verdict lists, the daemon's
+    /// refusal and the reload log all show this one line.
     fn parse_error(file: &Path, e: &toml::de::Error) -> String {
         let text = e.to_string();
-        format!(
-            "{}: {}",
-            Self::config_label(file),
-            text.lines().next().unwrap_or_default().trim_end()
-        )
+        let at = text.lines().next().unwrap_or_default().trim_end();
+        // The reason may run to several lines ("invalid string", "expected
+        // ..."): folded, so the error stays one line.
+        let reason = e
+            .message()
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("; ");
+        if reason.is_empty() || at.contains(&reason) {
+            format!("{}: {at}", Self::config_label(file))
+        } else {
+            format!("{}: {at}: {reason}", Self::config_label(file))
+        }
     }
 
     /// The layers this configuration was composed from, for seeding.
