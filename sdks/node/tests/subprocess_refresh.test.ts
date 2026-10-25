@@ -67,7 +67,7 @@ describe('subprocess transport refresh against a real daemon', { skip }, () => {
 
   it('a provider with sources refreshes and resolves', async () => {
     unwrap(await tp.refresh(handle, 'hostname', undefined));
-    assert.equal(lastArgv(), 'refresh hostname --global');
+    assert.equal(lastArgv(), `--socket ${daemon.sockPath} refresh hostname --global`);
   });
 
   it('a static namespace is the daemon\'s refusal, in its own words', async () => {
@@ -76,6 +76,6 @@ describe('subprocess transport refresh against a real daemon', { skip }, () => {
       (err: unknown) =>
         err instanceof ServerError && err.message.startsWith('nothing to refresh: sp has no sources'),
     );
-    assert.equal(lastArgv(), 'refresh sp --path /tmp');
+    assert.equal(lastArgv(), `--socket ${daemon.sockPath} refresh sp --path /tmp`);
   });
 });

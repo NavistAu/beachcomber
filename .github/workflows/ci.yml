@@ -212,6 +212,12 @@ jobs:
         run: npm test
       - name: Run conformance suite
         run: COMB_BIN=${{ github.workspace }}/target/debug/comb node conformance_runner.js
+      - name: Run conformance suite on the subprocess tier
+        # Without koffi the SDK falls back to spawning comb; this checks that
+        # tier's conformance too.
+        run: |
+          mv node_modules/koffi node_modules/koffi.aside
+          COMB_BIN=${{ github.workspace }}/target/debug/comb node conformance_runner.js
 
   test-go:
     name: Test Go SDK

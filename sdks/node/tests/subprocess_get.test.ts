@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { daemonAvailable, spawnDaemon, type TestDaemon } from './helpers.js';
 import { unwrap } from '../src/envelope.js';
-import { ServerError, UnsupportedError } from '../src/errors.js';
+import { ServerError } from '../src/errors.js';
 import { createSubprocessTransport } from '../src/subprocess_transport.js';
 import type { ClientHandle, Transport } from '../src/transport.js';
 
@@ -34,9 +34,14 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     return unwrap(await tp.get(handle, key, path_, undefined, flags));
   }
 
-  function lastArgv(): string {
+  function lastCall(): string {
     const lines = fs.readFileSync(argvLog, 'utf8').trimEnd().split('\n');
     return lines[lines.length - 1] as string;
+  }
+
+  /** The last call's argv from its subcommand on, without the global flags. */
+  function lastArgv(): string {
+    return lastCall().replace(/^.*? (?=get |put |refresh |status)/, '');
   }
 
   before(async () => {
@@ -171,11 +176,68 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     assert.equal(lastArgv(), 'get -f json sp.n --path /tmp --force');
   });
 
-  it("a caller's env cannot be honoured and is refused, naming the FFI transport", async () => {
+  it('the global flags a get spawns with are --socket, --color and --no-exec', async () => {
+    assert.equal(await get('sp.n', '/tmp'), 1);
+    assert.equal(lastCall(), `--socket ${daemon.sockPath} --color always --no-exec get -f json sp.n --path /tmp`);
+  });
+
+  it('the map is the template env: a map-only variable hits, a host-only one misses', async () => {
+    await put('mapenv:template', { m: '{{ env.ONLYINMAP }}', h: '{{ env.ONLYINHOST }}' }, '/tmp');
+    process.env['ONLYINHOST'] = 'host';
+    try {
+      const map = JSON.stringify({ ONLYINMAP: 'map' });
+      assert.equal(unwrap(await tp.get(handle, 'mapenv.m', '/tmp', map, 0)), 'map');
+      assert.equal(unwrap(await tp.get(handle, 'mapenv.h', '/tmp', map, 0)), null);
+      // With no map the spawn renders with this process's environment.
+      assert.equal(unwrap(await tp.get(handle, 'mapenv.h', '/tmp', undefined, 0)), 'host');
+    } finally {
+      delete process.env['ONLYINHOST'];
+    }
+  });
+
+  it("an exec child sees the map's variables", async () => {
+    await put('mapexec:template', { v: '{{ exec(\'echo "$MARK"\') | trim }}' }, '/tmp');
+    const execHandle = tp.newClient({ socketPath: daemon.sockPath, timeoutMs: 5000, exec: true });
+    try {
+      const map = JSON.stringify({ MARK: 'from-map', PATH: '/usr/bin:/bin' });
+      assert.equal(unwrap(await tp.get(execHandle, 'mapexec.v', '/tmp', map, 0)), 'from-map');
+      assert.equal(lastCall().includes('--no-exec'), false);
+    } finally {
+      tp.freeClient(execHandle);
+    }
+  });
+
+  it('with exec off the call fails with exec() is disabled', async () => {
+    await put('noexec:template', { v: "{{ exec('echo hi') }}" }, '/tmp');
     await assert.rejects(
-      () => tp.get(handle, 'sp.t', '/tmp', JSON.stringify({ A: 'x' }), 0),
-      (err: unknown) => err instanceof UnsupportedError && /FFI transport/.test(err.message),
+      () => get('noexec.v', '/tmp'),
+      (err: unknown) => err instanceof ServerError && /exec\(\) is disabled/.test(err.message),
     );
+  });
+
+  it('NO_COLOR in the map stops fg drawing escapes', async () => {
+    await put('hue:template', { v: "{{ 'x' | fg('#ff0000') }}" }, '/tmp');
+    const drawn = unwrap(await tp.get(handle, 'hue.v', '/tmp', JSON.stringify({}), 0));
+    assert.match(String(drawn), /\u001b\[/);
+    assert.equal(lastCall().includes('--color always'), true);
+    const plain = unwrap(await tp.get(handle, 'hue.v', '/tmp', JSON.stringify({ NO_COLOR: '1' }), 0));
+    assert.equal(plain, 'x');
+    assert.equal(lastCall().includes('--color never'), true);
+  });
+
+  it("socketPath beats a socket_path in the config under the map's HOME", async () => {
+    const home = fs.mkdtempSync(path.join('/tmp', 'bc-cfg-'));
+    try {
+      fs.mkdirSync(path.join(home, '.config', 'beachcomber'), { recursive: true });
+      fs.writeFileSync(
+        path.join(home, '.config', 'beachcomber', 'config.toml'),
+        '[daemon]\nsocket_path = "/nonexistent/other.sock"\n',
+      );
+      const map = JSON.stringify({ HOME: home, XDG_CONFIG_HOME: path.join(home, '.config') });
+      assert.equal(unwrap(await tp.get(handle, 'spg.g', undefined, map, 0)), 1);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("a template that cannot resolve is the resolver's error, not a null hit", async () => {
@@ -202,10 +264,15 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
   it("a failed exec() is a ServerError, never a transport kind", async () => {
     // The CLI's message names a missing file; that must not read as the
     // daemon being unreachable — the daemon answered.
-    await assert.rejects(
-      () => get('bad.ex', '/tmp'),
-      (err: unknown) => err instanceof ServerError && /definitely-missing-cmd-4f2a/.test(err.message),
-    );
+    const execHandle = tp.newClient({ socketPath: daemon.sockPath, timeoutMs: 5000, exec: true });
+    try {
+      await assert.rejects(
+        async () => unwrap(await tp.get(execHandle, 'bad.ex', '/tmp', undefined, 0)),
+        (err: unknown) => err instanceof ServerError && /definitely-missing-cmd-4f2a/.test(err.message),
+      );
+    } finally {
+      tp.freeClient(execHandle);
+    }
   });
 
   it("a group whose leaf fails reports the leaf's line", async () => {

@@ -239,19 +239,20 @@ and watch — all with exact envelope fidelity.
 <key> [--path P | --global] [--force] [--wait]`: the value `comb get`
 prints, the same value the FFI tier answers — the directory chain up to
 `$HOME`, `$HOME` as the global entry, `force`/`wait`, the daemon's
-refusals. Two things cannot cross the spawn. A spawned `comb` renders with
-its own environment, so a `get` that passes `env` throws
-`UnsupportedError`; with no `env` it renders with this process's
-environment, where the FFI tier renders with none. And the CLI renders
-with `exec()` on, so the client's `exec` option has no effect here. A
-caller that needs either needs the FFI transport. `refresh` is one `comb
+refusals. The spawned `comb` renders as the FFI tier does. A call's `env`
+map is its whole environment (with no map, this process's), so `env.*` and an
+`exec()` child see exactly the map. `--socket` carries `socketPath`, else
+`$BEACHCOMBER_SOCKET`, so the map cannot point the tier at another daemon.
+`--color never` goes when the render's environment sets a non-empty
+`NO_COLOR`, else `--color always`, so the colour filters draw the same bytes
+as under FFI. And `--no-exec` goes unless the client was made with `exec:
+true`. `refresh` is one `comb
 refresh <key> [--path P | --global]`, the daemon's op itself; its refusal
 (`nothing to refresh: <key> has no sources`) is the `ServerError`'s `message`,
 the daemon's own words — the same text the FFI transport reports. The tier
 does **not** implement `hello`, `introspect`, `eval`, or `watch`: `comb`
-has no CLI surface for `hello` or `introspect`, and `comb eval` and `comb
-watch` read their environment from their own process, so the `env` a
-caller passes could not be honoured.
+has no CLI surface for `hello` or `introspect`, and `eval` and `watch` are not
+built over the spawn yet.
 Those calls throw `UnsupportedError` rather than silently
 returning wrong data. An omitted `cwd` or `path` means the global entry,
 as under FFI (the transport passes `--global`).

@@ -301,7 +301,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
       }
     } catch (err) {
       // The active transport lacks this op (the subprocess tier's hello,
-      // introspect, eval and watch, and a get with an env): the fixture is skipped by the
+      // introspect, eval and watch): the fixture is skipped by the
       // main loop, never failed on a documented gap or passed vacuously.
       if (err instanceof UnsupportedError) throw err;
       return makeError(err instanceof Error ? err.message : String(err));

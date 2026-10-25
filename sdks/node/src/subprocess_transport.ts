@@ -27,31 +27,30 @@
  * The same code drives both subprocess tiers
  * (`sdks/lua/beachcomber/subprocess_backend.lua` is the Lua half).
  *
- * Two things a `get` takes cannot cross the spawn. A spawned `comb` renders
- * with its own environment, so a caller-supplied `env` cannot be honoured:
- * a call that passes one throws `UnsupportedError` naming the FFI
- * transport. With no `env`, the spawned `comb` inherits this process's
- * environment and renders with it, where the FFI tier renders with none.
- * And the CLI renders with `exec()` on, so the client's `exec` option has no
- * effect on this tier. A caller that needs either needs the FFI transport.
+ * The spawned `comb` is made to render as the FFI tier does:
  *
- * `eval` is not implemented over this tier, for the `env` reason above:
- * `comb eval` reads its environment from its own process, and the `env` a
- * caller hands in could not be honoured faithfully here.
+ * - **Environment.** A call's `env` map is the spawned `comb`'s whole
+ *   environment, so `env.*` and an `exec()` child see exactly the map. With
+ *   no map, the spawn inherits this process's environment, which is what the
+ *   FFI tier renders with too.
+ * - **Socket.** `--socket <p>` whenever the client has a `socketPath` or this
+ *   process has `$BEACHCOMBER_SOCKET`: the order `bc_socket_path` picks in.
+ *   The map can therefore never point the tier at another daemon.
+ * - **Colour.** `--color never` when the render's environment sets a
+ *   non-empty `NO_COLOR`, else `--color always` (the template filters would
+ *   otherwise draw nothing into a pipe): the rule `EngineCtx::colour` has.
+ * - **`exec()`.** `--no-exec` unless the client was made with `exec: true`.
+ *
+ * `eval` is not implemented over this tier yet.
  *
  * `watch` went the same way in Plan 4 Task 3, when it became a *resolved*
  * watch: every event is what `get` answers, re-read with the caller's own
- * `cwd` and `env`. `comb watch <key> -f json` renders it through the same
- * library, but it reads its environment from its own process. The Lua
- * SDK's subprocess backend refuses `watch` for its own, unrelated reason
- * (`comb`'s stdout is block- rather than line-buffered through
- * `io.popen`, so a blocking line read never returns), and the two tiers
- * agree regardless.
+ * `cwd` and `env`. The Lua SDK's subprocess backend refuses `watch` because
+ * `io.popen` has no timed read and no cancel, which `next_event(timeout_ms)`
+ * and `cancel` need.
  *
- * Rather than fake structured data from scraped human-readable text or
- * silently return the wrong answer, all of these ops throw
- * `UnsupportedError` naming the FFI transport as the
- * full-fidelity path.
+ * Until it is built, these ops throw `UnsupportedError` naming the FFI
+ * transport as the full-fidelity path.
  *
  * `refresh` is one spawn of `comb refresh <key> [--path P | --global]`: the
  * daemon's `refresh` op itself, which re-executes only the Sources the key
@@ -75,6 +74,8 @@
  */
 
 import { spawnSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { IoError, LibraryNotFoundError, TimeoutError, UnsupportedError } from './errors.js';
 import type { Envelope } from './envelope.js';
 import type { NewClientOptions, Transport } from './transport.js';
@@ -83,6 +84,7 @@ interface SubprocessClientHandle {
   combBin: string;
   socketPath: string | undefined;
   timeoutMs: number | undefined;
+  exec: boolean;
 }
 
 interface SubprocessSessionHandle {
@@ -97,22 +99,57 @@ function unsupported(op: string): never {
   );
 }
 
+/**
+ * The `comb` to run, as an absolute path where this process's `$PATH` finds
+ * it. A spawn with a caller's map as its whole environment would otherwise
+ * search the map's `$PATH`, not ours.
+ */
 function resolveCombBin(): string {
-  return process.env['COMB_BIN'] || 'comb';
+  const bin = process.env['COMB_BIN'] || 'comb';
+  if (bin.includes('/')) return bin;
+  for (const dir of (process.env['PATH'] ?? '').split(':')) {
+    if (dir === '') continue;
+    const candidate = path.join(dir, bin);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // not here
+    }
+  }
+  return bin;
+}
+
+/** The variables a call renders with: its map, else this process's. */
+function renderVars(envJson: string | undefined): NodeJS.ProcessEnv {
+  return envJson === undefined ? process.env : (JSON.parse(envJson) as Record<string, string>);
+}
+
+/** `--socket`: the client's option, else this process's `$BEACHCOMBER_SOCKET`. */
+function socketArgs(handle: SubprocessClientHandle): string[] {
+  const socket = handle.socketPath || process.env['BEACHCOMBER_SOCKET'];
+  return socket ? ['--socket', socket] : [];
+}
+
+/** `--no-exec` unless the client was made with `exec: true`. */
+function execArgs(handle: SubprocessClientHandle): string[] {
+  return handle.exec ? [] : ['--no-exec'];
+}
+
+/** `--color never` when `NO_COLOR` is set non-empty among the render's variables, else `always`. */
+function colourArgs(vars: NodeJS.ProcessEnv): string[] {
+  return ['--color', vars['NO_COLOR'] ? 'never' : 'always'];
 }
 
 function runComb(
-  combBin: string,
+  handle: SubprocessClientHandle,
   args: string[],
-  opts: { socketPath?: string; timeoutMs?: number },
+  vars: NodeJS.ProcessEnv = process.env,
 ): { code: number | null; stdout: string; stderr: string } {
-  const env = { ...process.env };
-  if (opts.socketPath) {
-    env['BEACHCOMBER_SOCKET'] = opts.socketPath;
-  }
-  const result = spawnSync(combBin, args, {
-    env,
-    timeout: opts.timeoutMs,
+  const combBin = handle.combBin;
+  const result = spawnSync(combBin, [...socketArgs(handle), ...args], {
+    env: vars,
+    timeout: handle.timeoutMs,
     encoding: 'utf8',
   });
   if (result.error) {
@@ -154,11 +191,11 @@ function cliGet(
   force: boolean,
   wait: boolean,
 ): Envelope {
-  if (envJson !== undefined) unsupported('get with an env');
-  const args = ['get', '-f', 'json', key, ...pathArgs(path_)];
+  const vars = renderVars(envJson);
+  const args = [...colourArgs(vars), ...execArgs(handle), 'get', '-f', 'json', key, ...pathArgs(path_)];
   if (force) args.push('--force');
   if (wait) args.push('--wait');
-  const { code, stdout, stderr } = runComb(handle.combBin, args, handle);
+  const { code, stdout, stderr } = runComb(handle, args, vars);
 
   if (code !== 0) {
     const lines = stderr.split('\n');
@@ -196,7 +233,7 @@ function cliPut(
   const args = ['put', key, jsonData];
   if (ttl !== undefined) args.push('--ttl', ttl);
   args.push(...pathArgs(path_));
-  const { code, stderr } = runComb(handle.combBin, args, handle);
+  const { code, stderr } = runComb(handle, args);
   if (code !== 0) return envelopeFromFailure(stderr);
   return { ok: true, data: null };
 }
@@ -210,7 +247,7 @@ function cliPut(
  */
 function cliRefresh(handle: SubprocessClientHandle, key: string, path_: string | undefined): Envelope {
   const args = ['refresh', key, ...pathArgs(path_)];
-  const { code, stderr } = runComb(handle.combBin, args, handle);
+  const { code, stderr } = runComb(handle, args);
   if (code !== 0) {
     const trimmed = stderr.trim();
     // The daemon's own refusal is the CLI's only stderr line. Anything else
@@ -226,7 +263,7 @@ function cliRefresh(handle: SubprocessClientHandle, key: string, path_: string |
 }
 
 function cliStatus(handle: SubprocessClientHandle): Envelope {
-  const { code, stdout, stderr } = runComb(handle.combBin, ['status', '-f', 'json'], handle);
+  const { code, stdout, stderr } = runComb(handle, [...execArgs(handle), 'status', '-f', 'json']);
   if (code !== 0) return envelopeFromFailure(stderr);
   const rows = stdout
     .split('\n')
@@ -256,6 +293,7 @@ export function createSubprocessTransport(): Transport {
         combBin,
         socketPath: options.socketPath,
         timeoutMs: options.timeoutMs,
+        exec: options.exec === true,
       };
     },
     freeClient() {
