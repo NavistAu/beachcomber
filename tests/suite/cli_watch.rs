@@ -5,19 +5,13 @@
 //! reads plus the provider's template tree).
 //!
 //! `comb watch` streams forever, so a streaming case here spawns it as a
-//! child with piped stdout and reads its lines on a background thread
-//! bounded by `recv_timeout` (no sleeps — see
-//! `tests/suite/no_sleep_in_tests.rs`), then kills it. The two error cases
+//! child and reads its lines through `common::watch`, then kills it. The two error cases
 //! (conflicting path spellings, a deleted cwd) exit before any streaming
 //! starts, so they use `assert_cmd` like `tests/suite/cli_refresh.rs` does
 //! for the same cases.
 
 use crate::common::daemon::{TestDaemon, isolate};
-use std::io::{BufRead, BufReader, Read};
-use std::path::Path;
-use std::process::{Child, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
+use crate::common::watch::{first_line, watch_lines};
 
 /// The template tree these tests watch through: one leaf, rendered from a
 /// literal tag so no environment is involved.
@@ -26,82 +20,6 @@ const TREE: &str = r#"{"widgets":{"foo":"{{ 'hi' }}"}}"#;
 /// `TREE` with the leaf edited — what a `put` to the template makes the
 /// watched value become.
 const TREE_EDITED: &str = r#"{"widgets":{"foo":"{{ 'hi!' }}"}}"#;
-
-/// A running `comb watch` child, killed and reaped on drop so an early
-/// `assert!` failure in a test body never leaks a daemon-attached process.
-struct WatchChild(Child);
-
-impl Drop for WatchChild {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-/// Spawn `comb watch <args>` at `cwd`, isolated like `comb` above, with piped
-/// stdout and stderr.
-fn spawn_watch(d: &TestDaemon, cwd: &Path, args: &[&str]) -> WatchChild {
-    let mut cmd = d.command(cwd);
-    cmd.arg("watch")
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    WatchChild(cmd.spawn().expect("spawn comb watch"))
-}
-
-/// A running `comb watch` whose stdout lines arrive on a channel fed by a
-/// background thread, so a test can wait for one frame, provoke the next,
-/// and wait again — all on bounded `recv_timeout`s, never a sleep.
-struct WatchLines {
-    child: WatchChild,
-    rx: mpsc::Receiver<String>,
-}
-
-/// Spawn `comb watch <args>` at `cwd` and start draining its stdout.
-fn watch_lines(d: &TestDaemon, cwd: &Path, args: &[&str]) -> WatchLines {
-    let mut child = spawn_watch(d, cwd, args);
-    let stdout = child.0.stdout.take().expect("piped stdout");
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { return };
-            if tx.send(line).is_err() {
-                return;
-            }
-        }
-    });
-    WatchLines { child, rx }
-}
-
-impl WatchLines {
-    /// The next frame's line, waiting up to 5s (the suite's norm for
-    /// spawn+connect+first-frame waits). A timeout panics naming what the
-    /// child wrote to stderr rather than failing as a bare `None`.
-    fn next_line(&mut self) -> String {
-        match self.rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(line) => line,
-            Err(_) => panic!(
-                "comb watch produced no further output within 5s; stderr:\n{}",
-                self.stderr()
-            ),
-        }
-    }
-
-    fn stderr(&mut self) -> String {
-        let _ = self.child.0.kill();
-        let mut stderr = String::new();
-        if let Some(mut s) = self.child.0.stderr.take() {
-            let _ = s.read_to_string(&mut stderr);
-        }
-        let _ = self.child.0.wait();
-        stderr
-    }
-}
-
-/// The first frame of `comb watch <args>` at `cwd`, then the child is killed.
-fn first_line(d: &TestDaemon, cwd: &Path, args: &[&str]) -> String {
-    watch_lines(d, cwd, args).next_line()
-}
 
 #[test]
 fn watch_defaults_to_the_callers_cwd() {

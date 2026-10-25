@@ -1,6 +1,6 @@
 use crate::common::daemon::TestDaemon;
+use crate::common::watch::first_line;
 use std::path::Path;
-use std::time::Duration;
 
 #[test]
 fn daemon_fixture_starts_and_exits() {
@@ -234,15 +234,12 @@ fn golden_watch_emits_value_then_exits() {
         .assert()
         .success();
 
-    // `watch` streams forever; kill it after 2 s.  The initial value line is
-    // written before the process is killed, so stdout will contain it even
-    // though the exit code is non-zero (killed by timeout).
-    // `--path /` matches the `--path /` used in the put above.
-    d.comb(Path::new("/"))
-        .args(["watch", "watchprov.val", "--path", "/"])
-        .timeout(Duration::from_secs(2))
-        .assert()
-        .stdout(predicates::str::contains("stream-me"));
+    // `watch` streams forever: its first line is the value, and then it is
+    // killed. `--path /` matches the `--path /` used in the put above.
+    assert_eq!(
+        first_line(&d, Path::new("/"), &["watchprov.val", "--path", "/"]),
+        "stream-me"
+    );
 }
 
 // ── golden_eval_renders_template ─────────────────────────────────────────────

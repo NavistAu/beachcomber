@@ -7,9 +7,9 @@
 //! read at the current directory instead would be a miss.
 
 use crate::common::daemon::TestDaemon;
+use crate::common::watch::first_line;
 use predicates::prelude::*;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// `(project, elsewhere)`: the directory a test addresses, and a sibling it
 /// runs from.
@@ -28,18 +28,6 @@ fn ok(d: &TestDaemon, cwd: &Path, args: &[&str]) -> String {
 
 fn usage_error(d: &TestDaemon, cwd: &Path, args: &[&str]) {
     d.comb(cwd).args(args).assert().code(2);
-}
-
-/// The first line `watch` prints, before it is stopped.
-fn watch_first(d: &TestDaemon, cwd: &Path, args: &[&str]) -> String {
-    let out = d
-        .comb(cwd)
-        .arg("watch")
-        .args(args)
-        .timeout(Duration::from_secs(2))
-        .assert();
-    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
-    stdout.lines().next().unwrap_or_default().to_string()
 }
 
 #[test]
@@ -94,7 +82,7 @@ fn watch_takes_the_short_flag() {
     let (project, elsewhere) = dirs(&d);
     let at = project.to_str().unwrap();
     ok(&d, &elsewhere, &["put", "p.v", "\"seen\"", at]);
-    assert_eq!(watch_first(&d, &elsewhere, &["-p", at, "p.v"]), "seen");
+    assert_eq!(first_line(&d, &elsewhere, &["-p", at, "p.v"]), "seen");
 }
 
 #[test]
@@ -213,7 +201,7 @@ fn a_template_reads_files_in_the_directory_it_is_addressed_at() {
         ok(&d, &elsewhere, &["eval", "--global", "{{ t.m }}"]),
         "home"
     );
-    assert_eq!(watch_first(&d, &elsewhere, &["t.m", at]), "project");
+    assert_eq!(first_line(&d, &elsewhere, &["t.m", at]), "project");
 }
 
 /// One rule on every command: an argument is a directory only when it starts
