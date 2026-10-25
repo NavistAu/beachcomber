@@ -355,6 +355,38 @@ pub fn source_call(
     }))
 }
 
+/// Bring `provider` up to date for a read from `entry`, as a `get` of it
+/// would before answering: each of its Sources, and each Source its lines
+/// call, runs a cold instance of its chain inline, once ([`source_call`] with
+/// [`Cold::Run`]). What `comb.<p>` in a `data` line does before it reads.
+///
+/// A Source already running on this thread is left as it stands: a run never
+/// waits on itself, so a line that reads its own provider, or reads round a
+/// ring of `comb.` reads back to itself, finds that Source's last stored
+/// value. Each instance reached is noted against the run that is reading, so
+/// whatever keeps the reader warm keeps these warm too. Only a fault of the
+/// lines is an error.
+pub fn warm_provider(
+    registry: &ProviderRegistry,
+    cache: &Cache,
+    provider: &str,
+    entry: Option<&str>,
+) -> Result<(), String> {
+    let own = registry
+        .provider_sources(provider)
+        .unwrap_or_default()
+        .iter()
+        .map(|s| (provider.to_string(), s.name.clone()));
+    let called = registry.lines().all_calls(provider).iter().cloned();
+    for (p, s) in own.chain(called).collect::<Vec<_>>() {
+        if is_running(&p, &s) {
+            continue;
+        }
+        source_call(registry, cache, &p, &s, entry, Cold::Run)?;
+    }
+    Ok(())
+}
+
 /// The instance chain of a Source from `dir`, walked without rendering a
 /// `root` line: a Source that renders its root is asked only for roots already
 /// kept. `None` when a root is not resolved yet.

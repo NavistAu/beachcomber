@@ -42,15 +42,19 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// A daemon-side read of one provider node at a directory entry: put over
-/// source, up the directory chain, never a template. What `comb.<p>` sees.
+/// source, up the directory chain, through the provider's `return` line,
+/// never a template. What `comb.<p>` sees.
 ///
-/// `read` only reads stored records and never executes anything: a Source's
-/// `data` line runs inside a refresh, and a read that ran Sources could
-/// recurse into the one being refreshed. So `comb.<own provider>` in a `data`
-/// line is that provider's own last stored value, never a fresh run.
+/// `read` is a read like any other: a cold Source of the provider runs first,
+/// inline, once. A Source never waits on itself, so `comb.<own provider>` in a
+/// `data` line, or a ring of such reads, finds the running Source's own last
+/// stored value. A Source call (`sources.<s>()`) differs where that is the
+/// point: it reads one Source's raw records, without a `put` over them or the
+/// provider's lines, and calling oneself is an error.
 pub trait DaemonRead: Send + Sync {
     /// `Ok(None)` is nothing stored. `Err` is a read that could not be
-    /// answered (a root that failed to work out); it fails the `data` render.
+    /// answered (a root that failed to work out, a fault in a line it ran);
+    /// it fails the `data` render.
     fn read(
         &self,
         provider: &str,
@@ -182,6 +186,9 @@ pub struct ConfigSource {
     reader: Arc<dyn DaemonRead>,
     /// The providers the `data` line reads through `comb`, each once.
     comb_providers: Vec<String>,
+    /// Whether the `data` line reads through `comb` at all, by name or by a
+    /// computed `comb[...]`: a read runs cold Sources, which the run notes.
+    reads_comb: bool,
     /// The Sources the `data` line calls.
     calls: Vec<Called>,
 }
@@ -343,7 +350,12 @@ impl ConfigSource {
             &plugins,
         )?;
 
-        let comb_providers: Vec<String> = discover_refs(&spec.data)
+        let refs = discover_refs(&spec.data);
+        let reads_comb = refs.iter().any(|r| {
+            matches!(r, Ref::CombProvider(_) | Ref::CombField(..))
+                || *r == Ref::Dynamic("comb".to_string())
+        });
+        let comb_providers: Vec<String> = refs
             .into_iter()
             .filter_map(|r| match r {
                 Ref::CombProvider(p) | Ref::CombField(p, _) => Some(p),
@@ -392,6 +404,7 @@ impl ConfigSource {
             plugins,
             reader,
             comb_providers,
+            reads_comb,
             calls,
         })
     }
@@ -438,7 +451,7 @@ impl ConfigSource {
     fn run(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let running = Running::enter(&self.spec.provider, &self.spec.name);
         let result = self.run_lines(path);
-        if !self.calls.is_empty() {
+        if !self.calls.is_empty() || self.reads_comb {
             self.reader.ran_calling(
                 &self.spec.provider,
                 &self.spec.name,

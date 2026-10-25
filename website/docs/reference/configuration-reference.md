@@ -126,7 +126,7 @@ return = "{{ result | poll('86400s') }}"
 
 ### The engine — what a Source's lines can call
 
-A Source's `data` and `result` lines run on one jinja engine in the daemon. `env` is the daemon's own environment (its `env_file` included, never the caller's), `comb.<provider>` reads stored records, and these functions and filters are added to minijinja's built-ins. A Source's `return` is not on this engine: it sees `result` and the schedule decorators (`poll`, `watch`, `ttl`, `failback`, `budget`, `timeout`, `nearest`, `super`) alone.
+A Source's `data` and `result` lines run on one jinja engine in the daemon. `env` is the daemon's own environment (its `env_file` included, never the caller's), `comb.<provider>` reads the provider as a `get` of it would — put over source, through its `return` line, a cold Source run first, once (a Source never waits on itself: one that reads its own provider finds its own last stored value) — and these functions and filters are added to minijinja's built-ins. A Source's `return` is not on this engine: it sees `result` and the schedule decorators (`poll`, `watch`, `ttl`, `failback`, `budget`, `timeout`, `nearest`, `super`) alone.
 
 | Name | What it does |
 |---|---|

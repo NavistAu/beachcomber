@@ -246,6 +246,65 @@ result.y = "{{ data }}!"
     );
 }
 
+/// `comb.<p>` in a `data` line is a read like any other: a provider nothing
+/// has read yet runs, once, for the line that reads it.
+#[test]
+fn a_data_line_reading_a_cold_provider_runs_it() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.up.sources.s]
+data = "{{ exec('echo upstream') | trim }}"
+result.v = "{{ data }}"
+
+[daemon.providers.down.sources.s]
+data = "{{ comb.up.v }}"
+result.v = "{{ data }}!"
+
+[daemon.providers.dyn.sources.s]
+data = "{{ comb['up2'].v }}"
+result.v = "{{ data }}?"
+
+[daemon.providers.up2.sources.s]
+data = "{{ exec('echo second') | trim }}"
+result.v = "{{ data }}"
+"#,
+    )]);
+    let d = setup.daemon();
+    assert_eq!(get(&d, "down.v"), Some(json!("upstream!")));
+    assert_eq!(
+        get(&d, "dyn.v"),
+        Some(json!("second?")),
+        "and comb[...] too"
+    );
+}
+
+/// A Source never waits on itself: one that reads its own provider, or reads
+/// round a ring of `comb.` reads back to itself, finds its own last stored
+/// value, which before its first run is nothing.
+#[test]
+fn a_data_line_reading_its_own_provider_finds_its_last_value() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.me.sources.s]
+data = "{{ (comb.me.n or 0) + 1 }}"
+result.n = "{{ data }}"
+
+[daemon.providers.ring_a.sources.s]
+data = "{{ comb.ring_b.v or 'none' }}"
+result.v = "{{ 'a<' ~ data }}"
+
+[daemon.providers.ring_b.sources.s]
+data = "{{ comb.ring_a.v or 'none' }}"
+result.v = "{{ 'b<' ~ data }}"
+"#,
+    )]);
+    let d = setup.daemon();
+    assert_eq!(get(&d, "me.n"), Some(json!(1)));
+    assert_eq!(get(&d, "ring_a.v"), Some(json!("a<b<none")));
+}
+
 #[test]
 fn data_runs_at_refresh_not_at_load() {
     let setup = Setup::new(&[(

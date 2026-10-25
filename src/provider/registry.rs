@@ -129,9 +129,12 @@ impl DaemonRead for RegistryReader {
         .map(|record| record.map(|r| r.value))
     }
 
-    /// Never executes a Source. `dir` is a directory; `$HOME` addresses the
-    /// global entry, as `QueryPlan` normalises it. It reads every instance up
-    /// each Source's chain from `dir`, as a whole-provider read does.
+    /// A read like any other: the provider's cold Sources run first, once
+    /// ([`crate::provider::source_call::warm_provider`]), then its stored
+    /// records are read, put over source, through its `return` line. `dir` is
+    /// a directory; `$HOME` addresses the global entry, as `QueryPlan`
+    /// normalises it. It reads every instance up each Source's chain from
+    /// `dir`, as a whole-provider read does.
     fn read(
         &self,
         provider: &str,
@@ -147,6 +150,18 @@ impl DaemonRead for RegistryReader {
         let Ok(plan) = crate::query::QueryPlan::build(provider, dir, &registry) else {
             return Ok(None);
         };
+        if crate::query::parse_facet(&plan.provider)
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            crate::provider::source_call::warm_provider(
+                &registry,
+                cache,
+                &plan.provider,
+                plan.requested_path.as_deref(),
+            )?;
+        }
         let instances = crate::query::instances_for(
             &registry,
             &plan.provider,
