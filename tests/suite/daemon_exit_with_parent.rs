@@ -7,26 +7,34 @@
 //! during the test-suite-health work. `--exit-with-parent` makes the daemon
 //! self-terminate when its spawner dies, even on SIGKILL.
 
-use crate::common::daemon::isolate;
+use crate::common::daemon::{isolate, launch};
 use crate::common::poll::poll_until;
 use std::process::Command;
 use std::time::Duration;
 
-/// True while `pid` (as a decimal string) is a live process. `kill -0` checks
-/// existence without sending a real signal; avoids a libc dev-dependency.
-fn pid_alive(pid: &str) -> bool {
-    Command::new("kill")
-        .args(["-0", pid])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// How often a test looks again: the daemon checks its parent every 50ms.
+const POLL: Duration = Duration::from_millis(10);
+
+/// True while `pid` is a live process: signal 0 checks existence without
+/// sending anything.
+fn pid_alive(pid: libc::pid_t) -> bool {
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// The pid `sh` recorded in `pidfile`.
+fn read_pid(pidfile: &std::path::Path) -> libc::pid_t {
+    std::fs::read_to_string(pidfile)
+        .expect("read daemon pidfile")
+        .trim()
+        .parse()
+        .expect("a pid")
 }
 
 /// Kills the daemon pid on drop, so a failed or timed-out test cannot leak it.
-struct KillOnDrop(String);
+struct KillOnDrop(libc::pid_t);
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
-        let _ = Command::new("kill").args(["-9", &self.0]).status();
+        unsafe { libc::kill(self.0, libc::SIGKILL) };
     }
 }
 
@@ -42,33 +50,22 @@ fn daemon_exits_when_parent_dies() {
     // SIGKILLing this `sh` re-parents the daemon WITHOUT signalling it — exactly
     // the nextest-SIGKILL-of-a-test scenario that produced the orphans.
     // `HOME`/`XDG_CONFIG_HOME` keep the daemon's managed-defaults write out of
-    // the developer's real config directory.
-    let mut parent = isolate(&mut Command::new("sh"), tmp.path(), tmp.path(), &sock)
+    // the developer's real config directory. `launch` hands `sh` the readiness
+    // pipe as `$0 $1` (`--ready-fd <fd>`), which `sh` passes on to the daemon
+    // and closes, and returns once the daemon says it serves.
+    let mut cmd = Command::new("sh");
+    isolate(&mut cmd, tmp.path(), tmp.path(), &sock)
         .arg("-c")
         .arg(format!(
-            "{comb} daemon --exit-with-parent --socket {sock} & echo $! > {pid}; wait",
+            "{comb} daemon --exit-with-parent --socket {sock} --ready-fd $1 & echo $! > {pid}; eval \"exec $1>&-\"; wait",
             sock = sock.display(),
             pid = pidfile.display(),
-        ))
-        .spawn()
-        .expect("spawn intermediate parent");
-
-    // Wait for the daemon to come up (socket + recorded pid).
-    poll_until(
-        &format!("(socket at {sock:?}, pidfile at {pidfile:?})"),
-        "both to exist",
-        Duration::from_secs(10),
-        Duration::from_millis(50),
-        || (sock.exists(), pidfile.exists()),
-        |(has_sock, has_pid)| *has_sock && *has_pid,
-    );
-    let daemon_pid = std::fs::read_to_string(&pidfile)
-        .expect("read daemon pidfile")
-        .trim()
-        .to_string();
-    let _reaper = KillOnDrop(daemon_pid.clone());
+        ));
+    let mut parent = launch(&mut cmd);
+    let daemon_pid = read_pid(&pidfile);
+    let _reaper = KillOnDrop(daemon_pid);
     assert!(
-        pid_alive(&daemon_pid),
+        pid_alive(daemon_pid),
         "daemon (pid {daemon_pid}) should be alive before the parent dies"
     );
 
@@ -76,13 +73,13 @@ fn daemon_exits_when_parent_dies() {
     parent.kill().expect("kill intermediate parent");
     let _ = parent.wait();
 
-    // The daemon must self-exit within a few poll intervals (it polls ppid @500ms).
+    // The daemon must self-exit within a few poll intervals (it polls ppid @50ms).
     let still_alive = poll_until(
         &format!("liveness of daemon pid {daemon_pid}"),
         "it to self-exit after its parent died (--exit-with-parent)",
         Duration::from_secs(10),
-        Duration::from_millis(100),
-        || pid_alive(&daemon_pid),
+        POLL,
+        || pid_alive(daemon_pid),
         |alive| !*alive,
     );
     assert!(
@@ -122,11 +119,8 @@ fn daemon_exits_when_parent_dies_during_startup() {
         || (log.exists(), pidfile.exists()),
         |(has_log, has_pid)| *has_log && *has_pid,
     );
-    let daemon_pid = std::fs::read_to_string(&pidfile)
-        .expect("read daemon pidfile")
-        .trim()
-        .to_string();
-    let _reaper = KillOnDrop(daemon_pid.clone());
+    let daemon_pid = read_pid(&pidfile);
+    let _reaper = KillOnDrop(daemon_pid);
     parent.kill().expect("kill intermediate parent");
     let _ = parent.wait();
 
@@ -134,8 +128,8 @@ fn daemon_exits_when_parent_dies_during_startup() {
         &format!("liveness of daemon pid {daemon_pid}"),
         "it to self-exit after its parent died mid-startup (--exit-with-parent)",
         Duration::from_secs(10),
-        Duration::from_millis(100),
-        || pid_alive(&daemon_pid),
+        POLL,
+        || pid_alive(daemon_pid),
         |alive| !*alive,
     );
     assert!(
@@ -168,11 +162,8 @@ fn daemon_exits_at_once_when_already_orphaned_at_startup() {
         .expect("spawn short-lived parent");
     let _ = parent.wait();
 
-    let daemon_pid = std::fs::read_to_string(&pidfile)
-        .expect("read daemon pidfile")
-        .trim()
-        .to_string();
-    let _reaper = KillOnDrop(daemon_pid.clone());
+    let daemon_pid = read_pid(&pidfile);
+    let _reaper = KillOnDrop(daemon_pid);
 
     // The parent has exited; release the daemon so it starts already orphaned.
     std::fs::write(&gate, "").expect("open gate");
@@ -181,8 +172,8 @@ fn daemon_exits_at_once_when_already_orphaned_at_startup() {
         &format!("liveness of daemon pid {daemon_pid}"),
         "it to exit at once, having no parent at startup (--exit-with-parent)",
         Duration::from_secs(10),
-        Duration::from_millis(100),
-        || pid_alive(&daemon_pid),
+        POLL,
+        || pid_alive(daemon_pid),
         |alive| !*alive,
     );
     assert!(

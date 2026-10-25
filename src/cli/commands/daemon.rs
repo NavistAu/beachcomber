@@ -318,6 +318,10 @@ impl Ready {
     }
 }
 
+/// How often `--exit-with-parent` looks at its parent: one `getppid()`, so a
+/// test that kills the parent sees the daemon go within tens of milliseconds.
+const PARENT_CHECK: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Cancel `cancel` when this daemon's parent process dies, detected via
 /// re-parenting: `getppid()` changes from `initial_ppid`, captured at the top of
 /// `run_daemon` (so a parent that died mid-startup is caught at once; the
@@ -337,7 +341,7 @@ fn spawn_parent_death_watch(cancel: tokio_util::sync::CancellationToken, initial
                 cancel.cancel();
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(PARENT_CHECK);
         }
     });
 }
