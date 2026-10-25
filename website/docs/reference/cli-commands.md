@@ -38,7 +38,7 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 
 `get`, `put`, `refresh`, `watch` and `eval` read or write at a directory, and all five take it the same three ways:
 
-- a trailing `[path]` argument — for `get`, which takes any number of keys, a last argument that starts with `/`, `~` or `.` after at least one key (no key starts so, and a lone argument is always a key); for the others, their optional last argument;
+- a trailing `[path]` argument, which is a directory only when it starts with `/`, `~` or `.` — no key starts so. For `get`, which takes any number of keys, a last argument written otherwise is another key, and a lone argument is always a key. For the others, whose last argument can only be a directory, anything else is refused with the spelling that works: `comb put p.k 1 repo` is `repo is not a directory: write ./repo or --path repo`;
 - `-p <path>` / `--path <path>`;
 - `--global`, the global entry (`$HOME`), which every directory's chain ends at.
 

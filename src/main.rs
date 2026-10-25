@@ -175,8 +175,12 @@ enum Commands {
         key: String,
         /// JSON data (an object at the root, any JSON below it); `null` removes the node's put, dropping the entry when none remain; provider records are untouched
         data: String,
-        /// Directory to address, the same as --path
-        #[arg(value_name = "PATH", conflicts_with_all = ["path", "global"])]
+        /// Directory to address, the same as --path; it starts with /, ~ or .
+        #[arg(
+            value_name = "PATH",
+            conflicts_with_all = ["path", "global"],
+            value_parser = trailing_dir
+        )]
         at: Option<String>,
         /// Expire the node: valid for this long (e.g., "30s", "5m"), stale for one decay step, then removed; the next put renews it. Whole seconds, at least 1s; not with null data
         #[arg(long, value_name = "DURATION", value_parser = beachcomber::config::duration_arg)]
@@ -189,8 +193,12 @@ enum Commands {
     Refresh {
         /// Provider key (e.g., "git" or "git.branch")
         key: String,
-        /// Directory to address, the same as --path
-        #[arg(value_name = "PATH", conflicts_with_all = ["path", "global"])]
+        /// Directory to address, the same as --path; it starts with /, ~ or .
+        #[arg(
+            value_name = "PATH",
+            conflicts_with_all = ["path", "global"],
+            value_parser = trailing_dir
+        )]
         at: Option<String>,
         #[command(flatten)]
         path: PathArgs,
@@ -200,8 +208,12 @@ enum Commands {
     Watch {
         /// Provider key (e.g., "git.branch")
         key: String,
-        /// Directory to address, the same as --path
-        #[arg(value_name = "PATH", conflicts_with_all = ["path", "global"])]
+        /// Directory to address, the same as --path; it starts with /, ~ or .
+        #[arg(
+            value_name = "PATH",
+            conflicts_with_all = ["path", "global"],
+            value_parser = trailing_dir
+        )]
         at: Option<String>,
         #[command(flatten)]
         path: PathArgs,
@@ -214,8 +226,12 @@ enum Commands {
     Eval {
         /// Template or expression: `{{ provider.field }}`, or text with several tags
         template: String,
-        /// Directory to address, the same as --path
-        #[arg(value_name = "PATH", conflicts_with_all = ["path", "global"])]
+        /// Directory to address, the same as --path; it starts with /, ~ or .
+        #[arg(
+            value_name = "PATH",
+            conflicts_with_all = ["path", "global"],
+            value_parser = trailing_dir
+        )]
         at: Option<String>,
         #[command(flatten)]
         path: PathArgs,
@@ -319,6 +335,21 @@ fn cli_path(global: bool, requested: Option<String>) -> Result<Option<String>, E
         Some(p) => p,
         None => cwd()?.to_string_lossy().into_owned(),
     }))
+}
+
+/// A trailing `[PATH]`: a directory only when it starts with `/`, `~` or
+/// `.`, the one rule `get` reads its last argument by
+/// ([`is_path_like`](beachcomber::cli::commands::get::is_path_like)). Where the
+/// last argument can only be a directory, anything else is refused with the
+/// spelling that would have worked.
+fn trailing_dir(arg: &str) -> Result<String, String> {
+    if beachcomber::cli::commands::get::is_path_like(arg) {
+        Ok(arg.to_string())
+    } else {
+        Err(format!(
+            "{arg} is not a directory: write ./{arg} or --path {arg}"
+        ))
+    }
 }
 
 /// `-p/--path` / `--global`, shared by every command that addresses a

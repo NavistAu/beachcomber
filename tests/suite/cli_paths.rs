@@ -214,3 +214,30 @@ fn a_template_reads_files_in_the_directory_it_is_addressed_at() {
     );
     assert_eq!(watch_first(&d, &elsewhere, &["t.m", at]), "project");
 }
+
+/// One rule on every command: an argument is a directory only when it starts
+/// with `/`, `~` or `.`. For `get` a bare word is another key; for the commands
+/// whose last argument can only be a directory, it is refused with the fix.
+#[test]
+fn a_trailing_directory_starts_with_slash_tilde_or_dot_on_every_command() {
+    let d = TestDaemon::spawn();
+    let (project, _) = dirs(&d);
+    let ws = project.parent().unwrap();
+
+    for args in [
+        &["put", "p.k", "1", "project"][..],
+        &["refresh", "git", "project"][..],
+        &["watch", "git.branch", "project"][..],
+        &["eval", "{{ 1 }}", "project"][..],
+    ] {
+        d.comb(ws)
+            .args(args)
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains(
+                "project is not a directory: write ./project or --path project",
+            ));
+    }
+    ok(&d, ws, &["put", "p.k", "1", "./project"]);
+    assert_eq!(ok(&d, ws, &["get", "p.k", "./project"]), "1");
+}
