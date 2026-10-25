@@ -422,3 +422,155 @@ fn a_template_put_at_the_global_entry_renders_at_a_cwd_below_home() {
     );
     assert_eq!(rendered[0]["value"], "hi");
 }
+
+// ── --tree ───────────────────────────────────────────────────────────────────
+
+/// Under each value, `--tree` lists the layers a read from here consults,
+/// nearest first: the template record over the data beneath it, a nearer put
+/// over a global one. The one the read takes is drawn plainly; the rest say
+/// `shadowed` when colour is off. Each leaf is one row: the records it
+/// shadows are its children, not rows of their own.
+#[test]
+fn tree_lists_the_layers_under_each_value_and_marks_the_shadowed_ones() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    put(&d, &cwd, &["t:template.greet", r#""{{ 'tpl' }}""#]);
+    put(&d, &cwd, &["t.greet", r#""data""#]);
+    put(&d, &cwd, &["--global", "t.other", r#""far""#]);
+    put(&d, &cwd, &["t.other", r#""near""#]);
+
+    let out = status(
+        &d,
+        &cwd,
+        &[
+            "--tree",
+            "--filter",
+            "provider=t",
+            "--color",
+            "never",
+            "--ascii",
+            "--no-trunc",
+        ],
+    );
+    let lines = squashed(&out);
+    let at = |prefix: &str| {
+        lines
+            .iter()
+            .position(|l| l.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no line starting {prefix:?} in:\n{out}"))
+    };
+    let greet = at("t greet template > tpl ");
+    assert!(
+        lines[greet + 1].starts_with("|- :template put {{ 'tpl' }} "),
+        "{out}"
+    );
+    assert!(
+        lines[greet + 2].starts_with("`- shadowed put data "),
+        "{out}"
+    );
+    // The near put is the row; only what it shadows hangs under it.
+    let near = at("t other put near ");
+    assert!(
+        lines[near + 1].starts_with("`- shadowed put far - "),
+        "{out}"
+    );
+    let top_level = |field: &str| {
+        lines
+            .iter()
+            .filter(|l| l.starts_with(&format!("t {field} ")))
+            .count()
+    };
+    assert_eq!(top_level("greet"), 1, "one greet row:\n{out}");
+    assert_eq!(top_level("other"), 1, "one other row:\n{out}");
+}
+
+/// A cascading Source answers from the project's instance and stores a record
+/// at `~` too: `--tree` keeps the project's record, which answered, as the
+/// one row, and lists the `~` record under it as shadowed.
+#[test]
+fn tree_keeps_the_instance_that_answered_as_the_row() {
+    let socket = crate::common::socket::IsolatedSocket::new();
+    let home = socket.dir.path().join("home");
+    let xdg = socket.dir.path().join("xdg");
+    let project_dir = home.join("ws").join("project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    std::fs::create_dir_all(xdg.join("beachcomber")).unwrap();
+    std::fs::write(home.join(".mk"), "home\n").unwrap();
+    std::fs::write(project_dir.join(".mk"), "proj\n").unwrap();
+    std::fs::write(
+        xdg.join("beachcomber").join("config.toml"),
+        r#"
+[daemon.providers.walk.sources.main]
+root = "{{ lup('.mk') | dirname }}"
+data = "{{ '.mk' | read | trim }}"
+result.v = "{{ data }}"
+"#,
+    )
+    .unwrap();
+    let d = TestDaemon::spawn_in(socket, home, xdg);
+    let cwd = std::fs::canonicalize(&project_dir).unwrap();
+    // Read from the project, then from `~`, so both instances hold a record.
+    comb(&d, &cwd).args(["get", "walk.v"]).assert().success();
+    comb(&d, &cwd)
+        .args(["get", "--global", "walk.v"])
+        .assert()
+        .success();
+
+    let out = status(
+        &d,
+        &cwd,
+        &[
+            "--tree",
+            "--filter",
+            "provider=walk",
+            "--color",
+            "never",
+            "--ascii",
+            "--no-trunc",
+        ],
+    );
+    let lines = squashed(&out);
+    let rows: Vec<&String> = lines.iter().filter(|l| l.starts_with("walk v ")).collect();
+    assert_eq!(rows.len(), 1, "one walk.v row:\n{out}");
+    assert!(rows[0].starts_with("walk v source(main) proj "), "{out}");
+    let at = lines.iter().position(|l| l == rows[0]).unwrap();
+    assert!(
+        lines[at + 1].starts_with("`- shadowed source(main) home - "),
+        "{out}"
+    );
+}
+
+/// In json each row carries its `layers`, the answering one marked.
+#[test]
+fn tree_json_rows_carry_their_layers() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    put(&d, &cwd, &["t:template.greet", r#""{{ 'tpl' }}""#]);
+    put(&d, &cwd, &["t.greet", r#""data""#]);
+
+    let rows = json_rows(&d, &cwd, &["--tree", "--filter", "provider=t"]);
+    let rendered = rows
+        .iter()
+        .find(|r| r["source"] == "template")
+        .unwrap_or_else(|| panic!("a rendered row: {rows:#?}"));
+    let layers = rendered["layers"].as_array().expect("layers");
+    assert_eq!(layers.len(), 2, "{layers:#?}");
+    assert_eq!(layers[0]["facet"], "template");
+    assert_eq!(layers[0]["answered"], true);
+    assert_eq!(layers[1]["label"], "put");
+    assert_eq!(layers[1]["value"], "data");
+    assert!(layers[1].get("answered").is_none(), "{layers:#?}");
+}
+
+#[test]
+fn tree_with_another_format_is_a_usage_error() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    comb(&d, &cwd)
+        .args(["status", "--tree", "-f", "csv"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "--tree works with the human, table and json formats",
+        ));
+}

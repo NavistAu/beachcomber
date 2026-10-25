@@ -3010,3 +3010,63 @@ fn modest_field_names_are_not_truncated_by_a_wide_value() {
         "modest field name must render untruncated: {out}"
     );
 }
+
+#[test]
+fn tree_dims_a_shadowed_layer_when_colour_is_on() {
+    use beachcomber::cache::LayerRecord;
+    use beachcomber::cli::status_format::render_tree;
+    let layer = |label: &str, answered: bool| LayerRecord {
+        label: label.into(),
+        facet: None,
+        path: None,
+        value: serde_json::json!(label),
+        age_ms: 0,
+        stale: false,
+        answered,
+    };
+    let rows = vec![sample_rows()[0].clone()];
+    let children = vec![vec![layer("taken", true), layer("hidden", false)]];
+    let opts = RenderOpts {
+        no_color: false,
+        ..RenderOpts::default()
+    };
+    let out = render_tree("human", &rows, &children, &opts);
+    let hidden = out.lines().find(|l| l.contains("hidden")).expect(&out);
+    let taken = out.lines().find(|l| l.contains("taken")).expect(&out);
+    assert!(hidden.contains("\x1b[2m"), "{hidden:?}");
+    assert!(!taken.contains("\x1b[2m"), "{taken:?}");
+    assert!(
+        hidden.contains("shadowed"),
+        "the word is there with colour too: {hidden:?}"
+    );
+}
+
+/// The layer the read took is the row itself, so it is not drawn again under
+/// it: a value with nothing behind it is a row alone.
+#[test]
+fn tree_does_not_repeat_the_row_as_its_own_layer() {
+    use beachcomber::cache::LayerRecord;
+    use beachcomber::cli::status_format::render_tree;
+    let row = sample_rows()[0].clone();
+    let itself = LayerRecord {
+        label: row.source.clone(),
+        facet: None,
+        path: row.path.clone(),
+        value: row.value.clone(),
+        age_ms: 0,
+        stale: false,
+        answered: true,
+    };
+    let opts = RenderOpts {
+        no_color: true,
+        ascii: true,
+        ..RenderOpts::default()
+    };
+    let out = render_tree("human", &[row], &[vec![itself]], &opts);
+    let body: Vec<&str> = out
+        .lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    assert_eq!(body.len(), 1, "the row alone: {out}");
+}

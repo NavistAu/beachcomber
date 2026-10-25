@@ -204,6 +204,16 @@ impl ClientSession {
             .map_err(comb_error_to_io)?;
         Ok(Self { session })
     }
+
+    /// The layers a read of `key` from `path` consults, per leaf (the
+    /// `layers` op); `None` is a miss.
+    pub fn layers(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+    ) -> std::io::Result<Option<serde_json::Value>> {
+        self.session.layers(key, path).map_err(comb_error_to_io)
+    }
 }
 
 /// The CLI's transport for [`libbeachcomber::resolve`]: one daemon `get` per

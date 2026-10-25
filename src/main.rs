@@ -162,9 +162,14 @@ enum Commands {
         #[arg(long)]
         ascii: bool,
         /// Object destructuring depth: 0 unlimited, 1 top-level fields only, 2 one level down.
-        /// Default: 2 for human/table, 1 for json/tsv/csv/sh.
+        /// Default: 2 for human/table, 1 for json/tsv/csv/sh; 0 with --tree.
         #[arg(long)]
         depth: Option<usize>,
+        /// Under each value, the layers a read from here consults — templates, then put,
+        /// config and Source records, nearest directory first — the one that answered drawn
+        /// plainly and the rest dimmed. human, table and json only.
+        #[arg(long)]
+        tree: bool,
     },
     /// Put data at any node, replacing what is there; null data removes the node
     #[command(visible_alias = "p")]
@@ -390,6 +395,7 @@ fn main() -> ExitCode {
             color,
             ascii,
             depth,
+            tree,
         } => {
             let fmt = if format.is_empty() {
                 None
@@ -407,6 +413,7 @@ fn main() -> ExitCode {
                 color.as_str(),
                 ascii,
                 depth,
+                tree,
             )
         }
         Commands::Put {

@@ -5,7 +5,7 @@
 use crate::cache::{CacheRow, RowKind};
 use crate::cli::status_format::{
     ColorMode, RenderOpts, apply_filters, apply_sort, default_depth, flatten_rows, render_preset,
-    resolve_color, resolve_max_width,
+    render_tree, resolve_color, resolve_max_width, row_base, row_facet,
 };
 use crate::config::Config;
 use libbeachcomber::resolve::{Inputs, Slot, resolve};
@@ -122,6 +122,108 @@ fn collect_leaves(
     }
 }
 
+/// The presets `--tree` draws: the two tables, and `json` (a `layers` array
+/// per row).
+const TREE_PRESETS: [&str; 3] = ["human", "table", "json"];
+
+/// The layers behind each row, for `--tree`: `out[i]` for `rows[i]`, empty
+/// for a facet row or a row whose field is not a leaf of the answer. A row on
+/// the caller's directory chain (its own directory, an ancestor, the global
+/// entry) is read from the caller's directory, as `comb get` there would; a
+/// row stored anywhere else is read from its own. One `layers` call per
+/// provider and directory.
+fn layer_children(
+    rows: &[CacheRow],
+    cwd: &str,
+    session: &mut crate::client::ClientSession,
+) -> Vec<Vec<crate::cache::LayerRecord>> {
+    let canonical = std::fs::canonicalize(cwd)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| cwd.to_string());
+    let chain = crate::query::path_chain(Some(&canonical));
+    let mut trees: HashMap<(String, Option<String>), Option<serde_json::Value>> = HashMap::new();
+    rows.iter()
+        .map(|row| {
+            if row_facet(&row.provider).is_some() {
+                return Vec::new();
+            }
+            let at = if chain.contains(&row.path) {
+                Some(canonical.clone())
+            } else {
+                row.path.clone()
+            };
+            let provider = row_base(&row.provider).to_string();
+            let tree = trees
+                .entry((provider.clone(), at.clone()))
+                .or_insert_with(|| session.layers(&provider, at.as_deref()).ok().flatten());
+            let mut node = tree.as_ref();
+            for segment in row.field.split('.') {
+                node = node.and_then(|n| n.get(segment));
+            }
+            match node {
+                Some(list @ serde_json::Value::Array(_)) => {
+                    serde_json::from_value(list.clone()).unwrap_or_default()
+                }
+                _ => Vec::new(),
+            }
+        })
+        .collect()
+}
+
+/// Under `--tree`, one row per leaf a read from `cwd` resolves. Every record
+/// on the caller's chain for the same leaf is a layer of that one read, so
+/// only the row that answered it stays at the top — the rendered row when a
+/// template answered, else the record the read took — and the rest are left
+/// to its children. A row stored off the chain is a read of its own and
+/// stays.
+fn collapse_to_answers(
+    rows: Vec<CacheRow>,
+    children: Vec<Vec<crate::cache::LayerRecord>>,
+    cwd: &str,
+) -> (Vec<CacheRow>, Vec<Vec<crate::cache::LayerRecord>>) {
+    let canonical = std::fs::canonicalize(cwd)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| cwd.to_string());
+    let chain = crate::query::path_chain(Some(&canonical));
+    let on_chain = |row: &CacheRow| {
+        row_facet(&row.provider).is_none()
+            && (chain.contains(&row.path) || row.path.as_deref() == Some(cwd))
+    };
+    let answers = |row: &CacheRow, layers: &[crate::cache::LayerRecord]| {
+        if matches!(row.kind, Some(RowKind::Template)) {
+            return true;
+        }
+        // A row's SOURCE and a layer's label are both the presented label.
+        layers
+            .iter()
+            .any(|l| l.answered && l.facet.is_none() && l.path == row.path && l.label == row.source)
+    };
+    // The row each on-chain leaf keeps: its answer, or failing one, its first.
+    let mut keep: HashMap<(String, String), usize> = HashMap::new();
+    for (i, (row, layers)) in rows.iter().zip(&children).enumerate() {
+        if !on_chain(row) {
+            continue;
+        }
+        let key = (row_base(&row.provider).to_string(), row.field.clone());
+        match keep.get(&key) {
+            Some(&j) if answers(&rows[j], &children[j]) => {}
+            Some(_) if !answers(row, layers) => {}
+            _ => {
+                keep.insert(key, i);
+            }
+        }
+    }
+    rows.into_iter()
+        .zip(children)
+        .enumerate()
+        .filter(|(i, (row, _))| {
+            !on_chain(row)
+                || keep.get(&(row_base(&row.provider).to_string(), row.field.clone())) == Some(i)
+        })
+        .map(|(_, pair)| pair)
+        .unzip()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run_status(
     config: &Config,
@@ -134,7 +236,16 @@ pub fn run_status(
     color_arg: &str,
     ascii: bool,
     depth: Option<usize>,
+    tree: bool,
 ) -> ExitCode {
+    let preset = format.unwrap_or("human");
+    if tree && !TREE_PRESETS.contains(&preset) {
+        eprintln!("error: --tree works with the human, table and json formats, not {preset}");
+        return ExitCode::from(2);
+    }
+    // A layer belongs to a leaf, so a tree destructures every value to its
+    // leaves unless --depth says otherwise.
+    let depth = depth.or(tree.then_some(0));
     let filters = &crate::cli::status_format::effective_filters(user_filters, all);
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
@@ -156,7 +267,6 @@ pub fn run_status(
     let cols = terminal_size::terminal_size().map(|(w, _)| w.0 as usize);
     let resolved_max_width = resolve_max_width(max_width_arg, cols);
 
-    let preset = format.unwrap_or("human");
     let opts = RenderOpts {
         is_tty,
         no_color: !color,
@@ -214,7 +324,21 @@ pub fn run_status(
                 eprintln!("sort error: {e}");
                 std::process::exit(2);
             });
-            let out = render_preset(preset, &rows, &opts);
+            let out = match std::env::current_dir() {
+                Ok(cwd) if tree => match client.connect() {
+                    Ok(mut session) => {
+                        let cwd = cwd.to_string_lossy().into_owned();
+                        let children = layer_children(&rows, &cwd, &mut session);
+                        let (rows, children) = collapse_to_answers(rows, children, &cwd);
+                        render_tree(preset, &rows, &children, &opts)
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        return ExitCode::from(2);
+                    }
+                },
+                _ => render_preset(preset, &rows, &opts),
+            };
             print!("{out}");
 
             // Canon provider_source.md invariant 16 and singleton.md

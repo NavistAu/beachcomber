@@ -57,6 +57,54 @@ pub fn presented_label(label: &str) -> String {
     }
 }
 
+/// One record in the stack of layers a read of one leaf consults: its writer's
+/// presented label, the facet it sits in (`template` for a template record),
+/// the directory it is stored at, its value as written (a template's raw
+/// text), and its freshness. `answered` marks the one a read takes. See
+/// [`Cache::layer_stacks`] and the `layers` op.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LayerRecord {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facet: Option<String>,
+    pub path: Option<String>,
+    pub value: serde_json::Value,
+    pub age_ms: u128,
+    pub stale: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answered: bool,
+}
+
+impl LayerRecord {
+    pub(crate) fn new(
+        label: &str,
+        facet: Option<&str>,
+        path: Option<&str>,
+        value: &Value,
+        age_ms: u128,
+        stale: bool,
+    ) -> Self {
+        Self {
+            label: presented_label(label),
+            facet: facet.map(str::to_string),
+            path: path.map(str::to_string),
+            value: serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
+            age_ms,
+            stale,
+            answered: false,
+        }
+    }
+}
+
+/// Every leaf of a map, as `(dotted tail, value)`.
+fn leaves_of(fields: &HashMap<String, Value>) -> Vec<(String, Value)> {
+    let mut out = Vec::new();
+    if !fields.is_empty() {
+        walk_leaves("", Value::Object(fields.clone()), &mut out);
+    }
+    out
+}
+
 /// What a Source's records carry into the `<p>:cache` facet beside them: the
 /// schedule that keeps them fresh. Built from the Source's metadata
 /// ([`Schedule::of`]), so a record and its schedule are written together and
@@ -1505,6 +1553,105 @@ impl Cache {
         }
 
         found.then_some(out)
+    }
+
+    /// Every record that holds a leaf of `namespace` for a read from
+    /// `requested`, as `(tail, record)`, in the order the read consults them:
+    /// the template records first (`<namespace>:template` up the chain from
+    /// `requested`, nearest first), then, for each link of the read's chain
+    /// nearest first ([`crate::query::read_chain`] over `visited`'s roots),
+    /// its `put`, its `config(…)` seeds, and the records each Source in
+    /// `visited` stored at that link. At one link the `put` comes before the
+    /// seeds and the seeds before the Sources, as a read stacks them.
+    ///
+    /// Nothing here decides which record answered: a `put` that replaced a
+    /// node hides records below it at its own link without being one of
+    /// theirs, and a provider line can compute a leaf no record holds. The
+    /// `layers` op marks the answer from the read itself.
+    pub fn layer_stacks(
+        &self,
+        namespace: &str,
+        requested: Option<&str>,
+        visited: &[Instance],
+    ) -> Vec<(String, LayerRecord)> {
+        let mut out = Vec::new();
+        let template = format!("{namespace}:template");
+        for link in crate::query::read_chain(requested, &[]) {
+            if let Some(entry) = self
+                .entries
+                .get(&make_cache_key(&template, link.as_deref()))
+            {
+                Self::static_layers(&entry, link.as_deref(), Some("template"), &mut out);
+            }
+        }
+        for link in crate::query::read_chain(requested, &crate::query::roots_of(visited)) {
+            let Some(entry) = self
+                .entries
+                .get(&make_cache_key(namespace, link.as_deref()))
+            else {
+                continue;
+            };
+            Self::static_layers(&entry, link.as_deref(), None, &mut out);
+            for instance in visited.iter().filter(|i| i.root == link) {
+                let Some(src) = entry.sources.get(&instance.source) else {
+                    continue;
+                };
+                for (tail, value) in leaves_of(&src.fields) {
+                    out.push((
+                        tail,
+                        LayerRecord::new(
+                            &instance.source,
+                            None,
+                            link.as_deref(),
+                            &value,
+                            src.age_ms(),
+                            src.is_stale(),
+                        ),
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    /// One link's static layers, `put` first and then each `config(…)` seed.
+    fn static_layers(
+        entry: &CacheEntry,
+        link: Option<&str>,
+        facet: Option<&str>,
+        out: &mut Vec<(String, LayerRecord)>,
+    ) {
+        if let Some(src) = entry.sources.get(PUT_SOURCE) {
+            for (tail, value) in leaves_of(&src.fields) {
+                let stamp = entry
+                    .put_address_for(&tail)
+                    .and_then(|address| entry.puts.get(address));
+                let (age, stale) = stamp.map_or((src.age_ms(), src.is_stale()), |s| {
+                    (s.age_ms(), s.is_stale())
+                });
+                out.push((
+                    tail,
+                    LayerRecord::new(PUT_SOURCE, facet, link, &value, age, stale),
+                ));
+            }
+        }
+        let mut seeds: Vec<&String> = entry
+            .sources
+            .keys()
+            .filter(|name| name.starts_with(CONFIG_SOURCE_PREFIX))
+            .collect();
+        // A later file wins a leaf two files set (Rule 1 moves it, so in
+        // practice one file holds it); nearest-first is last-first here.
+        seeds.sort_by(|a, b| b.cmp(a));
+        for name in seeds {
+            let src = &entry.sources[name];
+            for (tail, value) in leaves_of(&src.fields) {
+                out.push((
+                    tail,
+                    LayerRecord::new(name, facet, link, &value, src.age_ms(), src.is_stale()),
+                ));
+            }
+        }
     }
 
     /// Return a clone of a specific source's entry, or `None` if the (provider, path) key

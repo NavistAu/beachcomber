@@ -904,6 +904,22 @@ impl Client {
         parse_cache_rows(&line, self.skew_ref())
     }
 
+    /// The layers a read of `key` from `path` consults, per leaf: a tree
+    /// shaped like the value with an ordered array of
+    /// `{label, facet?, path, value, age_ms, stale, answered?}` at each leaf
+    /// (a leaf key answers with its array). `None` is a miss. Warms nothing.
+    /// Used by `comb status --tree`; no SDK binds it.
+    pub fn layers(
+        &self,
+        key: &str,
+        path: Option<&str>,
+    ) -> Result<Option<serde_json::Value>, CombError> {
+        let socket_path = self.find_or_start_socket()?;
+        let mut stream = self.connect(&socket_path)?;
+        let line = self.send_recv_line(&mut stream, &layers_request(key, path))?;
+        parse_layers(&line, self.skew_ref())
+    }
+
     /// Run an introspect query. `duration_secs` is only consulted by the
     /// `procs` subject; ignored by others.
     pub fn introspect(
@@ -1318,6 +1334,16 @@ impl Session {
         parse_cache_rows(&line, self.version_skew.as_ref())
     }
 
+    /// [`Client::layers`] on this session's connection.
+    pub fn layers(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+    ) -> Result<Option<serde_json::Value>, CombError> {
+        let line = self.send_recv_line(&layers_request(key, path))?;
+        parse_layers(&line, self.version_skew.as_ref())
+    }
+
     pub fn introspect(
         &mut self,
         subject: IntrospectSubject,
@@ -1421,6 +1447,22 @@ fn parse_node(line: &str, skew: Option<&VersionSkew>) -> Result<resolve::Got, Co
             .map(|v| v as u128),
         stale: resp.get("stale").and_then(|v| v.as_bool()),
     })
+}
+
+fn layers_request(key: &str, path: Option<&str>) -> serde_json::Value {
+    let mut request = serde_json::json!({ "op": "layers", "key": key });
+    if let Some(p) = path {
+        request["path"] = serde_json::json!(p);
+    }
+    request
+}
+
+fn parse_layers(
+    line: &str,
+    skew: Option<&VersionSkew>,
+) -> Result<Option<serde_json::Value>, CombError> {
+    let resp = check_ok(line, skew)?;
+    Ok(resp.get("data").filter(|v| !v.is_null()).cloned())
 }
 
 fn parse_cache_rows(line: &str, skew: Option<&VersionSkew>) -> Result<Vec<CacheRow>, CombError> {

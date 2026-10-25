@@ -588,6 +588,48 @@ Other subjects return different shapes; see `src/server.rs` for the current
 authoritative shape of each subject. Per-subject typed documentation is
 Phase 3+ work.
 
+### `Layers`
+
+The stack of layers a read of `key` from `path` consults, per leaf. It is
+the data behind `comb status --tree` and is **CLI-only**: no SDK or C ABI
+function binds it.
+
+```json
+{"op": "layers", "key": "aws.region", "path": "/home/me/ws/project"}
+```
+
+`key` is a provider or a field (`p`, `p.f`, `p.group.f`); a facet key is an
+error. Like a `:cache` read, it finds the instances a read would reach but
+warms none of them and signals no demand: a Source with nothing stored adds
+no layer, and a namespace with nothing anywhere is a miss (`{"ok": true}`).
+
+`data` is a tree shaped like the value with an ordered array at each leaf (a
+leaf key answers with its array alone):
+
+```json
+[{"label": "config(/home/me/.config/beachcomber/defaults/aws.toml)",
+  "facet": "template", "path": null,
+  "value": "{{ env.AWS_REGION or … }}", "age_ms": 72000, "stale": false,
+  "answered": true},
+ {"label": "put", "path": "/home/me/ws/project", "value": "eu-west-1",
+  "age_ms": 3000, "stale": false}]
+```
+
+The order is the read's: the template records for the leaf first
+(`<p>:template` up the chain from `path`, nearest first, `facet:
+"template"`, `value` the raw expression), then a leaf the provider's
+`result` or `return` line computed (`computed(<line>)`), then, for each
+directory of the read's chain nearest first, its `put`, its `config(<file>)`
+seeds, and the records of each Source instance the read reaches there
+(`source(<name>)`; cascade and `| nearest` as for `Get`). A leaf's list also
+holds a record that stands as a scalar on an ancestor of it, which hides the
+leaf in that layer. `label` is presented as a `:cache` answer's `source` is;
+`path` is the directory the record is stored at (`null`: the global entry).
+`answered` is present, and true, on the one layer the read takes: the first
+template record when a template stands at the leaf, otherwise the record the
+merged read resolves to (a `put` that replaced a node can hide nearer
+records below it, so the answer is not always the first data layer).
+
 ## Versioning
 
 `PROTOCOL_VERSION` uses two-part semver (`MAJOR.MINOR`):

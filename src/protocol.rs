@@ -47,6 +47,15 @@ pub enum Request {
     /// daemon's protocol version and build version so clients can verify
     /// compatibility before sending further ops.
     Hello,
+    /// The stack of layers a read of `key` from `path` consults, per leaf:
+    /// a tree shaped like the value with an ordered array at each leaf.
+    /// Warms nothing and signals no demand. CLI-only (`comb status --tree`):
+    /// no SDK binds it.
+    Layers {
+        key: String,
+        #[serde(default)]
+        path: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]

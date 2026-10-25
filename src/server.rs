@@ -1468,6 +1468,157 @@ fn cache_facet_node(
     }
 }
 
+/// The `layers` answer for `plan`: per leaf of the node the key names, every
+/// layer a read from the requested directory consults, in order — template
+/// records, then a leaf a provider line computed, then each link's `put`,
+/// `config(…)` seeds and Source records ([`Cache::layer_stacks`]) — with the
+/// one the read takes marked `answered`. A leaf's list also holds a record
+/// standing as a scalar on an ancestor of it, which hides the leaf in that
+/// layer. A tree shaped like the value, an array at each leaf; a leaf key is
+/// its array alone.
+fn layers_response(
+    cache: &Cache,
+    registry: &ProviderRegistry,
+    plan: &QueryPlan,
+    instances: &[Instance],
+) -> Response {
+    use crate::cache::LayerRecord;
+    let provider = plan.provider.as_str();
+    let requested = plan.requested_path.as_deref();
+    let merged = cache.read_merged(provider, requested, instances, registry, Layers::All);
+    let Answered { merged, half } = answer(cache, registry, provider, "", requested, merged);
+
+    let stacked = cache.layer_stacks(provider, requested, instances);
+    let (mut ordered, data): (Vec<_>, Vec<_>) =
+        stacked.into_iter().partition(|(_, r)| r.facet.is_some());
+    // A leaf a provider line computed belongs to no record: it sits under
+    // the templates and over the data it was computed from.
+    if let Some(m) = &merged {
+        let mut computed: Vec<(&String, &crate::cache::RecordFreshness)> = m
+            .records
+            .iter()
+            .filter(|(_, r)| r.source.starts_with(crate::cache::COMPUTED_PREFIX))
+            .collect();
+        computed.sort_by(|a, b| a.0.cmp(b.0));
+        for (tail, record) in computed {
+            let Some(value) = crate::provider::lookup_path(&m.fields, tail) else {
+                continue;
+            };
+            ordered.push((
+                tail.clone(),
+                LayerRecord::new(
+                    &record.source,
+                    None,
+                    record.entry.as_deref(),
+                    value,
+                    record.age_ms(),
+                    record.is_stale(),
+                ),
+            ));
+        }
+    }
+    ordered.extend(data);
+
+    let under = |tail: &str, at: &str| {
+        tail.len() > at.len() && tail.starts_with(at) && tail.as_bytes()[at.len()] == b'.'
+    };
+    let mut tails: Vec<&str> = ordered.iter().map(|(t, _)| t.as_str()).collect();
+    tails.sort();
+    tails.dedup();
+    let leaves: Vec<&str> = tails
+        .iter()
+        .copied()
+        .filter(|t| !tails.iter().any(|other| under(other, t)))
+        .collect();
+
+    let template_at = |tail: &str| -> bool {
+        let mut node = half.template.as_ref();
+        for segment in tail.split('.') {
+            match node {
+                Some(serde_json::Value::String(_)) => return true,
+                Some(serde_json::Value::Object(map)) => node = map.get(segment),
+                _ => return false,
+            }
+        }
+        matches!(node, Some(serde_json::Value::String(_)))
+    };
+    let answering = |tail: &str| -> Option<(String, Option<String>)> {
+        let records = &merged.as_ref()?.records;
+        let mut at = tail;
+        loop {
+            if let Some(r) = records.get(at) {
+                return Some((
+                    crate::cache::presented_label(&r.source),
+                    r.entry.as_deref().map(str::to_string),
+                ));
+            }
+            at = &at[..at.rfind('.')?];
+        }
+    };
+
+    let rest = plan.target.rest();
+    let mut tree = serde_json::Map::new();
+    let mut alone: Option<serde_json::Value> = None;
+    for leaf in leaves {
+        if !rest.is_empty() && leaf != rest && !under(leaf, rest) {
+            continue;
+        }
+        let mut list: Vec<LayerRecord> = ordered
+            .iter()
+            .filter(|(t, _)| t == leaf || under(leaf, t))
+            .map(|(_, r)| r.clone())
+            .collect();
+        if template_at(leaf) {
+            if let Some(first) = list.iter_mut().find(|r| r.facet.is_some()) {
+                first.answered = true;
+            }
+        } else if let Some((label, path)) = answering(leaf)
+            && let Some(hit) = list
+                .iter_mut()
+                .find(|r| r.facet.is_none() && r.label == label && r.path == path)
+        {
+            hit.answered = true;
+        }
+        let list = serde_json::to_value(list).unwrap_or_default();
+        if leaf == rest {
+            alone = Some(list);
+            continue;
+        }
+        let relative = if rest.is_empty() {
+            leaf
+        } else {
+            &leaf[rest.len() + 1..]
+        };
+        insert_dotted(&mut tree, relative, list);
+    }
+    match alone {
+        Some(list) => Response::ok(list, 0, false),
+        None if tree.is_empty() => Response::miss(),
+        None => Response::ok(serde_json::Value::Object(tree), 0, false),
+    }
+}
+
+/// Set `value` at the dotted `tail` of `tree`, making the objects on the way.
+fn insert_dotted(
+    tree: &mut serde_json::Map<String, serde_json::Value>,
+    tail: &str,
+    value: serde_json::Value,
+) {
+    match tail.split_once('.') {
+        None => {
+            tree.insert(tail.to_string(), value);
+        }
+        Some((head, below)) => {
+            let child = tree
+                .entry(head.to_string())
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            if let serde_json::Value::Object(map) = child {
+                insert_dotted(map, below, value);
+            }
+        }
+    }
+}
+
 async fn write_watch_line(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
     response: &Response,
@@ -2118,6 +2269,32 @@ async fn handle_request(
                     .unwrap_or_else(|e| Response::error(format!("procs task panicked: {e}")))
             }
         },
+        Request::Layers { key, path } => {
+            let requested = path.as_deref().or(context_path.as_deref());
+            let plan = match QueryPlan::build(key, requested, registry) {
+                Ok(plan) => plan,
+                Err(msg) => return Response::error(msg),
+            };
+            match crate::query::parse_facet(&plan.provider) {
+                Ok(None) if plan.layers == crate::cache::Layers::All => {}
+                Ok(_) => {
+                    return Response::error(format!(
+                        "layers takes a provider or field key, not a facet: {key}"
+                    ));
+                }
+                Err(msg) => return Response::error(msg),
+            }
+            // Like `p:cache`: the instances a read would reach, found
+            // without warming any of them or signalling demand.
+            let instances = match all_instances(registry, &plan).await {
+                Ok(instances) => instances,
+                Err(msg) => {
+                    warn!("layers {key}: {msg}");
+                    return Response::error(msg);
+                }
+            };
+            layers_response(cache, registry, &plan, &instances)
+        }
         Request::Hello => {
             let data = serde_json::json!({
                 "protocol_version": crate::protocol::PROTOCOL_VERSION,

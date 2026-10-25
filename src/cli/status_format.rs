@@ -460,14 +460,14 @@ pub fn render_preset(preset: &str, rows: &[CacheRow], opts: &RenderOpts) -> Stri
         "csv" => render_csv(rows),
         "tsv" => render_tsv(rows),
         "sh" => render_sh(rows),
-        "table" => render_table(rows, false, None, true, false, false),
+        "table" => render_table(rows, &[], false, None, true, false, false),
         "human" => {
             let trunc = if opts.no_trunc { None } else { opts.max_width };
             // `no_color` is the resolved color decision from the caller (already
             // accounts for NO_COLOR, TTY and --color). Don't re-AND with is_tty
             // here — that would override an explicit `--color=always`.
             let color = !opts.no_color;
-            render_table(rows, color, trunc, true, opts.ascii, true)
+            render_table(rows, &[], color, trunc, true, opts.ascii, true)
         }
         custom => {
             if let Some(body) = custom.strip_prefix("table ") {
@@ -999,6 +999,143 @@ fn template_marker(
     if ascii { "> " } else { "\u{25b8} " }
 }
 
+/// How a `--tree` layer row is drawn: one of the layers behind the value row
+/// above it.
+#[derive(Debug, Clone, Copy)]
+pub struct ChildMark {
+    /// The last layer under its value row.
+    pub last: bool,
+    /// The layer the read takes.
+    pub answered: bool,
+    /// A template record (`<p>:template`), not data.
+    pub template: bool,
+}
+
+impl ChildMark {
+    /// The branch glyph that leads the FIELD cell.
+    fn glyph(self, ascii: bool) -> &'static str {
+        match (self.last, ascii) {
+            (false, false) => "\u{251c}\u{2500}",
+            (true, false) => "\u{2514}\u{2500}",
+            (false, true) => "|-",
+            (true, true) => "`-",
+        }
+    }
+
+    /// The FIELD cell: the branch glyph, hanging under the field name above,
+    /// then what the layer is to the value — `:template` for the template
+    /// record that defines it, `shadowed` for a layer the read did not take.
+    /// Colour dims a shadowed layer as well; the word is there either way.
+    fn field(self, ascii: bool) -> String {
+        let mut cell = vec![self.glyph(ascii)];
+        if self.template {
+            cell.push(":template");
+        }
+        if !self.answered {
+            cell.push("shadowed");
+        }
+        cell.join(" ")
+    }
+}
+
+/// Whether `layer` is `row` itself: the record the read took, which the row
+/// already shows. A rendered row is never its own layer — its template
+/// record is what defines it.
+fn is_the_row(row: &CacheRow, layer: &crate::cache::LayerRecord) -> bool {
+    layer.answered
+        && layer.facet.is_none()
+        && !matches!(row.kind, Some(crate::cache::RowKind::Template))
+        && layer.path == row.path
+        && layer.label == row.source
+}
+
+/// `s` without its ANSI escape sequences.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `comb status --tree`: each value row followed by the layers behind it
+/// (`children[i]` for `rows[i]`), in the `human`, `table` or `json` preset.
+/// `json` gives each row its whole `layers` array; the tables draw each layer
+/// as a row of its own under its value, except the one that is the row
+/// itself, so a value with nothing behind it is drawn alone.
+pub fn render_tree(
+    preset: &str,
+    rows: &[CacheRow],
+    children: &[Vec<crate::cache::LayerRecord>],
+    opts: &RenderOpts,
+) -> String {
+    if preset == "json" {
+        let mut out = String::new();
+        for (row, layers) in rows.iter().zip(children) {
+            if let Ok(mut v) = serde_json::to_value(row) {
+                v["layers"] = serde_json::to_value(layers).unwrap_or_default();
+                out.push_str(&v.to_string());
+                out.push('\n');
+            }
+        }
+        return out;
+    }
+    let mut display = Vec::new();
+    let mut marks = Vec::new();
+    for (row, layers) in rows.iter().zip(children) {
+        display.push(row.clone());
+        marks.push(None);
+        let layers: Vec<_> = layers.iter().filter(|l| !is_the_row(row, l)).collect();
+        for (i, layer) in layers.iter().enumerate() {
+            display.push(CacheRow {
+                provider: row.provider.clone(),
+                path: layer.path.clone(),
+                source: layer.label.clone(),
+                field: row.field.clone(),
+                value: layer.value.clone(),
+                age_ms: layer.age_ms,
+                stale: layer.stale,
+                kind: None,
+                poll_interval_secs: None,
+                poll_count: None,
+                fsevents_reinstate: None,
+                polls_elapsed: None,
+                next_poll_in_secs: None,
+                failure: None,
+            });
+            marks.push(Some(ChildMark {
+                last: i + 1 == layers.len(),
+                answered: layer.answered,
+                template: layer.facet.as_deref() == Some("template"),
+            }));
+        }
+    }
+    match preset {
+        "table" => render_table(&display, &marks, false, None, true, false, false),
+        _ => {
+            let trunc = if opts.no_trunc { None } else { opts.max_width };
+            render_table(
+                &display,
+                &marks,
+                !opts.no_color,
+                trunc,
+                true,
+                opts.ascii,
+                true,
+            )
+        }
+    }
+}
+
 /// Render rows as aligned columns for the `human` preset.
 ///
 /// - `color_enabled`: apply per-cell ANSI colour (AGE yellow/green by stale, TTL by decay,
@@ -1007,7 +1144,7 @@ fn template_marker(
 /// - `header`: prepend a PROVIDER / FIELD / SOURCE / VALUE / PATH / AGE / POLL / TTL header row.
 /// - `ascii`: use ASCII-only glyphs in the TTL cell instead of Unicode.
 pub fn render_human(rows: &[CacheRow], opts: &FormatOptions) -> String {
-    render_table(rows, false, None, true, opts.ascii, true)
+    render_table(rows, &[], false, None, true, opts.ascii, true)
 }
 
 /// Compact a path under `$HOME` to a `~`-prefixed display form. Exact-prefix
@@ -1181,6 +1318,7 @@ fn compact_home_path(path: &str, home: Option<&str>) -> String {
 
 fn render_table(
     rows: &[CacheRow],
+    marks: &[Option<ChildMark>],
     color_enabled: bool,
     trunc: Option<usize>,
     header: bool,
@@ -1228,7 +1366,8 @@ fn render_table(
     // at a narrow cap.
     let source_cap = trunc.map(|c| MAX_SOURCE_WIDTH.min(c / 5));
 
-    for row in rows {
+    for (index, row) in rows.iter().enumerate() {
+        let mark = marks.get(index).copied().flatten();
         let path = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
         let value = if row.value.is_null() {
             ABSENT_TEXT.to_string()
@@ -1246,6 +1385,21 @@ fn render_table(
             + template_marker(row.kind.as_ref(), color_enabled, ascii)
                 .chars()
                 .count();
+        if let Some(mark) = mark {
+            nat_field = nat_field.max(mark.field(ascii).chars().count());
+            nat_path = nat_path.max(path.chars().count());
+            nat_source = nat_source.max(match source_cap {
+                Some(cap) => row.source.chars().count().min(cap),
+                None => row.source.chars().count(),
+            });
+            nat_value = nat_value.max(value.chars().count() + taint_width);
+            nat_age = nat_age.max(
+                format_age_with_polls(row.age_ms, None, ascii)
+                    .chars()
+                    .count(),
+            );
+            continue;
+        }
         nat_provider = nat_provider.max(row.provider.chars().count());
         nat_path = nat_path.max(path.chars().count());
         nat_field = nat_field.max(row.field.chars().count());
@@ -1414,7 +1568,8 @@ fn render_table(
         visible.push(header_vis);
     }
 
-    for row in rows {
+    for (index, row) in rows.iter().enumerate() {
+        let mark = marks.get(index).copied().flatten();
         // Provider-controlled text is sanitized first, then truncated — never
         // the other way round, so a truncation can't leave half an escape
         // sequence intact.
@@ -1427,12 +1582,18 @@ fn render_table(
         let tainted = row_is_tainted(row, &path_raw, &value_raw);
 
         let ell = ellipsis(ascii);
-        let provider_text = sanitize_cell(&row.provider, ascii);
+        let provider_text = match mark {
+            Some(_) => String::new(),
+            None => sanitize_cell(&row.provider, ascii),
+        };
         let mut source_text = sanitize_cell(&row.source, ascii);
         if let Some(cap) = source_cap {
             source_text = truncate_path(&source_text, cap, ell);
         }
-        let mut field_text = sanitize_cell(&row.field, ascii);
+        let mut field_text = match mark {
+            Some(mark) => mark.field(ascii),
+            None => sanitize_cell(&row.field, ascii),
+        };
         if let Some(cap) = field_cap {
             field_text = truncate_middle(&field_text, cap, ell);
         }
@@ -1490,6 +1651,15 @@ fn render_table(
             ascii,
             &ttl_widths,
         );
+        // A layer row has no lifecycle of its own to show.
+        let ttl = if mark.is_some() {
+            TtlCell {
+                text: String::new(),
+                color: None,
+            }
+        } else {
+            ttl
+        };
         let ttl_vis = ttl.text.chars().count();
         let ttl_cell = match (color_enabled, ttl.color) {
             (true, Some(c)) => ansi::wrap(&ttl.text, c, true),
@@ -1502,12 +1672,16 @@ fn render_table(
         // rather than relying on the general (left-justifying) padding loop.
         let poll_text = format!(
             "{:>width$}",
-            format_poll_cell(
-                row.kind.as_ref(),
-                row.next_poll_in_secs,
-                row.failure.as_ref(),
-                now_unix_ms,
-            ),
+            if mark.is_some() {
+                String::new()
+            } else {
+                format_poll_cell(
+                    row.kind.as_ref(),
+                    row.next_poll_in_secs,
+                    row.failure.as_ref(),
+                    now_unix_ms,
+                )
+            },
             width = nat_poll
         );
         let poll_vis = poll_text.chars().count();
@@ -1582,6 +1756,13 @@ fn render_table(
                 if i != TTL_COL_IDX {
                     *cell = ansi::wrap(cell, ansi::Color::Red, true);
                 }
+            }
+        }
+        // A layer the read did not take is dimmed, beside the `shadowed` its
+        // FIELD cell says ([`ChildMark::field`]).
+        if color_enabled && mark.is_some_and(|m| !m.answered) {
+            for cell in row_cells.iter_mut() {
+                *cell = ansi::wrap(&strip_ansi(cell), ansi::Color::Dim, true);
             }
         }
 

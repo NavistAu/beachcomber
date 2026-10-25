@@ -512,3 +512,137 @@ async fn next_frame(reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>) -> 
     .unwrap();
     serde_json::from_str(&line).unwrap()
 }
+
+// ── the `layers` op ──────────────────────────────────────────────────────────
+
+async fn layers(stream: &mut UnixStream, key: &str, path: Option<&str>) -> Response {
+    send(stream, json!({"op":"layers","key":key,"path":path})).await
+}
+
+/// `(label, path, answered)` of each layer in a leaf's list.
+fn stack(list: &serde_json::Value) -> Vec<(String, Option<String>, bool)> {
+    list.as_array()
+        .expect("a leaf's layers are an array")
+        .iter()
+        .map(|l| {
+            (
+                l["label"].as_str().unwrap().to_string(),
+                l["path"].as_str().map(str::to_string),
+                l["answered"].as_bool().unwrap_or(false),
+            )
+        })
+        .collect()
+}
+
+/// A put over a Source's field: both are layers of the leaf, the put first
+/// and answering, and the op warms nothing.
+#[tokio::test]
+async fn layers_list_a_put_over_a_source_and_mark_the_put_answered() {
+    let (_tmp, mut s, cache, handle, _sock) = serve().await;
+    let mut fields = std::collections::HashMap::new();
+    fields.insert("name".to_string(), Value::String("from-source".into()));
+    cache.put_source(
+        "hostname",
+        None,
+        "host",
+        fields,
+        beachcomber::cache::Schedule::poll(60, 1),
+    );
+    assert!(
+        put(&mut s, "hostname.name", json!("from-put"), None, None)
+            .await
+            .ok
+    );
+
+    let resp = layers(&mut s, "hostname.name", None).await;
+    assert!(resp.ok, "{resp:?}");
+    let list = resp.data.unwrap();
+    assert_eq!(
+        stack(&list),
+        vec![
+            ("put".to_string(), None, true),
+            ("source(host)".to_string(), None, false),
+        ]
+    );
+    assert_eq!(list[0]["value"], json!("from-put"));
+    assert_eq!(list[1]["value"], json!("from-source"));
+    assert!(list[0]["age_ms"].is_u64() && list[0]["stale"] == json!(false));
+    handle.abort();
+}
+
+/// A template at a leaf comes first and answers; the data beneath it is a
+/// layer the template shadows. The template record says so with `facet`.
+#[tokio::test]
+async fn layers_put_a_template_record_first_and_answering() {
+    let (_tmp, mut s, _cache, handle, _sock) = serve().await;
+    assert!(
+        put(&mut s, "ns:template.greet", json!("{{ 1 }}"), None, None)
+            .await
+            .ok
+    );
+    assert!(put(&mut s, "ns.greet", json!("data"), None, None).await.ok);
+
+    let list = layers(&mut s, "ns.greet", None).await.data.unwrap();
+    assert_eq!(
+        stack(&list),
+        vec![
+            ("put".to_string(), None, true),
+            ("put".to_string(), None, false),
+        ]
+    );
+    assert_eq!(list[0]["facet"], json!("template"));
+    assert_eq!(list[0]["value"], json!("{{ 1 }}"));
+    assert!(list[1].get("facet").is_none(), "{list}");
+    handle.abort();
+}
+
+/// Layers follow the directory chain nearest first: a put at the requested
+/// directory answers over the global one, and a namespace key answers with a
+/// tree shaped like the value.
+#[tokio::test]
+async fn layers_follow_the_chain_nearest_first_and_a_namespace_is_a_tree() {
+    let (tmp, mut s, _cache, handle, _sock) = serve().await;
+    let sub = tmp.path().join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let sub = sub.canonicalize().unwrap().to_string_lossy().to_string();
+    assert!(put(&mut s, "ns.a", json!("global"), None, None).await.ok);
+    assert!(
+        put(&mut s, "ns.a", json!("near"), None, Some(&sub))
+            .await
+            .ok
+    );
+    assert!(put(&mut s, "ns.b", json!({"c": 1}), None, None).await.ok);
+
+    let tree = layers(&mut s, "ns", Some(&sub)).await.data.unwrap();
+    assert_eq!(
+        stack(&tree["a"]),
+        vec![
+            ("put".to_string(), Some(sub.clone()), true),
+            ("put".to_string(), None, false),
+        ]
+    );
+    assert_eq!(
+        stack(&tree["b"]["c"]),
+        vec![("put".to_string(), None, true)]
+    );
+
+    let b = layers(&mut s, "ns.b", Some(&sub)).await.data.unwrap();
+    assert_eq!(stack(&b["c"]), vec![("put".to_string(), None, true)]);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn layers_of_nothing_is_a_miss_and_a_facet_key_is_refused() {
+    let (_tmp, mut s, _cache, handle, _sock) = serve().await;
+    let miss = layers(&mut s, "nowhere.x", None).await;
+    assert!(miss.ok && miss.data.is_none(), "{miss:?}");
+    // A cold Source is not run to answer: layers report what is stored.
+    let cold = layers(&mut s, "hostname.name", None).await;
+    assert!(cold.ok && cold.data.is_none(), "{cold:?}");
+
+    let refused = layers(&mut s, "ns:cache.x", None).await;
+    assert!(!refused.ok, "{refused:?}");
+    let refused = layers(&mut s, "ns:template", None).await;
+    assert!(!refused.ok, "{refused:?}");
+    handle.abort();
+}

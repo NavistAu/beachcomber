@@ -161,7 +161,7 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (`human` (default), `tsv`, `json`, `csv`, `table`, `sh`), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--sort <default|provider|path|field|value|age|stale|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
+**Flags:** `--format <preset>` (`human` (default), `tsv`, `json`, `csv`, `table`, `sh`), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|stale|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
 
 ### Filters
 
@@ -213,6 +213,20 @@ A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lea
 Rendering resolves with this shell's own environment and directory, and `exec()` is enabled — `status` is one of the surfaces canon `field_resolution.md` invariant 15 names, alongside `comb get`, `comb eval` and `comb watch`.
 
 In the `human`/`table` preset, SOURCE keeps its tail past 24 characters (less at a narrow `--max-width`, since it shares the same truncation budget as VALUE and PATH) — a `config(<file>)` label is a whole path, and its tail (`…/defaults/aws.toml`) is what tells one config file from another — unless `--no-trunc`.
+
+### `--tree`: the layers behind each value
+
+`--tree` follows each value row with the layers a read of it consults, in the order the read consults them: the template records first (`:template`, nearest directory first), then for each directory nearest first its `put`, its `config(<file>)` seeds and the Source records at the instances the read reaches. The layer the read takes is drawn plainly; the rest are dimmed, or say `shadowed` in FIELD with colour off. A row on your directory chain (this directory, an ancestor, the global entry) is read from here; a row stored anywhere else is read from its own directory.
+
+```sh
+$ comb s --tree --filter provider=demo --color never
+PROVIDER  FIELD               SOURCE                       VALUE              PATH          AGE  POLL  TTL
+demo      greet               template                     ▸ hi jane          ~/ws/project   0s     -  ---
+├─        :template           config(…/config.toml)        hi {{ env.USER }}  -             20m
+└─        shadowed            put                          near               ~/ws/project   3s
+```
+
+A layer row's AGE is its record's own: how long since that file or `put` last changed it. Facet rows are not value rows and get no layers (`-a` still lists them). `--tree` destructures every value to its leaves unless `--depth` says otherwise, and works with the `human`, `table` and `json` formats — in `json` each row gains a `layers` array (`{label, facet?, path, value, age_ms, stale, answered?}`); any other format is an error. The layers come from the daemon's `layers` op ([protocol spec](https://github.com/NavistAu/beachcomber/blob/main/docs/protocol-spec.md)), which warms nothing.
 
 **Destructuring (`--depth`):** object values expand into one row per key, recursively, with the parent's path, age and lifecycle metadata carried down. `--depth 0` is unlimited, `1` shows top-level fields only, `2` goes one level down, and so on.
 
