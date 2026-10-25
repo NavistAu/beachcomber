@@ -105,6 +105,12 @@ split-debuginfo = "unpacked"
 # debug data, faster link. Trade-off: less info in `lldb` step-through sessions.
 debug = "line-tables-only"
 
+# The daemon hashes its own executable at startup (singleton identity). An
+# unoptimised SHA-256 over a debug-sized binary costs most of a test daemon's
+# startup; optimised, it is a few milliseconds.
+[profile.dev.package.sha2]
+opt-level = 3
+
 [profile.release]
 opt-level = "z"
 lto = true
