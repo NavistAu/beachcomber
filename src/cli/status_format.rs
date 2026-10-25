@@ -1917,14 +1917,15 @@ fn simple_glob_match(pattern: &str, text: &str) -> bool {
 pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, String> {
     use crate::cache::RowKind;
     match col {
-        // path first so globals (path=None) bubble to the top as one group,
-        // then path-scoped rows are grouped by directory. Inside a path group,
-        // rows are ordered by provider then field.
+        // A provider's rows sit together: its plain rows, then each facet's
+        // (an absent facet sorts first), by field, then by path with the
+        // global entry (path=None) first.
         "default" => rows.sort_by(|a, b| {
-            a.path
-                .cmp(&b.path)
-                .then(a.provider.cmp(&b.provider))
+            row_base(&a.provider)
+                .cmp(row_base(&b.provider))
+                .then(row_facet(&a.provider).cmp(&row_facet(&b.provider)))
                 .then(a.field.cmp(&b.field))
+                .then(a.path.cmp(&b.path))
         }),
         "provider" => rows.sort_by(|a, b| a.provider.cmp(&b.provider)),
         "path" => rows.sort_by(|a, b| a.path.cmp(&b.path)),

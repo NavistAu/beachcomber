@@ -145,7 +145,8 @@ enum Commands {
         /// Show every row: drop the default facet=- and value!=- filters
         #[arg(long, short = 'a')]
         all: bool,
-        /// Sort by column: default, provider, path, field, value, age, stale (default: default)
+        /// Sort by column: default (provider, then its facets, field, path), provider, path, field,
+        /// value, age, stale, lifecycle, poll_interval
         #[arg(long, default_value = "default")]
         sort: String,
         /// Disable value truncation

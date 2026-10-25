@@ -564,6 +564,44 @@ fn sort_default_by_path() {
 }
 
 #[test]
+fn the_default_sort_is_provider_then_plain_before_facet_then_field_then_path() {
+    let row = |provider: &str, field: &str, path: Option<&str>| CacheRow {
+        provider: provider.into(),
+        field: field.into(),
+        path: path.map(String::from),
+        ..sample_rows()[0].clone()
+    };
+    let rows = vec![
+        row("git:template", "branch", None),
+        row("zed", "a", None),
+        row("git", "dirty", Some("/r")),
+        row("aws", "region", Some("/r")),
+        row("git", "branch", Some("/r")),
+        row("git", "branch", None),
+        row("git:cache", "_", None),
+    ];
+    let out = apply_sort(rows, "default").unwrap();
+    let got: Vec<(String, String, Option<String>)> = out
+        .into_iter()
+        .map(|r| (r.provider, r.field, r.path))
+        .collect();
+    let want = [
+        ("aws", "region", Some("/r")),
+        ("git", "branch", None),
+        ("git", "branch", Some("/r")),
+        ("git", "dirty", Some("/r")),
+        ("git:cache", "_", None),
+        ("git:template", "branch", None),
+        ("zed", "a", None),
+    ];
+    let want: Vec<(String, String, Option<String>)> = want
+        .iter()
+        .map(|(p, f, path)| (p.to_string(), f.to_string(), path.map(String::from)))
+        .collect();
+    assert_eq!(got, want);
+}
+
+#[test]
 fn sort_invalid_column_errors() {
     let rows = sample_rows();
     assert!(apply_sort(rows, "nonsense").is_err());
@@ -923,69 +961,6 @@ fn default_preset_is_human_regardless_of_tty() {
         out.contains("PROVIDER"),
         "human preset should emit PROVIDER header regardless of is_tty: {out}"
     );
-}
-
-// ---------------------------------------------------------------------------
-// Task 1.13: Default sort → (provider, path, field)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn default_sort_is_path_provider_field() {
-    use beachcomber::cache::CacheRow;
-    use beachcomber::cli::status_format::apply_sort;
-    use serde_json::json;
-
-    fn row(p: &str, path: Option<&str>, field: &str) -> CacheRow {
-        CacheRow {
-            provider: p.into(),
-            path: path.map(String::from),
-            source: "default".into(),
-            field: field.into(),
-            value: json!(0),
-            age_ms: 0,
-            stale: false,
-            kind: None,
-            poll_interval_secs: None,
-            poll_count: None,
-            fsevents_reinstate: None,
-            polls_elapsed: None,
-            next_poll_in_secs: None,
-            failure: None,
-        }
-    }
-
-    // Two globals (None path), plus multiple path-scoped rows spread across
-    // two repos and two providers, so the sort exercises every tier.
-    let rows = vec![
-        row("git", Some("/repo"), "branch"),
-        row("battery", None, "percent"),
-        row("hostname", None, "short"),
-        row("mise", Some("/repo"), "project"),
-        row("git", Some("/repo"), "dirty"),
-        row("git", Some("/other"), "branch"),
-    ];
-    let rows = apply_sort(rows, "default").unwrap();
-
-    // Globals (path=None) sort to the top, ordered by provider.
-    assert_eq!(rows[0].path, None);
-    assert_eq!(rows[0].provider, "battery");
-    assert_eq!(rows[1].path, None);
-    assert_eq!(rows[1].provider, "hostname");
-
-    // Then path-scoped rows grouped by path (alphabetical): /other before /repo.
-    assert_eq!(rows[2].path.as_deref(), Some("/other"));
-    assert_eq!(rows[2].provider, "git");
-
-    // Within /repo, providers alphabetical (git before mise), then fields
-    // alphabetical within the same provider (branch before dirty).
-    assert_eq!(rows[3].path.as_deref(), Some("/repo"));
-    assert_eq!(rows[3].provider, "git");
-    assert_eq!(rows[3].field, "branch");
-    assert_eq!(rows[4].path.as_deref(), Some("/repo"));
-    assert_eq!(rows[4].provider, "git");
-    assert_eq!(rows[4].field, "dirty");
-    assert_eq!(rows[5].path.as_deref(), Some("/repo"));
-    assert_eq!(rows[5].provider, "mise");
 }
 
 #[test]
