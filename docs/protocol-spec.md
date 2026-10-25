@@ -234,12 +234,28 @@ namespace's watchers, so editing a template alone delivers a frame with no new
 
 #### Keys
 
-Keys are `<provider>`, `<provider>.<field>`, or a facet address —
-`<provider>:<facet>` or `<provider>:<facet>.<field>`. A key has one colon form:
-the facet, with its colon in the first segment, before any dot. A facet name
-matches `[A-Za-z0-9_-]+`; a second colon in the first segment is `invalid facet
-key: <key>`, and a colon after the first dot (`git.branch:age`) is `invalid
-key: <key>`. There are no metadata suffixes.
+A key is a **head** and an **address** below it. The head is `<provider>` or a
+facet address, `<provider>:<facet>`, and runs to the first `.` or `[`. The
+address is any run of segments, each written one of three ways — jinja's own
+spellings, so a key reads the same here as in a template:
+
+- `.seg` — any characters but `.`, `[` and `]`: `git.branch`,
+  `mise.cargo:cargo-nextest`, `mise.npm:@scope/pkg`;
+- `[n]` — an array index, the same segment as `.n`: `p.list[0]` is `p.list.0`;
+- `['…']` or `["…"]` — a quoted segment, where a backslash escapes only the quote
+  and the backslash: `mise['go:golang.org/x/tools/gopls']`.
+
+Brackets are the one quoting form. Only a colon in the head names a facet; below
+it a colon is an ordinary character, so `git.branch:age` is an ordinary miss.
+There are no metadata suffixes. A facet name matches `[A-Za-z0-9_-]+`; a second
+colon in the head is `invalid facet key: <key>`. Anything else the grammar
+cannot read is `invalid key: <key>`: an empty head or segment (`p..a`, a
+trailing `.`), a head starting with `/` or `~`, a stray `]`, an unterminated
+bracket or quote, an index that is not a canonical decimal (`[01]`).
+
+Every address the daemon or a client prints is in **canonical form**, so it can
+be sent back as a key: bare segments joined by `.`, and a segment that is empty
+or holds `.`, `[` or `]` written `['…']`. A `rest` (below) is canonical.
 
 Every facet has the provider's shape: `get git` returns that part of the tree,
 and so does `get git:cache`. An unknown provider is a miss, and so is a facet
@@ -350,7 +366,7 @@ this default. Stateless per connection — fresh connections have no context.
 ### `Put`
 
 Store static data at any node of the tree. `key` is `namespace` or
-`namespace.node…` — the same dotted address `get` takes, and `namespace` may
+`namespace.node…` — the same address `get` takes, and `namespace` may
 itself be a facet address (`<provider>:<facet>`; invalid facet syntax is
 `invalid facet key: <key>`, the same check `get`/`refresh`/`watch` apply).
 `data` is required. A put **replaces** the node it addresses: nothing merges
@@ -370,8 +386,9 @@ build.status '"passing"'` and `comb put --ttl 60 build.eta '"4m"'` expire indepe
 a re-put without a `ttl` drops the expiry. `status` shows such a row as any
 lifecycle entry, source `put`; `<p>:cache.<node>` reports its `poll` and `decay`.
 
-An object key in `data` may not contain a `.`: it would name one record and
-address another. The node part of `key` is capped at ten segments.
+An object key in `data` may hold a `.`: it is one name, read back as the
+quoted segment `['a.b']`, and a node segment of `key` may be that quoted
+segment too. The node part of `key` is capped at ten segments.
 
 **Request (set):**
 ```json
@@ -410,12 +427,11 @@ invalid, `invalid request: missing field `data``.)
 
 **Error cases:**
 - Invalid facet syntax on the namespace segment: `{"ok": false, "error": "invalid facet key: <key>"}`
-- A colon after the first dot: `{"ok": false, "error": "invalid key: <key>"}`
+- A key the grammar cannot read: `{"ok": false, "error": "invalid key: <key>"}`
 - A write to a layer facet: `<p>:put and <p>:source are read-only; write <p>.<node>`
 - A write to `<p>:cache` other than `_.decay`, or a `_.decay` that is not a positive integer: see "The `:cache` facet"
 - A `ttl` of `0s`: `ttl must be at least 1s`; an unparsable one: `invalid ttl: <ttl>`; a `ttl` with `data: null`: `a ttl on an absent value has no meaning`
 - Non-object `data` at a namespace root: `{"ok": false, "error": "put data at the root must be an object"}`
-- An object key containing a `.`: `{"ok": false, "error": "put data keys may not contain '.': <key>"}`
 - More than ten node segments in `key`: `{"ok": false, "error": "put key is nested too deeply (limit 10 segments)"}`
 
 ### `Status`

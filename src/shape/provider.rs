@@ -1058,19 +1058,16 @@ fn attribute(
     records
 }
 
-/// A rendered template tree is tables and string leaves, with keys that name
-/// one record each. `Err` is the address of the first thing that is not.
+/// A rendered template tree is tables and string leaves, with non-empty keys.
+/// A key may hold a `.`: it is one name, addressed as a quoted segment.
+/// `Err` is the address of the first thing that is not.
 fn check_tree(value: &serde_json::Value, at: &str) -> Result<(), String> {
     match value {
         serde_json::Value::String(_) => Ok(()),
         serde_json::Value::Object(map) => {
             for (key, sub) in map {
-                let here = if at.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{at}.{key}")
-                };
-                if key.is_empty() || key.contains('.') {
+                let here = libbeachcomber::key::push(at, key);
+                if key.is_empty() {
                     return Err(here);
                 }
                 check_tree(sub, &here)?;

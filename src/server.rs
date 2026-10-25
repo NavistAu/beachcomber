@@ -1,6 +1,6 @@
 use crate::cache::{Cache, Layers, MergedRead};
 use crate::config::Config;
-use crate::protocol::{self, IntrospectSubject, Request, Response};
+use crate::protocol::{IntrospectSubject, Request, Response};
 use crate::provider::registry::{ProviderRegistry, RegistryHandle};
 use crate::provider::source_call::{in_failback_backoff, record_outcome};
 use crate::query::{Ask, Found, Instance, InstanceWalk, KeyParse, QueryPlan};
@@ -1104,14 +1104,6 @@ fn lookup_merged(merged: &Option<MergedRead>, field: &str) -> Option<serde_json:
     serde_json::to_value(value).ok()
 }
 
-/// A dotted address split into its first segment and whatever follows it.
-fn split_head(address: &str) -> (&str, Option<&str>) {
-    match address.split_once('.') {
-        Some((head, rest)) => (head, Some(rest)),
-        None => (address, None),
-    }
-}
-
 /// A data hit, carrying the freshness [`freshness`] found for it.
 ///
 /// Every node of a merged tree has at least one record at or below it, so a hit
@@ -1144,15 +1136,10 @@ fn freshness(read: &MergedRead, rest: &str) -> Option<(u128, bool)> {
     if let Some(record) = read.records.get(rest) {
         return Some((record.age_ms(), record.is_stale()));
     }
-    let below = if rest.is_empty() {
-        String::new()
-    } else {
-        format!("{rest}.")
-    };
     let mut oldest: Option<u128> = None;
     let mut stale = false;
     for (tail, record) in &read.records {
-        if !tail.starts_with(&below) {
+        if !libbeachcomber::key::within(tail, rest) {
             continue;
         }
         let age = record.age_ms();
@@ -1231,14 +1218,18 @@ fn template_half(
         };
     }
 
-    let (head, mut left) = split_head(rest);
-    let Some(mut current) = read.fields.get(head) else {
+    let Some((head, mut left)) = libbeachcomber::key::split_first(rest) else {
+        return TemplateHalf::default();
+    };
+    let Some(mut current) = read.fields.get(&head) else {
         return TemplateHalf::default();
     };
     while let Some(remainder) = left {
-        let (segment, below) = split_head(remainder);
+        let Some((segment, below)) = libbeachcomber::key::split_first(&remainder) else {
+            return TemplateHalf::default();
+        };
         match current {
-            Value::Object(map) => match map.get(segment) {
+            Value::Object(map) => match map.get(&segment) {
                 Some(v) => current = v,
                 None => return TemplateHalf::default(),
             },
@@ -1247,7 +1238,7 @@ fn template_half(
             Value::String(_) => {
                 return TemplateHalf {
                     template: serde_json::to_value(current).ok(),
-                    rest: Some(remainder.to_string()),
+                    rest: Some(remainder),
                 };
             }
             _ => return TemplateHalf::default(),
@@ -1519,9 +1510,8 @@ fn layers_response(
     }
     ordered.extend(data);
 
-    let under = |tail: &str, at: &str| {
-        tail.len() > at.len() && tail.starts_with(at) && tail.as_bytes()[at.len()] == b'.'
-    };
+    // Tails are canonical addresses: `a['b.c']` lies under `a`.
+    let under = |tail: &str, at: &str| tail != at && libbeachcomber::key::within(tail, at);
     let mut tails: Vec<&str> = ordered.iter().map(|(t, _)| t.as_str()).collect();
     tails.sort();
     tails.dedup();
@@ -1533,10 +1523,10 @@ fn layers_response(
 
     let template_at = |tail: &str| -> bool {
         let mut node = half.template.as_ref();
-        for segment in tail.split('.') {
+        for segment in libbeachcomber::key::segments(tail) {
             match node {
                 Some(serde_json::Value::String(_)) => return true,
-                Some(serde_json::Value::Object(map)) => node = map.get(segment),
+                Some(serde_json::Value::Object(map)) => node = map.get(segment.as_ref()),
                 _ => return false,
             }
         }
@@ -1544,15 +1534,15 @@ fn layers_response(
     };
     let answering = |tail: &str| -> Option<(String, Option<String>)> {
         let records = &merged.as_ref()?.records;
-        let mut at = tail;
+        let mut at = tail.to_string();
         loop {
-            if let Some(r) = records.get(at) {
+            if let Some(r) = records.get(&at) {
                 return Some((
                     crate::cache::presented_label(&r.source),
                     r.entry.as_deref().map(str::to_string),
                 ));
             }
-            at = &at[..at.rfind('.')?];
+            at = libbeachcomber::key::parent(&at).filter(|p| !p.is_empty())?;
         }
     };
 
@@ -1584,12 +1574,12 @@ fn layers_response(
             alone = Some(list);
             continue;
         }
-        let relative = if rest.is_empty() {
-            leaf
-        } else {
-            &leaf[rest.len() + 1..]
-        };
-        insert_dotted(&mut tree, relative, list);
+        let below = libbeachcomber::key::segments(rest).len();
+        let relative: Vec<_> = libbeachcomber::key::segments(leaf)
+            .into_iter()
+            .skip(below)
+            .collect();
+        insert_at(&mut tree, &relative, list);
     }
     match alone {
         Some(list) => Response::ok(list, 0, false),
@@ -1598,22 +1588,24 @@ fn layers_response(
     }
 }
 
-/// Set `value` at the dotted `tail` of `tree`, making the objects on the way.
-fn insert_dotted(
+/// Set `value` at the address `segments` of `tree`, making the objects on
+/// the way. Each segment is a key as stored, never split again.
+fn insert_at<S: AsRef<str>>(
     tree: &mut serde_json::Map<String, serde_json::Value>,
-    tail: &str,
+    segments: &[S],
     value: serde_json::Value,
 ) {
-    match tail.split_once('.') {
-        None => {
-            tree.insert(tail.to_string(), value);
+    match segments {
+        [] => {}
+        [last] => {
+            tree.insert(last.as_ref().to_string(), value);
         }
-        Some((head, below)) => {
+        [head, below @ ..] => {
             let child = tree
-                .entry(head.to_string())
+                .entry(head.as_ref().to_string())
                 .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
             if let serde_json::Value::Object(map) = child {
-                insert_dotted(map, below, value);
+                insert_at(map, below, value);
             }
         }
     }
@@ -1989,12 +1981,13 @@ async fn handle_request(
             ttl,
             path,
         } => {
-            if let Err(msg) = crate::query::validate_key(key) {
-                return Response::error(msg);
-            }
-            // A put key addresses a node: `namespace` or `namespace.node…`.
-            let (namespace, node) = protocol::split_key(key);
-            let node = node.unwrap_or("");
+            // A put key addresses a node: `namespace` or `namespace.node…`,
+            // the node in canonical form.
+            let (namespace, node) = match libbeachcomber::key::split_key(key) {
+                Ok(split) => split,
+                Err(msg) => return Response::error(msg),
+            };
+            let node = node.as_str();
 
             if let Some(base) = namespace
                 .strip_suffix(":put")
@@ -2016,7 +2009,7 @@ async fn handle_request(
             if is_cache_facet {
                 let derived = ["age_ms", "stale", "source"]
                     .iter()
-                    .any(|k| node.rsplit('.').next() == Some(k));
+                    .any(|k| libbeachcomber::key::last(node).as_deref() == Some(k));
                 if derived {
                     return Response::error(format!("{key} is derived and cannot be written"));
                 }
@@ -2040,7 +2033,7 @@ async fn handle_request(
             // node at the depth JSON conversion is already capped at, so a
             // pathological key cannot drive the daemon into a stack overflow
             // here or on the next read of what it wrote.
-            if node.split('.').count() > crate::provider::MAX_JSON_DEPTH {
+            if libbeachcomber::key::segments(node).len() > crate::provider::MAX_JSON_DEPTH {
                 return Response::error(format!(
                     "put key is nested too deeply (limit {} segments)",
                     crate::provider::MAX_JSON_DEPTH

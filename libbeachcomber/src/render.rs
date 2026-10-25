@@ -42,7 +42,8 @@ fn render_value(v: &Value, sh: bool) -> String {
 
 /// Render a `get`/`watch` response's `data` field into `format`: scalars bare,
 /// containers as sorted `a.b.c=value` lines — one per leaf at any depth,
-/// objects by key and arrays by decimal index — and `None`/`Value::Null` (a
+/// objects by key and arrays by decimal index, each address canonical — and
+/// `None`/`Value::Null` (a
 /// miss, or an explicit null) both rendering as the empty string.
 ///
 /// `format` is the wire format name. `"sh"` shell-quotes every rendered value
@@ -66,19 +67,11 @@ pub fn render_data(data: Option<&Value>, format: &str) -> String {
 }
 
 /// Push one `path=value` line per leaf under `value`, `prefix` being the
-/// dotted path to it. An empty container contributes no line. A map key that
-/// itself contains a `.` is ambiguous in this output (`a.b=1` could be
-/// `{"a":{"b":1}}` or `{"a.b":1}`); the daemon refuses such a key on `put`
-/// and in configuration, so only a template rendering to such a map can
-/// produce one.
+/// canonical address of it ([`crate::key`]). An empty container contributes no
+/// line. A map key holding a `.` is written as a quoted segment
+/// (`['a.b']=1`), so every address printed can be typed back as a key.
 fn flatten(prefix: &str, value: &Value, sh: bool, lines: &mut Vec<String>) {
-    let at = |segment: &str| {
-        if prefix.is_empty() {
-            segment.to_string()
-        } else {
-            format!("{prefix}.{segment}")
-        }
-    };
+    let at = |segment: &str| crate::key::push(prefix, segment);
     match value {
         Value::Object(map) => {
             for (k, v) in map {

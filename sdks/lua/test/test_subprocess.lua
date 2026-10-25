@@ -81,7 +81,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "no path reads the global entry",
     "an ancestor's put is read from a child path (the directory chain)",
     "a path equal to the daemon's $HOME is the global entry",
-    "a colon outside the provider segment is an invalid key, asked with its :cache slot",
+    "a colon below the provider segment is part of the field, asked with its :cache slot",
     "wait reaches the wire as --wait, in one comb get with the :cache slot",
     "--force on a static namespace is the daemon's refusal",
     "a template that does not compile is the resolver's error, not a null hit",
@@ -221,10 +221,14 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
 
   test(names[11], function()
     local r, err = c:get("sp.n:age", "/tmp")
-    assert_nil(r)
-    assert_eq(err.kind, "server_error")
-    assert_eq(err.message, "invalid key: sp.n:age")
+    assert_nil(err)
+    assert_true(r:is_miss())
     assert_eq(last_argv(guard), "get -f json sp.n:age sp:cache.n:age --path /tmp")
+    -- A bracketed key keeps its brackets past the head.
+    r, err = c:get("sp['o'].k", "/tmp")
+    assert_nil(err)
+    assert_eq(r.data, "v")
+    assert_eq(last_argv(guard), "get -f json sp['o'].k sp:cache['o'].k --path /tmp")
   end)
 
   test(names[12], function()

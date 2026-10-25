@@ -354,12 +354,12 @@ async fn put_key_deeper_than_the_cap_is_rejected() {
     handle.abort();
 }
 
-// ── dotted keys in the data are refused ─────────────────────────────────────
+// ── a key holding a dot is one name ──────────────────────────────────────────
 
-/// `{"a.b": 1}` names one record and addresses another: stored naively it
-/// becomes `a` → `{b: 1}`, unreachable under the name it was written with.
+/// `{"a.b": 1}` is one record named `a.b`, at the root or below it, read back
+/// whole and as the quoted segment `['a.b']`.
 #[tokio::test]
-async fn put_data_with_a_dotted_key_is_rejected() {
+async fn put_data_with_a_dotted_key_keeps_it_one_name() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -370,27 +370,28 @@ async fn put_data_with_a_dotted_key_is_rejected() {
         &serde_json::json!({"op":"put","key":"dk","data":{"a.b":1}}),
     )
     .await;
-    assert!(!r.ok, "a dotted data key must be rejected");
-    assert_eq!(
-        r.error.as_deref(),
-        Some("put data keys may not contain '.': a.b")
-    );
+    assert!(r.ok, "{r:?}");
+    let r = send_recv(&mut s, &serde_json::json!({"op":"get","key":"dk"})).await;
+    assert_eq!(r.data, Some(serde_json::json!({"a.b": 1})), "{r:?}");
+    let r = send_recv(&mut s, &serde_json::json!({"op":"get","key":"dk['a.b']"})).await;
+    assert_eq!(r.data, Some(serde_json::json!(1)), "{r:?}");
+    // Unquoted, the dot is a path, and nothing is stored there.
+    let r = send_recv(&mut s, &serde_json::json!({"op":"get","key":"dk.a.b"})).await;
+    assert!(r.ok && r.data.is_none(), "{r:?}");
 
     // Nested, and below the root, too.
     let r = send_recv(
         &mut s,
-        &serde_json::json!({"op":"put","key":"dk.node","data":{"ok":{"x.y":1}}}),
+        &serde_json::json!({"op":"put","key":"dk.node","data":{"ok":{"x.y":2}}}),
     )
     .await;
-    assert!(!r.ok, "a nested dotted data key must be rejected");
-    assert_eq!(
-        r.error.as_deref(),
-        Some("put data keys may not contain '.': x.y")
-    );
-
-    // A refused put registers nothing either, so the namespace still misses.
-    let r = send_recv(&mut s, &serde_json::json!({"op":"get","key":"dk"})).await;
-    assert!(r.ok && r.data.is_none(), "{r:?}");
+    assert!(r.ok, "{r:?}");
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"get","key":"dk.node.ok['x.y']"}),
+    )
+    .await;
+    assert_eq!(r.data, Some(serde_json::json!(2)), "{r:?}");
 
     handle.abort();
 }

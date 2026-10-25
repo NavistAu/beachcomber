@@ -440,7 +440,7 @@ fn push_flattened(out: &mut Vec<CacheRow>, row: CacheRow, depth: usize, level: u
     };
     for (key, child_value) in map {
         let child = CacheRow {
-            field: format!("{}.{}", row.field, key),
+            field: libbeachcomber::key::push(&row.field, key),
             value: child_value.clone(),
             ..row.clone()
         };

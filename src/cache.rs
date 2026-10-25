@@ -216,17 +216,12 @@ fn is_prototype(tail: &str) -> bool {
 pub enum PutError {
     /// The root of a namespace is a map of records, not a single value.
     RootNotObject,
-    /// An object key with a `.` in it names one record but addresses another.
-    DottedKey { key: String },
 }
 
 impl std::fmt::Display for PutError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PutError::RootNotObject => write!(f, "put data at the root must be an object"),
-            PutError::DottedKey { key } => {
-                write!(f, "put data keys may not contain '.': {key}")
-            }
         }
     }
 }
@@ -395,16 +390,12 @@ impl CacheEntry {
     /// The put address governing the record at `tail`: at or above it, nearest
     /// first.
     fn put_address_for(&self, tail: &str) -> Option<&str> {
-        let mut at = tail;
+        let mut at = tail.to_string();
         loop {
-            if let Some((addr, _)) = self.puts.get_key_value(at) {
+            if let Some((addr, _)) = self.puts.get_key_value(&at) {
                 return Some(addr.as_str());
             }
-            at = match at.rfind('.') {
-                Some(i) => &at[..i],
-                None if at.is_empty() => return None,
-                None => "",
-            };
+            at = libbeachcomber::key::parent(&at)?;
         }
     }
 
@@ -430,18 +421,11 @@ impl CacheEntry {
 
 /// Whether this field map occupies the address `tail` — see [`CacheEntry::owner_of`].
 fn occupies(fields: &HashMap<String, Value>, tail: &str) -> bool {
-    // The literal-key probe mirrors `lookup_path`, which a Source's output may
-    // still need; `remove_path` has no matching case, but `put` cannot create a
-    // literal dotted key (see `PutError::DottedKey`), so the two never disagree
-    // about a static record.
-    if fields.contains_key(tail) {
-        return true;
-    }
     let mut current: Option<&Value> = None;
-    for segment in tail.split('.') {
+    for segment in libbeachcomber::key::segments(tail) {
         current = match current {
-            None => fields.get(segment),
-            Some(Value::Object(map)) => map.get(segment),
+            None => fields.get(segment.as_ref()),
+            Some(Value::Object(map)) => map.get(segment.as_ref()),
             // A non-object ancestor: this map holds what stands at the address.
             Some(_) => return true,
         };
@@ -462,37 +446,12 @@ pub(crate) fn walk_leaves(prefix: &str, value: Value, out: &mut Vec<(String, Val
     match value {
         Value::Object(map) if !map.is_empty() || prefix.is_empty() => {
             for (k, v) in map {
-                let child = if prefix.is_empty() {
-                    k
-                } else {
-                    format!("{prefix}.{k}")
-                };
+                let child = libbeachcomber::key::push(prefix, &k);
                 walk_leaves(&child, v, out);
             }
         }
         other => out.push((prefix.to_string(), other)),
     }
-}
-
-/// The first object key containing a `.`, if any.
-///
-/// A dotted key names one record and addresses another: `{"a.b": 1}` would be
-/// stored as `a` → `{b: 1}`, indistinguishable from `put ns.a '{"b":1}'` and
-/// unreachable by the name it was written under. `put` refuses it rather than
-/// silently reinterpreting it.
-fn dotted_key(value: &Value) -> Option<&str> {
-    let Value::Object(map) = value else {
-        return None;
-    };
-    for (k, v) in map {
-        if k.contains('.') {
-            return Some(k);
-        }
-        if let Some(found) = dotted_key(v) {
-            return Some(found);
-        }
-    }
-    None
 }
 
 /// Whether the put address `addr` is `node` or lies below it (`""` is the
@@ -660,13 +619,13 @@ fn apply_static_write(
     if is_put {
         // A scalar standing on the way to `node` is about to become an object:
         // the address that stamped it no longer states that value.
-        let mut at = node;
-        while let Some(i) = at.rfind('.') {
-            at = &at[..i];
-            if crate::provider::lookup_path(&src.fields, at)
+        let mut at = node.to_string();
+        while let Some(up) = libbeachcomber::key::parent(&at).filter(|up| !up.is_empty()) {
+            at = up;
+            if crate::provider::lookup_path(&src.fields, &at)
                 .is_some_and(|v| !matches!(v, Value::Object(_)))
             {
-                entry.puts.remove(at);
+                entry.puts.remove(&at);
             }
         }
         entry.puts.insert(
@@ -690,13 +649,13 @@ fn apply_static_write(
 /// or the non-object ancestor standing in its place. Only called for a map
 /// [`CacheEntry::owner_of`] named, so one of the two always exists.
 fn remove_occupant(fields: &mut HashMap<String, Value>, tail: &str) {
-    let mut cut = tail;
+    let mut cut = tail.to_string();
     loop {
-        if crate::provider::remove_path(fields, cut).is_some() {
+        if crate::provider::remove_path(fields, &cut).is_some() {
             return;
         }
-        match cut.rfind('.') {
-            Some(i) => cut = &cut[..i],
+        match libbeachcomber::key::parent(&cut).filter(|up| !up.is_empty()) {
+            Some(up) => cut = up,
             None => return,
         }
     }
@@ -720,11 +679,7 @@ pub(crate) fn merge_layer(
     prefix: &str,
 ) {
     for (k, v) in overlay {
-        let tail = if prefix.is_empty() {
-            k.clone()
-        } else {
-            format!("{prefix}.{k}")
-        };
+        let tail = libbeachcomber::key::push(prefix, k);
         match (fields.get_mut(k), v) {
             (Some(Value::Object(existing)), Value::Object(incoming)) => {
                 // An empty object is a record at its own tail, so a farther
@@ -758,11 +713,7 @@ pub(crate) fn merge_read(
     prefix: &str,
 ) {
     for (k, v) in overlay {
-        let tail = if prefix.is_empty() {
-            k.clone()
-        } else {
-            format!("{prefix}.{k}")
-        };
+        let tail = libbeachcomber::key::push(prefix, k);
         match (fields.get_mut(k), v) {
             (Some(Value::Object(existing)), Value::Object(incoming)) => {
                 if !incoming.is_empty() {
@@ -790,7 +741,7 @@ fn copy_records(
     match value {
         Value::Object(map) if !map.is_empty() => {
             for (k, v) in map {
-                copy_records(records, from, &format!("{tail}.{k}"), v);
+                copy_records(records, from, &libbeachcomber::key::push(tail, k), v);
             }
         }
         _ => {
@@ -813,7 +764,7 @@ pub(crate) fn note_records(
     match value {
         Value::Object(map) if !map.is_empty() => {
             for (k, v) in map {
-                note_records(records, &format!("{tail}.{k}"), v, fresh);
+                note_records(records, &libbeachcomber::key::push(tail, k), v, fresh);
             }
         }
         _ => {
@@ -835,7 +786,14 @@ fn note_put_records(
     match value {
         Value::Object(map) if !map.is_empty() => {
             for (k, v) in map {
-                note_put_records(entry, label, at, records, &format!("{tail}.{k}"), v);
+                note_put_records(
+                    entry,
+                    label,
+                    at,
+                    records,
+                    &libbeachcomber::key::push(tail, k),
+                    v,
+                );
             }
         }
         _ => {
@@ -857,9 +815,7 @@ fn note_put_records(
 /// Drop the provenance of the node at `tail` and everything below it — the
 /// records a nearer layer has just overwritten.
 fn forget_records(records: &mut HashMap<String, RecordFreshness>, tail: &str) {
-    records.remove(tail);
-    let below = format!("{tail}.");
-    records.retain(|k, _| !k.starts_with(&below));
+    records.retain(|k, _| !libbeachcomber::key::within(k, tail));
 }
 
 pub struct Cache {
@@ -989,11 +945,6 @@ impl Cache {
     ) -> Result<(), PutError> {
         if node.is_empty() && !matches!(value, Value::Object(_)) {
             return Err(PutError::RootNotObject);
-        }
-        if let Some(key) = dotted_key(&value) {
-            return Err(PutError::DottedKey {
-                key: key.to_string(),
-            });
         }
         if label == PUT_SOURCE && !namespace.contains(':') {
             self.write_put_schedule(namespace, path, node, &value, interval_secs);
@@ -1195,11 +1146,6 @@ impl Cache {
         for (label, value) in writes {
             if !matches!(value, Value::Object(_)) {
                 return Err(PutError::RootNotObject);
-            }
-            if let Some(key) = dotted_key(&value) {
-                return Err(PutError::DottedKey {
-                    key: key.to_string(),
-                });
             }
             let mut leaves = Vec::new();
             walk_leaves("", value, &mut leaves);
@@ -1690,7 +1636,10 @@ impl Cache {
         if label.starts_with(CONFIG_SOURCE_PREFIX) {
             return None;
         }
-        let head = tail.split('.').next().unwrap_or(tail);
+        let head = libbeachcomber::key::segments(tail).first().map_or_else(
+            || tail.to_string(),
+            |h| libbeachcomber::key::quote(h).into_owned(),
+        );
         let address = if label == PUT_SOURCE {
             let entry = self.entries.get(&make_cache_key(provider, at))?;
             let address = entry.put_address_for(tail)?.to_string();
@@ -1932,8 +1881,8 @@ impl Cache {
                             // that address's row, listed once.
                             src.fields
                                 .iter()
-                                .filter(|(k, _)| !ce.puts.contains_key(*k))
-                                .map(|(k, v)| (k.clone(), v))
+                                .map(|(k, v)| (libbeachcomber::key::quote(k).into_owned(), v))
+                                .filter(|(k, _)| !ce.puts.contains_key(k))
                                 .collect()
                         } else {
                             crate::provider::lookup_path(&src.fields, addr)
@@ -1981,7 +1930,9 @@ impl Cache {
                         provider: provider.clone(),
                         path: path.clone(),
                         source: source_name.clone(),
-                        field: field.clone(),
+                        // The row's address below the namespace, canonical so it
+                        // can be typed back as a key.
+                        field: libbeachcomber::key::quote(field).into_owned(),
                         value,
                         age_ms: age,
                         stale,

@@ -249,21 +249,54 @@ async fn refresh_on_a_facet_key_is_an_error() {
     handle.abort();
 }
 
-// One colon form: a colon is valid once, inside the first segment (`p:facet`).
-// Any other colon makes the key invalid, in every op that takes a key.
+// One colon form names a facet: a colon in the head (`p:facet`). Below the
+// head a colon is part of a segment, like any other character but `.`, `[`
+// and `]`.
 
 #[tokio::test]
-async fn a_colon_outside_the_provider_segment_is_an_invalid_key() {
+async fn a_colon_below_the_head_is_part_of_a_segment() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
 
-    for key in [
-        "git.branch:age",
-        "hostname.name:source",
-        "scanline.widgets.foo:fresh",
-        "p:cache.x:stale",
-    ] {
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let r = send_recv(
+        &mut stream,
+        &serde_json::json!({"op": "get", "key": "git.branch:age"}).to_string(),
+    )
+    .await;
+    assert!(r.ok && r.data.is_none(), "an ordinary miss: {r:?}");
+
+    let key = "scanline.widgets.foo:fresh";
+    let r = send_recv(
+        &mut stream,
+        &serde_json::json!({"op": "put", "key": key, "data": {"x": 1}}).to_string(),
+    )
+    .await;
+    assert!(r.ok, "put {key}: {r:?}");
+    let r = send_recv(
+        &mut stream,
+        &serde_json::json!({"op": "get", "key": key}).to_string(),
+    )
+    .await;
+    assert_eq!(r.data, Some(serde_json::json!({"x": 1})), "get {key}");
+    let r = send_recv(
+        &mut stream,
+        &serde_json::json!({"op": "get", "key": "scanline['widgets']['foo:fresh'].x"}).to_string(),
+    )
+    .await;
+    assert_eq!(r.data, Some(serde_json::json!(1)), "the bracketed spelling");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_key_the_grammar_refuses_is_invalid_in_every_op() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    for key in ["p..a", "p['a", "p.a]", "/tmp/x", "~/ws"] {
         let want = Some(format!("invalid key: {key}"));
         for op in ["get", "refresh", "watch"] {
             // A watch ends its connection, so each op gets its own.

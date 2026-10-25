@@ -77,7 +77,11 @@ fn render_template_rows(
     };
     let mut out = Vec::new();
     for (provider, field) in addrs {
-        let value = match resolve(&format!("{provider}.{field}"), &inputs, session) {
+        let value = match resolve(
+            &libbeachcomber::key::join(&provider, &field),
+            &inputs,
+            session,
+        ) {
             Ok(Some(value)) => value,
             Ok(None) => serde_json::Value::Null,
             Err(e) => serde_json::Value::String(e.to_string()),
@@ -114,7 +118,7 @@ fn collect_leaves(
     match value {
         serde_json::Value::Object(map) => {
             for (key, child) in map {
-                collect_leaves(provider, &format!("{field}.{key}"), child, out);
+                collect_leaves(provider, &libbeachcomber::key::push(field, key), child, out);
             }
         }
         serde_json::Value::String(_) => out.push((provider.to_string(), field.to_string())),
@@ -157,8 +161,8 @@ fn layer_children(
                 .entry((provider.clone(), at.clone()))
                 .or_insert_with(|| session.layers(&provider, at.as_deref()).ok().flatten());
             let mut node = tree.as_ref();
-            for segment in row.field.split('.') {
-                node = node.and_then(|n| n.get(segment));
+            for segment in libbeachcomber::key::segments(&row.field) {
+                node = node.and_then(|n| n.get(segment.as_ref()));
             }
             match node {
                 Some(list @ serde_json::Value::Array(_)) => {

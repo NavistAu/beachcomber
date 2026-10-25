@@ -240,18 +240,17 @@ impl ConfigSource {
             ResultSpec::Fields(pairs) => {
                 let mut fields = Vec::new();
                 for (name, _) in pairs {
-                    if name.is_empty() || name.contains('.') || name.starts_with('<') {
+                    if name.is_empty() || name.starts_with('<') {
                         return Err(stage_error(
                             &spec,
                             "result",
-                            format!(
-                                "field name '{name}' must be non-empty, without '.', \
-                                 and not start with '<'"
-                            ),
+                            format!("field name '{name}' must be non-empty and not start with '<'"),
                         ));
                     }
                     fields.push(FieldSchema {
-                        name: name.clone(),
+                        // A declared field is an address; this one is a
+                        // single name, so a `.` in it is quoted (`['c.d']`).
+                        name: libbeachcomber::key::quote(name).into_owned(),
                         // Nominal for config Sources: a single-tag line keeps
                         // its runtime type (an int, bool or float), and
                         // nothing validates a field against its declared
@@ -1088,10 +1087,12 @@ mod tests {
     fn result_fields_are_validated_at_load() {
         let err = new_err(spec(None, "x", ResultSpec::Fields(vec![])));
         assert!(err.contains("no fields"), "{err}");
-        for bad in ["", "a.b", "<node>"] {
+        for bad in ["", "<node>"] {
             let err = new_err(spec(None, "x", fields(&[(bad, "1")])));
             assert!(err.starts_with("demo.s: result: "), "{bad}: {err}");
         }
+        // A name holding a `.` is one field, read as `['a.b']`.
+        source(spec(None, "x", fields(&[("a.b", "1")])));
     }
 
     #[test]

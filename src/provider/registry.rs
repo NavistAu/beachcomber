@@ -1022,24 +1022,22 @@ impl ProviderRegistry {
             .cloned()
     }
 
-    /// The Sources that answer `field` (dotted, below the provider): the Source
-    /// declared at the nearest ancestor node of the key — `field` itself, then
-    /// each shorter dotted prefix (`foo.bar.baz` tries `foo.bar.baz`, `foo.bar`,
-    /// `foo`) — else every Source that declares a sentinel field (they answer for
-    /// the provider node), in declaration order, else none.
+    /// The Sources that answer `field` (a canonical address below the
+    /// provider): the Source declared at the nearest ancestor node of the key —
+    /// `field` itself, then each shorter prefix (`foo.bar.baz` tries
+    /// `foo.bar.baz`, `foo.bar`, `foo`) — else every Source that declares a
+    /// sentinel field (they answer for the provider node), in declaration
+    /// order, else none.
     pub fn sources_for_key(&self, provider: &str, field: &str) -> Vec<&str> {
-        let mut node = field;
-        loop {
+        let mut node = field.to_string();
+        while !node.is_empty() {
             if let Some(owners) = self
                 .declared_sources
-                .get(&(provider.to_string(), node.to_string()))
+                .get(&(provider.to_string(), node.clone()))
             {
                 return owners.iter().map(String::as_str).collect();
             }
-            match node.rfind('.') {
-                Some(i) => node = &node[..i],
-                None => break,
-            }
+            node = libbeachcomber::key::parent(&node).unwrap_or_default();
         }
         self.sentinel_sources
             .get(provider)

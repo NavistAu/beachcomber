@@ -237,7 +237,7 @@ fn render_many(format: &OutputFormat, slots: &[(&str, Option<Value>)]) -> Result
             for (key, value) in slots {
                 match value {
                     Some(Value::Object(map)) => {
-                        let provider = key.split('.').next().unwrap_or(key);
+                        let provider = libbeachcomber::key::head_of(key);
                         for (k, v) in map {
                             merged.insert(format!("{provider}.{k}"), v.clone());
                             merged.insert(k.clone(), v.clone());

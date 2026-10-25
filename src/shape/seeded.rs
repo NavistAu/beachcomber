@@ -67,9 +67,12 @@ pub fn provider_name_error(root: &str, name: &str, client: bool) -> Option<Strin
             "invalid provider name '*' in [{root}]: '*' is not a provider name{hint}"
         ));
     }
-    if name.contains(':') || name.contains('.') {
+    // A name is a key's head (`libbeachcomber::key`): it ends at the first
+    // `.` or `[`, holds a `:` only before a facet, and is never a directory.
+    if name.contains([':', '.', '[', ']']) || name.starts_with(['/', '~']) {
         return Some(format!(
-            "invalid provider name '{name}' in [{root}]: a name holds no ':' or '.'"
+            "invalid provider name '{name}' in [{root}]: a name holds no ':', '.', '[' or ']', \
+             and does not start with '/' or '~'"
         ));
     }
     if name == "_" && client {
@@ -154,14 +157,6 @@ impl Reader {
                 };
                 self.err(format!(
                     "[client.providers.{provider}] {at} has an empty key"
-                ));
-                continue;
-            }
-            if key.contains('.') {
-                self.err(format!(
-                    "[client.providers.{provider}] template key '{addressed}' contains a '.': a \
-                     template nests with tables, and a dotted key names one record while \
-                     addressing another."
                 ));
                 continue;
             }

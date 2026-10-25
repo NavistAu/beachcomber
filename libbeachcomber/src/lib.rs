@@ -24,6 +24,7 @@ pub mod eval;
 // `engine::build_engine_env`.
 mod exec;
 pub mod filters;
+pub mod key;
 pub mod render;
 pub mod resolve;
 pub mod virtual_fields;

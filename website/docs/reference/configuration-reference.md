@@ -207,7 +207,7 @@ version = "{{ python.version }}"
 That is `python:template.venv_name` and `python:template.widgets.version`. A provider exists if either root names it: one named only under `[client.providers]` or `[daemon.providers]` is a provider with no Sources. The rules are checked file by file, because seeding is, and enforced at daemon startup, on reload and by `comb check config`; each error names its file:
 
 - `[client]` holds only `providers`, and `[client.providers.<p>]` holds only `template`; any other key is `unknown key '<k>' in [client]` (or `[client.providers.<p>]`). `[daemon.providers.<p>]` holds `cache`, `sources`, `enabled` (a boolean; [not on `_`](#switching-a-provider-off--enabled--false)) and the three lines above, and nothing else.
-- Nesting is tables only, so a quoted key containing a `.` (`"a.b" = "…"`) is an **error**, and so is an empty key. A provider name holds no `:` or `.` and is not `*`.
+- Nesting is tables only. A quoted key containing a `.` (`"a.b" = "…"`) is one name, not a path, and reads as the quoted segment `t['a.b']`; an empty key is an **error**. A provider name is the head of a key, so it holds no `:`, `.`, `[` or `]`, does not start with `/` or `~`, and is not `*`.
 - A template leaf that is neither a string nor a table is not a value expression: an **error**.
 - The colon-table form `[providers."<p>:template"]` is gone with the whole `[providers]` root: it is `unknown table [providers]`, which says templates live in `[client.providers.<p>] template.<leaf>` and decay in `[daemon.providers.<p>.cache._]`.
 

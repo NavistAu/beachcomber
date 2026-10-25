@@ -143,35 +143,33 @@ impl Value {
     }
 }
 
-/// The single dotted-path walk over a provider's field map.
+/// The single address walk over a provider's field map.
 ///
 /// Every caller that resolves `provider.field.sub…` against a `HashMap<String,
 /// Value>` goes through this — `ProviderResult::get_path`, the cache's
 /// `get_field`, and the server's source-field lookup. Three copies of this walk
 /// previously existed with different depth behaviour.
 ///
-/// Tries `path` as a literal field name first, so a provider declaring a field
-/// with a dot in its name still resolves. Otherwise splits on the first `.` and
-/// walks into nested [`Value::Object`]s for as many segments as the path has.
+/// `path` is a canonical address ([`libbeachcomber::key`]): a field whose name
+/// holds a `.` is the segment `['a.b']`, never the literal text `a.b`.
 ///
 /// Returns `None` if a segment is absent, or if the walk lands on a non-Object
 /// before the path is consumed.
 pub fn lookup_path<'a>(fields: &'a HashMap<String, Value>, path: &str) -> Option<&'a Value> {
-    if let Some(v) = fields.get(path) {
-        return Some(v);
-    }
-    let (head, rest) = path.split_once('.')?;
-    let mut current = fields.get(head)?;
-    for segment in rest.split('.') {
+    let segments = libbeachcomber::key::segments(path);
+    let (head, rest) = segments.split_first()?;
+    let mut current = fields.get(head.as_ref())?;
+    for segment in rest {
         match current {
-            Value::Object(map) => current = map.get(segment)?,
+            Value::Object(map) => current = map.get(segment.as_ref())?,
             _ => return None,
         }
     }
     Some(current)
 }
 
-/// Write `value` at a dotted tail, creating intermediate [`Value::Object`]s.
+/// Write `value` at a canonical address, creating intermediate
+/// [`Value::Object`]s.
 ///
 /// The counterpart of [`lookup_path`] for writes. Whatever occupies the final
 /// segment is replaced. A non-object sitting on an intermediate segment is
@@ -187,14 +185,14 @@ pub fn insert_path(fields: &mut HashMap<String, Value>, tail: &str, value: Value
         return;
     }
     let mut cursor = fields;
-    let mut segments = tail.split('.').peekable();
+    let mut segments = libbeachcomber::key::segments(tail).into_iter().peekable();
     while let Some(segment) = segments.next() {
         if segments.peek().is_none() {
-            cursor.insert(segment.to_string(), value);
+            cursor.insert(segment.into_owned(), value);
             return;
         }
         let slot = cursor
-            .entry(segment.to_string())
+            .entry(segment.into_owned())
             .or_insert_with(|| Value::Object(HashMap::new()));
         if !matches!(slot, Value::Object(_)) {
             *slot = Value::Object(HashMap::new());
@@ -207,7 +205,7 @@ pub fn insert_path(fields: &mut HashMap<String, Value>, tail: &str, value: Value
     }
 }
 
-/// Remove the node at a dotted tail, pruning intermediate objects the removal
+/// Remove the node at a canonical address, pruning intermediate objects the removal
 /// leaves empty. Returns the removed value, or `None` if nothing is stored
 /// there — including when a non-object sits on an intermediate segment, since
 /// then the addressed node does not exist.
@@ -221,7 +219,8 @@ pub fn remove_path(fields: &mut HashMap<String, Value>, tail: &str) -> Option<Va
     if tail.is_empty() {
         return None;
     }
-    let segments: Vec<&str> = tail.split('.').collect();
+    let owned = libbeachcomber::key::segments(tail);
+    let segments: Vec<&str> = owned.iter().map(|s| s.as_ref()).collect();
     let (last, parents) = segments.split_last()?;
 
     let mut sizes: Vec<usize> = Vec::with_capacity(segments.len());
@@ -302,11 +301,8 @@ impl ProviderResult {
         self.fields.get(key)
     }
 
-    /// Look up a value by a dotted path, walking into nested `Value::Object`s.
-    ///
-    /// First tries `path` as a literal field name (preserves the rare case of
-    /// a provider declaring a field with a dot in its name). If not found,
-    /// splits on the first `.` and walks further into nested objects.
+    /// Look up a value by a canonical address, walking into nested
+    /// `Value::Object`s ([`lookup_path`]).
     ///
     /// Returns `None` if any step of the walk lands on a non-Object value
     /// before the path is consumed, or if any segment is absent.
@@ -812,9 +808,9 @@ mod tests {
     }
 
     #[test]
-    fn get_path_literal_dot_field_wins_over_walk() {
-        // If a provider declares a field with a literal dot in the name,
-        // that takes precedence over the hierarchical walk.
+    fn a_field_whose_name_holds_a_dot_is_a_quoted_segment() {
+        // `a.b` is always the walk; the field literally named `a.b` is the
+        // quoted segment `['a.b']`.
         let mut result = ProviderResult::new();
         result.insert("a.b", Value::String("literal".into()));
 
@@ -822,10 +818,14 @@ mod tests {
         inner.insert("b".to_string(), Value::String("walked".into()));
         result.insert("a", Value::Object(inner));
 
-        match result.get_path("a.b") {
-            Some(Value::String(s)) => assert_eq!(s, "literal"),
-            other => panic!("expected literal match, got {other:?}"),
-        }
+        assert_eq!(
+            result.get_path("a.b"),
+            Some(&Value::String("walked".into()))
+        );
+        assert_eq!(
+            result.get_path("['a.b']"),
+            Some(&Value::String("literal".into()))
+        );
     }
 
     #[test]

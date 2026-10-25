@@ -83,27 +83,6 @@ fn response_miss_serializes() {
 }
 
 #[test]
-fn key_splits_provider_and_field() {
-    let (provider, field) = crate::protocol::split_key("git.branch");
-    assert_eq!(provider, "git");
-    assert_eq!(field, Some("branch"));
-}
-
-#[test]
-fn key_without_field() {
-    let (provider, field) = crate::protocol::split_key("battery");
-    assert_eq!(provider, "battery");
-    assert_eq!(field, None);
-}
-
-#[test]
-fn key_with_dotted_field() {
-    let (provider, field) = crate::protocol::split_key("mise.project");
-    assert_eq!(provider, "mise");
-    assert_eq!(field, Some("project"));
-}
-
-#[test]
 fn parse_put_request() {
     let json = r#"{"op":"put","key":"myapp","data":{"status":"healthy","version":"1.2.3"}}"#;
     let req: Request = serde_json::from_str(json).unwrap();

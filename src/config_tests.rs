@@ -393,15 +393,13 @@ fn unknown_key_under_client_is_an_error() {
     );
 }
 
+/// A quoted key holding a `.` is one name, read as a quoted segment
+/// (`x['a.b']`), at any depth.
 #[test]
-fn a_dotted_key_under_a_template_is_an_error() {
-    let errors = seeded_errors("[client.providers.x]\ntemplate.\"a.b\" = \"{{ y }}\"\n");
-    assert!(errors.iter().any(|e| e.contains("'a.b'")), "{errors:?}");
-
-    let errors = seeded_errors("[client.providers.x.template.group]\n\"c.d\" = \"{{ y }}\"\n");
+fn a_quoted_template_key_holding_a_dot_is_one_name() {
+    assert!(seeded_errors("[client.providers.x]\ntemplate.\"a.b\" = \"{{ y }}\"\n").is_empty());
     assert!(
-        errors.iter().any(|e| e.contains("group.c.d")),
-        "the check reaches nested tables, got {errors:?}"
+        seeded_errors("[client.providers.x.template.group]\n\"c.d\" = \"{{ y }}\"\n").is_empty()
     );
 }
 

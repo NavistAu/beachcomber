@@ -52,6 +52,16 @@ Query a value. Returns cached data immediately. On a cold cache (first query for
 | `provider:template.path…` | The raw template text at that node, unrendered |
 | `env.NAME` | The caller's own environment variable |
 
+A key is jinja's own address syntax, so a key reads the same here as in a template. Each segment below the provider is one of:
+
+| Spelling | Example | Notes |
+|---|---|---|
+| `.seg` | `git.branch`, `mise.cargo:cargo-nextest`, `mise.npm:@scope/pkg` | Any characters but `.`, `[` and `]` — a colon below the provider is just a character |
+| `[n]` | `p.list[0]` | An array index; the same as `p.list.0` |
+| `['…']` / `["…"]` | `'mise["go:golang.org/x/tools/gopls"]'` | A quoted segment, for a name holding `.`, `[` or `]`; a backslash escapes only the quote and the backslash |
+
+Brackets are the one quoting form; quote the whole key for the shell (`comb g 'p["a.b"]'`). Every address comb prints — `comb g` text lines, the `comb s` FIELD column, error messages — is in canonical form and can be typed back as a key: a segment that needs quoting prints as `['…']`, as in `['go:golang.org/x/tools/gopls']=0.16.0`.
+
 The `provider.field` form automatically routes to the source that owns the field — a source name is metadata on the record, never a key you address directly. Unlike a field, a source has no address at all.
 
 **Templates.** A key whose namespace carries a template (`[client.providers.<p>] template.*` in configuration, the managed `defaults/`, or a `comb p <p>:template.<f>`) is rendered by `comb get` with this shell's environment and directory — `comb g python.version`, `comb g aws.region` and `comb g kubecontext.context` are all templates, and `exec()` is enabled here. A template at a cached field's path wins on read. A template that does not compile, or cycles, exits `2` with a message naming the field — for a namespace query too, so `comb g scanline` fails on a broken `scanline.widgets.foo` rather than silently omitting it; a runtime failure such as a failed `exec()` is omitted from a namespace object and fails a single-leaf query. See [Configuration Reference — Templates](/docs/reference/configuration-reference#templates-and-value-expressions).
@@ -117,7 +127,7 @@ comb g.j git:source .            # → what the Source computed, even where a pu
 | `watch` | object | Watched paths, keyed by index — present for watching Sources |
 | `decay` | int | Decay steps before eviction (default 4) |
 
-A colon is allowed only in the provider segment; `git.branch:age` is an `invalid key` error.
+Only a colon in the provider's own segment names a facet (`git:cache`); below it a colon is an ordinary character, so `git.branch:age` is a miss like any unknown field. A key the grammar cannot read — `p..a`, `p['a`, `p[01]`, a provider starting with `/` or `~` — is `invalid key: <key>`, exit `2`.
 
 **Exit codes:**
 - `0` — success; also a miss under `text`/`sh`, which print nothing (e.g. `git` queried outside a git repository)

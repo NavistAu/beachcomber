@@ -242,12 +242,13 @@ impl<'a> Resolver<'a> {
     /// Resolve one address to the value a surface prints.
     fn resolve(&mut self, key: &str) -> Result<Option<JsonValue>, ResolveError> {
         // `env.*` is the caller's shell, never the daemon's. An unset
-        // variable is absent, as in the daemon's lines — never an error.
-        if key == "env" {
-            return Ok(None);
-        }
-        if let Some(var) = key.strip_prefix("env.") {
-            return Ok(self.env_value(var).map(JsonValue::String));
+        // variable is absent, as in the daemon's lines — never an error, and
+        // so is anything below a variable, which is a string.
+        if let Ok(("env", address)) = crate::key::split_key(key) {
+            return Ok(match crate::key::segments(&address).as_slice() {
+                [var] => self.env_value(var).map(JsonValue::String),
+                _ => None,
+            });
         }
 
         let Some(got) = self.fetch(key)? else {
@@ -385,7 +386,7 @@ impl<'a> Resolver<'a> {
         // `serde_json::Map` is a `BTreeMap` here, so leaves render in name
         // order — one deterministic order for the errors and the fetches.
         for (name, node) in tree {
-            let leaf = format!("{key}.{name}");
+            let leaf = crate::key::push(key, name);
             match node {
                 JsonValue::String(src) => {
                     match self.render(src, &leaf) {
@@ -521,12 +522,18 @@ impl<'a> Resolver<'a> {
     }
 }
 
-/// Walk `rest` into a rendered value: an object by key, an array by decimal
-/// index. A scalar reached with address left over, or a key or index that is
-/// not there, is a miss.
+/// Walk `rest`, a canonical address, into a rendered value: an object by key,
+/// an array by decimal index. A scalar reached with address left over, or a
+/// key or index that is not there, is a miss.
 fn walk(value: JsonValue, rest: &str) -> Option<JsonValue> {
+    // A `rest` is sent only with address left over, so an empty one names
+    // nothing.
+    if rest.is_empty() {
+        return None;
+    }
     let mut current = value;
-    for segment in rest.split('.') {
+    for segment in crate::key::segments(rest) {
+        let segment = segment.as_ref();
         current = match current {
             JsonValue::Object(mut fields) => fields.remove(segment)?,
             JsonValue::Array(mut items) => {

@@ -148,11 +148,12 @@ local function status_rows(comb_bin)
 end
 
 --- The `:cache` key that answers for `key`'s freshness: `git.branch` ->
--- `git:cache.branch`, `git` -> `git:cache`. A facet key (a `:` in the provider
--- segment) has no such companion and is asked alone (nil); a `:` anywhere
--- else is not a facet, and the daemon refuses it as an invalid key.
+-- `git:cache.branch`, `mise['a.b']` -> `mise:cache['a.b']`, `git` ->
+-- `git:cache`. The head runs to the first `.` or `[`. A facet key (a `:` in
+-- the head) has no such companion and is asked alone (nil); a `:` below the
+-- head is part of a segment.
 local function cache_key_of(key)
-  local p, rest = key:match("^([^.]*)(.*)$")
+  local p, rest = key:match("^([^.%[]*)(.*)$")
   if p:find(":", 1, true) then return nil end
   return p .. ":cache" .. rest
 end

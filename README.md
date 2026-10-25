@@ -539,7 +539,7 @@ comb g.j git:source .         # the Source's whole answer, ignoring any put over
 
 `age_ms`, `stale` and `source` are derived at the read and cannot be written. The one `:cache` key you can put is a decay prototype: `comb put '*:cache._.decay' 3` sets the decay depth (default 4) for every provider, `comb put 'git:cache._.decay' 6` for one, and `--path` scopes either to a directory and below.
 
-A colon is allowed only in the provider segment (`git:cache.branch`); `git.branch:age` is an `invalid key` error.
+Only a colon in the provider's own segment names a facet (`git:cache.branch`); below it a colon is an ordinary character (`mise.cargo:cargo-nextest`), so `git.branch:age` is a miss. Keys take jinja's subscripts too: `p.list[0]`, and `'mise["go:golang.org/x/tools/gopls"]'` for a name holding a `.`.
 
 ---
 

@@ -208,3 +208,287 @@ async fn watch_on_a_source_name_key_opens_and_misses() {
 
     handle.abort();
 }
+
+// ── The key grammar through `comb get` ───────────────────────────────────────
+//
+// One grammar (`libbeachcomber::key`) for every key: `.seg`, `[n]` and
+// `['…']`, jinja's own spellings, and a segment below the head may hold `:`,
+// `/`, `@` and spaces bare.
+
+mod grammar {
+    use crate::common::daemon::TestDaemon;
+    use crate::common::socket::IsolatedSocket;
+    use std::path::{Path, PathBuf};
+
+    fn project(d: &TestDaemon) -> PathBuf {
+        let dir = d.home.join("ws").join("project");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// `comb get --path <cwd> <args…>` as text, which must succeed. `--path`
+    /// so no key here is taken for a trailing directory.
+    fn get(d: &TestDaemon, cwd: &Path, args: &[&str]) -> String {
+        let out = d
+            .comb(cwd)
+            .arg("get")
+            .arg("--path")
+            .arg(cwd)
+            .args(args)
+            .assert()
+            .success();
+        String::from_utf8(out.get_output().stdout.clone()).unwrap()
+    }
+
+    fn put(d: &TestDaemon, cwd: &Path, key: &str, data: &str) {
+        d.comb(cwd)
+            .args(["put", "--path"])
+            .arg(cwd)
+            .args([key, data])
+            .assert()
+            .success();
+    }
+
+    #[test]
+    fn every_jinja_spelling_of_an_address_reads_the_same_node() {
+        let d = TestDaemon::spawn();
+        let cwd = project(&d);
+        put(
+            &d,
+            &cwd,
+            "p",
+            r#"{"list":[10,20],"o":{"a b":1,"it's":2,"x:y":3,"s/t":4,"say \"hi\"":5}}"#,
+        );
+
+        for (key, want) in [
+            ("p.list.0", "10"),
+            ("p.list[1]", "20"),
+            ("p['list'][1]", "20"),
+            ("p.o.x:y", "3"),
+            ("p['o']['x:y']", "3"),
+            (r#"p["o"]["x:y"]"#, "3"),
+            ("p.o.s/t", "4"),
+            ("p.o['a b']", "1"),
+            ("p.o.a b", "1"),
+            (r#"p["o"]["it's"]"#, "2"),
+            (r"p.o['it\'s']", "2"),
+            (r#"p.o['say "hi"']"#, "5"),
+            (r#"p.o["say \"hi\""]"#, "5"),
+        ] {
+            assert_eq!(get(&d, &cwd, &[key]), want, "{key}");
+        }
+    }
+
+    #[test]
+    fn a_colon_below_the_head_is_an_ordinary_miss_not_an_error() {
+        let d = TestDaemon::spawn();
+        let cwd = project(&d);
+        put(&d, &cwd, "p", r#"{"a":1}"#);
+        assert_eq!(get(&d, &cwd, &["p.a:age"]), "");
+    }
+
+    #[test]
+    fn a_malformed_key_is_invalid() {
+        let d = TestDaemon::spawn();
+        let cwd = project(&d);
+        for key in ["p..a", "p['a", "p[01]"] {
+            d.comb(&cwd)
+                .args(["get", "--path"])
+                .arg(&cwd)
+                .arg(key)
+                .assert()
+                .code(2)
+                .stderr(predicates::str::contains(format!("invalid key: {key}")));
+        }
+    }
+
+    /// Anything comb can read it can write: a name holding a `.` is a quoted
+    /// segment in a `put` key and a plain key in its data, and reads back the
+    /// way it was written.
+    #[test]
+    fn a_name_holding_a_dot_is_written_as_it_is_read() {
+        let d = TestDaemon::spawn();
+        let cwd = project(&d);
+
+        put(&d, &cwd, "p['a.b']", "1");
+        put(&d, &cwd, "p.o", r#"{"c.d": 2}"#);
+        assert_eq!(get(&d, &cwd, &["p['a.b']"]), "1");
+        assert_eq!(get(&d, &cwd, &["p.o['c.d']"]), "2");
+        assert_eq!(
+            get(&d, &cwd, &["p"]),
+            "['a.b']=1\no['c.d']=2",
+            "printed as keys it can be read back by"
+        );
+
+        put(&d, &cwd, "p['a.b']", "null");
+        assert_eq!(get(&d, &cwd, &["p['a.b']"]), "");
+    }
+
+    /// The same name in configuration: a quoted TOML key, in a template and
+    /// in a Source's `result`, reads as the quoted segment.
+    #[test]
+    fn a_configured_name_holding_a_dot_reads_as_a_quoted_segment() {
+        let socket = IsolatedSocket::new();
+        let home = socket.dir.path().join("home");
+        let xdg = socket.dir.path().join("xdg");
+        std::fs::create_dir_all(xdg.join("beachcomber")).unwrap();
+        std::fs::write(
+            xdg.join("beachcomber").join("config.toml"),
+            r#"
+[client.providers.t]
+template."a.b" = "{{ 'tpl' }}"
+
+[daemon.providers.s.sources.main]
+data = "{{ 'src' }}"
+result."c.d" = "{{ data }}"
+"#,
+        )
+        .unwrap();
+        let d = TestDaemon::spawn_in(socket, home, xdg);
+        let cwd = project(&d);
+
+        assert_eq!(get(&d, &cwd, &["t['a.b']"]), "tpl");
+        assert_eq!(get(&d, &cwd, &["s['c.d']"]), "src");
+        assert_eq!(get(&d, &cwd, &["s"]), "['c.d']=src");
+    }
+
+    /// A daemon whose `PATH` leads with a fake `mise` that reports two tools
+    /// for `project`: one named with a colon, one with dots and slashes.
+    fn mise_daemon() -> (TestDaemon, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let socket = IsolatedSocket::new();
+        let home = socket.dir.path().join("home");
+        let xdg = socket.dir.path().join("xdg");
+        let cwd = home.join("ws").join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::write(cwd.join("mise.toml"), "").unwrap();
+        let config = cwd.join("mise.toml");
+        let config = config.display();
+        let bin = socket.dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let mise = bin.join("mise");
+        std::fs::write(
+            &mise,
+            format!(
+                "#!/bin/sh\ncat <<'JSON'\n{{\"cargo:x\":[{{\"version\":\"1.0\",\"source\":{{\"path\":\"{config}\"}}}}],\
+                 \"go:golang.org/x/tools/gopls\":[{{\"version\":\"0.16.0\",\"source\":{{\"path\":\"{config}\"}}}}]}}\nJSON\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&mise, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // SAFETY: nextest runs each test in its own process; the daemon below
+        // inherits this `PATH`, so its `mise` is the fake one.
+        unsafe {
+            std::env::set_var(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    bin.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            );
+        }
+        (TestDaemon::spawn_in(socket, home, xdg), cwd)
+    }
+
+    #[test]
+    fn a_mise_tool_named_with_a_colon_or_dots_is_readable_alone() {
+        let (d, cwd) = mise_daemon();
+
+        assert_eq!(get(&d, &cwd, &["mise.cargo:x"]), "1.0");
+        assert_eq!(
+            get(&d, &cwd, &["mise['go:golang.org/x/tools/gopls']"]),
+            "0.16.0"
+        );
+        // Unquoted, the dots are segments, and that address holds nothing.
+        assert_eq!(get(&d, &cwd, &["mise.go:golang.org/x/tools/gopls"]), "");
+    }
+
+    #[test]
+    fn every_address_comb_prints_can_be_typed_back() {
+        let (d, cwd) = mise_daemon();
+
+        let text = get(&d, &cwd, &["mise"]);
+        assert!(
+            text.lines().any(|l| l == "cargo:x=1.0"),
+            "a colon needs no quoting: {text}"
+        );
+        assert!(
+            text.lines()
+                .any(|l| l == "['go:golang.org/x/tools/gopls']=0.16.0"),
+            "a name holding a dot prints quoted: {text}"
+        );
+
+        let out = d
+            .comb(&cwd)
+            .args(["status", "-f", "json", "--filter", "provider=mise"])
+            .assert()
+            .success();
+        let rows: Vec<serde_json::Value> = String::from_utf8_lossy(&out.get_output().stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let fields: Vec<&str> = rows.iter().filter_map(|r| r["field"].as_str()).collect();
+        assert!(
+            fields.contains(&"['go:golang.org/x/tools/gopls']"),
+            "status names the row by its key: {fields:?}"
+        );
+        for field in fields {
+            let key = libbeachcomber::key::join("mise", field);
+            assert_ne!(get(&d, &cwd, &[&key]), "", "{key} reads back");
+        }
+    }
+
+    /// `--tree` finds the layers of a row whose field is quoted: the field
+    /// is an address, walked by its segments, not split on its dots.
+    #[test]
+    fn tree_finds_the_layers_of_a_quoted_field() {
+        let (d, cwd) = mise_daemon();
+        get(&d, &cwd, &["mise"]);
+
+        let out = d
+            .comb(&cwd)
+            .args([
+                "status",
+                "--tree",
+                "-f",
+                "json",
+                "--filter",
+                "provider=mise",
+            ])
+            .assert()
+            .success();
+        let rows: Vec<serde_json::Value> = String::from_utf8_lossy(&out.get_output().stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let gopls = rows
+            .iter()
+            .find(|r| r["field"] == "['go:golang.org/x/tools/gopls']")
+            .unwrap_or_else(|| panic!("a gopls row: {rows:#?}"));
+        let layers = gopls["layers"].as_array().expect("layers");
+        assert!(
+            layers
+                .iter()
+                .any(|l| l["answered"] == true && l["value"] == "0.16.0"),
+            "the answering layer: {layers:#?}"
+        );
+
+        // On the wire, the `layers` tree is keyed by the stored names, so a
+        // name holding dots is one key, not a path of three.
+        use std::io::{BufRead, BufReader, Write};
+        let mut stream = std::os::unix::net::UnixStream::connect(&d.socket.path).unwrap();
+        let request = serde_json::json!({"op": "layers", "key": "mise", "path": cwd});
+        writeln!(stream, "{request}").unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        let resp: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(
+            resp["data"]["go:golang.org/x/tools/gopls"].is_array(),
+            "one key for the dotted name: {resp:#}"
+        );
+    }
+}

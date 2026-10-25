@@ -182,12 +182,16 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     assert.equal(r.stale, false);
   });
 
-  it("a colon outside the provider segment is not a facet: it is asked with its :cache slot and refused as an invalid key", async () => {
-    await assert.rejects(
-      () => get('sp.n:age', '/tmp'),
-      (err: unknown) => err instanceof ServerError && err.serverMessage === 'invalid key: sp.n:age',
-    );
+  it("a colon below the provider segment is part of the field: it is asked with its :cache slot and misses", async () => {
+    const r = await get('sp.n:age', '/tmp');
+    assert.equal(r.isMiss, true);
     assert.equal(lastArgv(), 'get -f json sp.n:age sp:cache.n:age --path /tmp');
+  });
+
+  it('a bracketed key keeps its brackets past the head', async () => {
+    const r = await get("sp['o'].k", '/tmp');
+    assert.equal(r.data, 'v');
+    assert.equal(lastArgv(), "get -f json sp['o'].k sp:cache['o'].k --path /tmp");
   });
 
   it('wait reaches the wire as --wait, in one comb get with the :cache slot', async () => {

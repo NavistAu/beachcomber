@@ -321,21 +321,6 @@ async fn refuses_to_start(e: &Env, rel: &str, expected: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_dotted_key_stops_the_daemon_starting() {
-    let e = Env::new(
-        "[client.providers.x]\ntemplate.\"a.b\" = \"{{ y }}\"\n",
-        &[],
-    );
-    refuses_to_start(
-        &e,
-        "config.toml",
-        "[client.providers.x] template key 'a.b' contains a '.': a template nests with tables, \
-         and a dotted key names one record while addressing another.",
-    )
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unknown_key_in_a_client_provider_stops_the_daemon_starting() {
     let e = Env::new("[client.providers.x]\nenabled = false\n", &[]);
     refuses_to_start(
@@ -463,6 +448,24 @@ async fn names_that_spell_a_prototype_or_nothing_are_not_provider_names() {
     ] {
         let e = Env::new(&format!("[{root}.providers.\"{name}\"]\n"), &[]);
         refuses_to_start(&e, "config.toml", msg).await;
+    }
+}
+
+/// A provider name is the head of a key, so it holds nothing the key grammar
+/// reads as an address and never looks like a directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_name_the_key_grammar_cannot_head_is_not_a_provider_name() {
+    for name in ["a[b", "a]b", "/abs", "~home"] {
+        let e = Env::new(&format!("[client.providers.\"{name}\"]\n"), &[]);
+        refuses_to_start(
+            &e,
+            "config.toml",
+            &format!(
+                "invalid provider name '{name}' in [client.providers]: a name holds no ':', '.', \
+                 '[' or ']', and does not start with '/' or '~'"
+            ),
+        )
+        .await;
     }
 }
 
@@ -1226,9 +1229,9 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
 #[test]
 fn a_refused_write_leaves_the_previous_seed_untouched() {
     // The drop and the writes are one operation, so a write the cache refuses
-    // cannot leave the entry emptied behind it. A dotted key is refused, so the
-    // second write is refused — and the first must not have landed, nor the
-    // previous seed have gone.
+    // cannot leave the entry emptied behind it. A root that is not an object
+    // is refused, so the second write is refused — and the first must not
+    // have landed, nor the previous seed have gone.
     let cache = Cache::new();
     let registry = ProviderRegistry::with_defaults();
     let old = "config:/x/old.toml".to_string();
@@ -1263,15 +1266,12 @@ fn a_refused_write_leaves_the_previous_seed_untouched() {
                 ),
                 (
                     "config:/x/new.toml".to_string(),
-                    CacheValue::Object(HashMap::from([(
-                        "a.b".to_string(),
-                        CacheValue::String("boom".into()),
-                    )])),
+                    CacheValue::String("boom".into()),
                 ),
             ],
         )
-        .expect_err("a dotted key refuses the swap");
-    assert!(format!("{err}").contains("a.b"), "{err}");
+        .expect_err("a root that is not an object refuses the swap");
+    assert!(format!("{err}").contains("must be an object"), "{err}");
 
     let read = cache
         .read_merged("hostname", None, &[], &registry, Layers::All)
@@ -1314,7 +1314,7 @@ fn comb_check_config_reports_a_facet_error() {
     std::fs::create_dir_all(&cfg_dir).unwrap();
     std::fs::write(
         cfg_dir.join("config.toml"),
-        "[client.providers.x]\ntemplate.\"a.b\" = \"{{ y }}\"\n",
+        "[client.providers.x]\ntemplate.\"\" = \"{{ y }}\"\n",
     )
     .unwrap();
 
@@ -1330,7 +1330,7 @@ fn comb_check_config_reports_a_facet_error() {
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("a.b"),
+        stdout.contains("[client.providers.x] template has an empty key"),
         "`comb check config` must name the offending key, got:\n{stdout}"
     );
     assert_eq!(out.status.code(), Some(2), "a config error exits 2");

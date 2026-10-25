@@ -438,16 +438,16 @@ impl ResolvedWatch<'static> {
     }
 }
 
-/// A facet key: a colon in the key's first segment, the syntax
-/// `beachcomber::query::parse_facet` reads. The daemon judges whether it is a
+/// A facet key: a colon in the key's head, the syntax
+/// [`crate::key::parse_facet`] reads. The daemon judges whether it is a
 /// well-formed one.
 fn is_facet_key(key: &str) -> bool {
     namespace(key).contains(':')
 }
 
-/// The namespace segment of a key: everything before the first dot.
+/// The head of a key: everything before the first `.` or `[`.
 fn namespace(key: &str) -> &str {
-    key.split('.').next().unwrap_or(key)
+    crate::key::head_of(key)
 }
 
 /// One daemon watch, with its first frame taken off the wire.
