@@ -16,13 +16,11 @@
 //! `field_resolution.md` invariant 8). A frame is one line; a miss is no
 //! line at all, because there is no value to print.
 
-use crate::cli::format::render_fmt_template_json;
-use crate::cli::output_format::Format;
+use crate::cli::output_format::{Format, template_locals};
 use crate::config::Config;
-use libbeachcomber::render::render_frame;
-use libbeachcomber::resolve::{Inputs, Slot};
+use libbeachcomber::render::{Format as ValueFormat, render_frame, render_value};
+use libbeachcomber::resolve::{Inputs, Slot, eval_with};
 use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
-use serde_json::Value;
 use std::process::ExitCode;
 
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
@@ -56,6 +54,19 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
         allow_exec: true,
     };
 
+    // A `-f` template renders each frame through the resolver, which reads
+    // what it names over a session of its own.
+    let mut session = match &format {
+        Format::Template(_) => match crate::client::Client::new(socket_path.clone()).connect() {
+            Ok(session) => Some(session),
+            Err(e) => {
+                eprintln!("Error: {e}");
+                return ExitCode::from(2);
+            }
+        },
+        Format::Preset(_) => None,
+    };
+
     let mut watch = match ResolvedWatch::open(&client, key, &inputs) {
         Ok(w) => w,
         Err(e) => {
@@ -67,7 +78,23 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
     loop {
         match watch.next(None) {
             Ok(WatchOutcome::Value(Some(value))) => {
-                if let Err(e) = print_frame(key, &format, &value) {
+                let frame = match (&format, session.as_mut()) {
+                    (Format::Template(template), Some(session)) => {
+                        let locals = template_locals(&[(key, Some(value))]);
+                        eval_with(template, "-f", &inputs, session, &locals)
+                            .map(|v| render_value("", v.as_ref(), ValueFormat::Text) + "\n")
+                            .map_err(|e| e.to_string())
+                    }
+                    (Format::Preset(preset), _) => Ok(render_frame(
+                        key,
+                        &value,
+                        preset
+                            .value_format()
+                            .expect("watch's formats are value formats"),
+                    )),
+                    (Format::Template(_), None) => unreachable!("a template opens its session"),
+                };
+                if let Err(e) = frame.map(|frame| print!("{frame}")) {
                     eprintln!("{e}");
                     return ExitCode::from(2);
                 }
@@ -88,21 +115,4 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
             }
         }
     }
-}
-
-/// One frame: the value as `comb get` prints it, on a line of its own, json
-/// compacted to one line.
-fn print_frame(key: &str, format: &Format, value: &Value) -> Result<(), String> {
-    let frame = match format {
-        Format::Template(template) => format!("{}\n", render_fmt_template_json(template, value)?),
-        Format::Preset(preset) => render_frame(
-            key,
-            value,
-            preset
-                .value_format()
-                .expect("watch's formats are value formats"),
-        ),
-    };
-    print!("{frame}");
-    Ok(())
 }

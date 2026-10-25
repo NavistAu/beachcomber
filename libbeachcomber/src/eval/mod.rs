@@ -9,7 +9,7 @@
 //! This module answers the two questions a caller has before evaluating — which
 //! of the two forms is this ([`classify`], [`single_tag_expression`]), and what
 //! does it reference ([`discover_refs`]) — and owns the template render
-//! ([`render_template`]). Evaluation itself is [`crate::resolve`]'s: it
+//! those use. Evaluation itself is [`crate::resolve`]'s: it
 //! fetches what a source references from the daemon and evaluates it against
 //! that, through this module's primitives.
 
@@ -183,33 +183,10 @@ pub(crate) fn too_deep() -> String {
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
-/// Render `src` as a template against an already-assembled `context`.
-///
-/// The formatting surfaces' one template render: `-f fmt`, `watch -f fmt` and
-/// the status formatter's custom templates all land here, with `exec()`
-/// unavailable. [`crate::resolve`] renders the template form of a value
-/// expression through the same `render_template_with`, with `exec()` as the
-/// surface decided.
-///
-/// `context` is a JSON object whose keys are the template's top-level names:
-/// the shape a caller rendering pre-fetched provider data builds directly.
-///
-/// The environment is the typed path's — the same filters, the same lenient
-/// undefined behaviour — so a cascade over a missing ref reads the same in both
-/// forms. On top of that, a `none` (a JSON `null`: a ref that resolved to
-/// nothing) renders as the empty string rather than the literal word `none`,
-/// matching how a missing `env.*` and [`crate::render::render_value`] already
-/// render nothing.
-pub fn render_template(src: &str, context: &serde_json::Value) -> Result<String, String> {
-    render_template_with(src, MjValue::from_serialize(context), Default::default())
-        .map_err(|e| e.to_string())
-}
-
 /// Why a template render failed, by phase: the source itself does not
 /// compile, or it compiled and failed while rendering. A caller that has to
 /// tell a configuration fault from a runtime one ([`crate::resolve`]) matches
-/// the variant; the public `Result<String, String>` render above carries the
-/// same split as the two prefixed strings `Display` produces.
+/// the variant; `Display` prefixes each with its phase.
 #[derive(Debug)]
 pub(crate) enum RenderError {
     Compile(minijinja::Error),
@@ -219,10 +196,39 @@ pub(crate) enum RenderError {
 impl std::fmt::Display for RenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RenderError::Compile(e) => write!(f, "template compile error: {e}"),
-            RenderError::Render(e) => write!(f, "template render error: {e}"),
+            RenderError::Compile(e) => write!(
+                f,
+                "template compile error: {}",
+                without_engine_frame(&e.to_string())
+            ),
+            RenderError::Render(e) => write!(
+                f,
+                "template render error: {}",
+                without_engine_frame(&e.to_string())
+            ),
         }
     }
+}
+
+/// An engine error's message without the engine's own framing: the leading
+/// `invalid operation: ` and a trailing ` (in <expression>:1)` or
+/// ` (in <string>:1)`. Only those two places, once: the text between is the
+/// error's own, a command's stderr included, and is not touched.
+pub fn without_engine_frame(message: &str) -> String {
+    let body = message
+        .strip_prefix("invalid operation: ")
+        .unwrap_or(message);
+    if let Some(open) = body.rfind(" (in <")
+        && let Some(rest) = body[open..].strip_suffix(')')
+        && let Some((place, line)) = rest[" (in <".len()..].split_once(">:")
+        && !place.is_empty()
+        && place.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+        && !line.is_empty()
+        && line.chars().all(|c| c.is_ascii_digit())
+    {
+        return body[..open].to_string();
+    }
+    body.to_string()
 }
 
 pub(crate) fn render_template_with(
@@ -318,23 +324,44 @@ pub fn undeclared_names(
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 //
-// Tests for the CLI's `-f fmt` rendering and for the value-expression
-// rendering it now shares with `comb eval` and the `:template` facet.
-//
-// Task 3 deleted `src/cli/format.rs`'s hand-rolled `{{ }}` scanner
-// (`find_eval_template_pairs` / `find_eval_template_refs`) and its
-// `render_eval_template`: reference discovery is `eval::discover_refs` and
-// rendering is `eval::render_template`, both here. The scanner cases that had
-// no library equivalent are kept below, restated against `discover_refs`.
-//
-// Plan 4 Task 1 deleted `render_fmt_template`, the `ProviderResult`-keyed
-// wrapper around `render_fmt_template_json` that nothing in `src/` called any
-// more; its `fmt_template_*` cases went with it, each already restated below
-// as an `eval_template_*` case exercising the same `render_template`.
+// Tests for a template rendered over locals — what a `-f` template sees of
+// the value it formats, through `resolve::eval_with` like every template —
+// and for reference discovery.
 #[cfg(test)]
 mod tests {
-    use super::{discover_refs, render_template};
+    use super::discover_refs;
     use crate::virtual_fields::Ref;
+
+    /// `src` rendered over `ctx`'s fields as locals, with no daemon behind
+    /// it and `exec()` off: what a `-f` template sees of the value it formats.
+    fn render_template(src: &str, ctx: &serde_json::Value) -> Result<String, String> {
+        use crate::resolve::{Fetch, FetchError, Got, Inputs, Slot, eval_with};
+        struct NoDaemon;
+        impl Fetch for NoDaemon {
+            fn get(
+                &mut self,
+                _: &str,
+                _: Option<&str>,
+                _: bool,
+                _: bool,
+            ) -> Result<Option<Got>, FetchError> {
+                Ok(None)
+            }
+        }
+        let env = std::collections::HashMap::new();
+        let inputs = Inputs {
+            cwd: "",
+            env: &env,
+            slot: Slot::Global,
+            force: false,
+            wait: false,
+            allow_exec: false,
+        };
+        let locals = ctx.as_object().cloned().unwrap_or_default();
+        eval_with(src, "<test>", &inputs, &mut NoDaemon, &locals)
+            .map(|v| crate::render::render_value("", v.as_ref(), crate::render::Format::Text))
+            .map_err(|e| e.to_string())
+    }
 
     fn resolved(provider: &str, field: &str) -> Ref {
         Ref::Resolved(provider.into(), field.into())

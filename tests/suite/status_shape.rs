@@ -286,12 +286,7 @@ fn csv_preset_quotes_values_with_commas() {
 #[test]
 fn custom_template_renders_per_row() {
     let rows = sample_rows();
-    let opts = RenderOpts::default();
-    let out = render_preset(
-        &status_preset("{{ provider }}.{{ field }}={{ value }}"),
-        &rows,
-        &opts,
-    );
+    let out = render_status_template("{{ provider }}.{{ field }}={{ value }}", &rows);
     let lines: Vec<_> = out.lines().collect();
     assert_eq!(lines.len(), rows.len());
     assert!(lines.iter().any(|l| l.contains("git.branch=main")));
@@ -317,11 +312,7 @@ fn custom_template_supports_truncate_filter() {
         next_poll_in_secs: None,
         failure: None,
     }];
-    let out = render_preset(
-        &status_preset("{{ value | truncate(7) }}"),
-        &rows,
-        &RenderOpts::default(),
-    );
+    let out = render_status_template("{{ value | truncate(7) }}", &rows);
     assert_eq!(out.trim(), "abcdef1...");
 }
 
@@ -379,11 +370,7 @@ fn custom_template_supports_age_human() {
         next_poll_in_secs: None,
         failure: None,
     }];
-    let out = render_preset(
-        &status_preset("{{ age_human }}"),
-        &rows,
-        &RenderOpts::default(),
-    );
+    let out = render_status_template("{{ age_human }}", &rows);
     // Should render as "1h" or similar
     assert!(!out.trim().is_empty());
     assert!(out.trim() != "3600000");
@@ -392,11 +379,7 @@ fn custom_template_supports_age_human() {
 #[test]
 fn table_prefix_aligns_columns_and_emits_header() {
     let rows = sample_rows();
-    let out = render_preset(
-        &status_preset("table {{ provider }}\t{{ field }}\t{{ value }}"),
-        &rows,
-        &RenderOpts::default(),
-    );
+    let out = render_status_template("table {{ provider }}	{{ field }}	{{ value }}", &rows);
     let lines: Vec<_> = out.lines().collect();
     // First line should be a header derived from the template variables.
     let header = lines[0];
@@ -3132,4 +3115,35 @@ fn status_preset(value: &str) -> beachcomber::cli::output_format::Format {
     beachcomber::cli::output_format::STATUS
         .parse(value)
         .unwrap()
+}
+
+/// `status -f TEMPLATE` over `rows`, rendered through the resolver as
+/// `comb status` renders it, with no daemon behind it.
+fn render_status_template(template: &str, rows: &[CacheRow]) -> String {
+    use libbeachcomber::resolve::{Fetch, FetchError, Got, Inputs, Slot, eval_with};
+    struct NoDaemon;
+    impl Fetch for NoDaemon {
+        fn get(
+            &mut self,
+            _: &str,
+            _: Option<&str>,
+            _: bool,
+            _: bool,
+        ) -> Result<Option<Got>, FetchError> {
+            Ok(None)
+        }
+    }
+    let env = std::collections::HashMap::new();
+    let inputs = Inputs {
+        cwd: "",
+        env: &env,
+        slot: Slot::Global,
+        force: false,
+        wait: false,
+        allow_exec: false,
+    };
+    let mut render = |src: &str, locals: &serde_json::Map<String, serde_json::Value>| {
+        eval_with(src, "-f", &inputs, &mut NoDaemon, locals)
+    };
+    beachcomber::cli::status_format::render_template_format(template, rows, &mut render).unwrap()
 }

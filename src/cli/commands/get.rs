@@ -8,11 +8,10 @@
 //! it is, `env.*` is answered from the environment. This module only renders
 //! what comes back, per output format.
 
-use crate::cli::format::render_fmt_template_json;
-use crate::cli::output_format::{Format, Preset};
+use crate::cli::output_format::{Format, Preset, template_locals};
 use crate::config::Config;
-use libbeachcomber::render::{render_value, render_values};
-use libbeachcomber::resolve::{Inputs, ResolveError, Slot, resolve};
+use libbeachcomber::render::{Format as ValueFormat, render_value, render_values};
+use libbeachcomber::resolve::{Inputs, ResolveError, Slot, eval_with, resolve};
 use serde_json::Value;
 use std::process::ExitCode;
 
@@ -127,7 +126,17 @@ pub fn run_get(
     }
 
     let rendered = match &format {
-        Format::Template(template) => render_template(template, &slots),
+        // A template renders as `comb eval` renders one, with the values
+        // bound beside every name a template reads.
+        Format::Template(template) => eval_with(
+            template,
+            "-f",
+            &inputs,
+            &mut session,
+            &template_locals(&slots),
+        )
+        .map(|v| render_value("", v.as_ref(), ValueFormat::Text))
+        .map_err(|e| e.to_string()),
         Format::Preset(preset) => {
             let format = preset
                 .value_format()
@@ -156,35 +165,6 @@ pub fn run_get(
     } else {
         ExitCode::SUCCESS
     }
-}
-
-/// A `-f` template over the keys' values: one key's object is the context
-/// itself; several keys' objects merge, each field also as
-/// `provider.field`, and a scalar sits under its key.
-fn render_template(template: &str, slots: &[(&str, Option<Value>)]) -> Result<String, String> {
-    if let [(_, value)] = slots {
-        return match value {
-            Some(value) => render_fmt_template_json(template, value),
-            None => Ok(String::new()),
-        };
-    }
-    let mut merged = serde_json::Map::new();
-    for (key, value) in slots {
-        match value {
-            Some(Value::Object(map)) => {
-                let provider = libbeachcomber::key::head_of(key);
-                for (k, v) in map {
-                    merged.insert(format!("{provider}.{k}"), v.clone());
-                    merged.insert(k.clone(), v.clone());
-                }
-            }
-            Some(value) => {
-                merged.insert(key.to_string(), value.clone());
-            }
-            None => {}
-        }
-    }
-    render_fmt_template_json(template, &Value::Object(merged))
 }
 
 #[cfg(test)]

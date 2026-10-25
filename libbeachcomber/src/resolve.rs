@@ -22,7 +22,7 @@
 use crate::engine::{EngineCtx, build_engine_env};
 use crate::eval::{
     MAX_VIRTUAL_DEPTH, RenderError, discover_refs, render_template_with, single_tag_expression,
-    too_deep,
+    too_deep, without_engine_frame,
 };
 use crate::lazy::{Bridge, LazyNode, Prefetch};
 use crate::virtual_fields::{Ref, mj_to_json};
@@ -229,7 +229,27 @@ pub fn eval(
     inputs: &Inputs<'_>,
     fetch: &mut dyn Fetch,
 ) -> Result<Option<JsonValue>, ResolveError> {
-    Resolver::new(inputs, fetch).render(src, "<eval>")
+    eval_with(src, "<eval>", inputs, fetch, &Map::new())
+}
+
+/// [`eval`], with `locals` bound as top-level names over the refs, and errors
+/// named `name`. A name `locals` binds is never fetched as a provider:
+/// `comb get -f '{{ value }}' git.branch` renders the value it read, and
+/// `comb status -f '{{ provider }}'` the row's provider, while every other
+/// name — `env`, `comb`, a provider ref, `exec()` — reads as it does in any
+/// template.
+pub fn eval_with(
+    src: &str,
+    name: &str,
+    inputs: &Inputs<'_>,
+    fetch: &mut dyn Fetch,
+    locals: &Map<String, JsonValue>,
+) -> Result<Option<JsonValue>, ResolveError> {
+    let mut r = Resolver::new(inputs, fetch);
+    r.push(name)?;
+    let rendered = r.render_frame_with(src, name, locals);
+    r.stack.pop();
+    rendered
 }
 
 /// One resolution: its inputs, its transport, its fetch memo and its
@@ -382,8 +402,28 @@ impl<'a> Resolver<'a> {
     }
 
     fn render_frame(&mut self, src: &str, key: &str) -> Result<Option<JsonValue>, ResolveError> {
-        let refs = discover_refs(src);
-        let bound = self.bind(&refs)?;
+        self.render_frame_with(src, key, &Map::new())
+    }
+
+    /// [`Self::render_frame`], with `locals` bound over the refs; a ref whose
+    /// name a local binds is not fetched.
+    fn render_frame_with(
+        &mut self,
+        src: &str,
+        key: &str,
+        locals: &Map<String, JsonValue>,
+    ) -> Result<Option<JsonValue>, ResolveError> {
+        let refs: Vec<Ref> = discover_refs(src)
+            .into_iter()
+            .filter(|r| match r {
+                Ref::Dynamic(name) | Ref::Resolved(name, _) => !locals.contains_key(name),
+                Ref::Env(_) | Ref::CombField(..) | Ref::CombProvider(_) => true,
+            })
+            .collect();
+        let mut bound = self.bind(&refs)?;
+        for (name, value) in locals {
+            bound.insert(name.clone(), value.clone());
+        }
         // `comb[...]` reads what the render asks for, so `comb` is a lazy
         // node rather than a prefetched value.
         if refs.contains(&Ref::Dynamic("comb".to_string())) {
@@ -636,11 +676,17 @@ fn evaluate(
         Some(expr) => {
             let env = build_engine_env(engine);
             let compiled = env.compile_expression(expr).map_err(|e| {
-                ResolveError::Config(format!("{key}: expression compile error: {e}"))
+                ResolveError::Config(format!(
+                    "{key}: expression compile error: {}",
+                    without_engine_frame(&e.to_string())
+                ))
             })?;
-            let value = compiled
-                .eval(context)
-                .map_err(|e| ResolveError::Runtime(format!("{key}: expression eval error: {e}")))?;
+            let value = compiled.eval(context).map_err(|e| {
+                ResolveError::Runtime(format!(
+                    "{key}: expression eval error: {}",
+                    without_engine_frame(&e.to_string())
+                ))
+            })?;
             // A `none` or undefined result is absent, as in the daemon's
             // lines.
             mj_to_json(value).map_err(|e| ResolveError::Runtime(format!("{key}: {e}")))

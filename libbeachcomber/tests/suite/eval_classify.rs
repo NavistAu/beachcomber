@@ -8,7 +8,7 @@
 //! bare-expression form. Evaluation against fetched data is `tests/suite/resolve.rs`.
 
 use libbeachcomber::eval::{
-    Form, TagKind, classify, discover_refs, render_template, scan_tags, single_tag_expression,
+    Form, TagKind, classify, discover_refs, scan_tags, single_tag_expression,
 };
 use libbeachcomber::virtual_fields::Ref;
 use serde_json::{Value, json};
@@ -279,7 +279,44 @@ fn cache_is_an_ordinary_provider_name() {
     );
 }
 
-// ── render_template over an already-assembled context ─────────────────────────
+// ── a template over locals: what a `-f` template sees ─────────────────────────
+
+/// `src` rendered over `ctx`'s fields as locals, with no daemon behind
+/// it and `exec()` off: what a `-f` template sees of the value it formats.
+fn render_template(src: &str, ctx: &serde_json::Value) -> Result<String, String> {
+    use libbeachcomber::resolve::{Fetch, FetchError, Got, Inputs, Slot, eval_with};
+    struct NoDaemon;
+    impl Fetch for NoDaemon {
+        fn get(
+            &mut self,
+            _: &str,
+            _: Option<&str>,
+            _: bool,
+            _: bool,
+        ) -> Result<Option<Got>, FetchError> {
+            Ok(None)
+        }
+    }
+    let env = std::collections::HashMap::new();
+    let inputs = Inputs {
+        cwd: "",
+        env: &env,
+        slot: Slot::Global,
+        force: false,
+        wait: false,
+        allow_exec: false,
+    };
+    let locals = ctx.as_object().cloned().unwrap_or_default();
+    eval_with(src, "<test>", &inputs, &mut NoDaemon, &locals)
+        .map(|v| {
+            libbeachcomber::render::render_value(
+                "",
+                v.as_ref(),
+                libbeachcomber::render::Format::Text,
+            )
+        })
+        .map_err(|e| e.to_string())
+}
 
 #[test]
 fn render_template_over_assembled_context() {
@@ -291,7 +328,7 @@ fn render_template_over_assembled_context() {
     );
     // A null in the assembled context renders as nothing — not the literal
     // word `none`. The same "missing is falsy" reading canon gives `env.*`
-    // misses and `render::render_data` gives an explicit null.
+    // misses and `render::render_value` gives an explicit null.
     let rendered = render_template("[{{ git.tag }}]", &ctx).unwrap();
     assert_eq!(rendered, "[]");
     assert!(!rendered.contains("none"), "got: {rendered}");
@@ -309,18 +346,18 @@ fn render_template_over_assembled_context() {
 
     // Errors are prefixed by phase.
     let err = render_template("{{ x } }}", &ctx).unwrap_err();
-    assert!(err.starts_with("template compile error:"), "got: {err}");
+    assert!(err.contains(": template compile error:"), "got: {err}");
     let err = render_template("{% for x in 5 %}{% endfor %}", &json!({})).unwrap_err();
-    assert!(err.starts_with("template render error:"), "got: {err}");
+    assert!(err.contains(": template render error:"), "got: {err}");
 }
 
 #[test]
 fn render_template_has_no_exec() {
-    // The formatting surfaces' render registers `exec()` in its disabled
-    // form, so a call fails at the call site with the on-topic message —
-    // not minijinja's "unknown function", indistinguishable from a typo.
+    // With `exec()` off, a call fails at the call site with the on-topic
+    // message — not minijinja's "unknown function", indistinguishable from a
+    // typo.
     let err = render_template("{{ exec(['printf', 'x']) }}", &json!({})).unwrap_err();
-    assert!(err.starts_with("template render error:"), "got: {err}");
+    assert!(err.contains(": expression eval error:"), "got: {err}");
     assert!(
         err.contains("exec() is disabled in this context"),
         "got: {err}"

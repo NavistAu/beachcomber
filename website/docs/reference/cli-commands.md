@@ -20,6 +20,8 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 | `.t` / `.T` | `tsv` / `TSV` | tab-separated; uppercase adds a header row |
 | `.f TEMPLATE` | `TEMPLATE` | a template: any `-f` value holding `{{` or `{%` |
 
+A `-f` template renders exactly as `comb eval` renders one — `env`, `comb.*`, provider refs and `exec()` all read as they do there — with what the command read bound beside them: `value` (`values`, in key order, for several keys) and an object's fields by name on `get` and `watch`, and each row's fields (`provider`, `path`, `field`, `source`, `value`, `age_ms`, `age_human`, `stale`, `kind`, …) on `status`. A name it binds is never fetched as a provider. A template that does not compile fails the command once (`-f: template compile error: …`, exit 2); a `status` row whose render fails shows the error in its place.
+
 A template is recognised by its tags, never by not being a format's name: `-f` with anything else must name a format the command has, or it's refused (`get has no 'bogus' format: expected text (default), json, sh, csv, CSV, tsv, TSV, or a template ({{ … }})`). `status` also has `table` (an uncoloured `human`), and `check config --origins` takes `human` or `json`.
 
 | Short | Long | Formats |
@@ -250,7 +252,7 @@ scanline            greeting  template  hi jane             ~/ws/project  0s    
 
 A cached field with a template over it shows **both** rows at that same address — `git.branch` cached by the `head` Source plus a `git:template.branch` override both list, so the raw cached value and the effective rendered one are visible side by side rather than one hiding the other. A leaf whose expression fails to render shows the failure text as its value instead of dropping the row.
 
-A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lead-in (`> ` under `--ascii`) when it's off. In the structured formats (`json`, `tsv`, `csv`, `sh`, a `-f` template's context) it carries `kind: template` and `source: template`, and it's selectable on its own with `--filter lifecycle=template`. A `provider` filter that rules a provider out entirely skips resolving that provider's templates — and any `exec()` inside them — rather than rendering them only to discard the rows afterward.
+A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lead-in (`> ` under `--ascii`) when it's off. In the structured formats (`json`, `tsv`, `csv`, `sh`, a `-f` template's row fields) it carries `kind: template` and `source: template`, and it's selectable on its own with `--filter lifecycle=template`. A `provider` filter that rules a provider out entirely skips resolving that provider's templates — and any `exec()` inside them — rather than rendering them only to discard the rows afterward.
 
 Rendering resolves with this shell's own environment and directory, and `exec()` is enabled — `status` is one of the surfaces canon `field_resolution.md` invariant 15 names, alongside `comb get`, `comb eval` and `comb watch`.
 
@@ -473,7 +475,7 @@ comb e '{{ exec(["git", "rev-parse", "--short", "HEAD"]) }}' .
 | Output | stdout, lossy-UTF-8 decoded, with at most one trailing `\n` (and a preceding `\r`) stripped |
 | Output cap | stdout past 1 MiB is a failure, not a truncation |
 | Failure | a non-zero exit, a timeout, an oversized stdout, or a spawn error is an eval error naming the command, with stderr (truncated) attached |
-| Availability | `comb eval` and `comb get` — the CLI user already has a shell — and an SDK client constructed with `exec` on (`Client(exec=True)` and the equivalent in each SDK; off by default). Disabled everywhere else a value expression is evaluated: every formatting surface (a `-f` template on `get`, `watch` or `status`), and an SDK client without the option. A call on a disabled surface fails immediately with `exec() is disabled in this context`. |
+| Availability | Every CLI surface that renders a template — `comb get`, `comb eval`, `comb watch`, `comb status`, and a `-f` template on any of them — since the CLI user already has a shell, and an SDK client constructed with `exec` on (`Client(exec=True)` and the equivalent in each SDK; off by default). A call on an SDK client without the option fails immediately with `exec() is disabled in this context`. |
 
 `exec()` always runs client-side — the daemon never executes it, the same as every other value expression. See the [Configuration Reference](/docs/reference/configuration-reference#exec-in-templates) for a template that wraps a script call.
 

@@ -472,12 +472,8 @@ pub fn render_preset(format: &Format, rows: &[CacheRow], opts: &RenderOpts) -> S
             render_table(rows, &[], color, trunc, true, opts.ascii, true)
         }
         Format::Preset(other) => unreachable!("status's formats hold no {}", other.name()),
-        Format::Template(template) => {
-            if let Some(body) = template.strip_prefix("table ") {
-                render_minijinja_table(body, rows)
-            } else {
-                render_minijinja(template, rows)
-            }
+        Format::Template(_) => {
+            unreachable!("a status template renders through render_template_format")
         }
     }
 }
@@ -486,46 +482,62 @@ pub fn render_preset(format: &Format, rows: &[CacheRow], opts: &RenderOpts) -> S
 // Custom minijinja template renderers
 // ---------------------------------------------------------------------------
 
-/// Render each row using a minijinja template. One output line per row.
-pub fn render_minijinja(template: &str, rows: &[CacheRow]) -> String {
-    let rendered: Vec<String> = rows
-        .iter()
-        .map(|r| {
-            let ctx = row_context(r);
-            crate::cli::format::render_fmt_template_json(template, &ctx)
-                .unwrap_or_else(|e| format!("<{e}>"))
-        })
-        .collect();
+/// How a `-f` template renders against one row: the template, and the row's
+/// fields as locals ([`row_context`]). `comb status` renders it the way
+/// `comb eval` renders any template ([`libbeachcomber::resolve::eval_with`]).
+pub type RowRender<'a> = dyn FnMut(
+        &str,
+        &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Option<serde_json::Value>, libbeachcomber::resolve::ResolveError>
+    + 'a;
+
+/// `status -f TEMPLATE`: the template rendered once per row, one row per
+/// line; `table TEMPLATE` splits each on tabs and aligns the columns under a
+/// header of the names the template reads. A template that does not compile
+/// fails the command once (`Err`); a row that fails while rendering shows its
+/// error in its place.
+pub fn render_template_format(
+    template: &str,
+    rows: &[CacheRow],
+    render: &mut RowRender<'_>,
+) -> Result<String, String> {
+    use libbeachcomber::render::{Format as ValueFormat, render_value};
+    use libbeachcomber::resolve::ResolveError;
+    let (body, table) = match template.strip_prefix("table ") {
+        Some(body) => (body, true),
+        None => (template, false),
+    };
+    let mut rendered = Vec::with_capacity(rows.len());
+    for row in rows {
+        let serde_json::Value::Object(ctx) = row_context(row) else {
+            unreachable!("a row's context is an object")
+        };
+        match render(body, &ctx) {
+            Ok(value) => rendered.push(
+                render_value("", value.as_ref(), ValueFormat::Text)
+                    .trim_end_matches('\n')
+                    .to_string(),
+            ),
+            Err(ResolveError::Config(message)) => return Err(message),
+            Err(e) => rendered.push(format!("<{e}>")),
+        }
+    }
+    if table {
+        return Ok(align_template_table(body, &rendered));
+    }
     let mut out = rendered.join("\n");
     if !out.is_empty() {
         out.push('\n');
     }
-    out
+    Ok(out)
 }
 
-/// Render rows using a tab-separated minijinja template, then align columns.
-///
-/// The template body (after stripping the `table ` prefix) is rendered per row.
-/// Column widths are computed across all rendered rows plus the derived header,
-/// and the output is printed as a left-aligned block.
-pub fn render_minijinja_table(body: &str, rows: &[CacheRow]) -> String {
-    // 1. Render each row.
-    let rendered: Vec<String> = rows
-        .iter()
-        .map(|r| {
-            let ctx = row_context(r);
-            crate::cli::format::render_fmt_template_json(body, &ctx)
-                .unwrap_or_else(|e| format!("<{e}>"))
-        })
-        .collect();
-
-    // 2. Split each rendered string on '\t' → matrix.
+/// `table` layout: each rendered row split on tabs, columns aligned across
+/// every row and the header derived from the names the template reads.
+fn align_template_table(body: &str, rendered: &[String]) -> String {
     let matrix: Vec<Vec<&str>> = rendered.iter().map(|s| s.split('\t').collect()).collect();
-
-    // 3. Derive header from variable names in `body`.
     let header: Vec<String> = extract_template_header(body);
 
-    // 4. Compute per-column widths.
     let n_cols = header
         .len()
         .max(matrix.iter().map(|r| r.len()).max().unwrap_or(0));
@@ -541,10 +553,7 @@ pub fn render_minijinja_table(body: &str, rows: &[CacheRow]) -> String {
         }
     }
 
-    // 5. Render aligned.
     let mut out = String::new();
-
-    // Header row.
     for (i, h) in header.iter().enumerate() {
         if i > 0 {
             out.push_str("  ");
@@ -556,8 +565,6 @@ pub fn render_minijinja_table(body: &str, rows: &[CacheRow]) -> String {
         }
     }
     out.push('\n');
-
-    // Data rows.
     for row in &matrix {
         for (i, cell) in row.iter().enumerate() {
             if i > 0 {
@@ -572,14 +579,10 @@ pub fn render_minijinja_table(body: &str, rows: &[CacheRow]) -> String {
         }
         out.push('\n');
     }
-
     out
 }
 
-/// Build the template render context for a `CacheRow`.
-///
-/// A `serde_json::Value` object — the shape
-/// [`crate::cli::format::render_fmt_template_json`] takes.
+/// A row's fields, as the locals of a `status -f` template.
 pub fn row_context(r: &CacheRow) -> serde_json::Value {
     use crate::cache::RowKind;
     let mut ctx = serde_json::Map::new();

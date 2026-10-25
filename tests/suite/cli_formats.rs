@@ -213,3 +213,78 @@ fn status_csv_has_no_header_and_csv_upper_has_one() {
     let tsv = ok(&d, &[&["s.T"][..], &filter].concat());
     assert!(tsv.starts_with("PROVIDER\tPATH\tFIELD"), "{tsv}");
 }
+
+// ── a -f template sees what any template sees ────────────────────────────────
+
+/// `args` with `FMT_X=x` in the environment, which must succeed.
+fn ok_with_x(d: &TestDaemon, args: &[&str]) -> String {
+    let out = d
+        .comb(Path::new("/"))
+        .env("FMT_X", "x")
+        .args(args)
+        .assert()
+        .success();
+    String::from_utf8(out.get_output().stdout.clone()).unwrap()
+}
+
+/// The value as `value`, an object's fields by name, and — as in
+/// `comb eval` — `env`, provider refs and `comb.*`.
+#[test]
+fn a_get_template_sees_the_value_env_and_refs() {
+    let d = TestDaemon::spawn();
+    seed(&d);
+    assert_eq!(
+        ok_with_x(
+            &d,
+            &[
+                "get",
+                "--global",
+                "-f",
+                "{{ value }}|{{ env.FMT_X }}|{{ fmtprov.n }}|{{ comb.fmtprov.n }}",
+                "fmtprov.val"
+            ]
+        ),
+        "formatted|x|3|3"
+    );
+    assert_eq!(
+        ok_with_x(&d, &["g.f", "{{ val }}/{{ n }}", "fmtprov", "--global"]),
+        "formatted/3"
+    );
+}
+
+#[test]
+fn a_status_template_sees_the_row_and_env() {
+    let d = TestDaemon::spawn();
+    seed(&d);
+    assert_eq!(
+        ok_with_x(
+            &d,
+            &[
+                "s.f",
+                "{{ env.FMT_X }}:{{ field }}={{ value }}",
+                "--filter",
+                "provider=fmtprov",
+                "--sort",
+                "field"
+            ]
+        ),
+        "x:n=3\nx:val=formatted\n"
+    );
+}
+
+/// A template that does not compile fails the command once, named, with no
+/// engine frame in the message.
+#[test]
+fn a_template_that_does_not_compile_fails_the_command() {
+    let d = TestDaemon::spawn();
+    seed(&d);
+    for args in [
+        &["get", "--global", "-f", "{{ x ", "fmtprov"][..],
+        &["status", "-f", "{{ x ", "--filter", "provider=fmtprov"][..],
+    ] {
+        let out = d.comb(Path::new("/")).args(args).assert().code(2);
+        let stderr = String::from_utf8_lossy(&out.get_output().stderr).to_string();
+        assert!(stderr.contains("-f: template compile error:"), "{stderr}");
+        assert!(!stderr.contains("(in <"), "no engine frame: {stderr}");
+    }
+}

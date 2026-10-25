@@ -291,7 +291,7 @@ template.deploy_tag = "{{ exec('git describe --tags --always') }}"
 | `stdin` | keyword, default none; must be a string — `\| tojson` first for structured data |
 | Output | stdout, lossy-UTF-8, at most one trailing newline stripped; capped at 1 MiB (an oversized stdout is a failure, not a truncation) |
 | Failure | non-zero exit / timeout / oversized stdout / spawn failure → a runtime error naming the command, with truncated stderr attached |
-| Availability | `comb get`, `comb eval`, and an SDK client constructed with `exec` on (`Client(exec=True)`, `new Client({ exec: true })`, `beachcomber.WithExec(true)`, `Beachcomber::Client.new(exec: true)`, `comb.connect{ exec = true }`, `bc_client_new("{\"exec\":true}")`) — off by default. Never the daemon, and never a formatting surface (`-f fmt`, `watch -f fmt`, the status formatter). A call anywhere it is off fails with `exec() is disabled in this context`. |
+| Availability | `comb get`, `comb eval`, and an SDK client constructed with `exec` on (`Client(exec=True)`, `new Client({ exec: true })`, `beachcomber.WithExec(true)`, `Beachcomber::Client.new(exec: true)`, `comb.connect{ exec = true }`, `bc_client_new("{\"exec\":true}")`) — off by default. Also every other CLI surface that renders a template, a `-f` template included (`comb watch`, `comb status`). Never the daemon. A call anywhere it is off fails with `exec() is disabled in this context`. |
 
 A whole-namespace `comb get <provider>` renders every template in that namespace in sequence, so several `exec()`-backed leaves under one namespace can serialise up to N × `timeout` in the worst case — pass an explicit, low `timeout` when the consumer is latency-sensitive (a shell prompt or statusline).
 

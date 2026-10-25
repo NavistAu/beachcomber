@@ -6,10 +6,10 @@ use crate::cache::{CacheRow, RowKind};
 use crate::cli::output_format::{Format, Preset};
 use crate::cli::status_format::{
     ColorMode, RenderOpts, apply_filters, apply_sort, default_depth, flatten_rows, render_preset,
-    render_tree, resolve_color, resolve_max_width, row_base, row_facet,
+    render_template_format, render_tree, resolve_color, resolve_max_width, row_base, row_facet,
 };
 use crate::config::Config;
-use libbeachcomber::resolve::{Inputs, Slot, resolve_traced};
+use libbeachcomber::resolve::{Inputs, Slot, eval_with, resolve_traced};
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -340,8 +340,39 @@ pub fn run_status(
                 eprintln!("sort error: {e}");
                 std::process::exit(2);
             });
-            let out = match &stacks {
-                Some(stacks) if tree => {
+            let out = match (&stacks, format) {
+                (_, Format::Template(template)) if !tree => {
+                    let cwd = std::env::current_dir()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let env = crate::cli::shell_env();
+                    let inputs = Inputs {
+                        cwd: &cwd,
+                        env: &env,
+                        slot: Slot::Cwd,
+                        force: false,
+                        wait: false,
+                        allow_exec: true,
+                    };
+                    let mut session = match client.connect() {
+                        Ok(session) => session,
+                        Err(e) => {
+                            eprintln!("Error: {e}");
+                            return ExitCode::from(2);
+                        }
+                    };
+                    let mut render = |src: &str, locals: &serde_json::Map<_, _>| {
+                        eval_with(src, "-f", &inputs, &mut session, locals)
+                    };
+                    match render_template_format(template, &rows, &mut render) {
+                        Ok(out) => out,
+                        Err(e) => {
+                            eprintln!("{e}");
+                            return ExitCode::from(2);
+                        }
+                    }
+                }
+                (Some(stacks), _) if tree => {
                     let children: Vec<_> = rows
                         .iter()
                         .map(|row| stacks.get(&row_id(row)).cloned().unwrap_or_default())

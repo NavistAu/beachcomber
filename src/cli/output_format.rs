@@ -237,6 +237,37 @@ pub fn origins_format(value: &str) -> Result<Format, String> {
     ORIGINS.parse(value)
 }
 
+/// What a `-f` template sees beside every name a template reads: the value
+/// as `value` (or `values`, in key order, for several keys), and an object's
+/// fields as names of their own. A key with no value binds nothing.
+pub fn template_locals(
+    slots: &[(&str, Option<serde_json::Value>)],
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::Value;
+    let mut locals = serde_json::Map::new();
+    for (_, value) in slots {
+        if let Some(Value::Object(fields)) = value {
+            for (name, field) in fields {
+                locals.insert(name.clone(), field.clone());
+            }
+        }
+    }
+    match slots {
+        [(_, Some(value))] => {
+            locals.insert("value".into(), value.clone());
+        }
+        [_] => {}
+        many => {
+            let values = many
+                .iter()
+                .map(|(_, v)| v.clone().unwrap_or(Value::Null))
+                .collect();
+            locals.insert("values".into(), Value::Array(values));
+        }
+    }
+    locals
+}
+
 /// The commands and their aliases, so a suffix on one is recognised as such.
 const COMMANDS: &[(&str, &str)] = &[
     ("daemon", "d"),
