@@ -19,6 +19,7 @@ export type WatchHandle = unknown;
 export interface NewClientOptions {
   socketPath?: string;
   timeoutMs?: number;
+  connectTimeoutMs?: number;
   autostart?: boolean;
   exec?: boolean;
 }

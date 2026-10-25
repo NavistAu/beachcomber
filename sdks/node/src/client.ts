@@ -252,9 +252,21 @@ export class Session {
 export interface ClientOptions {
   /** Override the auto-discovered socket path. */
   socketPath?: string;
-  /** Connection + read timeout in milliseconds. Default: 5000. */
+  /**
+   * How long one read or write on the daemon's socket may take, in
+   * milliseconds (`bc_client_new`'s `timeout_ms`). Unset, the library's
+   * default applies (100); this SDK has none of its own. 0 is refused.
+   * Over the subprocess transport it bounds each spawned `comb`.
+   */
   timeoutMs?: number;
-  /** Whether the underlying client may auto-start the daemon. Default: true. */
+  /**
+   * How long connecting keeps retrying a socket nobody answers yet, in
+   * milliseconds (`bc_client_new`'s `connect_timeout_ms`); 0 is a single
+   * attempt. Unset, the library's default applies (1500). The subprocess
+   * transport refuses it: `comb` has no such flag.
+   */
+  connectTimeoutMs?: number;
+  /** Whether the underlying client may auto-start the daemon. Unset, the library's default (on). */
   autostart?: boolean;
   /**
    * Whether a template this client renders (`get`, `eval`) may call
@@ -302,6 +314,7 @@ export class Client {
     this.handle = this.tp.newClient({
       socketPath: opts.socketPath,
       timeoutMs: opts.timeoutMs,
+      connectTimeoutMs: opts.connectTimeoutMs,
       autostart: opts.autostart,
       exec: opts.exec,
     });

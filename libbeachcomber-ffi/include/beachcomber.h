@@ -79,12 +79,22 @@ const char *bc_version(void);
 char *bc_socket_path(void);
 
 /**
- * Creates a new client handle. `options_json` is nullable; recognised keys
- * are `socket_path`, `timeout_ms`, `autostart` and `exec` — whether a
- * template this client renders (`bc_get`, `bc_eval`) may call `exec()`,
- * default `false`. Never returns NULL — a malformed `options_json` still
- * yields a handle, with the parse error deferred to the handle's first
- * operation rather than failing here.
+ * Creates a new client handle. `options_json` is nullable; its keys, each
+ * optional, are:
+ *
+ * | key                  | default                     | meaning |
+ * |----------------------|-----------------------------|---------|
+ * | `socket_path`        | `bc_socket_path`'s answer   | the daemon's socket |
+ * | `timeout_ms`         | 100                         | how long one read or write may take; at least 1 |
+ * | `connect_timeout_ms` | 1500                        | how long connecting keeps retrying; 0 is one attempt |
+ * | `autostart`          | `true`                      | start a daemon when none answers an auto-discovered socket |
+ * | `exec`               | `false`                     | whether a template this client renders (`bc_get`, `bc_eval`) may call `exec()` |
+ *
+ * These defaults are the only ones: an SDK passes on what its caller gave
+ * and adds none of its own. A key not in this table is refused. Never
+ * returns NULL — a malformed `options_json` still yields a handle, with the
+ * `parse_error` deferred to the handle's first operation rather than
+ * failing here.
  *
  * # Safety
  * `options_json` must be NULL or a valid pointer to a NUL-terminated string.

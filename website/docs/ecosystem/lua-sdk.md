@@ -79,8 +79,12 @@ Connect to the daemon and return a `Client`.
 | Option | Type | Description |
 |---|---|---|
 | `socket_path` | string | Override automatic socket discovery |
+| `timeout_ms` | number | `ffi` transport: how long one read or write on the socket may take. Left out, the library's default (100); the SDK has none of its own. 0 is refused |
+| `connect_timeout_ms` | number | `ffi` transport: how long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. Left out, the library's default (1500) |
 | `exec` | boolean | `ffi` transport: let templates this client renders call `exec()`. Off by default — a template that calls it then fails with `exec() is disabled in this context` |
 | `backend` | module | Override the socket backend (advanced) |
+
+The subprocess transport cannot bound a spawned `comb`, so `comb.connect` refuses `timeout_ms` and `connect_timeout_ms` there: it returns `nil` and an `unsupported` error naming the `ffi` transport.
 
 Returns `nil, error_message` on failure.
 

@@ -64,8 +64,27 @@ end
 
 local M = {}
 
---- @param opts table?  opts.socket_path / opts.timeout_ms / opts.autostart /
---                       opts.exec forwarded into bc_client_new's options_json;
+--- The keys of bc_client_new's options_json: the ABI's own, passed through.
+local CLIENT_OPTIONS = { "socket_path", "timeout_ms", "connect_timeout_ms", "autostart", "exec" }
+
+--- The `options_json` bc_client_new takes for `opts`: each option the caller
+-- gave, under the ABI's spelling, and nothing else — no key for an option
+-- left out, so the library's own default applies (this SDK has none). nil
+-- (no options at all) when none was given.
+-- @param opts table
+-- @return string|nil
+function M.options_json(opts)
+  local options = {}
+  for _, key in ipairs(CLIENT_OPTIONS) do
+    if opts[key] ~= nil then options[key] = opts[key] end
+  end
+  if next(options) == nil then return nil end
+  return json.encode(options)
+end
+
+--- @param opts table?  opts.socket_path / opts.timeout_ms /
+--                       opts.connect_timeout_ms / opts.autostart / opts.exec
+--                       forwarded into bc_client_new's options_json as given;
 --                       opts.library_path overrides ffi library discovery.
 -- @return Backend, or nil, Error
 function M.new(opts)
@@ -76,14 +95,7 @@ function M.new(opts)
   end
   local C = loaded.lib
 
-  local options = {}
-  if opts.socket_path ~= nil then options.socket_path = opts.socket_path end
-  if opts.timeout_ms ~= nil then options.timeout_ms = opts.timeout_ms end
-  if opts.autostart ~= nil then options.autostart = opts.autostart end
-  if opts.exec ~= nil then options.exec = opts.exec end
-  local options_json = next(options) and json.encode(options) or nil
-
-  local client_ptr = C.bc_client_new(options_json)
+  local client_ptr = C.bc_client_new(M.options_json(opts))
   ffi.gc(client_ptr, C.bc_client_free)
 
   return setmetatable({

@@ -43,12 +43,25 @@ console.log(branch); // e.g. "main"
 ```typescript
 const client = new Client();
 const client = new Client({ socketPath: '/custom/path' });
-const client = new Client({ socketPath: '/custom/path', timeoutMs: 2000, autostart: true });
+const client = new Client({ socketPath: '/custom/path', timeoutMs: 2000, connectTimeoutMs: 0 });
 const client = new Client({ exec: true }); // templates this client renders may call exec()
 ```
 
-`exec` is off by default: a template that calls `exec()` on a client
-without it fails with `exec() is disabled in this context`.
+Each option is passed to the library's `bc_client_new` as it is given; the
+SDK has no defaults of its own, so an option left unset is the library's
+default.
+
+| Option | Library default | Meaning |
+|---|---|---|
+| `socketPath` | `$BEACHCOMBER_SOCKET`, else `/tmp/beachcomber-<uid>/sock` | The daemon's socket. |
+| `timeoutMs` | 100 | How long one read or write on the socket may take. 0 is refused. |
+| `connectTimeoutMs` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
+| `autostart` | on | Start a daemon when none serves the auto-discovered socket. |
+| `exec` | off | Whether a template this client renders may call `exec()`; a template that calls it without the option fails with `exec() is disabled in this context`. |
+
+Over the subprocess transport `timeoutMs` bounds each spawned `comb`, and
+`connectTimeoutMs` is refused with `UnsupportedTransportError`: `comb` has
+no flag to carry it.
 
 #### `client.transport()`
 
@@ -191,7 +204,8 @@ programmatic handling.
 and watch — all with exact envelope fidelity.
 
 **Subprocess (`comb` CLI fallback)** covers `get`, `put`,
-`refresh`, `status`, and session context. `get` is one `comb get -f json
+`refresh`, `status`, and session context. `timeoutMs` bounds each spawned
+`comb`, with no default of its own; `connectTimeoutMs` is refused. `get` is one `comb get -f json
 <key> [--path P | --global] [--force] [--wait]`: the value `comb get`
 prints, the same value the FFI tier answers — the directory chain up to
 `$HOME`, `$HOME` as the global entry, `force`/`wait`, the daemon's

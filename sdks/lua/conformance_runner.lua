@@ -343,10 +343,20 @@ end
 
 -- ── Fixture execution ─────────────────────────────────────────────────────────
 
+--- The options a fixture's client connects with. A read may take up to 5s
+-- under the ffi transport; the subprocess transport takes no timeout (it
+-- cannot bound a spawn, and refuses one), so none is passed there.
+local HAS_FFI = pcall(require, "ffi")
+local function connect_options(socket)
+  local opts = { socket_path = socket, autostart = false, comb_bin = COMB_BIN }
+  if HAS_FFI then opts.timeout_ms = 5000 end
+  return opts
+end
+
 --- @return "pass"|"fail"|"skip", reason_string_on_fail_or_skip
 local function run_fixture(fixture)
   local guard = start_daemon()
-  local client, cerr = comb.connect({ socket_path = guard.socket, autostart = false, timeout_ms = 3000, comb_bin = COMB_BIN })
+  local client, cerr = comb.connect(connect_options(guard.socket))
   if not client then
     stop_daemon(guard)
     return "fail", "could not connect: " .. tostring(cerr)
@@ -394,7 +404,7 @@ end
 -- is visible rather than discovered in a profile.
 do
   local probe = start_daemon()
-  local probe_client, err = comb.connect({ socket_path = probe.socket, autostart = false, timeout_ms = 2000, comb_bin = COMB_BIN })
+  local probe_client, err = comb.connect(connect_options(probe.socket))
   stop_daemon(probe)
   if not probe_client then
     die("could not establish a connection to probe the active transport: " .. tostring(err))

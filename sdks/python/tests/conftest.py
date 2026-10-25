@@ -150,6 +150,6 @@ def daemon(comb_bin: str):
 def client(daemon: DaemonProcess):
     from libbeachcomber import Client
 
-    c = Client(socket_path=daemon.socket_path, timeout=5.0)
+    c = Client(socket_path=daemon.socket_path, timeout_ms=5000)
     yield c
     c.close()

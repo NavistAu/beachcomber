@@ -208,6 +208,22 @@ func WithAutostart(enabled bool) Option {
 	return func(opts map[string]interface{}) { opts["autostart"] = enabled }
 }
 
+// WithTimeoutMs sets how long one read or write on the daemon's socket may
+// take, in milliseconds (bc_client_new's timeout_ms). Left out, the
+// library's default applies (100ms); this SDK has none of its own. 0 is
+// refused: the client's first operation fails with kind parse_error.
+func WithTimeoutMs(ms uint64) Option {
+	return func(opts map[string]interface{}) { opts["timeout_ms"] = ms }
+}
+
+// WithConnectTimeoutMs sets how long connecting keeps retrying a socket
+// nobody answers yet, in milliseconds (bc_client_new's connect_timeout_ms);
+// 0 is a single attempt. Left out, the library's default applies (1500ms);
+// this SDK has none of its own.
+func WithConnectTimeoutMs(ms uint64) Option {
+	return func(opts map[string]interface{}) { opts["connect_timeout_ms"] = ms }
+}
+
 // WithExec sets whether a template this client renders ([Client.Get],
 // [Client.Eval]) may call exec(). Off by default: a template that calls it
 // then fails with "exec() is disabled in this context".

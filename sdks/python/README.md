@@ -88,11 +88,22 @@ text).
 `Client(exec=True)`; it is off by default, and a template that calls it
 then fails with `exec() is disabled in this context`.
 
-## Custom socket path
+## Client options
 
 ```python
-client = Client(socket_path="/tmp/beachcomber-1000/sock")
+client = Client(socket_path="/tmp/beachcomber-1000/sock", timeout_ms=500, connect_timeout_ms=0)
 ```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `socket_path` | `$BEACHCOMBER_SOCKET`, else `/tmp/beachcomber-<uid>/sock` | The daemon's socket. |
+| `timeout_ms` | 100 | How long one read or write on the socket may take; at least 1. |
+| `connect_timeout_ms` | 1500 | How long connecting keeps retrying before it gives up; 0 is one attempt. |
+| `autostart` | on | Start a daemon when none answers an auto-discovered socket. |
+| `exec` | off | Whether a template this client renders may call `exec()`. |
+
+The defaults are the library's (`bc_client_new`): this SDK passes on the
+options you give and adds none of its own.
 
 ## Library discovery
 

@@ -19,7 +19,7 @@ require 'beachcomber'
 
 client = Beachcomber::Client.new          # auto-discovers socket
 # client = Beachcomber::Client.new(socket_path: '/custom/path')
-# client = Beachcomber::Client.new(timeout: 0.5)  # 500 ms
+# client = Beachcomber::Client.new(timeout_ms: 500)
 # client = Beachcomber::Client.new(exec: true)    # templates this client renders may call exec()
 
 # What `comb get git.branch` prints in that directory; nil on a miss
@@ -36,6 +36,23 @@ client.get('git.branch', cwd: '/path/to/repo', force: true, wait: true)
 # The template itself, unrendered: a facet, read like any key
 client.get('aws:template.profile')
 ```
+
+## Client options
+
+```ruby
+client = Beachcomber::Client.new(socket_path: '/custom/path', timeout_ms: 500, connect_timeout_ms: 0)
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `socket_path:` | `$BEACHCOMBER_SOCKET`, else `/tmp/beachcomber-<uid>/sock` | The daemon's socket. |
+| `timeout_ms:` | 100 | How long one read or write on the socket may take; at least 1. |
+| `connect_timeout_ms:` | 1500 | How long connecting keeps retrying before it gives up; 0 is one attempt. |
+| `autostart:` | on | Start a daemon when none answers an auto-discovered socket. |
+| `exec:` | off | Whether a template this client renders may call `exec()`. |
+
+The defaults are the library's (`bc_client_new`): this SDK passes on the
+options you give and adds none of its own.
 
 ## Sessions
 

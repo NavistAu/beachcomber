@@ -17,6 +17,25 @@ import type { NewClientOptions, Transport } from './transport.js';
 
 const require = createRequire(import.meta.url);
 
+/**
+ * The `options_json` `bc_client_new` takes for `options`: each option the
+ * caller gave, under the ABI's spelling, and nothing else — no key for an
+ * option left unset, so the library's own default applies. `null` (no
+ * options at all) when none was given.
+ */
+export function clientOptionsJson(options: NewClientOptions): string | null {
+  const given: Record<string, unknown> = {};
+  const put = (key: string, value: unknown) => {
+    if (value !== undefined) given[key] = value;
+  };
+  put('socket_path', options.socketPath);
+  put('timeout_ms', options.timeoutMs);
+  put('connect_timeout_ms', options.connectTimeoutMs);
+  put('autostart', options.autostart);
+  put('exec', options.exec);
+  return Object.keys(given).length === 0 ? null : JSON.stringify(given);
+}
+
 /** True iff the optional `koffi` peer dependency resolves. Does not load it. */
 export function koffiAvailable(): boolean {
   try {
@@ -188,16 +207,7 @@ export function createFfiTransport(): Transport {
     libraryVersion: version,
 
     newClient(options: NewClientOptions) {
-      const optionsJson =
-        Object.keys(options).length === 0
-          ? null
-          : JSON.stringify({
-              socket_path: options.socketPath,
-              timeout_ms: options.timeoutMs,
-              autostart: options.autostart,
-              exec: options.exec,
-            });
-      return fns.bc_client_new(optionsJson);
+      return fns.bc_client_new(clientOptionsJson(options));
     },
     freeClient(handle) {
       fns.bc_client_free(handle);

@@ -298,9 +298,13 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     if not guard then
       for _, name in ipairs(live_tests) do skip(name, "daemon did not start") end
     else
-      local backend = require("beachcomber.ffi_backend").new({
+      -- The daemon is stopped however the body ends: a backend that fails
+      -- to load must not leave it running.
+      local ran, failure = pcall(function()
+      local backend, berr = require("beachcomber.ffi_backend").new({
         library_path = lib, socket_path = guard.socket, autostart = false, timeout_ms = 3000,
       })
+      if not backend then error("ffi backend: " .. tostring(berr), 0) end
       local c = Client.new(backend)
 
       test(live_tests[1], function()
@@ -375,7 +379,9 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
       end)
 
       c:close()
+      end)
       os.execute("kill " .. tostring(guard.pid) .. " 2>/dev/null; rm -rf " .. guard.tmpdir)
+      if not ran then error(failure, 0) end
     end
   end
 end

@@ -39,8 +39,16 @@ local M = {}
 --   opts.backend       table   Override transport selection entirely (advanced/tests) —
 --                               must satisfy the backend interface documented in
 --                               beachcomber.client.
---   opts.socket_path   string  ffi transport: override daemon socket discovery.
---   opts.timeout_ms    number  ffi transport: per-call timeout.
+--   opts.socket_path   string  override daemon socket discovery.
+--   opts.timeout_ms    number  ffi transport: how long one read or write on the
+--                               socket may take, in ms. Left out, the library's
+--                               default (100); this SDK has none. 0 is refused.
+--   opts.connect_timeout_ms number  ffi transport: how long connecting keeps
+--                               retrying, in ms; 0 is one attempt. Left out, the
+--                               library's default (1500).
+--                               The subprocess transport refuses both timeouts
+--                               (connect returns nil, an "unsupported" Error):
+--                               io.popen cannot bound a spawned comb.
 --   opts.autostart     boolean ffi transport: auto-spawn the daemon on demand.
 --   opts.exec          boolean ffi transport: whether a template this client
 --                               renders (get/eval) may call exec(). Off by

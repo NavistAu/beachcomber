@@ -146,7 +146,7 @@ so a binding can tell the cases apart without string matching:
 
 | Function | Description |
 |---|---|
-| `BcClient *bc_client_new(const char *options_json)` | Create a client handle. `options_json` is nullable; recognised keys are `socket_path`, `timeout_ms`, `autostart`, and `exec` (`{"exec":true}` lets templates this client renders call `exec()`; off by default). Never returns NULL. |
+| `BcClient *bc_client_new(const char *options_json)` | Create a client handle. `options_json` is nullable; its keys, each optional, are `socket_path`, `timeout_ms` (default 100, at least 1: how long one read or write may take), `connect_timeout_ms` (default 1500, 0 is one attempt: how long connecting keeps retrying), `autostart` (default on) and `exec` (`{"exec":true}` lets templates this client renders call `exec()`; off by default). Any other key is refused, as `parse_error` on the handle's first op. Never returns NULL. |
 | `void bc_client_free(BcClient *client)` | Free a client handle. Null-safe. |
 
 ### Operations

@@ -124,8 +124,9 @@ client:close()
 
 ```lua
 local client = comb.connect({
-  socket_path = '/run/user/1000/beachcomber/sock',  -- ffi transport
+  socket_path = '/run/user/1000/beachcomber/sock',
   timeout_ms  = 2000,                                -- ffi transport
+  connect_timeout_ms = 0,                            -- ffi transport
   autostart   = true,                                -- ffi transport
   exec        = true,                                -- ffi transport: templates may call exec()
   library_path = '/opt/beachcomber/lib/libbeachcomber.dylib', -- ffi: override discovery
@@ -133,8 +134,22 @@ local client = comb.connect({
 })
 ```
 
-`exec` is off by default: a template that calls `exec()` on a client
-without it fails with `exec() is disabled in this context`.
+The client options are passed to the library's `bc_client_new` as they are
+given; the SDK has no defaults of its own, so an option left out is the
+library's default.
+
+| Option | Library default | Meaning |
+|---|---|---|
+| `socket_path` | `$BEACHCOMBER_SOCKET`, else `/tmp/beachcomber-<uid>/sock` | The daemon's socket. |
+| `timeout_ms` | 100 | How long one read or write on the socket may take. 0 is refused. |
+| `connect_timeout_ms` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
+| `autostart` | on | Start a daemon when none serves the auto-discovered socket. |
+| `exec` | off | Whether a template this client renders may call `exec()`; a template that calls it without the option fails with `exec() is disabled in this context`. |
+
+The subprocess transport cannot bound a spawned `comb` (`io.popen` has no
+timeout, and `comb` no connect-budget flag), so `comb.connect` refuses
+`timeout_ms` and `connect_timeout_ms` there: it returns `nil` and an
+`unsupported` Error naming the ffi transport.
 
 ---
 

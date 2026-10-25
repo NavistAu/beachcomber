@@ -106,6 +106,23 @@ Unlike `NewClient`, `NewClientWithPath` never fails from the caller's point
 of view — a library discovery/validation failure is recorded and surfaced
 on the client's first operation instead.
 
+## Client options
+
+Each option is passed to the library's `bc_client_new` as it is given; this
+SDK has no defaults of its own, so an option left out is the library's
+default.
+
+| Option | Library default | Meaning |
+|---|---|---|
+| `WithTimeoutMs(ms uint64)` | 100 | How long one read or write on the socket may take. 0 is refused (`parse_error` on the first call). |
+| `WithConnectTimeoutMs(ms uint64)` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
+| `WithAutostart(enabled bool)` | on | Start a daemon when none serves the auto-discovered socket. |
+| `WithExec(enabled bool)` | off | Whether a template this client renders may call `exec()`. |
+
+```go
+c, err := beachcomber.NewClient(beachcomber.WithTimeoutMs(500), beachcomber.WithConnectTimeoutMs(0))
+```
+
 ## API
 
 ### `Client`

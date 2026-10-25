@@ -48,6 +48,78 @@ fn client_free_null_is_a_no_op() {
     unsafe { bc_client_free(ptr::null_mut()) };
 }
 
+/// The envelope of a client's first op (`bc_hello`), made with `options`,
+/// and how long it took.
+fn first_op(options: &str) -> (serde_json::Value, std::time::Duration) {
+    let json = CString::new(options).unwrap();
+    let client = unsafe { bc_client_new(json.as_ptr()) };
+    let started = std::time::Instant::now();
+    let ptr = unsafe { beachcomber::bc_hello(client) };
+    let took = started.elapsed();
+    let body = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_string();
+    unsafe { beachcomber::envelope::bc_string_free(ptr) };
+    unsafe { bc_client_free(client) };
+    (serde_json::from_str(&body).unwrap(), took)
+}
+
+/// `connect_timeout_ms` is how long connecting keeps retrying a socket nobody
+/// serves: 0 is one attempt, and a budget replaces the 1500ms default.
+#[test]
+fn connect_timeout_ms_bounds_the_connect() {
+    let dir = tempfile::Builder::new()
+        .prefix("bcct")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let sock = dir.path().join("sock");
+    let options = |ms: u64| {
+        format!(
+            r#"{{"socket_path":"{}","autostart":false,"connect_timeout_ms":{ms}}}"#,
+            sock.display()
+        )
+    };
+
+    let (v, took) = first_op(&options(0));
+    assert_eq!(v["error"]["kind"], "connection_failed", "{v}");
+    assert!(
+        took < std::time::Duration::from_millis(250),
+        "one attempt took {took:?}"
+    );
+
+    let (v, took) = first_op(&options(200));
+    assert_eq!(v["error"]["kind"], "connection_failed", "{v}");
+    assert!(
+        took >= std::time::Duration::from_millis(200),
+        "gave up after {took:?}"
+    );
+    assert!(
+        took < std::time::Duration::from_millis(1200),
+        "retried for {took:?}"
+    );
+}
+
+/// An option `bc_client_new` does not take is refused on the handle's first
+/// op, not ignored: each option has one spelling.
+#[test]
+fn an_unknown_option_is_refused() {
+    let (v, _) = first_op(r#"{"socket_path":"/tmp/does-not-matter.sock","timeout":5}"#);
+    assert_eq!(v["error"]["kind"], "parse_error", "{v}");
+    let message = v["error"]["message"].as_str().unwrap();
+    assert!(message.contains("unknown field `timeout`"), "{message}");
+}
+
+/// A `timeout_ms` of 0 would fail every read and write; it is refused when
+/// the client is made, naming the option.
+#[test]
+fn a_zero_timeout_ms_is_refused() {
+    let (v, _) = first_op(r#"{"socket_path":"/tmp/does-not-matter.sock","timeout_ms":0}"#);
+    assert_eq!(v["error"]["kind"], "parse_error", "{v}");
+    let message = v["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("timeout_ms must be at least 1"),
+        "{message}"
+    );
+}
+
 /// `bc_socket_path` is the socket a client with no `socket_path` option
 /// connects to: `$BEACHCOMBER_SOCKET` when set, else the per-user default.
 #[test]

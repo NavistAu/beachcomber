@@ -59,11 +59,14 @@ pub extern "C" fn bc_socket_path() -> *mut c_char {
     })
 }
 
-/// Recognised keys of `bc_client_new`'s `options_json` argument.
+/// The keys of `bc_client_new`'s `options_json` argument, and no others: a
+/// key it does not take is refused, so each option has one spelling.
 #[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct ClientOptions {
     socket_path: Option<String>,
     timeout_ms: Option<u64>,
+    connect_timeout_ms: Option<u64>,
     autostart: Option<bool>,
     exec: Option<bool>,
 }
@@ -79,6 +82,13 @@ unsafe fn build_client(options_json: *const c_char) -> Result<libbeachcomber::Cl
             .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed options_json: {e}")))?
     };
 
+    if options.timeout_ms == Some(0) {
+        return Err(FfiError::new(
+            kind::PARSE_ERROR,
+            "malformed options_json: timeout_ms must be at least 1",
+        ));
+    }
+
     let default_config = libbeachcomber::ClientConfig::default();
     let config = libbeachcomber::ClientConfig {
         timeout: options
@@ -93,15 +103,28 @@ unsafe fn build_client(options_json: *const c_char) -> Result<libbeachcomber::Cl
     if let Some(socket_path) = options.socket_path {
         client = client.with_socket_path(std::path::PathBuf::from(socket_path));
     }
+    if let Some(ms) = options.connect_timeout_ms {
+        client = client.with_connect_timeout(Duration::from_millis(ms));
+    }
     Ok(client)
 }
 
-/// Creates a new client handle. `options_json` is nullable; recognised keys
-/// are `socket_path`, `timeout_ms`, `autostart` and `exec` — whether a
-/// template this client renders (`bc_get`, `bc_eval`) may call `exec()`,
-/// default `false`. Never returns NULL — a malformed `options_json` still
-/// yields a handle, with the parse error deferred to the handle's first
-/// operation rather than failing here.
+/// Creates a new client handle. `options_json` is nullable; its keys, each
+/// optional, are:
+///
+/// | key                  | default                     | meaning |
+/// |----------------------|-----------------------------|---------|
+/// | `socket_path`        | `bc_socket_path`'s answer   | the daemon's socket |
+/// | `timeout_ms`         | 100                         | how long one read or write may take; at least 1 |
+/// | `connect_timeout_ms` | 1500                        | how long connecting keeps retrying; 0 is one attempt |
+/// | `autostart`          | `true`                      | start a daemon when none answers an auto-discovered socket |
+/// | `exec`               | `false`                     | whether a template this client renders (`bc_get`, `bc_eval`) may call `exec()` |
+///
+/// These defaults are the only ones: an SDK passes on what its caller gave
+/// and adds none of its own. A key not in this table is refused. Never
+/// returns NULL — a malformed `options_json` still yields a handle, with the
+/// `parse_error` deferred to the handle's first operation rather than
+/// failing here.
 ///
 /// # Safety
 /// `options_json` must be NULL or a valid pointer to a NUL-terminated string.

@@ -6,8 +6,6 @@ require_relative 'types'
 require_relative 'watch_stream'
 
 module Beachcomber
-  DEFAULT_TIMEOUT = 0.1 # seconds (100 ms) — matches libbeachcomber's own default.
-
   # Response-shaping helpers shared by Client and Session: the ABI's JSON
   # payload shapes are identical regardless of which handle made the call.
   module ResponseParsing
@@ -208,28 +206,41 @@ module Beachcomber
   class Client
     include ResponseParsing
 
-    # @param socket_path [String, nil] explicit socket path; library default
-    #   discovery applies when nil.
-    # @param timeout [Numeric, nil] socket read/write timeout in seconds
-    #   (default 0.1 / 100ms, matching the library's own default).
+    # Each option given is passed to +bc_client_new+ as it is; nil is not
+    # given, and the library's default applies. This SDK has no defaults of
+    # its own.
+    #
+    # @param socket_path [String, nil] explicit socket path; nil is the
+    #   library's discovery.
+    # @param timeout_ms [Integer, nil] how long one read or write on the
+    #   socket may take, in milliseconds; at least 1. nil is the library's
+    #   default (100).
+    # @param connect_timeout_ms [Integer, nil] how long connecting keeps
+    #   retrying before it gives up, in milliseconds; 0 is one attempt. nil
+    #   is the library's default (1500).
     # @param autostart [Boolean, nil] attempt to start the daemon if it isn't
-    #   running. When nil (the default) the shared library's default applies
-    #   (autostart on); pass false to disable. The library only autostarts
-    #   when the socket path is auto-discovered — never for an explicit
-    #   socket_path.
-    # @param exec [Boolean] whether a template this client renders
-    #   ({#get}, {#eval_expression}) may call +exec()+. Off by default:
-    #   a template that calls it then fails with
+    #   running; nil is the library's default (on). The library only
+    #   autostarts when the socket path is auto-discovered — never for an
+    #   explicit socket_path.
+    # @param exec [Boolean, nil] whether a template this client renders
+    #   ({#get}, {#eval_expression}) may call +exec()+; nil is the library's
+    #   default (off), and a template that calls it then fails with
     #   "exec() is disabled in this context".
-    def initialize(socket_path: nil, timeout: DEFAULT_TIMEOUT, autostart: nil, exec: false)
-      options = {}
-      options[:autostart] = autostart unless autostart.nil?
-      options[:socket_path] = socket_path if socket_path
-      options[:timeout_ms] = (timeout * 1000).round if timeout
-      options[:exec] = true if exec
-
-      @handle = Beachcomber::FFI.new_client(JSON.generate(options))
+    def initialize(socket_path: nil, timeout_ms: nil, connect_timeout_ms: nil, autostart: nil, exec: nil)
+      options = self.class.options_json(
+        socket_path: socket_path, timeout_ms: timeout_ms, connect_timeout_ms: connect_timeout_ms,
+        autostart: autostart, exec: exec,
+      )
+      @handle = Beachcomber::FFI.new_client(options)
       ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
+    end
+
+    # The +options_json+ +bc_client_new+ takes: exactly the options given
+    # (nil is not given), under the ABI's own names.
+    #
+    # @return [String]
+    def self.options_json(**options)
+      JSON.generate(options.compact)
     end
 
     def self.finalizer(handle)

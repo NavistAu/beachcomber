@@ -142,7 +142,7 @@ class DaemonProcess:
 
     def make_client(self) -> Client:
         """Return a Client connected to this daemon's socket."""
-        return Client(socket_path=self.socket_path, timeout=5.0)
+        return Client(socket_path=self.socket_path, timeout_ms=5000)
 
 
 # ---------------------------------------------------------------------------

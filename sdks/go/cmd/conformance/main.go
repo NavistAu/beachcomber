@@ -267,7 +267,7 @@ func runFixture(f fixture, combBin string) (bool, string) {
 	}
 	defer stopDaemon(cmd)
 
-	client := beachcomber.NewClientWithPath(sockPath)
+	client := beachcomber.NewClientWithPath(sockPath, beachcomber.WithTimeoutMs(5000))
 
 	// Run setup ops (no expectations checked).
 	for _, op := range f.Setup {

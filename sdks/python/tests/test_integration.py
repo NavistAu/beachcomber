@@ -112,7 +112,7 @@ def test_bad_explicit_socket_path_raises_connection_failed(tmp_path) -> None:
     # (it's an unconditional address to dial), so a missing socket surfaces
     # as a connection failure, not "daemon not running".
     bad_socket = str(tmp_path / "no-such-socket")
-    bad_client = Client(socket_path=bad_socket, timeout=0.2, autostart=False)
+    bad_client = Client(socket_path=bad_socket, timeout_ms=200, autostart=False)
     try:
         with pytest.raises(ConnectionFailedError) as excinfo:
             bad_client.get("git.branch")
@@ -128,7 +128,7 @@ def test_daemon_not_running_raises_with_kind(tmp_path, monkeypatch: pytest.Monke
     # dial (and failing to connect to) a path that was never expected to
     # exist yet.
     monkeypatch.setenv("BEACHCOMBER_SOCKET", str(tmp_path / "no-such-socket"))
-    bad_client = Client(timeout=0.2, autostart=False)
+    bad_client = Client(timeout_ms=200, autostart=False)
     try:
         with pytest.raises(DaemonNotRunning) as excinfo:
             bad_client.get("git.branch")
@@ -171,7 +171,7 @@ def test_exec_is_disabled_without_the_option(client: Client) -> None:
 
 def test_exec_runs_on_a_client_with_the_option(client: Client, daemon) -> None:
     client.put("execwidget2:template", {"out": "{{ exec(['printf', 'x']) }}"})
-    exec_client = Client(socket_path=daemon.socket_path, timeout=5.0, exec=True)
+    exec_client = Client(socket_path=daemon.socket_path, timeout_ms=5000, exec=True)
     try:
         assert exec_client.get("execwidget2.out", cwd="/tmp") == "x"
     finally:

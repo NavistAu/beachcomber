@@ -39,10 +39,6 @@ from .types import (
     WatchEvent,
 )
 
-# Default socket timeout in seconds (matches the native client's own default).
-_DEFAULT_TIMEOUT: float = 0.1
-
-
 def _opt_json(value: Optional[Any]) -> Optional[str]:
     """Serialise a nullable dict/value argument to JSON, or leave it None."""
     if value is None:
@@ -126,18 +122,11 @@ def _parse_introspect(subject: IntrospectSubject, data: Any) -> IntrospectRespon
     return IntrospectResponse(subject=subject, daemon=None, other=data)
 
 
-def _build_options_json(
-    socket_path: Optional[str], timeout: float, autostart: Optional[bool], exec: bool
-) -> Optional[str]:
-    options: dict = {}
-    if socket_path is not None:
-        options["socket_path"] = socket_path
-    options["timeout_ms"] = int(round(timeout * 1000))
-    if autostart is not None:
-        options["autostart"] = autostart
-    if exec:
-        options["exec"] = True
-    return json.dumps(options)
+def _build_options_json(**options: Any) -> str:
+    """The ``options_json`` ``bc_client_new`` takes: exactly the options the
+    caller gave (``None`` is not given), under the ABI's own names. The SDK
+    adds no defaults; an option left out is the library's."""
+    return json.dumps({name: value for name, value in options.items() if value is not None})
 
 
 class WatchStream:
@@ -215,25 +204,44 @@ class Client:
         socket_path: Explicit path to the daemon socket. If ``None`` the
             native library auto-discovers it (``$BEACHCOMBER_SOCKET``, then
             its per-user default).
-        timeout: Socket read/write timeout in seconds. Default ``0.1``.
+        timeout_ms: How long one read or write on the socket may take, in
+            milliseconds; at least 1. ``None`` is the library's default
+            (100).
+        connect_timeout_ms: How long connecting keeps retrying before it
+            gives up, in milliseconds; ``0`` is one attempt. ``None`` is the
+            library's default (1500).
         autostart: Whether to attempt starting the daemon if it isn't
-            running. ``None`` leaves the native library's own default.
+            running. ``None`` is the library's default (on).
         exec: Whether a template this client renders (:meth:`get`,
-            :meth:`eval`) may call ``exec()``. Off by default: a template
-            that calls it then fails with ``exec() is disabled in this
-            context``.
+            :meth:`eval`) may call ``exec()``. ``None`` is the library's
+            default, off: a template that calls it then fails with
+            ``exec() is disabled in this context``.
+
+    Each option given is passed to ``bc_client_new`` as it is; this SDK has
+    no defaults of its own.
     """
+
+    # Set before ``__init__`` runs, so ``__del__`` is safe on a client whose
+    # construction was refused.
+    _ptr: Optional[int] = None
 
     def __init__(
         self,
         socket_path: Optional[str] = None,
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout_ms: Optional[int] = None,
+        connect_timeout_ms: Optional[int] = None,
         autostart: Optional[bool] = None,
-        exec: bool = False,
+        exec: Optional[bool] = None,
     ) -> None:
         self._ptr = None
         self._lib = _native.get_lib()
-        options_json = _build_options_json(socket_path, timeout, autostart, exec)
+        options_json = _build_options_json(
+            socket_path=socket_path,
+            timeout_ms=timeout_ms,
+            connect_timeout_ms=connect_timeout_ms,
+            autostart=autostart,
+            exec=exec,
+        )
         ptr = self._lib.call_ptr("bc_client_new", options_json.encode())
         if not ptr:
             raise CombError("bc_client_new returned NULL")

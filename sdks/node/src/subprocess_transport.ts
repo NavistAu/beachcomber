@@ -60,6 +60,13 @@
  * — the same text a `server_error` envelope carries over the FFI tier. The
  * same code drives both subprocess tiers.
  *
+ * Timeouts: this tier has no default of its own. `timeoutMs`, when given,
+ * bounds each spawned `comb` (it is killed past it), the nearest a process
+ * spawn has to the FFI tier's per-read timeout; unset, a spawn runs until
+ * `comb` returns. `connectTimeoutMs` has no `comb` flag to carry it, so a
+ * client constructed with it is refused with `UnsupportedTransportError`
+ * naming the FFI transport, rather than silently ignored.
+ *
  * `comb get` and `comb put` both default an omitted `--path` to the CLI
  * process's own working directory, while an absent `path` here means the
  * global entry — the same thing `path: NULL` means under FFI, and the same
@@ -75,7 +82,7 @@ import type { NewClientOptions, Transport } from './transport.js';
 interface SubprocessClientHandle {
   combBin: string;
   socketPath: string | undefined;
-  timeoutMs: number;
+  timeoutMs: number | undefined;
 }
 
 interface SubprocessSessionHandle {
@@ -97,7 +104,7 @@ function resolveCombBin(): string {
 function runComb(
   combBin: string,
   args: string[],
-  opts: { socketPath?: string; timeoutMs: number },
+  opts: { socketPath?: string; timeoutMs?: number },
 ): { code: number | null; stdout: string; stderr: string } {
   const env = { ...process.env };
   if (opts.socketPath) {
@@ -232,10 +239,16 @@ export function createSubprocessTransport(): Transport {
     libraryVersion: `subprocess:${combBin}`,
 
     newClient(options: NewClientOptions): SubprocessClientHandle {
+      if (options.connectTimeoutMs !== undefined) {
+        throw new UnsupportedTransportError(
+          'connectTimeoutMs is not supported over the subprocess transport: comb has no flag ' +
+            "to carry it. Install the optional 'koffi' peer dependency for the FFI transport, which honours it.",
+        );
+      }
       return {
         combBin,
         socketPath: options.socketPath,
-        timeoutMs: options.timeoutMs ?? 5000,
+        timeoutMs: options.timeoutMs,
       };
     },
     freeClient() {

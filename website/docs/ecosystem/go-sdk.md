@@ -71,7 +71,17 @@ dirtyResult, err  := sess.Get("git.dirty", "", nil)
 c, err := beachcomber.NewClient()                       // auto-discover socket
 c := beachcomber.NewClientWithPath("/custom/path/sock") // explicit socket path
 c, err := beachcomber.NewClient(beachcomber.WithExec(true)) // templates this client renders may call exec()
+c, err := beachcomber.NewClient(beachcomber.WithTimeoutMs(500), beachcomber.WithConnectTimeoutMs(0))
 ```
+
+Each option is passed to the library's `bc_client_new` as it is given; the SDK has no defaults of its own, so an option left out is the library's default.
+
+| Option | Library default | Meaning |
+|---|---|---|
+| `WithTimeoutMs(ms uint64)` | 100 | How long one read or write on the socket may take. 0 is refused (`parse_error` on the first call). |
+| `WithConnectTimeoutMs(ms uint64)` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
+| `WithAutostart(enabled bool)` | on | Start a daemon when none serves the auto-discovered socket. |
+| `WithExec(enabled bool)` | off | Whether a template this client renders may call `exec()`. |
 
 #### `c.Get(key, cwd string, env map[string]string, flags ...GetFlag) (*Result, error)`
 

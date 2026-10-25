@@ -22,6 +22,11 @@
 -- into an Error.unsupported() naming this transport, and a conformance
 -- runner skips (never silently passes) a fixture that needs one.
 --
+-- Timeouts: `io.popen` cannot bound or kill a spawned `comb`, and `comb`
+-- has no flag for a connect budget, so `timeout_ms` and `connect_timeout_ms`
+-- cannot be honoured here. `M.new` refuses either with an "unsupported"
+-- Error naming the ffi transport, rather than ignoring it.
+--
 -- `refresh` is one spawn of `comb refresh <key> [--path P | --global]`: the
 -- daemon's `refresh` op itself, which re-executes only the Sources the key
 -- demands and refuses a key with none behind it. `comb refresh` prints the
@@ -148,6 +153,12 @@ local M = {}
 -- @return Backend, or nil, Error
 function M.new(opts)
   opts = opts or {}
+  for _, option in ipairs({ "timeout_ms", "connect_timeout_ms" }) do
+    if opts[option] ~= nil then
+      return nil, Error.new("unsupported", option .. " is not supported over the subprocess transport: "
+        .. "io.popen cannot bound a spawned comb; the ffi transport (LuaJIT) honours it")
+    end
+  end
   local comb_bin = opts.comb_bin or discovery.find_comb_on_path()
   if not comb_bin then
     return nil, Error.new(
