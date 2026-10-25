@@ -519,6 +519,30 @@ fn provider_names_hold_no_colon_star_or_nothing_and_the_prototype_is_not_a_clien
     assert!(seeded_errors("[daemon.providers._.cache._]\ndecay = 4\n").is_empty());
 }
 
+/// `env` and `comb` mean something of their own in every key and template,
+/// so neither root may name a provider after them — the same rule, in the
+/// same words, as a `put` or a key.
+#[test]
+fn a_reserved_word_is_no_provider_name_in_either_root() {
+    for (toml, name) in [
+        ("[client.providers.env]\ntemplate.x = \"1\"\n", "env"),
+        ("[client.providers.comb]\ntemplate.y = \"2\"\n", "comb"),
+        (
+            "[daemon.providers.env.sources.s]\ndata = \"{{ 1 }}\"\nresult = \"{{ {'a': data} }}\"\n",
+            "env",
+        ),
+        ("[daemon.providers.comb]\nenabled = false\n", "comb"),
+    ] {
+        let errors = seeded_errors(toml);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains(&format!("'{name}' is reserved"))),
+            "{toml}: {errors:?}"
+        );
+    }
+}
+
 #[test]
 fn an_error_names_its_file_and_each_file_is_checked_on_its_own() {
     // The merge of these two is valid (the later string wins the leaf), but

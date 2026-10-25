@@ -61,8 +61,7 @@ pub enum Ref {
 /// - `env.X` → `Ref::Env(X)`
 /// - `comb.P.F` → `Ref::CombField(P, F)`
 /// - `comb.P` → `Ref::CombProvider(P)`
-/// - `cwd` → `None` (path-expression variable)
-/// - `P.rest…` (P ∉ {env, comb, cwd}) → `Ref::Resolved(P, "rest…")`
+/// - `P.rest…` (P ∉ {env, comb}) → `Ref::Resolved(P, "rest…")`
 /// - a name alone → `Ref::Dynamic(name)`: minijinja reports a name alone when
 ///   it is used other than by attribute (`comb['x']`, `git[k]`, a filter)
 ///
@@ -77,7 +76,7 @@ pub enum Ref {
 pub(crate) fn classify_dotted(name: &str) -> Option<Ref> {
     let Some((first, rest)) = name.split_once('.') else {
         // A name alone is a name used other than by attribute.
-        return (name != "cwd").then(|| Ref::Dynamic(name.to_string()));
+        return Some(Ref::Dynamic(name.to_string()));
     };
     let mut segments = rest.split('.');
     // `split` yields at least one item, so `second` is always present.
@@ -90,8 +89,6 @@ pub(crate) fn classify_dotted(name: &str) -> Option<Ref> {
             Some(field) => Ref::CombField(second.to_string(), field.to_string()),
             None => Ref::CombProvider(second.to_string()),
         }),
-        // Path-expression variable, never a ref.
-        "cwd" => None,
         _ => Some(Ref::Resolved(first.to_string(), rest.to_string())),
     }
 }

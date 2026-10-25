@@ -57,16 +57,6 @@ pub fn provider_name_error(root: &str, name: &str, client: bool) -> Option<Strin
     if name.is_empty() {
         return Some(format!("empty provider name in [{root}]"));
     }
-    if name == "*" {
-        let hint = if client {
-            ""
-        } else {
-            "; '_' names every provider"
-        };
-        return Some(format!(
-            "invalid provider name '*' in [{root}]: '*' is not a provider name{hint}"
-        ));
-    }
     // A name is a key's head (`libbeachcomber::key`): it ends at the first
     // `.` or `[`, holds a `:` only before a facet, and is never a directory.
     if name.contains([':', '.', '[', ']']) || name.starts_with(['/', '~']) {
@@ -75,12 +65,13 @@ pub fn provider_name_error(root: &str, name: &str, client: bool) -> Option<Strin
              and does not start with '/' or '~'"
         ));
     }
-    if name == "_" && client {
-        return Some(format!(
-            "invalid provider name '_' in [{root}]: '_' is the prototype name, not a provider"
-        ));
+    // `_` is the daemon root's prototype table; every other reserved word,
+    // and `_` in the client root, is the one rule keys and `put` follow.
+    if name == "_" && !client {
+        return None;
     }
-    None
+    libbeachcomber::key::reserved(name)
+        .map(|reason| format!("invalid provider name '{name}' in [{root}]: {reason}"))
 }
 
 struct Reader {

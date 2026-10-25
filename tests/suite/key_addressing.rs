@@ -279,6 +279,49 @@ mod grammar {
         }
     }
 
+    /// `env`, `comb`, `_` and `*` mean something of their own, so no `put`
+    /// may take one as a namespace and no read may name one as a provider:
+    /// one rule and one message on every op. `env.X` still reads the shell,
+    /// and `*:cache._.decay` is still the decay of every provider.
+    #[test]
+    fn a_reserved_word_is_no_namespace() {
+        let d = TestDaemon::spawn();
+        let cwd = project(&d);
+
+        for (key, word) in [
+            ("env.FOO", "env"),
+            ("comb.x", "comb"),
+            ("_", "_"),
+            ("*", "*"),
+        ] {
+            d.comb(&cwd)
+                .args(["put", key, r#"{"a":1}"#])
+                .assert()
+                .code(2)
+                .stderr(predicates::str::contains(format!("'{word}' is reserved")));
+        }
+        d.comb(&cwd)
+            .args(["get", "comb.x"])
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains("'comb' is reserved"));
+        d.comb(&cwd)
+            .args(["refresh", "_"])
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains("'_' is reserved"));
+
+        let home = d.comb(&cwd).args(["get", "env.HOME"]).assert().success();
+        assert!(
+            !home.get_output().stdout.is_empty(),
+            "env.X reads the shell"
+        );
+        d.comb(&cwd)
+            .args(["put", "*:cache._.decay", "3"])
+            .assert()
+            .success();
+    }
+
     #[test]
     fn a_colon_below_the_head_is_an_ordinary_miss_not_an_error() {
         let d = TestDaemon::spawn();

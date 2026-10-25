@@ -498,13 +498,26 @@ async fn names_that_spell_a_prototype_or_nothing_are_not_provider_names() {
         (
             "client",
             "*",
-            "invalid provider name '*' in [client.providers]: '*' is not a provider name",
+            "invalid provider name '*' in [client.providers]: '*' is reserved: \
+             *:cache._.decay is the decay of every provider",
         ),
         (
             "daemon",
             "*",
-            "invalid provider name '*' in [daemon.providers]: '*' is not a provider name; \
-             '_' names every provider",
+            "invalid provider name '*' in [daemon.providers]: '*' is reserved: \
+             *:cache._.decay is the decay of every provider",
+        ),
+        (
+            "client",
+            "_",
+            "invalid provider name '_' in [client.providers]: '_' is reserved: \
+             it names a prototype table",
+        ),
+        (
+            "client",
+            "env",
+            "invalid provider name 'env' in [client.providers]: 'env' is reserved: \
+             env.X is the caller's environment",
         ),
         ("client", "", "empty provider name in [client.providers]"),
         ("daemon", "", "empty provider name in [daemon.providers]"),

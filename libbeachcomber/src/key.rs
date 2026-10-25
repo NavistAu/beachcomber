@@ -243,6 +243,33 @@ pub fn split_first(address: &str) -> Option<(String, Option<String>)> {
     Some((first, (!rest.is_empty()).then(|| format_address(&rest))))
 }
 
+/// Why `name` is reserved, or `None`. Each of these means something of its
+/// own in every key and template, so no provider may take one as its name:
+/// one rule for a `put`, a config table and a key the daemon is asked about.
+pub fn reserved(name: &str) -> Option<String> {
+    let meaning = match name {
+        "env" => "env.X is the caller's environment",
+        "comb" => {
+            "in a template comb.<p>.<f> reads the stored value of <p>.<f>; \
+             comb status --tree shows a value's layers"
+        }
+        "_" => "it names a prototype table",
+        "*" => "*:cache._.decay is the decay of every provider",
+        _ => return None,
+    };
+    Some(format!("'{name}' is reserved: {meaning}"))
+}
+
+/// Refuse a head whose base is [`reserved`]. `*:cache` is the one such head a
+/// key names: the abstract provider's decay prototype.
+pub fn check_head(head: &str) -> Result<(), String> {
+    if head == "*:cache" {
+        return Ok(());
+    }
+    let base = head.split_once(':').map_or(head, |(base, _)| base);
+    reserved(base).map_or(Ok(()), Err)
+}
+
 /// Parse the facet syntax of a head: `base:facet`. `Ok(None)` for a plain
 /// provider name, `Ok(Some(facet))` for a valid facet key, and an
 /// `invalid facet key` error for more than one colon, an empty base or facet,
@@ -418,6 +445,26 @@ mod tests {
         assert_eq!(head_of("git.branch"), "git");
         assert_eq!(head_of("mise['x']"), "mise");
         assert_eq!(head_of("git:cache"), "git:cache");
+    }
+
+    #[test]
+    fn a_reserved_word_is_no_head_but_the_abstract_providers_decay_is() {
+        for head in [
+            "env",
+            "comb",
+            "_",
+            "*",
+            "env:template",
+            "comb:cache",
+            "*:put",
+        ] {
+            let err = check_head(head).unwrap_err();
+            assert!(err.contains("is reserved"), "{head}: {err}");
+        }
+        assert_eq!(check_head("*:cache"), Ok(()));
+        for head in ["git", "git:cache", "environment", "combo", "my_env"] {
+            assert_eq!(check_head(head), Ok(()), "{head}");
+        }
     }
 
     #[test]

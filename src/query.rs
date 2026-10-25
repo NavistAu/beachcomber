@@ -12,10 +12,12 @@ use std::sync::OnceLock;
 /// Check a request key against the one key grammar
 /// ([`libbeachcomber::key`]): a head, optionally `name:facet`, then segments
 /// written `.seg`, `[n]` or `['…']`. A colon anywhere below the head is part of
-/// a segment. A malformed facet in the head is [`parse_facet`]'s error. Every
+/// a segment. A malformed facet in the head is [`parse_facet`]'s error, and a
+/// head naming a reserved word is [`libbeachcomber::key::check_head`]'s. Every
 /// op that takes a key calls this first.
 pub fn validate_key(key: &str) -> Result<(), String> {
-    libbeachcomber::key::split_key(key).map(|_| ())
+    let (head, _) = libbeachcomber::key::split_key(key)?;
+    libbeachcomber::key::check_head(head)
 }
 
 /// The facet syntax of a head; the rules are [`libbeachcomber::key::parse_facet`]'s.

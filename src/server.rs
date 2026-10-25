@@ -1988,6 +1988,9 @@ async fn handle_request(
                 Ok(split) => split,
                 Err(msg) => return Response::error(msg),
             };
+            if let Err(msg) = libbeachcomber::key::check_head(namespace) {
+                return Response::error(msg);
+            }
             let node = node.as_str();
 
             if let Some(base) = namespace
