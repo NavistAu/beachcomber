@@ -354,8 +354,11 @@ fn a_template_put_at_another_path_is_not_rendered_here() {
     );
 }
 
+/// A template over a cached field answers its read, so the default view shows
+/// the rendered row alone; the cached record it shadows is a row under `-a`,
+/// marked `shadowed` in json.
 #[test]
-fn a_cached_field_with_a_template_over_it_shows_both_rows() {
+fn a_cached_field_with_a_template_over_it_is_shadowed_by_it() {
     if !has_git() {
         eprintln!("skipping: git not available");
         return;
@@ -392,14 +395,28 @@ fn a_cached_field_with_a_template_over_it_shows_both_rows() {
         &cwd,
         &["--filter", "provider=git", "--filter", "field=branch"],
     );
+    assert_eq!(rows.len(), 1, "the rendered row alone: {rows:#?}");
+    assert_eq!(rows[0]["source"], "template");
+    assert_eq!(rows[0]["value"], "overridden");
+    assert_eq!(rows[0]["kind"]["kind"], "template");
+
+    let rows = json_rows(
+        &d,
+        &cwd,
+        &[
+            "-a",
+            "--filter",
+            "provider=git",
+            "--filter",
+            "field=branch",
+            "--filter",
+            "facet=-",
+        ],
+    );
     let cached: Vec<&serde_json::Value> =
         rows.iter().filter(|r| r["source"] != "template").collect();
-    let rendered: Vec<&serde_json::Value> =
-        rows.iter().filter(|r| r["source"] == "template").collect();
-    assert_eq!(cached.len(), 1, "the cached row stays: {rows:#?}");
-    assert_eq!(rendered.len(), 1, "the rendered row joins it: {rows:#?}");
-    assert_eq!(rendered[0]["value"], "overridden");
-    assert_eq!(rendered[0]["kind"]["kind"], "template");
+    assert_eq!(cached.len(), 1, "the cached row under -a: {rows:#?}");
+    assert_eq!(cached[0]["shadowed"], true, "{rows:#?}");
 }
 
 #[test]
@@ -685,4 +702,132 @@ fn tree_with_another_format_is_a_usage_error() {
         .stderr(predicates::str::contains(
             "--tree works with the human, table and json formats",
         ));
+}
+
+// ── the default view is what a read answers ──────────────────────────────────
+
+/// Rows of `status --filter provider=<p>`, squashed.
+fn rows_of(d: &TestDaemon, cwd: &Path, p: &str, extra: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "--filter".to_string(),
+        format!("provider={p}"),
+        "--color".into(),
+        "never".into(),
+        "--ascii".into(),
+        "--no-trunc".into(),
+    ];
+    args.extend(extra.iter().map(|s| s.to_string()));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = status(d, cwd, &args);
+    squashed(&out)
+        .into_iter()
+        .filter(|l| l.starts_with(&format!("{p} ")))
+        .collect()
+}
+
+/// By default `status` lists, for the caller's directory, the record each
+/// leaf's read takes — a nearer put over a global one, a template over the
+/// data beneath it — and none of the records they shadow, as `comb get`
+/// answers. `-a` lists them too, and `--filter shadowed=true` lists only them.
+#[test]
+fn the_default_status_lists_what_a_read_answers() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    put(&d, &cwd, &["--global", "t.v", r#""far""#]);
+    put(&d, &cwd, &["t.v", r#""near""#]);
+    put(&d, &cwd, &["t:template.g", r#""{{ 'tpl' }}""#]);
+    put(&d, &cwd, &["t.g", r#""data""#]);
+
+    let rows = rows_of(&d, &cwd, "t", &[]);
+    assert!(
+        rows.iter().any(|l| l.starts_with("t v put near ")),
+        "{rows:?}"
+    );
+    assert!(!rows.iter().any(|l| l.contains(" far ")), "{rows:?}");
+    assert!(
+        rows.iter().any(|l| l.starts_with("t g template > tpl ")),
+        "{rows:?}"
+    );
+    assert!(!rows.iter().any(|l| l.contains(" data ")), "{rows:?}");
+
+    let all = rows_of(&d, &cwd, "t", &["-a"]);
+    assert!(all.iter().any(|l| l.starts_with("t v put far ")), "{all:?}");
+    assert!(
+        all.iter().any(|l| l.starts_with("t g put data ")),
+        "{all:?}"
+    );
+
+    let shadowed = rows_of(&d, &cwd, "t", &["--filter", "shadowed=true"]);
+    assert_eq!(shadowed.len(), 2, "{shadowed:?}");
+    assert!(
+        shadowed
+            .iter()
+            .all(|l| l.contains(" far ") || l.contains(" data "))
+    );
+
+    // Under `-a --tree` a shadowed row's children say what shadows it, and
+    // never repeat the row itself.
+    let out = status(
+        &d,
+        &cwd,
+        &[
+            "-a",
+            "--tree",
+            "--filter",
+            "provider=t",
+            "--filter",
+            "field=v",
+            "--color",
+            "never",
+            "--ascii",
+            "--no-trunc",
+        ],
+    );
+    let lines = squashed(&out);
+    let far = lines
+        .iter()
+        .position(|l| l.starts_with("t v put far "))
+        .unwrap_or_else(|| panic!("a far row in:\n{out}"));
+    assert!(lines[far + 1].starts_with("`- put near "), "{out}");
+}
+
+/// A put at a Source's provider root replaces the whole node, so a read of
+/// the Source's other leaves is a miss — and the default status does not list
+/// them either.
+#[test]
+fn a_leaf_a_put_replaced_is_not_listed_by_default() {
+    let socket = crate::common::socket::IsolatedSocket::new();
+    let home = socket.dir.path().join("home");
+    let xdg = socket.dir.path().join("xdg");
+    std::fs::create_dir_all(xdg.join("beachcomber")).unwrap();
+    std::fs::write(
+        xdg.join("beachcomber").join("config.toml"),
+        r#"
+[daemon.providers.s.sources.main]
+data = "{{ 1 }}"
+result.a = "{{ 'src-a' }}"
+result.b = "{{ 'src-b' }}"
+"#,
+    )
+    .unwrap();
+    let d = TestDaemon::spawn_in(socket, home, xdg);
+    let cwd = project(&d);
+    comb(&d, &cwd)
+        .args(["get", "--global", "s"])
+        .assert()
+        .success();
+    put(&d, &cwd, &["--global", "s", r#"{"a":"put-a"}"#]);
+    comb(&d, &cwd)
+        .args(["get", "-f", "json", "s.b"])
+        .assert()
+        .code(2);
+
+    let rows = rows_of(&d, &cwd, "s", &[]);
+    assert!(
+        rows.iter().any(|l| l.starts_with("s a put put-a ")),
+        "{rows:?}"
+    );
+    assert!(!rows.iter().any(|l| l.contains("src-b")), "{rows:?}");
+    let all = rows_of(&d, &cwd, "s", &["-a"]);
+    assert!(all.iter().any(|l| l.contains("src-b")), "{all:?}");
 }

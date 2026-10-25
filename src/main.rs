@@ -134,12 +134,13 @@ enum Commands {
         #[arg(long, short = 'f', default_value = "", hide_default_value = true)]
         format: String,
         /// Filter rows: KEY=VALUE or KEY!=VALUE, repeatable, all must match. Keys: provider (base
-        /// name), facet, path, field, source, value, stale, lifecycle, fsevents_reinstate; `*` globs,
-        /// and `-` means none for facet, path and value. Without a filter on that key, facet=- and
-        /// value!=- apply: facet rows and absent values are hidden.
+        /// name), facet, path, field, source, value, shadowed, stale, lifecycle,
+        /// fsevents_reinstate; `*` globs, and `-` means none for facet, path and value. Without a
+        /// filter on that key, facet=-, value!=- and shadowed=false apply: facet rows, absent values
+        /// and records a read here does not take are hidden.
         #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
         filter: Vec<String>,
-        /// Show every row: drop the default facet=- and value!=- filters
+        /// Show every row: drop the default facet=-, value!=- and shadowed=false filters
         #[arg(long, short = 'a')]
         all: bool,
         /// Sort by column: default (provider, then its facets, field, path), provider, path, field,

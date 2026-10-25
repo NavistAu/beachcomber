@@ -91,6 +91,7 @@ fn render_template_rows(
             Err(e) => (serde_json::Value::String(e.to_string()), None),
         };
         out.push(CacheRow {
+            shadowed: false,
             provider,
             path: Some(cwd.to_string()),
             source: TEMPLATE_SOURCE.to_string(),
@@ -134,17 +135,18 @@ fn collect_leaves(
 /// per row).
 const TREE_PRESETS: [&str; 3] = ["human", "table", "json"];
 
-/// The layers behind each row, for `--tree`: `out[i]` for `rows[i]`, empty
-/// for a facet row or a row whose field is not a leaf of the answer. A row on
+/// The layers behind each row: `out[i]` for `rows[i]`, the stack a read of
+/// that leaf consults, in its order, or `None` for a facet row or a row whose
+/// field is not a leaf of the answer (a group shown at `--depth`). A row on
 /// the caller's directory chain (its own directory, an ancestor, the global
 /// entry) is read from the caller's directory, as `comb get` there would; a
 /// row stored anywhere else is read from its own. One `layers` call per
 /// provider and directory.
-fn layer_children(
+fn layer_stacks(
     rows: &[CacheRow],
     cwd: &str,
     session: &mut crate::client::ClientSession,
-) -> Vec<Vec<crate::cache::LayerRecord>> {
+) -> Vec<Option<Vec<crate::cache::LayerRecord>>> {
     let canonical = std::fs::canonicalize(cwd)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| cwd.to_string());
@@ -153,7 +155,7 @@ fn layer_children(
     rows.iter()
         .map(|row| {
             if row_facet(&row.provider).is_some() {
-                return Vec::new();
+                return None;
             }
             let at = if chain.contains(&row.path) {
                 Some(canonical.clone())
@@ -170,66 +172,51 @@ fn layer_children(
             }
             match node {
                 Some(list @ serde_json::Value::Array(_)) => {
-                    serde_json::from_value(list.clone()).unwrap_or_default()
+                    Some(serde_json::from_value(list.clone()).unwrap_or_default())
                 }
-                _ => Vec::new(),
+                _ => None,
             }
         })
         .collect()
 }
 
-/// Under `--tree`, one row per leaf a read from `cwd` resolves. Every record
-/// on the caller's chain for the same leaf is a layer of that one read, so
-/// only the row that answered it stays at the top — the rendered row when a
-/// template answered, else the record the read took — and the rest are left
-/// to its children. A row stored off the chain is a read of its own and
-/// stays.
-fn collapse_to_answers(
-    rows: Vec<CacheRow>,
-    children: Vec<Vec<crate::cache::LayerRecord>>,
+/// Mark every row the read from `cwd` does not take: a record on the caller's
+/// chain whose leaf another layer answers, or that the read answers nothing
+/// at — a put that replaced the node above it, say. Such a row is not what
+/// `comb get` here gives, so the default view hides it (`shadowed=false`).
+/// A rendered row is the answer by definition, a facet row is no value, a row
+/// stored off the chain is a read of its own, and a row whose field is not a
+/// leaf has no stack to judge it by: none of those is marked.
+fn mark_shadowed(
+    rows: &mut [CacheRow],
+    stacks: &[Option<Vec<crate::cache::LayerRecord>>],
     cwd: &str,
-) -> (Vec<CacheRow>, Vec<Vec<crate::cache::LayerRecord>>) {
+) {
     let canonical = std::fs::canonicalize(cwd)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| cwd.to_string());
     let chain = crate::query::path_chain(Some(&canonical));
-    let on_chain = |row: &CacheRow| {
-        row_facet(&row.provider).is_none()
-            && (chain.contains(&row.path) || row.path.as_deref() == Some(cwd))
-    };
-    let answers = |row: &CacheRow, layers: &[crate::cache::LayerRecord]| {
-        if matches!(row.kind, Some(RowKind::Template)) {
-            return true;
-        }
-        // A row's SOURCE and a layer's label are both the presented label.
-        layers
-            .iter()
-            .any(|l| l.answered && l.facet.is_none() && l.path == row.path && l.label == row.source)
-    };
-    // The row each on-chain leaf keeps: its answer, or failing one, its first.
-    let mut keep: HashMap<(String, String), usize> = HashMap::new();
-    for (i, (row, layers)) in rows.iter().zip(&children).enumerate() {
-        if !on_chain(row) {
+    for (row, stack) in rows.iter_mut().zip(stacks) {
+        let Some(stack) = stack else { continue };
+        if matches!(row.kind, Some(RowKind::Template)) || !chain.contains(&row.path) {
             continue;
         }
-        let key = (row_base(&row.provider).to_string(), row.field.clone());
-        match keep.get(&key) {
-            Some(&j) if answers(&rows[j], &children[j]) => {}
-            Some(_) if !answers(row, layers) => {}
-            _ => {
-                keep.insert(key, i);
-            }
-        }
+        // A row's SOURCE and a layer's label are both the presented label.
+        row.shadowed = !stack.iter().any(|l| {
+            l.answered && l.facet.is_none() && l.path == row.path && l.label == row.source
+        });
     }
-    rows.into_iter()
-        .zip(children)
-        .enumerate()
-        .filter(|(i, (row, _))| {
-            !on_chain(row)
-                || keep.get(&(row_base(&row.provider).to_string(), row.field.clone())) == Some(i)
-        })
-        .map(|(_, pair)| pair)
-        .unzip()
+}
+
+/// Which record a row shows, to find its stack again after filtering and
+/// sorting.
+fn row_id(row: &CacheRow) -> (String, Option<String>, String, String) {
+    (
+        row.provider.clone(),
+        row.path.clone(),
+        row.field.clone(),
+        row.source.clone(),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -323,7 +310,27 @@ pub fn run_status(
 
             // Destructure before filtering and sorting, so both operate on the
             // field names the user can actually see in the output.
-            let rows = flatten_rows(rows, opts.depth.unwrap_or_else(|| default_depth(preset)));
+            let mut rows = flatten_rows(rows, opts.depth.unwrap_or_else(|| default_depth(preset)));
+            // The layers behind each row decide which rows a read here takes;
+            // the rest are marked shadowed, which the default filters hide.
+            let stacks: Option<HashMap<_, _>> = match (std::env::current_dir(), client.connect()) {
+                (Ok(cwd), Ok(mut session)) => {
+                    let cwd = cwd.to_string_lossy().into_owned();
+                    let stacks = layer_stacks(&rows, &cwd, &mut session);
+                    mark_shadowed(&mut rows, &stacks, &cwd);
+                    Some(
+                        rows.iter()
+                            .zip(stacks)
+                            .map(|(row, stack)| (row_id(row), stack.unwrap_or_default()))
+                            .collect(),
+                    )
+                }
+                (_, Err(e)) if tree => {
+                    eprintln!("Error: {e}");
+                    return ExitCode::from(2);
+                }
+                _ => None,
+            };
             let rows = apply_filters(rows, filters).unwrap_or_else(|e| {
                 eprintln!("filter error: {e}");
                 std::process::exit(2);
@@ -332,19 +339,14 @@ pub fn run_status(
                 eprintln!("sort error: {e}");
                 std::process::exit(2);
             });
-            let out = match std::env::current_dir() {
-                Ok(cwd) if tree => match client.connect() {
-                    Ok(mut session) => {
-                        let cwd = cwd.to_string_lossy().into_owned();
-                        let children = layer_children(&rows, &cwd, &mut session);
-                        let (rows, children) = collapse_to_answers(rows, children, &cwd);
-                        render_tree(preset, &rows, &children, &opts)
-                    }
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        return ExitCode::from(2);
-                    }
-                },
+            let out = match &stacks {
+                Some(stacks) if tree => {
+                    let children: Vec<_> = rows
+                        .iter()
+                        .map(|row| stacks.get(&row_id(row)).cloned().unwrap_or_default())
+                        .collect();
+                    render_tree(preset, &rows, &children, &opts)
+                }
                 _ => render_preset(preset, &rows, &opts),
             };
             print!("{out}");

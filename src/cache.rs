@@ -1860,6 +1860,7 @@ impl Cache {
                         };
                         for (field, v) in rows {
                             out.push(CacheRow {
+                                shadowed: false,
                                 provider: provider.clone(),
                                 path: path.clone(),
                                 source: source_name.clone(),
@@ -1895,6 +1896,7 @@ impl Cache {
                     // Value implements Serialize with #[serde(untagged)] — to_value is lossless.
                     let value = serde_json::to_value(v).unwrap_or(serde_json::Value::Null);
                     out.push(CacheRow {
+                        shadowed: false,
                         provider: provider.clone(),
                         path: path.clone(),
                         source: source_name.clone(),
@@ -1991,6 +1993,12 @@ pub struct CacheRow {
     pub next_poll_in_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<FailureSnapshot>,
+    /// A record the read from the caller's directory does not take: another
+    /// layer of the same leaf answers, or the read answers nothing there.
+    /// `comb status` works this out for itself (the daemon never sets it), and
+    /// hides such rows unless asked (`--filter shadowed=true`, `-a`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shadowed: bool,
 }
 
 /// Discriminator used by the status formatter to choose rendering strategy.

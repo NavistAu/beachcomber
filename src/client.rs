@@ -108,6 +108,7 @@ fn failure_from_lib(f: libbeachcomber::FailureSnapshot) -> crate::cache::Failure
 /// input.
 fn cache_row_from_lib(r: libbeachcomber::CacheRow) -> crate::cache::CacheRow {
     crate::cache::CacheRow {
+        shadowed: false,
         provider: r.provider,
         path: r.path,
         source: r.source.unwrap_or_default(),

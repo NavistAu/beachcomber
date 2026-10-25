@@ -1055,12 +1055,12 @@ impl ChildMark {
     }
 }
 
-/// Whether `layer` is `row` itself: the record the read took, which the row
-/// already shows. A rendered row is never its own layer — its template
-/// record is what defines it.
+/// Whether `layer` is `row` itself, which the row already shows: the record
+/// the read took, or under `-a` a shadowed record shown as a row of its own,
+/// whose children then show what shadows it. A rendered row is never its own
+/// layer — its template record is what defines it.
 fn is_the_row(row: &CacheRow, layer: &crate::cache::LayerRecord) -> bool {
-    layer.answered
-        && layer.facet.is_none()
+    layer.facet.is_none()
         && !matches!(row.kind, Some(crate::cache::RowKind::Template))
         && layer.path == row.path
         && layer.label == row.source
@@ -1114,6 +1114,7 @@ pub fn render_tree(
         let layers: Vec<_> = layers.iter().filter(|l| !is_the_row(row, l)).collect();
         for (i, layer) in layers.iter().enumerate() {
             display.push(CacheRow {
+                shadowed: false,
                 provider: row.provider.clone(),
                 path: layer.path.clone(),
                 source: layer.label.clone(),
@@ -1870,9 +1871,10 @@ fn render_table(
 // ---------------------------------------------------------------------------
 
 /// The filters `comb status` applies on a key the user gave none on: facet
-/// rows (`aws:template`, `*:cache`) and absent values are hidden, so the
-/// default table is the values a read would answer. `--all` drops them.
-pub const DEFAULT_FILTERS: [&str; 2] = ["facet=-", "value!=-"];
+/// rows (`aws:template`, `*:cache`), absent values and shadowed records are
+/// hidden, so the default table is the values a read would answer. `--all`
+/// drops them.
+pub const DEFAULT_FILTERS: [&str; 3] = ["facet=-", "value!=-", "shadowed=false"];
 
 /// The filters to apply: `user`'s, plus each [`DEFAULT_FILTERS`] entry whose
 /// key `user` does not name (with either operator), unless `all`.
@@ -1976,6 +1978,8 @@ enum Predicate {
     /// The displayed value as a glob, or absent (`-`).
     Value(Option<String>),
     Stale(bool),
+    /// A record the read from the caller's directory does not take.
+    Shadowed(bool),
     /// Match Lifecycle rows with the given decay level (0=active, 1-4=decayN).
     LifecycleDecay(u8),
     /// Match Once rows.
@@ -2003,6 +2007,11 @@ fn parse_filter(s: &str) -> Result<Filter, String> {
             "true" => Predicate::Stale(true),
             "false" => Predicate::Stale(false),
             other => return Err(format!("stale= must be true or false, got {other}")),
+        },
+        "shadowed" => match v {
+            "true" => Predicate::Shadowed(true),
+            "false" => Predicate::Shadowed(false),
+            other => return Err(format!("shadowed= must be true or false, got {other}")),
         },
         "lifecycle" => match v {
             "active" => Predicate::LifecycleDecay(0),
@@ -2070,6 +2079,7 @@ impl Predicate {
                 !r.value.is_null() && simple_glob_match(pat, &value_to_string(&r.value))
             }
             Predicate::Stale(b) => r.stale == *b,
+            Predicate::Shadowed(b) => r.shadowed == *b,
             Predicate::LifecycleDecay(target) => matches!(
                 &r.kind,
                 Some(RowKind::Lifecycle { decay, .. }) if decay == target
@@ -2709,6 +2719,7 @@ mod ttl_cell_tests {
 
     fn lifecycle_row(poll: u64, keep: u32, next: u64) -> CacheRow {
         CacheRow {
+            shadowed: false,
             provider: "load".into(),
             path: None,
             source: "loadavg".into(),

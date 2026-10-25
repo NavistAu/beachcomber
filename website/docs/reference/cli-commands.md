@@ -201,11 +201,12 @@ comb s -f json
 | `field` | the field, exactly (destructured names included) |
 | `source` | the SOURCE label shown |
 | `value` | the value shown; `-` absent. A glob matches present values only, so `value=*` is "not absent" |
+| `shadowed` | `true` / `false` — a record the read from here does not take: another layer of the same leaf answers (a nearer put, a template over data), or the read answers nothing there (a put replaced the node above it) |
 | `stale` | `true` / `false` |
 | `lifecycle` | `active`, `decay<N>`, `once`, `static`, `template` |
 | `fsevents_reinstate` | `true` / `false` |
 
-Two filters apply by default: `facet=-` hides facet rows, which are data *about* a provider rather than values a read answers, and `value!=-` hides absent values. A filter you give on either key, with either operator, replaces that key's default; `-a`/`--all` drops both.
+Three filters apply by default, so the table is what `comb get` here answers: `facet=-` hides facet rows, which are data *about* a provider rather than values a read answers; `value!=-` hides absent values; and `shadowed=false` hides records the read from this directory does not take. A filter you give on any of those keys, with either operator, replaces that key's default; `-a`/`--all` drops all three. Records stored at directories off this one's chain are other directories' values, and are listed as they are.
 
 ```sh
 comb s                              # values only
@@ -213,6 +214,7 @@ comb s -a                           # everything
 comb s --filter facet=template      # the template records
 comb s --filter facet='*'           # every facet row
 comb s --filter value=-             # only absent values
+comb s --filter shadowed=true       # only what something else here shadows
 comb s --filter provider!=mise      # everything but mise
 ```
 
