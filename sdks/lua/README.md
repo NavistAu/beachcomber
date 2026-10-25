@@ -135,7 +135,7 @@ local client = comb.connect({
   connect_timeout_ms = 0,                            -- ffi transport
   autostart   = true,                                -- ffi transport
   exec        = true,                                -- ffi transport: templates may call exec()
-  library_path = '/opt/beachcomber/lib/libbeachcomber.dylib', -- ffi: override discovery
+  library_path = '/opt/beachcomber/lib/libbeachcomber.dylib', -- ffi: as $BEACHCOMBER_LIB, the only candidate
   comb_bin     = '/opt/beachcomber/bin/comb',                 -- subprocess: override discovery
 })
 ```
@@ -281,16 +281,27 @@ ABI's message as it came; and `library_version`, the loaded library's
 
 ### ffi transport: library discovery
 
-1. `$BEACHCOMBER_LIB`
-2. `../lib/<platform name>` relative to the `comb` resolved on `$PATH`
-   (the Homebrew-style `bin/` + `lib/` layout — `comb` and the library
-   ship together, so the one beside the `comb` you'd actually run is the
-   matching one)
-3. the platform default dynamic-linker search path
+The ffi transport finds `libbeachcomber` by the rule every SDK follows
+([`docs/sdk-api.md`](https://github.com/NavistAu/beachcomber/blob/main/docs/sdk-api.md#library-discovery),
+"Library discovery"). The file is `libbeachcomber.dylib` on macOS and
+`libbeachcomber.so` on every other platform, and the candidates are, in
+order:
 
-Every candidate tried is remembered: if none load, the error names all of
-them, in order — a missing library is a broken install, not a silent
-downgrade to `subprocess` (see "Transport" above). Every symbol the ABI
+1. `$BEACHCOMBER_LIB`, when it is set and not empty. It is then the only
+   candidate: a path set on purpose that does not load is an error, not a
+   reason to load some other library. `opts.library_path` is the same thing
+   for a caller that cannot set the environment (standard Lua has no
+   `setenv`).
+2. Beside `comb`: `<dir>/../lib/<file>`, where `<dir>` is the directory of
+   the first executable `comb` on `$PATH`, its symlinks resolved. A Homebrew
+   `comb` is a symlink into the Cellar, and the library sits in the Cellar
+   beside it; a `.deb` or `.rpm` puts them in `/usr/bin` and `/usr/lib`.
+3. The system loader, given the bare file name.
+
+The first candidate that loads is used. When none does, the error is
+`library_not_found`, naming every candidate tried and why each failed — a
+missing library is a broken install, not a silent downgrade to `subprocess`.
+Every symbol the ABI
 declares is verified at load time, not on first use; a missing symbol is a
 `library_symbol` Error naming the symbol, with the loaded library's
 `bc_version()` as its `library_version`, so a version-skew install error is
@@ -298,7 +309,8 @@ diagnosable at a glance.
 
 ### subprocess transport: `comb` discovery
 
-The `comb` binary is found on `$PATH` (or via `opts.comb_bin`). Standard
+The `comb` binary is the first executable `comb` on `$PATH` (or
+`opts.comb_bin`), the same one library discovery starts from. Standard
 Lua has no `setenv`, so `opts.socket_path` (or the daemon's own discovery,
 if unset) is threaded into each spawned `comb` invocation's command line
 rather than the process environment.

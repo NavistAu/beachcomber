@@ -67,7 +67,9 @@ local REQUIRED_SYMBOLS = {
 --- Load the cdylib per the discovery contract, verify every required
 -- symbol resolves, and return the loaded namespace plus its version.
 --
--- @param opts table?  opts.library_path overrides discovery entirely (advanced/tests).
+-- @param opts table?  opts.library_path is `$BEACHCOMBER_LIB` for a caller that
+--                     cannot set the environment (standard Lua has no setenv):
+--                     when given, it is the only candidate.
 -- @return {lib=cdata, version=string}, or nil, Error
 function M.load(opts)
   opts = opts or {}
@@ -77,7 +79,7 @@ function M.load(opts)
   if opts.library_path then
     candidates = { opts.library_path }
   else
-    candidates = discovery.library_candidates(ffi.os)
+    candidates = discovery.library_candidates()
   end
 
   local lib, tried = nil, {}

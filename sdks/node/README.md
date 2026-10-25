@@ -258,13 +258,22 @@ as under FFI (the transport passes `--global`).
 
 ## Library discovery (FFI transport)
 
-1. `$BEACHCOMBER_LIB`, if set — an explicit absolute path.
-2. `../lib/<library name>` relative to `comb` resolved on `$PATH` — the
-   library and binary ship together, so this comes before the system path
-   deliberately.
-3. The platform default dynamic-linker search path.
+The library is `libbeachcomber.dylib` on macOS and `libbeachcomber.so` on
+every other platform. It is located by the one rule every SDK follows
+([docs/sdk-api.md](https://github.com/NavistAu/beachcomber/blob/main/docs/sdk-api.md#library-discovery),
+checked against the shared fixture `sdks/discovery.json`), trying in order:
 
-If none resolve, `LibraryNotFoundError` names every location tried. A
+1. `$BEACHCOMBER_LIB`, when it is set and not empty. It is then the only
+   candidate: a path set on purpose that does not load is an error, not a
+   reason to load some other library.
+2. Beside `comb`: `<dir>/../lib/<file>`, where `<dir>` is the directory of
+   the first executable `comb` on `$PATH`, its symlinks resolved. A Homebrew
+   `comb` is a symlink into the Cellar, and the library sits in the Cellar
+   beside it; a `.deb` or `.rpm` puts them in `/usr/bin` and `/usr/lib`.
+3. The system loader, given the bare file name.
+
+If none loads, `LibraryNotFoundError` names every location tried and why
+each failed. A
 loaded library missing a required symbol raises `LibrarySymbolError`
 naming the symbol, with the library's own `bc_version()` as its
 `libraryVersion` — this is checked

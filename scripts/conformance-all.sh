@@ -41,9 +41,9 @@ export COMB_BIN="$ROOT/target/debug/comb"
 
 # Every binding now loads libbeachcomber.{so,dylib} over FFI rather than
 # speaking the wire protocol itself (Phase 4 of the client-ABI plan) —
-# without this, library discovery falls through to "../lib/ relative to
-# comb" and then the platform search path, which won't find a debug build
-# that hasn't been packaged anywhere.
+# without this, discovery (docs/sdk-api.md, "Library discovery") looks in
+# ../lib/ beside the comb on $PATH and then asks the system loader, and
+# neither finds a debug build that hasn't been packaged anywhere.
 case "$(uname -s)" in
     Darwin) export BEACHCOMBER_LIB="$ROOT/target/debug/libbeachcomber.dylib" ;;
     *)      export BEACHCOMBER_LIB="$ROOT/target/debug/libbeachcomber.so" ;;

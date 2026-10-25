@@ -135,15 +135,25 @@ options you give and adds none of its own.
 This SDK is a `ctypes` binding over `libbeachcomber`'s C ABI — no socket
 code or wire-protocol framing lives in Python; the native library owns the
 connection (including the daemon socket's own auto-discovery and
-autostart). At import/first-use, the native library itself is located, in
-order:
+autostart). It is loaded on first use.
 
-1. `$BEACHCOMBER_LIB` — exact path to the shared library.
-2. `../lib/<libname>` relative to the `comb` binary resolved on `$PATH`.
-3. The platform default dynamic-linker search path.
+The library is found by the one rule every SDK follows
+([`docs/sdk-api.md`, "Library discovery"](../../docs/sdk-api.md#library-discovery)). The file is
+`libbeachcomber.dylib` on macOS and `libbeachcomber.so` on every other
+platform, and the SDK tries, in order:
 
-If none resolve, `LibraryNotFoundError` is raised naming every location
-tried — there is no silent fallback to spawning `comb` as a subprocess.
+1. `$BEACHCOMBER_LIB`, when it is set and not empty. It is then the only
+   candidate: a path set on purpose that does not load is an error, not a
+   reason to load some other library.
+2. Beside `comb`: `<dir>/../lib/<file>`, where `<dir>` is the directory of
+   the first executable `comb` on `$PATH`, its symlinks resolved. A Homebrew
+   `comb` is a symlink into the Cellar, and the library sits in the Cellar
+   beside it.
+3. The system loader, given the bare file name.
+
+When none loads, `LibraryNotFoundError` names every candidate and why each
+failed; there is no fallback to spawning `comb` as a subprocess. The tests
+check this against the shared fixture, `sdks/discovery.json`.
 
 ## Socket discovery
 

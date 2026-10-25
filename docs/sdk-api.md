@@ -139,6 +139,27 @@ slug; a miss is `nil` with no error, and a method that answers nothing
 returns `true`. An error the SDK raises itself (`library_not_found`,
 `library_symbol`, `unsupported`) carries the SDK's own message.
 
+## Library discovery
+
+An SDK has to find `libbeachcomber` before it can call anything, so this rule
+is the one part of the API that cannot live in the library. Every SDK follows
+it. The file is `libbeachcomber.dylib` on macOS and `libbeachcomber.so` on
+every other platform, and the SDK tries, in order:
+
+1. `$BEACHCOMBER_LIB`, when it is set and not empty. It is then the only
+   candidate: a path set on purpose that does not load is an error, not a
+   reason to load some other library.
+2. Beside `comb`: `<dir>/../lib/<file>`, where `<dir>` is the directory of
+   the first executable `comb` on `$PATH`, its symlinks resolved. A Homebrew
+   `comb` is a symlink into the Cellar, and the library sits in the Cellar
+   beside it; a `.deb` or `.rpm` puts them in `/usr/bin` and `/usr/lib`.
+3. The system loader, given the bare file name.
+
+When none loads, the SDK raises `library_not_found`, naming every candidate
+it tried and why each failed. [`sdks/discovery.json`](../sdks/discovery.json)
+is the rule as a fixture: each SDK's tests build every case's directory tree
+and check the SDK's list of candidates against it.
+
 ## Language conventions
 
 | | Optional arguments | Session scope | Stream iteration |

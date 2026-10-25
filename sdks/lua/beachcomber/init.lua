@@ -54,7 +54,7 @@ local M = {}
 --                               renders (get/eval) may call exec(). Off by
 --                               default: a template that calls it then fails with
 --                               "exec() is disabled in this context".
---   opts.library_path  string  ffi transport: override library discovery entirely.
+--   opts.library_path  string  ffi transport: as $BEACHCOMBER_LIB, the only candidate.
 --   opts.comb_bin      string  subprocess transport: override `comb` discovery.
 --
 -- @return Client, or nil, Error

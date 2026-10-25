@@ -7,34 +7,33 @@ module Beachcomber
   # Fiddle::Function objects, plus JSON-envelope decoding shared by
   # Client/Session/WatchStream.
   #
-  # Discovery order (the shared contract every dynamic-language binding
-  # follows):
+  # Discovery is the one rule every SDK follows (docs/sdk-api.md, "Library
+  # discovery"; the shared fixture is sdks/discovery.json):
   #
-  #   1. $BEACHCOMBER_LIB
-  #   2. ../lib/<libname> relative to the resolved `comb` on $PATH
-  #   3. the platform default dynamic-linker search path
+  #   1. $BEACHCOMBER_LIB, when set and not empty. It is then the only
+  #      candidate: a path set on purpose that does not load is an error,
+  #      not a reason to load some other library.
+  #   2. Beside `comb`: <dir>/../lib/<file>, where <dir> is the directory of
+  #      the first executable `comb` on $PATH, its symlinks resolved (a
+  #      Homebrew `comb` is a symlink into its Cellar, the library beside it).
+  #   3. The system loader, given the bare file name.
   #
-  # `../lib/` beside `comb` is checked before the system path deliberately:
-  # library and binary ship together, so the copy next to the `comb` you
-  # would actually run is the matching one, and a stale system-wide copy
-  # must not win.
-  #
-  # A failure to find or load the library, or a missing required symbol, is
-  # a loud error naming every location tried (or the missing symbol) plus
-  # the loaded library's bc_version() where known. There is no silent
-  # fallback to a subprocess transport.
+  # The candidates are tried in order and the first that loads wins. When
+  # none does, LibraryNotFoundError names every candidate and why it failed;
+  # a missing required symbol is LibrarySymbolError. There is no fallback to
+  # a subprocess transport.
   module FFI
-    LIB_BASENAME =
-      case RbConfig::CONFIG['host_os']
-      when /darwin/i
-        'libbeachcomber.dylib'
-      when /linux/i
-        'libbeachcomber.so'
-      else
-        raise Beachcomber::LibraryNotFoundError.new(
-          "unsupported platform: #{RbConfig::CONFIG['host_os']}", library_version: nil,
-        )
-      end
+    # The library's file name: libbeachcomber.dylib on macOS and
+    # libbeachcomber.so on every other platform.
+    def self.library_basename(host_os = RbConfig::CONFIG['host_os'])
+      host_os =~ /darwin/i ? 'libbeachcomber.dylib' : 'libbeachcomber.so'
+    end
+
+    LIB_BASENAME = library_basename
+
+    # One location the loader tries: where it came from, and the path (or,
+    # for the system loader, the bare file name) handed to dlopen.
+    Candidate = Struct.new(:description, :path)
 
     # The 22 bc_* symbols this binding calls, checked at load (not on first
     # use) so a version-skewed or partial install fails loudly up front.
@@ -58,9 +57,8 @@ module Beachcomber
       attr_reader :library_path
     end
 
-    # Finds `comb` on $PATH the way a shell would, resolving symlinks (a
-    # Homebrew-linked binary, for instance) so `../lib/` is computed
-    # relative to where the binary actually lives.
+    # The first executable `comb` on $PATH, its symlinks resolved; nil when
+    # there is none.
     def self.resolved_comb_path
       ENV.fetch('PATH', '').split(File::PATH_SEPARATOR).each do |dir|
         next if dir.nil? || dir.empty?
@@ -75,48 +73,42 @@ module Beachcomber
       nil
     end
 
-    def self.candidate_beside_comb
-      comb = resolved_comb_path
-      return nil unless comb
+    # The locations to try for +file+, in order. Reads the environment and
+    # $PATH; loads nothing.
+    #
+    # @return [Array<Candidate>]
+    def self.candidates(file = LIB_BASENAME)
+      explicit = ENV['BEACHCOMBER_LIB']
+      return [Candidate.new('$BEACHCOMBER_LIB', explicit)] if explicit && !explicit.empty?
 
-      File.expand_path(File.join(File.dirname(comb), '..', 'lib', LIB_BASENAME))
+      out = []
+      comb = resolved_comb_path
+      if comb
+        beside = File.expand_path(File.join(File.dirname(comb), '..', 'lib', file))
+        out << Candidate.new("beside comb (#{comb})", beside)
+      end
+      out << Candidate.new('the system loader', file)
+    end
+
+    # The first of +candidates+ that loads, as [handle, path]; when none
+    # does, LibraryNotFoundError naming each and why it failed.
+    def self.open_first(candidates)
+      tried = candidates.map do |candidate|
+        return [Fiddle.dlopen(candidate.path), candidate.path]
+      rescue Fiddle::DLError => e
+        "#{candidate.description} (#{candidate.path}): #{e.message}"
+      end
+      raise Beachcomber::LibraryNotFoundError.new(
+        "could not load libbeachcomber; tried, in order: #{tried.join('; ')}", library_version: nil,
+      )
     end
 
     # Loads the library (idempotent) and returns the Fiddle::Handle.
     def self.load!
       return @handle if defined?(@handle) && @handle
 
-      tried = []
-
-      env_lib = ENV['BEACHCOMBER_LIB']
-      if env_lib && !env_lib.empty?
-        tried << env_lib
-        handle = try_open(env_lib)
-        return finish_load!(handle, env_lib) if handle
-      end
-
-      candidate = candidate_beside_comb
-      if candidate
-        tried << candidate
-        handle = try_open(candidate)
-        return finish_load!(handle, candidate) if handle
-      end
-
-      tried << "#{LIB_BASENAME} (platform default search path)"
-      handle = try_open(LIB_BASENAME)
-      return finish_load!(handle, LIB_BASENAME) if handle
-
-      raise Beachcomber::LibraryNotFoundError.new(
-        "could not locate #{LIB_BASENAME}; tried: #{tried.join(', ')}", library_version: nil,
-      )
+      finish_load!(*open_first(candidates))
     end
-
-    def self.try_open(path)
-      Fiddle.dlopen(path)
-    rescue Fiddle::DLError
-      nil
-    end
-    private_class_method :try_open
 
     def self.finish_load!(handle, path)
       @handle       = handle

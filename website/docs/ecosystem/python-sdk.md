@@ -72,6 +72,26 @@ with client.session() as session:
 client = Client(socket_path="/run/user/1000/beachcomber/sock")
 ```
 
+## Library discovery
+
+The library is found by the one rule every SDK follows
+([`docs/sdk-api.md`, "Library discovery"](https://github.com/NavistAu/beachcomber/blob/main/docs/sdk-api.md#library-discovery)). The file is
+`libbeachcomber.dylib` on macOS and `libbeachcomber.so` on every other
+platform, and the SDK tries, in order:
+
+1. `$BEACHCOMBER_LIB`, when it is set and not empty. It is then the only
+   candidate: a path set on purpose that does not load is an error, not a
+   reason to load some other library.
+2. Beside `comb`: `<dir>/../lib/<file>`, where `<dir>` is the directory of
+   the first executable `comb` on `$PATH`, its symlinks resolved. A Homebrew
+   `comb` is a symlink into the Cellar, and the library sits in the Cellar
+   beside it.
+3. The system loader, given the bare file name.
+
+When none loads, `LibraryNotFoundError` names every candidate and why each
+failed; there is no fallback to spawning `comb` as a subprocess. The tests
+check this against the shared fixture, `sdks/discovery.json`.
+
 ## Socket discovery
 
 The SDK discovers the daemon socket at:

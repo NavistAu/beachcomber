@@ -5,7 +5,8 @@ Implements the Phase-4 binding contract:
 1. Library discovery (see :mod:`.discovery`).
 2. Loud discovery failure naming every location tried.
 3. Required symbols checked at load, not on first use.
-4. ``bc_version()`` read on load and included in every error raised.
+4. ``bc_version()`` read on load and carried by every error raised, as its
+   ``library_version``.
 5. ``ok: false`` envelopes become idiomatic exceptions with ``kind``
    preserved (see :mod:`.exceptions`).
 6. Memory discipline: every ``char *`` this module returns to a caller is
@@ -196,9 +197,6 @@ def get_lib() -> NativeLib:
 def _load() -> NativeLib:
     tried: list = []
     for candidate in discovery.candidates():
-        if candidate.path is None:
-            tried.append(f"  - {candidate.description}: skipped ({candidate.reason})")
-            continue
         try:
             cdll = ctypes.CDLL(candidate.path)
         except OSError as exc:

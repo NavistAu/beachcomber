@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -85,5 +86,13 @@ func TestDiscoverLibrary_MissingCandidate_NamesEveryLocation(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "library_not_found=true") {
 		t.Errorf("expected the discovery error to be ErrLibraryNotFound, got: %s", out)
+	}
+	// $BEACHCOMBER_LIB set is the only candidate: nothing else is tried.
+	lib := "libbeachcomber.so"
+	if runtime.GOOS == "darwin" {
+		lib = "libbeachcomber.dylib"
+	}
+	if strings.Contains(string(out), "; "+lib) || strings.Contains(string(out), "/lib/"+lib) {
+		t.Errorf("expected only $BEACHCOMBER_LIB to be tried, got: %s", out)
 	}
 }

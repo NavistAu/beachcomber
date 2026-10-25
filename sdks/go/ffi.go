@@ -80,18 +80,22 @@ func libraryFileName() string {
 	return "libbeachcomber.so"
 }
 
-// candidateLibraryPaths returns the ordered discovery candidates: (1)
-// $BEACHCOMBER_LIB, (2) ../lib/ relative to the resolved `comb` on $PATH,
-// (3) the platform default dynamic-linker search path (a bare filename, left
-// for dlopen itself to resolve). The comb-relative location deliberately
-// comes before the system path: library and binary ship together, so the
-// one beside the comb you would actually run should win over a stale
-// /usr/lib copy.
+// candidateLibraryPaths returns the library-discovery candidates, in the
+// order the loader tries them — the rule every SDK follows (docs/sdk-api.md,
+// "Library discovery"; sdks/discovery.json is its fixture):
+//
+//  1. $BEACHCOMBER_LIB, set and not empty, is the only candidate: a path set
+//     on purpose that does not load is an error, not a reason to load some
+//     other library.
+//  2. Otherwise <dir>/../lib/<file>, where <dir> holds the first executable
+//     `comb` on $PATH with its symlinks resolved (a Homebrew comb is a
+//     symlink into the Cellar, where the library sits beside it),
+//  3. then the bare file name, for the system loader to resolve.
 func candidateLibraryPaths() []string {
-	var candidates []string
 	if v := os.Getenv("BEACHCOMBER_LIB"); v != "" {
-		candidates = append(candidates, v)
+		return []string{v}
 	}
+	var candidates []string
 	if combPath, err := exec.LookPath("comb"); err == nil {
 		if resolved, err := filepath.EvalSymlinks(combPath); err == nil {
 			combPath = resolved

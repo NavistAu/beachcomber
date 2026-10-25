@@ -142,6 +142,29 @@ An `err` carries `kind`, one of `Error.KINDS` — the ABI's `daemon_not_running`
 
 All operations follow the wire contract defined in [docs/protocol-spec.md](https://github.com/NavistAu/beachcomber/blob/main/docs/protocol-spec.md).
 
+## Library discovery
+
+The ffi transport finds `libbeachcomber` by the rule every SDK follows
+([`docs/sdk-api.md`](https://github.com/NavistAu/beachcomber/blob/main/docs/sdk-api.md#library-discovery),
+"Library discovery"). The file is `libbeachcomber.dylib` on macOS and
+`libbeachcomber.so` on every other platform, and the candidates are, in
+order:
+
+1. `$BEACHCOMBER_LIB`, when it is set and not empty. It is then the only
+   candidate: a path set on purpose that does not load is an error, not a
+   reason to load some other library. `opts.library_path` is the same thing
+   for a caller that cannot set the environment (standard Lua has no
+   `setenv`).
+2. Beside `comb`: `<dir>/../lib/<file>`, where `<dir>` is the directory of
+   the first executable `comb` on `$PATH`, its symlinks resolved. A Homebrew
+   `comb` is a symlink into the Cellar, and the library sits in the Cellar
+   beside it; a `.deb` or `.rpm` puts them in `/usr/bin` and `/usr/lib`.
+3. The system loader, given the bare file name.
+
+The first candidate that loads is used. When none does, the error is
+`library_not_found`, naming every candidate tried and why each failed — a
+missing library is a broken install, not a silent downgrade to `subprocess`.
+
 ## Socket path discovery
 
 The SDK looks for the daemon socket in this order:

@@ -1,10 +1,9 @@
 require_relative 'test_helper'
 require 'fileutils'
 
-# Exercises the library-discovery contract common to every dynamic-language
-# binding (see Phase 4's header in the client-ABI plan): $BEACHCOMBER_LIB,
-# then ../lib/ beside the resolved `comb` on $PATH, then the platform
-# default search path — and a loud, location-naming failure when none work.
+# Loading the library: the required symbols, and a loud failure naming
+# every candidate and why it failed. The candidates themselves are
+# test_discovery.rb's, against the shared fixture.
 class TestFFI < Minitest::Test
   def setup
     @orig_handle  = Beachcomber::FFI.instance_variable_get(:@handle)
@@ -43,63 +42,33 @@ class TestFFI < Minitest::Test
     end
   end
 
-  def test_resolved_comb_path_nil_when_absent_from_path
-    Dir.mktmpdir do |dir|
-      ENV['PATH'] = dir
-      assert_nil Beachcomber::FFI.resolved_comb_path
-    end
-  end
-
-  def test_resolved_comb_path_resolves_symlinks
-    Dir.mktmpdir do |dir|
-      dir = File.realpath(dir) # macOS: /tmp is itself a symlink to /private/tmp
-      real_dir = File.join(dir, 'real')
-      link_dir = File.join(dir, 'bin')
-      FileUtils.mkdir_p(real_dir)
-      FileUtils.mkdir_p(link_dir)
-      real_comb = File.join(real_dir, 'comb')
-      File.write(real_comb, "#!/bin/sh\n")
-      FileUtils.chmod('+x', real_comb)
-      File.symlink(real_comb, File.join(link_dir, 'comb'))
-
-      ENV['PATH'] = link_dir
-      assert_equal real_comb, Beachcomber::FFI.resolved_comb_path
-    end
-  end
-
-  def test_candidate_beside_comb_is_parent_lib_dir
-    Dir.mktmpdir do |dir|
-      dir = File.realpath(dir) # macOS: /tmp is itself a symlink to /private/tmp
-      bin_dir = File.join(dir, 'bin')
-      FileUtils.mkdir_p(bin_dir)
-      comb = File.join(bin_dir, 'comb')
-      File.write(comb, "#!/bin/sh\n")
-      FileUtils.chmod('+x', comb)
-
-      ENV['PATH'] = bin_dir
-      expected = File.join(dir, 'lib', Beachcomber::FFI::LIB_BASENAME)
-      assert_equal expected, Beachcomber::FFI.candidate_beside_comb
-    end
-  end
-
-  def test_candidate_beside_comb_nil_when_no_comb_on_path
-    Dir.mktmpdir do |dir|
-      ENV['PATH'] = dir
-      assert_nil Beachcomber::FFI.candidate_beside_comb
-    end
-  end
-
-  # Discovery failure is loud: names every location tried, in order, with
-  # no silent fallback to a subprocess transport.
-  def test_load_raises_library_not_found_naming_every_tried_location
+  # An explicit $BEACHCOMBER_LIB is the only candidate: when it does not
+  # load, the failure says why, and nothing else was tried.
+  def test_an_explicit_library_that_does_not_load_is_the_failure
     reset_memoized_load!
-    Dir.mktmpdir do |dir|
-      ENV['PATH'] = dir # no `comb` anywhere on PATH
-      ENV['BEACHCOMBER_LIB'] = '/no/such/file.dylib'
+    ENV['BEACHCOMBER_LIB'] = '/no/such/file.dylib'
 
-      err = assert_raises(Beachcomber::LibraryNotFoundError) { Beachcomber::FFI.load! }
-      assert_includes err.message, '/no/such/file.dylib'
-      assert_includes err.message, Beachcomber::FFI::LIB_BASENAME
+    err = assert_raises(Beachcomber::LibraryNotFoundError) { Beachcomber::FFI.load! }
+    assert_includes err.message, '$BEACHCOMBER_LIB (/no/such/file.dylib): '
+    refute_includes err.message, 'the system loader'
+  ensure
+    reset_memoized_load!
+  end
+
+  # With nothing set, every candidate is named with why it failed.
+  def test_load_names_every_candidate_and_why
+    reset_memoized_load!
+    Dir.mktmpdir('bcdisc', '/tmp') do |made|
+      root = File.realpath(made)
+      FileUtils.mkdir_p(File.join(root, 'bin'))
+      File.write(File.join(root, 'bin', 'comb'), "#!/bin/sh\n")
+      File.chmod(0o755, File.join(root, 'bin', 'comb'))
+      ENV['PATH'] = File.join(root, 'bin')
+      ENV.delete('BEACHCOMBER_LIB')
+      candidates = Beachcomber::FFI.candidates('libbeachcomber-none.so')
+      err = assert_raises(Beachcomber::LibraryNotFoundError) { Beachcomber::FFI.open_first(candidates) }
+      assert_includes err.message, "beside comb (#{root}/bin/comb) (#{root}/lib/libbeachcomber-none.so): "
+      assert_includes err.message, 'the system loader (libbeachcomber-none.so): '
     end
   ensure
     reset_memoized_load!
