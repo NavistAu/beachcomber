@@ -237,6 +237,61 @@ fn layers_tolerate_a_missing_main_config_file() {
     );
 }
 
+/// Every line of a Source that reads a name its stage does not see is
+/// reported, not the first alone.
+#[test]
+fn every_bad_line_of_a_source_is_reported() {
+    let errors = ProviderRegistry::load(
+        &in_memory(
+            "[daemon.providers.p.sources.s]\nroot = \"{{ nope1 }}\"\ndata = \"{{ nope2 }}\"\n\
+             result.f = \"{{ nope3 }}\"\nreturn = \"{{ result | poll('5s') }}\"\n",
+        ),
+        &Default::default(),
+    )
+    .errors;
+    for (stage, name) in [("root", "nope1"), ("data", "nope2"), ("result.f", "nope3")] {
+        let want = format!("[daemon.providers.p.sources.s] {stage}: unknown name '{name}'");
+        assert!(
+            errors.iter().any(|e| e.contains(&want)),
+            "{want} in {errors:#?}"
+        );
+    }
+}
+
+/// A client template is checked where the daemon loads it: one that does not
+/// compile is a load error, and one that reads a name no provider has is a
+/// warning, since a `put` may yet make that provider.
+#[test]
+fn a_client_template_is_linted_where_it_is_loaded() {
+    let config = Config::from_layers(vec![
+        crate::daemon::defaults::comb_layer(),
+        (
+            PathBuf::from("/user.toml"),
+            toml::from_str(
+                "[client.providers.p]\ntemplate.bad = \"{{ git.branch \"\n\
+                 template.typo = \"{{ gti.branch ~ p.bad ~ env.X ~ comb.q.r }}\"\n",
+            )
+            .unwrap(),
+        ),
+    ]);
+    let load = ProviderRegistry::load(&config, &Default::default());
+    assert_eq!(load.errors.len(), 1, "{:#?}", load.errors);
+    assert!(
+        load.errors[0].starts_with("config(/user.toml): [client.providers.p] template.bad: "),
+        "{:#?}",
+        load.errors
+    );
+    assert_eq!(load.warnings.len(), 1, "{:#?}", load.warnings);
+    assert!(
+        load.warnings[0].starts_with(
+            "config(/user.toml): [client.providers.p] template.typo: unknown name 'gti' (this \
+             line sees env, comb, "
+        ),
+        "{:#?}",
+        load.warnings
+    );
+}
+
 #[test]
 fn composed_is_every_layer_deep_merged_in_order() {
     let layer = |text: &str| toml::from_str::<toml::Value>(text).unwrap();

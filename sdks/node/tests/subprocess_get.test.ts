@@ -70,10 +70,10 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     await put(
       'bad:template',
       {
-        bad: '{{ 1 + }}',
+        bad: '{{ bad.bad }}',
         cyc: '{{ bad.cyc }}',
         ex: '{{ exec("definitely-missing-cmd-4f2a") }}',
-        grp: { leaf: '{{ 1 + }}' },
+        grp: { leaf: '{{ bad.grp.leaf }}' },
       },
       '/tmp',
     );
@@ -208,17 +208,17 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     assert.equal(lastArgv(), 'get -f json sp.n sp:cache.n --path /tmp --force');
   });
 
-  it("a template that does not compile is the resolver's error, not a null hit", async () => {
+  it("a template that cannot resolve is the resolver's error, not a null hit", async () => {
     await assert.rejects(
       () => get('bad.bad', '/tmp'),
-      (err: unknown) => err instanceof ServerError && /expression compile error/.test(err.message),
+      (err: unknown) => err instanceof ServerError && /cycle/.test(err.message),
     );
   });
 
   it("a namespace read with one bad leaf is the resolver's error, not a null hit", async () => {
     await assert.rejects(
       () => get('bad', '/tmp'),
-      (err: unknown) => err instanceof ServerError && /expression compile error/.test(err.message),
+      (err: unknown) => err instanceof ServerError && /cycle/.test(err.message),
     );
   });
 

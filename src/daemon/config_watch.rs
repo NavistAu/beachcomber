@@ -396,6 +396,9 @@ fn try_fire<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
     let config = Config::load_from(config_path);
     let vars = std::env::vars().collect();
     let loaded = ProviderRegistry::load(&config, &vars);
+    for w in &loaded.warnings {
+        tracing::warn!("{w}");
+    }
     let errors = loaded.errors;
     if !errors.is_empty() {
         for e in &errors {

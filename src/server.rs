@@ -2009,6 +2009,20 @@ async fn handle_request(
                 }
             }
 
+            // A template is linted as a configured one is: one that does not
+            // compile is refused. A name no provider has is not, since a later
+            // put may make that provider.
+            if namespace.ends_with(":template") {
+                let engine = libbeachcomber::engine::build_engine_env(Default::default());
+                let at = libbeachcomber::key::join(namespace, node);
+                let refused = crate::daemon::seed::lint_template_tree(&engine, data, &at, &[])
+                    .into_iter()
+                    .find(|(_, f)| matches!(f, libbeachcomber::eval::Finding::Compile(_)));
+                if let Some((leaf, finding)) = refused {
+                    return Response::error(format!("{leaf}: {finding}"));
+                }
+            }
+
             // A key arrives off the socket with no length bound of its own, and
             // every segment of the node is one step of a tree walk. Cap the
             // node at the depth JSON conversion is already capped at, so a

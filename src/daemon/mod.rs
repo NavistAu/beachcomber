@@ -141,6 +141,9 @@ async fn run_daemon_with_cancel(
         refuse_to_start(&load.errors);
         return;
     }
+    for w in &load.warnings {
+        warn!("{w}");
+    }
     let registry = load.registry.share(&cache);
 
     let (handle, mut scheduler) = Scheduler::new(

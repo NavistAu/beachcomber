@@ -31,7 +31,8 @@ use crate::provider::{
 use crate::shape::decorators::Recorded;
 use libbeachcomber::engine::EngineCtx;
 use libbeachcomber::eval::{
-    discover_refs, eval_line, eval_line_with, render_none_as_empty, undeclared_names,
+    Finding, Line, discover_refs, eval_line, eval_line_with, lint, render_none_as_empty,
+    undeclared_names,
 };
 use libbeachcomber::virtual_fields::Ref;
 use minijinja::Environment;
@@ -174,10 +175,6 @@ pub struct ConfigSourceSpec {
     pub recorded: Recorded,
 }
 
-const ROOT_NAMES: &[&str] = &["env", "_"];
-const DATA_NAMES: &[&str] = &["env", "comb", "sources", "daemon", "_"];
-const RESULT_NAMES: &[&str] = &["data", "_"];
-
 pub struct ConfigSource {
     spec: ConfigSourceSpec,
     meta: SourceMetadata,
@@ -226,10 +223,11 @@ fn without_engine_frame(message: &str) -> String {
     body.to_string()
 }
 
-/// The load check of a Source's lines: every name a line reads is one its
-/// stage sees, and `data` reads `comb` the one way it can. `who` prefixes the
-/// error (`demo.s`, or a `_` table's path); any line may be absent, as in a
-/// prototype. Nothing is rendered.
+/// The load check of a Source's lines ([`lint`]): each compiles and reads
+/// only names its stage sees, and `data` reads `comb` and calls `sources` the
+/// one way it can. Every line is checked, and each fault is one error
+/// prefixed `{who} {stage}: ` (`who` the Source's table, or a `_` table's);
+/// any line may be absent, as in a prototype. Nothing is rendered.
 pub fn lint_lines(
     who: &str,
     root: Option<&str>,
@@ -237,45 +235,48 @@ pub fn lint_lines(
     result: Option<&ResultSpec>,
     env: &Arc<HashMap<String, String>>,
     plugins: &Arc<PluginSet>,
-) -> Result<(), String> {
+) -> Vec<String> {
     let probe = engine(env, plugins, None);
-    let mut lines: Vec<(String, &str, &[&str])> = Vec::new();
+    let mut lines: Vec<(String, &str, Line)> = Vec::new();
     if let Some(root) = root {
-        lines.push(("root".into(), root, ROOT_NAMES));
+        lines.push(("root".into(), root, Line::Root));
     }
     if let Some(data) = data {
-        lines.push(("data".into(), data, DATA_NAMES));
+        lines.push(("data".into(), data, Line::Data));
     }
     match result {
-        Some(ResultSpec::Whole(line)) => lines.push(("result".into(), line, RESULT_NAMES)),
+        Some(ResultSpec::Whole(line)) => lines.push(("result".into(), line, Line::Result)),
         Some(ResultSpec::Fields(pairs)) => lines.extend(
             pairs
                 .iter()
-                .map(|(n, l)| (format!("result.{n}"), l.as_str(), RESULT_NAMES)),
+                .map(|(n, l)| (format!("result.{n}"), l.as_str(), Line::Result)),
         ),
         None => {}
     }
-    for (stage, line, allowed) in lines {
-        let names =
-            undeclared_names(&probe, line, false).map_err(|e| format!("{who} {stage}: {e}"))?;
-        if let Some(name) = names.iter().find(|n| !allowed.contains(&n.as_str())) {
-            return Err(format!(
-                "{who} {stage}: unknown name '{name}' (this line sees {})",
-                allowed.join(", ")
-            ));
+    let mut errors = Vec::new();
+    for (stage, line, kind) in lines {
+        let found = lint(&probe, line, kind.sees());
+        let compiles = !found.iter().any(|f| matches!(f, Finding::Compile(_)));
+        errors.extend(found.iter().map(|f| format!("{who} {stage}: {f}")));
+        if kind == Line::Data && compiles {
+            errors.extend(lint_data(&probe, line).map(|e| format!("{who} data: {e}")));
         }
     }
-    if let Some(data) = data {
-        let used = undeclared_names(&probe, data, true).map_err(|e| format!("{who} data: {e}"))?;
-        if used.contains("sources") {
-            return Err(format!(
-                "{who} data: a sibling Source is called, sources.<source>(); sources[...] and \
-                 sources as a whole are not supported"
-            ));
-        }
-        called_in(&probe, data).map_err(|e| format!("{who} data: {e}"))?;
+    errors
+}
+
+/// What only a `data` line can get wrong, once it compiles: reading
+/// `sources` other than by calling one, or calling a Source no way names.
+fn lint_data(probe: &Environment<'_>, data: &str) -> Option<String> {
+    let used = undeclared_names(probe, data, true).ok()?;
+    if used.contains("sources") {
+        return Some(
+            "a sibling Source is called, sources.<source>(); sources[...] and sources as a \
+             whole are not supported"
+                .into(),
+        );
     }
-    Ok(())
+    called_in(probe, data).err()
 }
 
 /// What a value is, for an error message that must not carry the value (a
@@ -307,11 +308,11 @@ impl ConfigSource {
         env: Arc<HashMap<String, String>>,
         plugins: Arc<PluginSet>,
         reader: Arc<dyn DaemonRead>,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, Vec<String>> {
         // A load error names the Source's table, as every configuration error
         // does; a run's error (`stage_error`) names the Source.
         let at = format!("[daemon.providers.{}.sources.{}]", spec.provider, spec.name);
-        let load_error = |stage: &str, message: &str| format!("{at} {stage}: {message}");
+        let load_error = |stage: &str, message: &str| vec![format!("{at} {stage}: {message}")];
         let fields = match &spec.result {
             ResultSpec::Whole(_) => vec![FieldSchema {
                 name: "<node>".into(),
@@ -346,14 +347,17 @@ impl ConfigSource {
             }
         };
 
-        lint_lines(
+        let errors = lint_lines(
             &at,
             spec.root.as_deref(),
             Some(&spec.data),
             Some(&spec.result),
             &env,
             &plugins,
-        )?;
+        );
+        if !errors.is_empty() {
+            return Err(errors);
+        }
 
         let refs = discover_refs(&spec.data);
         let reads_comb = refs.iter().any(|r| {
@@ -731,7 +735,7 @@ mod tests {
             Arc::new(FakeReader::default()),
         ) {
             Ok(_) => panic!("expected a load error"),
-            Err(e) => e,
+            Err(e) => e.join("\n"),
         }
     }
 

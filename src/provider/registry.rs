@@ -22,6 +22,10 @@ pub struct ConfigLoad {
     /// The providers that did load; trustworthy only when `errors` is empty.
     pub registry: ProviderRegistry,
     pub errors: Vec<String>,
+    /// What is likely a mistake but may not be, and does not stop the load:
+    /// a client template reading a name no provider has, which a `put` may
+    /// yet make.
+    pub warnings: Vec<String>,
 }
 
 /// What a configuration declares: the config Sources, by provider, and the
@@ -941,16 +945,14 @@ impl ProviderRegistry {
         // A `_` table's lines apply to Sources below it; they are compiled
         // here as a Source's own are, so a broken prototype does not load.
         for proto in crate::shape::prototype_lines(providers) {
-            if let Err(e) = lint_lines(
+            errors.extend(lint_lines(
                 &proto.path,
                 proto.root.as_deref(),
                 proto.data.as_deref(),
                 proto.result.as_ref(),
                 &env,
                 &plugins,
-            ) {
-                errors.push(e);
-            }
+            ));
         }
         // What builds is checked further whatever else does not: one broken
         // table hides no other.
@@ -967,7 +969,7 @@ impl ProviderRegistry {
             for spec in decl.sources {
                 match ConfigSource::new(spec, env.clone(), plugins.clone(), self.reader.clone()) {
                     Ok(source) => built.push(source),
-                    Err(e) => errors.push(e),
+                    Err(e) => errors.extend(e),
                 }
             }
             // A provider none of whose Sources built has their errors; it is
@@ -1264,10 +1266,12 @@ impl ProviderRegistry {
         errors.extend(registry.check_calls(providers));
         errors.extend(config.errors());
         // What the reseed could not plan (a `template` line that renders no
-        // table): the same refusal a reload makes, so startup, `comb check
-        // config` and the config watch all see it. What the load and the
-        // per-file rules already said is not said twice.
-        for e in crate::daemon::seed::plan_errors(config, &registry) {
+        // table, a client template that does not compile): the same refusal a
+        // reload makes, so startup, `comb check config` and the config watch
+        // all see it. What the load and the per-file rules already said is not
+        // said twice.
+        let (seed_errors, warnings) = crate::daemon::seed::plan_findings(config, &registry);
+        for e in seed_errors {
             if !errors.contains(&e) {
                 errors.push(e);
             }
@@ -1283,6 +1287,7 @@ impl ProviderRegistry {
         ConfigLoad {
             registry,
             errors: located,
+            warnings,
         }
     }
 

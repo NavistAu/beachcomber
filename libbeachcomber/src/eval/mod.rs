@@ -13,8 +13,10 @@
 //! fetches what a source references from the daemon and evaluates it against
 //! that, through this module's primitives.
 
+mod lint;
 mod scan;
 
+pub use lint::{Finding, Line, lint};
 pub use scan::{Tag, TagKind, scan_tags};
 
 use crate::engine::{EngineCtx, build_engine_env};

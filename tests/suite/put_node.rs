@@ -880,6 +880,41 @@ async fn put_at_a_node_under_a_facet_namespace() {
     handle.abort();
 }
 
+/// A template put is checked as a configured one is: one that does not
+/// compile is refused and writes nothing; one that reads a provider nothing
+/// has yet is taken, since a later put may make it.
+#[tokio::test]
+async fn a_template_put_that_does_not_compile_is_refused() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"scanline:template","data":{"a":"{{ 1 }}","b":{"c":"{{ git.branch "}}}),
+    )
+    .await;
+    assert!(!r.ok, "a template that does not compile is refused");
+    let error = r.error.unwrap_or_default();
+    assert!(error.starts_with("scanline:template.b.c: "), "{error}");
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"get","key":"scanline:template"}),
+    )
+    .await;
+    assert!(r.data.is_none(), "nothing was written: {:?}", r.data);
+
+    let r = send_recv(
+        &mut s,
+        &serde_json::json!({"op":"put","key":"scanline:template.t","data":"{{ nosuch.x }}"}),
+    )
+    .await;
+    assert!(r.ok, "a name no provider has yet is taken: {:?}", r.error);
+
+    handle.abort();
+}
+
 // ── (i) status shows the static record ──────────────────────────────────────
 
 /// `Cache::list_rows` emits one row per put address: a put at `my.some.value`

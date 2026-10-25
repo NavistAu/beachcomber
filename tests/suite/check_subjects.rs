@@ -981,6 +981,43 @@ fn check_config_sees_the_env_files_variables() {
     );
 }
 
+/// A client template reading a name no provider has is a warning in
+/// `comb check config`, not a failure: a `put` may yet make the provider.
+#[test]
+fn check_config_warns_of_a_template_reading_no_provider() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_dir = tmp.path().join("beachcomber");
+    std::fs::create_dir_all(cfg_dir.join("defaults")).unwrap();
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/defaults/00-comb.toml"),
+        cfg_dir.join("defaults/00-comb.toml"),
+    )
+    .unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        "[client.providers.p]\ntemplate.t = \"{{ gti.branch }}\"\n",
+    )
+    .unwrap();
+
+    let output = isolate(
+        &mut std::process::Command::new(comb_binary()),
+        tmp.path(),
+        tmp.path(),
+        &tmp.path().join("no-daemon.sock"),
+    )
+    .args(["check", "--connect-timeout", "0", "config"])
+    .output()
+    .expect("run comb check config");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("[WARN] local    config(")
+            && stdout.contains("[client.providers.p] template.t: unknown name 'gti'")
+            && !stdout.contains("[FAIL] local"),
+        "expected a local WARN naming the template, got:\n{stdout}"
+    );
+}
+
 /// `comb check config` on a file still carrying the removed `[providers]` root
 /// prints a local FAIL line that says where its contents went.
 #[test]

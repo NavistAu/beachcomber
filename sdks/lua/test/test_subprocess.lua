@@ -84,7 +84,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "a colon below the provider segment is part of the field, asked with its :cache slot",
     "wait reaches the wire as --wait, in one comb get with the :cache slot",
     "--force on a static namespace is the daemon's refusal",
-    "a template that does not compile is the resolver's error, not a null hit",
+    "a template that cannot resolve is the resolver's error, not a null hit",
     "a namespace read with one bad leaf is the resolver's error, not a null hit",
     "a template cycle is the resolver's error",
     "a failed exec() is a server_error, never a transport kind",
@@ -118,10 +118,10 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   assert_true(c:put("spg", { g = 1 }))
   assert_true(c:put("bad", { n = 1 }, nil, "/tmp"))
   assert_true(c:put("bad:template", {
-    bad = "{{ 1 + }}",
+    bad = "{{ bad.bad }}",
     cyc = "{{ bad.cyc }}",
     ex = '{{ exec("definitely-missing-cmd-4f2a") }}',
-    grp = { leaf = "{{ 1 + }}" },
+    grp = { leaf = "{{ bad.grp.leaf }}" },
   }, nil, "/tmp"))
 
   test(names[1], function()
@@ -250,14 +250,14 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     local r, err = c:get("bad.bad", "/tmp")
     assert_nil(r)
     assert_eq(err.kind, "server_error")
-    assert_true(err.message:find("expression compile error", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
+    assert_true(err.message:find("cycle", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
   end)
 
   test(names[15], function()
     local r, err = c:get("bad", "/tmp")
     assert_nil(r)
     assert_eq(err.kind, "server_error")
-    assert_true(err.message:find("expression compile error", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
+    assert_true(err.message:find("cycle", 1, true) ~= nil, "expected the resolver's error, got: " .. tostring(err))
   end)
 
   test(names[16], function()

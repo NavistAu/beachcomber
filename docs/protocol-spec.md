@@ -267,7 +267,8 @@ template (rendered by the client), then `put`, then the Source. Each layer is
 readable on its own:
 
 - `<p>:template` — the templates (data the client renders; the daemon never
-  evaluates one).
+  evaluates one, but a `put` of one that does not compile is refused, naming
+  the leaf).
 - `<p>:put` — what `put` and `config:<file>` seeds stored.
 - `<p>:source` — what the provider's Sources produced. A `put` does not hide
   it here.

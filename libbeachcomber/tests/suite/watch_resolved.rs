@@ -415,10 +415,11 @@ fn the_daemon_closing_ends_the_watch() {
     }
 }
 
-/// A template that does not compile is someone's to go and fix: the watch
-/// ends with the config error, naming the field.
+/// A template that cannot be resolved is someone's to go and fix: the watch
+/// ends with the config error, naming the field. Here a leaf that reads
+/// itself, since one that does not compile cannot be put.
 #[test]
-fn a_template_that_does_not_compile_ends_the_watch() {
+fn a_template_that_cannot_resolve_ends_the_watch() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
     let writer = client_for(&guard.path);
@@ -434,11 +435,11 @@ fn a_template_that_does_not_compile_ends_the_watch() {
     writer
         .put(
             "scanline:template.widgets.foo",
-            json!("{{ 1 + }}"),
+            json!("{{ scanline.widgets.foo }}"),
             None,
             None,
         )
-        .expect("put a broken leaf");
+        .expect("put a leaf that reads itself");
     match w.next(Some(SOON)) {
         Err(WatchError::Resolve(ResolveError::Config(message))) => {
             assert!(

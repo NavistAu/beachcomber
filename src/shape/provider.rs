@@ -53,7 +53,7 @@ use crate::shape::decorators::named_decorators;
 use crate::shape::prototype::{Kind, Link, chain, super_chain};
 use dashmap::DashSet;
 use libbeachcomber::engine::op_error;
-use libbeachcomber::eval::{single_tag_expression, undeclared_names};
+use libbeachcomber::eval::{Line, lint, single_tag_expression, undeclared_names};
 use minijinja::value::{Object, ObjectRepr, Value as MjValue};
 use minijinja::{Environment, Error};
 use std::collections::{BTreeSet, HashMap};
@@ -124,11 +124,12 @@ impl Key {
     /// The names a line of this key may read; any other is a load error.
     /// On `return`, `result` is also the value piped in by a nearer line's
     /// `| super`.
-    fn sees(self) -> &'static [&'static str] {
+    /// What kind of line it is, for the names it sees ([`Line::sees`]).
+    fn line(self) -> Line {
         match self {
-            Key::Template => &["client", "_"],
-            Key::Result => &["sources", "daemon", "_"],
-            Key::Return => &["result", "template", "daemon", "_"],
+            Key::Template => Line::ProviderTemplate,
+            Key::Result => Line::ProviderResult,
+            Key::Return => Line::ProviderReturn,
         }
     }
 }
@@ -494,20 +495,8 @@ impl ProviderLines {
                         }
                         Ok(_) => {}
                     }
-                    match undeclared_names(&self.env, line, false) {
-                        Err(e) => {
-                            errors.insert(format!("{at}: {e}"));
-                        }
-                        Ok(names) => {
-                            if let Some(unknown) =
-                                names.iter().find(|n| !key.sees().contains(&n.as_str()))
-                            {
-                                errors.insert(format!(
-                                    "{at}: unknown name '{unknown}' (this line sees {})",
-                                    key.sees().join(", ")
-                                ));
-                            }
-                        }
+                    for finding in lint(&self.env, line, key.line().sees()) {
+                        errors.insert(format!("{at}: {finding}"));
                     }
                 }
             }

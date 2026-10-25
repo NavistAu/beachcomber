@@ -1504,7 +1504,7 @@ async fn comb_check_config_renders_both_views_as_one_list() {
     // A valid file: the daemon starts, and the client reads the same file for
     // itself. The fixture wrote the managed defaults at this binary's version,
     // as `comb daemon` does, so the defaults line is a pass.
-    let e = Env::new("[client.providers.x]\ntemplate.a = \"{{ y }}\"\n", &[]);
+    let e = Env::new("[client.providers.x]\ntemplate.a = \"{{ x.b }}\"\n", &[]);
     let _h = e.serve().await;
 
     let out = tokio::task::spawn_blocking({

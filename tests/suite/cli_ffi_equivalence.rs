@@ -288,7 +288,7 @@ fn comb_get_json_and_bc_resolve_answer_identically() {
         &daemon,
         &cwd,
         "err:template",
-        r#"{"a":"{{ err.b }}","b":"{{ err.a }}","bad":"{{ 1 + }}"}"#,
+        r#"{"a":"{{ err.b }}","b":"{{ err.a }}","bad":"{{ err.bad }}"}"#,
     );
 
     let client = ffi_client(&daemon);

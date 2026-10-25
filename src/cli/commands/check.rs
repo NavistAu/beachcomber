@@ -273,6 +273,11 @@ fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
     if out.is_empty() {
         out.push(serde_json::json!({"level": "PASS", "message": "config file valid"}));
     }
+    out.extend(
+        load.warnings
+            .into_iter()
+            .map(|w| serde_json::json!({"level": "WARN", "message": w})),
+    );
     out.extend(defaults_verdicts(config));
     out
 }
