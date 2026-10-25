@@ -6,7 +6,9 @@ use beachcomber::cli::commands::kill::run_kill;
 use beachcomber::cli::commands::put::run_put;
 use beachcomber::cli::commands::refresh::run_refresh;
 use beachcomber::cli::commands::watch::run_watch;
-use beachcomber::cli::output_format::{parse_output_format, suffix_to_format};
+use beachcomber::cli::output_format::{
+    Format, GET, STATUS, WATCH, get_format, rewrite_suffix, status_format, watch_format,
+};
 use beachcomber::config::Config;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -78,7 +80,9 @@ fn status_after_help() -> String {
         from the same fast source instead of independently forking processes.\n\n\
         https://beachcomber.sh\n\
         MIT License — Copyright NavistAu",
-    after_help = "Default output is plain text. Use suffixes for other formats: comb g.j (json), g.s (sh), g.c/.C (csv), g.t/.T (tsv), g.f (template)."
+    after_help = "Format suffixes are the short spelling of -f on get, watch and status: comb g.j (json), \
+        g.s (sh), g.c / g.C (csv, CSV with a header row), g.t / g.T (tsv, TSV with a header row), \
+        g.f TEMPLATE (a template)."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -117,9 +121,8 @@ enum Commands {
         keys: Vec<String>,
         #[command(flatten)]
         path: PathArgs,
-        /// Output format (text, json, sh, csv, tsv, CSV, TSV, fmt)
-        #[arg(short, long, default_value = "text")]
-        format: String,
+        #[arg(short, long, default_value = "text", value_parser = get_format, help = GET.help())]
+        format: Format,
         /// Re-execute every source the key demands, each at the instance that answers for the directory; static records survive
         #[arg(long)]
         force: bool,
@@ -130,9 +133,8 @@ enum Commands {
     /// Show daemon status
     #[command(visible_alias = "s", after_help = status_after_help())]
     Status {
-        /// Output format: human (default), tsv, json, csv, table, sh
-        #[arg(long, short = 'f', default_value = "", hide_default_value = true)]
-        format: String,
+        #[arg(long, short = 'f', default_value = "human", value_parser = status_format, help = STATUS.help())]
+        format: Format,
         /// Filter rows: KEY=VALUE or KEY!=VALUE, repeatable, all must match. Keys: provider (base
         /// name), facet, path, field, source, value, shadowed, stale, lifecycle,
         /// fsevents_reinstate; `*` globs, and `-` means none for facet, path and value. Without a
@@ -218,9 +220,8 @@ enum Commands {
         at: Option<String>,
         #[command(flatten)]
         path: PathArgs,
-        /// Output format (text, json, sh)
-        #[arg(short, long, default_value = "text")]
-        format: String,
+        #[arg(short, long, default_value = "text", value_parser = watch_format, help = WATCH.help())]
+        format: Format,
     },
     /// Evaluate a value expression against cached values
     #[command(visible_alias = "e")]
@@ -271,34 +272,6 @@ enum Commands {
         #[arg(long)]
         socket: Option<PathBuf>,
     },
-}
-
-/// Pre-process argv to handle format suffix syntax (e.g., `comb g.p` → `comb g -f text`).
-/// Returns the modified args and an optional fmt template string.
-fn preprocess_args() -> (Vec<String>, Option<String>) {
-    let mut args: Vec<String> = std::env::args().collect();
-    let mut fmt_template = None;
-
-    if args.len() > 1 {
-        let first = args[1].clone();
-        if let Some((cmd, suffix)) = first.split_once('.')
-            && let Some(format_str) = suffix_to_format(suffix)
-        {
-            let is_fmt = suffix == "f";
-            args[1] = cmd.to_string();
-
-            if is_fmt && args.len() > 2 {
-                // For `.f`, the next arg after the command is the template string.
-                fmt_template = Some(args.remove(2));
-            }
-
-            // Insert -f <format> after the command name.
-            args.insert(2, format_str.to_string());
-            args.insert(2, "-f".to_string());
-        }
-    }
-
-    (args, fmt_template)
 }
 
 /// The path a `get`, `put`, `refresh`, `watch` or `eval` addresses: `Ok(None)` for `--global` (the
@@ -375,7 +348,13 @@ fn main() -> ExitCode {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
-    let (args, fmt_template) = preprocess_args();
+    let args = match rewrite_suffix(std::env::args().collect()) {
+        Ok(args) => args,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
     let cli = Cli::parse_from(args);
 
     // Only the daemon writes the managed defaults, and it does so before
@@ -412,7 +391,6 @@ fn main() -> ExitCode {
             force,
             wait,
         } => {
-            let output_format = parse_output_format(&format, fmt_template.as_deref());
             let (keys, resolved_path) = split_keys_and_path(keys, path);
             // `--global` addresses $HOME, which the daemon keys as the pathless
             // global entry, so it is sent as "no path" — and it cannot be
@@ -430,7 +408,7 @@ fn main() -> ExitCode {
                 &config,
                 &keys,
                 effective_path.as_deref(),
-                output_format,
+                format,
                 force,
                 wait,
             )
@@ -446,26 +424,19 @@ fn main() -> ExitCode {
             ascii,
             depth,
             tree,
-        } => {
-            let fmt = if format.is_empty() {
-                None
-            } else {
-                Some(format.as_str())
-            };
-            beachcomber::cli::commands::status::run_status(
-                &config,
-                fmt,
-                &filter,
-                all,
-                &sort,
-                no_trunc,
-                max_width.as_deref(),
-                color.as_str(),
-                ascii,
-                depth,
-                tree,
-            )
-        }
+        } => beachcomber::cli::commands::status::run_status(
+            &config,
+            &format,
+            &filter,
+            all,
+            &sort,
+            no_trunc,
+            max_width.as_deref(),
+            color.as_str(),
+            ascii,
+            depth,
+            tree,
+        ),
         Commands::Put {
             key,
             data,
@@ -496,12 +467,11 @@ fn main() -> ExitCode {
             path: PathArgs { path, global },
             format,
         } => {
-            let output_format = parse_output_format(&format, fmt_template.as_deref());
             let effective_path = match cli_path(global, path.or(at)) {
                 Ok(p) => p,
                 Err(code) => return code,
             };
-            run_watch(&config, &key, effective_path.as_deref(), output_format)
+            run_watch(&config, &key, effective_path.as_deref(), format)
         }
         Commands::Eval {
             template,

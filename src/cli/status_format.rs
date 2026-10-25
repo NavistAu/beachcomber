@@ -1,4 +1,5 @@
 use crate::cache::CacheRow;
+use crate::cli::output_format::{Format, Preset};
 use libbeachcomber::render::shell_quote;
 
 // ---------------------------------------------------------------------------
@@ -400,9 +401,9 @@ impl Default for RenderOpts {
 /// The machine presets stay at 1 so existing consumers keep getting
 /// byte-identical output unless they ask for more. Custom minijinja templates
 /// count as machine output for the same reason.
-pub fn default_depth(preset: &str) -> usize {
-    match preset {
-        "human" | "table" => 2,
+pub fn default_depth(format: &Format) -> usize {
+    match format {
+        Format::Preset(Preset::Human | Preset::Table) => 2,
         _ => 1,
     }
 }
@@ -454,14 +455,14 @@ fn push_flattened(out: &mut Vec<CacheRow>, row: CacheRow, depth: usize, level: u
 /// Any other value is treated as a minijinja template rendered per row.
 /// If the value starts with `table ` (with a space), the remainder is rendered
 /// as a tab-separated template with aligned columns and a derived header row.
-pub fn render_preset(preset: &str, rows: &[CacheRow], opts: &RenderOpts) -> String {
-    match preset {
-        "json" => render_json(rows),
-        "csv" => render_csv(rows),
-        "tsv" => render_tsv(rows),
-        "sh" => render_sh(rows),
-        "table" => render_table(rows, &[], false, None, true, false, false),
-        "human" => {
+pub fn render_preset(format: &Format, rows: &[CacheRow], opts: &RenderOpts) -> String {
+    match format {
+        Format::Preset(Preset::Json) => render_json(rows),
+        Format::Preset(Preset::Csv) => render_csv(rows),
+        Format::Preset(Preset::Tsv) => render_tsv(rows),
+        Format::Preset(Preset::Sh) => render_sh(rows),
+        Format::Preset(Preset::Table) => render_table(rows, &[], false, None, true, false, false),
+        Format::Preset(Preset::Human) => {
             let trunc = if opts.no_trunc { None } else { opts.max_width };
             // `no_color` is the resolved color decision from the caller (already
             // accounts for NO_COLOR, TTY and --color). Don't re-AND with is_tty
@@ -469,11 +470,12 @@ pub fn render_preset(preset: &str, rows: &[CacheRow], opts: &RenderOpts) -> Stri
             let color = !opts.no_color;
             render_table(rows, &[], color, trunc, true, opts.ascii, true)
         }
-        custom => {
-            if let Some(body) = custom.strip_prefix("table ") {
+        Format::Preset(other) => unreachable!("status's formats hold no {}", other.name()),
+        Format::Template(template) => {
+            if let Some(body) = template.strip_prefix("table ") {
                 render_minijinja_table(body, rows)
             } else {
-                render_minijinja(custom, rows)
+                render_minijinja(template, rows)
             }
         }
     }
@@ -1090,12 +1092,12 @@ fn strip_ansi(s: &str) -> String {
 /// as a row of its own under its value, except the one that is the row
 /// itself, so a value with nothing behind it is drawn alone.
 pub fn render_tree(
-    preset: &str,
+    format: &Format,
     rows: &[CacheRow],
     children: &[Vec<crate::cache::LayerRecord>],
     opts: &RenderOpts,
 ) -> String {
-    if preset == "json" {
+    if format == &Format::Preset(Preset::Json) {
         let mut out = String::new();
         for (row, layers) in rows.iter().zip(children) {
             if let Ok(mut v) = serde_json::to_value(row) {
@@ -1137,8 +1139,10 @@ pub fn render_tree(
             }));
         }
     }
-    match preset {
-        "table" => render_table(&display, &marks, false, None, true, false, false),
+    match format {
+        Format::Preset(Preset::Table) => {
+            render_table(&display, &marks, false, None, true, false, false)
+        }
         _ => {
             let trunc = if opts.no_trunc { None } else { opts.max_width };
             render_table(

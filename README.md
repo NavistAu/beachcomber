@@ -486,28 +486,26 @@ Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation. `com
 
 ## Format Suffix Syntax
 
-The `get` and `watch` commands support a shorthand suffix on the subcommand itself, saving characters in prompts and scripts. **Plain text is the default** — no suffix needed.
+`get`, `watch` and `status` take a suffix on the command as the short spelling of `-f`, saving characters in prompts and scripts. **Plain text is the default** — no suffix needed.
 
 | Suffix | Equivalent | Format |
 |---|---|---|
 | _(none)_ | `get -f text` | Raw value — the default |
-| `g.p` | `get -f text` | Raw value, explicit |
 | `g.j` | `get -f json` | The bare value as JSON, nested at any depth (no envelope — metadata is in the `:cache` facet) |
 | `g.s` | `get -f sh` | `key=value` lines (shell-parseable) |
 | `g.c` | `get -f csv` | Comma-separated values |
 | `g.C` | `get -f CSV` | CSV with header row |
 | `g.t` | `get -f tsv` | Tab-separated values |
 | `g.T` | `get -f TSV` | TSV with header row |
-| `g.f` | `get -f fmt` | minijinja template — `{{ field }}` placeholders |
+| `g.f TEMPLATE` | `get -f TEMPLATE` | a template — any `-f` value holding `{{` or `{%` |
 
 ```sh
 # These are all equivalent:
 comb g git.branch .              # default text
-comb g.p git.branch .            # explicit plain text
 comb get git.branch . -f text    # long form with flag
 ```
 
-The suffix is appended to the command (`g`, `w`) with a dot separator.
+The suffix is appended to the command (`g`, `w`, `s`) with a dot separator. It applies only to a command that has `-f` and that format, and a `-f` value is a template only when it holds `{{` or `{%`: anything else must name a format the command has.
 
 ---
 

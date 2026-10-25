@@ -9,7 +9,7 @@
 //! what comes back, per output format.
 
 use crate::cli::format::render_fmt_template_json;
-use crate::cli::output_format::{OutputFormat, format_sv, value_to_string};
+use crate::cli::output_format::{Format, Preset, format_sv, value_to_string};
 use crate::config::Config;
 use libbeachcomber::render::render_data;
 use libbeachcomber::resolve::{Inputs, ResolveError, Slot, resolve};
@@ -54,7 +54,7 @@ pub fn run_get(
     config: &Config,
     keys: &[String],
     path: Option<&str>,
-    format: OutputFormat,
+    format: Format,
     force: bool,
     wait: bool,
 ) -> ExitCode {
@@ -97,7 +97,7 @@ pub fn run_get(
     // string — nothing to print, not a failure — so a value embeds in a prompt
     // verbatim. Under every structured format it is an error: there is no
     // value to put in the document.
-    let plain = matches!(format, OutputFormat::Text | OutputFormat::Sh);
+    let plain = matches!(format, Format::Preset(Preset::Text | Preset::Sh));
     let mut slots: Vec<(&str, Option<Value>)> = Vec::with_capacity(keys.len());
     let mut any_error = false;
     for key in keys {
@@ -148,19 +148,24 @@ pub fn run_get(
 /// One key's value, or nothing for a miss. `text`/`sh`/`csv`/`tsv`/`fmt` are
 /// bare — no trailing newline — so the output embeds verbatim; `json` ends in
 /// a newline like every JSON document `comb` writes.
-fn render_one(format: &OutputFormat, value: Option<&Value>) -> Result<String, String> {
+fn render_one(format: &Format, value: Option<&Value>) -> Result<String, String> {
     let Some(value) = value else {
         return Ok(String::new());
     };
     Ok(match format {
-        OutputFormat::Text => render_data(Some(value), "text"),
-        OutputFormat::Sh => render_data(Some(value), "sh"),
-        OutputFormat::Json => format!("{}\n", serde_json::to_string_pretty(value).unwrap()),
-        OutputFormat::Csv => format_sv(value, ",", false),
-        OutputFormat::Tsv => format_sv(value, "\t", false),
-        OutputFormat::CsvHeader => format_sv(value, ",", true),
-        OutputFormat::TsvHeader => format_sv(value, "\t", true),
-        OutputFormat::Fmt(template) => render_fmt_template_json(template, value)?,
+        Format::Preset(Preset::Text) => render_data(Some(value), "text"),
+        Format::Preset(Preset::Sh) => render_data(Some(value), "sh"),
+        Format::Preset(Preset::Json) => {
+            format!("{}\n", serde_json::to_string_pretty(value).unwrap())
+        }
+        Format::Preset(Preset::Csv) => format_sv(value, ",", false),
+        Format::Preset(Preset::Tsv) => format_sv(value, "\t", false),
+        Format::Preset(Preset::CsvHeader) => format_sv(value, ",", true),
+        Format::Preset(Preset::TsvHeader) => format_sv(value, "\t", true),
+        Format::Template(template) => render_fmt_template_json(template, value)?,
+        Format::Preset(Preset::Human | Preset::Table) => {
+            unreachable!("get's formats hold no table")
+        }
     })
 }
 
@@ -170,10 +175,10 @@ fn render_one(format: &OutputFormat, value: Option<&Value>) -> Result<String, St
 /// contributes its sorted fields, a scalar its key, no value an empty cell —
 /// and `fmt` a template over the merge of every object's fields, as
 /// `provider.field` and as `field`, and every scalar under its key.
-fn render_many(format: &OutputFormat, slots: &[(&str, Option<Value>)]) -> Result<String, String> {
+fn render_many(format: &Format, slots: &[(&str, Option<Value>)]) -> Result<String, String> {
     Ok(match format {
-        OutputFormat::Text | OutputFormat::Sh => {
-            let wire = if matches!(format, OutputFormat::Sh) {
+        Format::Preset(Preset::Text | Preset::Sh) => {
+            let wire = if matches!(format, Format::Preset(Preset::Sh)) {
                 "sh"
             } else {
                 "text"
@@ -185,20 +190,26 @@ fn render_many(format: &OutputFormat, slots: &[(&str, Option<Value>)]) -> Result
                 .map(|line| format!("{line}\n"))
                 .collect()
         }
-        OutputFormat::Json => {
+        Format::Preset(Preset::Json) => {
             let values: Vec<&Option<Value>> = slots.iter().map(|(_, v)| v).collect();
             format!("{}\n", serde_json::to_string_pretty(&values).unwrap())
         }
-        OutputFormat::Csv
-        | OutputFormat::Tsv
-        | OutputFormat::CsvHeader
-        | OutputFormat::TsvHeader => {
-            let sep = if matches!(format, OutputFormat::Csv | OutputFormat::CsvHeader) {
+        Format::Preset(Preset::Csv)
+        | Format::Preset(Preset::Tsv)
+        | Format::Preset(Preset::CsvHeader)
+        | Format::Preset(Preset::TsvHeader) => {
+            let sep = if matches!(
+                format,
+                Format::Preset(Preset::Csv) | Format::Preset(Preset::CsvHeader)
+            ) {
                 ","
             } else {
                 "\t"
             };
-            let with_header = matches!(format, OutputFormat::CsvHeader | OutputFormat::TsvHeader);
+            let with_header = matches!(
+                format,
+                Format::Preset(Preset::CsvHeader) | Format::Preset(Preset::TsvHeader)
+            );
             let mut names: Vec<String> = Vec::new();
             let mut values: Vec<String> = Vec::new();
             for (key, value) in slots {
@@ -230,7 +241,7 @@ fn render_many(format: &OutputFormat, slots: &[(&str, Option<Value>)]) -> Result
             out.push('\n');
             out
         }
-        OutputFormat::Fmt(template) => {
+        Format::Template(template) => {
             let mut merged = serde_json::Map::new();
             for (key, value) in slots {
                 match value {
@@ -248,6 +259,9 @@ fn render_many(format: &OutputFormat, slots: &[(&str, Option<Value>)]) -> Result
                 }
             }
             render_fmt_template_json(template, &Value::Object(merged))?
+        }
+        Format::Preset(Preset::Human | Preset::Table) => {
+            unreachable!("get's formats hold no table")
         }
     })
 }

@@ -17,7 +17,7 @@
 //! line at all, because there is no value to print.
 
 use crate::cli::format::render_fmt_template_json;
-use crate::cli::output_format::{OutputFormat, format_sv};
+use crate::cli::output_format::{Format, Preset, format_sv};
 use crate::config::Config;
 use libbeachcomber::render::render_data;
 use libbeachcomber::resolve::{Inputs, Slot};
@@ -27,7 +27,7 @@ use std::process::ExitCode;
 
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
 /// `--path`, the trailing positional, or the current directory.
-pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: OutputFormat) -> ExitCode {
+pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format) -> ExitCode {
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
@@ -94,16 +94,19 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: OutputF
 /// Under `text`/`sh`/`csv`/`tsv`/`-f fmt` this renders exactly as `comb get`
 /// renders the same value; under `-f json` it is the same value compacted
 /// to one line, where `get` pretty-prints.
-fn print_frame(format: &OutputFormat, value: &Value) -> Result<(), String> {
+fn print_frame(format: &Format, value: &Value) -> Result<(), String> {
     let line = match format {
-        OutputFormat::Text => render_data(Some(value), "text"),
-        OutputFormat::Sh => render_data(Some(value), "sh"),
-        OutputFormat::Json => serde_json::to_string(value).unwrap(),
-        OutputFormat::Csv => format_sv(value, ",", false),
-        OutputFormat::Tsv => format_sv(value, "\t", false),
-        OutputFormat::CsvHeader => format_sv(value, ",", true),
-        OutputFormat::TsvHeader => format_sv(value, "\t", true),
-        OutputFormat::Fmt(template) => render_fmt_template_json(template, value)?,
+        Format::Preset(Preset::Text) => render_data(Some(value), "text"),
+        Format::Preset(Preset::Sh) => render_data(Some(value), "sh"),
+        Format::Preset(Preset::Json) => serde_json::to_string(value).unwrap(),
+        Format::Preset(Preset::Csv) => format_sv(value, ",", false),
+        Format::Preset(Preset::Tsv) => format_sv(value, "\t", false),
+        Format::Preset(Preset::CsvHeader) => format_sv(value, ",", true),
+        Format::Preset(Preset::TsvHeader) => format_sv(value, "\t", true),
+        Format::Template(template) => render_fmt_template_json(template, value)?,
+        Format::Preset(Preset::Human | Preset::Table) => {
+            unreachable!("watch's formats hold no table")
+        }
     };
     println!("{line}");
     Ok(())

@@ -41,16 +41,16 @@ pub enum CheckCommands {
         /// Read from the files; needs no daemon
         #[arg(long, value_name = "KEY", num_args = 0..=1, default_missing_value = "")]
         origins: Option<String>,
-        /// Output format for --origins
         #[arg(
             short,
             long,
             value_name = "FORMAT",
             default_value = "human",
-            value_parser = ["human", "json"],
+            value_parser = crate::cli::output_format::origins_format,
+            help = crate::cli::output_format::ORIGINS.help(),
             requires = "origins"
         )]
-        format: String,
+        format: crate::cli::output_format::Format,
         /// Colour for --origins: auto, always or never
         #[arg(
             long,
@@ -139,8 +139,15 @@ pub fn run_check(
 /// read or parsed, or breaks a rule, is reported as `check config` reports it
 /// — in the human table's place beneath it, or on stderr beside JSON — and
 /// fails the check; the files that did load are still shown.
-fn run_origins(config: &Config, key: &str, format: &str, color: &str, ascii: bool) -> ExitCode {
+fn run_origins(
+    config: &Config,
+    key: &str,
+    format: &crate::cli::output_format::Format,
+    color: &str,
+    ascii: bool,
+) -> ExitCode {
     use crate::cli::config_origins;
+    use crate::cli::output_format::{Format, Preset};
     use crate::cli::status_format::{ColorMode, resolve_color};
     use std::io::IsTerminal;
 
@@ -158,7 +165,7 @@ fn run_origins(config: &Config, key: &str, format: &str, color: &str, ascii: boo
         .collect();
     let (error_lines, worst) = render_verdicts(&errors, Some(LOCAL_VIEW));
 
-    if format == "json" {
+    if format == &Format::Preset(Preset::Json) {
         print!("{}", config_origins::render_json(&origins));
         eprint!("{error_lines}");
     } else {

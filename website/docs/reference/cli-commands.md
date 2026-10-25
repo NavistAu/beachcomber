@@ -9,30 +9,33 @@ All commands are subcommands of `comb`. The daemon is socket-activated — you n
 
 Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) also work.
 
-**Default output is plain text** — `comb g git.branch .` prints just the branch name. Format suffixes on the command replace the `-f` flag when you need something else:
+**Default output is plain text** — `comb g git.branch .` prints just the branch name. `-f` picks another format, or takes a template, and a suffix on the command is its short spelling:
 
-| Suffix | Format | Use when |
-|--------|--------|----------|
-| _(none)_ | **text** (default) | the common case — single values, shell substitution |
-| `.p` | plain text (explicit) | when text isn't the default for the command |
-| `.j` | json | programmatic consumers — the bare value, nested at any depth |
-| `.s` | sh (key=value lines) | sourceable output for `eval`/`source` |
-| `.c` / `.C` | csv / csv+header | spreadsheet-style field dumps |
-| `.t` / `.T` | tsv / tsv+header | tab-separated for `awk`/`cut` |
-| `.f` | template | minijinja template — `{{ field }}` placeholders |
+| Suffix | `-f` value | Format |
+|--------|------------|--------|
+| _(none)_ | `text` | **text** (`get`, `watch`) or **human** (`status`): the defaults |
+| `.j` | `json` | json — the bare value, nested at any depth |
+| `.s` | `sh` | shell assignments, sourceable with `eval`/`source` |
+| `.c` / `.C` | `csv` / `CSV` | comma-separated; uppercase adds a header row |
+| `.t` / `.T` | `tsv` / `TSV` | tab-separated; uppercase adds a header row |
+| `.f TEMPLATE` | `TEMPLATE` | a template: any `-f` value holding `{{` or `{%` |
 
-| Short | Long | Accepts format suffixes? |
-|-------|------|--------------------------|
-| `comb g` | `comb get` | all of them |
-| `comb s` | `comb status` | — |
+A template is recognised by its tags, never by not being a format's name: `-f` with anything else must name a format the command has, or it's refused (`get has no 'bogus' format: expected text (default), json, sh, csv, CSV, tsv, TSV, or a template ({{ … }})`). `status` also has `table` (an uncoloured `human`), and `check config --origins` takes `human` or `json`.
+
+| Short | Long | Formats |
+|-------|------|---------|
+| `comb g` | `comb get` | `text` (default), `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, a template |
+| `comb s` | `comb status` | `human` (default), `table`, `json`, `sh`, `csv`, `tsv`, a template |
 | `comb p` | `comb put` | — |
 | `comb r` | `comb refresh` | — |
-| `comb w` | `comb watch` | all of them |
+| `comb w` | `comb watch` | as `get` |
 | `comb e` | `comb eval` | — |
 | `comb i` | `comb init` | — |
-| `comb c` | `comb check` | — |
+| `comb c` | `comb check` | `check config --origins`: `human` (default), `json` |
 | `comb d` | `comb daemon` | — |
 | `comb k` | `comb kill` | — |
+
+A suffix applies only to a command that has `-f` and that format: `comb p.j` is `comb p takes no format`, and an unknown suffix is `unknown format suffix '.x'`.
 
 ## Addressing a directory
 
@@ -187,7 +190,7 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (`human` (default), `tsv`, `json`, `csv`, `table`, `sh`), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|stale|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
+**Flags:** `-f`/`--format` (`human` (default), `table`, `json`, `sh`, `csv`, `tsv`, or a template), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|stale|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
 
 ### Filters
 
@@ -236,7 +239,7 @@ scanline            greeting  template  hi jane             ~/ws/project  0s    
 
 A cached field with a template over it shows **both** rows at that same address — `git.branch` cached by the `head` Source plus a `git:template.branch` override both list, so the raw cached value and the effective rendered one are visible side by side rather than one hiding the other. A leaf whose expression fails to render shows the failure text as its value instead of dropping the row.
 
-A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lead-in (`> ` under `--ascii`) when it's off. In the structured formats (`json`, `tsv`, `csv`, `sh`, a custom `-f fmt` context) it carries `kind: template` and `source: template`, and it's selectable on its own with `--filter lifecycle=template`. A `provider` filter that rules a provider out entirely skips resolving that provider's templates — and any `exec()` inside them — rather than rendering them only to discard the rows afterward.
+A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lead-in (`> ` under `--ascii`) when it's off. In the structured formats (`json`, `tsv`, `csv`, `sh`, a `-f` template's context) it carries `kind: template` and `source: template`, and it's selectable on its own with `--filter lifecycle=template`. A `provider` filter that rules a provider out entirely skips resolving that provider's templates — and any `exec()` inside them — rather than rendering them only to discard the rows afterward.
 
 Rendering resolves with this shell's own environment and directory, and `exec()` is enabled — `status` is one of the surfaces canon `field_resolution.md` invariant 15 names, alongside `comb get`, `comb eval` and `comb watch`.
 
@@ -459,7 +462,7 @@ comb e '{{ exec(["git", "rev-parse", "--short", "HEAD"]) }}' .
 | Output | stdout, lossy-UTF-8 decoded, with at most one trailing `\n` (and a preceding `\r`) stripped |
 | Output cap | stdout past 1 MiB is a failure, not a truncation |
 | Failure | a non-zero exit, a timeout, an oversized stdout, or a spawn error is an eval error naming the command, with stderr (truncated) attached |
-| Availability | `comb eval` and `comb get` — the CLI user already has a shell — and an SDK client constructed with `exec` on (`Client(exec=True)` and the equivalent in each SDK; off by default). Disabled everywhere else a value expression is evaluated: every formatting surface (`-f fmt`, `watch -f fmt`, the status formatter), and an SDK client without the option. A call on a disabled surface fails immediately with `exec() is disabled in this context`. |
+| Availability | `comb eval` and `comb get` — the CLI user already has a shell — and an SDK client constructed with `exec` on (`Client(exec=True)` and the equivalent in each SDK; off by default). Disabled everywhere else a value expression is evaluated: every formatting surface (a `-f` template on `get`, `watch` or `status`), and an SDK client without the option. A call on a disabled surface fails immediately with `exec() is disabled in this context`. |
 
 `exec()` always runs client-side — the daemon never executes it, the same as every other value expression. See the [Configuration Reference](/docs/reference/configuration-reference#exec-in-templates) for a template that wraps a script call.
 

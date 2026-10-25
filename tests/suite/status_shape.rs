@@ -70,7 +70,11 @@ fn sample_rows() -> Vec<CacheRow> {
 
 #[test]
 fn json_preset_emits_ndjson() {
-    let out = render_preset("json", &sample_rows(), &RenderOpts::default());
+    let out = render_preset(
+        &status_preset("json"),
+        &sample_rows(),
+        &RenderOpts::default(),
+    );
     for line in out.lines().filter(|l| !l.is_empty()) {
         serde_json::from_str::<serde_json::Value>(line).expect("valid JSON per line");
     }
@@ -89,7 +93,11 @@ fn tsv_preset_is_tab_separated_no_header() {
 
 #[test]
 fn csv_preset_has_header_and_quotes_values() {
-    let out = render_preset("csv", &sample_rows(), &RenderOpts::default());
+    let out = render_preset(
+        &status_preset("csv"),
+        &sample_rows(),
+        &RenderOpts::default(),
+    );
     let lines: Vec<_> = out.lines().collect();
     assert!(
         lines[0].contains("PROVIDER") && lines[0].contains("FIELD"),
@@ -103,7 +111,11 @@ fn csv_preset_has_header_and_quotes_values() {
 
 #[test]
 fn table_preset_has_header_no_color_no_trunc() {
-    let out = render_preset("table", &sample_rows(), &RenderOpts::default());
+    let out = render_preset(
+        &status_preset("table"),
+        &sample_rows(),
+        &RenderOpts::default(),
+    );
     let first = out
         .lines()
         .next()
@@ -121,7 +133,7 @@ fn table_preset_has_header_no_color_no_trunc() {
 
 #[test]
 fn sh_preset_emits_sourceable_assignments() {
-    let out = render_preset("sh", &sample_rows(), &RenderOpts::default());
+    let out = render_preset(&status_preset("sh"), &sample_rows(), &RenderOpts::default());
     // Path /home/me/ws/foo → home_me_ws_foo; key = git_home_me_ws_foo_branch
     assert!(
         out.contains("git_home_me_ws_foo_branch="),
@@ -171,7 +183,7 @@ fn human_preset_truncates_value_to_meet_total_cap() {
         ascii: false,
         depth: None,
     };
-    let out = render_preset("human", &rows, &opts);
+    let out = render_preset(&status_preset("human"), &rows, &opts);
     // Output should contain truncated version, not the full 100 'a's.
     assert!(
         !out.contains(&"a".repeat(100)),
@@ -211,7 +223,7 @@ fn human_preset_color_on_stale_rows() {
         ascii: false,
         depth: None,
     };
-    let out = render_preset("human", &rows, &opts);
+    let out = render_preset(&status_preset("human"), &rows, &opts);
     assert!(
         out.contains('\x1b'),
         "human preset with is_tty=true and stale row should emit ANSI codes"
@@ -237,7 +249,7 @@ fn json_preset_path_none_serializes_as_null() {
         next_poll_in_secs: None,
         failure: None,
     }];
-    let out = render_preset("json", &rows, &RenderOpts::default());
+    let out = render_preset(&status_preset("json"), &rows, &RenderOpts::default());
     let parsed: serde_json::Value = serde_json::from_str(out.trim()).expect("valid JSON line");
     assert!(
         parsed["path"].is_null(),
@@ -265,7 +277,7 @@ fn csv_preset_quotes_values_with_commas() {
         next_poll_in_secs: None,
         failure: None,
     }];
-    let out = render_preset("csv", &rows, &RenderOpts::default());
+    let out = render_preset(&status_preset("csv"), &rows, &RenderOpts::default());
     // Value containing comma must be quoted in RFC 4180 style.
     assert!(
         out.contains("\"a,b,c\""),
@@ -277,7 +289,11 @@ fn csv_preset_quotes_values_with_commas() {
 fn custom_template_renders_per_row() {
     let rows = sample_rows();
     let opts = RenderOpts::default();
-    let out = render_preset("{{ provider }}.{{ field }}={{ value }}", &rows, &opts);
+    let out = render_preset(
+        &status_preset("{{ provider }}.{{ field }}={{ value }}"),
+        &rows,
+        &opts,
+    );
     let lines: Vec<_> = out.lines().collect();
     assert_eq!(lines.len(), rows.len());
     assert!(lines.iter().any(|l| l.contains("git.branch=main")));
@@ -303,7 +319,11 @@ fn custom_template_supports_truncate_filter() {
         next_poll_in_secs: None,
         failure: None,
     }];
-    let out = render_preset("{{ value | truncate(7) }}", &rows, &RenderOpts::default());
+    let out = render_preset(
+        &status_preset("{{ value | truncate(7) }}"),
+        &rows,
+        &RenderOpts::default(),
+    );
     assert_eq!(out.trim(), "abcdef1...");
 }
 
@@ -361,7 +381,11 @@ fn custom_template_supports_age_human() {
         next_poll_in_secs: None,
         failure: None,
     }];
-    let out = render_preset("{{ age_human }}", &rows, &RenderOpts::default());
+    let out = render_preset(
+        &status_preset("{{ age_human }}"),
+        &rows,
+        &RenderOpts::default(),
+    );
     // Should render as "1h" or similar
     assert!(!out.trim().is_empty());
     assert!(out.trim() != "3600000");
@@ -371,7 +395,7 @@ fn custom_template_supports_age_human() {
 fn table_prefix_aligns_columns_and_emits_header() {
     let rows = sample_rows();
     let out = render_preset(
-        "table {{ provider }}\t{{ field }}\t{{ value }}",
+        &status_preset("table {{ provider }}\t{{ field }}\t{{ value }}"),
         &rows,
         &RenderOpts::default(),
     );
@@ -564,7 +588,7 @@ fn an_absent_value_shows_as_null_in_the_table() {
         .into_iter()
         .filter(|r| r.value.is_null())
         .collect();
-    let out = render_preset("table", &rows, &RenderOpts::default());
+    let out = render_preset(&status_preset("table"), &rows, &RenderOpts::default());
     assert!(
         out.lines().nth(1).is_some_and(|l| l.contains(" null ")),
         "{out}"
@@ -651,7 +675,7 @@ fn no_trunc_disables_truncation_in_human() {
         ascii: false,
         depth: None,
     };
-    let out = render_preset("human", &rows, &opts);
+    let out = render_preset(&status_preset("human"), &rows, &opts);
     assert!(out.contains(&"x".repeat(100))); // at least 100 xs preserved
 }
 
@@ -667,7 +691,7 @@ fn max_width_truncates_value() {
         ascii: false,
         depth: None,
     };
-    let out = render_preset("human", &rows, &opts);
+    let out = render_preset(&status_preset("human"), &rows, &opts);
     assert!(!out.contains(&"x".repeat(50)));
 }
 
@@ -683,7 +707,7 @@ fn no_color_disables_ansi() {
         ascii: false,
         depth: None,
     };
-    let out = render_preset("human", &rows, &opts);
+    let out = render_preset(&status_preset("human"), &rows, &opts);
     assert!(!out.contains("\x1b["));
 }
 
@@ -903,7 +927,7 @@ fn max_width_value_column_shrinks_not_others() {
         ascii: false,
         depth: None,
     };
-    let out = render_preset("human", &[row], &opts);
+    let out = render_preset(&status_preset("human"), &[row], &opts);
     // The full 80-char value must not appear (it was shrunk).
     assert!(
         !out.contains(&"a".repeat(80)),
@@ -952,7 +976,7 @@ fn max_width_total_row_width_does_not_exceed_cap() {
         ascii: true, // ascii so TTL glyph width is predictable
         depth: None,
     };
-    let out = render_preset("human", &[row], &opts);
+    let out = render_preset(&status_preset("human"), &[row], &opts);
     // Every data row (skip header) must fit within total_cap columns.
     for (i, line) in out.lines().enumerate() {
         if i == 0 {
@@ -987,7 +1011,7 @@ fn default_preset_is_human_regardless_of_tty() {
         ascii: false,
         depth: None,
     };
-    let out = render_preset("human", &rows, &opts);
+    let out = render_preset(&status_preset("human"), &rows, &opts);
     assert!(
         out.contains("PROVIDER"),
         "human preset should emit PROVIDER header regardless of is_tty: {out}"
@@ -1748,7 +1772,7 @@ fn failure_state_renders_warn_and_red_row() {
         ascii: false,
         depth: None,
     };
-    let out = render_preset("human", &[row], &opts);
+    let out = render_preset(&status_preset("human"), &[row], &opts);
     assert!(out.contains("\u{26a0}"), "warn glyph missing: {:?}", out);
     assert!(out.contains("\x1b[31m"), "red ANSI missing: {:?}", out);
 }
@@ -1796,8 +1820,12 @@ fn render_preset_ascii_flag_swaps_glyphs() {
         ascii: true,
         depth: None,
     };
-    let out_unicode = render_preset("human", std::slice::from_ref(&row), &opts_unicode);
-    let out_ascii = render_preset("human", &[row], &opts_ascii);
+    let out_unicode = render_preset(
+        &status_preset("human"),
+        std::slice::from_ref(&row),
+        &opts_unicode,
+    );
+    let out_ascii = render_preset(&status_preset("human"), &[row], &opts_ascii);
     assert!(
         out_unicode.contains("\u{2605}"),
         "unicode star expected: {}",
@@ -1854,7 +1882,7 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
         ascii: false,
         depth: None,
     };
-    let out = render_preset("human", &[row], &opts);
+    let out = render_preset(&status_preset("human"), &[row], &opts);
     assert!(
         out.contains("\x1b[92m"),
         "bright green ANSI expected when no_color=false even with is_tty=false: {}",
@@ -1892,7 +1920,7 @@ fn human_preset_compacts_home_path() {
     let opts = RenderOpts::default();
 
     let out = temp_env::with_var("HOME", Some("/Users/x"), || {
-        render_preset("human", &[row], &opts)
+        render_preset(&status_preset("human"), &[row], &opts)
     });
     assert!(
         out.contains("~/ws/beachcomber"),
@@ -1935,7 +1963,7 @@ fn machine_presets_keep_real_path_under_home() {
         // embedding the literal path string, so it's checked separately —
         // the shared assertion across all five is simply "no `~` leaks in".
         for preset in ["json", "csv", "tsv", "table"] {
-            let out = render_preset(preset, std::slice::from_ref(&row), &opts);
+            let out = render_preset(&status_preset(preset), std::slice::from_ref(&row), &opts);
             assert!(
                 out.contains("/home/testuser/ws/beachcomber"),
                 "{preset} preset should keep the real path: {out}"
@@ -1945,7 +1973,7 @@ fn machine_presets_keep_real_path_under_home() {
                 "{preset} preset should not compact the path: {out}"
             );
         }
-        let sh_out = render_preset("sh", std::slice::from_ref(&row), &opts);
+        let sh_out = render_preset(&status_preset("sh"), std::slice::from_ref(&row), &opts);
         assert!(
             !sh_out.contains('~'),
             "sh preset should not compact the path: {sh_out}"
@@ -1992,7 +2020,7 @@ fn human_preset_path_compaction_frees_width_for_value() {
     // chars, freeing width the budget hands to VALUE — the full 20-char
     // value fits uncut.
     let compacted = temp_env::with_var("HOME", Some("/home/testuser"), || {
-        render_preset("human", std::slice::from_ref(&row), &opts)
+        render_preset(&status_preset("human"), std::slice::from_ref(&row), &opts)
     });
     assert!(
         compacted.contains(&"a".repeat(20)),
@@ -2006,7 +2034,7 @@ fn human_preset_path_compaction_frees_width_for_value() {
     // Same total-width budget, but HOME doesn't match this row's path: PATH
     // stays at its full 16-char length, so VALUE must truncate.
     let uncompacted = temp_env::with_var("HOME", Some("/no/match/here"), || {
-        render_preset("human", &[row], &opts)
+        render_preset(&status_preset("human"), &[row], &opts)
     });
     assert!(
         !uncompacted.contains(&"a".repeat(20)),
@@ -2063,7 +2091,7 @@ fn human_rows_leave_the_right_margin_unpainted() {
             ascii: true, // ascii so glyph char-counts are unambiguous
             depth: None,
         };
-        let out = render_preset("human", &[wide_value_row()], &opts);
+        let out = render_preset(&status_preset("human"), &[wide_value_row()], &opts);
         for line in out.lines() {
             assert!(
                 line.chars().count() <= cap - 2,
@@ -2109,7 +2137,7 @@ fn human_rows_leave_the_right_margin_unpainted() {
         ascii: true,
         depth: None,
     };
-    let out = render_preset("human", &[config_row], &opts);
+    let out = render_preset(&status_preset("human"), &[config_row], &opts);
     for line in out.lines() {
         assert!(
             line.chars().count() <= 78,
@@ -2144,7 +2172,7 @@ fn human_caps_path_column_keeping_the_tail() {
         ascii: true,
         depth: None,
     };
-    let out = render_preset("human", &[row], &opts);
+    let out = render_preset(&status_preset("human"), &[row], &opts);
     for line in out.lines() {
         assert!(
             line.chars().count() <= cap - 2,
@@ -2176,7 +2204,7 @@ fn human_caps_source_column_keeping_the_tail() {
         ascii: true,
         depth: None,
     };
-    let out = render_preset("human", &[row], &opts);
+    let out = render_preset(&status_preset("human"), &[row], &opts);
     assert!(
         out.contains("...mber/conf.d/mine.toml"),
         "SOURCE cell should truncate from the head and keep its tail: {out}"
@@ -2199,7 +2227,7 @@ fn no_trunc_keeps_the_full_source_label() {
         ascii: true,
         depth: None,
     };
-    let out = render_preset("human", &[row], &opts);
+    let out = render_preset(&status_preset("human"), &[row], &opts);
     assert!(
         out.contains("config:~/.config/beachcomber/conf.d/mine.toml"),
         "--no-trunc must keep the full SOURCE label: {out}"
@@ -2220,7 +2248,7 @@ fn truncation_uses_single_char_ellipsis_outside_ascii_mode() {
         ascii: false,
         depth: Some(1),
     };
-    let out = render_preset("human", &[row.clone()], &opts);
+    let out = render_preset(&status_preset("human"), &[row.clone()], &opts);
     assert!(out.contains('\u{2026}'), "unicode mode uses …: {out}");
     assert!(
         !out.contains("..."),
@@ -2232,7 +2260,7 @@ fn truncation_uses_single_char_ellipsis_outside_ascii_mode() {
     );
 
     let ascii_out = render_preset(
-        "human",
+        &status_preset("human"),
         &[row],
         &RenderOpts {
             ascii: true,
@@ -2267,8 +2295,8 @@ fn age_column_is_right_aligned_with_a_stable_floor() {
         ascii: true,
         depth: Some(1),
     };
-    let short = render_preset("human", &[mk(5_000)], &opts);
-    let long = render_preset("human", &[mk(3_540_000)], &opts);
+    let short = render_preset(&status_preset("human"), &[mk(5_000)], &opts);
+    let long = render_preset(&status_preset("human"), &[mk(3_540_000)], &opts);
     assert!(
         short.contains("      5s"),
         "5s right-aligns in an 8-wide AGE column: {short}"
@@ -2294,7 +2322,7 @@ fn no_trunc_keeps_full_path() {
         ascii: true,
         depth: None,
     };
-    let out = render_preset("human", &[row], &opts);
+    let out = render_preset(&status_preset("human"), &[row], &opts);
     assert!(
         out.contains(&long_path),
         "--no-trunc must keep the full path: {out}"
@@ -2321,7 +2349,7 @@ fn human_output_has_no_control_chars_besides_newline() {
     let mut hostile = wide_value_row();
     hostile.value = serde_json::json!("\x1b[31mred\x1b[0m");
     rows.push(hostile);
-    let out = render_preset("human", &rows, &opts);
+    let out = render_preset(&status_preset("human"), &rows, &opts);
     assert!(!out.is_empty(), "expected rendered output");
     for (i, c) in out.char_indices() {
         assert!(
@@ -2363,7 +2391,7 @@ fn width_split_gives_value_priority_over_path() {
         ascii: true,
         depth: None,
     };
-    let out = render_preset("human", &[long_value, long_path], &opts);
+    let out = render_preset(&status_preset("human"), &[long_value, long_path], &opts);
 
     for line in out.lines() {
         assert!(
@@ -2500,11 +2528,11 @@ fn default_depth_destructures_human_presets_only() {
     use beachcomber::cli::status_format::default_depth;
     // Two levels: enough to see structure, short of dumping a deep API blob
     // as thousands of rows. `--depth 0` still asks for everything.
-    assert_eq!(default_depth("human"), 2);
-    assert_eq!(default_depth("table"), 2);
+    assert_eq!(default_depth(&status_preset("human")), 2);
+    assert_eq!(default_depth(&status_preset("table")), 2);
     for machine in ["json", "tsv", "csv", "sh", "{{ provider }}"] {
         assert_eq!(
-            default_depth(machine),
+            default_depth(&status_preset(machine)),
             1,
             "machine preset {machine} must stay byte-identical by default"
         );
@@ -2523,7 +2551,7 @@ fn destructured_rows_render_as_separate_table_rows() {
         depth: None,
     };
     let rows = flatten_rows(vec![nested_row()], 0);
-    let out = render_preset("human", &rows, &opts);
+    let out = render_preset(&status_preset("human"), &rows, &opts);
     assert!(out.contains("session.color"), "{out}");
     assert!(out.contains("session.inner.deep"), "{out}");
     assert!(out.contains("blue"), "{out}");
@@ -2545,7 +2573,7 @@ fn render_hostile(value: serde_json::Value, ascii: bool, no_color: bool) -> Stri
         ascii,
         depth: None,
     };
-    render_preset("human", &[row], &opts)
+    render_preset(&status_preset("human"), &[row], &opts)
 }
 
 #[test]
@@ -2644,7 +2672,11 @@ fn machine_presets_do_not_sanitize() {
     // bytes the provider actually produced.
     let mut row = wide_value_row();
     row.value = serde_json::json!("\x1b[31mred");
-    let json = render_preset("json", std::slice::from_ref(&row), &RenderOpts::default());
+    let json = render_preset(
+        &status_preset("json"),
+        std::slice::from_ref(&row),
+        &RenderOpts::default(),
+    );
     assert!(json.contains("\\u001b"), "JSON escapes it: {json}");
     assert!(!json.contains('\u{241b}'), "no pictures in json: {json}");
     let tsv = render_tsv(&[row]);
@@ -2685,7 +2717,7 @@ fn render_structured(no_color: bool) -> String {
         ascii: true,
         depth: Some(1), // keep the object whole so there is something to highlight
     };
-    render_preset("human", &[row], &opts)
+    render_preset(&status_preset("human"), &[row], &opts)
 }
 
 #[test]
@@ -2736,7 +2768,7 @@ fn scalar_values_are_not_highlighted() {
         ascii: true,
         depth: None,
     };
-    let out = render_preset("human", &[row], &opts);
+    let out = render_preset(&status_preset("human"), &[row], &opts);
     assert!(
         !out.contains("\x1b[35mtrue"),
         "a scalar string must not be tokenized: {out:?}"
@@ -2762,7 +2794,7 @@ fn a_template_rows_structured_value_opens_in_cyan() {
         ascii: true,
         depth: Some(1), // keep the object whole so there is something to highlight
     };
-    let out = render_preset("human", &[row], &opts);
+    let out = render_preset(&status_preset("human"), &[row], &opts);
     assert!(
         out.contains("\x1b[36m{"),
         "the JSON body must still be wrapped in cyan for a Template row: {out:?}"
@@ -2784,13 +2816,13 @@ fn highlighting_survives_a_truncated_value() {
         ascii: true,
         depth: Some(1),
     };
-    let out = render_preset("human", std::slice::from_ref(&row), &opts);
+    let out = render_preset(&status_preset("human"), std::slice::from_ref(&row), &opts);
     let visible = strip_sgr(&out);
     assert!(visible.contains("..."), "value should be cut: {visible}");
     // Highlighting a cut value must add escapes and nothing else: the visible
     // text has to match what the same render produces with colour off.
     let plain = render_preset(
-        "human",
+        &status_preset("human"),
         &[row],
         &RenderOpts {
             no_color: true,
@@ -2836,7 +2868,7 @@ fn three_flexible_columns_share_the_budget_by_priority() {
         ascii: true,
         depth: Some(1),
     };
-    let out = render_preset("human", &[row], &opts);
+    let out = render_preset(&status_preset("human"), &[row], &opts);
 
     for line in out.lines() {
         assert!(
@@ -2904,14 +2936,14 @@ fn human_renders_an_array_as_an_array_and_a_digit_keyed_object_as_an_object() {
     };
     let mut row = sample_lifecycle_row();
     row.value = serde_json::json!([["a", "b"], {"x": 1}, "c"]);
-    let out = render_preset("human", std::slice::from_ref(&row), &opts);
+    let out = render_preset(&status_preset("human"), std::slice::from_ref(&row), &opts);
     assert!(out.contains(r#"[["a","b"],{"x":1},"c"]"#), "{out}");
 
     // An object whose keys happen to be digits is an object: arrays are
     // values of their own, so nothing has to be guessed back into one.
     let mut digits = sample_lifecycle_row();
     digits.value = serde_json::json!({"0": "a", "1": "b"});
-    let out = render_preset("human", &[digits], &opts);
+    let out = render_preset(&status_preset("human"), &[digits], &opts);
     assert!(out.contains(r#"{"0":"a","1":"b"}"#), "{out}");
 }
 
@@ -2928,7 +2960,7 @@ fn human_stripes_alternate_data_rows_when_colour_on() {
     };
     const BG: &str = "\x1b[48;5;234m"; // dark-terminal stripe
     let out = temp_env::with_var("COLORFGBG", None::<&str>, || {
-        render_preset("human", &rows, &opts)
+        render_preset(&status_preset("human"), &rows, &opts)
     });
     let lines: Vec<&str> = out.lines().collect();
     // Header and first data row unstriped; second data row striped and
@@ -2958,7 +2990,7 @@ fn human_stripes_alternate_data_rows_when_colour_on() {
 
     // Colour off: no stripes anywhere.
     let plain = render_preset(
-        "human",
+        &status_preset("human"),
         &sample_rows(),
         &RenderOpts {
             is_tty: false,
@@ -2990,7 +3022,7 @@ fn stripe_polarity_follows_colorfgbg() {
 
     // bg 0 = dark terminal → dark stripe.
     let out = temp_env::with_var("COLORFGBG", Some("15;0"), || {
-        render_preset("human", &sample_rows(), &opts)
+        render_preset(&status_preset("human"), &sample_rows(), &opts)
     });
     assert!(
         out.contains(DARK) && !out.contains(LIGHT),
@@ -3000,7 +3032,7 @@ fn stripe_polarity_follows_colorfgbg() {
     // bg 15 = light terminal → light stripe. Also exercises the
     // "fg;default;bg" three-field form some terminals export.
     let out = temp_env::with_var("COLORFGBG", Some("0;default;15"), || {
-        render_preset("human", &sample_rows(), &opts)
+        render_preset(&status_preset("human"), &sample_rows(), &opts)
     });
     assert!(
         out.contains(LIGHT) && !out.contains(DARK),
@@ -3009,7 +3041,7 @@ fn stripe_polarity_follows_colorfgbg() {
 
     // Garbage falls back to dark.
     let out = temp_env::with_var("COLORFGBG", Some("nonsense"), || {
-        render_preset("human", &sample_rows(), &opts)
+        render_preset(&status_preset("human"), &sample_rows(), &opts)
     });
     assert!(out.contains(DARK), "unparsable COLORFGBG → dark stripe");
 }
@@ -3030,7 +3062,7 @@ fn modest_field_names_are_not_truncated_by_a_wide_value() {
         ascii: true,
         depth: Some(1),
     };
-    let out = render_preset("human", &[row], &opts);
+    let out = render_preset(&status_preset("human"), &[row], &opts);
     assert!(
         out.contains("api_status.components.0"),
         "modest field name must render untruncated: {out}"
@@ -3056,7 +3088,7 @@ fn tree_dims_a_shadowed_layer_when_colour_is_on() {
         no_color: false,
         ..RenderOpts::default()
     };
-    let out = render_tree("human", &rows, &children, &opts);
+    let out = render_tree(&status_preset("human"), &rows, &children, &opts);
     let hidden = out.lines().find(|l| l.contains("hidden")).expect(&out);
     let taken = out.lines().find(|l| l.contains("taken")).expect(&out);
     assert!(hidden.contains("\x1b[2m"), "{hidden:?}");
@@ -3088,11 +3120,18 @@ fn tree_does_not_repeat_the_row_as_its_own_layer() {
         ascii: true,
         ..RenderOpts::default()
     };
-    let out = render_tree("human", &[row], &[vec![itself]], &opts);
+    let out = render_tree(&status_preset("human"), &[row], &[vec![itself]], &opts);
     let body: Vec<&str> = out
         .lines()
         .skip(1)
         .filter(|l| !l.trim().is_empty())
         .collect();
     assert_eq!(body.len(), 1, "the row alone: {out}");
+}
+
+/// A `-f` value as `status` reads it.
+fn status_preset(value: &str) -> beachcomber::cli::output_format::Format {
+    beachcomber::cli::output_format::STATUS
+        .parse(value)
+        .unwrap()
 }

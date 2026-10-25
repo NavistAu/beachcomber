@@ -3,6 +3,7 @@
 //! Moved from `src/main.rs` in Task 2.3.
 
 use crate::cache::{CacheRow, RowKind};
+use crate::cli::output_format::{Format, Preset};
 use crate::cli::status_format::{
     ColorMode, RenderOpts, apply_filters, apply_sort, default_depth, flatten_rows, render_preset,
     render_tree, resolve_color, resolve_max_width, row_base, row_facet,
@@ -133,7 +134,7 @@ fn collect_leaves(
 
 /// The presets `--tree` draws: the two tables, and `json` (a `layers` array
 /// per row).
-const TREE_PRESETS: [&str; 3] = ["human", "table", "json"];
+const TREE_PRESETS: [Preset; 3] = [Preset::Human, Preset::Table, Preset::Json];
 
 /// The layers behind each row: `out[i]` for `rows[i]`, the stack a read of
 /// that leaf consults, in its order, or `None` for a facet row or a row whose
@@ -222,7 +223,7 @@ fn row_id(row: &CacheRow) -> (String, Option<String>, String, String) {
 #[allow(clippy::too_many_arguments)]
 pub fn run_status(
     config: &Config,
-    format: Option<&str>,
+    format: &Format,
     user_filters: &[String],
     all: bool,
     sort_col: &str,
@@ -233,9 +234,9 @@ pub fn run_status(
     depth: Option<usize>,
     tree: bool,
 ) -> ExitCode {
-    let preset = format.unwrap_or("human");
-    if tree && !TREE_PRESETS.contains(&preset) {
-        eprintln!("error: --tree works with the human, table and json formats, not {preset}");
+    if tree && !format.preset().is_some_and(|p| TREE_PRESETS.contains(&p)) {
+        let named = format.preset().map_or("a template", Preset::name);
+        eprintln!("error: --tree works with the human, table and json formats, not {named}");
         return ExitCode::from(2);
     }
     // A layer belongs to a leaf, so a tree destructures every value to its
@@ -310,7 +311,7 @@ pub fn run_status(
 
             // Destructure before filtering and sorting, so both operate on the
             // field names the user can actually see in the output.
-            let mut rows = flatten_rows(rows, opts.depth.unwrap_or_else(|| default_depth(preset)));
+            let mut rows = flatten_rows(rows, opts.depth.unwrap_or_else(|| default_depth(format)));
             // The layers behind each row decide which rows a read here takes;
             // the rest are marked shadowed, which the default filters hide.
             let stacks: Option<HashMap<_, _>> = match (std::env::current_dir(), client.connect()) {
@@ -345,9 +346,9 @@ pub fn run_status(
                         .iter()
                         .map(|row| stacks.get(&row_id(row)).cloned().unwrap_or_default())
                         .collect();
-                    render_tree(preset, &rows, &children, &opts)
+                    render_tree(format, &rows, &children, &opts)
                 }
-                _ => render_preset(preset, &rows, &opts),
+                _ => render_preset(format, &rows, &opts),
             };
             print!("{out}");
 
@@ -356,7 +357,7 @@ pub fn run_status(
             // degradation are observable via `comb status`. Human
             // preset only, and on stderr so machine formats stay
             // parseable.
-            if preset == "human"
+            if format == &Format::Preset(Preset::Human)
                 && let Ok(resp) = client.introspect("daemon", None)
                 && resp.ok
                 && let Some(data) = resp.data.as_ref()

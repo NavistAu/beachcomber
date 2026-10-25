@@ -13,6 +13,7 @@ mod cli_durations;
 mod cli_eval;
 mod cli_exec;
 mod cli_ffi_equivalence;
+mod cli_formats;
 mod cli_get_multikey_force;
 mod cli_get_path;
 mod cli_get_sh_escape;
