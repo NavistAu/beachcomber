@@ -377,7 +377,7 @@ fn render_subject(
             // the serde boundary rather than silently returning a wrong default.
             match serde_json::from_value::<DaemonIntrospect>(payload.clone()) {
                 Ok(d) => {
-                    let uptime_fmt = format_uptime(d.uptime_secs);
+                    let uptime_fmt = secs(d.uptime_secs);
                     let (vlines, vworst) = render_typed_verdicts(&d.verdicts);
                     worst = worst.max(vworst);
 
@@ -457,7 +457,7 @@ fn render_subject(
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
                     lines.push_str(&format!(
-                        "  [WARN] {source:<8} {name:<12} fields={fields_str:<30} {invalidation} — in backoff {elapsed}s (stage={stage})\n"
+                        "  [WARN] {source:<8} {name:<12} fields={fields_str:<30} {invalidation} — in backoff {} (stage={stage})\n", secs(elapsed)
                     ));
                     worst = worst.max(Outcome::Warning);
                 } else {
@@ -574,7 +574,8 @@ fn render_subject(
                         None => provider.to_string(),
                     };
                     lines.push_str(&format!(
-                        "  [WARN] {label}   stage={stage} elapsed={elapsed}s\n"
+                        "  [WARN] {label}   stage={stage} elapsed={}\n",
+                        secs(elapsed)
                     ));
                     worst = worst.max(Outcome::Warning);
                 }
@@ -636,12 +637,16 @@ fn render_subject(
                 let overdue = interval > 0 && last > interval * 2;
                 if overdue {
                     lines.push_str(&format!(
-                        "  [WARN] {label}   interval={interval}s  last={last}s ago  OVERDUE\n"
+                        "  [WARN] {label}   interval={}  last={} ago  OVERDUE\n",
+                        secs(interval),
+                        secs(last)
                     ));
                     worst = worst.max(Outcome::Warning);
                 } else {
                     lines.push_str(&format!(
-                        "  [PASS] {label}   interval={interval}s  last={last}s ago\n"
+                        "  [PASS] {label}   interval={}  last={} ago\n",
+                        secs(interval),
+                        secs(last)
                     ));
                 }
             }
@@ -698,7 +703,8 @@ fn render_subject(
                 .map(|s| s.get("count").and_then(|v| v.as_u64()).unwrap_or(0))
                 .sum();
             lines.push_str(&format!(
-                "Procs ({duration}s sample — {total} exec events)\n"
+                "Procs ({} sample — {total} exec events)\n",
+                secs(duration)
             ));
 
             for s in &samples {
@@ -820,16 +826,30 @@ fn render_typed_verdicts(verdicts: &[Verdict]) -> (String, Outcome) {
     (out, worst)
 }
 
-fn format_uptime(secs: u64) -> String {
-    if secs < 60 {
-        return format!("{secs}s");
+/// A count of seconds, as every duration comb shows reads.
+fn secs(n: u64) -> String {
+    libbeachcomber::render::duration(Duration::from_secs(n))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `check`'s own durations read as `status`'s do: `1h`, `1m30s`.
+    #[test]
+    fn a_duration_reads_as_status_writes_one() {
+        let payload = serde_json::json!({
+            "timers": [{"provider": "p", "interval_secs": 3600, "last_run_secs_ago": 90}],
+            "verdicts": [],
+        });
+        let (text, _) = render_subject("timers", &payload, &[]);
+        assert!(text.contains("interval=1h  last=1m30s ago"), "{text}");
+
+        let payload = serde_json::json!({
+            "lifecycle": [{"provider": "p", "stage": "decay", "elapsed_secs": 3720}],
+            "verdicts": [],
+        });
+        let (text, _) = render_subject("lifecycle", &payload, &[]);
+        assert!(text.contains("elapsed=1h2m"), "{text}");
     }
-    let minutes = secs / 60;
-    if minutes < 60 {
-        let s = secs % 60;
-        return format!("{minutes}m {s}s");
-    }
-    let hours = minutes / 60;
-    let m = minutes % 60;
-    format!("{hours}h {m}m")
 }

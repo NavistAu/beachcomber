@@ -53,7 +53,9 @@ A template rendered for a read runs its `exec()`, `lup()` and `read` in the dire
 
 ## Durations
 
-Every duration comb takes — `put --ttl`, `kill --timeout`, `check --connect-timeout`, `check procs --duration`, the `[daemon]` duration keys and the `poll`, `ttl`, `failback` and `budget` decorators — is written the same way: a whole number with an optional unit, `ms`, `s`, `m` or `h`, a bare number being seconds (`250ms`, `30s`, `2m`, `60`; in config a TOML integer is seconds too). Anything else is refused in the same words, before a daemon is started. What each one may be is its own: a ttl is whole seconds of at least `1s`, a poll interval at least `1s`, a `budget` at least `1ms`, a `--connect-timeout` of `0` is a single attempt.
+Every duration comb takes — `put --ttl`, `kill --timeout`, `check --connect-timeout`, `check procs --duration`, the `[daemon]` duration keys and the `poll`, `ttl`, `failback` and `budget` decorators — is written the same way: whole numbers each with a unit, `h`, `m`, `s` or `ms`, largest first, a bare number being seconds (`250ms`, `30s`, `1m30s`, `2h14m`, `60`; in config a TOML integer is seconds too). Every duration comb shows is written this way too, so it can be copied back. Anything else is refused in the same words, before a daemon is started. What each one may be is its own: a ttl is whole seconds of at least `1s`, a poll interval at least `1s`, a `budget` at least `1ms`, a `--connect-timeout` of `0` is a single attempt.
+
+Every duration comb shows — `status`'s AGE and POLL, `check`'s uptime, intervals and elapsed times, a timeout in an error message — reads one way: `14s`; `3m`, `1m18s`; `2h`, `2h14m`, the seconds dropped once there are hours; and `250ms` when under a minute and not whole seconds. The TTL column's poll-interval field (`60s×12`) stays whole seconds, to line its digits up.
 
 ## Exit codes
 

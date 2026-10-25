@@ -32,9 +32,7 @@ pub fn deep_merge_toml(base: &mut toml::Value, overlay: toml::Value) {
 /// The one duration grammar ([`libbeachcomber::duration`]): every flag,
 /// `[daemon]` key, decorator and keyword argument that takes a duration reads
 /// it, and every refusal states it.
-pub use libbeachcomber::duration::{
-    GRAMMAR as DURATION_GRAMMAR, display as display_duration, parse as parse_duration,
-};
+pub use libbeachcomber::duration::{GRAMMAR as DURATION_GRAMMAR, parse as parse_duration};
 
 /// [`parse_duration`] as clap's value parser: every duration flag takes the
 /// one grammar and refuses anything else in the same words.
@@ -515,7 +513,7 @@ impl Config {
     /// a configuration with no file behind it, the env file and plugin path.
     pub fn applied(&self) -> toml::Value {
         let text = |s: String| toml::Value::String(s);
-        let duration = |d: Duration| text(display_duration(d));
+        let duration = |d: Duration| text(libbeachcomber::render::duration(d));
         let d = &self.daemon;
         let mut daemon = toml::Table::new();
         let mut set = |key: &str, value: Option<toml::Value>| {

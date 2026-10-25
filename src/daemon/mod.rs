@@ -250,8 +250,9 @@ fn spawn_watchdog(
     let threshold = config.daemon().watchdog_threshold_duration()?;
 
     info!(
-        "Watchdog enabled: checking every {:?}, threshold {:?}",
-        check_interval, threshold
+        "Watchdog enabled: checking every {}, threshold {}",
+        libbeachcomber::render::duration(check_interval),
+        libbeachcomber::render::duration(threshold)
     );
 
     Some(tokio::spawn(async move {

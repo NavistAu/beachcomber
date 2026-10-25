@@ -1,16 +1,18 @@
 //! Durations: the one grammar every flag, setting, decorator and keyword
-//! argument that takes a duration reads, and the one way one is shown.
+//! argument that takes a duration reads. [`crate::render::duration`] is the
+//! one way one is shown, and this grammar reads everything it writes.
 //!
-//! A duration is a whole number with an optional unit, `ms`, `s`, `m` or `h`;
-//! a bare number is seconds (`"250ms"`, `"30s"`, `"2m"`, `"60"`). Zero is
-//! zero in every unit; a consumer that cannot take zero, or anything below a
-//! whole second, refuses it itself.
+//! A duration is one or more whole numbers each with a unit, `h`, `m`, `s` or
+//! `ms`, largest first and each unit at most once (`"250ms"`, `"30s"`,
+//! `"1m30s"`, `"2h14m"`); a bare number is seconds (`"60"`). Zero is zero in
+//! every unit; a consumer that cannot take zero, or anything below a whole
+//! second, refuses it itself.
 
 use std::time::Duration;
 
 /// The grammar, as every refusal states it.
-pub const GRAMMAR: &str = "a whole number with an optional unit, ms, s, m or h; a bare number \
-     is seconds (\"250ms\", \"30s\", \"2m\", \"60\")";
+pub const GRAMMAR: &str = "whole numbers each with a unit, h, m, s or ms, largest first; a bare \
+     number is seconds (\"250ms\", \"30s\", \"1m30s\", \"60\")";
 
 /// Parse a duration in the one grammar, or `None` for text that is not one
 /// (or overflows).
@@ -19,38 +21,35 @@ pub fn parse(s: &str) -> Option<Duration> {
     if s.is_empty() {
         return None;
     }
-    if let Some(stripped) = s.strip_suffix("ms") {
-        return stripped
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .map(Duration::from_millis);
+    if let Ok(secs) = s.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
     }
-    let (num_str, multiplier) = if let Some(stripped) = s.strip_suffix('s') {
-        (stripped, 1u64)
-    } else if let Some(stripped) = s.strip_suffix('m') {
-        (stripped, 60)
-    } else if let Some(stripped) = s.strip_suffix('h') {
-        (stripped, 3600)
-    } else {
-        (s, 1)
-    };
-    num_str
-        .trim()
-        .parse::<u64>()
-        .ok()
-        .and_then(|n| n.checked_mul(multiplier))
-        .map(Duration::from_secs)
-}
-
-/// A duration as a person writes one: whole seconds as `"5s"`, anything
-/// finer as `"250ms"`.
-pub fn display(d: Duration) -> String {
-    if d.subsec_nanos() == 0 {
-        format!("{}s", d.as_secs())
-    } else {
-        format!("{}ms", d.as_millis())
+    // Units largest first, each at most once.
+    const UNITS: [(&str, u64); 4] = [("h", 3_600_000), ("m", 60_000), ("s", 1_000), ("ms", 1)];
+    let mut rest = s;
+    let mut total_ms: u64 = 0;
+    let mut next_unit = 0;
+    while !rest.is_empty() {
+        let digits = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digits == 0 {
+            return None;
+        }
+        let n: u64 = rest[..digits].parse().ok()?;
+        rest = &rest[digits..];
+        // `ms` before `m`, so `250ms` is not read as minutes then `s`.
+        let (i, (unit, scale)) = UNITS
+            .iter()
+            .enumerate()
+            .skip(next_unit)
+            .filter(|(_, (u, _))| rest.starts_with(u))
+            .max_by_key(|(_, (u, _))| u.len())?;
+        rest = &rest[unit.len()..];
+        total_ms = total_ms.checked_add(n.checked_mul(*scale)?)?;
+        next_unit = i + 1;
     }
+    Some(Duration::from_millis(total_ms))
 }
 
 /// The duration a template value holds: a string in the one grammar, or a
@@ -84,7 +83,19 @@ mod tests {
         assert_eq!(parse("1h"), Some(Duration::from_secs(3600)));
         assert_eq!(parse("60"), Some(Duration::from_secs(60)));
         assert_eq!(parse("0ms"), Some(Duration::ZERO));
-        for bad in ["", "x", "1m30s", "-1s", "1.5s", "18446744073709551615m"] {
+        assert_eq!(parse("1m30s"), Some(Duration::from_secs(90)));
+        assert_eq!(parse("2h14m"), Some(Duration::from_secs(8040)));
+        assert_eq!(parse("1s500ms"), Some(Duration::from_millis(1500)));
+        for bad in [
+            "",
+            "x",
+            "-1s",
+            "1.5s",
+            "30s1m",
+            "1m1m",
+            "1m 30s",
+            "18446744073709551615m",
+        ] {
             assert_eq!(parse(bad), None, "{bad}");
         }
     }
@@ -101,9 +112,15 @@ mod tests {
     }
 
     #[test]
-    fn display_writes_what_parse_reads() {
-        for d in [Duration::from_secs(5), Duration::from_millis(250)] {
-            assert_eq!(parse(&display(d)), Some(d));
+    fn what_comb_shows_reads_back() {
+        for d in [
+            Duration::from_secs(5),
+            Duration::from_millis(250),
+            Duration::from_secs(90),
+            Duration::from_secs(3600),
+            Duration::from_secs(8040),
+        ] {
+            assert_eq!(parse(&crate::render::duration(d)), Some(d), "{d:?}");
         }
     }
 }

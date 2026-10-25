@@ -116,7 +116,7 @@ pub struct LifecycleSnapshot {
 pub fn timed_out(timeout: Duration) -> String {
     format!(
         "timed out after {}",
-        crate::config::display_duration(timeout)
+        libbeachcomber::render::duration(timeout)
     )
 }
 
@@ -1126,7 +1126,7 @@ impl Scheduler {
                     {
                         info!(
                             "Idle shutdown: no entries, idle for {}",
-                            crate::config::display_duration(idle)
+                            libbeachcomber::render::duration(idle)
                         );
                         break;
                     }

@@ -233,7 +233,7 @@ pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
         Outcome::Exited(status) => Err(failure_message(name, format!("{status}"), &stderr_buf)),
         Outcome::TimedOut => Err(failure_message(
             name,
-            format!("timed out after {}", crate::duration::display(req.timeout)),
+            format!("timed out after {}", crate::render::duration(req.timeout)),
             &stderr_buf,
         )),
         Outcome::Capped => Err(failure_message(

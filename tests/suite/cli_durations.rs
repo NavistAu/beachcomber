@@ -1,6 +1,6 @@
 //! One duration grammar on every flag that takes one: `put --ttl`,
 //! `kill --timeout`, `check --connect-timeout` and `check procs --duration`
-//! each take a whole number with an optional unit (`ms`, `s`, `m`, `h`), a bare
+//! each take whole numbers each with a unit (`h`, `m`, `s`, `ms`), largest first, a bare
 //! number being seconds, and refuse anything else in the same words — before a
 //! daemon is started.
 
@@ -8,7 +8,7 @@ use crate::common::daemon::isolate;
 use std::process::Command;
 
 /// The sentence every refused duration carries.
-const GRAMMAR: &str = "a whole number with an optional unit";
+const GRAMMAR: &str = "whole numbers each with a unit";
 
 /// A `comb` with a throwaway `$HOME`, config and socket, and no daemon.
 fn comb(tmp: &tempfile::TempDir) -> Command {

@@ -48,7 +48,7 @@ pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> Outcome {
         "daemon",
         format_args!(
             "did not exit within {}; send SIGKILL if needed: kill -9 {pid}",
-            crate::config::display_duration(timeout)
+            libbeachcomber::render::duration(timeout)
         ),
     );
     Outcome::Error

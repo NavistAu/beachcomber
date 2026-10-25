@@ -25,8 +25,32 @@
 //! - **Newlines.** A value printed for embedding — text of a scalar — has no
 //!   trailing newline. Every document — json, sh, csv, tsv, and text of a
 //!   container or of several keys — ends each line in one.
+//!
+//! A duration shown to a person — `status`'s AGE and POLL, `check`'s
+//! uptimes and intervals, a timeout in an error — reads one way too
+//! ([`duration`]).
 
 use serde_json::Value;
+use std::time::Duration;
+
+/// A duration as comb shows one: `14s`; `3m`, `1m18s`; `2h`, `2h14m` (the
+/// seconds dropped once there are hours); and in milliseconds, `250ms`, when
+/// under a minute and not whole seconds.
+pub fn duration(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms < 60_000 && !ms.is_multiple_of(1000) {
+        return format!("{ms}ms");
+    }
+    let secs = d.as_secs();
+    let (hours, minutes, secs) = (secs / 3600, secs / 60 % 60, secs % 60);
+    match (hours, minutes, secs) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, 0) => format!("{m}m"),
+        (0, m, s) => format!("{m}m{s}s"),
+        (h, 0, _) => format!("{h}h"),
+        (h, m, _) => format!("{h}h{m}m"),
+    }
+}
 
 /// A value format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -377,6 +401,27 @@ fn collect_leaves<'v>(prefix: &str, value: &'v Value, out: &mut Vec<(String, &'v
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_duration_reads_as_comb_writes_one_everywhere() {
+        let ms = std::time::Duration::from_millis;
+        let s = std::time::Duration::from_secs;
+        for (d, text) in [
+            (s(0), "0s"),
+            (ms(250), "250ms"),
+            (ms(1500), "1500ms"),
+            (s(14), "14s"),
+            (s(60), "1m"),
+            (s(78), "1m18s"),
+            (ms(78_400), "1m18s"),
+            (s(3600), "1h"),
+            (s(8040), "2h14m"),
+            (s(8070), "2h14m"),
+            (s(90_061), "25h1m"),
+        ] {
+            assert_eq!(duration(d), text, "{d:?}");
+        }
+    }
 
     #[test]
     fn a_scalar_prints_bare_with_no_newline() {

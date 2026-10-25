@@ -1,7 +1,9 @@
 use crate::cache::CacheRow;
 use crate::cli::output_format::{Format, Preset};
 use crate::cli::style::Glyphs;
+use libbeachcomber::render;
 use libbeachcomber::render::shell_quote;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // ANSI colour helper (basic-16 palette, fg-only, no external crate)
@@ -89,11 +91,10 @@ pub const TTL_TOTAL_WIDTH_MAX: usize = 6;
 /// exceed `TTL_TOTAL_WIDTH_MAX` chars (`99h59m`).
 const TTL_TOTAL_MAX_SECS: u64 = 359_999;
 
-/// Clamp applied to the POLL column's raw-seconds value (next-poll or
-/// next-retry) before display. 6 digits covers ~11 days. The POLL column
-/// otherwise auto-sizes like any other plain column (via `nat_poll` in
-/// `render_table`) — this only bounds the displayed number, not a padded
-/// sub-field width.
+/// Clamp applied to the POLL column's seconds (next-poll or next-retry)
+/// before display, ~11 days (`277h46m`). The POLL column otherwise auto-sizes
+/// like any other plain column (via `nat_poll` in `render_table`) — this only
+/// bounds the displayed duration, not a padded sub-field width.
 const TTL_SECONDS_MAX: u64 = 999_999;
 
 /// Per-snapshot field widths for the TTL cell's internal `{P}s×{KK} (total)`
@@ -140,9 +141,9 @@ pub fn compute_ttl_widths(rows: &[CacheRow]) -> TtlWidths {
 
 /// Humanize a seconds count for the TTL cell's total-budget field, clamping
 /// to `TTL_TOTAL_MAX_SECS` first so the result never exceeds
-/// `TTL_TOTAL_WIDTH_MAX` chars. Shares `format_age`'s unit logic (s/m/h).
+/// `TTL_TOTAL_WIDTH_MAX` chars.
 fn format_duration_compact(secs: u64) -> String {
-    format_age((secs.min(TTL_TOTAL_MAX_SECS) as u128) * 1000)
+    render::duration(Duration::from_secs(secs.min(TTL_TOTAL_MAX_SECS)))
 }
 
 /// Seconds until a failing source's next retry attempt. When suppression is
@@ -262,8 +263,8 @@ pub fn format_ttl_cell(
     }
 }
 
-/// Format the POLL column: seconds until this source's next scheduled poll,
-/// or — for a failing source — seconds until its next retry attempt (POLL
+/// Format the POLL column: the time until this source's next scheduled poll,
+/// or — for a failing source — until its next retry attempt (POLL
 /// literally *is* the next attempt in that case). `-` for rows with no poll
 /// path: Once/Static/Transient/no-kind, and pure-Watch Lifecycle rows.
 pub fn format_poll_cell(
@@ -278,10 +279,10 @@ pub fn format_poll_cell(
     }
     if let Some(f) = failure {
         let retry = failure_retry_secs(f, next_poll_in_secs, now_unix_ms).min(TTL_SECONDS_MAX);
-        return format!("{retry}s");
+        return render::duration(Duration::from_secs(retry));
     }
     match next_poll_in_secs {
-        Some(n) => format!("{}s", n.min(TTL_SECONDS_MAX)),
+        Some(n) => render::duration(Duration::from_secs(n.min(TTL_SECONDS_MAX))),
         None => "-".to_string(),
     }
 }
@@ -2026,28 +2027,10 @@ pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, S
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Format an age in milliseconds as a human-readable duration.
-///
-/// Examples: `0s`, `14s`, `3m`, `2h14m`.
+/// An age in milliseconds, in whole seconds: `0s`, `14s`, `3m`, `2h14m`.
 pub fn format_age(age_ms: u128) -> String {
-    let secs = age_ms / 1000;
-    if secs < 60 {
-        return format!("{secs}s");
-    }
-    let minutes = secs / 60;
-    if minutes < 60 {
-        let s = secs % 60;
-        if s == 0 {
-            return format!("{minutes}m");
-        }
-        return format!("{minutes}m{s}s");
-    }
-    let hours = minutes / 60;
-    let m = minutes % 60;
-    if m == 0 {
-        return format!("{hours}h");
-    }
-    format!("{hours}h{m}m")
+    let secs = u64::try_from(age_ms / 1000).unwrap_or(u64::MAX);
+    render::duration(Duration::from_secs(secs))
 }
 
 /// Format an age with an optional poll-iteration suffix (`×N` / `xN` in ascii mode).
@@ -2558,6 +2541,23 @@ mod poll_cell_tests {
     }
 
     #[test]
+    fn a_long_wait_reads_as_every_duration_does() {
+        let lifecycle = RowKind::Lifecycle {
+            decay: 0,
+            depth: 4,
+            watches_files: true,
+        };
+        assert_eq!(
+            format_poll_cell(Some(&lifecycle), Some(3600), None, 0),
+            "1h"
+        );
+        assert_eq!(
+            format_poll_cell(Some(&lifecycle), Some(90), None, 0),
+            "1m30s"
+        );
+    }
+
+    #[test]
     fn watch_only_row_shows_dash() {
         // Lifecycle but no poll path (pure Watch): next_poll_in_secs is None.
         assert_eq!(
@@ -2650,7 +2650,7 @@ mod poll_cell_tests {
                 None,
                 0,
             ),
-            "999999s"
+            "277h46m"
         );
     }
 }

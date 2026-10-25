@@ -2533,7 +2533,7 @@ async fn handle_introspect_providers(
             let worst = relevant.iter().max_by_key(|b| b.elapsed_secs).unwrap();
             verdicts.push(serde_json::json!({
                 "level": "WARN",
-                "message": format!("{name} in backoff {}s (stage={})", worst.elapsed_secs, worst.stage)
+                "message": format!("{name} in backoff {} (stage={})", secs(worst.elapsed_secs), worst.stage)
             }));
         }
 
@@ -2644,7 +2644,7 @@ async fn handle_introspect_lifecycle(scheduler: Option<&SchedulerHandle>) -> Res
             };
             verdicts.push(serde_json::json!({
                 "level": "WARN",
-                "message": format!("{label} — stage={} elapsed={}s", entry.stage, entry.elapsed_secs),
+                "message": format!("{label} — stage={} elapsed={}", entry.stage, secs(entry.elapsed_secs)),
             }));
         }
     }
@@ -2713,7 +2713,7 @@ async fn handle_introspect_timers(scheduler: Option<&SchedulerHandle>) -> Respon
             };
             verdicts.push(serde_json::json!({
                 "level": "WARN",
-                "message": format!("{label} overdue (interval={}s, last={}s ago)", t.interval_secs, t.last_run_secs_ago),
+                "message": format!("{label} overdue (interval={}, last={} ago)", secs(t.interval_secs), secs(t.last_run_secs_ago)),
             }));
         }
     }
@@ -2813,6 +2813,11 @@ fn handle_introspect_procs(duration_secs: Option<u64>) -> Response {
         }
         Err(e) => Response::error(format!("procs snapshot failed: {e}")),
     }
+}
+
+/// A count of seconds, as every duration comb shows reads.
+fn secs(n: u64) -> String {
+    libbeachcomber::render::duration(std::time::Duration::from_secs(n))
 }
 
 #[cfg(test)]

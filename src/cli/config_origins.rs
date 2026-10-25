@@ -359,7 +359,7 @@ mod tests {
         let all = origins(&Config::load_from(&main));
         let threshold = find(&all, "daemon.watchdog_threshold");
         assert_eq!(threshold.file, None);
-        assert_eq!(threshold.value, toml::Value::String("90s".into()));
+        assert_eq!(threshold.value, toml::Value::String("1m30s".into()));
         assert_eq!(
             find(&all, "daemon.env_file").value,
             toml::Value::String(tmp.path().join("env").display().to_string())
