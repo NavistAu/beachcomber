@@ -15,13 +15,43 @@ pub fn launch(cmd: &mut Command) -> Child {
 /// Point `cmd` at a throwaway `$HOME`, `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME`
 /// (= `<home>/.local/state`) and `$BEACHCOMBER_SOCKET` (= `sock`), with
 /// `RUST_LOG=error`, so nothing it runs can read or write the developer's real
-/// config, defaults, log or daemon.
+/// config, defaults, log or daemon; and put [`stub_bin`] first on its `PATH`,
+/// so no template it renders runs the developer's own tools.
 pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path, sock: &Path) -> &'a mut Command {
+    let path = std::env::join_paths(std::iter::once(stub_bin().to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .expect("a PATH of directories");
     cmd.env("HOME", home)
         .env("XDG_CONFIG_HOME", xdg)
         .env("XDG_STATE_HOME", home.join(".local/state"))
         .env("BEACHCOMBER_SOCKET", sock)
         .env("RUST_LOG", "error")
+        .env("PATH", path)
+}
+
+/// The tools the shipped templates run through `exec()` — `kubectl` and
+/// `talosctl` — as stand-ins that exit 1, as a tool with nothing to report
+/// does: what [`isolate`] puts first on `PATH`. The developer's own would
+/// make every `comb status` call a cluster, and its answer depend on the
+/// machine. A test about those tools puts a `bin/` of its own first.
+pub fn stub_bin() -> &'static Path {
+    use std::os::unix::fs::PermissionsExt;
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("stub-bin");
+        std::fs::create_dir_all(&dir).expect("make the stub bin");
+        for tool in ["kubectl", "talosctl"] {
+            // Written beside and renamed over, so a test process that looks
+            // while another writes sees the whole script or none.
+            let part = dir.join(format!(".{tool}.{}", std::process::id()));
+            std::fs::write(&part, "#!/bin/sh\nexit 1\n").expect("write a stub");
+            std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755))
+                .expect("make a stub executable");
+            std::fs::rename(&part, dir.join(tool)).expect("put a stub in place");
+        }
+        dir
+    })
 }
 
 #[allow(dead_code)]
