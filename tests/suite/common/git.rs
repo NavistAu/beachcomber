@@ -20,20 +20,18 @@ pub struct GitRepoFixture {
 impl GitRepoFixture {
     /// Create a clean repository with one initial commit (`"init"`, adds `README.md`).
     ///
-    /// Git user identity is set to `test@test.com` / `Test` so commits work in
-    /// environments without a global git config.
+    /// Its commits are by `Test <test@test.com>` ([`git_cmd`] says so), so
+    /// they work in environments without a global git config. A machine with
+    /// no git fails the test that wanted one, loudly.
     pub fn new() -> Self {
-        if !has_git() {
-            panic!(
-                "git binary not found — call has_git() and skip the test before constructing GitRepoFixture"
-            );
-        }
+        assert!(
+            has_git(),
+            "git binary not found: this test needs git on $PATH"
+        );
         let dir = TempDir::new().expect("TempDir::new");
         let path = dir.path();
 
         git(path, &["init", "--initial-branch=main"]);
-        git(path, &["config", "user.email", "test@test.com"]);
-        git(path, &["config", "user.name", "Test"]);
         std::fs::write(path.join("README.md"), "# test").expect("write README.md");
         git(path, &["add", "."]);
         git(path, &["commit", "-m", "init"]);
@@ -141,14 +139,17 @@ impl GitRepoFixture {
 // Public helper
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if the `git` binary is available on `$PATH`.
-/// Tests that depend on real git should call this and skip cleanly if false.
+/// Returns `true` if the `git` binary is available on `$PATH`, asked once
+/// per test process.
 #[allow(dead_code)]
 pub fn has_git() -> bool {
-    std::process::Command::new("git")
-        .arg("--version")
-        .output()
-        .is_ok()
+    static HAS_GIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS_GIT.get_or_init(|| {
+        std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -168,17 +169,24 @@ const REPO_VARS: [&str; 6] = [
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 ];
 
-/// `git` in `dir` and nowhere else, with the host's configuration shut out. A
-/// `commit.gpgsign = true` in the developer's global config turns every
-/// fixture commit into a signing round-trip — ~100ms each, serialised through
-/// the agent when tests run in parallel — and `init.defaultBranch` would make
-/// the initial branch name depend on the machine.
+/// `git` in `dir` and nowhere else, with the host's configuration shut out and
+/// the test identity, `Test <test@test.com>`, as the author and committer of
+/// anything it commits. A `commit.gpgsign = true` in the developer's global
+/// config turns every fixture commit into a signing round-trip — ~100ms each,
+/// serialised through the agent when tests run in parallel — and
+/// `init.defaultBranch` would make the initial branch name depend on the
+/// machine. The identity rides in the environment rather than a `git config`
+/// per repository, which was two more processes for every fixture.
 pub fn git_cmd(dir: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     cmd.args(args)
         .current_dir(dir)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1");
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com");
     for var in REPO_VARS {
         cmd.env_remove(var);
     }
@@ -222,9 +230,6 @@ fn git_output(dir: &Path, args: &[&str]) -> String {
 /// names gets neither the fixture's identity nor its commit.
 #[test]
 fn a_fixture_ignores_an_inherited_git_dir() {
-    if !has_git() {
-        return;
-    }
     let decoy = TempDir::new().expect("TempDir::new");
     git(decoy.path(), &["init", "--initial-branch=main"]);
     // SAFETY: nextest runs each test in its own process, so nothing else
@@ -233,8 +238,6 @@ fn a_fixture_ignores_an_inherited_git_dir() {
 
     let fixture = GitRepoFixture::new();
 
-    let config = std::fs::read_to_string(decoy.path().join(".git/config")).unwrap();
-    assert!(!config.contains("test@test.com"), "{config}");
     assert!(
         !decoy.path().join(".git/refs/heads/main").exists(),
         "the decoy got the fixture's commit"

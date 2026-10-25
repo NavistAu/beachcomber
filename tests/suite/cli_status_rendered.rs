@@ -13,7 +13,7 @@
 //! puts it, with `SCANLINE_FOO=hi` in the shell.
 
 use crate::common::daemon::TestDaemon;
-use crate::common::git::{GitRepoFixture, has_git};
+use crate::common::git::GitRepoFixture;
 use crate::common::poll::poll_until;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -359,10 +359,6 @@ fn a_template_put_at_another_path_is_not_rendered_here() {
 /// marked `shadowed` in json.
 #[test]
 fn a_cached_field_with_a_template_over_it_is_shadowed_by_it() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let d = TestDaemon::spawn();
     let repo = GitRepoFixture::new();
     let cwd = repo.path().to_path_buf();

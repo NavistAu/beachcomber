@@ -4,7 +4,7 @@
 //! get of a node returns that part of the tree: an object node answers a tree
 //! shaped like its value, with the leaf answer at each leaf.
 
-use crate::common::git::{GitRepoFixture, has_git};
+use crate::common::git::GitRepoFixture;
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::Value;
@@ -94,9 +94,6 @@ async fn serve_on(
 
 #[tokio::test]
 async fn the_cache_facet_of_a_source_leaf_names_the_source_and_its_schedule() {
-    if !has_git() {
-        return;
-    }
     let (_tmp, mut s, _cache, handle, _sock) = serve().await;
     let repo = GitRepoFixture::new();
     let p = repo.path_str();
@@ -125,9 +122,6 @@ async fn the_cache_facet_of_a_source_leaf_names_the_source_and_its_schedule() {
 /// Source, and the `:cache` facet of its leaves shows the new `poll`.
 #[tokio::test]
 async fn a_retuned_builtin_shows_its_new_poll_in_the_cache_facet() {
-    if !has_git() {
-        return;
-    }
     let (tmp, sock, cache, _stock, watchers) = setup();
     let config = crate::common::registry::config_over_shipped(vec![(
         std::path::PathBuf::from("/t.toml"),
@@ -300,9 +294,6 @@ async fn a_put_to_a_derived_cache_key_is_refused() {
 
 #[tokio::test]
 async fn a_decay_prototype_put_is_accepted_and_reported() {
-    if !has_git() {
-        return;
-    }
     let (_tmp, mut s, _cache, handle, _sock) = serve().await;
     let repo = GitRepoFixture::new();
     let p = repo.path_str();
@@ -376,9 +367,6 @@ async fn the_cache_age_of_a_record_grows_with_the_clock() {
 
 #[tokio::test]
 async fn a_decay_prototype_put_at_a_directory_applies_from_there_down() {
-    if !has_git() {
-        return;
-    }
     let (_tmp, mut s, _cache, handle, _sock) = serve().await;
     let proj = GitRepoFixture::new();
     let other = GitRepoFixture::new();

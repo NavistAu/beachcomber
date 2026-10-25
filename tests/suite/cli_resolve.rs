@@ -8,7 +8,7 @@
 //! Outcomes pinned: 1, 2, 3, 4, 4a, 8, 20, 22, 23 of the design's §12.
 
 use crate::common::daemon::{TestDaemon, isolate};
-use crate::common::git::{GitRepoFixture, has_git};
+use crate::common::git::GitRepoFixture;
 use crate::common::socket::IsolatedSocket;
 use std::path::{Path, PathBuf};
 
@@ -160,10 +160,6 @@ fn an_address_past_a_template_indexes_a_rendered_array() {
 
 #[test]
 fn a_template_at_a_cached_fields_path_wins_and_the_raw_template_stays_readable() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let d = TestDaemon::spawn();
     let repo = GitRepoFixture::new();
     let cwd = repo.path().to_path_buf();
@@ -181,10 +177,6 @@ fn a_template_at_a_cached_fields_path_wins_and_the_raw_template_stays_readable()
 /// all `git:cache` has.
 #[test]
 fn a_literal_comb_field_beside_a_lazy_comb_still_demands_only_its_own_source() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let d = TestDaemon::spawn();
     let repo = GitRepoFixture::new();
     let cwd = repo.path().to_path_buf();

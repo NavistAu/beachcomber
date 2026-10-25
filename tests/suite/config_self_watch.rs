@@ -7,7 +7,7 @@
 //! under sandboxed hosts that can't use FSEvents / inotify, same convention
 //! as the watcher tests in `tests/`.
 
-use crate::common::git::{GitRepoFixture, has_git};
+use crate::common::git::GitRepoFixture;
 use crate::common::mtime::touch_future;
 use crate::common::poll::poll_until_async;
 use crate::seed::{Env, rewrite, send_recv};
@@ -551,9 +551,6 @@ async fn poll_of(live: &mut Live, key: &str, path: &str) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn editing_a_return_line_reloads_without_restart() {
-    if !has_git() {
-        return;
-    }
     let mut live = Live::start("", &[]).await;
     let repo = GitRepoFixture::new();
     let p = repo.path_str();
@@ -621,9 +618,6 @@ async fn removing_a_source_evicts_its_records() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_broken_providers_edit_changes_nothing() {
-    if !has_git() {
-        return;
-    }
     let mut live = Live::start("", &[]).await;
     let repo = GitRepoFixture::new();
     let p = repo.path_str();
@@ -730,9 +724,6 @@ async fn a_macro_edit_reseeds_in_place() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn disabling_a_provider_reloads_and_evicts_its_instances() {
-    if !has_git() {
-        return;
-    }
     let mut live = Live::start("", &[]).await;
     let repo = GitRepoFixture::new();
     let p = repo.path_str();

@@ -17,7 +17,6 @@
 //! surface and not the other.
 
 use crate::common::daemon::{TestDaemon, isolate};
-use crate::common::git::has_git;
 use libbeachcomber_ffi::envelope::bc_string_free;
 use libbeachcomber_ffi::{BcClient, bc_client_free, bc_client_new, bc_eval, bc_get, bc_hello};
 use serde_json::{Value, json};
@@ -58,45 +57,45 @@ enum Expect {
     Error,
 }
 
-/// `(key, expectation, needs git)`.
-const KEYS: &[(&str, Expect, bool)] = &[
-    ("scanline.widgets.foo", Expect::Hit(Some(r#""hi""#)), false),
-    ("scanline.widgets.bar", Expect::Hit(None), false),
-    ("scanline.widgets", Expect::Hit(None), false),
-    ("scanline", Expect::Hit(None), false),
-    ("scanline.lit", Expect::Hit(Some("1")), false),
-    ("scanline.stats.cpu", Expect::Hit(Some("40")), false),
-    ("scanline.list.1", Expect::Hit(Some(r#""b""#)), false),
-    ("scanline.stats.nope", Expect::Miss, false),
-    ("scanline.nope", Expect::Miss, false),
-    ("python.version", Expect::Hit(Some(r#""3.12""#)), false),
-    ("python", Expect::Hit(None), false),
-    ("hostname.name", Expect::Hit(None), false),
-    ("hostname", Expect::Hit(None), false),
+/// `(key, expectation)`.
+const KEYS: &[(&str, Expect)] = &[
+    ("scanline.widgets.foo", Expect::Hit(Some(r#""hi""#))),
+    ("scanline.widgets.bar", Expect::Hit(None)),
+    ("scanline.widgets", Expect::Hit(None)),
+    ("scanline", Expect::Hit(None)),
+    ("scanline.lit", Expect::Hit(Some("1"))),
+    ("scanline.stats.cpu", Expect::Hit(Some("40"))),
+    ("scanline.list.1", Expect::Hit(Some(r#""b""#))),
+    ("scanline.stats.nope", Expect::Miss),
+    ("scanline.nope", Expect::Miss),
+    ("python.version", Expect::Hit(Some(r#""3.12""#))),
+    ("python", Expect::Hit(None)),
+    ("hostname.name", Expect::Hit(None)),
+    ("hostname", Expect::Hit(None)),
     // The template wins over the cached branch; `main!` is a value the
     // repository itself can never hold, so a dropped template half shows.
-    ("git.branch", Expect::Hit(Some(r#""main!""#)), true),
-    ("git", Expect::Hit(None), true),
-    ("git.lines_added", Expect::Hit(Some("0")), true),
-    ("env.SCANLINE_FOO", Expect::Hit(Some(r#""hi""#)), false),
-    ("env.NOPE", Expect::Miss, false),
+    ("git.branch", Expect::Hit(Some(r#""main!""#))),
+    ("git", Expect::Hit(None)),
+    ("git.lines_added", Expect::Hit(Some("0"))),
+    ("env.SCANLINE_FOO", Expect::Hit(Some(r#""hi""#))),
+    ("env.NOPE", Expect::Miss),
     // Compared as a class only: both are a hit, the ages differ.
-    ("git:cache.branch", Expect::Hit(None), true),
-    ("a:b:c.x", Expect::Error, false),
-    ("nope.x", Expect::Miss, false),
-    ("err.a", Expect::Error, false),
-    ("err.bad", Expect::Error, false),
-    ("err", Expect::Error, false),
+    ("git:cache.branch", Expect::Hit(None)),
+    ("a:b:c.x", Expect::Error),
+    ("nope.x", Expect::Miss),
+    ("err.a", Expect::Error),
+    ("err.bad", Expect::Error),
+    ("err", Expect::Error),
 ];
 
 /// The scalar hits `comb eval '{{ key }}'` is checked against `bc_eval` for.
-const EVAL_KEYS: &[(&str, bool)] = &[
-    ("scanline.widgets.foo", false),
-    ("scanline.lit", false),
-    ("python.version", false),
-    ("hostname.name", false),
-    ("git.branch", true),
-    ("env.SCANLINE_FOO", false),
+const EVAL_KEYS: &[&str] = &[
+    "scanline.widgets.foo",
+    "scanline.lit",
+    "python.version",
+    "hostname.name",
+    "git.branch",
+    "env.SCANLINE_FOO",
 ];
 
 // ── the CLI surface ──────────────────────────────────────────────────────────
@@ -246,10 +245,6 @@ fn text_of(v: &Value) -> String {
 #[test]
 fn comb_get_json_and_bc_get_answer_identically() {
     let daemon = TestDaemon::spawn();
-    let git = has_git();
-    if !git {
-        eprintln!("skipping the git.* keys: git not available");
-    }
 
     // The cwd: a repository under the daemon's `$HOME`, so the `git.*` keys
     // have a work tree and the `put`s below land on a path the chain reaches.
@@ -257,14 +252,10 @@ fn comb_get_json_and_bc_get_answer_identically() {
     // repository is made here with its recipe instead.
     let cwd = daemon.home.join("ws").join("project");
     std::fs::create_dir_all(&cwd).unwrap();
-    if git {
-        crate::common::git::git(&cwd, &["init", "--initial-branch=main"]);
-        crate::common::git::git(&cwd, &["config", "user.email", "test@test.com"]);
-        crate::common::git::git(&cwd, &["config", "user.name", "Test"]);
-        std::fs::write(cwd.join("README.md"), "# test").unwrap();
-        crate::common::git::git(&cwd, &["add", "."]);
-        crate::common::git::git(&cwd, &["commit", "-m", "init"]);
-    }
+    crate::common::git::git(&cwd, &["init", "--initial-branch=main"]);
+    std::fs::write(cwd.join("README.md"), "# test").unwrap();
+    crate::common::git::git(&cwd, &["add", "."]);
+    crate::common::git::git(&cwd, &["commit", "-m", "init"]);
     let cwd = cwd.canonicalize().unwrap();
     let cwd_str = cwd.to_str().unwrap();
 
@@ -276,14 +267,12 @@ fn comb_get_json_and_bc_get_answer_identically() {
         r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":{"foo":"{{ env.SCANLINE_FOO }}","bar":"{{ comb.hostname.name | truncate(3) }}"},"stats":"{{ {\"cpu\": 40, \"mem\": 12} }}","list":"{{ [\"a\",\"b\"] }}"}"#,
     );
     cli_put(&daemon, &cwd, "scanline", r#"{"lit":1}"#);
-    if git {
-        cli_put(
-            &daemon,
-            &cwd,
-            "git:template.branch",
-            r#""{{ \"main\" ~ \"!\" }}""#,
-        );
-    }
+    cli_put(
+        &daemon,
+        &cwd,
+        "git:template.branch",
+        r#""{{ \"main\" ~ \"!\" }}""#,
+    );
     cli_put(
         &daemon,
         &cwd,
@@ -306,11 +295,7 @@ fn comb_get_json_and_bc_get_answer_identically() {
     let mut table: Vec<String> = Vec::new();
     let mut cli_hits: Vec<(&str, Value)> = Vec::new();
 
-    for (key, expect, needs_git) in KEYS {
-        if *needs_git && !git {
-            table.push(format!("{key:24} skipped (no git)"));
-            continue;
-        }
+    for (key, expect) in KEYS {
         let cli = cli_get(&daemon, &cwd, key);
         let ffi = ffi_get(client, key, cwd_str, &env);
         table.push(format!(
@@ -382,10 +367,7 @@ fn comb_get_json_and_bc_get_answer_identically() {
     // `comb eval '{{ key }}'` prints text; `bc_eval` returns the typed value.
     // The text must be the value rendered as `comb eval` renders a scalar,
     // and the value must be the one `comb get` gave for the same key.
-    for (key, needs_git) in EVAL_KEYS {
-        if *needs_git && !git {
-            continue;
-        }
+    for key in EVAL_KEYS {
         let src = format!("{{{{ {key} }}}}");
         let cli = cli_eval(&daemon, &cwd, &src);
         let ffi = ffi_eval(client, &src, cwd_str, &env);

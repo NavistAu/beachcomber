@@ -75,10 +75,6 @@ fn assert_miss(resp: &Response, context: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn source_name_as_key_segment_misses_but_the_field_still_hits() {
-    if !crate::common::git::has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -140,10 +136,6 @@ async fn source_name_as_key_segment_misses_but_the_field_still_hits() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn whole_provider_flattening_has_no_key_named_for_a_source() {
-    if !crate::common::git::has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -176,10 +168,6 @@ async fn whole_provider_flattening_has_no_key_named_for_a_source() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn watch_on_a_source_name_key_opens_and_misses() {
-    if !crate::common::git::has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();

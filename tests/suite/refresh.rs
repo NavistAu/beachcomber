@@ -95,10 +95,6 @@ async fn advance_10s() {
 
 #[tokio::test]
 async fn refreshing_a_field_re_executes_only_its_owning_source() {
-    if !crate::common::git::has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -142,10 +138,6 @@ async fn refreshing_a_field_re_executes_only_its_owning_source() {
 
 #[tokio::test]
 async fn refreshing_a_namespace_re_executes_every_source() {
-    if !crate::common::git::has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -268,10 +260,6 @@ async fn a_global_refresh_without_a_home_repository_has_nothing_to_refresh() {
 /// re-executed record is then the one whose age has fallen back to nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_scheduler_backed_refresh_runs_the_demanded_source_alone() {
-    if !crate::common::git::has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     // SAFETY: nextest gives every test its own process, so no other thread is
     // reading the environment concurrently. A real scheduler runs behind this
     // daemon and `$HOME` is the global path it polls, so it must not be the

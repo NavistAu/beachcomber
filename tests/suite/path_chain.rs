@@ -16,7 +16,7 @@
 //! `$HOME`, and `query::home_dir`'s `OnceLock` freezes whichever won the race.
 
 use crate::common::daemon::isolate;
-use crate::common::git::{GitRepoFixture, has_git};
+use crate::common::git::GitRepoFixture;
 use beachcomber::cache::Cache;
 use beachcomber::cache::Schedule;
 use beachcomber::config::Config;
@@ -1452,10 +1452,6 @@ async fn a_watch_below_home_receives_a_provider_write_above_home() {
 
 #[tokio::test]
 async fn a_nested_repo_never_reads_the_outer_repos_branch() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let f = Fixture::defaults();
     let outer = GitRepoFixture::new();
     let inner = outer.create_subdir("inner");
@@ -1485,10 +1481,6 @@ async fn a_nested_repo_never_reads_the_outer_repos_branch() {
 /// has a field filled in from the superproject's.
 #[tokio::test]
 async fn a_nested_repo_shows_only_its_own_values() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let f = Fixture::defaults();
     // The outer repo is on a branch forked from main, so it has a
     // `branch_parent`; the inner one is detached, so it has none.
@@ -1546,10 +1538,6 @@ async fn a_nested_repo_shows_only_its_own_values() {
 /// the key.
 #[tokio::test]
 async fn a_put_on_a_nearest_provider_is_found_up_the_path_chain() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let f = Fixture::defaults();
     let mut s = f.connect().await;
     let ws = f.path("ws");
@@ -1594,10 +1582,6 @@ async fn a_put_on_a_nearest_provider_is_found_up_the_path_chain() {
 /// is served by the `$HOME` repo: the walk found `$HOME`, which is an instance.
 #[tokio::test]
 async fn a_directory_without_a_repo_reads_the_home_repo() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let f = Fixture::defaults();
     crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
     let sub = f.path("ws/project/foo");
@@ -1660,10 +1644,6 @@ async fn a_directory_outside_home_and_any_repo_has_no_git_values() {
 /// there is never a second entry keyed `Some($HOME)`.
 #[tokio::test]
 async fn a_repository_at_home_is_served_from_the_global_entry() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let f = Fixture::defaults();
     crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
 
@@ -1720,10 +1700,6 @@ async fn a_repository_at_home_is_served_from_the_global_entry() {
 /// `$HOME` like any other directory.
 #[tokio::test]
 async fn a_bare_global_read_of_a_home_repository_is_not_a_miss() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let f = Fixture::defaults();
     crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
 
@@ -1747,10 +1723,6 @@ async fn a_bare_global_read_of_a_home_repository_is_not_a_miss() {
 /// it knows nothing about.
 #[tokio::test]
 async fn a_bare_global_read_without_a_home_repository_is_a_miss() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let f = Fixture::defaults();
     let mut s = f.connect().await;
 
@@ -1776,10 +1748,6 @@ async fn a_bare_global_read_without_a_home_repository_is_a_miss() {
 /// chain-resolved value.
 #[tokio::test]
 async fn watch_from_a_subdirectory_of_a_home_repository_reads_the_global_entry() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let f = Fixture::defaults();
     crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
 
@@ -1911,10 +1879,6 @@ async fn git_rows(stream: &mut UnixStream) -> Vec<(String, String)> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_at_the_global_entry_runs_the_home_repository() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_home_dir, _sock_dir, home, sock) = daemon_at_a_temp_home().await;
     crate::common::git::git(&home, &["init", "--initial-branch=homebr"]);
 
@@ -1947,10 +1911,6 @@ async fn refresh_at_the_global_entry_runs_the_home_repository() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn refresh_at_the_global_entry_writes_nothing_without_a_home_repository() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_home_dir, _sock_dir, _home, sock) = daemon_at_a_temp_home().await;
 
     // git is nearest and there is no repository at `$HOME`: no instance, so
@@ -2097,10 +2057,6 @@ async fn cli_resolves_a_relative_path_against_the_callers_cwd() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cli_carries_the_cwd_for_a_plain_get_from_a_subdirectory() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let f = Fixture::defaults();
     let repo = GitRepoFixture::new();
     let sub = repo.create_subdir("src/lib");

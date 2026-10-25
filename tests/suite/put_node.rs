@@ -9,7 +9,7 @@
 //!
 //! Raw-socket style, mirroring `tests/suite/store.rs` and `tests/suite/key_addressing.rs`.
 
-use crate::common::git::{GitRepoFixture, has_git};
+use crate::common::git::GitRepoFixture;
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -536,9 +536,6 @@ async fn a_null_put_at_a_node_removes_only_that_subtree() {
 /// namespace, and it reads back beside the provider's own records.
 #[tokio::test]
 async fn put_adds_a_static_record_to_a_provider_namespace() {
-    if !has_git() {
-        return;
-    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -619,9 +616,6 @@ async fn put_adds_a_static_record_to_a_provider_namespace() {
 /// not ownership. The Source's value is still there beneath it.
 #[tokio::test]
 async fn a_put_over_a_source_field_layers_over_it() {
-    if !has_git() {
-        return;
-    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -670,9 +664,6 @@ async fn a_put_over_a_source_field_layers_over_it() {
 /// is nearer and wins.
 #[tokio::test]
 async fn a_nearer_source_beats_a_global_put() {
-    if !has_git() {
-        return;
-    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();

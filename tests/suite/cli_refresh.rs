@@ -10,7 +10,7 @@
 //! what it answers.
 
 use crate::common::daemon::{TestDaemon, isolate};
-use crate::common::git::{GitRepoFixture, has_git};
+use crate::common::git::GitRepoFixture;
 use crate::common::poll::poll_until;
 use std::path::Path;
 use std::time::Duration;
@@ -112,10 +112,6 @@ fn refresh_global_is_accepted_for_a_global_source() {
 /// register no watch (canon `provider_source.md` invariant 4).
 #[test]
 fn refresh_of_a_field_re_executes_its_owning_source_alone() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let d = TestDaemon::spawn();
     let repo = GitRepoFixture::new();
     let cwd = repo.path();
@@ -168,10 +164,6 @@ fn refresh_of_a_field_re_executes_its_owning_source_alone() {
 /// rows the refresh writes name the fixture's path and nothing else.
 #[test]
 fn refresh_resolves_a_relative_path_against_the_callers_cwd() {
-    if !has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let d = TestDaemon::spawn();
     let repo = GitRepoFixture::new();
     let cwd = repo.path();

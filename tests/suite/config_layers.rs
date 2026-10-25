@@ -1219,9 +1219,6 @@ fn a_provider_with_no_sources_renders_its_result_at_a_read() {
 
 #[test]
 fn the_default_provider_lines_reproduce_todays_read() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     let setup = Setup::new(&[("config.toml", BASE)]);
     let d = setup.daemon();
     let repo = crate::common::git::GitRepoFixture::new();
@@ -1976,10 +1973,6 @@ fn a_later_layer_can_re_enable_a_provider() {
 
 #[test]
 fn a_built_in_provider_can_be_disabled() {
-    assert!(
-        crate::common::git::has_git(),
-        "this test needs git on $PATH"
-    );
     let repo = crate::common::git::GitRepoFixture::new();
     let inside = repo.path().canonicalize().unwrap();
     let in_repo = |p: &String| p.starts_with(inside.to_str().unwrap());

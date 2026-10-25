@@ -2,7 +2,7 @@
 //! `libbeachcomber::key::split_facet`: the facets are `template`, `macro`,
 //! `put`, `source` and `cache`, and no other.
 
-use crate::common::git::{GitRepoFixture, has_git};
+use crate::common::git::GitRepoFixture;
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -571,9 +571,6 @@ async fn warmed_repo_with_a_put_branch(stream: &mut UnixStream, repo: &GitRepoFi
 
 #[tokio::test]
 async fn the_put_facet_reads_only_the_put_layer() {
-    if !has_git() {
-        return;
-    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -615,9 +612,6 @@ async fn the_put_facet_reads_only_the_put_layer() {
 
 #[tokio::test]
 async fn the_source_facet_shows_a_value_a_put_hides() {
-    if !has_git() {
-        return;
-    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -647,9 +641,6 @@ async fn the_source_facet_shows_a_value_a_put_hides() {
 
 #[tokio::test]
 async fn the_source_facet_warms_like_the_plain_key() {
-    if !has_git() {
-        return;
-    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -747,9 +738,6 @@ async fn a_second_colon_after_a_layer_facet_is_an_invalid_facet_key() {
 
 #[tokio::test]
 async fn a_cold_watch_on_the_put_facet_warms_nothing() {
-    if !has_git() {
-        return;
-    }
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache.clone(), registry, None, watchers);
     let handle = server.spawn().unwrap();

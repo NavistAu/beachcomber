@@ -14,7 +14,7 @@
 //! Raw-socket style, mirroring `tests/suite/put_node.rs` and `tests/suite/facets.rs`.
 //! Templates are written with `put` here — seeding them from config is Task 6.
 
-use crate::common::git::{GitRepoFixture, has_git};
+use crate::common::git::GitRepoFixture;
 use beachcomber::cache::Cache;
 use beachcomber::cache::Schedule;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -213,9 +213,6 @@ async fn get_below_a_template_string_returns_it_with_the_leftover_rest() {
 /// its freshness, and no template half at all.
 #[tokio::test]
 async fn get_a_cached_field_without_a_template_is_unchanged() {
-    if !has_git() {
-        return;
-    }
     let repo = GitRepoFixture::new();
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -243,9 +240,6 @@ async fn get_a_cached_field_without_a_template_is_unchanged() {
 /// branch as `data` and the expression as `template`.
 #[tokio::test]
 async fn get_a_cached_field_with_a_template_returns_both_halves() {
-    if !has_git() {
-        return;
-    }
     let repo = GitRepoFixture::new();
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -541,9 +535,6 @@ async fn a_template_resolves_from_the_requested_directory_not_the_scope() {
 /// in a subdirectory belongs to that subdirectory, not to the whole repo.
 #[tokio::test]
 async fn a_template_below_the_repo_root_stays_below_it() {
-    if !has_git() {
-        return;
-    }
     let repo = GitRepoFixture::new();
     let sub = repo.create_subdir("sub");
     let sub = sub.to_str().unwrap();
@@ -710,9 +701,6 @@ async fn a_template_only_response_carries_no_freshness() {
 
 #[tokio::test]
 async fn the_cache_age_of_a_warm_field_is_a_number() {
-    if !has_git() {
-        return;
-    }
     let repo = GitRepoFixture::new();
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);

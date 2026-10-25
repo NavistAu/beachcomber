@@ -459,9 +459,6 @@ fn git_sibling_sources_have_disjoint_fields() {
 
 #[test]
 fn git_refs_stash_counted_in_linked_worktree() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     let repo = GitRepoFixture::new();
     let wt = repo.add_worktree("wt", "feature");
 
@@ -486,9 +483,6 @@ fn git_refs_stash_counted_in_linked_worktree() {
 
 #[test]
 fn git_refs_state_detected_in_linked_worktree() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     let repo = GitRepoFixture::new();
     let wt = repo.add_worktree("wt", "feature");
 
@@ -537,13 +531,10 @@ fn git_refs_state_detected_in_linked_worktree() {
 
 /// Build `main → devel (+3 lines) → feature (+2 lines)`, with `devel` and
 /// `feature` each created from an explicit start point so their reflogs record
-/// `branch: Created from <start>` rather than `HEAD`.
-///
-/// The initial branch is force-renamed to `main` because `git init`'s default
-/// branch name depends on the host's `init.defaultBranch`.
+/// `branch: Created from <start>` rather than `HEAD`. The fixture's repository
+/// starts on `main` (`git init --initial-branch=main`).
 fn lineage_fixture() -> GitRepoFixture {
     let repo = GitRepoFixture::new();
-    repo.git_in(repo.path(), &["branch", "-M", "main"]);
     repo.with_branch_from("devel", "main")
         .with_staged_file("f.txt", "a\nb\nc\n")
         .with_commit("devel work")
@@ -568,9 +559,6 @@ fn lineage_fields(path: &str) -> std::collections::HashMap<String, String> {
 
 #[test]
 fn git_lineage_parent_from_reflog_and_counts_match_known_diff() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     let repo = lineage_fixture();
     let got = lineage_fields(repo.path_str());
 
@@ -600,9 +588,6 @@ fn git_lineage_parent_from_reflog_and_counts_match_known_diff() {
 
 #[test]
 fn git_lineage_counts_removed_lines() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     let repo = lineage_fixture();
     // Delete two of f.txt's three lines and commit on feature.
     let repo = repo
@@ -620,9 +605,6 @@ fn git_lineage_counts_removed_lines() {
 
 #[test]
 fn git_lineage_missing_reflog_falls_back_to_default_branch() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     let repo = lineage_fixture();
     // Simulate a pruned/absent reflog for the checked-out branch.
     std::fs::remove_file(repo.path().join(".git/logs/refs/heads/feature"))
@@ -645,9 +627,6 @@ fn git_lineage_missing_reflog_falls_back_to_default_branch() {
 
 #[test]
 fn git_lineage_deleted_parent_falls_back_to_default_branch() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     let repo = lineage_fixture();
     // `devel` is still named by feature's reflog, but the branch is gone.
     repo.git_in(repo.path(), &["branch", "-D", "devel"]);
@@ -663,13 +642,9 @@ fn git_lineage_deleted_parent_falls_back_to_default_branch() {
 
 #[test]
 fn git_lineage_created_from_head_falls_back_to_default_branch() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     // `git checkout -b <new>` with no start point records `Created from HEAD`,
     // which names no branch.
     let repo = GitRepoFixture::new();
-    repo.git_in(repo.path(), &["branch", "-M", "main"]);
     let repo = repo
         .with_branch("solo")
         .with_staged_file("g.txt", "x\ny\n")
@@ -682,11 +657,7 @@ fn git_lineage_created_from_head_falls_back_to_default_branch() {
 
 #[test]
 fn git_lineage_on_default_branch_without_remote_reports_zero() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     let repo = GitRepoFixture::new();
-    repo.git_in(repo.path(), &["branch", "-M", "main"]);
 
     let got = lineage_fields(repo.path_str());
     // No origin/HEAD, so the default branch resolves to the local `main` — which
@@ -706,11 +677,7 @@ fn git_lineage_on_default_branch_without_remote_reports_zero() {
 
 #[test]
 fn git_lineage_default_branch_from_origin_head_measures_unpushed_work() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     let repo = GitRepoFixture::new();
-    repo.git_in(repo.path(), &["branch", "-M", "main"]);
     // Stand up what a clone would have: a remote-tracking ref plus the symref
     // `refs/remotes/origin/HEAD -> refs/remotes/origin/main`.
     repo.git_in(
@@ -745,9 +712,6 @@ fn git_lineage_default_branch_from_origin_head_measures_unpushed_work() {
 
 #[test]
 fn git_lineage_detached_head_emits_nothing() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     let repo = lineage_fixture().with_detached_head();
     let got = lineage_fields(repo.path_str());
     assert!(
@@ -775,9 +739,6 @@ fn git_lineage_requires_path() {
 
 #[test]
 fn git_lineage_parent_resolved_in_linked_worktree() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     let repo = lineage_fixture();
     // Branch reflogs live in the shared commondir, not <wt>/.git (a file), so a
     // linked worktree must resolve its parent through commondir.
@@ -839,9 +800,6 @@ fn git_head_source_is_read_always() {
 
 #[test]
 fn git_head_branch_correct_in_linked_worktree() {
-    if !crate::common::git::has_git() {
-        return;
-    }
     let repo = GitRepoFixture::new();
     // add_worktree creates a new branch "wt-branch" checked out in the linked worktree.
     let wt = repo.add_worktree("my-wt", "wt-branch");

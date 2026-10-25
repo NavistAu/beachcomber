@@ -87,10 +87,6 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
 /// Path context set via set_context reaches the correct cache entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn path_context_resolves_git_branch() {
-    if !crate::common::git::has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
     let mut session = session_for(sock);
 
@@ -127,10 +123,6 @@ async fn a_sessions_directory_reaches_put_as_well_as_get() {
 /// Global providers (hostname) work regardless of path context.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn global_provider_ignores_path_context() {
-    if !crate::common::git::has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_sock_tmp, sock, _repo_tmp, _repo_path) = setup_server_with_git_repo().await;
     let mut session = session_for(sock);
 
@@ -144,10 +136,6 @@ async fn global_provider_ignores_path_context() {
 /// Querying multiple keys in one session shares the same path context.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multiple_keys_share_path_context() {
-    if !crate::common::git::has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
     let mut session = session_for(sock);
 
@@ -163,10 +151,6 @@ async fn multiple_keys_share_path_context() {
 /// Without set_context, a path-scoped key is still queried (may return not-found).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn no_context_path_scoped_query_returns_response() {
-    if !crate::common::git::has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_sock_tmp, sock, _repo_tmp, _repo_path) = setup_server_with_git_repo().await;
     // Use get() without set_context — server receives no path.
     let resp = fetch(&sock, "git.branch", None);
@@ -178,10 +162,6 @@ async fn no_context_path_scoped_query_returns_response() {
 /// Passing explicit path to get() (not via set_context) also works.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explicit_path_in_get_resolves_correctly() {
-    if !crate::common::git::has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
     // Pass path directly to get() rather than using set_context.
     let resp = fetch(&sock, "git.branch", Some(&repo_path))
@@ -194,10 +174,6 @@ async fn explicit_path_in_get_resolves_correctly() {
 /// the repo root, hitting the same cache entry seeded at the root.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subdir_query_resolves_to_repo_root() {
-    if !crate::common::git::has_git() {
-        eprintln!("skipping: git not available");
-        return;
-    }
     let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
 
     // Create a subdir inside the repo and query git.branch from there.
