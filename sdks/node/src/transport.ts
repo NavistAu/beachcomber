@@ -67,6 +67,7 @@ export interface Transport {
     ttl: string | undefined,
     path: string | undefined,
   ): Promise<Envelope>;
+  sessionRefresh(session: SessionHandle, key: string, path: string | undefined): Promise<Envelope>;
   sessionSetContext(session: SessionHandle, path: string): Promise<Envelope>;
 
   openWatch(

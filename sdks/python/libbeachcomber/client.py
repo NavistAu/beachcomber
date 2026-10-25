@@ -496,12 +496,11 @@ class Client:
 class Session:
     """Persistent connection to the beachcomber daemon.
 
-    Wraps a native ``BcSession`` handle for ``get``/``put``/``set_context``
-    — the only ops the ABI exposes at session granularity. ``refresh``,
-    ``status``, ``hello`` and ``introspect`` have no session-level ABI
-    equivalent, so they delegate to the owning :class:`Client` on a fresh
-    one-shot native connection; they are kept here for API compatibility,
-    not because they reuse this session's socket.
+    Wraps a native ``BcSession`` handle for ``get``/``put``/``refresh``
+    and ``set_context``, which reuse its socket and its directory.
+    ``status``, ``hello`` and ``introspect`` take no path and have no
+    session-level ABI equivalent, so they delegate to the owning
+    :class:`Client` on a fresh one-shot native connection.
 
     Create via :meth:`Client.session` rather than directly.
     """
@@ -525,7 +524,9 @@ class Session:
         self.close()
 
     def set_context(self, path: str) -> None:
-        """Set the default working-directory path for this connection.
+        """Set this session's directory: every later ``get``, ``put`` and
+        ``refresh`` that names no path addresses it. The session keeps it
+        and sends it with each request.
 
         Raises:
             CombError: subclass matching the failure kind (e.g.
@@ -586,10 +587,17 @@ class Session:
         )
 
     def refresh(self, key: str, path: Optional[str] = None) -> None:
-        """Trigger recomputation. No session-level ABI equivalent exists;
-        runs on a fresh one-shot native connection via the owning client.
+        """Trigger recomputation at ``path``, else at this session's directory.
+
+        Raises:
+            CombError: subclass matching the failure kind.
         """
-        self._client.refresh(key, path)
+        self._lib.call(
+            "bc_session_refresh",
+            self._ptr,
+            key.encode(),
+            path.encode() if path is not None else None,
+        )
 
     def status(self) -> list[CacheRow]:
         """Return cache rows. No session-level ABI equivalent exists; runs

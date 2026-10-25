@@ -31,7 +31,7 @@ graph TB
 
 **Providers are never re-executed on every query.** A git status is computed once when `.git` changes, then served from cache to every reader — whether that's one prompt or a hundred tmux panes. The filesystem watcher is registered once for all concurrent readers.
 
-**Connection context** means consumers can set a working directory once on connect. `comb g git.branch` without an explicit path uses the connection's context directory, making prompt integration natural.
+**The directory you stand in is the default.** `comb g git.branch` without an explicit path addresses the current working directory, and an SDK session can set its directory once and send it with every request, making prompt integration natural.
 
 **Provider/Source/Field model:** each provider (e.g., `git`) declares one or more sources (e.g., `refs`, `diff`, `status`), each with its own invalidation strategy and lifecycle. A field belongs to exactly one source. Lifecycle state is tracked per source instance at `(provider, path, source)`, so sibling sources decay independently.
 

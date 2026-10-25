@@ -21,9 +21,6 @@ pub enum Request {
         #[serde(default)]
         path: Option<String>,
     },
-    Context {
-        path: String,
-    },
     Status,
     Put {
         key: String,

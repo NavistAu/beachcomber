@@ -427,7 +427,7 @@ async fn records_merge_across_the_chain() {
 /// A `context` op sets the connection's path — the SDKs' bc_eval/bc_resolve
 /// path. It reaches the chain exactly as an explicit `--path` does.
 #[tokio::test]
-async fn global_put_is_visible_through_a_connection_context() {
+async fn global_put_is_visible_from_a_directory_below_it() {
     let (tmp, sock, cache, registry, watchers) = setup();
     let (a, _b) = scopes(&tmp);
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
@@ -441,10 +441,11 @@ async fn global_put_is_visible_through_a_connection_context() {
     )
     .await;
 
-    let resp = send_recv(&mut stream, &format!(r#"{{"op":"context","path":"{a}"}}"#)).await;
-    assert!(resp.ok, "context should succeed: {:?}", resp.error);
-
-    let resp = send_recv(&mut stream, r#"{"op":"get","key":"myapp.v"}"#).await;
+    let resp = send_recv(
+        &mut stream,
+        &format!(r#"{{"op":"get","key":"myapp.v","path":"{a}"}}"#),
+    )
+    .await;
     assert!(resp.ok, "get should succeed: {:?}", resp.error);
     assert_eq!(resp.data.unwrap(), "global-val");
 

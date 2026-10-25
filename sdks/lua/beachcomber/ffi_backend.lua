@@ -204,6 +204,11 @@ function Session:put(key, data, ttl, path)
   return plain(decode(self._C, ptr))
 end
 
+function Session:refresh(key, path)
+  local ptr = self._C.bc_session_refresh(self._s, key, path)
+  return plain(decode(self._C, ptr))
+end
+
 function Session:set_context(path)
   local ptr = self._C.bc_session_set_context(self._s, path)
   return plain(decode(self._C, ptr))

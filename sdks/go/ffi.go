@@ -33,7 +33,8 @@ var requiredSymbolNames = []string{
 	"bc_client_new", "bc_client_free",
 	"bc_get", "bc_put", "bc_refresh", "bc_status", "bc_introspect", "bc_hello",
 	"bc_resolve", "bc_eval",
-	"bc_session_open", "bc_session_close", "bc_session_get", "bc_session_put", "bc_session_set_context",
+	"bc_session_open", "bc_session_close", "bc_session_get", "bc_session_put", "bc_session_refresh",
+	"bc_session_set_context",
 	"bc_watch_open", "bc_watch_next", "bc_watch_cancel", "bc_watch_free",
 	"bc_string_free",
 }
@@ -46,13 +47,13 @@ type nativeLib struct {
 	path    string
 	version string
 
-	bcClientNew, bcClientFree                                  uintptr
-	bcGet, bcPut, bcRefresh, bcStatus, bcIntrospect uintptr
-	bcHello, bcResolve, bcEval                                 uintptr
-	bcSessionOpen, bcSessionClose, bcSessionGet                uintptr
-	bcSessionPut, bcSessionSetContext                          uintptr
-	bcWatchOpen, bcWatchNext, bcWatchCancel, bcWatchFree       uintptr
-	bcStringFree                                               uintptr
+	bcClientNew, bcClientFree                            uintptr
+	bcGet, bcPut, bcRefresh, bcStatus, bcIntrospect      uintptr
+	bcHello, bcResolve, bcEval                           uintptr
+	bcSessionOpen, bcSessionClose, bcSessionGet          uintptr
+	bcSessionPut, bcSessionRefresh, bcSessionSetContext  uintptr
+	bcWatchOpen, bcWatchNext, bcWatchCancel, bcWatchFree uintptr
+	bcStringFree                                         uintptr
 }
 
 var (
@@ -140,8 +141,8 @@ func loadNativeLib() (*nativeLib, error) {
 		"bc_hello": &l.bcHello, "bc_resolve": &l.bcResolve, "bc_eval": &l.bcEval,
 		"bc_session_open": &l.bcSessionOpen, "bc_session_close": &l.bcSessionClose,
 		"bc_session_get": &l.bcSessionGet, "bc_session_put": &l.bcSessionPut,
-		"bc_session_set_context": &l.bcSessionSetContext,
-		"bc_watch_open":          &l.bcWatchOpen, "bc_watch_next": &l.bcWatchNext,
+		"bc_session_refresh": &l.bcSessionRefresh, "bc_session_set_context": &l.bcSessionSetContext,
+		"bc_watch_open": &l.bcWatchOpen, "bc_watch_next": &l.bcWatchNext,
 		"bc_watch_cancel": &l.bcWatchCancel, "bc_watch_free": &l.bcWatchFree,
 		"bc_string_free": &l.bcStringFree,
 	}

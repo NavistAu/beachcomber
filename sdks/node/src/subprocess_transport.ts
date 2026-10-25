@@ -350,10 +350,11 @@ export function createSubprocessTransport(): Transport {
     },
     async sessionPut(session, key, jsonData, ttl, path_) {
       const s = session as SubprocessSessionHandle;
-      // No contextPath fallback: the daemon's put op never consults
-      // connection context (only get/refresh do), and the FFI tier passes
-      // the caller's path through untouched. An omitted path means global.
-      return cliPut(s.client, key, jsonData, ttl, path_);
+      return cliPut(s.client, key, jsonData, ttl, path_ ?? s.contextPath);
+    },
+    async sessionRefresh(session, key, path_) {
+      const s = session as SubprocessSessionHandle;
+      return cliRefresh(s.client, key, path_ ?? s.contextPath);
     },
     async sessionSetContext(session, path_) {
       (session as SubprocessSessionHandle).contextPath = path_;

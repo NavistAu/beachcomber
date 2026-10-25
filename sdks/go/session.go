@@ -19,12 +19,9 @@ import (
 //	if err != nil { … }
 //	defer sess.Close()
 type Session struct {
-	// client backs Refresh/Hello/Introspect/Status: the ABI exposes only
-	// bc_session_get/put/set_context on a session's persistent connection
-	// (libbeachcomber-ffi/include/beachcomber.h), so those four fall back
-	// to a fresh connection via the parent Client, exactly as if called
-	// directly on it. Results are identical; only the "reuses this
-	// session's connection" performance property doesn't hold for them.
+	// client backs Hello/Introspect/Status, which take no path and have no
+	// session-level ABI equivalent: they fall back to a fresh connection via
+	// the parent Client, exactly as if called directly on it.
 	client *Client
 	lib    *nativeLib
 	handle uintptr // BcSession*
@@ -48,15 +45,19 @@ func (s *Session) GetWithFlags(key, path string, force, wait bool) (*Result, err
 	return resultFromGetData(data)
 }
 
-// Refresh forces the daemon to recompute the given provider/key. See the
-// Session doc comment: this uses a fresh connection, not this session's.
+// Refresh forces the daemon to recompute the given provider/key at path, or
+// at the session's directory (SetContext) when path is "".
 func (s *Session) Refresh(key string, path string) error {
-	return s.client.Refresh(key, path)
+	keyBuf, pathBuf := cBytes(key), optBytes(path)
+	_, err := s.lib.call(s.lib.bcSessionRefresh, s.handle, ptrOf(keyBuf), ptrOf(pathBuf))
+	runtime.KeepAlive(keyBuf)
+	runtime.KeepAlive(pathBuf)
+	return err
 }
 
-// SetContext sends a "context" message, which sets the default path for all
-// subsequent queries on this connection. This avoids repeating the path in
-// every Get call.
+// SetContext sets this session's directory: every later Get, Put and Refresh
+// that passes path "" addresses it. The session keeps it and sends it with
+// each request.
 func (s *Session) SetContext(path string) error {
 	pathBuf := cBytes(path)
 	_, err := s.lib.call(s.lib.bcSessionSetContext, s.handle, ptrOf(pathBuf))

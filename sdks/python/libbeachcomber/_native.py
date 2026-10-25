@@ -65,6 +65,10 @@ _SYMBOLS: dict = {
         [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
         ctypes.c_void_p,
     ),
+    "bc_session_refresh": (
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p],
+        ctypes.c_void_p,
+    ),
     "bc_session_set_context": ([ctypes.c_void_p, ctypes.c_char_p], ctypes.c_void_p),
     "bc_watch_open": (
         [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],

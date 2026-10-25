@@ -321,13 +321,11 @@ export class Session {
   }
 
   /**
-   * Trigger recomputation of a provider. There is no session-scoped
-   * `bc_session_refresh` in the ABI; this issues a one-shot client-level
-   * refresh against the same daemon connection this client was constructed
-   * with.
+   * Trigger recomputation of a provider at `path`, or at the session's
+   * directory (`setContext`) when `path` is omitted.
    */
   async refresh(key: string, path?: string): Promise<void> {
-    unwrap(await this.tp.refresh(this.clientHandle, key, path));
+    unwrap(await this.tp.sessionRefresh(this.handle, key, path));
   }
 
   /** Store data in the cache under the given key. */

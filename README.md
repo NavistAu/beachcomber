@@ -261,7 +261,7 @@ graph TB
 
 **Providers are never re-executed on every query.** A git status is computed once when `.git` changes, then served from cache to every reader — whether that's one prompt or a hundred tmux panes. The filesystem watcher is registered once for all concurrent readers.
 
-**The directory you are standing in is the default.** `comb g git.branch` with no path addresses the current working directory; `comb g --global git.branch` addresses the global entry, which is `$HOME`. An SDK session that holds one connection open can set its directory once with the `context` op and leave the path off every request after that.
+**The directory you are standing in is the default.** `comb g git.branch` with no path addresses the current working directory; `comb g --global git.branch` addresses the global entry, which is `$HOME`. An SDK session can set its directory once (`set_context`) and leave the path off every request after that; the session sends it with each request.
 
 **Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand, keeping the provider warm automatically. Resource usage scales with actual query patterns. Entries enter a decay sequence after queries stop — staying warm for a grace period (30s default) in case a new shell opens, then progressively slowing and eventually evicting.
 
@@ -1713,7 +1713,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "put", "key": "myapp", "data": {"status": "ok"}, "ttl": "30s", "path": "/project"}
 {"op": "put", "key": "myapp", "data": null}
 {"op": "watch", "key": "git.branch", "path": "/home/user/project"}
-{"op": "context", "path": "/home/user/project"}
 {"op": "status"}
 {"op": "introspect", "subject": "daemon"}
 {"op": "introspect", "subject": "providers"}
@@ -1730,9 +1729,9 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `hello`, `get`, `refresh`, `put`, `watch`, `context`, `status`, `introspect` |
+| `op` | string | Operation: `hello`, `get`, `refresh`, `put`, `watch`, `status`, `introspect`, `layers` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
-| `path` | string | Absolute path for providers with a root (git, mise, …). Optional if connection context is set. |
+| `path` | string | Absolute directory the request addresses; omitted, the global entry. A path that is not absolute is refused. |
 | `force` | bool | (`get` only) Trigger immediate recomputation before returning. |
 | `wait` | bool | (`get` only) Block until a fresh value is available. |
 
@@ -1809,20 +1808,6 @@ The `comb` CLI renders the JSON response into additional output formats on the c
 **`fmt`:** A minijinja template rendered over the value — `comb g.f '{{ branch }} ({{ dirty }})' git .` → `main (true)`.
 
 Use format suffixes on the CLI (`.s` sh, `.c` csv, `.C` CSV, `.t` tsv, `.T` TSV, `.f` fmt) or the `-f` flag.
-
-### Connection Context Example
-
-```python
-# Set context once, then query multiple values without repeating the path
-sock.send(b'{"op":"context","path":"/home/user/myproject"}\n')
-response = read_line(sock)  # {"ok": true}
-
-sock.send(b'{"op":"get","key":"git.branch"}\n')
-branch = read_line(sock)    # {"ok": true, "data": "main", ...}
-
-sock.send(b'{"op":"get","key":"git.dirty"}\n')
-dirty = read_line(sock)     # {"ok": true, "data": false, ...}
-```
 
 ---
 

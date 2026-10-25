@@ -128,9 +128,8 @@ const dirty  = await session.get('git.dirty');
 session.close();
 ```
 
-Note: the daemon's `put` op does not consult connection context (only
-`get`/`refresh` do) — pass an explicit `path` to `session.put()` regardless
-of `setContext`.
+`setContext` sets the session's directory: every later `get`, `put` and
+`refresh` that names no path addresses it.
 
 #### `client.watch(key, { cwd, env? })`
 

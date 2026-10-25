@@ -1,5 +1,5 @@
 //! Sessions: `bc_session_open`, `bc_session_get`, `bc_session_put`,
-//! `bc_session_set_context`, `bc_session_close`. Task 3.6 of
+//! `bc_session_refresh`, `bc_session_set_context`, `bc_session_close`. Task 3.6 of
 //! docs/superpowers/plans/2026-08-15-client-abi-and-sdk-refactor.md.
 //!
 //! Runs against a real in-process daemon spawned by `tests/suite/common/daemon.rs`.
@@ -14,7 +14,8 @@ use std::sync::{Barrier, Mutex};
 
 use beachcomber::envelope::bc_string_free;
 use beachcomber::{
-    BcClient, bc_client_free, bc_client_new, bc_session_close, bc_session_get, bc_session_open,
+    BcClient, bc_client_free, bc_client_new, bc_get, bc_session_close, bc_session_get,
+    bc_session_open, bc_session_put, bc_session_refresh, bc_session_set_context,
 };
 
 fn client_for(sock: &Path) -> *mut BcClient {
@@ -167,5 +168,53 @@ fn bc_client_is_send_and_sync_under_concurrent_ops_from_several_threads() {
     assert!(failures.is_empty(), "unexpected failures: {failures:?}");
     assert_eq!(ok_count.load(Ordering::SeqCst), threads * iters);
 
+    unsafe { bc_client_free(client) };
+}
+
+/// A session's directory is its own: `bc_session_set_context` reaches the
+/// daemon with every NULL-path `bc_session_put`, `bc_session_get` and
+/// `bc_session_refresh`, and a put lands there, not at the global entry.
+#[test]
+fn a_sessions_directory_is_sent_with_put_get_and_refresh() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let session = unsafe { bc_session_open(client) };
+    let dir = cs("/tmp");
+
+    let v = read(unsafe { bc_session_set_context(session, dir.as_ptr()) });
+    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+    let key = cs("sessctx");
+    let data = cs(r#"{"v":"here"}"#);
+    let v = read(unsafe {
+        bc_session_put(
+            session,
+            key.as_ptr(),
+            data.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+        )
+    });
+    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+
+    let leaf = cs("sessctx.v");
+    let v = read(unsafe { bc_session_get(session, leaf.as_ptr(), ptr::null(), 0) });
+    assert_eq!(v["data"]["data"], serde_json::json!("here"), "{v}");
+    let v = read(unsafe { bc_get(client, leaf.as_ptr(), dir.as_ptr(), 0) });
+    assert_eq!(v["data"]["data"], serde_json::json!("here"), "at /tmp: {v}");
+    let v = read(unsafe { bc_get(client, leaf.as_ptr(), ptr::null(), 0) });
+    assert!(v["data"]["data"].is_null(), "not global: {v}");
+
+    // A refresh of a namespace with no Sources is the daemon's refusal: it
+    // reached the daemon through the session.
+    let v = read(unsafe { bc_session_refresh(session, key.as_ptr(), ptr::null()) });
+    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("nothing to refresh")),
+        "{v}"
+    );
+
+    unsafe { bc_session_close(session) };
     unsafe { bc_client_free(client) };
 }

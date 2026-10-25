@@ -23,7 +23,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "get", "key": "git", "path": "/home/user/project"}
 {"op": "get", "key": "battery"}
 {"op": "refresh", "key": "git", "path": "/home/user/project"}
-{"op": "context", "path": "/home/user/project"}
 {"op": "status"}
 {"op": "introspect", "subject": "daemon"}
 ```
@@ -32,9 +31,9 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `hello`, `get`, `refresh`, `context`, `status`, `introspect`, `put`, `watch` |
+| `op` | string | Operation: `hello`, `get`, `refresh`, `status`, `introspect`, `put`, `watch`, `layers` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
-| `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
+| `path` | string | Absolute directory the request addresses; omitted, the global entry. A path that is not absolute is refused. |
 
 ## Response Format
 
@@ -132,17 +131,3 @@ The first line is emitted immediately with the current cached value (or a null d
 ## Text and Shell Rendering
 
 The wire protocol is JSON-only — there is no `format` field. Text (`-t`) and shell (`-s`) rendering are performed client-side by the CLI and SDKs after receiving the JSON response.
-
-## Connection Context Example
-
-```python
-# Set context once, then query multiple values without repeating the path
-sock.send(b'{"op":"context","path":"/home/user/myproject"}\n')
-response = read_line(sock)  # {"ok": true}
-
-sock.send(b'{"op":"get","key":"git.branch"}\n')
-branch = read_line(sock)    # {"ok": true, "data": "main", ...}
-
-sock.send(b'{"op":"get","key":"git.dirty"}\n')
-dirty = read_line(sock)     # {"ok": true, "data": false, ...}
-```

@@ -734,8 +734,33 @@ pub unsafe extern "C" fn bc_session_put(
     })
 }
 
-/// Sets connection context on this session so subsequent queries don't need
-/// an explicit `path`.
+/// Re-execute the Sources `key` demands, as [`bc_refresh`], at `path` — or,
+/// when `path` is NULL, at this session's directory ([`bc_session_set_context`]).
+///
+/// # Safety
+/// `session` must be a valid pointer from [`bc_session_open`]; `key` must be
+/// non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bc_session_refresh(
+    session: *mut BcSession,
+    key: *const c_char,
+    path: *const c_char,
+) -> *mut c_char {
+    call_ffi(move || {
+        let key = unsafe { required_str(key, "key") }?;
+        let path = unsafe { optional_str(path) }?;
+        let mut guard = unsafe { session_lock(session) }?;
+        let sess = guard.as_mut().map_err(|e| e.clone())?;
+        sess.refresh(key, path)?;
+        Ok(serde_json::Value::Null)
+    })
+}
+
+/// Set this session's directory: every later `bc_session_get`,
+/// `bc_session_put` and `bc_session_refresh` that passes a NULL `path`
+/// addresses it. The session keeps it and sends it with each request; it is
+/// read as every path is (`~` is home, a relative path is against the
+/// process's working directory).
 ///
 /// # Safety
 /// `session` must be a valid pointer from [`bc_session_open`]; `path` must

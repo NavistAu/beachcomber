@@ -163,9 +163,9 @@ async fn send_recv_line(
     serde_json::from_str(&line).unwrap()
 }
 
-/// Test 1: Setting context makes subsequent gets use the context path for path-scoped providers.
+/// Test 1: a request's path addresses the rooted instance for that directory.
 #[tokio::test]
-async fn context_sets_default_path_for_scoped_providers() {
+async fn a_request_path_addresses_its_instance() {
     let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();
 
     // Pre-populate cache for two different paths
@@ -202,20 +202,10 @@ async fn context_sets_default_path_for_scoped_providers() {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
-    // Set context to /project/a
     let resp = send_recv_line(
         &mut writer,
         &mut reader,
-        r#"{"op":"context","path":"/project/a"}"#,
-    )
-    .await;
-    assert!(resp.ok, "context op should succeed");
-
-    // Get without explicit path — should use /project/a from context
-    let resp = send_recv_line(
-        &mut writer,
-        &mut reader,
-        r#"{"op":"get","key":"pathprov.active_path"}"#,
+        r#"{"op":"get","key":"pathprov.active_path","path":"/project/a"}"#,
     )
     .await;
     assert!(resp.ok);
@@ -224,73 +214,32 @@ async fn context_sets_default_path_for_scoped_providers() {
     handle.abort();
 }
 
-/// Test 2: An explicit path on a request overrides the context path.
+/// Test 2: the wire has no `context` op. A connection holds no directory of
+/// its own: every request carries its path, and an SDK session that keeps a
+/// directory sends it with each request.
 #[tokio::test]
-async fn explicit_path_overrides_context() {
+async fn the_wire_has_no_context_op() {
     let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();
-
-    let mut fields_a = HashMap::new();
-    fields_a.insert(
-        "active_path".to_string(),
-        Value::String("/project/a".to_string()),
-    );
-    cache.put_source(
-        "pathprov",
-        Some("/project/a"),
-        "main",
-        fields_a,
-        Schedule::poll(60, 1),
-    );
-
-    let mut fields_b = HashMap::new();
-    fields_b.insert(
-        "active_path".to_string(),
-        Value::String("/project/b".to_string()),
-    );
-    cache.put_source(
-        "pathprov",
-        Some("/project/b"),
-        "main",
-        fields_b,
-        Schedule::poll(60, 1),
-    );
-
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
-
-    // Set context to /project/a
     let resp = send_recv_line(
         &mut writer,
         &mut reader,
         r#"{"op":"context","path":"/project/a"}"#,
     )
     .await;
-    assert!(resp.ok);
-
-    // Get with explicit path /project/b — should override context
-    let resp = send_recv_line(
-        &mut writer,
-        &mut reader,
-        r#"{"op":"get","key":"pathprov.active_path","path":"/project/b"}"#,
-    )
-    .await;
-    assert!(resp.ok);
-    assert_eq!(
-        resp.data.unwrap(),
-        serde_json::json!("/project/b"),
-        "Explicit path should override context"
-    );
+    assert!(!resp.ok, "context is not an op: {resp:?}");
 
     handle.abort();
 }
 
-/// Test 3: Global providers ignore the context path.
+/// Test 3: a global provider answers a read at any path from its one instance.
 #[tokio::test]
-async fn global_provider_ignores_context() {
+async fn global_provider_answers_any_path() {
     let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();
 
     // Pre-populate global provider in cache (no path)
@@ -308,27 +257,17 @@ async fn global_provider_ignores_context() {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
 
-    // Set context to some path
     let resp = send_recv_line(
         &mut writer,
         &mut reader,
-        r#"{"op":"context","path":"/some/dir"}"#,
-    )
-    .await;
-    assert!(resp.ok);
-
-    // Get from global provider — context should be ignored, should find cache entry at None path
-    let resp = send_recv_line(
-        &mut writer,
-        &mut reader,
-        r#"{"op":"get","key":"globalprov.info"}"#,
+        r#"{"op":"get","key":"globalprov.info","path":"/some/dir"}"#,
     )
     .await;
     assert!(resp.ok, "Global provider should still be found");
     assert_eq!(
         resp.data.unwrap(),
         serde_json::json!("global-value"),
-        "Global provider should ignore context and return global cache entry"
+        "Global provider should answer from its global cache entry"
     );
 
     handle.abort();

@@ -96,7 +96,7 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
 - `BcClient` (`bc_get`/`bc_put`/`bc_refresh`/`bc_status`/
   `bc_introspect`/`bc_hello`/`bc_resolve`/`bc_eval`/`bc_watch_open`)
   reconnects per call. `BcSession` (`bc_session_open` on a `BcClient`, then
-  `bc_session_get`/`put`/`set_context`) holds one persistent connection —
+  `bc_session_get`/`put`/`refresh`/`set_context`) holds one persistent connection, and a directory of its own that a NULL `path` sends —
   use it when a `set_context` needs to be visible to later calls.
 - `bc_get` / `bc_session_get` take a `flags` bitmask: `BC_GET_FORCE`,
   `BC_GET_WAIT`. Any other bit set is rejected (`kind: "bad_flags"`). The

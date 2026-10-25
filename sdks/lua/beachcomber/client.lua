@@ -266,10 +266,10 @@ function Client:watch(key, opts)
   return WatchStream.new(handle)
 end
 
---- Open an advanced Session: a persistent connection with true server-side
--- context (bc_session_*). Only meaningful over the ffi transport — most
--- callers want Client:set_context() instead, which works over either
--- transport by keeping the default path client-side.
+--- Open an advanced Session: a persistent connection that keeps a directory
+-- of its own (bc_session_*), sent with each get/put/refresh that names none.
+-- Only meaningful over the ffi transport — most callers want
+-- Client:set_context() instead, which works over either transport.
 -- @return session backend object, or nil, Error
 function Client:session()
   if not self._backend.session_open then

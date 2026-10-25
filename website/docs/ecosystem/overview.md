@@ -26,7 +26,7 @@ The Rust SDK ships as `libbeachcomber` on crates.io, matching the other language
 Shelling out to `comb g.` is fine for one-off queries from shell scripts, prompts, and status bars. For anything that queries more than a handful of keys per second, or needs to stream updates, use a language SDK:
 
 - **Persistent connections** — open a Unix socket once, reuse it for every query (avoids per-call socket setup).
-- **Connection context** — set a working directory once with `set_context`; subsequent path-scoped `get` calls don't need to repeat the path.
+- **Session directory** — set a working directory once with `set_context`; the session sends it with every later `get`, `put` and `refresh` that names no path.
 - **Typed results** — scalar/object dispatch in idiomatic types for each language.
 - **Lower latency** — skip `exec`/`fork` overhead; SDK `get` is ~15 µs vs ~34 µs for the CLI.
 

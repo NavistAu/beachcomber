@@ -16,9 +16,10 @@ line-delimited JSON. Each request is a single line starting with `{"op": ...}`.
 Each response is a single line with `{"ok": bool, ...}`. There is no framing
 beyond the newline delimiter.
 
-The daemon is stateless per connection except for:
-- A per-connection context path set via the `Context` op.
-- `Watch` streams, which hold the connection open until the client disconnects.
+The daemon is stateless per connection except for `Watch` streams, which hold
+the connection open until the client disconnects. A connection holds no
+directory of its own: every request carries its `path`, and an SDK session that
+keeps a directory sends it with each request.
 
 All other ops are stateless and can be sent on any connection in any order.
 
@@ -352,23 +353,6 @@ refresh — the config watcher does that.
 ```json
 {"ok": false, "error": "nothing to refresh: my.a has no sources"}
 ```
-
-### `Context`
-
-Set a default path for subsequent ops on the same connection.
-
-**Request:**
-```json
-{"op": "context", "path": "/some/dir"}
-```
-
-**Response:**
-```json
-{"ok": true}
-```
-
-Subsequent `Get` / `Refresh` calls without an explicit `path` field use
-this default. Stateless per connection — fresh connections have no context.
 
 ### `Put`
 

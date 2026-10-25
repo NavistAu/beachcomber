@@ -195,8 +195,6 @@ async fn handle_connection(
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 
-    let mut context_path: Option<String> = None;
-
     while reader.read_line(&mut line).await? > 0 {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -212,7 +210,6 @@ async fn handle_connection(
                 handle_watch(
                     key,
                     path,
-                    &context_path,
                     &cache,
                     &registry,
                     scheduler.as_ref(),
@@ -233,7 +230,6 @@ async fn handle_connection(
                     &cache,
                     &current,
                     scheduler.as_ref(),
-                    &mut context_path,
                     start_instant,
                     &requests_total,
                     &active_watches,
@@ -370,7 +366,6 @@ async fn all_instances(
 async fn handle_watch(
     key: String,
     path: Option<String>,
-    context_path: &Option<String>,
     cache: &Cache,
     handle: &RegistryHandle,
     scheduler: Option<&SchedulerHandle>,
@@ -378,7 +373,7 @@ async fn handle_watch(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) {
-    let requested = path.as_deref().or(context_path.as_deref());
+    let requested = path.as_deref();
     // A reload puts another registry in force; the watch's plan was made under
     // the one before it, so it is made again. Subscribed before the first plan
     // is made, so a reload during it is not missed.
@@ -1644,7 +1639,6 @@ async fn handle_request(
     cache: &Cache,
     registry: &Arc<ProviderRegistry>,
     scheduler: Option<&SchedulerHandle>,
-    context_path: &mut Option<String>,
     start_instant: Instant,
     requests_total: &AtomicU64,
     active_watches: &AtomicUsize,
@@ -1663,7 +1657,7 @@ async fn handle_request(
             // One source-aware plan drives the whole request: provider, resolved
             // path, parsed target, and the warming demand. Get and Watch both
             // build this so they share identical key semantics.
-            let requested = path.as_deref().or(context_path.as_deref());
+            let requested = path.as_deref();
             let plan = match QueryPlan::build(key, requested, registry) {
                 Ok(plan) => plan,
                 Err(msg) => return Response::error(msg),
@@ -1852,7 +1846,7 @@ async fn handle_request(
         Request::Refresh { key, path } => {
             // The same plan every other op builds, so the key is checked and
             // the path resolved exactly as for a `get`.
-            let requested = path.as_deref().or(context_path.as_deref());
+            let requested = path.as_deref();
             let plan = match QueryPlan::build(key, requested, registry) {
                 Ok(plan) => plan,
                 Err(msg) => return Response::error(msg),
@@ -1931,18 +1925,6 @@ async fn handle_request(
                     }
                 }
             }
-            Response {
-                ok: true,
-                data: None,
-                age_ms: None,
-                stale: None,
-                error: None,
-                template: None,
-                rest: None,
-            }
-        }
-        Request::Context { path } => {
-            *context_path = Some(path.clone());
             Response {
                 ok: true,
                 data: None,
@@ -2262,7 +2244,7 @@ async fn handle_request(
             }
         },
         Request::Layers { key, path } => {
-            let requested = path.as_deref().or(context_path.as_deref());
+            let requested = path.as_deref();
             let plan = match QueryPlan::build(key, requested, registry) {
                 Ok(plan) => plan,
                 Err(msg) => return Response::error(msg),

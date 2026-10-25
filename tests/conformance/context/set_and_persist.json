@@ -1,6 +1,6 @@
 {
   "name": "context_set_returns_ok",
-  "description": "Setting a connection context succeeds.",
+  "description": "Setting a session's directory succeeds; the session keeps it and sends it with each request that names no path.",
   "test": { "op": "context", "args": { "path": "/tmp" } },
   "expect": { "status": "ok" }
 }

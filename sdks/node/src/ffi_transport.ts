@@ -45,6 +45,7 @@ const OP_SYMBOLS = [
   'bc_session_close',
   'bc_session_get',
   'bc_session_put',
+  'bc_session_refresh',
   'bc_session_set_context',
   'bc_watch_open',
   'bc_watch_next',
@@ -124,6 +125,7 @@ function bindSymbols(lib: import('koffi').LibraryHandle, koffi: typeof import('k
     bc_session_close: ['void', [BcSession]],
     bc_session_get: [BcString, [BcSession, 'str', 'str', 'uint32']],
     bc_session_put: [BcString, [BcSession, 'str', 'str', 'str', 'str']],
+    bc_session_refresh: [BcString, [BcSession, 'str', 'str']],
     bc_session_set_context: [BcString, [BcSession, 'str']],
     bc_watch_open: [BcWatch, [BcClient, 'str', 'str', 'str']],
     bc_watch_next: [BcString, [BcWatch, 'int32']],
@@ -253,6 +255,11 @@ export function createFfiTransport(): Transport {
           nullIfUndefined(ttl),
           nullIfUndefined(path),
         ),
+      );
+    },
+    async sessionRefresh(session, key, path) {
+      return parseEnvelope(
+        await callAsync(fns.bc_session_refresh, session, key, nullIfUndefined(path)),
       );
     },
     async sessionSetContext(session, path) {

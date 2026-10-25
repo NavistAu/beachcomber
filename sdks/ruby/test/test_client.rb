@@ -195,8 +195,9 @@ class TestClient < Minitest::Test
     end
   end
 
+  # set_context is the session's own: nothing reaches the daemon for it,
+  # and the directory rides along on the next request that names none.
   def test_session_set_context
-    @server.enqueue('{"ok":true}') # context ack
     @server.enqueue('{"ok":true,"data":"main","age_ms":1,"stale":false}')
 
     @client.session do |s|
@@ -205,9 +206,10 @@ class TestClient < Minitest::Test
       assert r.hit?
     end
 
-    ctx_req = @server.requests.first
-    assert_equal 'context', ctx_req['op']
-    assert_equal '/repo',   ctx_req['path']
+    assert_equal 1, @server.requests.length
+    get_req = @server.requests.first
+    assert_equal 'get',   get_req['op']
+    assert_equal '/repo', get_req['path']
   end
 
   def test_session_multiple_requests_on_one_connection

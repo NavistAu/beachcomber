@@ -1148,6 +1148,9 @@ pub struct Session {
     /// after this session's first op. Checked once per connection, not
     /// per op.
     version_skew: Option<VersionSkew>,
+    /// The directory [`Session::set_context`] set, sent with every request
+    /// that names no path.
+    context: Option<String>,
 }
 
 impl Session {
@@ -1156,6 +1159,7 @@ impl Session {
             reader: BufReader::new(stream),
             skew_checked: false,
             version_skew: None,
+            context: None,
         }
     }
 
@@ -1194,7 +1198,8 @@ impl Session {
         force: bool,
         wait: bool,
     ) -> Result<CombResult, CombError> {
-        let line = self.send_recv_line(&get_request(key, path, force, wait)?)?;
+        let line =
+            self.send_recv_line(&get_request(key, self.path_or_context(path), force, wait)?)?;
         parse_response(&line, self.version_skew.as_ref())
     }
 
@@ -1207,7 +1212,8 @@ impl Session {
         force: bool,
         wait: bool,
     ) -> Result<resolve::Got, CombError> {
-        let line = self.send_recv_line(&get_request(key, path, force, wait)?)?;
+        let line =
+            self.send_recv_line(&get_request(key, self.path_or_context(path), force, wait)?)?;
         parse_node(&line, self.version_skew.as_ref())
     }
 
@@ -1267,17 +1273,19 @@ impl Session {
         })
     }
 
-    /// Set connection context so subsequent queries don't need explicit paths.
+    /// Set this session's directory: every later request that names no path
+    /// — `get`, `put`, `refresh`, `layers` alike — addresses it. Read as
+    /// every path is ([`path::normalise_here`]); kept by the session and sent
+    /// with each request, never set on the daemon's side of the connection.
     pub fn set_context(&mut self, path: &str) -> Result<(), CombError> {
-        let request = serde_json::json!({ "op": "context", "path": wire_path(Some(path))? });
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        check_ok(&line, self.version_skew.as_ref())?;
+        self.context = wire_path(Some(path))?;
         Ok(())
+    }
+
+    /// The path a request on this session carries: its own, else the
+    /// session's directory, else none (the global entry).
+    fn path_or_context<'a>(&'a self, path: Option<&'a str>) -> Option<&'a str> {
+        path.or(self.context.as_deref())
     }
 
     /// Store data at a key, replacing whatever is stored at that address.
@@ -1296,7 +1304,7 @@ impl Session {
         if let Some(t) = ttl {
             request["ttl"] = serde_json::json!(t);
         }
-        if let Some(p) = wire_path(path)? {
+        if let Some(p) = wire_path(self.path_or_context(path))? {
             request["path"] = serde_json::json!(p);
         }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
@@ -1312,7 +1320,7 @@ impl Session {
     /// Trigger recomputation.
     pub fn refresh(&mut self, key: &str, path: Option<&str>) -> Result<(), CombError> {
         let mut request = serde_json::json!({ "op": "refresh", "key": key });
-        if let Some(p) = wire_path(path)? {
+        if let Some(p) = wire_path(self.path_or_context(path))? {
             request["path"] = serde_json::json!(p);
         }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
@@ -1342,7 +1350,7 @@ impl Session {
         key: &str,
         path: Option<&str>,
     ) -> Result<Option<serde_json::Value>, CombError> {
-        let line = self.send_recv_line(&layers_request(key, path)?)?;
+        let line = self.send_recv_line(&layers_request(key, self.path_or_context(path))?)?;
         parse_layers(&line, self.version_skew.as_ref())
     }
 

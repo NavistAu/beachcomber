@@ -40,7 +40,8 @@ module Beachcomber
       bc_version bc_client_new bc_client_free bc_string_free
       bc_get bc_put bc_refresh bc_status bc_introspect bc_hello
       bc_resolve bc_eval
-      bc_session_open bc_session_close bc_session_get bc_session_put bc_session_set_context
+      bc_session_open bc_session_close bc_session_get bc_session_put bc_session_refresh
+      bc_session_set_context
       bc_watch_open bc_watch_next bc_watch_cancel bc_watch_free
     ].freeze
 
@@ -170,6 +171,7 @@ module Beachcomber
         bc_session_close: fnew('bc_session_close', [VOIDP], VOID),
         bc_session_get: fnew('bc_session_get', [VOIDP, VOIDP, VOIDP, INT], VOIDP),
         bc_session_put: fnew('bc_session_put', [VOIDP, VOIDP, VOIDP, VOIDP, VOIDP], VOIDP),
+        bc_session_refresh: fnew('bc_session_refresh', [VOIDP, VOIDP, VOIDP], VOIDP),
         bc_session_set_context: fnew('bc_session_set_context', [VOIDP, VOIDP], VOIDP),
         bc_watch_open: fnew('bc_watch_open', [VOIDP, VOIDP, VOIDP, VOIDP], VOIDP),
         bc_watch_next: fnew('bc_watch_next', [VOIDP, INT], VOIDP),

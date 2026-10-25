@@ -2,11 +2,11 @@ use crate::common::fetch::fetch;
 use beachcomber::cache::Cache;
 /// Integration tests for path context handling in `comb get`.
 ///
-/// These tests exercise the server-side path context (set via
-/// `libbeachcomber::Session::set_context`, the `context` op every SDK session
-/// uses) to verify that path-scoped queries work correctly — which is the
-/// server behaviour that the CLI disambiguation logic (split_keys_and_path)
-/// routes to.
+/// These tests exercise the directory a request addresses — explicit, or the
+/// one an SDK session keeps and sends with every request
+/// (`libbeachcomber::Session::set_context`) — to verify that path-scoped
+/// queries work correctly, which is the server behaviour the CLI
+/// disambiguation logic (split_keys_and_path) routes to.
 ///
 /// Unit tests for the disambiguation logic itself live in src/main.rs
 /// under `#[cfg(test)] mod path_disambiguation_tests`.
@@ -106,6 +106,30 @@ async fn path_context_resolves_git_branch() {
     let branch = hit(session.get("git.branch", None).unwrap(), "git.branch");
 
     assert_eq!(branch, "main");
+}
+
+/// A session's directory is sent with every request that names none — `put`
+/// and `refresh` as well as `get` — and an explicit path still wins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sessions_directory_reaches_put_as_well_as_get() {
+    let (_sock_tmp, sock, _repo_tmp, repo_path) = setup_server_with_git_repo().await;
+    let mut session = session_for(sock.clone());
+    session.set_context(&repo_path).unwrap();
+
+    session
+        .put("sessdir", serde_json::json!({"v": "here"}), None, None)
+        .unwrap();
+    assert_eq!(
+        hit(session.get("sessdir.v", None).unwrap(), "sessdir.v"),
+        "here"
+    );
+
+    let at_repo = fetch(&sock, "sessdir.v", Some(&repo_path))
+        .expect("an answer")
+        .expect("the put landed at the session's directory");
+    assert_eq!(at_repo.data.as_ref().unwrap(), "here");
+    let global = fetch(&sock, "sessdir.v", None).expect("an answer");
+    assert!(global.is_none(), "nothing was put globally: {global:?}");
 }
 
 /// Global providers (hostname) work regardless of path context.

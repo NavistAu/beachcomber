@@ -3,10 +3,10 @@
 //
 // a null `put` is exercised against a real in-process daemon (DaemonGuard):
 // asking it to put a key nested past ten segments is a genuine
-// rejection (`put key is nested too deeply`). `refresh`
-// and `set_context` have no such real rejection path today — the daemon
-// always answers `ok: true` for them — so those are exercised against a
-// one-shot fake responder that plays back a scripted `ok: false` line, the
+// rejection (`put key is nested too deeply`). `refresh` has no such real
+// rejection path today — the daemon always answers `ok: true` for it — so it
+// is exercised against a one-shot fake responder that plays back a scripted
+// `ok: false` line, the
 // same raw-`UnixListener` double already used in connect_retry.rs. Either
 // way, the point is the same: the client must surface the failure instead of
 // discarding the response body.
@@ -119,20 +119,18 @@ fn session_refresh_reports_daemon_rejection() {
     );
 }
 
+/// `set_context` is the session's own: it sends nothing, so a daemon that
+/// would refuse every request does not see it, and a path it cannot read is
+/// the caller's error.
 #[test]
-fn session_set_context_reports_daemon_rejection() {
+fn session_set_context_is_client_side() {
     let (_tmp, sock) = spawn_canned_responder(r#"{"ok":false,"error":"bad path"}"#);
     let client = client_for(&sock);
     let mut session = client.session().expect("session");
 
-    let result = session.set_context("/nonexistent");
-
-    assert!(
-        result.is_err(),
-        "set_context must surface a daemon-side rejection, got {result:?}"
-    );
-    assert!(
-        matches!(result, Err(CombError::ServerError(_))),
-        "expected ServerError, got {result:?}"
-    );
+    assert!(session.set_context("/nonexistent").is_ok());
+    assert!(matches!(
+        session.set_context("~bob/x"),
+        Err(CombError::ParseError(m)) if m.contains("~bob/x")
+    ));
 }

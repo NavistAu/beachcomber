@@ -99,7 +99,9 @@ module Beachcomber
   end
 
   # Session holds a persistent connection to the daemon, held open by the
-  # shared library, for {#get}/{#get_with_flags}/{#put}/{#set_context}.
+  # shared library, for {#get}/{#get_with_flags}/{#put}/{#refresh}, and a
+  # directory of its own ({#set_context}) that each of them sends when given
+  # no path.
   #
   # Obtain a Session via {Client#session}:
   #
@@ -108,11 +110,9 @@ module Beachcomber
   #     r = s.get('git.branch')
   #   end
   #
-  # {#refresh}, {#status}, {#hello} and {#introspect} are also available for
-  # API-compatibility with the pre-ABI client, but the C ABI provides no
-  # session-scoped equivalents for them (only get/put/set_context reuse the
-  # persistent connection — see Task 3.6 of the client-ABI plan); they route
-  # through the parent Client's connection instead, one-shot per call.
+  # {#status}, {#hello} and {#introspect} take no path and have no
+  # session-scoped equivalent in the C ABI; they route through the parent
+  # Client's connection instead, one-shot per call.
   #
   # The underlying handle is guarded by the library's own mutex: a
   # concurrent caller on the same session gets {Beachcomber::BusyError}
@@ -126,8 +126,9 @@ module Beachcomber
       @closed = false
     end
 
-    # Sets the default path for subsequent {#get}/{#get_with_flags} queries
-    # on this connection.
+    # Sets this session's directory: every later {#get}, {#get_with_flags},
+    # {#put} and {#refresh} that names no path addresses it. The session
+    # keeps it and sends it with each request.
     #
     # @param path [String]
     def set_context(path)
@@ -161,7 +162,7 @@ module Beachcomber
     # @param key [String]
     # @param path [String, nil]
     def refresh(key, path: nil)
-      Beachcomber::FFI.call!(:bc_refresh, @client_handle, key, path)
+      Beachcomber::FFI.call!(:bc_session_refresh, @handle, key, path)
       nil
     end
 

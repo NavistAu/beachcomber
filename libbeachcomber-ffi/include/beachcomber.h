@@ -271,8 +271,21 @@ char *bc_session_put(BcSession *session,
                      const char *path);
 
 /**
- * Sets connection context on this session so subsequent queries don't need
- * an explicit `path`.
+ * Re-execute the Sources `key` demands, as [`bc_refresh`], at `path` — or,
+ * when `path` is NULL, at this session's directory ([`bc_session_set_context`]).
+ *
+ * # Safety
+ * `session` must be a valid pointer from [`bc_session_open`]; `key` must be
+ * non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
+ */
+char *bc_session_refresh(BcSession *session, const char *key, const char *path);
+
+/**
+ * Set this session's directory: every later `bc_session_get`,
+ * `bc_session_put` and `bc_session_refresh` that passes a NULL `path`
+ * addresses it. The session keeps it and sends it with each request; it is
+ * read as every path is (`~` is home, a relative path is against the
+ * process's working directory).
  *
  * # Safety
  * `session` must be a valid pointer from [`bc_session_open`]; `path` must
