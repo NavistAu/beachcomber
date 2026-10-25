@@ -120,6 +120,7 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let asked = std::time::Instant::now();
     stream
         .write_all(b"{\"op\":\"get\",\"key\":\"hostname\",\"wait\":true}\n")
         .await
@@ -128,6 +129,7 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).await.unwrap();
+    let since_asked = asked.elapsed().as_millis();
 
     let response: Response = serde_json::from_str(&line).unwrap();
     assert!(
@@ -151,11 +153,12 @@ async fn wait_stale_entry_evicts_and_re_executes() {
         "wait on stale entry must evict and re-execute, not return the old value"
     );
 
-    // age_ms=0 indicates it was a fresh inline execution (not served from cache).
-    assert_eq!(
-        response.age_ms,
-        Some(0),
-        "wait on stale entry must return age_ms=0 (inline re-execution)"
+    // The answer's age is no older than the request: a fresh inline execution,
+    // not the 2s-old record served from cache.
+    let age = response.age_ms.expect("an age");
+    assert!(
+        age <= since_asked,
+        "wait on stale entry must return a record run for it: {age}ms old, asked {since_asked}ms ago"
     );
 
     handle.abort();
@@ -236,6 +239,7 @@ async fn force_wins_over_wait() {
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let asked = std::time::Instant::now();
     stream
         .write_all(b"{\"op\":\"get\",\"key\":\"hostname\",\"force\":true,\"wait\":true}\n")
         .await
@@ -244,6 +248,7 @@ async fn force_wins_over_wait() {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).await.unwrap();
+    let since_asked = asked.elapsed().as_millis();
 
     let response: Response = serde_json::from_str(&line).unwrap();
     assert!(response.ok, "force+wait should succeed");
@@ -261,10 +266,10 @@ async fn force_wins_over_wait() {
         name, "seeded-host",
         "force must win over wait: seeded value must be evicted and live value returned"
     );
-    assert_eq!(
-        response.age_ms,
-        Some(0),
-        "force re-execution must return age_ms=0"
+    let age = response.age_ms.expect("an age");
+    assert!(
+        age <= since_asked,
+        "force re-execution must return a record run for it: {age}ms old, asked {since_asked}ms ago"
     );
 
     handle.abort();

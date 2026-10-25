@@ -30,21 +30,10 @@ slow-timeout = { period = "15s", terminate-after = 2 }
 # flake. If it recurs at 1s, investigate what is actually outliving the test.
 leak-timeout = { period = "1s", result = "fail" }
 
-# --- Test groups ---
-# Daemon-spawning tests share per-process state (socket paths, filesystem
-# watchers). Cap their parallelism so they do not collide.
-#
-# Matched by module path within the `suite` binary: every former test file is
-# now a module of that single integration-test binary, so its tests carry a
-# `<module>::` prefix (e.g. `check_subjects::daemon_exits_when_bind_fails`).
-# The anchored regex lists exactly the module names that used to be their own
-# binaries in this group. `binary_id(beachcomber::suite) and` scopes the match to the root crate's `suite` binary
-# only (every crate has its own `suite` binary) — several of these module names (e.g. `scheduler`) also exist as
-# private module paths inside the crate's own unit tests, which must NOT be
-# pulled into this cap.
-[[profile.default.overrides]]
-filter = 'binary_id(beachcomber::suite) and test(/^(e2e|e2e_git|e2e_providers|scheduler|scheduler_dedup|scheduler_failure|scheduler_timeout|integration_scheduler|check_subjects|status_shape|get_force|get_wait|put_null|put_ttl|client|config_layers|daemon_exit_with_parent)::/)'
-test-group = "daemon"
+# --- No test groups ---
+# No group caps the suite's parallelism: every test has its own socket,
+# `$HOME` and config directory (`IsolatedSocket`, `common::daemon::isolate`),
+# so the tests that start daemons share nothing to collide on.
 
 # --- Retries for environment-sensitive tests ---
 # watcher_*, uptime_*, and battery_* depend on OS-level subsystems that can
@@ -53,10 +42,6 @@ test-group = "daemon"
 [[profile.default.overrides]]
 filter = 'test(watcher_) + test(uptime_) + test(battery_)'
 retries = { backoff = "exponential", count = 2, delay = "1s", jitter = true }
-
-[test-groups.daemon]
-# At most 2 daemon-spawning tests run concurrently.
-max-threads = 2
 
 # ---------------------------------------------------------------------------
 # CI profile — inherits everything from default, overrides what differs.

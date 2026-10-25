@@ -52,6 +52,7 @@ async fn get_force_evicts_and_re_executes() {
     // Send a force=true get for hostname.
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let request = r#"{"op":"get","key":"hostname","force":true}"#;
+    let asked = std::time::Instant::now();
     stream
         .write_all(format!("{request}\n").as_bytes())
         .await
@@ -60,6 +61,7 @@ async fn get_force_evicts_and_re_executes() {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).await.unwrap();
+    let since_asked = asked.elapsed().as_millis();
 
     let response: Response = serde_json::from_str(&line).unwrap();
     assert!(response.ok, "force get should return ok");
@@ -79,11 +81,11 @@ async fn get_force_evicts_and_re_executes() {
         "force should have evicted the seeded value and re-executed"
     );
 
-    // age_ms should be 0 because it was a fresh inline execution.
-    assert_eq!(
-        response.age_ms,
-        Some(0),
-        "force re-execution should return age_ms=0"
+    // The answer is no older than the request: a fresh inline execution.
+    let age = response.age_ms.expect("an age");
+    assert!(
+        age <= since_asked,
+        "force re-execution should return a record run for it: {age}ms old, asked {since_asked}ms ago"
     );
 
     handle.abort();
