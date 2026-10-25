@@ -65,6 +65,12 @@ Every command exits the same way, whatever its format — the format is applied 
 
 `--strict` is a global flag, accepted before or after the command (`comb --strict g git.branch`, `comb g git.branch --strict`); `BEACHCOMBER_STRICT=1` sets it (`0`, `false`, `no`, `off` or empty leave it off), and the flag wins.
 
+## Colour and glyphs
+
+`--color auto|always|never` and `--ascii` are global flags, accepted before or after the command, and every command that draws — `status`, `check`, `check config --origins`, `status --help`'s legend — draws by them. `--color` wins over `NO_COLOR`, which counts only when it holds something (an empty `NO_COLOR` is unset). Under `auto`, the default, a table is coloured on a terminal unless `NO_COLOR` is set. `--ascii` swaps every Unicode mark, tree branch, ellipsis and dash for its ASCII form.
+
+The template filters `fg`, `bg`, `bold` and `dim` follow the same choice without asking for a terminal — a prompt reads them through a pipe — so they draw their escapes unless `NO_COLOR` is set in the render's environment or `--color never` is given, and `--color always` draws them whatever `NO_COLOR` says. `--color` is written into the environment of the run, so `env.NO_COLOR` and an `exec()` child see the same choice. An SDK's `resolve`/`eval` reads `NO_COLOR` from the `env` it is handed.
+
 ## `comb g` (get) `<key>... [path] [-p <path>] [--global] [-f format]`
 
 Query a value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay. `comb get` is a client of `libbeachcomber::resolve`, the same function behind `comb eval` and every SDK's `resolve`: it always needs the daemon, even for a key (`env.HOME`) it answers without a request.
@@ -213,7 +219,7 @@ comb s -f json
 
 The machine formats lay a row out in the columns `PROVIDER PATH FIELD SOURCE VALUE AGE_MS STALE KIND DECAY POLL_INTERVAL_SECS POLL_COUNT FSEVENTS_REINSTATE FAILURE_CONSECUTIVE_FAILURES FAILURE_SUPPRESSED_UNTIL_UNIX_MS`, through the same cell encoders as `comb get`: `csv` and `tsv` have no header row and `CSV` and `TSV` do, a VALUE is its raw text (JSON for an object or array), and an absent field is an empty cell. `json` is one row object per line. `sh` names each variable `provider_path_field` with every character outside `[A-Za-z0-9_]` written as `_`, plus `_SOURCE`, `_KIND` and the lifecycle fields beside it.
 
-**Flags:** `-f`/`--format` (`human` (default), `table`, `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, or a template), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|stale|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
+**Flags:** `-f`/`--format` (`human` (default), `table`, `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, or a template), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|stale|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--depth N`, and the global `--color` and `--ascii` ([Colour and glyphs](#colour-and-glyphs)).
 
 A path at or below `$HOME` is written from `~` in both tables, the global entry as `~` itself — in its symlinked form or its real one — and so is a file in a SOURCE label, `check`'s path lines and `check config --origins`. The machine formats keep the stored path, the global entry as an empty cell (`null` in json).
 
@@ -455,7 +461,7 @@ comb e '{% if git.dirty %}*{{ git.branch }}{% else %}{{ git.branch }}{% endif %}
 comb e '{{ git.branch | truncate(20) }}' .
 ```
 
-Available filters: minijinja's built-ins (`default`, `upper`, `lower`, `length`, `tojson`, …) plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson` (parse a string — typically `exec()` output — as JSON).
+Available filters: minijinja's built-ins (`default`, `upper`, `lower`, `length`, `tojson`, …) plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson` (parse a string — typically `exec()` output — as JSON). `fg`, `bg`, `bold` and `dim` hand their text back unchanged under `NO_COLOR` or `--color never` ([Colour and glyphs](#colour-and-glyphs)).
 
 The natural type a single-tag expression keeps is mostly *not* visible
 in `comb e`'s own output, which is text: a bool prints `true`, and so does the
@@ -533,7 +539,7 @@ $ comb c config --origins client.providers.aws.template.profile
   └─ shadowed                            config(~/.config/beachcomber/defaults/aws.toml)    {{ env.AWS_PROFILE or … }}
 ```
 
-`-f json` prints one object per leaf, `{"key", "value", "file", "shadowed": [{"file", "value"}…]}`, with `file` the absolute path or `null` for a built-in value; `--color auto|always|never` (`NO_COLOR` honoured) and `--ascii` work as for `comb status --tree`, which this view draws like. A file that cannot be read or parsed, or breaks a rule, is reported beneath the rows as `comb c config` reports it (on stderr beside `-f json`) and exits `2`; the files that did load are still shown.
+`-f json` prints one object per leaf, `{"key", "value", "file", "shadowed": [{"file", "value"}…]}`, with `file` the absolute path or `null` for a built-in value; the global `--color` and `--ascii` apply as for `comb status --tree`, which this view draws like. A file that cannot be read or parsed, or breaks a rule, is reported beneath the rows as `comb c config` reports it (on stderr beside `-f json`) and exits `2`; the files that did load are still shown.
 
 `--connect-timeout <DURATION>` bounds how long the check keeps trying to reach the daemon before reporting it unreachable (default `1s`; `0` for a single attempt, or any [duration](#durations), e.g. `250ms`, `2s`). Retries start 5ms apart and double, so a daemon that is mid-restart is reached as soon as it binds. The option is accepted before or after the subcommand: `comb c --connect-timeout 0 daemon`.
 

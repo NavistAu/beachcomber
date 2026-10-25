@@ -800,23 +800,6 @@ fn ascii_flag_propagates_to_format_options() {
 }
 
 // ---------------------------------------------------------------------------
-// Task 1.10: ColorMode + resolve_color matrix
-// ---------------------------------------------------------------------------
-
-#[test]
-fn color_resolution_matrix() {
-    use beachcomber::cli::status_format::{ColorMode, resolve_color};
-    assert!(!resolve_color(ColorMode::Never, false, true));
-    assert!(!resolve_color(ColorMode::Always, true, true)); // NO_COLOR wins
-    assert!(!resolve_color(ColorMode::Auto, true, true)); // NO_COLOR wins
-    assert!(resolve_color(ColorMode::Always, false, false)); // explicit opt-in
-    assert!(resolve_color(ColorMode::Auto, false, true)); // TTY
-    // Pipe with no explicit --color: no colour. There is no environment
-    // escape hatch — `watch(1)` never exported WATCH_INTERVAL, it reads it.
-    assert!(!resolve_color(ColorMode::Auto, false, false));
-}
-
-// ---------------------------------------------------------------------------
 // Task 1.11: resolve_max_width
 // ---------------------------------------------------------------------------
 

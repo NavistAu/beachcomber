@@ -3,6 +3,7 @@
 use crate::cli::exit::Outcome;
 use crate::config::Config;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
@@ -39,7 +40,12 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
     match log_file {
         Ok(file) => {
             // Log to both stderr and file.
-            let stderr_layer = fmt::layer().with_target(true).with_writer(std::io::stderr);
+            // A spawned daemon's stderr is `daemon.log`: escapes only for a
+            // terminal.
+            let stderr_layer = fmt::layer()
+                .with_target(true)
+                .with_ansi(std::io::stderr().is_terminal())
+                .with_writer(std::io::stderr);
             let file_layer = fmt::layer()
                 .with_target(true)
                 .with_ansi(false)
@@ -53,7 +59,10 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
         }
         Err(_) => {
             // Fall back to stderr only.
-            tracing_subscriber::fmt().with_max_level(filter).init();
+            tracing_subscriber::fmt()
+                .with_max_level(filter)
+                .with_ansi(std::io::stderr().is_terminal())
+                .init();
         }
     }
 

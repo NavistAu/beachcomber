@@ -13,12 +13,22 @@ pub fn build_env<'a>() -> Environment<'a> {
     // `allow_exec` gating. Safe to register unconditionally on every surface
     // this environment backs, including path expressions and formatting-only
     // contexts.
-    env.add_filter("fg", fg_filter);
-    env.add_filter("bg", bg_filter);
-    env.add_filter("bold", bold_filter);
-    env.add_filter("dim", dim_filter);
+    add_colour_filters(&mut env, true);
     env.add_filter("fromjson", fromjson_filter);
     env
+}
+
+/// `fg`, `bg`, `bold` and `dim`, drawing their escapes only when `colour`:
+/// off, each hands its text back as it is (a bad colour is still an error).
+pub fn add_colour_filters(env: &mut Environment<'_>, colour: bool) {
+    env.add_filter("fg", move |value: String, color: String| {
+        fg_filter(value, color, colour)
+    });
+    env.add_filter("bg", move |value: String, color: String| {
+        bg_filter(value, color, colour)
+    });
+    env.add_filter("bold", move |value: String| bold_filter(value, colour));
+    env.add_filter("dim", move |value: String| dim_filter(value, colour));
 }
 
 /// `{{ text | fromjson }}` — parse `text` as JSON into a value the template
@@ -74,25 +84,28 @@ fn truncate_filter(value: String, length: u32) -> String {
 /// naming the offending value), not silent passthrough — a typo'd colour
 /// must be visible rather than rendering the text uncoloured with no sign
 /// anything went wrong.
-fn fg_filter(value: String, color: String) -> Result<String, Error> {
-    sgr_wrap(value, &color, 38)
+fn fg_filter(value: String, color: String, colour: bool) -> Result<String, Error> {
+    sgr_wrap(value, &color, 38, colour)
 }
 
 /// `{{ text | bg("#rrggbb") }}` — [`fg_filter`]'s sibling for the
 /// background SGR parameter (`48;2` instead of `38;2`). Same colour
 /// parsing, same empty-input and error behaviour.
-fn bg_filter(value: String, color: String) -> Result<String, Error> {
-    sgr_wrap(value, &color, 48)
+fn bg_filter(value: String, color: String, colour: bool) -> Result<String, Error> {
+    sgr_wrap(value, &color, 48, colour)
 }
 
 /// Shared body of `fg`/`bg`: parse `color` and wrap non-empty `value` in
 /// the SGR escape pair for `sgr_code` (38 for foreground, 48 for
 /// background).
-fn sgr_wrap(value: String, color: &str, sgr_code: u8) -> Result<String, Error> {
+fn sgr_wrap(value: String, color: &str, sgr_code: u8, colour: bool) -> Result<String, Error> {
     if value.is_empty() {
         return Ok(String::new());
     }
     let (r, g, b) = parse_hex_color(color)?;
+    if !colour {
+        return Ok(value);
+    }
     Ok(format!("\x1b[{sgr_code};2;{r};{g};{b}m{value}\x1b[0m"))
 }
 
@@ -111,14 +124,14 @@ fn sgr_wrap(value: String, color: &str, sgr_code: u8) -> Result<String, Error> {
 /// Empty input returns empty with no escapes at all, same as `fg`/`bg`, so
 /// a conditional segment contributes nothing rather than leaving a stray
 /// attribute escape that would bleed into whatever follows it.
-fn bold_filter(value: String) -> String {
-    sgr_attr(value, 1)
+fn bold_filter(value: String, colour: bool) -> String {
+    sgr_attr(value, 1, colour)
 }
 
 /// `{{ text | dim }}` — [`bold_filter`]'s sibling for the dim/faint SGR
 /// attribute (`2` instead of `1`). Same empty-input behaviour.
-fn dim_filter(value: String) -> String {
-    sgr_attr(value, 2)
+fn dim_filter(value: String, colour: bool) -> String {
+    sgr_attr(value, 2, colour)
 }
 
 /// Shared body of `bold`/`dim`: wrap non-empty `value` in the SGR pair for
@@ -126,9 +139,9 @@ fn dim_filter(value: String) -> String {
 /// off-code (`22`), matching `fg`/`bg` — every one of these filters ends its
 /// segment by returning the terminal to a known default state, which is what
 /// makes them safe to concatenate in any order.
-fn sgr_attr(value: String, code: u8) -> String {
-    if value.is_empty() {
-        return String::new();
+fn sgr_attr(value: String, code: u8, colour: bool) -> String {
+    if value.is_empty() || !colour {
+        return value;
     }
     format!("\x1b[{code}m{value}\x1b[0m")
 }
@@ -161,7 +174,7 @@ mod tests {
     #[test]
     fn fg_wraps_with_correct_sgr() {
         assert_eq!(
-            fg_filter("x".to_string(), "#ff0080".to_string()).unwrap(),
+            fg_filter("x".to_string(), "#ff0080".to_string(), true).unwrap(),
             "\x1b[38;2;255;0;128mx\x1b[0m"
         );
     }
@@ -169,7 +182,7 @@ mod tests {
     #[test]
     fn bg_wraps_with_correct_sgr() {
         assert_eq!(
-            bg_filter("x".to_string(), "#ff0080".to_string()).unwrap(),
+            bg_filter("x".to_string(), "#ff0080".to_string(), true).unwrap(),
             "\x1b[48;2;255;0;128mx\x1b[0m"
         );
     }
@@ -177,7 +190,7 @@ mod tests {
     #[test]
     fn hex_parsing_is_case_insensitive() {
         assert_eq!(
-            fg_filter("x".to_string(), "#FF0080".to_string()).unwrap(),
+            fg_filter("x".to_string(), "#FF0080".to_string(), true).unwrap(),
             "\x1b[38;2;255;0;128mx\x1b[0m"
         );
     }
@@ -185,14 +198,14 @@ mod tests {
     #[test]
     fn hash_prefix_is_optional() {
         assert_eq!(
-            fg_filter("x".to_string(), "ff0080".to_string()).unwrap(),
+            fg_filter("x".to_string(), "ff0080".to_string(), true).unwrap(),
             "\x1b[38;2;255;0;128mx\x1b[0m"
         );
     }
 
     #[test]
     fn invalid_colour_errors_naming_the_value() {
-        let err = fg_filter("x".to_string(), "not-a-colour".to_string()).unwrap_err();
+        let err = fg_filter("x".to_string(), "not-a-colour".to_string(), true).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidOperation);
         assert!(
             err.to_string().contains("not-a-colour"),
@@ -202,14 +215,20 @@ mod tests {
 
     #[test]
     fn wrong_length_hex_errors() {
-        assert!(fg_filter("x".to_string(), "#fff".to_string()).is_err());
-        assert!(fg_filter("x".to_string(), "#ff00801".to_string()).is_err());
+        assert!(fg_filter("x".to_string(), "#fff".to_string(), true).is_err());
+        assert!(fg_filter("x".to_string(), "#ff00801".to_string(), true).is_err());
     }
 
     #[test]
     fn empty_text_emits_no_escapes() {
-        assert_eq!(fg_filter(String::new(), "#ff0080".to_string()).unwrap(), "");
-        assert_eq!(bg_filter(String::new(), "#ff0080".to_string()).unwrap(), "");
+        assert_eq!(
+            fg_filter(String::new(), "#ff0080".to_string(), true).unwrap(),
+            ""
+        );
+        assert_eq!(
+            bg_filter(String::new(), "#ff0080".to_string(), true).unwrap(),
+            ""
+        );
     }
 
     #[test]
@@ -218,7 +237,7 @@ mod tests {
         // template that conditionally colours empty text never trips over
         // an otherwise-invalid placeholder colour.
         assert_eq!(
-            fg_filter(String::new(), "nonsense".to_string()).unwrap(),
+            fg_filter(String::new(), "nonsense".to_string(), true).unwrap(),
             ""
         );
     }
@@ -238,14 +257,24 @@ mod tests {
 
     #[test]
     fn bold_and_dim_wrap_with_their_sgr_attribute() {
-        assert_eq!(bold_filter("x".to_string()), "\x1b[1mx\x1b[0m");
-        assert_eq!(dim_filter("x".to_string()), "\x1b[2mx\x1b[0m");
+        assert_eq!(bold_filter("x".to_string(), true), "\x1b[1mx\x1b[0m");
+        assert_eq!(dim_filter("x".to_string(), true), "\x1b[2mx\x1b[0m");
     }
 
     #[test]
     fn bold_and_dim_empty_text_emits_no_escapes() {
-        assert_eq!(bold_filter(String::new()), "");
-        assert_eq!(dim_filter(String::new()), "");
+        assert_eq!(bold_filter(String::new(), true), "");
+        assert_eq!(dim_filter(String::new(), true), "");
+    }
+
+    #[test]
+    fn colour_off_hands_the_text_back_and_still_checks_the_colour() {
+        assert_eq!(
+            fg_filter("x".to_string(), "#ff0080".to_string(), false).unwrap(),
+            "x"
+        );
+        assert_eq!(bold_filter("x".to_string(), false), "x");
+        assert!(fg_filter("x".to_string(), "nope".to_string(), false).is_err());
     }
 
     #[test]

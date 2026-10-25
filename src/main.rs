@@ -10,6 +10,7 @@ use beachcomber::cli::exit::Outcome;
 use beachcomber::cli::output_format::{
     Format, GET, STATUS, WATCH, get_format, rewrite_suffix, status_format, watch_format,
 };
+use beachcomber::cli::style::{ColorChoice, Glyphs, Style};
 use beachcomber::config::Config;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -22,13 +23,9 @@ use std::process::ExitCode;
 /// needs no translating and omits it.
 fn status_after_help() -> String {
     let ascii = std::env::args().any(|a| a == "--ascii");
-    let (star, warn, times, dot, ring, rendered) = if ascii {
-        ("*", "!", "x", "-", "+", ">")
-    } else {
-        (
-            "\u{2605}", "\u{26a0}", "\u{00d7}", "\u{2219}", "\u{2299}", "\u{25b8}",
-        )
-    };
+    let g = Glyphs::of(ascii);
+    let (star, warn, times, dot, ring, rendered) =
+        (g.star, g.warn, g.times, g.dot, g.ring, g.rendered);
     let mut help = format!(
         "Reading the output:\n\
         \n\
@@ -95,6 +92,13 @@ struct Cli {
         hide_env_values = true
     )]
     strict: bool,
+    /// Colour: auto (a terminal, unless NO_COLOR is set), always or never.
+    /// Wins over NO_COLOR, for comb's own output and the template filters alike
+    #[arg(long, global = true, value_enum, value_name = "WHEN", default_value_t = ColorChoice::Auto)]
+    color: ColorChoice,
+    /// ASCII glyphs only (no Unicode box drawing, marks or ellipsis)
+    #[arg(long, global = true)]
+    ascii: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -165,12 +169,6 @@ enum Commands {
         /// Maximum width for VALUE in human format: integer or 'auto' (terminal width). Default 120.
         #[arg(long)]
         max_width: Option<String>,
-        /// Colorize output: auto (default), always, never
-        #[arg(long, value_parser = ["auto", "always", "never"], default_value = "auto")]
-        color: String,
-        /// Use ASCII-only output (no Unicode box-drawing or ellipsis)
-        #[arg(long)]
-        ascii: bool,
         /// Object destructuring depth: 0 unlimited, 1 top-level fields only, 2 one level down.
         /// Default: 2 for human/table, 1 for json/tsv/csv/sh; 0 with --tree.
         #[arg(long)]
@@ -366,12 +364,14 @@ fn main() -> ExitCode {
         }
     };
     let cli = Cli::parse_from(args);
+    cli.color.apply_to_env();
     let strict = cli.strict;
     run(cli).code(strict)
 }
 
 /// Run the command `cli` names.
 fn run(cli: Cli) -> Outcome {
+    let style = Style::detect(cli.color, cli.ascii);
     // Only the daemon writes the managed defaults, and it does so before
     // `Config::load()` reads the directory, so the defaults it seeds are this
     // binary's. A directory it cannot write is a refusal to start (spec §3.3).
@@ -435,8 +435,6 @@ fn run(cli: Cli) -> Outcome {
             sort,
             no_trunc,
             max_width,
-            color,
-            ascii,
             depth,
             tree,
         } => beachcomber::cli::commands::status::run_status(
@@ -447,8 +445,7 @@ fn run(cli: Cli) -> Outcome {
             &sort,
             no_trunc,
             max_width.as_deref(),
-            color.as_str(),
-            ascii,
+            style,
             depth,
             tree,
         ),
@@ -505,7 +502,7 @@ fn run(cli: Cli) -> Outcome {
         Commands::Check {
             connect_timeout,
             check_cmd,
-        } => run_check(&config, check_cmd, connect_timeout),
+        } => run_check(&config, check_cmd, connect_timeout, style),
         Commands::Kill { timeout, socket } => {
             let socket_path = socket.unwrap_or_else(|| config.resolve_socket_path());
             run_kill(&socket_path, timeout)

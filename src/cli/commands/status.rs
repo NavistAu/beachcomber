@@ -6,9 +6,10 @@ use crate::cache::{CacheRow, RowKind};
 use crate::cli::exit::Outcome;
 use crate::cli::output_format::{Format, Preset};
 use crate::cli::status_format::{
-    ColorMode, RenderOpts, apply_filters, apply_sort, default_depth, flatten_rows, render_preset,
-    render_template_format, render_tree, resolve_color, resolve_max_width, row_base, row_facet,
+    RenderOpts, apply_filters, apply_sort, default_depth, flatten_rows, render_preset,
+    render_template_format, render_tree, resolve_max_width, row_base, row_facet,
 };
+use crate::cli::style::Style;
 use crate::config::Config;
 use libbeachcomber::resolve::{Inputs, Slot, eval_with, resolve_traced};
 use std::collections::HashMap;
@@ -229,8 +230,7 @@ pub fn run_status(
     sort_col: &str,
     no_trunc: bool,
     max_width_arg: Option<&str>,
-    color_arg: &str,
-    ascii: bool,
+    style: Style,
     depth: Option<usize>,
     tree: bool,
 ) -> Outcome {
@@ -255,13 +255,7 @@ pub fn run_status(
     }
 
     let is_tty = std::io::stdout().is_terminal();
-    let mode = match color_arg {
-        "always" => ColorMode::Always,
-        "never" => ColorMode::Never,
-        _ => ColorMode::Auto,
-    };
-    let no_color_env = std::env::var("NO_COLOR").is_ok();
-    let color = resolve_color(mode, no_color_env, is_tty);
+    let Style { color, ascii } = style;
 
     let cols = terminal_size::terminal_size().map(|(w, _)| w.0 as usize);
     let resolved_max_width = resolve_max_width(max_width_arg, cols);

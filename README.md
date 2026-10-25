@@ -348,7 +348,7 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay<N>|once|static|rendered`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
+**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay<N>|once|static|rendered`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), and the global `--color=auto|always|never` (wins over `NO_COLOR`) and `--ascii`.
 
 A namespace holding a `[client.providers.<p>]` template renders one extra row per leaf visible from the caller's directory — resolved with this shell's environment and `exec()` enabled, exactly as `comb get` would render it — beside the raw template row and any cached value at that address; a field that's both cached and templated shows both rows. A rendered row's SOURCE is `rendered`, its VALUE is marked (cyan, or a `▸ `/`> ` lead-in without colour), and `--filter=lifecycle=rendered` selects just those rows.
 

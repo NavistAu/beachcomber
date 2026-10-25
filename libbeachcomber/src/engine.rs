@@ -26,6 +26,14 @@ pub struct EngineCtx {
     pub allow_exec: bool,
 }
 
+impl EngineCtx {
+    /// Whether the colour filters draw escapes: unless the render's `env`
+    /// sets `NO_COLOR` to something.
+    pub fn colour(&self) -> bool {
+        self.env.get("NO_COLOR").is_none_or(|v| v.is_empty())
+    }
+}
+
 /// The shared filters, chainable undefined, and `exec` as both a function
 /// and a filter, bound to `ctx`.
 ///
@@ -37,6 +45,7 @@ pub struct EngineCtx {
 /// than a generic "unknown function".
 pub fn build_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
     let mut jinja = build_pure_engine_env();
+    crate::filters::add_colour_filters(&mut jinja, ctx.colour());
     let for_fn = ctx.clone();
     let for_exec_filter = ctx.clone();
     jinja.add_function(

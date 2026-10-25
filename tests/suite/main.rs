@@ -26,6 +26,7 @@ mod cli_refresh;
 mod cli_report;
 mod cli_resolve;
 mod cli_status_rendered;
+mod cli_style;
 mod cli_virtual_fields;
 mod cli_virtual_fields_kinded;
 mod cli_watch;

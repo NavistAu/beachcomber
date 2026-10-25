@@ -12,6 +12,7 @@
 
 use crate::cli::exit::Outcome;
 use crate::cli::introspect_types::{DaemonIntrospect, Verdict};
+use crate::cli::style::Style;
 use crate::config::Config;
 use clap::Subcommand;
 use std::time::Duration;
@@ -51,18 +52,6 @@ pub enum CheckCommands {
             requires = "origins"
         )]
         format: crate::cli::output_format::Format,
-        /// Colour for --origins: auto, always or never
-        #[arg(
-            long,
-            value_name = "WHEN",
-            default_value = "auto",
-            value_parser = ["auto", "always", "never"],
-            requires = "origins"
-        )]
-        color: String,
-        /// ASCII glyphs for --origins
-        #[arg(long, requires = "origins")]
-        ascii: bool,
     },
     /// Check provider health and lifecycle state
     Providers,
@@ -94,6 +83,7 @@ pub fn run_check(
     config: &Config,
     check_cmd: Option<CheckCommands>,
     connect_timeout: Duration,
+    style: Style,
 ) -> Outcome {
     const ALL_SUBJECTS: &[&str] = &[
         "daemon",
@@ -110,11 +100,9 @@ pub fn run_check(
     if let Some(CheckCommands::Config {
         origins: Some(key),
         format,
-        color,
-        ascii,
     }) = &check_cmd
     {
-        return run_origins(config, key, format, color, *ascii);
+        return run_origins(config, key, format, style);
     }
 
     let (subjects, procs_duration): (Vec<&str>, Option<u64>) = match &check_cmd {
@@ -130,7 +118,7 @@ pub fn run_check(
         Some(CheckCommands::Procs { duration }) => (vec!["procs"], Some(*duration)),
     };
 
-    run_check_subjects(config, &subjects, procs_duration, connect_timeout)
+    run_check_subjects(config, &subjects, procs_duration, connect_timeout, style)
 }
 
 /// `comb check config --origins [KEY]`: how the composed configuration came
@@ -142,13 +130,10 @@ fn run_origins(
     config: &Config,
     key: &str,
     format: &crate::cli::output_format::Format,
-    color: &str,
-    ascii: bool,
+    style: Style,
 ) -> Outcome {
     use crate::cli::config_origins;
     use crate::cli::output_format::{Format, Preset};
-    use crate::cli::status_format::{ColorMode, resolve_color};
-    use std::io::IsTerminal;
 
     let origins = match config_origins::select(config_origins::origins(config), key) {
         Ok(origins) => origins,
@@ -168,20 +153,13 @@ fn run_origins(
         print!("{}", config_origins::render_json(&origins));
         eprint!("{error_lines}");
     } else {
-        let mode = match color {
-            "always" => ColorMode::Always,
-            "never" => ColorMode::Never,
-            _ => ColorMode::Auto,
-        };
-        let color = resolve_color(
-            mode,
-            std::env::var("NO_COLOR").is_ok(),
-            std::io::stdout().is_terminal(),
-        );
         if origins.is_empty() {
             println!("  (nothing in the configuration is at or below {key})");
         } else {
-            print!("{}", config_origins::render_human(&origins, color, ascii));
+            print!(
+                "{}",
+                config_origins::render_human(&origins, style.color, style.ascii)
+            );
         }
         if !error_lines.is_empty() {
             print!("\nConfig\n{error_lines}");
@@ -198,6 +176,7 @@ pub fn run_check_subjects(
     subjects: &[&str],
     procs_duration: Option<u64>,
     connect_timeout: Duration,
+    style: Style,
 ) -> Outcome {
     let socket_path = config.resolve_socket_path();
     let client = crate::client::Client::with_connect_timeout(socket_path, connect_timeout);
@@ -231,14 +210,17 @@ pub fn run_check_subjects(
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
                 let (text, code) = render_subject(subject, &payload, &local);
-                print!("{text}");
+                print!("{}", style.dashes(&text));
                 worst = worst.max(code);
             }
             Ok(resp) => {
                 let title = subject_title(subject);
                 let err = resp.error.as_deref().unwrap_or("unknown error");
                 let line = verdict_line("FAIL", daemon_view(&local), err);
-                print!("\n{title}\n{local_lines}{line}");
+                print!(
+                    "{}",
+                    style.dashes(&format!("\n{title}\n{local_lines}{line}"))
+                );
                 worst = worst.max(Outcome::Error);
             }
             Err(e) => {
@@ -248,7 +230,10 @@ pub fn run_check_subjects(
                     daemon_view(&local),
                     &format!("daemon not responding: {e}"),
                 );
-                print!("\n{title}\n{local_lines}{line}");
+                print!(
+                    "{}",
+                    style.dashes(&format!("\n{title}\n{local_lines}{line}"))
+                );
                 worst = worst.max(Outcome::Error);
                 // No point continuing if daemon is unreachable.
                 break;

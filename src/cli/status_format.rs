@@ -1,5 +1,6 @@
 use crate::cache::CacheRow;
 use crate::cli::output_format::{Format, Preset};
+use crate::cli::style::Glyphs;
 use libbeachcomber::render::shell_quote;
 
 // ---------------------------------------------------------------------------
@@ -181,18 +182,13 @@ pub fn format_ttl_cell(
 ) -> TtlCell {
     use crate::cache::RowKind;
 
-    // Glyph table.
-    let star = if ascii { "*" } else { "\u{2605}" }; // ★
-    let warn = if ascii { "!" } else { "\u{26a0}" }; // ⚠
-    let times = if ascii { "x" } else { "\u{00d7}" }; // ×
-    // Watches-files indicator progression:
-    //   watches only       → `∙` / `-`
-    //   watches + reinstate → `⊙` / `+`  (bullet with a ring around it)
-    // Both glyphs are math operator class (U+22xx / U+2299), so fonts render
-    // them at a shared baseline. Earlier pairs mixed General Punctuation and
-    // Math Symbols-B blocks and rendered vertically mis-aligned.
-    let dot = if ascii { "-" } else { "\u{2219}" }; // ∙
-    let dot_ring = if ascii { "+" } else { "\u{2299}" }; // ⊙
+    // Watches-files indicator progression: `dot` for watches only, `ring`
+    // (a bullet with a ring around it) for watches + reinstate. Both glyphs
+    // are math operator class (U+22xx / U+2299), so fonts render them at a
+    // shared baseline. Earlier pairs mixed General Punctuation and Math
+    // Symbols-B blocks and rendered vertically mis-aligned.
+    let g = Glyphs::of(ascii);
+    let (star, warn, times, dot, dot_ring) = (g.star, g.warn, g.times, g.dot, g.ring);
 
     match kind {
         None
@@ -288,44 +284,6 @@ pub fn format_poll_cell(
         Some(n) => format!("{}s", n.min(TTL_SECONDS_MAX)),
         None => "-".to_string(),
     }
-}
-
-/// Color mode for status output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColorMode {
-    Auto,
-    Always,
-    Never,
-}
-
-/// Resolve whether to enable color output based on the mode, environment, and TTY state.
-///
-/// Rules (in priority order):
-/// 1. `Never` → always false.
-/// 2. `NO_COLOR` env var set → always false.
-/// 3. `Always` → always true.
-/// 4. `Auto` → true if is_tty.
-///
-/// `auto` deliberately has no environment-based escape hatch for pipes. An
-/// earlier revision promoted `auto` to colour when `WATCH_INTERVAL` was set,
-/// on the belief that `watch(1)` exports it. It does not — procps-ng *reads*
-/// `WATCH_INTERVAL` to pick its own default interval and never passes it to
-/// the child. The promotion therefore never fired under `watch`, and when a
-/// user did export the variable for its documented purpose it fired at the
-/// worst time: plain `watch` (no `-c`) does not interpret SGR, so the table
-/// filled with literal escape text. Live viewers should ask for colour
-/// explicitly: `watch -c 'comb status --color=always'`.
-pub fn resolve_color(mode: ColorMode, no_color_env: bool, is_tty: bool) -> bool {
-    if mode == ColorMode::Never {
-        return false;
-    }
-    if no_color_env {
-        return false;
-    }
-    if mode == ColorMode::Always {
-        return true;
-    }
-    is_tty
 }
 
 /// Resolve the maximum **total table** width.
@@ -912,11 +870,11 @@ fn template_marker(
     kind: Option<&crate::cache::RowKind>,
     color_enabled: bool,
     ascii: bool,
-) -> &'static str {
+) -> String {
     if color_enabled || !matches!(kind, Some(crate::cache::RowKind::Rendered)) {
-        return "";
+        return String::new();
     }
-    if ascii { "> " } else { "\u{25b8} " }
+    format!("{} ", Glyphs::of(ascii).rendered)
 }
 
 /// How a `--tree` layer row is drawn: one of the layers behind the value row
@@ -935,12 +893,8 @@ pub struct ChildMark {
 /// the last, and `|-` / `` `- `` under `--ascii`. Every tree comb draws
 /// (`status --tree`, `check config --origins`) uses it.
 pub fn tree_branch(last: bool, ascii: bool) -> &'static str {
-    match (last, ascii) {
-        (false, false) => "\u{251c}\u{2500}",
-        (true, false) => "\u{2514}\u{2500}",
-        (false, true) => "|-",
-        (true, true) => "`-",
-    }
+    let g = Glyphs::of(ascii);
+    if last { g.last_branch } else { g.branch }
 }
 
 /// `s` dimmed when colour is on, as a shadowed tree row is.
@@ -1527,10 +1481,10 @@ fn render_table(
         // the rows whose text was rewritten without diffing against the
         // source. The marker is part of the cell, so it takes part in the
         // width budget and truncates with everything else.
-        let marker = match (tainted, ascii) {
-            (false, _) => "",
-            (true, true) => "! ",
-            (true, false) => "\u{203c} ", // ‼
+        let marker = if tainted {
+            format!("{} ", Glyphs::of(ascii).tainted)
+        } else {
+            String::new()
         };
         // A rendered row is marked ahead of the taint marker: colour-off
         // builds need to see "this was computed here" before anything else in
@@ -2108,10 +2062,7 @@ fn format_age_with_polls(age_ms: Option<u128>, polls_elapsed: Option<u32>, ascii
     };
     let base = format_age(age_ms);
     match polls_elapsed {
-        Some(n) => {
-            let sep = if ascii { "x" } else { "\u{00d7}" };
-            format!("{base}{sep}{n}")
-        }
+        Some(n) => format!("{base}{}{n}", Glyphs::of(ascii).times),
         None => base,
     }
 }
@@ -2135,7 +2086,7 @@ fn truncate_tail(s: &str, max: usize, ell: &str) -> String {
 /// The table's truncation mark: the one-column `…` glyph, or `...` under
 /// `--ascii` where the glyph can't be trusted.
 fn ellipsis(ascii: bool) -> &'static str {
-    if ascii { "..." } else { "\u{2026}" }
+    Glyphs::of(ascii).ellipsis
 }
 
 /// Truncate a cache path to at most `max` characters. A `#session` suffix
