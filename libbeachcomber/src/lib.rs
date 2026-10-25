@@ -25,9 +25,9 @@ pub mod eval;
 // `exec()` spawn engine, backing the `exec()` jinja function registered in
 // `engine::build_engine_env`.
 mod exec;
-pub mod filters;
 pub mod key;
 mod lazy;
+pub mod library;
 pub mod path;
 pub mod protocol;
 pub mod render;

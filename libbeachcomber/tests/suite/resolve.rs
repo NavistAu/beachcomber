@@ -149,7 +149,7 @@ const STATS: &str = "{{ {'cpu': 40, 'mem': 12} }}";
 
 /// The branch `truncate(12)` cuts. The design table writes the truncation as
 /// `feature/long`; the `truncate` filter this crate ships appends an ellipsis
-/// past the cut (`libbeachcomber/src/filters.rs`), so the value is
+/// past the cut (`libbeachcomber/src/library/style.rs`), so the value is
 /// `feature/long...`.
 const BRANCH: &str = "feature/long-name-here";
 const BRANCH_12: &str = "feature/long...";

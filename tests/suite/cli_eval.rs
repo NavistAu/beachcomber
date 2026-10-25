@@ -189,6 +189,24 @@ fn eval_exec_call_is_enabled_for_the_cli() {
         .stdout(predicates::str::diff("x"));
 }
 
+/// `url()` and `plugin()` run only in a Source's lines: on the client they are
+/// refused by name, not reported as unknown functions.
+#[test]
+fn url_on_the_client_is_refused_clearly() {
+    let d = TestDaemon::spawn();
+
+    for call in ["url('http://127.0.0.1:1/')", "plugin('a', 'b')"] {
+        let name = call.split('(').next().unwrap();
+        d.comb(Path::new("/"))
+            .args(["eval", &format!("{{{{ {call} }}}}")])
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains(format!(
+                "{name}() runs only in a Source's lines"
+            )));
+    }
+}
+
 /// `comb eval`'s output goes through `render::render_data`, which is a bare
 /// passthrough for a string value — no ANSI/control-character stripping.
 /// The `fg` filter's ESC bytes must survive to stdout unmangled so a shell

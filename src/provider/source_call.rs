@@ -493,7 +493,10 @@ mod tests {
     }
 
     fn called(line: &str) -> Result<Vec<Called>, String> {
-        called_in(&libbeachcomber::engine::build_pure_engine_env(), line)
+        called_in(
+            &libbeachcomber::engine::build_pure_engine_env(Default::default()),
+            line,
+        )
     }
 
     #[test]

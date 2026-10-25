@@ -54,6 +54,7 @@ use crate::shape::prototype::{Kind, Link, chain, super_chain};
 use dashmap::DashSet;
 use libbeachcomber::engine::op_error;
 use libbeachcomber::eval::{Line, lint, single_tag_expression, undeclared_names};
+use libbeachcomber::library::{Surface, first_refused};
 use minijinja::value::{Object, ObjectRepr, Value as MjValue};
 use minijinja::{Environment, Error};
 use std::collections::{BTreeSet, HashMap};
@@ -88,9 +89,6 @@ pub fn is_disabled_in(providers: &toml::Table, name: &str) -> bool {
 /// name no `[daemon.providers.<p>]` table owns can fail too, and the set must
 /// not grow with the names a client asks for.
 const MAX_LOGGED: usize = 256;
-
-/// What a provider line may not call: these lines run on every read.
-const NOT_AVAILABLE: [&str; 5] = ["exec", "read", "lup", "url", "plugin"];
 
 /// A line of a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -420,7 +418,7 @@ impl ProviderLines {
     /// a call that does IO, a `| super` where it means nothing, a name the line
     /// may not read, or text that does not compile is a load error.
     pub fn new(providers: &toml::Table) -> Result<Self, Vec<String>> {
-        let mut env = provider_engine_env();
+        let mut env = provider_engine_env(Default::default());
         env.add_filter("super", step_up);
         let own: HashMap<String, Arc<Chains>> = providers
             .keys()
@@ -460,7 +458,8 @@ impl ProviderLines {
                         continue;
                     }
                     let used = used_names(line);
-                    if let Some(name) = NOT_AVAILABLE.iter().find(|n| used.contains_key(**n)) {
+                    if let Some(item) = first_refused(Surface::Provider, |n| used.contains_key(n)) {
+                        let name = item.name;
                         errors.insert(format!(
                             "{at}: {name} is not available in a provider's line: these lines \
                              run on every read and do no IO"
@@ -1562,6 +1561,32 @@ mod tests {
             errors("[demo]\nreturn = \"{{ 'read' }}\"").is_empty(),
             "a word in a string is no call"
         );
+    }
+
+    /// The refusal is a reading of the library's tier table, not a list of its
+    /// own: every item the table does not make available on a provider's line
+    /// is refused by name, in whichever form it is called.
+    #[test]
+    fn the_refusal_is_the_tier_table() {
+        use libbeachcomber::library::{ITEMS, Surface};
+        let mut refused = 0;
+        for item in ITEMS {
+            let available = item.tier.available(Surface::Provider);
+            let call = match item.form {
+                libbeachcomber::library::Form::Filter => format!("{{{{ 'x' | {} }}}}", item.name),
+                _ => format!("{{{{ {}('x') }}}}", item.name),
+            };
+            let errs = errors(&format!("[demo]\nresult = \"{call}\""));
+            let named = errs.iter().any(|e| {
+                e.contains(&format!(
+                    "{} is not available in a provider's line",
+                    item.name
+                ))
+            });
+            assert_eq!(named, !available, "{}: {errs:?}", item.name);
+            refused += usize::from(!available);
+        }
+        assert!(refused >= 5, "exec, read, lup, url and plugin at least");
     }
 
     #[test]

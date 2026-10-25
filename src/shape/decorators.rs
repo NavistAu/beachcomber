@@ -12,8 +12,8 @@
 
 use crate::provider::{FailbackConfig, InvalidationStrategy, expand_abs_path};
 use crate::scheduler::lifecycle::DEFAULT_POLL_COUNT;
+use libbeachcomber::engine::build_pure_engine_env;
 use libbeachcomber::engine::op_error;
-use libbeachcomber::filters::build_env;
 use minijinja::value::{Kwargs, Object, ObjectRepr, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error, ErrorKind, UndefinedBehavior};
 use std::fmt;
@@ -253,7 +253,7 @@ fn merge(levels: &[Line], defaults: &EngineDefaults) -> Result<Recorded, ReturnE
 
 /// The strict minijinja setup a recording render (and a probe) runs in.
 fn strict_env() -> Environment<'static> {
-    let mut jinja = build_env();
+    let mut jinja = build_pure_engine_env(Default::default());
     jinja.set_undefined_behavior(UndefinedBehavior::Strict);
     jinja
 }
@@ -1262,6 +1262,19 @@ mod tests {
             assert!(e.starts_with(message), "{line}: {e}");
             assert!(!e.contains("(in "), "{line}: {e}");
         }
+    }
+
+    /// A return line renders on the pure library: its filters and functions
+    /// work, and the ones that do IO are not there.
+    #[test]
+    fn a_return_line_renders_on_the_pure_library() {
+        let r =
+            rec("{% set d = '/a/b/c.txt' | dirname | basename | upper %}{{ result | poll('2s') }}");
+        assert_eq!(r.invalidation, poll(2, 12));
+        let colour = "{% set c = 'x' | fg('#ff0000') | bold %}{{ result | poll('2s') }}";
+        assert!(record(&[colour]).is_ok());
+        let e = record(&["{% set d = 'x' | read %}{{ result | poll('2s') }}"]).unwrap_err();
+        assert!(e.contains("filter read is unknown"), "{e}");
     }
 
     #[test]

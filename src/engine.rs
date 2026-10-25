@@ -3,11 +3,13 @@
 //! [`daemon_engine_env`] is libbeachcomber's engine environment plus the two
 //! functions only the daemon has. They live here, not in libbeachcomber, so
 //! `ureq` and `libloading` stay out of every SDK's native library; a client
-//! template calling either gets minijinja's unknown-function error.
+//! template calling either is refused by libbeachcomber's engine environment
+//! (`url() runs only in a Source's lines`).
 
 use crate::boundaries::http;
 use crate::boundaries::library::{LibraryLoader, LoadedLibrary};
-use libbeachcomber::engine::{EngineCtx, build_engine_env, merge_values, op_error};
+use libbeachcomber::engine::{EngineCtx, build_engine_env, build_pure_engine_env, op_error};
+use libbeachcomber::library::data::merge_values;
 use libbeachcomber::path::expand_tilde;
 use minijinja::value::{Enumerator, Kwargs, Object, ObjectRepr, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error, State};
@@ -176,12 +178,12 @@ pub fn daemon_engine_env<'a>(ctx: Arc<EngineCtx>, plugins: Arc<PluginSet>) -> En
 }
 
 /// The engine environment a provider's `template`, `result` and `return` lines
-/// render in: libbeachcomber's pure part (the shared filters, `merge`), plus
+/// render in: libbeachcomber's pure library (the tier table's `Pure` items), plus
 /// [`facet`] and a `merge` that reads a provider's [`Sources`]. There is no
 /// `exec`, `read`, `lup`, `url` or `plugin`: these lines run on a read, which
 /// must not wait on a process, a file, the network or a library.
-pub fn provider_engine_env<'a>() -> Environment<'a> {
-    let mut jinja = libbeachcomber::engine::build_pure_engine_env();
+pub fn provider_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
+    let mut jinja = build_pure_engine_env(ctx);
     libbeachcomber::eval::render_none_as_empty(&mut jinja);
     jinja.add_filter("facet", facet);
     jinja.add_function(

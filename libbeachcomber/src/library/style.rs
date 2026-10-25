@@ -1,55 +1,40 @@
-use minijinja::{Environment, Error, ErrorKind};
+//! Text and terminal styling: `truncate`, `fg`, `bg`, `bold` and `dim`.
+//!
+//! All are pure string transforms (no filesystem, network or process access),
+//! so unlike `exec()` they need no `allow_exec` gating and are on every
+//! surface. The colour filters draw escapes only when the render's `env` does
+//! not set `NO_COLOR` ([`EngineCtx::colour`]).
 
-/// Build a minijinja `Environment` with the shared custom filters pre-registered.
-///
-/// Shared by all rendering helpers so the `truncate` filter (and any future
-/// additions) are available in `fmt`, `eval`, and any other template surface.
-pub fn build_env<'a>() -> Environment<'a> {
-    let mut env = Environment::new();
+use crate::engine::EngineCtx;
+use minijinja::{Environment, Error, ErrorKind};
+use std::sync::Arc;
+
+pub(super) fn add_truncate(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
     env.add_filter("truncate", truncate_filter);
-    env.add_filter("basename", basename_filter);
-    // `fg`/`bg`/`bold`/`dim` are pure string transforms — no filesystem,
-    // network, or process access — so unlike `exec()` they need no
-    // `allow_exec` gating. Safe to register unconditionally on every surface
-    // this environment backs, including path expressions and formatting-only
-    // contexts.
-    add_colour_filters(&mut env, true);
-    env.add_filter("fromjson", fromjson_filter);
-    env
 }
 
-/// `fg`, `bg`, `bold` and `dim`, drawing their escapes only when `colour`:
-/// off, each hands its text back as it is (a bad colour is still an error).
-pub fn add_colour_filters(env: &mut Environment<'_>, colour: bool) {
+pub(super) fn add_fg(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    let colour = ctx.colour();
     env.add_filter("fg", move |value: String, color: String| {
         fg_filter(value, color, colour)
     });
+}
+
+pub(super) fn add_bg(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    let colour = ctx.colour();
     env.add_filter("bg", move |value: String, color: String| {
         bg_filter(value, color, colour)
     });
+}
+
+pub(super) fn add_bold(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    let colour = ctx.colour();
     env.add_filter("bold", move |value: String| bold_filter(value, colour));
+}
+
+pub(super) fn add_dim(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    let colour = ctx.colour();
     env.add_filter("dim", move |value: String| dim_filter(value, colour));
-}
-
-/// `{{ text | fromjson }}` — parse `text` as JSON into a value the template
-/// can navigate: `(exec(['tool', 'info', '-o', 'json']) | fromjson).context`.
-///
-/// Text that is not JSON is an `InvalidOperation` error carrying serde's
-/// message, so a tool that printed something else fails at the filter rather
-/// than rendering `undefined` three attributes later.
-fn fromjson_filter(value: String) -> Result<minijinja::Value, Error> {
-    serde_json::from_str::<serde_json::Value>(&value)
-        .map(|v| minijinja::Value::from_serialize(&v))
-        .map_err(|e| Error::new(ErrorKind::InvalidOperation, format!("fromjson: {e}")))
-}
-
-fn basename_filter(value: String) -> String {
-    // Remove trailing slashes, then take the last path component.
-    let trimmed = value.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    trimmed.rsplit('/').next().unwrap_or(trimmed).to_string()
 }
 
 fn truncate_filter(value: String, length: u32) -> String {
@@ -170,6 +155,7 @@ fn parse_hex_color(color: &str) -> Result<(u8, u8, u8), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::build_pure_engine_env;
 
     #[test]
     fn fg_wraps_with_correct_sgr() {
@@ -244,7 +230,7 @@ mod tests {
 
     #[test]
     fn filters_compose_via_concatenation() {
-        let env = build_env();
+        let env = build_pure_engine_env(Default::default());
         let expr = env
             .compile_expression(r##"("a" | fg("#ff0000")) ~ ("b" | fg("#00ff00"))"##)
             .unwrap();
@@ -279,7 +265,7 @@ mod tests {
 
     #[test]
     fn bold_composes_over_fg() {
-        let env = build_env();
+        let env = build_pure_engine_env(Default::default());
         let expr = env
             .compile_expression(r##""x" | fg("#ff0000") | bold"##)
             .unwrap();
@@ -291,39 +277,8 @@ mod tests {
     }
 
     #[test]
-    fn fromjson_parses_an_object_that_round_trips() {
-        let v =
-            fromjson_filter(r#"{"context": "mycluster", "nodes": [1, 2]}"#.to_string()).unwrap();
-        assert_eq!(
-            serde_json::to_value(&v).unwrap(),
-            serde_json::json!({"context": "mycluster", "nodes": [1, 2]})
-        );
-    }
-
-    #[test]
-    fn fromjson_result_is_navigable_in_an_expression() {
-        // The shipped `talos.toml` shape: parse a tool's JSON, then read one key.
-        let env = crate::engine::build_engine_env(Default::default());
-        let expr = env.compile_expression("(s | fromjson).context").unwrap();
-        let out = expr
-            .eval(minijinja::context! { s => r#"{"context": "mycluster", "roles": null}"# })
-            .unwrap();
-        assert_eq!(out.as_str(), Some("mycluster"));
-    }
-
-    #[test]
-    fn fromjson_rejects_text_that_is_not_json() {
-        let err = fromjson_filter("error: current-context is not set".to_string()).unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-        assert!(
-            err.to_string().contains("fromjson"),
-            "error should name the filter, got: {err}"
-        );
-    }
-
-    #[test]
     fn fg_nests_inside_bg() {
-        let env = build_env();
+        let env = build_pure_engine_env(Default::default());
         let expr = env
             .compile_expression(r##""x" | fg("#ff0000") | bg("#0000ff")"##)
             .unwrap();
@@ -333,32 +288,5 @@ mod tests {
             out.as_str().unwrap(),
             "\x1b[48;2;0;0;255m\x1b[38;2;255;0;0mx\x1b[0m\x1b[0m"
         );
-    }
-
-    #[test]
-    fn minijinja_renders_basic_template() {
-        let env = minijinja::Environment::new();
-        let out = env
-            .render_str("Hello {{ name }}", minijinja::context!(name => "world"))
-            .unwrap();
-        assert_eq!(out, "Hello world");
-    }
-
-    #[test]
-    fn minijinja_upper_filter_available() {
-        let env = minijinja::Environment::new();
-        let out = env
-            .render_str("{{ sha | upper }}", minijinja::context!(sha => "abcdef12"))
-            .unwrap();
-        assert_eq!(out, "ABCDEF12");
-    }
-
-    #[test]
-    fn minijinja_default_filter_available() {
-        let env = minijinja::Environment::new();
-        let out = env
-            .render_str("{{ missing | default('fallback') }}", minijinja::context!())
-            .unwrap();
-        assert_eq!(out, "fallback");
     }
 }

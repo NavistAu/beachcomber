@@ -10,14 +10,14 @@
 
 use crate::common::daemon::TestDaemon;
 use crate::common::socket::IsolatedSocket;
-use libbeachcomber::filters::build_env;
+use libbeachcomber::engine::build_pure_engine_env;
 use std::path::{Path, PathBuf};
 
 // ── basename filter ──────────────────────────────────────────────────────────
 
 #[test]
 fn basename_filter_extracts_last_component() {
-    let env = build_env();
+    let env = build_pure_engine_env(Default::default());
     let result = env
         .render_str(r#"{{ "/home/user/.venv" | basename }}"#, ())
         .unwrap();
@@ -26,14 +26,14 @@ fn basename_filter_extracts_last_component() {
 
 #[test]
 fn basename_filter_on_plain_name() {
-    let env = build_env();
+    let env = build_pure_engine_env(Default::default());
     let result = env.render_str(r#"{{ "myenv" | basename }}"#, ()).unwrap();
     assert_eq!(result, "myenv");
 }
 
 #[test]
 fn basename_filter_trailing_slash() {
-    let env = build_env();
+    let env = build_pure_engine_env(Default::default());
     let result = env
         .render_str(r#"{{ "/some/path/" | basename }}"#, ())
         .unwrap();
@@ -43,7 +43,7 @@ fn basename_filter_trailing_slash() {
 
 #[test]
 fn basename_filter_empty_string() {
-    let env = build_env();
+    let env = build_pure_engine_env(Default::default());
     let result = env.render_str(r#"{{ "" | basename }}"#, ()).unwrap();
     assert_eq!(result, "");
 }
