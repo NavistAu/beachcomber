@@ -107,9 +107,11 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
   (`<provider>:template`, seeded from configuration or `bc_put`) and the
   client renders them. A plain field is its cached value, a templated one
   is rendered, and a bare provider name is the whole merged namespace; a
-  miss is `data: null`. `cwd` is required; `env_json` is nullable ("no
-  environment": every `env.*` is absent). Every fetch the resolution makes
-  addresses `cwd`.
+  miss is `data: null`. `cwd` is the directory the resolution addresses,
+  read as `comb get --path` reads one (`~` is the home directory, a relative
+  path is against the process's working directory); NULL is the global
+  entry. `env_json` is nullable ("no environment": every `env.*` is absent).
+  Every fetch the resolution makes addresses `cwd`.
 - `bc_eval(client, template_str, cwd, env_json)` renders a template that is
   stored nowhere — the same value `comb eval` prints. `template_str`
   accepts a single `{{ expr }}` tag, or literal text/several tags — the

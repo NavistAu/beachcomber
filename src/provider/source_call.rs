@@ -267,7 +267,7 @@ pub fn source_call(
         }
         return Ok(None);
     }
-    let entry = crate::query::normalise_path(entry);
+    let entry = entry.and_then(crate::query::address_of);
     let chain = match cold {
         Cold::Run => crate::query::instance_chain(registry, provider, source, entry.as_deref())?,
         Cold::Skip => match kept_chain(registry, provider, source, entry.as_deref())? {

@@ -80,8 +80,11 @@ pub fn home_dir() -> Option<PathBuf> {
 
 /// Canonicalise a requested path into the address a cache entry is keyed by.
 ///
-/// A relative path resolves against the daemon's cwd; a path that cannot be
-/// canonicalised is kept verbatim rather than dropped.
+/// A request's path is absolute: the client made it so, against the caller's
+/// own directory and `$HOME` (`libbeachcomber::path::normalise`), which the
+/// daemon cannot see. A relative path, an empty one or one starting `~` is
+/// refused, never joined to the daemon's own working directory. A path that
+/// cannot be canonicalised is kept verbatim rather than dropped.
 ///
 /// **The global entry is `$HOME`: its address is `None`, its directory is
 /// `$HOME`.** A request naming `$HOME` and a request carrying no path at all
@@ -89,20 +92,25 @@ pub fn home_dir() -> Option<PathBuf> {
 /// gets a cache entry of its own beside the global one. The directory half of
 /// that rule is [`instance_dir`]: the instance at the global entry still has a
 /// real directory to read, and it is `$HOME`.
-pub fn normalise_path(requested: Option<&str>) -> Option<String> {
-    let p = requested?;
-    let path = Path::new(p);
-    let absolute = if path.is_relative() {
-        std::env::current_dir()
-            .ok()
-            .and_then(|cwd| cwd.join(path).canonicalize().ok())
-            .map(|abs| abs.to_string_lossy().to_string())
-            .unwrap_or_else(|| p.to_string())
-    } else {
-        path.canonicalize()
-            .map(|abs| abs.to_string_lossy().to_string())
-            .unwrap_or_else(|_| p.to_string())
+pub fn normalise_path(requested: Option<&str>) -> Result<Option<String>, String> {
+    let Some(p) = requested else {
+        return Ok(None);
     };
+    if !Path::new(p).is_absolute() {
+        return Err(format!("path must be absolute: {p:?}"));
+    }
+    Ok(address_of(p))
+}
+
+/// The cache address of an absolute directory: canonicalised (kept verbatim
+/// when it cannot be), and `None` — the global entry — for `$HOME`. What
+/// [`normalise_path`] gives a request, and what the daemon's own directories
+/// (rendered roots, instance directories) are keyed by.
+pub fn address_of(dir: &str) -> Option<String> {
+    let absolute = Path::new(dir)
+        .canonicalize()
+        .map(|abs| abs.to_string_lossy().to_string())
+        .unwrap_or_else(|_| dir.to_string());
     if is_home(&absolute) {
         return None;
     }
@@ -515,7 +523,7 @@ impl QueryPlan {
     ) -> Result<QueryPlan, String> {
         validate_key(raw_key)?;
         let (key, layers) = split_layer_facet(raw_key);
-        let requested_path = normalise_path(path_hint);
+        let requested_path = normalise_path(path_hint)?;
         let target = parse_key(&key)?;
 
         let provider = match &target {
@@ -1022,17 +1030,30 @@ mod path_chain_tests {
 
     #[test]
     fn normalise_maps_home_to_the_global_entry() {
-        assert_eq!(normalise_path(Some(&home())), None);
+        assert_eq!(normalise_path(Some(&home())), Ok(None));
     }
 
     #[test]
     fn normalise_passes_a_missing_path_through() {
-        assert_eq!(normalise_path(None), None);
+        assert_eq!(normalise_path(None), Ok(None));
         // A path that cannot be canonicalised is kept verbatim rather than dropped.
         assert_eq!(
             normalise_path(Some("/no/such/beachcomber/dir")),
-            Some("/no/such/beachcomber/dir".to_string())
+            Ok(Some("/no/such/beachcomber/dir".to_string()))
         );
+    }
+
+    /// The daemon never resolves a path against its own working directory:
+    /// a path the client did not make absolute is refused.
+    #[test]
+    fn normalise_refuses_a_path_that_is_not_absolute() {
+        for p in ["", ".", "rel/x", "~", "~/x"] {
+            assert_eq!(
+                normalise_path(Some(p)),
+                Err(format!("path must be absolute: {p:?}")),
+                "{p:?}"
+            );
+        }
     }
 
     #[test]

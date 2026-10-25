@@ -2037,7 +2037,11 @@ async fn handle_request(
 
             // Resolve optional path — canonicalize if provided. `$HOME`, like a
             // request carrying no path at all, is the global entry.
-            let effective_path: Option<String> = crate::query::normalise_path(path.as_deref());
+            let effective_path: Option<String> = match crate::query::normalise_path(path.as_deref())
+            {
+                Ok(p) => p,
+                Err(e) => return Response::error(e),
+            };
 
             // A ttl is the put's lifecycle: valid for N, stale for one decay
             // step, then gone. It needs a value to expire.

@@ -296,33 +296,14 @@ fn cli_path(global: bool, requested: Option<String>) -> Result<Option<String>, O
     if global {
         return Ok(None);
     }
-    let cwd = || {
-        std::env::current_dir().map_err(|e| {
-            beachcomber::cli::report::error("current directory", e);
+    // A `~` the shell left alone (it was quoted) means what it would have
+    // expanded to; a relative path is the caller's.
+    libbeachcomber::path::normalise_here(requested.as_deref())
+        .map(Some)
+        .map_err(|e| {
+            beachcomber::cli::report::error_named(e);
             Outcome::Error
         })
-    };
-    // A `~` the shell left alone (it was quoted) means what it would have
-    // expanded to; without this `'~/x'` is relative and lands under the cwd.
-    let requested = match requested {
-        Some(p) => Some(
-            libbeachcomber::path::expand_tilde(&p, std::env::var("HOME").ok().as_deref())
-                .map_err(|e| {
-                    beachcomber::cli::report::error_named(e);
-                    Outcome::Error
-                })?
-                .to_string_lossy()
-                .into_owned(),
-        ),
-        None => None,
-    };
-    Ok(Some(match requested {
-        Some(p) if std::path::Path::new(&p).is_relative() => {
-            cwd()?.join(p).to_string_lossy().into_owned()
-        }
-        Some(p) => p,
-        None => cwd()?.to_string_lossy().into_owned(),
-    }))
 }
 
 /// A trailing `[PATH]`: a directory only when it starts with `/`, `~` or

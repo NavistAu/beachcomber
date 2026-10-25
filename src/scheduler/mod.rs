@@ -1868,7 +1868,7 @@ mod tests {
             a.execute(Some(at)).unwrap();
             keys.push(lifecycle::Key {
                 provider: "p".into(),
-                path: crate::query::normalise_path(Some(at)),
+                path: crate::query::address_of(at),
                 source: "a".into(),
                 node: String::new(),
             });

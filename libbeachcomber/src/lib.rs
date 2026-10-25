@@ -773,7 +773,7 @@ impl Client {
         let socket_path = self.find_or_start_socket()?;
         let mut stream = self.connect(&socket_path)?;
 
-        self.send_recv(&mut stream, &get_request(key, path, force, wait))
+        self.send_recv(&mut stream, &get_request(key, path, force, wait)?)
     }
 
     /// Query one node and return both halves of the daemon's answer — the
@@ -791,7 +791,7 @@ impl Client {
         let socket_path = self.find_or_start_socket()?;
         let mut stream = self.connect(&socket_path)?;
 
-        let line = self.send_recv_line(&mut stream, &get_request(key, path, force, wait))?;
+        let line = self.send_recv_line(&mut stream, &get_request(key, path, force, wait)?)?;
         parse_node(&line, self.skew_ref())
     }
 
@@ -858,7 +858,7 @@ impl Client {
         if let Some(t) = ttl {
             request["ttl"] = serde_json::json!(t);
         }
-        if let Some(p) = path {
+        if let Some(p) = wire_path(path)? {
             request["path"] = serde_json::json!(p);
         }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
@@ -878,7 +878,7 @@ impl Client {
         let mut stream = self.connect(&socket_path)?;
 
         let mut request = serde_json::json!({ "op": "refresh", "key": key });
-        if let Some(p) = path {
+        if let Some(p) = wire_path(path)? {
             request["path"] = serde_json::json!(p);
         }
 
@@ -919,7 +919,7 @@ impl Client {
     ) -> Result<Option<serde_json::Value>, CombError> {
         let socket_path = self.find_or_start_socket()?;
         let mut stream = self.connect(&socket_path)?;
-        let line = self.send_recv_line(&mut stream, &layers_request(key, path))?;
+        let line = self.send_recv_line(&mut stream, &layers_request(key, path)?)?;
         parse_layers(&line, self.skew_ref())
     }
 
@@ -959,7 +959,7 @@ impl Client {
         let socket_path = self.find_or_start_socket()?;
         let mut stream = self.connect(&socket_path)?;
         let mut request = serde_json::json!({ "op": "watch", "key": key });
-        if let Some(p) = path {
+        if let Some(p) = wire_path(path)? {
             request["path"] = serde_json::json!(p);
         }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
@@ -1194,7 +1194,7 @@ impl Session {
         force: bool,
         wait: bool,
     ) -> Result<CombResult, CombError> {
-        let line = self.send_recv_line(&get_request(key, path, force, wait))?;
+        let line = self.send_recv_line(&get_request(key, path, force, wait)?)?;
         parse_response(&line, self.version_skew.as_ref())
     }
 
@@ -1207,7 +1207,7 @@ impl Session {
         force: bool,
         wait: bool,
     ) -> Result<resolve::Got, CombError> {
-        let line = self.send_recv_line(&get_request(key, path, force, wait))?;
+        let line = self.send_recv_line(&get_request(key, path, force, wait)?)?;
         parse_node(&line, self.version_skew.as_ref())
     }
 
@@ -1269,7 +1269,7 @@ impl Session {
 
     /// Set connection context so subsequent queries don't need explicit paths.
     pub fn set_context(&mut self, path: &str) -> Result<(), CombError> {
-        let request = serde_json::json!({ "op": "context", "path": path });
+        let request = serde_json::json!({ "op": "context", "path": wire_path(Some(path))? });
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
         self.reader.get_mut().write_all(msg.as_bytes())?;
 
@@ -1296,7 +1296,7 @@ impl Session {
         if let Some(t) = ttl {
             request["ttl"] = serde_json::json!(t);
         }
-        if let Some(p) = path {
+        if let Some(p) = wire_path(path)? {
             request["path"] = serde_json::json!(p);
         }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
@@ -1312,7 +1312,7 @@ impl Session {
     /// Trigger recomputation.
     pub fn refresh(&mut self, key: &str, path: Option<&str>) -> Result<(), CombError> {
         let mut request = serde_json::json!({ "op": "refresh", "key": key });
-        if let Some(p) = path {
+        if let Some(p) = wire_path(path)? {
             request["path"] = serde_json::json!(p);
         }
         let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
@@ -1342,7 +1342,7 @@ impl Session {
         key: &str,
         path: Option<&str>,
     ) -> Result<Option<serde_json::Value>, CombError> {
-        let line = self.send_recv_line(&layers_request(key, path))?;
+        let line = self.send_recv_line(&layers_request(key, path)?)?;
         parse_layers(&line, self.version_skew.as_ref())
     }
 
@@ -1388,9 +1388,14 @@ impl Session {
 /// The `get` request every query sends: `path`, `force` and `wait` are
 /// present only when set, so the wire form is the same whichever of
 /// `get_with_flags` or `get_node` builds it, on either transport.
-fn get_request(key: &str, path: Option<&str>, force: bool, wait: bool) -> serde_json::Value {
+fn get_request(
+    key: &str,
+    path: Option<&str>,
+    force: bool,
+    wait: bool,
+) -> Result<serde_json::Value, CombError> {
     let mut request = serde_json::json!({ "op": "get", "key": key });
-    if let Some(p) = path {
+    if let Some(p) = wire_path(path)? {
         request["path"] = serde_json::json!(p);
     }
     if force {
@@ -1399,7 +1404,7 @@ fn get_request(key: &str, path: Option<&str>, force: bool, wait: bool) -> serde_
     if wait {
         request["wait"] = serde_json::json!(true);
     }
-    request
+    Ok(request)
 }
 
 /// Parse a response line's `{"ok": ...}` envelope, returning the raw JSON
@@ -1451,12 +1456,20 @@ fn parse_node(line: &str, skew: Option<&VersionSkew>) -> Result<resolve::Got, Co
     })
 }
 
-fn layers_request(key: &str, path: Option<&str>) -> serde_json::Value {
+fn layers_request(key: &str, path: Option<&str>) -> Result<serde_json::Value, CombError> {
     let mut request = serde_json::json!({ "op": "layers", "key": key });
-    if let Some(p) = path {
+    if let Some(p) = wire_path(path)? {
         request["path"] = serde_json::json!(p);
     }
-    request
+    Ok(request)
+}
+
+/// The `path` a request carries: [`path::normalise_here`], so `~` and a
+/// relative directory mean what they mean to this process, and the daemon
+/// only ever receives an absolute path. `None` is the global entry.
+fn wire_path(path: Option<&str>) -> Result<Option<String>, CombError> {
+    path.map(|p| path::normalise_here(Some(p)).map_err(|e| CombError::ParseError(e.to_string())))
+        .transpose()
 }
 
 fn parse_layers(

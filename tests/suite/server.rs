@@ -496,3 +496,41 @@ async fn a_get_of_a_field_the_put_does_not_cover_runs_and_demands_the_source() {
 
     handle.abort();
 }
+
+/// A request's path is absolute: the client makes it so, against the
+/// caller's directory and `$HOME`, which the daemon cannot see. A relative,
+/// empty or `~` path is refused on every op that takes one, never joined to
+/// the daemon's own working directory.
+#[tokio::test]
+async fn a_path_that_is_not_absolute_is_refused_on_every_op() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+
+    for path in ["rel/x", "", "~/x"] {
+        for request in [
+            serde_json::json!({"op": "get", "key": "hostname", "path": path}),
+            serde_json::json!({"op": "put", "key": "rp", "data": {"a": 1}, "path": path}),
+            serde_json::json!({"op": "refresh", "key": "hostname", "path": path}),
+            serde_json::json!({"op": "layers", "key": "rp", "path": path}),
+        ] {
+            let mut stream = UnixStream::connect(&sock).await.unwrap();
+            stream
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let response: Response = serde_json::from_str(&line).unwrap();
+            assert!(!response.ok, "{request} must be refused: {line}");
+            assert_eq!(
+                response.error.as_deref(),
+                Some(format!("path must be absolute: {path:?}").as_str()),
+                "{request}"
+            );
+        }
+    }
+
+    handle.abort();
+}

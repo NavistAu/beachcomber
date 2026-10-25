@@ -112,7 +112,7 @@ Read a cached value.
 {
   "op": "get",
   "key": "git.branch",
-  "path": "/absolute/or/relative/path",
+  "path": "/absolute/path",
   "force": false,
   "wait": false
 }
@@ -121,7 +121,12 @@ Read a cached value.
 - `key` (string, required) — `provider` or `provider.field`. See "Keys" below.
 - `path` (string, optional) — the directory the read is addressed at. Omitting
   it — or giving `$HOME`, which is the same address — reads the **global
-  entry**. A `path` returns the **chain-resolved tree**: static records (source
+  entry**. A `path` is absolute on every op that takes one: the client makes a
+  relative or `~` path absolute against the caller's own directory and home
+  (`libbeachcomber::path::normalise`), which the daemon cannot see. A path that
+  is not absolute (`""`, `"."`, `"rel/x"`, `"~/x"`) is refused,
+  `path must be absolute: "<path>"`, never joined to the daemon's working
+  directory. A `path` returns the **chain-resolved tree**: static records (source
   `put` or `config:<file>`) are collected from that path and every ancestor up
   to `$HOME` (or to `/` for a path outside `$HOME`) and then the global entry,
   the nearest winning. Provider-produced records live at the instances of

@@ -102,7 +102,7 @@ impl DaemonRead for RegistryReader {
         if let Some((registry, _)) = self.bound.get()
             && let Some(registry) = registry.upgrade()
         {
-            let root = crate::query::normalise_path(dir);
+            let root = dir.and_then(crate::query::address_of);
             registry.set_callees((provider, source, root.as_deref()), called);
         }
     }
@@ -736,7 +736,7 @@ impl ProviderRegistry {
             }
             // A rendered root is whatever the line says: canonicalise it.
             Some(root) if root == dir && !crate::query::is_home(&root) => Found::At(root),
-            Some(root) => match crate::query::normalise_path(Some(&root)) {
+            Some(root) => match crate::query::address_of(&root) {
                 Some(root) => Found::At(root),
                 None => Found::Home,
             },
@@ -2429,7 +2429,7 @@ result.y = "{{ data }}"
         std::fs::write(&flag, "b").unwrap();
         let (registry, _cache) = calling_registry(&flag);
         let at = dir.path().to_str().unwrap();
-        let root = crate::query::normalise_path(Some(at));
+        let root = crate::query::address_of(at);
         let a = registry.source("p", "a").unwrap();
 
         a.execute(Some(at)).unwrap();
@@ -2449,7 +2449,7 @@ result.y = "{{ data }}"
         std::fs::write(&flag, "b").unwrap();
         let (registry, _cache) = calling_registry(&flag);
         let at = dir.path().to_str().unwrap();
-        let root = crate::query::normalise_path(Some(at));
+        let root = crate::query::address_of(at);
         let a = registry.source("p", "a").unwrap();
         a.execute(Some(at)).unwrap();
         assert_eq!(demanded_with(&registry, "a", &root), ["p.a", "p.b"]);
@@ -2467,7 +2467,7 @@ result.y = "{{ data }}"
         std::fs::write(&flag, "b").unwrap();
         let (registry, _cache) = calling_registry(&flag);
         let at = dir.path().to_str().unwrap();
-        let root = crate::query::normalise_path(Some(at));
+        let root = crate::query::address_of(at);
         registry
             .source("p", "a")
             .unwrap()

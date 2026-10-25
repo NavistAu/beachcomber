@@ -476,22 +476,45 @@ fn bc_eval_deeply_nested_templates_error_rather_than_crash() {
     unsafe { bc_client_free(client) };
 }
 
-// ── cwd is required ──────────────────────────────────────────────────────────
+// ── the directory a resolution addresses ─────────────────────────────────────
 
-/// `cwd` is required: NULL must return an error envelope, never fall back
-/// to the process's own working directory.
+/// A NULL `cwd` addresses the global entry, as `comb get --global` does: a
+/// value put there is found, and one put at a directory is not.
 #[test]
-fn null_cwd_is_an_error_envelope() {
+fn null_cwd_addresses_the_global_entry() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    let key = cs("terraform.workspace");
-    let expr = cs("{{ env.LONGVAR | truncate(5) }}");
+    put(client, "nullcwd", r#"{"v":"global"}"#, None);
+    put(client, "nullcwd", r#"{"w":"dir"}"#, Some("/tmp"));
+    let key = cs("nullcwd.v");
+    let src = cs("{{ nullcwd.v }}-{{ nullcwd.w or 'none' }}");
 
     let v = read(unsafe { bc_resolve(client, key.as_ptr(), ptr::null(), ptr::null()) });
-    assert_eq!(v["ok"], serde_json::json!(false));
+    assert_eq!(hit(&v), &serde_json::json!("global"), "{v}");
 
-    let v = read(unsafe { bc_eval(client, expr.as_ptr(), ptr::null(), ptr::null()) });
-    assert_eq!(v["ok"], serde_json::json!(false));
+    let v = read(unsafe { bc_eval(client, src.as_ptr(), ptr::null(), ptr::null()) });
+    assert_eq!(hit(&v), &serde_json::json!("global-none"), "{v}");
+
+    unsafe { bc_client_free(client) };
+}
+
+/// A relative `cwd` is the caller's, made absolute against this process's
+/// directory exactly as a relative `comb get --path` is: the same read as
+/// naming that directory outright.
+#[test]
+fn a_relative_cwd_is_the_callers_directory() {
+    let daemon = DaemonGuard::spawn();
+    let client = client_for(&daemon.path);
+    let here = std::env::current_dir().unwrap();
+    put(
+        client,
+        "relcwd",
+        r#"{"v":"here"}"#,
+        Some(here.to_str().unwrap()),
+    );
+
+    let v = resolve(client, "relcwd.v", ".", None);
+    assert_eq!(hit(&v), &serde_json::json!("here"), "{v}");
 
     unsafe { bc_client_free(client) };
 }

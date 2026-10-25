@@ -47,7 +47,7 @@ A suffix applies only to a command that has `-f` and that format: `comb p.j` is 
 - `-p <path>` / `--path <path>`;
 - `--global`, the global entry (`$HOME`), which every directory's chain ends at.
 
-The three conflict with one another, and with none the command addresses the current directory. A relative path is the caller's, not the daemon's, and a leading `~` the shell left unexpanded (because it was quoted) is `$HOME`.
+The three conflict with one another, and with none the command addresses the current directory. A relative path is the caller's, not the daemon's, and a leading `~` the shell left unexpanded (because it was quoted) is `$HOME`; `~user` is an error. The SDKs read a path the same way, through the same function, and the daemon refuses any path that is not absolute.
 
 A template rendered for a read runs its `exec()`, `lup()` and `read` in the directory the read addresses — the given path, else the current directory, and `$HOME` for `--global` — so `comb get t.x ./repo`, `comb eval '{{ t.x }}' ./repo`, `comb watch t.x ./repo` and an SDK's `resolve(t.x, cwd=./repo)` look at the same files.
 

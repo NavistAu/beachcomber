@@ -319,25 +319,24 @@ fn watch_open_on_an_env_key_is_refused() {
     unsafe { bc_client_free(client) };
 }
 
-/// `bc_watch_open` with a NULL `cwd` is a deferred error, not a NULL return:
-/// `cwd` is required the way it is for `bc_resolve`, and the refusal names
-/// the argument.
+/// `bc_watch_open` with a NULL `cwd` watches the global entry, as
+/// `bc_resolve` reads it: the first event is the value put there.
 #[test]
-fn watch_open_with_null_cwd_is_a_parse_error_naming_cwd() {
+fn watch_open_with_null_cwd_watches_the_global_entry() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     let key = cs("watch_null_cwd_test.field");
+    let data = cs(r#"{"field":"global"}"#);
+    let ns = cs("watch_null_cwd_test");
+    let v = read(unsafe { bc_put(client, ns.as_ptr(), data.as_ptr(), ptr::null(), ptr::null()) });
+    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
     let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null(), ptr::null()) };
     assert!(!watch.is_null());
 
     let v = read(unsafe { bc_watch_next(watch, 2000) });
-    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
-    assert_eq!(v["error"]["kind"], serde_json::json!("parse_error"), "{v}");
-    assert_eq!(
-        v["error"]["message"],
-        serde_json::json!("cwd must not be NULL"),
-        "{v}"
-    );
+    assert_eq!(v["ok"], serde_json::json!(true), "{v}");
+    assert_eq!(v["outcome"], serde_json::json!("event"), "{v}");
+    assert_eq!(v["data"], serde_json::json!("global"), "{v}");
 
     unsafe { bc_watch_free(watch) };
     unsafe { bc_client_free(client) };

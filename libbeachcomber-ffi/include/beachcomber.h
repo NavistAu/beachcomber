@@ -178,18 +178,20 @@ char *bc_hello(BcClient *client);
  * is the whole merged namespace, as `comb get provider -f json`. A miss is
  * `data: null`.
  *
- * `cwd` is required: NULL returns an error envelope rather than falling
- * back to the process's own working directory — this library must never
- * read ambient state on the caller's behalf. Every fetch the resolution
- * makes addresses `cwd`, the same convention `comb get --path` follows.
+ * `cwd` is the directory the resolution addresses, read as `comb get --path`
+ * reads one: `~` is the home directory and a relative path is against the
+ * caller's working directory. NULL addresses the global entry, as
+ * `comb get --global` does. Every fetch the resolution makes addresses that
+ * directory, and a template's `exec`, `lup` and `read` run in it (in
+ * `$HOME` from `env_json` for the global entry).
  * `env_json` is nullable, meaning "no environment": every `env.*` is absent.
  * `exec()` inside a template runs only on a client created with
  * `{"exec":true}`; otherwise it fails with `exec() is disabled in this
  * context`.
  *
  * # Safety
- * `client` must be a valid pointer from [`bc_client_new`]; `key` and `cwd`
- * must be non-null and NUL-terminated; `env_json` must be NULL or
+ * `client` must be a valid pointer from [`bc_client_new`]; `key` must be
+ * non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
  * NUL-terminated.
  */
 char *bc_resolve(BcClient *client, const char *key, const char *cwd, const char *env_json);
@@ -201,14 +203,16 @@ char *bc_resolve(BcClient *client, const char *key, const char *cwd, const char 
  * `{{ expr }}` tag keeps the expression's natural type; anything else
  * (literal text, several tags, a source with no tags at all) is a string.
  * A missing ref — an absent `env.*`, a daemon miss, a key the daemon
- * rejects — is falsy at any depth, not an error.
+ * rejects — is falsy at any depth, not an error. A one-tag source whose
+ * value is `none` or undefined is absent: `data: null`, as a miss is for
+ * [`bc_resolve`].
  *
  * `cwd`, `env_json` and `exec()` behave as for [`bc_resolve`].
  *
  * # Safety
  * `client` must be a valid pointer from [`bc_client_new`]; `template_str`
- * and `cwd` must be non-null and NUL-terminated; `env_json` must be NULL
- * or NUL-terminated.
+ * must be non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
+ * NUL-terminated.
  */
 char *bc_eval(BcClient *client, const char *template_str, const char *cwd, const char *env_json);
 
@@ -283,14 +287,10 @@ char *bc_session_set_context(BcSession *session, const char *path);
  * namespace's template notifies that namespace, so a template edited under
  * the watch fires it exactly as a changed cache record does.
  *
- * `cwd` and `env_json` mean what they mean for [`bc_resolve`], and for the
- * same reason: this library reads no ambient state on the caller's behalf,
- * so the directory a watch addresses and the environment its templates see
- * are handed in. `cwd` is required — NULL is an error rather than a
- * fallback to the process's own working directory — and is both the slot
- * every subscription is opened at and the `cwd` every re-resolution runs
- * with. `env_json` is nullable, meaning "no environment": every `env.*` is
- * `""`. There is no global-entry form, as there is none for `bc_resolve`.
+ * `cwd` and `env_json` mean what they mean for [`bc_resolve`]: `cwd` is
+ * both the directory every subscription is opened at and the one every
+ * re-resolution runs in, and NULL watches the global entry. `env_json` is
+ * nullable, meaning "no environment": every `env.*` is absent.
  * `exec()` inside a template runs only on a client created with
  * `{"exec":true}`.
  *
@@ -301,7 +301,7 @@ char *bc_session_set_context(BcSession *session, const char *path);
  *
  * # Safety
  * `client` must be a valid, non-null pointer from [`bc_client_new`]; `key`
- * and `cwd` must be non-null and NUL-terminated; `env_json` must be NULL or
+ * must be non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
  * NUL-terminated.
  */
 BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const char *env_json);

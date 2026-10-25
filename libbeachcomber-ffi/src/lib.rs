@@ -487,6 +487,23 @@ fn resolve_error(e: ResolveError, fetch: &mut ClientFetch<'_>) -> FfiError {
     }
 }
 
+/// The directory a resolution addresses: NULL is the global entry, as
+/// `comb get --global` is; anything else is normalised as every request path
+/// is ([`libbeachcomber::path::normalise_here`]): `~` is the caller's home and
+/// a relative path is against the caller's working directory.
+///
+/// # Safety
+/// `cwd` must be NULL or NUL-terminated.
+unsafe fn resolution_dir(cwd: *const c_char) -> Result<(String, Slot), FfiError> {
+    if cwd.is_null() {
+        return Ok((String::new(), Slot::Global));
+    }
+    let dir = unsafe { required_str(cwd, "cwd") }?;
+    let dir = libbeachcomber::path::normalise_here(Some(dir))
+        .map_err(|e| FfiError::new(ErrorKind::ParseError, e.to_string()))?;
+    Ok((dir.clone(), Slot::Path(dir)))
+}
+
 /// Resolve `key` to the value `comb get key` prints at `cwd`, through
 /// [`libbeachcomber::resolve`]: the daemon holds the templates
 /// (`<provider>:template`, seeded from configuration or `put`), and this
@@ -495,18 +512,20 @@ fn resolve_error(e: ResolveError, fetch: &mut ClientFetch<'_>) -> FfiError {
 /// is the whole merged namespace, as `comb get provider -f json`. A miss is
 /// `data: null`.
 ///
-/// `cwd` is required: NULL returns an error envelope rather than falling
-/// back to the process's own working directory — this library must never
-/// read ambient state on the caller's behalf. Every fetch the resolution
-/// makes addresses `cwd`, the same convention `comb get --path` follows.
+/// `cwd` is the directory the resolution addresses, read as `comb get --path`
+/// reads one: `~` is the home directory and a relative path is against the
+/// caller's working directory. NULL addresses the global entry, as
+/// `comb get --global` does. Every fetch the resolution makes addresses that
+/// directory, and a template's `exec`, `lup` and `read` run in it (in
+/// `$HOME` from `env_json` for the global entry).
 /// `env_json` is nullable, meaning "no environment": every `env.*` is absent.
 /// `exec()` inside a template runs only on a client created with
 /// `{"exec":true}`; otherwise it fails with `exec() is disabled in this
 /// context`.
 ///
 /// # Safety
-/// `client` must be a valid pointer from [`bc_client_new`]; `key` and `cwd`
-/// must be non-null and NUL-terminated; `env_json` must be NULL or
+/// `client` must be a valid pointer from [`bc_client_new`]; `key` must be
+/// non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
 /// NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_resolve(
@@ -518,12 +537,12 @@ pub unsafe extern "C" fn bc_resolve(
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let key = unsafe { required_str(key, "key") }?;
-        let cwd = unsafe { required_str(cwd, "cwd") }?;
+        let (cwd, slot) = unsafe { resolution_dir(cwd) }?;
         let env_vars = parse_env_json(unsafe { optional_str(env_json) }?)?;
         let inputs = Inputs {
-            cwd,
+            cwd: &cwd,
             env: &env_vars,
-            slot: Slot::Path(cwd.to_string()),
+            slot,
             force: false,
             wait: false,
             allow_exec: c.allow_exec(),
@@ -551,8 +570,8 @@ pub unsafe extern "C" fn bc_resolve(
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `template_str`
-/// and `cwd` must be non-null and NUL-terminated; `env_json` must be NULL
-/// or NUL-terminated.
+/// must be non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
+/// NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_eval(
     client: *mut BcClient,
@@ -563,12 +582,12 @@ pub unsafe extern "C" fn bc_eval(
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let template_str = unsafe { required_str(template_str, "template_str") }?;
-        let cwd = unsafe { required_str(cwd, "cwd") }?;
+        let (cwd, slot) = unsafe { resolution_dir(cwd) }?;
         let env_vars = parse_env_json(unsafe { optional_str(env_json) }?)?;
         let inputs = Inputs {
-            cwd,
+            cwd: &cwd,
             env: &env_vars,
-            slot: Slot::Path(cwd.to_string()),
+            slot,
             force: false,
             wait: false,
             allow_exec: c.allow_exec(),
@@ -788,14 +807,10 @@ pub struct BcWatch {
 /// namespace's template notifies that namespace, so a template edited under
 /// the watch fires it exactly as a changed cache record does.
 ///
-/// `cwd` and `env_json` mean what they mean for [`bc_resolve`], and for the
-/// same reason: this library reads no ambient state on the caller's behalf,
-/// so the directory a watch addresses and the environment its templates see
-/// are handed in. `cwd` is required — NULL is an error rather than a
-/// fallback to the process's own working directory — and is both the slot
-/// every subscription is opened at and the `cwd` every re-resolution runs
-/// with. `env_json` is nullable, meaning "no environment": every `env.*` is
-/// `""`. There is no global-entry form, as there is none for `bc_resolve`.
+/// `cwd` and `env_json` mean what they mean for [`bc_resolve`]: `cwd` is
+/// both the directory every subscription is opened at and the one every
+/// re-resolution runs in, and NULL watches the global entry. `env_json` is
+/// nullable, meaning "no environment": every `env.*` is absent.
 /// `exec()` inside a template runs only on a client created with
 /// `{"exec":true}`.
 ///
@@ -806,7 +821,7 @@ pub struct BcWatch {
 ///
 /// # Safety
 /// `client` must be a valid, non-null pointer from [`bc_client_new`]; `key`
-/// and `cwd` must be non-null and NUL-terminated; `env_json` must be NULL or
+/// must be non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
 /// NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_watch_open(
@@ -818,12 +833,12 @@ pub unsafe extern "C" fn bc_watch_open(
     let state = (|| {
         let c = unsafe { client_arc(client) }?;
         let key = unsafe { required_str(key, "key") }?;
-        let cwd = unsafe { required_str(cwd, "cwd") }?;
+        let (cwd, slot) = unsafe { resolution_dir(cwd) }?;
         let env_vars = parse_env_json(unsafe { optional_str(env_json) }?)?;
         let inputs = Inputs {
-            cwd,
+            cwd: &cwd,
             env: &env_vars,
-            slot: Slot::Path(cwd.to_string()),
+            slot,
             // A watch is a subscription, not a demand: it never forces an
             // execution or waits on one.
             force: false,
