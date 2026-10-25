@@ -38,6 +38,7 @@ impl Source for RootedSourceImpl {
             fsevents_reinstate: false,
             decay: None,
             budget_execute: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+            timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
             nearest: false,
         })
     }
@@ -99,6 +100,7 @@ impl Source for GlobalSourceImpl {
             fsevents_reinstate: false,
             decay: None,
             budget_execute: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+            timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
             nearest: false,
         })
     }

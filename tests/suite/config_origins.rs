@@ -183,12 +183,12 @@ fn a_value_no_file_sets_is_comb_s_default() {
         "{}",
         lines.join("\n")
     );
-    let rows = json(home.path(), &["daemon.provider_timeout_secs"]);
+    let rows = json(home.path(), &["daemon.timeout"]);
     assert_eq!(
         rows,
         vec![serde_json::json!({
-            "key": "daemon.provider_timeout_secs",
-            "value": 10,
+            "key": "daemon.timeout",
+            "value": "10s",
             "file": null,
             "shadowed": [],
         })]

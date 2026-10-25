@@ -274,7 +274,7 @@ Each decay step doubles the poll interval and the step duration relative to the 
 
 **Idle shutdown**
 
-When `cache.is_empty()` and `demand.is_empty()` both hold true and no activity has been seen for `[daemon] idle_shutdown_secs`, the daemon exits.
+When `cache.is_empty()` and `demand.is_empty()` both hold true and no activity has been seen for `[daemon] idle_shutdown`, the daemon exits.
 
 ---
 

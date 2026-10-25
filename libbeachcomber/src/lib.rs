@@ -18,6 +18,7 @@
 //! }
 //! ```
 
+pub mod duration;
 pub mod engine;
 pub mod eval;
 // `exec()` spawn engine, backing the `exec()` jinja function registered in

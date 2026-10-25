@@ -382,6 +382,7 @@ impl ConfigSource {
             fsevents_reinstate: !matches!(recorded.invalidation, InvalidationStrategy::Poll { .. }),
             decay: recorded.decay,
             budget_execute: recorded.budget_execute,
+            timeout: recorded.timeout,
             nearest: recorded.nearest,
         };
         Ok(Self {
@@ -646,6 +647,7 @@ mod tests {
                 interval_secs: 1,
             },
             budget_execute: Duration::from_millis(50),
+            timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
             decay: None,
             nearest: false,
         }
@@ -877,6 +879,7 @@ mod tests {
                     interval_secs: 9,
                 },
                 budget_execute: Duration::from_millis(321),
+                timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
                 decay: Some(1),
                 nearest: false,
             };

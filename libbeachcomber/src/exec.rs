@@ -5,7 +5,7 @@
 //! stdin, and drains stdout/stderr concurrently — each on its own thread —
 //! while the calling thread polls [`std::process::Child::try_wait`] against
 //! a deadline. The whole point is a *bounded* deadline: `run` must never
-//! block meaningfully longer than `timeout_ms` (plus a small fixed grace),
+//! block meaningfully longer than `timeout` (plus a small fixed grace),
 //! no matter what the child does. Three things threaten that, and the
 //! shape of this module is the fix for all three:
 //!
@@ -85,7 +85,7 @@ pub(crate) struct ExecRequest<'a> {
     pub label: Option<&'a str>,
     pub args: &'a [String],
     pub stdin: Option<&'a str>,
-    pub timeout_ms: u64,
+    pub timeout: Duration,
     pub env: &'a HashMap<String, String>,
     pub cwd: Option<&'a Path>,
 }
@@ -133,7 +133,7 @@ pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
     // in particular, before the stdin write (now threaded, see below), which
     // used to run synchronously right here and left the deadline blind to
     // however long it took.
-    let deadline = Instant::now() + Duration::from_millis(req.timeout_ms);
+    let deadline = Instant::now() + req.timeout;
     // `process_group(0)` makes the child its own group leader, so its pid
     // is also the process group id — the target for the group-wide kill
     // once we're done (see module doc).
@@ -233,7 +233,7 @@ pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
         Outcome::Exited(status) => Err(failure_message(name, format!("{status}"), &stderr_buf)),
         Outcome::TimedOut => Err(failure_message(
             name,
-            format!("timed out after {}ms", req.timeout_ms),
+            format!("timed out after {}", crate::duration::display(req.timeout)),
             &stderr_buf,
         )),
         Outcome::Capped => Err(failure_message(
@@ -388,7 +388,7 @@ mod tests {
             label: None,
             args: &["hello".to_string()],
             stdin: None,
-            timeout_ms: 1000,
+            timeout: Duration::from_millis(1000),
             env: &test_env(),
             cwd: None,
         };
@@ -402,7 +402,7 @@ mod tests {
             label: None,
             args: &[],
             stdin: Some("round trip"),
-            timeout_ms: 1000,
+            timeout: Duration::from_millis(1000),
             env: &test_env(),
             cwd: None,
         };
@@ -419,7 +419,7 @@ mod tests {
             label: None,
             args: &[],
             stdin: None,
-            timeout_ms: 1000,
+            timeout: Duration::from_millis(1000),
             env: &test_env(),
             cwd: None,
         };
@@ -445,7 +445,7 @@ mod tests {
             label: None,
             args: &[],
             stdin: Some(&payload),
-            timeout_ms: 3000,
+            timeout: Duration::from_millis(3000),
             env: &test_env(),
             cwd: None,
         };
@@ -471,7 +471,7 @@ mod tests {
             label: None,
             args: &["-c".to_string(), "sleep 3".to_string()],
             stdin: Some(&payload),
-            timeout_ms: 200,
+            timeout: Duration::from_millis(200),
             env: &test_env(),
             cwd: None,
         };
@@ -497,7 +497,7 @@ mod tests {
             label: None,
             args: &["-c".to_string(), "sleep 3 & echo started".to_string()],
             stdin: None,
-            timeout_ms: 200,
+            timeout: Duration::from_millis(200),
             env: &test_env(),
             cwd: None,
         };
@@ -518,7 +518,7 @@ mod tests {
             label: None,
             args: &["-c".to_string(), "echo boom >&2; exit 3".to_string()],
             stdin: None,
-            timeout_ms: 1000,
+            timeout: Duration::from_millis(1000),
             env: &test_env(),
             cwd: None,
         };
@@ -538,7 +538,7 @@ mod tests {
             label: None,
             args: &[],
             stdin: None,
-            timeout_ms: 1000,
+            timeout: Duration::from_millis(1000),
             env: &test_env(),
             cwd: None,
         };
@@ -553,7 +553,7 @@ mod tests {
             label: None,
             args: &["-c".to_string(), "sleep 5".to_string()],
             stdin: None,
-            timeout_ms: 100,
+            timeout: Duration::from_millis(100),
             env: &test_env(),
             cwd: None,
         };
@@ -578,7 +578,7 @@ mod tests {
             label: None,
             args: &["-c".to_string(), "head -c 2000000 /dev/zero".to_string()],
             stdin: None,
-            timeout_ms: 5000,
+            timeout: Duration::from_millis(5000),
             env: &test_env(),
             cwd: None,
         };
@@ -607,7 +607,7 @@ mod tests {
                 "head -c 2000000 /dev/zero; sleep 30".to_string(),
             ],
             stdin: None,
-            timeout_ms: 20_000,
+            timeout: Duration::from_millis(20_000),
             env: &test_env(),
             cwd: None,
         };

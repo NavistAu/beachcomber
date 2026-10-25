@@ -1370,9 +1370,9 @@ impl ProviderRegistry {
         errors.into_iter().collect()
     }
 
-    /// Every built-in Source runs on `[daemon] budget.execute`; one whose
-    /// `return` the files set takes its schedule, failback, decay and budget
-    /// from that line instead. A built-in with no `return` keeps the rest of
+    /// Every built-in Source runs on `[daemon] budget` and `[daemon] timeout`;
+    /// one whose `return` the files set takes its schedule, failback, decay,
+    /// budget and timeout from that line instead. A built-in with no `return` keeps the rest of
     /// what it declares: the `_` lines apply to config Sources only.
     fn retune_builtins(
         &mut self,
@@ -1380,7 +1380,8 @@ impl ProviderRegistry {
         builtins: &[(String, String)],
         retunes: &[Retune],
     ) -> Vec<String> {
-        let budget = config.daemon().budget_execute();
+        let budget = config.daemon().budget();
+        let timeout = config.daemon().timeout();
         let mut errors = Vec::new();
         for (provider, source) in builtins {
             let line = retunes
@@ -1388,6 +1389,7 @@ impl ProviderRegistry {
                 .find(|r| &r.provider == provider && &r.source == source);
             self.retune(provider, source, |meta| {
                 meta.budget_execute = budget;
+                meta.timeout = timeout;
                 if let Some(Retune { recorded, .. }) = line {
                     meta.fsevents_reinstate =
                         !matches!(recorded.invalidation, InvalidationStrategy::Poll { .. });
@@ -1395,6 +1397,7 @@ impl ProviderRegistry {
                     meta.failback = recorded.failback;
                     meta.decay = recorded.decay;
                     meta.budget_execute = recorded.budget_execute;
+                    meta.timeout = recorded.timeout;
                     meta.nearest = recorded.nearest;
                 }
             });
@@ -1440,14 +1443,15 @@ impl ProviderRegistry {
 }
 
 /// What a Source gets for a decorator its `return` does not name: every Source
-/// has a `failback` and a `budget`, with no off switch.
+/// has a `failback`, a `budget` and a `timeout`, with no off switch.
 fn engine_defaults(config: &Config) -> EngineDefaults {
     EngineDefaults {
         failback: FailbackConfig {
             reattempts: DEFAULT_FAILBACK_COUNT,
             interval_secs: DEFAULT_FAILBACK_INTERVAL_SECS,
         },
-        budget_execute: config.daemon().budget_execute(),
+        budget_execute: config.daemon().budget(),
+        timeout: config.daemon().timeout(),
     }
 }
 
@@ -1508,6 +1512,7 @@ mod tests {
             fsevents_reinstate: false,
             decay: None,
             budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+            timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
             nearest: false,
         }
     }
@@ -1973,9 +1978,10 @@ return = "{{ result | poll('15s') }}"
 
     #[test]
     fn a_builtin_source_takes_the_engine_failback_and_budget() {
-        // A return that names neither: the engine's failback, the daemon's budget.
+        // A return that names neither: the engine's failback, the daemon's
+        // budget and timeout.
         let reg = registry_from(
-            "[daemon]\nbudget.execute = \"30ms\"\n\
+            "[daemon]\nbudget = \"30ms\"\ntimeout = \"4s\"\n\
              [daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('15s') }}\"\n",
         );
         let diff = source_meta(&reg, "git", "diff");
@@ -1998,6 +2004,7 @@ return = "{{ result | poll('15s') }}"
             )
         );
         assert_eq!(diff.budget_execute, std::time::Duration::from_millis(30));
+        assert_eq!(diff.timeout, std::time::Duration::from_secs(4));
         // Its own line wins when it names them.
         let reg = registry_from(
             "[daemon.providers.git.sources.diff]\n\
@@ -2010,7 +2017,7 @@ return = "{{ result | poll('15s') }}"
         );
         assert_eq!(diff.budget_execute, std::time::Duration::from_millis(7));
         // And the budget reaches the built-ins that have no return.
-        let reg = registry_from("[daemon]\nbudget.execute = \"30ms\"\n");
+        let reg = registry_from("[daemon]\nbudget = \"30ms\"\n");
         assert_eq!(
             source_meta(&reg, "git", "refs").budget_execute,
             std::time::Duration::from_millis(30)

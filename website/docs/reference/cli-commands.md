@@ -448,11 +448,11 @@ comb e '{{ exec(["git", "rev-parse", "--short", "HEAD"]) }}' .
 
 | | |
 |---|---|
-| Signature | `exec(cmd, timeout_ms=10000, stdin=none, sh='sh')`, or the filter `cmd \| exec()` (a command from both the pipe and an argument is an error) |
+| Signature | `exec(cmd, timeout='10s', stdin=none, sh='sh')`, or the filter `cmd \| exec()` (a command from both the pipe and an argument is an error) |
 | Spawn | a **string** runs under `sh -c` (`sh=` names another shell): the shell expands `$FOO`, globs and pipes, and quoting is yours. A **list** is argv, no shell: each element is exactly one argument and `'$FOO'` stays literal. |
 | Environment and directory | the child's environment is exactly the render's `env` map (this shell's environment for `comb`, `env_json` for an SDK) — `$FOO` and `env.FOO` read the same value — and its working directory is the render's. |
 | List element coercion | string → itself; bool → `"true"`/`"false"` (not minijinja's `Display`, which prints `True`/`False`); number → its canonical string form; `undefined`/`none` → error (typically a missed daemon ref reaching `exec()` un-guarded); a sequence or map → error, pointing at `stdin=` instead |
-| `timeout_ms` | keyword, default `10000`. A command still running at the deadline is killed (whole process group) and the call fails. |
+| `timeout` | keyword, a duration in the one grammar (`'2s'`, `'500ms'`, or a number of seconds), default `'10s'`. A command still running at the deadline is killed (whole process group) and the call fails. |
 | `stdin` | keyword, default none. Must be a string — pass structured data through `\| tojson` first (e.g. `stdin=(some_map \| tojson)`). |
 | Output | stdout, lossy-UTF-8 decoded, with at most one trailing `\n` (and a preceding `\r`) stripped |
 | Output cap | stdout past 1 MiB is a failure, not a truncation |
@@ -493,7 +493,7 @@ Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
 
 `comb c config` validates the composed configuration locally as well as relaying the daemon's view, and reports the managed `defaults/` directory without writing any defaults (a `.comb-probe.<pid>` write probe is created and removed to test writability): `[PASS] local    defaults <dir> (9 files, comb <version>)` when every shipped file is current, `[WARN]` when shipped files are missing or stale (the daemon writes them on its next start) or when the directory holds files `comb` did not write, and `[FAIL]` when the directory is not writable.
 
-`comb c config --origins [KEY]` shows how the composed configuration came together instead, read from the files with no daemon (so it works when the daemon cannot start). Every leaf of the composition — `[daemon]` settings, Source and provider lines, `_` prototypes, `enabled`, `cache._.decay`, `[client.providers.*] template.*` — is a row: its key in key form (`daemon.providers.git.sources._.return`, a name holding a `.` as `template['a.b']`), the file that set it, and its value. Beneath it, every earlier file that set the same leaf and was overridden is marked `shadowed`, the one it overrode first: `conf.d/` files from last to first, then `config.toml`, then `defaults/`. A setting no file sets but `comb` gives a value of its own (`daemon.log_level`, `daemon.provider_timeout_secs`, `daemon.budget.execute`, `daemon.plugin.path`) shows `default` as its file. `KEY` limits the rows to that key and what is below it (`--origins daemon.providers.git`, `--origins 'client.providers.aws.template.profile'`).
+`comb c config --origins [KEY]` shows how the composed configuration came together instead, read from the files with no daemon (so it works when the daemon cannot start). Every leaf of the composition — `[daemon]` settings, Source and provider lines, `_` prototypes, `enabled`, `cache._.decay`, `[client.providers.*] template.*` — is a row: its key in key form (`daemon.providers.git.sources._.return`, a name holding a `.` as `template['a.b']`), the file that set it, and its value. Beneath it, every earlier file that set the same leaf and was overridden is marked `shadowed`, the one it overrode first: `conf.d/` files from last to first, then `config.toml`, then `defaults/`. A setting no file sets but `comb` gives a value of its own (`daemon.log_level`, `daemon.timeout`, `daemon.budget`, `daemon.plugin.path`) shows `default` as its file. `KEY` limits the rows to that key and what is below it (`--origins daemon.providers.git`, `--origins 'client.providers.aws.template.profile'`).
 
 ```
 $ comb c config --origins client.providers.aws.template.profile

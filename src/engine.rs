@@ -13,7 +13,6 @@ use minijinja::{Environment, Error, State};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 /// The plugin libraries a daemon can call, found on a search path and loaded
 /// once per resolved path for the daemon's life.
@@ -143,10 +142,10 @@ const LIBRARY_EXT: &str = if cfg!(target_os = "macos") {
 };
 
 /// libbeachcomber's engine environment plus the daemon-only functions:
-/// `url(address, method='GET', headers={}, body=none, timeout_ms=10000)` and
+/// `url(address, method='GET', headers={}, body=none, timeout='10s')` and
 /// `plugin(name, symbol, args...)`.
 ///
-/// Both block: `url` until the response or `timeout_ms`, `plugin` for as long
+/// Both block: `url` until the response or `timeout`, `plugin` for as long
 /// as the library takes. A render through this environment must run on a
 /// blocking thread.
 pub fn daemon_engine_env<'a>(ctx: Arc<EngineCtx>, plugins: Arc<PluginSet>) -> Environment<'a> {
@@ -452,7 +451,7 @@ fn redacted(address: &str) -> String {
     format!("{scheme}{host}{path}")
 }
 
-/// `url(address, method='GET', headers={}, body=none, timeout_ms=10000)`: the
+/// `url(address, method='GET', headers={}, body=none, timeout='10s')`: the
 /// response body as text. `method` is GET, POST, PUT or PATCH; `body` (a
 /// string) needs a method other than GET. A non-2xx status is an error naming
 /// it.
@@ -511,25 +510,11 @@ fn url(address: MjValue, kwargs: Kwargs) -> Result<MjValue, Error> {
     if body.is_some() && method == "GET" {
         return Err(op_error("url(): body= needs method POST, PUT or PATCH"));
     }
-    let timeout_ms = kwargs
-        .get::<Option<u64>>("timeout_ms")
-        .map_err(|e| {
-            op_error(format!(
-                "url(): timeout_ms= {}",
-                e.detail().unwrap_or("invalid value")
-            ))
-        })?
-        .unwrap_or(10_000);
+    let timeout = libbeachcomber::engine::timeout_kwarg(&kwargs, "url")?;
     kwargs.assert_all_used()?;
 
-    let response = http::fetch(
-        &method,
-        address,
-        &headers,
-        body,
-        Duration::from_millis(timeout_ms),
-    )
-    .map_err(|e| op_error(format!("url(): {shown}: {e}")))?;
+    let response = http::fetch(&method, address, &headers, body, timeout)
+        .map_err(|e| op_error(format!("url(): {shown}: {e}")))?;
     if !(200..300).contains(&response.status) {
         return Err(op_error(format!(
             "url(): {shown}: status {}",
@@ -604,6 +589,28 @@ mod tests {
             .create();
         let t = format!("{{{{ (url('{}/v') | fromjson).a }}}}", server.url());
         assert_eq!(render(no_plugins(), &t).unwrap(), "1");
+    }
+
+    /// `timeout=` is a duration, as `exec()`'s is; the millisecond keyword
+    /// says what took its place.
+    #[test]
+    fn url_timeout_is_a_duration() {
+        let mut server = mockito::Server::new();
+        let _m = server.mock("GET", "/v").with_body("ok").create();
+        for timeout in ["'2s'", "2", "'1500ms'"] {
+            let t = format!("{{{{ url('{}/v', timeout={timeout}) }}}}", server.url());
+            assert_eq!(render(no_plugins(), &t).unwrap(), "ok", "{timeout}");
+        }
+        let err = url_error(&format!(
+            "{{{{ url('{}/v', timeout_ms=100) }}}}",
+            server.url()
+        ));
+        assert!(
+            err.contains("url(): timeout_ms= is removed: write timeout='10s'"),
+            "{err}"
+        );
+        let err = url_error(&format!("{{{{ url('{}/v', timeout='x') }}}}", server.url()));
+        assert!(err.contains("url(): timeout="), "{err}");
     }
 
     #[test]
@@ -708,7 +715,7 @@ mod tests {
         // Connections complete in the listen backlog; nothing ever answers.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let t = format!(
-            "{{{{ url('http://{}/', timeout_ms=50) }}}}",
+            "{{{{ url('http://{}/', timeout='50ms') }}}}",
             listener.local_addr().unwrap()
         );
         let err = url_error(&t);

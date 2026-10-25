@@ -28,7 +28,7 @@ fn config_parse_cases() {
             input: "",
             check: |c| {
                 assert_eq!(c.daemon().log_level, LevelFilter::INFO);
-                assert_eq!(c.daemon().idle_shutdown_secs, None);
+                assert_eq!(c.daemon().idle_shutdown(), None);
             },
         },
         ConfigParseCase {
@@ -37,12 +37,14 @@ fn config_parse_cases() {
 [daemon]
 log_level = "debug"
 socket_path = "/tmp/test.sock"
-idle_shutdown_secs = 30
+idle_shutdown = "30s"
+timeout = "5s"
 "#,
             check: |c| {
                 assert_eq!(c.daemon().log_level, LevelFilter::DEBUG);
                 assert_eq!(c.daemon().socket_path.as_deref(), Some("/tmp/test.sock"));
-                assert_eq!(c.daemon().idle_shutdown_secs, Some(30));
+                assert_eq!(c.daemon().idle_shutdown(), Some(Duration::from_secs(30)));
+                assert_eq!(c.daemon().timeout(), Duration::from_secs(5));
             },
         },
     ];
@@ -742,7 +744,7 @@ fn a_comb_key_added_later_cannot_collide() {
     // [daemon.providers.budget], a different table.
     let user = r#"
 [daemon]
-budget.execute = "20ms"
+budget = "20ms"
 
 [daemon.providers.budget.sources.s]
 data = "{{ 1 }}"
@@ -750,7 +752,7 @@ result.x = "{{ data }}"
 "#;
     assert_eq!(seeded_errors(user), Vec::<String>::new());
     let config = with_shipped_defaults(user);
-    assert_eq!(config.daemon().budget_execute(), Duration::from_millis(20));
+    assert_eq!(config.daemon().budget(), Duration::from_millis(20));
     let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
     let source = &registry.provider_sources("budget").unwrap()[0];
     assert_eq!(source.budget_execute, Duration::from_millis(20));
@@ -770,7 +772,7 @@ fn every_removed_form_is_an_error() {
         (
             "[lifecycle]",
             "idle_shutdown_secs = 5",
-            "unknown table [lifecycle]: idle_shutdown_secs is [daemon] idle_shutdown_secs",
+            "unknown table [lifecycle]: idle_shutdown_secs is [daemon] idle_shutdown",
         ),
         (
             "[failback]",
@@ -843,29 +845,45 @@ fn an_unknown_key_in_bare_daemon_is_an_error() {
     // The list is closed and typed.
     assert!(
         seeded_errors(
-            "[daemon]\nsocket_path = \"/s\"\nlog_level = \"info\"\nprovider_timeout_secs = 5\n\
+            "[daemon]\nsocket_path = \"/s\"\nlog_level = \"info\"\ntimeout = \"5s\"\n\
              env_file = \"/e\"\nwatchdog_interval = \"30s\"\nwatchdog_threshold = \"90s\"\n\
-             idle_shutdown_secs = 60\nplugin.path = [\"/p\"]\nbudget.execute = \"50ms\"\n\
+             idle_shutdown = \"60s\"\nplugin.path = [\"/p\"]\nbudget = \"50ms\"\n\
              providers._.cache._.decay = 4\n"
         )
         .is_empty()
     );
     for (bad, want) in [
         (
-            "provider_timeout_secs = \"x\"",
-            "[daemon] provider_timeout_secs must be an integer of at least 1 (seconds), got \"x\"",
+            "timeout = \"x\"",
+            "[daemon] timeout must be a duration of at least 1ms (\"10s\", \"500ms\"), got \"x\"",
         ),
         (
-            "idle_shutdown_secs = -1",
-            "[daemon] idle_shutdown_secs must be an integer of at least 1 (seconds), got -1",
+            "timeout = 0",
+            "[daemon] timeout must be a duration of at least 1ms (\"10s\", \"500ms\"), got 0",
         ),
         (
-            "provider_timeout_secs = 0",
-            "[daemon] provider_timeout_secs must be an integer of at least 1 (seconds), got 0",
+            "idle_shutdown = -1",
+            "[daemon] idle_shutdown must be a duration of whole seconds, at least 1s (\"30s\", \
+             \"2m\"), got -1",
         ),
         (
-            "idle_shutdown_secs = 0",
-            "[daemon] idle_shutdown_secs must be an integer of at least 1 (seconds), got 0",
+            "idle_shutdown = \"0s\"",
+            "[daemon] idle_shutdown must be a duration of whole seconds, at least 1s (\"30s\", \
+             \"2m\"), got \"0s\"",
+        ),
+        (
+            "provider_timeout_secs = 5",
+            "[daemon] provider_timeout_secs is removed: write [daemon] timeout = \"10s\" (a \
+             duration)",
+        ),
+        (
+            "idle_shutdown_secs = 60",
+            "[daemon] idle_shutdown_secs is removed: write [daemon] idle_shutdown = \"5m\" (a \
+             duration)",
+        ),
+        (
+            "budget.execute = \"50ms\"",
+            "[daemon.budget] is removed: write [daemon] budget = \"50ms\" (a duration)",
         ),
         (
             "log_level = 3",
@@ -896,13 +914,13 @@ fn a_type_error_is_a_load_error_not_the_default_config() {
     let main = write(
         tmp.path(),
         "config.toml",
-        "[daemon]\nprovider_timeout_secs = \"x\"\nlog_level = \"debug\"\n",
+        "[daemon]\ntimeout = \"x\"\nlog_level = \"debug\"\n",
     );
     let config = Config::load_from(&main);
     let errors = config.errors();
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
-        errors[0].contains("config.toml: [daemon] provider_timeout_secs must be"),
+        errors[0].contains("config.toml: [daemon] timeout must be"),
         "{errors:?}"
     );
     assert_eq!(
@@ -922,11 +940,7 @@ fn a_type_error_is_a_load_error_not_the_default_config() {
 
     // The check is of the files the Config was composed from: fixing the file
     // after the load does not make the loaded Config valid.
-    write(
-        tmp.path(),
-        "config.toml",
-        "[daemon]\nprovider_timeout_secs = \"x\"\n",
-    );
+    write(tmp.path(), "config.toml", "[daemon]\ntimeout = \"x\"\n");
     let loaded = Config::load_from(&main);
     write(tmp.path(), "config.toml", "[daemon]\n");
     assert_eq!(loaded.errors().len(), 1);
@@ -947,9 +961,9 @@ fn a_wrongly_typed_source_in_an_in_memory_config_is_an_error() {
 }
 
 #[test]
-fn budget_execute_defaults_to_50ms_and_takes_ms() {
+fn budget_defaults_to_50ms_and_takes_ms() {
     assert_eq!(
-        Config::default().daemon().budget_execute(),
+        Config::default().daemon().budget(),
         Duration::from_millis(50)
     );
     for (text, want) in [
@@ -958,30 +972,48 @@ fn budget_execute_defaults_to_50ms_and_takes_ms() {
         ("1ms", Duration::from_millis(1)),
         ("2s", Duration::from_secs(2)),
     ] {
-        let config = with_shipped_defaults(&format!("[daemon]\nbudget.execute = \"{text}\"\n"));
+        let config = with_shipped_defaults(&format!("[daemon]\nbudget = \"{text}\"\n"));
         assert_eq!(config.errors(), Vec::<String>::new());
-        assert_eq!(config.daemon().budget_execute(), want, "{text}");
+        assert_eq!(config.daemon().budget(), want, "{text}");
     }
     // A bare number is seconds, as in every duration.
-    let config = with_shipped_defaults("[daemon]\nbudget.execute = 5\n");
+    let config = with_shipped_defaults("[daemon]\nbudget = 5\n");
     assert_eq!(config.errors(), Vec::<String>::new());
-    assert_eq!(config.daemon().budget_execute(), Duration::from_secs(5));
+    assert_eq!(config.daemon().budget(), Duration::from_secs(5));
     for bad in ["\"0ms\"", "0", "\"soon\"", "\"\""] {
-        let errors = seeded_errors(&format!("[daemon]\nbudget.execute = {bad}\n"));
+        let errors = seeded_errors(&format!("[daemon]\nbudget = {bad}\n"));
         assert_eq!(errors.len(), 1, "{bad}: {errors:?}");
         assert!(
-            errors[0].starts_with("[daemon.budget] execute must be a duration of at least 1ms"),
+            errors[0].starts_with("[daemon] budget must be a duration of at least 1ms"),
             "{bad}: {errors:?}"
         );
     }
     assert_eq!(
-        seeded_errors("[daemon]\nbudget = 5\n"),
-        vec!["[daemon] budget must be a table".to_string()]
-    );
-    assert_eq!(
         seeded_errors("[daemon.budget]\nstat = \"5ms\"\n"),
-        vec!["unknown key 'stat' in [daemon.budget]".to_string()]
+        vec![
+            "[daemon.budget] is removed: write [daemon] budget = \"50ms\" (a duration)".to_string()
+        ]
     );
+}
+
+/// `[daemon] timeout` is how long one run of a Source may take before it is
+/// cut off, for every Source whose `return` does not say: ten seconds unless
+/// the files say otherwise.
+#[test]
+fn timeout_defaults_to_10s_and_takes_any_duration() {
+    assert_eq!(
+        Config::default().daemon().timeout(),
+        Duration::from_secs(10)
+    );
+    for (text, want) in [
+        ("\"250ms\"", Duration::from_millis(250)),
+        ("\"2m\"", Duration::from_secs(120)),
+        ("30", Duration::from_secs(30)),
+    ] {
+        let config = with_shipped_defaults(&format!("[daemon]\ntimeout = {text}\n"));
+        assert_eq!(config.errors(), Vec::<String>::new());
+        assert_eq!(config.daemon().timeout(), want, "{text}");
+    }
 }
 
 #[test]

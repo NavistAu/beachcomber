@@ -418,7 +418,7 @@ For Sources with a root, `patterns` like `".git"` are relative to the instance's
 
 ## 3b. Cache Lifecycle Tuning
 
-A built-in Source's schedule is its own, set in code, until the files say otherwise. Its table in `[daemon.providers.<name>.sources.<source>]` takes `return` and nothing else (`root`, `data` and `result` are errors), and the line replaces the Source's invalidation, failback, decay and budget whole. A failback or budget it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget.execute`). A built-in with no `return` keeps everything it declares: the `_` Source lines apply to config Sources, and reach a built-in only through `| super`.
+A built-in Source's schedule is its own, set in code, until the files say otherwise. Its table in `[daemon.providers.<name>.sources.<source>]` takes `return` and nothing else (`root`, `data` and `result` are errors), and the line replaces the Source's invalidation, failback, decay and budget whole. A failback, budget or timeout it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget`, `[daemon] timeout`). A built-in with no `return` keeps everything it declares: the `_` Source lines apply to config Sources, and reach a built-in only through `| super`.
 
 Example:
 

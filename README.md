@@ -547,7 +547,7 @@ Only a colon in the provider's own segment names a facet (`git:cache.branch`); b
 
 beachcomber runs with sensible defaults and requires no configuration. The optional config file lives at `~/.config/beachcomber/config.toml`.
 
-The file has two roots. `[daemon]` is the daemon's: its settings (`socket_path`, `log_level`, `plugin.path`, `budget.execute`, ...) and `providers`, where a provider's Sources, its `template`/`result`/`return` lines, its `cache` (decay) and `enabled` live. `[client]` is what clients render: `providers.<p>.template`. A provider exists if either root names it. Configuration is read only from `$XDG_CONFIG_HOME/beachcomber` (`defaults/`, `config.toml`, `conf.d/`, `env`); `$XDG_CONFIG_DIRS` is not consulted.
+The file has two roots. `[daemon]` is the daemon's: its settings (`socket_path`, `log_level`, `plugin.path`, `timeout`, `budget`, ...) and `providers`, where a provider's Sources, its `template`/`result`/`return` lines, its `cache` (decay) and `enabled` live. `[client]` is what clients render: `providers.<p>.template`. A provider exists if either root names it. Configuration is read only from `$XDG_CONFIG_HOME/beachcomber` (`defaults/`, `config.toml`, `conf.d/`, `env`); `$XDG_CONFIG_DIRS` is not consulted.
 
 A provider is a namespace made of **Sources**, and a Source is a jinja function: `root` says which directory an instance answers for (empty is the one instance at `~`), `data` is the body, `result` shapes it into fields, and `return` says when it runs again (`poll`, `watch`, `ttl`, `failback`, `budget`, `nearest`). A table named `_` is a prototype: a Source's own line wins whole, an absent line takes the nearest `_`'s, and `| super` extends it. The abstract provider and Source ship in `defaults/00-comb.toml`.
 
@@ -568,10 +568,11 @@ A provider is a namespace made of **Sources**, and a Source is a jinja function:
 # Logs go to: $XDG_STATE_HOME/beachcomber/daemon.log
 log_level = "info"
 
-# Maximum time (in seconds) to wait for any provider to complete.
-# Providers that exceed this are cancelled; the last good cached value is retained.
-# Default: 10
-provider_timeout_secs = 10
+# How long one run of a Source may take before it is cut off, for every
+# Source whose `return` does not say `timeout(...)`. The run fails and the last
+# good cached value is retained. Any duration of at least 1ms.
+# Default: "10s"
+timeout = "10s"
 
 # Path to an environment file loaded at daemon startup.
 # Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
@@ -590,17 +591,17 @@ provider_timeout_secs = 10
 # Default: 3x watchdog_interval
 # watchdog_threshold = "90s"
 
-# How long (in seconds) the daemon waits with no active connections before
-# shutting itself down. The next client connection will socket-activate a
-# fresh instance.
+# How long the daemon waits with no active connections before shutting
+# itself down. The next client connection will socket-activate a fresh
+# instance. Whole seconds, at least 1s.
 # Default: unset (daemon stays resident)
-# idle_shutdown_secs = 300
+# idle_shutdown = "5m"
 
-# The execute budget recorded for every Source whose own `return` does not say
-# `budget(...)`. Any duration of at least 1ms. (Recorded, not yet enforced: a
-# later release reads it.)
+# How long a read waits for a Source before answering with what it has, for
+# every Source whose own `return` does not say `budget(...)`. Any duration of
+# at least 1ms. (Recorded, not yet enforced: a later release reads it.)
 # Default: "50ms"
-# budget.execute = "50ms"
+# budget = "50ms"
 
 
 # ─── Retuning a built-in Source ────────────────────────────────────────────────
@@ -670,14 +671,14 @@ return = "{{ result | poll('86400s') }}"
 |---|---|---|---|
 | `socket_path` | string | `/tmp/beachcomber-<uid>/sock` | Unix socket path |
 | `log_level` | string | `"info"` | Tracing log level |
-| `provider_timeout_secs` | int, at least 1 | `10` | Max seconds for any provider to run |
+| `timeout` | duration, at least `1ms` | `"10s"` | How long one run of a Source may take before it is cut off, for every Source whose `return` does not name `timeout(...)` |
 | `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
 | `watchdog_interval` | duration or null | `null` (disabled) | How often the watchdog checks scheduler liveness |
 | `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
-| `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds with no client before the daemon shuts down; unset keeps it resident |
-| `budget.execute` | duration | `"50ms"` | The execute budget recorded for every Source whose `return` does not name `budget(...)`; at least `1ms`. Recorded, not yet enforced: a later release reads it. |
+| `idle_shutdown` | duration (whole seconds) or null | `null` (disabled) | How long with no client before the daemon shuts down; unset keeps it resident |
+| `budget` | duration, at least `1ms` | `"50ms"` | How long a read waits for a Source before answering with what it has, for every Source whose `return` does not name `budget(...)`. Recorded, not yet enforced: a later release reads it. |
 
-> Values are checked when the configuration loads, and an error names the file: `log_level` is one of `off`, `error`, `warn`, `info`, `debug`, `trace`; `provider_timeout_secs` and `idle_shutdown_secs` are at least `1`; `socket_path` and `env_file` are not empty; `watchdog_interval` and `watchdog_threshold` are whole seconds of at least `1s` (`"30s"`, `"5m"`, `"1h"`), a threshold needs an interval, and a threshold below the interval is an error. `budget.execute` also takes milliseconds (`"250ms"`). `[daemon]` takes no other keys. A file that is not valid TOML is an error too: it is never skipped.
+> Values are checked when the configuration loads, and an error names the file: `log_level` is one of `off`, `error`, `warn`, `info`, `debug`, `trace`; `timeout` and `budget` are durations of at least `1ms`, and `idle_shutdown` whole seconds of at least `1s`; `socket_path` and `env_file` are not empty; `watchdog_interval` and `watchdog_threshold` are whole seconds of at least `1s` (`"30s"`, `"5m"`, `"1h"`), a threshold needs an interval, and a threshold below the interval is an error. `[daemon]` takes no other keys. A file that is not valid TOML is an error too: it is never skipped.
 
 > A Source's schedule is its `return` line (`poll`, `watch`, `ttl`). The `[providers]` root, `[lifecycle]`, `[failback]` and `[tree]` tables, and the `scope`, `marker`, `poll_*`, `fsevent_*`, `failback_*`, `budget_*` keys are config errors, and so is `enabled` anywhere but `[daemon.providers.<name>]`.
 
@@ -685,7 +686,7 @@ return = "{{ result | poll('86400s') }}"
 
 **`[daemon.providers.<name>.sources.<source>]` section for a built-in Source:**
 
-A table naming a built-in Rust Source takes `return` only; `root`, `data` and `result` are errors. The line replaces the Source's invalidation, failback, decay, budget and `nearest` whole; a failback or budget it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget.execute`). `| super` extends the nearest `_` Source's line, as for a config Source. A built-in with no `return` keeps its own schedule: the `_` lines do not reach it.
+A table naming a built-in Rust Source takes `return` only; `root`, `data` and `result` are errors. The line replaces the Source's invalidation, failback, decay, budget and `nearest` whole; a failback, budget or timeout it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget`, `[daemon] timeout`). `| super` extends the nearest `_` Source's line, as for a config Source. A built-in with no `return` keeps its own schedule: the `_` lines do not reach it.
 
 **`[daemon.providers.<name>.sources.<source>]` section (config Sources):**
 
@@ -1418,7 +1419,7 @@ Query: `comb g vpn.active`
 
 ### HTTP
 
-A Source fetches over HTTP by calling `url()` in its `data` line. The request is made in the daemon process — no `curl` fork, no shell spawning, with proper timeout handling. `url(address, method='GET', headers={}, body=none, timeout_ms=10000)` returns the response body as text; pipe it through `fromjson` to get a value `result` can read. `method` is `GET`, `POST`, `PUT` or `PATCH`. A non-2xx status fails the render, so the Source's execute fails and its `failback` applies.
+A Source fetches over HTTP by calling `url()` in its `data` line. The request is made in the daemon process — no `curl` fork, no shell spawning, with proper timeout handling. `url(address, method='GET', headers={}, body=none, timeout='10s')` returns the response body as text; pipe it through `fromjson` to get a value `result` can read. `method` is `GET`, `POST`, `PUT` or `PATCH`. A non-2xx status fails the render, so the Source's execute fails and its `failback` applies.
 
 > **Note:** `exec('curl …')` also works for a quick query, but for anything polling regularly `url()` avoids the 2-6ms process spawn per request.
 
@@ -1474,7 +1475,7 @@ Query: `comb g exchange.value` — returns the AUD rate, refreshed daily.
 
 A Source that calls `url()` has the same lifecycle as any config Source:
 
-- **`provider_timeout_secs`** (default `10`, set under `[daemon]`) — the maximum time a single execute may take; `url()` also takes its own `timeout_ms=` (default `10000`). A request that exceeds the limit fails and the last good cached value is retained.
+- **`timeout`** (default `"10s"`, set under `[daemon]`, or per Source with `| timeout('30s')` on its `return`) — the maximum time a single execute may take; `url()` also takes its own `timeout=` (default `'10s'`). A request that exceeds the limit fails and the last good cached value is retained.
 - **`failback(count, interval)`** on the `return` line (the shipped default is `failback(3, '1s')`) — after `count` consecutive failures the Source backs off exponentially, the first step being `interval` and the cap 8× `interval` (8 s with the shipped default). Attempts before the count are not delayed. A non-2xx response, a connection error and a timeout all count.
 
 A transient 5xx or network error will not remove the last cached value — consumers will see `stale: true` on the wire (`comb g.j <provider>:cache.<field>` from the CLI) once the value is past its expected refresh time.
@@ -1542,7 +1543,7 @@ Then `chmod 600` and restart the daemon (`pkill -f 'comb daemon'` — it socket-
 
 - **Exit codes:** A non-zero exit from `exec` fails the refresh. The last cached value is retained. After repeated failures (the `failback(count, interval)` decorator; the abstract Source ships `failback(3, '1s')`), the Source enters exponential backoff from the interval (default 1s, 4 doubling levels).
 - **Stderr:** A command that succeeds has its stderr dropped. One that fails (a non-zero exit, a timeout) has the tail of its stderr in the error message the daemon logs for the refresh.
-- **Timeouts:** `exec` kills a command after `timeout_ms` (default 10000, 10 s): `exec('slow-tool', timeout_ms=30000)`. A timeout fails the refresh, and the next trigger retries it.
+- **Timeouts:** `exec` kills a command after `timeout` (default `'10s'`): `exec('slow-tool', timeout='30s')`. A timeout fails the refresh, and the next trigger retries it.
 - **Shell:** A string is executed via `sh -c`; a list (`exec(['cmd', 'arg'])`) is one argument per element with no shell. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
 - **Rooted Sources:** `data` runs with the instance's `root` as its working directory. A Source with no `root` is the one instance at `~`. A read from a directory takes each value from the instance at its nearest root, then the next root up, ending at `~`: a **cascade**, the default, which suits layered settings (mise, asdf's `.tool-versions`) where a project sets some keys and `~` the rest. Add `| nearest` to `return` and the nearest instance answers alone: a key it lacks is absent, and a directory whose `root` renders none has no instance and no value (it does not fall back to `~`). That suits "the one you are in" (git, direnv, a Python venv, a terraform root): `return = "{{ result | watch('.git/HEAD') | nearest }}"`. Put `nearest` on a `_` prototype and reach it with `| super` to make a provider's Sources nearest together.
 - **Performance:** Every process spawn costs 2-6ms minimum. For Sources that poll frequently (< 30s), prefer `read` and `lup` over spawning CLI tools. See the design principles in `docs/performance.md`.

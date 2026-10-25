@@ -733,12 +733,22 @@ async fn inline_execute_source(
         }
         let dir = crate::query::instance_dir(root);
         let src_clone = std::sync::Arc::clone(&source);
-        let Ok((outcome, failed_call)) = tokio::task::spawn_blocking(move || {
-            crate::provider::source_call::ran(|| src_clone.execute(dir.as_deref()))
-        })
-        .await
-        else {
-            return Ok(false);
+        // A run a read starts is cut off at the Source's timeout, as one the
+        // scheduler starts is.
+        let timeout = registry
+            .source_metadata(provider, source_name)
+            .map_or(crate::scheduler::lifecycle::DEFAULT_TIMEOUT, |m| m.timeout);
+        let run = tokio::time::timeout(
+            timeout,
+            tokio::task::spawn_blocking(move || {
+                crate::provider::source_call::ran(|| src_clone.execute(dir.as_deref()))
+            }),
+        )
+        .await;
+        let (outcome, failed_call) = match run {
+            Ok(Ok(ran)) => ran,
+            Ok(Err(_)) => return Ok(false),
+            Err(_) => (Err(crate::scheduler::timed_out(timeout)), None),
         };
         let recorded = record_outcome(registry, cache, provider, source_name, root, outcome)
             .map_err(|e| (e, failed_call.is_some()));

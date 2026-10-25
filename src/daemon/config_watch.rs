@@ -13,8 +13,8 @@
 //! applies it in place: it builds the new registry (the load that gated the
 //! edit), plans the reseed, swaps both in, brings the scheduler's lifecycle
 //! entries to match and reseeds the template and `cache` facets. A change to a bare key of `[daemon]` or `[client]` (`socket_path`,
-//! `log_level`, `plugin.path`, `budget.execute`, the watchdog keys,
-//! `idle_shutdown_secs`) is [`ChangeKind::Settings`] and the daemon restarts,
+//! `log_level`, `plugin.path`, `budget`, `timeout`, the watchdog keys,
+//! `idle_shutdown`) is [`ChangeKind::Settings`] and the daemon restarts,
 //! because those are read once at startup. The classifier is the composed TOML
 //! with both `providers` roots removed (`Config::settings_only`), compared
 //! before and after. Because the providers case leaves the process running,
@@ -552,17 +552,14 @@ mod tests {
     #[test]
     fn a_bare_daemon_key_is_a_settings_change() {
         let mut dir = Dir::new(SOURCE);
-        dir.write("conf.d/10-c.toml", "[daemon]\nidle_shutdown_secs = 600\n");
+        dir.write("conf.d/10-c.toml", "[daemon]\nidle_shutdown = \"10m\"\n");
         assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
     }
 
     #[test]
     fn a_budget_edit_is_a_settings_change() {
         let mut dir = Dir::new(SOURCE);
-        dir.write(
-            "conf.d/10-budget.toml",
-            "[daemon]\nbudget.execute = \"20ms\"\n",
-        );
+        dir.write("conf.d/10-budget.toml", "[daemon]\nbudget = \"20ms\"\n");
         assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
     }
 

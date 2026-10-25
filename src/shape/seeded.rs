@@ -213,14 +213,33 @@ impl Reader {
                         ));
                     }
                 }
-                "provider_timeout_secs" | "idle_shutdown_secs" => {
-                    if value.as_integer().is_none_or(|n| n < 1) {
+                // A Source's run and a reader's wait: any duration of at
+                // least 1ms.
+                "budget" if value.is_table() => self.err(
+                    "[daemon.budget] is removed: write [daemon] budget = \"50ms\" (a duration)"
+                        .into(),
+                ),
+                "timeout" | "budget" => {
+                    if duration_value(value).is_none_or(|d| d.is_zero()) {
+                        let example = if key == "timeout" { "10s" } else { "50ms" };
+                        let other = if key == "timeout" { "500ms" } else { "2s" };
                         self.err(format!(
-                            "[daemon] {key} must be an integer of at least 1 (seconds), got {value}"
+                            "[daemon] {key} must be a duration of at least 1ms (\"{example}\", \
+                             \"{other}\"), got {value}"
                         ));
                     }
                 }
-                "watchdog_interval" | "watchdog_threshold" => {
+                "provider_timeout_secs" => self.err(
+                    "[daemon] provider_timeout_secs is removed: write [daemon] timeout = \"10s\" \
+                     (a duration)"
+                        .into(),
+                ),
+                "idle_shutdown_secs" => self.err(
+                    "[daemon] idle_shutdown_secs is removed: write [daemon] idle_shutdown = \"5m\" \
+                     (a duration)"
+                        .into(),
+                ),
+                "watchdog_interval" | "watchdog_threshold" | "idle_shutdown" => {
                     let whole =
                         duration_value(value).filter(|d| d.subsec_nanos() == 0 && !d.is_zero());
                     if whole.is_none() {
@@ -230,26 +249,7 @@ impl Reader {
                         ));
                     }
                 }
-                "budget" => self.daemon_budget(value),
                 _ => self.err(format!("unknown key '{key}' in [daemon]")),
-            }
-        }
-    }
-
-    /// `[daemon] budget`: a table holding only `execute`, a duration of at
-    /// least 1ms (`"50ms"`, `"2s"`).
-    fn daemon_budget(&mut self, budget: &toml::Value) {
-        let Some(table) = budget.as_table() else {
-            return self.err("[daemon] budget must be a table".into());
-        };
-        for (key, value) in table {
-            if key != "execute" {
-                self.err(format!("unknown key '{key}' in [daemon.budget]"));
-            } else if duration_value(value).is_none_or(|d| d.is_zero()) {
-                self.err(format!(
-                    "[daemon.budget] execute must be a duration of at least 1ms (\"50ms\", \
-                     \"2s\"), got {value}"
-                ));
             }
         }
     }
@@ -266,7 +266,7 @@ impl Reader {
                  [daemon.providers.<p>.cache._]"
             }
             "lifecycle" => {
-                ": idle_shutdown_secs is [daemon] idle_shutdown_secs; a Source sets its \
+                ": idle_shutdown_secs is [daemon] idle_shutdown; a Source sets its \
                  schedule on its return line"
             }
             "failback" => ": a Source sets failback on its return line",

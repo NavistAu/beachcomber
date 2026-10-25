@@ -7,7 +7,7 @@ title: Configuration Reference
 
 beachcomber runs with sensible defaults and requires no configuration. The optional config file lives at `~/.config/beachcomber/config.toml`.
 
-The file has two roots. `[daemon]` is the daemon's: its settings (`socket_path`, `log_level`, `plugin.path`, `budget.execute`, ...) and `providers`, where a provider's Sources, its `template`/`result`/`return` lines, its `cache` (decay) and `enabled` live. `[client]` is what clients render: `providers.<p>.template`. A provider exists if either root names it; one named only in a root is a provider with no Sources. Nothing else is a root: `[providers]`, `[lifecycle]`, `[failback]` and `[tree]` are errors.
+The file has two roots. `[daemon]` is the daemon's: its settings (`socket_path`, `log_level`, `plugin.path`, `timeout`, `budget`, ...) and `providers`, where a provider's Sources, its `template`/`result`/`return` lines, its `cache` (decay) and `enabled` live. `[client]` is what clients render: `providers.<p>.template`. A provider exists if either root names it; one named only in a root is a provider with no Sources. Nothing else is a root: `[providers]`, `[lifecycle]`, `[failback]` and `[tree]` are errors.
 
 A provider is a namespace made of **Sources**. A Source is a jinja function: `root` says which directory an instance answers for, `data` runs on the daemon's engine (below) and gets its body, `result` shapes that into fields, and `return` says when it runs again (`poll`, `watch`, `ttl`, `failback`, `budget`, `nearest`). A table named `_` is a prototype: a Source's own line wins whole, an absent line takes the nearest `_`'s, and `| super` extends it instead. The abstract provider and the abstract Source ship in `defaults/00-comb.toml`, so a Source you write says only what differs.
 
@@ -29,10 +29,11 @@ A provider is a namespace made of **Sources**. A Source is a jinja function: `ro
 # Logs go to: $XDG_STATE_HOME/beachcomber/daemon.log
 log_level = "info"
 
-# Maximum time (in seconds) to wait for any provider to complete.
-# Providers that exceed this are cancelled; the last good cached value is retained.
-# Default: 10
-provider_timeout_secs = 10
+# How long one run of a Source may take before it is cut off, for every
+# Source whose `return` does not say `timeout(...)`. The run fails and the last
+# good cached value is retained. Any duration of at least 1ms.
+# Default: "10s"
+timeout = "10s"
 
 # Path to an environment file loaded at daemon startup.
 # Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
@@ -51,17 +52,17 @@ provider_timeout_secs = 10
 # Default: 3x watchdog_interval
 # watchdog_threshold = "90s"
 
-# How long (in seconds) the daemon waits with no active connections before
-# shutting itself down. The next client connection will socket-activate a
-# fresh instance.
+# How long the daemon waits with no active connections before shutting
+# itself down. The next client connection will socket-activate a fresh
+# instance. Whole seconds, at least 1s.
 # Default: unset (daemon stays resident)
-# idle_shutdown_secs = 300
+# idle_shutdown = "5m"
 
-# The execute budget recorded for every Source whose own `return` does not say
-# `budget(...)`. Any duration of at least 1ms. (Recorded, not yet enforced: a
-# later release reads it.)
+# How long a read waits for a Source before answering with what it has, for
+# every Source whose own `return` does not say `budget(...)`. Any duration of
+# at least 1ms. (Recorded, not yet enforced: a later release reads it.)
 # Default: "50ms"
-# budget.execute = "50ms"
+# budget = "50ms"
 
 
 # ─── Retuning a built-in Source ────────────────────────────────────────────────
@@ -125,12 +126,12 @@ return = "{{ result | poll('86400s') }}"
 
 ### The engine — what a Source's lines can call
 
-A Source's `data` and `result` lines run on one jinja engine in the daemon. `env` is the daemon's own environment (its `env_file` included, never the caller's), `comb.<provider>` reads stored records, and these functions and filters are added to minijinja's built-ins. A Source's `return` is not on this engine: it sees `result` and the schedule decorators (`poll`, `watch`, `ttl`, `failback`, `budget`, `nearest`, `super`) alone.
+A Source's `data` and `result` lines run on one jinja engine in the daemon. `env` is the daemon's own environment (its `env_file` included, never the caller's), `comb.<provider>` reads stored records, and these functions and filters are added to minijinja's built-ins. A Source's `return` is not on this engine: it sees `result` and the schedule decorators (`poll`, `watch`, `ttl`, `failback`, `budget`, `timeout`, `nearest`, `super`) alone.
 
 | Name | What it does |
 |---|---|
-| `exec(cmd, timeout_ms=10000, stdin=none, sh='sh')`, `cmd \| exec()` | Runs one command and returns its stdout (at most one trailing newline stripped). A **string** runs under `sh -c`; a **list** is argv with no shell, each element one argument. More than one positional argument is an error. The child's environment is `env`. |
-| `url(address, method='GET', headers={}, body=none, timeout_ms=10000)` | The response body as text; a non-2xx status fails the Source. Daemon only. |
+| `exec(cmd, timeout='10s', stdin=none, sh='sh')`, `cmd \| exec()` | Runs one command and returns its stdout (at most one trailing newline stripped). A **string** runs under `sh -c`; a **list** is argv with no shell, each element one argument. More than one positional argument is an error. The child's environment is `env`. |
+| `url(address, method='GET', headers={}, body=none, timeout='10s')` | The response body as text; a non-2xx status fails the Source. Daemon only. |
 | `plugin(name, symbol, args...)` | Calls `const char* symbol(const char* input)` in `lib<name>` found on `[daemon.plugin] path`. Daemon only. |
 | `path \| read` | The file's text (`~` is `$HOME`, a relative path is against the instance's directory), or none when it is missing. |
 | `lup(name, all=false, files=false, dirs=false, follow=true, git=false, root=false)` | The nearest path called `name` at or above the instance's directory (stopping at `~`), or none: `root = "{{ lup('.git') \| dirname }}"`. |
@@ -215,7 +216,7 @@ The decay depth is seeded the same way, from the daemon root: `[daemon.providers
 
 Every leaf is loaded into the cache at daemon start, labelled with the file it came from — `comb status` shows its source as `config(~/.config/beachcomber/conf.d/10-mine.toml)`. Every file's leaves are loaded under that file's own label, and a leaf two files set is read from the later file in composition order (`defaults/`, then `config.toml`, then `conf.d/`). `comb status --tree` lists the file that answers and, under it as `shadowed`, each file it overrode.
 
-**An edit under `providers` reloads without a restart.** A configuration change that touches only what is under `[daemon.providers]` or `[client.providers]` — Sources, `template`, `result` and `return` lines, `cache` tables, `enabled`, a provider newly named or no longer named — is applied in place. The daemon builds the new set of providers from the composed files, swaps it in, and reseeds the `template` and `cache` facets: every `config:`-labelled record is dropped and all layers are loaded again, so an edited leaf takes effect on the next read, a leaf deleted from its file disappears, and a `watch` on the affected key wakes. A file whose records in a provider come back unchanged keeps their age, so `comb status -a` shows when each file last changed them rather than when the daemon last reloaded. Records written by `comb put` are untouched. Only a change to a bare key of `[daemon]` or `[client]` (`socket_path`, `log_level`, `plugin.path`, `budget.execute`, the watchdog keys, `idle_shutdown_secs`, …) restarts the daemon, because those are read once at startup.
+**An edit under `providers` reloads without a restart.** A configuration change that touches only what is under `[daemon.providers]` or `[client.providers]` — Sources, `template`, `result` and `return` lines, `cache` tables, `enabled`, a provider newly named or no longer named — is applied in place. The daemon builds the new set of providers from the composed files, swaps it in, and reseeds the `template` and `cache` facets: every `config:`-labelled record is dropped and all layers are loaded again, so an edited leaf takes effect on the next read, a leaf deleted from its file disappears, and a `watch` on the affected key wakes. A file whose records in a provider come back unchanged keeps their age, so `comb status -a` shows when each file last changed them rather than when the daemon last reloaded. Records written by `comb put` are untouched. Only a change to a bare key of `[daemon]` or `[client]` (`socket_path`, `log_level`, `plugin.path`, `timeout`, `budget`, the watchdog keys, `idle_shutdown`, …) restarts the daemon, because those are read once at startup.
 
 What a reload does to what is already running, instance by instance:
 
@@ -281,17 +282,17 @@ template.deploy_tag = "{{ exec('git describe --tags --always') }}"
 
 | | |
 |---|---|
-| Signature | `exec(cmd, timeout_ms=10000, stdin=none, sh='sh')`, or the filter `cmd \| exec()` |
+| Signature | `exec(cmd, timeout='10s', stdin=none, sh='sh')`, or the filter `cmd \| exec()` |
 | Spawn | a **string** runs under `sh -c` (`sh=` names another shell); a **list** is argv, no shell — each element exactly one argument, `'$FOO'` stays literal. |
 | Environment | the child's environment is exactly the template's `env` map (`comb`'s environment for the CLI, `env_json` for an SDK), so `$FOO` and `env.FOO` agree; its working directory is the render's. |
 | List element coercion | string → itself; bool → `"true"`/`"false"`; number → its canonical string form; `undefined`/`none`, a sequence, or a map → error (structured data goes through `stdin=` instead) |
-| `timeout_ms` | keyword, default `10000` |
+| `timeout` | keyword, a duration (`'2s'`, `'500ms'`, or a number of seconds), default `'10s'` |
 | `stdin` | keyword, default none; must be a string — `\| tojson` first for structured data |
 | Output | stdout, lossy-UTF-8, at most one trailing newline stripped; capped at 1 MiB (an oversized stdout is a failure, not a truncation) |
 | Failure | non-zero exit / timeout / oversized stdout / spawn failure → a runtime error naming the command, with truncated stderr attached |
 | Availability | `comb get`, `comb eval`, and an SDK client constructed with `exec` on (`Client(exec=True)`, `new Client({ exec: true })`, `beachcomber.WithExec(true)`, `Beachcomber::Client.new(exec: true)`, `comb.connect{ exec = true }`, `bc_client_new("{\"exec\":true}")`) — off by default. Never the daemon, and never a formatting surface (`-f fmt`, `watch -f fmt`, the status formatter). A call anywhere it is off fails with `exec() is disabled in this context`. |
 
-A whole-namespace `comb get <provider>` renders every template in that namespace in sequence, so several `exec()`-backed leaves under one namespace can serialise up to N × `timeout_ms` in the worst case — pass an explicit, low `timeout_ms` when the consumer is latency-sensitive (a shell prompt or statusline).
+A whole-namespace `comb get <provider>` renders every template in that namespace in sequence, so several `exec()`-backed leaves under one namespace can serialise up to N × `timeout` in the worst case — pass an explicit, low `timeout` when the consumer is latency-sensitive (a shell prompt or statusline).
 
 See [CLI Commands](/docs/reference/cli-commands) for the expression-level reference and more examples.
 
@@ -352,12 +353,12 @@ Composition rules:
 |---|---|---|---|
 | `socket_path` | string | (see resolution order) | Unix socket path. Resolution order: this key → `BEACHCOMBER_SOCKET` env var → `/tmp/beachcomber-<uid>/sock` |
 | `log_level` | string | `"info"` | Tracing log level |
-| `provider_timeout_secs` | int, at least 1 | `10` | Max seconds for any provider to run |
+| `timeout` | duration, at least `1ms` | `"10s"` | How long one run of a Source may take before it is cut off, for every Source whose `return` does not name `timeout(...)` |
 | `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
 | `watchdog_interval` | duration or null | `null` (disabled) | How often the watchdog checks scheduler liveness |
 | `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
-| `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds with no client before the daemon shuts down; unset keeps it resident |
-| `budget.execute` | duration | `"50ms"` | The execute budget recorded for every Source whose `return` does not name `budget(...)`; at least `1ms`. Recorded, not yet enforced: a later release reads it. |
+| `idle_shutdown` | duration (whole seconds) or null | `null` (disabled) | How long with no client before the daemon shuts down; unset keeps it resident |
+| `budget` | duration, at least `1ms` | `"50ms"` | How long a read waits for a Source before answering with what it has, for every Source whose `return` does not name `budget(...)`. Recorded, not yet enforced: a later release reads it. |
 | `providers.<p>.enabled` | bool | `true` | `false` switches the provider off: sugar for `result = "{{ {} }}"`, and no Source of it runs ([Switching a provider off](#switching-a-provider-off--enabled--false)). Not valid on `_` |
 | `providers.<p>.cache._.decay` | int, 1 to 16 | (4 from `defaults/00-comb.toml`) | Decay steps before eviction, seeded as `<p>:cache._.decay`; `<p> = _` is every provider ([Template facets](#template-facets)) |
 
@@ -367,13 +368,13 @@ Composition rules:
 |---|---|---|---|
 | `providers.<p>.template.<leaf>` | string, or a table of them | none | A template (value expression), seeded as `<p>:template.<leaf>`; nest with tables ([Template facets](#template-facets)) |
 
-> Values are checked when the configuration loads, and an error names the file: `log_level` is one of `off`, `error`, `warn`, `info`, `debug`, `trace`; `provider_timeout_secs` and `idle_shutdown_secs` are at least `1`; `socket_path` and `env_file` are not empty; `watchdog_interval` and `watchdog_threshold` are whole seconds of at least `1s` (`"30s"`, `"5m"`, `"1h"`, or a TOML integer of seconds), a threshold needs an interval, and a threshold below the interval is an error. `budget.execute` is at least `1ms` (`"250ms"`). Every duration takes the one grammar in [CLI Commands — Durations](/docs/reference/cli-commands#durations). `[daemon]` takes no other keys. A file that is not valid TOML is an error too, never skipped, and the error says where and why in one line: `config:<file>: TOML parse error at line 5, column 1: duplicate key `glyph``. That one — a dotted key (`template.glyph = …` under `[client.providers.p]`) adding to a table a `[client.providers.p.template.…]` header already created — is the commonest: TOML forbids it, so write such keys under the `[client.providers.p.template]` header instead.
+> Values are checked when the configuration loads, and an error names the file: `log_level` is one of `off`, `error`, `warn`, `info`, `debug`, `trace`; `timeout` and `budget` are durations of at least `1ms`, and `idle_shutdown` whole seconds of at least `1s`; `socket_path` and `env_file` are not empty; `watchdog_interval` and `watchdog_threshold` are whole seconds of at least `1s` (`"30s"`, `"5m"`, `"1h"`, or a TOML integer of seconds), a threshold needs an interval, and a threshold below the interval is an error. Every duration takes the one grammar in [CLI Commands — Durations](/docs/reference/cli-commands#durations). `[daemon]` takes no other keys. A file that is not valid TOML is an error too, never skipped, and the error says where and why in one line: `config:<file>: TOML parse error at line 5, column 1: duplicate key `glyph``. That one — a dotted key (`template.glyph = …` under `[client.providers.p]`) adding to a table a `[client.providers.p.template.…]` header already created — is the commonest: TOML forbids it, so write such keys under the `[client.providers.p.template]` header instead.
 
-> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`). The `[providers]` root, the `[lifecycle]` (`idle_shutdown_secs` moved to `[daemon]`), `[failback]` and `[tree]` tables, and the `scope`, `marker`, `poll_*`, `fsevent_*`, `failback_*`, `budget_*` keys are config errors, at whatever level they appear, and so is `enabled` anywhere but `[daemon.providers.<p>]`.
+> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`). The `[providers]` root, the `[lifecycle]` (`idle_shutdown_secs` became `[daemon] idle_shutdown`), `[failback]` and `[tree]` tables, and the `scope`, `marker`, `poll_*`, `fsevent_*`, `failback_*`, `budget_*` keys are config errors, at whatever level they appear, and so is `enabled` anywhere but `[daemon.providers.<p>]`. `[daemon] provider_timeout_secs`, `idle_shutdown_secs` and the `[daemon.budget]` table are errors that name their replacements: `timeout`, `idle_shutdown` and `budget`, each a duration.
 
 **`[daemon.providers.<name>.sources.<source>]` section for a built-in Source:**
 
-A table naming a built-in Rust Source takes `return` only; `root`, `data` and `result` are errors (`git.diff is a built-in Source: only return can be set`). The line replaces the Source's invalidation, failback, decay, budget and `nearest` whole; a failback or budget it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget.execute`). `| super` extends the nearest `_` Source's line, as for a config Source. A built-in with no `return` keeps its own schedule: the `_` lines do not reach it.
+A table naming a built-in Rust Source takes `return` only; `root`, `data` and `result` are errors (`git.diff is a built-in Source: only return can be set`). The line replaces the Source's invalidation, failback, decay, budget and `nearest` whole; a failback, budget or timeout it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget`, `[daemon] timeout`). `| super` extends the nearest `_` Source's line, as for a config Source. A built-in with no `return` keeps its own schedule: the `_` lines do not reach it.
 
 **Calling another Source.** A Source's `data` line may call a sibling, `sources.<source>()`, or any provider's Source, `daemon.providers.<provider>.sources.<source>()`; a provider's `result` and `return` lines may call the latter, as in `return = "{{ result | merge(daemon.providers.gitstats.sources.repo()) | facet('template', template) }}"`. A call gives the called Source's own stored record, without any `put` over it, as a read of it from the same directory would find it: a cascading Source merges up its chain, a `| nearest` Source answers from its nearest instance alone. A Source whose record is not stored yet is run inline, once, by the read or refresh that needs it: two calls to it in one read, or callers racing for it in one refresh, run it once. A provider line's call is warmed by the `get` before the line renders; the same call reached from `comb.<p>`, a `watch` frame or `<p>:cache` finds only what is stored and never runs anything or renders a `root`. A called Source is kept warm while it is called: a read that reaches it through a line demands it, and demanding a Source demands what its last run called (a poll of the caller does not; a branch of the `data` line the last run did not take calls nothing), so it is polled and watched on its own schedule and decays and is evicted with its callers: one that would be evicted first stays at its last decay step while a caller that is still cached names it. `get --force` and `get --wait` reach the Sources a provider's `result` and `return` lines call as they reach its own, re-running them (or those past their interval). A `watch` of a provider follows the Sources its lines call. A leaf a line computes from a called record is as old as that record. The abstract provider `_` cannot call a Source by name (`sources.<s>()` is a load error there: use `merge(sources)`), since its lines apply to every provider. A called Source's own failure is the caller's miss, as a direct read of it would be (an instance of a cascading Source that fails is skipped, and the call goes on up its chain): the line that called it gets nothing, and the failure is the called Source's, under its own failback. A Source cannot call itself (`<p>.<s> cannot call itself`), a call to a provider or Source that does not exist is a load error naming it, and Sources that call each other in a ring are a load error naming the ring (`Sources call each other in a ring: a.x -> b.y -> a.x`). Were a ring to be run anyway, the Source reached again fails the read with `sources: <p>.<s> calls itself`.
 

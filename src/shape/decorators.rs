@@ -1,7 +1,8 @@
 //! Return decorators (Decisions 7 and 8): a Source's schedule, recorded.
 //!
 //! A Source's `return` line is rendered once, at load, with `result` bound to
-//! a sentinel and `poll`, `watch`, `ttl`, `failback`, `budget`, `nearest` and `super`
+//! a sentinel and `poll`, `watch`, `ttl`, `failback`, `budget`, `timeout`, `nearest` and
+//! `super`
 //! registered as filters that record their call and hand their input on. The
 //! render must give the sentinel back. The context holds nothing else (`_`
 //! is `{"name": ...}`), undefined is an error, and the environment is the
@@ -27,7 +28,9 @@ const MAX_INTERVAL_SECS: u64 = 365 * 24 * 3600;
 /// Counts multiply an interval into a lifespan, which decay then doubles.
 const MAX_COUNT: u32 = 10_000;
 const MUST_DECORATE: &str = "a Source's return must decorate result";
-const DECORATORS: [&str; 6] = ["poll", "watch", "ttl", "failback", "budget", "nearest"];
+const DECORATORS: [&str; 7] = [
+    "poll", "watch", "ttl", "failback", "budget", "timeout", "nearest",
+];
 
 /// What `result` is bound to: an opaque object. It has no length, items or
 /// attributes, so anything that needs them errors; and printing it counts, so
@@ -69,6 +72,8 @@ pub struct Recorded {
     pub invalidation: InvalidationStrategy,
     pub failback: FailbackConfig,
     pub budget_execute: Duration,
+    /// How long one run may take before it is cut off.
+    pub timeout: Duration,
     /// `Some(1)` for a `ttl(...)` Source; otherwise the provider's `_.decay`
     /// decides.
     pub decay: Option<u8>,
@@ -78,11 +83,12 @@ pub struct Recorded {
 }
 
 /// What a Source gets for a decorator its chain does not name: every Source
-/// has a `failback` and a `budget`, with no off switch.
+/// has a `failback`, a `budget` and a `timeout`, with no off switch.
 #[derive(Debug, Clone, Copy)]
 pub struct EngineDefaults {
     pub failback: FailbackConfig,
     pub budget_execute: Duration,
+    pub timeout: Duration,
 }
 
 /// The decorators one line recorded, each the last call of its name.
@@ -93,6 +99,7 @@ struct Line {
     ttl: Option<u64>,
     failback: Option<FailbackConfig>,
     budget: Option<Duration>,
+    timeout: Option<Duration>,
     nearest: bool,
 }
 
@@ -235,6 +242,10 @@ fn merge(levels: &[Line], defaults: &EngineDefaults) -> Result<Recorded, ReturnE
             .iter()
             .find_map(|l| l.budget)
             .unwrap_or(defaults.budget_execute),
+        timeout: levels
+            .iter()
+            .find_map(|l| l.timeout)
+            .unwrap_or(defaults.timeout),
         decay,
         nearest: levels.iter().any(|l| l.nearest),
     })
@@ -348,13 +359,17 @@ fn record(
                 interval_secs: interval_of(name, &args[1])?,
             });
         }
-        "budget" => {
+        "budget" | "timeout" => {
             arity(args.len() == 1, "a duration")?;
-            let budget = duration_of(name, &args[0])?;
-            if budget.is_zero() {
+            let duration = duration_of(name, &args[0])?;
+            if duration.is_zero() {
                 return Err(format!("{name}(): must be at least 1ms"));
             }
-            line.budget = Some(budget);
+            if name == "budget" {
+                line.budget = Some(duration);
+            } else {
+                line.timeout = Some(duration);
+            }
         }
         "nearest" => {
             arity(args.is_empty(), "no arguments")?;
@@ -377,7 +392,9 @@ fn duration_of(name: &str, value: &MjValue) -> Result<Duration, String> {
             .as_i64()
             .map(|n| Duration::from_secs(n.max(0) as u64))
             .ok_or_else(|| match name {
-                "budget" => format!("{name}(): a number is whole seconds; write '50ms' for less"),
+                "budget" | "timeout" => {
+                    format!("{name}(): a number is whole seconds; write '50ms' for less")
+                }
                 _ => format!("{name}(): interval must be a whole number of seconds"),
             }),
         ValueKind::String => {
@@ -525,7 +542,7 @@ mod tests {
     use super::*;
     use crate::scheduler::lifecycle::{
         DEFAULT_BUDGET_EXECUTE, DEFAULT_FAILBACK_COUNT, DEFAULT_FAILBACK_INTERVAL_SECS,
-        DEFAULT_POLL_COUNT,
+        DEFAULT_POLL_COUNT, DEFAULT_TIMEOUT,
     };
 
     fn defaults() -> EngineDefaults {
@@ -535,6 +552,7 @@ mod tests {
                 interval_secs: DEFAULT_FAILBACK_INTERVAL_SECS,
             },
             budget_execute: DEFAULT_BUDGET_EXECUTE,
+            timeout: DEFAULT_TIMEOUT,
         }
     }
 
@@ -968,6 +986,42 @@ mod tests {
             let e = record(&[line]).unwrap_err();
             let decorator = line.split("| ").nth(1).unwrap().split('(').next().unwrap();
             assert!(e.starts_with(&format!("{decorator}():")), "{line}: {e}");
+        }
+    }
+
+    /// `timeout(d)` is how long one run of the Source may take before it is
+    /// cut off; a Source whose chain does not say takes the engine's.
+    #[test]
+    fn timeout_is_recorded_and_otherwise_the_engines() {
+        assert_eq!(
+            rec("{{ result | timeout('2s') }}").timeout,
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            rec("{{ result | timeout('750ms') }}").timeout,
+            Duration::from_millis(750)
+        );
+        assert_eq!(
+            rec("{{ result | timeout(3) }}").timeout,
+            Duration::from_secs(3)
+        );
+        assert_eq!(rec("{{ result | poll('60s') }}").timeout, DEFAULT_TIMEOUT);
+        let r = record_return(
+            &["{{ result | poll('60s') }}"],
+            "s",
+            &EngineDefaults {
+                timeout: Duration::from_secs(4),
+                ..defaults()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.timeout, Duration::from_secs(4));
+        for line in ["{{ result | timeout('0s') }}", "{{ result | timeout(0) }}"] {
+            assert_eq!(
+                record(&[line]).unwrap_err(),
+                "timeout(): must be at least 1ms",
+                "{line}"
+            );
         }
     }
 

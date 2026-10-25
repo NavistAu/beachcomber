@@ -9,8 +9,8 @@ use std::time::Duration;
 /// `libbeachcomber::ClientConfig` defaults to 100ms, which is tuned for its
 /// own connect-probe/auto-spawn use, not for a `get`/`put` round trip: a
 /// `force`/`wait` request blocks on the provider's actual execution, and
-/// while this crate's own daemon caps that at `provider_timeout_secs`
-/// (default 10s, see `config.rs`), a provider can be configured to run
+/// while this crate's own daemon caps that at the Source's `timeout`
+/// (default 10s, `[daemon] timeout`), a Source can be configured to run
 /// longer. The pre-adapter root client set no timeout at all -- sockets
 /// blocked until the daemon answered or the connection died -- and `watch`
 /// in particular must keep blocking indefinitely between daemon-pushed

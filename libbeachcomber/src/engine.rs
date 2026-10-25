@@ -345,24 +345,38 @@ pub fn op_error(message: impl Into<std::borrow::Cow<'static, str>>) -> Error {
     Error::new(ErrorKind::InvalidOperation, message)
 }
 
-/// `exec(cmd, timeout_ms=10000, stdin=none, sh='sh')`, the one entry behind
+/// How long `exec()` and `url()` wait when their `timeout=` does not say.
+pub const DEFAULT_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The `timeout=` keyword of `function` (`exec`, `url`): a duration in the one
+/// grammar ([`crate::duration`]) of at least 1ms, [`DEFAULT_CALL_TIMEOUT`]
+/// when absent. The millisecond keyword it replaced says what took its place.
+pub fn timeout_kwarg(kwargs: &Kwargs, function: &str) -> Result<std::time::Duration, Error> {
+    if kwargs.has("timeout_ms") {
+        return Err(op_error(format!(
+            "{function}(): timeout_ms= is removed: write timeout='10s'"
+        )));
+    }
+    let Some(value) = kwargs.get::<Option<MjValue>>("timeout")? else {
+        return Ok(DEFAULT_CALL_TIMEOUT);
+    };
+    match crate::duration::from_value(&value) {
+        Ok(d) if !d.is_zero() => Ok(d),
+        Ok(_) => Err(op_error(format!(
+            "{function}(): timeout= must be at least 1ms"
+        ))),
+        Err(e) => Err(op_error(format!("{function}(): timeout= {e}"))),
+    }
+}
+
+/// `exec(cmd, timeout='10s', stdin=none, sh='sh')`, the one entry behind
 /// both spellings. A string runs `sh -c`; a list is argv, no shell. The
 /// child's environment is `ctx.env` and its directory `ctx.cwd`.
 fn exec(ctx: &EngineCtx, command: &MjValue, kwargs: Kwargs) -> Result<MjValue, Error> {
     if !ctx.allow_exec {
         return Err(op_error("exec() is disabled in this context"));
     }
-    // A bare `?` on a conversion failure (e.g. `timeout_ms="x"`) would say
-    // "cannot convert string to u64", naming neither `exec()` nor the keyword.
-    let timeout_ms = kwargs
-        .get::<Option<u64>>("timeout_ms")
-        .map_err(|e| {
-            op_error(format!(
-                "exec(): timeout_ms= {}",
-                e.detail().unwrap_or("invalid value")
-            ))
-        })?
-        .unwrap_or(10_000);
+    let timeout = timeout_kwarg(&kwargs, "exec")?;
     // A raw `Value`, so a non-string (`stdin=true`, a map) is rejected rather
     // than stringified through minijinja's `Display`.
     let stdin = match kwargs.get::<Option<MjValue>>("stdin")? {
@@ -407,7 +421,7 @@ fn exec(ctx: &EngineCtx, command: &MjValue, kwargs: Kwargs) -> Result<MjValue, E
         label: label.as_deref(),
         args: &args,
         stdin: stdin.as_deref(),
-        timeout_ms,
+        timeout,
         env: &ctx.env,
         cwd: ctx.cwd.as_deref(),
     };
@@ -580,10 +594,28 @@ mod tests {
         assert!(err.contains("stdin") && err.contains("tojson"), "{err}");
     }
 
+    /// `timeout=` is a duration in the one grammar: a string, or a bare
+    /// number of seconds.
     #[test]
-    fn exec_timeout_ms_conversion_error_names_the_kwarg() {
-        let err = eval("exec('echo hi', timeout_ms='x')").unwrap_err();
-        assert!(err.contains("timeout_ms"), "unexpected error: {err}");
+    fn exec_timeout_is_a_duration() {
+        assert_eq!(eval("exec('echo hi', timeout='2s')").unwrap(), "hi");
+        assert_eq!(eval("exec('echo hi', timeout=2)").unwrap(), "hi");
+        let err = eval("exec('sleep 2', timeout='100ms')").unwrap_err();
+        assert!(err.contains("timed out after 100ms"), "{err}");
+        for bad in ["'x'", "'0s'", "true"] {
+            let err = eval(&format!("exec('echo hi', timeout={bad})")).unwrap_err();
+            assert!(err.contains("exec(): timeout="), "{bad}: {err}");
+        }
+    }
+
+    /// The millisecond keyword is gone, and says what took its place.
+    #[test]
+    fn exec_timeout_ms_names_its_replacement() {
+        let err = eval("exec('echo hi', timeout_ms=5000)").unwrap_err();
+        assert!(
+            err.contains("exec(): timeout_ms= is removed: write timeout='10s'"),
+            "{err}"
+        );
     }
 
     #[test]

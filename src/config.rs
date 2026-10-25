@@ -28,43 +28,12 @@ pub fn deep_merge_toml(base: &mut toml::Value, overlay: toml::Value) {
     }
 }
 
-/// The one duration grammar, as every refusal states it.
-pub const DURATION_GRAMMAR: &str = "a whole number with an optional unit, ms, s, m or h; a bare \
-     number is seconds (\"250ms\", \"30s\", \"2m\", \"60\")";
-
-/// Parse a duration in the one grammar every flag, `[daemon]` key and
-/// decorator takes: a whole number with an optional unit, `ms`, `s`, `m` or
-/// `h`, a bare number being seconds (`"250ms"`, `"30s"`, `"2m"`, `"60"`). Zero
-/// is zero in every unit; a consumer that cannot take zero, or anything below
-/// a whole second, refuses it itself ([`parse_whole_seconds`]).
-pub fn parse_duration(s: &str) -> Option<Duration> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    if let Some(stripped) = s.strip_suffix("ms") {
-        return stripped
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .map(Duration::from_millis);
-    }
-    let (num_str, multiplier) = if let Some(stripped) = s.strip_suffix('s') {
-        (stripped, 1u64)
-    } else if let Some(stripped) = s.strip_suffix('m') {
-        (stripped, 60)
-    } else if let Some(stripped) = s.strip_suffix('h') {
-        (stripped, 3600)
-    } else {
-        (s, 1)
-    };
-    num_str
-        .trim()
-        .parse::<u64>()
-        .ok()
-        .and_then(|n| n.checked_mul(multiplier))
-        .map(Duration::from_secs)
-}
+/// The one duration grammar ([`libbeachcomber::duration`]): every flag,
+/// `[daemon]` key, decorator and keyword argument that takes a duration reads
+/// it, and every refusal states it.
+pub use libbeachcomber::duration::{
+    GRAMMAR as DURATION_GRAMMAR, display as display_duration, parse as parse_duration,
+};
 
 /// [`parse_duration`] as clap's value parser: every duration flag takes the
 /// one grammar and refuses anything else in the same words.
@@ -79,16 +48,6 @@ pub fn duration_value(value: &toml::Value) -> Option<Duration> {
         toml::Value::String(s) => parse_duration(s),
         toml::Value::Integer(n) => u64::try_from(*n).ok().map(Duration::from_secs),
         _ => None,
-    }
-}
-
-/// A duration as a person writes one: whole seconds as `"5s"`, anything
-/// finer as `"250ms"`.
-pub fn display_duration(d: Duration) -> String {
-    if d.subsec_nanos() == 0 {
-        format!("{}s", d.as_secs())
-    } else {
-        format!("{}ms", d.as_millis())
     }
 }
 
@@ -226,8 +185,11 @@ pub struct DaemonConfig {
     /// anything else, so a `Config` that loaded holds a valid level.
     #[serde(deserialize_with = "deserialize_log_level")]
     pub log_level: tracing_subscriber::filter::LevelFilter,
-    /// Seconds a Source may run before it is cancelled; at least 1.
-    pub provider_timeout_secs: u64,
+    /// How long one run of a Source may take before it is cut off, for every
+    /// Source whose `return` does not say (`timeout(...)`); see
+    /// [`DaemonConfig::timeout`]. A duration in the one grammar.
+    #[serde(deserialize_with = "deserialize_duration_text")]
+    pub timeout: Option<String>,
     /// Path to an env file loaded at daemon startup.
     /// Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
     /// These vars are injected into the daemon's environment before any providers execute,
@@ -245,14 +207,15 @@ pub struct DaemonConfig {
     /// Example: "90s", "3m".
     #[serde(deserialize_with = "deserialize_duration_text")]
     pub watchdog_threshold: Option<String>,
-    /// Seconds with no client before the daemon shuts down. Default: never.
-    pub idle_shutdown_secs: Option<u64>,
-    /// `[daemon.budget]`: `execute`, the execute budget recorded for every
-    /// Source whose own `return` does not name `budget(...)`
-    /// (`DaemonConfig::budget_execute`); nothing enforces it yet. A
-    /// `toml::Value` for the reason `Config::client` is one.
-    #[serde(default = "empty_table")]
-    pub budget: toml::Value,
+    /// How long with no client before the daemon shuts down. Default: never.
+    /// Whole seconds, at least 1s, in the one duration grammar.
+    #[serde(deserialize_with = "deserialize_duration_text")]
+    pub idle_shutdown: Option<String>,
+    /// How long a read waits for a Source before answering with what it has,
+    /// for every Source whose `return` does not say (`budget(...)`); see
+    /// [`DaemonConfig::budget`]. Recorded; nothing enforces it yet.
+    #[serde(deserialize_with = "deserialize_duration_text")]
+    pub budget: Option<String>,
     /// `[daemon.providers.<p>]`: what the daemon holds about a provider:
     /// `cache` (`[daemon.providers.<p>.cache._] decay = N`, seeded as
     /// `<p>:cache._.decay`, and `*:cache` for `<p> = _`) and `sources`
@@ -289,12 +252,12 @@ impl Default for DaemonConfig {
         Self {
             socket_path: None,
             log_level: tracing_subscriber::filter::LevelFilter::INFO,
-            provider_timeout_secs: 10,
+            timeout: None,
             env_file: None,
             watchdog_interval: None,
             watchdog_threshold: None,
-            idle_shutdown_secs: None,
-            budget: empty_table(),
+            idle_shutdown: None,
+            budget: None,
             providers: empty_table(),
             plugin: empty_table(),
         }
@@ -320,16 +283,36 @@ impl DaemonConfig {
         }
     }
 
-    /// `[daemon] budget.execute`: how long a Source may execute before it is
-    /// over budget, for every Source whose `return` does not say. A value of
-    /// the wrong shape is `Config::errors`'s to report; it reads as
-    /// absent here.
-    pub fn budget_execute(&self) -> Duration {
+    /// `[daemon] budget`: how long a read waits for a Source before answering
+    /// with what it has, for every Source whose `return` does not say. A value
+    /// of the wrong shape is `Config::errors`'s to report; it reads as absent
+    /// here.
+    pub fn budget(&self) -> Duration {
         self.budget
-            .get("execute")
-            .and_then(duration_value)
+            .as_deref()
+            .and_then(parse_duration)
             .filter(|d| !d.is_zero())
             .unwrap_or(crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE)
+    }
+
+    /// `[daemon] timeout`: how long one run of a Source may take before it is
+    /// cut off, for every Source whose `return` does not say. Ten seconds
+    /// unless the files say otherwise.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+            .as_deref()
+            .and_then(parse_duration)
+            .filter(|d| !d.is_zero())
+            .unwrap_or(crate::scheduler::lifecycle::DEFAULT_TIMEOUT)
+    }
+
+    /// `[daemon] idle_shutdown`: how long with no client before the daemon
+    /// shuts down, or `None` for never.
+    pub fn idle_shutdown(&self) -> Option<Duration> {
+        self.idle_shutdown
+            .as_deref()
+            .and_then(parse_whole_seconds)
+            .filter(|d| !d.is_zero())
     }
 }
 
@@ -1073,7 +1056,7 @@ mod tests {
     #[test]
     fn a_composition_that_does_not_deserialize_is_an_error() {
         let (_tmp, main, _conf_d) = config_dir();
-        std::fs::write(&main, "[daemon]\nprovider_timeout_secs = \"x\"\n").unwrap();
+        std::fs::write(&main, "[daemon]\nsocket_path = 3\n").unwrap();
         assert_eq!(Config::load_from(&main).errors().len(), 1);
     }
 }

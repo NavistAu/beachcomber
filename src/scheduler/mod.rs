@@ -112,6 +112,14 @@ pub struct LifecycleSnapshot {
     pub source: String,
 }
 
+/// What a run cut off at its `timeout` reports, wherever it ran.
+pub fn timed_out(timeout: Duration) -> String {
+    format!(
+        "timed out after {}",
+        crate::config::display_duration(timeout)
+    )
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SchedulerStatus {
     pub watched_paths: Vec<String>,
@@ -597,7 +605,12 @@ impl Scheduler {
         }
 
         let cache = Arc::clone(&self.cache);
-        let timeout_secs = self.config.daemon().provider_timeout_secs;
+        // The Source's own timeout (its `timeout(...)`, else `[daemon]
+        // timeout`, applied when the registry was built).
+        let timeout = self
+            .registry
+            .source_metadata(provider_name, source_name)
+            .map_or_else(|| self.config.daemon().timeout(), |m| m.timeout);
         let in_flight = Arc::clone(&self.in_flight);
         let pending_rerun = Arc::clone(&self.pending_rerun);
         let superseded = Arc::clone(&self.superseded);
@@ -619,7 +632,7 @@ impl Scheduler {
 
         tokio::spawn(async move {
             let result = tokio::time::timeout(
-                Duration::from_secs(timeout_secs),
+                timeout,
                 tokio::task::spawn_blocking(move || {
                     let _registry = registry;
                     source.execute(exec_dir.as_deref())
@@ -647,7 +660,7 @@ impl Scheduler {
                         Ok(Ok(Ok(source_result))) => Ok(source_result),
                         Ok(Ok(Err(e))) => Err(e),
                         Ok(Err(e)) => Err(format!("panicked: {e}")),
-                        Err(_) => Err(format!("timed out after {timeout_secs}s")),
+                        Err(_) => Err(timed_out(timeout)),
                     };
                     match record_outcome(
                         &recording_registry,
@@ -866,7 +879,7 @@ impl Scheduler {
 
         // Idle shutdown tracking.
         let mut last_activity = Instant::now();
-        let idle_shutdown_secs = self.config.daemon().idle_shutdown_secs;
+        let idle_shutdown = self.config.daemon().idle_shutdown();
 
         // Tick every second to check poll timers.
         let mut tick = interval(Duration::from_secs(1));
@@ -1106,12 +1119,15 @@ impl Scheduler {
                     }
 
                     // Idle shutdown.
-                    if let Some(idle_secs) = idle_shutdown_secs
+                    if let Some(idle) = idle_shutdown
                         && self.cache.is_empty()
                         && lifecycle.is_empty()
-                        && last_activity.elapsed().as_secs() >= idle_secs
+                        && last_activity.elapsed() >= idle
                     {
-                        info!("Idle shutdown: no entries, idle for {}s", idle_secs);
+                        info!(
+                            "Idle shutdown: no entries, idle for {}",
+                            crate::config::display_duration(idle)
+                        );
                         break;
                     }
                 }

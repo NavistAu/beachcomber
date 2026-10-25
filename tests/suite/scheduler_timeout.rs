@@ -60,6 +60,8 @@ fn slow_source_meta() -> SourceMetadata {
         fsevents_reinstate: false,
         decay: None,
         budget_execute: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        // The Source's own timeout, which the scheduler applies to its run.
+        timeout: Duration::from_secs(1),
         nearest: false,
     }
 }
@@ -128,7 +130,9 @@ async fn slow_provider_times_out() {
         .expect("slow");
     let registry = Arc::new(registry);
 
-    let config = Config::from_toml("[daemon]\nprovider_timeout_secs = 1\n");
+    // The daemon's default is far longer: the run is cut off at the Source's
+    // own timeout.
+    let config = Config::from_toml("[daemon]\ntimeout = \"30s\"\n");
 
     let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
@@ -213,7 +217,7 @@ async fn fast_provider_completes_within_timeout() {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(ProviderRegistry::with_defaults());
 
-    let config = Config::from_toml("[daemon]\nprovider_timeout_secs = 5\n");
+    let config = Config::from_toml("[daemon]\ntimeout = \"5s\"\n");
 
     let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
@@ -250,4 +254,35 @@ async fn fast_provider_completes_within_timeout() {
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;
+}
+
+/// A run a read starts inline is cut off at the Source's `timeout(...)` too:
+/// the read answers with what it has instead of waiting out the command.
+#[test]
+fn an_inline_run_is_cut_off_at_the_sources_timeout() {
+    let socket = crate::common::socket::IsolatedSocket::new();
+    let home = socket.dir.path().join("home");
+    let xdg = socket.dir.path().join("xdg");
+    std::fs::create_dir_all(xdg.join("beachcomber")).unwrap();
+    std::fs::write(
+        xdg.join("beachcomber").join("config.toml"),
+        r#"
+[daemon.providers.t.sources.main]
+data = "{{ exec('sleep 5', timeout='6s') }}"
+result.v = "{{ data }}"
+return = "{{ result | timeout('300ms') }}"
+"#,
+    )
+    .unwrap();
+    let d = crate::common::daemon::TestDaemon::spawn_in(socket, home, xdg);
+    let cwd = d.home.clone();
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    let started = std::time::Instant::now();
+    d.comb(&cwd).args(["get", "t.v"]).assert().success();
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the read waited {:?} for a run its Source cuts off at 300ms",
+        started.elapsed()
+    );
 }

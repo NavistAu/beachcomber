@@ -43,6 +43,7 @@ fn make_source_meta(
         fsevents_reinstate,
         decay: None,
         budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
         nearest: false,
     }
 }

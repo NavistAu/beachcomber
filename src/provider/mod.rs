@@ -603,6 +603,9 @@ pub struct SourceMetadata {
     pub decay: Option<u8>,
     /// How long one `execute` may take before the engine reports it slow.
     pub budget_execute: std::time::Duration,
+    /// How long one `execute` may take before it is cut off: the Source's
+    /// `timeout(...)`, else `[daemon] timeout`.
+    pub timeout: std::time::Duration,
     /// How the Source's instances combine. `false` cascades: a read takes
     /// each leaf from the nearest instance that has it, then the next one up,
     /// ending at `~`. `true` is `| nearest`: the nearest instance answers
@@ -854,6 +857,7 @@ mod tests {
             fsevents_reinstate: false,
             decay: None,
             budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+            timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
             nearest: false,
         }
     }

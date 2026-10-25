@@ -92,18 +92,15 @@ fn builtin_defaults(config: &Config) -> Vec<(Vec<String>, toml::Value)> {
             seg(&["daemon", "log_level"]),
             toml::Value::String(daemon.log_level.to_string().to_lowercase()),
         ),
-        (
-            seg(&["daemon", "provider_timeout_secs"]),
-            toml::Value::Integer(daemon.provider_timeout_secs as i64),
-        ),
         // The accessors answer with their default when no file sets the key,
         // and these are listed only then.
         (
-            seg(&["daemon", "budget", "execute"]),
-            toml::Value::String(format!(
-                "{}ms",
-                config.daemon().budget_execute().as_millis()
-            )),
+            seg(&["daemon", "timeout"]),
+            toml::Value::String(crate::config::display_duration(config.daemon().timeout())),
+        ),
+        (
+            seg(&["daemon", "budget"]),
+            toml::Value::String(crate::config::display_duration(config.daemon().budget())),
         ),
     ];
     // The plugin directory beside the config file, when there is one.
@@ -374,11 +371,11 @@ mod tests {
         assert_eq!(level.file, None);
         assert_eq!(level.value, toml::Value::String("info".into()));
         assert_eq!(
-            find(&all, "daemon.provider_timeout_secs").value,
-            toml::Value::Integer(10)
+            find(&all, "daemon.timeout").value,
+            toml::Value::String("10s".into())
         );
         assert_eq!(
-            find(&all, "daemon.budget.execute").value,
+            find(&all, "daemon.budget").value,
             toml::Value::String("50ms".into())
         );
 
