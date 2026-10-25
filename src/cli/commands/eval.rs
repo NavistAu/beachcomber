@@ -21,8 +21,8 @@ use std::process::ExitCode;
 
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
 /// `--path`, the trailing positional, or the current directory. A render's
-/// `exec()`, `lup()` and `read` run in that directory, or in the current one
-/// for the global entry.
+/// `exec()`, `lup()` and `read` run in the directory it addresses, `$HOME` for
+/// the global entry — the resolver's rule, the same for every surface.
 pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
@@ -41,12 +41,9 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
     };
 
     let env = crate::cli::shell_env();
-    let cwd = match path {
-        Some(p) => p.to_string(),
-        None => std::env::current_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-    };
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let inputs = Inputs {
         cwd: &cwd,
         env: &env,

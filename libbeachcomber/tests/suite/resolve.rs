@@ -1495,3 +1495,47 @@ fn a_lazy_comb_node_returned_whole_is_its_data() {
     );
     assert_eq!(render_eval("{{ comb['nope'] }}", &mut f, &env), None);
 }
+
+// ── a template runs in the directory the resolution addresses ────────────────
+
+/// `read` (like `lup` and `exec`) runs in the directory the resolution
+/// addresses: an explicit path wins over the caller's directory, and the
+/// global entry is `$HOME`.
+#[test]
+fn a_templates_files_are_read_in_the_addressed_directory() {
+    let addressed = tempfile::tempdir().unwrap();
+    let caller = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    for (dir, text) in [
+        (&addressed, "addressed"),
+        (&caller, "caller"),
+        (&home, "home"),
+    ] {
+        std::fs::write(dir.path().join("marker"), text).unwrap();
+    }
+    let path = |d: &tempfile::TempDir| d.path().to_str().unwrap().to_string();
+    let env = env_of(&[("HOME", &path(&home))]);
+    let read = |slot: Slot| {
+        let mut f = MapFetch::default();
+        let at = match &slot {
+            Slot::Path(p) => Some(p.clone()),
+            Slot::Cwd => Some(path(&caller)),
+            Slot::Global => None,
+        };
+        f.seed("t.m", at.as_deref(), tmpl(json!("{{ 'marker' | read }}")));
+        let caller_dir = path(&caller);
+        let inputs = Inputs {
+            cwd: &caller_dir,
+            env: &env,
+            slot,
+            force: false,
+            wait: false,
+            allow_exec: false,
+        };
+        resolve("t.m", &inputs, &mut f).unwrap()
+    };
+
+    assert_eq!(read(Slot::Path(path(&addressed))), Some(json!("addressed")));
+    assert_eq!(read(Slot::Cwd), Some(json!("caller")));
+    assert_eq!(read(Slot::Global), Some(json!("home")));
+}

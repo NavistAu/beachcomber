@@ -179,3 +179,38 @@ fn every_command_describes_the_path_in_the_same_words() {
         assert_eq!(line(&help(cmd), "[PATH]"), positional, "{cmd}");
     }
 }
+
+/// A template's `read`, `lup` and `exec` run in the directory the read
+/// addresses: the one given, else the current directory, and `$HOME` for the
+/// global entry. `get`, `eval` and `watch` agree, whichever directory they
+/// are run from.
+#[test]
+fn a_template_reads_files_in_the_directory_it_is_addressed_at() {
+    let d = TestDaemon::spawn();
+    let (project, elsewhere) = dirs(&d);
+    std::fs::write(project.join("marker"), "project\n").unwrap();
+    std::fs::write(elsewhere.join("marker"), "elsewhere\n").unwrap();
+    std::fs::write(d.home.join("marker"), "home\n").unwrap();
+    ok(
+        &d,
+        &elsewhere,
+        &[
+            "put",
+            "--global",
+            "t:template.m",
+            r#""{{ 'marker' | read | trim }}""#,
+        ],
+    );
+    let at = project.to_str().unwrap();
+
+    assert_eq!(ok(&d, &elsewhere, &["get", "t.m"]), "elsewhere");
+    assert_eq!(ok(&d, &elsewhere, &["get", "t.m", at]), "project");
+    assert_eq!(ok(&d, &elsewhere, &["get", "-p", at, "t.m"]), "project");
+    assert_eq!(ok(&d, &elsewhere, &["get", "--global", "t.m"]), "home");
+    assert_eq!(ok(&d, &elsewhere, &["eval", "{{ t.m }}", at]), "project");
+    assert_eq!(
+        ok(&d, &elsewhere, &["eval", "--global", "{{ t.m }}"]),
+        "home"
+    );
+    assert_eq!(watch_first(&d, &elsewhere, &["t.m", at]), "project");
+}

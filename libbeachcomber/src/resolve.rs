@@ -88,6 +88,18 @@ impl Inputs<'_> {
             Slot::Global => None,
         }
     }
+
+    /// The directory a template's `exec`, `lup` and `read` run in: the one
+    /// this resolution addresses, whichever surface asked — an explicit path,
+    /// else the caller's directory, and for the global entry `$HOME` (the
+    /// caller's). `None` when there is none to give.
+    fn dir(&self) -> Option<&str> {
+        let dir = match &self.slot {
+            Slot::Global => self.env.get("HOME").map(String::as_str),
+            _ => self.path(),
+        };
+        dir.filter(|d| !d.is_empty())
+    }
 }
 
 /// A [`Fetch`] failure.
@@ -249,7 +261,7 @@ impl<'a> Resolver<'a> {
             inputs,
             engine: Arc::new(EngineCtx {
                 env: inputs.env.clone(),
-                cwd: (!inputs.cwd.is_empty()).then(|| inputs.cwd.into()),
+                cwd: inputs.dir().map(Into::into),
                 allow_exec: inputs.allow_exec,
             }),
             fetch,

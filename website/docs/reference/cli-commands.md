@@ -44,6 +44,8 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 
 The three conflict with one another, and with none the command addresses the current directory. A relative path is the caller's, not the daemon's, and a leading `~` the shell left unexpanded (because it was quoted) is `$HOME`.
 
+A template rendered for a read runs its `exec()`, `lup()` and `read` in the directory the read addresses — the given path, else the current directory, and `$HOME` for `--global` — so `comb get t.x ./repo`, `comb eval '{{ t.x }}' ./repo`, `comb watch t.x ./repo` and an SDK's `resolve(t.x, cwd=./repo)` look at the same files.
+
 ## `comb g` (get) `<key>... [path] [-p <path>] [--global] [-f format]`
 
 Query a value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay. `comb get` is a client of `libbeachcomber::resolve`, the same function behind `comb eval` and every SDK's `resolve`: it always needs the daemon, even for a key (`env.HOME`) it answers without a request.
