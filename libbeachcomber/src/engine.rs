@@ -47,6 +47,7 @@ impl EngineCtx {
 pub fn build_pure_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
     let mut jinja = Environment::new();
     jinja.set_undefined_behavior(UndefinedBehavior::Chainable);
+    library::absent::guard_builtins(&mut jinja);
     library::install(&mut jinja, &ctx, Tier::Pure);
     jinja
 }

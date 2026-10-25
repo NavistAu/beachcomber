@@ -48,6 +48,18 @@ fn basename_filter_empty_string() {
     assert_eq!(result, "");
 }
 
+#[test]
+fn basename_filter_follows_posix() {
+    let jinja = build_pure_engine_env(Default::default());
+    let result = jinja.render_str(r#"{{ "/" | basename }}"#, ()).unwrap();
+    assert_eq!(result, "/");
+    // Absent in, absent out: nothing to name.
+    let result = jinja
+        .render_str(r#"[{{ missing | basename | default("none") }}]"#, ())
+        .unwrap();
+    assert_eq!(result, "[none]");
+}
+
 // ── ref discovery ─────────────────────────────────────────────────────────────
 
 #[test]

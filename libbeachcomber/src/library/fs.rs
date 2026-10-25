@@ -1,7 +1,7 @@
 //! Files: `read` and `lup`. Both read the filesystem, so they are the `io`
 //! tier: not on a provider's lines, which run on every read.
 
-use super::{is_blank, none};
+use super::{UNDEFINED, is_absent};
 use crate::engine::{EngineCtx, op_error};
 use minijinja::value::{Kwargs, Value as MjValue};
 use minijinja::{Environment, Error};
@@ -22,10 +22,10 @@ pub(super) fn add_lup(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
 }
 
 /// `p | read`: the file's text. A relative `p` is against `ctx.cwd`, a
-/// leading `~` against `ctx.env["HOME"]`. A missing file is `none`.
+/// leading `~` against `ctx.env["HOME"]`. A missing file is undefined.
 fn read(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
-    if is_blank(path) {
-        return Ok(none());
+    if is_absent(path) {
+        return Ok(UNDEFINED);
     }
     let Some(p) = path.as_str() else {
         return Err(op_error("read(): the path must be a string"));
@@ -33,7 +33,7 @@ fn read(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
     let full = resolve_path(ctx, p).map_err(|e| op_error(format!("read(): {e}")))?;
     match std::fs::read_to_string(&full) {
         Ok(text) => Ok(MjValue::from(text)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(none()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(UNDEFINED),
         Err(e) => Err(op_error(format!("read(): {}: {e}", full.display()))),
     }
 }
@@ -77,11 +77,11 @@ fn lup(ctx: &EngineCtx, name: &str, kwargs: Kwargs) -> Result<MjValue, Error> {
     }
 
     let Some(cwd) = &ctx.cwd else {
-        return Ok(none());
+        return Ok(UNDEFINED);
     };
     // lup follows `..` on disk, so it starts from the physical directory.
     let Ok(start) = cwd.canonicalize() else {
-        return Ok(none());
+        return Ok(UNDEFINED);
     };
     let mut query = liblup::Query::new(name.as_bytes());
     query.all = all;
@@ -100,7 +100,7 @@ fn lup(ctx: &EngineCtx, name: &str, kwargs: Kwargs) -> Result<MjValue, Error> {
     };
     let hits = match liblup::lookup(&query, start.as_os_str().as_bytes(), boundary) {
         Ok(hits) => hits,
-        Err(liblup::LupError::NoMatch | liblup::LupError::NotInGitRepo) => return Ok(none()),
+        Err(liblup::LupError::NoMatch | liblup::LupError::NotInGitRepo) => return Ok(UNDEFINED),
         Err(liblup::LupError::UsageError(m)) => return Err(op_error(format!("lup(): {m}"))),
         Err(liblup::LupError::Io(e)) => {
             return Err(op_error(format!("lup(): {}: {e}", start.display())));
@@ -113,7 +113,7 @@ fn lup(ctx: &EngineCtx, name: &str, kwargs: Kwargs) -> Result<MjValue, Error> {
     Ok(if all {
         MjValue::from(paths.collect::<Vec<_>>())
     } else {
-        paths.next().unwrap_or_else(none)
+        paths.next().unwrap_or(UNDEFINED)
     })
 }
 
@@ -166,10 +166,10 @@ mod tests {
     }
 
     #[test]
-    fn read_missing_is_none() {
+    fn read_missing_is_undefined() {
         let (_d, _root, ctx) = repo();
         assert_eq!(
-            eval_in(ctx.clone(), "('nope' | read) is none").unwrap(),
+            eval_in(ctx.clone(), "('nope' | read) is undefined").unwrap(),
             "true"
         );
         assert_eq!(
@@ -201,13 +201,13 @@ mod tests {
     }
 
     #[test]
-    fn lup_miss_is_none() {
+    fn lup_miss_is_undefined() {
         let (_d, _root, ctx) = repo();
         assert_eq!(
-            eval_in(ctx, "lup('.nothing-here') is none").unwrap(),
+            eval_in(ctx, "lup('.nothing-here') is undefined").unwrap(),
             "true"
         );
-        assert_eq!(eval("lup('.git') is none").unwrap(), "true");
+        assert_eq!(eval("lup('.git') is undefined").unwrap(), "true");
     }
 
     #[test]
@@ -217,7 +217,7 @@ mod tests {
         let cwd = root.join("a/b/c");
         let home = root.join("a/b");
         let ctx = ctx_with(&[("HOME", home.to_str().unwrap())], Some(&cwd));
-        assert_eq!(eval_in(ctx, "lup('.git') is none").unwrap(), "true");
+        assert_eq!(eval_in(ctx, "lup('.git') is undefined").unwrap(), "true");
     }
 
     #[test]
@@ -256,17 +256,17 @@ mod tests {
             root.join(".env").to_str().unwrap()
         );
         assert_eq!(
-            eval_in(ctx, "lup('.env', git=true) is none").unwrap(),
+            eval_in(ctx, "lup('.env', git=true) is undefined").unwrap(),
             "true"
         );
     }
 
     #[test]
-    fn lup_git_outside_a_repository_is_none() {
+    fn lup_git_outside_a_repository_is_undefined() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ctx_with(&[], Some(dir.path()));
         assert_eq!(
-            eval_in(ctx, "lup('.env', git=true) is none").unwrap(),
+            eval_in(ctx, "lup('.env', git=true) is undefined").unwrap(),
             "true"
         );
     }

@@ -1,6 +1,6 @@
 //! Objects and lists: `pluck`, `merge` and `map`.
 
-use super::{is_blank, none};
+use super::{UNDEFINED, is_absent};
 use crate::engine::{EngineCtx, op_error};
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error, State};
@@ -31,6 +31,9 @@ pub(super) fn add_map(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
 fn pluck(value: MjValue, path: String) -> Result<MjValue, Error> {
     let segments = crate::key::parse_address(&path)
         .ok_or_else(|| op_error(format!("pluck(): malformed path '{path}'")))?;
+    if is_absent(&value) {
+        return Ok(UNDEFINED);
+    }
     let mut cur = value;
     for segment in segments {
         cur = match cur.kind() {
@@ -39,13 +42,13 @@ fn pluck(value: MjValue, path: String) -> Result<MjValue, Error> {
                 let len = cur.len().unwrap_or(0);
                 match crate::key::array_index(&segment, len).filter(|i| *i < len) {
                     Some(i) => cur.get_item_by_index(i)?,
-                    None => return Ok(none()),
+                    None => return Ok(UNDEFINED),
                 }
             }
-            _ => return Ok(none()),
+            _ => return Ok(UNDEFINED),
         };
-        if is_blank(&cur) {
-            return Ok(none());
+        if is_absent(&cur) {
+            return Ok(UNDEFINED);
         }
     }
     Ok(cur)
@@ -53,14 +56,14 @@ fn pluck(value: MjValue, path: String) -> Result<MjValue, Error> {
 
 /// Deep merge, later wins; a non-object replaces; a `null` leaf removes. A
 /// `none` or undefined operand contributes nothing: it does not replace what
-/// the others gave.
+/// the others gave, and with nothing left the result is undefined.
 pub fn merge_values(values: impl Iterator<Item = MjValue>) -> Result<MjValue, Error> {
-    let mut acc = serde_json::Value::Null;
-    for v in values.filter(|v| !is_blank(v)) {
+    let mut acc = None;
+    for v in values.filter(|v| !is_absent(v)) {
         let json = serde_json::to_value(&v).map_err(|e| op_error(format!("merge(): {e}")))?;
-        acc = merge_json(acc, json);
+        acc = Some(merge_json(acc.unwrap_or(serde_json::Value::Null), json));
     }
-    Ok(MjValue::from_serialize(acc))
+    Ok(acc.map_or(UNDEFINED, MjValue::from_serialize))
 }
 
 fn merge_json(base: serde_json::Value, over: serde_json::Value) -> serde_json::Value {
@@ -99,13 +102,16 @@ fn strip_nulls(v: serde_json::Value) -> serde_json::Value {
 /// `map`, extended to objects: `obj | map('filter', args…)` applies the
 /// filter to each value and keeps the keys. Anything else is jinja's `map`.
 fn map(state: &State, value: MjValue, args: Rest<MjValue>) -> Result<MjValue, Error> {
+    if is_absent(&value) {
+        return Ok(UNDEFINED);
+    }
     if value.kind() != ValueKind::Map {
         return minijinja::filters::map(state, value, args).map(MjValue::from);
     }
     let (pos, kwargs): (&[MjValue], Kwargs) = minijinja::value::from_args(&args)?;
     let name = match pos.first().and_then(|a| a.as_str()) {
         Some(name) if !kwargs.has("attribute") => name.to_string(),
-        _ => return Err(op_error("map over an object takes a filter name")),
+        _ => return Err(op_error("map(): over an object takes a filter name")),
     };
     kwargs.assert_all_used()?;
     let mut out = Vec::new();
@@ -130,10 +136,14 @@ mod tests {
         assert_eq!(p("node[-1].version"), "20.0.0");
         assert_eq!(p("a.b.c"), "1");
         assert_eq!(p(r#"[\"k.y\"]"#), "7");
-        assert_eq!(p("a.missing.c"), "none");
-        assert_eq!(p("node[5]"), "none");
-        assert_eq!(p("a[0]"), "none");
-        assert_eq!(p("node.version"), "none");
+        for miss in ["a.missing.c", "node[5]", "a[0]", "node.version"] {
+            assert_eq!(
+                eval(&format!("(({data}) | pluck('{miss}')) is undefined")).unwrap(),
+                "true",
+                "{miss}"
+            );
+        }
+        assert_eq!(eval("(none | pluck('a')) is undefined").unwrap(), "true");
         assert_eq!(
             p("node.-1.version"),
             "20.0.0",
@@ -158,7 +168,7 @@ mod tests {
     fn map_over_an_object_with_attribute_is_an_error() {
         let err = eval(r#"('{"a":1}' | fromjson) | map(attribute='x')"#).unwrap_err();
         assert!(
-            err.contains("map over an object takes a filter name"),
+            err.contains("map(): over an object takes a filter name"),
             "{err}"
         );
     }

@@ -5,36 +5,56 @@
 //! surface. The colour filters draw escapes only when the render's `env` does
 //! not set `NO_COLOR` ([`EngineCtx::colour`]).
 
+use super::{UNDEFINED, is_absent, text};
 use crate::engine::EngineCtx;
+use minijinja::value::Value as MjValue;
 use minijinja::{Environment, Error, ErrorKind};
 use std::sync::Arc;
 
+/// Run `style` over the text of `value`; absent is undefined.
+fn styled(
+    name: &str,
+    value: &MjValue,
+    style: impl FnOnce(String) -> Result<String, Error>,
+) -> Result<MjValue, Error> {
+    if is_absent(value) {
+        return Ok(UNDEFINED);
+    }
+    style(text(name, value)?).map(MjValue::from)
+}
+
 pub(super) fn add_truncate(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
-    env.add_filter("truncate", truncate_filter);
+    env.add_filter("truncate", |value: MjValue, length: u32| {
+        styled("truncate", &value, |s| Ok(truncate_filter(s, length)))
+    });
 }
 
 pub(super) fn add_fg(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
     let colour = ctx.colour();
-    env.add_filter("fg", move |value: String, color: String| {
-        fg_filter(value, color, colour)
+    env.add_filter("fg", move |value: MjValue, color: String| {
+        styled("fg", &value, |s| fg_filter(s, color, colour))
     });
 }
 
 pub(super) fn add_bg(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
     let colour = ctx.colour();
-    env.add_filter("bg", move |value: String, color: String| {
-        bg_filter(value, color, colour)
+    env.add_filter("bg", move |value: MjValue, color: String| {
+        styled("bg", &value, |s| bg_filter(s, color, colour))
     });
 }
 
 pub(super) fn add_bold(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
     let colour = ctx.colour();
-    env.add_filter("bold", move |value: String| bold_filter(value, colour));
+    env.add_filter("bold", move |value: MjValue| {
+        styled("bold", &value, |s| Ok(bold_filter(s, colour)))
+    });
 }
 
 pub(super) fn add_dim(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
     let colour = ctx.colour();
-    env.add_filter("dim", move |value: String| dim_filter(value, colour));
+    env.add_filter("dim", move |value: MjValue| {
+        styled("dim", &value, |s| Ok(dim_filter(s, colour)))
+    });
 }
 
 fn truncate_filter(value: String, length: u32) -> String {
@@ -87,7 +107,8 @@ fn sgr_wrap(value: String, color: &str, sgr_code: u8, colour: bool) -> Result<St
     if value.is_empty() {
         return Ok(String::new());
     }
-    let (r, g, b) = parse_hex_color(color)?;
+    let name = if sgr_code == 38 { "fg" } else { "bg" };
+    let (r, g, b) = parse_hex_color(name, color)?;
     if !colour {
         return Ok(value);
     }
@@ -138,12 +159,12 @@ fn sgr_attr(value: String, code: u8, colour: bool) -> String {
 /// is an `InvalidOperation` error naming the value that failed to parse,
 /// so a typo surfaces at render time instead of silently passing the text
 /// through uncoloured.
-fn parse_hex_color(color: &str) -> Result<(u8, u8, u8), Error> {
+fn parse_hex_color(name: &str, color: &str) -> Result<(u8, u8, u8), Error> {
     let hex = color.strip_prefix('#').unwrap_or(color);
     if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(Error::new(
             ErrorKind::InvalidOperation,
-            format!("invalid colour {color:?}: expected #rrggbb hex"),
+            format!("{name}(): invalid colour {color:?}: expected #rrggbb hex"),
         ));
     }
     let r = u8::from_str_radix(&hex[0..2], 16).expect("validated hex digits");

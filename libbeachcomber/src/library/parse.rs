@@ -1,6 +1,8 @@
 //! Text to data: `fromjson` and `fromini`.
 
-use crate::engine::{EngineCtx, op_error};
+use super::{UNDEFINED, is_absent_text, text};
+use crate::engine::EngineCtx;
+use minijinja::value::Value as MjValue;
 use minijinja::{Environment, Error, ErrorKind};
 use std::sync::Arc;
 
@@ -18,16 +20,24 @@ pub(super) fn add_fromini(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
 /// Text that is not JSON is an `InvalidOperation` error carrying serde's
 /// message, so a tool that printed something else fails at the filter rather
 /// than rendering `undefined` three attributes later.
-fn fromjson_filter(value: String) -> Result<minijinja::Value, Error> {
-    serde_json::from_str::<serde_json::Value>(&value)
-        .map(|v| minijinja::Value::from_serialize(&v))
-        .map_err(|e| Error::new(ErrorKind::InvalidOperation, format!("fromjson: {e}")))
+fn fromjson_filter(value: MjValue) -> Result<MjValue, Error> {
+    if is_absent_text(&value) {
+        return Ok(UNDEFINED);
+    }
+    serde_json::from_str::<serde_json::Value>(&text("fromjson", &value)?)
+        .map(|v| MjValue::from_serialize(&v))
+        .map_err(|e| Error::new(ErrorKind::InvalidOperation, format!("fromjson(): {e}")))
 }
 
 /// `s | fromini`: section -> {key: string}. Keys before any section land
 /// under `""`.
-fn fromini(text: String) -> Result<minijinja::Value, Error> {
-    let ini = ini::Ini::load_from_str(&text).map_err(|e| op_error(format!("fromini: {e}")))?;
+fn fromini(value: MjValue) -> Result<MjValue, Error> {
+    if is_absent_text(&value) {
+        return Ok(UNDEFINED);
+    }
+    let source = text("fromini", &value)?;
+    let ini = ini::Ini::load_from_str(&source)
+        .map_err(|e| Error::new(ErrorKind::InvalidOperation, format!("fromini(): {e}")))?;
     let mut out = serde_json::Map::new();
     for (section, props) in ini.iter() {
         if section.is_none() && props.is_empty() {
@@ -40,9 +50,7 @@ fn fromini(text: String) -> Result<minijinja::Value, Error> {
             table[k] = serde_json::Value::String(v.to_string());
         }
     }
-    Ok(minijinja::Value::from_serialize(serde_json::Value::Object(
-        out,
-    )))
+    Ok(MjValue::from_serialize(serde_json::Value::Object(out)))
 }
 
 #[cfg(test)]
@@ -53,8 +61,10 @@ mod tests {
 
     #[test]
     fn fromjson_parses_an_object_that_round_trips() {
-        let v =
-            fromjson_filter(r#"{"context": "mycluster", "nodes": [1, 2]}"#.to_string()).unwrap();
+        let v = fromjson_filter(MjValue::from(
+            r#"{"context": "mycluster", "nodes": [1, 2]}"#,
+        ))
+        .unwrap();
         assert_eq!(
             serde_json::to_value(&v).unwrap(),
             serde_json::json!({"context": "mycluster", "nodes": [1, 2]})
@@ -74,10 +84,10 @@ mod tests {
 
     #[test]
     fn fromjson_rejects_text_that_is_not_json() {
-        let err = fromjson_filter("error: current-context is not set".to_string()).unwrap_err();
+        let err = fromjson_filter(MjValue::from("error: current-context is not set")).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidOperation);
         assert!(
-            err.to_string().contains("fromjson"),
+            err.to_string().contains("fromjson():"),
             "error should name the filter, got: {err}"
         );
     }

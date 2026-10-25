@@ -2,4 +2,4 @@
 # The interpreter version in effect: an explicit selector, then a tool manager, then the venv.
 template.version = "{{ env.PYENV_VERSION or env.MISE_PYTHON_VERSION or comb.mise.python or comb.asdf.python or comb.python.venv_version }}"
 # The active virtualenv's name: a local .venv, else the basename of $VIRTUAL_ENV; absent when neither is there.
-template.venv_name = "{{ comb.python.local_venv_name or (env.VIRTUAL_ENV | basename if env.VIRTUAL_ENV) }}"
+template.venv_name = "{{ comb.python.local_venv_name or (env.VIRTUAL_ENV | basename) }}"

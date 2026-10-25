@@ -13,6 +13,7 @@
 //! [`parse`] (text to data). `exec` is bound to a render's process rules and
 //! lives in [`crate::engine`]; `url` and `plugin` live in the daemon.
 
+pub mod absent;
 pub mod data;
 pub mod fs;
 pub mod parse;
@@ -152,12 +153,35 @@ fn add_plugin_refusal(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
     );
 }
 
-pub(crate) fn none() -> MjValue {
-    MjValue::from(())
+/// What an item gives when it has nothing to give: undefined, so `| default(x)`
+/// fires and `~` joins it as nothing.
+pub(crate) const UNDEFINED: MjValue = MjValue::UNDEFINED;
+
+/// Whether `v` is absent: undefined or `none`.
+pub(crate) fn is_absent(v: &MjValue) -> bool {
+    v.is_undefined() || v.is_none()
 }
 
-pub(crate) fn is_blank(v: &MjValue) -> bool {
-    v.is_undefined() || v.is_none()
+/// Whether `v` is absent, or the empty string. The parse and path filters read
+/// `''` as absent.
+pub(crate) fn is_absent_text(v: &MjValue) -> bool {
+    is_absent(v) || v.as_str() == Some("")
+}
+
+/// `v` as the text a text filter works on: a string is itself, a number or a
+/// bool is its text, anything else is an error `name(): ...`.
+pub(crate) fn text(name: &str, v: &MjValue) -> Result<String, Error> {
+    use minijinja::value::ValueKind;
+    match v.kind() {
+        ValueKind::String => Ok(v.as_str().unwrap_or_default().to_string()),
+        ValueKind::Number => Ok(v.to_string()),
+        ValueKind::Bool => Ok(if v.is_true() { "true" } else { "false" }.to_string()),
+        ValueKind::Seq | ValueKind::Iterable => {
+            Err(op_error(format!("{name}(): expected text, not a list")))
+        }
+        ValueKind::Map => Err(op_error(format!("{name}(): expected text, not a map"))),
+        _ => Err(op_error(format!("{name}(): expected text"))),
+    }
 }
 
 #[cfg(test)]
@@ -269,6 +293,35 @@ mod tests {
                 assert!(item.tier.available(Surface::Client), "{}", item.name);
             }
             assert!(item.tier.available(Surface::Source), "{}", item.name);
+        }
+    }
+
+    /// Every error an item raises for bad input reads `name(): why`.
+    #[test]
+    fn every_error_is_name_then_why() {
+        use super::testing::eval;
+        for (name, bad) in [
+            ("truncate", "[1] | truncate(3)"),
+            ("fg", "'x' | fg('nope')"),
+            ("bg", "'x' | bg('nope')"),
+            ("bold", "{} | bold"),
+            ("dim", "[1] | dim"),
+            ("basename", "[1] | basename"),
+            ("dirname", "{} | dirname"),
+            ("pluck", "{} | pluck('a[')"),
+            ("map", "{'a': 1} | map(attribute='x')"),
+            ("fromjson", "'{' | fromjson"),
+            ("fromini", "[1] | fromini"),
+            ("read", "[1] | read"),
+            ("lup", "lup('x', files=true, dirs=true)"),
+            ("exec", "exec(1)"),
+        ] {
+            let err = eval(bad).unwrap_err();
+            let why = err.strip_prefix("invalid operation: ").unwrap_or(&err);
+            assert!(
+                why.starts_with(&format!("{name}(): ")),
+                "{name}: `{bad}` gave `{err}`"
+            );
         }
     }
 
