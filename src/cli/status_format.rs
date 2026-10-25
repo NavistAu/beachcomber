@@ -597,7 +597,7 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
     ctx.insert("age_ms".into(), serde_json::json!(r.age_ms));
     ctx.insert(
         "age_human".into(),
-        serde_json::Value::String(format_age(r.age_ms)),
+        serde_json::Value::String(r.age_ms.map_or_else(|| "-".to_string(), format_age)),
     );
     ctx.insert("stale".into(), serde_json::Value::Bool(r.stale));
     // kind — snake_case discriminator, empty string when None
@@ -745,7 +745,7 @@ pub fn render_tsv(rows: &[CacheRow]) -> String {
             row.field,
             row.source,
             value,
-            row.age_ms,
+            row.age_ms.map(|a| a.to_string()).unwrap_or_default(),
             row.stale,
             kind,
             decay,
@@ -812,7 +812,7 @@ pub fn render_csv(rows: &[CacheRow]) -> String {
             csv_quote(&row.field),
             csv_quote(&row.source),
             csv_quote(&value),
-            row.age_ms,
+            row.age_ms.map(|a| a.to_string()).unwrap_or_default(),
             stale,
             csv_quote(kind),
             csv_quote(&decay),
@@ -1102,7 +1102,7 @@ pub fn render_tree(
                 source: layer.label.clone(),
                 field: row.field.clone(),
                 value: layer.value.clone(),
-                age_ms: layer.age_ms,
+                age_ms: Some(layer.age_ms),
                 stale: layer.stale,
                 kind: None,
                 poll_interval_secs: None,
@@ -2176,7 +2176,11 @@ pub fn format_age(age_ms: u128) -> String {
 /// Used for the AGE column in `comb status` table rendering. The suffix shows how
 /// many polls have fired in the current lifecycle step, giving the user a sense of
 /// where they are in the K-poll window without computing it from the TTL column.
-fn format_age_with_polls(age_ms: u128, polls_elapsed: Option<u32>, ascii: bool) -> String {
+/// A row with no age (a rendered value that read no cached input) is `-`.
+fn format_age_with_polls(age_ms: Option<u128>, polls_elapsed: Option<u32>, ascii: bool) -> String {
+    let Some(age_ms) = age_ms else {
+        return "-".to_string();
+    };
     let base = format_age(age_ms);
     match polls_elapsed {
         Some(n) => {
@@ -2693,7 +2697,7 @@ mod ttl_cell_tests {
             source: "loadavg".into(),
             field: "one".into(),
             value: serde_json::json!(0.5),
-            age_ms: 0,
+            age_ms: Some(0),
             stale: false,
             kind: Some(RowKind::Lifecycle {
                 decay: 0,
@@ -2865,26 +2869,26 @@ mod format_age_with_polls_tests {
 
     #[test]
     fn no_polls_no_suffix() {
-        assert_eq!(format_age_with_polls(14_000, None, false), "14s");
+        assert_eq!(format_age_with_polls(Some(14_000), None, false), "14s");
     }
 
     #[test]
     fn polls_unicode_suffix() {
         assert_eq!(
-            format_age_with_polls(14_000, Some(3), false),
+            format_age_with_polls(Some(14_000), Some(3), false),
             "14s\u{00d7}3"
         );
     }
 
     #[test]
     fn polls_ascii_suffix() {
-        assert_eq!(format_age_with_polls(14_000, Some(3), true), "14sx3");
+        assert_eq!(format_age_with_polls(Some(14_000), Some(3), true), "14sx3");
     }
 
     #[test]
     fn polls_zero() {
         assert_eq!(
-            format_age_with_polls(14_000, Some(0), false),
+            format_age_with_polls(Some(14_000), Some(0), false),
             "14s\u{00d7}0"
         );
     }
@@ -2892,7 +2896,7 @@ mod format_age_with_polls_tests {
     #[test]
     fn polls_two_digit_n() {
         assert_eq!(
-            format_age_with_polls(14_000, Some(12), false),
+            format_age_with_polls(Some(14_000), Some(12), false),
             "14s\u{00d7}12"
         );
     }
@@ -2900,7 +2904,7 @@ mod format_age_with_polls_tests {
     #[test]
     fn minutes_age_with_polls() {
         assert_eq!(
-            format_age_with_polls(185_000, Some(5), false),
+            format_age_with_polls(Some(185_000), Some(5), false),
             "3m5s\u{00d7}5"
         );
     }

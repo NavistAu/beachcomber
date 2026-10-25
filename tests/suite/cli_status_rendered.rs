@@ -540,6 +540,46 @@ result.v = "{{ data }}"
     );
 }
 
+/// A rendered row is as old as the oldest cached value it read, and has no
+/// age when it read none.
+#[test]
+fn a_rendered_row_is_as_old_as_its_oldest_input() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    put(&d, &cwd, &["seed", r#"{"v":"x"}"#]);
+    put(&d, &cwd, &["t:template.reads", r#""{{ comb.seed.v }}""#]);
+    put(
+        &d,
+        &cwd,
+        &["t:template.shell", r#""{{ env.SCANLINE_FOO }}""#],
+    );
+
+    let rows = json_rows(&d, &cwd, &["--filter", "provider=t"]);
+    let row = |field: &str| {
+        rows.iter()
+            .find(|r| r["field"] == field && r["source"] == "template")
+            .unwrap_or_else(|| panic!("a rendered {field} row: {rows:#?}"))
+            .clone()
+    };
+    // A put record's age is whatever the clock says by now; the rendered row
+    // carries one because its input does.
+    let reads = row("reads");
+    assert!(reads["age_ms"].is_u64(), "as old as seed.v: {reads}");
+    let shell = row("shell");
+    assert!(shell.get("age_ms").is_none(), "no cached input: {shell}");
+
+    let human = status(
+        &d,
+        &cwd,
+        &["--filter", "provider=t", "--color", "never", "--ascii"],
+    );
+    let line = squashed(&human)
+        .into_iter()
+        .find(|l| l.starts_with("t shell template > hi "))
+        .unwrap_or_else(|| panic!("a shell row in:\n{human}"));
+    assert!(line.ends_with(" - - ---"), "AGE is -: {line:?}");
+}
+
 /// In json each row carries its `layers`, the answering one marked.
 #[test]
 fn tree_json_rows_carry_their_layers() {

@@ -20,7 +20,7 @@ fn sample_rows() -> Vec<CacheRow> {
             source: "refs".into(),
             field: "branch".into(),
             value: serde_json::json!("main"),
-            age_ms: 14_000,
+            age_ms: Some(14_000),
             stale: false,
             kind: None,
             poll_interval_secs: None,
@@ -36,7 +36,7 @@ fn sample_rows() -> Vec<CacheRow> {
             source: "status".into(),
             field: "dirty".into(),
             value: serde_json::json!(false),
-            age_ms: 14_000,
+            age_ms: Some(14_000),
             stale: false,
             kind: None,
             poll_interval_secs: None,
@@ -52,7 +52,7 @@ fn sample_rows() -> Vec<CacheRow> {
             source: "default".into(),
             field: "value".into(),
             value: serde_json::json!("me-laptop"),
-            age_ms: 52_000,
+            age_ms: Some(52_000),
             stale: false,
             kind: None,
             poll_interval_secs: None,
@@ -147,7 +147,7 @@ fn human_preset_truncates_value_to_meet_total_cap() {
         source: "refs".into(),
         field: "commit_summary".into(),
         value: serde_json::json!("a".repeat(100)),
-        age_ms: 14_000,
+        age_ms: Some(14_000),
         stale: false,
         kind: None,
         poll_interval_secs: None,
@@ -188,7 +188,7 @@ fn human_preset_color_on_stale_rows() {
         source: "refs".into(),
         field: "branch".into(),
         value: serde_json::json!("main"),
-        age_ms: 9999,
+        age_ms: Some(9999),
         stale: true,
         kind: None,
         poll_interval_secs: None,
@@ -221,7 +221,7 @@ fn json_preset_path_none_serializes_as_null() {
         source: "default".into(),
         field: "value".into(),
         value: serde_json::json!("myhost"),
-        age_ms: 1000,
+        age_ms: Some(1000),
         stale: false,
         kind: None,
         poll_interval_secs: None,
@@ -248,7 +248,7 @@ fn csv_preset_quotes_values_with_commas() {
         source: "default".into(),
         field: "tags".into(),
         value: serde_json::json!("a,b,c"),
-        age_ms: 0,
+        age_ms: Some(0),
         stale: false,
         kind: None,
         poll_interval_secs: None,
@@ -285,7 +285,7 @@ fn custom_template_supports_truncate_filter() {
         source: "refs".into(),
         field: "sha".into(),
         value: serde_json::json!("abcdef1234567890"),
-        age_ms: 14_000,
+        age_ms: Some(14_000),
         stale: false,
         kind: None,
         poll_interval_secs: None,
@@ -342,7 +342,7 @@ fn custom_template_supports_age_human() {
         source: "refs".into(),
         field: "branch".into(),
         value: serde_json::json!("main"),
-        age_ms: 3_600_000, // 1 hour
+        age_ms: Some(3_600_000), // 1 hour
         stale: false,
         kind: None,
         poll_interval_secs: None,
@@ -547,12 +547,12 @@ fn an_absent_value_shows_as_null_in_the_table() {
 #[test]
 fn sort_by_age_ascending() {
     let mut rows = sample_rows();
-    rows[0].age_ms = 30_000;
-    rows[1].age_ms = 10_000;
-    rows[2].age_ms = 20_000;
+    rows[0].age_ms = Some(30_000);
+    rows[1].age_ms = Some(10_000);
+    rows[2].age_ms = Some(20_000);
     let out = apply_sort(rows, "age").unwrap();
     let ages: Vec<_> = out.iter().map(|r| r.age_ms).collect();
-    assert_eq!(ages, vec![10_000, 20_000, 30_000]);
+    assert_eq!(ages, vec![Some(10_000), Some(20_000), Some(30_000)]);
 }
 
 #[test]
@@ -854,7 +854,7 @@ fn max_width_value_column_shrinks_not_others() {
         source: "refs".into(),
         field: "branch".into(),
         value: json!("a".repeat(80)),
-        age_ms: 1000,
+        age_ms: Some(1000),
         stale: false,
         kind: None,
         poll_interval_secs: None,
@@ -902,7 +902,7 @@ fn max_width_total_row_width_does_not_exceed_cap() {
         source: "global".into(),
         field: "global".into(),
         value: json!({"ansible-base":"2.10.17","aws-vault":"7.2.0","awscli":"2.16.9","go":"1.24.9"}),
-        age_ms: 158_000,
+        age_ms: Some(158_000),
         stale: false,
         kind: None,
         poll_interval_secs: None,
@@ -1000,7 +1000,7 @@ fn cache_row_new_fields_serde_round_trip() {
         source: "refs".into(),
         field: "branch".into(),
         value: json!("main"),
-        age_ms: 14_000,
+        age_ms: Some(14_000),
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 0,
@@ -1360,7 +1360,7 @@ fn human_preset_includes_ttl_column_and_drops_stale() {
         source: "refs".into(),
         field: "branch".into(),
         value: serde_json::json!("main"),
-        age_ms: 14_000,
+        age_ms: Some(14_000),
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 0,
@@ -1395,7 +1395,7 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
         source: "refs".into(),
         field: "branch".into(),
         value: json!("main"),
-        age_ms: 14_000,
+        age_ms: Some(14_000),
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 0,
@@ -1518,7 +1518,7 @@ fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
         source: "default".into(),
         field: "x".into(),
         value: json!(0),
-        age_ms: 0,
+        age_ms: Some(0),
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay,
@@ -1543,7 +1543,7 @@ fn once_row(provider: &str) -> beachcomber::cache::CacheRow {
         source: "default".into(),
         field: "x".into(),
         value: json!(0),
-        age_ms: 0,
+        age_ms: Some(0),
         stale: false,
         kind: Some(RowKind::Once),
         poll_interval_secs: None,
@@ -1644,7 +1644,7 @@ fn human_renders_p_zero_k_zero_without_panic() {
         source: "default".into(),
         field: "x".into(),
         value: json!(null),
-        age_ms: 0,
+        age_ms: Some(0),
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 0,
@@ -1684,7 +1684,7 @@ fn failure_state_renders_warn_and_red_row() {
         source: "default".into(),
         field: "thing".into(),
         value: json!("x"),
-        age_ms: 1000,
+        age_ms: Some(1000),
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 1,
@@ -1727,7 +1727,7 @@ fn render_preset_ascii_flag_swaps_glyphs() {
         source: "refs".into(),
         field: "branch".into(),
         value: json!("main"),
-        age_ms: 1000,
+        age_ms: Some(1000),
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 0,
@@ -1788,7 +1788,7 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
         source: "refs".into(),
         field: "branch".into(),
         value: json!("main"),
-        age_ms: 1000,
+        age_ms: Some(1000),
         stale: false,
         kind: Some(RowKind::Lifecycle {
             decay: 0,
@@ -1838,7 +1838,7 @@ fn human_preset_compacts_home_path() {
         source: "refs".into(),
         field: "branch".into(),
         value: json!("main"),
-        age_ms: 0,
+        age_ms: Some(0),
         stale: false,
         kind: None,
         poll_interval_secs: None,
@@ -1875,7 +1875,7 @@ fn machine_presets_keep_real_path_under_home() {
         source: "refs".into(),
         field: "branch".into(),
         value: json!("main"),
-        age_ms: 0,
+        age_ms: Some(0),
         stale: false,
         kind: None,
         poll_interval_secs: None,
@@ -1923,7 +1923,7 @@ fn human_preset_path_compaction_frees_width_for_value() {
         source: "default".into(),
         field: "f".into(),
         value: json!("a".repeat(20)),
-        age_ms: 0,
+        age_ms: Some(0),
         stale: false,
         kind: None,
         poll_interval_secs: None,
@@ -1985,7 +1985,7 @@ fn wide_value_row() -> CacheRow {
         source: "global".into(),
         field: "global".into(),
         value: serde_json::json!("v".repeat(200)),
-        age_ms: 158_000,
+        age_ms: Some(158_000),
         stale: false,
         kind: Some(beachcomber::cache::RowKind::Lifecycle {
             decay: 0,
@@ -2046,7 +2046,7 @@ fn human_rows_leave_the_right_margin_unpainted() {
         source: "config:~/.config/beachcomber/defaults/env.toml".into(),
         field: "greeting".into(),
         value: serde_json::json!("1.2.3-rc1"),
-        age_ms: 5_000,
+        age_ms: Some(5_000),
         stale: false,
         kind: Some(beachcomber::cache::RowKind::Static),
         poll_interval_secs: None,
@@ -2211,7 +2211,7 @@ fn age_column_is_right_aligned_with_a_stable_floor() {
     // differ only in age line up byte-for-byte in width.
     let mk = |age_ms: u128| {
         let mut r = sample_lifecycle_row();
-        r.age_ms = age_ms;
+        r.age_ms = Some(age_ms);
         r
     };
     let opts = RenderOpts {
@@ -2370,7 +2370,7 @@ fn nested_row() -> CacheRow {
             "inner": {"deep": 1},
             "list": [1, 2, 3],
         }),
-        age_ms: 4_000,
+        age_ms: Some(4_000),
         stale: true,
         kind: Some(beachcomber::cache::RowKind::Once),
         poll_interval_secs: Some(30),

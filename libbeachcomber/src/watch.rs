@@ -21,7 +21,7 @@
 //! read with a short timeout in turn, which is also what lets
 //! [`ResolvedWatch::cancel_handle`] end a wait from another thread.
 
-use crate::resolve::{FetchError, Inputs, ResolveError, Slot, resolve_with_deps};
+use crate::resolve::{FetchError, Inputs, ResolveError, Slot, resolve_traced};
 use crate::{Client, ClientFetch, CombError, WatchStream};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -241,7 +241,7 @@ impl<'a> ResolvedWatch<'a> {
         let mut fetch = ClientFetch::new(&client);
         let resolved = {
             let borrowed = inputs.as_inputs();
-            resolve_with_deps(key, &borrowed, &mut fetch)
+            resolve_traced(key, &borrowed, &mut fetch).map(|t| (t.value, t.deps))
         };
         let (last, deps) = resolved.map_err(|e| watch_error(e, &mut fetch))?;
 
@@ -390,7 +390,7 @@ impl<'a> ResolvedWatch<'a> {
         let mut fetch = ClientFetch::new(&self.client);
         let resolved = {
             let inputs = self.inputs.as_reresolve_inputs();
-            resolve_with_deps(&self.key, &inputs, &mut fetch)
+            resolve_traced(&self.key, &inputs, &mut fetch).map(|t| (t.value, t.deps))
         };
         let (value, deps) = resolved.map_err(|e| watch_error(e, &mut fetch))?;
 

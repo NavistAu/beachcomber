@@ -338,8 +338,20 @@ fn comb_get_json_and_bc_resolve_answer_identically() {
         match (&cli, &ffi) {
             (Class::Hit(c), Class::Hit(f)) => {
                 if key.contains(":cache") {
-                    if !(c["age_ms"].is_number() && f["age_ms"].is_number()) {
-                        report.push(format!("{key}: both must carry an age_ms; cli={c} ffi={f}"));
+                    // Two reads a moment apart differ in age, so ages are
+                    // compared for presence only: a stored record carries
+                    // one, a template answer none. The rest must agree.
+                    let without_age = |v: &Value| {
+                        let mut v = v.clone();
+                        if let Value::Object(map) = &mut v {
+                            map.remove("age_ms");
+                        }
+                        v
+                    };
+                    if c["age_ms"].is_number() != f["age_ms"].is_number()
+                        || without_age(c) != without_age(f)
+                    {
+                        report.push(format!("{key}: cache answers differ; cli={c} ffi={f}"));
                     }
                 } else if c != f {
                     report.push(format!(

@@ -697,7 +697,7 @@ async fn a_template_only_response_carries_no_freshness() {
     let facet = get(&mut s, "scanline:cache.widgets.foo").await;
     assert_eq!(
         facet["data"],
-        serde_json::json!({"age_ms": 0, "stale": false, "source": "template"}),
+        serde_json::json!({"stale": false, "source": "template"}),
         "got {facet}"
     );
     assert!(

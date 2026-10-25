@@ -1897,7 +1897,7 @@ impl Cache {
                                 source: source_name.clone(),
                                 field,
                                 value: serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
-                                age_ms: stamp.age_ms(),
+                                age_ms: Some(stamp.age_ms()),
                                 stale: stamp.is_stale(),
                                 // Only an address written with a ttl is a lifecycle entry; the
                                 // server fills its kind in.
@@ -1934,7 +1934,7 @@ impl Cache {
                         // can be typed back as a key.
                         field: libbeachcomber::key::quote(field).into_owned(),
                         value,
-                        age_ms: age,
+                        age_ms: Some(age),
                         stale,
                         kind: kind.clone(),
                         poll_interval_secs: None,
@@ -2001,7 +2001,11 @@ pub struct CacheRow {
     pub source: String,
     pub field: String,
     pub value: serde_json::Value,
-    pub age_ms: u128,
+    /// How old the value is. Every stored record has an age; a row
+    /// `comb status` renders is as old as the oldest cached input behind it,
+    /// and has none when it read no cached value at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_ms: Option<u128>,
     pub stale: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<RowKind>,

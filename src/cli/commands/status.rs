@@ -8,7 +8,7 @@ use crate::cli::status_format::{
     render_tree, resolve_color, resolve_max_width, row_base, row_facet,
 };
 use crate::config::Config;
-use libbeachcomber::resolve::{Inputs, Slot, resolve};
+use libbeachcomber::resolve::{Inputs, Slot, resolve_traced};
 use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -77,14 +77,18 @@ fn render_template_rows(
     };
     let mut out = Vec::new();
     for (provider, field) in addrs {
-        let value = match resolve(
+        // A rendered value has no age of its own: it is as old as the oldest
+        // cached input it used, and has none when it used none.
+        let (value, age_ms) = match resolve_traced(
             &libbeachcomber::key::join(&provider, &field),
             &inputs,
             session,
         ) {
-            Ok(Some(value)) => value,
-            Ok(None) => serde_json::Value::Null,
-            Err(e) => serde_json::Value::String(e.to_string()),
+            Ok(traced) => (
+                traced.value.unwrap_or(serde_json::Value::Null),
+                traced.oldest_input_ms,
+            ),
+            Err(e) => (serde_json::Value::String(e.to_string()), None),
         };
         out.push(CacheRow {
             provider,
@@ -92,7 +96,7 @@ fn render_template_rows(
             source: TEMPLATE_SOURCE.to_string(),
             field,
             value,
-            age_ms: 0,
+            age_ms,
             stale: false,
             kind: Some(RowKind::Template),
             poll_interval_secs: None,

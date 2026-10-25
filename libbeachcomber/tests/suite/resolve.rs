@@ -8,7 +8,7 @@
 //! §3.1 templates, §4.2 worked example).
 
 use libbeachcomber::resolve::{
-    Fetch, FetchError, Got, Inputs, ResolveError, Slot, deps, eval, resolve, resolve_with_deps,
+    Fetch, FetchError, Got, Inputs, ResolveError, Slot, Traced, deps, eval, resolve, resolve_traced,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -326,7 +326,7 @@ fn a_key_two_leaves_share_is_fetched_once_and_reported_once() {
     )
     .seed("git.branch", Some(CWD), data(json!(BRANCH)));
 
-    let (value, d) = resolve_with_deps("scanline", &inputs(&env), &mut f).unwrap();
+    let Traced { value, deps: d, .. } = resolve_traced("scanline", &inputs(&env), &mut f).unwrap();
     assert_eq!(value, Some(json!({ "a": BRANCH, "b": "feat..." })));
     assert_eq!(f.keys(), vec!["scanline", "git.branch"]);
     assert_eq!(
@@ -370,7 +370,7 @@ fn deps_of_a_template_with_two_refs_list_both_in_fetch_order() {
         Some(CWD),
         tmpl(json!("{{ comb.git.branch }}/{{ terraform.workspace }}")),
     );
-    let (value, d) = resolve_with_deps("k.two", &inputs(&env), &mut f).unwrap();
+    let Traced { value, deps: d, .. } = resolve_traced("k.two", &inputs(&env), &mut f).unwrap();
     assert_eq!(value, Some(json!(format!("{BRANCH}/default"))));
     assert_eq!(
         d,
@@ -1398,7 +1398,7 @@ fn what_a_lazy_read_fetched_is_a_dependency() {
     let mut f = MapFetch::default();
     f.seed("k.t", Some(CWD), tmpl(json!("{{ comb['qa'].v }}")))
         .seed("qa", Some(CWD), data(json!({"v": "a1"})));
-    let (value, deps) = resolve_with_deps("k.t", &inputs(&env), &mut f).unwrap();
+    let Traced { value, deps, .. } = resolve_traced("k.t", &inputs(&env), &mut f).unwrap();
     assert_eq!(value, Some(json!("a1")));
     assert_eq!(
         deps,
@@ -1407,6 +1407,63 @@ fn what_a_lazy_read_fetched_is_a_dependency() {
             ("qa".to_string(), Some(CWD.to_string())),
         ]
     );
+}
+
+// ── a rendered value is as old as its oldest input ───────────────────────────
+
+/// Cached data `value`, `age_ms` old.
+fn aged(value: Value, age_ms: u128) -> Got {
+    Got {
+        data: Some(value),
+        age_ms: Some(age_ms),
+        stale: Some(false),
+        ..Got::default()
+    }
+}
+
+#[test]
+fn a_rendered_value_is_as_old_as_the_oldest_cached_input_it_used() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed(
+        "k.t",
+        Some(CWD),
+        tmpl(json!("{{ comb.a.v }}-{{ b.v }}-{{ comb['c'].v }}")),
+    )
+    .seed("a.v", Some(CWD), aged(json!("x"), 5_000))
+    .seed("b.v", Some(CWD), aged(json!("y"), 90_000))
+    .seed("c", Some(CWD), aged(json!({"v": "z"}), 40_000));
+    let traced = resolve_traced("k.t", &inputs(&env), &mut f).unwrap();
+    assert_eq!(traced.value, Some(json!("x-y-z")));
+    assert_eq!(traced.oldest_input_ms, Some(90_000));
+}
+
+#[test]
+fn a_rendered_value_with_no_cached_input_has_no_age() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    // The template's own record is not an input: data shadowed by the
+    // template at the same address is never used.
+    f.seed(
+        "k.t",
+        Some(CWD),
+        Got {
+            template: Some(json!("{{ env.SCANLINE_FOO }}")),
+            ..aged(json!("shadowed"), 70_000)
+        },
+    );
+    let traced = resolve_traced("k.t", &inputs(&env), &mut f).unwrap();
+    assert_eq!(traced.value, Some(json!("hi")));
+    assert_eq!(traced.oldest_input_ms, None);
+}
+
+#[test]
+fn plain_data_is_as_old_as_itself() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed("p.v", Some(CWD), aged(json!(1), 12_000));
+    let traced = resolve_traced("p.v", &inputs(&env), &mut f).unwrap();
+    assert_eq!(traced.oldest_input_ms, Some(12_000));
 }
 
 #[test]

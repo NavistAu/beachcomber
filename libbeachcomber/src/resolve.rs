@@ -166,16 +166,33 @@ pub fn resolve(
     Resolver::new(inputs, fetch).resolve(key)
 }
 
-/// [`resolve`], plus the distinct `(key, path)` pairs it fetched, in
-/// first-fetch order.
-pub fn resolve_with_deps(
+/// One resolution's value, and what it read to reach it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Traced {
+    /// What [`resolve`] returns. `None` is a miss.
+    pub value: Option<JsonValue>,
+    /// The distinct `(key, path)` pairs it fetched, in first-fetch order.
+    pub deps: Fetched,
+    /// The age of the oldest cached value it used: a ref's data, or the data
+    /// it answered with. `None` when it used none — a template over `env`,
+    /// `exec()` or literals alone is computed now. A rendered value has no
+    /// age of its own; it is as old as the oldest input behind it.
+    pub oldest_input_ms: Option<u128>,
+}
+
+/// [`resolve`], traced.
+pub fn resolve_traced(
     key: &str,
     inputs: &Inputs<'_>,
     fetch: &mut dyn Fetch,
-) -> Result<(Option<JsonValue>, Fetched), ResolveError> {
+) -> Result<Traced, ResolveError> {
     let mut r = Resolver::new(inputs, fetch);
     let value = r.resolve(key)?;
-    Ok((value, r.order))
+    Ok(Traced {
+        value,
+        deps: r.order,
+        oldest_input_ms: r.oldest,
+    })
 }
 
 /// The distinct daemon keys a resolution of `key` reads — the watch fan-in's
@@ -188,7 +205,7 @@ pub fn deps(
     inputs: &Inputs<'_>,
     fetch: &mut dyn Fetch,
 ) -> Result<Fetched, ResolveError> {
-    resolve_with_deps(key, inputs, fetch).map(|(_, d)| d)
+    resolve_traced(key, inputs, fetch).map(|t| t.deps)
 }
 
 /// `comb eval` / `bc_eval`: render a source that is not stored anywhere,
@@ -222,6 +239,8 @@ struct Resolver<'a> {
     memo: HashMap<(String, Option<String>), Result<Option<Got>, FetchError>>,
     order: Fetched,
     stack: Frames,
+    /// The age of the oldest cached value used so far ([`Traced`]).
+    oldest: Option<u128>,
 }
 
 impl<'a> Resolver<'a> {
@@ -237,7 +256,19 @@ impl<'a> Resolver<'a> {
             memo: HashMap::new(),
             order: Vec::new(),
             stack: Vec::new(),
+            oldest: None,
         }
+    }
+
+    /// The data of `got`, noted as an input this resolution used.
+    fn used(&mut self, got: Option<Got>) -> Option<JsonValue> {
+        let got = got?;
+        if got.data.is_some()
+            && let Some(age) = got.age_ms
+        {
+            self.oldest = Some(self.oldest.map_or(age, |o| o.max(age)));
+        }
+        got.data
     }
 
     /// Resolve one address to the value a surface prints.
@@ -271,7 +302,11 @@ impl<'a> Resolver<'a> {
             // rendered or omitted — cached data never shows through one.
             Some(JsonValue::Object(tree)) => {
                 let rendered = self.render_tree(&tree, key)?;
-                Ok(Some(JsonValue::Object(match got.data {
+                let data = self.used(Some(Got {
+                    template: None,
+                    ..got
+                }));
+                Ok(Some(JsonValue::Object(match data {
                     Some(JsonValue::Object(mut data)) => {
                         prune_template_owned(&mut data, &tree);
                         deep_merge(&mut data, rendered);
@@ -283,7 +318,7 @@ impl<'a> Resolver<'a> {
             Some(_) => Err(ResolveError::Config(format!(
                 "{key}: template is neither a string nor an object"
             ))),
-            None => Ok(got.data),
+            None => Ok(self.used(Some(got))),
         }
     }
 
@@ -377,7 +412,7 @@ impl<'a> Resolver<'a> {
                 (out, bridge.take_error())
             });
             for (asked, reply) in questions {
-                let answer = self.fetch_ref(&asked).map(|g| g.and_then(|g| g.data));
+                let answer = self.fetch_ref(&asked).map(|g| self.used(g));
                 let _ = reply.send(answer);
             }
             let (out, error) = render
@@ -483,10 +518,8 @@ impl<'a> Resolver<'a> {
                     Err(e) => return Err(e),
                 },
                 Ref::CombField(provider, field) => {
-                    let Some(value) = self
-                        .fetch_ref(&crate::key::join(provider, field))?
-                        .and_then(|g| g.data)
-                    else {
+                    let got = self.fetch_ref(&crate::key::join(provider, field))?;
+                    let Some(value) = self.used(got) else {
                         continue;
                     };
                     if let Some(JsonValue::Object(cache)) = top.get_mut("comb") {
@@ -499,7 +532,8 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 Ref::CombProvider(provider) => {
-                    let Some(value) = self.fetch_ref(provider)?.and_then(|g| g.data) else {
+                    let got = self.fetch_ref(provider)?;
+                    let Some(value) = self.used(got) else {
                         continue;
                     };
                     if let Some(JsonValue::Object(cache)) = top.get_mut("comb") {

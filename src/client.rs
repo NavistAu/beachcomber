@@ -113,7 +113,7 @@ fn cache_row_from_lib(r: libbeachcomber::CacheRow) -> crate::cache::CacheRow {
         source: r.source.unwrap_or_default(),
         field: r.field.unwrap_or_default(),
         value: r.value,
-        age_ms: r.age_ms as u128,
+        age_ms: Some(r.age_ms as u128),
         stale: r.stale,
         kind: r.kind.map(row_kind_from_lib),
         poll_interval_secs: r.poll_interval_secs,

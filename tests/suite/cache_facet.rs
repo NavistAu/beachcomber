@@ -191,10 +191,7 @@ async fn the_cache_facet_of_a_template_answer_has_derived_keys_only() {
     );
 
     let leaf = get(&mut s, "ns:cache.greeting", None).await.data.unwrap();
-    assert_eq!(
-        leaf,
-        json!({"age_ms": 0, "stale": false, "source": "template"})
-    );
+    assert_eq!(leaf, json!({"stale": false, "source": "template"}));
     handle.abort();
 }
 
@@ -447,10 +444,7 @@ async fn the_cache_facet_of_an_object_node_is_a_tree_of_leaf_answers() {
         "a leaf below a ttl'd address carries that address's schedule: {whole}"
     );
     assert_eq!(whole["b"]["d"]["decay"], json!(1));
-    assert_eq!(
-        whole["t"],
-        json!({"age_ms": 0, "stale": false, "source": "template"})
-    );
+    assert_eq!(whole["t"], json!({"stale": false, "source": "template"}));
     assert!(
         whole.get("_").is_none(),
         "the prototypes are not part of the value"

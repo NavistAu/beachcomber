@@ -1329,9 +1329,10 @@ fn read_watch_value(
 ///
 /// A leaf answers `age_ms`, `stale` and `source` (derived from the record that
 /// answered), plus the keys stored beside it (`poll`, `watch`, `decay`). A leaf a
-/// template answers is `{"age_ms": 0, "stale": false, "source": "template"}`:
-/// computed at the read, so it is zero seconds old. `p:cache._` is the prototype
-/// node, which is not part of the value: it reads back as written.
+/// template answers is `{"stale": false, "source": "template"}`, with no
+/// `age_ms`: the client renders it, so it is as old as the inputs the render
+/// reads, which the daemon never sees. `p:cache._` is the prototype node, which
+/// is not part of the value: it reads back as written.
 fn cache_facet_response(
     cache: &Cache,
     registry: &ProviderRegistry,
@@ -1443,7 +1444,7 @@ fn cache_facet_node(
             (!tree.is_empty()).then(|| tree.into())
         }
         (_, Some(_)) => Some(serde_json::json!({
-            "age_ms": 0, "stale": false, "source": "template"
+            "stale": false, "source": "template"
         })),
         (Some(Value::Object(map)), None) if !map.is_empty() => {
             let tree: serde_json::Map<String, serde_json::Value> = map
