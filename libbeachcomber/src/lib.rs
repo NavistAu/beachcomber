@@ -31,6 +31,7 @@ pub mod path;
 pub mod render;
 pub mod resolve;
 pub mod socket;
+pub mod spawn;
 pub mod virtual_fields;
 pub mod watch;
 
@@ -1013,31 +1014,27 @@ impl Client {
             return Ok(p.clone());
         }
 
-        let (path, _) = socket::resolve(None, None);
-
-        // Check if daemon is listening
-        if UnixStream::connect(&path).is_ok() {
+        let (path, source) = socket::resolve(None, None);
+        if spawn::is_serving(&path) {
             return Ok(path);
         }
-
         if !self.config.auto_start {
             return Err(CombError::DaemonNotRunning);
         }
-
-        // Try to start the daemon
-        start_daemon(&path)?;
-
-        // Wait for it to be ready
-        let mut delay = Duration::from_millis(10);
-        for _ in 0..8 {
-            std::thread::sleep(delay);
-            if UnixStream::connect(&path).is_ok() {
-                return Ok(path);
-            }
-            delay = (delay * 2).min(Duration::from_millis(500));
+        // The same spawn the CLI makes: the first `comb` on PATH, its stderr
+        // in the daemon's log, one backoff.
+        let comb = spawn::find_comb().ok_or(CombError::DaemonNotRunning)?;
+        let log = spawn::log_path();
+        let how = spawn::Spawn {
+            binary: &comb,
+            no_reap: source.no_reap(),
+            log: &log,
+        };
+        match spawn::ensure(&path, &how) {
+            Ok(()) => Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Err(CombError::DaemonNotRunning),
+            Err(e) => Err(CombError::ConnectionFailed(e)),
         }
-
-        Err(CombError::DaemonNotRunning)
     }
 
     fn connect(&self, path: &Path) -> Result<UnixStream, CombError> {
@@ -1623,56 +1620,6 @@ fn parse_introspect(
         IntrospectSubject::Daemon => Ok(IntrospectResponse::Daemon(parse_daemon_health(&data)?)),
         _ => Ok(IntrospectResponse::Other(data)),
     }
-}
-
-/// Attempt to start the comb daemon via socket activation.
-fn start_daemon(socket_path: &Path) -> Result<(), CombError> {
-    use std::process::Command;
-
-    // Pre-flight: a path the kernel cannot bind (SUN_LEN) would fork a daemon
-    // doomed to fail; surface the real cause instead of a spawn timeout.
-    socket::check_length(socket_path).map_err(|e| {
-        CombError::ConnectionFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
-    })?;
-
-    // Find comb binary
-    let comb = which_comb().ok_or(CombError::DaemonNotRunning)?;
-
-    if let Some(parent) = socket_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    let mut cmd = Command::new(&comb);
-    cmd.arg("daemon")
-        .arg("--socket")
-        .arg(socket_path.as_os_str());
-    // A spawn whose path came from $BEACHCOMBER_SOCKET is a deliberate
-    // override daemon: flag it --no-reap so the reaping daemon spares it
-    // (canon singleton.md §"Env-override spawns are flagged").
-    let (default, source) = socket::resolve(None, None);
-    if source.no_reap() && default == socket_path {
-        cmd.arg("--no-reap");
-    }
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(CombError::ConnectionFailed)?;
-
-    Ok(())
-}
-
-fn which_comb() -> Option<PathBuf> {
-    // Check PATH for comb binary
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in path.split(':') {
-            let candidate = PathBuf::from(dir).join("comb");
-            if candidate.exists() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]

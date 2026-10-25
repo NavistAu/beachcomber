@@ -7,7 +7,7 @@ use tokio::net::UnixStream;
 fn is_daemon_responsive_when_no_socket() {
     let path = PathBuf::from("/tmp/nonexistent-beachcomber-test/sock");
     assert!(
-        !daemon::is_daemon_running(&path),
+        !libbeachcomber::spawn::is_serving(&path),
         "Should return false when socket doesn't exist"
     );
 }

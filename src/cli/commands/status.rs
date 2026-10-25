@@ -246,13 +246,10 @@ pub fn run_status(
     // leaves unless --depth says otherwise.
     let depth = depth.or(tree.then_some(0));
     let filters = &crate::cli::status_format::effective_filters(user_filters, all);
-    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = socket_source.no_reap();
-
-    if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        crate::cli::report::daemon_start(e);
-        return Outcome::Error;
-    }
+    let socket_path = match crate::cli::connect::connect(config) {
+        Ok(socket) => socket,
+        Err(outcome) => return outcome,
+    };
 
     let is_tty = std::io::stdout().is_terminal();
     let Style { color, ascii } = style;

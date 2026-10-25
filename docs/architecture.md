@@ -133,7 +133,7 @@ This traces the full path from CLI invocation to output on stdout.
 
 **Step 1: CLI entry point**
 
-The `comb get` subcommand resolves the socket path (XDG runtime dir or `$TMPDIR/beachcomber-$UID/sock`). If no socket exists, it calls `daemon::ensure_daemon()` which forks `comb daemon --socket <path>` as a detached child and waits up to ~1.5s for the socket to appear.
+The `comb get` subcommand resolves the socket path (`--socket` → `[daemon] socket_path` → `$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock`, `libbeachcomber::socket::resolve`). If no daemon serves it, `cli::connect` checks the configuration — a configuration the daemon would refuse is reported before anything is spawned — then `libbeachcomber::spawn::ensure` starts `comb daemon --socket <path>` as a detached child, its stderr appended to the daemon's log, and waits up to ~1.6s for the socket to appear. Every SDK spawns through the same function.
 
 **Step 2: Socket connection**
 

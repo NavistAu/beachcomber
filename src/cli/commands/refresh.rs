@@ -13,13 +13,10 @@ use crate::config::Config;
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
 /// an absolute path — the one given, or the current directory.
 pub fn run_refresh(config: &Config, key: &str, path: Option<&str>) -> Outcome {
-    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = socket_source.no_reap();
-
-    if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        crate::cli::report::daemon_start(e);
-        return Outcome::Error;
-    }
+    let socket_path = match crate::cli::connect::connect(config) {
+        Ok(socket) => socket,
+        Err(outcome) => return outcome,
+    };
 
     match crate::client::Client::new(socket_path).refresh(key, path) {
         Ok(resp) if resp.ok => Outcome::Done,

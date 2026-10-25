@@ -1,11 +1,11 @@
 //! Handler for the `kill` subcommand.
 
 use crate::cli::exit::Outcome;
-use crate::daemon::is_daemon_running;
+use libbeachcomber::spawn::is_serving;
 use std::path::Path;
 
 pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> Outcome {
-    if !is_daemon_running(socket_path) {
+    if !is_serving(socket_path) {
         println!("Daemon is not running.");
         return Outcome::Done;
     }
@@ -32,7 +32,7 @@ pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> Outcome {
     // Poll until the socket stops responding.
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
-        if !is_daemon_running(socket_path) {
+        if !is_serving(socket_path) {
             println!("Daemon stopped (pid {pid}).");
             return Outcome::Done;
         }

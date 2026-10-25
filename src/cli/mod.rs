@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod config_origins;
+pub mod connect;
 pub mod exit;
 pub mod introspect_types;
 pub mod output_format;

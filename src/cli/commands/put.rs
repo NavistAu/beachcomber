@@ -22,13 +22,10 @@ pub fn run_put(
         Some(d) => Some(format!("{}s", d.as_secs())),
         None => None,
     };
-    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = socket_source.no_reap();
-
-    if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        crate::cli::report::daemon_start(e);
-        return Outcome::Error;
-    }
+    let socket_path = match crate::cli::connect::connect(config) {
+        Ok(socket) => socket,
+        Err(outcome) => return outcome,
+    };
 
     let client = crate::client::Client::new(socket_path);
 

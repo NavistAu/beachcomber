@@ -931,20 +931,11 @@ impl Config {
         libbeachcomber::socket::default_path()
     }
 
-    /// The daemon's log file, under the XDG state home. No setting moves it,
-    /// so finding it loads nothing.
+    /// The daemon's log ([`libbeachcomber::spawn::log_path`]): where the daemon
+    /// writes, and where a spawn sends its stderr. No setting moves it, so
+    /// finding it loads nothing.
     pub fn log_path() -> PathBuf {
-        let xdg = xdg::BaseDirectories::with_prefix("beachcomber");
-
-        xdg.get_state_home()
-            .unwrap_or_else(|| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                PathBuf::from(home)
-                    .join(".local")
-                    .join("state")
-                    .join("beachcomber")
-            })
-            .join("daemon.log")
+        libbeachcomber::spawn::log_path()
     }
 }
 

@@ -26,8 +26,8 @@ const SOCKET_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 /// Build a `libbeachcomber` client bound to `socket_path`.
 ///
 /// Trap: a bare `libbeachcomber::Client::new()` runs its own daemon
-/// auto-spawn (`find_or_start_socket` / `start_daemon` / `which_comb`),
-/// which would race `crate::daemon::ensure_daemon` and could start a
+/// auto-spawn (`find_or_start_socket`, which starts the first `comb` on
+/// `PATH`), which would race `crate::cli::connect::connect` and could start a
 /// different `comb` binary than the one already resolved onto
 /// `socket_path`. `with_socket_path` makes `find_or_start_socket` return
 /// the override unconditionally, before `auto_start` is ever consulted;

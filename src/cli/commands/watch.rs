@@ -26,13 +26,10 @@ use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
 /// `--path`, the trailing positional, or the current directory.
 pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format) -> Outcome {
-    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = socket_source.no_reap();
-
-    if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        crate::cli::report::daemon_start(e);
-        return Outcome::Error;
-    }
+    let socket_path = match crate::cli::connect::connect(config) {
+        Ok(socket) => socket,
+        Err(outcome) => return outcome,
+    };
 
     let client = crate::client::build_client(&socket_path);
     let cwd = std::env::current_dir()

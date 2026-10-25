@@ -24,14 +24,11 @@ use libbeachcomber::resolve::{Inputs, Slot, eval};
 /// `exec()`, `lup()` and `read` run in the directory it addresses, `$HOME` for
 /// the global entry — the resolver's rule, the same for every surface.
 pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> Outcome {
-    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = socket_source.no_reap();
-
     // `comb` always requires the daemon (design §2, outcome 22).
-    if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        crate::cli::report::daemon_start(e);
-        return Outcome::Error;
-    }
+    let socket_path = match crate::cli::connect::connect(config) {
+        Ok(socket) => socket,
+        Err(outcome) => return outcome,
+    };
     let mut session = match crate::client::Client::new(socket_path).connect() {
         Ok(s) => s,
         Err(e) => {

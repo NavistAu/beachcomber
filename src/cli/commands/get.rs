@@ -57,15 +57,12 @@ pub fn run_get(
     force: bool,
     wait: bool,
 ) -> Outcome {
-    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = socket_source.no_reap();
-
     // `comb` always requires the daemon (design §2), a key whose answer needs
     // no request (`env.HOME`) included.
-    if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        crate::cli::report::daemon_start(e);
-        return Outcome::Error;
-    }
+    let socket_path = match crate::cli::connect::connect(config) {
+        Ok(socket) => socket,
+        Err(outcome) => return outcome,
+    };
     let mut session = match crate::client::Client::new(socket_path).connect() {
         Ok(s) => s,
         Err(e) => {
