@@ -9,9 +9,19 @@ pub fn run_put(
     config: &Config,
     key: &str,
     data_str: &str,
-    ttl: Option<&str>,
+    ttl: Option<std::time::Duration>,
     path: Option<&str>,
 ) -> ExitCode {
+    // A ttl is whole seconds of at least one; refused here, before a daemon
+    // is started for a put that cannot happen.
+    let ttl = match ttl {
+        Some(d) if d.subsec_nanos() != 0 || d.is_zero() => {
+            eprintln!("Error: ttl must be a whole number of seconds, at least 1s");
+            return ExitCode::from(2);
+        }
+        Some(d) => Some(format!("{}s", d.as_secs())),
+        None => None,
+    };
     let (socket_path, socket_source) = config.resolve_socket_path_with_source();
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
@@ -33,7 +43,7 @@ pub fn run_put(
     // Whether this JSON is legal here depends on the node the key
     // addresses — an object at the root, anything below it — which only the
     // daemon knows. It reports the mismatch.
-    match client.put(key, data, ttl, path) {
+    match client.put(key, data, ttl.as_deref(), path) {
         Ok(response) => {
             if response.ok {
                 ExitCode::SUCCESS

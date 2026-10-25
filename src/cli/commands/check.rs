@@ -16,17 +16,14 @@ use clap::Subcommand;
 use std::process::ExitCode;
 use std::time::Duration;
 
-/// Parse `--connect-timeout`: `0`, `250ms`, `2s`, or a bare number of seconds.
-pub fn parse_connect_timeout(s: &str) -> Result<Duration, String> {
-    let s = s.trim();
-    let (num, unit_ms) = match s.strip_suffix("ms") {
-        Some(n) => (n, 1u64),
-        None => (s.strip_suffix('s').unwrap_or(s), 1000),
-    };
-    num.trim()
-        .parse::<u64>()
-        .map(|n| Duration::from_millis(n * unit_ms))
-        .map_err(|_| format!("expected a duration like `0`, `250ms` or `2s`, got `{s}`"))
+/// `check procs --duration`: the one duration grammar, in whole seconds of at
+/// least one, which is what the sampler counts in.
+fn procs_duration(s: &str) -> Result<u64, String> {
+    let d = crate::config::duration_arg(s)?;
+    if d.subsec_nanos() != 0 || d.is_zero() {
+        return Err("procs --duration must be a whole number of seconds, at least 1s".into());
+    }
+    Ok(d.as_secs())
 }
 
 /// Subcommands for `comb check`.
@@ -81,8 +78,14 @@ pub enum CheckCommands {
     Demand,
     /// Snapshot process spawns to measure beachcomber impact
     Procs {
-        /// Sample duration in seconds
-        #[arg(short, long, default_value = "60")]
+        /// How long to sample: whole seconds, at least 1s, e.g. `60s` or `2m`
+        #[arg(
+            short,
+            long,
+            value_name = "DURATION",
+            default_value = "60s",
+            value_parser = procs_duration
+        )]
         duration: u64,
     },
 }

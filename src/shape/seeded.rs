@@ -34,7 +34,7 @@
 //!
 //! Every error is prefixed with the file's `config:<path>` label.
 
-use crate::config::{Config, LOG_LEVELS, log_level_filter, parse_duration, parse_whole_seconds};
+use crate::config::{Config, LOG_LEVELS, duration_value, log_level_filter};
 use crate::scheduler::lifecycle::{MAX_DECAY, decay_error};
 use std::path::Path;
 
@@ -229,10 +229,8 @@ impl Reader {
                     }
                 }
                 "watchdog_interval" | "watchdog_threshold" => {
-                    let whole = value
-                        .as_str()
-                        .and_then(parse_whole_seconds)
-                        .filter(|d| !d.is_zero());
+                    let whole =
+                        duration_value(value).filter(|d| d.subsec_nanos() == 0 && !d.is_zero());
                     if whole.is_none() {
                         self.err(format!(
                             "[daemon] {key} must be a duration of whole seconds, at least 1s \
@@ -255,7 +253,7 @@ impl Reader {
         for (key, value) in table {
             if key != "execute" {
                 self.err(format!("unknown key '{key}' in [daemon.budget]"));
-            } else if value.as_str().and_then(parse_duration).is_none() {
+            } else if duration_value(value).is_none_or(|d| d.is_zero()) {
                 self.err(format!(
                     "[daemon.budget] execute must be a duration of at least 1ms (\"50ms\", \
                      \"2s\"), got {value}"

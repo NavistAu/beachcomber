@@ -1,4 +1,4 @@
-use beachcomber::cli::commands::check::{CheckCommands, parse_connect_timeout, run_check};
+use beachcomber::cli::commands::check::{CheckCommands, run_check};
 use beachcomber::cli::commands::daemon::run_daemon;
 use beachcomber::cli::commands::get::{run_get, split_keys_and_path};
 use beachcomber::cli::commands::init::run_init;
@@ -178,9 +178,9 @@ enum Commands {
         /// Directory to address, the same as --path
         #[arg(value_name = "PATH", conflicts_with_all = ["path", "global"])]
         at: Option<String>,
-        /// Expire the node: valid for this long (e.g., "30s", "5m"), stale for one decay step, then removed; the next put renews it. At least 1s; not with null data
-        #[arg(long)]
-        ttl: Option<String>,
+        /// Expire the node: valid for this long (e.g., "30s", "5m"), stale for one decay step, then removed; the next put renews it. Whole seconds, at least 1s; not with null data
+        #[arg(long, value_name = "DURATION", value_parser = beachcomber::config::duration_arg)]
+        ttl: Option<std::time::Duration>,
         #[command(flatten)]
         path: PathArgs,
     },
@@ -233,7 +233,7 @@ enum Commands {
             global = true,
             value_name = "DURATION",
             default_value = "1s",
-            value_parser = parse_connect_timeout
+            value_parser = beachcomber::config::duration_arg
         )]
         connect_timeout: std::time::Duration,
         #[command(subcommand)]
@@ -242,9 +242,14 @@ enum Commands {
     /// Stop the running daemon (it will socket-activate on the next query)
     #[command(visible_alias = "k")]
     Kill {
-        /// Wait up to this many seconds for the daemon to exit
-        #[arg(long, default_value = "5")]
-        timeout: u64,
+        /// How long to wait for the daemon to exit, e.g. `5s` or `500ms`
+        #[arg(
+            long,
+            value_name = "DURATION",
+            default_value = "5s",
+            value_parser = beachcomber::config::duration_arg
+        )]
+        timeout: std::time::Duration,
         /// Override socket path (derives the pid file path)
         #[arg(long)]
         socket: Option<PathBuf>,
@@ -440,13 +445,7 @@ fn main() -> ExitCode {
                 Ok(p) => p,
                 Err(code) => return code,
             };
-            run_put(
-                &config,
-                &key,
-                &data,
-                ttl.as_deref(),
-                effective_path.as_deref(),
-            )
+            run_put(&config, &key, &data, ttl, effective_path.as_deref())
         }
         Commands::Refresh {
             key,

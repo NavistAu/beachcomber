@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
-pub fn run_kill(socket_path: &Path, timeout_secs: u64) -> ExitCode {
+pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> ExitCode {
     if !is_daemon_running(socket_path) {
         println!("Daemon is not running.");
         return ExitCode::SUCCESS;
@@ -35,7 +35,7 @@ pub fn run_kill(socket_path: &Path, timeout_secs: u64) -> ExitCode {
     }
 
     // Poll until the socket stops responding.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
         if !is_daemon_running(socket_path) {
             println!("Daemon stopped (pid {pid}).");
@@ -45,7 +45,8 @@ pub fn run_kill(socket_path: &Path, timeout_secs: u64) -> ExitCode {
     }
 
     eprintln!(
-        "Daemon did not exit within {timeout_secs}s. Send SIGKILL manually if needed: kill -9 {pid}"
+        "Daemon did not exit within {}. Send SIGKILL manually if needed: kill -9 {pid}",
+        crate::config::display_duration(timeout)
     );
     ExitCode::from(1)
 }

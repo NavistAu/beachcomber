@@ -46,6 +46,10 @@ The three conflict with one another, and with none the command addresses the cur
 
 A template rendered for a read runs its `exec()`, `lup()` and `read` in the directory the read addresses — the given path, else the current directory, and `$HOME` for `--global` — so `comb get t.x ./repo`, `comb eval '{{ t.x }}' ./repo`, `comb watch t.x ./repo` and an SDK's `resolve(t.x, cwd=./repo)` look at the same files.
 
+## Durations
+
+Every duration comb takes — `put --ttl`, `kill --timeout`, `check --connect-timeout`, `check procs --duration`, the `[daemon]` duration keys and the `poll`, `ttl`, `failback` and `budget` decorators — is written the same way: a whole number with an optional unit, `ms`, `s`, `m` or `h`, a bare number being seconds (`250ms`, `30s`, `2m`, `60`; in config a TOML integer is seconds too). Anything else is refused in the same words, before a daemon is started. What each one may be is its own: a ttl is whole seconds of at least `1s`, a poll interval at least `1s`, a `budget` at least `1ms`, a `--connect-timeout` of `0` is a single attempt.
+
 ## `comb g` (get) `<key>... [path] [-p <path>] [--global] [-f format]`
 
 Query a value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay. `comb get` is a client of `libbeachcomber::resolve`, the same function behind `comb eval` and every SDK's `resolve`: it always needs the daemon, even for a key (`env.HOME`) it answers without a request.
@@ -480,7 +484,7 @@ comb c lifecycle         # keys in the decay/drain sequence
 comb c watches           # active filesystem watch registrations
 comb c timers            # poll timers and last-run times
 comb c demand            # demand-tracked keys and last-query times
-comb c procs             # 1-minute process snapshot, categorize against providers
+comb c procs             # 1-minute process snapshot (-d 2m for longer), categorize against providers
 ```
 
 Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
@@ -499,7 +503,7 @@ $ comb c config --origins client.providers.aws.template.profile
 
 `-f json` prints one object per leaf, `{"key", "value", "file", "shadowed": [{"file", "value"}…]}`, with `file` the absolute path or `null` for a default; `--color auto|always|never` (`NO_COLOR` honoured) and `--ascii` work as for `comb status --tree`, which this view draws like. A file that cannot be read or parsed, or breaks a rule, is reported beneath the rows as `comb c config` reports it (on stderr beside `-f json`) and exits `2`; the files that did load are still shown.
 
-`--connect-timeout <DURATION>` bounds how long the check keeps trying to reach the daemon before reporting it unreachable (default `1s`; `0` for a single attempt, or e.g. `250ms`, `2s`). Retries start 5ms apart and double, so a daemon that is mid-restart is reached as soon as it binds. The option is accepted before or after the subcommand: `comb c --connect-timeout 0 daemon`.
+`--connect-timeout <DURATION>` bounds how long the check keeps trying to reach the daemon before reporting it unreachable (default `1s`; `0` for a single attempt, or any [duration](#durations), e.g. `250ms`, `2s`). Retries start 5ms apart and double, so a daemon that is mid-restart is reached as soon as it binds. The option is accepted before or after the subcommand: `comb c --connect-timeout 0 daemon`.
 
 **Exit codes:** `0` if healthy, `1` if unhealthy, `2` on error.
 
@@ -521,14 +525,14 @@ The daemon exits cleanly on SIGINT (Ctrl+C) or SIGTERM. Prefer `comb kill` from 
 
 **One daemon per user.** The daemon whose socket matches its own resolution above is the *canonical* daemon. It removes orphaned `comb daemon` processes (reparented to PID 1, on sockets nothing resolves) at startup and hourly. A foreground debug run under your shell is never touched; a daemon you run under a supervisor on a *non-default* socket is parented to PID 1, so mark it exempt with `--no-reap`. Full rules in the repo's `docs/canon/singleton.md`.
 
-## `comb k` (kill) `[--timeout <secs>] [--socket <path>]`
+## `comb k` (kill) `[--timeout <duration>] [--socket <path>]`
 
 Stop the running daemon. Sends `SIGTERM` and waits for the daemon to exit; the next `comb` query will socket-activate a fresh daemon. No-op if the daemon is not running.
 
 ```sh
 comb kill                 # default 5s timeout
 comb k                    # short form
-comb kill --timeout 30    # wait longer on slow shutdowns
+comb kill --timeout 30s   # wait longer on slow shutdowns
 comb kill --socket /tmp/beachcomber-debug.sock   # target a custom socket
 ```
 

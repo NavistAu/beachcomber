@@ -9,7 +9,6 @@
 //! that names anything but a literal, `_.name` or an expression over those
 //! cannot render.
 
-use crate::config::parse_duration;
 use crate::provider::{FailbackConfig, InvalidationStrategy, expand_abs_path};
 use crate::scheduler::lifecycle::DEFAULT_POLL_COUNT;
 use libbeachcomber::engine::op_error;
@@ -383,7 +382,7 @@ fn duration_of(name: &str, value: &MjValue) -> Result<Duration, String> {
             }),
         ValueKind::String => {
             let text = value.as_str().unwrap_or_default();
-            parse_duration(text).ok_or_else(|| format!("{name}(): invalid duration: {text}"))
+            crate::config::duration_arg(text).map_err(|e| format!("{name}(): {e}"))
         }
         _ => Err(format!(
             "{name}(): a duration is a number of seconds or a string like '30s'"
@@ -1017,7 +1016,10 @@ mod tests {
     fn a_decorators_own_error_is_reported_unchanged() {
         assert_eq!(
             record(&["{{ result | poll('soon') }}"]).unwrap_err(),
-            "poll(): invalid duration: soon"
+            format!(
+                "poll(): invalid duration `soon`: {}",
+                crate::config::DURATION_GRAMMAR
+            )
         );
         assert_eq!(
             record(&["{{ result | pol('1s') }}"]).unwrap_err(),
@@ -1044,7 +1046,10 @@ mod tests {
     fn huge_intervals_and_counts_are_errors_not_panics() {
         assert_eq!(
             record(&["{{ result | poll('999999999999999999h') }}"]).unwrap_err(),
-            "poll(): invalid duration: 999999999999999999h"
+            format!(
+                "poll(): invalid duration `999999999999999999h`: {}",
+                crate::config::DURATION_GRAMMAR
+            )
         );
         assert_eq!(
             record(&["{{ result | poll('9000000h') }}"]).unwrap_err(),
@@ -1090,7 +1095,14 @@ mod tests {
                 "{{ result | poll('1s') | super }}",
                 "{{ result | poll('soon') }}"
             ]),
-            (1, "poll(): invalid duration: soon".to_string())
+            (
+                1,
+                format!(
+                    "poll(): invalid duration `soon`: {}",
+                    crate::config::DURATION_GRAMMAR
+                )
+                .to_string()
+            )
         );
         assert_eq!(
             at(&["{{ result | super }}", "{{ result | poll(env.X) }}"]),

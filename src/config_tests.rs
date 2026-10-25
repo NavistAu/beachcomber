@@ -102,6 +102,22 @@ fn log_path_resolves_xdg() {
     );
 }
 
+/// One grammar for every duration: a whole number with an optional unit,
+/// `ms`, `s`, `m` or `h`, a bare number being seconds. Zero is zero in every
+/// unit; what a consumer cannot take (a zero interval, a sub-second ttl) is
+/// that consumer's to refuse.
+#[test]
+fn one_duration_grammar_and_zero_is_zero_in_every_unit() {
+    for zero in ["0", "0s", "0ms", "0m", "0h"] {
+        assert_eq!(parse_duration(zero), Some(Duration::ZERO), "{zero}");
+    }
+    for bad in ["1m30s", "5S", "1d", "x", "-1s", "1.5s", "ms"] {
+        assert_eq!(parse_duration(bad), None, "{bad}");
+    }
+    let err = crate::config::duration_arg("1m30s").unwrap_err();
+    assert!(err.contains(crate::config::DURATION_GRAMMAR), "{err}");
+}
+
 #[test]
 fn parse_duration_variants() {
     assert_eq!(parse_duration("500ms"), Some(Duration::from_millis(500)));
@@ -946,7 +962,11 @@ fn budget_execute_defaults_to_50ms_and_takes_ms() {
         assert_eq!(config.errors(), Vec::<String>::new());
         assert_eq!(config.daemon().budget_execute(), want, "{text}");
     }
-    for bad in ["\"0ms\"", "\"soon\"", "5", "\"\""] {
+    // A bare number is seconds, as in every duration.
+    let config = with_shipped_defaults("[daemon]\nbudget.execute = 5\n");
+    assert_eq!(config.errors(), Vec::<String>::new());
+    assert_eq!(config.daemon().budget_execute(), Duration::from_secs(5));
+    for bad in ["\"0ms\"", "0", "\"soon\"", "\"\""] {
         let errors = seeded_errors(&format!("[daemon]\nbudget.execute = {bad}\n"));
         assert_eq!(errors.len(), 1, "{bad}: {errors:?}");
         assert!(
@@ -970,7 +990,7 @@ fn the_watchdog_keys_are_whole_seconds_of_at_least_one() {
         ("watchdog_interval", "\"0s\""),
         ("watchdog_interval", "\"500ms\""),
         ("watchdog_interval", "\"soon\""),
-        ("watchdog_interval", "30"),
+        ("watchdog_interval", "0"),
         ("watchdog_threshold", "\"0s\""),
         ("watchdog_threshold", "\"1500ms\""),
     ] {
@@ -983,8 +1003,12 @@ fn the_watchdog_keys_are_whole_seconds_of_at_least_one() {
             "{errors:?}"
         );
     }
-    for ok in ["\"1s\"", "\"2000ms\"", "\"2m\""] {
-        assert!(seeded_errors(&format!("[daemon]\nwatchdog_interval = {ok}\n")).is_empty());
+    // A bare number is seconds, in a TOML integer as in a string.
+    for ok in ["\"1s\"", "\"2000ms\"", "\"2m\"", "30", "\"30\""] {
+        assert!(
+            seeded_errors(&format!("[daemon]\nwatchdog_interval = {ok}\n")).is_empty(),
+            "{ok}"
+        );
     }
 
     // A threshold below the interval would restart a healthy scheduler.
@@ -1264,7 +1288,7 @@ fn parse_duration_accepts_milliseconds() {
     assert_eq!(parse_duration("1ms"), Some(Duration::from_millis(1)));
     assert_eq!(parse_duration("1500ms"), Some(Duration::from_millis(1500)));
     assert_eq!(parse_duration("2000ms"), Some(Duration::from_secs(2)));
-    assert_eq!(parse_duration("0ms"), None);
+    assert_eq!(parse_duration("0ms"), Some(Duration::ZERO));
 }
 
 #[test]

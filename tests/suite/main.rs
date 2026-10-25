@@ -7,6 +7,7 @@ mod boundaries_spawn;
 mod cache_facet;
 mod cache_lifecycle;
 mod check_subjects;
+mod cli_durations;
 mod cli_eval;
 mod cli_exec;
 mod cli_ffi_equivalence;

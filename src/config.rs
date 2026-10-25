@@ -28,21 +28,26 @@ pub fn deep_merge_toml(base: &mut toml::Value, overlay: toml::Value) {
     }
 }
 
-/// Parse a duration string like "30s", "5m", "1h" or "50ms" into a Duration.
-/// An `ms` suffix takes any whole number of milliseconds of at least 1
-/// (`"1500ms"` is 1.5 s); `"0ms"` is `None`. Consumers that can only act on
-/// whole seconds use [`parse_whole_seconds`].
+/// The one duration grammar, as every refusal states it.
+pub const DURATION_GRAMMAR: &str = "a whole number with an optional unit, ms, s, m or h; a bare \
+     number is seconds (\"250ms\", \"30s\", \"2m\", \"60\")";
+
+/// Parse a duration in the one grammar every flag, `[daemon]` key and
+/// decorator takes: a whole number with an optional unit, `ms`, `s`, `m` or
+/// `h`, a bare number being seconds (`"250ms"`, `"30s"`, `"2m"`, `"60"`). Zero
+/// is zero in every unit; a consumer that cannot take zero, or anything below
+/// a whole second, refuses it itself ([`parse_whole_seconds`]).
 pub fn parse_duration(s: &str) -> Option<Duration> {
     let s = s.trim();
     if s.is_empty() {
         return None;
     }
     if let Some(stripped) = s.strip_suffix("ms") {
-        let n = stripped.trim().parse::<u64>().ok()?;
-        if n < 1 {
-            return None;
-        }
-        return Some(Duration::from_millis(n));
+        return stripped
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .map(Duration::from_millis);
     }
     let (num_str, multiplier) = if let Some(stripped) = s.strip_suffix('s') {
         (stripped, 1u64)
@@ -59,6 +64,32 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
         .ok()
         .and_then(|n| n.checked_mul(multiplier))
         .map(Duration::from_secs)
+}
+
+/// [`parse_duration`] as clap's value parser: every duration flag takes the
+/// one grammar and refuses anything else in the same words.
+pub fn duration_arg(s: &str) -> Result<Duration, String> {
+    parse_duration(s).ok_or_else(|| format!("invalid duration `{s}`: {DURATION_GRAMMAR}"))
+}
+
+/// A duration a config value holds: a string in the one grammar, or an
+/// integer, which like a bare number is seconds.
+pub fn duration_value(value: &toml::Value) -> Option<Duration> {
+    match value {
+        toml::Value::String(s) => parse_duration(s),
+        toml::Value::Integer(n) => u64::try_from(*n).ok().map(Duration::from_secs),
+        _ => None,
+    }
+}
+
+/// A duration as a person writes one: whole seconds as `"5s"`, anything
+/// finer as `"250ms"`.
+pub fn display_duration(d: Duration) -> String {
+    if d.subsec_nanos() == 0 {
+        format!("{}s", d.as_secs())
+    } else {
+        format!("{}ms", d.as_millis())
+    }
 }
 
 /// [`parse_duration`], but `None` unless the duration is a whole number of
@@ -97,6 +128,20 @@ fn deserialize_log_level<'de, D: serde::Deserializer<'de>>(
             "log_level must be one of {}",
             LOG_LEVELS.join(", ")
         ))
+    })
+}
+
+/// A duration setting as written: a string in the one grammar, or an integer,
+/// which like a bare number is seconds. Whether it is a duration at all is the
+/// configuration check's to say ([`duration_value`]).
+fn deserialize_duration_text<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<String>, D::Error> {
+    Ok(match Option::<toml::Value>::deserialize(d)? {
+        Some(toml::Value::String(s)) => Some(s),
+        Some(toml::Value::Integer(n)) => Some(n.to_string()),
+        Some(other) => Some(other.to_string()),
+        None => None,
     })
 }
 
@@ -191,12 +236,14 @@ pub struct DaemonConfig {
     /// Default: `env` beside the config file.
     pub env_file: Option<String>,
     /// How often the watchdog checks the scheduler heartbeat. Default: disabled (None).
-    /// Whole seconds, at least 1s. Example: "30s", "1m".
+    /// Whole seconds, at least 1s, in the one duration grammar. Example: "30s", "1m", 30.
+    #[serde(deserialize_with = "deserialize_duration_text")]
     pub watchdog_interval: Option<String>,
     /// How long the heartbeat can be stale before the watchdog restarts the scheduler.
     /// Default: 3x watchdog_interval; never below the interval, and not set
     /// without one.
     /// Example: "90s", "3m".
+    #[serde(deserialize_with = "deserialize_duration_text")]
     pub watchdog_threshold: Option<String>,
     /// Seconds with no client before the daemon shuts down. Default: never.
     pub idle_shutdown_secs: Option<u64>,
@@ -280,8 +327,8 @@ impl DaemonConfig {
     pub fn budget_execute(&self) -> Duration {
         self.budget
             .get("execute")
-            .and_then(toml::Value::as_str)
-            .and_then(parse_duration)
+            .and_then(duration_value)
+            .filter(|d| !d.is_zero())
             .unwrap_or(crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE)
     }
 }
