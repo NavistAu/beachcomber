@@ -53,7 +53,7 @@ pub fn start_in_process_with_reaper(
     cancel: CancellationToken,
     reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
 ) -> (tokio::task::JoinHandle<()>, DaemonReady) {
-    start_in_process_inner(socket_path, config, cancel, reaper, None)
+    start_in_process_inner(socket_path, config, cancel, reaper, None, None)
 }
 
 /// Test seam: an in-process daemon whose provider file-watching polls every
@@ -83,6 +83,26 @@ pub fn start_in_process_polling_with(
         cancel,
         reaper,
         Some(std::time::Duration::from_millis(50)),
+        None,
+    )
+}
+
+/// Test seam: [`start_in_process_polling`] whose `introspect procs` samples
+/// process starts through `procs` instead of the system's tracer, which
+/// takes the whole sampling window and, unprivileged, sees nothing.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn start_in_process_polling_sampling(
+    socket_path: PathBuf,
+    config: Config,
+    procs: Arc<dyn crate::boundaries::proc_snap::ProcessSnapshotter>,
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
+    start_in_process_inner(
+        socket_path,
+        config,
+        CancellationToken::new(),
+        None,
+        Some(std::time::Duration::from_millis(50)),
+        Some(procs),
     )
 }
 
@@ -92,10 +112,20 @@ fn start_in_process_inner(
     cancel: CancellationToken,
     reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
     polling_watch: Option<std::time::Duration>,
+    procs: Option<Arc<dyn crate::boundaries::proc_snap::ProcessSnapshotter>>,
 ) -> (tokio::task::JoinHandle<()>, DaemonReady) {
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
-        run_daemon_with_cancel(socket_path, config, cancel, reaper, ready_tx, polling_watch).await;
+        run_daemon_with_cancel(
+            socket_path,
+            config,
+            cancel,
+            reaper,
+            ready_tx,
+            polling_watch,
+            procs,
+        )
+        .await;
     });
     (task, ready_rx)
 }
@@ -107,6 +137,7 @@ async fn run_daemon_with_cancel(
     reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
     ready: tokio::sync::oneshot::Sender<()>,
     polling_watch: Option<std::time::Duration>,
+    procs: Option<Arc<dyn crate::boundaries::proc_snap::ProcessSnapshotter>>,
 ) {
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
@@ -164,6 +195,9 @@ async fn run_daemon_with_cancel(
     );
     if let Some(health) = reaper {
         server = server.with_reaper_health(health);
+    }
+    if let Some(procs) = procs {
+        server = server.with_process_snapshotter(procs);
     }
 
     // Bind before serving so readiness can be signalled: whoever holds the

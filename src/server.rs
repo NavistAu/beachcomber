@@ -1,3 +1,4 @@
+use crate::boundaries::proc_snap::{ProcessSnapshotter, RealProcessSnapshotter};
 use crate::cache::{Cache, Layers, MergedRead};
 use crate::config::Config;
 use crate::protocol::{IntrospectSubject, Request, Response};
@@ -34,6 +35,9 @@ pub struct Server {
     /// Reaper health, present only in the daemon path (canon invariant 13).
     /// None for embedded/test servers — introspect then omits the field.
     reaper: Option<Arc<crate::singleton::ReaperHealth>>,
+    /// What `introspect procs` samples process starts through: the system's
+    /// tracer, or a test's stand-in ([`Self::with_process_snapshotter`]).
+    procs: Arc<dyn ProcessSnapshotter>,
 }
 
 impl Server {
@@ -58,6 +62,7 @@ impl Server {
             active_watches: Arc::new(AtomicUsize::new(0)),
             config: Arc::new(Config::default()),
             reaper: None,
+            procs: Arc::new(RealProcessSnapshotter),
         }
     }
 
@@ -80,12 +85,20 @@ impl Server {
             active_watches: Arc::new(AtomicUsize::new(0)),
             config: Arc::new(config),
             reaper: None,
+            procs: Arc::new(RealProcessSnapshotter),
         }
     }
 
     /// Attach reaper health state for introspect surfacing (daemon path only).
     pub fn with_reaper_health(mut self, health: Arc<crate::singleton::ReaperHealth>) -> Self {
         self.reaper = Some(health);
+        self
+    }
+
+    /// Sample process starts for `introspect procs` through `procs` instead
+    /// of the system's tracer.
+    pub fn with_process_snapshotter(mut self, procs: Arc<dyn ProcessSnapshotter>) -> Self {
+        self.procs = procs;
         self
     }
 
@@ -141,6 +154,7 @@ impl Server {
                     let socket_path = self.socket_path.clone();
                     let config = Arc::clone(&self.config);
                     let reaper = self.reaper.clone();
+                    let procs = Arc::clone(&self.procs);
                     tokio::spawn(async move {
                         if let Err(e) = handle_connection(
                             stream,
@@ -154,6 +168,7 @@ impl Server {
                             socket_path,
                             config,
                             reaper,
+                            procs,
                         )
                         .await
                         {
@@ -190,6 +205,7 @@ async fn handle_connection(
     socket_path: PathBuf,
     config: Arc<Config>,
     reaper: Option<Arc<crate::singleton::ReaperHealth>>,
+    procs: Arc<dyn ProcessSnapshotter>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -236,6 +252,7 @@ async fn handle_connection(
                     &socket_path,
                     &config,
                     reaper.as_deref(),
+                    &procs,
                 )
                 .await;
                 let mut response_bytes = serde_json::to_string(&response).unwrap();
@@ -1643,6 +1660,7 @@ async fn handle_request(
     socket_path: &std::path::Path,
     config: &Config,
     reaper: Option<&crate::singleton::ReaperHealth>,
+    procs: &Arc<dyn ProcessSnapshotter>,
 ) -> Response {
     match request {
         Request::Get {
@@ -2240,7 +2258,8 @@ async fn handle_request(
             IntrospectSubject::Demand => handle_introspect_demand(scheduler).await,
             IntrospectSubject::Procs => {
                 let dur = *duration_secs;
-                tokio::task::spawn_blocking(move || handle_introspect_procs(dur))
+                let procs = Arc::clone(procs);
+                tokio::task::spawn_blocking(move || handle_introspect_procs(procs.as_ref(), dur))
                     .await
                     .unwrap_or_else(|e| Response::error(format!("procs task panicked: {e}")))
             }
@@ -2756,9 +2775,9 @@ async fn handle_introspect_demand(scheduler: Option<&SchedulerHandle>) -> Respon
     )
 }
 
-fn handle_introspect_procs(duration_secs: Option<u64>) -> Response {
+fn handle_introspect_procs(procs: &dyn ProcessSnapshotter, duration_secs: Option<u64>) -> Response {
     let dur = duration_secs.unwrap_or(2);
-    match crate::proc_snapshot::capture(dur) {
+    match procs.capture(dur) {
         Ok(result) => {
             let samples: Vec<serde_json::Value> = result
                 .samples

@@ -4,8 +4,10 @@
 
 use crate::common::daemon::{isolate, launch};
 use crate::common::poll::poll_until;
+use beachcomber::boundaries::proc_snap::ProcessSnapshotter;
 use beachcomber::client::Client;
 use beachcomber::config::Config;
+use beachcomber::proc_snapshot::{ProcSample, ProcSnapshotResult, ReplacementSuggestion};
 
 async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<()>) {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -316,68 +318,83 @@ async fn introspect_demand_returns_active_keys() {
     handle.abort();
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+/// A process tracer that saw two `git` starts and a `zsh`, at once: what
+/// `introspect procs` makes of a sample, without waiting out a window.
+struct SawGit;
+
+impl ProcessSnapshotter for SawGit {
+    fn capture(&self, duration_secs: u64) -> Result<ProcSnapshotResult, String> {
+        Ok(ProcSnapshotResult {
+            duration_secs,
+            total: 3,
+            samples: vec![
+                ProcSample {
+                    command: "git".into(),
+                    count: 2,
+                    category: Some("git".into()),
+                },
+                ProcSample {
+                    command: "zsh".into(),
+                    count: 1,
+                    category: Some("shell".into()),
+                },
+            ],
+            replacement_suggestions: vec![ReplacementSuggestion {
+                command_pattern: "git".into(),
+                provider: "git".into(),
+                field: "branch".into(),
+            }],
+        })
+    }
+}
+
+/// An in-process daemon whose `introspect procs` samples through [`SawGit`].
+async fn setup_sampling_daemon() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    tokio::task::JoinHandle<()>,
+) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let (handle, ready) = beachcomber::daemon::start_in_process_polling_sampling(
+        sock.clone(),
+        Config::default(),
+        std::sync::Arc::new(SawGit),
+    );
+    ready.await.expect("daemon ready");
+    (tmp, sock, handle)
+}
+
+/// `introspect procs` hands the sampler the duration asked for and reports
+/// each command, the replacements `comb get` offers, and a verdict on each.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_procs_returns_sample_structure() {
-    let (_tmp, client, handle) = setup_daemon().await;
+    let (_tmp, sock, handle) = setup_sampling_daemon().await;
 
-    let resp = client
-        .introspect("procs", Some(1))
+    let resp = Client::new(sock)
+        .introspect("procs", Some(7))
         .expect("introspect procs request");
-
-    // procs may fail in sandboxed environments; accept either ok or a recognisable error.
-    if !resp.ok {
-        let err = resp.error.as_deref().unwrap_or("");
-        assert!(
-            err.contains("procs")
-                || err.contains("permission")
-                || err.contains("eslogger")
-                || err.contains("proc")
-                || err.contains("snapshot"),
-            "unexpected error: {err}"
-        );
-        handle.abort();
-        return;
-    }
-
-    let d = resp.data.expect("payload present on success");
-    assert!(
-        d.get("duration_secs").and_then(|v| v.as_u64()).is_some(),
-        "duration_secs missing or not a number"
-    );
-    assert!(
-        d.get("samples").and_then(|v| v.as_array()).is_some(),
-        "samples missing or not an array"
-    );
-    assert!(
-        d.get("replacement_suggestions")
-            .and_then(|v| v.as_array())
-            .is_some(),
-        "replacement_suggestions missing or not an array"
-    );
-    assert!(
-        d.get("verdicts").and_then(|v| v.as_array()).is_some(),
-        "verdicts missing or not an array"
-    );
-
-    let verdicts = d.get("verdicts").and_then(|v| v.as_array()).unwrap();
-    assert!(!verdicts.is_empty(), "at least one verdict expected");
-    for v in verdicts {
-        let level = v
-            .get("level")
-            .and_then(|x| x.as_str())
-            .expect("verdict has level");
-        assert!(
-            ["INFO", "WARN", "PASS", "FAIL"].contains(&level),
-            "unexpected verdict level: {level}"
-        );
-        assert!(
-            v.get("message").and_then(|x| x.as_str()).is_some(),
-            "verdict missing message"
-        );
-    }
-
     handle.abort();
+
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let d = resp.data.expect("payload present on success");
+    assert_eq!(
+        d,
+        serde_json::json!({
+            "duration_secs": 7,
+            "samples": [
+                {"command": "git", "count": 2, "category": "git"},
+                {"command": "zsh", "count": 1, "category": "shell"},
+            ],
+            "replacement_suggestions": [
+                {"command_pattern": "git", "provider": "git", "field": "branch"},
+            ],
+            "verdicts": [
+                {"level": "INFO", "message": "7s sample: 3 exec events"},
+                {"level": "WARN", "message": "1 replacement opportunity: consider using `comb get` instead"},
+            ],
+        })
+    );
 }
 
 // ── CLI aggregation tests ──────────────────────────────────────────────────
@@ -994,21 +1011,46 @@ fn check_config_warns_of_a_template_reading_no_provider() {
 
 /// With no `config.toml`, `check` and `check config` say that and only that: the
 /// `defaults/` and `conf.d/` files may still be composed, so it does not claim
-/// comb is running on its built-in values.
-#[test]
-fn check_without_a_config_toml_says_so() {
-    let d = crate::common::daemon::TestDaemon::spawn();
-    for args in [&["check"][..], &["check", "config"]] {
-        let out = d
-            .comb(std::path::Path::new("/"))
+/// comb is running on its built-in values. A bare `check` runs every subject,
+/// `procs` at the daemon's default sample.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn check_without_a_config_toml_says_so() {
+    let (tmp, sock, handle) = setup_sampling_daemon().await;
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let outputs = tokio::task::spawn_blocking(move || {
+        [&["check"][..], &["check", "config"]].map(|args| {
+            let out = isolate(
+                &mut std::process::Command::new(comb_binary()),
+                &home,
+                &home.join(".config"),
+                &sock,
+            )
+            .current_dir("/")
             .args(args)
             .output()
             .unwrap();
-        let stdout = String::from_utf8_lossy(&out.stdout);
+            (args, String::from_utf8_lossy(&out.stdout).into_owned())
+        })
+    })
+    .await
+    .unwrap();
+    handle.abort();
+
+    for (args, stdout) in &outputs {
         assert!(
             stdout.contains("no config.toml") && !stdout.contains("using defaults"),
             "comb {args:?}:\n{stdout}"
         );
+    }
+    let (_, bare) = &outputs[0];
+    for header in [
+        "Daemon\n",
+        "Config\n",
+        "Providers",
+        "Procs (2s sample — 3 exec events)\n",
+    ] {
+        assert!(bare.contains(header), "comb check: no {header:?}:\n{bare}");
     }
 }
 

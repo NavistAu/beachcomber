@@ -310,13 +310,13 @@ fn introspect_procs_subject_honours_duration_secs_option() {
     // (`eslogger` on macOS, akin to `uptime_provider_executes` needing an
     // unsandboxed environment). What this test can assert regardless of
     // that: the option actually reached the daemon rather than being
-    // dropped — proven by the call taking ~1s (the requested duration), not
-    // the 2s default `handle_introspect_procs` falls back to when
-    // `duration_secs` is absent.
+    // dropped — proven by the call returning well inside the 2s default
+    // `handle_introspect_procs` falls back to when `duration_secs` is
+    // absent: 0 is an empty window.
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     let subject = cs("procs");
-    let options = cs(r#"{"duration_secs":1}"#);
+    let options = cs(r#"{"duration_secs":0}"#);
 
     let start = std::time::Instant::now();
     let v = read(unsafe { bc_introspect(client, subject.as_ptr(), options.as_ptr()) });
@@ -324,8 +324,8 @@ fn introspect_procs_subject_honours_duration_secs_option() {
 
     assert!(v["ok"].is_boolean(), "envelope must have an ok field: {v}");
     assert!(
-        elapsed < Duration::from_millis(1800),
-        "duration_secs=1 must not fall back to the 2s default; took {elapsed:?}"
+        elapsed < Duration::from_secs(1),
+        "duration_secs=0 must not fall back to the 2s default; took {elapsed:?}"
     );
 
     unsafe { bc_client_free(client) };
