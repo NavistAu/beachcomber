@@ -191,11 +191,14 @@ impl std::fmt::Display for ResolveError {
     }
 }
 
+/// One node: a key at a path, `None` for the global entry.
+type Coord = (String, Option<String>);
+
 /// The distinct `(key, path)` pairs one resolution fetched, in first-fetch order.
-type Fetched = Vec<(String, Option<String>)>;
+type Fetched = Vec<Coord>;
 
 /// The `(key, path)` nodes currently being rendered, innermost last.
-type Frames = Vec<(String, Option<String>)>;
+type Frames = Vec<Coord>;
 
 /// The value `comb get <key>` prints. `Ok(None)` is a miss.
 pub fn resolve(
@@ -280,16 +283,18 @@ pub fn eval_with(
     rendered
 }
 
-/// One resolution: its inputs, its transport, its fetch memo and its
+/// One resolution: its inputs, its transport, its two memos and its
 /// evaluation stack.
 ///
-/// Both the memo and the stack are per top-level call. The memo makes
+/// The memos and the stack are per top-level call. The fetch memo makes
 /// `Fetch::get` run exactly once per distinct `(key, path)` — a namespace
 /// whose leaves share a ref is one round trip for that ref, not one per leaf,
 /// and a key the daemon rejected is asked about once too — and its insertion
-/// order is the dependency list [`deps`] returns. The stack is what makes a
-/// cycle an error rather than a hang; its entries are `(key, path)`, because
-/// the same key at two directories is two nodes.
+/// order is the dependency list [`deps`] returns. The value memo makes each
+/// node render once: a leaf several templates read is rendered for the first
+/// and handed to the rest. The stack is what makes a cycle an error rather
+/// than a hang; its entries are `(key, path)`, because the same key at two
+/// directories is two nodes.
 struct Resolver<'a> {
     inputs: &'a Inputs<'a>,
     /// What every render of this resolution runs in: the caller's `env` and
@@ -297,7 +302,10 @@ struct Resolver<'a> {
     engine: Arc<EngineCtx>,
     fetch: &'a mut dyn Fetch,
     /// The daemon's answers so far: a node, or its refusal of the key.
-    memo: HashMap<(String, Option<String>), Result<Option<Got>, String>>,
+    memo: HashMap<Coord, Result<Option<Got>, String>>,
+    /// What each node resolved to so far: its value, or the message it
+    /// failed to render with ([`ResolveError::Runtime`]).
+    resolved: HashMap<Coord, Result<Option<JsonValue>, String>>,
     order: Fetched,
     stack: Frames,
     /// The age of the oldest cached value used so far ([`Traced`]).
@@ -315,6 +323,7 @@ impl<'a> Resolver<'a> {
             }),
             fetch,
             memo: HashMap::new(),
+            resolved: HashMap::new(),
             order: Vec::new(),
             stack: Vec::new(),
             oldest: None,
@@ -344,6 +353,41 @@ impl<'a> Resolver<'a> {
             });
         }
 
+        // A node is resolved once, and every later read of it is told the
+        // same. Not while it is being rendered: asked for again then, it is a
+        // cycle whatever it came to before, and the render below says so.
+        let coord = self.coord(key);
+        if !self.on_stack(key)
+            && let Some(done) = self.resolved.get(&coord)
+        {
+            return done.clone().map_err(ResolveError::Runtime);
+        }
+        let outcome = self.resolve_node(key);
+        match &outcome {
+            Ok(value) => {
+                self.resolved.insert(coord, Ok(value.clone()));
+            }
+            // A render failure is the node's answer too: a group omits the
+            // leaf that failed and goes on, and the next reader of the node
+            // is told the same rather than rendering it again.
+            Err(ResolveError::Runtime(m)) => {
+                self.resolved.insert(coord, Err(m.clone()));
+            }
+            // A refusal is the fetch memo's already, and every other error
+            // ends the resolution.
+            Err(_) => {}
+        }
+        outcome
+    }
+
+    /// [`Self::resolve`] of a node not yet resolved: what the daemon holds
+    /// there, rendered.
+    ///
+    /// Each input it uses is counted as it is used — fetched into the
+    /// dependency list, its age into the oldest — and both are the
+    /// resolution's, so a later read the value memo answers has nothing new
+    /// to count: its inputs are the ones counted here.
+    fn resolve_node(&mut self, key: &str) -> Result<Option<JsonValue>, ResolveError> {
         let Some(got) = self.fetch(key)? else {
             return Ok(None);
         };
@@ -396,7 +440,7 @@ impl<'a> Resolver<'a> {
     /// hit or a miss; a transport failure is not an answer and ends the
     /// resolution, so nothing about it is kept.
     fn fetch(&mut self, key: &str) -> Result<Option<Got>, ResolveError> {
-        let coord = (key.to_string(), self.inputs.path().map(str::to_string));
+        let coord = self.coord(key);
         let rejected = |m| ResolveError::Fetch(FetchError::Rejected(m));
         if let Some(answer) = self.memo.get(&coord) {
             return answer.clone().map_err(rejected);
@@ -683,9 +727,14 @@ impl<'a> Resolver<'a> {
                 "{top}: virtual field cycle detected: {key} is already being resolved"
             )));
         }
-        self.stack
-            .push((key.to_string(), self.inputs.path().map(str::to_string)));
+        self.stack.push(self.coord(key));
         Ok(())
+    }
+
+    /// The node `key` names in this resolution: every one of its reads
+    /// addresses the same path.
+    fn coord(&self, key: &str) -> Coord {
+        (key.to_string(), self.inputs.path().map(str::to_string))
     }
 
     fn on_stack(&self, key: &str) -> bool {

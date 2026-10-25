@@ -176,6 +176,22 @@ libc::getifaddrs(&mut ifaddrs);
 
 ---
 
+### Round 3: The client-side resolver
+
+Every client renders templates through `libbeachcomber::resolve`, so its cost is every status line's. Measured two ways: a status line of 12 widgets in the shape scanline's one-tree config takes (a theme group of eleven leaves read by eleven widgets, derived leaves the widgets share, the width in `env`), each widget its own `resolve`, the template data local and five reads from a daemon, minimum over 100 renders; and `cargo bench --bench resolve`. The host was at load average 100–200 throughout, so compare the figures with each other, not with the tables below.
+
+#### 3.1 Render each node once per resolution
+
+**Problem:** The resolver memoised fetches per `(key, path)`, so a ref named twice was one round trip, but not renders. A widget that reads the theme and two derived leaves that read it too rendered the theme's eleven leaves four times in one resolution.
+
+**Fix:** A second memo keeps what each node resolved to, a render failure included, for the rest of the top-level resolution. The frame stack is checked first, so a node asked for while it is being rendered is still a cycle. The dependency list and the oldest-input age belong to the resolution, so a read the memo answers leaves both as they were: its inputs were counted when it first rendered.
+
+**Result:** the status line 8.0 → 7.0 ms a render with a minimal environment, and 22 → 17 ms with 140 variables, since fewer renders also meant fewer copies of the environment (3.2). `resolve/widget/1` 0.92 → 0.61 ms, `resolve/widget/140` 4.5 → 1.4 ms.
+
+**Rule for future changes:** Both memos live for one top-level call and no longer. A memo across calls would hand one caller's `env` and directory to the next: each of scanline's widgets reads its own `env.SCANLINE_WIDTH`.
+
+---
+
 ## Current Performance Profile
 
 ### Provider Execution Time Tiers

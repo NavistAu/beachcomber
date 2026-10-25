@@ -621,6 +621,29 @@ fn a_self_referencing_leaf_is_a_cycle_naming_itself() {
     );
 }
 
+#[test]
+fn a_node_being_rendered_is_a_cycle_even_once_it_has_a_value() {
+    // The tree served for `g` and the leaf served for `g.l` disagree, as when
+    // the configuration reloads between two fetches: alone, `g.l` is a
+    // constant; in the group, the leaf names itself. `g.l` resolves first
+    // (refs bind in sorted order) and has a value; then the group renders its
+    // leaf `g.l`, which asks for `g.l` while rendering it — a cycle, not the
+    // value it had a moment ago.
+    let vars = spec_env();
+    let mut f = MapFetch::default();
+    f.seed("g.l", Some(CWD), tmpl(json!("{{ 'leaf' }}"))).seed(
+        "g",
+        Some(CWD),
+        tmpl(json!({ "l": "{{ g.l }}" })),
+    );
+    assert_eq!(
+        eval("{{ g.l }}{{ g | length }}", &inputs(&vars), &mut f),
+        Err(ResolveError::Config(
+            "g.l: virtual field cycle detected: g.l is already being resolved".to_string()
+        ))
+    );
+}
+
 // ── 8. The depth limit ────────────────────────────────────────────────────────
 
 #[test]
@@ -1599,4 +1622,121 @@ fn a_templates_files_are_read_in_the_addressed_directory() {
     assert_eq!(read(Slot::Path(path(&addressed))), Some(json!("addressed")));
     assert_eq!(read(Slot::Cwd), Some(json!("caller")));
     assert_eq!(read(Slot::Global), Some(json!("home")));
+}
+
+// ── 17. Each node renders once per resolution ────────────────────────────────
+
+/// A leaf whose every render appends one `x` to the file `$COUNT` names, and
+/// whose value is `v`: the file's length is how many times it rendered.
+const COUNTED: &str = r#"{{ exec('printf x >> "$COUNT"; printf v') }}"#;
+
+/// `k.shared` read from five places in one resolution: directly, through two
+/// other templates, and through both leaves of a group read whole.
+fn shared_fetch() -> MapFetch {
+    let group = json!({ "one": "{{ k.shared }}", "two": "{{ k.shared }}" });
+    let mut f = MapFetch::default();
+    f.seed("k.shared", Some(CWD), tmpl(json!(COUNTED)))
+        .seed("k.a", Some(CWD), tmpl(json!("{{ k.shared }}-a")))
+        .seed("k.b", Some(CWD), tmpl(json!("{{ k.shared }}-b")))
+        .seed("g", Some(CWD), tmpl(group))
+        .seed(
+            "k.top",
+            Some(CWD),
+            tmpl(json!(
+                "{{ k.shared }} {{ k.a }} {{ k.b }} {% for _, v in g | items %}{{ v }}{% endfor %}"
+            )),
+        );
+    f
+}
+
+#[test]
+fn a_node_read_from_many_places_renders_once_per_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    let count = dir.path().join("count");
+    let vars = env_of(&[("COUNT", count.to_str().unwrap())]);
+    let renders = || std::fs::read_to_string(&count).unwrap_or_default().len();
+    let mut i = inputs(&vars);
+    i.allow_exec = true;
+
+    let mut f = shared_fetch();
+    assert_eq!(
+        resolve("k.top", &i, &mut f),
+        Ok(Some(json!("v v-a v-b vv")))
+    );
+    assert_eq!(renders(), 1, "five reads, one render");
+
+    // The memo is the resolution's own: the next one renders afresh.
+    assert_eq!(
+        resolve("k.top", &i, &mut f),
+        Ok(Some(json!("v v-a v-b vv")))
+    );
+    assert_eq!(renders(), 2);
+}
+
+#[test]
+fn a_node_that_failed_to_render_is_not_rendered_again() {
+    // Both leaves of the group read `k.fail`, whose command fails: each leaf
+    // is omitted, and the command ran once.
+    let dir = tempfile::tempdir().unwrap();
+    let count = dir.path().join("count");
+    let vars = env_of(&[("COUNT", count.to_str().unwrap())]);
+    let mut i = inputs(&vars);
+    i.allow_exec = true;
+    let mut f = MapFetch::default();
+    f.seed(
+        "k.fail",
+        Some(CWD),
+        tmpl(json!(r#"{{ exec('printf x >> "$COUNT"; exit 3') }}"#)),
+    )
+    .seed(
+        "g",
+        Some(CWD),
+        tmpl(json!({ "a": "{{ k.fail }}", "b": "{{ k.fail }}", "c": "ok" })),
+    );
+    assert_eq!(resolve("g", &i, &mut f), Ok(Some(json!({ "c": "ok" }))));
+    assert_eq!(std::fs::read_to_string(&count).unwrap(), "x");
+}
+
+#[test]
+fn a_node_read_again_reports_the_same_deps_and_age() {
+    // `k.shared` holds the oldest input, `d.old`, and is read twice: through
+    // `k.a`, then by `k.top` itself. The dependency list is every key once in
+    // first-fetch order, and the age is `d.old`'s, as when each read rendered.
+    let vars = spec_env();
+    let mut f = MapFetch::default();
+    f.seed("k.top", Some(CWD), tmpl(json!("{{ k.a }}|{{ k.shared }}")))
+        .seed(
+            "k.a",
+            Some(CWD),
+            tmpl(json!("{{ k.shared }}{{ comb.e.x }}")),
+        )
+        .seed(
+            "k.shared",
+            Some(CWD),
+            tmpl(json!("{{ comb.d.old }}{{ d.new }}")),
+        )
+        .seed("d.old", Some(CWD), aged(json!("o"), 90_000))
+        .seed("d.new", Some(CWD), aged(json!("n"), 5_000))
+        .seed("e.x", Some(CWD), aged(json!("e"), 1_000));
+
+    let traced = resolve_traced("k.top", &inputs(&vars), &mut f).unwrap();
+    assert_eq!(traced.value, Some(json!("one|on")));
+    let at = |k: &str| (k.to_string(), Some(CWD.to_string()));
+    assert_eq!(
+        traced.deps,
+        vec![
+            at("k.top"),
+            at("k.a"),
+            at("e.x"),
+            at("k.shared"),
+            at("d.old"),
+            at("d.new"),
+        ]
+    );
+    assert_eq!(traced.oldest_input_ms, Some(90_000));
+    assert_eq!(
+        f.keys(),
+        vec!["k.top", "k.a", "e.x", "k.shared", "d.old", "d.new"],
+        "each key fetched once"
+    );
 }
