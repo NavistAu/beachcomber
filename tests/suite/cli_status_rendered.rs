@@ -147,6 +147,24 @@ fn colour_off_with_no_ascii_marks_the_rendered_value_with_the_unicode_glyph() {
     assert_row(&out, "scanline widgets.foo template \u{25b8} hi ");
 }
 
+/// Rendering `widgets.bar` reads `comb.hostname.name`, which runs the
+/// hostname Source on a cold daemon. The table is read after the render, so
+/// the record that render produced is a row of the same `status`, not only of
+/// the next one.
+#[test]
+fn what_a_render_runs_is_a_row_of_the_same_status() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    seed_scanline(&d, &cwd);
+
+    let rows = json_rows(&d, &cwd, &[]);
+    assert!(
+        rows.iter()
+            .any(|r| r["provider"] == "hostname" && r["field"] == "name"),
+        "the hostname record the render ran is a row: {rows:#?}"
+    );
+}
+
 #[test]
 fn rendered_rows_carry_kind_and_source_template_in_json() {
     let d = TestDaemon::spawn();

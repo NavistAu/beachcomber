@@ -189,6 +189,14 @@ pub fn run_status(
                     &mut session,
                     filters,
                 );
+                // A render reads what it needs, and a cold read runs the
+                // Source behind it: the table is read again, so what this
+                // render ran is a row of this status, not only the next.
+                if !rendered.is_empty()
+                    && let Ok(after) = client.status()
+                {
+                    rows = after;
+                }
                 rows.extend(rendered);
             }
 
