@@ -1486,6 +1486,13 @@ fn empty_or_garbage_returns_none() {
 
 // ── from tests/suite/env_file.rs ──────────
 
+/// [`Config::load_env_file`] in a test.
+fn load_env(config: &Config) -> usize {
+    // SAFETY: nextest runs each test in a process of its own, and these tests
+    // start no thread that touches the environment.
+    unsafe { config.load_env_file() }
+}
+
 #[test]
 fn loads_env_file() {
     let tmp = TempDir::new().unwrap();
@@ -1519,7 +1526,7 @@ BEACHCOMBER_TEST_NUM=42
             ("BEACHCOMBER_TEST_NUM", None::<&str>),
         ],
         || {
-            let count = config.load_env_file();
+            let count = load_env(&config);
             assert_eq!(count, 4, "Should load 4 variables");
             assert_eq!(
                 std::env::var("BEACHCOMBER_TEST_KEY").unwrap(),
@@ -1571,7 +1578,7 @@ fn vars_are_the_processs_with_the_env_files_over_them() {
 fn missing_env_file_returns_zero() {
     let config = Config::from_toml("[daemon]\nenv_file = \"/nonexistent/path/to/env\"\n");
 
-    let count = config.load_env_file();
+    let count = load_env(&config);
     assert_eq!(count, 0, "Missing file should return 0");
 }
 
@@ -1585,7 +1592,7 @@ fn no_env_file_configured_returns_zero() {
         "[daemon]\nenv_file = {}\n",
         toml::Value::String(missing.to_string_lossy().to_string())
     ));
-    let count = config.load_env_file();
+    let count = load_env(&config);
     assert_eq!(count, 0, "nonexistent env_file should return 0");
 }
 
@@ -1623,7 +1630,7 @@ fn xdg_config_dirs_is_not_searched() {
             let config = Config::load();
             assert_eq!(config.daemon().log_level, LevelFilter::INFO);
             assert_eq!(config.loaded_path(), None, "no file at the config home");
-            assert_eq!(config.load_env_file(), 0);
+            assert_eq!(load_env(&config), 0);
             assert!(std::env::var("BEACHCOMBER_SYS_VAR").is_err());
 
             let main = write(&home, "beachcomber/config.toml", "[daemon]\n");
@@ -1641,8 +1648,8 @@ fn the_default_variables_file_is_beside_the_loaded_config() {
     let main = write(tmp.path(), "config.toml", "");
     write(tmp.path(), "env", "BEACHCOMBER_BESIDE_VAR=1\n");
     temp_env::with_vars([("BEACHCOMBER_BESIDE_VAR", None::<&str>)], || {
-        assert_eq!(Config::default().load_env_file(), 0);
-        assert_eq!(Config::load_from(&main).load_env_file(), 1);
+        assert_eq!(load_env(&Config::default()), 0);
+        assert_eq!(load_env(&Config::load_from(&main)), 1);
         assert_eq!(std::env::var("BEACHCOMBER_BESIDE_VAR").unwrap(), "1");
     });
 }

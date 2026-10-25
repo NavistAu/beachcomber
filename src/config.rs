@@ -841,12 +841,19 @@ impl Config {
     /// Load environment variables from the env file ([`Self::env_file_path`]).
     /// Sets them in the process environment, so they reach a Source's lines as
     /// `env.VAR` (an unset one renders empty) and the commands its `exec()` runs.
-    /// Returns the number of variables loaded.
-    pub fn load_env_file(&self) -> usize {
+    /// Returns the number of variables loaded. `comb daemon` calls it once,
+    /// before its runtime starts.
+    ///
+    /// # Safety
+    ///
+    /// As for [`std::env::set_var`]: no other thread may read or write the
+    /// environment while it runs. Call it while the process has one thread,
+    /// before any runtime or thread is started.
+    pub unsafe fn load_env_file(&self) -> usize {
         let vars = self.env_file_vars();
         for (key, value) in &vars {
-            // SAFETY: env file is loaded once at daemon startup before any threads
-            // are spawned, so there are no concurrent readers of the environment.
+            // SAFETY: the caller guarantees no other thread touches the
+            // environment while this runs.
             unsafe {
                 std::env::set_var(key, value);
             }

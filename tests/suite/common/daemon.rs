@@ -95,9 +95,10 @@ impl TestDaemon {
     /// arguments, signals) uses [`TestDaemon::spawn_in`].
     ///
     /// The process environment is pointed at `home` and `xdg` as the spawned
-    /// daemon's is, and the managed defaults are written as `comb daemon` does
-    /// before it loads its configuration. Nextest gives each test its own
-    /// process, so setting it here is local to the test.
+    /// daemon's is, the managed defaults are written as `comb daemon` does
+    /// before it loads its configuration, and its env file is loaded before
+    /// the runtime starts, as `comb daemon` loads it. Nextest gives each test
+    /// its own process, so setting it here is local to the test.
     #[allow(dead_code)]
     pub fn serve_in_process(socket: IsolatedSocket, home: PathBuf, xdg: PathBuf) -> Self {
         std::fs::create_dir_all(&home).expect("create temp HOME");
@@ -114,6 +115,9 @@ impl TestDaemon {
             env!("BEACHCOMBER_VERSION"),
         )
         .expect("write managed defaults");
+        let config = beachcomber::config::Config::load();
+        // SAFETY: as above; the runtime that starts threads is built next.
+        unsafe { config.load_env_file() };
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -125,7 +129,7 @@ impl TestDaemon {
             let _enter = runtime.enter();
             beachcomber::daemon::start_in_process_polling_with(
                 socket.path.clone(),
-                beachcomber::config::Config::load(),
+                config,
                 cancel.clone(),
                 None,
             )

@@ -25,6 +25,10 @@ use tracing::{info, warn};
 /// coming.
 pub type DaemonReady = tokio::sync::oneshot::Receiver<()>;
 
+/// Start a daemon on the running runtime. Its environment is the process's
+/// as it stands: the env file is not loaded here, since nothing may set the
+/// environment once threads run. A caller that wants it calls
+/// [`Config::load_env_file`] before starting its runtime, as `comb daemon` does.
 pub fn start_in_process(
     socket_path: PathBuf,
     config: Config,
@@ -104,16 +108,12 @@ async fn run_daemon_with_cancel(
     ready: tokio::sync::oneshot::Sender<()>,
     polling_watch: Option<std::time::Duration>,
 ) {
-    // Load env file before anything else — providers need these vars
-    let env_count = config.load_env_file();
-    if env_count > 0 {
-        info!("Loaded {} environment variables from env file", env_count);
-    }
-
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    // The daemon's own environment, after the env file: what every config
-    // Source's lines see as `env`, and what its commands inherit.
+    // The daemon's own environment: what every config Source's lines see as
+    // `env`, and what its commands inherit. Inside a running runtime nothing
+    // may set it, so the env file is already in it: `comb daemon` loaded it
+    // before its runtime started (an embedder does the same, or goes without).
     let vars: std::collections::HashMap<String, String> = std::env::vars().collect();
     let load = ProviderRegistry::load(&config, &vars);
     // Every error the configuration has, at once.

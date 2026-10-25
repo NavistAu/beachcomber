@@ -109,6 +109,16 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
     // removed (it also killed peer daemons on other socket paths). See
     // `docs/canon/singleton.md` §"Same-build serving probe".
 
+    // The env file becomes the daemon's own environment, which every Source
+    // reads and every command it runs inherits. Setting it is sound only while
+    // the process has one thread, so it is loaded here, once, before the
+    // runtime below starts any.
+    // SAFETY: nothing so far has started a thread; the runtime is built next.
+    let env_count = unsafe { config.load_env_file() };
+    if env_count > 0 {
+        tracing::info!("Loaded {env_count} environment variables from env file");
+    }
+
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     rt.block_on(async {
         let cancel = tokio_util::sync::CancellationToken::new();
