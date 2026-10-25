@@ -462,14 +462,14 @@ pub fn render_preset(format: &Format, rows: &[CacheRow], opts: &RenderOpts) -> S
             render_delimited(rows, p.value_format().expect("a value format"))
         }
         Format::Preset(Preset::Sh) => render_sh(rows),
-        Format::Preset(Preset::Table) => render_table(rows, &[], false, None, true, false, false),
+        Format::Preset(Preset::Table) => render_table(rows, &[], false, None, true, false),
         Format::Preset(Preset::Human) => {
             let trunc = if opts.no_trunc { None } else { opts.max_width };
             // `no_color` is the resolved color decision from the caller (already
             // accounts for NO_COLOR, TTY and --color). Don't re-AND with is_tty
             // here — that would override an explicit `--color=always`.
             let color = !opts.no_color;
-            render_table(rows, &[], color, trunc, true, opts.ascii, true)
+            render_table(rows, &[], color, trunc, true, opts.ascii)
         }
         Format::Preset(other) => unreachable!("status's formats hold no {}", other.name()),
         Format::Template(_) => {
@@ -1080,20 +1080,10 @@ pub fn render_tree(
         }
     }
     match format {
-        Format::Preset(Preset::Table) => {
-            render_table(&display, &marks, false, None, true, false, false)
-        }
+        Format::Preset(Preset::Table) => render_table(&display, &marks, false, None, true, false),
         _ => {
             let trunc = if opts.no_trunc { None } else { opts.max_width };
-            render_table(
-                &display,
-                &marks,
-                !opts.no_color,
-                trunc,
-                true,
-                opts.ascii,
-                true,
-            )
+            render_table(&display, &marks, !opts.no_color, trunc, true, opts.ascii)
         }
     }
 }
@@ -1106,7 +1096,7 @@ pub fn render_tree(
 /// - `header`: prepend a PROVIDER / FIELD / SOURCE / VALUE / PATH / AGE / POLL / TTL header row.
 /// - `ascii`: use ASCII-only glyphs in the TTL cell instead of Unicode.
 pub fn render_human(rows: &[CacheRow], opts: &FormatOptions) -> String {
-    render_table(rows, &[], false, None, true, opts.ascii, true)
+    render_table(rows, &[], false, None, true, opts.ascii)
 }
 
 /// Compact a path under `$HOME` to a `~`-prefixed display form. Exact-prefix
@@ -1268,14 +1258,10 @@ pub fn sanitize_cell(s: &str, ascii: bool) -> String {
         .collect()
 }
 
-fn compact_home_path(path: &str, home: Option<&str>) -> String {
-    match home {
-        Some(h) if !h.is_empty() && path == h => "~".to_string(),
-        Some(h) if !h.is_empty() && path.starts_with(&format!("{h}/")) => {
-            format!("~{}", &path[h.len()..])
-        }
-        _ => path.to_string(),
-    }
+/// A row's PATH as the tables show it: the global entry as `~`, and a path
+/// under home written from `~` ([`crate::home::Home::compact`]).
+fn shown_path(path: Option<&str>, home: &crate::home::Home) -> String {
+    path.map_or_else(|| "~".to_string(), |p| home.compact(p))
 }
 
 fn render_table(
@@ -1285,21 +1271,16 @@ fn render_table(
     trunc: Option<usize>,
     header: bool,
     ascii: bool,
-    compact_home: bool,
 ) -> String {
     // `trunc` is the **total table width cap** (all columns + padding).
     // We scan all rows first to measure natural column widths, then compute
     // how much room the VALUE column has once other columns claim their natural
     // widths and inter-column separators are accounted for.
 
-    // Display-only: `~`-compact paths under $HOME so the freed width benefits
-    // the VALUE column. Machine presets (json/csv/tsv/sh) never call through
-    // this path — they use `row.path` directly. Resolved once per render.
-    let home = if compact_home {
-        std::env::var("HOME").ok()
-    } else {
-        None
-    };
+    // Display-only: a path under $HOME is written from `~`, and the global
+    // entry is `~` itself, in both tables. Machine presets (json/csv/tsv/sh)
+    // never call through this path — they use `row.path` directly.
+    let home = crate::home::Home::from_env();
 
     let now_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1330,7 +1311,7 @@ fn render_table(
 
     for (index, row) in rows.iter().enumerate() {
         let mark = marks.get(index).copied().flatten();
-        let path = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
+        let path = shown_path(row.path.as_deref(), &home);
         let value = if row.value.is_null() {
             ABSENT_TEXT.to_string()
         } else {
@@ -1535,7 +1516,7 @@ fn render_table(
         // Provider-controlled text is sanitized first, then truncated — never
         // the other way round, so a truncation can't leave half an escape
         // sequence intact.
-        let path_raw = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
+        let path_raw = shown_path(row.path.as_deref(), &home);
         let value_raw = if row.value.is_null() {
             ABSENT_TEXT.to_string()
         } else {
@@ -1914,8 +1895,8 @@ enum Predicate {
     Provider(String),
     /// The facet: a name or glob, or none (`-`).
     Facet(Option<String>),
-    /// The path: a glob, or none (`-`).
-    Path(Option<String>),
+    /// The path as shown or as stored: a glob, the global entry being `~`.
+    Path(String),
     Field(String),
     /// The displayed SOURCE label, as a glob.
     Source(String),
@@ -1943,7 +1924,10 @@ fn parse_filter(s: &str) -> Result<Filter, String> {
     let predicate = match k {
         "provider" => Predicate::Provider(v.to_string()),
         "facet" => Predicate::Facet(dash(v)),
-        "path" => Predicate::Path(dash(v)),
+        "path" if v == "-" => {
+            return Err("path=-: the global entry is written ~ (path=~)".to_string());
+        }
+        "path" => Predicate::Path(v.to_string()),
         "field" => Predicate::Field(v.to_string()),
         "source" => Predicate::Source(v.to_string()),
         "value" => Predicate::Value(dash(v)),
@@ -2011,9 +1995,10 @@ impl Predicate {
             Predicate::Facet(Some(pat)) => {
                 row_facet(&r.provider).is_some_and(|f| simple_glob_match(pat, f))
             }
-            Predicate::Path(None) => r.path.is_none(),
-            Predicate::Path(Some(pat)) => {
-                r.path.as_deref().is_some_and(|p| simple_glob_match(pat, p))
+            Predicate::Path(pat) => {
+                let home = crate::home::Home::from_env();
+                simple_glob_match(pat, &shown_path(r.path.as_deref(), &home))
+                    || r.path.as_deref().is_some_and(|p| simple_glob_match(pat, p))
             }
             Predicate::Field(v) => &r.field == v,
             Predicate::Source(pat) => simple_glob_match(pat, &display_source(r)),
@@ -2258,63 +2243,6 @@ mod ansi_tests {
     #[test]
     fn colour_disabled_returns_plain() {
         assert_eq!(ansi::wrap("hi", ansi::Color::Red, false), "hi");
-    }
-}
-
-#[cfg(test)]
-mod compact_home_path_tests {
-    use super::compact_home_path;
-
-    #[test]
-    fn compacts_exact_prefix_match() {
-        assert_eq!(
-            compact_home_path("/Users/x/ws/beachcomber", Some("/Users/x")),
-            "~/ws/beachcomber"
-        );
-    }
-
-    #[test]
-    fn compacts_path_equal_to_home() {
-        assert_eq!(compact_home_path("/Users/x", Some("/Users/x")), "~");
-    }
-
-    #[test]
-    fn leaves_non_home_path_untouched() {
-        assert_eq!(
-            compact_home_path("/var/log/beachcomber", Some("/Users/x")),
-            "/var/log/beachcomber"
-        );
-    }
-
-    #[test]
-    fn does_not_compact_on_partial_segment_match() {
-        // "/Users/joe" is a string-prefix of "/Users/joel/x" but not a path
-        // component prefix — must not compact.
-        assert_eq!(
-            compact_home_path("/Users/joel/x", Some("/Users/joe")),
-            "/Users/joel/x"
-        );
-    }
-
-    #[test]
-    fn leaves_dash_marker_untouched() {
-        assert_eq!(compact_home_path("-", Some("/Users/x")), "-");
-    }
-
-    #[test]
-    fn passes_through_when_home_unknown() {
-        assert_eq!(
-            compact_home_path("/Users/x/ws/beachcomber", None),
-            "/Users/x/ws/beachcomber"
-        );
-    }
-
-    #[test]
-    fn passes_through_when_home_empty() {
-        assert_eq!(
-            compact_home_path("/Users/x/ws/beachcomber", Some("")),
-            "/Users/x/ws/beachcomber"
-        );
     }
 }
 

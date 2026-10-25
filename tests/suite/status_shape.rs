@@ -432,10 +432,14 @@ fn filter_by_path_glob() {
 }
 
 #[test]
-fn filter_path_dash_matches_globals() {
+fn filter_path_tilde_matches_globals() {
     let rows = sample_rows();
-    let out = apply_filters(rows, &["path=-".to_string()]).unwrap();
+    let out = apply_filters(rows, &["path=~".to_string()]).unwrap();
+    assert!(!out.is_empty());
     assert!(out.iter().all(|r| r.path.is_none()));
+    // `-` is not a spelling of the global entry.
+    let err = apply_filters(sample_rows(), &["path=-".to_string()]).unwrap_err();
+    assert!(err.contains("path=~"), "{err}");
 }
 
 #[test]
@@ -1939,11 +1943,12 @@ fn machine_presets_keep_real_path_under_home() {
     let opts = RenderOpts::default();
 
     temp_env::with_var("HOME", Some("/home/testuser"), || {
-        // json/csv/tsv/table carry `path` verbatim; sh flattens it into a
+        // json/csv/tsv carry `path` verbatim; sh flattens it into a
         // sanitized shell-variable key (slashes → underscores) rather than
         // embedding the literal path string, so it's checked separately —
-        // the shared assertion across all five is simply "no `~` leaks in".
-        for preset in ["json", "csv", "tsv", "table"] {
+        // the shared assertion across all four is simply "no `~` leaks in".
+        // Both tables compact it (`human_preset_compacts_home_path`).
+        for preset in ["json", "csv", "tsv"] {
             let out = render_preset(&status_preset(preset), std::slice::from_ref(&row), &opts);
             assert!(
                 out.contains("/home/testuser/ws/beachcomber"),

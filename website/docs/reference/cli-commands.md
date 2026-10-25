@@ -205,15 +205,17 @@ The machine formats lay a row out in the columns `PROVIDER PATH FIELD SOURCE VAL
 
 **Flags:** `-f`/`--format` (`human` (default), `table`, `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, or a template), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|stale|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
 
+A path at or below `$HOME` is written from `~` in both tables, the global entry as `~` itself — in its symlinked form or its real one — and so is a file in a SOURCE label, `check`'s path lines and `check config --origins`. The machine formats keep the stored path, the global entry as an empty cell (`null` in json).
+
 ### Filters
 
-`--filter` takes `key=value` or `key!=value`, repeatable; a row is shown when it matches every filter. `*` is a glob in any value, and `-` means none for `facet`, `path` and `value`.
+`--filter` takes `key=value` or `key!=value`, repeatable; a row is shown when it matches every filter. `*` is a glob in any value, and `-` means none for `facet` and `value`.
 
 | Key | Matches |
 |-----|---------|
 | `provider` | the provider's base name — `aws` matches `aws` and `aws:template` |
 | `facet` | the facet after the colon (`template`, `cache`); `*` any facet; `-` none |
-| `path` | the row's directory; `-` the global entry |
+| `path` | the row's directory, as the table shows it or as stored: `~` is the global entry and `~/ws/*` a glob under home, as `/Users/me/ws/*` is |
 | `field` | the field, exactly (destructured names included) |
 | `source` | the SOURCE label shown |
 | `value` | the value shown; `-` absent. A glob matches present values only, so `value=*` is "not absent" |

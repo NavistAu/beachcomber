@@ -529,7 +529,7 @@ fn comb_check_config_reports_the_defaults_directory() {
         stdout.contains(&format!(
             "  [WARN] local    defaults {}: 9 shipped file(s) missing or stale — the daemon \
              writes them on its next start\n",
-            defaults.display()
+            "~/beachcomber/defaults"
         )),
         "got:\n{stdout}"
     );
@@ -572,7 +572,7 @@ fn comb_check_config_reports_the_defaults_directory() {
     assert!(
         stdout.contains(&format!(
             "  [PASS] local    defaults {} (9 files, comb {})\n",
-            defaults.display(),
+            "~/beachcomber/defaults",
             env!("BEACHCOMBER_VERSION")
         )),
         "got:\n{stdout}"
@@ -661,7 +661,7 @@ fn comb_check_config_counts_the_files_comb_did_not_write() {
     assert!(
         stdout.contains(&format!(
             "  [WARN] local    defaults {} holds 1 file(s) comb did not write\n",
-            defaults.display()
+            "~/beachcomber/defaults"
         )),
         "got:\n{stdout}"
     );
@@ -688,7 +688,7 @@ fn comb_check_config_fails_an_unwritable_defaults_directory() {
     assert!(
         stdout.contains(&format!(
             "  [FAIL] local    defaults {} not writable: ",
-            defaults.display()
+            "~/beachcomber/defaults"
         )) && stdout.contains("— the daemon cannot rewrite them on upgrade\n"),
         "got:\n{stdout}"
     );

@@ -488,7 +488,7 @@ fn tree_lists_the_layers_under_each_value_and_marks_the_shadowed_ones() {
     // The near put is the row; only what it shadows hangs under it.
     let near = at("t other put near ");
     assert!(
-        lines[near + 1].starts_with("`- shadowed put far - "),
+        lines[near + 1].starts_with("`- shadowed put far ~ "),
         "{out}"
     );
     let top_level = |field: &str| {
@@ -624,7 +624,7 @@ result.v = "{{ data }}"
     assert!(rows[0].starts_with("walk v source(main) proj "), "{out}");
     let at = lines.iter().position(|l| l == rows[0]).unwrap();
     assert!(
-        lines[at + 1].starts_with("`- shadowed source(main) home - "),
+        lines[at + 1].starts_with("`- shadowed source(main) home ~ "),
         "{out}"
     );
 }

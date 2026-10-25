@@ -768,10 +768,7 @@ impl Config {
     /// the file's path with `$HOME` written as `~`
     /// (`config:~/.config/beachcomber/conf.d/10-mine.toml`).
     pub fn config_label(path: &Path) -> String {
-        let shown = crate::query::home_dir()
-            .and_then(|home| path.strip_prefix(&home).ok().map(|rest| rest.to_path_buf()))
-            .map(|rest| format!("~/{}", rest.display()))
-            .unwrap_or_else(|| path.display().to_string());
+        let shown = crate::home::Home::from_env().compact_path(path);
         format!("{}{shown}", crate::cache::CONFIG_SOURCE_PREFIX)
     }
 

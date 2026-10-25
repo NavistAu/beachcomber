@@ -214,6 +214,73 @@ fn status_csv_has_no_header_and_csv_upper_has_one() {
     assert!(tsv.starts_with("PROVIDER\tPATH\tFIELD"), "{tsv}");
 }
 
+// ── one way to show a path under home ────────────────────────────────────────
+
+/// The global entry is `~` in both tables, a path under home is written from
+/// `~` in both, and `--filter path=~` selects the global entry.
+#[test]
+fn the_global_entry_and_paths_under_home_are_written_from_tilde() {
+    let d = TestDaemon::spawn();
+    seed(&d);
+    let project = d.home.join("ws").join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    ok(
+        &d,
+        &[
+            "put",
+            "--path",
+            project.to_str().unwrap(),
+            "fmtprov.at",
+            "1",
+        ],
+    );
+    for preset in ["human", "table"] {
+        let out = ok(
+            &d,
+            &[
+                "status",
+                "-f",
+                preset,
+                "--color",
+                "never",
+                "--filter",
+                "provider=fmtprov",
+            ],
+        );
+        let rows: Vec<Vec<&str>> = out
+            .lines()
+            .skip(1)
+            .map(|l| l.split_whitespace().collect())
+            .collect();
+        assert!(
+            rows.iter()
+                .any(|r| r.get(1) == Some(&"val") && r.contains(&"~")),
+            "{preset}: the global entry is ~:\n{out}"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.get(1) == Some(&"at") && r.contains(&"~/ws/project")),
+            "{preset}: under home from ~:\n{out}"
+        );
+    }
+    let global = ok(
+        &d,
+        &[
+            "status",
+            "-f",
+            "{{ field }}",
+            "--filter",
+            "provider=fmtprov",
+            "--filter",
+            "path=~",
+            "--sort",
+            "field",
+        ],
+    );
+    assert_eq!(global, "n\nval\n");
+    refused(&d, &["status", "--filter", "path=-"], "path=~");
+}
+
 // ── a -f template sees what any template sees ────────────────────────────────
 
 /// `args` with `FMT_X=x` in the environment, which must succeed.

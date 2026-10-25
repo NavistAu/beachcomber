@@ -5,6 +5,7 @@ pub mod client;
 pub mod config;
 pub mod daemon;
 pub mod engine;
+pub mod home;
 pub mod pid_check;
 pub mod proc_snapshot;
 pub mod protocol;

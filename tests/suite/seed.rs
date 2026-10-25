@@ -1533,8 +1533,8 @@ async fn comb_check_config_renders_both_views_as_one_list() {
          \x20 [PASS] local    config file valid\n\
          \x20 [PASS] local    defaults {} ({} files, comb {})\n\
          \n",
-        e.cfg_dir.join("config.toml").display(),
-        e.cfg_dir.join("defaults").display(),
+        "~/beachcomber/config.toml",
+        "~/beachcomber/defaults",
         beachcomber::daemon::defaults::SHIPPED.len(),
         env!("BEACHCOMBER_VERSION"),
     );

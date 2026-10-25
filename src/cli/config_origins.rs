@@ -145,17 +145,7 @@ fn file_text(file: Option<&Path>) -> String {
     let Some(file) = file else {
         return "default".to_string();
     };
-    let shown = file.display().to_string();
-    let homes = [
-        std::env::var_os("HOME").map(PathBuf::from),
-        crate::query::home_dir(),
-    ];
-    for home in homes.into_iter().flatten() {
-        if let Ok(rest) = file.strip_prefix(&home) {
-            return format!("~/{}", rest.display());
-        }
-    }
-    shown
+    crate::home::Home::from_env().compact_path(file)
 }
 
 /// The human table: KEY, FILE, VALUE, each leaf followed by what it shadowed,

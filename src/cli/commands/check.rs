@@ -297,7 +297,7 @@ fn defaults_verdicts(config: &Config) -> Vec<serde_json::Value> {
     use crate::daemon::defaults::{SHIPPED, audit};
     let version = env!("BEACHCOMBER_VERSION");
     let dir = Config::defaults_dir_for(config.config_file().unwrap_or(&Config::config_path()));
-    let shown = dir.display();
+    let shown = crate::home::Home::from_env().compact_path(&dir);
     let found = audit(&dir, version);
 
     let mut out = Vec::new();
@@ -512,7 +512,11 @@ fn render_subject(
             lines.push_str("Config\n");
             let daemon = Some(DAEMON_VIEW);
             match path {
-                Some(p) => lines.push_str(&verdict_line("PASS", daemon, &format!("path {p}"))),
+                Some(p) => lines.push_str(&verdict_line(
+                    "PASS",
+                    daemon,
+                    &format!("path {}", crate::home::Home::from_env().compact(p)),
+                )),
                 None => lines.push_str(&verdict_line(
                     "INFO",
                     daemon,
@@ -585,7 +589,9 @@ fn render_subject(
                         .unwrap_or(0);
                     let path = entry.get("path").and_then(|v| v.as_str());
                     let label = match path {
-                        Some(p) => format!("{provider} ({p})"),
+                        Some(p) => {
+                            format!("{provider} ({})", crate::home::Home::from_env().compact(p))
+                        }
                         None => provider.to_string(),
                     };
                     lines.push_str(&format!(
@@ -611,8 +617,9 @@ fn render_subject(
                 lines.push_str("  [WARN] not watching any paths\n");
                 worst = worst.max(1);
             } else {
+                let home = crate::home::Home::from_env();
                 for path in &paths {
-                    let p = path.as_str().unwrap_or("?");
+                    let p = home.compact(path.as_str().unwrap_or("?"));
                     lines.push_str(&format!("  [PASS] {p}\n"));
                 }
             }
@@ -644,7 +651,7 @@ fn render_subject(
                     .unwrap_or(0);
                 let path = timer.get("path").and_then(|v| v.as_str());
                 let label = match path {
-                    Some(p) => format!("{provider} ({p})"),
+                    Some(p) => format!("{provider} ({})", crate::home::Home::from_env().compact(p)),
                     None => provider.to_string(),
                 };
                 let overdue = interval > 0 && last > interval * 2;
