@@ -226,14 +226,15 @@ In the `human`/`table` preset, SOURCE keeps its tail past 24 characters (less at
 
 ### `--tree`: the layers behind each value
 
-`--tree` follows each value row with the layers a read of it consults, in the order the read consults them: the template records first (`:template`, nearest directory first), then for each directory nearest first its `put`, its `config(<file>)` seeds and the Source records at the instances the read reaches. The layer the read takes is drawn plainly; the rest are dimmed, or say `shadowed` in FIELD with colour off. A row on your directory chain (this directory, an ancestor, the global entry) is read from here; a row stored anywhere else is read from its own directory.
+`--tree` follows each value row with the layers a read of it consults, in the order the read consults them: the template records first (`:template`, nearest directory first), then for each directory nearest first its `put`, its `config(<file>)` seeds and the Source records at the instances the read reaches. Every config file that sets a leaf is a layer of its own, the last in composition order (`defaults/`, then `config.toml`, then `conf.d/`) first, so a file is followed by those it overrides. The layers hang under the field name; the one the read takes is the row itself and is not repeated, and every other says what it is to the value — `:template` for a template record, `shadowed` for a layer the read did not take, dimmed as well when colour is on. A value with nothing behind it has no layers. A row on your directory chain (this directory, an ancestor, the global entry) is read from here; a row stored anywhere else is read from its own directory.
 
 ```sh
-$ comb s --tree --filter provider=demo --color never
-PROVIDER  FIELD               SOURCE                       VALUE              PATH          AGE  POLL  TTL
-demo      greet               template                     ▸ hi jane          ~/ws/project   0s     -  ---
-├─        :template           config(…/config.toml)        hi {{ env.USER }}  -             20m
-└─        shadowed            put                          near               ~/ws/project   3s
+$ comb s --tree --filter provider=aws --filter field=profile --color never
+PROVIDER  FIELD                  SOURCE                          VALUE                      PATH          AGE  POLL  TTL
+aws       profile                template                        ▸ work                     ~/ws/project    -     -  ---
+          ├─ :template           config(…/conf.d/10-mine.toml)   {{ env.MY_PROFILE … }}     -             20m
+          ├─ :template shadowed  config(…/config.toml)           {{ 'personal' }}           -              2d
+          └─ :template shadowed  config(…/defaults/aws.toml)     {{ env.AWS_PROFILE or … }} -              2d
 ```
 
 A layer row's AGE is its record's own: how long since that file or `put` last changed it. Facet rows are not value rows and get no layers (`-a` still lists them). `--tree` destructures every value to its leaves unless `--depth` says otherwise, and works with the `human`, `table` and `json` formats — in `json` each row gains a `layers` array (`{label, facet?, path, value, age_ms, stale, answered?}`); any other format is an error. The layers come from the daemon's `layers` op ([protocol spec](https://github.com/NavistAu/beachcomber/blob/main/docs/protocol-spec.md)), which warms nothing.

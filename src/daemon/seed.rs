@@ -15,11 +15,9 @@
 //! one per-file parse (`crate::shape::seeded::read`). Each is written at the global path, every record labelled `config:<file>`
 //! with the file that set it. Layers are written in composition order —
 //! `defaults/*.toml` lexically, then the main config file, then
-//! `conf.d/*.toml` lexically — with the deep-merge semantics
-//! `Cache::write_static` gives a `put`. A record two files
-//! set ends up labelled by the later one (a `config:` write moves a record out of
-//! whichever earlier `config:` map held it), and a record only the earlier file set keeps
-//! its own label.
+//! `conf.d/*.toml` lexically — and every file keeps its own records, a record
+//! two files set included: a read takes it from the later file, and the
+//! earlier file's is what it overrode, which `comb status --tree` shows.
 //!
 //! Settings still compose by deep merge. These tables deliberately do not: the
 //! merge would collapse the layers into one value and the file a record came

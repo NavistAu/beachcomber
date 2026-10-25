@@ -350,13 +350,17 @@ pub struct CacheEntry {
     /// address was written and how long it is valid for.
     pub puts: BTreeMap<String, PutStamp>,
     pub created_at: Instant,
+    /// The `config:<file>` labels of this entry in the order their files
+    /// compose — `defaults/`, then the main file, then `conf.d/` — which is
+    /// the order they are written in. Each file keeps its own records, so two
+    /// may hold the same one; a read takes the later file's.
+    pub config_order: Vec<String>,
 }
 
 impl CacheEntry {
     /// Merge every source's fields into one tree, recursing into objects the
-    /// maps share. The maps hold disjoint *records*, so no value is ever
-    /// decided by merge order — only the intermediate objects two maps both
-    /// contribute to get stitched together.
+    /// maps share. Not a read: two `config:` maps may hold the same record,
+    /// and only [`Cache::read_merged`] stacks them in composition order.
     pub fn flatten_fields(&self) -> HashMap<String, Value> {
         let mut out = HashMap::new();
         for src in self.sources.values() {
@@ -379,6 +383,25 @@ impl CacheEntry {
             .iter()
             .find(|(_, src)| occupies(&src.fields, tail))
             .map(|(name, _)| name.as_str())
+    }
+
+    /// The `config:<file>` maps this entry holds, in composition order: the
+    /// order [`Self::config_order`] records, and any map it does not name
+    /// after those, by name.
+    fn config_labels(&self) -> Vec<&String> {
+        let rank = |name: &String| {
+            self.config_order
+                .iter()
+                .position(|l| l == name)
+                .unwrap_or(usize::MAX)
+        };
+        let mut labels: Vec<&String> = self
+            .sources
+            .keys()
+            .filter(|name| name.starts_with(CONFIG_SOURCE_PREFIX))
+            .collect();
+        labels.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.cmp(b)));
+        labels
     }
 
     /// The stamp governing the record at `tail`: the put address at or above
@@ -555,6 +578,9 @@ fn drop_labelled(entry: &mut CacheEntry, prefix: &str) -> bool {
     entry
         .sources
         .retain(|name, _| !(is_static_label(name) && name.starts_with(prefix)));
+    entry
+        .config_order
+        .retain(|name| !(is_static_label(name) && name.starts_with(prefix)));
     entry.sources.len() != before
 }
 
@@ -578,34 +604,15 @@ fn apply_static_write(
         drop_put_subtree(entry, node, (!leaves.is_empty()).then_some(label));
     }
 
-    // Rule 1: one record, one map, among `config:` labels only. A later file's
-    // record moves out of an earlier file's map. The `put` map neither evicts
-    // a `config:` record nor is evicted by one: it is a layer of its own.
-    if label.starts_with(CONFIG_SOURCE_PREFIX) {
-        for (tail, _) in &leaves {
-            let holders: Vec<String> = entry
-                .sources
-                .iter()
-                .filter(|(name, src)| {
-                    name.starts_with(CONFIG_SOURCE_PREFIX)
-                        && name.as_str() != label
-                        && occupies(&src.fields, tail)
-                })
-                .map(|(name, _)| name.clone())
-                .collect();
-            for holder in holders {
-                if let Some(src) = entry.sources.get_mut(&holder) {
-                    remove_occupant(&mut src.fields, tail);
-                    if src.fields.is_empty() {
-                        entry.sources.remove(&holder);
-                    }
-                }
-            }
-        }
-    }
-
+    // Every `config:` file keeps its own records, a record two files set
+    // included: the later file's wins at read time, and the earlier one's is
+    // what it overrode. Files are written in composition order, so the order
+    // of first writes is that order.
     if leaves.is_empty() {
         return;
+    }
+    if label.starts_with(CONFIG_SOURCE_PREFIX) && !entry.config_order.iter().any(|l| l == label) {
+        entry.config_order.push(label.to_string());
     }
     let src = entry
         .sources
@@ -642,22 +649,6 @@ fn apply_static_write(
     src.last_refreshed = now;
     if !is_put && interval_secs.is_some() {
         src.expected_interval_secs = interval_secs;
-    }
-}
-
-/// Remove whatever occupies the address `tail` in this map: the node itself,
-/// or the non-object ancestor standing in its place. Only called for a map
-/// [`CacheEntry::owner_of`] named, so one of the two always exists.
-fn remove_occupant(fields: &mut HashMap<String, Value>, tail: &str) {
-    let mut cut = tail.to_string();
-    loop {
-        if crate::provider::remove_path(fields, &cut).is_some() {
-            return;
-        }
-        match libbeachcomber::key::parent(&cut).filter(|up| !up.is_empty()) {
-            Some(up) => cut = up,
-            None => return,
-        }
     }
 }
 
@@ -919,6 +910,7 @@ impl Cache {
                 },
                 puts: BTreeMap::new(),
                 created_at: Instant::now(),
+                config_order: Vec::new(),
             });
     }
 
@@ -931,8 +923,9 @@ impl Cache {
     /// is removed. A `config:` label adds its leaves to its own map.
     ///
     /// There is no ownership: every supplier writes a layer of its own and a
-    /// read stacks them (source, then `config:` seeds, then `put`). Among
-    /// `config:` labels a record lives in one map, the latest file's.
+    /// read stacks them (source, then `config:` seeds, then `put`). Each
+    /// `config:` file keeps its own map, written in composition order, and a
+    /// read takes a record two files set from the later one.
     #[allow(clippy::too_many_arguments)]
     pub fn write_static(
         &self,
@@ -972,6 +965,7 @@ impl Cache {
                     sources: HashMap::new(),
                     puts: BTreeMap::new(),
                     created_at: now,
+                    config_order: Vec::new(),
                 };
                 apply_static_write(&mut fresh, label, node, leaves, interval_secs, now);
                 vacant.insert(fresh);
@@ -1186,6 +1180,7 @@ impl Cache {
                     sources: HashMap::new(),
                     puts: BTreeMap::new(),
                     created_at: now,
+                    config_order: Vec::new(),
                 };
                 for (label, leaves) in planned {
                     changed |= !leaves.is_empty();
@@ -1206,15 +1201,28 @@ impl Cache {
     }
 
     /// Merge the static maps of `entry` into `out`: `config:<file>` seeds in
-    /// label order, then the `put` map on top. Returns whether anything merged.
+    /// composition order, so a later file's record lands over an earlier
+    /// one's, then the `put` map on top. Returns whether anything merged.
     ///
     /// One layer at a time: [`Cache::read_merged`] walks the chain itself
     /// because a layer's static maps have to land between its neighbours'
     /// provider maps, not after all of them.
     fn merge_static_records(entry: &CacheEntry, at: Option<&str>, out: &mut MergedRead) -> bool {
-        let seeds = Self::merge_named(entry, at, out, |name| {
-            name.starts_with(CONFIG_SOURCE_PREFIX)
-        });
+        let mut seeds = false;
+        for name in entry.config_labels() {
+            let src = &entry.sources[name];
+            if src.fields.is_empty() {
+                continue;
+            }
+            let fresh = RecordFreshness {
+                source: Arc::from(name.as_str()),
+                entry: at.map(Arc::from),
+                last_refreshed: src.last_refreshed,
+                expected_interval_secs: src.expected_interval_secs,
+            };
+            merge_layer(&mut out.fields, &mut out.records, &src.fields, &fresh, "");
+            seeds = true;
+        }
         let puts = Self::merge_puts(entry, at, out);
         seeds | puts
     }
@@ -1353,40 +1361,6 @@ impl Cache {
                 ((p.clone(), s.clone()), record)
             })
             .collect()
-    }
-
-    /// Deep-merge the maps of `entry` whose name `wanted` accepts, in
-    /// source-name order. Returns whether anything merged: a map with no fields
-    /// (an instance with nothing to report) merges nothing and is no hit.
-    ///
-    /// The name order matters because two maps in one entry can in principle
-    /// hold the same key — two sentinel Sources, say, whose field names the
-    /// registry cannot check for overlap. Iterating `entry.sources` directly
-    /// would let a HashMap's order decide the value.
-    fn merge_named(
-        entry: &CacheEntry,
-        at: Option<&str>,
-        out: &mut MergedRead,
-        wanted: impl Fn(&String) -> bool,
-    ) -> bool {
-        let mut names: Vec<&String> = entry.sources.keys().filter(|n| wanted(n)).collect();
-        names.sort();
-        let mut merged = false;
-        for name in names {
-            let src = &entry.sources[name];
-            let fresh = RecordFreshness {
-                source: Arc::from(name.as_str()),
-                entry: at.map(Arc::from),
-                last_refreshed: src.last_refreshed,
-                expected_interval_secs: src.expected_interval_secs,
-            };
-            if src.fields.is_empty() {
-                continue;
-            }
-            merge_layer(&mut out.fields, &mut out.records, &src.fields, &fresh, "");
-            merged = true;
-        }
-        merged
     }
 
     /// The value tree a read of `namespace` from `requested` sees, plus one
@@ -1581,15 +1555,9 @@ impl Cache {
                 ));
             }
         }
-        let mut seeds: Vec<&String> = entry
-            .sources
-            .keys()
-            .filter(|name| name.starts_with(CONFIG_SOURCE_PREFIX))
-            .collect();
-        // A later file wins a leaf two files set (Rule 1 moves it, so in
-        // practice one file holds it); nearest-first is last-first here.
-        seeds.sort_by(|a, b| b.cmp(a));
-        for name in seeds {
+        // A later file wins a leaf two files set, so the files are listed
+        // last-first: the one that answers, then each it overrode.
+        for name in entry.config_labels().into_iter().rev() {
             let src = &entry.sources[name];
             for (tail, value) in leaves_of(&src.fields) {
                 out.push((
@@ -2908,6 +2876,7 @@ mod tests {
             sources,
             puts: BTreeMap::new(),
             created_at: Instant::now(),
+            config_order: Vec::new(),
         };
 
         assert_eq!(entry.owner_of("some.value"), Some(PUT_SOURCE));
@@ -2978,6 +2947,7 @@ mod tests {
             sources,
             puts: BTreeMap::new(),
             created_at: Instant::now(),
+            config_order: Vec::new(),
         };
 
         let mut expected = HashMap::new();

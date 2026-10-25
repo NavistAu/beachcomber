@@ -484,6 +484,78 @@ fn tree_lists_the_layers_under_each_value_and_marks_the_shadowed_ones() {
     assert_eq!(top_level("other"), 1, "one other row:\n{out}");
 }
 
+/// `aws.profile` set by the shipped default, by `config.toml` and by a
+/// drop-in: under the rendered value, `--tree` lists the drop-in's template,
+/// then the two it overrode as shadowed, last file first.
+#[test]
+fn tree_lists_every_config_file_that_sets_a_template() {
+    let socket = crate::common::socket::IsolatedSocket::new();
+    let home = socket.dir.path().join("home");
+    let xdg = socket.dir.path().join("xdg");
+    let dir = xdg.join("beachcomber");
+    std::fs::create_dir_all(dir.join("conf.d")).unwrap();
+    beachcomber::daemon::defaults::write_managed_defaults(
+        &dir.join("defaults"),
+        env!("BEACHCOMBER_VERSION"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("config.toml"),
+        "[client.providers.aws]\ntemplate.profile = \"{{ 'main' }}\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("conf.d").join("10-mine.toml"),
+        "[client.providers.aws]\ntemplate.profile = \"{{ 'mine' }}\"\n",
+    )
+    .unwrap();
+    let d = TestDaemon::spawn_in(socket, home, xdg);
+    let cwd = project(&d);
+
+    let out = status(
+        &d,
+        &cwd,
+        &[
+            "--tree",
+            "--filter",
+            "provider=aws",
+            "--filter",
+            "field=profile",
+            "--color",
+            "never",
+            "--ascii",
+            "--no-trunc",
+        ],
+    );
+    let lines = squashed(&out);
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("aws profile template > mine "))
+        .unwrap_or_else(|| panic!("the rendered row in:\n{out}"));
+    let file = |rel: &str| format!("config({})", dir.join(rel).display());
+    assert!(
+        lines[at + 1].starts_with(&format!(
+            "|- :template {} {{{{ 'mine' }}}} ",
+            file("conf.d/10-mine.toml")
+        )),
+        "{out}"
+    );
+    assert!(
+        lines[at + 2].starts_with(&format!(
+            "|- :template shadowed {} {{{{ 'main' }}}} ",
+            file("config.toml")
+        )),
+        "{out}"
+    );
+    assert!(
+        lines[at + 3].starts_with(&format!(
+            "`- :template shadowed {} ",
+            file("defaults/aws.toml")
+        )),
+        "{out}"
+    );
+}
+
 /// A cascading Source answers from the project's instance and stores a record
 /// at `~` too: `--tree` keeps the project's record, which answered, as the
 /// one row, and lists the `~` record under it as shadowed.

@@ -218,29 +218,92 @@ async fn client_templates_seed_the_template_facet_with_their_file_label() {
     let drop_in = e.row_label("conf.d/10-mine.toml");
     let static_kind = json!({"kind": "static"});
 
+    // The shipped `defaults/python.toml` sets `venv_name` and `version` too:
+    // each file's record is a row of its own, so each is looked up by label.
     assert_eq!(
-        row(&mut s, "python:template", "venv_name").await,
+        row_from(&mut s, "python:template", "venv_name", Some(&main)).await,
         Some((
             main.clone(),
             json!("{{ python.venv }}"),
             static_kind.clone()
         )),
-        "a leaf only the main file sets keeps the main file's label"
+        "a leaf the main file sets carries the main file's label"
     );
     assert_eq!(
-        row(&mut s, "python:template", "version").await,
+        row_from(&mut s, "python:template", "version", Some(&drop_in)).await,
         Some((
             drop_in.clone(),
             json!("{{ python.version }}"),
             static_kind.clone()
         )),
-        "a leaf only the drop-in sets carries the drop-in's label"
+        "a leaf the drop-in sets carries the drop-in's label"
     );
     assert_eq!(
-        row(&mut s, "python:template", "shared").await,
-        Some((drop_in, json!("from-drop-in"), static_kind)),
-        "a leaf both files set carries the later file's label and value"
+        row_from(&mut s, "python:template", "shared", Some(&drop_in)).await,
+        Some((drop_in, json!("from-drop-in"), static_kind.clone())),
+        "a leaf both files set is a record of each, the later file's"
     );
+    assert_eq!(
+        row_from(&mut s, "python:template", "shared", Some(&main)).await,
+        Some((main, json!("from-main"), static_kind)),
+        "and the earlier file's, which it overrides"
+    );
+}
+
+/// `aws.profile` set by the shipped `defaults/aws.toml`, by `config.toml` and
+/// by a drop-in: a read takes the drop-in's, the `layers` behind it list all
+/// three files, nearest first, and removing the drop-in shows `config.toml`'s
+/// without a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removing_the_file_that_answers_shows_the_one_it_overrode() {
+    let e = Env::new(
+        "[client.providers.aws]\ntemplate.profile = \"from-main\"\n",
+        &[(
+            "10-mine.toml",
+            "[client.providers.aws]\ntemplate.profile = \"from-drop-in\"\n",
+        )],
+    );
+    let _h = e.serve().await;
+    let mut s = e.connect().await;
+    assert_eq!(
+        data(&mut s, "aws:template.profile").await,
+        json!("from-drop-in")
+    );
+
+    let resp = send_recv(&mut s, json!({"op": "layers", "key": "aws.profile"})).await;
+    let layers = resp["data"]
+        .as_array()
+        .unwrap_or_else(|| panic!("layers: {resp}"));
+    let labels: Vec<&str> = layers
+        .iter()
+        .map(|l| l["label"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            e.row_label("conf.d/10-mine.toml").as_str(),
+            e.row_label("config.toml").as_str(),
+            e.row_label("defaults/aws.toml").as_str(),
+        ],
+        "{resp}"
+    );
+    assert_eq!(layers[0]["answered"], json!(true), "{resp}");
+    assert!(
+        layers[1..].iter().all(|l| l.get("answered").is_none()),
+        "the others are shadowed: {resp}"
+    );
+
+    // The watch snapshots `conf.d/`, so a file gone from it is a change.
+    std::fs::remove_file(e.drop_in("10-mine.toml")).unwrap();
+    crate::common::poll::poll_until_async(
+        "aws:template.profile",
+        "the record the drop-in overrode",
+        Duration::from_secs(5),
+        Duration::from_millis(20),
+        async || data(&mut s, "aws:template.profile").await,
+        |v| *v == json!("from-main"),
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1224,6 +1287,81 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
         reads >= 2,
         "the reader read {reads} times — it must outlive the swaps, not just precede them"
     );
+}
+
+/// Every file that sets a leaf keeps its own record of it, under its own
+/// label. A read takes the last file in composition order — `defaults/`, then
+/// `config.toml`, then `conf.d/` — and the layers list every file's record,
+/// the one that answers first. The labels sort in a different order on
+/// purpose: composition order is the order the files were written in, not
+/// their names'.
+#[test]
+fn every_file_keeps_its_record_and_the_last_file_answers() {
+    let cache = Cache::new();
+    let registry = ProviderRegistry::with_defaults();
+    let defaults = "config:/c/defaults/aws.toml";
+    let main = "config:/c/config.toml";
+    let drop_in = "config:/c/conf.d/10-mine.toml";
+    let tree = |v: &str| {
+        CacheValue::Object(HashMap::from([(
+            "profile".to_string(),
+            CacheValue::String(v.into()),
+        )]))
+    };
+    cache
+        .reseed_static(
+            "aws:template",
+            None,
+            "config:",
+            vec![
+                (defaults.into(), tree("from-defaults")),
+                (main.into(), tree("from-main")),
+                (drop_in.into(), tree("from-drop-in")),
+            ],
+        )
+        .unwrap();
+
+    let read = cache
+        .read_merged("aws:template", None, &[], &registry, Layers::All)
+        .unwrap();
+    assert_eq!(
+        read.fields["profile"],
+        CacheValue::String("from-drop-in".into())
+    );
+    assert_eq!(&*read.records["profile"].source, drop_in);
+
+    let labels: Vec<String> = cache
+        .layer_stacks("aws", None, &[])
+        .into_iter()
+        .filter(|(tail, _)| tail == "profile")
+        .map(|(_, record)| record.label)
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            "config(/c/conf.d/10-mine.toml)",
+            "config(/c/config.toml)",
+            "config(/c/defaults/aws.toml)",
+        ],
+        "every file's record, the answering one first"
+    );
+
+    // The decay prototype is seeded the same way, and resolved the same way.
+    let decay = |n: i64| {
+        CacheValue::Object(HashMap::from([(
+            "_".to_string(),
+            CacheValue::Object(HashMap::from([("decay".to_string(), CacheValue::Int(n))])),
+        )]))
+    };
+    cache
+        .reseed_static(
+            "*:cache",
+            None,
+            "config:",
+            vec![(defaults.into(), decay(4)), (main.into(), decay(6))],
+        )
+        .unwrap();
+    assert_eq!(cache.resolve_decay("git", None), 6);
 }
 
 #[test]

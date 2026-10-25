@@ -636,7 +636,9 @@ The order is the read's: the template records for the leaf first
 "template"`, `value` the raw expression), then a leaf the provider's
 `result` or `return` line computed (`computed(<line>)`), then, for each
 directory of the read's chain nearest first, its `put`, its `config(<file>)`
-seeds, and the records of each Source instance the read reaches there
+seeds (every file that sets the leaf, the last in composition order first,
+so a file's record is followed by those it overrides), and the records of
+each Source instance the read reaches there
 (`source(<name>)`; cascade and `| nearest` as for `Get`). A leaf's list also
 holds a record that stands as a scalar on an ancestor of it, which hides the
 leaf in that layer. `label` is presented as a `:cache` answer's `source` is;

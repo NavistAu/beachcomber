@@ -478,10 +478,24 @@ async fn the_daemon_seeds_defaults_beneath_config_and_conf_d() {
         venv_source.starts_with("config(") && venv_source.ends_with("defaults/python.toml)"),
         "the shipped leaf is labelled with the defaults file, got {venv_source}"
     );
-    let version_source = row_source(&mut s, "python:template", "version").await;
+    // Both files keep a `version` record; the read answers from the drop-in,
+    // and the default's is the layer it overrides.
+    let resp = send_recv(&mut s, json!({"op": "layers", "key": "python.version"})).await;
+    let labels: Vec<(&str, bool)> = resp["data"]
+        .as_array()
+        .unwrap_or_else(|| panic!("layers: {resp}"))
+        .iter()
+        .map(|l| {
+            (
+                l["label"].as_str().unwrap_or_default(),
+                l["answered"] == json!(true),
+            )
+        })
+        .collect();
     assert!(
-        version_source.starts_with("config(") && version_source.ends_with("conf.d/10-mine.toml)"),
-        "the overriding leaf is labelled with the drop-in, got {version_source}"
+        matches!(labels.as_slice(), [(first, true), (second, false)]
+            if first.ends_with("conf.d/10-mine.toml)") && second.ends_with("defaults/python.toml)")),
+        "the overriding leaf answers from the drop-in, over the default: {labels:?}"
     );
     assert_eq!(
         data(&mut s, "kubecontext:template.context").await,
