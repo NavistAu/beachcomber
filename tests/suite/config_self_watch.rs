@@ -1217,7 +1217,7 @@ async fn a_fixed_body_is_not_held_back_by_the_failure_backoff_of_the_old_one() {
         format!(
             "[daemon.providers.demo.sources.s]\ndata = \"{{{{ {data} }}}}\"\n\
              result.n = \"{{{{ data }}}}\"\n\
-             return = \"{{{{ result | poll('10m') | failback(1, '10m') }}}}\"\n"
+             return = \"{{{{ result | poll('10m') | failback('10m', 1) }}}}\"\n"
         )
     };
     let mut live = Live::start("", &[("10-demo.toml", &body("exec('exit 1')"))]).await;

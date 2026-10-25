@@ -338,7 +338,7 @@ fn the_shipped_comb_file_holds_the_abstract_provider_the_decay_and_the_abstract_
     );
     assert_eq!(
         providers["sources"]["_"]["return"].as_str(),
-        Some("{{ result | poll('60s', 12) | failback(3, '1s') }}")
+        Some("{{ result | poll('60s', 12) | failback('1s', 3) }}")
     );
     assert_eq!(providers["sources"]["_"].as_table().unwrap().len(), 1);
     assert!(

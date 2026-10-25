@@ -1465,7 +1465,7 @@ mod tests {
 
     #[test]
     fn the_abstract_providers_lines_load_too() {
-        let errs = errors("[_]\nreturn = \"{{ result | failback(3, '1s') }}\"");
+        let errs = errors("[_]\nreturn = \"{{ result | failback('1s', 3) }}\"");
         assert_eq!(errs.len(), 1, "{errs:?}");
         assert!(
             errs[0].starts_with("[daemon.providers._] return: "),

@@ -214,7 +214,7 @@ The scheduler checks `in_flight` (a `Mutex<HashSet>`). If an execution for `("gi
 
 **Step 6: Failure backoff check**
 
-Before launching, the scheduler checks `failure_counts`. If the Source has exceeded its failure threshold (default 3) and is within its exponential backoff window (starting at the failback interval, default `1s`, doubling for 4 levels), execution is skipped. A config Source sets both on its `return` line (`| failback(count, interval)`; the shipped abstract Source has `failback(3, '1s')`). A built-in Source has its own, until `[daemon.providers.<p>.sources.<s>] return` names them: a `return` on a built-in replaces its failback with the line's, or with the engine's `failback(3, '1s')` where the line is silent. The scheduler reads the Source's metadata only; no config table is consulted when scheduling.
+Before launching, the scheduler checks `failure_counts`. If the Source has exceeded its failure threshold (default 3) and is within its exponential backoff window (starting at the failback interval, default `1s`, doubling for 4 levels), execution is skipped. A config Source sets both on its `return` line (`| failback(interval, count)`; the shipped abstract Source has `failback('1s', 3)`). A built-in Source has its own, until `[daemon.providers.<p>.sources.<s>] return` names them: a `return` on a built-in replaces its failback with the line's, or with the engine's `failback('1s', 3)` where the line is silent. The scheduler reads the Source's metadata only; no config table is consulted when scheduling.
 
 **Step 7: spawn_blocking**
 

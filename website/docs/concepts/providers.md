@@ -57,7 +57,7 @@ A source's schedule is its `return` line, built from decorators on `result`:
 | `poll(interval, count)` | Re-executes on a timer while the record is queried; `count` intervals before it starts to decay |
 | `watch(path, ...)` | Re-executes when a watched path changes. A relative path is matched within the directory the instance answers for; an absolute one (or `~/...`) is watched directly, for values that live in a config file elsewhere |
 | `ttl(interval)` | `poll(interval, 1)` with a decay depth of 1: valid for one interval, then gone |
-| `failback(count, interval)` | After `count` failures, suppress execution for `interval`, doubling per level. Always on: the engine's `failback(3, '1s')` applies where a line is silent |
+| `failback(interval, count)` | After `count` failures, suppress execution for `interval`, doubling per level. Always on: the engine's `failback('1s', 3)` applies where a line is silent |
 | `nearest` | The nearest instance answers alone, instead of cascading up to `~`: see [Where an instance lives](#where-an-instance-lives). Takes no arguments; not saying it is cascade |
 | `budget(duration)` | How long a read waits for the Source before answering with what it has; `[daemon] budget` (default `50ms`) where a line is silent. Recorded, not yet enforced |
 | `timeout(duration)` | How long one run of the Source may take before it is cut off and fails; `[daemon] timeout` (default `10s`) where a line is silent |

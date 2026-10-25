@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn own_key_wins_whole() {
         let own = table("return = \"{{ result | poll('5s') }}\"");
-        let proto = table("return = \"{{ result | poll('60s') | failback(3, '1s') }}\"");
+        let proto = table("return = \"{{ result | poll('60s') | failback('1s', 3) }}\"");
         assert_eq!(
             effective(&links(&[&own, &proto]), "return").and_then(toml::Value::as_str),
             Some("{{ result | poll('5s') }}")

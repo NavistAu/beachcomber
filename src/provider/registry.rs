@@ -2047,7 +2047,7 @@ return = "{{ result | poll('15s') }}"
         // Its own line wins when it names them.
         let reg = registry_from(
             "[daemon.providers.git.sources.diff]\n\
-             return = \"{{ result | failback(5, '2s') | budget('7ms') }}\"\n",
+             return = \"{{ result | failback('2s', 5) | budget('7ms') }}\"\n",
         );
         let diff = source_meta(&reg, "git", "diff");
         assert_eq!(
@@ -2069,7 +2069,7 @@ return = "{{ result | poll('15s') }}"
         let reg = registry_from(
             r#"
 [daemon.providers.git.sources._]
-return = "{{ result | failback(7, '3s') | super }}"
+return = "{{ result | failback('3s', 7) | super }}"
 
 [daemon.providers.git.sources.diff]
 return = "{{ result | super }}"
@@ -2087,7 +2087,7 @@ return = "{{ result | super }}"
         assert_eq!(
             (diff.failback.reattempts, diff.failback.interval_secs),
             (7, 3),
-            "git's `_`, one level up, beats the abstract failback(3, '1s')"
+            "git's `_`, one level up, beats the abstract failback('1s', 3)"
         );
         // A nearer call of a decorator beats the prototype's.
         let reg = registry_from(
@@ -2192,6 +2192,44 @@ result.y = "{{ data }}"
         assert!(!reg.register_static("hostname"));
         assert!(reg.register_static("myvar"));
         assert!(reg.is_static_namespace("myvar"));
+    }
+
+    /// `failback` takes the interval first; the count-first order is a load
+    /// error naming the table, on a config Source and a built-in alike, never
+    /// read the other way round.
+    #[test]
+    fn the_count_first_failback_order_is_a_load_error_naming_its_table() {
+        let load = |text: &str| {
+            let config = crate::config_tests::with_shipped_defaults(text);
+            ProviderRegistry::load(&config, &Default::default()).errors
+        };
+        let order = "failback(): takes the interval first, as a string like '1s', then the count: \
+                     failback('1s', 3)";
+        for (text, table) in [
+            (
+                "[daemon.providers.p.sources.s]\ndata = \"{{ 1 }}\"\nresult.a = \"{{ data }}\"\n\
+                 return = \"{{ result | failback(3, '1s') }}\"\n",
+                "[daemon.providers.p.sources.s]",
+            ),
+            (
+                "[daemon.providers.git.sources.diff]\n\
+                 return = \"{{ result | poll('15s', 8) | failback(5, '2s') }}\"\n",
+                "[daemon.providers.git.sources.diff]",
+            ),
+        ] {
+            let errors = load(text);
+            assert!(
+                errors.len() == 1 && errors[0].contains(table) && errors[0].ends_with(order),
+                "{errors:?}"
+            );
+        }
+        assert!(
+            load(
+                "[daemon.providers.git.sources.diff]\n\
+             return = \"{{ result | poll('15s', 8) | failback('2s', 5) }}\"\n"
+            )
+            .is_empty()
+        );
     }
 
     #[test]

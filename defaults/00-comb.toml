@@ -10,4 +10,4 @@ decay = 4
 
 [daemon.providers._.sources._]
 # What a config Source hands out: its result, polled every minute while queried, and backed off after repeated failures.
-return = "{{ result | poll('60s', 12) | failback(3, '1s') }}"
+return = "{{ result | poll('60s', 12) | failback('1s', 3) }}"

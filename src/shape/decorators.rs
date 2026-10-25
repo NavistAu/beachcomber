@@ -353,10 +353,18 @@ fn record(
             line.ttl = Some(interval_of(name, &args[0])?);
         }
         "failback" => {
-            arity(args.len() == 2, "a count and an interval")?;
+            arity(args.len() == 2, "an interval and a count")?;
+            // Interval first, as for `poll`. A number there is the old
+            // count-first order: refused, never read the other way round.
+            if args[0].kind() != ValueKind::String {
+                return Err(format!(
+                    "{name}(): takes the interval first, as a string like '1s', then the \
+                     count: {name}('1s', 3)"
+                ));
+            }
             line.failback = Some(FailbackConfig {
-                reattempts: count_of(name, &args[0])?,
-                interval_secs: interval_of(name, &args[1])?,
+                reattempts: count_of(name, &args[1])?,
+                interval_secs: interval_of(name, &args[0])?,
             });
         }
         "budget" | "timeout" => {
@@ -648,7 +656,7 @@ mod tests {
 
     #[test]
     fn no_schedule_decorator_is_watch_only() {
-        let r = rec("{{ result | failback(2, '5s') }}");
+        let r = rec("{{ result | failback('5s', 2) }}");
         assert_eq!(r.invalidation, watch(&[], &[]));
         assert_eq!(r.decay, None);
     }
@@ -676,7 +684,7 @@ mod tests {
     fn failback_on_a_prototype_changes_the_value() {
         let r = record(&[
             "{{ result | poll('10s') | super }}",
-            "{{ result | failback(5, '2s') }}",
+            "{{ result | failback('2s', 5) }}",
         ])
         .unwrap();
         assert_eq!(
@@ -685,6 +693,53 @@ mod tests {
                 reattempts: 5,
                 interval_secs: 2
             }
+        );
+    }
+
+    /// `failback(interval, count)`: the interval first, as for `poll`.
+    #[test]
+    fn failback_takes_the_interval_then_the_count() {
+        assert_eq!(
+            rec("{{ result | failback('5s', 2) }}").failback,
+            FailbackConfig {
+                reattempts: 2,
+                interval_secs: 5
+            }
+        );
+        assert_eq!(
+            rec("{{ result | failback('1m', 7) }}").failback,
+            FailbackConfig {
+                reattempts: 7,
+                interval_secs: 60
+            }
+        );
+    }
+
+    /// The count-first order is refused, never read the other way round: a
+    /// number where the interval goes is the old order, and the error says
+    /// which comes first.
+    #[test]
+    fn the_count_first_failback_order_is_an_error_that_says_the_order() {
+        for line in [
+            "{{ result | failback(3, '1s') }}",
+            "{{ result | failback(3, 1) }}",
+            "{{ result | failback(1, 3) }}",
+            "{{ result | poll('60s', 12) | failback(5, '2s') }}",
+        ] {
+            assert_eq!(
+                record(&[line]).unwrap_err(),
+                "failback(): takes the interval first, as a string like '1s', then the count: \
+                 failback('1s', 3)",
+                "{line}"
+            );
+        }
+        assert_eq!(
+            record(&["{{ result | failback('1s', '3') }}"]).unwrap_err(),
+            "failback(): count must be a whole number of at least 1"
+        );
+        assert_eq!(
+            record(&["{{ result | failback('1s') }}"]).unwrap_err(),
+            "failback(): takes an interval and a count"
         );
     }
 
@@ -705,7 +760,7 @@ mod tests {
     fn super_extends_the_prototype() {
         let r = record(&[
             "{{ result | watch('.git/index') | super }}",
-            "{{ result | poll('60s', 12) | failback(3, '1s') }}",
+            "{{ result | poll('60s', 12) | failback('1s', 3) }}",
         ])
         .unwrap();
         assert_eq!(
@@ -736,7 +791,7 @@ mod tests {
     fn super_reaches_through_two_prototypes() {
         let r = record(&[
             "{{ result | watch('a') | super }}",
-            "{{ result | failback(4, '3s') | super }}",
+            "{{ result | failback('3s', 4) | super }}",
             "{{ result | poll('9s', 2) | budget('70ms') }}",
         ])
         .unwrap();
@@ -768,7 +823,7 @@ mod tests {
         for (line, decorator) in [
             ("{{ result | poll(env.X) }}", "poll"),
             ("{{ result | watch(data.path) }}", "watch"),
-            ("{{ result | failback(n, '1s') }}", "failback"),
+            ("{{ result | failback('1s', n) }}", "failback"),
             ("{{ result | budget(result) }}", "budget"),
             ("{{ result | ttl(sources) }}", "ttl"),
             ("{{ result | poll(result) }}", "poll"),
@@ -822,7 +877,7 @@ mod tests {
             watch(&["b"], &[])
         );
         assert_eq!(
-            rec("{{ result | failback(1, '1s') | failback(5, '2s') }}").failback,
+            rec("{{ result | failback('1s', 1) | failback('2s', 5) }}").failback,
             FailbackConfig {
                 reattempts: 5,
                 interval_secs: 2
@@ -961,7 +1016,7 @@ mod tests {
         for (line, decorator) in [
             ("{{ result | poll('500ms') }}", "poll"),
             ("{{ result | ttl('500ms') }}", "ttl"),
-            ("{{ result | failback(3, '500ms') }}", "failback"),
+            ("{{ result | failback('500ms', 3) }}", "failback"),
         ] {
             assert_eq!(
                 record(&[line]).unwrap_err(),
@@ -979,7 +1034,7 @@ mod tests {
             "{{ result | poll(0) }}",
             "{{ result | poll('10s', 0) }}",
             "{{ result | watch() }}",
-            "{{ result | failback(3) }}",
+            "{{ result | failback('1s') }}",
             "{{ result | budget('0ms') }}",
             "{{ result | poll('10s', foo=1) }}",
         ] {

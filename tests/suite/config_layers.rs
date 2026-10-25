@@ -1018,7 +1018,7 @@ fn a_failing_source_in_backoff_is_skipped_not_re_run_on_every_read() {
 root = "{{{{ exec('pwd') | trim }}}}"
 data = "{{{{ exec('pwd >> {}; false') }}}}"
 result.x = "{{{{ data }}}}"
-return = "{{{{ result | failback(1, '1h') }}}}"
+return = "{{{{ result | failback('1h', 1) }}}}"
 "#,
             count.display()
         ),
@@ -1729,7 +1729,7 @@ fn a_called_sources_own_failure_is_the_callers_miss() {
 [daemon.providers.bad.sources.t]
 data = "{{ exec('exit 3') }}"
 result.v = "{{ data }}"
-return = "{{ result | failback(1, '1h') }}"
+return = "{{ result | failback('1h', 1) }}"
 
 [daemon.providers.viadata.sources.s]
 data = "{{ daemon.providers.bad.sources.t().v }}"

@@ -470,13 +470,13 @@ For Sources with a root, `patterns` like `".git"` are relative to the instance's
 
 ## 3b. Cache Lifecycle Tuning
 
-A built-in Source's schedule is its own, set in code, until the files say otherwise. Its table in `[daemon.providers.<name>.sources.<source>]` takes `return` and nothing else (`root`, `data` and `result` are errors), and the line replaces the Source's invalidation, failback, decay and budget whole. A failback, budget or timeout it does not name is the engine's (`failback(3, '1s')`, `[daemon] budget`, `[daemon] timeout`). A built-in with no `return` keeps everything it declares: the `_` Source lines apply to config Sources, and reach a built-in only through `| super`.
+A built-in Source's schedule is its own, set in code, until the files say otherwise. Its table in `[daemon.providers.<name>.sources.<source>]` takes `return` and nothing else (`root`, `data` and `result` are errors), and the line replaces the Source's invalidation, failback, decay and budget whole. A failback, budget or timeout it does not name is the engine's (`failback('1s', 3)`, `[daemon] budget`, `[daemon] timeout`). A built-in with no `return` keeps everything it declares: the `_` Source lines apply to config Sources, and reach a built-in only through `| super`.
 
 Example:
 
 ```toml
 [daemon.providers.git.sources.status]
-return = "{{ result | watch('.git/index') | poll('120s', 6) | failback(5, '2s') | nearest }}"
+return = "{{ result | watch('.git/index') | poll('120s', 6) | failback('2s', 5) | nearest }}"
 ```
 
 The line replaces everything the Source declares, `nearest` included: git, direnv, python and terraform Sources are nearest, so a retune of one says `| nearest` again or the Source cascades.
@@ -673,7 +673,7 @@ The `return` line's decorators map onto `InvalidationStrategy` (see `src/shape/d
 - `poll` only -> `Poll { interval_secs, count }`
 - `watch` only -> `Watch { patterns, abs_paths }`
 - Both -> `WatchAndPoll { patterns, abs_paths, interval_secs, count }`
-- A Source with no `return` takes the abstract Source's `poll('60s', 12) | failback(3, '1s')` from `defaults/00-comb.toml`
+- A Source with no `return` takes the abstract Source's `poll('60s', 12) | failback('1s', 3)` from `defaults/00-comb.toml`
 
 Set `root` to give the Source instances at project roots (`data` runs with the root as its working directory):
 
@@ -691,7 +691,7 @@ An empty `root` (or none) is the one instance at `~`. Instances cascade by defau
 
 Three things a config Source relies on beyond its own table:
 
-- **Prototypes.** A table named `_` (`[daemon.providers.<p>.sources._]` for one provider's Sources, `[daemon.providers._.sources._]` for all) holds defaults. A Source's own `root`, `data`, `result` or `return` line wins whole; an absent line takes the nearest `_`'s; `| super` on a `return` extends the `_` line instead of replacing it. The abstract Source (`poll('60s', 12) | failback(3, '1s')`) ships in `defaults/00-comb.toml`.
+- **Prototypes.** A table named `_` (`[daemon.providers.<p>.sources._]` for one provider's Sources, `[daemon.providers._.sources._]` for all) holds defaults. A Source's own `root`, `data`, `result` or `return` line wins whole; an absent line takes the nearest `_`'s; `| super` on a `return` extends the `_` line instead of replacing it. The abstract Source (`poll('60s', 12) | failback('1s', 3)`) ships in `defaults/00-comb.toml`.
 - **The engine.** `data` can call `exec`, `url`, `plugin`, `read`, `lup`, `fromjson`, `fromini`, `merge`, `map` over objects, `pluck`, `dirname` and `tojson` (the table is in the configuration reference). An `exec` string is run by `sh -c`, so `$BAR` in it is invisible to the engine, and to a future `cache()` hash of the line: prefer `exec('cmd ' ~ env.bar)`.
 - **Calling a Source.** `sources.<s>()` reads a sibling's stored record and `daemon.providers.<q>.sources.<s>()` any provider's. A Source with nothing stored is run inline, once, by the read or refresh that needs it (a cold call); a ring of Sources calling each other is a load error; a called Source stays warm and decays with its callers.
 
