@@ -15,12 +15,7 @@ pub mod source_call;
 pub mod sudo;
 pub mod terraform;
 pub mod uname;
-#[cfg(target_os = "macos")]
 pub mod uptime;
-#[cfg(target_os = "linux")]
-pub mod uptime_linux;
-#[cfg(target_os = "linux")]
-pub use uptime_linux as uptime;
 pub mod user;
 
 #[cfg(test)]
