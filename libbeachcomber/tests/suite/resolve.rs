@@ -864,6 +864,64 @@ fn an_all_empty_cascade_is_absent_alone_and_in_a_group() {
 }
 
 #[test]
+fn a_group_with_no_present_leaf_is_absent_at_every_level() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed(
+        "k",
+        Some(CWD),
+        tmpl(json!({
+            "a": "{{ none }}",
+            "sub": { "b": "{{ env.NOPE }}" },
+        })),
+    )
+    .seed(
+        "m",
+        Some(CWD),
+        tmpl(json!({
+            "a": "{{ 1 }}",
+            "sub": { "b": "{{ none }}", "deeper": { "c": "{{ none }}" } },
+        })),
+    );
+
+    assert_eq!(resolve("k", &inputs(&env), &mut f), Ok(None));
+    assert_eq!(resolve("k.sub", &inputs(&env), &mut f), Ok(None));
+    assert_eq!(
+        resolve("m", &inputs(&env), &mut f),
+        Ok(Some(json!({ "a": 1 }))),
+        "an empty subgroup is not a member"
+    );
+}
+
+#[test]
+fn data_the_template_owns_entirely_leaves_nothing_present() {
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed(
+        "k",
+        Some(CWD),
+        both(json!({ "a": "cached" }), json!({ "a": "{{ none }}" })),
+    );
+    assert_eq!(resolve("k", &inputs(&env), &mut f), Ok(None));
+}
+
+#[test]
+fn an_empty_object_stored_as_data_is_present() {
+    // `{}` written by a put or a Source is a value; a group the client
+    // assembles out of absent leaves is not.
+    let env = spec_env();
+    let mut f = MapFetch::default();
+    f.seed(
+        "k",
+        Some(CWD),
+        both(json!({}), json!({ "a": "{{ none }}" })),
+    )
+    .seed("plain", Some(CWD), data(json!({})));
+    assert_eq!(resolve("k", &inputs(&env), &mut f), Ok(Some(json!({}))));
+    assert_eq!(resolve("plain", &inputs(&env), &mut f), Ok(Some(json!({}))));
+}
+
+#[test]
 fn none_is_absent_and_text_around_it_is_a_string() {
     let env = spec_env();
     let mut f = MapFetch::default();

@@ -530,6 +530,26 @@ fn kubecontext_is_absent_without_kubectl() {
     assert_absent_with_path(&d, &cwd, &path, "kubecontext.namespace");
 }
 
+/// A namespace with no present leaf is absent as a whole, as each leaf is:
+/// a miss on `comb get`, and undefined in a template.
+#[test]
+fn a_namespace_with_nothing_present_is_absent() {
+    let (d, bin) = daemon_with_defaults_and_tools(&[]);
+    let cwd = project(&d);
+    let path = path_of_only(&bin);
+
+    assert_absent_with_path(&d, &cwd, &path, "kubecontext");
+    let out = comb(&d, &cwd)
+        .env("PATH", &path)
+        .args(["eval", "{{ kubecontext is defined }}"])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8(out.get_output().stdout.clone()).unwrap(),
+        "false"
+    );
+}
+
 /// `talos.context` is the `context` of what `talosctl config info -o json`
 /// prints.
 #[test]

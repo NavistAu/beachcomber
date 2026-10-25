@@ -312,20 +312,27 @@ impl<'a> Resolver<'a> {
             // result wins over the cached data it shares an address with.
             // Every address the tree holds a leaf at is the template's,
             // rendered or omitted — cached data never shows through one.
+            //
+            // A group assembled here is absent when nothing in it is
+            // present, as a single absent leaf is. An object the daemon
+            // holds as data is a value even when empty: `{}` written by a
+            // put or a Source states an empty object.
             Some(JsonValue::Object(tree)) => {
                 let rendered = self.render_tree(&tree, key)?;
                 let data = self.used(Some(Got {
                     template: None,
                     ..got
                 }));
-                Ok(Some(JsonValue::Object(match data {
+                let stored_empty = matches!(&data, Some(JsonValue::Object(d)) if d.is_empty());
+                let merged = match data {
                     Some(JsonValue::Object(mut data)) => {
                         prune_template_owned(&mut data, &tree);
                         deep_merge(&mut data, rendered);
                         data
                     }
                     _ => rendered,
-                })))
+                };
+                Ok((stored_empty || !merged.is_empty()).then_some(JsonValue::Object(merged)))
             }
             Some(_) => Err(ResolveError::Config(format!(
                 "{key}: template is neither a string nor an object"
@@ -478,9 +485,13 @@ impl<'a> Resolver<'a> {
                         Err(e) => return Err(e),
                     }
                 }
+                // A subgroup with nothing present in it is absent, so it is
+                // not a member either.
                 JsonValue::Object(sub) => {
                     let value = self.render_tree(sub, &leaf)?;
-                    out.insert(name.clone(), JsonValue::Object(value));
+                    if !value.is_empty() {
+                        out.insert(name.clone(), JsonValue::Object(value));
+                    }
                 }
                 _ => {
                     return Err(ResolveError::Config(format!(
