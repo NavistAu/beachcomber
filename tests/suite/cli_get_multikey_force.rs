@@ -54,7 +54,13 @@ async fn session_get_formatted_with_flags_forwards_force() {
     let mut session = client_for(sock).session().unwrap();
 
     let text = session
-        .get_formatted_with_flags("hostname.name", None, "text", true, false)
+        .get_formatted_with_flags(
+            "hostname.name",
+            None,
+            libbeachcomber::render::Format::Text,
+            true,
+            false,
+        )
         .unwrap();
 
     assert!(
@@ -73,7 +79,13 @@ async fn session_get_formatted_with_flags_forwards_wait() {
     let mut session = client_for(sock).session().unwrap();
 
     let text = session
-        .get_formatted_with_flags("hostname.name", None, "text", false, true)
+        .get_formatted_with_flags(
+            "hostname.name",
+            None,
+            libbeachcomber::render::Format::Text,
+            false,
+            true,
+        )
         .unwrap();
 
     // Fresh + wait=true + not stale => returns cached seed.

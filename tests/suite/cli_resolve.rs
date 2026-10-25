@@ -152,7 +152,7 @@ fn an_address_past_a_template_indexes_a_rendered_array() {
 
     assert_eq!(stdout(&d, &cwd, &["scanline.list.0"]), "a");
     // The array itself flattens by decimal index under `text`.
-    assert_eq!(stdout(&d, &cwd, &["scanline.list"]), "0=a\n1=b");
+    assert_eq!(stdout(&d, &cwd, &["scanline.list"]), "0=a\n1=b\n");
 }
 
 // ── outcome 4: a template at a cached field's path wins on read ──────────────
@@ -224,7 +224,9 @@ fn text_flattens_every_level_to_sorted_leaf_lines() {
     // `widgets.clock={"format":"%H:%M"}`).
     assert_eq!(
         stdout(&d, &cwd, &["scanline", "-f", "text"]),
-        format!("lit=1\ntheme=dark\nwidgets.bar={bar}\nwidgets.clock.format=%H:%M\nwidgets.foo=hi")
+        format!(
+            "lit=1\ntheme=dark\nwidgets.bar={bar}\nwidgets.clock.format=%H:%M\nwidgets.foo=hi\n"
+        )
     );
 }
 
@@ -239,11 +241,11 @@ fn sh_shell_quotes_every_flattened_value() {
     assert_eq!(
         stdout(&d, &cwd, &["scanline", "-f", "sh"]),
         format!(
-            "lit='1'\ntheme='dark'\nwidgets.bar='{bar}'\nwidgets.clock.format='%H:%M'\nwidgets.foo='hi'"
+            "lit='1'\ntheme='dark'\nwidgets_bar='{bar}'\nwidgets_clock_format='%H:%M'\nwidgets_foo='hi'\n"
         )
     );
     // A space and a single quote survive: POSIX single-quoting, `'` as `'\''`.
-    assert_eq!(stdout(&d, &cwd, &["q", "-f", "sh"]), r"v='it'\''s a b'");
+    assert_eq!(stdout(&d, &cwd, &["q", "-f", "sh"]), "v='it'\\''s a b'\n");
 }
 
 // ── outcome 23: a config error in one leaf fails the query, naming it ────────
@@ -678,14 +680,15 @@ fn multi_key_output_keeps_its_shape_per_format_and_a_miss_reports_itself() {
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
-    // text: one rendering per key, a miss prints nothing, exit 0.
+    // text: one rendering per key, a miss holding its place as an empty
+    // line, exit 0.
     assert_eq!(
         stdout(
             &d,
             &cwd,
             &["scanline.lit", "scanline.nope", "scanline.widgets.foo"]
         ),
-        "1\nhi\n"
+        "1\n\nhi\n"
     );
     // json: an array of resolved values in key order.
     assert_eq!(

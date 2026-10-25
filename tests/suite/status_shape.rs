@@ -8,9 +8,7 @@ use crate::common::fetch::fetch;
 use crate::common::git::GitRepoFixture;
 use crate::common::poll::{poll_until, poll_until_async};
 use beachcomber::cache::CacheRow;
-use beachcomber::cli::status_format::{
-    RenderOpts, render_csv, render_preset, render_sh_env, render_tsv, row_context,
-};
+use beachcomber::cli::status_format::{RenderOpts, render_preset, render_sh_env, row_context};
 
 fn sample_rows() -> Vec<CacheRow> {
     vec![
@@ -84,7 +82,7 @@ fn json_preset_emits_ndjson() {
 #[test]
 fn tsv_preset_is_tab_separated_no_header() {
     let rows = vec![sample_lifecycle_row()];
-    let out = render_tsv(&rows);
+    let out = render_preset(&status_preset("tsv"), &rows, &RenderOpts::default());
     let line = out.lines().next().expect("at least one line");
     let cols: Vec<&str> = line.split('\t').collect();
     assert_eq!(cols.len(), 14, "got: {:?}", cols);
@@ -94,7 +92,7 @@ fn tsv_preset_is_tab_separated_no_header() {
 #[test]
 fn csv_preset_has_header_and_quotes_values() {
     let out = render_preset(
-        &status_preset("csv"),
+        &status_preset("CSV"),
         &sample_rows(),
         &RenderOpts::default(),
     );
@@ -1473,7 +1471,7 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
 #[test]
 fn tsv_preset_14_columns_lifecycle_row() {
     let rows = vec![sample_lifecycle_row()];
-    let out = render_tsv(&rows);
+    let out = render_preset(&status_preset("tsv"), &rows, &RenderOpts::default());
     let line = out.lines().next().expect("at least one line");
     let cols: Vec<&str> = line.split('\t').collect();
     assert_eq!(cols.len(), 14, "got: {:?}", cols);
@@ -1497,7 +1495,7 @@ fn tsv_preset_14_columns_lifecycle_row() {
 #[test]
 fn csv_preset_has_full_header_and_all_columns() {
     let rows = vec![sample_lifecycle_row()];
-    let out = render_csv(&rows);
+    let out = render_preset(&status_preset("CSV"), &rows, &RenderOpts::default());
     let header = out.lines().next().unwrap();
     assert_eq!(
         header,
@@ -2679,7 +2677,7 @@ fn machine_presets_do_not_sanitize() {
     );
     assert!(json.contains("\\u001b"), "JSON escapes it: {json}");
     assert!(!json.contains('\u{241b}'), "no pictures in json: {json}");
-    let tsv = render_tsv(&[row]);
+    let tsv = render_preset(&status_preset("tsv"), &[row], &RenderOpts::default());
     assert!(!tsv.contains('\u{241b}'), "no pictures in tsv: {tsv}");
 }
 

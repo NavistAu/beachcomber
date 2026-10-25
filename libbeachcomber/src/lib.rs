@@ -795,26 +795,23 @@ impl Client {
     }
 
     /// Query a single key, rendered by the daemon as plain text.
-    /// Shorthand for `get_formatted(key, path, "text")`.
+    /// Shorthand for `get_formatted(key, path, Format::Text)`.
     pub fn get_text(&self, key: &str, path: Option<&str>) -> Result<String, CombError> {
-        self.get_formatted(key, path, "text")
+        self.get_formatted(key, path, render::Format::Text)
     }
 
-    /// Query a single key, rendered server-side into `format` (e.g. `"text"`, `"sh"`).
+    /// Query a single key, rendered into `format` ([`render::render_value`]).
     pub fn get_formatted(
         &self,
         key: &str,
         path: Option<&str>,
-        format: &str,
+        format: render::Format,
     ) -> Result<String, CombError> {
         self.get_formatted_with_flags(key, path, format, false, false)
     }
 
-    /// Query a single key with optional flags, rendered into `format`
-    /// (`"text"` or `"sh"`) on the client side.
-    ///
-    /// `sh` shell-quotes every rendered value; `text` leaves them raw (see
-    /// [`render::render_data`]). This performs a plain JSON `get` and renders
+    /// Query a single key with optional flags, rendered into `format` on the
+    /// client side ([`render::render_value`]). This performs a plain JSON `get` and renders
     /// the result locally (Task 1.8 retired the server-rendered wire
     /// sub-protocol this used to speak); a failed request surfaces as
     /// `CombError::ServerError`, never as a rendered `error:` line. This is
@@ -824,17 +821,19 @@ impl Client {
         &self,
         key: &str,
         path: Option<&str>,
-        format: &str,
+        format: render::Format,
         force: bool,
         wait: bool,
     ) -> Result<String, CombError> {
-        match self.get_with_flags(key, path, force, wait)? {
-            CombResult::Hit { data, .. } => Ok(render::render_data(Some(data.as_value()), format)),
-            CombResult::Template { template, .. } => {
-                Ok(render::render_data(Some(&template), format))
+        Ok(match self.get_with_flags(key, path, force, wait)? {
+            CombResult::Hit { data, .. } => {
+                render::render_value(key, Some(data.as_value()), format)
             }
-            CombResult::Miss => Ok(render::render_data(None, format)),
-        }
+            CombResult::Template { template, .. } => {
+                render::render_value(key, Some(&template), format)
+            }
+            CombResult::Miss => render::render_value(key, None, format),
+        })
     }
 
     /// Store data at a key, replacing whatever is stored at that address.
@@ -1225,27 +1224,24 @@ impl Session {
     }
 
     /// Query a single key on this persistent connection, rendered by the
-    /// daemon as plain text. Shorthand for `get_formatted(key, path, "text")`.
+    /// daemon as plain text. Shorthand for `get_formatted(key, path, Format::Text)`.
     pub fn get_text(&mut self, key: &str, path: Option<&str>) -> Result<String, CombError> {
-        self.get_formatted(key, path, "text")
+        self.get_formatted(key, path, render::Format::Text)
     }
 
-    /// Query a single key on this persistent connection, rendered
-    /// server-side into `format` (e.g. `"text"`, `"sh"`).
+    /// Query a single key on this persistent connection, rendered into
+    /// `format` ([`render::render_value`]).
     pub fn get_formatted(
         &mut self,
         key: &str,
         path: Option<&str>,
-        format: &str,
+        format: render::Format,
     ) -> Result<String, CombError> {
         self.get_formatted_with_flags(key, path, format, false, false)
     }
 
     /// Query a key with optional flags on this persistent connection,
-    /// rendered into `format` (`"text"` or `"sh"`) on the client side.
-    ///
-    /// `sh` shell-quotes every rendered value; `text` leaves them raw (see
-    /// [`render::render_data`]). This performs a plain JSON `get` and renders
+    /// rendered into `format` on the client side ([`render::render_value`]). This performs a plain JSON `get` and renders
     /// the result locally (Task 1.8 retired the server-rendered wire
     /// sub-protocol this used to speak); a failed request surfaces as
     /// `CombError::ServerError`, never as a rendered `error:` line. This is
@@ -1255,17 +1251,19 @@ impl Session {
         &mut self,
         key: &str,
         path: Option<&str>,
-        format: &str,
+        format: render::Format,
         force: bool,
         wait: bool,
     ) -> Result<String, CombError> {
-        match self.get_with_flags(key, path, force, wait)? {
-            CombResult::Hit { data, .. } => Ok(render::render_data(Some(data.as_value()), format)),
-            CombResult::Template { template, .. } => {
-                Ok(render::render_data(Some(&template), format))
+        Ok(match self.get_with_flags(key, path, force, wait)? {
+            CombResult::Hit { data, .. } => {
+                render::render_value(key, Some(data.as_value()), format)
             }
-            CombResult::Miss => Ok(render::render_data(None, format)),
-        }
+            CombResult::Template { template, .. } => {
+                render::render_value(key, Some(&template), format)
+            }
+            CombResult::Miss => render::render_value(key, None, format),
+        })
     }
 
     /// Set connection context so subsequent queries don't need explicit paths.

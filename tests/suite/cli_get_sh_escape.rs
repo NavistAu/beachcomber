@@ -3,7 +3,7 @@
 //! must escape each value too, not only scalars.
 //!
 //! Two kinds of value reach `-f sh` and both are covered here, through the
-//! one renderer (`libbeachcomber::render::render_data`):
+//! one renderer (`libbeachcomber::render::render_value`):
 //!
 //! - **rendered** — `conda` is the cleanest probe: a namespace the daemon holds
 //!   only a template for (the managed default `conda:template.env`), so
@@ -28,14 +28,13 @@ fn conda_output(format: &str, value: &str) -> String {
 }
 
 /// A value carrying a space, a single quote and a `$` must come back
-/// POSIX-single-quoted so the line is safe to `eval`. Bare, no trailing
-/// newline: every `text`/`sh` output of `comb get` is, whichever path
-/// rendered it, so a value embeds in a prompt string verbatim.
+/// POSIX-single-quoted so the line is safe to `eval`. `sh` is a document of
+/// assignments, so each line ends in a newline.
 #[test]
 fn sh_format_shell_escapes_object_values() {
     let out = conda_output("sh", "it's a $HOME env");
     assert_eq!(
-        out, "env='it'\\''s a $HOME env'",
+        out, "env='it'\\''s a $HOME env'\n",
         "-f sh must shell-escape each object value (canon invariant 8)"
     );
 }
@@ -64,7 +63,10 @@ fn sh_format_object_line_is_eval_safe() {
 #[test]
 fn text_format_leaves_object_values_raw() {
     let out = conda_output("text", "it's a $HOME env");
-    assert_eq!(out, "env=it's a $HOME env", "-f text must not shell-escape");
+    assert_eq!(
+        out, "env=it's a $HOME env\n",
+        "-f text must not shell-escape"
+    );
 }
 
 // ── cached values ────────────────────────────────────────────────────────────
@@ -106,27 +108,28 @@ fn sh_eval(out: &str, script: &str) -> String {
     String::from_utf8(shell.stdout).unwrap()
 }
 
-/// A daemon-backed **scalar** under `-f sh` must be shell-quoted.
+/// A daemon-backed **scalar** under `-f sh` must be shell-quoted, and
+/// assigned to the key's last segment.
 #[test]
 fn daemon_scalar_sh_is_shell_quoted() {
     let d = TestDaemon::spawn();
     seed(&d);
     assert_eq!(
         daemon_output(&d, "sh", "shq.one"),
-        "'it'\\''s a $HOME env'",
+        "one='it'\\''s a $HOME env'\n",
         "-f sh must shell-escape a daemon-backed scalar (canon invariant 8)"
     );
 }
 
 /// ...and it survives a real `eval` byte-for-byte, the way a shell consumes it:
-/// `eval "v=$(comb get -f sh shq.one)"`.
+/// `eval "$(comb get -f sh shq.one)"`.
 #[test]
 fn daemon_scalar_sh_round_trips_through_eval() {
     let d = TestDaemon::spawn();
     seed(&d);
     let out = daemon_output(&d, "sh", "shq.one");
     assert_eq!(
-        sh_eval(&out, r#"eval "v=$COMB_SH_OUT"; printf %s "$v""#),
+        sh_eval(&out, r#"eval "$COMB_SH_OUT"; printf %s "$one""#),
         HOSTILE,
         "the escaped scalar must survive `eval` byte-for-byte"
     );
@@ -140,7 +143,7 @@ fn daemon_object_sh_escapes_every_value() {
     seed(&d);
     let out = daemon_output(&d, "sh", "shq");
     assert_eq!(
-        out, "one='it'\\''s a $HOME env'\ntwo='42'",
+        out, "one='it'\\''s a $HOME env'\ntwo='42'\n",
         "-f sh must shell-escape each object value (canon invariant 8)"
     );
     assert_eq!(
@@ -166,7 +169,7 @@ fn daemon_scalar_sh_escapes_newline() {
         .success();
     let out = daemon_output(&d, "sh", "shnl.v");
     assert_eq!(
-        sh_eval(&out, r#"eval "v=$COMB_SH_OUT"; printf %s "$v""#),
+        sh_eval(&out, r#"eval "$COMB_SH_OUT"; printf %s "$v""#),
         "line1\nline2",
         "a newline inside the value must survive `eval`"
     );
@@ -180,7 +183,7 @@ fn daemon_text_leaves_values_raw() {
     assert_eq!(daemon_output(&d, "text", "shq.one"), HOSTILE);
     assert_eq!(
         daemon_output(&d, "text", "shq"),
-        "one=it's a $HOME env\ntwo=42"
+        "one=it's a $HOME env\ntwo=42\n"
     );
 }
 

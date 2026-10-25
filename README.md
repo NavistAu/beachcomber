@@ -492,7 +492,7 @@ Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation. `com
 |---|---|---|
 | _(none)_ | `get -f text` | Raw value — the default |
 | `g.j` | `get -f json` | The bare value as JSON, nested at any depth (no envelope — metadata is in the `:cache` facet) |
-| `g.s` | `get -f sh` | `key=value` lines (shell-parseable) |
+| `g.s` | `get -f sh` | a shell assignment per leaf, `name='value'`, safe to `eval` |
 | `g.c` | `get -f csv` | Comma-separated values |
 | `g.C` | `get -f CSV` | CSV with header row |
 | `g.t` | `get -f tsv` | Tab-separated values |

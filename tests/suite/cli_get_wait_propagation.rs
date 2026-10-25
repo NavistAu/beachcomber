@@ -69,7 +69,13 @@ async fn single_key_text_wait_true_re_executes_stale_entry() {
 
     let text = tokio::task::spawn_blocking(move || {
         client_for(sock)
-            .get_formatted_with_flags("hostname.name", None, "text", false, true)
+            .get_formatted_with_flags(
+                "hostname.name",
+                None,
+                libbeachcomber::render::Format::Text,
+                false,
+                true,
+            )
             .unwrap()
     })
     .await

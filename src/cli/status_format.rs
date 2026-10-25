@@ -458,8 +458,9 @@ fn push_flattened(out: &mut Vec<CacheRow>, row: CacheRow, depth: usize, level: u
 pub fn render_preset(format: &Format, rows: &[CacheRow], opts: &RenderOpts) -> String {
     match format {
         Format::Preset(Preset::Json) => render_json(rows),
-        Format::Preset(Preset::Csv) => render_csv(rows),
-        Format::Preset(Preset::Tsv) => render_tsv(rows),
+        Format::Preset(p @ (Preset::Csv | Preset::CsvHeader | Preset::Tsv | Preset::TsvHeader)) => {
+            render_delimited(rows, p.value_format().expect("a value format"))
+        }
         Format::Preset(Preset::Sh) => render_sh(rows),
         Format::Preset(Preset::Table) => render_table(rows, &[], false, None, true, false, false),
         Format::Preset(Preset::Human) => {
@@ -700,143 +701,86 @@ fn render_json(rows: &[CacheRow]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// TSV renderer
+// CSV and TSV
 // ---------------------------------------------------------------------------
 
-pub fn render_tsv(rows: &[CacheRow]) -> String {
+/// The columns `status -f csv|tsv` lays a row out in, as the uppercase
+/// formats name them in their header.
+const DELIMITED_COLUMNS: [&str; 14] = [
+    "PROVIDER",
+    "PATH",
+    "FIELD",
+    "SOURCE",
+    "VALUE",
+    "AGE_MS",
+    "STALE",
+    "KIND",
+    "DECAY",
+    "POLL_INTERVAL_SECS",
+    "POLL_COUNT",
+    "FSEVENTS_REINSTATE",
+    "FAILURE_CONSECUTIVE_FAILURES",
+    "FAILURE_SUPPRESSED_UNTIL_UNIX_MS",
+];
+
+/// One row's cells, in [`DELIMITED_COLUMNS`] order, before encoding: a
+/// VALUE is its raw text, as `comb get -f csv` prints one
+/// ([`libbeachcomber::render::csv_cell`]), and an absent field an empty cell.
+fn delimited_cells(row: &CacheRow) -> Vec<String> {
     use crate::cache::RowKind;
-    let mut out = String::new();
-    for row in rows {
-        let kind = match &row.kind {
-            Some(RowKind::Lifecycle { .. }) => "lifecycle",
-            Some(RowKind::Once) => "once",
-            Some(RowKind::Static) => "static",
-            Some(RowKind::Transient) => "transient",
-            Some(RowKind::Template) => "template",
-            None => "",
-        };
-        let decay = match &row.kind {
-            Some(RowKind::Lifecycle { decay, .. }) => decay.to_string(),
-            _ => String::new(),
-        };
-        let path = row.path.as_deref().unwrap_or("");
-        let value = serde_json::to_string(&row.value).unwrap_or_default();
-        let p = row
-            .poll_interval_secs
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-        let k = row.poll_count.map(|n| n.to_string()).unwrap_or_default();
-        let r = row
-            .fsevents_reinstate
-            .map(|b| b.to_string())
-            .unwrap_or_default();
-        let fc = row
+    use libbeachcomber::render::csv_cell;
+    let opt = |v: Option<String>| v.unwrap_or_default();
+    let kind = match &row.kind {
+        Some(RowKind::Lifecycle { .. }) => "lifecycle",
+        Some(RowKind::Once) => "once",
+        Some(RowKind::Static) => "static",
+        Some(RowKind::Transient) => "transient",
+        Some(RowKind::Template) => "template",
+        None => "",
+    };
+    let decay = match &row.kind {
+        Some(RowKind::Lifecycle { decay, .. }) => decay.to_string(),
+        _ => String::new(),
+    };
+    vec![
+        row.provider.clone(),
+        row.path.clone().unwrap_or_default(),
+        row.field.clone(),
+        row.source.clone(),
+        csv_cell(Some(&row.value)),
+        opt(row.age_ms.map(|a| a.to_string())),
+        row.stale.to_string(),
+        kind.to_string(),
+        decay,
+        opt(row.poll_interval_secs.map(|n| n.to_string())),
+        opt(row.poll_count.map(|n| n.to_string())),
+        opt(row.fsevents_reinstate.map(|b| b.to_string())),
+        opt(row
             .failure
             .as_ref()
-            .map(|f| f.consecutive_failures.to_string())
-            .unwrap_or_default();
-        let fs = row
+            .map(|f| f.consecutive_failures.to_string())),
+        opt(row
             .failure
             .as_ref()
-            .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))
-            .unwrap_or_default();
-        out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            row.provider,
-            path,
-            row.field,
-            row.source,
-            value,
-            row.age_ms.map(|a| a.to_string()).unwrap_or_default(),
-            row.stale,
-            kind,
-            decay,
-            p,
-            k,
-            r,
-            fc,
-            fs,
-        ));
-    }
-    out
+            .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))),
+    ]
 }
 
-// ---------------------------------------------------------------------------
-// CSV renderer (RFC 4180)
-// ---------------------------------------------------------------------------
-
-pub fn render_csv(rows: &[CacheRow]) -> String {
-    use crate::cache::RowKind;
+/// `status -f csv|CSV|tsv|TSV`: one line per row through the shared cell
+/// encoders, and the uppercase formats a header row first.
+pub fn render_delimited(rows: &[CacheRow], format: libbeachcomber::render::Format) -> String {
+    let delimited = format
+        .delimited()
+        .unwrap_or_else(|| unreachable!("{} is not a delimited format", format.name()));
     let mut out = String::new();
-
-    // Header row
-    out.push_str("PROVIDER,PATH,FIELD,SOURCE,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,POLL_COUNT,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS\n");
-
+    if delimited.header {
+        let names: Vec<String> = DELIMITED_COLUMNS.iter().map(|c| c.to_string()).collect();
+        out.push_str(&delimited.line(&names));
+    }
     for row in rows {
-        let path = row.path.as_deref().unwrap_or("");
-        let value = serde_json::to_string(&row.value).unwrap_or_default();
-        let stale = if row.stale { "true" } else { "false" };
-        let kind = match &row.kind {
-            Some(RowKind::Lifecycle { .. }) => "lifecycle",
-            Some(RowKind::Once) => "once",
-            Some(RowKind::Static) => "static",
-            Some(RowKind::Transient) => "transient",
-            Some(RowKind::Template) => "template",
-            None => "",
-        };
-        let decay = match &row.kind {
-            Some(RowKind::Lifecycle { decay, .. }) => decay.to_string(),
-            _ => String::new(),
-        };
-        let p = row
-            .poll_interval_secs
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-        let k = row.poll_count.map(|n| n.to_string()).unwrap_or_default();
-        let r = row
-            .fsevents_reinstate
-            .map(|b| b.to_string())
-            .unwrap_or_default();
-        let fc = row
-            .failure
-            .as_ref()
-            .map(|f| f.consecutive_failures.to_string())
-            .unwrap_or_default();
-        let fs = row
-            .failure
-            .as_ref()
-            .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))
-            .unwrap_or_default();
-        out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-            csv_quote(&row.provider),
-            csv_quote(path),
-            csv_quote(&row.field),
-            csv_quote(&row.source),
-            csv_quote(&value),
-            row.age_ms.map(|a| a.to_string()).unwrap_or_default(),
-            stale,
-            csv_quote(kind),
-            csv_quote(&decay),
-            csv_quote(&p),
-            csv_quote(&k),
-            csv_quote(&r),
-            csv_quote(&fc),
-            csv_quote(&fs),
-        ));
+        out.push_str(&delimited.line(&delimited_cells(row)));
     }
     out
-}
-
-/// RFC 4180 quoting: wrap in double-quotes if value contains `,`, `"`, or newline.
-/// Internal double-quotes are doubled.
-fn csv_quote(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
-        let escaped = s.replace('"', "\"\"");
-        format!("\"{escaped}\"")
-    } else {
-        s.to_string()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -848,7 +792,7 @@ pub fn render_sh_env(rows: &[CacheRow]) -> String {
     let mut out = String::new();
     for row in rows {
         let key = sanitize_sh_key(&row.provider, row.path.as_deref(), &row.field);
-        let value = value_to_string(&row.value);
+        let value = libbeachcomber::render::csv_cell(Some(&row.value));
         let quoted = shell_quote(&value);
         out.push_str(&format!("{key}={quoted}\n"));
         // source — which Source produced the value, `template` when the CLI
@@ -915,31 +859,24 @@ fn render_sh(rows: &[CacheRow]) -> String {
     render_sh_env(rows)
 }
 
-/// Build a shell-safe variable name: `provider_path_field`.
-/// Path segments replace `/` with `_`; leading/trailing underscores from empty parts removed.
+/// A row's shell variable name, `provider_path_field`: the provider, each
+/// component of the path and the field's segments, joined by `_` and made a
+/// name by the shared encoder ([`libbeachcomber::render::sh_ident`]), as
+/// `comb get -f sh` names its lines.
 fn sanitize_sh_key(provider: &str, path: Option<&str>, field: &str) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    parts.push(sanitize_ident(provider));
-    if let Some(p) = path {
-        // Replace slashes with underscores, then split on underscores to flatten.
-        let normalized = p.replace('/', "_");
-        // Strip leading underscores that result from leading slashes.
-        let normalized = normalized.trim_matches('_');
-        if !normalized.is_empty() {
-            for segment in normalized.split('_').filter(|s| !s.is_empty()) {
-                parts.push(sanitize_ident(segment));
-            }
-        }
-    }
-    parts.push(sanitize_ident(field));
-    parts.join("_")
-}
-
-/// Replace any non-alphanumeric character with `_`.
-fn sanitize_ident(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
+    let mut parts: Vec<String> = vec![provider.to_string()];
+    parts.extend(
+        path.unwrap_or_default()
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+    );
+    parts.extend(
+        libbeachcomber::key::segments(field)
+            .into_iter()
+            .map(|s| s.into_owned()),
+    );
+    libbeachcomber::render::sh_ident(&parts.join("_"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1394,7 +1331,7 @@ fn render_table(
         let value = if row.value.is_null() {
             ABSENT_TEXT.to_string()
         } else {
-            value_to_string(&row.value)
+            libbeachcomber::render::csv_cell(Some(&row.value))
         };
         // Sanitizing swaps one char for one char, so it never changes a
         // natural width. Only the taint marker does.
@@ -1599,7 +1536,7 @@ fn render_table(
         let value_raw = if row.value.is_null() {
             ABSENT_TEXT.to_string()
         } else {
-            value_to_string(&row.value)
+            libbeachcomber::render::csv_cell(Some(&row.value))
         };
         let tainted = row_is_tainted(row, &path_raw, &value_raw);
 
@@ -2080,7 +2017,8 @@ impl Predicate {
             Predicate::Value(None) => r.value.is_null(),
             // A glob matches a present value only: `value=*` is "not absent".
             Predicate::Value(Some(pat)) => {
-                !r.value.is_null() && simple_glob_match(pat, &value_to_string(&r.value))
+                !r.value.is_null()
+                    && simple_glob_match(pat, &libbeachcomber::render::csv_cell(Some(&r.value)))
             }
             Predicate::Stale(b) => r.stale == *b,
             Predicate::Shadowed(b) => r.shadowed == *b,
@@ -2167,16 +2105,6 @@ pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, S
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-/// Convert a `serde_json::Value` to a display string.
-/// Strings are returned unquoted; other types use their JSON representation.
-pub fn value_to_string(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Null => String::new(),
-        other => other.to_string(),
-    }
-}
 
 /// Format an age in milliseconds as a human-readable duration.
 ///

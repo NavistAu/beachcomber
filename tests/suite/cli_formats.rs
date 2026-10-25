@@ -133,3 +133,83 @@ fn get_and_watch_list_the_same_formats_in_their_help() {
         assert!(flat.contains(want), "{command} --help:\n{help}");
     }
 }
+
+// ── one encoder per format ───────────────────────────────────────────────────
+
+/// A cell holding a comma or a quote is quoted, so the header and the row
+/// have as many cells as each other.
+#[test]
+fn csv_quotes_its_cells_so_header_and_row_agree() {
+    let d = TestDaemon::spawn();
+    ok(
+        &d,
+        &["put", "--global", "dq", r#"{"a":"x,y","b":"say \"hi\""}"#],
+    );
+    assert_eq!(
+        ok(&d, &["g.C", "dq", "--global"]),
+        "a,b\n\"x,y\",\"say \"\"hi\"\"\"\n"
+    );
+}
+
+/// Every `sh` line assigns a shell variable, whatever the address: a nested
+/// leaf, a name holding a `.` or a space.
+#[test]
+fn sh_assigns_a_shell_variable_for_any_address() {
+    let d = TestDaemon::spawn();
+    ok(
+        &d,
+        &["put", "--global", "dk", r#"{"a.b":1,"c":{"d":2},"e f":3}"#],
+    );
+    let out = ok(&d, &["g.s", "dk", "--global"]);
+    let shell = std::process::Command::new("sh")
+        .args([
+            "-c",
+            r#"eval "$OUT"; printf '%s|%s|%s' "$a_b" "$c_d" "$e_f""#,
+        ])
+        .env("OUT", &out)
+        .output()
+        .expect("sh runs");
+    assert_eq!(String::from_utf8(shell.stdout).unwrap(), "1|2|3", "{out}");
+}
+
+/// A scalar prints bare for embedding; a container is a document of lines.
+#[test]
+fn a_scalar_has_no_trailing_newline_and_a_document_ends_in_one() {
+    let d = TestDaemon::spawn();
+    seed(&d);
+    assert_eq!(ok(&d, &["get", "--global", "fmtprov.val"]), "formatted");
+    assert_eq!(
+        ok(&d, &["get", "--global", "fmtprov"]),
+        "n=3\nval=formatted\n"
+    );
+}
+
+/// Several keys keep one line each under text, a miss an empty one.
+#[test]
+fn a_miss_holds_its_line_among_several_keys() {
+    let d = TestDaemon::spawn();
+    seed(&d);
+    assert_eq!(
+        ok(
+            &d,
+            &["get", "--global", "fmtprov.val", "nope.z", "fmtprov.n"]
+        ),
+        "formatted\n\n3\n"
+    );
+}
+
+/// `status` names its delimited formats as `get` does: lowercase without a
+/// header, uppercase with one, and a value as its raw text.
+#[test]
+fn status_csv_has_no_header_and_csv_upper_has_one() {
+    let d = TestDaemon::spawn();
+    seed(&d);
+    let filter = ["--filter", "provider=fmtprov", "--sort", "field"];
+    let plain = ok(&d, &[&["status", "-f", "csv"][..], &filter].concat());
+    assert!(plain.starts_with("fmtprov,"), "no header: {plain}");
+    assert!(plain.contains(",formatted,"), "raw value: {plain}");
+    let headed = ok(&d, &[&["s.C"][..], &filter].concat());
+    assert!(headed.starts_with("PROVIDER,PATH,FIELD"), "{headed}");
+    let tsv = ok(&d, &[&["s.T"][..], &filter].concat());
+    assert!(tsv.starts_with("PROVIDER\tPATH\tFIELD"), "{tsv}");
+}

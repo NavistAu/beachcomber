@@ -16,6 +16,7 @@
 
 use crate::common::daemon::DaemonGuard;
 
+use libbeachcomber::render::Format;
 use libbeachcomber::{Client, ClientConfig, CombError};
 use std::time::Duration;
 
@@ -62,9 +63,9 @@ fn client_get_text_of_a_template_only_node_is_the_template_text() {
     let text = client.get_text("fmt_tmpl.t", None).expect("get_text");
     assert_eq!(text, "{{ 1 + 1 }}");
     let sh = client
-        .get_formatted("fmt_tmpl.t", None, "sh")
+        .get_formatted("fmt_tmpl.t", None, Format::Sh)
         .expect("get_formatted");
-    assert_eq!(sh, "'{{ 1 + 1 }}'");
+    assert_eq!(sh, "t='{{ 1 + 1 }}'\n");
 }
 
 #[test]
@@ -82,11 +83,11 @@ fn client_get_formatted_renders_whole_object_sorted() {
         .expect("put");
 
     let text = client
-        .get_formatted("fmt_obj", None, "text")
+        .get_formatted("fmt_obj", None, Format::Text)
         .expect("get_formatted");
     assert_eq!(
-        text, "a=first\nz=last",
-        "multi-field object renders as sorted key=value lines with no trailing blank line"
+        text, "a=first\nz=last\n",
+        "multi-field object renders as sorted key=value lines, each ending in a newline"
     );
 }
 
@@ -108,9 +109,9 @@ fn client_get_formatted_first_line_only_error_prefix_is_not_data_content() {
         .expect("put");
 
     let text = client
-        .get_formatted("fmt_lookalike", None, "text")
+        .get_formatted("fmt_lookalike", None, Format::Text)
         .expect("get_formatted must not treat a later data line as an error");
-    assert_eq!(text, "a=first\nb=error: not a real error");
+    assert_eq!(text, "a=first\nb=error: not a real error\n");
 }
 
 #[test]
@@ -131,15 +132,15 @@ fn client_get_formatted_sh_shell_quotes_every_value() {
         .expect("put");
 
     let sh = client
-        .get_formatted("fmt_sh_obj", None, "sh")
+        .get_formatted("fmt_sh_obj", None, Format::Sh)
         .expect("get_formatted");
-    assert_eq!(sh, "a='it'\\''s a $HOME env'\nb='42'");
+    assert_eq!(sh, "a='it'\\''s a $HOME env'\nb='42'\n");
 
     // The same query under `text` is untouched.
     let text = client
-        .get_formatted("fmt_sh_obj", None, "text")
+        .get_formatted("fmt_sh_obj", None, Format::Text)
         .expect("get_formatted");
-    assert_eq!(text, "a=it's a $HOME env\nb=42");
+    assert_eq!(text, "a=it's a $HOME env\nb=42\n");
 }
 
 #[test]
@@ -158,9 +159,9 @@ fn session_get_formatted_sh_shell_quotes_scalar() {
         .expect("put");
 
     let sh = session
-        .get_formatted_with_flags("fmt_sh_scalar.x", None, "sh", false, false)
+        .get_formatted_with_flags("fmt_sh_scalar.x", None, Format::Sh, false, false)
         .expect("get_formatted_with_flags");
-    assert_eq!(sh, "'two words'");
+    assert_eq!(sh, "x='two words'\n");
 }
 
 #[test]
@@ -168,7 +169,7 @@ fn client_get_formatted_reports_daemon_rejection() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
 
-    let result = client.get_formatted("a:b:c.x", None, "text");
+    let result = client.get_formatted("a:b:c.x", None, Format::Text);
 
     match result {
         Err(CombError::ServerError(msg)) => {
@@ -202,7 +203,7 @@ fn session_get_formatted_with_flags_forwards_force() {
         .expect("put");
 
     let text = session
-        .get_formatted_with_flags("fmt_session.x", None, "text", false, false)
+        .get_formatted_with_flags("fmt_session.x", None, Format::Text, false, false)
         .expect("get_formatted_with_flags");
     assert_eq!(text, "seeded");
 }
@@ -222,11 +223,11 @@ fn session_error_response_leaves_connection_usable_for_the_next_request() {
         .put("fmt_after_error", serde_json::json!({"x": 42}), None, None)
         .expect("put");
 
-    let err = session.get_formatted_with_flags("a:b:c.x", None, "text", false, false);
+    let err = session.get_formatted_with_flags("a:b:c.x", None, Format::Text, false, false);
     assert!(matches!(err, Err(CombError::ServerError(_))));
 
     let text = session
-        .get_formatted_with_flags("fmt_after_error.x", None, "text", false, false)
+        .get_formatted_with_flags("fmt_after_error.x", None, Format::Text, false, false)
         .expect("session must still be usable after a prior error response");
     assert_eq!(text, "42");
 }

@@ -359,7 +359,7 @@ mod grammar {
         assert_eq!(get(&d, &cwd, &["p.o['c.d']"]), "2");
         assert_eq!(
             get(&d, &cwd, &["p"]),
-            "['a.b']=1\no['c.d']=2",
+            "['a.b']=1\no['c.d']=2\n",
             "printed as keys it can be read back by"
         );
 
@@ -392,7 +392,7 @@ result."c.d" = "{{ data }}"
 
         assert_eq!(get(&d, &cwd, &["t['a.b']"]), "tpl");
         assert_eq!(get(&d, &cwd, &["s['c.d']"]), "src");
-        assert_eq!(get(&d, &cwd, &["s"]), "['c.d']=src");
+        assert_eq!(get(&d, &cwd, &["s"]), "['c.d']=src\n");
     }
 
     /// A daemon whose `PATH` leads with a fake `mise` that reports two tools

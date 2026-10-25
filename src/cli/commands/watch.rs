@@ -17,9 +17,9 @@
 //! line at all, because there is no value to print.
 
 use crate::cli::format::render_fmt_template_json;
-use crate::cli::output_format::{Format, Preset, format_sv};
+use crate::cli::output_format::Format;
 use crate::config::Config;
-use libbeachcomber::render::render_data;
+use libbeachcomber::render::render_frame;
 use libbeachcomber::resolve::{Inputs, Slot};
 use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
 use serde_json::Value;
@@ -67,7 +67,7 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
     loop {
         match watch.next(None) {
             Ok(WatchOutcome::Value(Some(value))) => {
-                if let Err(e) = print_frame(&format, &value) {
+                if let Err(e) = print_frame(key, &format, &value) {
                     eprintln!("{e}");
                     return ExitCode::from(2);
                 }
@@ -90,24 +90,19 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
     }
 }
 
-/// One frame, followed by the newline that separates frames on a stream.
-/// Under `text`/`sh`/`csv`/`tsv`/`-f fmt` this renders exactly as `comb get`
-/// renders the same value; under `-f json` it is the same value compacted
-/// to one line, where `get` pretty-prints.
-fn print_frame(format: &Format, value: &Value) -> Result<(), String> {
-    let line = match format {
-        Format::Preset(Preset::Text) => render_data(Some(value), "text"),
-        Format::Preset(Preset::Sh) => render_data(Some(value), "sh"),
-        Format::Preset(Preset::Json) => serde_json::to_string(value).unwrap(),
-        Format::Preset(Preset::Csv) => format_sv(value, ",", false),
-        Format::Preset(Preset::Tsv) => format_sv(value, "\t", false),
-        Format::Preset(Preset::CsvHeader) => format_sv(value, ",", true),
-        Format::Preset(Preset::TsvHeader) => format_sv(value, "\t", true),
-        Format::Template(template) => render_fmt_template_json(template, value)?,
-        Format::Preset(Preset::Human | Preset::Table) => {
-            unreachable!("watch's formats hold no table")
-        }
+/// One frame: the value as `comb get` prints it, on a line of its own, json
+/// compacted to one line.
+fn print_frame(key: &str, format: &Format, value: &Value) -> Result<(), String> {
+    let frame = match format {
+        Format::Template(template) => format!("{}\n", render_fmt_template_json(template, value)?),
+        Format::Preset(preset) => render_frame(
+            key,
+            value,
+            preset
+                .value_format()
+                .expect("watch's formats are value formats"),
+        ),
     };
-    println!("{line}");
+    print!("{frame}");
     Ok(())
 }

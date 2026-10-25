@@ -198,7 +198,7 @@ pub(crate) fn too_deep() -> String {
 /// undefined behaviour — so a cascade over a missing ref reads the same in both
 /// forms. On top of that, a `none` (a JSON `null`: a ref that resolved to
 /// nothing) renders as the empty string rather than the literal word `none`,
-/// matching how a missing `env.*` and [`crate::render::render_data`] already
+/// matching how a missing `env.*` and [`crate::render::render_value`] already
 /// render nothing.
 pub fn render_template(src: &str, context: &serde_json::Value) -> Result<String, String> {
     render_template_with(src, MjValue::from_serialize(context), Default::default())

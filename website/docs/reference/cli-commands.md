@@ -25,7 +25,7 @@ A template is recognised by its tags, never by not being a format's name: `-f` w
 | Short | Long | Formats |
 |-------|------|---------|
 | `comb g` | `comb get` | `text` (default), `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, a template |
-| `comb s` | `comb status` | `human` (default), `table`, `json`, `sh`, `csv`, `tsv`, a template |
+| `comb s` | `comb status` | `human` (default), `table`, `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, a template |
 | `comb p` | `comb put` | — |
 | `comb r` | `comb refresh` | — |
 | `comb w` | `comb watch` | as `get` |
@@ -97,21 +97,22 @@ comb g hostname.short            # → myhost
 # Query the entire provider (all fields from all sources) — alternate formats
 comb g git .                     # → key=value lines, one per leaf at any depth (text default)
 comb g.j git .                   # → the bare JSON object, nested (no envelope — metadata is in the :cache facet)
-comb g.s git .                   # → the same lines as text, every value shell-quoted
-comb g.c git .                   # → comma-separated values
-comb g.C git .                   # → CSV with header row
-comb g.t git .                   # → tab-separated values
-comb g.T git .                   # → TSV with header row
+comb g.s git .                   # → a shell assignment per leaf, every value shell-quoted
+comb g.c git .                   # → one comma-separated row, a cell per field
+comb g.C git .                   # → the same, under a header row of the field names
+comb g.t git .                   # → one tab-separated row
+comb g.T git .                   # → the same, under a header row
 
 # Template formatting
 comb g.f '{{ branch }} ({{ dirty }})' git .      # → main (false)
 
-# Shell-variable output (key=value lines, sourceable)
+# Shell assignments, sourceable: `eval "$(comb g.s git .)"`
 comb g.s git .
-# ahead=0
-# behind=0
-# branch=main
-# dirty=false
+# ahead='0'
+# behind='0'
+# branch='main'
+# dirty='false'
+comb g.s git.branch .            # → branch='main' (a scalar is named by its key's last segment)
 
 # Multiple keys in one connection (variadic)
 comb g git.branch git.dirty battery.percent .
@@ -135,6 +136,14 @@ comb g.j git:cache.branch .      # → {"age_ms": 1523, "stale": false, "source"
 comb g.j git:source .            # → what the Source computed, even where a put hides it
 ```
 
+**Output.** Every format is rendered once, for `get`, `watch` and `eval` alike:
+- **Absent.** A miss, or a `null` anywhere in a value, prints nothing — no line, no assignment — an empty cell where a column holds its place, and `null` only in json.
+- **text.** A scalar prints bare. A container prints sorted `address=value` lines, one per leaf at any depth, each address canonical so it can be typed back as a key (`['a.b']=1`, `list.0=a`).
+- **sh.** Every line assigns a shell variable: a leaf is named by its address below the key with each character outside `[A-Za-z0-9_]` written as `_` (`c.d` → `c_d`, `['a.b']` → `a_b`, `e f` → `e_f`), a scalar by the key's last segment, and every value is single-quoted, so `eval "$(comb g.s …)"` is safe.
+- **csv and tsv.** A cell per top-level field of an object, or per key; a string is its raw text and anything else its JSON text. csv quotes per RFC 4180, tsv writes `\`, tab, CR and LF as `\\`, `\t`, `\r` and `\n`, and `CSV`/`TSV` add a header row of the cells' names.
+- **Newlines.** A scalar printed under text has no trailing newline, so it embeds verbatim. Everything else — json, sh, csv, tsv, and text of a container or of several keys — ends each line in one.
+- **Several keys.** One document across the keys, a miss holding its place: `null` in the json array, an empty line under text and sh, an empty cell under csv and tsv.
+
 **Layers and the `:cache` facet.** A field's value is the first layer that has it: the effective template (rendered here), then `put` (what `comb p` and the `config:` seeds stored), then the Source. Nothing merges implicitly, `null` means absent, and each layer is readable on its own at any depth: `provider:template`, `provider:put` and `provider:source` (the last two are read-only), and `provider:cache`, the daemon's metadata about the same tree.
 
 | `:cache` key | Type | Description |
@@ -150,7 +159,7 @@ Only a colon in the provider's own segment names a facet (`git:cache`); below it
 
 **Exit codes:**
 - `0` — success; also a miss under `text`/`sh`, which print nothing (e.g. `git` queried outside a git repository)
-- `2` — a miss under `json`, `csv`, `tsv` or `fmt` (`Error querying <key>: no data (cache miss)` on stderr)
+- `2` — a miss under `json`, `csv`, `tsv` or a template (`Error querying <key>: no data (cache miss)` on stderr)
 - `2` — error (daemon unreachable, invalid key, a template that does not compile or cycles — the message names the field)
 
 ## `comb s` (status)
@@ -190,7 +199,9 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `-f`/`--format` (`human` (default), `table`, `json`, `sh`, `csv`, `tsv`, or a template), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|stale|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
+The machine formats lay a row out in the columns `PROVIDER PATH FIELD SOURCE VALUE AGE_MS STALE KIND DECAY POLL_INTERVAL_SECS POLL_COUNT FSEVENTS_REINSTATE FAILURE_CONSECUTIVE_FAILURES FAILURE_SUPPRESSED_UNTIL_UNIX_MS`, through the same cell encoders as `comb get`: `csv` and `tsv` have no header row and `CSV` and `TSV` do, a VALUE is its raw text (JSON for an object or array), and an absent field is an empty cell. `json` is one row object per line. `sh` names each variable `provider_path_field` with every character outside `[A-Za-z0-9_]` written as `_`, plus `_SOURCE`, `_KIND` and the lifecycle fields beside it.
+
+**Flags:** `-f`/`--format` (`human` (default), `table`, `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, or a template), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|stale|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`, `--depth N`.
 
 ### Filters
 

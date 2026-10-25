@@ -12,7 +12,7 @@
 //! `comb eval '{{ p.f }}'` and `comb get p.f` agree by construction. `comb`
 //! always requires the daemon (design §2) — there is no daemon-skip path.
 //!
-//! The result prints through `libbeachcomber::render::render_data` — the
+//! The result prints through `libbeachcomber::render::render_value` — the
 //! same renderer `comb get -f text` uses.
 
 use crate::config::Config;
@@ -58,7 +58,11 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
         Ok(value) => {
             print!(
                 "{}",
-                libbeachcomber::render::render_data(value.as_ref(), "text")
+                libbeachcomber::render::render_value(
+                    "",
+                    value.as_ref(),
+                    libbeachcomber::render::Format::Text
+                )
             );
             ExitCode::SUCCESS
         }

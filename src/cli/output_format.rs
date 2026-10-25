@@ -9,6 +9,8 @@
 //! parses argv ([`rewrite_suffix`]), and is refused on a command without
 //! `-f` or without that format.
 
+use libbeachcomber::render::Format as ValueFormat;
+
 /// A named output format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preset {
@@ -77,6 +79,12 @@ impl Preset {
     fn from_name(name: &str) -> Option<Preset> {
         Preset::ALL.into_iter().find(|p| p.name() == name)
     }
+
+    /// The value format this preset prints a value in — every preset but the
+    /// two tables, which lay out rows.
+    pub fn value_format(self) -> Option<ValueFormat> {
+        ValueFormat::from_name(self.name())
+    }
 }
 
 /// What `-f` asked for: a named format, or a template.
@@ -142,7 +150,9 @@ pub const STATUS: Formats = Formats {
         Preset::Json,
         Preset::Sh,
         Preset::Csv,
+        Preset::CsvHeader,
         Preset::Tsv,
+        Preset::TsvHeader,
     ],
     templates: true,
 };
@@ -297,35 +307,6 @@ pub fn rewrite_suffix(mut args: Vec<String>) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
-/// Format a JSON value as a single display string.
-pub fn value_to_string(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Null => String::new(),
-        other => other.to_string(),
-    }
-}
-
-/// Format response data as CSV or TSV.
-pub fn format_sv(data: &serde_json::Value, sep: &str, with_header: bool) -> String {
-    match data {
-        serde_json::Value::Object(map) => {
-            let mut pairs: Vec<(&String, &serde_json::Value)> = map.iter().collect();
-            pairs.sort_by_key(|(k, _)| *k);
-            let mut out = String::new();
-            if with_header {
-                let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
-                out.push_str(&keys.join(sep));
-                out.push('\n');
-            }
-            let vals: Vec<String> = pairs.iter().map(|(_, v)| value_to_string(v)).collect();
-            out.push_str(&vals.join(sep));
-            out
-        }
-        other => value_to_string(other),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,9 +390,9 @@ mod tests {
                 .contains("unknown format suffix '.p'")
         );
         assert!(
-            rewrite_suffix(argv(&["s.C"]))
+            rewrite_suffix(argv(&["s.f"]))
                 .unwrap_err()
-                .contains("status has no 'CSV' format")
+                .contains("the .f suffix takes the template")
         );
     }
 }
