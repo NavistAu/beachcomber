@@ -1,5 +1,5 @@
 [client.providers.kubecontext]
-# The kubectl context in effect, honouring the shell's own $KUBECONFIG.
-template.context = "{{ exec('kubectl config current-context') }}"
-# The context's namespace; `default` when it sets none.
-template.namespace = "{{ exec(['kubectl', 'config', 'view', '--minify', '-o', 'jsonpath={..namespace}']) or 'default' }}"
+# The kubectl context in effect, honouring the shell's own $KUBECONFIG; absent when none is set or kubectl is not installed.
+template.context = "{{ exec('kubectl config current-context 2>/dev/null || true') or none }}"
+# The context's namespace; `default` when it sets none; absent when there is no context.
+template.namespace = "{{ (exec(['kubectl', 'config', 'view', '--minify', '-o', 'jsonpath={..namespace}']) or 'default') if kubecontext.context }}"

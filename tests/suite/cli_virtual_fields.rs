@@ -516,3 +516,9 @@ fn python_venv_name_basename_virtual_env_when_no_local_venv() {
         ".venv"
     );
 }
+
+#[test]
+fn python_venv_name_is_absent_without_a_venv() {
+    let (d, cwd) = daemon();
+    assert_absent(&d, &cwd, "python.venv_name");
+}

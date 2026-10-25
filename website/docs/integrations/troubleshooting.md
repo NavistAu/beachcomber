@@ -25,7 +25,7 @@ comb g git.branch .
 comb g battery.percent
 ```
 
-If the command returns nothing, the provider has no data for the current context. This is normal — for example, `git.branch` returns empty outside a git repository. A template-backed key that shells out is different: `kubecontext.context` runs `kubectl config current-context` through `exec()`, and when no context is set `kubectl` exits 1, so `comb g kubecontext.context` prints that error to stderr and exits `2` rather than printing nothing — `2>/dev/null` it in a prompt.
+If the command returns nothing, the provider has no data for the current context. This is normal — for example, `git.branch` returns empty outside a git repository, and `kubecontext.context` is empty when no kubectl context is set or `kubectl` is not installed. A template that shells out fails only when its command fails for a reason the template does not expect: `comb g` then prints the error to stderr and exits `2`.
 
 ## Path-scoped providers return empty or wrong data
 

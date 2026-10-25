@@ -359,10 +359,9 @@ fn a_managed_default_renders_through_comb_get() {
 
 // ── outcome 20: kubecontext is a template over kubectl ───────────────────────
 
-/// A daemon started with the managed defaults written, plus a `kubectl` on
-/// the child's `PATH` that prints `ctx-1` for `config current-context` and
-/// nothing for `config view …`.
-fn daemon_with_defaults_and_fake_kubectl() -> (TestDaemon, PathBuf) {
+/// A daemon started with the managed defaults written, plus a `bin/` holding
+/// each `(name, script)` as an executable for the child's `PATH`.
+fn daemon_with_defaults_and_tools(tools: &[(&str, &str)]) -> (TestDaemon, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
 
     let socket = IsolatedSocket::new();
@@ -375,14 +374,21 @@ fn daemon_with_defaults_and_fake_kubectl() -> (TestDaemon, PathBuf) {
     .expect("write managed defaults");
     let bin = socket.dir.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let kubectl = bin.join("kubectl");
-    std::fs::write(
-        &kubectl,
-        "#!/bin/sh\ncase \"$2\" in current-context) printf 'ctx-1' ;; esac\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&kubectl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for (name, script) in tools {
+        let tool = bin.join(name);
+        std::fs::write(&tool, script).unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     (TestDaemon::spawn_in(socket, home, xdg), bin)
+}
+
+/// A `kubectl` that prints `ctx-1` for `config current-context` and nothing
+/// for `config view …`.
+fn daemon_with_defaults_and_fake_kubectl() -> (TestDaemon, PathBuf) {
+    daemon_with_defaults_and_tools(&[(
+        "kubectl",
+        "#!/bin/sh\ncase \"$2\" in current-context) printf 'ctx-1' ;; esac\n",
+    )])
 }
 
 fn path_with(bin: &Path) -> String {
@@ -391,6 +397,37 @@ fn path_with(bin: &Path) -> String {
         bin.display(),
         std::env::var("PATH").unwrap_or_default()
     )
+}
+
+/// A `PATH` holding `bin` and a `sh`, and nothing else: no tool the
+/// developer's machine happens to have installed is on it.
+fn path_of_only(bin: &Path) -> String {
+    let sh = bin.join("sh");
+    if !sh.exists() {
+        std::os::unix::fs::symlink("/bin/sh", &sh).unwrap();
+    }
+    bin.display().to_string()
+}
+
+/// `key` is absent with this `PATH`: text prints nothing and succeeds, json
+/// is the miss.
+fn assert_absent_with_path(d: &TestDaemon, cwd: &Path, path: &str, key: &str) {
+    comb(d, cwd)
+        .env("PATH", path)
+        .args(["get", key])
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty())
+        .stderr(predicates::str::is_empty());
+    comb(d, cwd)
+        .env("PATH", path)
+        .args(["get", "-f", "json", key])
+        .assert()
+        .code(2)
+        .stdout(predicates::str::is_empty())
+        .stderr(predicates::str::contains(format!(
+            "Error querying {key}: no data (cache miss)"
+        )));
 }
 
 /// `kubecontext.context` is `defaults/kubecontext.toml`'s template — the same
@@ -428,6 +465,69 @@ fn kubecontext_namespace_defaults_when_kubectl_prints_none() {
         String::from_utf8(out.get_output().stdout.clone()).unwrap(),
         "default"
     );
+}
+
+/// `kubectl` with no current context exits 1: there is no context to report,
+/// so `context` is absent rather than an error, and `namespace`, which has no
+/// context to belong to, is absent too.
+#[test]
+fn kubecontext_is_absent_when_kubectl_has_no_context() {
+    let (d, bin) = daemon_with_defaults_and_tools(&[(
+        "kubectl",
+        "#!/bin/sh\necho 'error: current-context is not set' >&2\nexit 1\n",
+    )]);
+    let cwd = project(&d);
+    let path = path_with(&bin);
+
+    assert_absent_with_path(&d, &cwd, &path, "kubecontext.context");
+    assert_absent_with_path(&d, &cwd, &path, "kubecontext.namespace");
+}
+
+/// Without `kubectl` installed, `kubecontext` is absent, not an error.
+#[test]
+fn kubecontext_is_absent_without_kubectl() {
+    let (d, bin) = daemon_with_defaults_and_tools(&[]);
+    let cwd = project(&d);
+    let path = path_of_only(&bin);
+
+    assert_absent_with_path(&d, &cwd, &path, "kubecontext.context");
+    assert_absent_with_path(&d, &cwd, &path, "kubecontext.namespace");
+}
+
+/// `talos.context` is the `context` of what `talosctl config info -o json`
+/// prints.
+#[test]
+fn talos_context_renders_through_talosctl() {
+    let (d, bin) = daemon_with_defaults_and_tools(&[(
+        "talosctl",
+        "#!/bin/sh\nprintf '{\"context\":\"lab\",\"nodes\":[]}'\n",
+    )]);
+    let cwd = project(&d);
+
+    let out = comb(&d, &cwd)
+        .env("PATH", path_with(&bin))
+        .args(["get", "talos.context"])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8(out.get_output().stdout.clone()).unwrap(),
+        "lab"
+    );
+}
+
+/// `talosctl` with no context exits 1, and without `talosctl` there is no
+/// command at all: either way `talos.context` is absent, not an error.
+#[test]
+fn talos_context_is_absent_when_talosctl_has_no_context_or_is_missing() {
+    let (d, bin) = daemon_with_defaults_and_tools(&[(
+        "talosctl",
+        "#!/bin/sh\necho 'no context is set' >&2\nexit 1\n",
+    )]);
+    let cwd = project(&d);
+    assert_absent_with_path(&d, &cwd, &path_with(&bin), "talos.context");
+
+    std::fs::remove_file(bin.join("talosctl")).unwrap();
+    assert_absent_with_path(&d, &cwd, &path_of_only(&bin), "talos.context");
 }
 
 // ── templates resolve from the requested slot ────────────────────────────────
