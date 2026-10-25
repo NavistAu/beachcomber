@@ -43,11 +43,13 @@ impl FileLock {
     }
 }
 
-/// The built fixture, always (re)built first with the cargo that built this
-/// test and the profile this test was built with, so a stale library from an
-/// earlier build never answers. Once per process. Absolute.
+/// The built fixture, (re)built with the cargo that built this test and the
+/// profile this test was built with, so a stale library from an earlier build
+/// never answers. Once per nextest run: the first test process to want it
+/// builds it and records the run (`NEXTEST_RUN_ID`) beside it, and the rest of
+/// the run's processes take what it recorded. Absolute.
 ///
-/// Every test process builds, and even a build with nothing to do replaces
+/// Even a build with nothing to do replaces
 /// `target/<profile>/libtest_provider_lib.*` with a new file, so a path into
 /// that directory can vanish under a concurrent process. The build therefore
 /// runs under a lock shared by every process, and what it returns is a copy
@@ -62,6 +64,18 @@ pub fn ensure_fixture_built() -> PathBuf {
             let out_dir = target_dir().join(profile);
             std::fs::create_dir_all(&out_dir).expect("create target profile dir");
             let _lock = FileLock::take(&out_dir.join(".test_provider_lib.lock"));
+            // Outside nextest a process is a run of its own.
+            let run = std::env::var("NEXTEST_RUN_ID")
+                .unwrap_or_else(|_| format!("pid-{}", std::process::id()));
+            let fixtures = out_dir.join("test-fixtures");
+            let record = fixtures.join("built-for-run");
+            if let Some(path) = std::fs::read_to_string(&record).ok().and_then(|text| {
+                let (built_for, path) = text.split_once('\n')?;
+                (built_for == run).then(|| PathBuf::from(path))
+            }) && path.exists()
+            {
+                return path;
+            }
 
             let mut build = std::process::Command::new(env!("CARGO"));
             build
@@ -85,7 +99,7 @@ pub fn ensure_fixture_built() -> PathBuf {
                 "test_provider_lib-{:016x}",
                 std::hash::Hasher::finish(&hasher)
             );
-            let dir = out_dir.join("test-fixtures").join(name);
+            let dir = fixtures.join(name);
             std::fs::create_dir_all(&dir).expect("create fixture dir");
             let copy = dir.join(LIB_NAME);
             if !copy.exists() {
@@ -93,8 +107,12 @@ pub fn ensure_fixture_built() -> PathBuf {
                 std::fs::write(&partial, &bytes).expect("write fixture copy");
                 std::fs::rename(&partial, &copy).expect("publish fixture copy");
             }
-            copy.canonicalize()
-                .unwrap_or_else(|e| panic!("fixture copy missing at {copy:?}: {e}"))
+            let copy = copy
+                .canonicalize()
+                .unwrap_or_else(|e| panic!("fixture copy missing at {copy:?}: {e}"));
+            std::fs::write(&record, format!("{run}\n{}", copy.display()))
+                .expect("record the fixture's run");
+            copy
         })
         .clone()
 }
