@@ -139,10 +139,10 @@ viddy 'comb status --color=always'
 
 ```sh
 $ comb s
-PROVIDER  FIELD    SOURCE  VALUE    PATH    AGE   POLL  TTL
-git       branch   head    main     /repo   14s    46s  ★     60s×12 ◉
-git       dirty    status  true     /repo   14s    46s  ★     60s×12 ◉
-hostname  short    host    artemis  -        3h      -  ---
+PROVIDER  FIELD    SOURCE          VALUE    PATH    AGE   POLL  TTL
+git       branch   source(head)    main     /repo   14s    46s  ★     60s×12 ◉
+git       dirty    source(status)  true     /repo   14s    46s  ★     60s×12 ◉
+hostname  short    source(host)    artemis  -        3h      -  ---
 
 # Every row, facets and absent values included
 comb s -a
@@ -194,7 +194,7 @@ An absent value is a template leaf that rendered nothing — a Source stores no 
 
 ### SOURCE, and the caller's rendered template leaves
 
-SOURCE sits between FIELD and VALUE and names what produced the row: a Source of the provider (`head`, `refs`, `status`, …), the static label `put`, a config-seeded record's `config:<file>`, or `template` for a row this CLI computed itself, from the caller's own directory and environment.
+SOURCE sits between FIELD and VALUE and names what produced the row, as a `:cache` answer does: a Source of the provider (`source(head)`, `source(refs)`, …), the static label `put`, a config-seeded record's `config(<file>)`, a leaf a provider line computed (`computed(return)`), or `template` for a row this CLI computed itself, from the caller's own directory and environment. The function form keeps a Source named `put` or `template` from reading as one of those words.
 
 The daemon holds a template (`[client.providers.<p>] template.*`, the managed `defaults/`, or a `comb p <p>:template.<f>`) as data and never evaluates it, so `status` used to show a column of raw expressions — `{{ env.SCANLINE_FOO }}` — where the point of looking is to see what a prompt would actually get. Every template leaf visible from the caller's directory (its own path, an ancestor up to `$HOME`, or the global entry) is now resolved exactly as `comb get` would resolve it and added as its own row, beside any cached value at the same address — and beside the raw template row, which `-a` shows:
 
@@ -212,7 +212,7 @@ A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lea
 
 Rendering resolves with this shell's own environment and directory, and `exec()` is enabled — `status` is one of the surfaces canon `field_resolution.md` invariant 15 names, alongside `comb get`, `comb eval` and `comb watch`.
 
-In the `human`/`table` preset, SOURCE keeps its tail past 24 characters (less at a narrow `--max-width`, since it shares the same truncation budget as VALUE and PATH) — a `config:<file>` label is a whole path, and its tail (`…/defaults/aws.toml`) is what tells one config file from another — unless `--no-trunc`.
+In the `human`/`table` preset, SOURCE keeps its tail past 24 characters (less at a narrow `--max-width`, since it shares the same truncation budget as VALUE and PATH) — a `config(<file>)` label is a whole path, and its tail (`…/defaults/aws.toml`) is what tells one config file from another — unless `--no-trunc`.
 
 **Destructuring (`--depth`):** object values expand into one row per key, recursively, with the parent's path, age and lifecycle metadata carried down. `--depth 0` is unlimited, `1` shows top-level fields only, `2` goes one level down, and so on.
 

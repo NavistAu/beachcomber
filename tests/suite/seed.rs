@@ -106,8 +106,14 @@ impl Env {
         UnixStream::connect(&self.sock).await.unwrap()
     }
 
+    /// The stored label of `rel`, which an error message names the file by.
     fn label(&self, rel: &str) -> String {
         format!("config:{}", self.cfg_dir.join(rel).display())
+    }
+
+    /// The label a `status` row presents for `rel`.
+    fn row_label(&self, rel: &str) -> String {
+        format!("config({})", self.cfg_dir.join(rel).display())
     }
 
     pub(crate) fn drop_in(&self, name: &str) -> PathBuf {
@@ -208,8 +214,8 @@ async fn client_templates_seed_the_template_facet_with_their_file_label() {
     let _h = e.serve().await;
     let mut s = e.connect().await;
 
-    let main = e.label("config.toml");
-    let drop_in = e.label("conf.d/10-mine.toml");
+    let main = e.row_label("config.toml");
+    let drop_in = e.row_label("conf.d/10-mine.toml");
     let static_kind = json!({"kind": "static"});
 
     assert_eq!(

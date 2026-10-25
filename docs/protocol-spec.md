@@ -275,7 +275,9 @@ tree of its leaves' answers.
 ```
 
 - `age_ms`, `stale`, `source` are derived at the read. `source` is `put`,
-  `template`, `config:<file>`, or `source(<name>)` for a Source. A value served
+  `template`, `config(<file>)` for a configuration seed, `computed(result)` /
+  `computed(return)` for a leaf a provider line computed, or `source(<name>)`
+  for a Source. A value served
   by a template has these three only (`age_ms` 0, `stale` false, `source`
   `template`). A miss is a miss.
 - `poll` (`{interval, count}`), `watch` and `decay` are stored: written when a
@@ -457,8 +459,9 @@ List all cache entries currently held by the daemon.
 }
 ```
 
-`source` is the row's record's source label — a Source of the provider
-(`head`, `refs`, …), or a static label (`put`, `config:<file>`). `kind` is
+`source` is the row's record's label, presented as a `:cache` answer's is:
+`source(<name>)` for a Source of the provider (`source(head)`, …), `put`,
+`config(<file>)` or `computed(<line>)`. `kind` is
 present when the row's lifecycle discriminator is known: `{"kind":
 "lifecycle", "decay": N, "depth": D, "watches_files": bool}` for a lifecycle-tracked row,
 `{"kind": "once"}` / `{"kind": "static"}` / `{"kind": "transient"}`

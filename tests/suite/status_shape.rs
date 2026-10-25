@@ -1181,10 +1181,10 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
         || client.status().expect("status"),
         |rows: &Vec<CacheRow>| {
             rows.iter()
-                .any(|r| r.provider == "git" && r.source == "refs")
+                .any(|r| r.provider == "git" && r.source == "source(refs)")
                 && rows
                     .iter()
-                    .any(|r| r.provider == "git" && r.source == "diff")
+                    .any(|r| r.provider == "git" && r.source == "source(diff)")
         },
     );
 
@@ -1193,7 +1193,7 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     // source (poll) has watches_files=false while refs has watches_files=true.
     let refs_row = rows
         .iter()
-        .find(|r| r.provider == "git" && r.source == "refs")
+        .find(|r| r.provider == "git" && r.source == "source(refs)")
         .expect("git.refs row present after get in a real repo");
 
     use beachcomber::cache::RowKind;
@@ -1222,7 +1222,7 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     // Cross-check the diff source: poll strategy → poll_interval_secs is Some, watches_files=false.
     let diff_row = rows
         .iter()
-        .find(|r| r.provider == "git" && r.source == "diff")
+        .find(|r| r.provider == "git" && r.source == "source(diff)")
         .expect("git.diff row present");
     match diff_row.kind.as_ref().expect("kind present") {
         RowKind::Lifecycle { watches_files, .. } => {

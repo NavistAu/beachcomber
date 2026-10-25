@@ -383,7 +383,7 @@ fn the_shipped_cache_prototype_is_the_decay_default() {
     );
     assert!(
         rows[0].source.starts_with("config:") && rows[0].source.ends_with("defaults/00-comb.toml"),
-        "labelled with the defaults file, got {}",
+        "stored with the defaults file's label, got {}",
         rows[0].source
     );
     assert_eq!(rows[0].value, json!({"decay": 4}));
@@ -475,12 +475,12 @@ async fn the_daemon_seeds_defaults_beneath_config_and_conf_d() {
     );
     let venv_source = row_source(&mut s, "python:template", "venv_name").await;
     assert!(
-        venv_source.starts_with("config:") && venv_source.ends_with("defaults/python.toml"),
+        venv_source.starts_with("config(") && venv_source.ends_with("defaults/python.toml)"),
         "the shipped leaf is labelled with the defaults file, got {venv_source}"
     );
     let version_source = row_source(&mut s, "python:template", "version").await;
     assert!(
-        version_source.starts_with("config:") && version_source.ends_with("conf.d/10-mine.toml"),
+        version_source.starts_with("config(") && version_source.ends_with("conf.d/10-mine.toml)"),
         "the overriding leaf is labelled with the drop-in, got {version_source}"
     );
     assert_eq!(

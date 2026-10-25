@@ -35,6 +35,28 @@ pub fn is_static_label(source_name: &str) -> bool {
 /// Like `put` and `config:<file>` it has no Source behind it.
 pub const COMPUTED_PREFIX: &str = "computed:";
 
+/// A record's writer label as every reader sees it — a `:cache` answer's
+/// `source`, a `status` row's SOURCE: `source(<name>)` for a Source,
+/// `config(<file>)` for a configuration seed, `computed(result)` /
+/// `computed(return)` for a leaf a provider line computed, and `put` as
+/// it is. The function form keeps a Source that happens to be named `put` or
+/// `template` from reading as one of those words.
+///
+/// Storage keeps the short labels (`head`, `config:<file>`,
+/// `computed:return`): they key records, lifecycle snapshots and failure
+/// state, so only what leaves the daemon is presented.
+pub fn presented_label(label: &str) -> String {
+    if label == PUT_SOURCE {
+        label.to_string()
+    } else if let Some(file) = label.strip_prefix(CONFIG_SOURCE_PREFIX) {
+        format!("config({file})")
+    } else if let Some(line) = label.strip_prefix(COMPUTED_PREFIX) {
+        format!("computed({line})")
+    } else {
+        format!("source({label})")
+    }
+}
+
 /// What a Source's records carry into the `<p>:cache` facet beside them: the
 /// schedule that keeps them fresh. Built from the Source's metadata
 /// ([`Schedule::of`]), so a record and its schedule are written together and
@@ -1851,9 +1873,13 @@ pub struct CacheEntryInfo {
 pub struct CacheRow {
     pub provider: String,
     pub path: Option<String>,
-    /// Name of the Source that produced this field. Drives per-row lifecycle
+    /// What produced this field. Inside the daemon it is the stored label
+    /// (`head`, `put`, `config:<file>`), which keys the per-row lifecycle
     /// snapshot lookup so the renderer can format glyphs and TTL columns
-    /// according to the owning Source's strategy, not the provider's.
+    /// according to the owning Source's strategy, not the provider's. The
+    /// `status` response presents it ([`presented_label`]: `source(head)`,
+    /// `put`, `config(<file>)`), and a row `comb status` renders itself says
+    /// `template`.
     pub source: String,
     pub field: String,
     pub value: serde_json::Value,
@@ -1957,6 +1983,20 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_label_but_put_is_presented_in_function_form() {
+        assert_eq!(presented_label("head"), "source(head)");
+        assert_eq!(presented_label("put"), "put");
+        assert_eq!(
+            presented_label("config:/c/defaults/aws.toml"),
+            "config(/c/defaults/aws.toml)"
+        );
+        assert_eq!(presented_label("computed:return"), "computed(return)");
+        assert_eq!(presented_label("computed:result"), "computed(result)");
+        // A Source named like a layer word stays a Source.
+        assert_eq!(presented_label("template"), "source(template)");
+    }
 
     fn make_fields(pairs: &[(&str, &str)]) -> HashMap<String, Value> {
         pairs

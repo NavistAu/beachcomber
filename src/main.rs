@@ -29,9 +29,9 @@ fn status_after_help() -> String {
     let mut help = format!(
         "Reading the output:\n\
         \n\
-        \x20 PROVIDER  FIELD   SOURCE    VALUE       PATH              AGE    POLL  TTL\n\
-        \x20 git       branch  head      main        ~/ws/beachcomber  14s{times}2   37s  {star}  60s{times}12 (12m) {ring}\n\
-        \x20 git       branch  template  {rendered} main-dev  ~/ws/beachcomber  0s       -   ---\n\
+        \x20 PROVIDER  FIELD   SOURCE        VALUE       PATH              AGE    POLL  TTL\n\
+        \x20 git       branch  source(head)  main        ~/ws/beachcomber  14s{times}2   37s  {star}  60s{times}12 (12m) {ring}\n\
+        \x20 git       branch  template      {rendered} main-dev  ~/ws/beachcomber  0s       -   ---\n\
         \n\
         \x20 Each row is one cache ENTRY, returned by a Query ie `comb get`.\n\
         \x20 - ENTRY Refreshes VALUE by SOURCE(PROVIDER.FIELD @ PATH).\n\
@@ -41,8 +41,9 @@ fn status_after_help() -> String {
         \x20   - Idle entries halve their TTL.PollRate each TTL.PollLifetime.\n\
         \x20   - After 4 lifetimes, the ENTRY is Evicted from cache.\n\
         \n\
-        \x20 SOURCE head        Which Source of the PROVIDER produced VALUE; `put` / `config:<file>` for stored data\n\
-        \x20        template    Rendered here, from this shell's directory and environment — never cached\n\
+        \x20 SOURCE source(head)  Which Source of the PROVIDER produced VALUE; `put` / `config(<file>)` for stored data,\n\
+        \x20                      `computed(return)` for a leaf a provider line computed\n\
+        \x20        template      Rendered here, from this shell's directory and environment — never cached\n\
         \x20 VALUE  {rendered} main-dev  A rendered VALUE, marked because it is computed, not stored (cyan with colour on)\n\
         \x20 AGE    43s         RefreshTime:  Time since VALUE Refreshed from SOURCE\n\
         \x20        {times}2          PollCount:    Polls since last Query\n\

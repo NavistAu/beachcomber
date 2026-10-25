@@ -1382,14 +1382,7 @@ fn cache_facet_response(
         answer.insert("age_ms".into(), (record.age_ms() as u64).into());
         answer.insert("stale".into(), record.is_stale().into());
         let label: &str = &record.source;
-        answer.insert(
-            "source".into(),
-            if crate::cache::is_static_label(label) {
-                label.into()
-            } else {
-                format!("source({label})").into()
-            },
-        );
+        answer.insert("source".into(), crate::cache::presented_label(label).into());
         let stored = cache.stored_keys(provider, record.entry.as_deref(), label, tail);
         for (key, v) in stored.iter().flatten() {
             if let Ok(v) = serde_json::to_value(v) {
@@ -2068,6 +2061,12 @@ async fn handle_request(
                         row.failure = Some(snap.clone());
                     }
                 }
+            }
+
+            // The internal labels keyed the lookups above; a reader gets the
+            // presented form, as a `:cache` answer does.
+            for row in rows.iter_mut() {
+                row.source = crate::cache::presented_label(&row.source);
             }
 
             match serde_json::to_value(&rows) {
