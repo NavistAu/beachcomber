@@ -155,22 +155,39 @@ pub fn has_git() -> bool {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// `git` with the host's configuration shut out. A `commit.gpgsign = true` in
-/// the developer's global config turns every fixture commit into a signing
-/// round-trip — ~100ms each, serialised through the agent when tests run in
-/// parallel — and `init.defaultBranch` would make the initial branch name
-/// depend on the machine.
-fn git_cmd(dir: &Path, args: &[&str]) -> Command {
+/// The variables that point git at a repository other than the one
+/// `current_dir` is in. A test run under `git rebase --exec` inherits
+/// `GIT_DIR`, and a fixture would then write its config and commits into the
+/// repository being rebased.
+const REPO_VARS: [&str; 6] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+];
+
+/// `git` in `dir` and nowhere else, with the host's configuration shut out. A
+/// `commit.gpgsign = true` in the developer's global config turns every
+/// fixture commit into a signing round-trip — ~100ms each, serialised through
+/// the agent when tests run in parallel — and `init.defaultBranch` would make
+/// the initial branch name depend on the machine.
+pub fn git_cmd(dir: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     cmd.args(args)
         .current_dir(dir)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1");
+    for var in REPO_VARS {
+        cmd.env_remove(var);
+    }
     cmd
 }
 
+/// [`git_cmd`], run, panicking with git's stderr if it fails.
 #[allow(dead_code)]
-fn git(dir: &Path, args: &[&str]) {
+pub fn git(dir: &Path, args: &[&str]) {
     let out = git_cmd(dir, args)
         .output()
         .unwrap_or_else(|e| panic!("git {:?}: {e}", args));
@@ -198,4 +215,29 @@ fn git_output(dir: &Path, args: &[&str]) -> String {
         );
     }
     String::from_utf8(out.stdout).expect("git output is UTF-8")
+}
+
+/// A fixture builds in its own directory even when the test inherits a
+/// `GIT_DIR`, as it does under `git rebase --exec`: the repository `GIT_DIR`
+/// names gets neither the fixture's identity nor its commit.
+#[test]
+fn a_fixture_ignores_an_inherited_git_dir() {
+    if !has_git() {
+        return;
+    }
+    let decoy = TempDir::new().expect("TempDir::new");
+    git(decoy.path(), &["init", "--initial-branch=main"]);
+    // SAFETY: nextest runs each test in its own process, so nothing else
+    // reads this environment.
+    unsafe { std::env::set_var("GIT_DIR", decoy.path().join(".git")) };
+
+    let fixture = GitRepoFixture::new();
+
+    let config = std::fs::read_to_string(decoy.path().join(".git/config")).unwrap();
+    assert!(!config.contains("test@test.com"), "{config}");
+    assert!(
+        !decoy.path().join(".git/refs/heads/main").exists(),
+        "the decoy got the fixture's commit"
+    );
+    assert!(fixture.path().join(".git/refs/heads/main").exists());
 }

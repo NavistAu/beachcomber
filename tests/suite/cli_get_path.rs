@@ -69,11 +69,7 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
     // Force the initial branch to `main` regardless of the host's
     // `init.defaultBranch` (CI runners default to `master`); the read-always git
     // provider reports the repo's real branch, which these tests assert == "main".
-    std::process::Command::new("git")
-        .args(["init", "-b", "main"])
-        .current_dir(&repo_path)
-        .output()
-        .unwrap();
+    crate::common::git::git(std::path::Path::new(&repo_path), &["init", "-b", "main"]);
 
     // Seed a git.branch entry at the repo root (where root will land).
     let mut git = HashMap::new();

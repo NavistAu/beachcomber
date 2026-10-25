@@ -1551,7 +1551,7 @@ async fn a_put_on_a_nearest_provider_is_found_up_the_path_chain() {
     let ws = f.path("ws");
     let repo = f.path("ws/repo");
     std::fs::create_dir_all(&repo).unwrap();
-    git_at(Path::new(&repo), &["init", "--initial-branch=main"]);
+    crate::common::git::git(Path::new(&repo), &["init", "--initial-branch=main"]);
 
     send_recv(
         &mut s,
@@ -1595,7 +1595,7 @@ async fn a_directory_without_a_repo_reads_the_home_repo() {
         return;
     }
     let f = Fixture::defaults();
-    git_at(&f.home, &["init", "--initial-branch=homebr"]);
+    crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
     let sub = f.path("ws/project/foo");
 
     let mut s = f.connect().await;
@@ -1649,22 +1649,6 @@ async fn a_directory_outside_home_and_any_repo_has_no_git_values() {
 
 // ── a repository at $HOME is served from the global entry ────────────────────
 
-/// `git`, with the host's configuration shut out (see `common::git`).
-fn git_at(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
 /// `$HOME` is the global path, so a repository rooted there is the
 /// instance at the global entry: its records key the pathless entry and
 /// the source runs at `$HOME`. Addressing `$HOME`, addressing nothing, and
@@ -1677,7 +1661,7 @@ async fn a_repository_at_home_is_served_from_the_global_entry() {
         return;
     }
     let f = Fixture::defaults();
-    git_at(&f.home, &["init", "--initial-branch=homebr"]);
+    crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
 
     let home = f.home.to_string_lossy().into_owned();
     let mut s = f.connect().await;
@@ -1737,7 +1721,7 @@ async fn a_bare_global_read_of_a_home_repository_is_not_a_miss() {
         return;
     }
     let f = Fixture::defaults();
-    git_at(&f.home, &["init", "--initial-branch=homebr"]);
+    crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
 
     let mut s = f.connect().await;
     let whole = data(send_recv(&mut s, get("git")).await, "bare --global");
@@ -1793,7 +1777,7 @@ async fn watch_from_a_subdirectory_of_a_home_repository_reads_the_global_entry()
         return;
     }
     let f = Fixture::defaults();
-    git_at(&f.home, &["init", "--initial-branch=homebr"]);
+    crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
 
     let sub = f.path("ws/other");
     let mut w = f.connect().await;
@@ -1926,7 +1910,7 @@ async fn refresh_at_the_global_entry_runs_the_home_repository() {
         return;
     }
     let (_home_dir, _sock_dir, home, sock) = daemon_at_a_temp_home().await;
-    git_at(&home, &["init", "--initial-branch=homebr"]);
+    crate::common::git::git(&home, &["init", "--initial-branch=homebr"]);
 
     let mut s = UnixStream::connect(&sock).await.unwrap();
     let resp = send_recv(&mut s, serde_json::json!({"op": "refresh", "key": "git"})).await;

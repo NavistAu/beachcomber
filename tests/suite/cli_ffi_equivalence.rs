@@ -258,12 +258,12 @@ fn comb_get_json_and_bc_get_answer_identically() {
     let cwd = daemon.home.join("ws").join("project");
     std::fs::create_dir_all(&cwd).unwrap();
     if git {
-        git_at(&cwd, &["init", "--initial-branch=main"]);
-        git_at(&cwd, &["config", "user.email", "test@test.com"]);
-        git_at(&cwd, &["config", "user.name", "Test"]);
+        crate::common::git::git(&cwd, &["init", "--initial-branch=main"]);
+        crate::common::git::git(&cwd, &["config", "user.email", "test@test.com"]);
+        crate::common::git::git(&cwd, &["config", "user.name", "Test"]);
         std::fs::write(cwd.join("README.md"), "# test").unwrap();
-        git_at(&cwd, &["add", "."]);
-        git_at(&cwd, &["commit", "-m", "init"]);
+        crate::common::git::git(&cwd, &["add", "."]);
+        crate::common::git::git(&cwd, &["commit", "-m", "init"]);
     }
     let cwd = cwd.canonicalize().unwrap();
     let cwd_str = cwd.to_str().unwrap();
@@ -419,21 +419,5 @@ fn comb_get_json_and_bc_get_answer_identically() {
         "{} disagreement(s) between comb get -f json and bc_get:\n  {}",
         report.len(),
         report.join("\n  ")
-    );
-}
-
-/// `git`, with the host's configuration shut out, as `common::git` does.
-fn git_at(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
     );
 }
