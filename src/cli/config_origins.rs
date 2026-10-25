@@ -27,18 +27,14 @@ pub struct Origin {
     pub shadowed: Vec<(PathBuf, toml::Value)>,
 }
 
-/// Every leaf of `config`'s composition, sorted by key, with comb's defaults
-/// for the settings no file sets. Each layer is one file, in composition
-/// order, deep-merged as [`crate::config::deep_merge_toml`] does: a table
-/// merges key by key, anything else is the last file's.
+/// Every leaf of `config`'s composition ([`Config::composed`]), sorted by
+/// key, with comb's defaults for the settings no file sets: what
+/// [`Config::applied`] holds that the composition does not, so the view cannot
+/// claim a default comb does not use, nor leave out one it does.
 pub fn origins(config: &Config) -> Vec<Origin> {
     let layers = config.composed_layers();
-    let mut merged = toml::Value::Table(Default::default());
-    for (_, layer) in layers {
-        crate::config::deep_merge_toml(&mut merged, layer.clone());
-    }
     let mut leaves = Vec::new();
-    collect_leaves(&merged, &mut Vec::new(), &mut leaves);
+    collect_leaves(config.composed(), &mut Vec::new(), &mut leaves);
 
     let mut out: Vec<(Vec<String>, Origin)> = leaves
         .into_iter()
@@ -63,8 +59,10 @@ pub fn origins(config: &Config) -> Vec<Origin> {
         })
         .collect();
 
-    for (segments, value) in builtin_defaults(config) {
-        if at_path(&merged, &segments).is_none() {
+    let mut defaults = Vec::new();
+    collect_leaves(&config.applied(), &mut Vec::new(), &mut defaults);
+    for (segments, value) in defaults {
+        if at_path(config.composed(), &segments).is_none() {
             out.push((
                 segments.clone(),
                 Origin {
@@ -78,45 +76,6 @@ pub fn origins(config: &Config) -> Vec<Origin> {
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out.into_iter().map(|(_, origin)| origin).collect()
-}
-
-/// The settings comb gives a value of its own when no file sets one: the
-/// `[daemon]` defaults that are values rather than absent, and the defaults
-/// the accessors fall back to. Read off the code that applies them, so the
-/// view cannot claim a default comb does not use.
-fn builtin_defaults(config: &Config) -> Vec<(Vec<String>, toml::Value)> {
-    let seg = |path: &[&str]| path.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    let daemon = crate::config::DaemonConfig::default();
-    let mut out = vec![
-        (
-            seg(&["daemon", "log_level"]),
-            toml::Value::String(daemon.log_level.to_string().to_lowercase()),
-        ),
-        // The accessors answer with their default when no file sets the key,
-        // and these are listed only then.
-        (
-            seg(&["daemon", "timeout"]),
-            toml::Value::String(crate::config::display_duration(config.daemon().timeout())),
-        ),
-        (
-            seg(&["daemon", "budget"]),
-            toml::Value::String(crate::config::display_duration(config.daemon().budget())),
-        ),
-    ];
-    // The plugin directory beside the config file, when there is one.
-    if let Ok(dirs) = config.plugin_path(None)
-        && !dirs.is_empty()
-    {
-        out.push((
-            seg(&["daemon", "plugin", "path"]),
-            toml::Value::Array(
-                dirs.into_iter()
-                    .map(|d| toml::Value::String(d.display().to_string()))
-                    .collect(),
-            ),
-        ));
-    }
-    out
 }
 
 /// The leaves of `value`: everything that is not a table with keys in it. An
@@ -385,6 +344,32 @@ mod tests {
             1,
             "{all:#?}"
         );
+    }
+
+    /// What comb applies where no file says is what the code that applies it
+    /// answers: a value worked out from another (the watchdog threshold, three
+    /// intervals) and one beside the config file (the env file) are listed
+    /// as the defaults they are.
+    #[test]
+    fn a_default_is_what_comb_applies_however_it_is_worked_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("config.toml");
+        std::fs::write(&main, "[daemon]\nwatchdog_interval = \"30s\"\n").unwrap();
+        let all = origins(&Config::load_from(&main));
+        let threshold = find(&all, "daemon.watchdog_threshold");
+        assert_eq!(threshold.file, None);
+        assert_eq!(threshold.value, toml::Value::String("90s".into()));
+        assert_eq!(
+            find(&all, "daemon.env_file").value,
+            toml::Value::String(tmp.path().join("env").display().to_string())
+        );
+
+        // A configuration with no file behind it reads no env file, and has
+        // no watchdog to default the threshold of.
+        let all = origins(&config(&[]));
+        for key in ["daemon.env_file", "daemon.watchdog_threshold"] {
+            assert!(all.iter().all(|o| o.key != key), "{key} in {all:#?}");
+        }
     }
 
     #[test]

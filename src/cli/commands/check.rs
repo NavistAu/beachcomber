@@ -260,10 +260,9 @@ pub fn run_check_subjects(
 /// The provider set is `ProviderRegistry::load`'s. A Source's `plugin()` calls
 /// are linted, not run, so nothing is `dlopen`ed in the checking process.
 fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
-    // The loader the daemon and the config watch use; the checking process's
-    // own variables stand in for the daemon's.
-    let vars = std::env::vars().collect();
-    let load = crate::provider::registry::ProviderRegistry::load(config, &vars);
+    // The loader the daemon and the config watch use, with the variables a
+    // daemon started on this configuration would have.
+    let load = crate::provider::registry::ProviderRegistry::load(config, &config.vars());
     let mut out: Vec<serde_json::Value> = load
         .errors
         .into_iter()

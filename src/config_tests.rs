@@ -96,8 +96,7 @@ fn socket_path_override() {
 
 #[test]
 fn log_path_resolves_xdg() {
-    let config = Config::default();
-    let path = config.resolve_log_path();
+    let path = Config::log_path();
     assert!(
         path.to_string_lossy().contains("beachcomber"),
         "Log path should include 'beachcomber': {path:?}",
@@ -239,8 +238,32 @@ fn layers_tolerate_a_missing_main_config_file() {
 }
 
 #[test]
-fn settings_only_strips_both_providers_roots() {
-    let composed: toml::Value = toml::from_str(
+fn composed_is_every_layer_deep_merged_in_order() {
+    let layer = |text: &str| toml::from_str::<toml::Value>(text).unwrap();
+    let config = Config::from_layers(vec![
+        (
+            PathBuf::from("/d.toml"),
+            layer("[daemon]\nlog_level = \"warn\"\nbudget = \"1s\"\n"),
+        ),
+        (
+            PathBuf::from("/c.toml"),
+            layer("[daemon]\nlog_level = \"debug\"\n"),
+        ),
+    ]);
+    assert_eq!(
+        config.composed(),
+        &layer("[daemon]\nlog_level = \"debug\"\nbudget = \"1s\"\n"),
+        "a table merges key by key; the last file's value holds"
+    );
+    assert_eq!(
+        Config::default().composed(),
+        &toml::Value::Table(Default::default())
+    );
+}
+
+#[test]
+fn settings_are_the_composition_without_either_providers_root() {
+    let settings = Config::from_toml(
         r#"
 [daemon]
 log_level = "debug"
@@ -258,9 +281,7 @@ bogus = 1
 template.branch = "{{ git.branch }}"
 "#,
     )
-    .unwrap();
-
-    let settings = Config::settings_only(composed);
+    .settings();
     assert!(
         settings["client"].get("providers").is_none(),
         "[client.providers] is not a setting"
@@ -1456,6 +1477,35 @@ BEACHCOMBER_TEST_NUM=42
                 "single quoted"
             );
             assert_eq!(std::env::var("BEACHCOMBER_TEST_NUM").unwrap(), "42");
+        },
+    );
+}
+
+/// The variables a daemon started on this configuration has: this process's,
+/// with the env file's over them. Read, not set: the process is left as it was.
+#[test]
+fn vars_are_the_processs_with_the_env_files_over_them() {
+    let tmp = TempDir::new().unwrap();
+    let env_path = tmp.path().join("env");
+    std::fs::write(&env_path, "BEACHCOMBER_TEST_OVER=file\n").unwrap();
+    let config = Config::from_toml(&format!(
+        "[daemon]\nenv_file = {}\n",
+        toml::Value::String(env_path.to_string_lossy().to_string())
+    ));
+    temp_env::with_vars(
+        [
+            ("BEACHCOMBER_TEST_OVER", Some("process")),
+            ("BEACHCOMBER_TEST_KEPT", Some("process")),
+        ],
+        || {
+            let vars = config.vars();
+            assert_eq!(vars["BEACHCOMBER_TEST_OVER"], "file");
+            assert_eq!(vars["BEACHCOMBER_TEST_KEPT"], "process");
+            assert_eq!(
+                std::env::var("BEACHCOMBER_TEST_OVER").unwrap(),
+                "process",
+                "reading the env file sets nothing"
+            );
         },
     );
 }

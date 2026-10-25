@@ -1017,7 +1017,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
     let (watch_cfg, watch_conf_d, watch_defaults) = (cfg.clone(), conf_d.clone(), defaults.clone());
     let stop = CancellationToken::new();
     beachcomber::daemon::config_watch::spawn_config_self_watch_with(
-        cfg.clone(),
+        &Config::load_from(&cfg),
         Duration::from_millis(20),
         false,
         stop.clone(),

@@ -944,6 +944,43 @@ fn check_config_reports_its_own_local_verdict() {
     );
 }
 
+/// `comb check config` judges the configuration with the variables a daemon
+/// started on it would have, the env file's among them: a `~` in the plugin
+/// path is the env file's `HOME` when the checking shell has none.
+#[test]
+fn check_config_sees_the_env_files_variables() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_dir = tmp.path().join("beachcomber");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        "[daemon.plugin]\npath = [\"~/plugins\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        cfg_dir.join("env"),
+        format!("HOME={}\n", tmp.path().display()),
+    )
+    .unwrap();
+
+    let output = isolate(
+        &mut std::process::Command::new(comb_binary()),
+        tmp.path(),
+        tmp.path(),
+        &tmp.path().join("no-daemon.sock"),
+    )
+    .env_remove("HOME")
+    .args(["check", "--connect-timeout", "0", "config"])
+    .output()
+    .expect("run comb check config");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("[PASS] local") && !stdout.contains("HOME is not set"),
+        "expected the env file's HOME to stand, got:\n{stdout}"
+    );
+}
+
 /// `comb check config` on a file still carrying the removed `[providers]` root
 /// prints a local FAIL line that says where its contents went.
 #[test]

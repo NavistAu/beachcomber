@@ -11,6 +11,7 @@ use crate::common::git::{GitRepoFixture, has_git};
 use crate::common::mtime::touch_future;
 use crate::common::poll::poll_until_async;
 use crate::seed::{Env, rewrite, send_recv};
+use beachcomber::config::Config;
 use beachcomber::daemon::config_watch::{ChangeKind, spawn_config_self_watch_with};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -42,16 +43,29 @@ fn watch_until(
     std::thread::JoinHandle<()>,
     std::sync::mpsc::Receiver<ChangeKind>,
 ) {
+    watch_from(&Config::load_from(&cfg), ms, stop)
+}
+
+/// [`watch_until`] from `running`, the configuration the daemon loaded.
+fn watch_from(
+    running: &Config,
+    ms: u64,
+    stop: CancellationToken,
+) -> (
+    std::thread::JoinHandle<()>,
+    std::sync::mpsc::Receiver<ChangeKind>,
+) {
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = spawn_config_self_watch_with(
-        cfg,
+        running,
         Duration::from_millis(ms),
         false, // fs events off — the mtime poll is the mechanism under test
         stop,
         move |kind, _, _| {
             let _ = tx.send(kind);
         },
-    );
+    )
+    .expect("a configuration loaded from a file is watched");
     (handle, rx)
 }
 
@@ -206,6 +220,34 @@ fn new_file_appearing_in_conf_d_triggers_restart() {
 }
 
 // ── re-arming and change classification ──────────────────────────────────────
+
+/// A change is judged against the configuration the daemon is running, not
+/// the files as they were when the watch began: a setting edited between the
+/// daemon's load and the watch's start is still a restart when the next edit
+/// is seen, though that edit touches only a provider.
+#[test]
+fn a_change_is_judged_against_the_configuration_the_daemon_loaded() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.toml");
+    std::fs::write(&cfg, "[daemon]\n").unwrap();
+    let running = Config::load_from(&cfg);
+    std::fs::write(&cfg, "[daemon]\nlog_level = \"debug\"\n").unwrap();
+    touch_future(&cfg);
+
+    let (_watch, rx) = watch_from(&running, 50, CancellationToken::new());
+
+    std::fs::write(
+        &cfg,
+        "[daemon]\nlog_level = \"debug\"\n[client.providers.p]\ntemplate.t = \"x\"\n",
+    )
+    .unwrap();
+    crate::common::mtime::set_mtime_ahead(&cfg, 4);
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3)),
+        Ok(ChangeKind::Settings),
+        "the daemon runs at info; the files say debug"
+    );
+}
 
 #[test]
 fn the_watch_re_arms_and_reports_every_change() {

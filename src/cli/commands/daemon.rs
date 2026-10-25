@@ -10,7 +10,7 @@ pub fn run_daemon(socket_path: PathBuf, config: Config, exit_with_parent: bool) 
     // Captured before any startup work: a parent that dies during startup must
     // still be noticed, and once we are re-parented getppid() no longer names it.
     let parent_pid = unsafe { libc::getppid() };
-    let log_path = config.resolve_log_path();
+    let log_path = Config::log_path();
 
     // A configuration with errors is refused before anything is set up: the
     // log level it names is not trusted to build the logger.

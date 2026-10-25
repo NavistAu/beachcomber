@@ -16,7 +16,7 @@
 //! `log_level`, `plugin.path`, `budget`, `timeout`, the watchdog keys,
 //! `idle_shutdown`) is [`ChangeKind::Settings`] and the daemon restarts,
 //! because those are read once at startup. The classifier is the composed TOML
-//! with both `providers` roots removed (`Config::settings_only`), compared
+//! with both `providers` roots removed (`Config::settings`), compared
 //! before and after. Because the providers case leaves the process running,
 //! the watch re-arms after every call rather than firing once and exiting.
 //!
@@ -76,7 +76,7 @@ pub const CONFIG_WATCH_POLL_INTERVAL: Duration = crate::singleton::SELF_WATCH_PO
 
 /// What a configuration change turned out to be, decided by comparing the
 /// composed *settings* — the deep-merged TOML with both `providers` roots
-/// removed (`Config::settings_only`) — before and after.
+/// removed (`Config::settings`) — before and after.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
     /// The bare keys of `[daemon]` and `[client]` are as they were: only what
@@ -123,10 +123,11 @@ fn composed_snapshot(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path)
     out
 }
 
-/// Spawn a thread watching `config_path`, its `defaults/` and its `conf.d`.
-/// Each time the composed set changes and parses as valid config, calls
-/// `on_change` with the
-/// kind of change (after a 200ms debounce on the fs-event path) and **keeps
+/// Spawn a thread watching the files `running` was loaded from: its
+/// `config.toml`, `defaults/` and `conf.d`. `running` is the configuration
+/// the daemon runs on, and what the first change is judged against. Each time
+/// the composed set changes and parses as valid config, calls `on_change` with
+/// the kind of change (after a 200ms debounce on the fs-event path) and **keeps
 /// watching** — a providers change is handled in place, so there is no process
 /// exit to end the watch. A change that fails to parse logs a warning naming the
 /// error and changes nothing: the daemon never restarts into a config that would
@@ -140,27 +141,30 @@ fn composed_snapshot(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path)
 /// Cancelling `stop` ends the thread, at the latest one `poll_interval` later.
 /// Returns its `JoinHandle` so a caller that needs to know it has gone can wait
 /// for it; the daemon does not, because its own exit is what cancels the token.
+/// `None` for a configuration with no file behind it, which has nothing to
+/// watch.
 pub fn spawn_config_self_watch_with<
     F: FnMut(ChangeKind, &Config, ProviderRegistry) + Send + 'static,
 >(
-    config_path: PathBuf,
+    running: &Config,
     poll_interval: Duration,
     fs_events: bool,
     stop: CancellationToken,
     mut on_change: F,
-) -> std::thread::JoinHandle<()> {
+) -> Option<std::thread::JoinHandle<()>> {
     use notify::{EventKind, RecursiveMode, Watcher};
     use std::sync::mpsc;
 
     // The starting point is read on the caller's thread, not the watch's: a
     // change landing between the spawn and the thread's first instruction would
     // otherwise become the "before" state and classify itself as no change.
+    let config_path = running.config_file()?.to_path_buf();
     let defaults_dir = Config::defaults_dir_for(&config_path);
     let conf_d_dir = Config::conf_d_dir_for(&config_path);
     let mut snapshot = composed_snapshot(&config_path, &defaults_dir, &conf_d_dir);
-    let mut settings = settings_of(&Config::load_from(&config_path));
+    let mut settings = running.settings();
 
-    std::thread::spawn(move || {
+    Some(std::thread::spawn(move || {
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
         let watcher = if fs_events {
             match (notify::recommended_watcher(tx), config_path.parent()) {
@@ -318,7 +322,7 @@ pub fn spawn_config_self_watch_with<
                 }
             }
         }
-    })
+    }))
 }
 
 /// Poll fallback used both when the fs-event watcher couldn't be set up at
@@ -404,7 +408,7 @@ fn try_fire<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
         );
         return;
     }
-    let next = settings_of(&config);
+    let next = config.settings();
     let kind = if next == *settings {
         ChangeKind::Providers
     } else {
@@ -413,17 +417,6 @@ fn try_fire<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
     *settings = next;
     tracing::info!("config file changed and parses cleanly ({kind:?})");
     on_change(kind, &config, loaded.registry);
-}
-
-/// The composed configuration with both `providers` roots removed — the half a
-/// change has to touch for a restart to be warranted. Read from the layers the
-/// `Config` was composed from, so what is compared is what was validated.
-fn settings_of(config: &Config) -> toml::Value {
-    let mut composed = toml::Value::Table(Default::default());
-    for (_, layer) in config.composed_layers() {
-        crate::config::deep_merge_toml(&mut composed, layer.clone());
-    }
-    Config::settings_only(composed)
 }
 
 fn mtime_to_unix_ms(mtime: SystemTime) -> u64 {
@@ -458,7 +451,7 @@ mod tests {
                 config,
                 settings: toml::Value::Table(Default::default()),
             };
-            dir.settings = settings_of(&Config::load_from(&dir.config));
+            dir.settings = Config::load_from(&dir.config).settings();
             dir
         }
 

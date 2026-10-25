@@ -297,8 +297,7 @@ pub fn fork_daemon(binary_path: &str, socket_path: &Path, no_reap: bool) -> std:
     }
 
     // Open log file for the forked daemon's stderr.
-    let config = crate::config::Config::load();
-    let log_path = config.resolve_log_path();
+    let log_path = crate::config::Config::log_path();
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

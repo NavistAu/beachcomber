@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -141,6 +142,9 @@ pub struct Config {
     /// seeds its facets from them, so an edit after the load cannot slip past
     /// the check or be seeded unchecked. Empty for the default.
     layers: Vec<(PathBuf, toml::Value)>,
+    /// `layers` deep-merged in order ([`deep_merge_toml`]): what the settings
+    /// were read from, merged once.
+    composed: toml::Value,
     /// Everything wrong with `layers`, found once when they were composed: a
     /// file that could not be read or parsed, a rule a file breaks, a value
     /// the composition cannot hold.
@@ -238,6 +242,7 @@ impl Default for Config {
             client: empty_table(),
             config_path: None,
             layers: Vec::new(),
+            composed: empty_table(),
             errors: Vec::new(),
         }
     }
@@ -391,7 +396,10 @@ impl Config {
     fn compose(read: ReadLayers, config_path: Option<PathBuf>) -> Self {
         let ReadLayers { layers, mut errors } = read;
         errors.extend(Self::validate_layers(&layers));
-        let merged = Self::merged(&layers);
+        let mut merged = empty_table();
+        for (_, layer) in &layers {
+            deep_merge_toml(&mut merged, layer.clone());
+        }
         let composed = match Composed::deserialize(merged.clone()) {
             Ok(composed) => composed,
             Err(e) => {
@@ -424,19 +432,12 @@ impl Config {
             client: composed.client,
             config_path,
             layers,
+            composed: merged,
             errors: Vec::new(),
         };
         errors.extend(config.watchdog_errors());
         config.errors = errors;
         config
-    }
-
-    fn merged(layers: &[(PathBuf, toml::Value)]) -> toml::Value {
-        let mut composed = toml::Value::Table(Default::default());
-        for (_, layer) in layers {
-            deep_merge_toml(&mut composed, layer.clone());
-        }
-        composed
     }
 
     /// A configuration from the text of one layer that has no file, labelled
@@ -498,6 +499,61 @@ impl Config {
     /// The layers this configuration was composed from, for seeding.
     pub fn composed_layers(&self) -> &[(PathBuf, toml::Value)] {
         &self.layers
+    }
+
+    /// The layers deep-merged in order: a table merges key by key, anything
+    /// else is the last file's. What the settings were read from.
+    pub fn composed(&self) -> &toml::Value {
+        &self.composed
+    }
+
+    /// `[daemon]`'s bare settings as comb applies them, each read through the
+    /// accessor the code that applies it reads: a file's value where one is
+    /// set, comb's own where none is. A setting comb gives no value of its own
+    /// is absent where no file sets it: `socket_path` (`$BEACHCOMBER_SOCKET`
+    /// or the per-user default decide), the watchdog, `idle_shutdown`, and, for
+    /// a configuration with no file behind it, the env file and plugin path.
+    pub fn applied(&self) -> toml::Value {
+        let text = |s: String| toml::Value::String(s);
+        let duration = |d: Duration| text(display_duration(d));
+        let d = &self.daemon;
+        let mut daemon = toml::Table::new();
+        let mut set = |key: &str, value: Option<toml::Value>| {
+            if let Some(value) = value {
+                daemon.insert(key.to_string(), value);
+            }
+        };
+        set("socket_path", d.socket_path.clone().map(text));
+        set(
+            "log_level",
+            Some(text(d.log_level.to_string().to_lowercase())),
+        );
+        set("timeout", Some(duration(d.timeout())));
+        set("budget", Some(duration(d.budget())));
+        set(
+            "env_file",
+            self.env_file_path().map(|p| text(p.display().to_string())),
+        );
+        set(
+            "watchdog_interval",
+            d.watchdog_interval_duration().map(duration),
+        );
+        set(
+            "watchdog_threshold",
+            d.watchdog_threshold_duration().map(duration),
+        );
+        set("idle_shutdown", d.idle_shutdown().map(duration));
+        if let Ok(dirs) = self.plugin_path(None)
+            && !dirs.is_empty()
+        {
+            let dirs = dirs.into_iter().map(|p| text(p.display().to_string()));
+            let mut plugin = toml::Table::new();
+            plugin.insert("path".into(), toml::Value::Array(dirs.collect()));
+            daemon.insert("plugin".into(), toml::Value::Table(plugin));
+        }
+        let mut out = toml::Table::new();
+        out.insert("daemon".into(), toml::Value::Table(daemon));
+        toml::Value::Table(out)
     }
 
     /// The configuration files that compose, in composition order — every
@@ -655,7 +711,8 @@ impl Config {
     /// daemon, and a change to anything under `[daemon.providers]` or
     /// `[client.providers]` is applied in place. Only the two roots exist
     /// (`crate::shape::seeded::read` refuses any other), so nothing else is kept.
-    pub fn settings_only(mut composed: toml::Value) -> toml::Value {
+    pub fn settings(&self) -> toml::Value {
+        let mut composed = self.composed.clone();
         if let Some(table) = composed.as_table_mut() {
             table.retain(|root, _| root == "client" || root == "daemon");
             for root in ["client", "daemon"] {
@@ -775,29 +832,50 @@ impl Config {
         self.config_path.as_deref().filter(|p| p.is_file())
     }
 
-    /// Load environment variables from the configured env file (or default path).
+    /// The env file: `[daemon] env_file`, or the `env` beside the config file.
+    /// A `Config` with no file behind it reads nothing ambient.
+    pub fn env_file_path(&self) -> Option<PathBuf> {
+        match &self.daemon.env_file {
+            Some(p) => Some(PathBuf::from(shellexpand(p))),
+            None => self.config_path.as_deref().map(|p| p.with_file_name("env")),
+        }
+    }
+
+    /// Load environment variables from the env file ([`Self::env_file_path`]).
     /// Sets them in the process environment, so they reach a Source's lines as
     /// `env.VAR` (an unset one renders empty) and the commands its `exec()` runs.
     /// Returns the number of variables loaded.
     pub fn load_env_file(&self) -> usize {
-        let path = match &self.daemon.env_file {
-            Some(p) => PathBuf::from(shellexpand(p)),
-            None => {
-                // Default: the variables file beside the config file; a
-                // `Config` with no file behind it reads nothing ambient.
-                match self.config_path.as_deref() {
-                    Some(path) => path.with_file_name("env"),
-                    None => return 0,
-                }
+        let vars = self.env_file_vars();
+        for (key, value) in &vars {
+            // SAFETY: env file is loaded once at daemon startup before any threads
+            // are spawned, so there are no concurrent readers of the environment.
+            unsafe {
+                std::env::set_var(key, value);
             }
-        };
+        }
+        vars.len()
+    }
 
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return 0,
-        };
+    /// The variables a daemon started on this configuration has: this
+    /// process's, with the env file's over them. Nothing is set: what the
+    /// daemon's Sources would see, for the checks it would run.
+    pub fn vars(&self) -> HashMap<String, String> {
+        let mut vars: HashMap<String, String> = std::env::vars().collect();
+        vars.extend(self.env_file_vars());
+        vars
+    }
 
-        let mut count = 0;
+    /// The env file's `KEY=VALUE` lines, in order: blanks and `#` comments
+    /// skipped, one pair of surrounding quotes stripped. No file is none.
+    fn env_file_vars(&self) -> Vec<(String, String)> {
+        let Some(content) = self
+            .env_file_path()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
         for line in content.lines() {
             let line = line.trim();
 
@@ -818,16 +896,10 @@ impl Config {
                 } else {
                     value
                 };
-
-                // SAFETY: env file is loaded once at daemon startup before any threads
-                // are spawned, so there are no concurrent readers of the environment.
-                unsafe {
-                    std::env::set_var(key, value);
-                }
-                count += 1;
+                out.push((key.to_string(), value.to_string()));
             }
         }
-        count
+        out
     }
 
     pub fn resolve_socket_path(&self) -> PathBuf {
@@ -877,7 +949,9 @@ impl Config {
             .join("sock")
     }
 
-    pub fn resolve_log_path(&self) -> PathBuf {
+    /// The daemon's log file, under the XDG state home. No setting moves it,
+    /// so finding it loads nothing.
+    pub fn log_path() -> PathBuf {
         let xdg = xdg::BaseDirectories::with_prefix("beachcomber");
 
         xdg.get_state_home()

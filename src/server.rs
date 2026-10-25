@@ -37,6 +37,9 @@ pub struct Server {
 }
 
 impl Server {
+    /// A server on the default configuration, which reads no file: an
+    /// embedded or test server. The daemon passes its own
+    /// ([`Self::new_with_config`]).
     pub fn new(
         socket_path: PathBuf,
         cache: Arc<Cache>,
@@ -53,7 +56,7 @@ impl Server {
             start_instant: Instant::now(),
             requests_total: Arc::new(AtomicU64::new(0)),
             active_watches: Arc::new(AtomicUsize::new(0)),
-            config: Arc::new(Config::load()),
+            config: Arc::new(Config::default()),
             reaper: None,
         }
     }

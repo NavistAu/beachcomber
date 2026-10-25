@@ -354,7 +354,7 @@ Composition rules:
 | `socket_path` | string | (see resolution order) | Unix socket path. Resolution order: this key → `BEACHCOMBER_SOCKET` env var → `/tmp/beachcomber-<uid>/sock` |
 | `log_level` | string | `"info"` | Tracing log level |
 | `timeout` | duration, at least `1ms` | `"10s"` | How long one run of a Source may take before it is cut off, for every Source whose `return` does not name `timeout(...)` |
-| `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
+| `env_file` | string | `env` beside `config.toml` | Path to env file loaded at startup; `comb check config` reads it too, so it checks with the variables the daemon would have |
 | `watchdog_interval` | duration or null | `null` (disabled) | How often the watchdog checks scheduler liveness |
 | `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
 | `idle_shutdown` | duration (whole seconds) or null | `null` (disabled) | How long with no client before the daemon shuts down; unset keeps it resident |

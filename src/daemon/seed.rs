@@ -63,9 +63,9 @@ pub fn spawn_config_seeding(
     polling_watch: Option<Duration>,
     scheduler: &SchedulerHandle,
 ) {
-    let Some(config_path) = config.config_file().map(|p| p.to_path_buf()) else {
+    if config.config_file().is_none() {
         return;
-    };
+    }
     seed_facets(cache, &registry.current(), config.composed_layers());
 
     // The watch stops on the daemon's own shutdown token — its closure holds
@@ -87,7 +87,7 @@ pub fn spawn_config_seeding(
         Some(_) => (Duration::from_millis(50), false),
     };
     super::config_watch::spawn_config_self_watch_with(
-        config_path,
+        config,
         interval,
         fs_events,
         stop,
