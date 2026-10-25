@@ -175,8 +175,7 @@ fn the_daemon_says_it_serves_once_its_socket_is_bound() {
 
     let mut child = launch(&mut cmd, None, spawn::READY_TIMEOUT).expect("the daemon serves");
     let serving = spawn::is_serving(&socket.path);
-    let _ = child.kill();
-    let _ = child.wait();
+    crate::common::daemon::stop(&mut child);
     assert!(serving, "served by the time it said so");
 }
 
@@ -226,4 +225,24 @@ fn a_daemon_that_refuses_its_configuration_is_reported_with_its_first_error() {
         other => panic!("expected Exited, got {other:?}"),
     }
     assert!(!socket.path.exists(), "it never bound");
+}
+
+/// A test's daemon is stopped as `comb kill` stops one, by SIGTERM, so it
+/// shuts down cleanly — and an instrumented build writes its coverage
+/// profile — rather than being SIGKILLed.
+#[test]
+fn a_test_daemon_is_stopped_cleanly() {
+    let outside = tempfile::tempdir().unwrap();
+    let home = outside.path().join("home");
+    let xdg = outside.path().join("xdg");
+    drop(TestDaemon::spawn_in(
+        IsolatedSocket::new(),
+        home.clone(),
+        xdg,
+    ));
+
+    let log = std::fs::read_to_string(home.join(".local/state/beachcomber/daemon.log"))
+        .expect("the daemon's log");
+    assert!(log.contains("Received SIGTERM"), "{log}");
+    assert!(log.contains("Daemon shut down cleanly"), "{log}");
 }

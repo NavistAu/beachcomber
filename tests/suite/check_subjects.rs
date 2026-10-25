@@ -2,7 +2,7 @@
 // and the `comb check` CLI aggregation behaviour.
 // Uses the in-process test daemon pattern from tests/suite/put_remove.rs.
 
-use crate::common::daemon::{isolate, launch};
+use crate::common::daemon::{isolate, launch, stop};
 use crate::common::poll::poll_until;
 use beachcomber::boundaries::proc_snap::ProcessSnapshotter;
 use beachcomber::client::Client;
@@ -690,8 +690,7 @@ fn check_daemon_reports_watch_backend() {
         "backend must be native or polling, got:\n{stdout}"
     );
 
-    let _ = daemon.kill();
-    let _ = daemon.wait();
+    stop(&mut daemon);
 }
 
 // --- Reaper health surfacing (canon singleton.md invariant 13) ---
@@ -844,8 +843,7 @@ async fn env_override_daemon_does_not_arm_reaper() {
         .introspect("daemon", None)
         .expect("introspect request");
 
-    let _ = daemon.kill();
-    let _ = daemon.wait();
+    stop(&mut daemon);
 
     assert!(resp.ok, "introspect failed: {:?}", resp.error);
     let data = resp.data.expect("payload");

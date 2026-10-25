@@ -49,6 +49,23 @@ where
     }
 }
 
+/// Poll `poll_fn` until it returns true or `timeout` elapses, and say which:
+/// for a wait whose running out is not a failure (a `Drop` that escalates),
+/// where [`poll_until`] would panic.
+#[allow(dead_code)]
+pub fn poll_for(timeout: Duration, interval: Duration, mut poll_fn: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if poll_fn() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(interval);
+    }
+}
+
 /// Convenience wrapper over [`poll_until`] for the common case of polling
 /// until a value equals an expected one.
 #[allow(dead_code)]

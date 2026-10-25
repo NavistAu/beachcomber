@@ -552,8 +552,7 @@ fn comb_check_config_reports_the_defaults_directory() {
     .args(["check", "--connect-timeout", "2s", "config"])
     .output()
     .expect("run comb check config");
-    let _ = daemon.kill();
-    let _ = daemon.wait();
+    crate::common::daemon::stop(&mut daemon);
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(

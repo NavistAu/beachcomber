@@ -5,11 +5,30 @@ use std::process::{Child, Command};
 /// Run `cmd`, a `comb daemon` command line, and return once the daemon says
 /// it serves ([`libbeachcomber::spawn::launch`], the readiness pipe every
 /// spawn waits on). Its stderr is the test's own. The `Child` is the
-/// caller's to kill and wait.
+/// caller's to [`stop`].
 #[allow(dead_code)]
 pub fn launch(cmd: &mut Command) -> Child {
     libbeachcomber::spawn::launch(cmd, None, libbeachcomber::spawn::READY_TIMEOUT)
         .unwrap_or_else(|e| panic!("comb daemon did not start: {e}"))
+}
+
+/// Stop a spawned daemon as `comb kill` does, with SIGTERM: it shuts down
+/// cleanly, so an instrumented build writes its coverage profile, which a
+/// SIGKILL never lets it. One that has not exited within a second is
+/// SIGKILLed. Either way it is reaped.
+#[allow(dead_code)]
+pub fn stop(process: &mut Child) {
+    // SAFETY: a signal to a child not yet reaped, so its pid is still its own.
+    unsafe { libc::kill(process.id() as libc::pid_t, libc::SIGTERM) };
+    let exited = crate::common::poll::poll_for(
+        std::time::Duration::from_secs(1),
+        std::time::Duration::from_millis(1),
+        || !matches!(process.try_wait(), Ok(None)),
+    );
+    if !exited {
+        let _ = process.kill();
+    }
+    let _ = process.wait();
 }
 
 /// Point `cmd` at a throwaway `$HOME`, `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME`
@@ -195,8 +214,7 @@ impl TestDaemon {
 impl Drop for TestDaemon {
     fn drop(&mut self) {
         if let Some(process) = self.process.as_mut() {
-            let _ = process.kill();
-            let _ = process.wait();
+            stop(process);
         }
         if let Some(served) = self.served.take() {
             served.cancel.cancel();
