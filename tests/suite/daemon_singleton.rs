@@ -1,6 +1,5 @@
 //! Integration tests for the daemon singleton property and socket-path resolution.
 
-use crate::common::poll::poll_until;
 use beachcomber::config::Config;
 use std::path::PathBuf;
 
@@ -175,33 +174,25 @@ fn supersession_same_version_different_hash_still_supersedes() {
 
 #[test]
 fn supersede_existing_kills_target_process() {
+    use std::os::unix::process::ExitStatusExt;
     let mut child = std::process::Command::new("sleep")
         .arg("30")
         .spawn()
         .expect("spawn sleep");
     let pid = child.id();
+    // Reaped the moment it dies, as a daemon's real parent reaps it: an
+    // unreaped child stays a zombie, which `kill(pid, 0)` still finds.
+    let reaper = std::thread::spawn(move || child.wait());
 
-    // Call supersede_existing. It may report "survived SIGKILL" because we're the parent
-    // of the target and the process becomes a zombie until we wait() — that's a test-env
-    // artefact, not a production bug.
-    let _ = beachcomber::singleton::supersede_existing(pid, std::time::Duration::from_millis(500));
+    let result =
+        beachcomber::singleton::supersede_existing(pid, std::time::Duration::from_millis(500));
+    let status = reaper.join().unwrap().expect("wait for the target");
 
-    // Reap the zombie.
-    let _ = child.wait();
-
-    // After reaping, the kernel frees the PID slot — not necessarily by the
-    // time wait() returns, so poll the slot rather than guess at the lag.
-    let still_alive = poll_until(
-        "kill(pid, 0) on the superseded process",
-        "a nonzero return (the PID slot is free)",
-        std::time::Duration::from_secs(5),
-        std::time::Duration::from_millis(10),
-        || unsafe { libc::kill(pid as libc::pid_t, 0) },
-        |rc| *rc != 0,
-    );
-    assert!(
-        still_alive != 0,
-        "process should be gone; kill(0) returned {still_alive}"
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        status.signal(),
+        Some(libc::SIGTERM),
+        "it went at the SIGTERM, inside the grace: {status:?}"
     );
 }
 
@@ -323,7 +314,8 @@ fn probe_until_serving_returns_true_when_serving() {
     assert!(beachcomber::singleton::probe_until_serving(
         &AlwaysServing,
         socket,
-        Duration::ZERO
+        Duration::ZERO,
+        beachcomber::singleton::PROBE_STEP
     ));
 }
 
@@ -333,7 +325,8 @@ fn probe_until_serving_returns_false_when_never_serving_after_grace() {
     assert!(!beachcomber::singleton::probe_until_serving(
         &NeverServing,
         socket,
-        Duration::ZERO
+        Duration::ZERO,
+        beachcomber::singleton::PROBE_STEP
     ));
 }
 
@@ -355,7 +348,8 @@ fn probe_until_serving_waits_through_grace_for_late_bind() {
     assert!(beachcomber::singleton::probe_until_serving(
         &probe,
         socket,
-        Duration::from_secs(2)
+        Duration::from_secs(2),
+        Duration::from_millis(1)
     ));
 }
 
