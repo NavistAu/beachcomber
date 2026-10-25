@@ -12,7 +12,7 @@ use crate::cli::exit::Outcome;
 use crate::cli::output_format::{Format, template_locals};
 use crate::config::Config;
 use libbeachcomber::render::{Format as ValueFormat, render_value, render_values};
-use libbeachcomber::resolve::{Inputs, Slot, eval_with, resolve};
+use libbeachcomber::resolve::{Slot, eval_with, resolve};
 use serde_json::Value;
 
 /// Whether `s` is a directory rather than a key: it starts with `/`, `~` or
@@ -79,14 +79,7 @@ pub fn run_get(
         Some(p) => Slot::Path(p.to_string()),
         None => Slot::Global,
     };
-    let inputs = Inputs {
-        cwd: &cwd,
-        env: &env,
-        slot,
-        force,
-        wait,
-        allow_exec: true,
-    };
+    let inputs = crate::cli::inputs(&cwd, &env, slot, force, wait);
 
     // One slot per key, `None` where it produced no value, so a multi-key
     // document keeps its positions. What the keys came to is decided here,

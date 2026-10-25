@@ -96,6 +96,10 @@ struct Cli {
     /// Wins over NO_COLOR, for comb's own output and the template filters alike
     #[arg(long, global = true, value_enum, value_name = "WHEN", default_value_t = ColorChoice::Auto)]
     color: ColorChoice,
+    /// Render templates with `exec()` off: a template that calls it fails,
+    /// naming why, and nothing is spawned
+    #[arg(long, global = true)]
+    no_exec: bool,
     /// ASCII glyphs only (no Unicode box drawing, marks or ellipsis)
     #[arg(long, global = true)]
     ascii: bool,
@@ -350,6 +354,7 @@ fn main() -> ExitCode {
     };
     let cli = Cli::parse_from(args);
     cli.color.apply_to_env();
+    beachcomber::cli::set_no_exec(cli.no_exec);
     let strict = cli.strict;
     run(cli).code(strict)
 }

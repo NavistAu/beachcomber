@@ -11,7 +11,7 @@ use crate::cli::status_format::{
 };
 use crate::cli::style::Style;
 use crate::config::Config;
-use libbeachcomber::resolve::{Inputs, Slot, eval_with, resolve_traced};
+use libbeachcomber::resolve::{Slot, eval_with, resolve_traced};
 use std::collections::HashMap;
 use std::io::IsTerminal;
 
@@ -69,14 +69,7 @@ fn render_template_rows(
     addrs.sort();
     addrs.dedup();
 
-    let inputs = Inputs {
-        cwd,
-        env,
-        slot: Slot::Cwd,
-        force: false,
-        wait: false,
-        allow_exec: true,
-    };
+    let inputs = crate::cli::inputs(cwd, env, Slot::Cwd, false, false);
     let mut out = Vec::new();
     for (provider, field) in addrs {
         // A rendered value has no age of its own: it is as old as the oldest
@@ -346,14 +339,7 @@ pub fn run_status(
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     let env = crate::cli::shell_env();
-                    let inputs = Inputs {
-                        cwd: &cwd,
-                        env: &env,
-                        slot: Slot::Cwd,
-                        force: false,
-                        wait: false,
-                        allow_exec: true,
-                    };
+                    let inputs = crate::cli::inputs(&cwd, &env, Slot::Cwd, false, false);
                     let mut session = match client.connect() {
                         Ok(session) => session,
                         Err(e) => {

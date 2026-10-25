@@ -73,6 +73,8 @@ Every command exits the same way, whatever its format — the format is applied 
 
 The template filters `fg`, `bg`, `bold` and `dim` follow the same choice without asking for a terminal — a prompt reads them through a pipe — so they draw their escapes unless `NO_COLOR` is set in the render's environment or `--color never` is given, and `--color always` draws them whatever `NO_COLOR` says. `--color` is written into the environment of the run, so `env.NO_COLOR` and an `exec()` child see the same choice. An SDK's `resolve`/`eval` reads `NO_COLOR` from the `env` it is handed.
 
+`--no-exec` is a global flag too: every template the command renders (`get`, `eval`, `watch`, a `status` row or `-f` template) runs with `exec()` off, so a template that calls it fails with `exec() is disabled in this context` and nothing is spawned. Without it, `comb` allows `exec()`, as it is the user's own shell. The SDK subprocess tiers pass it for a client whose `exec` option is off, which is the default.
+
 ## `comb g` (get) `<key>... [path] [-p <path>] [--global] [-f format]`
 
 Query a value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay. `comb get` is a client of `libbeachcomber::resolve`, the same function behind `comb eval` and every SDK's `resolve`: it always needs the daemon, even for a key (`env.HOME`) it answers without a request.

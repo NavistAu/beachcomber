@@ -20,7 +20,7 @@ use crate::cli::exit::Outcome;
 use crate::cli::output_format::{Format, template_locals};
 use crate::config::Config;
 use libbeachcomber::render::{Format as ValueFormat, render_frame, render_value};
-use libbeachcomber::resolve::{Inputs, Slot, eval_with};
+use libbeachcomber::resolve::{Slot, eval_with};
 use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
 
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
@@ -40,16 +40,9 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
         Some(p) => Slot::Path(p.to_string()),
         None => Slot::Global,
     };
-    let inputs = Inputs {
-        cwd: &cwd,
-        env: &env,
-        slot,
-        // A watch is a subscription, not a demand: it never forces an
-        // execution or waits on one, it reports what the value becomes.
-        force: false,
-        wait: false,
-        allow_exec: true,
-    };
+    // A watch is a subscription, not a demand: it never forces an execution
+    // or waits on one, it reports what the value becomes.
+    let inputs = crate::cli::inputs(&cwd, &env, slot, false, false);
 
     // A `-f` template renders each frame through the resolver, which reads
     // what it names over a session of its own.

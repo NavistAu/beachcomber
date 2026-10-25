@@ -17,7 +17,7 @@
 
 use crate::cli::exit::Outcome;
 use crate::config::Config;
-use libbeachcomber::resolve::{Inputs, Slot, eval};
+use libbeachcomber::resolve::{Slot, eval};
 
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
 /// `--path`, the trailing positional, or the current directory. A render's
@@ -41,14 +41,8 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> Outcome 
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let inputs = Inputs {
-        cwd: &cwd,
-        env: &env,
-        slot: path.map_or(Slot::Global, |p| Slot::Path(p.to_string())),
-        force: false,
-        wait: false,
-        allow_exec: true,
-    };
+    let slot = path.map_or(Slot::Global, |p| Slot::Path(p.to_string()));
+    let inputs = crate::cli::inputs(&cwd, &env, slot, false, false);
 
     match eval(template, &inputs, &mut session) {
         // An absent value prints nothing, and is a miss, as for `comb get`.
