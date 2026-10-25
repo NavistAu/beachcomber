@@ -251,6 +251,7 @@ cargo bench --bench protocol
 cargo bench --bench providers
 cargo bench --bench socket
 cargo bench --bench throughput
+cargo bench --bench resolve     # the client-side resolver, no daemon
 
 # Run with baseline comparison (after making changes)
 cargo bench -- --baseline main
