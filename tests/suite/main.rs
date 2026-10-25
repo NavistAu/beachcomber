@@ -1,5 +1,19 @@
 mod common;
 
+/// The test process's own git — the git provider runs in it, through
+/// `RealGitExecutor` — reads no host configuration, as the fixtures' git
+/// (`common::git::git_cmd`) does not: what a test sees must not depend on the
+/// developer's `~/.gitconfig` or the system's.
+#[ctor::ctor]
+fn isolate_git_config() {
+    // SAFETY: a constructor runs before `main`, while the process has one
+    // thread.
+    unsafe {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    }
+}
+
 mod absent_fields;
 mod arrays;
 mod auto_shutdown;

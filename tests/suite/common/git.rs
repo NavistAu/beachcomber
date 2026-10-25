@@ -244,3 +244,17 @@ fn a_fixture_ignores_an_inherited_git_dir() {
     );
     assert!(fixture.path().join(".git/refs/heads/main").exists());
 }
+
+/// The test process's own git, which the in-process git provider runs, reads
+/// no configuration file of the host's (`main.rs` points it at none).
+#[test]
+fn the_test_processs_own_git_reads_no_host_config() {
+    let outside = TempDir::new().expect("TempDir::new");
+    let out = Command::new("git")
+        .args(["config", "--list", "--show-origin"])
+        .current_dir(outside.path())
+        .output()
+        .expect("run git config");
+    let listed = String::from_utf8_lossy(&out.stdout);
+    assert!(!listed.contains("file:"), "{listed}");
+}
