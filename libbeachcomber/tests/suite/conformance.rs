@@ -4,15 +4,16 @@
 // Each fixture spawns its own daemon for isolation. A fixture that
 // breaks any `expect` rule fails a Rust test bearing the fixture's `name`.
 
+use crate::common::client::client_for;
 use crate::common::daemon::DaemonGuard;
 
 use libbeachcomber::resolve::{self, Inputs, Slot};
 use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
-use libbeachcomber::{Client, ClientConfig, IntrospectResponse, IntrospectSubject};
+use libbeachcomber::{Client, IntrospectResponse, IntrospectSubject};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -57,15 +58,6 @@ impl ResolveCtx<'_> {
 struct OpDescriptor {
     op: String,
     args: Value,
-}
-
-fn client_for(sock: &Path) -> Client {
-    Client::with_config(ClientConfig {
-        timeout: Duration::from_secs(2),
-        auto_start: false,
-        exec: false,
-    })
-    .with_socket_path(sock.to_path_buf())
 }
 
 fn load_fixtures() -> Vec<Fixture> {

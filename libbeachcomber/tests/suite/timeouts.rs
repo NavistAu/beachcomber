@@ -25,9 +25,10 @@ fn silent_daemon() -> (tempfile::TempDir, PathBuf) {
     (tmp, sock)
 }
 
+/// A daemon that never answers cannot pass falsely, however short the wait.
 fn impatient_client(sock: &std::path::Path) -> Client {
     Client::with_config(ClientConfig {
-        timeout: Duration::from_millis(50),
+        timeout: Duration::from_millis(5),
         auto_start: false,
         exec: false,
     })

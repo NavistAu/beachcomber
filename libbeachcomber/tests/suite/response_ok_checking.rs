@@ -11,22 +11,13 @@
 // way, the point is the same: the client must surface the failure instead of
 // discarding the response body.
 
+use crate::common::client::client_for;
 use crate::common::daemon::DaemonGuard;
 
-use libbeachcomber::{Client, ClientConfig, CombError};
+use libbeachcomber::CombError;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::time::Duration;
-
-fn client_for(sock: &std::path::Path) -> Client {
-    Client::with_config(ClientConfig {
-        timeout: Duration::from_secs(2),
-        auto_start: false,
-        exec: false,
-    })
-    .with_socket_path(sock.to_path_buf())
-}
 
 /// Bind a socket and, on the first connection, read one request line and
 /// reply with a single scripted response line.

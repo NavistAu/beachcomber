@@ -50,10 +50,11 @@ fn connect_retries_succeed_after_brief_outage() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("sock");
 
-    // Spawn a binder thread that binds after 400ms.
-    let _guard = BinderGuard::spawn(sock.clone(), Duration::from_millis(400));
-
+    // A binder thread that binds 30ms from now: the first attempt finds
+    // nothing, and only a retry can succeed.
     let start = Instant::now();
+    let _guard = BinderGuard::spawn(sock.clone(), Duration::from_millis(30));
+
     let result = libbeachcomber::connect_with_retry(&sock);
     let elapsed = start.elapsed();
 
@@ -62,7 +63,7 @@ fn connect_retries_succeed_after_brief_outage() {
         "connect_with_retry should succeed after retry"
     );
     assert!(
-        elapsed >= Duration::from_millis(250),
+        elapsed >= Duration::from_millis(30),
         "should have retried at least once; elapsed={:?}",
         elapsed
     );
@@ -75,7 +76,7 @@ fn connect_retries_exhaust_at_the_budget() {
     let sock = tmp.path().join("nosock");
 
     let start = Instant::now();
-    let result = libbeachcomber::connect_with_retry_for(&sock, Duration::from_millis(200));
+    let result = libbeachcomber::connect_with_retry_for(&sock, Duration::from_millis(20));
     let elapsed = start.elapsed();
 
     assert!(
@@ -85,7 +86,7 @@ fn connect_retries_exhaust_at_the_budget() {
     // The last sleep is clipped to the deadline, so the final attempt lands
     // at the budget, not past the next doubling.
     assert!(
-        elapsed >= Duration::from_millis(200),
+        elapsed >= Duration::from_millis(20),
         "should keep trying until the budget is spent; elapsed={:?}",
         elapsed
     );

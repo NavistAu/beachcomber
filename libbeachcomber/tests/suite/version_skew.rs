@@ -10,20 +10,11 @@
 // scripted `daemon_version`, letting the mismatch be forced without any
 // production code reading ambient environment.
 
-use libbeachcomber::{Client, ClientConfig};
+use crate::common::client::client_for;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::time::Duration;
-
-fn client_for(sock: &std::path::Path) -> Client {
-    Client::with_config(ClientConfig {
-        timeout: Duration::from_secs(2),
-        auto_start: false,
-        exec: false,
-    })
-    .with_socket_path(sock.to_path_buf())
-}
 
 /// Bind a socket and, on the first connection, answer every `hello` request
 /// with `daemon_version` and every other op with a scripted envelope

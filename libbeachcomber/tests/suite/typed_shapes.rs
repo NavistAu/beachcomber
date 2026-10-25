@@ -1,18 +1,7 @@
 // Phase 3: typed-shape integration tests for the public SDK crate.
 
+use crate::common::client::client_for;
 use crate::common::daemon::DaemonGuard;
-
-use libbeachcomber::{Client, ClientConfig};
-use std::time::Duration;
-
-fn client_for(sock: &std::path::Path) -> Client {
-    Client::with_config(ClientConfig {
-        timeout: Duration::from_secs(2),
-        auto_start: false,
-        exec: false,
-    })
-    .with_socket_path(sock.to_path_buf())
-}
 
 #[test]
 fn status_returns_typed_cache_rows() {

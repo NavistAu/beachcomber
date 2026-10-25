@@ -4,39 +4,17 @@
 //!
 //! Runs against a real in-process daemon spawned by `tests/suite/common/daemon.rs`.
 
+use crate::common::client::{Options, client_for, client_with, cs, read};
 use crate::common::daemon::DaemonGuard;
 
-use std::ffi::{CStr, CString, c_char};
-use std::path::Path;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Barrier, Mutex};
 
-use beachcomber::envelope::bc_string_free;
 use beachcomber::{
-    BcClient, bc_client_free, bc_client_new, bc_get, bc_session_close, bc_session_get,
-    bc_session_open, bc_session_put, bc_session_refresh, bc_session_set_context,
+    bc_client_free, bc_client_new, bc_get, bc_session_close, bc_session_get, bc_session_open,
+    bc_session_put, bc_session_refresh, bc_session_set_context,
 };
-
-fn client_for(sock: &Path) -> *mut BcClient {
-    let json = format!(
-        r#"{{"socket_path":"{}","autostart":false,"timeout_ms":2000}}"#,
-        sock.display()
-    );
-    let cs = CString::new(json).unwrap();
-    unsafe { bc_client_new(cs.as_ptr()) }
-}
-
-fn cs(s: &str) -> CString {
-    CString::new(s).unwrap()
-}
-
-fn read(ptr: *mut c_char) -> serde_json::Value {
-    assert!(!ptr.is_null(), "call_ffi must never return NULL");
-    let body = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_string();
-    unsafe { bc_string_free(ptr) };
-    serde_json::from_str(&body).expect("envelope must be valid JSON")
-}
 
 /// Wraps a raw pointer so it can be shared across threads in these tests.
 /// Sound here because every operation this crate exposes on the pointee
@@ -109,9 +87,15 @@ fn two_thread_session_yields_busy_for_one_and_leaves_the_stream_intact() {
 
 #[test]
 fn session_open_on_unreachable_daemon_defers_error_to_first_op() {
-    let sock = Path::new("/tmp/beachcomber-ffi-session-test-unreachable.sock");
-    let _ = std::fs::remove_file(sock);
-    let client = client_for(sock);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sock = dir.path().join("nothing-listens-here.sock");
+    let client = client_with(
+        &sock,
+        Options {
+            connect_timeout_ms: Some(0),
+            ..Options::default()
+        },
+    );
 
     let session = unsafe { bc_session_open(client) };
     assert!(
@@ -235,7 +219,7 @@ fn a_slow_session_get_and_a_slow_put_report_timeout() {
         }
     });
     let options = cs(&format!(
-        r#"{{"socket_path":"{}","autostart":false,"timeout_ms":50}}"#,
+        r#"{{"socket_path":"{}","autostart":false,"timeout_ms":5}}"#,
         sock.display()
     ));
     let client = unsafe { bc_client_new(options.as_ptr()) };

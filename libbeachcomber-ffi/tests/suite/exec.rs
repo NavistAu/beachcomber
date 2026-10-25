@@ -10,32 +10,11 @@
 //! contact would surface as a distinct transport failure, not the messages
 //! asserted here.
 
-use std::ffi::{CStr, CString, c_char};
-use std::path::Path;
+use crate::common::client::{Options, client_for, client_with, cs, read};
+
 use std::ptr;
 
-use beachcomber::envelope::bc_string_free;
-use beachcomber::{BcClient, bc_client_free, bc_client_new, bc_eval};
-
-fn client_for(sock: &Path, exec: bool) -> *mut BcClient {
-    let json = format!(
-        r#"{{"socket_path":"{}","autostart":false,"timeout_ms":2000,"exec":{exec}}}"#,
-        sock.display()
-    );
-    let cs = CString::new(json).unwrap();
-    unsafe { bc_client_new(cs.as_ptr()) }
-}
-
-fn cs(s: &str) -> CString {
-    CString::new(s).unwrap()
-}
-
-fn read(ptr: *mut c_char) -> serde_json::Value {
-    assert!(!ptr.is_null(), "call_ffi must never return NULL");
-    let body = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_string();
-    unsafe { bc_string_free(ptr) };
-    serde_json::from_str(&body).expect("envelope must be valid JSON")
-}
+use beachcomber::{BcClient, bc_client_free, bc_eval};
 
 fn eval(client: *mut BcClient, src: &str) -> serde_json::Value {
     let src = cs(src);
@@ -49,7 +28,7 @@ fn eval(client: *mut BcClient, src: &str) -> serde_json::Value {
 #[test]
 fn bc_eval_of_exec_call_returns_disabled_message_without_the_option() {
     let dir = tempfile::TempDir::new().unwrap();
-    let client = client_for(&dir.path().join("nonexistent.sock"), false);
+    let client = client_for(&dir.path().join("nonexistent.sock"));
 
     let v = eval(client, "{{ exec(['printf', 'x']) }}");
     assert_eq!(v["ok"], serde_json::json!(false), "{v}");
@@ -70,7 +49,13 @@ fn bc_eval_of_exec_call_returns_disabled_message_without_the_option() {
 #[test]
 fn bc_eval_of_exec_call_runs_with_the_option() {
     let dir = tempfile::TempDir::new().unwrap();
-    let client = client_for(&dir.path().join("nonexistent.sock"), true);
+    let client = client_with(
+        &dir.path().join("nonexistent.sock"),
+        Options {
+            exec: true,
+            ..Options::default()
+        },
+    );
 
     let v = eval(client, "{{ exec(['printf', 'x']) }}");
     assert_eq!(v["ok"], serde_json::json!(true), "{v}");
@@ -85,7 +70,13 @@ fn bc_eval_of_exec_call_runs_with_the_option() {
 #[test]
 fn bc_eval_of_a_failing_exec_is_a_server_error() {
     let dir = tempfile::TempDir::new().unwrap();
-    let client = client_for(&dir.path().join("nonexistent.sock"), true);
+    let client = client_with(
+        &dir.path().join("nonexistent.sock"),
+        Options {
+            exec: true,
+            ..Options::default()
+        },
+    );
 
     let v = eval(client, "{{ exec('false') }}");
     assert_eq!(v["ok"], serde_json::json!(false), "{v}");
@@ -100,7 +91,13 @@ fn bc_eval_of_a_failing_exec_is_a_server_error() {
 fn bc_eval_exec_sees_env_json_not_the_host_env() {
     assert!(std::env::var_os("HOME").is_some());
     let dir = tempfile::TempDir::new().unwrap();
-    let client = client_for(&dir.path().join("nonexistent.sock"), true);
+    let client = client_with(
+        &dir.path().join("nonexistent.sock"),
+        Options {
+            exec: true,
+            ..Options::default()
+        },
+    );
 
     let src = cs(r#"{{ exec('echo "[$FOO][$HOME]"') }}"#);
     let cwd = cs("/tmp");

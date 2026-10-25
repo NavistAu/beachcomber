@@ -85,10 +85,10 @@ fn connect_timeout_ms_bounds_the_connect() {
         "one attempt took {took:?}"
     );
 
-    let (v, took) = first_op(&options(200));
+    let (v, took) = first_op(&options(50));
     assert_eq!(v["error"]["kind"], "connection_failed", "{v}");
     assert!(
-        took >= std::time::Duration::from_millis(200),
+        took >= std::time::Duration::from_millis(50),
         "gave up after {took:?}"
     );
     assert!(

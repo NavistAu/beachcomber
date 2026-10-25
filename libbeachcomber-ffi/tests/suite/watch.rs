@@ -10,44 +10,23 @@
 //!
 //! Runs against a real in-process daemon spawned by `tests/suite/common/daemon.rs`.
 
+use crate::common::client::{client_for, cs, read};
 use crate::common::daemon::DaemonGuard;
 
-use std::ffi::{CStr, CString, c_char};
-use std::path::Path;
+use std::ffi::CString;
 use std::ptr;
 use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use beachcomber::envelope::bc_string_free;
 use beachcomber::{
-    BcClient, BcWatch, bc_client_free, bc_client_new, bc_get, bc_put, bc_watch_cancel,
-    bc_watch_free, bc_watch_next, bc_watch_open,
+    BcClient, BcWatch, bc_client_free, bc_get, bc_put, bc_watch_cancel, bc_watch_free,
+    bc_watch_next, bc_watch_open,
 };
 
 /// The directory every watch here addresses. Nothing is stored at it: each
 /// fixture `put`s globally, and the global entry is the last link of every
 /// path's chain (canon `field_resolution.md` §"Path resolution").
 const CWD: &str = "/tmp";
-
-fn client_for(sock: &Path) -> *mut BcClient {
-    let json = format!(
-        r#"{{"socket_path":"{}","autostart":false,"timeout_ms":2000}}"#,
-        sock.display()
-    );
-    let cs = CString::new(json).unwrap();
-    unsafe { bc_client_new(cs.as_ptr()) }
-}
-
-fn cs(s: &str) -> CString {
-    CString::new(s).unwrap()
-}
-
-fn read(ptr: *mut c_char) -> serde_json::Value {
-    assert!(!ptr.is_null(), "call_watch_next must never return NULL");
-    let body = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_string();
-    unsafe { bc_string_free(ptr) };
-    serde_json::from_str(&body).expect("envelope must be valid JSON")
-}
 
 /// `bc_watch_open` at [`CWD`] with an optional environment.
 fn open_watch(client: *mut BcClient, key: &str, env: Option<&str>) -> *mut BcWatch {

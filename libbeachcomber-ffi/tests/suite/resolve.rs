@@ -5,34 +5,12 @@
 //! directory holding the managed defaults — and the client renders it with
 //! the supplied `cwd` and `env_json`. Runs against a real in-process daemon.
 
+use crate::common::client::{Options, client_for, client_with, cs, read};
 use crate::common::daemon::DaemonGuard;
 
-use std::ffi::{CStr, CString, c_char};
-use std::path::Path;
 use std::ptr;
 
-use beachcomber::envelope::bc_string_free;
-use beachcomber::{BcClient, bc_client_free, bc_client_new, bc_eval, bc_get, bc_put};
-
-fn client_for(sock: &Path) -> *mut BcClient {
-    let json = format!(
-        r#"{{"socket_path":"{}","autostart":false,"timeout_ms":2000}}"#,
-        sock.display()
-    );
-    let cs = CString::new(json).unwrap();
-    unsafe { bc_client_new(cs.as_ptr()) }
-}
-
-fn cs(s: &str) -> CString {
-    CString::new(s).unwrap()
-}
-
-fn read(ptr: *mut c_char) -> serde_json::Value {
-    assert!(!ptr.is_null(), "call_ffi must never return NULL");
-    let body = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_string();
-    unsafe { bc_string_free(ptr) };
-    serde_json::from_str(&body).expect("envelope must be valid JSON")
-}
+use beachcomber::{BcClient, bc_client_free, bc_eval, bc_get, bc_put};
 
 /// `bc_put(key, data)` at `path` (NULL for the global entry), asserting it
 /// was accepted.
@@ -426,7 +404,13 @@ fn bc_get_rejected_key_is_a_server_error_in_the_daemons_words() {
 fn transport_failure_keeps_its_kind() {
     let dir = tempfile::tempdir().expect("tempdir");
     let sock = dir.path().join("nothing-listens-here.sock");
-    let client = client_for(&sock);
+    let client = client_with(
+        &sock,
+        Options {
+            connect_timeout_ms: Some(0),
+            ..Options::default()
+        },
+    );
 
     for v in [
         eval(client, "{{ git.branch }}", "/tmp", None),
@@ -562,12 +546,13 @@ fn an_eval_with_no_env_reads_the_process_home() {
 #[test]
 fn an_exec_child_of_a_call_with_no_env_inherits_the_process_path() {
     let daemon = DaemonGuard::spawn();
-    let json = format!(
-        r#"{{"socket_path":"{}","autostart":false,"timeout_ms":2000,"exec":true}}"#,
-        daemon.path.display()
+    let client = client_with(
+        &daemon.path,
+        Options {
+            exec: true,
+            ..Options::default()
+        },
     );
-    let opts = cs(&json);
-    let client = unsafe { bc_client_new(opts.as_ptr()) };
 
     let v = eval(client, r#"{{ exec('echo "$PATH"') | trim }}"#, "/tmp", None);
     assert_eq!(hit(&v), &serde_json::json!(std::env::var("PATH").unwrap()));

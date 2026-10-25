@@ -4,38 +4,16 @@
 //!
 //! Runs against a real in-process daemon spawned by `tests/suite/common/daemon.rs`.
 
+use crate::common::client::{client_for, cs, read};
 use crate::common::daemon::DaemonGuard;
 
-use std::ffi::{CStr, CString, c_char};
-use std::path::Path;
 use std::ptr;
 use std::time::Duration;
 
-use beachcomber::envelope::bc_string_free;
 use beachcomber::{
-    BC_GET_FORCE, BC_GET_WAIT, BcClient, bc_client_free, bc_client_new, bc_get, bc_hello,
-    bc_introspect, bc_put, bc_refresh, bc_status,
+    BC_GET_FORCE, BC_GET_WAIT, bc_client_free, bc_get, bc_hello, bc_introspect, bc_put, bc_refresh,
+    bc_status,
 };
-
-fn client_for(sock: &Path) -> *mut BcClient {
-    let json = format!(
-        r#"{{"socket_path":"{}","autostart":false,"timeout_ms":2000}}"#,
-        sock.display()
-    );
-    let cs = CString::new(json).unwrap();
-    unsafe { bc_client_new(cs.as_ptr()) }
-}
-
-fn cs(s: &str) -> CString {
-    CString::new(s).unwrap()
-}
-
-fn read(ptr: *mut c_char) -> serde_json::Value {
-    assert!(!ptr.is_null(), "call_ffi must never return NULL");
-    let body = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_string();
-    unsafe { bc_string_free(ptr) };
-    serde_json::from_str(&body).expect("envelope must be valid JSON")
-}
 
 #[test]
 fn get_returns_ok_envelope_for_a_real_key() {

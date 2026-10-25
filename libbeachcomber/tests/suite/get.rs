@@ -5,22 +5,12 @@
 //
 // Exercised against a real in-process daemon (DaemonGuard).
 
+use crate::common::client::client_for;
 use crate::common::daemon::DaemonGuard;
 
 use libbeachcomber::render::{Format, render_value};
 use libbeachcomber::resolve::{FetchError, ResolveError};
-use libbeachcomber::{Client, ClientConfig};
 use serde_json::json;
-use std::time::Duration;
-
-fn client_for(sock: &std::path::Path) -> Client {
-    Client::with_config(ClientConfig {
-        timeout: Duration::from_secs(2),
-        auto_start: false,
-        exec: false,
-    })
-    .with_socket_path(sock.to_path_buf())
-}
 
 #[test]
 fn client_get_answers_a_stored_value_and_none_on_a_miss() {

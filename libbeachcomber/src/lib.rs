@@ -53,7 +53,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-/// Connect to a Unix socket with 3 retries (250ms / 500ms / 1s exponential backoff).
+/// Connect to a Unix socket, retrying for up to [`DEFAULT_CONNECT_TIMEOUT`]
+/// on the schedule [`connect_with_retry_for`] describes.
 ///
 /// Retries on `ConnectionRefused` and `NotFound` only — other errors surface
 /// immediately. Intended to cover the brief restart window when the old daemon

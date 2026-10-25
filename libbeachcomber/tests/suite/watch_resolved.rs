@@ -10,11 +10,11 @@
 //! Nothing here sleeps: changes are driven with `put` on a second client and
 //! every wait is a deadline on `next`.
 
+use crate::common::client::client_for;
 use crate::common::daemon::DaemonGuard;
 
 use libbeachcomber::resolve::{Inputs, ResolveError, Slot};
 use libbeachcomber::watch::{ResolvedWatch, WatchError, WatchOutcome};
-use libbeachcomber::{Client, ClientConfig};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -23,15 +23,6 @@ use std::time::{Duration, Instant};
 
 /// The deadline a change is expected to arrive within.
 const SOON: Duration = Duration::from_secs(2);
-
-fn client_for(sock: &Path) -> Client {
-    Client::with_config(ClientConfig {
-        timeout: Duration::from_secs(2),
-        auto_start: false,
-        exec: false,
-    })
-    .with_socket_path(sock.to_path_buf())
-}
 
 /// The shell the design's §3.1 examples assume.
 fn shell_env() -> HashMap<String, String> {

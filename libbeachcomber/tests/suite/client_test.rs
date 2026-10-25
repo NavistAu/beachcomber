@@ -32,6 +32,8 @@ fn socket_path_defaults_under_tmp_and_honours_the_env() {
     assert_eq!(set, std::path::PathBuf::from("/custom/sock"));
 }
 
+/// A client that may not start a daemon, finding none on the socket it
+/// resolves, says so at once: it neither spawns nor waits.
 #[test]
 fn client_no_autostart_returns_error() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -40,12 +42,20 @@ fn client_no_autostart_returns_error() {
         timeout: Duration::from_millis(50),
         auto_start: false,
         exec: false,
-    })
-    .with_socket_path(socket);
-    let result = client.get("hostname", None);
+    });
+    let result = temp_env::with_var("BEACHCOMBER_SOCKET", Some(&socket), || {
+        client.get("hostname", None)
+    });
     assert!(
-        result.is_err(),
-        "expected error against absent socket, got {result:?}"
+        matches!(
+            result,
+            Err(libbeachcomber::resolve::ResolveError::Fetch(
+                libbeachcomber::resolve::FetchError::Transport(
+                    libbeachcomber::CombError::DaemonNotRunning
+                )
+            ))
+        ),
+        "expected DaemonNotRunning against an absent socket, got {result:?}"
     );
 }
 
