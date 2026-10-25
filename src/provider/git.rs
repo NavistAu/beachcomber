@@ -336,7 +336,8 @@ fn status_meta() -> SourceMetadata {
 // ── Source impls ──────────────────────────────────────────────────────────────
 
 /// Read-always source: parses `<gitdir>/HEAD` directly, no subprocess.
-/// Returns `branch` (String) and `detached` (Bool) on every request.
+/// Returns `detached` (Bool) on every request, and `branch` (String) when HEAD
+/// is on one.
 struct GitHead;
 
 impl GitHead {
@@ -344,22 +345,22 @@ impl GitHead {
     ///
     /// Returns (branch, detached):
     /// - `ref: refs/heads/<name>` → branch=<name>, detached=false
-    /// - 40/64-hex line (detached HEAD) → branch="", detached=true
-    /// - missing/other → branch="", detached=false
-    fn parse_head(dirs: &GitDirs) -> (String, bool) {
+    /// - 40/64-hex line (detached HEAD) → no branch, detached=true
+    /// - missing/other → no branch, detached=false
+    fn parse_head(dirs: &GitDirs) -> (Option<String>, bool) {
         let head_path = dirs.gitdir.join("HEAD");
         let Ok(contents) = std::fs::read_to_string(&head_path) else {
-            return (String::new(), false);
+            return (None, false);
         };
         let line = contents.trim();
         if let Some(branch) = line.strip_prefix("ref: refs/heads/") {
-            return (branch.to_string(), false);
+            return (Some(branch.to_string()), false);
         }
         // Detached HEAD: 40-char (SHA-1) or 64-char (SHA-256) hex string
         if (line.len() == 40 || line.len() == 64) && line.chars().all(|c| c.is_ascii_hexdigit()) {
-            return (String::new(), true);
+            return (None, true);
         }
-        (String::new(), false)
+        (None, false)
     }
 }
 
@@ -380,7 +381,9 @@ impl Source for GitHead {
         };
         let (branch, detached) = Self::parse_head(&dirs);
         let mut result = SourceResult::new();
-        result.insert("branch", Value::String(branch));
+        if let Some(branch) = branch {
+            result.insert("branch", Value::String(branch));
+        }
         result.insert("detached", Value::Bool(detached));
         Ok(result)
     }
@@ -434,35 +437,48 @@ impl Source for GitRefs {
             return Err("git status failed".into());
         };
         let stash_count = count_stashes(&dirs);
-        let (state, state_step, state_total) = detect_repo_state(&dirs);
-        let (commit, last_commit_ts, commit_summary) = get_head_info(dir, &*self.executor);
+        let (state, steps) = detect_repo_state(&dirs);
+        let head = get_head_info(dir, &*self.executor);
         let tag = get_nearest_tag(dir, &*self.executor);
-        let (push_ahead, push_behind) = get_push_divergence(dir, &status.branch, &*self.executor);
+        let push = get_push_divergence(dir, &status.branch, &*self.executor);
 
         let now_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let last_commit_age_secs = if last_commit_ts > 0 {
-            now_secs.saturating_sub(last_commit_ts)
-        } else {
-            0
-        };
 
+        // What the repo does not have is absent, never "" or 0: an upstream
+        // (and with it ahead/behind), a commit, a tag, a push remote, a
+        // stepped operation in progress. Counts — stashes — are values.
         let mut result = SourceResult::new();
-        result.insert("ahead", Value::Int(status.ahead));
-        result.insert("behind", Value::Int(status.behind));
-        result.insert("upstream", Value::String(status.upstream));
+        if let Some(upstream) = status.upstream {
+            result.insert("upstream", Value::String(upstream));
+            if let Some((ahead, behind)) = status.ab {
+                result.insert("ahead", Value::Int(ahead));
+                result.insert("behind", Value::Int(behind));
+            }
+        }
         result.insert("stash", Value::Int(stash_count));
         result.insert("state", Value::String(state));
-        result.insert("state_step", Value::Int(state_step));
-        result.insert("state_total", Value::Int(state_total));
-        result.insert("commit", Value::String(commit));
-        result.insert("tag", Value::String(tag));
-        result.insert("last_commit_age_secs", Value::Int(last_commit_age_secs));
-        result.insert("commit_summary", Value::String(commit_summary));
-        result.insert("push_ahead", Value::Int(push_ahead));
-        result.insert("push_behind", Value::Int(push_behind));
+        if let Some((step, total)) = steps {
+            result.insert("state_step", Value::Int(step));
+            result.insert("state_total", Value::Int(total));
+        }
+        if let Some(head) = head {
+            result.insert("commit", Value::String(head.hash));
+            result.insert(
+                "last_commit_age_secs",
+                Value::Int(now_secs.saturating_sub(head.timestamp)),
+            );
+            result.insert("commit_summary", Value::String(head.subject));
+        }
+        if let Some(tag) = tag {
+            result.insert("tag", Value::String(tag));
+        }
+        if let Some((push_ahead, push_behind)) = push {
+            result.insert("push_ahead", Value::Int(push_ahead));
+            result.insert("push_behind", Value::Int(push_behind));
+        }
         Ok(result)
     }
 
@@ -565,10 +581,9 @@ impl Source for GitLineage {
 
         // Detached HEAD has no branch, so it has neither a parent nor a
         // meaningful position relative to one. Emit nothing.
-        let (branch, detached) = GitHead::parse_head(&dirs);
-        if detached || branch.is_empty() {
+        let (Some(branch), false) = GitHead::parse_head(&dirs) else {
             return Ok(SourceResult::new());
-        }
+        };
 
         let executor = &*self.executor;
         let base = detect_default_branch(&dirs, dir, executor);
@@ -755,9 +770,10 @@ pub fn git_provider_with_executor(executor: Arc<dyn GitExecutor>) -> impl Provid
 
 struct ParsedGitStatus {
     branch: String,
-    upstream: String,
-    ahead: i64,
-    behind: i64,
+    /// The branch's upstream, when it has one.
+    upstream: Option<String>,
+    /// (ahead, behind) of the upstream, reported only when there is one.
+    ab: Option<(i64, i64)>,
     staged: i64,
     unstaged: i64,
     untracked: i64,
@@ -778,9 +794,8 @@ fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitS
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut branch = String::new();
-    let mut upstream = String::new();
-    let mut ahead: i64 = 0;
-    let mut behind: i64 = 0;
+    let mut upstream = None;
+    let mut ab = None;
     let mut staged: i64 = 0;
     let mut unstaged: i64 = 0;
     let mut untracked: i64 = 0;
@@ -792,16 +807,18 @@ fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitS
                 .strip_prefix("# branch.head ")
                 .unwrap_or("")
                 .to_string();
-        } else if line.starts_with("# branch.upstream ") {
-            upstream = line
-                .strip_prefix("# branch.upstream ")
-                .unwrap_or("")
-                .to_string();
+        } else if let Some(name) = line.strip_prefix("# branch.upstream ") {
+            upstream = Some(name.to_string());
         } else if line.starts_with("# branch.ab ") {
+            // Present only when the branch has an upstream to compare with.
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 4 {
-                ahead = parts[2].trim_start_matches('+').parse().unwrap_or(0);
-                behind = parts[3].trim_start_matches('-').parse().unwrap_or(0);
+            if parts.len() >= 4
+                && let (Ok(ahead), Ok(behind)) = (
+                    parts[2].trim_start_matches('+').parse(),
+                    parts[3].trim_start_matches('-').parse(),
+                )
+            {
+                ab = Some((ahead, behind));
             }
         } else if line.starts_with("1 ") || line.starts_with("2 ") {
             let chars: Vec<char> = line.chars().collect();
@@ -825,8 +842,7 @@ fn parse_git_status(dir: &Path, executor: &dyn GitExecutor) -> Option<ParsedGitS
     Some(ParsedGitStatus {
         branch,
         upstream,
-        ahead,
-        behind,
+        ab,
         staged,
         unstaged,
         untracked,
@@ -841,46 +857,54 @@ fn count_stashes(dirs: &GitDirs) -> i64 {
         .unwrap_or(0)
 }
 
-/// Returns (state_name, step, total).
-fn detect_repo_state(dirs: &GitDirs) -> (String, i64, i64) {
+/// Returns (state_name, (step, total) for a stepped operation in progress).
+fn detect_repo_state(dirs: &GitDirs) -> (String, Option<(i64, i64)>) {
     let git_dir = &dirs.gitdir;
 
     if git_dir.join("MERGE_HEAD").exists() {
-        return ("merge".to_string(), 0, 0);
+        return ("merge".to_string(), None);
     }
 
     if git_dir.join("rebase-merge").exists() {
-        let step = read_int_file(&git_dir.join("rebase-merge").join("msgnum"));
-        let total = read_int_file(&git_dir.join("rebase-merge").join("end"));
-        return ("rebase".to_string(), step, total);
+        let steps = read_steps(
+            &git_dir.join("rebase-merge").join("msgnum"),
+            &git_dir.join("rebase-merge").join("end"),
+        );
+        return ("rebase".to_string(), steps);
     }
 
     if git_dir.join("rebase-apply").exists() {
-        let step = read_int_file(&git_dir.join("rebase-apply").join("next"));
-        let total = read_int_file(&git_dir.join("rebase-apply").join("last"));
-        return ("rebase".to_string(), step, total);
+        let steps = read_steps(
+            &git_dir.join("rebase-apply").join("next"),
+            &git_dir.join("rebase-apply").join("last"),
+        );
+        return ("rebase".to_string(), steps);
     }
 
     if git_dir.join("CHERRY_PICK_HEAD").exists() {
-        return ("cherry-pick".to_string(), 0, 0);
+        return ("cherry-pick".to_string(), None);
     }
 
     if git_dir.join("BISECT_LOG").exists() {
-        return ("bisect".to_string(), 0, 0);
+        return ("bisect".to_string(), None);
     }
 
     if git_dir.join("REVERT_HEAD").exists() {
-        return ("revert".to_string(), 0, 0);
+        return ("revert".to_string(), None);
     }
 
-    ("clean".to_string(), 0, 0)
+    ("clean".to_string(), None)
 }
 
-fn read_int_file(path: &Path) -> i64 {
+/// A stepped operation's (step, total), when both files read as numbers.
+fn read_steps(step: &Path, total: &Path) -> Option<(i64, i64)> {
+    Some((read_int_file(step)?, read_int_file(total)?))
+}
+
+fn read_int_file(path: &Path) -> Option<i64> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0)
 }
 
 /// Runs `git diff --numstat` and returns (lines_added, lines_removed) summed across all files.
@@ -926,8 +950,16 @@ fn parse_numstat_output(output: Result<std::process::Output, std::io::Error>) ->
     (added, removed)
 }
 
-/// Runs `git log -1 --format="%h %ct %s"` and returns (short_hash, commit_timestamp, subject).
-fn get_head_info(dir: &Path, executor: &dyn GitExecutor) -> (String, i64, String) {
+/// The last commit: its short hash, timestamp and subject.
+struct HeadCommit {
+    hash: String,
+    timestamp: i64,
+    subject: String,
+}
+
+/// Runs `git log -1 --format="%h %ct %s"`: the last commit, or `None` in a
+/// repo with no commits yet.
+fn get_head_info(dir: &Path, executor: &dyn GitExecutor) -> Option<HeadCommit> {
     let output = executor.run_git(
         dir,
         vec!["log".into(), "-1".into(), "--format=%h %ct %s".into()],
@@ -935,49 +967,50 @@ fn get_head_info(dir: &Path, executor: &dyn GitExecutor) -> (String, i64, String
 
     let output = match output {
         Ok(o) if o.status.success() => o,
-        _ => return (String::new(), 0, String::new()),
+        _ => return None,
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let line = stdout.trim();
     let mut parts = line.splitn(3, ' ');
-    let hash = parts.next().unwrap_or("").to_string();
-    let ts: i64 = parts
-        .next()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0);
+    let hash = parts.next().filter(|h| !h.is_empty())?.to_string();
+    let timestamp: i64 = parts.next().and_then(|s| s.trim().parse().ok())?;
     let subject = parts.next().unwrap_or("").to_string();
-    (hash, ts, subject)
+    Some(HeadCommit {
+        hash,
+        timestamp,
+        subject,
+    })
 }
 
-/// Runs `git describe --tags --abbrev=0` and returns the nearest tag or empty string.
-fn get_nearest_tag(dir: &Path, executor: &dyn GitExecutor) -> String {
+/// Runs `git describe --tags --abbrev=0`: the nearest tag, or `None` when
+/// there is none.
+fn get_nearest_tag(dir: &Path, executor: &dyn GitExecutor) -> Option<String> {
     let output = executor.run_git(
         dir,
         vec!["describe".into(), "--tags".into(), "--abbrev=0".into()],
     );
 
     match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => String::new(),
+        Ok(o) if o.status.success() => {
+            Some(String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|t| !t.is_empty())
+        }
+        _ => None,
     }
 }
 
-/// Returns (push_ahead, push_behind) relative to the push remote.
-/// If no push remote is configured, returns (0, 0).
-fn get_push_divergence(dir: &Path, branch: &str, executor: &dyn GitExecutor) -> (i64, i64) {
+/// Returns (push_ahead, push_behind) relative to the push remote, or `None`
+/// when there is no push remote, or no branch on it, to compare with.
+fn get_push_divergence(dir: &Path, branch: &str, executor: &dyn GitExecutor) -> Option<(i64, i64)> {
     if branch.is_empty() || branch == "(detached)" {
-        return (0, 0);
+        return None;
     }
 
     // Resolve push remote: branch.<name>.pushRemote, then remote.pushDefault
     let push_remote = get_git_config(dir, &format!("branch.{branch}.pushRemote"), executor)
         .or_else(|| get_git_config(dir, "remote.pushDefault", executor));
 
-    let push_remote = match push_remote {
-        Some(r) => r,
-        None => return (0, 0),
-    };
+    let push_remote = push_remote?;
 
     let refspec = format!("{push_remote}/{branch}");
 
@@ -993,7 +1026,7 @@ fn get_push_divergence(dir: &Path, branch: &str, executor: &dyn GitExecutor) -> 
     );
     match check {
         Ok(o) if o.status.success() => {}
-        _ => return (0, 0),
+        _ => return None,
     }
 
     let output = executor.run_git(
@@ -1008,17 +1041,14 @@ fn get_push_divergence(dir: &Path, branch: &str, executor: &dyn GitExecutor) -> 
 
     let output = match output {
         Ok(o) if o.status.success() => o,
-        _ => return (0, 0),
+        _ => return None,
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parts: Vec<&str> = stdout.trim().split('\t').collect();
-    if parts.len() == 2 {
-        let ahead = parts[0].parse().unwrap_or(0);
-        let behind = parts[1].parse().unwrap_or(0);
-        (ahead, behind)
-    } else {
-        (0, 0)
+    match parts.as_slice() {
+        [ahead, behind] => Some((ahead.parse().ok()?, behind.parse().ok()?)),
+        _ => None,
     }
 }
 

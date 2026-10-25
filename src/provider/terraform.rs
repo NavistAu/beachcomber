@@ -64,10 +64,10 @@ impl Source for TerraformState {
         // per-shell override rendered client-side by the workspace template
         // in defaults/terraform.toml:
         //   workspace = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}"
-        let workspace = read_workspace_file(&tf_dir);
-
         let mut result = SourceResult::new();
-        result.insert("workspace", Value::String(workspace));
+        if let Some(workspace) = read_workspace_file(&tf_dir) {
+            result.insert("workspace", Value::String(workspace));
+        }
         Ok(result)
     }
 
@@ -80,11 +80,14 @@ impl Source for TerraformState {
     }
 }
 
-fn read_workspace_file(tf_dir: &Path) -> String {
-    std::fs::read_to_string(tf_dir.join("environment"))
+/// The selected workspace: `.terraform/environment`, or `default` when there
+/// is no such file, as terraform reads it. An empty file names none.
+fn read_workspace_file(tf_dir: &Path) -> Option<String> {
+    let workspace = std::fs::read_to_string(tf_dir.join("environment"))
         .unwrap_or_else(|_| "default".to_string())
         .trim()
-        .to_string()
+        .to_string();
+    (!workspace.is_empty()).then_some(workspace)
 }
 
 fn find_terraform_root(start: &Path) -> Option<String> {

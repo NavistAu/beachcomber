@@ -59,7 +59,9 @@ impl Source for UserName {
         let uid = unsafe { libc::getuid() } as i64;
         let name = get_username(uid as u32);
         let mut result = SourceResult::new();
-        result.insert("name", Value::String(name));
+        if !name.is_empty() {
+            result.insert("name", Value::String(name));
+        }
         result.insert("uid", Value::Int(uid));
         Ok(result)
     }

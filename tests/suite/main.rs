@@ -1,5 +1,6 @@
 mod common;
 
+mod absent_fields;
 mod arrays;
 mod auto_shutdown;
 mod binary_self_watch;

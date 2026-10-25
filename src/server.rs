@@ -952,8 +952,6 @@ struct Climbed {
     /// Every instance visited, one a `put` answered included (which is not in
     /// `reached`: nothing runs or is kept warm for it).
     visited: Vec<Instance>,
-    /// Whether any Source ran.
-    ran: bool,
     /// The merged read at the end.
     merged: Option<MergedRead>,
 }
@@ -1024,7 +1022,6 @@ async fn climb(
     let mut out = Climbed {
         reached: Vec::new(),
         visited: Vec::new(),
-        ran: false,
         merged: None,
     };
     loop {
@@ -1062,8 +1059,7 @@ async fn climb(
                 continue;
             }
             if let Climb::Warm(how) = mode {
-                out.ran |=
-                    warm_source(registry, cache, provider, &w.name, root.as_deref(), how).await?;
+                warm_source(registry, cache, provider, &w.name, root.as_deref(), how).await?;
             }
             out.reached.push(Instance {
                 source: w.name.clone(),
@@ -1737,7 +1733,6 @@ async fn handle_request(
             let Climbed {
                 reached,
                 visited,
-                ran,
                 mut merged,
             } = match climb(
                 registry,
@@ -1796,48 +1791,9 @@ async fn handle_request(
                 Vec::new()
             };
 
-            // A source whose map exists without holding this address is still
-            // worth one attempt — `warm_source` only knows whether the instance
-            // has *anything* cached. Only a field read can tell: a namespace
-            // read has no single address to miss.
-            let retry = match &plan.target {
-                KeyParse::Field(_, field)
-                    if registry.reads_by_default(provider_name)
-                        && lookup_merged(&merged, field).is_none()
-                        && !ran =>
-                {
-                    reached.first()
-                }
-                _ => None,
-            };
-            if let Some(first) = retry {
-                match inline_execute_source(
-                    registry,
-                    cache,
-                    provider_name,
-                    &first.source,
-                    first.root.as_deref(),
-                    false,
-                    false,
-                )
-                .await
-                {
-                    Ok(true) => {
-                        merged = cache.read_merged(
-                            provider_name,
-                            plan.requested_path.as_deref(),
-                            &visited,
-                            registry,
-                            plan.layers,
-                        );
-                    }
-                    Ok(false) => {}
-                    Err(msg) => {
-                        warn!("get {key}: {msg}");
-                        return Response::error(msg);
-                    }
-                }
-            }
+            // A field the Source's last run left absent is absent until it runs
+            // again, as a field it produced is present until then: the read is
+            // answered from that run, never by running the Source once more.
 
             // Demand every instance the read reached, so each is kept warm and,
             // the first time, its schedule is registered. The Sources the

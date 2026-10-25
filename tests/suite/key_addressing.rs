@@ -96,26 +96,26 @@ async fn source_name_as_key_segment_misses_but_the_field_still_hits() {
     .await;
     assert_miss(&resp, "git.refs before warming");
 
-    // "ahead" is a real field of the "refs" source, but addressing it through
+    // "stash" is a real field of the "refs" source, but addressing it through
     // the (removed) source-field form also just misses now.
     let resp = send_recv(
         &mut stream,
-        &serde_json::json!({"op": "get", "key": "git.refs.ahead", "path": path}),
+        &serde_json::json!({"op": "get", "key": "git.refs.stash", "path": path}),
     )
     .await;
-    assert_miss(&resp, "git.refs.ahead before warming");
+    assert_miss(&resp, "git.refs.stash before warming");
 
-    // git.ahead is the field's one real address, and it still hits — this
+    // git.stash is the field's one real address, and it still hits — this
     // also warms the "refs" source in the cache.
     let resp = send_recv(
         &mut stream,
-        &serde_json::json!({"op": "get", "key": "git.ahead", "path": path}),
+        &serde_json::json!({"op": "get", "key": "git.stash", "path": path}),
     )
     .await;
-    assert!(resp.ok, "git.ahead should hit: {:?}", resp.error);
+    assert!(resp.ok, "git.stash should hit: {:?}", resp.error);
     assert!(
         resp.data.as_ref().is_some_and(|d| d.is_number()),
-        "git.ahead should be numeric, got {:?}",
+        "git.stash should be numeric, got {:?}",
         resp.data
     );
 
@@ -130,10 +130,10 @@ async fn source_name_as_key_segment_misses_but_the_field_still_hits() {
 
     let resp = send_recv(
         &mut stream,
-        &serde_json::json!({"op": "get", "key": "git.refs.ahead", "path": path}),
+        &serde_json::json!({"op": "get", "key": "git.refs.stash", "path": path}),
     )
     .await;
-    assert_miss(&resp, "git.refs.ahead after warming refs");
+    assert_miss(&resp, "git.refs.stash after warming refs");
 
     handle.abort();
 }
@@ -161,8 +161,8 @@ async fn whole_provider_flattening_has_no_key_named_for_a_source() {
     let data = resp.data.expect("git provider should have data");
     let obj = data.as_object().expect("object");
     assert!(
-        obj.contains_key("ahead"),
-        "flattened fields include ahead, got keys: {:?}",
+        obj.contains_key("stash"),
+        "flattened fields include stash, got keys: {:?}",
         obj.keys().collect::<Vec<_>>()
     );
     assert!(

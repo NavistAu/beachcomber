@@ -103,10 +103,8 @@ mod macos {
         let result = execute_with(sample);
         assert_eq!(result.fields.get("percent").unwrap(), &Value::Int(72));
         assert_eq!(result.fields.get("charging").unwrap(), &Value::Bool(false));
-        assert_eq!(
-            result.fields.get("time_remaining_secs").unwrap(),
-            &Value::Int(0)
-        );
+        // No estimate is no value: absent, never 0.
+        assert!(!result.fields.contains_key("time_remaining_secs"));
         assert_eq!(
             result.fields.get("status").unwrap().as_text(),
             "calculating"
@@ -119,6 +117,8 @@ mod macos {
         let result = execute_with(sample);
         assert_eq!(result.fields.get("percent").unwrap(), &Value::Int(100));
         assert_eq!(result.fields.get("status").unwrap().as_text(), "charged");
+        // A full battery has no time remaining to report.
+        assert!(!result.fields.contains_key("time_remaining_secs"));
     }
 
     #[test]
@@ -185,25 +185,22 @@ mod linux {
         let stub = StubProcessExecutor::new(vec![io_error()]);
         let source = battery_upower_source_with_executor(stub);
         let result = source.execute(None).unwrap();
-        // time_remaining_secs and status are still written from sysfs; here
-        // with no sysfs battery dir, status becomes "unknown".
+        // status is still written from sysfs; here with no sysfs battery dir,
+        // it becomes "unknown", and with no upower there is no estimate.
         assert!(result.fields.contains_key("status"));
-        assert!(result.fields.contains_key("time_remaining_secs"));
+        assert!(!result.fields.contains_key("time_remaining_secs"));
         assert_eq!(result.fields.get("status").unwrap().as_text(), "unknown");
     }
 
     #[test]
-    fn upower_returns_zero_time_when_no_battery_line() {
+    fn upower_has_no_time_when_no_battery_line() {
         let stub = StubProcessExecutor::new(vec![success_output(
             b"/org/freedesktop/UPower/devices/ac_adapter\n",
         )]);
         let source = battery_upower_source_with_executor(stub);
         let result = source.execute(None).unwrap();
-        // No "battery" line → time_remaining_secs = 0
-        assert_eq!(
-            result.fields.get("time_remaining_secs").unwrap().as_text(),
-            "0"
-        );
+        // No "battery" line → no estimate, so no time_remaining_secs.
+        assert!(!result.fields.contains_key("time_remaining_secs"));
     }
 
     #[test]

@@ -1526,7 +1526,10 @@ async fn a_nested_repo_shows_only_its_own_values() {
 
     let whole = data(send_recv(&mut s, get_at("git", inner)).await, "inner repo");
     assert_eq!(whole["detached"], serde_json::json!(true), "{whole}");
-    assert_eq!(whole["branch"], serde_json::json!(""), "{whole}");
+    assert!(
+        whole.get("branch").is_none(),
+        "a detached HEAD is on no branch: {whole}"
+    );
     assert!(
         whole.get("branch_parent").is_none(),
         "nothing of the outer repo shows in the inner one: {whole}"

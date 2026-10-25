@@ -229,11 +229,24 @@ fn git_refs_clean_repo_new_fields() {
         .unwrap();
     let result = refs_src.execute(Some(repo.path_str())).unwrap();
 
-    // No upstream in a local-only repo
-    assert_eq!(result.fields.get("upstream").unwrap().as_text(), "");
-    // state_step and state_total are 0 in a clean repo
-    assert_eq!(result.fields.get("state_step").unwrap().as_text(), "0");
-    assert_eq!(result.fields.get("state_total").unwrap().as_text(), "0");
+    // No upstream in a local-only repo: absent, as are ahead and behind.
+    assert!(
+        !result.fields.contains_key("upstream"),
+        "{:?}",
+        result.fields
+    );
+    assert!(!result.fields.contains_key("ahead"), "{:?}", result.fields);
+    // No stepped operation in a clean repo: no step, no total.
+    assert!(
+        !result.fields.contains_key("state_step"),
+        "{:?}",
+        result.fields
+    );
+    assert!(
+        !result.fields.contains_key("state_total"),
+        "{:?}",
+        result.fields
+    );
     // state is clean
     assert_eq!(result.fields.get("state").unwrap().as_text(), "clean");
 
@@ -380,9 +393,17 @@ fn git_refs_push_ahead_behind_no_push_remote() {
         .find(|s| s.metadata().name == "refs")
         .unwrap();
     let result = refs_src.execute(Some(repo.path_str())).unwrap();
-    // No push remote configured — both should be 0
-    assert_eq!(result.fields.get("push_ahead").unwrap().as_text(), "0");
-    assert_eq!(result.fields.get("push_behind").unwrap().as_text(), "0");
+    // No push remote configured: nothing to diverge from, so both are absent.
+    assert!(
+        !result.fields.contains_key("push_ahead"),
+        "{:?}",
+        result.fields
+    );
+    assert!(
+        !result.fields.contains_key("push_behind"),
+        "{:?}",
+        result.fields
+    );
 }
 
 #[test]

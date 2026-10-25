@@ -739,7 +739,7 @@ beachcomber ships 16 built-in providers organized by category, plus template-bac
 }
 ```
 
-> **Platform note:** On macOS, `time_remaining_secs` is always available. On Linux, it requires UPower (`upower` command) — if unavailable, the field reads `0`. The `status` field reports the battery state: `"charging"`, `"discharging"`, `"full"`, or `"unknown"`.
+> **Platform note:** `time_remaining_secs` is absent when there is no estimate — a full battery, macOS reporting none, or Linux without UPower (`upower` command). The `status` field reports the battery state: `"charging"`, `"discharging"`, `"full"`, or `"unknown"`.
 
 ```json
 // comb g.j network
@@ -766,26 +766,26 @@ beachcomber ships 16 built-in providers organized by category, plus template-bac
 
 | Field | Type | Description |
 |---|---|---|
-| `branch` | string | Current branch name |
-| `commit` | string | Short SHA of HEAD |
+| `branch` | string | Current branch name; absent on a detached HEAD |
+| `commit` | string | Short SHA of HEAD; absent before the first commit |
 | `detached` | bool | Whether HEAD is detached |
-| `upstream` | string | Upstream tracking branch (e.g., "origin/main") |
-| `tag` | string | Nearest tag (empty if none) |
+| `upstream` | string | Upstream tracking branch (e.g., "origin/main"); absent when none |
+| `tag` | string | Nearest tag; absent when none |
 | `dirty` | bool | Whether working tree has changes |
 | `staged` | int | Number of staged files |
 | `unstaged` | int | Number of unstaged modified files |
 | `untracked` | int | Number of untracked files |
 | `conflicted` | int | Number of conflicted files |
-| `ahead` | int | Commits ahead of upstream |
-| `behind` | int | Commits behind upstream |
+| `ahead` | int | Commits ahead of upstream; absent without one |
+| `behind` | int | Commits behind upstream; absent without one |
 | `stash` | int | Number of stash entries |
 | `lines_added` | int | Lines added in working tree (unstaged) |
 | `lines_removed` | int | Lines removed in working tree (unstaged) |
 | `lines_staged_added` | int | Lines added in index (staged) |
 | `lines_staged_removed` | int | Lines removed in index (staged) |
 | `state` | string | Repo state: "clean", "merge", "rebase", "cherry-pick", "bisect", "revert" |
-| `state_step` | int | Current step in rebase/cherry-pick (0 if not in progress) |
-| `state_total` | int | Total steps in rebase/cherry-pick (0 if not in progress) |
+| `state_step` | int | Current step of a rebase in progress; absent otherwise |
+| `state_total` | int | Total steps of a rebase in progress; absent otherwise |
 | `last_commit_age_secs` | int | Seconds since last commit |
 | `commit_summary` | string | First line of HEAD commit message |
 | `push_ahead` | int | Commits ahead of the push remote |

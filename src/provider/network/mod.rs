@@ -84,35 +84,49 @@ impl Source for NetworkInterfaces {
     }
 
     fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
-        let (iface, ip, ipv6, vpn_active, vpn_name) = scan_interfaces();
-        let ssid = get_wifi_ssid();
-
-        // LIMITATION: online heuristic is IP-presence based (no reachability check).
-        // A future improvement could probe a known host; out of S6 scope.
-        let online = !ip.is_empty() || !ipv6.is_empty();
-
-        let mut result = SourceResult::new();
-        result.insert("interface", Value::String(iface));
-        result.insert("ip", Value::String(ip));
-        result.insert("ipv6", Value::String(ipv6));
-        result.insert("online", Value::Bool(online));
-        result.insert("vpn_active", Value::Bool(vpn_active));
-        result.insert("vpn_name", Value::String(vpn_name));
-        result.insert("ssid", Value::String(ssid));
-        Ok(result)
+        Ok(interfaces_result(scan_interfaces(), get_wifi_ssid()))
     }
 }
 
-fn scan_interfaces() -> (String, String, String, bool, String) {
+/// What one interface scan found. An empty string is "none found".
+#[derive(Default)]
+pub(crate) struct Scan {
+    pub iface: String,
+    pub ip: String,
+    pub ipv6: String,
+    pub vpn_active: bool,
+    pub vpn_name: String,
+}
+
+/// The fields a scan and an SSID make. What the machine has no value for — an
+/// interface, an address, a VPN, a Wi-Fi network — is absent, never `""`;
+/// `online` and `vpn_active` are always values.
+pub(crate) fn interfaces_result(scan: Scan, ssid: String) -> SourceResult {
+    // LIMITATION: online heuristic is IP-presence based (no reachability check).
+    // A future improvement could probe a known host; out of S6 scope.
+    let online = !scan.ip.is_empty() || !scan.ipv6.is_empty();
+
+    let mut result = SourceResult::new();
+    for (field, text) in [
+        ("interface", scan.iface),
+        ("ip", scan.ip),
+        ("ipv6", scan.ipv6),
+        ("vpn_name", scan.vpn_name),
+        ("ssid", ssid),
+    ] {
+        if !text.is_empty() {
+            result.insert(field, Value::String(text));
+        }
+    }
+    result.insert("online", Value::Bool(online));
+    result.insert("vpn_active", Value::Bool(scan.vpn_active));
+    result
+}
+
+fn scan_interfaces() -> Scan {
     let mut ifaddrs: *mut libc::ifaddrs = std::ptr::null_mut();
     if unsafe { libc::getifaddrs(&mut ifaddrs) } != 0 {
-        return (
-            String::new(),
-            String::new(),
-            String::new(),
-            false,
-            String::new(),
-        );
+        return Scan::default();
     }
 
     let mut best_iface = String::new();
@@ -166,7 +180,13 @@ fn scan_interfaces() -> (String, String, String, bool, String) {
 
     unsafe { libc::freeifaddrs(ifaddrs) };
 
-    (best_iface, best_ip, best_ipv6, vpn_active, vpn_name)
+    Scan {
+        iface: best_iface,
+        ip: best_ip,
+        ipv6: best_ipv6,
+        vpn_active,
+        vpn_name,
+    }
 }
 
 /// Check if an IPv6 address is link-local (fe80::/10).

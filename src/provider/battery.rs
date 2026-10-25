@@ -89,7 +89,8 @@ impl Source for BatteryState {
 fn parse_pmset_output_to_source(output: &str) -> SourceResult {
     let mut percent: i64 = 0;
     let mut charging = false;
-    let mut time_remaining_secs: i64 = 0;
+    // No estimate — none given, or a full battery — is no value: absent.
+    let mut time_remaining_secs: Option<i64> = None;
     let mut status: String = "unknown".to_string();
     let mut found = false;
 
@@ -115,19 +116,20 @@ fn parse_pmset_output_to_source(output: &str) -> SourceResult {
 
             if line.contains("(no estimate)") {
                 status = "calculating".into();
-                time_remaining_secs = 0;
+                time_remaining_secs = None;
             } else if line.contains("charged") {
                 status = "charged".into();
-                time_remaining_secs = 0;
+                time_remaining_secs = None;
             } else if line.contains("remaining") {
                 if let Some(rem_pos) = line.find("remaining") {
                     let before_rem = line[..rem_pos].trim();
                     if let Some(time_str) = before_rem.rsplit(';').next() {
                         let time_str = time_str.trim();
-                        if let Some((h, m)) = time_str.split_once(':') {
-                            let hours: i64 = h.trim().parse().unwrap_or(0);
-                            let mins: i64 = m.trim().parse().unwrap_or(0);
-                            time_remaining_secs = hours * 3600 + mins * 60;
+                        if let Some((h, m)) = time_str.split_once(':')
+                            && let (Ok(hours), Ok(mins)) =
+                                (h.trim().parse::<i64>(), m.trim().parse::<i64>())
+                        {
+                            time_remaining_secs = Some(hours * 3600 + mins * 60);
                         }
                     }
                 }
@@ -151,7 +153,9 @@ fn parse_pmset_output_to_source(output: &str) -> SourceResult {
     let mut result = SourceResult::new();
     result.insert("percent", Value::Int(percent));
     result.insert("charging", Value::Bool(charging));
-    result.insert("time_remaining_secs", Value::Int(time_remaining_secs));
+    if let Some(secs) = time_remaining_secs {
+        result.insert("time_remaining_secs", Value::Int(secs));
+    }
     result.insert("status", Value::String(status));
     result
 }
@@ -301,18 +305,20 @@ impl Source for BatteryUpower {
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
 
-        let time_remaining_secs = get_upower_time_remaining_secs(&*self.executor).unwrap_or(0);
+        // No estimate from upower is no value: absent, never 0.
+        let time_remaining_secs =
+            get_upower_time_remaining_secs(&*self.executor).filter(|secs| *secs > 0);
 
         let status = if sysfs_status == "Full" {
             "charged".to_string()
         } else if sysfs_status == "Charging" {
-            if time_remaining_secs > 0 {
+            if time_remaining_secs.is_some() {
                 "charging".to_string()
             } else {
                 "calculating".to_string()
             }
         } else if sysfs_status == "Discharging" {
-            if time_remaining_secs > 0 {
+            if time_remaining_secs.is_some() {
                 "discharging".to_string()
             } else {
                 "calculating".to_string()
@@ -322,7 +328,9 @@ impl Source for BatteryUpower {
         };
 
         let mut result = SourceResult::new();
-        result.insert("time_remaining_secs", Value::Int(time_remaining_secs));
+        if let Some(secs) = time_remaining_secs {
+            result.insert("time_remaining_secs", Value::Int(secs));
+        }
         result.insert("status", Value::String(status));
         Ok(result)
     }
@@ -440,7 +448,7 @@ mod tests {
         let sample = " -InternalBattery-0\t72%; discharging; (no estimate) present: true\n";
         let r = parse_pmset_output(sample).expect("parses");
         assert_eq!(r.get("percent").unwrap(), &Value::Int(72));
-        assert_eq!(r.get("time_remaining_secs").unwrap(), &Value::Int(0));
+        assert!(r.get("time_remaining_secs").is_none());
         assert_eq!(r.get("status").unwrap().as_text(), "calculating");
     }
 

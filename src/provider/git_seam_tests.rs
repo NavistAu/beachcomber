@@ -183,17 +183,67 @@ fn git_refs_clean_repo_produces_correct_branch() {
         result.fields.get("commit_summary").unwrap().as_text(),
         "init"
     );
-    assert_eq!(result.fields.get("tag").unwrap().as_text(), "");
-    assert_eq!(result.fields.get("push_ahead").unwrap(), &Value::Int(0));
-    assert_eq!(result.fields.get("push_behind").unwrap(), &Value::Int(0));
+    // What the repo does not have is absent, not "" or 0: no tag, no push
+    // remote, and no rebase or other stepped operation in progress.
+    for absent in [
+        "tag",
+        "push_ahead",
+        "push_behind",
+        "state_step",
+        "state_total",
+    ] {
+        assert!(
+            !result.fields.contains_key(absent),
+            "{absent} must be absent: {:?}",
+            result.fields
+        );
+    }
     assert_eq!(result.fields.get("state").unwrap().as_text(), "clean");
+}
+
+#[test]
+fn git_refs_without_an_upstream_or_commits_leaves_them_absent() {
+    let dir = fake_repo();
+    let stub = StubGitExecutor::new(vec![
+        success(status_one_staged()), // no branch.upstream, but a branch.ab line
+        failure(),                    // log -1: no commits yet
+        failure(),                    // describe --tags
+        failure(),                    // config --get branch.main.pushRemote
+        failure(),                    // config --get remote.pushDefault
+    ]);
+    let provider = git_provider_with_executor(stub);
+    let sources = provider.sources();
+    let refs_src = sources
+        .iter()
+        .find(|s| s.metadata().name == "refs")
+        .unwrap();
+    let result = refs_src
+        .execute(Some(dir.path().to_str().unwrap()))
+        .unwrap();
+
+    for absent in [
+        "upstream",
+        "ahead",
+        "behind",
+        "commit",
+        "commit_summary",
+        "last_commit_age_secs",
+    ] {
+        assert!(
+            !result.fields.contains_key(absent),
+            "{absent} must be absent: {:?}",
+            result.fields
+        );
+    }
+    // A count is a count: zero stashes is a value.
+    assert_eq!(result.fields.get("stash"), Some(&Value::Int(0)));
 }
 
 #[test]
 fn git_refs_detached_head_sets_detached_true() {
     // detached is now owned by the head source (reads .git/HEAD directly).
-    // The refs source no longer emits detached. This test verifies refs still
-    // produces push_ahead/push_behind=0 in the detached case.
+    // The refs source no longer emits detached, and has no push divergence
+    // to report in the detached case.
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![
         success(status_detached()), // status
@@ -215,8 +265,16 @@ fn git_refs_detached_head_sets_detached_true() {
         !result.fields.contains_key("detached"),
         "detached moved to head source; must not be present in refs"
     );
-    assert_eq!(result.fields.get("push_ahead").unwrap(), &Value::Int(0));
-    assert_eq!(result.fields.get("push_behind").unwrap(), &Value::Int(0));
+    assert!(
+        !result.fields.contains_key("push_ahead"),
+        "{:?}",
+        result.fields
+    );
+    assert!(
+        !result.fields.contains_key("push_behind"),
+        "{:?}",
+        result.fields
+    );
 }
 
 #[test]

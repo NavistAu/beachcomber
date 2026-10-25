@@ -149,3 +149,36 @@ fn network_provider_metadata_includes_ipv6_field() {
         fields
     );
 }
+
+/// What the machine does not have — an interface, an address, a VPN, a Wi-Fi
+/// network — is absent, never `""`. The two flags are always values.
+#[test]
+fn network_fields_it_has_no_value_for_are_absent() {
+    use crate::provider::Value;
+    use crate::provider::network::Scan;
+    let offline = super::interfaces_result(Scan::default(), String::new());
+    assert_eq!(offline.fields.len(), 2, "{:?}", offline.fields);
+    assert_eq!(offline.fields.get("online"), Some(&Value::Bool(false)));
+    assert_eq!(offline.fields.get("vpn_active"), Some(&Value::Bool(false)));
+
+    let wired = super::interfaces_result(
+        Scan {
+            iface: "en0".into(),
+            ip: "10.0.0.2".into(),
+            ..Scan::default()
+        },
+        String::new(),
+    );
+    assert_eq!(
+        wired.fields.get("ip"),
+        Some(&Value::String("10.0.0.2".into()))
+    );
+    assert_eq!(wired.fields.get("online"), Some(&Value::Bool(true)));
+    for absent in ["ipv6", "vpn_name", "ssid"] {
+        assert!(
+            !wired.fields.contains_key(absent),
+            "{absent}: {:?}",
+            wired.fields
+        );
+    }
+}

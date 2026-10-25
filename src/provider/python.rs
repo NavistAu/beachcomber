@@ -74,11 +74,12 @@ impl Source for PythonVenv {
             let venv_path = dir.join(name);
             let cfg_path = venv_path.join("pyvenv.cfg");
             if cfg_path.exists() {
-                let venv_version = parse_pyvenv_version(&cfg_path);
                 let mut result = SourceResult::new();
                 result.insert("venv", Value::Bool(true));
                 result.insert("local_venv_name", Value::String(name.to_string()));
-                result.insert("venv_version", Value::String(venv_version));
+                if let Some(version) = parse_pyvenv_version(&cfg_path) {
+                    result.insert("venv_version", Value::String(version));
+                }
                 return Ok(result);
             }
         }
@@ -95,21 +96,14 @@ impl Source for PythonVenv {
     }
 }
 
-fn parse_pyvenv_version(cfg_path: &Path) -> String {
-    let Ok(cfg) = std::fs::read_to_string(cfg_path) else {
-        return String::new();
-    };
-    for line in cfg.lines() {
-        if let Some((key, val)) = line.split_once('=')
-            && key.trim() == "version"
-        {
-            let v = val.trim().to_string();
-            if !v.is_empty() {
-                return v;
-            }
-        }
-    }
-    String::new()
+/// The `version` a `pyvenv.cfg` records, or `None` when it records none.
+fn parse_pyvenv_version(cfg_path: &Path) -> Option<String> {
+    let cfg = std::fs::read_to_string(cfg_path).ok()?;
+    cfg.lines().find_map(|line| {
+        let (key, val) = line.split_once('=')?;
+        let v = val.trim();
+        (key.trim() == "version" && !v.is_empty()).then(|| v.to_string())
+    })
 }
 
 const VENV_DIRS: &[&str] = &[".venv", "venv", ".virtualenv", "env"];
@@ -218,7 +212,7 @@ mod tests {
     fn python_venv_version_exact_key_match_no_version_info_bleed() {
         // virtualenv writes `version_info = X.Y.Z.final.0` and NO bare `version` line.
         // strip_prefix("version") incorrectly matches version_info; exact-key match must not.
-        // With no bare `version` key present, venv_version must be "" (empty string).
+        // With no bare `version` key present, venv_version is absent.
         let dir = TempDir::new().unwrap();
         let venv = dir.path().join(".venv");
         std::fs::create_dir_all(venv.join("bin")).unwrap();
@@ -232,14 +226,10 @@ mod tests {
         let result = sources[0]
             .execute(Some(dir.path().to_str().unwrap()))
             .unwrap();
-        let ver = result.fields["venv_version"].as_text();
         assert!(
-            !ver.contains("_info"),
-            "venv_version must not contain '_info' garbage from version_info line; got: {ver:?}"
-        );
-        assert_eq!(
-            ver, "",
-            "with only version_info present (no bare version key), venv_version must be empty; got: {ver:?}"
+            !result.fields.contains_key("venv_version"),
+            "with only version_info present (no bare version key), venv_version is absent: {:?}",
+            result.fields
         );
     }
 
