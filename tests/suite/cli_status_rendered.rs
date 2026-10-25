@@ -95,10 +95,10 @@ fn rendered_leaves_sit_beside_the_raw_templates_and_the_cached_data() {
 
     // The rendered leaves: SOURCE `template`, VALUE marked with the glyph
     // that stands in for the cyan the colour build uses.
-    assert_row(&out, "scanline widgets.foo template > hi ");
-    assert_row(&out, "scanline theme template > dark ");
+    assert_row(&out, "scanline widgets.foo rendered > hi ");
+    assert_row(&out, "scanline theme rendered > dark ");
     // A depth-2 leaf renders too, not just the top-level ones.
-    assert_row(&out, "scanline widgets.clock.format template > %H:%M ");
+    assert_row(&out, "scanline widgets.clock.format rendered > %H:%M ");
     // The template itself is still data the daemon holds, put by the user.
     assert_row(
         &out,
@@ -166,7 +166,7 @@ fn an_absent_leaf_is_a_null_row_shown_only_when_asked() {
     assert_eq!(absent.len(), 1, "only the absent leaf: {absent:#?}");
     assert_eq!(absent[0]["field"], "nothing");
     assert!(absent[0]["value"].is_null());
-    assert_eq!(absent[0]["kind"]["kind"], "template");
+    assert_eq!(absent[0]["kind"]["kind"], "rendered");
 
     let out = status(
         &d,
@@ -181,7 +181,7 @@ fn an_absent_leaf_is_a_null_row_shown_only_when_asked() {
             "--no-trunc",
         ],
     );
-    assert_row(&out, "t nothing template > null ");
+    assert_row(&out, "t nothing rendered > null ");
 }
 
 #[test]
@@ -224,7 +224,7 @@ fn colour_off_with_no_ascii_marks_the_rendered_value_with_the_unicode_glyph() {
     // Default glyph set (no --ascii), colour off: the Unicode marker prefixes
     // the rendered VALUE.
     let out = status(&d, &cwd, &["--color", "never", "--no-trunc"]);
-    assert_row(&out, "scanline widgets.foo template \u{25b8} hi ");
+    assert_row(&out, "scanline widgets.foo rendered \u{25b8} hi ");
 }
 
 /// Rendering `widgets.bar` reads `comb.hostname.name`, which runs the
@@ -246,7 +246,7 @@ fn what_a_render_runs_is_a_row_of_the_same_status() {
 }
 
 #[test]
-fn rendered_rows_carry_kind_and_source_template_in_json() {
+fn rendered_rows_carry_kind_and_source_rendered_in_json() {
     let d = TestDaemon::spawn();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
@@ -257,8 +257,8 @@ fn rendered_rows_carry_kind_and_source_template_in_json() {
         .filter(|r| r["provider"] == "scanline" && r["field"] == "widgets.foo")
         .collect();
     assert_eq!(rendered.len(), 1, "one rendered widgets.foo row: {rows:#?}");
-    assert_eq!(rendered[0]["source"], "template");
-    assert_eq!(rendered[0]["kind"]["kind"], "template");
+    assert_eq!(rendered[0]["source"], "rendered");
+    assert_eq!(rendered[0]["kind"]["kind"], "rendered");
     assert_eq!(rendered[0]["value"], "hi");
 }
 
@@ -268,11 +268,11 @@ fn the_lifecycle_filter_selects_only_the_rendered_rows() {
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
-    let rows = json_rows(&d, &cwd, &["--filter", "lifecycle=template"]);
+    let rows = json_rows(&d, &cwd, &["--filter", "lifecycle=rendered"]);
     assert!(!rows.is_empty(), "the fixture has rendered rows");
     for row in &rows {
-        assert_eq!(row["source"], "template", "in {row}");
-        assert_eq!(row["kind"]["kind"], "template", "in {row}");
+        assert_eq!(row["source"], "rendered", "in {row}");
+        assert_eq!(row["kind"]["kind"], "rendered", "in {row}");
     }
     let fields: Vec<&str> = rows.iter().filter_map(|r| r["field"].as_str()).collect();
     assert!(fields.contains(&"theme"), "got {fields:?}");
@@ -291,7 +291,7 @@ fn a_leaf_that_fails_shows_its_error_text_as_the_value() {
 
     let rows = json_rows(&d, &cwd, &["--filter", "provider=boom"]);
     let rendered: Vec<&serde_json::Value> =
-        rows.iter().filter(|r| r["source"] == "template").collect();
+        rows.iter().filter(|r| r["source"] == "rendered").collect();
     assert_eq!(rendered.len(), 1, "one rendered leaf: {rows:#?}");
     let value = rendered[0]["value"]
         .as_str()
@@ -314,7 +314,7 @@ fn a_string_form_leaf_that_fails_names_the_script() {
 
     let rows = json_rows(&d, &cwd, &["--filter", "provider=boom"]);
     let rendered: Vec<&serde_json::Value> =
-        rows.iter().filter(|r| r["source"] == "template").collect();
+        rows.iter().filter(|r| r["source"] == "rendered").collect();
     assert_eq!(rendered.len(), 1, "one rendered leaf: {rows:#?}");
     let value = rendered[0]["value"]
         .as_str()
@@ -349,7 +349,7 @@ fn a_template_put_at_another_path_is_not_rendered_here() {
     assert!(
         !rows
             .iter()
-            .any(|r| r["provider"] == "offstage" && r["source"] == "template"),
+            .any(|r| r["provider"] == "offstage" && r["source"] == "rendered"),
         "a template at another path must not be rendered here: {rows:#?}"
     );
 }
@@ -380,7 +380,7 @@ fn a_cached_field_with_a_template_over_it_is_shadowed_by_it() {
         || json_rows(&d, &cwd, &["--filter", "provider=git"]),
         |rows| {
             rows.iter()
-                .any(|r| r["field"] == "branch" && r["source"] != "template")
+                .any(|r| r["field"] == "branch" && r["source"] != "rendered")
         },
     );
 
@@ -396,9 +396,9 @@ fn a_cached_field_with_a_template_over_it_is_shadowed_by_it() {
         &["--filter", "provider=git", "--filter", "field=branch"],
     );
     assert_eq!(rows.len(), 1, "the rendered row alone: {rows:#?}");
-    assert_eq!(rows[0]["source"], "template");
+    assert_eq!(rows[0]["source"], "rendered");
     assert_eq!(rows[0]["value"], "overridden");
-    assert_eq!(rows[0]["kind"]["kind"], "template");
+    assert_eq!(rows[0]["kind"]["kind"], "rendered");
 
     let rows = json_rows(
         &d,
@@ -414,7 +414,7 @@ fn a_cached_field_with_a_template_over_it_is_shadowed_by_it() {
         ],
     );
     let cached: Vec<&serde_json::Value> =
-        rows.iter().filter(|r| r["source"] != "template").collect();
+        rows.iter().filter(|r| r["source"] != "rendered").collect();
     assert_eq!(cached.len(), 1, "the cached row under -a: {rows:#?}");
     assert_eq!(cached[0]["shadowed"], true, "{rows:#?}");
 }
@@ -431,7 +431,7 @@ fn a_template_put_at_the_global_entry_renders_at_a_cwd_below_home() {
 
     let rows = json_rows(&d, &cwd, &["--filter", "provider=globalscan"]);
     let rendered: Vec<&serde_json::Value> =
-        rows.iter().filter(|r| r["source"] == "template").collect();
+        rows.iter().filter(|r| r["source"] == "rendered").collect();
     assert_eq!(
         rendered.len(),
         1,
@@ -476,7 +476,7 @@ fn tree_lists_the_layers_under_each_value_and_marks_the_shadowed_ones() {
             .position(|l| l.starts_with(prefix))
             .unwrap_or_else(|| panic!("no line starting {prefix:?} in:\n{out}"))
     };
-    let greet = at("t greet template > tpl ");
+    let greet = at("t greet rendered > tpl ");
     assert!(
         lines[greet + 1].starts_with("|- :template put {{ 'tpl' }} "),
         "{out}"
@@ -547,7 +547,7 @@ fn tree_lists_every_config_file_that_sets_a_template() {
     let lines = squashed(&out);
     let at = lines
         .iter()
-        .position(|l| l.starts_with("aws profile template > mine "))
+        .position(|l| l.starts_with("aws profile rendered > mine "))
         .unwrap_or_else(|| panic!("the rendered row in:\n{out}"));
     let file = |rel: &str| format!("config({})", dir.join(rel).display());
     assert!(
@@ -646,7 +646,7 @@ fn a_rendered_row_is_as_old_as_its_oldest_input() {
     let rows = json_rows(&d, &cwd, &["--filter", "provider=t"]);
     let row = |field: &str| {
         rows.iter()
-            .find(|r| r["field"] == field && r["source"] == "template")
+            .find(|r| r["field"] == field && r["source"] == "rendered")
             .unwrap_or_else(|| panic!("a rendered {field} row: {rows:#?}"))
             .clone()
     };
@@ -664,7 +664,7 @@ fn a_rendered_row_is_as_old_as_its_oldest_input() {
     );
     let line = squashed(&human)
         .into_iter()
-        .find(|l| l.starts_with("t shell template > hi "))
+        .find(|l| l.starts_with("t shell rendered > hi "))
         .unwrap_or_else(|| panic!("a shell row in:\n{human}"));
     assert!(line.ends_with(" - - ---"), "AGE is -: {line:?}");
 }
@@ -680,7 +680,7 @@ fn tree_json_rows_carry_their_layers() {
     let rows = json_rows(&d, &cwd, &["--tree", "--filter", "provider=t"]);
     let rendered = rows
         .iter()
-        .find(|r| r["source"] == "template")
+        .find(|r| r["source"] == "rendered")
         .unwrap_or_else(|| panic!("a rendered row: {rows:#?}"));
     let layers = rendered["layers"].as_array().expect("layers");
     assert_eq!(layers.len(), 2, "{layers:#?}");
@@ -689,6 +689,30 @@ fn tree_json_rows_carry_their_layers() {
     assert_eq!(layers[1]["label"], "put");
     assert_eq!(layers[1]["value"], "data");
     assert!(layers[1].get("answered").is_none(), "{layers:#?}");
+}
+
+/// A row rendered here says so in its SOURCE and its lifecycle, as
+/// `rendered`; "template" is the facet and the leaf it was rendered from.
+#[test]
+fn a_rendered_row_is_rendered_in_every_column_that_names_it() {
+    let d = TestDaemon::spawn();
+    let cwd = project(&d);
+    let out = comb(&d, &cwd)
+        .args(["status", "-f", "sh", "--filter", "lifecycle=rendered"])
+        .assert()
+        .success();
+    let sh = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(sh.contains("_SOURCE='rendered'\n"), "{sh}");
+    assert!(sh.contains("_KIND='rendered'\n"), "{sh}");
+    assert!(!sh.contains("'template'"), "{sh}");
+
+    comb(&d, &cwd)
+        .args(["status", "--filter", "lifecycle=template"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "error: --filter: lifecycle= must be active|decay<N>|once|static|rendered, got template",
+        ));
 }
 
 #[test]
@@ -700,7 +724,7 @@ fn tree_with_another_format_is_a_usage_error() {
         .assert()
         .code(2)
         .stderr(predicates::str::contains(
-            "--tree works with the human, table and json formats",
+            "error: --tree: works with the human, table and json formats",
         ));
 }
 
@@ -745,7 +769,7 @@ fn the_default_status_lists_what_a_read_answers() {
     );
     assert!(!rows.iter().any(|l| l.contains(" far ")), "{rows:?}");
     assert!(
-        rows.iter().any(|l| l.starts_with("t g template > tpl ")),
+        rows.iter().any(|l| l.starts_with("t g rendered > tpl ")),
         "{rows:?}"
     );
     assert!(!rows.iter().any(|l| l.contains(" data ")), "{rows:?}");

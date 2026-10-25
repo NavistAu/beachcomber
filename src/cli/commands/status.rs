@@ -20,7 +20,7 @@ const TEMPLATE_FACET: &str = ":template";
 
 /// The SOURCE a rendered row reports: nothing produced it but this
 /// resolution, here.
-const TEMPLATE_SOURCE: &str = "template";
+const RENDERED_SOURCE: &str = "rendered";
 
 /// One rendered row per template leaf the caller's directory can see.
 ///
@@ -95,12 +95,12 @@ fn render_template_rows(
             shadowed: false,
             provider,
             path: Some(cwd.to_string()),
-            source: TEMPLATE_SOURCE.to_string(),
+            source: RENDERED_SOURCE.to_string(),
             field,
             value,
             age_ms,
             stale: false,
-            kind: Some(RowKind::Template),
+            kind: Some(RowKind::Rendered),
             poll_interval_secs: None,
             poll_count: None,
             fsevents_reinstate: None,
@@ -199,7 +199,7 @@ fn mark_shadowed(
     let chain = crate::query::path_chain(Some(&canonical));
     for (row, stack) in rows.iter_mut().zip(stacks) {
         let Some(stack) = stack else { continue };
-        if matches!(row.kind, Some(RowKind::Template)) || !chain.contains(&row.path) {
+        if matches!(row.kind, Some(RowKind::Rendered)) || !chain.contains(&row.path) {
             continue;
         }
         // A row's SOURCE and a layer's label are both the presented label.
@@ -236,7 +236,10 @@ pub fn run_status(
 ) -> ExitCode {
     if tree && !format.preset().is_some_and(|p| TREE_PRESETS.contains(&p)) {
         let named = format.preset().map_or("a template", Preset::name);
-        eprintln!("error: --tree works with the human, table and json formats, not {named}");
+        crate::cli::report::error(
+            "--tree",
+            format_args!("works with the human, table and json formats, not {named}"),
+        );
         return ExitCode::from(2);
     }
     // A layer belongs to a leaf, so a tree destructures every value to its
@@ -247,7 +250,7 @@ pub fn run_status(
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        eprintln!("Failed to start daemon: {e}");
+        crate::cli::report::daemon_start(e);
         return ExitCode::from(2);
     }
 
@@ -327,17 +330,17 @@ pub fn run_status(
                     )
                 }
                 (_, Err(e)) if tree => {
-                    eprintln!("Error: {e}");
+                    crate::cli::report::daemon_unreachable(e);
                     return ExitCode::from(2);
                 }
                 _ => None,
             };
             let rows = apply_filters(rows, filters).unwrap_or_else(|e| {
-                eprintln!("filter error: {e}");
+                crate::cli::report::error("--filter", e);
                 std::process::exit(2);
             });
             let rows = apply_sort(rows, sort_col).unwrap_or_else(|e| {
-                eprintln!("sort error: {e}");
+                crate::cli::report::error("--sort", e);
                 std::process::exit(2);
             });
             let out = match (&stacks, format) {
@@ -357,7 +360,7 @@ pub fn run_status(
                     let mut session = match client.connect() {
                         Ok(session) => session,
                         Err(e) => {
-                            eprintln!("Error: {e}");
+                            crate::cli::report::daemon_unreachable(e);
                             return ExitCode::from(2);
                         }
                     };
@@ -367,7 +370,7 @@ pub fn run_status(
                     match render_template_format(template, &rows, &mut render) {
                         Ok(out) => out,
                         Err(e) => {
-                            eprintln!("{e}");
+                            crate::cli::report::error_named(e);
                             return ExitCode::from(2);
                         }
                     }
@@ -393,13 +396,12 @@ pub fn run_status(
                 && resp.ok
                 && let Some(data) = resp.data.as_ref()
             {
-                let glyph = if ascii { "!" } else { "⚠" };
                 if let Some(backend) = data.get("watch_backend").and_then(|v| v.as_str())
                     && backend != "native"
                 {
-                    eprintln!(
-                        "{glyph} watch backend: {backend} — kernel fs events undelivered; watch invalidation degraded"
-                    );
+                    crate::cli::report::warning(format_args!(
+                        "watch backend: {backend} — kernel fs events undelivered; watch invalidation degraded"
+                    ));
                 }
                 if let Some(reaper) = data.get("reaper").filter(|r| !r.is_null()) {
                     let armed = reaper
@@ -413,19 +415,21 @@ pub fn run_status(
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
                     if armed && confined {
-                        eprintln!(
-                            "{glyph} reaper visibility degraded: daemon runs confined — orphan daemons outside its view are not policed"
+                        crate::cli::report::warning(
+                            "reaper visibility degraded: daemon runs confined — orphan daemons outside its view are not policed",
                         );
                     }
                     if armed && denied > 0 {
-                        eprintln!("{glyph} reaper: {denied} kill attempt(s) denied by the OS");
+                        crate::cli::report::warning(format_args!(
+                            "reaper: {denied} kill attempt(s) denied by the OS"
+                        ));
                     }
                 }
             }
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("Error: {e}");
+            crate::cli::report::daemon_unreachable(e);
             ExitCode::from(2)
         }
     }

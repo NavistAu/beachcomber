@@ -82,7 +82,7 @@ end
 -- `pipe:close()`'s return value: LuaJIT's `io.popen():close()` has been
 -- observed to return `true` regardless of the child's actual exit code on
 -- this platform, so it cannot be trusted to detect failure. stderr goes to
--- a temporary file so `get` can read the CLI's per-key `Error querying`
+-- a temporary file so `get` can read the CLI's per-key `error: <key>: `
 -- lines apart from the JSON on stdout.
 local function run(cmd)
   local errfile = os.tmpname()
@@ -109,10 +109,9 @@ end
 
 --- The rest of the first line of `stderr` that starts with `prefix`, or nil.
 --
--- `comb get` prints one `Error querying <k>: <msg>` line per key the daemon
--- answered with an error, and `<k>: <msg>` for a key the resolver failed
--- on. The cache slot's line starts `Error querying <cache key>: `, so a
--- prefix ending in `: ` never matches it.
+-- `comb get` prints one `error: <k>: <msg>` line per key that failed: the
+-- daemon's refusal, or the resolver's own error. The cache slot's line
+-- starts `error: <cache key>: `, so a prefix ending in `: ` never matches it.
 local function line_after(stderr, prefix)
   for line in stderr:gmatch("[^\n]+") do
     if line:sub(1, #prefix) == prefix then
@@ -203,13 +202,13 @@ end
 
 --- One `comb get -f json` for the value and its `:cache` answer (the
 -- header comment): exit 0 is a hit; exit 2 with the CLI's miss line for
--- `key` (`Error querying <key>: no data (cache miss)`) is a miss; exit 2
--- with another `Error querying <key>: ` line is that refusal, in the
--- daemon's words. Exit 2 with a null value slot and no such line is the
--- resolver's own error — a template that does not compile, a cycle, a
--- failed `exec()` — which the CLI prints as `<key>: <msg>`; an absent
--- rendered value is the CLI's miss line, so that slot is never a hit. Exit 2 with the value slot filled is a rendered value whose
--- `:cache` slot missed on its own — a hit with age 0.
+-- `key` (`error: <key>: no data (cache miss)`) is a miss; exit 2 with
+-- another `error: <key>: ` line is that error — the daemon's refusal, or the
+-- resolver's own (a template that does not compile, a cycle, a failed
+-- `exec()`). Exit 2 with a null value slot and an `error: <key>.<leaf>` line
+-- is a leaf of a group failing; an absent rendered value is the miss line,
+-- so that slot is never a hit. Exit 2 with the value slot filled is a
+-- rendered value whose `:cache` slot missed on its own — a hit with age 0.
 function Backend:get(key, path, flags)
   flags = flags or {}
   local cache_key = cache_key_of(key)
@@ -226,7 +225,7 @@ function Backend:get(key, path, flags)
 
   if not ok then
     err = err or ""
-    local own = line_after(err, "Error querying " .. key .. ": ")
+    local own = line_after(err, "error: " .. key .. ": ")
     if own == "no data (cache miss)" then
       return { ok = true, data = nil } -- miss
     end
@@ -234,21 +233,23 @@ function Backend:get(key, path, flags)
       return { ok = false, error = { kind = "server_error", message = own } }
     end
     if decoded == nil or value == json.NULL then
-      -- The resolver failed on `key` (its `<key>: <msg>` line, or
-      -- `<key>.<leaf>: <msg>` when a leaf of a group failed), or the CLI did
-      -- before answering at all (no daemon, a bad argument). The cache slot's miss
-      -- line (`Error querying <cache key>: …`) is not the message.
+      -- A leaf of a group failed (`error: <key>.<leaf>: <msg>`), or the CLI
+      -- did before answering at all (no daemon, a bad argument). The cache
+      -- slot's line (`error: <cache key>: …`) is not the message.
       local message
+      local leaf_prefix = "error: " .. key
       for line in err:gmatch("[^\n]+") do
-        if line:sub(1, #key + 2) == key .. ": " or line:sub(1, #key + 1) == key .. "." then
-          message = line
+        local rest = line:sub(#leaf_prefix + 1, #leaf_prefix + 1)
+        if line:sub(1, #leaf_prefix) == leaf_prefix and (rest == "." or rest == "[") then
+          message = line:sub(#"error: " + 1)
           break
         end
       end
       if not message then
+        local companion = cache_key and ("error: " .. cache_key) or nil
         local kept = {}
         for line in err:gmatch("[^\n]+") do
-          if line:sub(1, 15) ~= "Error querying " then kept[#kept + 1] = line end
+          if not companion or line:sub(1, #companion) ~= companion then kept[#kept + 1] = line end
         end
         message = table.concat(kept, "\n")
         if message == "" then message = (err:gsub("%s+$", "")) end
@@ -284,16 +285,19 @@ function Backend:put(key, data, ttl, path)
 end
 
 --- One `comb refresh`: exit 0 is the daemon's ok; exit 2 is its refusal,
--- printed alone on stderr — `nothing to refresh: <key> has no sources` for a
--- key with no Source behind it — or the CLI's own line when it could not
--- reach the daemon. `comb get --force` is not a stand-in: it selects the
--- same Sources but then *reads*, so it answers a sourceless key with a
--- different refusal and an unowned field with a plain miss.
+-- printed alone on stderr as `error: <key>: <words>` — `nothing to refresh:
+-- <key> has no sources` for a key with no Source behind it — or the CLI's
+-- own `error: daemon: …` when it could not reach the daemon. `comb get
+-- --force` is not a stand-in: it selects the same Sources but then *reads*,
+-- so it answers a sourceless key with a different refusal and an unowned
+-- field with a plain miss.
 function Backend:refresh(key, path)
   local cmd = self._comb .. " refresh " .. shell_escape(key) .. path_arg(path)
   local _, ok, err = run(cmd)
   if not ok then
-    return { ok = false, error = { kind = "server_error", message = (err or ""):gsub("%s+$", "") } }
+    err = err or ""
+    local message = line_after(err, "error: " .. key .. ": ") or err:gsub("%s+$", "")
+    return { ok = false, error = { kind = "server_error", message = message } }
   end
   return { ok = true }
 end

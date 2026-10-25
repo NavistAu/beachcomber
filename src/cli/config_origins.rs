@@ -139,16 +139,19 @@ fn value_text(value: &toml::Value, ascii: bool) -> String {
     sanitize_cell(&text, ascii)
 }
 
-/// A file as a cell: `$HOME` written as `~`, as the shell would show it; comb's
-/// own default as `default`.
-fn file_text(file: Option<&Path>) -> String {
+/// Where a leaf came from, as `status` labels a config-seeded record:
+/// `config(<file>)`, `$HOME` written as `~`; comb's own value as `built-in`.
+fn source_text(file: Option<&Path>) -> String {
     let Some(file) = file else {
-        return "default".to_string();
+        return "built-in".to_string();
     };
-    crate::home::Home::from_env().compact_path(file)
+    format!(
+        "config({})",
+        crate::home::Home::from_env().compact_path(file)
+    )
 }
 
-/// The human table: KEY, FILE, VALUE, each leaf followed by what it shadowed,
+/// The human table: KEY, SOURCE, VALUE, each leaf followed by what it shadowed,
 /// hanging under it as `status --tree` hangs a value's layers. VALUE is last
 /// and never cut: a template line is as long as it is.
 pub fn render_human(origins: &[Origin], color: bool, ascii: bool) -> String {
@@ -156,7 +159,7 @@ pub fn render_human(origins: &[Origin], color: bool, ascii: bool) -> String {
     for o in origins {
         rows.push((
             o.key.clone(),
-            file_text(o.file.as_deref()),
+            source_text(o.file.as_deref()),
             value_text(&o.value, ascii),
             false,
         ));
@@ -164,7 +167,7 @@ pub fn render_human(origins: &[Origin], color: bool, ascii: bool) -> String {
             let last = i + 1 == o.shadowed.len();
             rows.push((
                 format!("{} shadowed", tree_branch(last, ascii)),
-                file_text(Some(file)),
+                source_text(Some(file)),
                 value_text(value, ascii),
                 true,
             ));
@@ -178,15 +181,23 @@ pub fn render_human(origins: &[Origin], color: bool, ascii: bool) -> String {
             .unwrap_or(0)
     };
     let key_w = width(|r| &r.0, "KEY");
-    let file_w = width(|r| &r.1, "FILE");
+    let source_w = width(|r| &r.1, "SOURCE");
     let pad = |s: &str, w: usize| format!("{s}{}", " ".repeat(w.saturating_sub(s.chars().count())));
 
     let mut out = String::new();
-    let header = format!("  {}  {}  VALUE", pad("KEY", key_w), pad("FILE", file_w));
+    let header = format!(
+        "  {}  {}  VALUE",
+        pad("KEY", key_w),
+        pad("SOURCE", source_w)
+    );
     out.push_str(&bold(&header, color));
     out.push('\n');
-    for (key, file, value, shadowed) in rows {
-        let line = format!("  {}  {}  {value}", pad(&key, key_w), pad(&file, file_w));
+    for (key, source, value, shadowed) in rows {
+        let line = format!(
+            "  {}  {}  {value}",
+            pad(&key, key_w),
+            pad(&source, source_w)
+        );
         if shadowed {
             out.push_str(&dim(&line, color));
         } else {
@@ -198,7 +209,7 @@ pub fn render_human(origins: &[Origin], color: bool, ascii: bool) -> String {
 }
 
 /// One JSON object per leaf: `{key, value, file, shadowed: [{file, value}]}`,
-/// `file` the absolute path, or `null` for comb's own default.
+/// `file` the absolute path, or `null` for comb's own built-in value.
 pub fn render_json(origins: &[Origin]) -> String {
     let mut out = String::new();
     for o in origins {

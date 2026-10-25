@@ -68,7 +68,7 @@ fn refresh_of_a_static_namespace_is_the_daemons_refusal() {
         .code(2)
         .stdout(predicates::str::is_empty())
         .stderr(predicates::str::diff(
-            "nothing to refresh: my has no sources\n",
+            "error: my: nothing to refresh: my has no sources\n",
         ));
 }
 
@@ -261,7 +261,5 @@ fn refresh_from_a_deleted_cwd_with_no_path_is_an_error() {
     assert_cmd::Command::from_std(cmd)
         .assert()
         .code(2)
-        .stderr(predicates::str::contains(
-            "cannot determine the current directory",
-        ));
+        .stderr(predicates::str::contains("error: current directory: "));
 }

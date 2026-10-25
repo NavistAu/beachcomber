@@ -223,7 +223,7 @@ async fn run_daemon_with_cancel(
 pub fn refusal(errors: &[String]) -> Vec<String> {
     let mut lines: Vec<String> = errors.iter().map(|e| format!("error: {e}")).collect();
     lines.push(format!(
-        "Config validation failed with {} error(s). Daemon refusing to start.",
+        "error: daemon: refusing to start: the configuration has {} error(s)",
         errors.len()
     ));
     lines

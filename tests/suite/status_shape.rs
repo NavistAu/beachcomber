@@ -341,7 +341,7 @@ fn cache_row_kind_serde_round_trip() {
         (RowKind::Once, json!({"kind": "once"})),
         (RowKind::Static, json!({"kind": "static"})),
         (RowKind::Transient, json!({"kind": "transient"})),
-        (RowKind::Template, json!({"kind": "template"})),
+        (RowKind::Rendered, json!({"kind": "rendered"})),
     ];
     for (variant, expected_json) in cases {
         let serialized = serde_json::to_value(&variant).unwrap();
@@ -469,7 +469,7 @@ fn facet_rows() -> Vec<CacheRow> {
     tpl.source = "config:/c/config.toml".into();
     tpl.value = serde_json::json!("{{ env.B }}");
     let mut absent = rows[0].clone();
-    absent.source = "template".into();
+    absent.source = "rendered".into();
     absent.field = "nothing".into();
     absent.value = serde_json::Value::Null;
     rows.push(tpl);
@@ -2769,7 +2769,7 @@ fn a_template_rows_structured_value_opens_in_cyan() {
     // opening brace stays cyan — the row is marked by that lead-in plus its
     // SOURCE, not by an unbroken cyan span.
     let mut row = wide_value_row();
-    row.kind = Some(beachcomber::cache::RowKind::Template);
+    row.kind = Some(beachcomber::cache::RowKind::Rendered);
     row.value = serde_json::json!({"name": "claude"});
     row.path = Some("/repo".into());
     let opts = RenderOpts {

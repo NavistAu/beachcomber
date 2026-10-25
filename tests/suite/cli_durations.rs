@@ -76,7 +76,7 @@ fn a_ttl_the_daemon_cannot_take_is_refused_before_it_starts() {
         assert_eq!(out.status.code(), Some(2), "{ttl}");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains("ttl must be a whole number of seconds, at least 1s"),
+            stderr.contains("error: --ttl: must be a whole number of seconds, at least 1s"),
             "{ttl}: {stderr}"
         );
     }

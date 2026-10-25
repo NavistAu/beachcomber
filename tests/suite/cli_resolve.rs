@@ -464,7 +464,7 @@ fn assert_absent_with_path(d: &TestDaemon, cwd: &Path, path: &str, key: &str) {
         .code(2)
         .stdout(predicates::str::is_empty())
         .stderr(predicates::str::contains(format!(
-            "Error querying {key}: no data (cache miss)"
+            "error: {key}: no data (cache miss)"
         )));
 }
 
@@ -634,7 +634,7 @@ fn a_daemon_rejected_key_is_an_error_in_every_format() {
             .assert()
             .code(2)
             .stdout(predicates::str::is_empty())
-            .stderr(predicates::str::contains("Error querying a:b:c.x: "))
+            .stderr(predicates::str::contains("error: a:b:c.x: "))
             .stderr(predicates::str::contains("invalid facet key"));
     }
 }
@@ -723,7 +723,7 @@ fn multi_key_output_keeps_its_shape_per_format_and_a_miss_reports_itself() {
         .assert()
         .code(2)
         .stderr(predicates::str::contains(
-            "Error querying scanline.nope: no data (cache miss)",
+            "error: scanline.nope: no data (cache miss)",
         ));
     let parsed: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
     assert_eq!(parsed, serde_json::json!([1, null, "hi"]));
@@ -740,7 +740,7 @@ fn multi_key_output_keeps_its_shape_per_format_and_a_miss_reports_itself() {
         .assert()
         .code(2)
         .stderr(predicates::str::contains(
-            "Error querying scanline.nope: no data (cache miss)",
+            "error: scanline.nope: no data (cache miss)",
         ));
     assert_eq!(
         String::from_utf8(out.get_output().stdout.clone()).unwrap(),

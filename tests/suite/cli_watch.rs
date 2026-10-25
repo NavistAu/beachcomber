@@ -236,9 +236,7 @@ fn watch_from_a_deleted_cwd_with_no_path_is_an_error() {
     assert_cmd::Command::from_std(cmd)
         .assert()
         .code(2)
-        .stderr(predicates::str::contains(
-            "cannot determine the current directory",
-        ));
+        .stderr(predicates::str::contains("error: current directory: "));
 }
 
 /// The same deleted-cwd case, but with an explicit relative positional (`.`)
@@ -266,9 +264,7 @@ fn watch_from_a_deleted_cwd_with_a_relative_path_is_an_error() {
     assert_cmd::Command::from_std(cmd)
         .assert()
         .code(2)
-        .stderr(predicates::str::contains(
-            "cannot determine the current directory",
-        ));
+        .stderr(predicates::str::contains("error: current directory: "));
 }
 
 // ── Plan 4 Task 3: every frame is the resolved value ────────────────────────

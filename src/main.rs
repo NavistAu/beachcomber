@@ -33,7 +33,7 @@ fn status_after_help() -> String {
         \n\
         \x20 PROVIDER  FIELD   SOURCE        VALUE       PATH              AGE    POLL  TTL\n\
         \x20 git       branch  source(head)  main        ~/ws/beachcomber  14s{times}2   37s  {star}  60s{times}12 (12m) {ring}\n\
-        \x20 git       branch  template      {rendered} main-dev  ~/ws/beachcomber  0s       -   ---\n\
+        \x20 git       branch  rendered      {rendered} main-dev  ~/ws/beachcomber  0s       -   ---\n\
         \n\
         \x20 Each row is one cache ENTRY, returned by a Query ie `comb get`.\n\
         \x20 - ENTRY Refreshes VALUE by SOURCE(PROVIDER.FIELD @ PATH).\n\
@@ -45,7 +45,7 @@ fn status_after_help() -> String {
         \n\
         \x20 SOURCE source(head)  Which Source of the PROVIDER produced VALUE; `put` / `config(<file>)` for stored data,\n\
         \x20                      `computed(return)` for a leaf a provider line computed\n\
-        \x20        template      Rendered here, from this shell's directory and environment — never cached\n\
+        \x20        rendered      Rendered here, from this shell's directory and environment — never cached\n\
         \x20 VALUE  {rendered} main-dev  A rendered VALUE, marked because it is computed, not stored (cyan with colour on)\n\
         \x20 AGE    43s         RefreshTime:  Time since VALUE Refreshed from SOURCE\n\
         \x20        {times}2          PollCount:    Polls since last Query\n\
@@ -290,7 +290,7 @@ fn cli_path(global: bool, requested: Option<String>) -> Result<Option<String>, E
     }
     let cwd = || {
         std::env::current_dir().map_err(|e| {
-            eprintln!("cannot determine the current directory: {e}");
+            beachcomber::cli::report::error("current directory", e);
             ExitCode::from(2)
         })
     };
@@ -351,7 +351,7 @@ fn main() -> ExitCode {
     let args = match rewrite_suffix(std::env::args().collect()) {
         Ok(args) => args,
         Err(e) => {
-            eprintln!("error: {e}");
+            beachcomber::cli::report::error_named(e);
             return ExitCode::from(2);
         }
     };
@@ -365,9 +365,9 @@ fn main() -> ExitCode {
         if let Err(e) =
             beachcomber::daemon::defaults::write_managed_defaults(&dir, env!("BEACHCOMBER_VERSION"))
         {
-            eprintln!(
-                "error: could not write managed defaults to {}: {e}",
-                dir.display()
+            beachcomber::cli::report::error(
+                "daemon",
+                format_args!("could not write managed defaults to {}: {e}", dir.display()),
             );
             return ExitCode::from(2);
         }
@@ -397,7 +397,7 @@ fn main() -> ExitCode {
             // combined with a path, whether that came from `--path` (clap
             // refuses it) or from a trailing positional.
             if global && resolved_path.is_some() {
-                eprintln!("cannot combine --global with a path");
+                beachcomber::cli::report::error("--global", "cannot be combined with a path");
                 return ExitCode::from(2);
             }
             let effective_path = match cli_path(global, resolved_path) {

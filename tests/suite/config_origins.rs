@@ -93,15 +93,15 @@ fn a_leaf_three_files_set_shows_the_winner_then_what_it_overrode() {
         .unwrap_or_else(|| panic!("a demo.x line in:\n{}", lines.join("\n")));
     assert_eq!(
         lines[at],
-        "client.providers.demo.template.x ~/beachcomber/conf.d/10-a.toml {{ 'a' }}"
+        "client.providers.demo.template.x config(~/beachcomber/conf.d/10-a.toml) {{ 'a' }}"
     );
     assert_eq!(
         lines[at + 1],
-        "|- shadowed ~/beachcomber/config.toml {{ 'c' }}"
+        "|- shadowed config(~/beachcomber/config.toml) {{ 'c' }}"
     );
     assert_eq!(
         lines[at + 2],
-        "`- shadowed ~/beachcomber/defaults/demo.toml {{ 'd' }}"
+        "`- shadowed config(~/beachcomber/defaults/demo.toml) {{ 'd' }}"
     );
     // A leaf one file set has nothing beneath it.
     let only = lines
@@ -110,7 +110,7 @@ fn a_leaf_three_files_set_shows_the_winner_then_what_it_overrode() {
         .expect("the only leaf");
     assert_eq!(
         lines[only],
-        "client.providers.demo.template.only ~/beachcomber/defaults/demo.toml {{ 1 }}"
+        "client.providers.demo.template.only config(~/beachcomber/defaults/demo.toml) {{ 1 }}"
     );
     assert!(
         !lines.get(only + 1).is_some_and(|l| l.contains("shadowed")),
@@ -129,7 +129,7 @@ fn a_key_limits_the_output_to_its_subtree() {
         .collect();
     assert_eq!(
         keys,
-        vec!["client.providers.demo.template.x ~/beachcomber/conf.d/10-a.toml {{ 'a' }}"]
+        vec!["client.providers.demo.template.x config(~/beachcomber/conf.d/10-a.toml) {{ 'a' }}"]
     );
 
     let lines = text(home.path(), &["client.providers.demo"]);
@@ -179,7 +179,7 @@ fn a_value_no_file_sets_is_comb_s_default() {
     let home = config_home(&[]);
     let lines = text(home.path(), &["daemon.log_level"]);
     assert!(
-        lines.iter().any(|l| l == "daemon.log_level default info"),
+        lines.iter().any(|l| l == "daemon.log_level built-in info"),
         "{}",
         lines.join("\n")
     );
@@ -202,7 +202,7 @@ fn a_value_no_file_sets_is_comb_s_default() {
             .iter()
             .filter(|l| !l.starts_with("KEY "))
             .collect::<Vec<_>>(),
-        vec!["daemon.log_level ~/beachcomber/config.toml debug"]
+        vec!["daemon.log_level config(~/beachcomber/config.toml) debug"]
     );
 }
 
@@ -214,9 +214,8 @@ fn a_name_holding_a_dot_prints_as_a_quoted_segment() {
     )]);
     let lines = text(home.path(), &["client.providers.demo"]);
     assert!(
-        lines
-            .iter()
-            .any(|l| l == "client.providers.demo.template['a.b'] ~/beachcomber/config.toml {{ 1 }}"),
+        lines.iter().any(|l| l
+            == "client.providers.demo.template['a.b'] config(~/beachcomber/config.toml) {{ 1 }}"),
         "{}",
         lines.join("\n")
     );

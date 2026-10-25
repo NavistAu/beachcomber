@@ -244,7 +244,7 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
       (err: unknown) =>
         err instanceof ServerError &&
         /^bad\.grp\.leaf: /.test(err.serverMessage) &&
-        !/Error querying/.test(err.serverMessage),
+        !/^error: /m.test(err.serverMessage),
     );
   });
 });
@@ -263,7 +263,7 @@ describe('subprocess transport classifies a daemon-answered refusal', () => {
     const standIn = path.join(tmpDir, 'comb');
     fs.writeFileSync(
       standIn,
-      `#!/bin/sh\necho '[null,null,null]'\necho 'Error querying k.x: cannot read: no such file or directory' >&2\nexit 2\n`,
+      `#!/bin/sh\necho '[null,null,null]'\necho 'error: k.x: cannot read: no such file or directory' >&2\nexit 2\n`,
       { mode: 0o755 },
     );
     process.env['COMB_BIN'] = standIn;

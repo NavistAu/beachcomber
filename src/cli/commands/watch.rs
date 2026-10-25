@@ -30,7 +30,7 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        eprintln!("Failed to start daemon: {e}");
+        crate::cli::report::daemon_start(e);
         return ExitCode::from(2);
     }
 
@@ -60,7 +60,7 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
         Format::Template(_) => match crate::client::Client::new(socket_path.clone()).connect() {
             Ok(session) => Some(session),
             Err(e) => {
-                eprintln!("Error: {e}");
+                crate::cli::report::daemon_unreachable(e);
                 return ExitCode::from(2);
             }
         },
@@ -70,7 +70,7 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
     let mut watch = match ResolvedWatch::open(&client, key, &inputs) {
         Ok(w) => w,
         Err(e) => {
-            eprintln!("{e}");
+            crate::cli::report::watch_error(key, &e);
             return ExitCode::from(2);
         }
     };
@@ -95,7 +95,7 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
                     (Format::Template(_), None) => unreachable!("a template opens its session"),
                 };
                 if let Err(e) = frame.map(|frame| print!("{frame}")) {
-                    eprintln!("{e}");
+                    crate::cli::report::error_named(e);
                     return ExitCode::from(2);
                 }
             }
@@ -110,7 +110,7 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
             // became reachable, so treat both as the watch being over.
             Ok(WatchOutcome::Timeout | WatchOutcome::Cancelled) => return ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("{e}");
+                crate::cli::report::watch_error(key, &e);
                 return ExitCode::from(2);
             }
         }

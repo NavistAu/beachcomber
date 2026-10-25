@@ -2058,7 +2058,20 @@ pub enum RowKind {
     /// a template is data the daemon holds at `<p>:template` and never
     /// evaluates (canon `field_resolution.md` invariant 7), so `list_rows`
     /// never emits this kind and nothing carrying it comes off the wire.
-    Template,
+    Rendered,
+}
+
+impl RowKind {
+    /// The kind as `status` shows it: its serialised name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            RowKind::Lifecycle { .. } => "lifecycle",
+            RowKind::Once => "once",
+            RowKind::Static => "static",
+            RowKind::Transient => "transient",
+            RowKind::Rendered => "rendered",
+        }
+    }
 }
 
 /// Failure state for a cache entry, embedded in status rows.
@@ -2336,11 +2349,11 @@ mod tests {
         );
     }
 
-    /// `RowKind::Template` is produced by the CLI's own rendering, never by
+    /// `RowKind::Rendered` is produced by the CLI's own rendering, never by
     /// the cache (see the doc comment on the variant) — `list_rows` must
     /// never emit one.
     #[test]
-    fn list_rows_never_emits_row_kind_template() {
+    fn list_rows_never_emits_row_kind_rendered() {
         let cache = Cache::new();
         cache.put_source(
             "myapp",
@@ -2352,8 +2365,8 @@ mod tests {
 
         let rows = cache.list_rows();
         assert!(
-            !rows.iter().any(|r| r.kind == Some(RowKind::Template)),
-            "list_rows must never emit RowKind::Template: {rows:?}"
+            !rows.iter().any(|r| r.kind == Some(RowKind::Rendered)),
+            "list_rows must never emit RowKind::Rendered: {rows:?}"
         );
     }
 

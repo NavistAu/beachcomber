@@ -11,7 +11,7 @@
 use crate::cli::output_format::{Format, Preset, template_locals};
 use crate::config::Config;
 use libbeachcomber::render::{Format as ValueFormat, render_value, render_values};
-use libbeachcomber::resolve::{Inputs, ResolveError, Slot, eval_with, resolve};
+use libbeachcomber::resolve::{Inputs, Slot, eval_with, resolve};
 use serde_json::Value;
 use std::process::ExitCode;
 
@@ -63,13 +63,13 @@ pub fn run_get(
     // `comb` always requires the daemon (design §2), a key whose answer needs
     // no request (`env.HOME`) included.
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        eprintln!("Failed to start daemon: {e}");
+        crate::cli::report::daemon_start(e);
         return ExitCode::from(2);
     }
     let mut session = match crate::client::Client::new(socket_path).connect() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Error: {e}");
+            crate::cli::report::daemon_unreachable(e);
             return ExitCode::from(2);
         }
     };
@@ -104,20 +104,13 @@ pub fn run_get(
             Ok(Some(value)) => Some(value),
             Ok(None) => {
                 if !plain {
-                    eprintln!("Error querying {key}: no data (cache miss)");
+                    crate::cli::report::error(key, "no data (cache miss)");
                     any_error = true;
                 }
                 None
             }
-            // The daemon's own words for a key it refused, or the transport's.
-            Err(ResolveError::Fetch(e)) => {
-                eprintln!("Error querying {key}: {e}");
-                any_error = true;
-                None
-            }
-            // A config or runtime failure already names its field.
             Err(e) => {
-                eprintln!("{e}");
+                crate::cli::report::resolve_error(key, &e);
                 any_error = true;
                 None
             }
@@ -156,7 +149,7 @@ pub fn run_get(
     match rendered {
         Ok(out) => print!("{out}"),
         Err(e) => {
-            eprintln!("{e}");
+            crate::cli::report::error_named(e);
             return ExitCode::from(2);
         }
     }

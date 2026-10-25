@@ -199,7 +199,7 @@ pub fn format_ttl_cell(
         | Some(RowKind::Once)
         | Some(RowKind::Static)
         | Some(RowKind::Transient)
-        | Some(RowKind::Template) => TtlCell {
+        | Some(RowKind::Rendered) => TtlCell {
             text: "---".into(),
             color: None,
         },
@@ -606,15 +606,8 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
         serde_json::Value::String(r.age_ms.map_or_else(|| "-".to_string(), format_age)),
     );
     ctx.insert("stale".into(), serde_json::Value::Bool(r.stale));
-    // kind — snake_case discriminator, empty string when None
-    let kind_str = match &r.kind {
-        Some(RowKind::Lifecycle { .. }) => "lifecycle",
-        Some(RowKind::Once) => "once",
-        Some(RowKind::Static) => "static",
-        Some(RowKind::Transient) => "transient",
-        Some(RowKind::Template) => "template",
-        None => "",
-    };
+    // kind — empty string when None
+    let kind_str = r.kind.as_ref().map_or("", RowKind::name);
     ctx.insert("kind".into(), serde_json::Value::String(kind_str.into()));
     // decay — only for lifecycle
     if let Some(RowKind::Lifecycle { decay, .. }) = &r.kind {
@@ -733,14 +726,7 @@ fn delimited_cells(row: &CacheRow) -> Vec<String> {
     use crate::cache::RowKind;
     use libbeachcomber::render::csv_cell;
     let opt = |v: Option<String>| v.unwrap_or_default();
-    let kind = match &row.kind {
-        Some(RowKind::Lifecycle { .. }) => "lifecycle",
-        Some(RowKind::Once) => "once",
-        Some(RowKind::Static) => "static",
-        Some(RowKind::Transient) => "transient",
-        Some(RowKind::Template) => "template",
-        None => "",
-    };
+    let kind = row.kind.as_ref().map_or("", RowKind::name);
     let decay = match &row.kind {
         Some(RowKind::Lifecycle { decay, .. }) => decay.to_string(),
         _ => String::new(),
@@ -798,19 +784,11 @@ pub fn render_sh_env(rows: &[CacheRow]) -> String {
         let value = libbeachcomber::render::csv_cell(Some(&row.value));
         let quoted = shell_quote(&value);
         out.push_str(&format!("{key}={quoted}\n"));
-        // source — which Source produced the value, `template` when the CLI
+        // source — which Source produced the value, `rendered` when the CLI
         // rendered it here rather than the daemon caching it.
         out.push_str(&format!("{key}_SOURCE={}\n", shell_quote(&row.source)));
         // kind
-        let kind_str = match &row.kind {
-            Some(RowKind::Lifecycle { .. }) => Some("lifecycle"),
-            Some(RowKind::Once) => Some("once"),
-            Some(RowKind::Static) => Some("static"),
-            Some(RowKind::Transient) => Some("transient"),
-            Some(RowKind::Template) => Some("template"),
-            None => None,
-        };
-        if let Some(kind_val) = kind_str {
+        if let Some(kind_val) = row.kind.as_ref().map(RowKind::name) {
             out.push_str(&format!("{key}_KIND={}\n", shell_quote(kind_val)));
         }
         // decay (only for lifecycle)
@@ -894,7 +872,7 @@ const COLS: usize = 8;
 const TTL_COL_IDX: usize = 7;
 // PROVIDER and FIELD sit adjacent because together they are the cache key the
 // user typed (`git.branch`); SOURCE follows, naming what produced the VALUE
-// beside it (a Source, `put`, `config:<file>`, or `template` for a row this
+// beside it (a Source, `put`, `config(<file>)`, or `rendered` for a row this
 // CLI rendered); PATH follows VALUE as the scope qualifier rather than
 // splitting the key. Human/table presets only — the machine presets
 // (json/tsv/csv/sh) keep their own established column order.
@@ -913,7 +891,7 @@ const H_POLL: usize = 6;
 /// `--no-trunc`.
 ///
 /// SOURCE would otherwise take its natural width like PROVIDER, because a
-/// Source name is short (`refs`, `head`, `put`, `template`). One kind is not:
+/// Source name is short (`refs`, `head`, `put`, `rendered`). One kind is not:
 /// a `config:<file>` label is a whole path, and uncapped it pinned VALUE and
 /// PATH at their floors across every row of the table. Its tail
 /// (`…/defaults/aws.toml`) is what tells one config file from another, so the
@@ -935,7 +913,7 @@ fn template_marker(
     color_enabled: bool,
     ascii: bool,
 ) -> &'static str {
-    if color_enabled || !matches!(kind, Some(crate::cache::RowKind::Template)) {
+    if color_enabled || !matches!(kind, Some(crate::cache::RowKind::Rendered)) {
         return "";
     }
     if ascii { "> " } else { "\u{25b8} " }
@@ -1003,7 +981,7 @@ impl ChildMark {
 /// layer — its template record is what defines it.
 fn is_the_row(row: &CacheRow, layer: &crate::cache::LayerRecord) -> bool {
     layer.facet.is_none()
-        && !matches!(row.kind, Some(crate::cache::RowKind::Template))
+        && !matches!(row.kind, Some(crate::cache::RowKind::Rendered))
         && layer.path == row.path
         && layer.label == row.source
 }
@@ -1658,7 +1636,7 @@ fn render_table(
             // by an unbroken cyan span.
             let body = if row.value.is_null() {
                 ansi::wrap(&body, ansi::Color::Dim, true)
-            } else if matches!(row.kind, Some(crate::cache::RowKind::Template)) {
+            } else if matches!(row.kind, Some(crate::cache::RowKind::Rendered)) {
                 let body = if body.starts_with(['{', '[']) {
                     highlight_json(&body)
                 } else {
@@ -1911,8 +1889,8 @@ enum Predicate {
     LifecycleOnce,
     /// Match Static rows.
     LifecycleStatic,
-    /// Match rendered (Template) rows.
-    LifecycleTemplate,
+    /// Match rows rendered here.
+    LifecycleRendered,
     /// Match on fsevents_reinstate flag value.
     FseventsReinstate(bool),
 }
@@ -1945,7 +1923,7 @@ fn parse_filter(s: &str) -> Result<Filter, String> {
             "active" => Predicate::LifecycleDecay(0),
             "once" => Predicate::LifecycleOnce,
             "static" => Predicate::LifecycleStatic,
-            "template" => Predicate::LifecycleTemplate,
+            "rendered" => Predicate::LifecycleRendered,
             other => match other
                 .strip_prefix("decay")
                 .and_then(|n| n.parse::<u8>().ok())
@@ -1953,7 +1931,7 @@ fn parse_filter(s: &str) -> Result<Filter, String> {
                 Some(n) if n >= 1 => Predicate::LifecycleDecay(n),
                 _ => {
                     return Err(format!(
-                        "lifecycle= must be active|decay<N>|once|static|template, got {other}"
+                        "lifecycle= must be active|decay<N>|once|static|rendered, got {other}"
                     ));
                 }
             },
@@ -2016,7 +1994,7 @@ impl Predicate {
             ),
             Predicate::LifecycleOnce => matches!(&r.kind, Some(RowKind::Once)),
             Predicate::LifecycleStatic => matches!(&r.kind, Some(RowKind::Static)),
-            Predicate::LifecycleTemplate => matches!(&r.kind, Some(RowKind::Template)),
+            Predicate::LifecycleRendered => matches!(&r.kind, Some(RowKind::Rendered)),
             Predicate::FseventsReinstate(b) => r.fsevents_reinstate.unwrap_or(false) == *b,
         }
     }
@@ -2072,12 +2050,12 @@ pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, S
         "age" => rows.sort_by_key(|r| r.age_ms),
         "stale" => rows.sort_by_key(|r| r.stale),
         // Closest to eviction first (fewest steps left), Active last,
-        // then Once, Static, Template, Transient, None.
+        // then Once, Static, Rendered, Transient, None.
         "lifecycle" => rows.sort_by_key(|r| match &r.kind {
             Some(RowKind::Lifecycle { decay, depth, .. }) => (0u8, depth.saturating_sub(*decay)),
             Some(RowKind::Once) => (1, 0),
             Some(RowKind::Static) => (2, 0),
-            Some(RowKind::Template) => (3, 0),
+            Some(RowKind::Rendered) => (3, 0),
             Some(RowKind::Transient) => (4, 0),
             None => (5, 0),
         }),
@@ -2439,7 +2417,7 @@ mod ttl_cell_tests {
     fn template_renders_dashes() {
         // A rendered row has no lifecycle of its own — it is computed at
         // read time and never cached.
-        let cell = format_ttl_cell(Some(&RowKind::Template), None, None, None, None, false, &W6);
+        let cell = format_ttl_cell(Some(&RowKind::Rendered), None, None, None, None, false, &W6);
         assert_eq!(cell.text, "---");
         assert!(cell.color.is_none());
     }
@@ -2653,7 +2631,7 @@ mod poll_cell_tests {
             Some(RowKind::Once),
             Some(RowKind::Static),
             Some(RowKind::Transient),
-            Some(RowKind::Template),
+            Some(RowKind::Rendered),
         ] {
             assert_eq!(
                 format_poll_cell(kind.as_ref(), Some(37), None, 0),

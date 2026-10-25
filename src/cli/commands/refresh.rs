@@ -17,7 +17,7 @@ pub fn run_refresh(config: &Config, key: &str, path: Option<&str>) -> ExitCode {
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        eprintln!("Failed to start daemon: {e}");
+        crate::cli::report::daemon_start(e);
         return ExitCode::from(2);
     }
 
@@ -25,11 +25,11 @@ pub fn run_refresh(config: &Config, key: &str, path: Option<&str>) -> ExitCode {
         Ok(resp) if resp.ok => ExitCode::SUCCESS,
         // The daemon's own words for a key it refused.
         Ok(resp) => {
-            eprintln!("{}", resp.error.unwrap_or_default());
+            crate::cli::report::error(key, resp.error.unwrap_or_default());
             ExitCode::from(2)
         }
         Err(e) => {
-            eprintln!("Error: {e}");
+            crate::cli::report::daemon_unreachable(e);
             ExitCode::from(2)
         }
     }

@@ -1018,6 +1018,26 @@ fn check_config_warns_of_a_template_reading_no_provider() {
     );
 }
 
+/// With no `config.toml`, `check` and `check config` say that and only that: the
+/// `defaults/` and `conf.d/` files may still be composed, so it does not claim
+/// comb is running on its built-in values.
+#[test]
+fn check_without_a_config_toml_says_so() {
+    let d = crate::common::daemon::TestDaemon::spawn();
+    for args in [&["check"][..], &["check", "config"]] {
+        let out = d
+            .comb(std::path::Path::new("/"))
+            .args(args)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("no config.toml") && !stdout.contains("using defaults"),
+            "comb {args:?}:\n{stdout}"
+        );
+    }
+}
+
 /// `comb check config` on a file still carrying the removed `[providers]` root
 /// prints a local FAIL line that says where its contents went.
 #[test]
@@ -1080,7 +1100,7 @@ fn comb_daemon_refused_by_config_validation_exits_two_and_binds_nothing() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(2), "stderr:\n{stderr}");
     assert!(
-        stderr.contains("Daemon refusing to start"),
+        stderr.contains("error: daemon: refusing to start: the configuration has "),
         "the refusal is logged, got:\n{stderr}"
     );
     assert!(!sock.exists(), "it never bound its socket");

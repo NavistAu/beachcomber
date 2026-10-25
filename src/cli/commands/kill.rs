@@ -17,7 +17,7 @@ pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> ExitCode {
     let pid = match resolve_daemon_pid(&pid_path, socket_path) {
         Ok(pid) => pid,
         Err(msg) => {
-            eprintln!("{msg}");
+            crate::cli::report::error("daemon", msg);
             return ExitCode::from(2);
         }
     };
@@ -30,7 +30,7 @@ pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> ExitCode {
             println!("Daemon process was already stopped.");
             return ExitCode::SUCCESS;
         }
-        eprintln!("Failed to signal daemon (pid {pid}): {err}");
+        crate::cli::report::error("daemon", format_args!("could not signal pid {pid}: {err}"));
         return ExitCode::from(2);
     }
 
@@ -44,9 +44,12 @@ pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> ExitCode {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    eprintln!(
-        "Daemon did not exit within {}. Send SIGKILL manually if needed: kill -9 {pid}",
-        crate::config::display_duration(timeout)
+    crate::cli::report::error(
+        "daemon",
+        format_args!(
+            "did not exit within {}; send SIGKILL if needed: kill -9 {pid}",
+            crate::config::display_duration(timeout)
+        ),
     );
     ExitCode::from(1)
 }

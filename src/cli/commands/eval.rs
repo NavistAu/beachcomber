@@ -16,7 +16,7 @@
 //! same renderer `comb get -f text` uses.
 
 use crate::config::Config;
-use libbeachcomber::resolve::{Inputs, ResolveError, Slot, eval};
+use libbeachcomber::resolve::{Inputs, Slot, eval};
 use std::process::ExitCode;
 
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
@@ -29,13 +29,13 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
 
     // `comb` always requires the daemon (design §2, outcome 22).
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        eprintln!("Failed to start daemon: {e}");
+        crate::cli::report::daemon_start(e);
         return ExitCode::from(2);
     }
     let mut session = match crate::client::Client::new(socket_path).connect() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Error: {e}");
+            crate::cli::report::daemon_unreachable(e);
             return ExitCode::from(2);
         }
     };
@@ -66,14 +66,8 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode
             );
             ExitCode::SUCCESS
         }
-        // The daemon's own words for a key it refused, or the transport's.
-        Err(ResolveError::Fetch(e)) => {
-            eprintln!("Error: {e}");
-            ExitCode::from(2)
-        }
-        // A config or runtime failure already names its field.
         Err(e) => {
-            eprintln!("{e}");
+            crate::cli::report::resolve_error("<eval>", &e);
             ExitCode::from(2)
         }
     }

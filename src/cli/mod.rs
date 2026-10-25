@@ -2,6 +2,7 @@ pub mod commands;
 pub mod config_origins;
 pub mod introspect_types;
 pub mod output_format;
+pub mod report;
 pub mod status_format;
 
 use std::collections::HashMap;

@@ -217,7 +217,7 @@ fn assert_absent(d: &TestDaemon, cwd: &Path, key: &str) {
         .code(2)
         .stdout(predicates::str::is_empty())
         .stderr(predicates::str::contains(format!(
-            "Error querying {key}: no data (cache miss)"
+            "error: {key}: no data (cache miss)"
         )));
 }
 

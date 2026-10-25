@@ -203,7 +203,7 @@ fn comb_daemon_refuses_to_start_when_the_defaults_directory_is_unwritable() {
     assert_eq!(out.status.code(), Some(2), "no daemon: exit 2");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("could not write managed defaults")
+        stderr.starts_with("error: daemon: could not write managed defaults")
             && stderr.contains(&cfg_dir.join("defaults").display().to_string()),
         "the error names the directory, got:\n{stderr}"
     );

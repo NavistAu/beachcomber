@@ -154,7 +154,7 @@ fn run_origins(
     let origins = match config_origins::select(config_origins::origins(config), key) {
         Ok(origins) => origins,
         Err(e) => {
-            eprintln!("{e}");
+            crate::cli::report::error_named(e);
             return ExitCode::from(2);
         }
     };
@@ -407,7 +407,7 @@ fn render_subject(
                     if let Some(cp) = &d.config_path {
                         lines.push_str(&format!("  [PASS] config   {cp}\n"));
                     } else {
-                        lines.push_str("  [INFO] config   (none — using defaults)\n");
+                        lines.push_str("  [INFO] config   no config.toml\n");
                     }
                     lines.push_str(&format!(
                         "  [PASS] requests_total={}  in_flight={}  active_watchers={}  cache_entries={}\n",
@@ -517,11 +517,7 @@ fn render_subject(
                     daemon,
                     &format!("path {}", crate::home::Home::from_env().compact(p)),
                 )),
-                None => lines.push_str(&verdict_line(
-                    "INFO",
-                    daemon,
-                    "path (none — using defaults)",
-                )),
+                None => lines.push_str(&verdict_line("INFO", daemon, "no config.toml")),
             }
             if parsed {
                 lines.push_str(&verdict_line(

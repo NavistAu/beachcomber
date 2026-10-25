@@ -161,7 +161,7 @@ Only a colon in the provider's own segment names a facet (`git:cache`); below it
 
 **Exit codes:**
 - `0` — success; also a miss under `text`/`sh`, which print nothing (e.g. `git` queried outside a git repository)
-- `2` — a miss under `json`, `csv`, `tsv` or a template (`Error querying <key>: no data (cache miss)` on stderr)
+- `2` — a miss under `json`, `csv`, `tsv` or a template (`error: <key>: no data (cache miss)` on stderr)
 - `2` — error (daemon unreachable, invalid key, a template that does not compile or cycles — the message names the field)
 
 ## `comb s` (status)
@@ -221,7 +221,7 @@ A path at or below `$HOME` is written from `~` in both tables, the global entry 
 | `value` | the value shown; `-` absent. A glob matches present values only, so `value=*` is "not absent" |
 | `shadowed` | `true` / `false` — a record the read from here does not take: another layer of the same leaf answers (a nearer put, a template over data), or the read answers nothing there (a put replaced the node above it) |
 | `stale` | `true` / `false` |
-| `lifecycle` | `active`, `decay<N>`, `once`, `static`, `template` |
+| `lifecycle` | `active`, `decay<N>`, `once`, `static`, `rendered` |
 | `fsevents_reinstate` | `true` / `false` |
 
 Three filters apply by default, so the table is what `comb get` here answers: `facet=-` hides facet rows, which are data *about* a provider rather than values a read answers; `value!=-` hides absent values; and `shadowed=false` hides records the read from this directory does not take. A filter you give on any of those keys, with either operator, replaces that key's default; `-a`/`--all` drops all three. Records stored at directories off this one's chain are other directories' values, and are listed as they are.
@@ -240,7 +240,7 @@ An absent value is a template leaf that rendered nothing — a Source stores no 
 
 ### SOURCE, and the caller's rendered template leaves
 
-SOURCE sits between FIELD and VALUE and names what produced the row, as a `:cache` answer does: a Source of the provider (`source(head)`, `source(refs)`, …), the static label `put`, a config-seeded record's `config(<file>)`, a leaf a provider line computed (`computed(return)`), or `template` for a row this CLI computed itself, from the caller's own directory and environment. The function form keeps a Source named `put` or `template` from reading as one of those words.
+SOURCE sits between FIELD and VALUE and names what produced the row, as a `:cache` answer does: a Source of the provider (`source(head)`, `source(refs)`, …), the static label `put`, a config-seeded record's `config(<file>)`, a leaf a provider line computed (`computed(return)`), or `rendered` for a row this CLI rendered itself, from the caller's own directory and environment. The function form keeps a Source named `put` or `rendered` from reading as one of those words.
 
 The daemon holds a template (`[client.providers.<p>] template.*`, the managed `defaults/`, or a `comb p <p>:template.<f>`) as data and never evaluates it, so `status` used to show a column of raw expressions — `{{ env.SCANLINE_FOO }}` — where the point of looking is to see what a prompt would actually get. Every template leaf visible from the caller's directory (its own path, an ancestor up to `$HOME`, or the global entry) is now resolved exactly as `comb get` would resolve it and added as its own row, beside any cached value at the same address — and beside the raw template row, which `-a` shows:
 
@@ -254,7 +254,7 @@ scanline            greeting  template  hi jane             ~/ws/project  0s    
 
 A cached field with a template over it shows **both** rows at that same address — `git.branch` cached by the `head` Source plus a `git:template.branch` override both list, so the raw cached value and the effective rendered one are visible side by side rather than one hiding the other. A leaf whose expression fails to render shows the failure text as its value instead of dropping the row.
 
-A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lead-in (`> ` under `--ascii`) when it's off. In the structured formats (`json`, `tsv`, `csv`, `sh`, a `-f` template's row fields) it carries `kind: template` and `source: template`, and it's selectable on its own with `--filter lifecycle=template`. A `provider` filter that rules a provider out entirely skips resolving that provider's templates — and any `exec()` inside them — rather than rendering them only to discard the rows afterward.
+A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lead-in (`> ` under `--ascii`) when it's off. In the structured formats (`json`, `tsv`, `csv`, `sh`, a `-f` template's row fields) it carries `kind: rendered` and `source: rendered`, and it's selectable on its own with `--filter lifecycle=rendered`. A `provider` filter that rules a provider out entirely skips resolving that provider's templates — and any `exec()` inside them — rather than rendering them only to discard the rows afterward.
 
 Rendering resolves with this shell's own environment and directory, and `exec()` is enabled — `status` is one of the surfaces canon `field_resolution.md` invariant 15 names, alongside `comb get`, `comb eval` and `comb watch`.
 
@@ -267,7 +267,7 @@ In the `human`/`table` preset, SOURCE keeps its tail past 24 characters (less at
 ```sh
 $ comb s --tree --filter provider=aws --filter field=profile --color never
 PROVIDER  FIELD                  SOURCE                          VALUE                      PATH          AGE  POLL  TTL
-aws       profile                template                        ▸ work                     ~/ws/project    -     -  ---
+aws       profile                rendered                        ▸ work                     ~/ws/project    -     -  ---
           ├─ :template           config(…/conf.d/10-mine.toml)   {{ env.MY_PROFILE … }}     -             20m
           ├─ :template shadowed  config(…/config.toml)           {{ 'personal' }}           -              2d
           └─ :template shadowed  config(…/defaults/aws.toml)     {{ env.AWS_PROFILE or … }} -              2d
@@ -513,17 +513,17 @@ Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
 
 `comb c config` validates the composed configuration locally (a `FAIL` for each error, a `WARN` for each warning: a client template reading a name no provider has) as well as relaying the daemon's view — locally with the variables a daemon started on it would have, the shell's with the env file's over them — and reports the managed `defaults/` directory without writing any defaults (a `.comb-probe.<pid>` write probe is created and removed to test writability): `[PASS] local    defaults <dir> (9 files, comb <version>)` when every shipped file is current, `[WARN]` when shipped files are missing or stale (the daemon writes them on its next start) or when the directory holds files `comb` did not write, and `[FAIL]` when the directory is not writable.
 
-`comb c config --origins [KEY]` shows how the composed configuration came together instead, read from the files with no daemon (so it works when the daemon cannot start). Every leaf of the composition — `[daemon]` settings, Source and provider lines, `_` prototypes, `enabled`, `cache._.decay`, `[client.providers.*] template.*` — is a row: its key in key form (`daemon.providers.git.sources._.return`, a name holding a `.` as `template['a.b']`), the file that set it, and its value. Beneath it, every earlier file that set the same leaf and was overridden is marked `shadowed`, the one it overrode first: `conf.d/` files from last to first, then `config.toml`, then `defaults/`. A setting no file sets but `comb` gives a value of its own shows `default` as its file: `daemon.log_level`, `daemon.timeout`, `daemon.budget`, `daemon.env_file` and `daemon.plugin.path` (both beside `config.toml`), and `daemon.watchdog_threshold` when an interval is set (three of it); one `comb` gives no value (`socket_path`, the watchdog, `idle_shutdown`) has no row. `KEY` limits the rows to that key and what is below it (`--origins daemon.providers.git`, `--origins 'client.providers.aws.template.profile'`).
+`comb c config --origins [KEY]` shows how the composed configuration came together instead, read from the files with no daemon (so it works when the daemon cannot start). Every leaf of the composition — `[daemon]` settings, Source and provider lines, `_` prototypes, `enabled`, `cache._.decay`, `[client.providers.*] template.*` — is a row: its key in key form (`daemon.providers.git.sources._.return`, a name holding a `.` as `template['a.b']`), the file that set it as `status` labels one, `config(<file>)`, and its value. Beneath it, every earlier file that set the same leaf and was overridden is marked `shadowed`, the one it overrode first: `conf.d/` files from last to first, then `config.toml`, then `defaults/`. A setting no file sets but `comb` gives a value of its own shows `built-in` as its source: `daemon.log_level`, `daemon.timeout`, `daemon.budget`, `daemon.env_file` and `daemon.plugin.path` (both beside `config.toml`), and `daemon.watchdog_threshold` when an interval is set (three of it); one `comb` gives no value (`socket_path`, the watchdog, `idle_shutdown`) has no row. `KEY` limits the rows to that key and what is below it (`--origins daemon.providers.git`, `--origins 'client.providers.aws.template.profile'`).
 
 ```
 $ comb c config --origins client.providers.aws.template.profile
-  KEY                                    FILE                                       VALUE
-  client.providers.aws.template.profile  ~/.config/beachcomber/conf.d/10-mine.toml  {{ env.MY_PROFILE or 'mine' }}
-  ├─ shadowed                            ~/.config/beachcomber/config.toml          {{ 'from-config' }}
-  └─ shadowed                            ~/.config/beachcomber/defaults/aws.toml    {{ env.AWS_PROFILE or … }}
+  KEY                                    SOURCE                                             VALUE
+  client.providers.aws.template.profile  config(~/.config/beachcomber/conf.d/10-mine.toml)  {{ env.MY_PROFILE or 'mine' }}
+  ├─ shadowed                            config(~/.config/beachcomber/config.toml)          {{ 'from-config' }}
+  └─ shadowed                            config(~/.config/beachcomber/defaults/aws.toml)    {{ env.AWS_PROFILE or … }}
 ```
 
-`-f json` prints one object per leaf, `{"key", "value", "file", "shadowed": [{"file", "value"}…]}`, with `file` the absolute path or `null` for a default; `--color auto|always|never` (`NO_COLOR` honoured) and `--ascii` work as for `comb status --tree`, which this view draws like. A file that cannot be read or parsed, or breaks a rule, is reported beneath the rows as `comb c config` reports it (on stderr beside `-f json`) and exits `2`; the files that did load are still shown.
+`-f json` prints one object per leaf, `{"key", "value", "file", "shadowed": [{"file", "value"}…]}`, with `file` the absolute path or `null` for a built-in value; `--color auto|always|never` (`NO_COLOR` honoured) and `--ascii` work as for `comb status --tree`, which this view draws like. A file that cannot be read or parsed, or breaks a rule, is reported beneath the rows as `comb c config` reports it (on stderr beside `-f json`) and exits `2`; the files that did load are still shown.
 
 `--connect-timeout <DURATION>` bounds how long the check keeps trying to reach the daemon before reporting it unreachable (default `1s`; `0` for a single attempt, or any [duration](#durations), e.g. `250ms`, `2s`). Retries start 5ms apart and double, so a daemon that is mid-restart is reached as soon as it binds. The option is accepted before or after the subcommand: `comb c --connect-timeout 0 daemon`.
 

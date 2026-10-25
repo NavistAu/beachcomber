@@ -318,12 +318,12 @@ comb g.j git:cache.branch .    # → {"age_ms": 1240, "stale": false, "source": 
 
 **Exit codes:**
 - `0` — success; also a miss under `text`/`sh`, which print nothing
-- `2` — a miss under `json`, `csv`, `tsv` or `fmt` (`Error querying <key>: no data (cache miss)` on stderr)
+- `2` — a miss under `json`, `csv`, `tsv` or `fmt` (`error: <key>: no data (cache miss)` on stderr)
 - `2` — error (daemon unreachable, invalid key, a template that does not compile or cycles — named in the message)
 
 ### `comb s` (status)
 
-Show all warm cache entries as a table — one row per provider field, with SOURCE naming what produced each value: a Source of the provider (`source(head)`), `put`, `config(<file>)`, `computed(return)`, or `template`. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, Active-window poll count, and whether filesystem events will reinstate the entry (`◉`).
+Show all warm cache entries as a table — one row per provider field, with SOURCE naming what produced each value: a Source of the provider (`source(head)`), `put`, `config(<file>)`, `computed(return)`, or `rendered` for a row rendered here. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, Active-window poll count, and whether filesystem events will reinstate the entry (`◉`).
 
 `watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time. Each refresh re-renders the caller's template leaves, `exec()` included, so a tight interval multiplies whatever the templates spawn.
 
@@ -348,9 +348,9 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay<N>|once|static|template`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
+**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay<N>|once|static|rendered`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
 
-A namespace holding a `[client.providers.<p>]` template renders one extra row per leaf visible from the caller's directory — resolved with this shell's environment and `exec()` enabled, exactly as `comb get` would render it — beside the raw template row and any cached value at that address; a field that's both cached and templated shows both rows. A rendered row's SOURCE is `template`, its VALUE is marked (cyan, or a `▸ `/`> ` lead-in without colour), and `--filter=lifecycle=template` selects just those rows.
+A namespace holding a `[client.providers.<p>]` template renders one extra row per leaf visible from the caller's directory — resolved with this shell's environment and `exec()` enabled, exactly as `comb get` would render it — beside the raw template row and any cached value at that address; a field that's both cached and templated shows both rows. A rendered row's SOURCE is `rendered`, its VALUE is marked (cyan, or a `▸ `/`> ` lead-in without colour), and `--filter=lifecycle=rendered` selects just those rows.
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts).
 

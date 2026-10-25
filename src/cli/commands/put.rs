@@ -16,7 +16,7 @@ pub fn run_put(
     // is started for a put that cannot happen.
     let ttl = match ttl {
         Some(d) if d.subsec_nanos() != 0 || d.is_zero() => {
-            eprintln!("Error: ttl must be a whole number of seconds, at least 1s");
+            crate::cli::report::error("--ttl", "must be a whole number of seconds, at least 1s");
             return ExitCode::from(2);
         }
         Some(d) => Some(format!("{}s", d.as_secs())),
@@ -26,7 +26,7 @@ pub fn run_put(
     let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
 
     if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        eprintln!("Failed to start daemon: {e}");
+        crate::cli::report::daemon_start(e);
         return ExitCode::from(2);
     }
 
@@ -35,7 +35,7 @@ pub fn run_put(
     let data: serde_json::Value = match serde_json::from_str(data_str) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("Invalid JSON: {e}");
+            crate::cli::report::error(key, format_args!("invalid JSON: {e}"));
             return ExitCode::from(2);
         }
     };
@@ -48,12 +48,12 @@ pub fn run_put(
             if response.ok {
                 ExitCode::SUCCESS
             } else {
-                eprintln!("Error: {}", response.error.unwrap_or_default());
+                crate::cli::report::error(key, response.error.unwrap_or_default());
                 ExitCode::from(2)
             }
         }
         Err(e) => {
-            eprintln!("Error: {e}");
+            crate::cli::report::daemon_unreachable(e);
             ExitCode::from(2)
         }
     }

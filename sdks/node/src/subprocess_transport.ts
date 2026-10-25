@@ -173,13 +173,14 @@ function freshness(node: unknown): { ageMs: number; stale: boolean } {
  * The node at `key`, shaped as `bc_get`'s envelope
  * (`{"ok":true,"data":{"data":...,"age_ms":...,"stale":...}}`, the three
  * null on a miss), from one `comb get -f json` for the value and its `:cache`
- * answer (the file header). Exit 0 is a hit. Exit 2 with the CLI's
- * miss line for `key` (`Error querying <key>: no data (cache miss)`) is a
- * miss; with another `Error querying <key>: ` line it is that refusal, in
- * the daemon's words. Exit 2 with a null value slot and no such line is the
- * resolver's own error — a template that does not compile, a cycle, a
- * failed `exec()` — which the CLI prints as `<key>: <msg>`; an absent
- * rendered value is the CLI's miss line, so that slot is never a hit.
+ * answer (the file header). Exit 0 is a hit. The CLI reports every error
+ * as `error: <who>: <why>`. Exit 2 with the miss line for `key`
+ * (`error: <key>: no data (cache miss)`) is a miss; with another
+ * `error: <key>: ` line it is that error — the daemon's refusal, or the
+ * resolver's own (a template that does not compile, a cycle, a failed
+ * `exec()`). Exit 2 with a null value slot and an `error: <key>.<leaf>` line
+ * is a leaf of a group failing; an absent rendered value is the miss line,
+ * so that slot is never a hit.
  * Exit 2 with the value slot filled is a rendered value whose `:cache` slot
  * missed on its own — a hit with age 0.
  */
@@ -204,27 +205,32 @@ function cliGet(
   const value = meta ? decoded : (decoded as unknown[] | undefined)?.[0];
   if (code !== 0) {
     const lines = stderr.split('\n');
-    // The CLI prints one `Error querying <k>: <msg>` line per key the daemon
-    // answered with an error; the `<cacheKey>` line starts `Error querying
-    // <cacheKey>: `, which never matches `<key>`'s prefix.
-    const prefix = `Error querying ${key}: `;
+    // The CLI prints one `error: <k>: <msg>` line per key that failed; the
+    // `<cacheKey>` line starts `error: <cacheKey>: `, which never matches
+    // `<key>`'s prefix.
+    const prefix = `error: ${key}: `;
     const own = lines.find((line) => line.startsWith(prefix))?.slice(prefix.length);
     if (own === 'no data (cache miss)') {
       return { ok: true, data: { data: null, age_ms: null, stale: null } };
     }
     if (own !== undefined) {
-      // The daemon answered `key` with a refusal: a server error whatever
-      // the words say — never a transport kind, which `envelopeFromFailure`
-      // would guess from them.
+      // The daemon refused `key`, or the resolver failed on it: a server error
+      // whatever the words say — never a transport kind, which
+      // `envelopeFromFailure` would guess from them.
       return { ok: false, error: { kind: 'server_error', message: own } };
     }
     if (value === null) {
-      // The resolver failed on `key`: a `<key>: <msg>` line, or `<key>.<leaf>: <msg>`
-      // when a leaf of a group failed. The daemon answered, so this is a
-      // server error whatever the words say — never a transport kind.
+      // A leaf of a group failed: an `error: <key>.<leaf>: <msg>` line. The
+      // daemon answered, so this is a server error whatever the words say.
+      const companion = cacheKey === undefined ? undefined : `error: ${cacheKey}`;
+      const leaf = lines.find(
+        (line) => line.startsWith(`error: ${key}.`) || line.startsWith(`error: ${key}[`),
+      );
       const ownError =
-        lines.find((line) => line.startsWith(`${key}: `) || line.startsWith(`${key}.`)) ??
-        (lines.filter((line) => !line.startsWith('Error querying ')).join('\n') || stderr);
+        leaf?.slice('error: '.length) ??
+        (lines
+          .filter((line) => companion === undefined || !line.startsWith(companion))
+          .join('\n') || stderr);
       return { ok: false, error: { kind: 'server_error', message: ownError.trim() } };
     }
     if (decoded === undefined) {
@@ -255,9 +261,10 @@ function cliPut(
 
 /**
  * One `comb refresh <key> [--path P | --global]`: exit 0 is the daemon's ok;
- * exit 2 is its refusal, printed alone on stderr — `nothing to refresh:
- * <key> has no sources` for a key with no Source behind it — or the CLI's
- * own line when it could not reach the daemon at all.
+ * exit 2 is its refusal, printed alone on stderr as `error: <key>: <words>`
+ * — `nothing to refresh: <key> has no sources` for a key with no Source
+ * behind it — or the CLI's own `error: daemon: …` when it could not reach the
+ * daemon at all.
  */
 function cliRefresh(handle: SubprocessClientHandle, key: string, path_: string | undefined): Envelope {
   const args = ['refresh', key, ...pathArgs(path_)];
@@ -265,12 +272,13 @@ function cliRefresh(handle: SubprocessClientHandle, key: string, path_: string |
   if (code !== 0) {
     const trimmed = stderr.trim();
     // The daemon's own refusal is the CLI's only stderr line. Anything else
-    // — nothing printed, or `Failed to start daemon: …` — means the CLI
-    // never reached the daemon at all.
-    if (trimmed === '' || trimmed.startsWith('Failed to start daemon')) {
+    // — nothing printed, or `error: daemon: …` — means the CLI never reached
+    // the daemon at all.
+    const refusal = `error: ${key}: `;
+    if (!trimmed.startsWith(refusal)) {
       return envelopeFromFailure(stderr);
     }
-    return { ok: false, error: { kind: 'server_error', message: trimmed } };
+    return { ok: false, error: { kind: 'server_error', message: trimmed.slice(refusal.length) } };
   }
   return { ok: true, data: null };
 }

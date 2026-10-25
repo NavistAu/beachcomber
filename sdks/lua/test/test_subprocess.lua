@@ -279,7 +279,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_nil(r)
     assert_eq(err.kind, "server_error")
     assert_eq(err.message:sub(1, 14), "bad.grp.leaf: ")
-    assert_true(err.message:find("Error querying", 1, true) == nil, "companion miss lines must not be the message: " .. tostring(err))
+    assert_true(("\n" .. err.message):find("\nerror: ") == nil, "companion miss lines must not be the message: " .. tostring(err))
   end)
 
   test(names[19], function()
