@@ -11,8 +11,8 @@ use std::ptr;
 use std::time::Duration;
 
 use beachcomber::{
-    BC_GET_FORCE, BC_GET_WAIT, bc_client_free, bc_get, bc_hello, bc_introspect, bc_put, bc_refresh,
-    bc_status,
+    bc_client_free, bc_client_new, bc_get, bc_hello, bc_introspect, bc_put, bc_refresh,
+    bc_session_close, bc_session_get, bc_session_open, bc_status,
 };
 
 #[test]
@@ -21,42 +21,171 @@ fn get_returns_ok_envelope_for_a_real_key() {
     let client = client_for(&daemon.path);
     let key = cs("hostname.short");
 
-    let v = read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), ptr::null(), 0) });
+    let v = read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), ptr::null(), ptr::null()) });
     assert_eq!(v["ok"], serde_json::json!(true));
 
     unsafe { bc_client_free(client) };
 }
 
+/// `bc_get`'s `options_json` takes `force` and `wait` (a duration or
+/// `"forever"`), each optional, and a key left `null` is left out.
 #[test]
-fn get_reserved_flag_bit_is_rejected_not_ignored() {
+fn get_options_take_force_and_a_wait_duration() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     let key = cs("hostname.short");
 
-    let v = read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), ptr::null(), 1 << 5) });
-    assert_eq!(v["ok"], serde_json::json!(false));
-    assert_eq!(v["error"]["kind"], serde_json::json!("bad_flags"));
+    for options in [
+        r#"{}"#,
+        r#"{"force":true,"wait":"forever"}"#,
+        r#"{"wait":"0"}"#,
+        r#"{"wait":"50ms","force":false}"#,
+        r#"{"wait":null,"force":null}"#,
+    ] {
+        let options = cs(options);
+        let v = read(unsafe {
+            bc_get(
+                client,
+                key.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                options.as_ptr(),
+            )
+        });
+        assert_eq!(v["ok"], serde_json::json!(true), "{options:?}: {v}");
+    }
 
     unsafe { bc_client_free(client) };
 }
 
+/// A key `options_json` does not take, a `wait` that is neither a duration
+/// nor `"forever"` (the boolean it replaced included), and JSON that does not
+/// parse are each a `parse_error`, on a client and on a session alike.
 #[test]
-fn get_accepts_the_documented_flag_combination() {
+fn get_options_refuse_an_unknown_key_and_a_wait_that_is_no_duration() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
+    let session = unsafe { bc_session_open(client) };
     let key = cs("hostname.short");
 
-    let v = read(unsafe {
+    for (options, says) in [
+        (r#"{"flags":1}"#, "unknown field `flags`"),
+        (r#"{"wait":true}"#, "invalid type: boolean `true`"),
+        (r#"{"wait":"soon"}"#, "invalid wait `soon`"),
+        (r#"{"force":"yes"}"#, "invalid type"),
+        (r#"{"wait":"#, "malformed options_json"),
+    ] {
+        let options = cs(options);
+        for v in [
+            read(unsafe {
+                bc_get(
+                    client,
+                    key.as_ptr(),
+                    ptr::null(),
+                    ptr::null(),
+                    options.as_ptr(),
+                )
+            }),
+            read(unsafe {
+                bc_session_get(
+                    session,
+                    key.as_ptr(),
+                    ptr::null(),
+                    ptr::null(),
+                    options.as_ptr(),
+                )
+            }),
+        ] {
+            assert_eq!(v["ok"], serde_json::json!(false), "{options:?}: {v}");
+            assert_eq!(v["error"]["kind"], "parse_error", "{options:?}: {v}");
+            let message = v["error"]["message"].as_str().unwrap_or_default();
+            assert!(message.contains(says), "{options:?}: {message}");
+        }
+    }
+
+    unsafe { bc_session_close(session) };
+    unsafe { bc_client_free(client) };
+}
+
+/// A socket that answers each request line after `delay`, and the request
+/// lines it read.
+fn late_daemon(
+    delay: Duration,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::sync::mpsc::Receiver<String>,
+) {
+    use std::io::{BufRead, Write};
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("sock");
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    let (heard, lines) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let heard = heard.clone();
+            std::thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(&stream);
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+                    let _ = heard.send(std::mem::take(&mut line));
+                    std::thread::sleep(delay);
+                    let _ = (&stream).write_all(b"{\"ok\":true,\"data\":\"late\"}\n");
+                }
+            });
+        }
+    });
+    (tmp, sock, lines)
+}
+
+/// A read's deadline is `timeout_ms` plus its `wait`: one that waits
+/// `"forever"` is answered however long past `timeout_ms` the answer takes,
+/// on a client and on a session, and the request it sends carries the wait.
+#[test]
+fn a_get_that_waits_forever_outlasts_timeout_ms() {
+    let (_tmp, sock, heard) = late_daemon(Duration::from_millis(25));
+    let options = cs(&format!(
+        r#"{{"socket_path":"{}","autostart":false,"timeout_ms":5}}"#,
+        sock.display()
+    ));
+    let client = unsafe { bc_client_new(options.as_ptr()) };
+    let session = unsafe { bc_session_open(client) };
+    let key = cs("p.x");
+    let forever = cs(r#"{"wait":"forever"}"#);
+
+    let got = read(unsafe {
         bc_get(
             client,
             key.as_ptr(),
             ptr::null(),
             ptr::null(),
-            BC_GET_FORCE | BC_GET_WAIT,
+            forever.as_ptr(),
         )
     });
-    assert_eq!(v["ok"], serde_json::json!(true));
+    assert_eq!(got["data"], "late", "{got}");
+    let got = read(unsafe {
+        bc_session_get(
+            session,
+            key.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            forever.as_ptr(),
+        )
+    });
+    assert_eq!(got["data"], "late", "{got}");
+    let gets: Vec<serde_json::Value> = heard
+        .try_iter()
+        .map(|line| serde_json::from_str(&line).unwrap())
+        .filter(|request: &serde_json::Value| request["op"] == "get")
+        .collect();
+    assert_eq!(gets.len(), 2, "{gets:?}");
+    assert!(gets.iter().all(|g| g["wait"] == "forever"), "{gets:?}");
 
+    // Without the wait the same answer is too late.
+    let late = read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), ptr::null(), ptr::null()) });
+    assert_eq!(late["error"]["kind"], "timeout", "{late}");
+
+    unsafe { bc_session_close(session) };
     unsafe { bc_client_free(client) };
 }
 
@@ -81,7 +210,15 @@ fn put_get_round_trip() {
     });
     assert_eq!(put_v["ok"], serde_json::json!(true));
 
-    let get_v = read(unsafe { bc_get(client, field_key.as_ptr(), ptr::null(), ptr::null(), 0) });
+    let get_v = read(unsafe {
+        bc_get(
+            client,
+            field_key.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+        )
+    });
     assert_eq!(get_v["ok"], serde_json::json!(true));
     assert_eq!(get_v["data"], serde_json::json!("hello"));
 
@@ -119,7 +256,15 @@ fn bc_put_with_null_data_removes() {
     });
     assert_eq!(v["ok"], serde_json::json!(true));
 
-    let v = read(unsafe { bc_get(client, node_key.as_ptr(), ptr::null(), ptr::null(), 0) });
+    let v = read(unsafe {
+        bc_get(
+            client,
+            node_key.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+        )
+    });
     assert_eq!(v["data"], serde_json::Value::Null);
 
     unsafe { bc_client_free(client) };
@@ -150,7 +295,7 @@ fn get_renders_and_the_facets_read_what_is_stored() {
     }
     let get = |key: &str| {
         let key = cs(key);
-        read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), ptr::null(), 0) })
+        read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), ptr::null(), ptr::null()) })
     };
 
     for (key, value) in [
@@ -237,7 +382,15 @@ fn status_returns_an_array_envelope() {
 fn status_rows_are_the_daemons_rows() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
-    read(unsafe { bc_get(client, cs("hostname").as_ptr(), ptr::null(), ptr::null(), 0) });
+    read(unsafe {
+        bc_get(
+            client,
+            cs("hostname").as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+        )
+    });
     let put = read(unsafe {
         bc_put(
             client,

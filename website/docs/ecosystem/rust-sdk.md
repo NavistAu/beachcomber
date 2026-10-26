@@ -130,9 +130,10 @@ let dirty = session.get("git.dirty", None)?;
 The one client-side resolver — the function `comb get`, `comb eval`, `bc_get`/`bc_eval` and every SDK's `get` and `eval` answer from. `Client::get` and `Session::get` are this function with the process's environment; the daemon holds templates as data (`<provider>:template`, seeded from configuration or `put`) and never evaluates one, so the client renders them with the caller's environment and directory. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `Ok(None)` is a miss; `Err(ResolveError::Config)` is a template that does not compile or cycles, `Runtime` a failed or disabled `exec()`, `Fetch` a daemon the library could not ask or a key it refused.
 
 ```rust
-use libbeachcomber::Client;
+use libbeachcomber::{Client, Wait};
 use libbeachcomber::resolve::{resolve, Inputs, Slot};
 use std::collections::HashMap;
+use std::time::Duration;
 
 let client = Client::new();
 let env: HashMap<String, String> = std::env::vars().collect();
@@ -141,7 +142,7 @@ let inputs = Inputs {
     env: &env,
     slot: Slot::Cwd,               // or Slot::Path(..) / Slot::Global
     force: false,
-    wait: false,
+    wait: Wait::Budget,            // or Wait::For(Duration::ZERO) / Wait::Forever
     allow_exec: client.allow_exec(),
     now: std::time::SystemTime::now(),
 };

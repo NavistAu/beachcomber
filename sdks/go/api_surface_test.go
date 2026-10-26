@@ -194,7 +194,6 @@ func TestAPI_ErrorKindsAreTheTables(t *testing.T) {
 		"parse_error":        beachcomber.ErrParse,
 		"server_error":       beachcomber.ErrServer,
 		"timeout":            beachcomber.ErrTimeout,
-		"bad_flags":          beachcomber.ErrBadFlags,
 		"busy":               beachcomber.ErrBusy,
 		"panic":              beachcomber.ErrPanic,
 		"version_skew":       beachcomber.ErrVersionSkew,

@@ -36,7 +36,6 @@ module Beachcomber
   define_error :ParseError, 'parse_error'
   define_error :ServerError, 'server_error'
   define_error :TimeoutError, 'timeout'
-  define_error :BadFlagsError, 'bad_flags'
   define_error :BusyError, 'busy'
   define_error :PanicError, 'panic'
   define_error :VersionSkewError, 'version_skew'

@@ -1,4 +1,4 @@
-// Verify that a multi-key `comb get` propagates force=true and wait=true to
+// Verify that a multi-key `comb get` propagates force=true and `wait: forever` to
 // every fetch, and that the resolver's `Fetch` over a `libbeachcomber::Session`
 // puts both on the wire. Phase 1 Round 3 bug: the CLI's session wrapper
 // dropped both.
@@ -53,12 +53,18 @@ async fn session_fetch_forwards_force() {
     let (_tmp, sock) = setup_seeded().await;
     let mut session = client_for(sock).session().unwrap();
 
-    let text = Fetch::get(&mut session, "hostname.name", None, true, false)
-        .unwrap()
-        .expect("a hit")
-        .data
-        .expect("data")
-        .to_string();
+    let text = Fetch::get(
+        &mut session,
+        "hostname.name",
+        None,
+        true,
+        libbeachcomber::Wait::Budget,
+    )
+    .unwrap()
+    .expect("a hit")
+    .data
+    .expect("data")
+    .to_string();
 
     assert!(
         !text.contains("seeded-value"),
@@ -68,24 +74,30 @@ async fn session_fetch_forwards_force() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_fetch_forwards_wait() {
-    // Fetching with wait=true on a fresh entry must
+    // Fetching with wait: forever on a fresh entry must
     // not error. This locks in that wait is an accepted parameter; the
-    // behavioral wait=true semantics (stale-re-execute) are covered in
+    // behavioral wait: forever semantics (stale-re-execute) are covered in
     // tests/suite/cli_get_wait_propagation.rs and tests/suite/get_wait.rs.
     let (_tmp, sock) = setup_seeded().await;
     let mut session = client_for(sock).session().unwrap();
 
-    let text = Fetch::get(&mut session, "hostname.name", None, false, true)
-        .unwrap()
-        .expect("a hit")
-        .data
-        .expect("data")
-        .to_string();
+    let text = Fetch::get(
+        &mut session,
+        "hostname.name",
+        None,
+        false,
+        libbeachcomber::Wait::Forever,
+    )
+    .unwrap()
+    .expect("a hit")
+    .data
+    .expect("data")
+    .to_string();
 
-    // Fresh + wait=true + not stale => returns cached seed.
+    // Fresh + wait: forever + not stale => returns cached seed.
     assert!(
         text.contains("seeded-value"),
-        "wait=true on a fresh entry must return the cached value; got {text:?}"
+        "wait: forever on a fresh entry must return the cached value; got {text:?}"
     );
 }
 

@@ -3,7 +3,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { daemonAvailable, spawnDaemon, type TestDaemon } from './helpers.js';
 import { Client } from '../src/client.js';
-import { ServerError, TimeoutError } from '../src/errors.js';
+import { ParseError, ServerError, TimeoutError } from '../src/errors.js';
 
 const skip = !daemonAvailable();
 
@@ -80,8 +80,23 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     assert.equal(await client.get('itest_tpl3.t.x'), 5);
   });
 
-  it('get takes the force and wait flags', async () => {
-    assert.notEqual(await client.get('hostname.short', { force: true, wait: true }), null);
+  it('get takes force and a wait duration', async () => {
+    for (const wait of ['forever', '0', '50ms']) {
+      assert.notEqual(await client.get('hostname.short', { force: true, wait }), null);
+    }
+  });
+
+  it("a wait that is no duration is the library's parse_error", async () => {
+    await assert.rejects(
+      () => client.get('hostname.short', { wait: 'soon' }),
+      (err: unknown) => err instanceof ParseError && err.message.includes('invalid wait `soon`'),
+    );
+    const session = await client.session();
+    try {
+      await assert.rejects(() => session.get('hostname.short', { wait: 'soon' }), ParseError);
+    } finally {
+      session.close();
+    }
   });
 
   it("refresh of a static namespace is the daemon's refusal, in its own words", async () => {

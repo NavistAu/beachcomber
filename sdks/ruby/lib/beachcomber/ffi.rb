@@ -46,9 +46,6 @@ module Beachcomber
       bc_watch_open bc_watch_next bc_watch_cancel bc_watch_free
     ].freeze
 
-    GET_FORCE = 1 << 0
-    GET_WAIT  = 1 << 1
-
     VOIDP = Fiddle::TYPE_VOIDP
     INT   = Fiddle::TYPE_INT
     VOID  = Fiddle::TYPE_VOID
@@ -155,7 +152,7 @@ module Beachcomber
         bc_client_new: fnew('bc_client_new', [VOIDP], VOIDP),
         bc_client_free: fnew('bc_client_free', [VOIDP], VOID),
         bc_string_free: fnew('bc_string_free', [VOIDP], VOID),
-        bc_get: fnew('bc_get', [VOIDP, VOIDP, VOIDP, VOIDP, INT], VOIDP),
+        bc_get: fnew('bc_get', [VOIDP, VOIDP, VOIDP, VOIDP, VOIDP], VOIDP),
         bc_put: fnew('bc_put', [VOIDP, VOIDP, VOIDP, VOIDP, VOIDP], VOIDP),
         bc_refresh: fnew('bc_refresh', [VOIDP, VOIDP, VOIDP], VOIDP),
         bc_status: fnew('bc_status', [VOIDP], VOIDP),
@@ -164,7 +161,7 @@ module Beachcomber
         bc_eval: fnew('bc_eval', [VOIDP, VOIDP, VOIDP, VOIDP], VOIDP),
         bc_session_open: fnew('bc_session_open', [VOIDP], VOIDP),
         bc_session_close: fnew('bc_session_close', [VOIDP], VOID),
-        bc_session_get: fnew('bc_session_get', [VOIDP, VOIDP, VOIDP, VOIDP, INT], VOIDP),
+        bc_session_get: fnew('bc_session_get', [VOIDP, VOIDP, VOIDP, VOIDP, VOIDP], VOIDP),
         bc_session_put: fnew('bc_session_put', [VOIDP, VOIDP, VOIDP, VOIDP, VOIDP], VOIDP),
         bc_session_refresh: fnew('bc_session_refresh', [VOIDP, VOIDP, VOIDP], VOIDP),
         bc_session_set_context: fnew('bc_session_set_context', [VOIDP, VOIDP], VOIDP),

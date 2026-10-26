@@ -36,7 +36,7 @@ fn inputs(env: &HashMap<String, String>) -> Inputs<'_> {
         env,
         slot: Slot::Global,
         force: false,
-        wait: false,
+        wait: libbeachcomber::Wait::Budget,
         allow_exec: false,
         now: std::time::SystemTime::now(),
     }

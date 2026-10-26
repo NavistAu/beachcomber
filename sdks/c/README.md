@@ -38,19 +38,21 @@ int main(void) {
 
     /* The value `comb get git.branch` prints at that directory. NULL cwd is
      * the global entry; env_json is the caller's environment for env.*. */
-    char *r = bc_get(c, "git.branch", "/path/to/repo", NULL, 0);
+    char *r = bc_get(c, "git.branch", "/path/to/repo", NULL, NULL);
     printf("%s\n", r);
     /* {"ok":true,"data":"main"}
      * or {"ok":true,"data":null} on miss
      * or {"ok":false,"error":{"kind":"...","message":"..."}} on error */
     bc_string_free(r);
 
-    /* Re-execute what the read demands, waiting for the fresh value */
-    r = bc_get(c, "git.branch", "/path/to/repo", NULL, BC_GET_FORCE | BC_GET_WAIT);
+    /* Re-execute what the read demands, waiting for the fresh value; a wait
+     * is a duration ("0", "50ms") or "forever" */
+    r = bc_get(c, "git.branch", "/path/to/repo", NULL,
+               "{\"force\":true,\"wait\":\"forever\"}");
     bc_string_free(r);
 
     /* The template itself, unrendered: a facet, read like any key */
-    r = bc_get(c, "myapp:template.theme", NULL, NULL, 0);
+    r = bc_get(c, "myapp:template.theme", NULL, NULL, NULL);
     bc_string_free(r);
 
     /* Put / remove a static-data entry ("null" removes) */
@@ -63,7 +65,7 @@ int main(void) {
     BcSession *s = bc_session_open(c);
     r = bc_session_set_context(s, "/path/to/repo");
     bc_string_free(r);
-    r = bc_session_get(s, "git.branch", NULL, NULL, 0); /* reads at the context path */
+    r = bc_session_get(s, "git.branch", NULL, NULL, NULL); /* reads at the context path */
     bc_string_free(r);
     bc_session_close(s);
 
@@ -88,7 +90,7 @@ cc -o myapp myapp.c -I/usr/local/include -L/usr/local/lib -lbeachcomber \
 
 `beachcomber.h` is a one-line passthrough to the cbindgen-generated
 `libbeachcomber-ffi/include/beachcomber.h` — see that file's doc comments
-for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
+for the full bc_* contract (ownership, NULL-safety, options JSON). In short:
 
 - Every call returns a caller-owned, NUL-terminated `char *` JSON envelope
   — `{"ok":true,"data":...}` or `{"ok":false,"error":{"kind":...,"message":...}}`
@@ -104,7 +106,7 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
   `bc_session_get`/`put`/`refresh`/`set_context`) holds one persistent
   connection, and a directory of its own that a NULL `cwd` or `path` sends —
   use it when a `set_context` needs to be visible to later calls.
-- `bc_get(client, key, cwd, env_json, flags)` / `bc_session_get(session, …)`
+- `bc_get(client, key, cwd, env_json, options_json)` / `bc_session_get(session, …)`
   return the same value `comb get` prints for this key, cwd and env: the
   daemon holds the templates (`<provider>:template`, seeded from
   configuration or `bc_put`) and the client renders them. A plain field is
@@ -113,8 +115,14 @@ for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
   the read addresses, read as `comb get --path` reads one (`~` is the home
   directory, a relative path is against the process's working directory);
   NULL is the global entry. `env_json` is nullable (NULL is the calling process's
-  environment, as `comb` renders). `flags` is a bitmask: `BC_GET_FORCE`, `BC_GET_WAIT`;
-  any other bit set is rejected (`kind: "bad_flags"`).
+  environment, as `comb` renders). `options_json` is nullable; its keys, each
+  optional, are `force` (`true` re-executes every Source the read demands, as
+  `comb get --force`) and `wait` (how long to wait for a run the read needs
+  before answering what is stored, as `comb get --wait`: a duration such as
+  `"0"`, `"50ms"` or `"2s"`, or `"forever"`; left out, a stored record waits
+  its Source's budget and a cold read waits for its run). The read may take
+  `timeout_ms` plus the wait; `"forever"` has no deadline. Any other key, or
+  a `wait` that is neither, is a `parse_error`.
 - The unrendered halves are facets, read with `bc_get` like any key:
   `p:template.x` is the template as stored, `p:put.x` and `p:source.x`
   those layers' values. There is no raw read.

@@ -581,7 +581,7 @@ mod tests {
                 _: &str,
                 _: Option<&str>,
                 _: bool,
-                _: bool,
+                _: crate::Wait,
             ) -> Result<Option<Got>, FetchError> {
                 Ok(None)
             }
@@ -592,7 +592,7 @@ mod tests {
             env: &env,
             slot: Slot::Global,
             force: false,
-            wait: false,
+            wait: crate::Wait::Budget,
             allow_exec: false,
             now: std::time::SystemTime::now(),
         };

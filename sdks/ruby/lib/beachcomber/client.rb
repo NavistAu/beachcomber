@@ -10,9 +10,13 @@ module Beachcomber
   module Requests
     private
 
-    # The +flags+ bitmask +bc_get+ and +bc_session_get+ take.
-    def get_flags(force, wait)
-      (force ? Beachcomber::FFI::GET_FORCE : 0) | (wait ? Beachcomber::FFI::GET_WAIT : 0)
+    # The +options_json+ +bc_get+ and +bc_session_get+ take: the options the
+    # caller gave, +force+ when it is set and +wait+ as given; none is nil.
+    def get_options(force, wait)
+      options = {}
+      options['force'] = true if force
+      options['wait'] = wait unless wait.nil?
+      json_or_nil(options.empty? ? nil : options)
     end
 
     def json_or_nil(value)
@@ -94,10 +98,10 @@ module Beachcomber
     # @param cwd [String, nil]
     # @param env [Hash, nil] the caller's environment for `env.*` refs
     # @param force [Boolean]
-    # @param wait [Boolean]
+    # @param wait [String, nil] a duration or "forever", as {Client#get}
     # @return [Object, nil] the value, or nil on a miss
-    def get(key, cwd: nil, env: nil, force: false, wait: false)
-      Beachcomber::FFI.call!(:bc_session_get, handle!, key, cwd, json_or_nil(env), get_flags(force, wait))
+    def get(key, cwd: nil, env: nil, force: false, wait: nil)
+      Beachcomber::FFI.call!(:bc_session_get, handle!, key, cwd, json_or_nil(env), get_options(force, wait))
     end
 
     # {Client#refresh} on this session's connection; +path: nil+ is this
@@ -211,12 +215,16 @@ module Beachcomber
     # @param env [Hash, nil] the caller's environment for `env.*` refs; nil
     #   is the calling process's environment, as `comb` renders
     # @param force [Boolean] re-execute every Source the read demands first
-    # @param wait [Boolean] re-execute a stale entry inline before answering
+    # @param wait [String, nil] how long to wait for a run the read needs
+    #   before answering what is stored, as `comb get --wait`: a duration
+    #   ("0", "50ms", "2s") or "forever"; nil is the read's budget. The read
+    #   may take +timeout_ms+ plus the wait; "forever" has no deadline
     # @return [Object, nil] the value, or nil on a miss
     # @raise [Beachcomber::DaemonNotRunningError] when no daemon answers
     # @raise [Beachcomber::ServerError] when the daemon refuses the read
-    def get(key, cwd: nil, env: nil, force: false, wait: false)
-      Beachcomber::FFI.call!(:bc_get, handle!, key, cwd, json_or_nil(env), get_flags(force, wait))
+    # @raise [Beachcomber::ParseError] when +wait+ is no duration
+    def get(key, cwd: nil, env: nil, force: false, wait: nil)
+      Beachcomber::FFI.call!(:bc_get, handle!, key, cwd, json_or_nil(env), get_options(force, wait))
     end
 
     # Renders a template that is stored nowhere — the same value `comb eval`

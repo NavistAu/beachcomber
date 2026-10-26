@@ -524,6 +524,30 @@ static const char *fixture_cwd(const json_node_t *fixture_root, const char *defa
  * The caller's environment a get/eval/watch op reads with, as the JSON text
  * the ABI takes, or NULL for none. Caller frees.
  */
+/*
+ * get_options: bc_get's options_json for a get op's args, malloc'd: `force`
+ * when it is true, and `wait` as the fixture gives it, for the library to
+ * read. NULL when there is neither.
+ */
+static char *get_options(const json_node_t *args) {
+    json_node_t *force = args ? json_get(args, "force") : NULL;
+    json_node_t *wait  = args ? json_get(args, "wait")  : NULL;
+    int forced = force && force->type == JSON_BOOL && force->val.boolean;
+    if (!forced && !wait) return NULL;
+    char *wait_json = wait ? serialise_node(wait) : NULL;
+    size_t n = 32 + (wait_json ? strlen(wait_json) : 0);
+    char *out = (char *)malloc(n);
+    if (out) {
+        snprintf(out, n, "{%s%s%s%s}",
+                 forced ? "\"force\":true" : "",
+                 forced && wait_json ? "," : "",
+                 wait_json ? "\"wait\":" : "",
+                 wait_json ? wait_json : "");
+    }
+    free(wait_json);
+    return out;
+}
+
 static char *fixture_env(const json_node_t *fixture_root) {
     json_node_t *env_node = json_get(fixture_root, "env");
     return (env_node && env_node->type == JSON_OBJECT) ? serialise_node(env_node) : NULL;
@@ -553,17 +577,15 @@ static char *run_op(BcClient *client, BcSession *session,
     }
 
     if (strcmp(op_str, "get") == 0) {
-        uint32_t flags = 0;
-        json_node_t *force = args ? json_get(args, "force") : NULL;
-        json_node_t *wait  = args ? json_get(args, "wait")  : NULL;
-        if (force && force->type == JSON_BOOL && force->val.boolean) flags |= BC_GET_FORCE;
-        if (wait  && wait->type  == JSON_BOOL && wait->val.boolean)  flags |= BC_GET_WAIT;
+        char *options_json = get_options(args);
         /* cwd / env are fixture-level fields, not op args — see
          * tests/conformance/README.md's "get" section. */
         char *env_json = fixture_env(fixture_root);
         char *result = bc_session_get(session, key ? key : "",
-                                      fixture_cwd(fixture_root, default_cwd), env_json, flags);
+                                      fixture_cwd(fixture_root, default_cwd), env_json,
+                                      options_json);
         free(env_json);
+        free(options_json);
         return result;
     }
 

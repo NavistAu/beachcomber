@@ -165,7 +165,7 @@ fn inputs<'a>(home: &'a str, env: &'a HashMap<String, String>) -> Inputs<'a> {
         env,
         slot: Slot::Global,
         force: false,
-        wait: false,
+        wait: libbeachcomber::Wait::Budget,
         allow_exec: false,
         now: std::time::SystemTime::now(),
     }

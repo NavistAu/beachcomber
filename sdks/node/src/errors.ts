@@ -17,7 +17,6 @@ export type CombErrorKind =
   | 'parse_error'
   | 'server_error'
   | 'timeout'
-  | 'bad_flags'
   | 'busy'
   | 'panic'
   | 'version_skew'
@@ -65,7 +64,6 @@ export class ServerError extends kindError('server_error') {}
 /** A read or write ran out `timeoutMs`, or `nextEvent` ran out its timeout. */
 export class TimeoutError extends kindError('timeout') {}
 /** A flag bit the ABI does not define was set. */
-export class BadFlagsError extends kindError('bad_flags') {}
 /** A session or watch is in use by another caller. */
 export class BusyError extends kindError('busy') {}
 /** The library panicked; the panic was caught at the boundary. */
@@ -86,7 +84,6 @@ const BY_KIND: Record<CombErrorKind, new (message: string, libraryVersion?: stri
   parse_error: ParseError,
   server_error: ServerError,
   timeout: TimeoutError,
-  bad_flags: BadFlagsError,
   busy: BusyError,
   panic: PanicError,
   version_skew: VersionSkewError,

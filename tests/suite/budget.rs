@@ -414,3 +414,121 @@ async fn a_watch_gets_the_late_value() {
     let frame: Json = serde_json::from_str(&frame).unwrap();
     assert_eq!(frame["data"], json!(2), "the late value");
 }
+
+/// A get that says how long it waits.
+fn waiting(key: &str, wait: &str) -> Json {
+    json!({"op": "get", "key": key, "wait": wait})
+}
+
+/// `--wait 0` on a stale record answers it at once, though the Source's
+/// budget would wait an hour: the run it started is still held, and goes on.
+#[tokio::test]
+async fn wait_0_answers_a_stale_record_with_its_run_held() {
+    let d = daemon(vec![meta("s", "n", Duration::from_secs(3600), 3)]);
+    stale(&d, "g.n").await;
+
+    let answer = ask(d.sock.clone(), waiting("g.n", "0")).await;
+    assert_eq!(answer["data"], json!(1), "the stored value: {answer}");
+    assert_eq!(answer["stale"], json!(true));
+    let cache = ask(d.sock.clone(), get("g:cache.n")).await;
+    assert_eq!(cache["data"]["executing"], json!(true), "{cache}");
+    until("the read's run to begin", || {
+        d.sides[0].runs.load(Ordering::SeqCst) == 2
+    })
+    .await;
+
+    d.sides[0].permits.grant(1);
+    let answer = ask(d.sock.clone(), waiting("g.n", "forever")).await;
+    assert_eq!(
+        answer["data"],
+        json!(2),
+        "the run went on and stored: {answer}"
+    );
+}
+
+/// `--wait 0` with nothing stored answers a miss at once, and the run it
+/// started goes on in the background and stores its value.
+#[tokio::test]
+async fn wait_0_on_a_cold_read_is_a_miss_and_the_run_goes_on() {
+    let d = daemon(vec![meta("s", "n", BUDGET, 3)]);
+
+    let answer = ask(d.sock.clone(), waiting("g.n", "0")).await;
+    assert_eq!(answer, json!({"ok": true}), "a miss, with the run held");
+    until("the read's run to begin", || {
+        d.sides[0].runs.load(Ordering::SeqCst) == 1
+    })
+    .await;
+
+    d.sides[0].permits.grant(1);
+    let answer = ask(d.sock.clone(), waiting("g.n", "forever")).await;
+    assert_eq!(answer["data"], json!(1), "{answer}");
+    assert_eq!(
+        d.sides[0].runs.load(Ordering::SeqCst),
+        1,
+        "the read took the run the first one started"
+    );
+}
+
+/// `--wait forever` waits for a stale record's run past its Source's budget,
+/// and answers the run's value.
+#[tokio::test]
+async fn wait_forever_waits_past_the_budget() {
+    let d = daemon(vec![meta("s", "n", BUDGET, 3)]);
+    stale(&d, "g.n").await;
+    let mut read = tokio::spawn(ask(d.sock.clone(), waiting("g.n", "forever")));
+    until("the run to begin", || {
+        d.sides[0].runs.load(Ordering::SeqCst) == 2
+    })
+    .await;
+    assert!(still_waiting(&mut read, BUDGET * 5).await);
+    d.sides[0].permits.grant(1);
+    let answer = read.await.unwrap();
+    assert_eq!(answer["data"], json!(2));
+    assert_eq!(answer["stale"], json!(false));
+}
+
+/// `--force` with `--wait 0` starts its run and answers what is stored, the
+/// last good value, while the run goes on.
+#[tokio::test]
+async fn force_with_wait_0_answers_the_stored_value() {
+    let d = daemon(vec![meta("s", "n", BUDGET, 3)]);
+    d.sides[0].permits.grant(1);
+    assert_eq!(ask(d.sock.clone(), get("g.n")).await["data"], json!(1));
+
+    let answer = ask(
+        d.sock.clone(),
+        json!({"op": "get", "key": "g.n", "force": true, "wait": "0"}),
+    )
+    .await;
+    assert_eq!(answer["data"], json!(1), "the stored value: {answer}");
+    until("the forced run to begin", || {
+        d.sides[0].runs.load(Ordering::SeqCst) == 2
+    })
+    .await;
+
+    d.sides[0].permits.grant(1);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while ask(d.sock.clone(), get("g.n")).await["data"] != json!(2) {
+        assert!(std::time::Instant::now() < deadline, "the run never stored");
+        tokio::task::yield_now().await;
+    }
+}
+
+/// The boolean `wait` it replaced is an invalid request.
+#[tokio::test]
+async fn a_boolean_wait_is_refused() {
+    let d = daemon(vec![meta("s", "n", BUDGET, 3)]);
+    let answer = ask(
+        d.sock.clone(),
+        json!({"op": "get", "key": "g.n", "wait": true}),
+    )
+    .await;
+    assert_eq!(answer["ok"], json!(false), "{answer}");
+    assert!(
+        answer["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("invalid type: boolean `true`")),
+        "{answer}"
+    );
+    assert_eq!(d.sides[0].runs.load(Ordering::SeqCst), 0, "nothing ran");
+}

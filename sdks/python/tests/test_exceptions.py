@@ -9,7 +9,6 @@ import pytest
 
 from libbeachcomber.client import _parse_cache_rows
 from libbeachcomber.exceptions import (
-    BadFlagsError,
     BusyError,
     CombError,
     ConnectionFailedError,
@@ -34,7 +33,6 @@ from libbeachcomber.exceptions import (
         ("server_error", ServerError),
         ("timeout", TimeoutError),
         ("busy", BusyError),
-        ("bad_flags", BadFlagsError),
         ("panic", PanicError),
         ("version_skew", VersionSkewError),
     ],

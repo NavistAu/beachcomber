@@ -58,7 +58,7 @@ impl Served {
     /// `key` at `dir` (the global entry for `None`), waiting for any run the
     /// read makes: what is under test is whether it makes one, not how fast.
     async fn get(&self, key: &str, dir: Option<&Path>) -> Json {
-        let mut request = json!({"op": "get", "key": key, "wait": true});
+        let mut request = json!({"op": "get", "key": key, "wait": "forever"});
         if let Some(dir) = dir {
             request["path"] = json!(dir);
         }

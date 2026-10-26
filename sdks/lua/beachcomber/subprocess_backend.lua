@@ -40,10 +40,13 @@
 -- — the same text a `server_error` envelope carries over the ffi tier.
 --
 -- `get` is one spawn: `comb get -f json <key> [--path P | --global]
--- [--force] [--wait]`, the value `comb get` prints. It renders through the
--- same libbeachcomber::resolve the ffi tier's bc_get does, with everything
--- the daemon does for a `get`: the directory chain up to `$HOME`, `$HOME`
--- itself as the global entry, `--force`/`--wait` and the daemon's refusals.
+-- [--force] [--wait=<wait>]`, the value `comb get` prints. It renders
+-- through the same libbeachcomber::resolve the ffi tier's bc_get does, with
+-- everything the daemon does for a `get`: the directory chain up to `$HOME`,
+-- `$HOME` itself as the global entry, `--force`, the wait as given, and the
+-- daemon's refusals. A wait comb cannot read is its usage error, which is the
+-- library's "parse_error" in the library's words, as over ffi; a wait that
+-- is not a string is the "parse_error" the ABI gives one.
 -- A facet key reads like any other (`p:template.x` is the template as
 -- stored).
 --
@@ -236,15 +239,27 @@ end
 -- `key` or the resolver's own error (a template that does not compile, a
 -- cycle, a failed `exec()`), an `error: <key>.<leaf>: ` line a leaf of a
 -- group failing, and anything else the CLI failing before it asked at all.
-function Backend:get(key, cwd, env, flags)
-  flags = flags or {}
+function Backend:get(key, cwd, env, options)
+  options = options or {}
+  local wait = options.wait
+  if wait ~= nil and type(wait) ~= "string" then
+    -- What bc_get's options_json says of a wait that is not a string.
+    return { ok = false, error = { kind = "parse_error",
+      message = "malformed options_json: invalid type: " .. type(wait) .. ", expected a string" } }
+  end
   local cmd = command(self, " get -f json " .. shell_escape(key) .. path_arg(cwd), env, true)
-  if flags.force then cmd = cmd .. " --force" end
-  if flags.wait then cmd = cmd .. " --wait" end
+  if options.force then cmd = cmd .. " --force" end
+  -- `=` keeps a wait that starts with `-` the flag's value.
+  if wait ~= nil then cmd = cmd .. " " .. shell_escape("--wait=" .. wait) end
   local out, ok, err = run(cmd)
 
   if not ok then
     err = err or ""
+    -- comb's usage error for `--wait`: the library's words after the flag.
+    local refused = err:match("error: invalid value '[^\n]*' for '%-%-wait <[^>]*>': ([^\n]*)")
+    if refused then
+      return { ok = false, error = { kind = "parse_error", message = refused } }
+    end
     local own = line_after(err, "error: " .. key .. ": ")
     if own then
       return { ok = false, error = { kind = "server_error", message = own } }
@@ -345,9 +360,9 @@ function Session:set_context(path)
   return { ok = true }
 end
 
-function Session:get(key, cwd, env, flags)
+function Session:get(key, cwd, env, options)
   if cwd == nil then cwd = self._path end
-  return self._backend:get(key, cwd, env, flags)
+  return self._backend:get(key, cwd, env, options)
 end
 
 function Session:put(key, data, ttl, path)

@@ -192,7 +192,7 @@ class TestOps < Minitest::Test
     assert_raises(Beachcomber::ParseError) { @client.status }
   end
 
-  # --- get flags ---
+  # --- get options ---
 
   def test_get_sends_force
     @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
@@ -203,15 +203,24 @@ class TestOps < Minitest::Test
     refute req.key?('wait')
   end
 
-  def test_get_sends_wait
+  def test_get_sends_the_wait_as_a_duration
     @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
-    @client.get('git.branch', wait: true)
+    @client.get('git.branch', wait: '0')
     req = @server.requests.last
-    assert_equal true, req['wait']
+    assert_equal '0s', req['wait']
     refute req.key?('force')
   end
 
-  def test_get_omits_flags_by_default
+  # The library reads the wait, so a bad one is its parse_error, and nothing
+  # reaches the daemon.
+  def test_a_wait_that_is_no_duration_is_a_parse_error
+    err = assert_raises(Beachcomber::ParseError) { @client.get('git.branch', wait: 'soon') }
+    assert_includes err.message, 'invalid wait `soon`'
+    assert_raises(Beachcomber::ParseError) { @client.get('git.branch', wait: true) }
+    refute(@server.requests.any? { |r| r['op'] == 'get' })
+  end
+
+  def test_get_omits_the_options_by_default
     @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
     @client.get('git.branch')
     req = @server.requests.last
@@ -372,15 +381,16 @@ class TestOps < Minitest::Test
     assert_equal 'myvalue', req['data']
   end
 
-  def test_session_get_takes_flags_and_env
+  def test_session_get_takes_the_options_and_env
     @server.enqueue('{"ok":true,"template":"{{ env.WHO }}"}')
     result = nil
     @client.session do |s|
-      result = s.get('git.branch', env: { 'WHO' => 'me' }, force: true)
+      result = s.get('git.branch', env: { 'WHO' => 'me' }, force: true, wait: '50ms')
     end
     assert_equal 'me', result
     req = @server.requests.last
     assert_equal true, req['force']
+    assert_equal '50ms', req['wait']
   end
 
   # --- lifecycle fields on CacheRow ---

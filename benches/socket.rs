@@ -86,7 +86,7 @@ fn bench_socket_roundtrip_cold(c: &mut Criterion) {
                     env: &HashMap::new(),
                     slot: Slot::Global,
                     force: false,
-                    wait: false,
+                    wait: libbeachcomber::Wait::Budget,
                     allow_exec: true,
                     now: std::time::SystemTime::now(),
                 };

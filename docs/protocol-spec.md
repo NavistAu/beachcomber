@@ -120,7 +120,7 @@ Read a cached value.
   "key": "git.branch",
   "path": "/absolute/path",
   "force": false,
-  "wait": false
+  "wait": "50ms"
 }
 ```
 
@@ -147,21 +147,32 @@ Read a cached value.
   leaves the last good value, which the read answers. A key naming no
   Source (a static namespace, a facet) is an error: `cannot --force static
   namespace '<name>': no source to re-execute from`.
-- `wait` (bool, optional, default false) — how long a read of a record that
-  is not valid waits for the record's run. A record is valid while it is within
-  its lifetime and its stat inputs (the files its Source declares, stat'd on
-  the read) are as its run found them. A read of a record past its lifetime
-  (`stale`), or one whose inputs changed, always runs its Source (or takes the
-  run in flight, when that run sees the inputs as they are) and waits up to the
-  Source's budget (`budget(...)`, else `[daemon] budget`, default `50ms`); with
-  `wait` it waits for the run however long it takes. Answered in time, the
-  read has the fresh value; late, it has the stored value (`stale: true` if it
-  is past its lifetime), and `:cache.<field>.executing` is `true` while the run
-  goes on. A read with nothing stored, and `force`, always wait for their run.
-  A valid record is served as is, and so is an instance in failback backoff.
-  Budget exceeded is not `stale`: that keeps its meaning, past the lifetime. A
-  namespace read starts the runs of every Source it needs before it waits for
-  any, each budget counted from the read's start.
+- `wait` (string, optional) — how long the read waits for a run it needs: a
+  duration in the one grammar (`"0"`, `"50ms"`, `"2s"`, `"1m30s"`; a bare
+  number is seconds) or `"forever"`. Absent (or `null`), the read waits its
+  **budget**. Anything else, a boolean included, is an invalid request
+  (``invalid wait `soon`: …``, ``invalid type: boolean `true`, …``).
+
+  A record is valid while it is within its lifetime and its stat inputs (the
+  files its Source declares, stat'd on the read) are as its run found them,
+  and a valid record is served as is, as is an instance in failback backoff.
+  Otherwise the read runs the instance's Source (or takes the run in flight,
+  when that run sees the inputs as they are) and waits:
+
+  | The read finds | With no `wait` it waits | With a `wait` |
+  |---|---|---|
+  | a record past its lifetime (`stale`), or whose inputs changed | the Source's budget (`budget(...)`, else `[daemon] budget`, default `50ms`) | that long (`"forever"`: the run's end) |
+  | nothing stored | the run's end, which its `timeout` bounds | as above |
+  | anything, with `force` | the run's end | as above |
+
+  Each wait counts from the read's start. Answered in time, the read has the
+  fresh value; late, it has what is stored (`stale: true` if it is past its
+  lifetime, a miss when nothing is), `:cache.<field>.executing` is `true` while
+  the run goes on, and the run records itself for the next read and for any
+  `watch` of the key. Budget exceeded is not `stale`: that keeps its meaning,
+  past the lifetime. A namespace read starts the runs of every Source it needs
+  before it waits for any. A client's read of the answer may take its own
+  timeout plus the `wait`; `"forever"` has no deadline.
 
 **Response (hit):**
 ```json

@@ -24,6 +24,7 @@ use crate::eval::{
     EvalError, Import, MAX_VIRTUAL_DEPTH, discover_refs, evaluate, imports, library, too_deep,
 };
 use crate::lazy::{Bridge, LazyNode, Prefetch};
+use crate::protocol::Wait;
 use crate::virtual_fields::{Ref, mj_to_json};
 use minijinja::Environment;
 use minijinja::value::Value as MjValue;
@@ -78,8 +79,8 @@ pub struct Inputs<'a> {
     pub slot: Slot,
     /// Re-execute the source before answering.
     pub force: bool,
-    /// Wait for a value rather than answering with a miss.
-    pub wait: bool,
+    /// How long each fetch waits for a run it needs ([`Wait`]).
+    pub wait: Wait,
     /// Whether an evaluated template may call `exec()`.
     pub allow_exec: bool,
     /// The clock `now()`, `ago` and `spinner` read: one value for the whole
@@ -158,7 +159,7 @@ pub trait Fetch {
         key: &str,
         path: Option<&str>,
         force: bool,
-        wait: bool,
+        wait: Wait,
     ) -> Result<Option<Got>, FetchError>;
 }
 

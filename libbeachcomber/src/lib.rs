@@ -44,7 +44,7 @@ pub const VERSION: &str = env!("BEACHCOMBER_VERSION");
 
 pub use protocol::{
     CacheRow, DaemonHealth, FailureSnapshot, HelloInfo, IntrospectSubject, ReaperStatus, RowKind,
-    Verdict,
+    Verdict, Wait,
 };
 use protocol::{Request, Response};
 
@@ -533,7 +533,7 @@ impl Client {
         key: &str,
         path: Option<&str>,
         force: bool,
-        wait: bool,
+        wait: Wait,
     ) -> Result<resolve::Got, CombError> {
         self.call(&get_request(key, path, force, wait)?)
             .map(parse_node)
@@ -658,6 +658,7 @@ impl Client {
         stream.set_write_timeout(Some(self.config.timeout))?;
         Ok(Conn {
             reader: BufReader::new(stream),
+            timeout: self.config.timeout,
         })
     }
 }
@@ -676,7 +677,7 @@ impl resolve::Fetch for &Client {
         key: &str,
         path: Option<&str>,
         force: bool,
-        wait: bool,
+        wait: Wait,
     ) -> Result<Option<resolve::Got>, resolve::FetchError> {
         fetched(self.fetch_node(key, path, force, wait))
     }
@@ -691,7 +692,7 @@ impl resolve::Fetch for Session {
         key: &str,
         path: Option<&str>,
         force: bool,
-        wait: bool,
+        wait: Wait,
     ) -> Result<Option<resolve::Got>, resolve::FetchError> {
         fetched(
             get_request(key, path, force, wait)
@@ -719,6 +720,9 @@ fn fetched(
 /// Every op on a [`Client`] or a [`Session`] is one [`Conn::exchange`].
 struct Conn {
     reader: BufReader<UnixStream>,
+    /// The client's timeout, on every read and write unless a request's own
+    /// wait lengthens its read ([`Request::beyond_timeout`]).
+    timeout: Duration,
 }
 
 /// A request as it goes on the wire: one JSON line.
@@ -735,12 +739,29 @@ impl Conn {
         Ok(())
     }
 
-    /// Send one request and read its one response line.
+    /// Send one request and read its one response line. The read may take
+    /// the client's timeout plus whatever the request waits for (a `get`'s
+    /// wait; `forever` has no deadline), and the connection's reads go back
+    /// to the timeout after it.
     fn exchange(&mut self, request: &Request) -> Result<String, CombError> {
-        self.send(request)?;
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        Ok(line)
+        let read_timeout = request
+            .beyond_timeout()
+            .map(|beyond| self.timeout.saturating_add(beyond));
+        let lengthened = read_timeout != Some(self.timeout);
+        if lengthened {
+            self.reader.get_ref().set_read_timeout(read_timeout)?;
+        }
+        let answered = self.send(request).and_then(|()| {
+            let mut line = String::new();
+            self.reader.read_line(&mut line)?;
+            Ok(line)
+        });
+        if lengthened {
+            // A connection that cannot take the option back has failed, and
+            // its next exchange says so: this one's answer stands.
+            let _ = self.reader.get_ref().set_read_timeout(Some(self.timeout));
+        }
+        answered
     }
 
     /// The daemon's `hello`.
@@ -905,7 +926,7 @@ fn get_request(
     key: &str,
     path: Option<&str>,
     force: bool,
-    wait: bool,
+    wait: Wait,
 ) -> Result<Request, CombError> {
     Ok(Request::Get {
         key: key.to_string(),
@@ -975,7 +996,7 @@ fn get_here(
             .clone()
             .map_or(resolve::Slot::Global, resolve::Slot::Path),
         force: false,
-        wait: false,
+        wait: Wait::Budget,
         allow_exec,
         now: std::time::SystemTime::now(),
     };

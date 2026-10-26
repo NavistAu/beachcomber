@@ -29,13 +29,13 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(value, "main")
   end)
 
-  test("get forwards exactly key, cwd, env and the flags", function()
+  test("get forwards exactly key, cwd, env and the options", function()
     local seen, nargs
     local backend = make_backend({
       get = function(_, ...)
         nargs = select("#", ...)
-        local key, cwd, env, flags = ...
-        seen = { key = key, cwd = cwd, env = env, flags = flags }
+        local key, cwd, env, options = ...
+        seen = { key = key, cwd = cwd, env = env, options = options }
         return { ok = true }
       end,
     })
@@ -44,28 +44,28 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(seen.key, "git.branch")
     assert_eq(seen.cwd, "/myrepo")
     assert_eq(seen.env.A, "x")
-    assert_true(not seen.flags.force)
-    assert_true(not seen.flags.wait)
+    assert_true(not seen.options.force)
+    assert_nil(seen.options.wait)
   end)
 
   test("get with no opts is the global entry and no environment", function()
     local seen
     local backend = make_backend({
-      get = function(_, key, cwd, env, flags) seen = { cwd = cwd, env = env }; return { ok = true } end,
+      get = function(_, key, cwd, env, options) seen = { cwd = cwd, env = env }; return { ok = true } end,
     })
     Client.new(backend):get("git.branch")
     assert_nil(seen.cwd, "no cwd and no context is the global entry")
     assert_nil(seen.env, "no env is passed as none, not as an empty table")
   end)
 
-  test("get passes force and wait through as the flags table", function()
-    local seen_flags
+  test("get passes force and the wait through as the options table", function()
+    local seen_options
     local backend = make_backend({
-      get = function(_, key, cwd, env, flags) seen_flags = flags; return { ok = true } end,
+      get = function(_, key, cwd, env, options) seen_options = options; return { ok = true } end,
     })
-    Client.new(backend):get("git.branch", { force = true, wait = true })
-    assert_eq(seen_flags.force, true)
-    assert_eq(seen_flags.wait, true)
+    Client.new(backend):get("git.branch", { force = true, wait = "50ms" })
+    assert_eq(seen_options.force, true)
+    assert_eq(seen_options.wait, "50ms")
   end)
 
   test("a miss is nil with no Error", function()
@@ -94,7 +94,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   end)
 
   test("the raw read and the old names are gone", function()
-    assert_nil(Client.get_with_flags, "get_with_flags is gone: get takes the flags")
+    assert_nil(Client.get_with_flags, "get_with_flags is gone: get takes the options")
     assert_nil(Client.resolve, "resolve is gone: get renders")
     assert_nil(client_mod.Result, "Result is gone: get returns the value")
   end)
@@ -341,7 +341,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "get renders a put template with the caller's environment",
     "refresh of a static namespace is the daemon's words alone",
     "the facets read the unrendered halves",
-    "get takes force and wait",
+    "get takes force and a wait duration, and refuses one that is not",
     "a session's get with no cwd reads at its directory",
     "get with no cwd and no context reads the global entry",
   }
@@ -414,9 +414,18 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
       end)
 
       test(live_tests[6], function()
-        local value, err = c:get("hostname.short", { force = true, wait = true })
-        assert_nil(err)
-        assert_eq(type(value), "string")
+        for _, wait in ipairs({ "forever", "0", "50ms" }) do
+          local value, err = c:get("hostname.short", { force = true, wait = wait })
+          assert_nil(err)
+          assert_eq(type(value), "string")
+        end
+        local value, err = c:get("hostname.short", { wait = "soon" })
+        assert_nil(value)
+        assert_eq(err.kind, "parse_error")
+        assert_true(err.message:find("invalid wait `soon`", 1, true) ~= nil, err.message)
+        value, err = c:get("hostname.short", { wait = true })
+        assert_nil(value)
+        assert_eq(err.kind, "parse_error")
       end)
 
       test(live_tests[7], function()

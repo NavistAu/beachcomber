@@ -55,7 +55,7 @@ pub fn run_get(
     path: Option<&str>,
     format: Format,
     force: bool,
-    wait: bool,
+    wait: libbeachcomber::Wait,
 ) -> Outcome {
     // `comb` always requires the daemon (design §2), a key whose answer needs
     // no request (`env.HOME`) included.

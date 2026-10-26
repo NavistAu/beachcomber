@@ -34,7 +34,7 @@ _SYMBOLS: dict = {
     "bc_client_new": ([ctypes.c_char_p], ctypes.c_void_p),
     "bc_client_free": ([ctypes.c_void_p], None),
     "bc_get": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32],
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
         ctypes.c_void_p,
     ),
     "bc_put": (
@@ -55,7 +55,7 @@ _SYMBOLS: dict = {
     "bc_session_open": ([ctypes.c_void_p], ctypes.c_void_p),
     "bc_session_close": ([ctypes.c_void_p], None),
     "bc_session_get": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32],
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
         ctypes.c_void_p,
     ),
     "bc_session_put": (
@@ -76,12 +76,6 @@ _SYMBOLS: dict = {
     "bc_watch_free": ([ctypes.c_void_p], None),
     "bc_string_free": ([ctypes.c_void_p], None),
 }
-
-# bc_get / bc_session_get flags (mirrors BC_GET_FORCE / BC_GET_WAIT in
-# libbeachcomber-ffi/include/beachcomber.h).
-BC_GET_FORCE = 1 << 0
-BC_GET_WAIT = 1 << 1
-
 
 class NativeLib:
     """A loaded ``libbeachcomber`` with verified symbols and cached version.

@@ -65,7 +65,7 @@ int main(void) {
     BcClient *c = bc_client_new(NULL);   /* default socket discovery */
 
     /* What `comb get git.branch` prints there; NULL env_json is the calling process's environment */
-    char *r = bc_get(c, "git.branch", "/path/to/repo", NULL, 0);
+    char *r = bc_get(c, "git.branch", "/path/to/repo", NULL, NULL);
     printf("%s\n", r);
     /* {"ok":true,"data":"main"}
      * or {"ok":true,"data":null} on miss
@@ -129,7 +129,6 @@ so a binding can tell the cases apart without string matching:
 | `parse_error` | Malformed response from the daemon |
 | `server_error` | Daemon returned `ok: false` |
 | `timeout` | The call exceeded its timeout — any op, on a client or a session |
-| `bad_flags` | An unrecognised bit was set in a `flags` argument |
 | `busy` | The handle's connection is already in use by another caller |
 | `version_skew` | The daemon's reported version doesn't match this library's |
 | `panic` | The call panicked internally; caught at the FFI boundary |
@@ -170,7 +169,7 @@ client renders them in-process with the `cwd` and `env_json` you pass.
 
 | Function | Description |
 |---|---|
-| `char *bc_get(BcClient *c, const char *key, const char *cwd, const char *env_json, uint32_t flags)` | The value `comb get` prints for this key, cwd and env. A plain field is its cached value, a templated one is rendered, and a bare provider name is the whole merged namespace; a miss is `data: null`. `cwd` is the directory every fetch the read makes addresses, read as `comb get --path` reads one (`~` is home, a relative path is against the process's working directory); NULL is the global entry. `env_json` is nullable ("no environment": every `env.*` is absent). `flags` is a bitmask of `BC_GET_FORCE` / `BC_GET_WAIT`; any other bit yields `kind: "bad_flags"`. |
+| `char *bc_get(BcClient *c, const char *key, const char *cwd, const char *env_json, const char *options_json)` | The value `comb get` prints for this key, cwd and env. A plain field is its cached value, a templated one is rendered, and a bare provider name is the whole merged namespace; a miss is `data: null`. `cwd` is the directory every fetch the read makes addresses, read as `comb get --path` reads one (`~` is home, a relative path is against the process's working directory); NULL is the global entry. `env_json` is nullable ("no environment": every `env.*` is absent). `options_json` is nullable; its keys, each optional, are `force` (`true` re-executes every Source the read demands, as `comb get --force`) and `wait` (how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration such as `"0"` or `"50ms"`, or `"forever"`); any other key, or a `wait` that is neither, is a `parse_error`. The read may take `timeout_ms` plus the wait. |
 | `char *bc_eval(BcClient *c, const char *template_str, const char *cwd, const char *env_json)` | Render a template that is stored nowhere — the same value `comb eval` prints. `template_str` accepts a single `{{ expr }}` tag (keeps the expression's natural type), or literal text/several tags (always a string — a source with no tags at all is its literal text). `cwd` is as for `bc_get`, and every daemon ref the expression names is fetched scoped to it. |
 
 The unrendered halves are facets, read with `bc_get` like any key:
@@ -193,7 +192,7 @@ internal mutex: a concurrent caller gets `kind: "busy"` rather than blocking.
 |---|---|
 | `BcSession *bc_session_open(BcClient *client)` | Open a persistent session on `client`'s connection. Never returns NULL. |
 | `void bc_session_close(BcSession *session)` | Close and free a session handle. Null-safe. |
-| `char *bc_session_get(BcSession *s, const char *key, const char *cwd, const char *env_json, uint32_t flags)` | Same as `bc_get`, on the session's persistent connection; a NULL `cwd` is the session's directory when it has one. |
+| `char *bc_session_get(BcSession *s, const char *key, const char *cwd, const char *env_json, const char *options_json)` | Same as `bc_get`, on the session's persistent connection; a NULL `cwd` is the session's directory when it has one. |
 | `char *bc_session_put(BcSession *s, const char *key, const char *json_data, const char *ttl, const char *path)` | Same as `bc_put`, on the session's persistent connection. |
 | `char *bc_session_set_context(BcSession *s, const char *path)` | Set a default path so subsequent queries on this session don't need an explicit `path`. |
 
@@ -208,7 +207,7 @@ bc_session_close(s);
 
 ### Watch
 
-Opens a watch on the *value* of a key — what `bc_get(key, cwd, env_json, 0)`
+Opens a watch on the *value* of a key — what `bc_get(key, cwd, env_json, NULL)`
 answers — and emits it again whenever it changes: the fan-in underneath
 subscribes to every key the resolution reads, and a write to a namespace or
 any of its facets wakes its watchers, so a template edited under the watch

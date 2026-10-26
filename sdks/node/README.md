@@ -84,15 +84,20 @@ is `null`.
 const branch = await client.get('git.branch', { cwd: '/some/repo' });
 const host   = await client.get('hostname.short');        // no cwd: the global entry
 const git    = await client.get('git', { cwd: '/some/repo' }); // full provider (an object)
-const fresh  = await client.get('git.branch', { cwd: '/some/repo', force: true, wait: true });
+const fresh  = await client.get('git.branch', { cwd: '/some/repo', force: true, wait: 'forever' });
+const now    = await client.get('git.branch', { cwd: '/some/repo', wait: '0' }); // what is stored, at once
 ```
 
 `opts` is `{ cwd?, env?, force?, wait? }`. `cwd` is the directory the read
 addresses (`~` is home, a relative path is against this process's working
 directory); omitted, it is the global entry. `env` is the caller's
 environment for `env.*` refs; omitted, the calling process's environment, as `comb` renders. `force`
-re-executes every Source the read demands first; `wait` re-executes a
-stale entry inline before answering.
+re-executes every Source the read demands first, as `comb get --force`.
+`wait` is how long the read waits for a run it needs before it answers what
+is stored, as `comb get --wait`: a duration (`'0'`, `'50ms'`, `'2s'`) or
+`'forever'`; anything else is a `ParseError`. Omitted, a stored record waits
+its Source's budget and a cold read waits for its run. The read may take
+`timeoutMs` plus the wait; `'forever'` has no deadline.
 
 The unrendered halves are facets, read like any key:
 
@@ -219,7 +224,6 @@ kind from a newer library is a bare `CombError` with the kind kept.
 | `ParseError` | `parse_error` | A request, a response or a template could not be read |
 | `ServerError` | `server_error` | The daemon refused the request, or a template failed to render |
 | `TimeoutError` | `timeout` | A read or write ran out `timeoutMs`, or `nextEvent` ran out its timeout |
-| `BadFlagsError` | `bad_flags` | A flag bit the ABI does not define was set |
 | `BusyError` | `busy` | A session or watch is in use by another caller |
 | `PanicError` | `panic` | The native library panicked (caught at the FFI boundary) |
 | `VersionSkewError` | `version_skew` | The daemon is a different version from the library |
@@ -236,10 +240,11 @@ and watch — all with exact envelope fidelity.
 **Subprocess (`comb` CLI fallback)** covers `get`, `put`,
 `refresh`, `status`, `eval`, `watch`, and session context. `timeoutMs` bounds each spawned
 `comb`, with no default of its own; `connectTimeoutMs` is refused. `get` is one `comb get -f json
-<key> [--path P | --global] [--force] [--wait]`: the value `comb get`
+<key> [--path P | --global] [--force] [--wait=<wait>]`: the value `comb get`
 prints, the same value the FFI tier answers — the directory chain up to
-`$HOME`, `$HOME` as the global entry, `force`/`wait`, the daemon's
-refusals. The spawned `comb` renders as the FFI tier does. A call's `env`
+`$HOME`, `$HOME` as the global entry, `force`, the wait, the daemon's
+refusals. A wait `comb` cannot read is the same `ParseError`, in the same
+words, as over FFI. The spawned `comb` renders as the FFI tier does. A call's `env`
 map is its whole environment (with no map, this process's), so `env.*` and an
 `exec()` child see exactly the map. `--socket` carries `socketPath`, else
 `$BEACHCOMBER_SOCKET`, so the map cannot point the tier at another daemon.

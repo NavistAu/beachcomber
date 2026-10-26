@@ -2,7 +2,6 @@ require_relative 'test_helper'
 
 class TestErrors < Minitest::Test
   KIND_MAP = {
-    'bad_flags' => Beachcomber::BadFlagsError,
     'busy' => Beachcomber::BusyError,
     'panic' => Beachcomber::PanicError,
     'version_skew' => Beachcomber::VersionSkewError,

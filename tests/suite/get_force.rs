@@ -174,32 +174,6 @@ async fn force_on_static_namespace_returns_error() {
     handle.abort();
 }
 
-/// wait field is accepted without error (no-op in this task; semantics land in T14).
-#[tokio::test]
-async fn get_with_wait_field_is_accepted() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-
-    let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
-    let handle = server.spawn().unwrap();
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-    let request = r#"{"op":"get","key":"hostname","wait":true}"#;
-    stream
-        .write_all(format!("{request}\n").as_bytes())
-        .await
-        .unwrap();
-
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).await.unwrap();
-
-    let response: Response = serde_json::from_str(&line).unwrap();
-    // Must not error out — wait is wired through but currently a no-op.
-    assert!(response.ok, "wait=true should not cause a protocol error");
-
-    handle.abort();
-}
-
 /// A Source that answers its run count, or fails while `fail` is set.
 struct Flaky {
     meta: beachcomber::provider::SourceMetadata,

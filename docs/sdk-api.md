@@ -42,7 +42,21 @@ out is the ABI's default.
 `~` is the home directory and a relative path is against the caller's working
 directory. Leaving it out addresses the global entry. `env` is the caller's
 environment for `env.*` references; leaving it out is the calling process's
-environment, as `comb` renders with its own. `force` and `wait` are `comb get --force` and `--wait`.
+environment, as `comb` renders with its own.
+
+`force` and `wait` are `comb get --force` and `--wait`, and `bc_get`'s
+`options_json` keys (`{"force": true, "wait": "50ms"}`); an SDK sends the ones
+its caller gave and no others. `force` re-executes every Source the read
+demands. `wait` is how long the read waits for a run it needs before it
+answers what is stored: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`.
+The library reads it, so a `wait` that is neither is the same `parse_error`
+on every SDK. Left out, a stored record waits its Source's budget, and a cold
+read or a forced one waits for its run.
+
+A read may take `timeout_ms` plus its `wait`, and one that waits `"forever"`
+has no deadline. A cold read with no `wait` waits for its run, so a slow
+Source can outlast the default 100 ms `timeout_ms` and report `timeout`; the
+run goes on, and the next read has its value.
 
 ## Session
 
@@ -107,7 +121,6 @@ the ABI's, unchanged; the library's version is a field of its own,
 | `parse_error` | ABI | A request, a response or a template could not be read. |
 | `server_error` | ABI | The daemon refused the request, or a template failed to render. |
 | `timeout` | ABI | A read or write ran out `timeout_ms`, or `next_event` ran out its `timeout_ms`. |
-| `bad_flags` | ABI | A flag bit the ABI does not define was set. |
 | `busy` | ABI | A session or watch is in use by another caller. |
 | `panic` | ABI | The library panicked; the panic was caught at the boundary. |
 | `version_skew` | ABI | The daemon is a different version from the library. |
@@ -124,7 +137,6 @@ the ABI's, unchanged; the library's version is a field of its own,
 | `parse_error` | `ParseError` | `ErrParse` | `kind == "parse_error"` |
 | `server_error` | `ServerError` | `ErrServer` | `kind == "server_error"` |
 | `timeout` | `TimeoutError` | `ErrTimeout` | `kind == "timeout"` |
-| `bad_flags` | `BadFlagsError` | `ErrBadFlags` | `kind == "bad_flags"` |
 | `busy` | `BusyError` | `ErrBusy` | `kind == "busy"` |
 | `panic` | `PanicError` | `ErrPanic` | `kind == "panic"` |
 | `version_skew` | `VersionSkewError` | `ErrVersionSkew` | `kind == "version_skew"` |
@@ -167,5 +179,5 @@ and check the SDK's list of candidates against it.
 | Python | keyword arguments | `with client.session() as s:` | `for event in stream:` |
 | Ruby | keyword arguments | `client.session { \|s\| … }` | `stream.each { \|event\| … }` |
 | Node | an options object | `const s = await client.session()` | `for await (const event of stream)` |
-| Go | `""` and `nil` are absent; a trailing optional is variadic (`Get`'s `Force` and `Wait`, `NextEvent`'s timeout, `Introspect`'s duration) | `s, err := c.Session()` | `ev, err := w.NextEvent()` until `ev` is nil |
+| Go | `""` and `nil` are absent; a trailing optional is variadic (`Get`'s `Force` and `Wait("50ms")`, `NextEvent`'s timeout, `Introspect`'s duration) | `s, err := c.Session()` | `ev, err := w.NextEvent()` until `ev` is nil |
 | Lua | an options table | `local s = client:session()` | `while true do local ev = w:next_event() … end` |

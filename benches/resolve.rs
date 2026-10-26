@@ -26,7 +26,7 @@ impl Fetch for MapFetch {
         key: &str,
         _path: Option<&str>,
         _force: bool,
-        _wait: bool,
+        _wait: libbeachcomber::Wait,
     ) -> Result<Option<Got>, FetchError> {
         Ok(self.0.get(key).cloned())
     }
@@ -132,7 +132,7 @@ fn bench_resolve(c: &mut Criterion) {
                 env: &env,
                 slot: Slot::Cwd,
                 force: false,
-                wait: false,
+                wait: libbeachcomber::Wait::Budget,
                 allow_exec,
                 now: std::time::SystemTime::now(),
             };

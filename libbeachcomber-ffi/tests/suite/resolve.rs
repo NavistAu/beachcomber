@@ -40,7 +40,7 @@ fn resolve(client: *mut BcClient, key: &str, cwd: &str, env: Option<&str>) -> se
             key.as_ptr(),
             cwd.as_ptr(),
             env.as_ref().map_or(ptr::null(), |e| e.as_ptr()),
-            0,
+            ptr::null(),
         )
     })
 }
@@ -475,7 +475,7 @@ fn null_cwd_addresses_the_global_entry() {
     let key = cs("nullcwd.v");
     let src = cs("{{ nullcwd.v }}-{{ nullcwd.w or 'none' }}");
 
-    let v = read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), ptr::null(), 0) });
+    let v = read(unsafe { bc_get(client, key.as_ptr(), ptr::null(), ptr::null(), ptr::null()) });
     assert_eq!(hit(&v), &serde_json::json!("global"), "{v}");
 
     let v = read(unsafe { bc_eval(client, src.as_ptr(), ptr::null(), ptr::null()) });

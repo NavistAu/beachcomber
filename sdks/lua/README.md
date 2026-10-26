@@ -46,7 +46,7 @@ subprocess session does. `refresh` over `subprocess` is one `comb refresh
 <key>`, the daemon's op itself, and its refusal (`nothing to refresh: <key>
 has no sources`) is the error message. `get` over `subprocess` is one `comb
 get -f json <key>`, so its answer is the resolver's: the rendered value, the
-directory chain up to `$HOME`, `$HOME` as the global entry, force/wait, the
+directory chain up to `$HOME`, `$HOME` as the global entry, force, the wait, the
 daemon's refusals. `eval` is one `comb eval -f json -- <template>`; a
 template that does not compile is `err.kind == "server_error"` there, where
 the ffi tier reports `parse_error`.
@@ -189,7 +189,7 @@ stored, `p:put.x` and `p:source.x` those layers' values. `key` is
 | `cwd` | The directory the read addresses (`~` is home, a relative path is against this process's working directory). Default: the global entry. |
 | `env` | The caller's environment for `env.*` refs. `nil` (the default) is the calling process's environment, as `comb` renders. |
 | `force` | Re-execute every Source the read demands first (`comb get --force`). |
-| `wait` | Re-execute a stale entry inline before answering (`comb get --wait`). |
+| `wait` | How long to wait for a run the read needs before answering what is stored (`comb get --wait`): a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`; anything else is `"parse_error"`, on both transports. `nil` (the default): a stored record waits its Source's budget, a cold read waits for its run. |
 
 ### `Client:refresh(key [, opts])` → `true | nil, Error`
 
@@ -272,7 +272,7 @@ Error, and a method that answers nothing (`put`, `refresh`,
 `set_context`, `close`) returns `true`. An Error carries `kind`, a slug
 from `Error.KINDS` (the table's: the ABI's `daemon_not_running`,
 `connection_failed`, `io_error`, `parse_error`, `server_error`, `timeout`,
-`bad_flags`, `busy`, `panic`, `version_skew`, and this SDK's own
+`busy`, `panic`, `version_skew`, and this SDK's own
 `library_not_found`, `library_symbol` and `unsupported`); `message`, the
 ABI's message as it came; and `library_version`, the loaded library's
 `bc_version()` (`nil` over `subprocess`, which loads none).

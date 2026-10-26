@@ -14,7 +14,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Client.Get flags
+// Client.Get options
 // ---------------------------------------------------------------------------
 
 func TestClient_Get_Force(t *testing.T) {
@@ -32,12 +32,14 @@ func TestClient_Get_Force(t *testing.T) {
 
 func TestClient_Get_ForceAndWait(t *testing.T) {
 	c := requireClient(t)
-	v, err := c.Get("hostname.short", "", nil, beachcomber.Force, beachcomber.Wait)
-	if err != nil {
-		t.Fatalf("Get(Force, Wait): %v", err)
-	}
-	if v == nil {
-		t.Error("expected a value, got a miss")
+	for _, wait := range []string{"forever", "0", "50ms"} {
+		v, err := c.Get("hostname.short", "", nil, beachcomber.Force, beachcomber.Wait(wait))
+		if err != nil {
+			t.Fatalf("Get(Force, Wait(%q)): %v", wait, err)
+		}
+		if v == nil {
+			t.Errorf("Wait(%q): expected a value, got a miss", wait)
+		}
 	}
 }
 
@@ -48,12 +50,30 @@ func TestSession_Get_ForceAndWait(t *testing.T) {
 		t.Fatalf("Session: %v", err)
 	}
 	defer sess.Close()
-	v, err := sess.Get("hostname.short", "", nil, beachcomber.Force, beachcomber.Wait)
+	v, err := sess.Get("hostname.short", "", nil, beachcomber.Force, beachcomber.Wait("forever"))
 	if err != nil {
 		t.Fatalf("Session.Get(Force, Wait): %v", err)
 	}
 	if v == nil {
 		t.Error("expected a value, got a miss")
+	}
+}
+
+// The library reads the wait, so one that is no duration is its parse_error,
+// on a client and a session alike.
+func TestGet_AWaitThatIsNoDurationIsAParseError(t *testing.T) {
+	c := requireClient(t)
+	_, err := c.Get("hostname.short", "", nil, beachcomber.Wait("soon"))
+	if !errors.Is(err, beachcomber.ErrParse) || !strings.Contains(err.Error(), "invalid wait `soon`") {
+		t.Fatalf("Get(Wait(soon)): got %v, want a parse_error naming the wait", err)
+	}
+	sess, err := c.Session()
+	if err != nil {
+		t.Fatalf("Session: %v", err)
+	}
+	defer sess.Close()
+	if _, err := sess.Get("hostname.short", "", nil, beachcomber.Wait("soon")); !errors.Is(err, beachcomber.ErrParse) {
+		t.Fatalf("Session.Get(Wait(soon)): got %v, want a parse_error", err)
 	}
 }
 

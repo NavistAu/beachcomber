@@ -5,18 +5,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { daemonAvailable, spawnDaemon, type TestDaemon } from './helpers.js';
 import { unwrap } from '../src/envelope.js';
-import { ServerError } from '../src/errors.js';
+import { ParseError, ServerError } from '../src/errors.js';
 import { createSubprocessTransport } from '../src/subprocess_transport.js';
 import type { ClientHandle, Transport } from '../src/transport.js';
 
 const skip = !daemonAvailable();
 
-const BC_GET_FORCE = 0x1;
-const BC_GET_WAIT = 0x2;
-
 // The subprocess tier's `get` is one `comb get -f json <key> [--path P |
-// --global] [--force] [--wait]`, so its answer is the CLI's — the
-// directory chain, `$HOME` as the global entry, `--force`/`--wait`, the
+// --global] [--force] [--wait=<wait>]`, so its answer is the CLI's — the
+// directory chain, `$HOME` as the global entry, `--force`, the wait, the
 // daemon's refusals — and a template-backed key renders. These drive the
 // transport directly and unwrap its envelope exactly as `Client.get` does.
 describe('subprocess transport get against a real daemon', { skip }, () => {
@@ -30,8 +27,8 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     unwrap(await tp.put(handle, key, JSON.stringify(data), undefined, path_));
   }
 
-  async function get(key: string, path_?: string, flags = 0): Promise<unknown> {
-    return unwrap(await tp.get(handle, key, path_, undefined, flags));
+  async function get(key: string, path_?: string, force = false, wait?: string): Promise<unknown> {
+    return unwrap(await tp.get(handle, key, path_, undefined, force, wait));
   }
 
   function lastCall(): string {
@@ -163,14 +160,29 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
     assert.equal(lastArgv(), "get -f json sp['o'].k --path /tmp");
   });
 
-  it('wait reaches the CLI as --wait', async () => {
-    assert.equal(await get('sp.n', '/tmp', BC_GET_WAIT), 1);
-    assert.equal(lastArgv(), 'get -f json sp.n --path /tmp --wait');
+  it('the wait reaches the CLI as --wait, as given', async () => {
+    assert.equal(await get('sp.n', '/tmp', false, '50ms'), 1);
+    assert.equal(lastArgv(), 'get -f json sp.n --path /tmp --wait=50ms');
+    assert.equal(await get('sp.n', '/tmp', false, 'forever'), 1);
+    assert.equal(lastArgv(), 'get -f json sp.n --path /tmp --wait=forever');
+  });
+
+  it("a wait comb cannot read is the library's parse_error, in its words", async () => {
+    for (const wait of ['soon', '-1s']) {
+      await assert.rejects(
+        () => get('sp.n', '/tmp', false, wait),
+        (err: unknown) => err instanceof ParseError && err.message.startsWith(`invalid wait \`${wait}\`: `),
+      );
+    }
+    await assert.rejects(
+      () => get('sp.n', '/tmp', false, 0 as unknown as string),
+      (err: unknown) => err instanceof ParseError && err.message.includes('invalid type'),
+    );
   });
 
   it("--force on a static namespace is the daemon's refusal", async () => {
     await assert.rejects(
-      () => get('sp.n', '/tmp', BC_GET_FORCE),
+      () => get('sp.n', '/tmp', true),
       (err: unknown) => err instanceof ServerError && err.message.startsWith('cannot --force static namespace'),
     );
     assert.equal(lastArgv(), 'get -f json sp.n --path /tmp --force');

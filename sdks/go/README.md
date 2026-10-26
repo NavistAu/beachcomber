@@ -139,7 +139,7 @@ For latency-sensitive use, prefer `Session`.
 | Method | Description |
 |---|---|
 | `NewClient(options ...Option) (*Client, error)` | Make a client (see "Client options"). |
-| `Get(key, cwd string, env map[string]string, flags ...GetFlag) (any, error)` | The value `comb get` prints for this key, cwd and env, `nil` on a miss — the daemon holds the templates, the client renders them; a bare provider name is the whole merged namespace. `flags` are `beachcomber.Force` and `beachcomber.Wait`. |
+| `Get(key, cwd string, env map[string]string, options ...GetOption) (any, error)` | The value `comb get` prints for this key, cwd and env, `nil` on a miss — the daemon holds the templates, the client renders them; a bare provider name is the whole merged namespace. `options` are `beachcomber.Force` and `beachcomber.Wait("50ms")`. |
 | `Refresh(key, path string) error` | Force recomputation. |
 | `Put(key string, data interface{}, ttl, path string) error` | Write a value into the cache as static data. `data` is marshalled to JSON. |
 | `Status() ([]CacheRow, error)` | Cache rows from the daemon. |
@@ -159,8 +159,18 @@ process's environment, as `comb` does. The unrendered halves are facets, read li
 `Get("p:source.x", …)` those layers' values.
 
 `Force` re-executes every Source the read demands before answering, as
-`comb get --force`; `Wait` re-executes a stale entry inline, as
-`comb get --wait`.
+`comb get --force`. `Wait(d)` is how long the read waits for a run it needs
+before it answers what is stored, as `comb get --wait`: a duration (`"0"`,
+`"50ms"`, `"2s"`) or `"forever"`; anything else is `ErrParse`. Left out, a
+stored record waits its Source's budget and a cold read waits for its run.
+The read may take `timeout_ms` plus the wait; `"forever"` has no deadline.
+
+```go
+// Answer at once with what is stored, however stale
+branch, err := client.Get("git.branch", "/path/to/repo", nil, beachcomber.Wait("0"))
+// Force a run, and wait for it
+branch, err = client.Get("git.branch", "/path/to/repo", nil, beachcomber.Force, beachcomber.Wait("forever"))
+```
 
 `templateStr` accepts a single `{{ expr }}` tag, or literal text/several
 tags — the former keeps the expression's natural type, the latter is
@@ -181,7 +191,7 @@ connection of their own, so they are the `Client`'s alone.
 
 | Method | Description |
 |---|---|
-| `Get(key, cwd string, env map[string]string, flags ...GetFlag) (any, error)` | `Client.Get` on this session's connection; `cwd == ""` is the session's directory when `SetContext` has set one, else the global entry. |
+| `Get(key, cwd string, env map[string]string, options ...GetOption) (any, error)` | `Client.Get` on this session's connection; `cwd == ""` is the session's directory when `SetContext` has set one, else the global entry. |
 | `SetContext(path string) error` | Set this session's directory: every later `Get` with `cwd == ""`, and `Put` and `Refresh` with `path == ""`, address it. |
 | `Put(key string, data interface{}, ttl, path string) error` | Write on this session's connection. |
 | `Refresh(key, path string) error` | Recompute on this session's connection, at `path` or the session's directory. |
@@ -245,7 +255,6 @@ One sentinel per kind matches an `*Error` of that kind with `errors.Is`:
 | `ErrParse` | `parse_error` | A request, a response or a template could not be read. |
 | `ErrServer` | `server_error` | The daemon refused the request, or a template failed to render. |
 | `ErrTimeout` | `timeout` | A read or write ran out `timeout_ms`, or `NextEvent(ms)` ran out. |
-| `ErrBadFlags` | `bad_flags` | A flag bit the ABI does not define was set. |
 | `ErrBusy` | `busy` | A session or watch is in use by another caller. |
 | `ErrPanic` | `panic` | The library panicked; the panic was caught at the boundary. |
 | `ErrVersionSkew` | `version_skew` | The daemon is a different version from the library. |

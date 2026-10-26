@@ -9,6 +9,7 @@
 //! is ignored, so a newer daemon may add one.
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// Wire protocol version. Semver: minor = additive, major = breaking.
 /// See `docs/protocol-spec.md` for what counts as additive vs breaking.
@@ -16,6 +17,88 @@ pub const PROTOCOL_VERSION: &str = "1.0";
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// How long a `get` waits for a run it needs, past which it answers what is
+/// stored and the run goes on and records itself.
+///
+/// It is written the same on every surface: `comb get --wait <DURATION|forever>`,
+/// the wire's `"wait"`, the C ABI's options JSON and every SDK's `wait`, each
+/// a duration in the one grammar ([`crate::duration`]) or `forever`. Leaving
+/// it out is [`Wait::Budget`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Wait {
+    /// The read's default: a stored record's Source's `budget`; a cold read
+    /// and a `--force` wait for their run's end, which its `timeout` bounds.
+    #[default]
+    Budget,
+    /// At most this long, counted from when the read began, whatever it finds.
+    For(Duration),
+    /// To the run's end.
+    Forever,
+}
+
+impl Wait {
+    pub fn is_budget(&self) -> bool {
+        *self == Wait::Budget
+    }
+
+    /// How much longer than a client's own timeout an answer to a read that
+    /// waits so may take: `None` is no deadline at all.
+    pub fn beyond_timeout(self) -> Option<Duration> {
+        match self {
+            Wait::Budget => Some(Duration::ZERO),
+            Wait::For(d) => Some(d),
+            Wait::Forever => None,
+        }
+    }
+}
+
+/// `forever`, or a duration in the one grammar. The budget has no spelling:
+/// it is a wait left out.
+impl std::str::FromStr for Wait {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        if s == "forever" {
+            return Ok(Wait::Forever);
+        }
+        crate::duration::parse(s).map(Wait::For).ok_or_else(|| {
+            format!(
+                "invalid wait `{s}`: `forever`, or a duration: {}",
+                crate::duration::GRAMMAR
+            )
+        })
+    }
+}
+
+/// A wait as the wire carries it: `forever`, or the duration in every unit it
+/// has, so it reads back exactly. The budget is never written: a request
+/// leaves it out.
+impl Serialize for Wait {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Wait::Budget => serializer.serialize_none(),
+            Wait::For(d) => serializer.serialize_str(&crate::render::duration_with(
+                *d,
+                crate::duration::Unit::ALL.len(),
+                crate::duration::Unit::Milli,
+            )),
+            Wait::Forever => serializer.serialize_str("forever"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Wait {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// A request's `wait`: `null` is absent, as everywhere, so it is the budget.
+fn wait_or_absent<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Wait, D::Error> {
+    Option::<Wait>::deserialize(deserializer).map(Option::unwrap_or_default)
 }
 
 /// One request line. A field the op does not take is refused, never ignored:
@@ -29,8 +112,13 @@ pub enum Request {
         path: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         force: bool,
-        #[serde(default, skip_serializing_if = "is_false")]
-        wait: bool,
+        /// Absent (or `null`) is the budget.
+        #[serde(
+            default,
+            deserialize_with = "wait_or_absent",
+            skip_serializing_if = "Wait::is_budget"
+        )]
+        wait: Wait,
     },
     Refresh {
         key: String,
@@ -90,6 +178,18 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
+}
+
+impl Request {
+    /// How much longer than a client's own timeout the daemon may take to
+    /// answer: a `get`'s [`Wait`] ([`Wait::beyond_timeout`]); every other op
+    /// is answered within the timeout.
+    pub fn beyond_timeout(&self) -> Option<Duration> {
+        match self {
+            Request::Get { wait, .. } => wait.beyond_timeout(),
+            _ => Some(Duration::ZERO),
+        }
+    }
 }
 
 /// What an `introspect` request asks about. See `docs/protocol-spec.md` for
@@ -384,7 +484,7 @@ mod tests {
             key: "git.branch".into(),
             path: None,
             force: false,
-            wait: false,
+            wait: Wait::Budget,
         };
         assert_eq!(
             serde_json::to_value(&get).unwrap(),
@@ -408,8 +508,18 @@ mod tests {
             .unwrap(),
             serde_json::json!({"op": "memo", "key": "p.f", "hash": "0000000000000000"})
         );
+        let waits = |wait| Request::Get {
+            key: "git".into(),
+            path: Some("/r".into()),
+            force: true,
+            wait,
+        };
         for request in [
             get,
+            waits(Wait::For(Duration::ZERO)),
+            waits(Wait::For(Duration::from_millis(50))),
+            waits(Wait::For(Duration::from_millis(90_061_001))),
+            waits(Wait::Forever),
             Request::Hello {},
             Request::Introspect {
                 subject: IntrospectSubject::Procs,
@@ -433,6 +543,73 @@ mod tests {
             let line = serde_json::to_string(&request).unwrap();
             assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), request);
         }
+    }
+
+    /// A `get`'s wait is a duration or `forever`, written so it reads back.
+    /// The boolean it replaced, and anything else, is an invalid request.
+    #[test]
+    fn a_wait_is_a_duration_or_forever() {
+        let wait = |line: &str| match serde_json::from_str::<Request>(line) {
+            Ok(Request::Get { wait, .. }) => Ok(wait),
+            Ok(other) => panic!("not a get: {other:?}"),
+            Err(e) => Err(e.to_string()),
+        };
+        assert_eq!(wait(r#"{"op":"get","key":"k"}"#), Ok(Wait::Budget));
+        assert_eq!(
+            wait(r#"{"op":"get","key":"k","wait":"0"}"#),
+            Ok(Wait::For(Duration::ZERO))
+        );
+        assert_eq!(
+            wait(r#"{"op":"get","key":"k","wait":"1m30s"}"#),
+            Ok(Wait::For(Duration::from_secs(90)))
+        );
+        assert_eq!(
+            wait(r#"{"op":"get","key":"k","wait":"forever"}"#),
+            Ok(Wait::Forever)
+        );
+        assert_eq!(
+            wait(r#"{"op":"get","key":"k","wait":null}"#),
+            Ok(Wait::Budget),
+            "null is absent"
+        );
+        for refused in ["true", "false", "50", r#""soon""#, r#""""#, r#""budget""#] {
+            let line = format!(r#"{{"op":"get","key":"k","wait":{refused}}}"#);
+            assert!(wait(&line).is_err(), "{line} must be refused");
+        }
+        assert!(
+            wait(r#"{"op":"get","key":"k","wait":"soon"}"#)
+                .unwrap_err()
+                .contains("invalid wait `soon`: `forever`, or a duration"),
+        );
+        assert_eq!(
+            serde_json::to_value(Request::Get {
+                key: "k".into(),
+                path: None,
+                force: false,
+                wait: Wait::For(Duration::from_millis(1500)),
+            })
+            .unwrap()["wait"],
+            serde_json::json!("1s500ms")
+        );
+    }
+
+    /// A client's read of a `get` may take its timeout plus the wait;
+    /// `forever` has no deadline, and every other op has the timeout alone.
+    #[test]
+    fn a_read_waits_past_the_timeout_by_its_wait() {
+        let get = |wait| Request::Get {
+            key: "k".into(),
+            path: None,
+            force: false,
+            wait,
+        };
+        assert_eq!(get(Wait::Budget).beyond_timeout(), Some(Duration::ZERO));
+        assert_eq!(
+            get(Wait::For(Duration::from_secs(2))).beyond_timeout(),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(get(Wait::Forever).beyond_timeout(), None);
+        assert_eq!(Request::Status {}.beyond_timeout(), Some(Duration::ZERO));
     }
 
     #[test]

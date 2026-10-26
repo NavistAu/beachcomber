@@ -179,7 +179,8 @@ class ConformanceRunner
     case op
     when 'get'
       cwd = fixture['cwd'] || @default_cwd
-      value = @client.get(args['key'], cwd: cwd, env: fixture['env'])
+      value = @client.get(args['key'], cwd: cwd, env: fixture['env'],
+                                       force: args['force'] || false, wait: args['wait'])
       [value, nil]
     when 'refresh'
       @client.refresh(args['key'], path: args['path'])

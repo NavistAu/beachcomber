@@ -164,7 +164,7 @@ fn watch_first_event_equals_bc_get_of_the_same_key() {
             cs("eqprov.f").as_ptr(),
             cs(CWD).as_ptr(),
             cs(env).as_ptr(),
-            0,
+            ptr::null(),
         )
     });
     assert_eq!(resolved["ok"], serde_json::json!(true), "{resolved}");

@@ -40,9 +40,11 @@ branch = client.get("git.branch", cwd="/path/to/repo")   # "main"
 git = client.get("git", cwd="/path/to/repo")
 print(git["branch"], git["dirty"])
 
-# The caller's environment for env.* refs, and the force/wait flags
+# The caller's environment for env.* refs; force a run, and wait for it
 client.get("aws.profile", cwd="/path/to/repo", env=dict(os.environ))
-client.get("git.branch", cwd="/path/to/repo", force=True, wait=True)
+client.get("git.branch", cwd="/path/to/repo", force=True, wait="forever")
+# Answer at once with what is stored, however stale
+client.get("git.branch", cwd="/path/to/repo", wait="0")
 
 # The template itself, unrendered: a facet, read like any key
 client.get("aws:template.profile")
@@ -123,9 +125,9 @@ client = Client(timeout_ms=500, connect_timeout_ms=0)
 The defaults are the library's (`bc_client_new`): this SDK passes on the
 options you give and adds none of its own.
 
-#### `client.get(key, cwd=None, env=None, force=False, wait=False)` / `client.eval(template_str, cwd=None, env=None)`
+#### `client.get(key, cwd=None, env=None, force=False, wait=None)` / `client.eval(template_str, cwd=None, env=None)`
 
-`get` returns the value `comb get` prints for this key, cwd and env — the bare value, `None` on a miss: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `cwd=None` is the global entry; `force` re-executes every Source the read demands first, and `wait` re-executes a stale entry inline. The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `eval` renders a template that is stored nowhere — the same value `comb eval` prints. The template accepts a single `{{ expr }}` tag, or literal text/several tags — the former keeps the expression's natural type, the latter is always a string (a source with no tags at all is its literal text). `exec()` inside a template runs only on a `Client(exec=True)`; otherwise it fails with `exec() is disabled in this context`.
+`get` returns the value `comb get` prints for this key, cwd and env — the bare value, `None` on a miss: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `cwd=None` is the global entry; `force` re-executes every Source the read demands first, and `wait` is how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`, anything else a `ParseError`. The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `eval` renders a template that is stored nowhere — the same value `comb eval` prints. The template accepts a single `{{ expr }}` tag, or literal text/several tags — the former keeps the expression's natural type, the latter is always a string (a source with no tags at all is its literal text). `exec()` inside a template runs only on a `Client(exec=True)`; otherwise it fails with `exec() is disabled in this context`.
 
 #### `client.refresh(key, path=None)`
 
@@ -171,7 +173,6 @@ One `CombError` subclass per error kind of the [SDK API table](https://github.co
 | `ParseError` | `parse_error` | A request, a response or a template could not be read |
 | `ServerError` | `server_error` | The daemon refused the request, or a template failed to render |
 | `TimeoutError` | `timeout` | A read or write ran out `timeout_ms`, or `next_event` ran out its `timeout_ms` |
-| `BadFlagsError` | `bad_flags` | A flag bit the ABI does not define was set |
 | `BusyError` | `busy` | A session or watch is in use by another caller |
 | `PanicError` | `panic` | The library panicked |
 | `VersionSkewError` | `version_skew` | The daemon is a different version from the library |

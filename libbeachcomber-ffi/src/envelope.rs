@@ -25,8 +25,6 @@ use serde_json::json;
 pub mod kind {
     pub use libbeachcomber::kind::*;
 
-    /// A reserved flag bit was set.
-    pub const BAD_FLAGS: &str = "bad_flags";
     /// The handle's connection is in use by another caller.
     pub const BUSY: &str = "busy";
     /// The wrapped call panicked; caught at the FFI boundary.

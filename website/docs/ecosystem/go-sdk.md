@@ -84,9 +84,9 @@ Each option is passed to the library's `bc_client_new` as it is given; the SDK h
 | `WithAutostart(enabled bool)` | on | Start a daemon when none serves the auto-discovered socket. |
 | `WithExec(enabled bool)` | off | Whether a template this client renders may call `exec()`. |
 
-#### `c.Get(key, cwd string, env map[string]string, flags ...GetFlag) (any, error)`
+#### `c.Get(key, cwd string, env map[string]string, options ...GetOption) (any, error)`
 
-The value `comb get` prints for this key, cwd and env, as `encoding/json` decodes it (a `string`, `float64`, `bool`, `map[string]interface{}` or `[]interface{}`) — the daemon holds the templates, the client renders them; a plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. A miss is `nil`. `cwd` is the directory the read addresses (`~` is home, a relative path is against this process's working directory); `""` is the global entry. `env` may be `nil`, which makes every `env.*` reference absent. `flags` are `beachcomber.Force` (re-execute every Source the read demands first, as `comb get --force`) and `beachcomber.Wait` (re-execute a stale entry inline, as `comb get --wait`). The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
+The value `comb get` prints for this key, cwd and env, as `encoding/json` decodes it (a `string`, `float64`, `bool`, `map[string]interface{}` or `[]interface{}`) — the daemon holds the templates, the client renders them; a plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. A miss is `nil`. `cwd` is the directory the read addresses (`~` is home, a relative path is against this process's working directory); `""` is the global entry. `env` may be `nil`, which makes every `env.*` reference absent. `options` are `beachcomber.Force` (re-execute every Source the read demands first, as `comb get --force`) and `beachcomber.Wait(d)` (how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`; anything else is `ErrParse`). The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `exec()` inside a template runs only on a client constructed with `beachcomber.WithExec(true)`; it is off by default, and a template that calls it then fails with `exec() is disabled in this context`.
 
 ```go
 v, err := c.Get("git.branch", "/path/to/repo", nil)
@@ -132,7 +132,7 @@ Open a persistent connection.
 
 | Method | Description |
 |---|---|
-| `Get(key, cwd string, env map[string]string, flags ...GetFlag) (any, error)` | `c.Get` on this session's connection; `cwd == ""` is the session's directory when `SetContext` has set one, else the global entry |
+| `Get(key, cwd string, env map[string]string, options ...GetOption) (any, error)` | `c.Get` on this session's connection; `cwd == ""` is the session's directory when `SetContext` has set one, else the global entry |
 | `Refresh(key, path string) error` | Force recomputation |
 | `SetContext(path string) error` | Set this session's directory: every later `Get` with `cwd == ""`, and `Put` and `Refresh` with `path == ""`, address it |
 | `Put(key string, data interface{}, ttl, path string) error` | Write a static-data entry |
@@ -165,7 +165,6 @@ Every error is an `*Error`: `Kind` (the table's slug), `Message` (the library's 
 | `ErrParse` | `parse_error` |
 | `ErrServer` | `server_error` |
 | `ErrTimeout` | `timeout` |
-| `ErrBadFlags` | `bad_flags` |
 | `ErrBusy` | `busy` |
 | `ErrPanic` | `panic` |
 | `ErrVersionSkew` | `version_skew` |

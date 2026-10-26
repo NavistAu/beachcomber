@@ -1,0 +1,9 @@
+{
+  "name": "get_wait_is_a_duration",
+  "description": "A get's wait is a duration or \"forever\", handed to bc_get's options_json (or comb get --wait) as given: a stored value answers with it, as without it.",
+  "setup": [
+    { "op": "put", "args": { "key": "waited", "data": { "v": 1 } } }
+  ],
+  "test": { "op": "get", "args": { "key": "waited.v", "wait": "50ms" } },
+  "expect": { "status": "hit", "data_type": "number", "data_equals": 1 }
+}

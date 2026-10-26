@@ -29,9 +29,11 @@ branch = client.get('git.branch', cwd: '/path/to/repo')   # "main"
 git = client.get('git', cwd: '/path/to/repo')
 puts git['branch']
 
-# The caller's environment for env.* refs, and the force/wait flags
+# The caller's environment for env.* refs; force a run, and wait for it
 client.get('aws.profile', cwd: '/path/to/repo', env: ENV.to_h)
-client.get('git.branch', cwd: '/path/to/repo', force: true, wait: true)
+client.get('git.branch', cwd: '/path/to/repo', force: true, wait: 'forever')
+# Answer at once with what is stored, however stale
+client.get('git.branch', cwd: '/path/to/repo', wait: '0')
 
 # The template itself, unrendered: a facet, read like any key
 client.get('aws:template.profile')
@@ -66,7 +68,7 @@ Opens a fresh socket connection for each call. Simple and stateless.
 
 | Method | Description |
 |--------|-------------|
-| `get(key, cwd: nil, env: nil, force: false, wait: false)` | The value `comb get` prints for this key, cwd and env; `nil` on a miss. |
+| `get(key, cwd: nil, env: nil, force: false, wait: nil)` | The value `comb get` prints for this key, cwd and env; `nil` on a miss. `force: true` re-executes every Source the read demands, as `comb get --force`; `wait:` is how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`'0'`, `'50ms'`, `'2s'`) or `'forever'` (anything else is a `ParseError`). Left out, a stored record waits its Source's budget and a cold read waits for its run; the read may take `timeout_ms` plus the wait. |
 | `eval(template, cwd: nil, env: nil)` | Render a template stored nowhere — the same value `comb eval` prints. |
 | `watch(key, cwd: nil, env: nil)` | Subscribe to a key's value — what `get` answers for it — and receive it again whenever it changes. Returns a `WatchStream` (Enumerable). |
 | `put(key, data, ttl: nil, path: nil)` | Write a value into the cache; `nil` removes the node. Returns `nil`. |
@@ -112,7 +114,7 @@ end
 | Method | Description |
 |--------|-------------|
 | `set_context(path)` | Set this session's directory: a `get` with no `cwd`, and a `put` or `refresh` with no `path`, address it. |
-| `get(key, cwd: nil, env: nil, force: false, wait: false)` | `Client#get` on this connection; `cwd: nil` is the session's directory, else the global entry. |
+| `get(key, cwd: nil, env: nil, force: false, wait: nil)` | `Client#get` on this connection; `cwd: nil` is the session's directory, else the global entry. |
 | `put(key, data, ttl: nil, path: nil)` | `Client#put` on this connection; `path: nil` is the session's directory. |
 | `refresh(key, path: nil)` | `Client#refresh` on this connection; `path: nil` is the session's directory. |
 | `close` | Close the connection (called automatically by `Client#session`). |
@@ -160,7 +162,6 @@ loaded).
 | `ParseError` | `parse_error` | A request, a response or a template could not be read. |
 | `ServerError` | `server_error` | The daemon refused the request, or a template failed to render. |
 | `TimeoutError` | `timeout` | A read or write ran out `timeout_ms`, or `next_event` ran out its `timeout_ms`. |
-| `BadFlagsError` | `bad_flags` | A flag bit the library does not define was set. |
 | `BusyError` | `busy` | A session or watch is in use by another caller. |
 | `PanicError` | `panic` | The library panicked; the panic was caught at the boundary. |
 | `VersionSkewError` | `version_skew` | The daemon is a different version from the library. |

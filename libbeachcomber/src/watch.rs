@@ -25,7 +25,7 @@
 //! nothing happening never wakes.
 
 use crate::resolve::{Fetch, FetchError, Got, Inputs, ResolveError, Slot, resolve_traced};
-use crate::{Client, CombError, Session, WatchStream};
+use crate::{Client, CombError, Session, Wait, WatchStream};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::io::Write;
@@ -260,7 +260,7 @@ struct OwnedInputs {
     /// replaying `force` into an internal re-resolve is a self-sustaining
     /// storm: frame → re-resolve(force) → execute → new value → frame.
     force: bool,
-    wait: bool,
+    wait: Wait,
     allow_exec: bool,
 }
 
@@ -288,15 +288,15 @@ impl OwnedInputs {
         }
     }
 
-    /// [`Self::as_inputs`], with `force`/`wait` cleared — what every internal
-    /// re-resolve must use instead (see the field doc above).
+    /// [`Self::as_inputs`], with `force` cleared and `wait` the budget — what
+    /// every internal re-resolve must use instead (see the field doc above).
     fn as_reresolve_inputs(&self) -> Inputs<'_> {
         Inputs {
             cwd: &self.cwd,
             env: &self.env,
             slot: self.slot.clone(),
             force: false,
-            wait: false,
+            wait: Wait::Budget,
             allow_exec: self.allow_exec,
             now: std::time::SystemTime::now(),
         }
@@ -328,7 +328,7 @@ impl Fetch for Recording<'_> {
         key: &str,
         path: Option<&str>,
         force: bool,
-        wait: bool,
+        wait: Wait,
     ) -> Result<Option<Got>, FetchError> {
         let got = self.fetch.get(key, path, force, wait)?;
         self.read
@@ -717,7 +717,7 @@ fn watch_error(e: ResolveError) -> WatchError {
 mod tests {
     use super::*;
 
-    fn owned(force: bool, wait: bool) -> OwnedInputs {
+    fn owned(force: bool, wait: Wait) -> OwnedInputs {
         OwnedInputs::new(&Inputs {
             cwd: "/",
             env: &HashMap::new(),
@@ -737,15 +737,23 @@ mod tests {
     /// itself, on every frame.
     #[test]
     fn reresolve_inputs_clear_force_and_wait_but_open_inputs_keep_them() {
-        let owned = owned(true, true);
+        let owned = owned(true, Wait::Forever);
 
         let opening = owned.as_inputs();
         assert!(opening.force, "the opening resolve keeps force");
-        assert!(opening.wait, "the opening resolve keeps wait");
+        assert_eq!(
+            opening.wait,
+            Wait::Forever,
+            "the opening resolve keeps wait"
+        );
 
         let reresolve = owned.as_reresolve_inputs();
         assert!(!reresolve.force, "a re-resolve must not replay force");
-        assert!(!reresolve.wait, "a re-resolve must not replay wait");
+        assert_eq!(
+            reresolve.wait,
+            Wait::Budget,
+            "a re-resolve must not replay wait"
+        );
     }
 
     /// Pins item 1: a watch with nothing left that could ever fire — no dep
@@ -758,7 +766,7 @@ mod tests {
         let client = Client::new();
         let mut w = ResolvedWatch {
             client: ClientRef::Borrowed(&client),
-            inputs: owned(false, false),
+            inputs: owned(false, Wait::Budget),
             key: "p.field".to_string(),
             kind: Kind::Resolved(None),
             streams: Vec::new(),

@@ -19,7 +19,6 @@ Error.KINDS = {
   "parse_error",
   "server_error",
   "timeout",
-  "bad_flags",
   "busy",
   "panic",
   "version_skew",

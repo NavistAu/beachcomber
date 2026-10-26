@@ -15,15 +15,17 @@
  * equivalent: `comb` exposes no JSON-emitting subcommand for either.
  *
  * `get` is one spawn: `comb get -f json <key> [--path P | --global]
- * [--force] [--wait]` — the value `comb get` prints, which is the value
- * `bc_get` answers over the FFI tier: the same resolver, the directory
- * chain up to `$HOME`, `$HOME` itself as the global entry, `--force`/`--wait`
- * and the daemon's refusals. Exit 0 is an answer: the value on stdout, or
- * `null` for a miss. Exit 2 is an error, reported as `error: <who>: <why>`:
- * an `error: <key>: ` line is the daemon's refusal of `key` or the
- * resolver's own error (a template that does not compile, a cycle, a failed
- * `exec()`), and an `error: <key>.<leaf>: ` line is a leaf of a group
- * failing.
+ * [--force] [--wait=<wait>]` — the value `comb get` prints, which is the
+ * value `bc_get` answers over the FFI tier: the same resolver, the directory
+ * chain up to `$HOME`, `$HOME` itself as the global entry, `--force`, the
+ * wait as given, and the daemon's refusals. Exit 0 is an answer: the value
+ * on stdout, or `null` for a miss. Exit 2 is an error, reported as
+ * `error: <who>: <why>`: an `error: <key>: ` line is the daemon's refusal of
+ * `key` or the resolver's own error (a template that does not compile, a
+ * cycle, a failed `exec()`), and an `error: <key>.<leaf>: ` line is a leaf
+ * of a group failing. A wait `comb` cannot read is its usage error, which is
+ * the library's `parse_error` in the library's words, as over FFI; a wait
+ * that is not a string is the `parse_error` the ABI gives one.
  * The same code drives both subprocess tiers
  * (`sdks/lua/beachcomber/subprocess_backend.lua` is the Lua half).
  *
@@ -214,6 +216,16 @@ function pathArgs(path_: string | undefined): string[] {
 }
 
 /**
+ * The library's refusal of a wait, from the usage error `comb` gives
+ * `--wait` (`error: invalid value '<w>' for '--wait <DURATION|forever>':
+ * <why>`): `<why>` is the library's words. `undefined` for any other failure.
+ */
+function waitRefusal(stderr: string): ErrEnvelope | undefined {
+  const why = /^error: invalid value '.*' for '--wait <[^>]*>': (.*)$/m.exec(stderr)?.[1];
+  return why === undefined ? undefined : { ok: false, error: { kind: 'parse_error', message: why } };
+}
+
+/**
  * The value at `key`, shaped as `bc_get`'s envelope (`{"ok":true,"data":<value>}`,
  * `null` on a miss), from one `comb get -f json` (the file header).
  */
@@ -223,15 +235,25 @@ function cliGet(
   path_: string | undefined,
   envJson: string | undefined,
   force: boolean,
-  wait: boolean,
+  wait: string | undefined,
 ): Envelope {
+  if (wait !== undefined && typeof wait !== 'string') {
+    // What bc_get's options_json says of a wait that is not a string.
+    return {
+      ok: false,
+      error: { kind: 'parse_error', message: `malformed options_json: invalid type: ${typeof wait}, expected a string` },
+    };
+  }
   const vars = renderVars(envJson);
   const args = [...colourArgs(vars), ...execArgs(handle), 'get', '-f', 'json', key, ...pathArgs(path_)];
   if (force) args.push('--force');
-  if (wait) args.push('--wait');
+  // `=` keeps a wait that starts with `-` the flag's value.
+  if (wait !== undefined) args.push(`--wait=${wait}`);
   const { code, stdout, stderr } = runComb(handle, args, vars);
 
   if (code !== 0) {
+    const refused = waitRefusal(stderr);
+    if (refused !== undefined) return refused;
     const lines = stderr.split('\n');
     const prefix = `error: ${key}: `;
     const own = lines.find((line) => line.startsWith(prefix))?.slice(prefix.length);
@@ -492,9 +514,8 @@ export function createSubprocessTransport(): Transport {
       // No resources held.
     },
 
-    async get(handle, key, cwd, envJson, flags) {
-      const h = handle as SubprocessClientHandle;
-      return cliGet(h, key, cwd, envJson, (flags & 0x1) !== 0, (flags & 0x2) !== 0);
+    async get(handle, key, cwd, envJson, force, wait) {
+      return cliGet(handle as SubprocessClientHandle, key, cwd, envJson, force, wait);
     },
     async put(handle, key, jsonData, ttl, path_) {
       return cliPut(handle as SubprocessClientHandle, key, jsonData, ttl, path_);
@@ -521,9 +542,9 @@ export function createSubprocessTransport(): Transport {
     closeSession() {
       // No resources held.
     },
-    async sessionGet(session, key, cwd, envJson, flags) {
+    async sessionGet(session, key, cwd, envJson, force, wait) {
       const s = session as SubprocessSessionHandle;
-      return cliGet(s.client, key, cwd ?? s.contextPath, envJson, (flags & 0x1) !== 0, (flags & 0x2) !== 0);
+      return cliGet(s.client, key, cwd ?? s.contextPath, envJson, force, wait);
     },
     async sessionPut(session, key, jsonData, ttl, path_) {
       const s = session as SubprocessSessionHandle;

@@ -34,16 +34,6 @@ export type {
   WatchEvent,
 };
 
-const BC_GET_FORCE = 1 << 0;
-const BC_GET_WAIT = 1 << 1;
-
-function flagsOf(opts: GetOptions): number {
-  let flags = 0;
-  if (opts.force) flags |= BC_GET_FORCE;
-  if (opts.wait) flags |= BC_GET_WAIT;
-  return flags;
-}
-
 function envJsonOf(env: Record<string, string> | undefined): string | undefined {
   return env !== undefined ? JSON.stringify(env) : undefined;
 }
@@ -166,7 +156,7 @@ export class Session {
    */
   async get(key: string, opts: GetOptions = {}): Promise<unknown> {
     return unwrap(
-      await this.tp.sessionGet(this.#open(), key, opts.cwd, envJsonOf(opts.env), flagsOf(opts)),
+      await this.tp.sessionGet(this.#open(), key, opts.cwd, envJsonOf(opts.env), opts.force === true, opts.wait),
       this.tp.libraryVersion,
     );
   }
@@ -242,12 +232,18 @@ export interface ReadOptions {
   env?: Record<string, string>;
 }
 
-/** The inputs of a `get`: a read's, and its flags. */
+/** The inputs of a `get`: a read's, and how it treats the runs it needs. */
 export interface GetOptions extends ReadOptions {
-  /** Re-execute every Source the read demands before answering. */
+  /** Re-execute every Source the read demands before answering, as `comb get --force`. */
   force?: boolean;
-  /** Re-execute a stale entry inline before answering. */
-  wait?: boolean;
+  /**
+   * How long to wait for a run the read needs before answering what is
+   * stored, as `comb get --wait`: a duration (`'0'`, `'50ms'`, `'2s'`) or
+   * `'forever'`; anything else is a `ParseError`. Omitted, a stored record
+   * waits its Source's budget and a cold read waits for its run. The read may
+   * take `timeoutMs` plus the wait; `'forever'` has no deadline.
+   */
+  wait?: string;
 }
 
 /**
@@ -289,12 +285,12 @@ export class Client {
    *
    * @param key   `"provider.field"`, or a bare provider name.
    * @param opts  `cwd` (omitted: the global entry), `env` (omitted: no
-   *              environment), and the `force`/`wait` flags.
+   *              environment), `force` and `wait`.
    * @returns     The value, or `null` on a miss.
    */
   async get(key: string, opts: GetOptions = {}): Promise<unknown> {
     return unwrap(
-      await this.tp.get(this.#open(), key, opts.cwd, envJsonOf(opts.env), flagsOf(opts)),
+      await this.tp.get(this.#open(), key, opts.cwd, envJsonOf(opts.env), opts.force === true, opts.wait),
       this.tp.libraryVersion,
     );
   }

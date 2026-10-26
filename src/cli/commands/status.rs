@@ -69,7 +69,7 @@ fn render_template_rows(
     addrs.sort();
     addrs.dedup();
 
-    let inputs = crate::cli::inputs(cwd, env, Slot::Cwd, false, false);
+    let inputs = crate::cli::inputs(cwd, env, Slot::Cwd, false, libbeachcomber::Wait::Budget);
     let mut out = Vec::new();
     for (provider, field) in addrs {
         // A rendered value has no age of its own: it is as old as the oldest
@@ -339,7 +339,13 @@ pub fn run_status(
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     let env = crate::cli::shell_env();
-                    let inputs = crate::cli::inputs(&cwd, &env, Slot::Cwd, false, false);
+                    let inputs = crate::cli::inputs(
+                        &cwd,
+                        &env,
+                        Slot::Cwd,
+                        false,
+                        libbeachcomber::Wait::Budget,
+                    );
                     let mut session = match client.connect() {
                         Ok(session) => session,
                         Err(e) => {

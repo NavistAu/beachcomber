@@ -1,14 +1,15 @@
-// Locks in wait=true semantics: at the `libbeachcomber` client layer
+// Locks in `wait` semantics: at the `libbeachcomber` client layer
 // (the resolver's `Fetch` over a `Client` and a `Session`) and at
-// the binary (`comb get --wait`), against one stale seeded entry — a value
-// served with wait=true must be the re-executed one, never the stale seed.
+// the binary (`comb get --wait forever`), against one stale seeded entry — a
+// value served with `wait: forever` must be the re-executed one, never the
+// stale seed. The bare `--wait` is a usage error.
 //
 // run_get hands `wait` to `libbeachcomber::resolve` through `Inputs`, which
 // forwards it on every fetch (pinned in libbeachcomber/tests/suite/resolve.rs);
 // tests/suite/cli_get_multikey_force.rs runs the binary with `--force` the same way.
 //
 // Phase 1 Round 3 bug: run_get captured `wait` then discarded it via `_wait`,
-// so every CLI --wait invocation silently behaved as wait=false.
+// so every CLI --wait invocation silently behaved as no wait at all.
 
 use crate::common::daemon::isolate;
 use beachcomber::cache::Cache;
@@ -16,7 +17,7 @@ use beachcomber::cache::Schedule;
 use beachcomber::provider::Value;
 use beachcomber::server::Server;
 use libbeachcomber::resolve::Fetch;
-use libbeachcomber::{Client, ClientConfig};
+use libbeachcomber::{Client, ClientConfig, Wait};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -62,15 +63,21 @@ async fn setup_stale() -> (TempDir, std::path::PathBuf) {
 }
 
 #[tokio::test(start_paused = true)]
-async fn single_key_text_wait_true_re_executes_stale_entry() {
-    // wait=true on a stale entry: the seeded value is evicted and the live
-    // provider runs inline — the returned text must not contain the seed.
+async fn single_key_text_wait_forever_re_executes_stale_entry() {
+    // `wait: forever` on a stale entry: the live provider runs and the read
+    // waits for it — the returned text must not contain the seed.
     let (_tmp, sock) = setup_stale().await;
 
     let got = tokio::task::spawn_blocking(move || {
-        Fetch::get(&mut &client_for(sock), "hostname.name", None, false, true)
-            .unwrap()
-            .expect("a hit")
+        Fetch::get(
+            &mut &client_for(sock),
+            "hostname.name",
+            None,
+            false,
+            Wait::Forever,
+        )
+        .unwrap()
+        .expect("a hit")
     })
     .await
     .expect("client call");
@@ -78,14 +85,14 @@ async fn single_key_text_wait_true_re_executes_stale_entry() {
     let text = got.data.expect("data").to_string();
     assert!(
         !text.contains("stale-seed"),
-        "wait=true on a stale entry must trigger re-execution; got {text:?}"
+        "wait forever on a stale entry must trigger re-execution; got {text:?}"
     );
 }
 
 #[tokio::test(start_paused = true)]
 async fn comb_get_wait_re_executes_stale_entry() {
-    // The binary: `--wait` reaches the fetch, so the stale seed is not what
-    // prints. A `wait: false` typo in run_get would serve "stale-seed".
+    // The binary: `--wait forever` reaches the fetch, so the stale seed is not
+    // what prints. A dropped `wait` in run_get would serve "stale-seed".
     let (tmp, sock) = setup_stale().await;
 
     let stdout = tokio::task::spawn_blocking(move || {
@@ -93,6 +100,7 @@ async fn comb_get_wait_re_executes_stale_entry() {
         isolate(&mut cmd, tmp.path(), &tmp.path().join("cfg"), &sock).args([
             "get",
             "--wait",
+            "forever",
             "hostname.name",
         ]);
         let out = assert_cmd::Command::from_std(cmd).assert().success();
@@ -103,18 +111,43 @@ async fn comb_get_wait_re_executes_stale_entry() {
 
     assert!(
         !stdout.contains("stale-seed"),
-        "comb get --wait on a stale entry must trigger re-execution; got {stdout:?}"
+        "comb get --wait forever on a stale entry must trigger re-execution; got {stdout:?}"
     );
 }
 
+/// `--wait` takes a duration or `forever`: the bare flag, and a value that is
+/// neither, are usage errors that reach no daemon.
+#[test]
+fn a_bare_wait_is_a_usage_error() {
+    let tmp = TempDir::new().unwrap();
+    let sock = tmp.path().join("nobody.sock");
+    for (args, says) in [
+        (
+            &["get", "hostname.name", "--wait"][..],
+            "a value is required for '--wait <DURATION|forever>'",
+        ),
+        (
+            &["get", "--wait", "soon", "hostname.name"][..],
+            "invalid wait `soon`",
+        ),
+    ] {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+        isolate(&mut cmd, tmp.path(), &tmp.path().join("cfg"), &sock).args(args);
+        let out = cmd.output().expect("comb runs");
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(says), "{args:?}: {stderr}");
+    }
+}
+
 #[tokio::test(start_paused = true)]
-async fn multi_key_client_side_wait_true_re_executes_stale_entry() {
-    // The same through a session's Fetch, wait=true forwarded.
+async fn multi_key_client_side_wait_forever_re_executes_stale_entry() {
+    // The same through a session's Fetch, `wait: forever` forwarded.
     let (_tmp, sock) = setup_stale().await;
 
     let got = tokio::task::spawn_blocking(move || {
         let mut session = client_for(sock).session().unwrap();
-        Fetch::get(&mut session, "hostname.name", None, false, true)
+        Fetch::get(&mut session, "hostname.name", None, false, Wait::Forever)
             .unwrap()
             .expect("a hit")
     })
@@ -126,7 +159,7 @@ async fn multi_key_client_side_wait_true_re_executes_stale_entry() {
     let name = data.as_str().expect("name field is a string");
     assert_ne!(
         name, "stale-seed",
-        "wait=true on a stale entry must trigger re-execution; got {name:?}"
+        "wait forever on a stale entry must trigger re-execution; got {name:?}"
     );
     // The seed is two seconds old; a re-execution is as old as this call took.
     assert!(

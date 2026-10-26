@@ -297,8 +297,11 @@ comb g git.branch git.dirty battery.percent .
 # Force immediate recomputation before returning
 comb g --force git .
 
-# Block until a fresh value arrives (useful after a trigger)
-comb g --wait git.branch .
+# Wait for the fresh value however long its run takes (useful after a trigger)
+comb g --wait forever git.branch .
+
+# Answer at once with what is stored, however stale; the run goes on
+comb g --wait 0 git.branch .
 
 # Global providers (no path needed)
 comb g battery.percent
@@ -1734,7 +1737,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute directory the request addresses; omitted, the global entry. A path that is not absolute is refused. |
 | `force` | bool | (`get` only) Trigger immediate recomputation before returning. |
-| `wait` | bool | (`get` only) Block until a fresh value is available. |
+| `wait` | string | (`get` only) How long to wait for a run the read needs before answering what is stored: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`. Omitted, a stored record waits its Source's budget and a cold read waits for its run. |
 
 ### Response Format
 

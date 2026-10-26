@@ -86,7 +86,7 @@ fn bench_concurrent_throughput(c: &mut Criterion) {
                                     env: &env,
                                     slot: Slot::Global,
                                     force: false,
-                                    wait: false,
+                                    wait: libbeachcomber::Wait::Budget,
                                     allow_exec: true,
                                     now: std::time::SystemTime::now(),
                                 };

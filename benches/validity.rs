@@ -373,10 +373,10 @@ const BUDGET_ROUNDS: usize = 4;
 /// The `[daemon] budget` every Source here has.
 const BUDGET: Duration = Duration::from_millis(50);
 
-/// T4.4 (the lifetime half): a Source whose run takes 300 ms, read once its
-/// record is past its 1 s poll. The default read waits its 50 ms budget and
-/// answers the stored record while `:cache` says the run is executing; a read
-/// with `wait` waits for the run. A server with no scheduler, so nothing but
+/// T4.4: a Source whose run takes 300 ms, read once its record is past its
+/// 1 s poll. The default read waits its 50 ms budget and answers the stored
+/// record while `:cache` says the run is executing; `--wait 0` answers it at
+/// once; `--wait forever` waits for the run. A server with no scheduler, so nothing but
 /// the reads runs the Source and the record ages as the clock does.
 fn budget_accuracy() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
@@ -411,9 +411,13 @@ fn budget_accuracy() {
         reader: BufReader::new(stream.try_clone().expect("clone stream")),
         writer: stream,
     };
-    let get = |conn: &mut Conn, wait: bool| {
+    let get = |conn: &mut Conn, wait: Option<&str>| {
+        let mut request = json!({"op": "get", "key": "slow.v"});
+        if let Some(wait) = wait {
+            request["wait"] = wait.into();
+        }
         let t0 = Instant::now();
-        let answer = conn.send(&json!({"op": "get", "key": "slow.v", "wait": wait}));
+        let answer = conn.send(&request);
         (answer, t0.elapsed())
     };
     let executing = |conn: &mut Conn| {
@@ -434,26 +438,25 @@ fn budget_accuracy() {
         "budget_accuracy: a 300ms Source, its record stale, budget {}ms, {BUDGET_ROUNDS} rounds",
         BUDGET.as_millis()
     );
-    let (cold, took) = get(&mut conn, false);
+    let (cold, took) = get(&mut conn, None);
     assert_eq!(cold["data"], json!("1"), "{cold}");
     println!("  cold read (waits for its run): {:.1}ms", ms(took));
     for round in 1..=BUDGET_ROUNDS {
-        age_past_the_poll();
-        let (late, took) = get(&mut conn, false);
-        let busy = executing(&mut conn);
-        println!(
-            "  {round}: default read {:>6.1}ms  stale {}  executing {busy}",
-            ms(took),
-            late["stale"]
-        );
-        until_idle(&mut conn);
-        age_past_the_poll();
-        let (waited, took) = get(&mut conn, true);
-        println!(
-            "     wait read    {:>6.1}ms  stale {}",
-            ms(took),
-            waited["stale"]
-        );
+        for (name, wait) in [
+            ("default read", None),
+            ("--wait 0", Some("0")),
+            ("--wait forever", Some("forever")),
+        ] {
+            age_past_the_poll();
+            let (answer, took) = get(&mut conn, wait);
+            let busy = executing(&mut conn);
+            println!(
+                "  {round}: {name:<14} {:>6.1}ms  stale {}  executing {busy}",
+                ms(took),
+                answer["stale"]
+            );
+            until_idle(&mut conn);
+        }
     }
 }
 

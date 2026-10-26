@@ -13,6 +13,7 @@ pub fn shell_env() -> std::collections::HashMap<String, String> {
     libbeachcomber::env::process()
 }
 
+use libbeachcomber::Wait;
 use libbeachcomber::resolve::{Inputs, Slot};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -31,7 +32,7 @@ pub fn inputs<'a>(
     env: &'a std::collections::HashMap<String, String>,
     slot: Slot,
     force: bool,
-    wait: bool,
+    wait: Wait,
 ) -> Inputs<'a> {
     Inputs {
         cwd,

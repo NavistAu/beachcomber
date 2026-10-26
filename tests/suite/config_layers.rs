@@ -2213,7 +2213,7 @@ fn refresh_wait_and_force_of_a_disabled_provider() {
     );
     let out = d
         .comb(&d.home)
-        .args(["get", "--wait", "-f", "json", "off"])
+        .args(["get", "--wait", "forever", "-f", "json", "off"])
         .output()
         .unwrap();
     assert!(

@@ -44,7 +44,7 @@ pub fn run_eval(config: &Config, template: &str, path: Option<&str>, format: For
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     let slot = path.map_or(Slot::Global, |p| Slot::Path(p.to_string()));
-    let inputs = crate::cli::inputs(&cwd, &env, slot, false, false);
+    let inputs = crate::cli::inputs(&cwd, &env, slot, false, libbeachcomber::Wait::Budget);
 
     match eval(template, &inputs, &mut session) {
         // An absent value prints nothing, and is a miss, as for `comb get`.

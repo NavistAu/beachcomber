@@ -34,17 +34,18 @@ func (s *Session) open() error {
 }
 
 // Get is [Client.Get] on this session's persistent connection: the same
-// value, the same flags. cwd "" is this session's directory (SetContext)
+// value, the same options. cwd "" is this session's directory (SetContext)
 // when it has one, else the global entry.
-func (s *Session) Get(key, cwd string, env map[string]string, flags ...GetFlag) (interface{}, error) {
+func (s *Session) Get(key, cwd string, env map[string]string, options ...GetOption) (interface{}, error) {
 	if err := s.open(); err != nil {
 		return nil, err
 	}
-	keyBuf, cwdBuf, envBuf := cBytes(key), optBytes(cwd), jsonMapBytes(env)
-	data, err := s.lib.call(s.lib.bcSessionGet, s.handle, ptrOf(keyBuf), ptrOf(cwdBuf), ptrOf(envBuf), flagBits(flags))
+	keyBuf, cwdBuf, envBuf, optBuf := cBytes(key), optBytes(cwd), jsonMapBytes(env), getOptionsBytes(options)
+	data, err := s.lib.call(s.lib.bcSessionGet, s.handle, ptrOf(keyBuf), ptrOf(cwdBuf), ptrOf(envBuf), ptrOf(optBuf))
 	runtime.KeepAlive(keyBuf)
 	runtime.KeepAlive(cwdBuf)
 	runtime.KeepAlive(envBuf)
+	runtime.KeepAlive(optBuf)
 	if err != nil {
 		return nil, err
 	}

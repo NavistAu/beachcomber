@@ -30,7 +30,6 @@ Quick start::
 
 from .client import Client, Session, WatchStream
 from .exceptions import (
-    BadFlagsError,
     BusyError,
     CombError,
     ConnectionFailedError,
@@ -67,7 +66,6 @@ __all__ = [
     "ParseError",
     "ServerError",
     "TimeoutError",
-    "BadFlagsError",
     "BusyError",
     "PanicError",
     "VersionSkewError",

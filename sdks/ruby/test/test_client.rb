@@ -43,12 +43,12 @@ class TestClient < Minitest::Test
     refute req.key?('path')
   end
 
-  def test_get_sends_the_force_and_wait_flags
+  def test_get_sends_force_and_the_wait
     @server.enqueue('{"ok":true,"data":"main","age_ms":5,"stale":false}')
-    @client.get('git.branch', force: true, wait: true)
+    @client.get('git.branch', force: true, wait: 'forever')
     req = @server.requests.last
     assert_equal true, req['force']
-    assert_equal true, req['wait']
+    assert_equal 'forever', req['wait']
   end
 
   def test_get_hash_data

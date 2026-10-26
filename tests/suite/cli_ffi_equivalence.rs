@@ -214,7 +214,13 @@ fn ffi_get(client: *mut BcClient, key: &str, cwd: &str, env: &str) -> Class {
     let cwd = cs(cwd);
     let env = cs(env);
     classify_envelope(envelope(unsafe {
-        bc_get(client, key.as_ptr(), cwd.as_ptr(), env.as_ptr(), 0)
+        bc_get(
+            client,
+            key.as_ptr(),
+            cwd.as_ptr(),
+            env.as_ptr(),
+            std::ptr::null(),
+        )
     }))
 }
 

@@ -163,7 +163,9 @@ local function run_op(client, descriptor, resolve_ctx)
     return { ok = true, data = { protocol_version = info.protocol_version, daemon_version = info.daemon_version } }
 
   elseif op == "get" then
-    local value, err = client:get(args.key, { cwd = resolve_ctx.cwd, env = resolve_ctx.env })
+    local value, err = client:get(args.key, {
+      cwd = resolve_ctx.cwd, env = resolve_ctx.env, force = args.force, wait = args.wait,
+    })
     if value == nil and err then return fail(err) end
     return { ok = true, data = value }
 

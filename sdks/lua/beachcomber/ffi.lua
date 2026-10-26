@@ -24,7 +24,7 @@ const char *bc_version(void);
 BcClient *bc_client_new(const char *options_json);
 void bc_client_free(BcClient *client);
 
-char *bc_get(BcClient *client, const char *key, const char *cwd, const char *env_json, uint32_t flags);
+char *bc_get(BcClient *client, const char *key, const char *cwd, const char *env_json, const char *options_json);
 char *bc_put(BcClient *client, const char *key, const char *json_data, const char *ttl, const char *path);
 char *bc_refresh(BcClient *client, const char *key, const char *path);
 char *bc_status(BcClient *client);
@@ -35,7 +35,7 @@ char *bc_eval(BcClient *client, const char *template_str, const char *cwd, const
 
 BcSession *bc_session_open(BcClient *client);
 void bc_session_close(BcSession *session);
-char *bc_session_get(BcSession *session, const char *key, const char *cwd, const char *env_json, uint32_t flags);
+char *bc_session_get(BcSession *session, const char *key, const char *cwd, const char *env_json, const char *options_json);
 char *bc_session_put(BcSession *session, const char *key, const char *json_data, const char *ttl, const char *path);
 char *bc_session_refresh(BcSession *session, const char *key, const char *path);
 char *bc_session_set_context(BcSession *session, const char *path);
@@ -47,11 +47,6 @@ void bc_watch_free(BcWatch *w);
 
 void bc_string_free(char *ptr);
 ]]
-
---- `bc_get` / `bc_session_get` flag bits (mirrors BC_GET_FORCE / BC_GET_WAIT
--- in libbeachcomber-ffi/include/beachcomber.h).
-M.BC_GET_FORCE = 1
-M.BC_GET_WAIT = 2
 
 -- Every symbol the ABI declares. Verified at load time (common-contract
 -- point 3: "required symbols are checked at load, not on first use").

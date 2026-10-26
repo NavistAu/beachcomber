@@ -33,12 +33,17 @@ export interface Transport {
   newClient(options: NewClientOptions): ClientHandle;
   freeClient(handle: ClientHandle): void;
 
+  /**
+   * `bc_get`: `force` and `wait` are its `options_json` keys, `wait` handed
+   * on as the caller gave it, for the library to read.
+   */
   get(
     handle: ClientHandle,
     key: string,
     cwd: string | undefined,
     envJson: string | undefined,
-    flags: number,
+    force: boolean,
+    wait: string | undefined,
   ): Promise<Envelope>;
   put(
     handle: ClientHandle,
@@ -65,7 +70,8 @@ export interface Transport {
     key: string,
     cwd: string | undefined,
     envJson: string | undefined,
-    flags: number,
+    force: boolean,
+    wait: string | undefined,
   ): Promise<Envelope>;
   sessionPut(
     session: SessionHandle,

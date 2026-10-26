@@ -132,7 +132,7 @@ function bindSymbols(lib: import('koffi').LibraryHandle, koffi: typeof import('k
   const sig: Record<(typeof OP_SYMBOLS)[number], [Spec, Spec[]]> = {
     bc_client_new: [BcClient, ['str']],
     bc_client_free: ['void', [BcClient]],
-    bc_get: [BcString, [BcClient, 'str', 'str', 'str', 'uint32']],
+    bc_get: [BcString, [BcClient, 'str', 'str', 'str', 'str']],
     bc_put: [BcString, [BcClient, 'str', 'str', 'str', 'str']],
     bc_refresh: [BcString, [BcClient, 'str', 'str']],
     bc_status: [BcString, [BcClient]],
@@ -141,7 +141,7 @@ function bindSymbols(lib: import('koffi').LibraryHandle, koffi: typeof import('k
     bc_eval: [BcString, [BcClient, 'str', 'str', 'str']],
     bc_session_open: [BcSession, [BcClient]],
     bc_session_close: ['void', [BcSession]],
-    bc_session_get: [BcString, [BcSession, 'str', 'str', 'str', 'uint32']],
+    bc_session_get: [BcString, [BcSession, 'str', 'str', 'str', 'str']],
     bc_session_put: [BcString, [BcSession, 'str', 'str', 'str', 'str']],
     bc_session_refresh: [BcString, [BcSession, 'str', 'str']],
     bc_session_set_context: [BcString, [BcSession, 'str']],
@@ -204,6 +204,17 @@ export function createFfiTransport(): Transport {
 
   const nullIfUndefined = (v: string | undefined): string | null => (v === undefined ? null : v);
 
+  /**
+   * `bc_get`'s `options_json`: the options the caller gave, `force` when it
+   * is set and `wait` as given; none at all is NULL.
+   */
+  const getOptionsJson = (force: boolean, wait: string | undefined): string | null => {
+    const options: { force?: true; wait?: string } = {};
+    if (force) options.force = true;
+    if (wait !== undefined) options.wait = wait;
+    return Object.keys(options).length === 0 ? null : JSON.stringify(options);
+  };
+
   const transport: Transport = {
     kind: 'ffi',
     libraryVersion: version,
@@ -215,9 +226,16 @@ export function createFfiTransport(): Transport {
       fns.bc_client_free(handle);
     },
 
-    async get(handle, key, cwd, envJson, flags) {
+    async get(handle, key, cwd, envJson, force, wait) {
       return parseEnvelope(
-        await callAsync(fns.bc_get, handle, key, nullIfUndefined(cwd), nullIfUndefined(envJson), flags),
+        await callAsync(
+          fns.bc_get,
+          handle,
+          key,
+          nullIfUndefined(cwd),
+          nullIfUndefined(envJson),
+          getOptionsJson(force, wait),
+        ),
       );
     },
     async put(handle, key, jsonData, ttl, path) {
@@ -249,9 +267,16 @@ export function createFfiTransport(): Transport {
     closeSession(session) {
       fns.bc_session_close(session);
     },
-    async sessionGet(session, key, cwd, envJson, flags) {
+    async sessionGet(session, key, cwd, envJson, force, wait) {
       return parseEnvelope(
-        await callAsync(fns.bc_session_get, session, key, nullIfUndefined(cwd), nullIfUndefined(envJson), flags),
+        await callAsync(
+          fns.bc_session_get,
+          session,
+          key,
+          nullIfUndefined(cwd),
+          nullIfUndefined(envJson),
+          getOptionsJson(force, wait),
+        ),
       );
     },
     async sessionPut(session, key, jsonData, ttl, path) {

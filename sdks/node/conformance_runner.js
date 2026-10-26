@@ -184,6 +184,8 @@ if (!fs.existsSync(DIST_CLIENT)) {
           const data = await client.get(key, {
             cwd: resolveCtx.cwd,
             env: resolveCtx.env,
+            force: args.force === true,
+            wait: args.wait,
           });
           if (data === null || data === undefined) {
             return makeOk();

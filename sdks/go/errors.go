@@ -39,8 +39,6 @@ var (
 	ErrServer = &Error{Kind: "server_error", Message: "the daemon refused the request"}
 	// ErrTimeout: a read or write ran out timeout_ms, or NextEvent ran out its timeout.
 	ErrTimeout = &Error{Kind: "timeout", Message: "timed out"}
-	// ErrBadFlags: a flag bit the ABI does not define was set.
-	ErrBadFlags = &Error{Kind: "bad_flags", Message: "a flag bit the ABI does not define was set"}
 	// ErrBusy: a session or watch is in use by another caller.
 	ErrBusy = &Error{Kind: "busy", Message: "the handle is in use by another caller"}
 	// ErrPanic: the library panicked; the panic was caught at the boundary.

@@ -3,7 +3,7 @@
 ---
 --- The backend's `get` is one `comb get -f json <key>` (its header comment),
 --- so its answer is the resolver's: a template renders, the directory chain,
---- `$HOME` as the global entry, `--force`/`--wait`, the daemon's refusals.
+--- `$HOME` as the global entry, `--force`, the wait, the daemon's refusals.
 --- A caller's `env` is the spawned comb's whole environment (`env -i`), and
 --- `eval` is one `comb eval -f json`. `refresh` is one `comb refresh <key>`, and its refusal
 --- is the daemon's line. Runs under PUC Lua and LuaJIT
@@ -88,7 +88,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "an ancestor's put is read from a child path (the directory chain)",
     "a path equal to the daemon's $HOME is the global entry",
     "a colon below the provider segment is part of the field",
-    "wait reaches the wire as --wait, in one comb get",
+    "the wait reaches the CLI as --wait, as given, in one comb get",
     "--force on a static namespace is the daemon's refusal",
     "a template that cannot resolve is the resolver's error, not a null hit",
     "a namespace read with one bad leaf is the resolver's error, not a null hit",
@@ -108,6 +108,7 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     "NO_COLOR in the map stops fg drawing escapes",
     "eval keeps a number a number and renders the map",
     "eval of a template that cannot render is a server_error",
+    "a wait comb cannot read is the library's parse_error, in its words",
   }
   if not comb_bin then
     for _, name in ipairs(names) do skip(name, "no comb built") end
@@ -283,10 +284,27 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   end)
 
   test(names[12], function()
-    local value, err = c:get("sp.n", { cwd = "/tmp", wait = true })
+    local value, err = c:get("sp.n", { cwd = "/tmp", wait = "50ms" })
     assert_nil(err)
     assert_eq(value, 1)
-    assert_eq(last_argv(guard), "get -f json sp.n --path /tmp --wait")
+    assert_eq(last_argv(guard), "get -f json sp.n --path /tmp --wait=50ms")
+    value, err = c:get("sp.n", { cwd = "/tmp", wait = "forever" })
+    assert_nil(err)
+    assert_eq(value, 1)
+    assert_eq(last_argv(guard), "get -f json sp.n --path /tmp --wait=forever")
+  end)
+
+  test(names[#names], function()
+    for _, wait in ipairs({ "soon", "-1s" }) do
+      local value, err = c:get("sp.n", { cwd = "/tmp", wait = wait })
+      assert_nil(value)
+      assert_eq(err.kind, "parse_error")
+      local lead = "invalid wait `" .. wait .. "`: "
+      assert_eq(err.message:sub(1, #lead), lead, "the library's words")
+    end
+    local value, err = c:get("sp.n", { cwd = "/tmp", wait = 0 })
+    assert_nil(value)
+    assert_eq(err.kind, "parse_error")
   end)
 
   test(names[13], function()

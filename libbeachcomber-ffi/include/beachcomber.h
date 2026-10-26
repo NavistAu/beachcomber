@@ -9,18 +9,6 @@
 #include <stdint.h>
 
 /**
- * `bc_get` flag: re-execute every Source the read demands before answering,
- * as `comb get --force`.
- */
-#define BC_GET_FORCE (1 << 0)
-
-/**
- * `bc_get` flag: a stale entry the read demands is re-executed inline before
- * answering, as `comb get --wait`.
- */
-#define BC_GET_WAIT (1 << 1)
-
-/**
  * Opaque client handle returned by [`bc_client_new`].
  *
  * Construction never fails from the caller's point of view: a malformed
@@ -184,22 +172,33 @@ char *bc_hello(BcClient *client);
  * directory, and a template's `exec`, `lup` and `read` run in it (in
  * `$HOME` from `env_json` for the global entry).
  * `env_json` is nullable: NULL renders with the calling process's environment, as `comb` does.
- * `flags` is a bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit
- * set yields a `bad_flags` envelope.
+ * `options_json` is nullable; its keys, each optional, are:
+ *
+ * | key     | default | meaning |
+ * |---------|---------|---------|
+ * | `force` | `false` | re-execute every Source the read demands, as `comb get --force` |
+ * | `wait`  | the budget | how long to wait for a run the read needs, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"` |
+ *
+ * Left out, `wait` is the read's budget: a stored record waits its Source's
+ * `budget`, a cold read and a forced one wait for their run. A read that
+ * stops waiting answers what is stored, and the run goes on. The read's
+ * deadline is the client's `timeout_ms` plus the `wait`; `"forever"` has
+ * none. A key not in this table, or a `wait` that is neither, is a
+ * `parse_error`.
  * `exec()` inside a template runs only on a client created with
  * `{"exec":true}`; otherwise it fails with `exec() is disabled in this
  * context`.
  *
  * # Safety
  * `client` must be a valid pointer from [`bc_client_new`]; `key` must be
- * non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
- * NUL-terminated.
+ * non-null and NUL-terminated; `cwd`, `env_json` and `options_json` must be
+ * NULL or NUL-terminated.
  */
 char *bc_get(BcClient *client,
              const char *key,
              const char *cwd,
              const char *env_json,
-             uint32_t flags);
+             const char *options_json);
 
 /**
  * Render a source that is stored nowhere, every ref resolved exactly as it
@@ -244,19 +243,19 @@ void bc_session_close(BcSession *session);
 
 /**
  * [`bc_get`] on this session's persistent connection: the same rendered
- * value, the same flags. A NULL `cwd` is this session's directory
+ * value, the same options. A NULL `cwd` is this session's directory
  * ([`bc_session_set_context`]) when it has one, else the global entry.
  *
  * # Safety
  * `session` must be a valid pointer from [`bc_session_open`]; `key` must
- * be non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
- * NUL-terminated.
+ * be non-null and NUL-terminated; `cwd`, `env_json` and `options_json` must
+ * be NULL or NUL-terminated.
  */
 char *bc_session_get(BcSession *session,
                      const char *key,
                      const char *cwd,
                      const char *env_json,
-                     uint32_t flags);
+                     const char *options_json);
 
 /**
  * Store data into the cache as static data on this session's persistent
@@ -299,7 +298,7 @@ char *bc_session_set_context(BcSession *session, const char *path);
 
 /**
  * Opens a watch on the *value* of `key` — what `bc_get(key, cwd,
- * env_json, 0)` answers — and emits it again whenever it changes. The fan-in
+ * env_json, NULL)` answers — and emits it again whenever it changes. The fan-in
  * underneath subscribes to every key the resolution read, and a write to a
  * namespace's template notifies that namespace, so a template edited under
  * the watch fires it exactly as a changed cache record does.

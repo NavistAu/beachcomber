@@ -365,7 +365,7 @@ fn a_cached_field_with_a_template_over_it_is_shadowed_by_it() {
 
     // Warm the git source at this repo, so `git.branch` really is cached.
     comb(&d, &cwd)
-        .args(["get", "git.branch", "--wait"])
+        .args(["get", "git.branch", "--wait", "forever"])
         .assert()
         .success();
     poll_until(

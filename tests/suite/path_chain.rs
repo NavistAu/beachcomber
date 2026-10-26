@@ -564,8 +564,8 @@ fn get_forced(key: &str, path: Option<&str>) -> serde_json::Value {
 
 fn get_waited(key: &str, path: Option<&str>) -> serde_json::Value {
     match path {
-        Some(p) => serde_json::json!({"op": "get", "key": key, "path": p, "wait": true}),
-        None => serde_json::json!({"op": "get", "key": key, "wait": true}),
+        Some(p) => serde_json::json!({"op": "get", "key": key, "path": p, "wait": "forever"}),
+        None => serde_json::json!({"op": "get", "key": key, "wait": "forever"}),
     }
 }
 

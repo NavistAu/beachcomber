@@ -123,6 +123,19 @@ var supportedOps = map[string]bool{
 	"eval": true,
 }
 
+// getOptions is a get op's force and wait as Get takes them: the wait as
+// given, for the library to read.
+func getOptions(args map[string]interface{}) []beachcomber.GetOption {
+	var options []beachcomber.GetOption
+	if force, _ := args["force"].(bool); force {
+		options = append(options, beachcomber.Force)
+	}
+	if wait, ok := args["wait"].(string); ok {
+		options = append(options, beachcomber.Wait(wait))
+	}
+	return options
+}
+
 // unsupportedOp returns the first op in f (setup or test) this runner can't
 // execute, or "" if every op is supported.
 func unsupportedOp(f fixture) string {
@@ -312,7 +325,7 @@ func runOp(c *beachcomber.Client, op opDescriptor, f fixture, tmpDir string) err
 		return c.Put(key, data, ttl, path)
 	case "get":
 		key, _ := op.Args["key"].(string)
-		_, err := c.Get(key, readCwd(f, tmpDir), f.Env)
+		_, err := c.Get(key, readCwd(f, tmpDir), f.Env, getOptions(op.Args)...)
 		return err
 	case "refresh":
 		key, _ := op.Args["key"].(string)
@@ -343,7 +356,7 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 	switch op.Op {
 	case "get":
 		key, _ := op.Args["key"].(string)
-		v, err := c.Get(key, readCwd(f, tmpDir), f.Env)
+		v, err := c.Get(key, readCwd(f, tmpDir), f.Env, getOptions(op.Args)...)
 		if err != nil {
 			return nil, nil, err
 		}

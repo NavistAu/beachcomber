@@ -70,8 +70,10 @@ daemon is the only source of templates; the resolver takes no overrides.
 resolver (`libbeachcomber::resolve`, which every SDK's `get` binds through
 the C ABI's `bc_get`) asks the daemon for each node — the cached value and
 the template in effect at the address — and renders the template with the
-fixture's `env` and `cwd`. `args.key` is the only argument, and it resolves
-exactly as `comb get <key>` does:
+fixture's `env` and `cwd`. `args.key` resolves exactly as `comb get <key>`
+does; `args.force` (a boolean) and `args.wait` (a string: a duration or
+`"forever"`) are the SDK's `force` and `wait`, handed on as given, so a
+`wait` the library cannot read is refused in its words on every SDK:
 
 - `"provider.field"` — the cached value, or, where a template is in effect
   at that address, the rendered template. Refs of the form `comb.P.F` /

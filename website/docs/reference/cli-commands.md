@@ -79,7 +79,7 @@ The template filters `fg`, `bg`, `bold` and `dim` follow the same choice without
 
 Query a value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay. `comb get` is a client of `libbeachcomber::resolve`, the same function behind `comb eval` and every SDK's `resolve`: it always needs the daemon, even for a key (`env.HOME`) it answers without a request.
 
-**Flags:** `--force` (trigger immediate recomputation before returning), `--wait` (block until a fresh value arrives), `-p`/`--path <dir>` (query a directory other than the current one), `--global` (query the global entry, `$HOME`) — see [Addressing a directory](#addressing-a-directory). Multiple keys can be passed in a single connection (variadic).
+**Flags:** `--force` (trigger immediate recomputation before returning), `--wait <DURATION|forever>` (how long to wait for a run the read needs before answering what is stored: `--wait 0` answers at once, `--wait forever` waits for the run; without it a stored record waits its Source's `budget` and a cold read waits for its run; the bare `--wait` is a usage error), `-p`/`--path <dir>` (query a directory other than the current one), `--global` (query the global entry, `$HOME`) — see [Addressing a directory](#addressing-a-directory). Multiple keys can be passed in a single connection (variadic).
 
 **Path:** after at least one key, a last argument that starts with `/`, `~` or `.` is the directory to read from (`comb g git.branch .`, `comb g git "$PWD"`); no key starts with those, so a key holding a `/` (`mise.npm:@scope/pkg`) is always a key, and a lone argument is always a key. A leading `~` the shell left unexpanded (it was quoted) is `$HOME`. With no `--path` and no such argument, `get` queries the current working directory. A read at a directory resolves data stored by `put` (and by config) up the directory chain to `$HOME`, the nearest write winning; a provider's own data stays where its source scope puts it. `--global` reads `$HOME` alone and cannot be combined with a path.
 
@@ -142,8 +142,11 @@ comb g git.branch git.dirty battery.percent .
 # Force immediate recomputation before returning
 comb g --force git .
 
-# Block until a fresh value arrives (useful after a trigger)
-comb g --wait git.branch .
+# Wait for the fresh value however long its run takes (useful after a trigger)
+comb g --wait forever git.branch .
+
+# Answer at once with what is stored, however stale; the run goes on
+comb g --wait 0 git.branch .
 
 # Template-backed keys render here, with this shell's environment
 comb g python.version .              # → 3.12.1 (defaults/python.toml's cascade)

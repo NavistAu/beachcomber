@@ -47,10 +47,24 @@ impl ResolveCtx<'_> {
             env: self.env_vars,
             slot: Slot::Path(self.cwd.to_string()),
             force: false,
-            wait: false,
+            wait: libbeachcomber::Wait::Budget,
             allow_exec: false,
             now: std::time::SystemTime::now(),
         }
+    }
+
+    /// [`Self::inputs`] with a `get`'s own `force` and `wait`: the wait read
+    /// as the library reads it, so a bad one is refused in its words.
+    fn get_inputs(&self, args: &Value) -> Result<Inputs<'_>, String> {
+        let wait = match args["wait"].as_str() {
+            Some(wait) => wait.parse()?,
+            None => libbeachcomber::Wait::Budget,
+        };
+        Ok(Inputs {
+            force: args["force"].as_bool().unwrap_or(false),
+            wait,
+            ..self.inputs()
+        })
     }
 }
 
@@ -156,7 +170,11 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
         // `setup` `put`s to `<p>:template` seed them.
         "get" => {
             let key = descriptor.args["key"].as_str().unwrap_or("");
-            match resolve::resolve(key, &resolve.inputs(), &mut { client }) {
+            let inputs = match resolve.get_inputs(&descriptor.args) {
+                Ok(inputs) => inputs,
+                Err(e) => return err_resp(e),
+            };
+            match resolve::resolve(key, &inputs, &mut { client }) {
                 Ok(v) => CanonicalResponse {
                     ok: true,
                     data_as_text: v

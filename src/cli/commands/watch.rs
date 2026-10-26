@@ -43,7 +43,7 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
     };
     // A watch is a subscription, not a demand: it never forces an execution
     // or waits on one, it reports what the value becomes.
-    let inputs = crate::cli::inputs(&cwd, &env, slot, false, false);
+    let inputs = crate::cli::inputs(&cwd, &env, slot, false, libbeachcomber::Wait::Budget);
 
     // A `-f` template renders each frame through the resolver, which reads
     // what it names over a session of its own.

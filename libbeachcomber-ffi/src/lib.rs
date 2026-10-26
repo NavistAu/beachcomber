@@ -12,7 +12,7 @@ pub mod envelope;
 use envelope::{FfiError, WatchOutcome, call_ffi, call_watch_next, kind};
 use libbeachcomber::resolve::{self, Inputs, Slot};
 use libbeachcomber::watch::{CancelHandle, ResolvedWatch, WatchOutcome as LibWatchOutcome};
-use libbeachcomber::{IntrospectResponse, IntrospectSubject};
+use libbeachcomber::{IntrospectResponse, IntrospectSubject, Wait};
 use std::collections::HashMap;
 
 /// Opaque client handle returned by [`bc_client_new`].
@@ -71,16 +71,24 @@ struct ClientOptions {
     exec: Option<bool>,
 }
 
+/// An `options_json` argument as the options it holds: NULL is every option
+/// left out, and anything that does not parse as them is `parse_error`.
+fn parse_options<T: serde::de::DeserializeOwned + Default>(
+    json: Option<&str>,
+) -> Result<T, FfiError> {
+    match json {
+        None => Ok(T::default()),
+        Some(s) => serde_json::from_str(s)
+            .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed options_json: {e}"))),
+    }
+}
+
 /// # Safety
 /// `options_json` must be NULL or a valid pointer to a NUL-terminated string.
 unsafe fn build_client(options_json: *const c_char) -> Result<libbeachcomber::Client, FfiError> {
-    let options = if options_json.is_null() {
-        ClientOptions::default()
-    } else {
-        let raw = unsafe { CStr::from_ptr(options_json) }.to_string_lossy();
-        serde_json::from_str::<ClientOptions>(&raw)
-            .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed options_json: {e}")))?
-    };
+    let raw = (!options_json.is_null())
+        .then(|| unsafe { CStr::from_ptr(options_json) }.to_string_lossy());
+    let options: ClientOptions = parse_options(raw.as_deref())?;
 
     if options.timeout_ms == Some(0) {
         return Err(FfiError::new(
@@ -149,24 +157,16 @@ pub unsafe extern "C" fn bc_client_free(client: *mut BcClient) {
 
 // ── Operations (Task 3.4) ──────────────────────────────────────────────
 
-/// `bc_get` flag: re-execute every Source the read demands before answering,
-/// as `comb get --force`.
-pub const BC_GET_FORCE: u32 = 1 << 0;
-/// `bc_get` flag: a stale entry the read demands is re-executed inline before
-/// answering, as `comb get --wait`.
-pub const BC_GET_WAIT: u32 = 1 << 1;
-const BC_GET_KNOWN_FLAGS: u32 = BC_GET_FORCE | BC_GET_WAIT;
-
-/// Rejects (rather than silently ignoring) any bit outside 0..=1.
-fn check_get_flags(flags: u32) -> Result<(), FfiError> {
-    let unknown = flags & !BC_GET_KNOWN_FLAGS;
-    if unknown != 0 {
-        return Err(FfiError::new(
-            kind::BAD_FLAGS,
-            format!("unknown flag bits set: {unknown:#x}"),
-        ));
-    }
-    Ok(())
+/// The keys of `bc_get`'s and `bc_session_get`'s `options_json` argument, and
+/// no others: a key it does not take is refused, so each option has one
+/// spelling. `null` is a key left out.
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct GetOptions {
+    /// `comb get --force`.
+    force: Option<bool>,
+    /// `comb get --wait`: a duration or `"forever"`.
+    wait: Option<Wait>,
 }
 
 /// Borrows the handle's underlying client, or its deferred construction
@@ -317,13 +317,7 @@ pub unsafe extern "C" fn bc_introspect(
         let subject: IntrospectSubject = subject
             .parse()
             .map_err(|e: String| FfiError::new(kind::PARSE_ERROR, e))?;
-        let options_json = unsafe { optional_str(options_json) }?;
-        let options: IntrospectOptions = match options_json {
-            Some(s) => serde_json::from_str(s).map_err(|e| {
-                FfiError::new(kind::PARSE_ERROR, format!("malformed options_json: {e}"))
-            })?,
-            None => IntrospectOptions::default(),
-        };
+        let options: IntrospectOptions = parse_options(unsafe { optional_str(options_json) }?)?;
         match c.introspect(subject, options.duration_secs)? {
             IntrospectResponse::Daemon(health) => {
                 Ok(serde_json::to_value(health).expect("daemon health serialises"))
@@ -380,13 +374,12 @@ unsafe fn resolution_dir(cwd: *const c_char) -> Result<(String, Slot), FfiError>
 }
 
 /// The resolution inputs every `bc_get` and `bc_eval` builds: the directory,
-/// the caller's environment and the read's flags.
+/// the caller's environment and the read's options.
 struct ReadInputs {
     cwd: String,
     slot: Slot,
     env: HashMap<String, String>,
-    force: bool,
-    wait: bool,
+    options: GetOptions,
 }
 
 impl ReadInputs {
@@ -395,16 +388,14 @@ impl ReadInputs {
     unsafe fn new(
         dir: (String, Slot),
         env_json: *const c_char,
-        flags: u32,
+        options: GetOptions,
     ) -> Result<Self, FfiError> {
-        check_get_flags(flags)?;
         let (cwd, slot) = dir;
         Ok(Self {
             cwd,
             slot,
             env: parse_env_json(unsafe { optional_str(env_json) }?)?,
-            force: flags & BC_GET_FORCE != 0,
-            wait: flags & BC_GET_WAIT != 0,
+            options,
         })
     }
 
@@ -413,8 +404,8 @@ impl ReadInputs {
             cwd: &self.cwd,
             env: &self.env,
             slot: self.slot.clone(),
-            force: self.force,
-            wait: self.wait,
+            force: self.options.force.unwrap_or_default(),
+            wait: self.options.wait.unwrap_or_default(),
             allow_exec,
             now: std::time::SystemTime::now(),
         }
@@ -451,28 +442,40 @@ fn get_value(
 /// directory, and a template's `exec`, `lup` and `read` run in it (in
 /// `$HOME` from `env_json` for the global entry).
 /// `env_json` is nullable: NULL renders with the calling process's environment, as `comb` does.
-/// `flags` is a bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit
-/// set yields a `bad_flags` envelope.
+/// `options_json` is nullable; its keys, each optional, are:
+///
+/// | key     | default | meaning |
+/// |---------|---------|---------|
+/// | `force` | `false` | re-execute every Source the read demands, as `comb get --force` |
+/// | `wait`  | the budget | how long to wait for a run the read needs, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"` |
+///
+/// Left out, `wait` is the read's budget: a stored record waits its Source's
+/// `budget`, a cold read and a forced one wait for their run. A read that
+/// stops waiting answers what is stored, and the run goes on. The read's
+/// deadline is the client's `timeout_ms` plus the `wait`; `"forever"` has
+/// none. A key not in this table, or a `wait` that is neither, is a
+/// `parse_error`.
 /// `exec()` inside a template runs only on a client created with
 /// `{"exec":true}`; otherwise it fails with `exec() is disabled in this
 /// context`.
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `key` must be
-/// non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
-/// NUL-terminated.
+/// non-null and NUL-terminated; `cwd`, `env_json` and `options_json` must be
+/// NULL or NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_get(
     client: *mut BcClient,
     key: *const c_char,
     cwd: *const c_char,
     env_json: *const c_char,
-    flags: u32,
+    options_json: *const c_char,
 ) -> *mut c_char {
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let key = unsafe { required_str(key, "key") }?;
-        let read = unsafe { ReadInputs::new(resolution_dir(cwd)?, env_json, flags) }?;
+        let options = parse_options(unsafe { optional_str(options_json) }?)?;
+        let read = unsafe { ReadInputs::new(resolution_dir(cwd)?, env_json, options) }?;
         get_value(key, &read.inputs(c.allow_exec()), &mut { c })
     })
 }
@@ -503,7 +506,8 @@ pub unsafe extern "C" fn bc_eval(
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let template_str = unsafe { required_str(template_str, "template_str") }?;
-        let read = unsafe { ReadInputs::new(resolution_dir(cwd)?, env_json, 0) }?;
+        let read =
+            unsafe { ReadInputs::new(resolution_dir(cwd)?, env_json, GetOptions::default()) }?;
         match resolve::eval(template_str, &read.inputs(c.allow_exec()), &mut { c }) {
             Ok(value) => Ok(value.unwrap_or(serde_json::Value::Null)),
             Err(e) => Err(e.into()),
@@ -584,23 +588,24 @@ pub unsafe extern "C" fn bc_session_close(session: *mut BcSession) {
 }
 
 /// [`bc_get`] on this session's persistent connection: the same rendered
-/// value, the same flags. A NULL `cwd` is this session's directory
+/// value, the same options. A NULL `cwd` is this session's directory
 /// ([`bc_session_set_context`]) when it has one, else the global entry.
 ///
 /// # Safety
 /// `session` must be a valid pointer from [`bc_session_open`]; `key` must
-/// be non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
-/// NUL-terminated.
+/// be non-null and NUL-terminated; `cwd`, `env_json` and `options_json` must
+/// be NULL or NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_session_get(
     session: *mut BcSession,
     key: *const c_char,
     cwd: *const c_char,
     env_json: *const c_char,
-    flags: u32,
+    options_json: *const c_char,
 ) -> *mut c_char {
     call_ffi(move || {
         let key = unsafe { required_str(key, "key") }?;
+        let options = parse_options(unsafe { optional_str(options_json) }?)?;
         let allow_exec = unsafe { &*session }.allow_exec;
         let mut guard = unsafe { session_lock(session) }?;
         let sess = guard.as_mut().map_err(|e| e.clone())?;
@@ -608,7 +613,7 @@ pub unsafe extern "C" fn bc_session_get(
             (true, Some(dir)) => (dir.to_string(), Slot::Path(dir.to_string())),
             _ => unsafe { resolution_dir(cwd) }?,
         };
-        let read = unsafe { ReadInputs::new(dir, env_json, flags) }?;
+        let read = unsafe { ReadInputs::new(dir, env_json, options) }?;
         get_value(key, &read.inputs(allow_exec), sess)
     })
 }
@@ -714,7 +719,7 @@ pub struct BcWatch {
 }
 
 /// Opens a watch on the *value* of `key` — what `bc_get(key, cwd,
-/// env_json, 0)` answers — and emits it again whenever it changes. The fan-in
+/// env_json, NULL)` answers — and emits it again whenever it changes. The fan-in
 /// underneath subscribes to every key the resolution read, and a write to a
 /// namespace's template notifies that namespace, so a template edited under
 /// the watch fires it exactly as a changed cache record does.
@@ -753,9 +758,9 @@ pub unsafe extern "C" fn bc_watch_open(
             env: &env_vars,
             slot,
             // A watch is a subscription, not a demand: it never forces an
-            // execution or waits on one.
+            // execution, and it waits as a read with no `wait` does.
             force: false,
-            wait: false,
+            wait: Wait::Budget,
             allow_exec: c.allow_exec(),
             now: std::time::SystemTime::now(),
         };

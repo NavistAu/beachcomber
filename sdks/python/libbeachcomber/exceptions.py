@@ -70,12 +70,6 @@ class TimeoutError(CombError):  # noqa: A001 - deliberately mirrors the ABI's "t
     kind = "timeout"
 
 
-class BadFlagsError(CombError):
-    """A flag bit the ABI does not define was set."""
-
-    kind = "bad_flags"
-
-
 class BusyError(CombError):
     """A session or watch is in use by another caller."""
 
@@ -123,7 +117,6 @@ _KIND_TO_EXCEPTION = {
         ParseError,
         ServerError,
         TimeoutError,
-        BadFlagsError,
         BusyError,
         PanicError,
         VersionSkewError,

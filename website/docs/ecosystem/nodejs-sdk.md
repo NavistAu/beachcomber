@@ -62,7 +62,7 @@ no flag to carry it.
 
 The value `comb get` prints for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace; a miss is `null`.
 
-`opts` is `{ cwd?, env?, force?, wait? }`. `cwd` is the directory the read addresses (`~` is home, a relative path is against this process's working directory); omitted, it is the global entry. `env` is the caller's environment for `env.*` refs; omitted, every `env.*` is absent. `force` re-executes every Source the read demands first; `wait` re-executes a stale entry inline before answering.
+`opts` is `{ cwd?, env?, force?, wait? }`. `cwd` is the directory the read addresses (`~` is home, a relative path is against this process's working directory); omitted, it is the global entry. `env` is the caller's environment for `env.*` refs; omitted, every `env.*` is absent. `force` re-executes every Source the read demands first, as `comb get --force`; `wait` is how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`'0'`, `'50ms'`, `'2s'`) or `'forever'`, anything else a `ParseError`.
 
 ```typescript
 const branch = await client.get('git.branch', { cwd: '/some/repo' });
@@ -142,7 +142,6 @@ One class per error kind, each extending `CombError` (which extends `Error`) and
 | `ParseError` | `parse_error` | A request, a response or a template could not be read |
 | `ServerError` | `server_error` | The daemon refused the request, or a template failed to render |
 | `TimeoutError` | `timeout` | A read or write ran out `timeoutMs`, or `nextEvent` ran out its timeout |
-| `BadFlagsError` | `bad_flags` | A flag bit the ABI does not define was set |
 | `BusyError` | `busy` | A session or watch is in use by another caller |
 | `PanicError` | `panic` | The native library panicked (caught at the FFI boundary) |
 | `VersionSkewError` | `version_skew` | The daemon is a different version from the library |

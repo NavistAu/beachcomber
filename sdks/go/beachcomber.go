@@ -315,25 +315,37 @@ func (c *Client) open() error {
 	return nil
 }
 
-// GetFlag is one of the flags a Get takes.
-type GetFlag uint32
+// GetOption is one of the options a Get takes: each writes one key of the
+// options_json bc_get and bc_session_get take. An option left out is the
+// library's default; this SDK has none of its own.
+type GetOption func(opts map[string]interface{})
 
-const (
-	// Force re-executes every Source the read demands before answering, as
-	// comb get --force.
-	Force GetFlag = 1 << 0 // BC_GET_FORCE
-	// Wait re-executes a stale entry the read demands inline before
-	// answering, as comb get --wait.
-	Wait GetFlag = 1 << 1 // BC_GET_WAIT
-)
+// Force re-executes every Source the read demands before answering, as comb
+// get --force.
+var Force GetOption = func(opts map[string]interface{}) { opts["force"] = true }
 
-// flagBits ORs flags into the bitmask bc_get and bc_session_get take.
-func flagBits(flags []GetFlag) uintptr {
-	var bits GetFlag
-	for _, f := range flags {
-		bits |= f
+// Wait is how long the read waits for a run it needs before it answers what
+// is stored, as comb get --wait: a duration ("0", "50ms", "2s") or
+// "forever". Anything else fails the Get with kind parse_error. Left out, a
+// stored record waits its Source's budget and a cold read waits for its run.
+// The read may take the client's timeout_ms plus the wait; "forever" has no
+// deadline.
+func Wait(d string) GetOption {
+	return func(opts map[string]interface{}) { opts["wait"] = d }
+}
+
+// getOptionsBytes is the options_json options write, or nil (NULL) when
+// there are none.
+func getOptionsBytes(options []GetOption) []byte {
+	if len(options) == 0 {
+		return nil
 	}
-	return uintptr(bits)
+	opts := map[string]interface{}{}
+	for _, o := range options {
+		o(opts)
+	}
+	b, _ := json.Marshal(opts) // a map of bools and strings always marshals
+	return cBytes(string(b))
 }
 
 // Get returns the value comb get prints for key at cwd, with env as the
@@ -349,17 +361,18 @@ func flagBits(flags []GetFlag) uintptr {
 // cwd is the directory the read addresses: "~" is the home directory and a
 // relative path is against this process's working directory; "" is the
 // global entry. env is the caller's environment for env.* references; nil
-// means the calling process's environment, as comb has. flags are [Force] and
-// [Wait].
-func (c *Client) Get(key, cwd string, env map[string]string, flags ...GetFlag) (interface{}, error) {
+// means the calling process's environment, as comb has. options are [Force]
+// and [Wait].
+func (c *Client) Get(key, cwd string, env map[string]string, options ...GetOption) (interface{}, error) {
 	if err := c.open(); err != nil {
 		return nil, err
 	}
-	keyBuf, cwdBuf, envBuf := cBytes(key), optBytes(cwd), jsonMapBytes(env)
-	data, err := c.lib.call(c.lib.bcGet, c.handle, ptrOf(keyBuf), ptrOf(cwdBuf), ptrOf(envBuf), flagBits(flags))
+	keyBuf, cwdBuf, envBuf, optBuf := cBytes(key), optBytes(cwd), jsonMapBytes(env), getOptionsBytes(options)
+	data, err := c.lib.call(c.lib.bcGet, c.handle, ptrOf(keyBuf), ptrOf(cwdBuf), ptrOf(envBuf), ptrOf(optBuf))
 	runtime.KeepAlive(keyBuf)
 	runtime.KeepAlive(cwdBuf)
 	runtime.KeepAlive(envBuf)
+	runtime.KeepAlive(optBuf)
 	if err != nil {
 		return nil, err
 	}

@@ -171,6 +171,8 @@ def _run_op(
                 args.get("key", ""),
                 cwd=resolve_ctx["cwd"],
                 env=resolve_ctx["env"] or None,
+                force=bool(args.get("force", False)),
+                wait=args.get("wait"),
             )
         )
     if op == "eval":

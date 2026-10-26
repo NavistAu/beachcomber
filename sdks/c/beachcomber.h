@@ -11,7 +11,7 @@
  * Build by linking against libbeachcomber.{dylib,so} (produced by
  * `cargo build -p libbeachcomber-ffi`) and calling the bc_* functions
  * declared in the included header — see its doc comments for the full
- * contract (ownership, NULL-safety, flag bits, envelope shape). The
+ * contract (ownership, NULL-safety, options JSON, envelope shape). The
  * `libbeachcomber.pc.in` template in this directory describes how an
  * installed copy of the library and header are discovered via
  * pkg-config.

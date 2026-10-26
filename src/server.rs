@@ -1,7 +1,7 @@
 use crate::boundaries::proc_snap::{ProcessSnapshotter, RealProcessSnapshotter};
 use crate::cache::{Cache, Layers, MergedRead, RecordState};
 use crate::config::Config;
-use crate::protocol::{IntrospectSubject, Request, Response};
+use crate::protocol::{IntrospectSubject, Request, Response, Wait};
 use crate::provider::registry::{ProviderRegistry, RegistryHandle};
 use crate::provider::source_call::instance_key;
 use crate::query::{Ask, Found, Instance, InstanceWalk, KeyParse, QueryPlan};
@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tracing::{debug, info, warn};
@@ -711,33 +711,35 @@ impl Drop for ChainWatch {
     }
 }
 
-/// How long a read of a record past its lifetime waits for the record's
-/// run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Wait {
-    /// The Source's budget, counted from when the read began.
-    Budget,
-    /// To the run's end (`wait`).
-    Forever,
-}
-
 /// What a read asks of each instance it reaches.
 #[derive(Clone, Copy, Debug)]
 struct Read {
-    /// `--force`: a run that begins now, past the failback backoff, waited for
-    /// to its end.
+    /// `--force`: a run that begins now, past the failback backoff.
     force: bool,
+    /// How long the read waits for each run it needs.
     wait: Wait,
-    /// When the read began: every Source's budget counts from here.
+    /// When the read began: every wait counts from here.
     began: tokio::time::Instant,
 }
 
 impl Read {
-    fn new(force: bool, wait: bool) -> Self {
+    fn new(force: bool, wait: Wait) -> Self {
         Self {
             force,
-            wait: if wait { Wait::Forever } else { Wait::Budget },
+            wait,
             began: tokio::time::Instant::now(),
+        }
+    }
+
+    /// Until when the read waits for a run, given what it waits for when the
+    /// call says nothing (`budget`: `Some` for a record it has, `None`, the
+    /// run's end, for a cold one or a forced run); `None` is to the run's
+    /// end.
+    fn until(&self, budget: Option<Duration>) -> Option<tokio::time::Instant> {
+        match self.wait {
+            Wait::Budget => budget.map(|budget| self.began + budget),
+            Wait::For(wait) => Some(self.began + wait),
+            Wait::Forever => None,
         }
     }
 }
@@ -758,10 +760,10 @@ struct Pending {
 /// | The read finds | It runs | It waits for |
 /// |---|---|---|
 /// | a valid record | nothing | nothing |
-/// | a record whose inputs changed | the run in flight if it sees them as they are, or one | the Source's budget, or (`wait`) the run |
+/// | a record whose inputs changed | the run in flight if it sees them as they are, or one | the call's `wait`, else the Source's budget |
 /// | a record past its lifetime (`stale`) | the run in flight, or one | as above |
-/// | nothing stored | the run in flight, or one | the run |
-/// | anything, with `--force` | one that begins now | the run |
+/// | nothing stored | the run in flight, or one | the call's `wait`, else the run's end |
+/// | anything, with `--force` | one that begins now | as above |
 ///
 /// The check stats the record's inputs on the request task: one `stat` per
 /// input, bounded by their count, not by time.
@@ -779,20 +781,17 @@ fn start_for_read(
     read: Read,
 ) -> Option<Pending> {
     let source = registry.source(provider, source_name)?;
-    let budget = || match read.wait {
-        Wait::Budget => Some(read.began + source.metadata().budget),
-        Wait::Forever => None,
-    };
+    let budget = Some(source.metadata().budget);
     let (want, until) = if read.force {
-        (Want::Forced, None)
+        (Want::Forced, read.until(None))
     } else {
         // A valid instance is the common read: answered before anything
         // shared is locked.
         match cache.record_state(provider, root, source_name) {
             RecordState::Valid => return None,
-            RecordState::Cold => (Want::Cold, None),
-            RecordState::Invalid => (Want::Changed, budget()),
-            RecordState::Stale => (Want::Any, budget()),
+            RecordState::Cold => (Want::Cold, read.until(None)),
+            RecordState::Invalid => (Want::Changed, read.until(budget)),
+            RecordState::Stale => (Want::Any, read.until(budget)),
         }
     };
     let key = instance_key(provider, source_name, root);
@@ -3032,7 +3031,14 @@ mod tests {
 
     /// A read of the instance at `~` of `demo.s`, as a `get` makes it.
     async fn read_of(registry: &Arc<ProviderRegistry>, cache: &Arc<Cache>) -> Result<bool, String> {
-        let pending = start_for_read(registry, cache, "demo", "s", None, Read::new(false, false));
+        let pending = start_for_read(
+            registry,
+            cache,
+            "demo",
+            "s",
+            None,
+            Read::new(false, Wait::Budget),
+        );
         settle(pending.into_iter().collect()).await
     }
 

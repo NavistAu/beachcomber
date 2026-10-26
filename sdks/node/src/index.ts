@@ -53,7 +53,6 @@ export {
   ParseError,
   ServerError,
   TimeoutError,
-  BadFlagsError,
   BusyError,
   PanicError,
   VersionSkewError,

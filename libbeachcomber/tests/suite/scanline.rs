@@ -134,7 +134,7 @@ impl Fetch for Scanline<'_> {
         key: &str,
         _path: Option<&str>,
         _force: bool,
-        _wait: bool,
+        _wait: libbeachcomber::Wait,
     ) -> Result<Option<Got>, FetchError> {
         let (head, address) = key::split_key(key).map_err(FetchError::Rejected)?;
         let segments: Vec<String> = key::segments(&address)
@@ -300,7 +300,7 @@ impl<'a> State<'a> {
             env: &env,
             slot: Slot::Path(LOCUS.to_string()),
             force: false,
-            wait: false,
+            wait: libbeachcomber::Wait::Budget,
             allow_exec: false,
             now: self.now,
         };

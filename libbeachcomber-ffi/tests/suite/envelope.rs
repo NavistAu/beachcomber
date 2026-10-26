@@ -32,7 +32,6 @@ fn success_round_trips() {
 fn every_error_kind_serialises_its_slug() {
     let io = || std::io::Error::other("x");
     let cases = [
-        (kind::BAD_FLAGS, "bad_flags"),
         (kind::BUSY, "busy"),
         (kind::PANIC, "panic"),
         (kind::VERSION_SKEW, "version_skew"),

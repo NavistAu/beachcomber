@@ -29,7 +29,7 @@ struct Call {
     key: String,
     path: Option<String>,
     force: bool,
-    wait: bool,
+    wait: libbeachcomber::Wait,
 }
 
 #[derive(Default)]
@@ -62,7 +62,7 @@ impl Fetch for MapFetch {
         key: &str,
         path: Option<&str>,
         force: bool,
-        wait: bool,
+        wait: libbeachcomber::Wait,
     ) -> Result<Option<Got>, FetchError> {
         self.log.push(Call {
             key: key.to_string(),
@@ -135,7 +135,7 @@ fn inputs(env: &HashMap<String, String>) -> Inputs<'_> {
         env,
         slot: Slot::Cwd,
         force: false,
-        wait: false,
+        wait: libbeachcomber::Wait::Budget,
         allow_exec: false,
         now: std::time::SystemTime::now(),
     }
@@ -928,11 +928,11 @@ fn force_and_wait_are_forwarded_to_every_fetch() {
     let mut f = spec_fetch();
     let mut i = inputs(&env);
     i.force = true;
-    i.wait = true;
+    i.wait = libbeachcomber::Wait::For(std::time::Duration::from_millis(50));
 
     resolve("scanline.widgets.bar", &i, &mut f).unwrap();
     assert_eq!(f.keys(), vec!["scanline.widgets.bar", "git.branch"]);
-    assert!(f.log.iter().all(|c| c.force && c.wait));
+    assert!(f.log.iter().all(|c| c.force && c.wait == i.wait));
 }
 
 // ── 7. Cycles ─────────────────────────────────────────────────────────────────
@@ -2093,7 +2093,7 @@ fn a_templates_files_are_read_in_the_addressed_directory() {
             env: &env,
             slot,
             force: false,
-            wait: false,
+            wait: libbeachcomber::Wait::Budget,
             allow_exec: false,
             now: std::time::SystemTime::now(),
         };

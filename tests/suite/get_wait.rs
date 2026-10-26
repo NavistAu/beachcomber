@@ -25,7 +25,7 @@ fn setup() -> (
     (tmp, sock, cache, registry, watchers)
 }
 
-/// wait=true + fresh entry (interval=60s) -> returns the cached value without re-executing.
+/// wait: forever + fresh entry (interval=60s) -> returns the cached value without re-executing.
 /// The returned data must equal the seeded value (not a live provider result).
 #[tokio::test]
 async fn wait_fresh_entry_is_served_from_cache() {
@@ -58,7 +58,7 @@ async fn wait_fresh_entry_is_served_from_cache() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     stream
-        .write_all(b"{\"op\":\"get\",\"key\":\"hostname\",\"wait\":true}\n")
+        .write_all(b"{\"op\":\"get\",\"key\":\"hostname\",\"wait\":\"forever\"}\n")
         .await
         .unwrap();
 
@@ -90,7 +90,7 @@ async fn wait_fresh_entry_is_served_from_cache() {
     handle.abort();
 }
 
-/// wait=true + stale entry (interval=0s) -> evicts the entry and re-executes inline,
+/// wait: forever + stale entry (interval=0s) -> evicts the entry and re-executes inline,
 /// returning age_ms=0 and the live provider value (not the seeded stale value).
 #[tokio::test]
 async fn wait_stale_entry_evicts_and_re_executes() {
@@ -122,7 +122,7 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let asked = std::time::Instant::now();
     stream
-        .write_all(b"{\"op\":\"get\",\"key\":\"hostname\",\"wait\":true}\n")
+        .write_all(b"{\"op\":\"get\",\"key\":\"hostname\",\"wait\":\"forever\"}\n")
         .await
         .unwrap();
 
@@ -164,7 +164,7 @@ async fn wait_stale_entry_evicts_and_re_executes() {
     handle.abort();
 }
 
-/// wait=true + static namespace -> returns the cached value regardless of staleness.
+/// wait: forever + static namespace -> returns the cached value regardless of staleness.
 /// Static namespaces have no source to re-execute, so the entry is served as-is.
 #[tokio::test]
 async fn wait_static_namespace_returns_cached_ignoring_stale() {
@@ -196,7 +196,7 @@ async fn wait_static_namespace_returns_cached_ignoring_stale() {
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     stream
-        .write_all(b"{\"op\":\"get\",\"key\":\"mystore\",\"wait\":true}\n")
+        .write_all(b"{\"op\":\"get\",\"key\":\"mystore\",\"wait\":\"forever\"}\n")
         .await
         .unwrap();
 
@@ -222,7 +222,7 @@ async fn wait_static_namespace_returns_cached_ignoring_stale() {
     handle.abort();
 }
 
-/// force=true wins over wait=true: the entry is always evicted and re-executed,
+/// force=true wins over wait: forever: the entry is always evicted and re-executed,
 /// regardless of whether wait is also set.
 #[tokio::test]
 async fn force_wins_over_wait() {
@@ -241,7 +241,7 @@ async fn force_wins_over_wait() {
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let asked = std::time::Instant::now();
     stream
-        .write_all(b"{\"op\":\"get\",\"key\":\"hostname\",\"force\":true,\"wait\":true}\n")
+        .write_all(b"{\"op\":\"get\",\"key\":\"hostname\",\"force\":true,\"wait\":\"forever\"}\n")
         .await
         .unwrap();
 

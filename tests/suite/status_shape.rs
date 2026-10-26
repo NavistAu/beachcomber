@@ -3173,7 +3173,7 @@ fn render_status_template(template: &str, rows: &[CacheRow]) -> String {
             _: &str,
             _: Option<&str>,
             _: bool,
-            _: bool,
+            _: libbeachcomber::Wait,
         ) -> Result<Option<Got>, FetchError> {
             Ok(None)
         }
@@ -3184,7 +3184,7 @@ fn render_status_template(template: &str, rows: &[CacheRow]) -> String {
         env: &env,
         slot: Slot::Global,
         force: false,
-        wait: false,
+        wait: libbeachcomber::Wait::Budget,
         allow_exec: false,
         now: std::time::SystemTime::now(),
     };

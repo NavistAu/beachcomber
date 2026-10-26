@@ -5,7 +5,7 @@
 
 use libbeachcomber::resolve::{self, Inputs, Slot};
 use libbeachcomber::resolve::{Fetch, FetchError, ResolveError};
-use libbeachcomber::{Client, ClientConfig, CombError, IntrospectSubject};
+use libbeachcomber::{Client, ClientConfig, CombError, IntrospectSubject, Wait};
 use std::collections::HashMap;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
@@ -58,7 +58,7 @@ fn every_client_op_that_waits_too_long_is_a_timeout() {
     assert_timeout("get", read(client.get("p.x", None)));
     assert_timeout(
         "fetch",
-        Fetch::get(&mut &client, "p.x", None, false, false).map_err(|e| match e {
+        Fetch::get(&mut &client, "p.x", None, false, Wait::Budget).map_err(|e| match e {
             FetchError::Transport(e) => e,
             other => panic!("expected a transport failure, got {other:?}"),
         }),
@@ -109,7 +109,7 @@ fn a_resolution_keeps_the_transports_kind_over_a_client_and_a_session() {
         env: &env,
         slot: Slot::Global,
         force: false,
-        wait: false,
+        wait: Wait::Budget,
         allow_exec: false,
         now: std::time::SystemTime::now(),
     };
@@ -120,5 +120,59 @@ fn a_resolution_keeps_the_transports_kind_over_a_client_and_a_session() {
 
     let mut session = client.session().expect("connects");
     let err = resolve::resolve("p.x", &inputs, &mut session).expect_err("times out");
+    assert_eq!(err.kind(), "timeout", "{err}");
+}
+
+/// A socket that answers every request line `"late"`, after `delay`.
+fn late_daemon(delay: Duration) -> (tempfile::TempDir, PathBuf) {
+    use std::io::{BufRead, Write};
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut reader = std::io::BufReader::new(&stream);
+                let mut line = String::new();
+                while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+                    line.clear();
+                    std::thread::sleep(delay);
+                    let _ = (&stream).write_all(b"{\"ok\":true,\"data\":\"late\"}\n");
+                }
+            });
+        }
+    });
+    (tmp, sock)
+}
+
+/// A read may take the client's timeout plus its wait: one that waits
+/// `forever` has no deadline, so an answer five timeouts late is still its
+/// answer, over a `Client` and a `Session`; with no wait it is a timeout.
+#[test]
+fn a_read_that_waits_forever_outlasts_the_timeout() {
+    let (_tmp, sock) = late_daemon(Duration::from_millis(25));
+    let client = impatient_client(&sock);
+    let env = HashMap::new();
+    let inputs = |wait| Inputs {
+        cwd: "/",
+        env: &env,
+        slot: Slot::Global,
+        force: false,
+        wait,
+        allow_exec: false,
+        now: std::time::SystemTime::now(),
+    };
+    let late = Some(serde_json::json!("late"));
+
+    let forever = inputs(Wait::Forever);
+    assert_eq!(
+        resolve::resolve("p.x", &forever, &mut { &client }),
+        Ok(late.clone())
+    );
+    let mut session = client.session().expect("connects");
+    assert_eq!(resolve::resolve("p.x", &forever, &mut session), Ok(late));
+
+    let err = resolve::resolve("p.x", &inputs(Wait::Budget), &mut { &client })
+        .expect_err("too late without the wait");
     assert_eq!(err.kind(), "timeout", "{err}");
 }

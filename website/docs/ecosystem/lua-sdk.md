@@ -96,7 +96,7 @@ Returns `nil, err` on failure.
 
 The value `comb get` prints for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace; a miss is `nil` with no error. The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `key` is `"provider"` or `"provider.field"`.
 
-`opts.cwd` is the directory the read addresses (default: the global entry); `opts.env` is the caller's environment for `env.*` refs (default: the calling process's environment, as `comb` renders); `opts.force` re-executes every Source the read demands first and `opts.wait` re-executes a stale entry inline, as `comb get --force`/`--wait` do. A template that calls `exec()` needs `exec = true` on the connect. Over `subprocess` a spawned `comb` renders with its own environment: `opts.env` is an `"unsupported"` error there, and a `get` without it sees this process's environment.
+`opts.cwd` is the directory the read addresses (default: the global entry); `opts.env` is the caller's environment for `env.*` refs (default: the calling process's environment, as `comb` renders); `opts.force` re-executes every Source the read demands first, as `comb get --force`; `opts.wait` is how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`, anything else a `"parse_error"` on both transports. A template that calls `exec()` needs `exec = true` on the connect. Over `subprocess` a spawned `comb` renders with its own environment: `opts.env` is an `"unsupported"` error there, and a `get` without it sees this process's environment.
 
 ### `Client:refresh(key [, opts])` → `true | nil, error`
 
@@ -136,7 +136,7 @@ Release the client.
 
 ### Errors
 
-An `err` carries `kind`, one of `Error.KINDS` — the ABI's `daemon_not_running`, `connection_failed`, `io_error`, `parse_error`, `server_error`, `timeout`, `bad_flags`, `busy`, `panic` and `version_skew`, and this SDK's own `library_not_found`, `library_symbol` and `unsupported`; `message`, the ABI's message as it came; and `library_version`, the loaded library's version (`nil` over `subprocess`). Branch on `kind`.
+An `err` carries `kind`, one of `Error.KINDS` — the ABI's `daemon_not_running`, `connection_failed`, `io_error`, `parse_error`, `server_error`, `timeout`, `busy`, `panic` and `version_skew`, and this SDK's own `library_not_found`, `library_symbol` and `unsupported`; `message`, the ABI's message as it came; and `library_version`, the loaded library's version (`nil` over `subprocess`). Branch on `kind`.
 
 ## Wire protocol reference
 

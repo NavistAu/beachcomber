@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import pytest
 
-from libbeachcomber import Client, ConnectionFailedError, DaemonNotRunningError, ServerError
+from libbeachcomber import (
+    Client,
+    ConnectionFailedError,
+    DaemonNotRunningError,
+    ParseError,
+    ServerError,
+)
 from libbeachcomber import TimeoutError as CombTimeoutError
 from libbeachcomber import _native
 from libbeachcomber.types import IntrospectSubject
@@ -58,8 +64,20 @@ def test_put_none_clears_entry(client: Client) -> None:
     assert client.get("widget3.v") is None
 
 
-def test_get_takes_the_force_and_wait_flags(client: Client) -> None:
-    assert client.get("hostname.short", force=True, wait=True) is not None
+def test_get_takes_force_and_a_wait_duration(client: Client) -> None:
+    for wait in ("forever", "0", "50ms"):
+        assert client.get("hostname.short", force=True, wait=wait) is not None
+        with client.session() as session:
+            assert session.get("hostname.short", wait=wait) is not None
+
+
+def test_a_wait_that_is_no_duration_is_a_parse_error(client: Client) -> None:
+    # The library reads the wait, so its refusal is the same on every SDK.
+    with pytest.raises(ParseError) as excinfo:
+        client.get("hostname.short", wait="soon")
+    assert "invalid wait `soon`" in excinfo.value.message
+    with client.session() as session, pytest.raises(ParseError):
+        session.get("hostname.short", wait=True)  # type: ignore[arg-type]
 
 
 def test_refresh_of_a_provider_does_not_raise(client: Client) -> None:

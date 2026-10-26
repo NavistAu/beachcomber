@@ -152,9 +152,11 @@ enum Commands {
         /// Re-execute every source the key demands, each at the instance that answers for the directory; static records survive
         #[arg(long)]
         force: bool,
-        /// Block until a fresh value is available
-        #[arg(long)]
-        wait: bool,
+        /// How long to wait for a run the read needs before answering what is stored: a duration
+        /// (`0` answers at once) or `forever`. Without it, a stored record waits its Source's
+        /// budget, and a cold read or --force waits for the run
+        #[arg(long, value_name = "DURATION|forever", value_parser = str::parse::<beachcomber::protocol::Wait>)]
+        wait: Option<beachcomber::protocol::Wait>,
     },
     /// Show daemon status
     #[command(visible_alias = "s", after_help = status_after_help())]
@@ -425,7 +427,7 @@ fn run(cli: Cli) -> Outcome {
                 effective_path.as_deref(),
                 format,
                 force,
-                wait,
+                wait.unwrap_or_default(),
             )
         }
         Commands::Status {

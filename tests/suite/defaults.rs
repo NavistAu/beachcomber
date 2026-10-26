@@ -223,7 +223,7 @@ impl libbeachcomber::resolve::Fetch for OneTemplate {
         key: &str,
         _path: Option<&str>,
         _force: bool,
-        _wait: bool,
+        _wait: libbeachcomber::Wait,
     ) -> Result<Option<libbeachcomber::resolve::Got>, libbeachcomber::resolve::FetchError> {
         Ok((key == "t").then(|| libbeachcomber::resolve::Got {
             template: Some(json!(self.0)),
@@ -243,7 +243,7 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
         env: &env,
         slot: Slot::Global,
         force: false,
-        wait: false,
+        wait: libbeachcomber::Wait::Budget,
         allow_exec: false,
         now: std::time::SystemTime::now(),
     };

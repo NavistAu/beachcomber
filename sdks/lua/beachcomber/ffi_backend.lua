@@ -114,12 +114,15 @@ function Backend:version()
   return self._version
 end
 
-local function flag_bits(flags)
-  flags = flags or {}
-  local bits = 0
-  if flags.force then bits = bits + ffi_loader.BC_GET_FORCE end
-  if flags.wait then bits = bits + ffi_loader.BC_GET_WAIT end
-  return bits
+--- `bc_get`'s `options_json`: the options the caller gave, `force` when it
+-- is set and `wait` as given; none at all is NULL.
+local function options_json_of(options)
+  options = options or {}
+  local given = {}
+  if options.force then given.force = true end
+  if options.wait ~= nil then given.wait = options.wait end
+  if next(given) == nil then return nil end
+  return json.encode(given)
 end
 
 --- `env_vars` nil is a NULL `env_json`: the library renders with the calling
@@ -129,8 +132,8 @@ local function env_json_of(env_vars)
   return json.encode(env_vars)
 end
 
-function Backend:get(key, cwd, env_vars, flags)
-  local ptr = self._C.bc_get(self._client, key, cwd, env_json_of(env_vars), flag_bits(flags))
+function Backend:get(key, cwd, env_vars, options)
+  local ptr = self._C.bc_get(self._client, key, cwd, env_json_of(env_vars), options_json_of(options))
   return unwrap_value(decode(self._C, ptr))
 end
 
@@ -184,8 +187,8 @@ end
 --- bc_session_get: Backend:get on this session's connection. A nil `cwd`
 -- is the session's directory (set_context) when it has one, else the
 -- global entry.
-function Session:get(key, cwd, env_vars, flags)
-  local ptr = self._C.bc_session_get(self._s, key, cwd, env_json_of(env_vars), flag_bits(flags))
+function Session:get(key, cwd, env_vars, options)
+  local ptr = self._C.bc_session_get(self._s, key, cwd, env_json_of(env_vars), options_json_of(options))
   return unwrap_value(decode(self._C, ptr))
 end
 

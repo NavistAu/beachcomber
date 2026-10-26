@@ -49,16 +49,23 @@ def _opt_json(value: Optional[Any]) -> Optional[str]:
 
 
 def _read_args(
-    cwd: Optional[str], env: Optional[dict], force: bool, wait: bool
-) -> tuple[Optional[bytes], Optional[bytes], int]:
-    """The ``cwd``, ``env_json`` and ``flags`` arguments ``bc_get`` and
-    ``bc_session_get`` take."""
+    cwd: Optional[str], env: Optional[dict], force: bool, wait: Optional[str]
+) -> tuple[Optional[bytes], Optional[bytes], Optional[bytes]]:
+    """The ``cwd``, ``env_json`` and ``options_json`` arguments ``bc_get`` and
+    ``bc_session_get`` take. The options are the ones the caller gave:
+    ``force`` when it is set, ``wait`` as it was given; none at all is
+    NULL."""
+    options: dict = {}
+    if force:
+        options["force"] = True
+    if wait is not None:
+        options["wait"] = wait
     env_json = _opt_json(env)
-    flags = (_native.BC_GET_FORCE if force else 0) | (_native.BC_GET_WAIT if wait else 0)
+    options_json = _opt_json(options or None)
     return (
         cwd.encode() if cwd is not None else None,
         env_json.encode() if env_json is not None else None,
-        flags,
+        options_json.encode() if options_json is not None else None,
     )
 
 
@@ -289,7 +296,7 @@ class Client:
         cwd: Optional[str] = None,
         env: Optional[dict] = None,
         force: bool = False,
-        wait: bool = False,
+        wait: Optional[str] = None,
     ) -> Any:
         """The value ``comb get`` prints for this key, cwd and env.
 
@@ -308,7 +315,11 @@ class Client:
             env: The caller's environment for ``env.*`` refs. ``None`` means
                 the calling process's environment, as ``comb`` renders.
             force: Re-execute every Source the read demands first.
-            wait: Re-execute a stale entry inline before answering.
+            wait: How long to wait for a run the read needs before
+                answering what is stored, as ``comb get --wait``: a duration
+                (``"0"``, ``"50ms"``, ``"2s"``) or ``"forever"``. ``None`` is
+                the read's budget. The read may take ``timeout_ms`` plus the
+                wait; ``"forever"`` has no deadline.
 
         Returns:
             The value, or ``None`` on a miss.
@@ -537,7 +548,7 @@ class Session:
         cwd: Optional[str] = None,
         env: Optional[dict] = None,
         force: bool = False,
-        wait: bool = False,
+        wait: Optional[str] = None,
     ) -> Any:
         """:meth:`Client.get` on the persistent connection. ``cwd=None`` is
         this session's directory (:meth:`set_context`) when it has one, else

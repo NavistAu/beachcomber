@@ -14,7 +14,7 @@
 -- so a caller that cares about latency can check it rather than discover a
 -- 5ms-per-call transport in a profile.
 --
--- A backend implements: name(), get(key,cwd,env,flags),
+-- A backend implements: name(), get(key,cwd,env,options),
 -- put(key,data,ttl,path), status(), close(), and optionally version(),
 -- refresh(key,path), introspect(subject,duration_secs), hello(),
 -- eval(template,cwd,env), watch_open(key,cwd,env) and session_open() (a
@@ -47,7 +47,9 @@ local function closed(what, library_version)
   return nil, Error.new("io_error", "the " .. what .. " is closed", library_version)
 end
 
-local function flags_of(opts)
+--- What a get asks besides its key, cwd and env: `force`, and `wait` as
+-- the caller gave it, for the library to read.
+local function options_of(opts)
   return { force = opts.force, wait = opts.wait }
 end
 
@@ -78,7 +80,7 @@ end
 function Session:get(key, opts)
   if self._closed then return closed("session", self._version) end
   opts = opts or {}
-  return answer(self._handle:get(key, opts.cwd, opts.env, flags_of(opts)), self._version)
+  return answer(self._handle:get(key, opts.cwd, opts.env, options_of(opts)), self._version)
 end
 
 --- Client:put on this session; no `opts.path` is the session's directory.
@@ -144,13 +146,19 @@ end
 --                      working directory); nil is the global entry.
 --                      opts.env: the caller's environment for env.* refs;
 --                      nil is the calling process's environment, as comb renders.
---                      opts.force: re-execute every Source the read demands first.
---                      opts.wait: re-execute a stale entry inline before answering.
+--                      opts.force: re-execute every Source the read demands
+--                      first, as comb get --force.
+--                      opts.wait: how long to wait for a run the read needs
+--                      before answering what is stored, as comb get --wait:
+--                      a duration ("0", "50ms", "2s") or "forever"; anything
+--                      else is a "parse_error". nil is the read's budget: a
+--                      stored record waits its Source's budget, a cold read
+--                      waits for its run.
 -- @return value, or nil on a miss (no Error), or nil, Error
 function Client:get(key, opts)
   if self._closed then return closed("client", self._version) end
   opts = opts or {}
-  return answer(self._backend:get(key, opts.cwd, opts.env, flags_of(opts)), self._version)
+  return answer(self._backend:get(key, opts.cwd, opts.env, options_of(opts)), self._version)
 end
 
 --- Render a template that is stored nowhere — the same value `comb eval`
