@@ -78,6 +78,8 @@ All responses are a single line of JSON:
   "Template half" under `Get`.
 - `rest` (string, optional) — for `Get` responses, the part of the key the
   template walk could not consume.
+- `memo` (any, optional) — for `Get` responses, the memo half beside the
+  template half. See "Memo half" under `Get`.
 
 All optional fields are omitted (not set to null) when not applicable.
 
@@ -180,7 +182,7 @@ Read a cached value.
 
 **Response (error):**
 ```json
-{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, put, source or cache)"}
+{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, memo, put, source or cache)"}
 ```
 
 #### Freshness
@@ -254,10 +256,50 @@ never carries a template half; it reads the facet's own records as `data`.
 {"ok": true, "template": "{{ {'cpu': 40, 'mem': 12} }}", "rest": "cpu"}
 ```
 
-`Watch` frames carry the same two halves, so a streamed value renders exactly as
+`Watch` frames carry the same halves, so a streamed value renders exactly as
 a fetched one. A write to a namespace or to any of its facets notifies the
 namespace's watchers, so editing a template alone delivers a frame with no new
 `data`.
+
+#### Memo half
+
+A template leaf whose expression pipes through `| cache()` has its value
+stored by the client after it renders (the `memo` op, below): its **memo**,
+at the leaf's address in the `<p>:memo` facet, with its record (the client's
+hash of the leaf's inputs, and the triggers that invalidate it) in
+`<p>:cache`. A `get` that attaches a template half attaches the memo half
+beside it, `memo`, when a leaf of that template has a memo:
+
+- for a string template, one object, the memo of that leaf;
+- for a group, a tree shaped like the template tree, with that object at each
+  leaf that has a memo, and no key for a leaf that has none.
+
+```json
+{"ok": true, "template": "{{ 'kubectl config current-context' | cache() | exec() }}",
+ "memo": {"hash": "9c6001d328a94690", "stale": false, "age_ms": 5200, "data": "prod"}}
+```
+
+- `hash` — the hash the client computed when it stored the memo, 16 lowercase
+  hex digits. Absent once an invalidation has dropped it: a memo with no hash
+  is a miss for every reader.
+- `stale` — whether the memo is past its `ttl`; `age_ms` — how long since it
+  was stored.
+- `data` — the leaf's value. Absent for a **memo of absence**: a leaf that
+  rendered nothing is remembered as having rendered nothing, and `null` is
+  never stored.
+
+A memo is found as a static record is: up the chain from the requested path,
+nearest first, so a memo stored at a directory serves the directories below it.
+It is read only through its template: a namespace with no template at an
+address carries no memo half there, whatever `<p>:memo` holds. The daemon does
+not decide a hit: the client compares the hash with its own and takes the memo
+only when they are equal and the memo is not stale.
+
+The daemon drops a memo's hash, and notifies the namespace's watchers at the
+memo's directory, when the field is invalidated: a `put` or a configuration
+reload of the template at or above the leaf (`<p>:template`), a data write at
+or under the leaf (a `put` to `<p>`, its removal or expiry, a configuration
+seed, or a Source's run storing the field), and a `refresh` of the key.
 
 #### Keys
 
@@ -276,9 +318,9 @@ spellings, so a key reads the same here as in a template:
 Brackets are the one quoting form. Only a colon in the head names a facet; below
 it a colon is an ordinary character, so `git.branch:age` is an ordinary miss.
 There are no metadata suffixes. The facets are a closed set — `template`,
-`macro`, `put`, `source` and `cache` — and any other name after the colon, a
+`macro`, `memo`, `put`, `source` and `cache` — and any other name after the colon, a
 second colon in the head or an empty provider before it is `invalid facet key:
-<head> (a facet is template, macro, put, source or cache)`, on every op. Anything else the grammar
+<head> (a facet is template, macro, memo, put, source or cache)`, on every op. Anything else the grammar
 cannot read is `invalid key: <key>`: an empty head or segment (`p..a`, a
 trailing `.`), a head starting with `/` or `~`, a stray `]`, an unterminated
 bracket or quote, an index that is not a canonical decimal (`[01]`).
@@ -305,6 +347,12 @@ readable on its own:
   configured library is: a string under a name, at `<p>:macro.<name>` or as a
   table of them at `<p>:macro`, that compiles and prints nothing outside its
   macros.
+- `<p>:memo` — the values `| cache()` stored for `<p>`'s template leaves, each
+  at its leaf's address (see "Memo half"). A namespace of its own, read like
+  `:template` (`get kubecontext:memo.context`), with no template half; each
+  value's `age_ms` and `stale` are its memo's. A memo of absence holds no
+  value here. Written only by the `memo` op: a `put` to it is `<p>:memo is
+  written by cache(); edit <p>:template.<f>, or refresh <p>`.
 - `<p>:put` — what `put` and `config:<file>` seeds stored.
 - `<p>:source` — what the provider's Sources produced. A `put` does not hide
   it here.
@@ -329,11 +377,12 @@ tree of its leaves' answers.
 ```
 
 - `age_ms`, `stale`, `source` are derived at the read. `source` is `put`,
-  `template`, `config(<file>)` for a configuration seed, `computed(result)` /
-  `computed(return)` for a leaf a provider line computed, or `source(<name>)`
-  for a Source. A value served
-  by a template has these three only (`age_ms` 0, `stale` false, `source`
-  `template`). A miss is a miss.
+  `template`, `memo`, `config(<file>)` for a configuration seed,
+  `computed(result)` / `computed(return)` for a leaf a provider line computed,
+  or `source(<name>)` for a Source. A value served by a template with no memo
+  has two only (`stale` false, `source` `template`). A template leaf with a
+  memo answers for the memo: `source` `memo`, the memo's `age_ms` and `stale`,
+  and its stored keys. A miss is a miss.
 - `executing` is derived too, for a Source's record: `true` while a run of the
   record's instance is in flight, whoever started it (a read that stopped
   waiting for it, a poll, a file event, a refresh). A template can read it
@@ -345,6 +394,9 @@ tree of its leaves' answers.
   of those inputs as its run stamped them (FNV-1a 64 over each input's path and
   stamp, `libbeachcomber::validity`), 16 lowercase hex digits. A read checks
   the record by stamping the inputs again. A Source that only polls has none.
+  A memo's `hash` is the one its `memo` op carried, until an invalidation drops
+  it; its `watch` is the absolute paths the op named, and a `ttl` stores `poll`
+  (`{interval, count: 1}`) and `decay` 1, as a `put`'s does.
 - `decay` is the number of decay steps before eviction. It is data: a Source
   takes the nearest `_` prototype, looking at each directory from the requested
   one up to `$HOME` for `<p>:cache._.decay` and then `*:cache._.decay` (every
@@ -374,11 +426,15 @@ requested directory — the root its `root` names for it, or the one instance at
 `~` for a Source with no root — so `path` is optional and is only consulted by
 Sources that have a root. A facet outside the closed set is the same
 error `get`/`put`/`watch` give: `{"ok": false, "error": "invalid facet key:
-<head> (a facet is template, macro, put, source or cache)"}`.
+<head> (a facet is template, macro, memo, put, source or cache)"}`.
 
-A key that names no Source has nothing to re-execute and is an **error**: a
-static namespace (one created by `put` or a config seed), an unknown name, or a
-field no Source owns. A layer facet or `:cache` key is `cannot refresh <key>: a
+A `refresh` also drops the hash of every memo at or under the key, at every
+directory, so the next read of a cached template renders it afresh, and notifies
+the namespace's watchers there.
+
+A key that names no Source and no memo has nothing to re-execute and is an
+**error**: a static namespace (one created by `put` or a config seed), an
+unknown name, or a field no Source owns. A layer facet or `:cache` key is `cannot refresh <key>: a
 layer facet is read-only`. Reading configuration afresh is not a
 refresh — the config watcher does that.
 
@@ -399,7 +455,7 @@ Store static data at any node of the tree. `key` is `namespace` or
 itself be a facet address (`<provider>:<facet>`; a facet outside the closed
 set is `invalid facet key: <head> …`, the same check `get`/`refresh`/`watch`
 apply). Of the facets, `put` writes only `template`, `macro` and a `cache`
-`_.decay`.
+`_.decay`; `memo` is the `memo` op's.
 `data` is required. A put **replaces** the node it addresses: nothing merges
 implicitly, so `put my '{"b":2}'` states all of `my` at that directory, and
 `put my.b 2` replaces only `my.b`. `null` means absent: `data: null` removes the
@@ -464,13 +520,63 @@ invalid, `invalid request: missing field `data``.)
 ```
 
 **Error cases:**
-- A facet outside the closed set on the namespace segment: `{"ok": false, "error": "invalid facet key: <head> (a facet is template, macro, put, source or cache)"}`
+- A facet outside the closed set on the namespace segment: `{"ok": false, "error": "invalid facet key: <head> (a facet is template, macro, memo, put, source or cache)"}`
 - A key the grammar cannot read: `{"ok": false, "error": "invalid key: <key>"}`
 - A write to a layer facet: `<p>:put and <p>:source are read-only; write <p>.<node>`
+- A write to `<p>:memo`: `<p>:memo is written by cache(); edit <p>:template.<f>, or refresh <p>`
 - A write to `<p>:cache` other than `_.decay`, or a `_.decay` that is not a positive integer: see "The `:cache` facet"
 - A `ttl` of `0s`: `ttl must be at least 1s`; an unparsable one: `invalid ttl: <ttl>`; a `ttl` with `data: null`: `a ttl on an absent value has no meaning`
 - Non-object `data` at a namespace root: `{"ok": false, "error": "put data at the root must be an object"}`
 - More than ten node segments in `key`: `{"ok": false, "error": "put key is nested too deeply (limit 10 segments)"}`
+
+### `Memo`
+
+Store what a template leaf's `| cache()` computed. The client's resolver sends
+it after a render that missed, once the value has been handed to its caller;
+no SDK binds it.
+
+**Request:**
+```json
+{"op": "memo", "key": "kubecontext.context", "path": "/Users/j/ws/p",
+ "hash": "9c6001d328a94690", "data": "prod",
+ "watch": ["/Users/j/.kube/config"], "ttl": "10m"}
+```
+
+- `key` (string, required) — the template leaf, `provider.field`: a facet or a
+  bare provider is refused.
+- `path` (string, optional) — the reader's directory, as every op's: omitted
+  (or `$HOME`) is the global entry. A memo is stored at the reader's directory
+  and serves the directories below it.
+- `hash` (string, required) — the client's hash of the leaf's inputs, sixteen
+  lowercase hex digits.
+- `data` (any, optional) — the leaf's value. Absent (or `null`) stores a memo
+  of absence.
+- `watch` (array of strings, optional) — the files whose change invalidates
+  the memo, absolute: the client expanded `~` and made them absolute.
+- `ttl` (string, optional) — how long the memo is valid, whole seconds and at
+  least `1s`, as a `put`'s `ttl`.
+
+The write replaces the memo at that address and directory — its value, its
+stored keys and its age together — and any memo at an address above or below
+it there; it notifies the namespace's watchers at `path`. A memo's `hash`,
+`watch`, `poll` and `decay` are read back through `<p>:cache.<field>`, its
+value through `<p>:memo.<field>` and the memo half.
+
+**Response:**
+```json
+{"ok": true}
+```
+
+**Error cases:**
+- A facet key: `memo takes a provider.field key, not a facet: <key>`; a bare
+  provider: `memo takes a provider.field key: <key> names no field`
+- A hash that is not sixteen lowercase hex digits: `invalid memo hash: <hash>
+  (sixteen lowercase hex digits)`
+- A relative watch path: `a memo's watch paths are absolute: <path>`
+- A `ttl` of `0s`: `ttl must be at least 1s`; an unparsable one or one finer
+  than a second: `invalid ttl: <ttl>`
+- More than ten node segments in `key`, an invalid key or provider name: as
+  for `put`
 
 ### `Status`
 
@@ -515,7 +621,9 @@ List all cache entries currently held by the daemon.
 
 `source` is the row's record's label, presented as a `:cache` answer's is:
 `source(<name>)` for a Source of the provider (`source(head)`, …), `put`,
-`config(<file>)` or `computed(<line>)`. `kind` is
+`config(<file>)`, `computed(<line>)`, or `memo` for a `<p>:memo` row (one per
+memo that holds a value, aged by its memo; a memo's stored keys are not rows
+of their own). `kind` is
 present when the row's lifecycle discriminator is known: `{"kind":
 "lifecycle", "decay": N, "depth": D, "watches_files": bool}` for a lifecycle-tracked row,
 `{"kind": "once"}` / `{"kind": "static"}` / `{"kind": "transient"}`
@@ -555,8 +663,8 @@ a layer facet or `:cache` key warms no Source.
 
 The daemon emits one initial event with the current value, then one
 response per subsequent change. The initial event and every later one are
-the same chain-resolved read `Get` returns — **both halves**, `data` and
-`template` — and the watch fires on a change to **any entry on either
+the same chain-resolved read `Get` returns — **every half**, `data`,
+`template` and `memo` — and the watch fires on a change to **any entry on either
 chain**: a `put` at an ancestor, or at the global entry, reaches a watch
 opened at a project path. Any write to a namespace or one of its facets
 (`p:template`, `p:put`, `p:cache`) wakes the namespace's watchers, so a template
@@ -566,7 +674,9 @@ daemon drops the subscription as soon as the client closes the connection,
 not on the next write to the watched key. The connection is single-purpose:
 after the watch request the client must not write again, and any further
 bytes from it — a pipelined line, a stray newline — end the watch just as a
-close does.
+close does. A frame is sent when its `data`, its `template` or its `memo` half
+changed; ages are not compared, so a memo whose hash was dropped is a frame, and
+one that only grew older is not.
 
 This op is unchanged by, and knows nothing about, *resolved* watching — a
 value re-resolved over every key its resolution reads, emitted only when that
@@ -703,9 +813,11 @@ leaf key answers with its array alone):
   "age_ms": 3000, "stale": false}]
 ```
 
-The order is the read's: the template records for the leaf first
-(`<p>:template` up the chain from `path`, nearest first, `facet:
-"template"`, `value` the raw expression), then a leaf the provider's
+The order is the read's: the memo records for a template leaf first
+(`<p>:memo` up the chain from `path`, nearest first, label `memo`, `facet:
+"memo"`, `value` the memo's value, `null` for a memo of absence), then the
+template records for the leaf (`<p>:template` up the chain from `path`,
+nearest first, `facet: "template"`, `value` the raw expression), then a leaf the provider's
 `result` or `return` line computed (`computed(<line>)`), then, for each
 directory of the read's chain nearest first, its `put`, its `config(<file>)`
 seeds (every file that sets the leaf, the last in composition order first,
@@ -715,8 +827,9 @@ each Source instance the read reaches there
 holds a record that stands as a scalar on an ancestor of it, which hides the
 leaf in that layer. `label` is presented as a `:cache` answer's `source` is;
 `path` is the directory the record is stored at (`null`: the global entry).
-`answered` is present, and true, on the one layer the read takes: the first
-template record when a template stands at the leaf, otherwise the record the
+`answered` is present, and true, on the one layer the read takes: when a
+template stands at the leaf, the nearest memo while it is live (it has a
+`hash` and is not stale), else the first template record; otherwise the record the
 merged read resolves to (a `put` that replaced a node can hide nearer
 records below it, so the answer is not always the first data layer).
 

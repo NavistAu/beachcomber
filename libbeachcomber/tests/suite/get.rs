@@ -118,7 +118,7 @@ fn client_get_reports_daemon_rejection() {
     match client.get("a:b:c.x", None) {
         Err(ResolveError::Fetch(FetchError::Rejected(msg))) => assert_eq!(
             msg,
-            "invalid facet key: a:b:c (a facet is template, macro, put, source or cache)",
+            "invalid facet key: a:b:c (a facet is template, macro, memo, put, source or cache)",
         ),
         other => panic!("expected a rejection, got {other:?}"),
     }

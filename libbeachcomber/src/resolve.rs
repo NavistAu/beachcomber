@@ -36,7 +36,9 @@ use std::sync::{Arc, PoisonError, RwLock, mpsc};
 /// `data` is the cached value at the address, `template` the template tree in
 /// effect there — a string for a leaf, an object for a group. `rest` is the
 /// address left over when the template walk stopped at a string, so the
-/// client can walk it into what that string renders to. `age_ms` and `stale`
+/// client can walk it into what that string renders to. `memo` is what
+/// `| cache()` stored for the template's leaves, beside the template and
+/// shaped like it ([`crate::protocol::Response::memo`]). `age_ms` and `stale`
 /// accompany `data` and nothing else. All-`None` is a miss.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Got {
@@ -46,6 +48,9 @@ pub struct Got {
     pub template: Option<JsonValue>,
     /// The address left over past a template string, to walk into what it renders.
     pub rest: Option<String>,
+    /// The memo half: one memo object for a string template, a tree of them
+    /// for a group, present only with `template`.
+    pub memo: Option<JsonValue>,
     /// Age of `data`, present only with it.
     pub age_ms: Option<u128>,
     /// Staleness of `data`, present only with it.

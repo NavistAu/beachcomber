@@ -1,6 +1,6 @@
 //! Facet keys (`provider:facet`), checked at the request boundary by
 //! `libbeachcomber::key::split_facet`: the facets are `template`, `macro`,
-//! `put`, `source` and `cache`, and no other.
+//! `memo`, `put`, `source` and `cache`, and no other.
 
 use crate::common::git::GitRepoFixture;
 use beachcomber::cache::Cache;
@@ -27,9 +27,9 @@ fn setup() -> (
     (tmp, sock, cache, registry, watchers)
 }
 
-/// The daemon's words for a head whose facet is not one of the four.
+/// The daemon's words for a head whose facet is not one of the six.
 fn invalid_facet(head: &str) -> String {
-    format!("invalid facet key: {head} (a facet is template, macro, put, source or cache)")
+    format!("invalid facet key: {head} (a facet is template, macro, memo, put, source or cache)")
 }
 
 async fn send_recv(stream: &mut UnixStream, request: &str) -> Response {
@@ -236,8 +236,8 @@ async fn a_put_to_macro_is_linted() {
     handle.abort();
 }
 
-// The facets are a closed set: `template`, `macro`, `put`, `source` and
-// `cache`. Any other name after the colon is refused by every op that takes a
+// The facets are a closed set: `template`, `macro`, `memo`, `put`, `source`
+// and `cache`. Any other name after the colon is refused by every op that takes a
 // key, naming the head as the caller wrote it, and nothing is stored or read.
 
 #[tokio::test]
@@ -249,7 +249,7 @@ async fn an_unknown_facet_is_an_invalid_facet_key_on_every_op() {
     for (key, head) in [
         ("myapp:notes", "myapp:notes"),
         ("myapp:notes.x", "myapp:notes"),
-        ("git:memo.branch", "git:memo"),
+        ("git:memos.branch", "git:memos"),
         ("p:Template", "p:Template"),
         ("p:bogus:put.x", "p:bogus:put"),
         ("p:bogus:cache", "p:bogus:cache"),

@@ -1007,13 +1007,14 @@ fn envelope(line: &str, skew: Option<&VersionSkew>) -> Result<Response, CombErro
     Ok(resp)
 }
 
-/// A `get` response's both halves, each `None` when absent, so a miss is
+/// A `get` response's halves, each `None` when absent, so a miss is
 /// `Got::default()`.
 fn parse_node(resp: Response) -> resolve::Got {
     resolve::Got {
         data: resp.data,
         template: resp.template,
         rest: resp.rest,
+        memo: resp.memo,
         age_ms: resp.age_ms,
         stale: resp.stale,
     }
@@ -1092,10 +1093,10 @@ mod tests {
         }
     }
 
-    /// A `get` response read as a `Got` keeps both halves: the eight response shapes of the
+    /// A `get` response read as a `Got` keeps every half: the eight response shapes of the
     /// one-tree design §3.4 — a template leaf, a template group, data plus a
     /// tree, data plus a template, data alone, a template plus `rest`, a
-    /// miss, and a rejected key.
+    /// miss, and a rejected key — and a template with its memo half.
     #[test]
     fn parse_node_reads_every_response_shape() {
         use resolve::Got;
@@ -1125,6 +1126,7 @@ mod tests {
                 data: Some(json!({"lit": 1})),
                 template: Some(json!({"theme": "t", "widgets": {"foo": "f"}})),
                 rest: None,
+                memo: None,
                 age_ms: Some(30),
                 stale: Some(false),
             }
@@ -1137,6 +1139,7 @@ mod tests {
                 data: Some(json!("default")),
                 template: Some(json!("{{ env.TF_WORKSPACE or comb.terraform.workspace }}")),
                 rest: None,
+                memo: None,
                 age_ms: Some(812),
                 stale: Some(false),
             }
@@ -1147,6 +1150,7 @@ mod tests {
                 data: Some(json!("feature/x")),
                 template: None,
                 rest: None,
+                memo: None,
                 age_ms: Some(812),
                 stale: Some(true),
             }
@@ -1156,6 +1160,18 @@ mod tests {
             Got {
                 template: Some(json!("{{ {'cpu': 40, 'mem': 12} }}")),
                 rest: Some("cpu".to_string()),
+                ..Got::default()
+            }
+        );
+        assert_eq!(
+            node(
+                r#"{"ok":true,"template":{"a":"{{ x }}","b":"{{ y }}"},"memo":{"a":{"hash":"9c6001d328a94690","stale":false,"age_ms":4,"data":"prod"}}}"#
+            ),
+            Got {
+                template: Some(json!({"a": "{{ x }}", "b": "{{ y }}"})),
+                memo: Some(
+                    json!({"a": {"hash": "9c6001d328a94690", "stale": false, "age_ms": 4, "data": "prod"}})
+                ),
                 ..Got::default()
             }
         );

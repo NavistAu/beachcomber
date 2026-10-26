@@ -3301,3 +3301,69 @@ fn macro_rows_are_facet_rows() {
         "{table}"
     );
 }
+
+/// A template leaf's memo is a facet row of `<p>:memo`, one per memo that
+/// holds a value: hidden by default, shown by `--filter facet=memo`,
+/// SOURCE `memo`, VALUE the memo's, aged by it. A memo of absence has no
+/// value to show, and the keys stored for a memo in `<p>:cache` are no rows.
+#[test]
+fn memo_rows_are_facet_rows() {
+    use crate::common::daemon::TestDaemon;
+    use crate::common::socket::IsolatedSocket;
+    use std::io::{BufRead, Write};
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().canonicalize().unwrap();
+    let (home, xdg) = (root.join("home"), root.join("xdg"));
+    let d = TestDaemon::serve_in_process(IsolatedSocket::new(), home.clone(), xdg);
+    let mut stream = std::os::unix::net::UnixStream::connect(&d.socket.path).unwrap();
+    let mut lines = std::io::BufReader::new(stream.try_clone().unwrap()).lines();
+    for request in [
+        serde_json::json!({"op": "put", "key": "demo:template", "data": {"f": "{{ 1 }}", "g": "{{ none }}"}}),
+        serde_json::json!({"op": "memo", "key": "demo.f", "hash": "9c6001d328a94690", "data": 1, "ttl": "1h"}),
+        serde_json::json!({"op": "memo", "key": "demo.g", "hash": "9c6001d328a94690"}),
+    ] {
+        writeln!(stream, "{request}").unwrap();
+        let answer: serde_json::Value =
+            serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        assert_eq!(answer["ok"], serde_json::json!(true), "{answer}");
+    }
+    let rows = |args: &[&str]| -> Vec<serde_json::Value> {
+        let out = d
+            .comb(&home)
+            // The shipped templates' `exec()` would spawn the stub tools.
+            .args([
+                "--no-exec",
+                "status",
+                "-f",
+                "json",
+                "--filter",
+                "provider=demo",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .filter(|r: &serde_json::Value| r["provider"] == "demo:memo")
+            .collect()
+    };
+
+    assert_eq!(
+        rows(&[]),
+        Vec::<serde_json::Value>::new(),
+        "hidden by default"
+    );
+    let shown = rows(&["--filter", "facet=memo"]);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    let row = &shown[0];
+    assert_eq!(row["field"], serde_json::json!("f"));
+    assert_eq!(row["source"], serde_json::json!("memo"));
+    assert_eq!(row["value"], serde_json::json!(1));
+    assert!(row["age_ms"].is_u64(), "{row}");
+}

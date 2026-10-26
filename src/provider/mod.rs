@@ -163,6 +163,20 @@ pub fn lookup_path<'a>(fields: &'a HashMap<String, Value>, path: &str) -> Option
     Some(current)
 }
 
+/// [`lookup_path`], for writing in place.
+pub fn lookup_path_mut<'a>(
+    fields: &'a mut HashMap<String, Value>,
+    path: &str,
+) -> Option<&'a mut Value> {
+    let segments = libbeachcomber::key::segments(path);
+    let (head, rest) = segments.split_first()?;
+    let mut current = fields.get_mut(head.as_ref())?;
+    for segment in rest {
+        current = child_mut(current, segment)?;
+    }
+    Some(current)
+}
+
 /// The node one segment below `value`: an object's member, or an array's
 /// element at an index ([`libbeachcomber::key::array_index`]).
 pub fn child<'a>(value: &'a Value, segment: &str) -> Option<&'a Value> {

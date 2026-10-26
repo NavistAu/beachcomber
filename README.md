@@ -518,6 +518,7 @@ A field's value is the first layer that has it, in this order: the effective **t
 | `git.branch` | the first layer that has it |
 | `git:template.branch` | the template text, unrendered |
 | `scanline:macro.rate` | a macro library's text, which a client template imports (`[client.providers.<p>] macro.<name>`) |
+| `kubecontext:memo.context` | the value a template leaf's `\| cache()` stored, served in place of rendering it while it is valid (read-only) |
 | `git:put.branch` | what `put` and `config:` seeds stored (read-only) |
 | `git:source.branch` | what the Source computed, even where a `put` hides it (read-only) |
 | `git:cache.branch` | the daemon's metadata about `git.branch` |
@@ -528,8 +529,9 @@ A field's value is the first layer that has it, in this order: the effective **t
 |---|---|
 | `age_ms` | Milliseconds since the value was last computed (0 for a rendered template) |
 | `stale` | Whether the value is past its expected refresh time |
-| `source` | What answered: `put`, `template`, `config(<file>)`, `computed(<line>)`, or `source(<name>)`, e.g. `source(head)` |
+| `source` | What answered: `put`, `template`, `memo` (a template leaf's stored value), `config(<file>)`, `computed(<line>)`, or `source(<name>)`, e.g. `source(head)` |
 | `poll`, `watch`, `decay` | The lifecycle the entry registered with: poll `{interval, count}`, watched paths, decay steps before eviction |
+| `hash` | What the record's validity is checked against: a Source's inputs as its run stamped them, or the hash a memo was stored under, until an invalidation drops it |
 
 ```sh
 comb g.j git:cache.branch .   # → {"age_ms": 1240, "stale": false, "source": "source(head)", ...}
@@ -538,7 +540,7 @@ comb g.j git:source .         # the Source's whole answer, ignoring any put over
 
 `age_ms`, `stale` and `source` are derived at the read, as is `executing` on a Source's record (`true` while a run of its instance is in flight), and none of them can be written. The one `:cache` key you can put is a decay prototype: `comb put '*:cache._.decay' 3` sets the decay depth (default 4) for every provider, `comb put 'git:cache._.decay' 6` for one, and `--path` scopes either to a directory and below.
 
-Only a colon in the provider's own segment names a facet (`git:cache.branch`), and the five above are the only facets: `git:memo` or `git:notes` is `invalid facet key` on every command, `comb put` included. Below the provider's segment a colon is an ordinary character (`mise.cargo:cargo-nextest`), so `git.branch:age` is a miss. Keys take jinja's subscripts too: `p.list[0]`, and `'mise["go:golang.org/x/tools/gopls"]'` for a name holding a `.`.
+Only a colon in the provider's own segment names a facet (`git:cache.branch`), and the six above are the only facets: `git:notes` or `git:memos` is `invalid facet key` on every command, `comb put` included. Below the provider's segment a colon is an ordinary character (`mise.cargo:cargo-nextest`), so `git.branch:age` is a miss. Keys take jinja's subscripts too: `p.list[0]`, and `'mise["go:golang.org/x/tools/gopls"]'` for a name holding a `.`.
 
 ---
 
@@ -1728,7 +1730,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `hello`, `get`, `refresh`, `put`, `watch`, `status`, `introspect`, `layers` |
+| `op` | string | Operation: `hello`, `get`, `refresh`, `put`, `memo`, `watch`, `status`, `introspect`, `layers` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute directory the request addresses; omitted, the global entry. A path that is not absolute is refused. |
 | `force` | bool | (`get` only) Trigger immediate recomputation before returning. |
@@ -1740,7 +1742,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240, "stale": false}
 {"ok": true, "data": "main", "age_ms": 1240, "stale": false}
 {"ok": true, "data": null, "age_ms": null, "stale": false}
-{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, put, source or cache)"}
+{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, memo, put, source or cache)"}
 ```
 
 **Fields:**
@@ -1767,6 +1769,12 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op":"put","key":"myapp","data":{"status":"healthy"}}
 {"op":"put","key":"myapp.deploy.count","data":3}
 {"op":"put","key":"myapp","data":{"status":"ok"},"ttl":"30s","path":"/project"}
+```
+
+**`memo`:** Store what a template leaf's `| cache()` computed — the client's resolver sends it after a render that missed, and no SDK binds it. `key` is the leaf (`provider.field`, never a facet), `path` the reader's directory, `hash` the client's sixteen lowercase hex digits over the leaf's inputs, `data` the leaf's value (absent for a leaf that rendered nothing), `watch` the absolute paths whose change invalidates it, `ttl` its lifetime. A `get` that attaches a template half then carries the memo beside it as `memo` (`{hash, stale, age_ms, data}`, a tree of them for a group), found up the chain from the requested directory; `<p>:cache.<field>` answers `source: memo` with its stored keys. A template or data write at the leaf, and a `refresh` of the key, drop the memo's `hash`. Returns `{"ok": true}`.
+
+```json
+{"op":"memo","key":"kubecontext.context","path":"/project","hash":"9c6001d328a94690","data":"prod","watch":["/home/me/.kube/config"],"ttl":"10m"}
 ```
 
 **`watch`:** Open a long-lived subscription. The server emits one NDJSON response immediately with the current value, then emits additional lines each time the watched key changes. The connection stays open until the client closes it.

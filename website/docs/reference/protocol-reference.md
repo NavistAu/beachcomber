@@ -31,7 +31,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `hello`, `get`, `refresh`, `status`, `introspect`, `put`, `watch`, `layers` |
+| `op` | string | Operation: `hello`, `get`, `refresh`, `status`, `introspect`, `put`, `memo`, `watch`, `layers` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
 | `path` | string | Absolute directory the request addresses; omitted, the global entry. A path that is not absolute is refused. |
 
@@ -41,7 +41,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240, "stale": false}
 {"ok": true, "data": "main", "age_ms": 1240, "stale": false}
 {"ok": true, "data": null, "stale": false}
-{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, put, source or cache)"}
+{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, memo, put, source or cache)"}
 ```
 
 **Fields:**
@@ -111,6 +111,12 @@ Response:
 Response: `{"ok":true}`
 
 Returns `put data at the root must be an object` for a non-object at a namespace root.
+
+**`memo`:** Store what a template leaf's `| cache()` computed — the client's resolver sends it after a render that missed, and no SDK binds it. `key` is the leaf (`provider.field`, never a facet), `path` the reader's directory, `hash` the client's sixteen lowercase hex digits over the leaf's inputs, `data` the leaf's value (absent for a leaf that rendered nothing), `watch` the absolute paths whose change invalidates it, `ttl` its lifetime. A `get` that attaches a template half then carries the memo beside it as `memo` (`{hash, stale, age_ms, data}`, a tree of them for a group), found up the chain from the requested directory; `<p>:cache.<field>` answers `source: memo` with its stored keys. A template or data write at the leaf, and a `refresh` of the key, drop the memo's `hash`. Returns `{"ok": true}`.
+
+```json
+{"op":"memo","key":"kubecontext.context","path":"/project","hash":"9c6001d328a94690","data":"prod","watch":["/home/me/.kube/config"],"ttl":"10m"}
+```
 
 **`watch`:** Stream cache updates for a key. The server holds the connection open and emits a response line on each cache update for the watched key. An optional `path` scopes the watch to a directory.
 

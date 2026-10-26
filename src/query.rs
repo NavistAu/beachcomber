@@ -494,8 +494,8 @@ pub struct QueryPlan {
 
 /// Split a `:put`, `:source` or `:cache` layer facet off the head of a key:
 /// `git:source.branch` is `("git.branch", Source)`. A plain key, or one
-/// naming the template or macro facet (a namespace of its own), is returned
-/// unchanged with every layer. A head whose facet is not one of the five is
+/// naming the template, macro or memo facet (a namespace of its own), is
+/// returned unchanged with every layer. A head whose facet is not one of the six is
 /// [`parse_facet`]'s error, naming the head as written.
 pub fn split_layer_facet(
     key: &str,
@@ -508,7 +508,9 @@ pub fn split_layer_facet(
         Some(Facet::Put) => Layers::Put,
         Some(Facet::Source) => Layers::Source,
         Some(Facet::Cache) => Layers::Cache,
-        None | Some(Facet::Template | Facet::Macro) => return Ok((key.into(), Layers::All)),
+        None | Some(Facet::Template | Facet::Macro | Facet::Memo) => {
+            return Ok((key.into(), Layers::All));
+        }
     };
     Ok((format!("{base}{}", &key[head.len()..]).into(), layers))
 }
@@ -747,7 +749,7 @@ mod tests {
             assert_eq!(
                 err,
                 format!(
-                    "invalid facet key: {head} (a facet is template, macro, put, source or cache)"
+                    "invalid facet key: {head} (a facet is template, macro, memo, put, source or cache)"
                 ),
                 "{key}"
             );

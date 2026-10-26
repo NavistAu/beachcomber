@@ -1406,7 +1406,7 @@ mod tests {
                 errs,
                 vec![
                     "[daemon.providers.demo] return: facet(): 'mine' is not a facet (a facet is \
-                     template, macro, put, source or cache)"
+                     template, macro, memo, put, source or cache)"
                         .to_string()
                 ],
                 "{line}"
@@ -1422,7 +1422,7 @@ mod tests {
             .unwrap_err();
         assert!(
             err.contains(
-                "facet(): 'demo' is not a facet (a facet is template, macro, put, source or cache)"
+                "facet(): 'demo' is not a facet (a facet is template, macro, memo, put, source or cache)"
             ),
             "{err}"
         );

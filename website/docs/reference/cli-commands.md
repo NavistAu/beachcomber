@@ -177,7 +177,7 @@ comb g.j git:source .            # → what the Source computed, even where a pu
 | `watch` | array | Watched paths — present for watching Sources |
 | `decay` | int | Decay steps before eviction (default 4) |
 
-Only a colon in the provider's own segment names a facet (`git:cache`), and the facets are `template`, `macro`, `put`, `source` and `cache` alone: any other (`git:memo`) is `invalid facet key: git:memo (a facet is template, macro, put, source or cache)`, exit `2`, on `get`, `put`, `refresh` and `watch` alike. Below the provider's segment a colon is an ordinary character, so `git.branch:age` is a miss like any unknown field. A key the grammar cannot read — `p..a`, `p['a`, `p[01]`, a provider starting with `/` or `~` — is `invalid key: <key>`, exit `2`.
+Only a colon in the provider's own segment names a facet (`git:cache`), and the facets are `template`, `macro`, `memo`, `put`, `source` and `cache` alone: any other (`git:notes`) is `invalid facet key: git:notes (a facet is template, macro, memo, put, source or cache)`, exit `2`, on `get`, `put`, `refresh` and `watch` alike. Below the provider's segment a colon is an ordinary character, so `git.branch:age` is a miss like any unknown field. A key the grammar cannot read — `p..a`, `p['a`, `p[01]`, a provider starting with `/` or `~` — is `invalid key: <key>`, exit `2`.
 
 **Exit codes** ([as for every command](#exit-codes)):
 - `0` — success, a miss included in every format (e.g. `git` queried outside a git repository): `text` prints nothing, `json` prints `null`, and a miss among several keys holds its place

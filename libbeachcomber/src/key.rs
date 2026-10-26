@@ -2,7 +2,7 @@
 //! the templates share.
 //!
 //! A key is a **head** and an **address** below it. The head is a provider
-//! name, optionally `name:facet` with one of the five [`Facet`]s; it runs to
+//! name, optionally `name:facet` with one of the six [`Facet`]s; it runs to
 //! the first `.` or `[`. The address
 //! is a run of segments, each written one of three ways:
 //!
@@ -326,6 +326,10 @@ pub enum Facet {
     /// `<p>:macro`: the macro libraries a client template imports, each a
     /// text of `{% macro %}` definitions at `<p>:macro.<name>`.
     Macro,
+    /// `<p>:memo`: the values `| cache()` stored for the template leaves,
+    /// each at its leaf's address. Written only by the `memo` op; read only
+    /// through its template.
+    Memo,
     /// `<p>:put`: what `put` and the `config:` seeds stored. Read-only.
     Put,
     /// `<p>:source`: what the provider's Sources produced. Read-only.
@@ -336,22 +340,24 @@ pub enum Facet {
 
 impl Facet {
     /// Every facet, in the order the docs list them.
-    pub const ALL: [Facet; 5] = [
+    pub const ALL: [Facet; 6] = [
         Facet::Template,
         Facet::Macro,
+        Facet::Memo,
         Facet::Put,
         Facet::Source,
         Facet::Cache,
     ];
 
     /// What every refusal of a facet name says the facets are.
-    pub const LIST: &'static str = "a facet is template, macro, put, source or cache";
+    pub const LIST: &'static str = "a facet is template, macro, memo, put, source or cache";
 
     /// The name a key writes after the colon.
     pub fn name(self) -> &'static str {
         match self {
             Facet::Template => "template",
             Facet::Macro => "macro",
+            Facet::Memo => "memo",
             Facet::Put => "put",
             Facet::Source => "source",
             Facet::Cache => "cache",
@@ -591,6 +597,7 @@ mod tests {
         for (head, facet) in [
             ("scanline:template", Facet::Template),
             ("scanline:macro", Facet::Macro),
+            ("kubecontext:memo", Facet::Memo),
             ("a:put", Facet::Put),
             ("a:source", Facet::Source),
             ("a:cache", Facet::Cache),
@@ -605,7 +612,7 @@ mod tests {
     fn the_facets_are_a_closed_set() {
         for bad in [
             "a:my_facet-2",
-            "a:memo",
+            "a:memos",
             "a:notes",
             "a:Template",
             "a:templates",
@@ -618,7 +625,7 @@ mod tests {
             assert_eq!(
                 parse_facet(bad),
                 Err(format!(
-                    "invalid facet key: {bad} (a facet is template, macro, put, source or cache)"
+                    "invalid facet key: {bad} (a facet is template, macro, memo, put, source or cache)"
                 )),
                 "{bad}"
             );

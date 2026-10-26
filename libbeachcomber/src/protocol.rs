@@ -54,6 +54,25 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
+    /// Store what a template leaf's `| cache()` computed: the leaf's memo at
+    /// `key` (a `provider.field`, never a facet) for the reader's `path`.
+    /// `hash` is the sixteen lowercase hex digits the client computed over
+    /// the leaf's inputs; `data` the leaf's final output, absent for a leaf
+    /// that rendered nothing (a memo of absence); `watch` the absolute paths
+    /// the leaf named; `ttl` its lifetime in whole seconds. The resolver
+    /// writes it back after a render; no SDK binds it.
+    Memo {
+        key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        hash: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        watch: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl: Option<String>,
+    },
     Introspect {
         subject: IntrospectSubject,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -155,6 +174,15 @@ pub struct Response {
     /// expression renders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rest: Option<String>,
+    /// The memo half of a `get`, present only beside a template half: what
+    /// `| cache()` stored for the template's leaves, read from the requested
+    /// path up the chain, nearest first. For a string template one object,
+    /// `{"hash", "stale", "age_ms", "data"}` (`hash` absent once an
+    /// invalidation dropped it, `data` absent for a memo of absence); for a
+    /// group a tree shaped like the template, that object at each leaf that
+    /// has a memo. Absent when no leaf has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memo: Option<serde_json::Value>,
 }
 
 impl Response {
@@ -176,6 +204,7 @@ impl Response {
             error: None,
             template: None,
             rest: None,
+            memo: None,
         }
     }
 
@@ -187,16 +216,19 @@ impl Response {
         }
     }
 
-    /// Attach the template half. Both are `None` on a node with no template,
-    /// and `rest` is set only when the walk stopped on a string with segments
-    /// left over.
-    pub fn with_template(
+    /// Attach the template half and the memo half beside it. All three are
+    /// `None` on a node with no template; `rest` is set only when the walk
+    /// stopped on a string with segments left over, and `memo` only when a
+    /// leaf of the template has a memo.
+    pub fn with_halves(
         mut self,
         template: Option<serde_json::Value>,
         rest: Option<String>,
+        memo: Option<serde_json::Value>,
     ) -> Self {
         self.template = template;
         self.rest = rest;
+        self.memo = memo;
         self
     }
 }
@@ -362,6 +394,20 @@ mod tests {
             serde_json::to_value(Request::Status {}).unwrap(),
             serde_json::json!({"op": "status"})
         );
+        // A memo of absence with no triggers is the key, the path and the
+        // hash alone.
+        assert_eq!(
+            serde_json::to_value(Request::Memo {
+                key: "p.f".into(),
+                path: None,
+                hash: "0000000000000000".into(),
+                data: None,
+                watch: Vec::new(),
+                ttl: None,
+            })
+            .unwrap(),
+            serde_json::json!({"op": "memo", "key": "p.f", "hash": "0000000000000000"})
+        );
         for request in [
             get,
             Request::Hello {},
@@ -374,6 +420,14 @@ mod tests {
                 data: serde_json::json!({"x": 1}),
                 ttl: Some("1m".into()),
                 path: Some("/r".into()),
+            },
+            Request::Memo {
+                key: "kubecontext.context".into(),
+                path: Some("/r".into()),
+                hash: "9c6001d328a94690".into(),
+                data: Some(serde_json::json!("prod")),
+                watch: vec!["/h/.kube/config".into()],
+                ttl: Some("10m".into()),
             },
         ] {
             let line = serde_json::to_string(&request).unwrap();

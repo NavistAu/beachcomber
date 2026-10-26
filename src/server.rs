@@ -416,10 +416,11 @@ async fn handle_watch(
         return;
     }
 
-    // Both halves decide whether a frame is new. A template edited on its own
-    // changes what the client renders just as much as a value does, so a frame
-    // whose only change is the template is still a frame.
-    let mut last = (initial.data.clone(), initial.template.clone());
+    // Every half decides whether a frame is new. A template edited on its own
+    // changes what the client renders just as much as a value does, and so does
+    // a memo whose hash an invalidation dropped, so a frame whose only change
+    // is one of those is still a frame.
+    let mut last = frame_identity(&initial);
 
     // Stream loop. A watch owns its connection for its whole lifetime — after
     // the initial request the client never writes again — so any completion
@@ -468,8 +469,8 @@ async fn handle_watch(
 
         let response = setup.read(cache);
 
-        // Field-level filtering: skip if neither half changed.
-        let current = (response.data.clone(), response.template.clone());
+        // Field-level filtering: skip if no half changed.
+        let current = frame_identity(&response);
         if current == last {
             continue;
         }
@@ -478,6 +479,48 @@ async fn handle_watch(
         if write_watch_line(writer, &response).await.is_err() {
             break; // Client disconnected
         }
+    }
+}
+
+/// What decides whether a watch frame is new: its data, its template and its
+/// memo half. Ages are not compared: a frame is about what changed, and an
+/// age always has.
+type FrameIdentity = (
+    Option<serde_json::Value>,
+    Option<serde_json::Value>,
+    Option<serde_json::Value>,
+);
+
+fn frame_identity(frame: &Response) -> FrameIdentity {
+    (
+        frame.data.clone(),
+        frame.template.clone(),
+        frame
+            .memo
+            .as_ref()
+            .map(|memo| memo_without_ages(frame.template.as_ref(), memo)),
+    )
+}
+
+/// A memo half with each memo's `age_ms` taken out, walked beside the
+/// template it was built from: a string template's half is one memo, a
+/// group's a tree of them, so a key of a group is never mistaken for one.
+fn memo_without_ages(
+    template: Option<&serde_json::Value>,
+    memo: &serde_json::Value,
+) -> serde_json::Value {
+    match (template, memo) {
+        (Some(serde_json::Value::Object(group)), serde_json::Value::Object(tree)) => tree
+            .iter()
+            .map(|(k, v)| (k.clone(), memo_without_ages(group.get(k), v)))
+            .collect::<serde_json::Map<_, _>>()
+            .into(),
+        (_, serde_json::Value::Object(leaf)) => {
+            let mut leaf = leaf.clone();
+            leaf.remove("age_ms");
+            leaf.into()
+        }
+        (_, other) => other.clone(),
     }
 }
 
@@ -1129,14 +1172,20 @@ fn freshness(read: &MergedRead, rest: &str) -> Option<(u128, bool)> {
     None
 }
 
-/// What the template half of a `get` found. `Default` is "nothing attached",
-/// which is every early return in [`template_half`].
+/// What the template half of a `get` found, and the memo half beside it.
+/// `Default` is "nothing attached", which is every early return in
+/// [`template_half`].
 #[derive(Default)]
 struct TemplateHalf {
     /// The node at the requested address in the `template` facet's merged tree.
     template: Option<serde_json::Value>,
     /// The part of the address the walk could not consume.
     rest: Option<String>,
+    /// The address `template` stands at: the requested one, or that of the
+    /// string the walk stopped on.
+    at: String,
+    /// The memos of the template's leaves ([`memo_half`]).
+    memo: Option<serde_json::Value>,
 }
 
 /// What a `get` answers once the provider's `return` has read the data: the
@@ -1171,9 +1220,44 @@ fn answer(
     result: Option<MergedRead>,
 ) -> Answered {
     let returned = crate::shape::provider::returned_over(cache, registry, provider, path, result);
+    let mut half = template_half(returned.template, rest);
+    if let Some(template) = &half.template
+        && cache.has_memos(provider)
+    {
+        half.memo = memo_half(cache, provider, path, template, &half.at);
+    }
     Answered {
-        half: template_half(returned.template, rest),
+        half,
         merged: returned.read,
+    }
+}
+
+/// The memo half for `template`, which stands at `at`: for a string, the
+/// memo of that leaf a read from `path` finds ([`Cache::memo_record`]); for a
+/// group, the tree of its leaves' memos, a leaf with none left out. `None`
+/// when no leaf has one.
+fn memo_half(
+    cache: &Cache,
+    provider: &str,
+    path: Option<&str>,
+    template: &serde_json::Value,
+    at: &str,
+) -> Option<serde_json::Value> {
+    match template {
+        serde_json::Value::String(_) => cache
+            .memo_record(provider, path, at)
+            .map(|memo| memo.half()),
+        serde_json::Value::Object(group) => {
+            let tree: serde_json::Map<String, serde_json::Value> = group
+                .iter()
+                .filter_map(|(k, t)| {
+                    let below = libbeachcomber::key::push(at, k);
+                    Some((k.clone(), memo_half(cache, provider, path, t, &below)?))
+                })
+                .collect();
+            (!tree.is_empty()).then(|| tree.into())
+        }
+        _ => None,
     }
 }
 
@@ -1194,7 +1278,7 @@ fn template_half(
     if rest.is_empty() {
         return TemplateHalf {
             template: serde_json::to_value(&read.fields).ok(),
-            rest: None,
+            ..TemplateHalf::default()
         };
     }
 
@@ -1204,6 +1288,7 @@ fn template_half(
     let Some(mut current) = read.fields.get(&head) else {
         return TemplateHalf::default();
     };
+    let mut at = libbeachcomber::key::push("", &head);
     while let Some(remainder) = left {
         let Some((segment, below)) = libbeachcomber::key::split_first(&remainder) else {
             return TemplateHalf::default();
@@ -1219,23 +1304,28 @@ fn template_half(
                 return TemplateHalf {
                     template: serde_json::to_value(current).ok(),
                     rest: Some(remainder),
+                    at,
+                    memo: None,
                 };
             }
             _ => return TemplateHalf::default(),
         }
+        at = libbeachcomber::key::push(&at, &segment);
         left = below;
     }
     match current {
         Value::Object(_) | Value::String(_) => TemplateHalf {
             template: serde_json::to_value(current).ok(),
             rest: None,
+            at,
+            memo: None,
         },
         _ => TemplateHalf::default(),
     }
 }
 
 /// Assemble the response for a resolved read: the data half out of `merged`
-/// with its own freshness, and the template half attached to it.
+/// with its own freshness, and the template and memo halves attached to it.
 ///
 /// `get` and `watch` share this, so a streamed value and a fetched one cannot
 /// answer the same key differently. The only thing they do apart is warming:
@@ -1246,12 +1336,7 @@ fn template_half(
 /// scalar, miss exactly as `p.nonesuch` does. That is the same rule the client
 /// applies when it walks an address past a template (a scalar reached with
 /// segments left is a miss), so the two halves of the tree agree.
-fn resolve_halves(
-    merged: &Option<MergedRead>,
-    target: &KeyParse,
-    template: Option<serde_json::Value>,
-    template_rest: Option<String>,
-) -> Response {
+fn resolve_halves(merged: &Option<MergedRead>, target: &KeyParse, half: TemplateHalf) -> Response {
     let rest = target.rest();
     let response = match target {
         KeyParse::Field(..) => match (lookup_merged(merged, rest), merged) {
@@ -1265,7 +1350,7 @@ fn resolve_halves(
             None => Response::miss(),
         },
     };
-    response.with_template(template, template_rest)
+    response.with_halves(half.template, half.rest, half.memo)
 }
 
 // Watch reads only from cache — it starts no run on a cold miss (unlike Get).
@@ -1299,7 +1384,7 @@ fn read_watch_value(
         // chain from the directory the caller named, not from an instance's root.
         answer(cache, registry, provider, target.rest(), requested, merged)
     };
-    resolve_halves(&merged, target, half.template, half.rest)
+    resolve_halves(&merged, target, half)
 }
 
 /// The answer of `get p:cache.<path>`: the tree of what is known about the
@@ -1312,8 +1397,10 @@ fn read_watch_value(
 /// in flight), plus the keys stored beside it (`poll`, `watch`, `decay`). A leaf a
 /// template answers is `{"stale": false, "source": "template"}`, with no
 /// `age_ms`: the client renders it, so it is as old as the inputs the render
-/// reads, which the daemon never sees. `p:cache._` is the prototype node, which
-/// is not part of the value: it reads back as written.
+/// reads, which the daemon never sees. A template leaf with a memo answers for
+/// the memo instead ([`crate::cache::MemoRecord::cache_answer`]): `source`
+/// `memo`, its age, and its stored keys. `p:cache._` is the prototype node,
+/// which is not part of the value: it reads back as written.
 fn cache_facet_response(
     cache: &Cache,
     registry: &ProviderRegistry,
@@ -1383,7 +1470,26 @@ fn cache_facet_response(
         Some(answer.into())
     };
 
-    match cache_facet_node(rest, value.as_ref(), half.template.as_ref(), &leaf) {
+    let template_leaf = |tail: &str| -> serde_json::Value {
+        // A string reached with segments left over answers at its own address.
+        let at = if half.rest.is_some() {
+            half.at.as_str()
+        } else {
+            tail
+        };
+        match cache.memo_record(provider, requested, at) {
+            Some(memo) => memo.cache_answer(),
+            None => serde_json::json!({"stale": false, "source": "template"}),
+        }
+    };
+
+    match cache_facet_node(
+        rest,
+        value.as_ref(),
+        half.template.as_ref(),
+        &leaf,
+        &template_leaf,
+    ) {
         Some(tree) => Response::ok(tree, 0, false),
         None => Response::miss(),
     }
@@ -1392,12 +1498,14 @@ fn cache_facet_response(
 /// The tree of leaf answers for the node at `tail`: the one place the answer
 /// for an object node lives. `value` is the data at the node, `template` the
 /// template tree at it; a template wins over data at the same leaf, as it does
-/// in a read. An object with no answer anywhere below it is no answer.
+/// in a read, and `template_leaf` answers for it. An object with no answer
+/// anywhere below it is no answer.
 fn cache_facet_node(
     tail: &str,
     value: Option<&crate::provider::Value>,
     template: Option<&serde_json::Value>,
     leaf: &dyn Fn(&str) -> Option<serde_json::Value>,
+    template_leaf: &dyn Fn(&str) -> serde_json::Value,
 ) -> Option<serde_json::Value> {
     use crate::provider::Value;
     let child = |key: &str| libbeachcomber::key::push(tail, key);
@@ -1421,20 +1529,22 @@ fn cache_facet_node(
                         data.and_then(|m| m.get(k)),
                         group.get(k),
                         leaf,
+                        template_leaf,
                     )?;
                     Some((k.clone(), answer))
                 })
                 .collect();
             (!tree.is_empty()).then(|| tree.into())
         }
-        (_, Some(_)) => Some(serde_json::json!({
-            "stale": false, "source": "template"
-        })),
+        (_, Some(_)) => Some(template_leaf(tail)),
         (Some(Value::Object(map)), None) if !map.is_empty() => {
             let tree: serde_json::Map<String, serde_json::Value> = map
                 .iter()
                 .filter_map(|(k, v)| {
-                    Some((k.clone(), cache_facet_node(&child(k), Some(v), None, leaf)?))
+                    Some((
+                        k.clone(),
+                        cache_facet_node(&child(k), Some(v), None, leaf, template_leaf)?,
+                    ))
                 })
                 .collect();
             (!tree.is_empty()).then(|| tree.into())
@@ -1445,10 +1555,11 @@ fn cache_facet_node(
 }
 
 /// The `layers` answer for `plan`: per leaf of the node the key names, every
-/// layer a read from the requested directory consults, in order — template
-/// records, then a leaf a provider line computed, then each link's `put`,
-/// `config(…)` seeds and Source records ([`Cache::layer_stacks`]) — with the
-/// one the read takes marked `answered`. A leaf's list also holds a record
+/// layer a read from the requested directory consults, in order — memo
+/// records, template records, then a leaf a provider line computed, then each
+/// link's `put`, `config(…)` seeds and Source records ([`Cache::layer_stacks`])
+/// — with the one the read takes marked `answered`: at a template leaf the
+/// nearest memo while it is live, else the template. A leaf's list also holds a record
 /// standing as a scalar on an ancestor of it, which hides the leaf in that
 /// layer. A tree shaped like the value, an array at each leaf; a leaf key is
 /// its array alone.
@@ -1464,9 +1575,31 @@ fn layers_response(
     let merged = cache.read_merged(provider, requested, instances, registry, Layers::All);
     let Answered { merged, half } = answer(cache, registry, provider, "", requested, merged);
 
+    // The address of the template string that answers `tail`: `tail`
+    // itself, or the string above it the walk stops on.
+    let template_string = |tail: &str| -> Option<String> {
+        let mut node = half.template.as_ref();
+        let mut at = String::new();
+        for segment in libbeachcomber::key::segments(tail) {
+            match node {
+                Some(serde_json::Value::String(_)) => return Some(at),
+                Some(serde_json::Value::Object(map)) => node = map.get(segment.as_ref()),
+                _ => return None,
+            }
+            at = libbeachcomber::key::push(&at, &segment);
+        }
+        matches!(node, Some(serde_json::Value::String(_))).then_some(at)
+    };
+
     let stacked = cache.layer_stacks(provider, requested, instances);
-    let (mut ordered, data): (Vec<_>, Vec<_>) =
-        stacked.into_iter().partition(|(_, r)| r.facet.is_some());
+    // A memo is read only through its template: one at an address no template
+    // string stands at is no layer of anything.
+    let (mut ordered, data): (Vec<_>, Vec<_>) = stacked
+        .into_iter()
+        .filter(|(tail, r)| {
+            r.facet.as_deref() != Some("memo") || template_string(tail).as_deref() == Some(tail)
+        })
+        .partition(|(_, r)| r.facet.is_some());
     // A leaf a provider line computed belongs to no record: it sits under
     // the templates and over the data it was computed from.
     if let Some(m) = &merged {
@@ -1506,17 +1639,6 @@ fn layers_response(
         .filter(|t| !tails.iter().any(|other| under(other, t)))
         .collect();
 
-    let template_at = |tail: &str| -> bool {
-        let mut node = half.template.as_ref();
-        for segment in libbeachcomber::key::segments(tail) {
-            match node {
-                Some(serde_json::Value::String(_)) => return true,
-                Some(serde_json::Value::Object(map)) => node = map.get(segment.as_ref()),
-                _ => return false,
-            }
-        }
-        matches!(node, Some(serde_json::Value::String(_)))
-    };
     let answering = |tail: &str| -> Option<(String, Option<String>)> {
         let records = &merged.as_ref()?.records;
         let mut at = tail.to_string();
@@ -1543,9 +1665,19 @@ fn layers_response(
             .filter(|(t, _)| t == leaf || under(leaf, t))
             .map(|(_, r)| r.clone())
             .collect();
-        if template_at(leaf) {
-            if let Some(first) = list.iter_mut().find(|r| r.facet.is_some()) {
-                first.answered = true;
+        if let Some(string) = template_string(leaf) {
+            let live = cache
+                .memo_record(provider, requested, &string)
+                .filter(crate::cache::MemoRecord::is_live);
+            let memo = live.and_then(|memo| {
+                list.iter()
+                    .position(|r| r.facet.as_deref() == Some("memo") && r.path == memo.entry)
+            });
+            let template = list
+                .iter()
+                .position(|r| r.facet.as_deref() == Some("template"));
+            if let Some(i) = memo.or(template) {
+                list[i].answered = true;
             }
         } else if let Some((label, path)) = answering(leaf)
             && let Some(hit) = list
@@ -1594,6 +1726,72 @@ fn insert_at<S: AsRef<str>>(
             }
         }
     }
+}
+
+/// A request's `ttl`: whole seconds and at least one, or none. One reading
+/// for a `put` and a `memo`.
+fn parse_ttl(ttl: Option<&str>) -> Result<Option<u64>, String> {
+    let Some(t) = ttl else {
+        return Ok(None);
+    };
+    match crate::config::parse_whole_seconds(t).map(|d| d.as_secs()) {
+        None => Err(format!("invalid ttl: {t}")),
+        Some(0) => Err("ttl must be at least 1s".to_string()),
+        Some(n) => Ok(Some(n)),
+    }
+}
+
+/// What a `memo` request writes, checked: the provider, the directory, the
+/// leaf's canonical address and the memo; or why it is refused. The key is
+/// a provider's field, never a facet or a bare provider; the hash sixteen
+/// lowercase hex digits; each watch path absolute; the ttl as a `put`'s.
+fn memo_write(
+    key: &str,
+    path: Option<&str>,
+    hash: &str,
+    data: Option<&serde_json::Value>,
+    watch: &[String],
+    ttl: Option<&str>,
+) -> Result<(String, Option<String>, String, crate::cache::MemoWrite), String> {
+    let (provider, field) = libbeachcomber::key::split_key(key)?;
+    libbeachcomber::key::check_head(provider)?;
+    if libbeachcomber::key::split_facet(provider)?.1.is_some() {
+        return Err(format!(
+            "memo takes a provider.field key, not a facet: {key}"
+        ));
+    }
+    if field.is_empty() {
+        return Err(format!(
+            "memo takes a provider.field key: {key} names no field"
+        ));
+    }
+    if libbeachcomber::key::segments(&field).len() > crate::provider::MAX_JSON_DEPTH {
+        return Err(format!(
+            "memo key is nested too deeply (limit {} segments)",
+            crate::provider::MAX_JSON_DEPTH
+        ));
+    }
+    let hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+    if hash.len() != 16 || !hash.bytes().all(hex) {
+        return Err(format!(
+            "invalid memo hash: {hash} (sixteen lowercase hex digits)"
+        ));
+    }
+    if let Some(relative) = watch
+        .iter()
+        .find(|p| !std::path::Path::new(p).is_absolute())
+    {
+        return Err(format!("a memo's watch paths are absolute: {relative}"));
+    }
+    let ttl_secs = parse_ttl(ttl)?;
+    let path = crate::query::normalise_path(path)?;
+    let write = crate::cache::MemoWrite {
+        data: data.and_then(crate::provider::Value::from_json),
+        hash: hash.to_string(),
+        watch: watch.to_vec(),
+        ttl_secs,
+    };
+    Ok((provider.to_string(), path, field, write))
 }
 
 async fn write_watch_line(
@@ -1810,7 +2008,7 @@ async fn handle_request(
                         merged,
                     )
                 };
-            resolve_halves(&merged, &plan.target, half.template, half.rest)
+            resolve_halves(&merged, &plan.target, half)
         }
         Request::Refresh { key, path } => {
             // The same plan every other op builds, so the key is checked and
@@ -1841,7 +2039,13 @@ async fn handle_request(
             if registry.is_disabled(provider_name) {
                 return Response::error(format!("nothing to refresh: {provider_name} is disabled"));
             }
+            // A cached template under the key renders afresh at its next read,
+            // wherever its memos are: their hashes go. That is a refresh too.
+            let memos = cache.drop_memo_hashes_under(provider_name, plan.target.rest());
             if demanded.is_empty() {
+                if memos {
+                    return Response::miss();
+                }
                 return Response::error(format!("nothing to refresh: {addressed} has no sources"));
             }
 
@@ -1859,6 +2063,9 @@ async fn handle_request(
                 };
             // Every demanded Source is nearest and found no instance here.
             if instances.is_empty() {
+                if memos {
+                    return Response::miss();
+                }
                 return Response::error(format!(
                     "nothing to refresh: {addressed} has no instance at {}",
                     plan.requested_path.as_deref().unwrap_or("~")
@@ -1893,15 +2100,7 @@ async fn handle_request(
                     }
                 }
             }
-            Response {
-                ok: true,
-                data: None,
-                age_ms: None,
-                stale: None,
-                error: None,
-                template: None,
-                rest: None,
-            }
+            Response::miss()
         }
         Request::Put {
             key,
@@ -1920,13 +2119,19 @@ async fn handle_request(
             }
             let node = node.as_str();
 
-            // The facet a put names is one of the four, and only two of them
+            // The facet a put names is one of the six, and only three of them
             // are written to.
             use libbeachcomber::key::Facet;
             let facet = match libbeachcomber::key::split_facet(namespace) {
                 Ok((base, Some(Facet::Put | Facet::Source))) => {
                     return Response::error(format!(
                         "{base}:put and {base}:source are read-only; write {base}.<node>"
+                    ));
+                }
+                Ok((base, Some(Facet::Memo))) => {
+                    return Response::error(format!(
+                        "{base}:memo is written by cache(); edit {base}:template.<f>, or refresh \
+                         {base}"
                     ));
                 }
                 Ok((_, facet)) => facet,
@@ -2004,13 +2209,9 @@ async fn handle_request(
             if ttl.is_some() && data.is_null() {
                 return Response::error("a ttl on an absent value has no meaning");
             }
-            let ttl_secs = match ttl.as_deref() {
-                None => None,
-                Some(t) => match crate::config::parse_whole_seconds(t).map(|d| d.as_secs()) {
-                    None => return Response::error(format!("invalid ttl: {t}")),
-                    Some(0) => return Response::error("ttl must be at least 1s"),
-                    Some(n) => Some(n),
-                },
+            let ttl_secs = match parse_ttl(ttl.as_deref()) {
+                Ok(secs) => secs,
+                Err(msg) => return Response::error(msg),
             };
             let put_written = || crate::scheduler::SchedulerMessage::PutWritten {
                 provider: namespace.to_string(),
@@ -2026,15 +2227,7 @@ async fn handle_request(
                 if let Some(sched) = scheduler {
                     sched.send(put_written()).await;
                 }
-                return Response {
-                    ok: true,
-                    data: None,
-                    age_ms: None,
-                    stale: None,
-                    error: None,
-                    template: None,
-                    rest: None,
-                };
+                return Response::miss();
             }
 
             // `MAX_JSON_DEPTH` is counted from the record, not from the
@@ -2077,16 +2270,29 @@ async fn handle_request(
             // (`register_static` refuses a registered name).
             registry.register_static(namespace);
 
-            Response {
-                ok: true,
-                data: None,
-                age_ms: None,
-                stale: None,
-                error: None,
-                template: None,
-                rest: None,
-            }
+            Response::miss()
         }
+        Request::Memo {
+            key,
+            path,
+            hash,
+            data,
+            watch,
+            ttl,
+        } => match memo_write(
+            key,
+            path.as_deref(),
+            hash,
+            data.as_ref(),
+            watch,
+            ttl.as_deref(),
+        ) {
+            Ok((provider, path, field, write)) => {
+                cache.write_memo(&provider, path.as_deref(), &field, write);
+                Response::miss()
+            }
+            Err(msg) => Response::error(msg),
+        },
         Request::Status {} => {
             let mut rows = cache.list_rows();
 
@@ -2107,6 +2313,9 @@ async fn handle_request(
                 // (`Cache::list_rows` leaves its kind unset); without one it
                 // stays static, whatever put sits above it.
                 let is_put = row.source == crate::cache::PUT_SOURCE;
+                // A memo row is a `<p>:memo` row; its lifecycle is `<p>`'s,
+                // at its own address.
+                let is_memo = row.source == crate::cache::MEMO_SOURCE;
 
                 if row.kind != Some(RowKind::Static) {
                     // Look up the lifecycle snapshot for THIS row's owning source
@@ -2115,10 +2324,16 @@ async fn handle_request(
                     // A put row's key is its own address: the row's field, or the
                     // root address when the field is a root put's top-level key.
                     let key = crate::scheduler::lifecycle::Key {
-                        provider: row.provider.clone(),
+                        provider: if is_memo {
+                            libbeachcomber::key::split_facet(&row.provider)
+                                .map_or(row.provider.as_str(), |(base, _)| base)
+                                .to_string()
+                        } else {
+                            row.provider.clone()
+                        },
                         path: row.path.clone(),
                         source: row.source.clone(),
-                        node: if is_put {
+                        node: if is_put || is_memo {
                             row.field.clone()
                         } else {
                             String::new()
@@ -2149,7 +2364,7 @@ async fn handle_request(
                             row.next_poll_in_secs = snap.next_poll_in_secs;
                         }
                         row.fsevents_reinstate = Some(snap.fsevents_reinstate);
-                    } else if is_put {
+                    } else if is_put || is_memo {
                         row.kind = Some(RowKind::Static);
                     } else {
                         row.kind = Some(RowKind::Transient);
@@ -2880,6 +3095,49 @@ mod tests {
         })
         .await;
         assert!(registry.runs().in_flight().is_empty());
+    }
+
+    /// A watch frame is new when its data, its template or its memo half
+    /// changed, and not when only an age did: a memo's `age_ms` in a group's
+    /// tree as much as in a string's object, and never a key of the group that
+    /// happens to be called `age_ms`.
+    #[test]
+    fn a_frame_is_new_when_a_half_changed_but_not_when_an_age_did() {
+        use serde_json::json;
+        let frame = |template: serde_json::Value, memo: serde_json::Value| Response {
+            template: Some(template),
+            memo: Some(memo),
+            ..Response::miss()
+        };
+        let leaf = json!("{{ 1 }}");
+        let at = |age: u64, hash: Option<&str>| {
+            let mut m = json!({"stale": false, "age_ms": age, "data": 1});
+            if let Some(h) = hash {
+                m["hash"] = json!(h);
+            }
+            m
+        };
+        assert_eq!(
+            frame_identity(&frame(leaf.clone(), at(1, Some("a")))),
+            frame_identity(&frame(leaf.clone(), at(900, Some("a"))))
+        );
+        assert_ne!(
+            frame_identity(&frame(leaf.clone(), at(1, Some("a")))),
+            frame_identity(&frame(leaf.clone(), at(1, None))),
+            "a dropped hash"
+        );
+        let group = json!({"age_ms": "{{ 1 }}", "g": {"h": "{{ 2 }}"}});
+        let tree =
+            |age: u64, h: u64| json!({"age_ms": at(age, Some("a")), "g": {"h": at(h, Some("b"))}});
+        assert_eq!(
+            frame_identity(&frame(group.clone(), tree(1, 2))),
+            frame_identity(&frame(group.clone(), tree(3, 4)))
+        );
+        assert_ne!(
+            frame_identity(&frame(group.clone(), tree(1, 2))),
+            frame_identity(&frame(group.clone(), json!({"g": {"h": at(2, Some("b"))}}))),
+            "a group's leaf named age_ms is a leaf, not an age"
+        );
     }
 
     #[test]

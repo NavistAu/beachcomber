@@ -171,6 +171,7 @@ impl Fetch for Scanline<'_> {
             data,
             template,
             rest,
+            memo: None,
             age_ms,
             stale: age_ms.map(|_| false),
         }))

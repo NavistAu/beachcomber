@@ -169,6 +169,8 @@ async fn the_cache_facet_of_a_put_leaf_says_put() {
     handle.abort();
 }
 
+/// A template leaf with no memo: the client renders it, so the daemon knows
+/// nothing of its age.
 #[tokio::test]
 async fn the_cache_facet_of_a_template_answer_has_derived_keys_only() {
     let (_tmp, mut s, _cache, handle, _sock) = serve().await;
@@ -626,5 +628,70 @@ async fn layers_of_nothing_is_a_miss_and_a_facet_key_is_refused() {
     assert!(!refused.ok, "{refused:?}");
     let refused = layers(&mut s, "ns:template", None).await;
     assert!(!refused.ok, "{refused:?}");
+    handle.abort();
+}
+
+/// A template leaf's memo records come first in its layers, nearest first:
+/// the nearest is the answer while it is live, and the template once its hash
+/// is gone.
+#[tokio::test]
+async fn layers_list_the_memo_first() {
+    let (_tmp, mut s, _cache, handle, _sock) = serve().await;
+    let root = tempfile::tempdir().unwrap();
+    let at = root.path().canonicalize().unwrap();
+    let at = at.to_str().unwrap();
+    assert!(
+        put(&mut s, "demo:template.f", json!("{{ 1 }}"), None, None)
+            .await
+            .ok
+    );
+    for (path, data) in [(None, json!("far")), (Some(at), json!("near"))] {
+        let r = send(
+            &mut s,
+            json!({"op": "memo", "key": "demo.f", "path": path,
+                   "hash": "9c6001d328a94690", "data": data}),
+        )
+        .await;
+        assert!(r.ok, "{:?}", r.error);
+    }
+    let layers = |r: Response| -> Vec<(String, Option<String>, serde_json::Value, bool)> {
+        r.data
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["label"].as_str().unwrap().to_string(),
+                    l["facet"].as_str().map(str::to_string),
+                    l["value"].clone(),
+                    l["answered"] == json!(true),
+                )
+            })
+            .collect()
+    };
+    let got = layers(send(&mut s, json!({"op": "layers", "key": "demo.f", "path": at})).await);
+    let memo = Some("memo".to_string());
+    let template = Some("template".to_string());
+    assert_eq!(
+        got,
+        vec![
+            ("memo".into(), memo.clone(), json!("near"), true),
+            ("memo".into(), memo.clone(), json!("far"), false),
+            ("put".into(), template.clone(), json!("{{ 1 }}"), false),
+        ]
+    );
+
+    assert!(
+        send(&mut s, json!({"op": "refresh", "key": "demo.f"}))
+            .await
+            .ok
+    );
+    let got = layers(send(&mut s, json!({"op": "layers", "key": "demo.f", "path": at})).await);
+    assert_eq!(
+        got.iter().map(|l| l.3).collect::<Vec<_>>(),
+        vec![false, false, true],
+        "a memo with no hash answers nothing: {got:?}"
+    );
     handle.abort();
 }

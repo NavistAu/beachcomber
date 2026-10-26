@@ -116,6 +116,7 @@ fn both(d: Value, t: Value) -> Got {
         age_ms: Some(30),
         stale: Some(false),
         rest: None,
+        memo: None,
     }
 }
 
