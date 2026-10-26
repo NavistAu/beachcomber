@@ -850,7 +850,7 @@ mod tests {
             0
         );
         // SAFETY: `getrusage` succeeded, so it filled `usage`.
-        i64::from(unsafe { usage.assume_init() }.ru_nvcsw)
+        unsafe { usage.assume_init() }.ru_nvcsw
     }
 
     #[cfg(target_os = "macos")]
