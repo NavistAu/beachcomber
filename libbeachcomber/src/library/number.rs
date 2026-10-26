@@ -1,8 +1,8 @@
 //! Numbers shown: `ramp`, `pct`, `compact` and `bytes`.
 
-use super::{UNDEFINED, is_absent, number};
+use super::{UNDEFINED, arguments, is_absent, number};
 use crate::engine::{EngineCtx, op_error};
-use minijinja::value::{Value as MjValue, ValueKind};
+use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error};
 use std::sync::Arc;
 
@@ -11,7 +11,13 @@ pub(super) fn add_ramp(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
 }
 
 pub(super) fn add_pct(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
-    env.add_filter("pct", pct);
+    env.add_filter(
+        "pct",
+        |r: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
+            let [digits] = arguments("pct", &args, &kwargs, ["digits"])?;
+            pct(r, digits)
+        },
+    );
 }
 
 pub(super) fn add_compact(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
@@ -211,6 +217,15 @@ mod tests {
         assert_eq!(ok("0 | pct(2)"), "0.00%");
         assert_eq!(ok("1.5 | pct"), "150%");
         assert_eq!(ok("0.423 | pct(none)"), "42%", "none digits is not given");
+    }
+
+    #[test]
+    fn pct_takes_digits_by_keyword() {
+        assert_eq!(ok("0.4236 | pct(digits=2)"), "42.36%");
+        let e = err("0.5 | pct(1, digits=1)");
+        assert!(e.contains("pct(): digits given twice"), "{e}");
+        let e = err("0.5 | pct(1, 2)");
+        assert!(e.contains("pct(): takes at most 1 argument"), "{e}");
     }
 
     #[test]

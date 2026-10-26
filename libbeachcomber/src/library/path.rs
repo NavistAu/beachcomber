@@ -2,9 +2,9 @@
 //! `shorten_path`. They work on the string alone (and the render's `HOME` and
 //! directory) and touch no file; `realpath` is in [`super::fs`].
 
-use super::{UNDEFINED, is_absent, is_absent_text, text};
+use super::{UNDEFINED, arguments, is_absent, is_absent_text, text};
 use crate::engine::{EngineCtx, op_error};
-use minijinja::value::Value as MjValue;
+use minijinja::value::{Kwargs, Rest, Value as MjValue};
 use minijinja::{Environment, Error};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -27,9 +27,13 @@ pub(super) fn add_relpath(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
 
 pub(super) fn add_shorten_path(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
     let ctx = ctx.clone();
-    env.add_filter("shorten_path", move |path: MjValue, n: Option<MjValue>| {
-        shorten_path(&ctx, &path, n)
-    });
+    env.add_filter(
+        "shorten_path",
+        move |path: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
+            let [n] = arguments("shorten_path", &args, &kwargs, ["n"])?;
+            shorten_path(&ctx, &path, n)
+        },
+    );
 }
 
 fn home(ctx: &EngineCtx) -> Option<&str> {
@@ -329,6 +333,15 @@ mod tests {
             ok("'/Users/j/ws/beachcomber/docs' | shorten_path"),
             "~/w/b/docs"
         );
+    }
+
+    #[test]
+    fn shorten_path_takes_n_by_keyword() {
+        assert_eq!(ok("'/usr/local/bin' | shorten_path(n=2)"), "/u/local/bin");
+        let e = err("'/a' | shorten_path(1, n=1)");
+        assert!(e.contains("shorten_path(): n given twice"), "{e}");
+        let e = err("'/a' | shorten_path(m=1)");
+        assert!(e.contains("shorten_path(): unknown argument"), "{e}");
     }
 
     #[test]
