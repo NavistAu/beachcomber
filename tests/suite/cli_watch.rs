@@ -372,6 +372,31 @@ fn json_watch_on_a_missing_key_prints_null_then_the_value() {
     assert_eq!(w.next_line(), "1");
 }
 
+/// `comb get -f '<template>'` renders the template for a miss, so a template
+/// watch does too: the first frame on a key nothing answers is the template's
+/// text, and the value's rendering follows when a `put` gives it one.
+#[test]
+fn template_watch_on_a_missing_key_renders_the_template_then_the_value() {
+    let d = TestDaemon::spawn();
+    let tpl = "{{ value if value is defined else 'none' }}";
+
+    let got = d
+        .comb(&d.home)
+        .args(["get", "--global", "my.a", "-f", tpl])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&got.stdout), "none");
+
+    let mut w = watch_lines(&d, &d.home, &["--global", "my.a", "-f", tpl]);
+    assert_eq!(w.next_line(), "none");
+
+    d.comb(&d.home)
+        .args(["put", "--global", "my", r#"{"a":1}"#])
+        .assert()
+        .success();
+    assert_eq!(w.next_line(), "1");
+}
+
 /// A value going away is a change like any other: under json, the frame
 /// after `put … null` is `null`.
 #[test]

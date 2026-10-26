@@ -10,10 +10,10 @@
 //! keys' cached templates rendered: the output is out first.
 
 use crate::cli::exit::Outcome;
-use crate::cli::output_format::{Format, template_locals};
+use crate::cli::output_format::{Format, render_template};
 use crate::config::Config;
-use libbeachcomber::render::{Format as ValueFormat, render_value, render_values};
-use libbeachcomber::resolve::{Slot, eval_with, resolve_traced, write_back};
+use libbeachcomber::render::{render_value, render_values};
+use libbeachcomber::resolve::{Slot, resolve_traced, write_back};
 use serde_json::Value;
 
 /// Whether `s` is a directory rather than a key: it starts with `/`, `~` or
@@ -109,15 +109,7 @@ pub fn run_get(
     let rendered = match &format {
         // A template renders as `comb eval` renders one, with the values
         // bound beside every name a template reads.
-        Format::Template(template) => eval_with(
-            template,
-            "-f",
-            &inputs,
-            &mut session,
-            &template_locals(&slots),
-        )
-        .map(|v| render_value("", v.as_ref(), ValueFormat::Text))
-        .map_err(|e| e.to_string()),
+        Format::Template(template) => render_template(template, &slots, &inputs, &mut session),
         Format::Preset(preset) => {
             let format = preset
                 .value_format()

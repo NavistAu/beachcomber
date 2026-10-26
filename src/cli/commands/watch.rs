@@ -14,14 +14,15 @@
 //! reusing `libbeachcomber::render::render_data` for `text`/`sh` exactly as
 //! `get` does, including the shell-quoting `-f sh` requires (canon
 //! `field_resolution.md` invariant 8). A frame is one line. A miss is what
-//! `get` prints for one: `null` under `-f json`, and no line at all under
-//! every other format.
+//! `get` prints for one: `null` under `-f json`, a template's own rendering
+//! under `-f '<template>'` (through the one `render_template` `get` uses),
+//! and no line at all under every other format.
 
 use crate::cli::exit::Outcome;
-use crate::cli::output_format::{Format, template_locals};
+use crate::cli::output_format::{Format, render_template};
 use crate::config::Config;
-use libbeachcomber::render::{Format as ValueFormat, render_frame, render_value};
-use libbeachcomber::resolve::{Slot, eval_with};
+use libbeachcomber::render::render_frame;
+use libbeachcomber::resolve::Slot;
 use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
 
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
@@ -72,22 +73,20 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
             // line otherwise. The watch stays open either way: a later `put`
             // can give the key a value.
             Ok(WatchOutcome::Value(value)) => {
-                let frame = match (&format, session.as_mut(), value) {
-                    (Format::Template(_), _, None) => Ok(String::new()),
-                    (Format::Template(template), Some(session), Some(value)) => {
-                        let locals = template_locals(&[(key, Some(value))]);
-                        eval_with(template, "-f", &inputs, session, &locals)
-                            .map(|v| render_value("", v.as_ref(), ValueFormat::Text) + "\n")
-                            .map_err(|e| e.to_string())
+                let frame = match (&format, session.as_mut()) {
+                    // The frame is a line: the template's text, ended.
+                    (Format::Template(template), Some(session)) => {
+                        render_template(template, &[(key, value)], &inputs, session)
+                            .map(|text| text + "\n")
                     }
-                    (Format::Preset(preset), _, value) => Ok(render_frame(
+                    (Format::Preset(preset), _) => Ok(render_frame(
                         key,
                         value.as_ref(),
                         preset
                             .value_format()
                             .expect("watch's formats are value formats"),
                     )),
-                    (Format::Template(_), None, Some(_)) => {
+                    (Format::Template(_), None) => {
                         unreachable!("a template opens its session")
                     }
                 };

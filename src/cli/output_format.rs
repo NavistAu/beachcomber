@@ -280,6 +280,20 @@ pub fn template_locals(
     locals
 }
 
+/// A `-f` template rendered over `slots`, as text: the one rendering of it
+/// for `get` and for every frame of a `watch`, so a miss is rendered by the
+/// template in both, and an error in it is worded alike.
+pub fn render_template(
+    template: &str,
+    slots: &[(&str, Option<serde_json::Value>)],
+    inputs: &libbeachcomber::resolve::Inputs<'_>,
+    fetch: &mut dyn libbeachcomber::resolve::Fetch,
+) -> Result<String, String> {
+    libbeachcomber::resolve::eval_with(template, "-f", inputs, fetch, &template_locals(slots))
+        .map(|v| libbeachcomber::render::render_value("", v.as_ref(), ValueFormat::Text))
+        .map_err(|e| e.to_string())
+}
+
 /// The commands and their aliases, so a suffix on one is recognised as such.
 const COMMANDS: &[(&str, &str)] = &[
     ("daemon", "d"),
