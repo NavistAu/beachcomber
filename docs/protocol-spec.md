@@ -145,16 +145,19 @@ Read a cached value.
   leaves the last good value, which the read answers. A key naming no
   Source (a static namespace, a facet) is an error: `cannot --force static
   namespace '<name>': no source to re-execute from`.
-- `wait` (bool, optional, default false) — how long a read of a record past
-  its lifetime (`stale`) waits for the record's run. A read of a stale record
-  always runs its Source (or takes the run in flight) and waits up to the
+- `wait` (bool, optional, default false) — how long a read of a record that
+  is not valid waits for the record's run. A record is valid while it is within
+  its lifetime and its stat inputs (the files its Source declares, stat'd on
+  the read) are as its run found them. A read of a record past its lifetime
+  (`stale`), or one whose inputs changed, always runs its Source (or takes the
+  run in flight, when that run sees the inputs as they are) and waits up to the
   Source's budget (`budget(...)`, else `[daemon] budget`, default `50ms`); with
   `wait` it waits for the run however long it takes. Answered in time, the
-  read has the fresh value; late, it has the stored value, `stale: true`, and
-  `:cache.<field>.executing` is `true` while the run goes on. A read with
-  nothing stored, and `force`, always wait for their run. A record within its
-  lifetime is served as is, and so is an instance in failback backoff. Budget
-  exceeded is not `stale`: that keeps its meaning, past the lifetime. A
+  read has the fresh value; late, it has the stored value (`stale: true` if it
+  is past its lifetime), and `:cache.<field>.executing` is `true` while the run
+  goes on. A read with nothing stored, and `force`, always wait for their run.
+  A valid record is served as is, and so is an instance in failback backoff.
+  Budget exceeded is not `stale`: that keeps its meaning, past the lifetime. A
   namespace read starts the runs of every Source it needs before it waits for
   any, each budget counted from the read's start.
 
@@ -321,8 +324,8 @@ any node: a leaf answers with an object, and an object node answers with the
 tree of its leaves' answers.
 
 ```json
-{"age_ms": 1200, "stale": false, "source": "source(head)",
- "watch": [".git"], "decay": 4}
+{"age_ms": 1200, "stale": false, "source": "source(head)", "executing": false,
+ "watch": [".git"], "hash": "9c6001d328a94690", "decay": 4}
 ```
 
 - `age_ms`, `stale`, `source` are derived at the read. `source` is `put`,
@@ -338,6 +341,10 @@ tree of its leaves' answers.
 - `poll` (`{interval, count}`), `watch` and `decay` are stored: written when a
   Source registers or a `put` carries a `ttl`, and read back here. `watch` is an
   array of patterns.
+- `hash` is stored, for a Source's record with stat inputs: the validity hash
+  of those inputs as its run stamped them (FNV-1a 64 over each input's path and
+  stamp, `libbeachcomber::validity`), 16 lowercase hex digits. A read checks
+  the record by stamping the inputs again. A Source that only polls has none.
 - `decay` is the number of decay steps before eviction. It is data: a Source
   takes the nearest `_` prototype, looking at each directory from the requested
   one up to `$HOME` for `<p>:cache._.decay` and then `*:cache._.decay` (every

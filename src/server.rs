@@ -1,5 +1,5 @@
 use crate::boundaries::proc_snap::{ProcessSnapshotter, RealProcessSnapshotter};
-use crate::cache::{Cache, Layers, MergedRead};
+use crate::cache::{Cache, Layers, MergedRead, RecordState};
 use crate::config::Config;
 use crate::protocol::{IntrospectSubject, Request, Response};
 use crate::provider::registry::{ProviderRegistry, RegistryHandle};
@@ -397,7 +397,7 @@ async fn handle_watch(
     // is made, so a reload during it is not missed.
     let mut swapped = handle.subscribe();
     let registry = swapped.borrow_and_update().clone();
-    let mut setup = match watch_setup(&key, requested, registry, cache, scheduler, watchers).await {
+    let mut setup = match watch_setup(&key, requested, registry, scheduler, watchers).await {
         Ok(setup) => setup,
         Err(msg) => {
             let _ = write_watch_line(writer, &Response::error(msg)).await;
@@ -443,7 +443,7 @@ async fn handle_watch(
                     break;
                 }
                 let registry = swapped.borrow_and_update().clone();
-                setup = match watch_setup(&key, requested, registry, cache, scheduler, watchers).await {
+                setup = match watch_setup(&key, requested, registry, scheduler, watchers).await {
                     Ok(setup) => setup,
                     Err(msg) => {
                         let _ = write_watch_line(writer, &Response::error(msg)).await;
@@ -505,13 +505,12 @@ impl WatchSetup {
     }
 }
 
-/// Make a watch's [`WatchSetup`] under `registry`, signal demand for what it
-/// reads and refresh its read-always Sources. The error is for the client.
+/// Make a watch's [`WatchSetup`] under `registry` and signal demand for what
+/// it reads. The error is for the client.
 async fn watch_setup(
     key: &str,
     requested: Option<&str>,
     registry: Arc<ProviderRegistry>,
-    cache: &Arc<Cache>,
     scheduler: Option<&SchedulerHandle>,
     watchers: &Arc<WatcherRegistry>,
 ) -> Result<WatchSetup, String> {
@@ -596,21 +595,6 @@ async fn watch_setup(
         }
         ChainWatch { tasks, changed }
     };
-
-    // Re-execute any read-always source(s) for the snapshot so the value is
-    // fresh off disk, not stale cache.
-    if !layered {
-        for instance in &instances {
-            maybe_read_always(
-                &registry,
-                cache,
-                &provider_name,
-                &instance.source,
-                instance.root.as_deref(),
-            )
-            .await;
-        }
-    }
 
     Ok(WatchSetup {
         registry,
@@ -719,16 +703,20 @@ struct Pending {
 
 /// Start the run, or take the one in flight, that one instance of a Source
 /// needs for `read`, and say how long the read waits for it. `None` when it
-/// needs none: its record is within its lifetime, or it is in failback backoff
-/// (only `--force` runs past that). `root` is the instance: the cache entry its
-/// records live at.
+/// needs none: its record is valid (within its lifetime, its stat inputs as
+/// its run found them), or it is in failback backoff (only `--force` runs past
+/// that). `root` is the instance: the cache entry its records live at.
 ///
 /// | The read finds | It runs | It waits for |
 /// |---|---|---|
-/// | a record within its lifetime | nothing | nothing |
-/// | a record past it (`stale`) | the run in flight, or one | the Source's budget, or (`wait`) the run |
+/// | a valid record | nothing | nothing |
+/// | a record whose inputs changed | the run in flight if it sees them as they are, or one | the Source's budget, or (`wait`) the run |
+/// | a record past its lifetime (`stale`) | the run in flight, or one | as above |
 /// | nothing stored | the run in flight, or one | the run |
 /// | anything, with `--force` | one that begins now | the run |
+///
+/// The check stats the record's inputs on the request task: one `stat` per
+/// input, bounded by their count, not by time.
 ///
 /// The decision is per instance, never per provider: a warm sibling says
 /// nothing about this one. A run replaces the instance's map when it succeeds
@@ -743,22 +731,21 @@ fn start_for_read(
     read: Read,
 ) -> Option<Pending> {
     let source = registry.source(provider, source_name)?;
+    let budget = || match read.wait {
+        Wait::Budget => Some(read.began + source.metadata().budget),
+        Wait::Forever => None,
+    };
     let (want, until) = if read.force {
         (Want::Forced, None)
-    } else if source.read_always() {
-        (Want::Fresh, None)
-    // A warm instance is the common read: answered before anything shared
-    // is locked.
-    } else if !cache.has_provider_records_for(provider, root, source_name) {
-        (Want::Cold, None)
-    } else if cache.source_is_stale(provider, root, source_name) {
-        let until = match read.wait {
-            Wait::Budget => Some(read.began + source.metadata().budget),
-            Wait::Forever => None,
-        };
-        (Want::Any, until)
     } else {
-        return None;
+        // A valid instance is the common read: answered before anything
+        // shared is locked.
+        match cache.record_state(provider, root, source_name) {
+            RecordState::Valid => return None,
+            RecordState::Cold => (Want::Cold, None),
+            RecordState::Invalid => (Want::Changed, budget()),
+            RecordState::Stale => (Want::Any, budget()),
+        }
     };
     let key = instance_key(provider, source_name, root);
     let run = registry.runs().start(want, registry, cache, &key)?;
@@ -821,28 +808,6 @@ async fn run_for_read(
             fault: true,
         } => Err(message),
         _ => Ok(true),
-    }
-}
-
-/// Run a Source that runs on every read, before a `watch` sends its first
-/// frame, so the value is fresh off disk rather than what was stored.
-///
-/// `watch`'s half of [`start_for_read`]: a watch never runs a cold instance
-/// (the scheduler populates it, and the stream carries the value then), so
-/// only the read-always case applies to it.
-async fn maybe_read_always(
-    registry: &Arc<ProviderRegistry>,
-    cache: &Arc<Cache>,
-    provider: &str,
-    source_name: &str,
-    root: Option<&str>,
-) {
-    if registry
-        .source(provider, source_name)
-        .is_some_and(|src| src.read_always())
-    {
-        // The failure is logged; a watch has no read to fail.
-        let _ = run_for_read(registry, cache, Want::Fresh, provider, source_name, root).await;
     }
 }
 

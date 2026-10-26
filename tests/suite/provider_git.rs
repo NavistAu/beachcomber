@@ -785,17 +785,57 @@ fn git_head_source_reports_branch() {
     );
 }
 
+/// The inputs each git Source's record is checked by: the files git reads
+/// its state from, where they are, in a plain repo and a linked worktree.
 #[test]
-fn git_head_source_is_read_always() {
+fn git_inputs_are_the_files_git_reads() {
+    use std::path::{Path, PathBuf};
+    let repo = GitRepoFixture::new();
+    let wt = repo.add_worktree("wt", "feature");
     let sources = GitProvider.sources();
-    let head_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "head")
-        .unwrap();
-    assert!(
-        head_src.read_always(),
-        "head source must return read_always() == true"
+    let inputs = |name: &str, root: &Path| -> Vec<PathBuf> {
+        let source = sources.iter().find(|s| s.metadata().name == name).unwrap();
+        source.inputs(&source.metadata().invalidation, root.to_str())
+    };
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
+    let plain = repo.path();
+    let dot_git = plain.join(".git");
+    assert_eq!(inputs("head", plain), [dot_git.join("HEAD")]);
+    assert_eq!(
+        inputs("refs", plain),
+        [
+            dot_git.join("HEAD"),
+            dot_git.join("packed-refs"),
+            dot_git.join("refs/heads/main")
+        ]
     );
+    assert_eq!(inputs("status", plain), [dot_git.join("index")]);
+
+    // A linked worktree: its HEAD and index are in its own gitdir, its refs in
+    // the common one, and its `.git` is a gitfile that names the gitdir.
+    let gitdir = canon(&dot_git.join("worktrees/wt"));
+    let head = inputs("head", &wt);
+    assert_eq!(head.len(), 2, "{head:?}");
+    assert_eq!(canon(&head[0]), gitdir.join("HEAD"));
+    assert_eq!(head[1], wt.join(".git"), "the gitfile is an input");
+    let refs = inputs("refs", &wt);
+    assert_eq!(refs[..2], head[..]);
+    assert_eq!(canon(refs[2].parent().unwrap()), canon(&dot_git));
+    assert!(refs[2].ends_with("packed-refs"), "{refs:?}");
+    assert!(refs[3].ends_with("refs/heads/feature"), "{refs:?}");
+    let status = inputs("status", &wt);
+    assert_eq!(status.len(), 1);
+    assert_eq!(canon(&status[0]), gitdir.join("index"));
+
+    // Outside a repository the one input is the `.git` whose creation would
+    // make one.
+    let outside = TempDir::new().unwrap();
+    assert_eq!(
+        inputs("head", outside.path()),
+        [outside.path().join(".git")]
+    );
+    // A Source that only polls has none.
+    assert!(inputs("diff", plain).is_empty());
 }
 
 #[test]

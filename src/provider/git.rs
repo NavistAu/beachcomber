@@ -340,9 +340,28 @@ fn status_meta() -> SourceMetadata {
 
 // ── Source impls ──────────────────────────────────────────────────────────────
 
-/// Read-always source: parses `<gitdir>/HEAD` directly, no subprocess.
-/// Returns `detached` (Bool) on every request, and `branch` (String) when HEAD
-/// is on one.
+/// The files git's own state is read from, for the instance at `root`:
+/// `<gitdir>/HEAD`, and `<root>/.git` itself when it is a gitfile (a linked
+/// worktree or a submodule), so that pointing it at another gitdir is a
+/// change. Outside a repository, `<root>/.git`, whose creation is the change.
+fn head_inputs(root: &Path) -> Vec<PathBuf> {
+    let dot_git = root.join(".git");
+    match resolve_git_dir(root) {
+        None => vec![dot_git],
+        Some(dirs) => {
+            let mut out = vec![dirs.gitdir.join("HEAD")];
+            if dirs.gitdir != dot_git {
+                out.push(dot_git);
+            }
+            out
+        }
+    }
+}
+
+/// Parses `<gitdir>/HEAD` directly, no subprocess. Returns `detached` (Bool)
+/// on every request, and `branch` (String) when HEAD is on one. A read checks
+/// `HEAD` itself (its inputs), so a checkout is seen by the next read without
+/// running this on every one.
 struct GitHead;
 
 impl GitHead {
@@ -405,8 +424,10 @@ impl Source for GitHead {
         true
     }
 
-    fn read_always(&self) -> bool {
-        true
+    /// `HEAD`, exactly: the `.git` its watch declares is a directory whose
+    /// own mtime every git command moves.
+    fn inputs(&self, _: &InvalidationStrategy, root: Option<&str>) -> Vec<PathBuf> {
+        root.map_or_else(Vec::new, |root| head_inputs(Path::new(root)))
     }
 }
 
@@ -497,6 +518,25 @@ impl Source for GitRefs {
 
     fn has_root(&self) -> bool {
         true
+    }
+
+    /// `HEAD`, and the refs the branch it is on resolves through: the loose
+    /// `<commondir>/refs/heads/<branch>` and `<commondir>/packed-refs`. What
+    /// else the Source reads (the upstream's refs, the stash, a merge in
+    /// progress) its watch of `.git` brings up to date.
+    fn inputs(&self, _: &InvalidationStrategy, root: Option<&str>) -> Vec<PathBuf> {
+        let Some(root) = root else {
+            return Vec::new();
+        };
+        let root = Path::new(root);
+        let mut out = head_inputs(root);
+        if let Some(dirs) = resolve_git_dir(root) {
+            out.push(dirs.commondir.join("packed-refs"));
+            if let (Some(branch), _) = GitHead::parse_head(&dirs) {
+                out.push(dirs.commondir.join("refs").join("heads").join(branch));
+            }
+        }
+        out
     }
 }
 
@@ -698,6 +738,20 @@ impl Source for GitStatus {
 
     fn has_root(&self) -> bool {
         true
+    }
+
+    /// The index, where it is: `<gitdir>/index`, which in a linked worktree is
+    /// not the `.git/index` the watch declares. A change in the working tree
+    /// that has not reached the index is left to the watch and the poll.
+    fn inputs(&self, _: &InvalidationStrategy, root: Option<&str>) -> Vec<PathBuf> {
+        let Some(root) = root else {
+            return Vec::new();
+        };
+        let root = Path::new(root);
+        match resolve_git_dir(root) {
+            Some(dirs) => vec![dirs.gitdir.join("index")],
+            None => vec![root.join(".git")],
+        }
     }
 }
 

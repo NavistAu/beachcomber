@@ -821,7 +821,6 @@ impl Scheduler {
                                 watch_instance(
                                     registrar.as_ref(),
                                     &mut watch_paths,
-                                    &self.registry,
                                     &key.provider,
                                     sm,
                                     key.path.as_deref(),
@@ -903,7 +902,6 @@ impl Scheduler {
                                     watch_instance(
                                         registrar.as_ref(),
                                         &mut watch_paths,
-                                        &self.registry,
                                         provider,
                                         sm,
                                         root.as_deref(),
@@ -1046,7 +1044,6 @@ impl Scheduler {
 fn watch_instance(
     registrar: Option<&Registrar>,
     watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
-    registry: &ProviderRegistry,
     provider: &str,
     sm: &crate::provider::SourceMetadata,
     root: Option<&str>,
@@ -1054,8 +1051,7 @@ fn watch_instance(
     let Some(registrar) = registrar else {
         return;
     };
-    let src = registry.source(provider, &sm.name);
-    for (watch_path, sub) in instance_watches(provider, sm, root, src.as_deref()) {
+    for (watch_path, sub) in instance_watches(provider, sm, root) {
         debug!(
             "Watching {:?} for provider={} source={} root={:?}",
             watch_path, provider, sm.name, root
@@ -1071,7 +1067,7 @@ fn watch_instance(
 /// A relative `watch` entry is a pattern under the instance's root directory,
 /// so it registers only for a rooted instance: at `~` a recursive watch of
 /// `$HOME` is the firehose, and the instance refreshes by poll, by demand and
-/// (when read-always) on every read. An absolute entry (`/…`, or `~`/`$XDG_*`
+/// when a read finds an input changed. An absolute entry (`/…`, or `~`/`$XDG_*`
 /// expanded by the Source) is watched whatever the root, and an event on it
 /// refreshes this instance. A Poll Source registers no watch at all: an empty
 /// pattern list matches every event under its root.
@@ -1079,7 +1075,6 @@ fn instance_watches(
     provider: &str,
     sm: &crate::provider::SourceMetadata,
     root: Option<&str>,
-    source: Option<&dyn crate::provider::Source>,
 ) -> Vec<(PathBuf, Subscription)> {
     let mut out = Vec::new();
     if matches!(sm.invalidation, InvalidationStrategy::Poll { .. }) {
@@ -1092,17 +1087,10 @@ fn instance_watches(
         patterns,
     };
     let patterns = crate::provider::watch_patterns(&sm.invalidation);
-    if let Some(root) = root {
-        if !patterns.is_empty() {
-            out.push((PathBuf::from(root), subscription(patterns.clone())));
-        }
-        // A source whose root is not itself a watchable directory names the
-        // concrete files to watch via watched_files().
-        if let Some(source) = source {
-            for file in source.watched_files(Some(root)) {
-                out.push((file, subscription(Vec::new())));
-            }
-        }
+    if let Some(root) = root
+        && !patterns.is_empty()
+    {
+        out.push((PathBuf::from(root), subscription(patterns.clone())));
     }
     // The instance at `~` has no directory to watch recursively: that would be
     // all of `$HOME`. Its files are the single-component patterns joined to

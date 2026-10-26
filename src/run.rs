@@ -16,7 +16,7 @@
 //! wait: [`Run::wait`] says so instead ([`Cycle`]), and the caller reads the
 //! last stored value. A Source never waits on itself.
 
-use crate::cache::Cache;
+use crate::cache::{Cache, Validity};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::source_call::{in_failback_backoff, ran};
 use crate::provider::{Source, SourceResult};
@@ -26,6 +26,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use tracing::{debug, warn};
 
+/// What a run's execution gave: the Source's result with the validity of its
+/// stat inputs as stamped immediately before it began, or its error and
+/// whether it was a fault in the lines (a Source it calls failed, or it
+/// called itself).
+type Ran = Result<(SourceResult, Option<Validity>), (String, bool)>;
+
 /// What a caller needs of a run of an instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Want {
@@ -33,11 +39,16 @@ pub enum Want {
     /// stored one by now. A cold read, a Source's call, an instance's first
     /// demand.
     Cold,
-    /// The run in flight, else a new one. A poll.
+    /// The run in flight, else a new one. A poll, a read of a record past its
+    /// lifetime.
     Any,
+    /// A run that sees the inputs as they are now: the run in flight if its
+    /// inputs are as it stamped them (or it has yet to stamp them), else the
+    /// one queued behind it; a new one if there is none. A read that found an
+    /// input of the record changed.
+    Changed,
     /// A run that begins after now: the one queued behind the run in flight,
-    /// if there is one. A file event, a refresh, a read of a Source that runs
-    /// on every read.
+    /// if there is one. A file event, a refresh.
     Fresh,
     /// [`Self::Fresh`], past the failback backoff: `--force`.
     Forced,
@@ -127,6 +138,11 @@ enum Overtaken {
 /// How one run stands, for everyone waiting on it.
 struct State {
     id: RunId,
+    /// The validity of the run's inputs, set once it has stamped them,
+    /// immediately before it executes. Shared with the run's blocking thread,
+    /// which holds this and not the state: who holds the state are the run's
+    /// callers.
+    stamped: Arc<std::sync::OnceLock<Option<Validity>>>,
     end: Mutex<Option<End>>,
     ended: Condvar,
     notify: tokio::sync::Notify,
@@ -137,6 +153,7 @@ impl Default for State {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            stamped: Arc::default(),
             end: Mutex::default(),
             ended: Condvar::default(),
             notify: tokio::sync::Notify::default(),
@@ -156,6 +173,17 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl State {
+    /// Whether the run reads the inputs as they are now: it has yet to stamp
+    /// them, or has none, or they are as it stamped them (or cannot be known
+    /// otherwise).
+    fn sees_now(&self) -> bool {
+        self.stamped.get().is_none_or(|validity| {
+            validity
+                .as_ref()
+                .is_none_or(|v| v.check() != libbeachcomber::validity::Check::Invalid)
+        })
+    }
+
     fn finish(&self, end: End) {
         *lock(&self.end) = Some(end);
         self.ended.notify_all();
@@ -299,6 +327,11 @@ impl Runs {
         if let Some(slot) = table.slots.get_mut(key) {
             let state = match want {
                 Want::Cold | Want::Any if slot.overtaken.is_none() => Arc::clone(&slot.running),
+                // Stamped under the lock: one stat per input, and only when a
+                // read found the record changed with a run in flight.
+                Want::Changed if slot.overtaken.is_none() && slot.running.sees_now() => {
+                    Arc::clone(&slot.running)
+                }
                 // A run a reload overtook gives a caller nothing: it waits for
                 // the run queued behind it.
                 _ => slot.queue(registry, cache, want == Want::Forced),
@@ -416,12 +449,21 @@ impl Runs {
             // Source's `comb.<p>` reader holds only weakly: kept here, a
             // reload mid-run cannot leave it reading a registry that has gone.
             let keep = Arc::clone(&settle.registry);
+            let root = settle.key.path.clone();
+            let stamped = Arc::clone(&settle.state.stamped);
             let ran = tokio::time::timeout(
                 timeout,
                 tokio::task::spawn_blocking(move || {
                     let _registry = keep;
                     let _here = Here::enter(here);
-                    ran(|| source.execute(dir.as_deref()))
+                    // Stamped immediately before the run begins: a change
+                    // while it runs fails the next read's check, which makes
+                    // one run more, never a stale answer.
+                    let inputs = source.inputs(&source.metadata().invalidation, root.as_deref());
+                    let validity = Validity::take(inputs);
+                    let _ = stamped.set(validity.clone());
+                    let (result, failed_call) = ran(|| source.execute(dir.as_deref()));
+                    (result.map(|result| (result, validity)), failed_call)
                 }),
             )
             .await;
@@ -445,7 +487,7 @@ impl Runs {
         registry: &Arc<ProviderRegistry>,
         cache: &Arc<Cache>,
         state: &Arc<State>,
-        result: Option<Result<SourceResult, (String, bool)>>,
+        result: Option<Ran>,
     ) {
         let mut table = lock(&self.table);
         // The slot is this run's only while it is the one running there.
@@ -563,7 +605,7 @@ struct Settle {
 impl Settle {
     /// Settle with `result`. Marked done only once settled: should settling
     /// panic, the drop settles again with nothing, and the waiters are let go.
-    fn finish(mut self, result: Result<SourceResult, (String, bool)>) {
+    fn finish(mut self, result: Ran) {
         self.runs.settle(
             &self.key,
             &self.registry,
@@ -588,12 +630,7 @@ impl Drop for Settle {
 /// ends a streak of failures; a failure counts toward the instance's failback
 /// and writes nothing. A run whose Source a reload has retired since it began
 /// is [`Outcome::Dropped`]: neither its result nor its failure counts.
-fn record(
-    registry: &ProviderRegistry,
-    cache: &Cache,
-    key: &Key,
-    result: Result<SourceResult, (String, bool)>,
-) -> Outcome {
+fn record(registry: &ProviderRegistry, cache: &Cache, key: &Key, result: Ran) -> Outcome {
     let (provider, source_name, root) = (&key.provider, &key.source, key.path.as_deref());
     let Some(source) = registry.source(provider, source_name) else {
         return Outcome::Dropped;
@@ -601,7 +638,7 @@ fn record(
     let meta = source.metadata();
     registry
         .unless_retired(provider, source_name, || match result {
-            Ok(result) => {
+            Ok((result, validity)) => {
                 // A success ends a streak of failures; an instance that never
                 // failed has no state to end (the common run).
                 let mut failures = lock(&registry.failures);
@@ -616,7 +653,7 @@ fn record(
                     root,
                     source_name,
                     result.fields,
-                    crate::cache::Schedule::of(meta),
+                    crate::cache::Schedule::of(meta).with_validity(validity),
                 );
                 debug!("Executed source '{provider}.{source_name}' path={root:?}");
                 Outcome::Stored
@@ -756,17 +793,16 @@ mod tests {
     }
 
     fn fixture(failback: u32, timeout: Duration) -> Fixture {
+        fixture_of(meta(failback, timeout))
+    }
+
+    fn fixture_of(meta: SourceMetadata) -> Fixture {
         let runs = Arc::new(AtomicU32::new(0));
         let gate = Arc::new(Gate::default());
         let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut registry = ProviderRegistry::new();
         registry
-            .register(Box::new(P(
-                meta(failback, timeout),
-                runs.clone(),
-                gate.clone(),
-                fail.clone(),
-            )))
+            .register(Box::new(P(meta, runs.clone(), gate.clone(), fail.clone())))
             .unwrap();
         Fixture {
             registry: Arc::new(registry),
@@ -843,6 +879,53 @@ mod tests {
             f.start(Want::Cold).is_none(),
             "a stored instance needs no run"
         );
+    }
+
+    /// A read that found its record's inputs changed takes the run in flight
+    /// only while that run's own stamp of them is as they are: a run that
+    /// stamped them before the change cannot have seen it, so the read waits
+    /// for the run queued behind it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_changed_record_takes_the_run_in_flight_only_if_it_sees_the_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input");
+        std::fs::write(&input, "1").unwrap();
+        // Long since written: the run's stamp is not racy.
+        std::fs::File::options()
+            .write(true)
+            .open(&input)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(10))
+            .unwrap();
+        let f = fixture_of(SourceMetadata {
+            invalidation: InvalidationStrategy::Watch {
+                patterns: Vec::new(),
+                abs_paths: vec![input.to_string_lossy().into_owned()],
+            },
+            ..meta(3, Duration::from_secs(60))
+        });
+        let first = f.start(Want::Cold).unwrap();
+        // Executing: it stamped its input first.
+        f.until_runs(1).await;
+        let joined = f.start(Want::Changed).unwrap();
+        assert_eq!(
+            f.registry.runs().callers(&f.key),
+            Some(2),
+            "the input as the run stamped it: the run in flight"
+        );
+        std::fs::write(&input, "22").unwrap();
+        let queued = f.start(Want::Changed).unwrap();
+        assert_eq!(
+            f.registry.runs().callers(&f.key),
+            Some(2),
+            "the input changed since: the run queued behind it"
+        );
+        f.gate.open();
+        for run in [&first, &joined, &queued] {
+            assert_eq!(run.outcome().await, Outcome::Stored);
+        }
+        assert_eq!(f.runs.load(Ordering::SeqCst), 2);
+        assert_eq!(f.stored(), Some(Value::Int(2)), "the queued run's");
     }
 
     /// A caller that stops waiting takes nothing with it: the run records

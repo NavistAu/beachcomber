@@ -598,8 +598,9 @@ timeout = "10s"
 
 # How long a read waits for a Source before answering with what it has, for
 # every Source whose own `return` does not say `budget(...)`. Any duration of
-# at least 1ms. A read of a record past its lifetime runs its Source and waits
-# this long for the run, then answers with what is stored.
+# at least 1ms. A read of a record past its lifetime, or one whose watched
+# files changed, runs its Source and waits this long for the run, then answers
+# with what is stored.
 # Default: "50ms"
 # budget = "50ms"
 
@@ -676,7 +677,7 @@ return = "{{ result | poll('86400s') }}"
 | `watchdog_interval` | duration or null | `null` (disabled) | How often the watchdog checks scheduler liveness |
 | `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
 | `idle_shutdown` | duration (whole seconds) or null | `null` (disabled) | How long with no client before the daemon shuts down; unset keeps it resident |
-| `budget` | duration, at least `1ms` | `"50ms"` | How long a read waits for a Source before answering with what it has, for every Source whose `return` does not name `budget(...)`. A read of a record past its lifetime runs the Source and waits this long for the run before answering with what is stored. |
+| `budget` | duration, at least `1ms` | `"50ms"` | How long a read waits for a Source before answering with what it has, for every Source whose `return` does not name `budget(...)`. A read of a record past its lifetime, or one whose watched files changed, runs the Source and waits this long for the run before answering with what is stored. |
 
 > Values are checked when the configuration loads, and an error names the file: `log_level` is one of `off`, `error`, `warn`, `info`, `debug`, `trace`; `timeout` and `budget` are durations of at least `1ms`, and `idle_shutdown` whole seconds of at least `1s`; `socket_path` and `env_file` are not empty; `watchdog_interval` and `watchdog_threshold` are whole seconds of at least `1s` (`"30s"`, `"5m"`, `"1h"`), a threshold needs an interval, and a threshold below the interval is an error. `[daemon]` takes no other keys. A file that is not valid TOML is an error too: it is never skipped.
 

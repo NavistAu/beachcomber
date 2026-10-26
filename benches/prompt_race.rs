@@ -14,8 +14,10 @@
 //!     disk, then at once a `get` over the raw socket, counted right when it
 //!     answers the new value, with the read's own latency. Two changes: a
 //!     `.git/HEAD` write read as `git.branch`, and a `state.json` rewrite read
-//!     through a config Source that declares `watch('state.json')`. Each trial
-//!     starts once the watcher has caught up with the last one.
+//!     through a config Source that declares `watch('state.json')`. Run with
+//!     the watcher on (each trial starts once it has caught up with the last
+//!     one) and with it off (a server with no scheduler: the read's own check
+//!     of the record's files is all there is).
 //!
 //! Budget B is NOT benched here - it is the prompt's read round-trip: ~5 ms via
 //! the `comb` CLI (process spawn + socket), ~0.3 ms via an in-process SDK client
@@ -361,7 +363,8 @@ async fn wait_for_field(
     }
 }
 
-/// The count a read after a change gets right, and the read's latency.
+/// The count a read after a change gets right, and the read's latency, with
+/// the watcher on and with it off.
 fn read_after_mutation() {
     if !has_git() {
         eprintln!("prompt_race: git not found; skipping read_after_mutation");
@@ -391,29 +394,45 @@ fn read_after_mutation() {
         beachcomber::daemon::defaults::comb_layer(),
         (PathBuf::from("<bench>"), layer),
     ]);
-    let watchers = Arc::new(WatcherRegistry::new());
-    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = ProviderRegistry::with_config(&config, &Default::default())
-        .expect("the bench lines load")
-        .share(&cache);
-    let (handle, scheduler) =
-        Scheduler::new(cache.clone(), registry.clone(), config, watchers.clone());
-    let sock_dir = TempDir::new().unwrap();
-    let sock = sock_dir.path().join("s");
-    let server = Server::new(
-        sock.clone(),
-        cache.clone(),
-        registry,
-        Some(handle),
-        watchers,
-    );
-    {
-        let _enter = rt.enter();
-        rt.spawn(async move { scheduler.run().await });
-        server.spawn().expect("bind the bench socket");
-    }
-    let mut stream = UnixStream::connect(&sock).unwrap();
+    let serve = |watched: bool| {
+        let watchers = Arc::new(WatcherRegistry::new());
+        let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+        let registry = ProviderRegistry::with_config(&config, &Default::default())
+            .expect("the bench lines load")
+            .share(&cache);
+        let handle = watched.then(|| {
+            let (handle, scheduler) = Scheduler::new(
+                cache.clone(),
+                registry.clone(),
+                config.clone(),
+                watchers.clone(),
+            );
+            rt.spawn(async move { scheduler.run().await });
+            handle
+        });
+        let sock_dir = TempDir::new().unwrap();
+        let sock = sock_dir.path().join("s");
+        let server = Server::new(sock.clone(), cache.clone(), registry, handle, watchers);
+        {
+            let _enter = rt.enter();
+            server.spawn().expect("bind the bench socket");
+        }
+        let stream = UnixStream::connect(&sock).unwrap();
+        (sock_dir, cache, stream)
+    };
 
+    // With the watcher off first: nothing runs but what a read starts.
+    {
+        let (_sock, _cache, mut stream) = serve(false);
+        for (key, path) in [("git.branch", &repo), ("rstate.v", &state)] {
+            let (answer, _) = timed_get(&mut stream, key, path);
+            assert!(answer.get("data").is_some(), "{key} answers: {answer}");
+        }
+        println!("read_after_mutation: {READ_TRIALS} trials each, watcher off");
+        trials(&mut stream, &repo, &state, |_| {});
+    }
+
+    let (_sock, cache, mut stream) = serve(true);
     // The cold reads demand both instances, which registers their watches. A
     // change made before a registration is in place is never reported, so the
     // probe changes the file until the watcher carries one into the cache.
@@ -438,12 +457,43 @@ fn read_after_mutation() {
     });
     if !delivering {
         eprintln!(
-            "prompt_race: the watcher delivered nothing in 20s (sandbox, or a non-FSEvents path); skipping read_after_mutation"
+            "prompt_race: the watcher delivered nothing in 20s (sandbox, or a non-FSEvents path); skipping read_after_mutation with the watcher on"
         );
         return;
     }
-
     println!("read_after_mutation: {READ_TRIALS} trials each, watcher on");
+    // Each trial starts once the watcher has caught up with the last one.
+    trials(&mut stream, &repo, &state, |trial| {
+        rt.block_on(async {
+            match trial {
+                Trial::Branch(target) => {
+                    wait_for_branch(&cache, &repo, target, Duration::from_secs(10)).await;
+                }
+                Trial::State(want) => {
+                    let want = Value::String(want.to_string());
+                    wait_for_field(
+                        &cache,
+                        "rstate",
+                        &state,
+                        "v",
+                        &want,
+                        Duration::from_secs(10),
+                    )
+                    .await;
+                }
+            }
+        })
+    });
+}
+
+/// The change one trial made, for the wait after it.
+enum Trial<'a> {
+    Branch(&'a str),
+    State(&'a str),
+}
+
+/// `READ_TRIALS` of each change, each read at once, then `after` the trial.
+fn trials(stream: &mut UnixStream, repo: &str, state: &str, after: impl Fn(Trial)) {
     let report = |what: &str, right: usize, mut reads: Vec<Duration>| {
         reads.sort();
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
@@ -459,34 +509,22 @@ fn read_after_mutation() {
     let (mut right, mut reads) = (0, Vec::new());
     for i in 0..READ_TRIALS {
         let target = if i % 2 == 0 { "a" } else { "b" };
-        set_head(&repo, target);
-        let (answer, took) = timed_get(&mut stream, "git.branch", &repo);
+        set_head(repo, target);
+        let (answer, took) = timed_get(stream, "git.branch", repo);
         right += usize::from(answer["data"] == serde_json::json!(target));
         reads.push(took);
-        rt.block_on(wait_for_branch(
-            &cache,
-            &repo,
-            target,
-            Duration::from_secs(10),
-        ));
+        after(Trial::Branch(target));
     }
     report("git.branch after a .git/HEAD write", right, reads);
 
     let (mut right, mut reads) = (0, Vec::new());
     for i in 0..READ_TRIALS {
         let want = format!("v{i}");
-        std::fs::write(Path::new(&state).join("state.json"), &want).unwrap();
-        let (answer, took) = timed_get(&mut stream, "rstate.v", &state);
+        std::fs::write(Path::new(state).join("state.json"), &want).unwrap();
+        let (answer, took) = timed_get(stream, "rstate.v", state);
         right += usize::from(answer["data"] == serde_json::json!(want));
         reads.push(took);
-        rt.block_on(wait_for_field(
-            &cache,
-            "rstate",
-            &state,
-            "v",
-            &Value::String(want),
-            Duration::from_secs(10),
-        ));
+        after(Trial::State(&want));
     }
     report("rstate.v after a state.json rewrite", right, reads);
 }

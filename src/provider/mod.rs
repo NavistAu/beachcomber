@@ -775,21 +775,53 @@ pub trait Source: Send + Sync {
         false
     }
 
-    /// Absolute files this instance should watch, derived from its `root`.
-    /// Default: none. A source whose root is not itself a watchable directory
-    /// returns the concrete files the scheduler should watch instead. Only
-    /// consulted for Watch/WatchAndPoll sources.
-    fn watched_files(&self, _root: Option<&str>) -> Vec<std::path::PathBuf> {
-        Vec::new()
+    /// The stat inputs of the instance at `root` (`None` is the instance at
+    /// `~`): the files its run reads that a read checks before answering
+    /// from its record ([`crate::cache::Validity`]). A run stamps them
+    /// immediately before it begins. `declared` is the Source's invalidation
+    /// as it stands, which a `return` line can retune; the caller passes
+    /// `metadata().invalidation`.
+    ///
+    /// The default is the `watch(...)` declaration ([`declared_inputs`]). A
+    /// Source whose root alone cannot name its files overrides it, as git
+    /// does for a linked worktree's `HEAD`.
+    fn inputs(
+        &self,
+        declared: &InvalidationStrategy,
+        root: Option<&str>,
+    ) -> Vec<std::path::PathBuf> {
+        declared_inputs(declared, root)
     }
+}
 
-    /// If true, the request path re-executes this source on every read instead
-    /// of serving cache. Only for sources whose execute is a cheap file/syscall
-    /// read. Expensive sources (subprocess, worktree scan, network) must return
-    /// false and stay event/poll-driven.
-    fn read_always(&self) -> bool {
-        false
+/// The stat inputs a `watch(...)` declaration names for the instance at
+/// `root`: each relative entry joined to the root, and each absolute one as
+/// written. At the instance at `~`, a relative entry of one component is a
+/// file under `$HOME`, as its watch registers it; one of more names nothing
+/// there. A declared directory is an input as a node, by its own mtime: an
+/// entry created, removed or renamed in it is a change, one deeper is not.
+pub fn declared_inputs(
+    strategy: &InvalidationStrategy,
+    root: Option<&str>,
+) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for pattern in watch_patterns(strategy) {
+        match root {
+            Some(root) => out.push(std::path::Path::new(root).join(&pattern)),
+            None if !pattern.contains('/') => {
+                if let Some(home) = crate::query::home_dir() {
+                    out.push(home.join(&pattern));
+                }
+            }
+            None => {}
+        }
     }
+    out.extend(
+        watch_abs_paths(strategy)
+            .into_iter()
+            .map(std::path::PathBuf::from),
+    );
+    out
 }
 
 #[cfg(test)]
@@ -1100,9 +1132,37 @@ mod tests {
     }
 
     #[test]
-    fn non_file_sources_watch_no_explicit_files() {
-        for s in super::git::GitProvider.sources() {
-            assert!(s.watched_files(Some("/tmp")).is_empty());
-        }
+    fn the_inputs_are_the_watch_declaration() {
+        let strategy = InvalidationStrategy::WatchAndPoll {
+            patterns: vec!["state.json".into(), ".cfg/x".into()],
+            abs_paths: vec!["/etc/hosts".into()],
+            interval_secs: 60,
+            count: 2,
+        };
+        assert_eq!(
+            declared_inputs(&strategy, Some("/r")),
+            [
+                std::path::PathBuf::from("/r/state.json"),
+                "/r/.cfg/x".into(),
+                "/etc/hosts".into()
+            ]
+        );
+        let home = crate::query::home_dir().expect("HOME");
+        assert_eq!(
+            declared_inputs(&strategy, None),
+            [home.join("state.json"), "/etc/hosts".into()],
+            "at ~ a name of one component lies under $HOME; a path names nothing"
+        );
+        assert!(
+            declared_inputs(
+                &InvalidationStrategy::Poll {
+                    interval_secs: 5,
+                    count: 1
+                },
+                Some("/r")
+            )
+            .is_empty(),
+            "a Source that only polls has none"
+        );
     }
 }

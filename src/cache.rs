@@ -106,9 +106,10 @@ fn leaves_of(fields: &HashMap<String, Value>) -> Vec<(String, Value)> {
 }
 
 /// What a Source's records carry into the `<p>:cache` facet beside them: the
-/// schedule that keeps them fresh. Built from the Source's metadata
-/// ([`Schedule::of`]), so a record and its schedule are written together and
-/// removed together.
+/// schedule that keeps them fresh, and the validity of the run that made
+/// them. Built from the Source's metadata ([`Schedule::of`]) and, by the run,
+/// [`Schedule::with_validity`], so a record and what is known of it are
+/// written together and removed together.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Schedule {
     /// `(interval_secs, count)` for a Source that polls.
@@ -117,6 +118,149 @@ pub struct Schedule {
     pub watch: Vec<String>,
     /// The Source's own decay depth (`ttl(...)` sets 1), stored as `decay`.
     pub decay: Option<u8>,
+    /// The record's stat inputs as its run found them, stored as `hash`;
+    /// `None` for a Source with none (one that only polls).
+    pub validity: Option<Validity>,
+}
+
+/// What a read checks of a Source record before answering from it: its stat
+/// inputs (the files [`crate::provider::Source::inputs`] names), as the run
+/// that made it found them immediately before it began. A change during the
+/// run therefore fails the next check: one more run, never a stale answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Validity {
+    inputs: Arc<[std::path::PathBuf]>,
+    /// [`libbeachcomber::validity::stamps_hash`] of the inputs.
+    hash: u64,
+    /// An input lies on a mount whose stamps are not trusted (network, FUSE,
+    /// unknown): a read never stats it, and the check is Unknown.
+    remote: bool,
+    /// A stamp was taken so soon after an input's mtime that a same-size
+    /// write in place could leave it unchanged (the mount's resolution, and
+    /// at least 10 ms): the first check from this moment is Invalid, once
+    /// the run it makes takes a stamp that is not.
+    racy_until: Option<Instant>,
+}
+
+/// The least a stamp must trail its file's mtime by to be trusted: a
+/// filesystem's clock is coarser than its nanosecond field.
+const RACY: std::time::Duration = std::time::Duration::from_millis(10);
+
+impl Validity {
+    /// Stamp `inputs` now: `None` when there are none.
+    pub fn take(inputs: Vec<std::path::PathBuf>) -> Option<Self> {
+        Self::take_at(inputs, std::time::SystemTime::now(), Instant::now())
+    }
+
+    /// [`Self::take`] at the wall-clock moment `taken`, which is `now` on the
+    /// clock records are kept by.
+    fn take_at(
+        inputs: Vec<std::path::PathBuf>,
+        taken: std::time::SystemTime,
+        now: Instant,
+    ) -> Option<Self> {
+        use libbeachcomber::fs::{Mount, Stamp, mount_of, stamp};
+        if inputs.is_empty() {
+            return None;
+        }
+        let mut remote = false;
+        // How long from `taken` the stamps stay racy: the latest of each
+        // input's mtime plus its mount's resolution (and at least `RACY`).
+        let mut racy: Option<std::time::Duration> = None;
+        let stamped: Vec<(&std::path::PathBuf, Stamp)> = inputs
+            .iter()
+            .map(|path| {
+                let s = stamp(path);
+                if let Stamp::Present(p) = &s {
+                    match mount_of(path, p.dev) {
+                        (Mount::Remote { kind }, first) => {
+                            remote = true;
+                            if first {
+                                tracing::warn!(
+                                    "{} lies on a mount ({}) whose stamps a read does not take: \
+                                     records that read it are checked only for their lifetime",
+                                    path.display(),
+                                    kind.as_deref().unwrap_or("unknown")
+                                );
+                            }
+                        }
+                        (Mount::Local { resolution }, _) => {
+                            let mtime = std::time::UNIX_EPOCH
+                                + std::time::Duration::new(
+                                    u64::try_from(p.mtime_secs).unwrap_or(0),
+                                    p.mtime_nanos,
+                                );
+                            if let Ok(left) = (mtime + resolution.max(RACY)).duration_since(taken)
+                                && !left.is_zero()
+                            {
+                                racy = Some(racy.map_or(left, |r| r.max(left)));
+                            }
+                        }
+                    }
+                }
+                (path, s)
+            })
+            .collect();
+        let hash = libbeachcomber::validity::stamps_hash(&stamped);
+        Some(Self {
+            hash,
+            remote,
+            racy_until: racy.map(|left| now + left),
+            inputs: inputs.into(),
+        })
+    }
+
+    /// The stored hash, as `:cache` shows it.
+    pub fn hash(&self) -> u64 {
+        self.hash
+    }
+
+    /// Stamp the inputs again and compare: [`Check::Invalid`] when one
+    /// changed, or the stamps were racy and their window has passed;
+    /// [`Check::Unknown`] when one cannot be stamped or lies on a mount whose
+    /// stamps are not trusted.
+    ///
+    /// [`Check::Invalid`]: libbeachcomber::validity::Check::Invalid
+    /// [`Check::Unknown`]: libbeachcomber::validity::Check::Unknown
+    pub fn check(&self) -> libbeachcomber::validity::Check {
+        self.check_at(Instant::now())
+    }
+
+    fn check_at(&self, now: Instant) -> libbeachcomber::validity::Check {
+        use libbeachcomber::fs::{Stamp, stamp};
+        use libbeachcomber::validity::Check;
+        if self.remote {
+            return Check::Unknown;
+        }
+        let mut stamped = Vec::with_capacity(self.inputs.len());
+        for path in self.inputs.iter() {
+            let s = stamp(path);
+            if s == Stamp::Unknown {
+                return Check::Unknown;
+            }
+            stamped.push((path, s));
+        }
+        if libbeachcomber::validity::stamps_hash(&stamped) != self.hash
+            || self.racy_until.is_some_and(|until| now >= until)
+        {
+            Check::Invalid
+        } else {
+            Check::Valid
+        }
+    }
+}
+
+/// What a read finds of one instance's record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordState {
+    /// Nothing is stored: the read runs the Source and waits for the run.
+    Cold,
+    /// Within its lifetime and its inputs as they were: answered as it is.
+    Valid,
+    /// Past its lifetime (`stale`).
+    Stale,
+    /// An input changed since the run that made it.
+    Invalid,
 }
 
 impl Schedule {
@@ -125,6 +269,7 @@ impl Schedule {
             poll: Some((interval_secs, count)),
             watch: Vec::new(),
             decay: None,
+            validity: None,
         }
     }
 
@@ -135,6 +280,11 @@ impl Schedule {
             decay: source.decay,
             ..Self::from_strategy(&source.invalidation)
         }
+    }
+
+    /// The schedule, with the validity of the run whose records it carries.
+    pub fn with_validity(self, validity: Option<Validity>) -> Self {
+        Self { validity, ..self }
     }
 
     pub fn from_strategy(strategy: &crate::provider::InvalidationStrategy) -> Self {
@@ -151,6 +301,7 @@ impl Schedule {
                 poll: None,
                 watch: patterns.iter().chain(abs_paths).cloned().collect(),
                 decay: None,
+                validity: None,
             },
             WatchAndPoll {
                 patterns,
@@ -161,13 +312,21 @@ impl Schedule {
                 poll: Some((*interval_secs, *count)),
                 watch: patterns.iter().chain(abs_paths).cloned().collect(),
                 decay: None,
+                validity: None,
             },
         }
     }
 
-    /// The stored `:cache` keys of one record: `poll`, `watch` and `decay`.
+    /// The stored `:cache` keys of one record: `poll`, `watch`, `decay` and
+    /// `hash` (16 hex digits).
     fn stored_keys(&self) -> HashMap<String, Value> {
         let mut keys = HashMap::new();
+        if let Some(validity) = &self.validity {
+            keys.insert(
+                "hash".to_string(),
+                Value::String(libbeachcomber::validity::hex(validity.hash)),
+            );
+        }
         if let Some((interval_secs, count)) = self.poll {
             keys.insert("poll".to_string(), poll_key(interval_secs, count));
         }
@@ -237,6 +396,9 @@ pub struct CacheSourceEntry {
     pub fields: HashMap<String, Value>,
     pub last_refreshed: Instant,
     pub expected_interval_secs: Option<u64>,
+    /// What a read checks before answering from a Source's record; `None`
+    /// for a static record and a Source with no stat inputs.
+    pub validity: Option<Validity>,
 }
 
 impl CacheSourceEntry {
@@ -631,6 +793,7 @@ fn apply_static_write(
             last_refreshed: now,
             // The `put` map's freshness is its address stamps' to own.
             expected_interval_secs: (!is_put).then_some(interval_secs).flatten(),
+            validity: None,
         });
     if is_put {
         // A value standing in the way of `node` is about to become an object
@@ -886,8 +1049,8 @@ impl Cache {
         let stored = schedule.stored_keys();
         if !stored.is_empty() {
             let facet_key = make_cache_key(&cache_facet_of(provider), path);
-            // A record rewritten with the schedule it already carries (a
-            // read-always Source, on every read) only has its clock moved.
+            // A record rewritten with the schedule it already carries only has
+            // its clock moved.
             let unchanged = self
                 .entries
                 .get_mut(&facet_key)
@@ -915,6 +1078,7 @@ impl Cache {
                         fields: per_field,
                         last_refreshed: now,
                         expected_interval_secs: None,
+                        validity: None,
                     },
                 );
             }
@@ -926,6 +1090,7 @@ impl Cache {
                 fields,
                 last_refreshed: now,
                 expected_interval_secs: schedule.poll.map(|(secs, _)| secs),
+                validity: schedule.validity,
             },
         );
         if let Some(ref watchers) = self.watchers {
@@ -1708,18 +1873,33 @@ impl Cache {
             .is_some_and(|e| e.sources.contains_key(source))
     }
 
-    /// Whether the map `source` wrote at `(provider, path)` is past its own
-    /// interval.
+    /// What a read finds of the record `source` wrote at `(provider, path)`:
+    /// none, or one past its lifetime, or one whose stat inputs changed since
+    /// its run (checked now, by stat), or one it can answer from. An input
+    /// that changed outranks the lifetime: it needs a run that sees the
+    /// change.
     ///
-    /// Staleness is per Source for the same reason coldness is: each map
-    /// carries the interval its own Source declared, and a sibling that is
-    /// overdue says nothing about this one. False when the entry or the map is
-    /// absent — there is nothing stale about a map that was never written.
-    pub fn source_is_stale(&self, provider: &str, path: Option<&str>, source: &str) -> bool {
-        self.entries
-            .get(&make_cache_key(provider, path))
-            .and_then(|e| e.sources.get(source).map(|s| s.is_stale()))
-            .unwrap_or(false)
+    /// The state is per Source: each record carries the lifetime and the
+    /// inputs of its own Source, and a sibling that is overdue or changed says
+    /// nothing about this one.
+    pub fn record_state(&self, provider: &str, path: Option<&str>, source: &str) -> RecordState {
+        let (stale, validity) = {
+            let Some(entry) = self.entries.get(&make_cache_key(provider, path)) else {
+                return RecordState::Cold;
+            };
+            let Some(record) = entry.sources.get(source) else {
+                return RecordState::Cold;
+            };
+            (record.is_stale(), record.validity.clone())
+        };
+        // Stamped with no lock held: a stat is a syscall.
+        if validity.is_some_and(|v| v.check() == libbeachcomber::validity::Check::Invalid) {
+            RecordState::Invalid
+        } else if stale {
+            RecordState::Stale
+        } else {
+            RecordState::Valid
+        }
     }
 
     /// Remove a single source's contribution from the (provider, path) entry.
@@ -1800,6 +1980,7 @@ impl Cache {
         source_name: &str,
         schedule: Schedule,
     ) {
+        let validity;
         let fields: Vec<String> = {
             let Some(mut entry) = self.entries.get_mut(&make_cache_key(provider, path)) else {
                 return;
@@ -1808,10 +1989,13 @@ impl Cache {
                 return;
             };
             src.expected_interval_secs = schedule.poll.map(|(secs, _)| secs);
+            // The run's validity is the record's, not the schedule's: it
+            // stays, and with it the stored `hash`.
+            validity = src.validity.clone();
             src.fields.keys().cloned().collect()
         };
         let facet_key = make_cache_key(&cache_facet_of(provider), path);
-        let stored = schedule.stored_keys();
+        let stored = schedule.with_validity(validity).stored_keys();
         if stored.is_empty() {
             if let Some(mut entry) = self.entries.get_mut(&facet_key) {
                 entry.sources.remove(source_name);
@@ -1830,6 +2014,7 @@ impl Cache {
                     fields: per_field,
                     last_refreshed: Instant::now(),
                     expected_interval_secs: None,
+                    validity: None,
                 },
             );
         }
@@ -2826,6 +3011,7 @@ mod tests {
                 fields: nested,
                 last_refreshed: Instant::now(),
                 expected_interval_secs: None,
+                validity: None,
             },
         );
         sources.insert(
@@ -2834,6 +3020,7 @@ mod tests {
                 fields: make_fields(&[("branch", "main")]),
                 last_refreshed: Instant::now(),
                 expected_interval_secs: None,
+                validity: None,
             },
         );
         let entry = CacheEntry {
@@ -2904,6 +3091,7 @@ mod tests {
                     fields,
                     last_refreshed: Instant::now(),
                     expected_interval_secs: None,
+                    validity: None,
                 },
             );
         }
@@ -3268,5 +3456,136 @@ mod tests {
             .unwrap();
         tokio::time::advance(std::time::Duration::from_secs(5)).await;
         assert!(cache.list_entries().iter().all(|e| !e.stale));
+    }
+
+    // ── validity ────────────────────────────────────────────────────────────
+
+    use libbeachcomber::validity::Check;
+    use std::time::{Duration, SystemTime};
+
+    /// Write `body` to `path` in place and give it `mtime`: the same inode, and
+    /// (for a body of the same size) the same stamp.
+    fn rewrite(path: &std::path::Path, body: &str, mtime: SystemTime) {
+        std::fs::write(path, body).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    fn mtime(path: &std::path::Path) -> SystemTime {
+        std::fs::metadata(path).unwrap().modified().unwrap()
+    }
+
+    #[test]
+    fn a_record_with_no_inputs_has_no_validity() {
+        assert!(Validity::take(Vec::new()).is_none());
+    }
+
+    #[test]
+    fn a_change_to_an_input_is_invalid_and_none_is_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let (f, absent) = (dir.path().join("f"), dir.path().join("later"));
+        let old = SystemTime::now() - Duration::from_secs(10);
+        rewrite(&f, "1", old);
+        let v = Validity::take(vec![f.clone(), absent.clone()]).unwrap();
+        assert!(v.racy_until.is_none(), "an old mtime is not racy");
+        assert_eq!(v.check(), Check::Valid);
+        assert_eq!(v.check(), Check::Valid, "checking changes nothing");
+        rewrite(&f, "22", old);
+        assert_eq!(v.check(), Check::Invalid, "a new size");
+        let v = Validity::take(vec![f.clone(), absent.clone()]).unwrap();
+        std::fs::write(&absent, "").unwrap();
+        assert_eq!(v.check(), Check::Invalid, "an absent input created");
+    }
+
+    /// A stamp taken within its mount's resolution of the file's mtime (and
+    /// at least 10 ms) cannot see a same-size write in place in that window:
+    /// the record is answered while the window lasts and is invalid from the
+    /// moment it closes.
+    #[test]
+    fn a_racy_stamp_is_invalid_once_its_window_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("f");
+        std::fs::write(&f, "1").unwrap();
+        let written = mtime(&f);
+        let now = Instant::now();
+        let v =
+            Validity::take_at(vec![f.clone()], written + Duration::from_millis(2), now).unwrap();
+        assert_eq!(v.racy_until, Some(now + Duration::from_millis(8)));
+        rewrite(&f, "2", written);
+        assert_eq!(
+            v.check_at(now + Duration::from_millis(7)),
+            Check::Valid,
+            "the stamp cannot see it"
+        );
+        assert_eq!(v.check_at(now + Duration::from_millis(8)), Check::Invalid);
+
+        // A stamp taken past the window is not racy.
+        let v = Validity::take_at(vec![f.clone()], written + RACY, now).unwrap();
+        assert_eq!(v.racy_until, None);
+        // An mtime ahead of the clock keeps the stamp racy until it has
+        // passed, by the window.
+        let v = Validity::take_at(vec![f], written - Duration::from_secs(1), now).unwrap();
+        assert_eq!(v.racy_until, Some(now + Duration::from_secs(1) + RACY));
+    }
+
+    #[test]
+    fn an_input_on_a_mount_whose_stamps_are_not_trusted_is_unknown() {
+        let v = Validity {
+            inputs: vec![std::path::PathBuf::from("/nfs/f")].into(),
+            hash: 0,
+            remote: true,
+            racy_until: None,
+        };
+        assert_eq!(v.check(), Check::Unknown);
+    }
+
+    /// T4.8: validity costs a record at most 64 bytes, beside its input paths.
+    #[test]
+    fn validity_takes_at_most_64_bytes() {
+        assert!(
+            std::mem::size_of::<Option<Validity>>() <= 64,
+            "{}",
+            std::mem::size_of::<Option<Validity>>()
+        );
+    }
+
+    /// What a read finds of a record: its validity outranks its lifetime.
+    #[tokio::test(start_paused = true)]
+    async fn the_state_of_a_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("f");
+        rewrite(&f, "1", SystemTime::now() - Duration::from_secs(10));
+        let cache = Cache::new();
+        assert_eq!(cache.record_state("p", None, "s"), RecordState::Cold);
+        let schedule =
+            Schedule::from_strategy(&crate::provider::InvalidationStrategy::WatchAndPoll {
+                patterns: Vec::new(),
+                abs_paths: vec![f.to_string_lossy().into_owned()],
+                interval_secs: 60,
+                count: 1,
+            });
+        let fields = HashMap::from([("v".to_string(), Value::Int(1))]);
+        cache.put_source(
+            "p",
+            None,
+            "s",
+            fields,
+            schedule.with_validity(Validity::take(vec![f.clone()])),
+        );
+        assert_eq!(cache.record_state("p", None, "s"), RecordState::Valid);
+        let keys = cache.stored_keys("p", None, "s", "v").unwrap();
+        assert!(
+            matches!(&keys.get("hash"), Some(Value::String(h)) if h.len() == 16
+                && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())),
+            "{keys:?}"
+        );
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert_eq!(cache.record_state("p", None, "s"), RecordState::Stale);
+        rewrite(&f, "22", SystemTime::now());
+        assert_eq!(cache.record_state("p", None, "s"), RecordState::Invalid);
     }
 }

@@ -164,7 +164,7 @@ and writes it as a single newline-terminated line.
 
 **Step 7: Cache lookup**
 
-`cache.get("git", Some("."))` constructs the key `"git\0."` and looks it up in the DashMap. On a cache hit, it returns `Some(CacheEntry)`.
+`cache.record_state("git", Some(root), "head")` looks up the instance's record (the key `"git\0<root>"` in the DashMap) and checks it: within its lifetime, and its stat inputs (`Source::inputs`, for `head` the repository's `HEAD`) as its run stamped them. One `stat(2)` per input, on the request task. A valid record is answered as it is; nothing runs.
 
 **Step 8: Field extraction**
 
@@ -182,9 +182,11 @@ The client reads the response line, strips metadata, and writes the plain text t
 
 The server finds no record for the instance and starts its run (`Runs::start`), or takes the run already in flight, whoever started it. The run executes on `tokio::task::spawn_blocking` and writes its result to the cache itself; the read waits for it and answers from what it wrote, in the same response. The client receives data on the first query — there is no empty response or polling step. A read that stops waiting (its connection gone) takes nothing with it: the run records itself.
 
-**On a record past its lifetime:**
+**On a record whose inputs changed, or past its lifetime:**
 
-A record older than its Source's poll interval is `stale`. The read runs the Source (or takes the run in flight) and waits up to the Source's budget (`budget(...)`, else `[daemon] budget`, default `50ms`), counted from when the read began; with `wait` it waits for the run however long. In time, it answers the fresh value; late, it answers the stored one, still `stale`, while `:cache.<field>.executing` says the run goes on, and the run records itself for the next read and for any `watch`. A namespace read starts every run it needs before it waits for any, so its Sources run together.
+A record whose stat inputs changed since its run (a `git checkout` rewrote `HEAD`) is invalid; one older than its Source's poll interval is `stale`. Either way the read runs the Source and waits up to the Source's budget (`budget(...)`, else `[daemon] budget`, default `50ms`), counted from when the read began; with `wait` it waits for the run however long. A stale record takes the run in flight; an invalid one takes it only if that run's own inputs are as they are now (it stamped them after the change, or has yet to), else the run queued behind it. In time, the read answers the fresh value; late, it answers the stored one (`stale` if it is past its lifetime) while `:cache.<field>.executing` says the run goes on, and the run records itself for the next read and for any `watch`. A namespace read starts every run it needs before it waits for any, so its Sources run together.
+
+So a read after a change answers the new value whether or not the file event has arrived: correctness does not wait for the watcher, which keeps the background warming. A run stamps its inputs immediately before it executes, so a change during the run fails the next check: one run more, never a stale answer. Only the files a Source declares are checked: what an `exec` child reads, or a change deeper than a declared directory, stays eventual, brought up to date by the watch and the poll. A read of `:cache`, `:put` or `:source`, a `watch` frame, `status` and `refresh` check nothing.
 
 ---
 
@@ -223,11 +225,16 @@ The run executes in a task of its own:
 runtime.spawn(async move {
     let result = tokio::time::timeout(
         timeout,
-        tokio::task::spawn_blocking(move || source.execute(dir)),
+        tokio::task::spawn_blocking(move || {
+            let validity = Validity::take(source.inputs(&declared, root));
+            (source.execute(dir), validity)
+        }),
     ).await;
     settle.finish(result);
 });
 ```
+
+The stamp of the inputs is taken on the blocking thread immediately before `execute`, and stored with the record.
 
 `spawn_blocking` runs `Source::execute()` on tokio's dedicated blocking thread pool, so the scheduler's loop and the request tasks go on while it runs. Nobody waits on the task: the scheduler goes on at once, and a read waits on the `Run` it was handed.
 

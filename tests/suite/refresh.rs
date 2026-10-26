@@ -11,9 +11,7 @@
 //!
 //! `git` is the fixture because it is the one built-in with several Sources
 //! over one namespace. The fields under test are `commit` (source `refs`) and
-//! `lines_added` (source `diff`): `branch`'s source, `head`, is `read_always`,
-//! so its record is rewritten by every read and its age can never say which op
-//! refreshed it.
+//! `lines_added` (source `diff`).
 
 use crate::common::git::GitRepoFixture;
 use crate::common::poll::poll_until_async;
@@ -69,8 +67,8 @@ async fn warm(stream: &mut UnixStream, key: &str, path: &str) -> serde_json::Val
         .unwrap_or_else(|| panic!("get {key} should hit at {path}"))
 }
 
-/// The `age_ms` of a key's `:cache` leaf (`git.commit` -> `git:cache.commit`), in ms. Reading an age never re-executes the Sources
-/// under test — neither `refs` nor `diff` is `read_always`.
+/// The `age_ms` of a key's `:cache` leaf (`git.commit` -> `git:cache.commit`),
+/// in ms. A `:cache` read runs nothing.
 async fn age(stream: &mut UnixStream, key: &str, path: &str) -> u64 {
     let cache_key = key.replacen('.', ":cache.", 1);
     let resp = send_recv(stream, &get(&cache_key, path)).await;
@@ -124,8 +122,8 @@ async fn refreshing_a_field_re_executes_only_its_owning_source() {
         "refresh git.commit must leave `diff` alone"
     );
 
-    // The same rule for a field whose source is read-always: `head` is the
-    // only source `git.branch` demands, so `diff` is still untouched.
+    // The same rule for `git.branch`: `head` is the only source it demands,
+    // so `diff` is still untouched.
     let resp = send_recv(&mut s, &refresh("git.branch", path)).await;
     assert!(resp.ok, "refresh git.branch: {:?}", resp.error);
     assert!(

@@ -150,7 +150,7 @@ fn refs_outputs_clean() -> Vec<std::io::Result<Output>> {
 
 #[test]
 fn git_refs_clean_repo_produces_correct_branch() {
-    // Note: branch and detached have moved to the head source (read-always).
+    // Note: branch and detached are the head source's.
     // The refs source now produces commit, ahead, behind, upstream, state, etc.
     let dir = fake_repo();
     let stub = StubGitExecutor::new(refs_outputs_clean());

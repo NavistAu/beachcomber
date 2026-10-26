@@ -249,7 +249,7 @@ daemon's own startup path in-process (native watcher), 2000 interleaved rounds (
 | config Source, `poll` only (0 watch paths) | 32 µs | 281 µs | 5.3 ms | 28.6 ms |
 | config Source, `watch` of 1 path | 28 µs | 253 µs | 4.7 ms | 24.7 ms |
 | config Source, `watch` of 8 paths | 29 µs | 238 µs | 4.6 ms | 22.7 ms |
-| `git.branch` (git `head` runs on every read) | 66 µs | 753 µs | 13.6 ms | 48.8 ms |
+| `git.branch` (git `head` ran on every read) | 66 µs | 753 µs | 13.6 ms | 48.8 ms |
 | `git`, the whole namespace | 97 µs | 798 µs | 11.9 ms | 53.1 ms |
 
 `cargo bench --bench validity -- second_get_after_cold` (audit P9: a `root = lup(…)` plus `watch(…)` Source, the
@@ -268,13 +268,34 @@ trials each):
 
 | Change, then read | Answered the new value | read p50 | read p99 |
 |---|---:|---:|---:|
-| `.git/HEAD` written, `git.branch` | 100/100 (git `head` runs on every read) | 0.12 ms | 0.37 ms |
+| `.git/HEAD` written, `git.branch` | 100/100 (git `head` ran on every read) | 0.12 ms | 0.37 ms |
 | `state.json` rewritten, a config Source with `watch('state.json')` | 8/100 | 0.13 ms | 2.8 ms |
 
 `convergence_L` (`.git/HEAD` written until the cache shows the new branch, through the watcher): 7.6 ms mean.
 
 The CLI (`hyperfine -N --warmup 20 --runs 200`, release, an isolated daemon, load ~57): `comb get git.branch` has a
 median of 14.8 ms (min 7.3 ms) against 14.2 ms (min 6.4 ms) for `comb get hostname.name`, the process floor.
+
+### Read validity: a warm read checks its record's files
+
+Since `a warm read checks its record's files` a read stats a Source record's inputs before it answers from it, and
+git's `head` no longer runs on every read. Measured 2026-10-26 against the baseline binary above, interleaved run for
+run, at load 140-200 (so read the minimum beside the median):
+
+- **Warm `get`, raw socket** (`warm_get_percentiles`, two runs of each): `git.branch` p50 106-108 µs (baseline
+  266 µs), min 41 µs (77-78 µs); `git` p50 184-185 µs (329-332 µs), min 84-86 µs (110-114 µs). The config Sources
+  are unchanged within noise (p50 98-121 µs against 102-122 µs).
+- **The stat pass**: `watch8` against `watch0` adds 8-10 µs at the minimum and 18-23 µs at the median, 1.1-2.8 µs
+  per input. One `lstat(2)` per input that is not a symlink; `stat_pass/lstat` (a bare `lstat`) measured 9-12 µs
+  on this host at this load, against the ~1 µs of an idle one.
+- **Read after a change** (`read_after_mutation`, four runs): 100/100 in every run, for the `.git/HEAD` write and for
+  the `state.json` rewrite (baseline 8/100), with the watcher on and with it off. The read that finds the change
+  has a p50 of 0.21-0.97 ms for `git.branch` and 0.26-1.98 ms for the config Source (under 1 ms in 15 of the 16
+  runs and modes); its p99 is the load's (1.7-56 ms).
+- **CLI** (`hyperfine -N --warmup 20 --runs 200`, three runs of each): `comb get git.branch` minus `comb get
+  hostname.name` at the median was +0.2, +1.0 and +5.5 ms (baseline +1.2 to +2.3 ms); at the minimum 6.4-7.2 ms
+  against 6.6-6.9 ms.
+- **Size**: `Option<Validity>` is 48 bytes per record, beside its input paths.
 
 ### The watch fan-in: one `poll(2)` (phase 3)
 

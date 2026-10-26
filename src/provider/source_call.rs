@@ -18,7 +18,7 @@
 //! A Source reached again while it is running, through however many others, is
 //! a cycle: the error `sources: <p>.<s> calls itself`.
 
-use crate::cache::{Cache, RecordFreshness};
+use crate::cache::{Cache, RecordFreshness, RecordState};
 use crate::provider::Value;
 use crate::provider::registry::{CalleeMap, ProviderRegistry};
 use crate::run::{Cycle, Outcome, Want};
@@ -224,12 +224,15 @@ enum Unwarmed {
     Fault(String),
 }
 
-/// Run each instance of `provider`'s Source `source` reached from `entry` that
-/// has nothing stored, wait for it, and note the call against the run that is
-/// calling. The chain reached. A disabled provider has no instances: nothing
-/// of it runs, and the call is noted all the same, with none, since what the
-/// caller stored depends on the answer and switching the provider on changes
-/// it.
+/// Run each instance of `provider`'s Source `source` reached from `entry` whose
+/// record is not valid (nothing stored, past its lifetime, or an input
+/// changed), wait for it to its end, and note the call against the run that is
+/// calling. The chain reached. A Source's own read has no budget: a run
+/// computes a value to store, and storing one built from a record it did not
+/// wait for would defeat the record's validity. A disabled provider has no
+/// instances: nothing of it runs, and the call is noted all the same, with
+/// none, since what the caller stored depends on the answer and switching the
+/// provider on changes it.
 fn warm_called(
     registry: &Arc<ProviderRegistry>,
     cache: &Arc<Cache>,
@@ -246,13 +249,16 @@ fn warm_called(
         .map_err(Unwarmed::Fault)?;
     for root in &chain {
         let root = root.as_deref();
-        // A stored instance is the common call: answered before anything
+        // A valid instance is the common call: answered before anything
         // shared is locked.
-        if cache.has_provider_records_for(provider, root, source) {
-            continue;
-        }
+        let want = match cache.record_state(provider, root, source) {
+            RecordState::Valid => continue,
+            RecordState::Cold => Want::Cold,
+            RecordState::Invalid => Want::Changed,
+            RecordState::Stale => Want::Any,
+        };
         let key = instance_key(provider, source, root);
-        let Some(run) = registry.runs().start(Want::Cold, registry, cache, &key) else {
+        let Some(run) = registry.runs().start(want, registry, cache, &key) else {
             continue;
         };
         match run.wait() {

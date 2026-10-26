@@ -267,12 +267,12 @@ impl Source for Retuned {
         self.inner.has_root()
     }
 
-    fn watched_files(&self, root: Option<&str>) -> Vec<std::path::PathBuf> {
-        self.inner.watched_files(root)
-    }
-
-    fn read_always(&self) -> bool {
-        self.inner.read_always()
+    fn inputs(
+        &self,
+        declared: &crate::provider::InvalidationStrategy,
+        root: Option<&str>,
+    ) -> Vec<std::path::PathBuf> {
+        self.inner.inputs(declared, root)
     }
 }
 

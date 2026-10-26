@@ -10,7 +10,11 @@
 //!   * `warm_get/watch0`, `watch1`, `watch8`: a warm `get` of a rooted config
 //!     Source that declares 0 (it only polls), 1 and 8 `watch` paths;
 //!   * `warm_get/git.branch`, `warm_get/git`: a field and the whole namespace
-//!     on a fixture repository.
+//!     on a fixture repository;
+//!   * `stat_pass/1`, `/4`, `/10`: the check a warm read makes of a record's
+//!     stat inputs (`Validity::check`), for that many files, in-process, and
+//!     `stat_pass/lstat`, one bare `lstat(2)`, the floor per input on the
+//!     machine as it is.
 //!
 //! Printed:
 //!   * `warm_get_percentiles`: the same reads interleaved, one of each case per
@@ -27,7 +31,7 @@
 //!     start, which a criterion iteration cannot hold.
 //!
 //! Run with `cargo bench --bench validity`. A filter runs one part:
-//! `-- warm_get/` the criterion groups, `-- warm_get_percentiles`,
+//! `-- warm_get/` or `-- stat_pass/` a criterion group, `-- warm_get_percentiles`,
 //! `-- second_get_after_cold` or `-- budget_accuracy` a printed one.
 
 use beachcomber::config::Config;
@@ -243,6 +247,38 @@ fn bench_warm_gets(c: &mut Criterion) {
     group.finish();
 }
 
+/// The check of a record's stat inputs, by how many there are: what a warm
+/// read adds per instance it reaches.
+fn bench_stat_pass(c: &mut Criterion) {
+    let dir = TempDir::new().unwrap();
+    let files: Vec<PathBuf> = (0..10)
+        .map(|i| {
+            let file = dir.path().join(format!("f{i}"));
+            std::fs::write(&file, "x").unwrap();
+            // Long since written: the stamps are not racy.
+            std::fs::File::options()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+                .unwrap();
+            file
+        })
+        .collect();
+    let mut group = c.benchmark_group("stat_pass");
+    group.bench_function("lstat", |b| {
+        b.iter(|| criterion::black_box(std::fs::symlink_metadata(&files[0]).is_ok()));
+    });
+    for n in [1, 4, 10] {
+        let validity = beachcomber::cache::Validity::take(files[..n].to_vec()).unwrap();
+        assert_eq!(validity.check(), libbeachcomber::validity::Check::Valid);
+        group.bench_function(n.to_string(), |b| {
+            b.iter(|| criterion::black_box(validity.check()));
+        });
+    }
+    group.finish();
+}
+
 /// Rounds of `warm_get_percentiles`.
 const ROUNDS: usize = 2000;
 
@@ -429,6 +465,12 @@ criterion_group! {
     targets = bench_warm_gets
 }
 
+criterion_group! {
+    name = stat_pass;
+    config = Criterion::default().sample_size(200).measurement_time(Duration::from_secs(2));
+    targets = bench_stat_pass
+}
+
 fn main() {
     // A filter is the first argument that is not a flag (`cargo bench` passes
     // `--bench`); with none, every part runs.
@@ -436,6 +478,10 @@ fn main() {
     let runs = |name: &str| filter.as_deref().is_none_or(|f| name.contains(f));
     if runs("warm_get/") {
         warm();
+        Criterion::default().configure_from_args().final_summary();
+    }
+    if runs("stat_pass/") {
+        stat_pass();
         Criterion::default().configure_from_args().final_summary();
     }
     if runs("warm_get_percentiles") {

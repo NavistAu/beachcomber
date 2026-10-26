@@ -380,27 +380,61 @@ template.workspace = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}"
 
 ---
 
-## 2c. `Source::watched_files`
+## 2c. `Source::inputs`: what a read checks
 
-When a rooted source's root is not itself a watchable directory, `Source::watched_files` names the concrete files the scheduler should watch for its instance:
+A read answers from a Source's stored record only while the record is valid:
+within its lifetime (its poll), and with its **stat inputs** as its run found
+them. A run stamps its inputs immediately before it executes, and a read stats
+them again (one `stat(2)` per input, on the request task) before it answers. If
+one changed, the record's instance runs again, and the read waits up to the
+Source's budget for it. A change while the run executes fails the next read's
+check, so it costs one run more, never a stale answer.
 
 ```rust
 pub trait Source: Send + Sync {
     // ... other methods ...
 
-    /// Returns explicit file paths to watch for the instance at `root`.
-    /// Default: empty — use `patterns` / `abs_paths` in the invalidation strategy instead.
-    fn watched_files(&self, root: Option<&str>) -> Vec<PathBuf> {
-        let _ = root;
-        vec![]
+    /// The stat inputs of the instance at `root` (`None` is the instance at
+    /// `~`). `declared` is the Source's invalidation as it stands, which a
+    /// `return` line can retune.
+    fn inputs(&self, declared: &InvalidationStrategy, root: Option<&str>) -> Vec<PathBuf> {
+        declared_inputs(declared, root)
     }
 }
 ```
 
-The scheduler calls `watched_files(root)` when the instance is first requested and uses the result to set up per-file watches, each subscribed to that instance's lifecycle key. No built-in source overrides it today.
+The default is the Source's `watch(...)` declaration: each relative pattern
+joined to the instance's root, each absolute path as written, and at the `~`
+instance each single-component pattern under `$HOME`. A Source that only polls
+declares none, has no validity, and is checked for its lifetime alone.
 
-Use `watched_files` when:
-- `abs_paths` in the invalidation strategy is not suitable because the files depend on the instance's root.
+- **A stamp** is `dev`, `ino`, size, mtime in nanoseconds and kind, following
+  symlinks, plus the link's own inode and mtime for a symlink. An absent path
+  has a stamp of its own, so creating an input is a change. A path that cannot
+  be stat'd (`EACCES`) is unknown, and keeps the record.
+- **A directory** is an input as a node, by its own mtime: an entry created,
+  removed or renamed in it is a change (git writes `HEAD` and `index` by
+  renaming a lockfile in `.git/`); a change deeper in the tree is left to the
+  watch.
+- **A network or FUSE mount** (NFS, SMB, AFP, FUSE, or one not known) is never
+  stat'd on a read: a stat there can hang and its attribute cache can lie. A
+  record with an input there is checked for its lifetime only, and the daemon
+  logs one warning per mount.
+- **A racy stamp**, taken within the mount's timestamp resolution of the
+  file's mtime (and at least 10 ms), cannot see a same-size write in place in
+  that window. The first read once the window has closed counts the record
+  invalid and runs it again.
+
+Override `inputs` when the root alone cannot name the files a run reads. Git
+does: `head` returns `<gitdir>/HEAD`, plus `<root>/.git` itself when it is a
+gitfile (a linked worktree or a submodule); `refs` adds
+`<commondir>/packed-refs` and `<commondir>/refs/heads/<branch>`; `status`
+returns `<gitdir>/index`. Name only files the run reads: an input that changes
+when the value does not costs a run for nothing.
+
+The record's validity hash is shown as `hash` in its `:cache` answer
+(`comb get git:cache.branch`), 16 lowercase hex digits, written by the daemon
+alone.
 
 ---
 

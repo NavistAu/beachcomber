@@ -102,14 +102,12 @@ fn refresh_global_is_accepted_for_a_global_source() {
 /// cannot reach, and the post-refresh read polls for the fall — the shape
 /// `tests/suite/refresh.rs` uses for the same proof over a raw socket.
 ///
-/// The two fields are chosen for what their Sources do *not* do. `branch`'s
-/// `head` is `read_always`, so its record is rewritten by every read and its
-/// age can never say which op refreshed it. `head` and `refs` are also
-/// `Watch` Sources: warming one registers a kernel watch on the scheduler
-/// loop, which blocks for seconds when `fseventsd` is loaded — as it is with
-/// the whole suite's daemons starting at once — and a refresh queued behind
-/// it would miss any deadline. `diff` and `lineage` are `Poll` Sources and
-/// register no watch (canon `provider_source.md` invariant 4).
+/// The two fields are chosen for what their Sources do *not* do: `head` and
+/// `refs` are `Watch` Sources, whose records a read checks against the files
+/// they declare (a fixture's, written just now, are racy and run again once),
+/// and whose watches a slow host registers late. `diff` and `lineage` are
+/// `Poll` Sources: they declare no files and register no watch, so only a
+/// refresh writes their records again.
 #[test]
 fn refresh_of_a_field_re_executes_its_owning_source_alone() {
     let d = TestDaemon::spawn();

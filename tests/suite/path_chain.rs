@@ -1758,13 +1758,16 @@ async fn a_bare_global_read_without_a_home_repository_is_a_miss() {
 
 /// A watch from a subdirectory of a repository rooted at `$HOME` subscribes to
 /// the global entry, which is on its chain, and its initial frame is the
-/// chain-resolved value.
+/// chain-resolved value. A watch runs nothing (its frames follow writes), so a
+/// read stores the value first.
 #[tokio::test]
 async fn watch_from_a_subdirectory_of_a_home_repository_reads_the_global_entry() {
     let f = Fixture::defaults();
     crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
 
     let sub = f.path("ws/other");
+    let mut s = f.connect().await;
+    send_recv(&mut s, get_at("git.branch", &sub)).await;
     let mut w = f.connect().await;
     let mut req = serde_json::json!({"op": "watch", "key": "git.branch", "path": sub}).to_string();
     req.push('\n');

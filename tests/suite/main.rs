@@ -87,5 +87,6 @@ mod shutdown;
 mod status_shape;
 mod store;
 mod test_isolation;
+mod validity;
 mod watch;
 mod watch_registration;

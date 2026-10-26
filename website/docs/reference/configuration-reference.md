@@ -60,8 +60,9 @@ timeout = "10s"
 
 # How long a read waits for a Source before answering with what it has, for
 # every Source whose own `return` does not say `budget(...)`. Any duration of
-# at least 1ms. A read of a record past its lifetime runs its Source and waits
-# this long for the run, then answers with what is stored.
+# at least 1ms. A read of a record past its lifetime, or one whose watched
+# files changed, runs its Source and waits this long for the run, then answers
+# with what is stored.
 # Default: "50ms"
 # budget = "50ms"
 
@@ -363,7 +364,7 @@ Composition rules:
 | `watchdog_interval` | duration or null | `null` (disabled) | How often the watchdog checks scheduler liveness |
 | `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
 | `idle_shutdown` | duration (whole seconds) or null | `null` (disabled) | How long with no client before the daemon shuts down; unset keeps it resident |
-| `budget` | duration, at least `1ms` | `"50ms"` | How long a read waits for a Source before answering with what it has, for every Source whose `return` does not name `budget(...)`. A read of a record past its lifetime runs the Source and waits this long for the run before answering with what is stored. |
+| `budget` | duration, at least `1ms` | `"50ms"` | How long a read waits for a Source before answering with what it has, for every Source whose `return` does not name `budget(...)`. A read of a record past its lifetime, or one whose watched files changed, runs the Source and waits this long for the run before answering with what is stored. |
 | `providers.<p>.enabled` | bool | `true` | `false` switches the provider off: sugar for `result = "{{ {} }}"`, and no Source of it runs ([Switching a provider off](#switching-a-provider-off--enabled--false)). Not valid on `_` |
 | `providers.<p>.cache._.decay` | int, 1 to 16 | (4 from `defaults/00-comb.toml`) | Decay steps before eviction, seeded as `<p>:cache._.decay`; `<p> = _` is every provider ([Template facets](#template-facets)) |
 

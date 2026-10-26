@@ -1,9 +1,14 @@
 //! The one reader of a file's `lstat`, shared by the `stat` template filter
 //! and anything else that must say what a file looked like: size, mtime, kind
-//! and permission bits.
+//! and permission bits. Beside it, a path's [`Stamp`] for the validity hash
+//! ([`crate::validity`]), and what a filesystem's stamps can be trusted for
+//! ([`mount_of`]).
 
+use std::collections::HashMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 /// What a file is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +81,236 @@ pub fn lstat(path: &Path) -> std::io::Result<Stat> {
     std::fs::symlink_metadata(path).map(|m| Stat::from_metadata(&m))
 }
 
+/// What a path looked like, for the validity hash: one input of a record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stamp {
+    /// Nothing is there: its creation is a change.
+    Absent,
+    /// It could not be stamped (`EACCES`, say): nothing is known of it, and a
+    /// record that reads it is kept.
+    Unknown,
+    Present(Present),
+}
+
+/// A path that is there, as `stat(2)` (following symlinks) saw it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Present {
+    pub dev: u64,
+    pub ino: u64,
+    pub size: u64,
+    pub mtime_secs: i64,
+    pub mtime_nanos: u32,
+    /// What it is once followed: never [`Kind::Symlink`].
+    pub kind: Kind,
+    /// The link's own inode and mtime when the path is a symlink, so that
+    /// pointing it elsewhere is a change.
+    pub link: Option<Link>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Link {
+    pub ino: u64,
+    pub mtime_secs: i64,
+    pub mtime_nanos: u32,
+}
+
+impl Kind {
+    fn code(self) -> u8 {
+        match self {
+            Kind::File => 0,
+            Kind::Dir => 1,
+            Kind::Symlink => 2,
+            Kind::Other => 3,
+        }
+    }
+}
+
+impl Stamp {
+    /// The canonical encoding the validity hash takes: a tag (0 absent, 1
+    /// unknown, 2 present); for a present path its `dev`, `ino`, `size` (u64),
+    /// `mtime` seconds (i64) and nanoseconds (u32), kind (u8: file 0, dir 1,
+    /// other 3) and whether it is a link (u8), all little-endian; for a link
+    /// its own `ino` (u64) and `mtime` (i64, u32). Stored hashes depend on
+    /// it: it does not change.
+    pub fn encode(&self) -> Vec<u8> {
+        match self {
+            Stamp::Absent => vec![0],
+            Stamp::Unknown => vec![1],
+            Stamp::Present(p) => {
+                let mut out = Vec::with_capacity(48);
+                out.push(2);
+                out.extend(p.dev.to_le_bytes());
+                out.extend(p.ino.to_le_bytes());
+                out.extend(p.size.to_le_bytes());
+                out.extend(p.mtime_secs.to_le_bytes());
+                out.extend(p.mtime_nanos.to_le_bytes());
+                out.push(p.kind.code());
+                match p.link {
+                    None => out.push(0),
+                    Some(link) => {
+                        out.push(1);
+                        out.extend(link.ino.to_le_bytes());
+                        out.extend(link.mtime_secs.to_le_bytes());
+                        out.extend(link.mtime_nanos.to_le_bytes());
+                    }
+                }
+                out
+            }
+        }
+    }
+}
+
+fn nanos(meta: &std::fs::Metadata) -> u32 {
+    u32::try_from(meta.mtime_nsec())
+        .unwrap_or(0)
+        .min(999_999_999)
+}
+
+/// The stamp of `path`: `stat(2)` following symlinks, and `lstat(2)` of a
+/// symlink for its own inode and mtime. Nothing there, or a component that
+/// is not a directory, is [`Stamp::Absent`], and so is a symlink to nothing;
+/// any other failure is [`Stamp::Unknown`]. A directory is stamped as a node,
+/// by its own mtime, which an entry created, removed or renamed in it changes.
+///
+/// One `lstat(2)` for what is not a symlink, the common input: a read pays a
+/// stamp per input.
+pub fn stamp(path: &Path) -> Stamp {
+    let absent = |e: &std::io::Error| {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+        )
+    };
+    let own = match std::fs::symlink_metadata(path) {
+        Ok(own) => own,
+        Err(e) if absent(&e) => return Stamp::Absent,
+        Err(_) => return Stamp::Unknown,
+    };
+    let (followed, link) = if own.file_type().is_symlink() {
+        let link = Link {
+            ino: own.ino(),
+            mtime_secs: own.mtime(),
+            mtime_nanos: nanos(&own),
+        };
+        match std::fs::metadata(path) {
+            Ok(followed) => (followed, Some(link)),
+            Err(e) if absent(&e) => return Stamp::Absent,
+            Err(_) => return Stamp::Unknown,
+        }
+    } else {
+        (own, None)
+    };
+    let kind = match Stat::from_metadata(&followed).kind {
+        Kind::Symlink => Kind::Other,
+        kind => kind,
+    };
+    Stamp::Present(Present {
+        dev: followed.dev(),
+        ino: followed.ino(),
+        size: followed.len(),
+        mtime_secs: followed.mtime(),
+        mtime_nanos: nanos(&followed),
+        kind,
+        link,
+    })
+}
+
+/// What a filesystem's stamps can be trusted for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mount {
+    /// A local filesystem whose mtimes have this resolution: nanoseconds for
+    /// APFS, ext4, btrfs, xfs, tmpfs and their like; a second for HFS+; two
+    /// for FAT and exFAT.
+    Local { resolution: Duration },
+    /// A network or FUSE mount, or one not known: a stat there can hang, and
+    /// its attribute cache can lie, so its stamps are not taken on a read.
+    Remote { kind: Option<String> },
+}
+
+/// The [`Mount`] the device `dev`, which `path` lies on, is: classified once,
+/// by `statfs(2)` of `path`, and kept for the process's life. `true` beside
+/// it the first time a device is seen, so a caller can say once what it found.
+pub fn mount_of(path: &Path, dev: u64) -> (Mount, bool) {
+    static MOUNTS: OnceLock<Mutex<HashMap<u64, Mount>>> = OnceLock::new();
+    let mounts = MOUNTS.get_or_init(Mutex::default);
+    if let Some(known) = mounts.lock().unwrap_or_else(|e| e.into_inner()).get(&dev) {
+        return (known.clone(), false);
+    }
+    let mount = classify(path);
+    mounts
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(dev, mount.clone());
+    (mount, true)
+}
+
+/// `statfs(2)` of `path`, as a [`Mount`].
+fn classify(path: &Path) -> Mount {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return Mount::Remote { kind: None };
+    };
+    let mut fs = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+    // SAFETY: `c_path` is a NUL-terminated path and `fs` is a properly sized
+    // out-parameter, read only when the call succeeds.
+    if unsafe { libc::statfs(c_path.as_ptr(), fs.as_mut_ptr()) } != 0 {
+        return Mount::Remote { kind: None };
+    }
+    // SAFETY: statfs succeeded and filled it in.
+    let fs = unsafe { fs.assume_init() };
+    kind_of(&fs)
+}
+
+const NANOS: Duration = Duration::from_nanos(1);
+
+#[cfg(target_os = "macos")]
+fn kind_of(fs: &libc::statfs) -> Mount {
+    let name: String = fs
+        .f_fstypename
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8 as char)
+        .collect();
+    named(name)
+}
+
+/// A mount by `statfs(2)`'s `f_fstypename`.
+#[cfg(target_os = "macos")]
+fn named(name: String) -> Mount {
+    let resolution = match name.as_str() {
+        "apfs" | "tmpfs" | "devfs" => NANOS,
+        "hfs" => Duration::from_secs(1),
+        "msdos" | "exfat" => Duration::from_secs(2),
+        _ => return Mount::Remote { kind: Some(name) },
+    };
+    Mount::Local { resolution }
+}
+
+#[cfg(target_os = "linux")]
+fn kind_of(fs: &libc::statfs) -> Mount {
+    magic(fs.f_type as i64 as u64 & 0xffff_ffff)
+}
+
+/// A mount by `statfs(2)`'s `f_type`, the filesystem's magic number.
+#[cfg(target_os = "linux")]
+fn magic(magic: u64) -> Mount {
+    let resolution = match magic {
+        // ext2/3/4, btrfs, xfs, tmpfs, overlayfs, zfs, f2fs, bcachefs, ramfs.
+        0xEF53 | 0x9123_683E | 0x5846_5342 | 0x0102_1994 | 0x794C_7630 | 0x2FC1_2FC1
+        | 0xF2F5_2010 | 0xCA45_1A4E | 0x8584_58F6 => NANOS,
+        // msdos/vfat, exfat.
+        0x4D44 | 0x2011_BAB0 => Duration::from_secs(2),
+        // HFS+.
+        0x482B => Duration::from_secs(1),
+        _ => {
+            return Mount::Remote {
+                kind: Some(format!("{magic:#x}")),
+            };
+        }
+    };
+    Mount::Local { resolution }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +353,158 @@ mod tests {
             mode: 0,
         };
         assert_eq!(s.mtime(), 1_700_000_000.5);
+    }
+
+    fn present(path: &Path) -> Present {
+        match stamp(path) {
+            Stamp::Present(p) => p,
+            other => panic!("{path:?}: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stamp_of_an_absent_path_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(stamp(&dir.path().join("nope")), Stamp::Absent);
+        let file = dir.path().join("f");
+        std::fs::write(&file, "x").unwrap();
+        assert_eq!(
+            stamp(&file.join("below")),
+            Stamp::Absent,
+            "a component that is a file"
+        );
+    }
+
+    #[test]
+    fn a_stamp_of_a_file_and_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        std::fs::write(&file, "hello").unwrap();
+        let p = present(&file);
+        assert_eq!((p.kind, p.size, p.link), (Kind::File, 5, None));
+        let d = present(dir.path());
+        assert_eq!(d.kind, Kind::Dir);
+        assert_eq!(p.dev, d.dev);
+    }
+
+    #[test]
+    fn a_stamp_of_a_symlink_carries_the_link_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::write(&a, "1").unwrap();
+        std::fs::write(&b, "2").unwrap();
+        let link = dir.path().join("l");
+        std::os::unix::fs::symlink(&a, &link).unwrap();
+        let first = present(&link);
+        assert_eq!(first.kind, Kind::File, "followed");
+        assert!(first.link.is_some());
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&b, &link).unwrap();
+        assert_ne!(stamp(&link), Stamp::Present(first), "retargeted");
+    }
+
+    #[test]
+    fn a_symlink_to_nothing_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("l");
+        std::os::unix::fs::symlink(dir.path().join("nothing"), &link).unwrap();
+        assert_eq!(stamp(&link), Stamp::Absent);
+    }
+
+    #[test]
+    fn a_stamp_of_what_cannot_be_read_is_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("f"), "x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let got = stamp(&locked.join("f"));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if std::fs::metadata(locked.join("f")).is_ok() && got != Stamp::Unknown {
+            // Root reads through any mode.
+            return;
+        }
+        assert_eq!(got, Stamp::Unknown);
+    }
+
+    /// A rename over a file is a new inode: the stamp changes even when the
+    /// size and the mtime do not.
+    #[test]
+    fn a_same_size_rename_is_a_new_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let (f, tmp) = (dir.path().join("f"), dir.path().join("f.tmp"));
+        std::fs::write(&f, "aaaa").unwrap();
+        let mtime = std::fs::metadata(&f).unwrap().modified().unwrap();
+        let before = present(&f);
+        std::fs::write(&tmp, "bbbb").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&tmp)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        std::fs::rename(&tmp, &f).unwrap();
+        let after = present(&f);
+        assert_eq!(
+            (after.size, after.mtime_secs, after.mtime_nanos),
+            (before.size, before.mtime_secs, before.mtime_nanos)
+        );
+        assert_ne!(after.ino, before.ino);
+        let hash = |p: Present| crate::validity::stamps_hash(&[(&f, Stamp::Present(p))]);
+        assert_ne!(hash(after), hash(before), "the hash changes with it");
+    }
+
+    #[test]
+    fn the_temp_directory_is_a_local_mount_classified_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let dev = present(dir.path()).dev;
+        let (mount, _) = mount_of(dir.path(), dev);
+        assert!(matches!(mount, Mount::Local { .. }), "{mount:?}");
+        let (again, first) = mount_of(dir.path(), dev);
+        assert_eq!((again, first), (mount, false));
+    }
+
+    /// Network and FUSE mounts, and any not known, are not stat'd on a read.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn statfs_classifies_network_and_fuse_mounts_as_remote() {
+        for remote in [
+            "nfs", "smbfs", "afpfs", "webdav", "macfuse", "osxfuse", "zzz",
+        ] {
+            assert_eq!(
+                named(remote.into()),
+                Mount::Remote {
+                    kind: Some(remote.into())
+                }
+            );
+        }
+        let local = |resolution| Mount::Local { resolution };
+        assert_eq!(named("apfs".into()), local(NANOS));
+        assert_eq!(named("hfs".into()), local(Duration::from_secs(1)));
+        assert_eq!(named("msdos".into()), local(Duration::from_secs(2)));
+        assert_eq!(named("exfat".into()), local(Duration::from_secs(2)));
+    }
+
+    /// Network and FUSE mounts, and any not known, are not stat'd on a read.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn statfs_classifies_network_and_fuse_mounts_as_remote() {
+        // NFS, FUSE, SMB, CIFS, SMB2, and one not known.
+        for remote in [
+            0x6969,
+            0x6573_5546,
+            0x517B,
+            0xFF53_4D42,
+            0xFE53_4D42,
+            0x1234,
+        ] {
+            assert!(matches!(magic(remote), Mount::Remote { .. }), "{remote:#x}");
+        }
+        let local = |resolution| Mount::Local { resolution };
+        assert_eq!(magic(0xEF53), local(NANOS), "ext4");
+        assert_eq!(magic(0x0102_1994), local(NANOS), "tmpfs");
+        assert_eq!(magic(0x482B), local(Duration::from_secs(1)), "HFS+");
+        assert_eq!(magic(0x4D44), local(Duration::from_secs(2)), "FAT");
     }
 
     #[test]
