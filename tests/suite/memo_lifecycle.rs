@@ -108,10 +108,8 @@ fn an_absent_watch_path_is_watched_through_its_parent_and_its_creation_drops_the
 /// `introspect lifecycle` names it), and one decay step later it is evicted,
 /// its value and its record with it.
 ///
-/// The lifecycle runs on the system clock in whole-second ticks, and a
-/// memo's ttl is whole seconds: the ttl (1 s) and its one decay step (2 s)
-/// pass in real time, each ending at the next tick after it, so this test
-/// takes three to five seconds.
+/// The ttl (1 s) and its one decay step (2 s) pass on the daemon's clock,
+/// which the test moves on: each ends at the scheduler's next tick.
 #[test]
 fn a_memo_decays_lets_go_of_its_watch_and_is_evicted() {
     let s = scenario();
@@ -145,16 +143,12 @@ fn a_memo_decays_lets_go_of_its_watch_and_is_evicted() {
         assert_eq!(ask(sock, get)["memo"]["data"], json!("prod"));
     }
 
-    let since = std::time::Instant::now();
+    s.daemon.advance(Duration::from_secs(1));
     wait(
         "introspect watches",
         "no watch once the memo has decayed",
         || watches(sock),
         Vec::is_empty,
-    );
-    eprintln!(
-        "introspect watches reached 0 {:?} after the memo's watch was seen Active (ttl 1s)",
-        since.elapsed()
     );
     assert!(
         record(sock, &s.project).get("hash").is_none(),
@@ -175,6 +169,7 @@ fn a_memo_decays_lets_go_of_its_watch_and_is_evicted() {
         ]
     );
 
+    s.daemon.advance(Duration::from_secs(2));
     wait(
         "demo:memo.f",
         "the memo evicted",

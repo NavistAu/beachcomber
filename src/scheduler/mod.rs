@@ -9,9 +9,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, interval};
+// The scheduler's one clock is the runtime's: its ticks, its lifecycle and its
+// failure backoff read it, as the cache's ages do. In a daemon it is the
+// system's monotonic clock; a test pauses and advances it.
+use tokio::time::{Duration, Instant, interval};
 use tracing::{debug, info, warn};
 
 use crate::query::Instance;
@@ -343,8 +345,8 @@ fn snapshot_entry(
 /// Convert a future `Instant` deadline into a Unix-millisecond timestamp by
 /// anchoring against the current monotonic and wall clocks. Past deadlines
 /// resolve to "now" (saturating).
-fn instant_to_unix_ms(deadline: std::time::Instant) -> u64 {
-    let now_inst = std::time::Instant::now();
+fn instant_to_unix_ms(deadline: Instant) -> u64 {
+    let now_inst = Instant::now();
     let now_sys = std::time::SystemTime::now();
     let remaining = deadline.saturating_duration_since(now_inst);
     let absolute = now_sys + remaining;
@@ -822,9 +824,8 @@ impl Scheduler {
         // Watch paths that are being monitored: path -> subscriptions
         let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
 
-        // Idle shutdown tracking, on the runtime's clock like the tick that
-        // checks it, so a test with paused time sees the daemon go idle.
-        let mut last_activity = tokio::time::Instant::now();
+        // Idle shutdown tracking.
+        let mut last_activity = Instant::now();
         let idle_shutdown = self.config.daemon().idle_shutdown();
 
         // Tick every second to check poll timers.
@@ -849,11 +850,11 @@ impl Scheduler {
                         Some(SchedulerMessage::Refresh { provider, instances }) => {
                             debug!("Refresh: provider={} instances={:?}", provider, instances);
                             self.refresh_sources(&provider, &instances);
-                            last_activity = tokio::time::Instant::now();
+                            last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::PutWritten { provider, path, node, ttl_secs }) => {
                             apply_put_written(&mut lifecycle, &self.cache, &provider, path.as_deref(), &node, ttl_secs, Instant::now());
-                            last_activity = tokio::time::Instant::now();
+                            last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::MemoWritten { provider, path, node, ttl_secs, watch }) => {
                             let key = memo_key(&provider, path.as_deref(), &node);
@@ -862,7 +863,7 @@ impl Scheduler {
                                 drop_watches_for_key(gone, &mut watch_paths, registrar.as_ref());
                             }
                             watch_key(registrar.as_ref(), &mut watch_paths, &key, memo_watches(&key, &watch));
-                            last_activity = tokio::time::Instant::now();
+                            last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::Reload { next, registry }) => {
                             let watches = self.reload(next, &registry, &mut lifecycle);
@@ -881,7 +882,7 @@ impl Scheduler {
                                     key.path.as_deref(),
                                 );
                             }
-                            last_activity = tokio::time::Instant::now();
+                            last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
                             let status = build_status(
@@ -973,7 +974,7 @@ impl Scheduler {
                                     self.execute_source(provider, &sm.name, root.as_deref(), Want::Cold);
                                 }
                             }
-                            last_activity = tokio::time::Instant::now();
+                            last_activity = Instant::now();
                         }
                     }
                 }
@@ -996,7 +997,7 @@ impl Scheduler {
                             self.fire(&key, Want::Fresh);
                         }
                     }
-                    last_activity = tokio::time::Instant::now();
+                    last_activity = Instant::now();
                 }
 
                 // Watch self-test verdict (canon provider_source.md §"Watch backend health").

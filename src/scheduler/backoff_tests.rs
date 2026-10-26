@@ -7,7 +7,8 @@ use crate::scheduler::lifecycle::{
     DEFAULT_DECAY, LifecycleRegistry, LifecycleState, SourceLifecycleConfig, StateTransition,
     StrategyKind,
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 fn test_config() -> SourceLifecycleConfig {
     // 1ms poll + count 1 = 1ms per step for fast test progression.

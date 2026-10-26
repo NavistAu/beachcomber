@@ -253,8 +253,7 @@ fn an_absent_path_is_watched_through_its_parent_and_its_creation_runs_the_source
 /// checked by stat and answers the file as it is now, with no watch; and the
 /// read reinstates the instance, which registers the watch again.
 ///
-/// The window is real time (the lifecycle runs on the system clock, and a
-/// poll is whole seconds), so this test takes one to two seconds.
+/// The window passes on the daemon's clock, which the test moves on.
 #[test]
 fn a_watch_goes_when_its_instance_decays_and_a_read_brings_it_back() {
     let tmp = tempfile::tempdir().unwrap();
@@ -284,18 +283,14 @@ fn a_watch_goes_when_its_instance_decays_and_a_read_brings_it_back() {
     };
     active();
 
-    let since = std::time::Instant::now();
+    d.advance(Duration::from_secs(1));
     poll_until(
         "introspect watches",
         "no watch once the instance has decayed",
         Duration::from_secs(10),
-        Duration::from_millis(10),
+        Duration::from_millis(5),
         || watches(&sock),
         Vec::is_empty,
-    );
-    eprintln!(
-        "introspect watches reached 0 {:?} after the watch was seen Active (Active window 1s)",
-        since.elapsed()
     );
 
     std::fs::write(&file, "2").unwrap();

@@ -374,9 +374,9 @@ fn held_instance() -> Vec<Instance> {
 /// scheduler's first demand of the instance and then its poll arrive: both
 /// take the run in flight. One run, whoever asked.
 ///
-/// The poll is a real one: its interval is a second, the shortest there is,
-/// and the lifecycle's clock is the system's, so this waits that second out.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+/// The poll is a real one, a second after the demand on the scheduler's
+/// clock, which this test moves on by that second.
+#[tokio::test]
 async fn a_read_a_demand_and_a_poll_of_one_instance_run_it_once() {
     let d = held(1);
     let read = tokio::spawn(ask(
@@ -394,19 +394,28 @@ async fn a_read_a_demand_and_a_poll_of_one_instance_run_it_once() {
             instances: held_instance(),
         })
         .await;
-    let demanded = std::time::Instant::now();
     d.handle.get_status().await.expect("the demand was handled");
-    // The poll is due a second after the demand; the first tick after that
-    // runs it. Two ticks past the second, and a round trip behind them.
+    // The poll is due a second after the demand: the first tick on the clock
+    // past that second runs it, and a round trip behind the tick has seen it
+    // through.
     let beat = d.heartbeat.load(Ordering::Relaxed);
-    let deadline = demanded + Duration::from_secs(10);
-    while demanded.elapsed() < Duration::from_secs(1)
-        || d.heartbeat.load(Ordering::Relaxed) < beat + 2
-    {
-        assert!(std::time::Instant::now() < deadline, "the ticks stopped");
-        tokio::task::yield_now().await;
-    }
-    d.handle.get_status().await.expect("the poll was handled");
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::time::resume();
+    until("a tick past the second", || {
+        d.heartbeat.load(Ordering::Relaxed) > beat
+    })
+    .await;
+    let status = d.handle.get_status().await.expect("the poll was handled");
+    let poll = status
+        .poll_timers
+        .iter()
+        .find(|p| p.provider == "held")
+        .expect("the instance's poll timer");
+    assert_eq!(
+        poll.last_run_secs_ago, 0,
+        "the poll fired at the tick, a second after the demand"
+    );
     assert_eq!(
         d.runs.load(Ordering::SeqCst),
         1,

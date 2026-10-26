@@ -10,9 +10,14 @@
 //! has no watch, and a late event is not a demand), and a read reinstates it
 //! and registers them again. Until then a read checks the record's files by
 //! stat, so the record is never served past a change.
+//!
+//! Its times are the runtime's clock ([`tokio::time::Instant`]), the one the
+//! cache ages its records on and the scheduler ticks on: the system's
+//! monotonic clock, which a test drives by pausing and advancing it.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use crate::provider::InvalidationStrategy;
 

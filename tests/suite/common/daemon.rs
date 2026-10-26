@@ -105,11 +105,13 @@ pub struct TestDaemon {
     served: Option<InProcess>,
 }
 
-/// An in-process daemon: its own runtime, and the token that stops it.
+/// An in-process daemon: the runtime it runs on, a single-threaded one on a
+/// thread of its own, so that a test can move its clock; and the token that
+/// stops it.
 struct InProcess {
-    runtime: tokio::runtime::Runtime,
+    runtime: tokio::runtime::Handle,
     cancel: tokio_util::sync::CancellationToken,
-    task: tokio::task::JoinHandle<()>,
+    thread: std::thread::JoinHandle<()>,
 }
 
 impl TestDaemon {
@@ -163,6 +165,9 @@ impl TestDaemon {
     /// before it loads its configuration, and its env file is loaded before
     /// the runtime starts, as `comb daemon` loads it. Nextest gives each test
     /// its own process, so setting it here is local to the test.
+    ///
+    /// It runs on a single-threaded runtime of its own, whose clock
+    /// [`TestDaemon::advance`] moves.
     #[allow(dead_code)]
     pub fn serve_in_process(socket: IsolatedSocket, home: PathBuf, xdg: PathBuf) -> Self {
         std::fs::create_dir_all(&home).expect("create temp HOME");
@@ -183,24 +188,27 @@ impl TestDaemon {
         // SAFETY: as above; the runtime that starts threads is built next.
         unsafe { config.load_env_file() };
 
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .expect("daemon runtime");
         let cancel = tokio_util::sync::CancellationToken::new();
-        let (task, ready) = {
-            let _enter = runtime.enter();
-            beachcomber::daemon::start_in_process_polling_with(
-                socket.path.clone(),
-                config,
-                cancel.clone(),
-                None,
-            )
-        };
-        runtime
-            .block_on(ready)
-            .expect("the in-process daemon refused to start");
+        let (started_tx, started) = std::sync::mpsc::channel();
+        let (path, stop) = (socket.path.clone(), cancel.clone());
+        let thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("daemon runtime");
+            runtime.block_on(async move {
+                let (task, ready) =
+                    beachcomber::daemon::start_in_process_polling_with(path, config, stop, None);
+                let ready = ready.await;
+                let _ = started_tx.send((tokio::runtime::Handle::current(), ready));
+                let _ = task.await;
+            });
+            // A Source's run still under way on a blocking thread is not
+            // waited for.
+            runtime.shutdown_background();
+        });
+        let (runtime, ready) = started.recv().expect("the daemon's thread started it");
+        ready.expect("the in-process daemon refused to start");
         Self {
             socket,
             home,
@@ -209,9 +217,30 @@ impl TestDaemon {
             served: Some(InProcess {
                 runtime,
                 cancel,
-                task,
+                thread,
             }),
         }
+    }
+
+    /// Move this in-process daemon's clock on by `by` at once: the clock its
+    /// scheduler ticks on and its lifecycle, its failure backoff and its
+    /// records' ages read. Whatever falls due in that time is done on the
+    /// daemon's next turn, as if `by` had passed; real time goes on from
+    /// there.
+    #[allow(dead_code)]
+    pub fn advance(&self, by: std::time::Duration) {
+        let served = self
+            .served
+            .as_ref()
+            .expect("advance() moves an in-process daemon's clock");
+        let (done, advanced) = std::sync::mpsc::channel();
+        served.runtime.spawn(async move {
+            tokio::time::pause();
+            tokio::time::advance(by).await;
+            tokio::time::resume();
+            let _ = done.send(());
+        });
+        advanced.recv().expect("the daemon's clock advanced");
     }
 
     /// `comb` at `cwd`, isolated to this daemon's home/xdg, with
@@ -237,8 +266,7 @@ impl Drop for TestDaemon {
         }
         if let Some(served) = self.served.take() {
             served.cancel.cancel();
-            let _ = served.runtime.block_on(served.task);
-            served.runtime.shutdown_background();
+            let _ = served.thread.join();
         }
     }
 }

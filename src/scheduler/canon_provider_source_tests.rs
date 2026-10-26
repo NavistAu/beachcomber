@@ -14,7 +14,8 @@ use crate::scheduler::lifecycle::{
     StrategyKind,
 };
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 // ---------------------------------------------------------------------------
 // Shared fixture helpers
