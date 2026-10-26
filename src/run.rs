@@ -1043,13 +1043,10 @@ mod tests {
                 nearest: false,
             },
         };
-        let source = ConfigSource::new(
-            spec,
-            Arc::new(std::env::vars().collect()),
-            Arc::new(crate::engine::PluginSet::new(vec![], Arc::new(loader))),
-            Arc::new(NoReads),
-        )
-        .unwrap();
+        let vars: Arc<HashMap<String, String>> = Arc::new(std::env::vars().collect());
+        let plugins = Arc::new(crate::engine::PluginSet::new(vec![], Arc::new(loader)));
+        let probe = crate::provider::config_source::load_probe(&vars, &plugins);
+        let source = ConfigSource::new(spec, vars, plugins, Arc::new(NoReads), &probe).unwrap();
         let mut registry = ProviderRegistry::new();
         registry.register_config_sources("p", vec![source]).unwrap();
         Arc::new(registry)

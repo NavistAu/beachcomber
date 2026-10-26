@@ -207,20 +207,26 @@ fn stage_error(spec: &ConfigSourceSpec, stage: &str, message: impl std::fmt::Dis
     format!("{}.{}: {stage}: {message}", spec.provider, spec.name)
 }
 
-/// The load check of a Source's lines ([`lint`]): each compiles and reads
-/// only names its stage sees, and `data` reads `comb` and calls `sources` the
-/// one way it can. Every line is checked, and each fault is one error
-/// prefixed `{who} {stage}: ` (`who` the Source's table, or a `_` table's);
-/// any line may be absent, as in a prototype. Nothing is rendered.
+/// What a load reads every Source's lines in: the daemon's engine for them,
+/// `env` its environment and `plugins` its libraries, which is never run.
+/// Built once per load, for every Source and `_` table it checks.
+pub fn load_probe(env: &HashMap<String, String>, plugins: &Arc<PluginSet>) -> Probe<'static> {
+    Probe::new(engine(env, plugins, None, None))
+}
+
+/// The load check of a Source's lines ([`lint`]), read in `probe`
+/// ([`load_probe`]): each compiles and reads only names its stage sees, and
+/// `data` reads `comb` and calls `sources` the one way it can. Every line is
+/// checked, and each fault is one error prefixed `{who} {stage}: ` (`who` the
+/// Source's table, or a `_` table's); any line may be absent, as in a
+/// prototype. Nothing is rendered.
 pub fn lint_lines(
+    probe: &Probe<'_>,
     who: &str,
     root: Option<&str>,
     data: Option<&str>,
     result: Option<&ResultSpec>,
-    env: &Arc<HashMap<String, String>>,
-    plugins: &Arc<PluginSet>,
 ) -> Vec<String> {
-    let probe = Probe::new(engine(env, plugins, None, None));
     let mut lines: Vec<(String, &str, Line)> = Vec::new();
     if let Some(root) = root {
         lines.push(("root".into(), root, Line::Root));
@@ -239,11 +245,11 @@ pub fn lint_lines(
     }
     let mut errors = Vec::new();
     for (stage, line, kind) in lines {
-        let found = lint(&probe, line, kind, &Known::default());
+        let found = lint(probe, line, kind, &Known::default());
         let compiles = !found.iter().any(|f| matches!(f, Finding::Compile(_)));
         errors.extend(found.iter().map(|f| format!("{who} {stage}: {f}")));
         if kind == Line::Data && compiles {
-            errors.extend(lint_data(&probe, line).map(|e| format!("{who} data: {e}")));
+            errors.extend(lint_data(probe, line).map(|e| format!("{who} data: {e}")));
         }
     }
     errors
@@ -287,11 +293,14 @@ impl ConfigSource {
         )
     }
 
+    /// The Source `spec` describes, its lines checked in `probe`, the load's
+    /// ([`load_probe`] of `env` and `plugins`).
     pub fn new(
         spec: ConfigSourceSpec,
         env: Arc<HashMap<String, String>>,
         plugins: Arc<PluginSet>,
         reader: Arc<dyn DaemonRead>,
+        probe: &Probe<'_>,
     ) -> Result<Self, Vec<String>> {
         // A load error names the Source's table, as every configuration error
         // does; a run's error (`stage_error`) names the Source.
@@ -332,19 +341,17 @@ impl ConfigSource {
         };
 
         let errors = lint_lines(
+            probe,
             &at,
             spec.root.as_deref(),
             Some(&spec.data),
             Some(&spec.result),
-            &env,
-            &plugins,
         );
         if !errors.is_empty() {
             return Err(errors);
         }
 
-        let probe = Probe::new(engine(&env, &plugins, None, None));
-        let refs = discover_refs(&probe, &spec.data);
+        let refs = discover_refs(probe, &spec.data);
         let reads_comb = refs.iter().any(|r| {
             matches!(r, Ref::CombProvider(_) | Ref::CombField(..))
                 || *r == Ref::Dynamic("comb".to_string())
@@ -360,7 +367,7 @@ impl ConfigSource {
             .collect();
 
         let who = format!("{}.{}", spec.provider, spec.name);
-        let calls = called_in(&probe, &spec.data).map_err(|e| load_error("data", &e))?;
+        let calls = called_in(probe, &spec.data).map_err(|e| load_error("data", &e))?;
         let itself = |c: &Called| match c {
             Called::Sibling(s) => *s == spec.name,
             Called::Of(p, s) => *p == spec.provider && *s == spec.name,
@@ -716,14 +723,20 @@ mod tests {
         Arc::new(std::env::vars().collect())
     }
 
+    /// `spec` built with `snapshot` as the daemon's environment and no
+    /// plugins, read as a load reads it.
+    fn built(
+        spec: ConfigSourceSpec,
+        snapshot: Arc<HashMap<String, String>>,
+        reader: Arc<dyn DaemonRead>,
+    ) -> Result<ConfigSource, Vec<String>> {
+        let plugins = Arc::new(PluginSet::new(vec![], Arc::new(MockLibraryLoader::new())));
+        let probe = load_probe(&snapshot, &plugins);
+        ConfigSource::new(spec, snapshot, plugins, reader, &probe)
+    }
+
     fn build(spec: ConfigSourceSpec, reader: Arc<dyn DaemonRead>) -> ConfigSource {
-        ConfigSource::new(
-            spec,
-            daemon_env(),
-            Arc::new(PluginSet::new(vec![], Arc::new(MockLibraryLoader::new()))),
-            reader,
-        )
-        .unwrap()
+        built(spec, daemon_env(), reader).unwrap()
     }
 
     fn source(spec: ConfigSourceSpec) -> ConfigSource {
@@ -735,22 +748,11 @@ mod tests {
     }
 
     fn with_env(spec: ConfigSourceSpec, snapshot: HashMap<String, String>) -> ConfigSource {
-        ConfigSource::new(
-            spec,
-            Arc::new(snapshot),
-            Arc::new(PluginSet::new(vec![], Arc::new(MockLibraryLoader::new()))),
-            Arc::new(FakeReader::default()),
-        )
-        .unwrap()
+        built(spec, Arc::new(snapshot), Arc::new(FakeReader::default())).unwrap()
     }
 
     fn new_err(spec: ConfigSourceSpec) -> String {
-        match ConfigSource::new(
-            spec,
-            daemon_env(),
-            Arc::new(PluginSet::new(vec![], Arc::new(MockLibraryLoader::new()))),
-            Arc::new(FakeReader::default()),
-        ) {
+        match built(spec, daemon_env(), Arc::new(FakeReader::default())) {
             Ok(_) => panic!("expected a load error"),
             Err(e) => e.join("\n"),
         }

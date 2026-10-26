@@ -2,7 +2,7 @@ use crate::boundaries::library::LibloadingLoader;
 use crate::cache::{Cache, Layers};
 use crate::config::Config;
 use crate::engine::PluginSet;
-use crate::provider::config_source::{ConfigSource, DaemonRead, lint_lines};
+use crate::provider::config_source::{ConfigSource, DaemonRead, lint_lines, load_probe};
 use crate::provider::source_call::Called;
 use crate::provider::{
     FailbackConfig, Provider, ProviderMetadata, Source, SourceMetadata, SourceResult, Value,
@@ -967,17 +967,18 @@ impl ProviderRegistry {
             });
         let plugins = Arc::new(PluginSet::new(search, Arc::new(LibloadingLoader)));
         let env = Arc::new(env.clone());
+        // Every line below is read in the one engine.
+        let probe = load_probe(&env, &plugins);
 
         // A `_` table's lines apply to Sources below it; they are compiled
         // here as a Source's own are, so a broken prototype does not load.
         for proto in crate::shape::prototype_lines(providers) {
             errors.extend(lint_lines(
+                &probe,
                 &proto.path,
                 proto.root.as_deref(),
                 proto.data.as_deref(),
                 proto.result.as_ref(),
-                &env,
-                &plugins,
             ));
         }
         // What builds is checked further whatever else does not: one broken
@@ -994,7 +995,13 @@ impl ProviderRegistry {
         for decl in decls {
             let mut built = Vec::new();
             for spec in decl.sources {
-                match ConfigSource::new(spec, env.clone(), plugins.clone(), self.reader.clone()) {
+                match ConfigSource::new(
+                    spec,
+                    env.clone(),
+                    plugins.clone(),
+                    self.reader.clone(),
+                    &probe,
+                ) {
                     Ok(source) => built.push(source),
                     Err(e) => errors.extend(e),
                 }
