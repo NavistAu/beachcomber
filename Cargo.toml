@@ -102,6 +102,10 @@ harness = false
 name = "resolve"
 harness = false
 
+[[bench]]
+name = "validity"
+harness = false
+
 [profile.dev]
 # macOS: skip dsymutil during link (keep debug info in .o files). Faster link.
 split-debuginfo = "unpacked"

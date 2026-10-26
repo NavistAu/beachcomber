@@ -10,6 +10,12 @@
 //!     watcher callback fires (steady-state, after the stream has started).
 //!   * `convergence_L`     - end-to-end: `.git/HEAD` written -> cache reflects the
 //!     new branch (FSEvents delivery + scheduler dispatch + refs execute + write).
+//!   * `read_after_mutation` (printed, not criterion) - correctness: a change on
+//!     disk, then at once a `get` over the raw socket, counted right when it
+//!     answers the new value, with the read's own latency. Two changes: a
+//!     `.git/HEAD` write read as `git.branch`, and a `state.json` rewrite read
+//!     through a config Source that declares `watch('state.json')`. Each trial
+//!     starts once the watcher has caught up with the last one.
 //!
 //! Budget B is NOT benched here - it is the prompt's read round-trip: ~5 ms via
 //! the `comb` CLI (process spawn + socket), ~0.3 ms via an in-process SDK client
@@ -36,9 +42,12 @@ use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
+use beachcomber::server::Server;
 use beachcomber::watcher::FsWatcher;
 use beachcomber::watcher_registry::WatcherRegistry;
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -312,8 +321,191 @@ fn bench_convergence_l(c: &mut Criterion) {
     group.finish();
 }
 
+/// Trials per change in `read_after_mutation`.
+const READ_TRIALS: usize = 100;
+
+/// One request on a raw connection, its answer and how long it took.
+fn timed_get(stream: &mut UnixStream, key: &str, path: &str) -> (serde_json::Value, Duration) {
+    let mut line =
+        serde_json::to_string(&serde_json::json!({"op": "get", "key": key, "path": path})).unwrap();
+    line.push('\n');
+    let t0 = Instant::now();
+    stream.write_all(line.as_bytes()).unwrap();
+    let mut answer = String::new();
+    BufReader::new(&mut *stream).read_line(&mut answer).unwrap();
+    let took = t0.elapsed();
+    (serde_json::from_str(&answer).expect("a JSON answer"), took)
+}
+
+/// Poll the cache until `field` of `provider` at `path` reads `want`.
+async fn wait_for_field(
+    cache: &Cache,
+    provider: &str,
+    path: &str,
+    field: &str,
+    want: &Value,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cache
+            .get_field(provider, Some(path), field)
+            .is_some_and(|(v, _)| v == *want)
+        {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_micros(200)).await;
+    }
+}
+
+/// The count a read after a change gets right, and the read's latency.
+fn read_after_mutation() {
+    if !has_git() {
+        eprintln!("prompt_race: git not found; skipping read_after_mutation");
+        return;
+    }
+    let rt = Runtime::new().unwrap();
+    let (_repo, repo) = make_repo_with_branches();
+    let state_dir = fsevents_tempdir();
+    let state = state_dir
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    std::fs::write(Path::new(&state).join(".rstate"), "").unwrap();
+    std::fs::write(Path::new(&state).join("state.json"), "start").unwrap();
+
+    let layer: toml::Value = toml::from_str(
+        "[daemon.providers.rstate.sources.s]\n\
+         root = \"{{ lup('.rstate') | dirname }}\"\n\
+         data = \"{{ 'state.json' | read | trim }}\"\n\
+         result.v = \"{{ data }}\"\n\
+         return = \"{{ result | watch('state.json') }}\"\n",
+    )
+    .unwrap();
+    let config = Config::from_layers(vec![
+        beachcomber::daemon::defaults::comb_layer(),
+        (PathBuf::from("<bench>"), layer),
+    ]);
+    let watchers = Arc::new(WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+    let registry = ProviderRegistry::with_config(&config, &Default::default())
+        .expect("the bench lines load")
+        .share(&cache);
+    let (handle, scheduler) =
+        Scheduler::new(cache.clone(), registry.clone(), config, watchers.clone());
+    let sock_dir = TempDir::new().unwrap();
+    let sock = sock_dir.path().join("s");
+    let server = Server::new(
+        sock.clone(),
+        cache.clone(),
+        registry,
+        Some(handle),
+        watchers,
+    );
+    {
+        let _enter = rt.enter();
+        rt.spawn(async move { scheduler.run().await });
+        server.spawn().expect("bind the bench socket");
+    }
+    let mut stream = UnixStream::connect(&sock).unwrap();
+
+    // The cold reads demand both instances, which registers their watches. A
+    // change made before a registration is in place is never reported, so the
+    // probe changes the file until the watcher carries one into the cache.
+    for (key, path) in [("git.branch", &repo), ("rstate.v", &state)] {
+        let (answer, _) = timed_get(&mut stream, key, path);
+        assert!(answer.get("data").is_some(), "{key} answers: {answer}");
+    }
+    let delivering = rt.block_on(async {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut n = 0u32;
+        while Instant::now() < deadline {
+            let probe = format!("probe{n}");
+            n += 1;
+            std::fs::write(Path::new(&state).join("state.json"), &probe).unwrap();
+            let seen = Value::String(probe);
+            let wait = Duration::from_millis(500);
+            if wait_for_field(&cache, "rstate", &state, "v", &seen, wait).await {
+                return true;
+            }
+        }
+        false
+    });
+    if !delivering {
+        eprintln!(
+            "prompt_race: the watcher delivered nothing in 20s (sandbox, or a non-FSEvents path); skipping read_after_mutation"
+        );
+        return;
+    }
+
+    println!("read_after_mutation: {READ_TRIALS} trials each, watcher on");
+    let report = |what: &str, right: usize, mut reads: Vec<Duration>| {
+        reads.sort();
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        let at = |q: f64| reads[((reads.len() - 1) as f64 * q).round() as usize];
+        println!(
+            "  {what}: {right}/{READ_TRIALS} answered the new value; read p50 {:.3}ms p99 {:.3}ms max {:.3}ms",
+            ms(at(0.5)),
+            ms(at(0.99)),
+            ms(reads[reads.len() - 1])
+        );
+    };
+
+    let (mut right, mut reads) = (0, Vec::new());
+    for i in 0..READ_TRIALS {
+        let target = if i % 2 == 0 { "a" } else { "b" };
+        set_head(&repo, target);
+        let (answer, took) = timed_get(&mut stream, "git.branch", &repo);
+        right += usize::from(answer["data"] == serde_json::json!(target));
+        reads.push(took);
+        rt.block_on(wait_for_branch(
+            &cache,
+            &repo,
+            target,
+            Duration::from_secs(10),
+        ));
+    }
+    report("git.branch after a .git/HEAD write", right, reads);
+
+    let (mut right, mut reads) = (0, Vec::new());
+    for i in 0..READ_TRIALS {
+        let want = format!("v{i}");
+        std::fs::write(Path::new(&state).join("state.json"), &want).unwrap();
+        let (answer, took) = timed_get(&mut stream, "rstate.v", &state);
+        right += usize::from(answer["data"] == serde_json::json!(want));
+        reads.push(took);
+        rt.block_on(wait_for_field(
+            &cache,
+            "rstate",
+            &state,
+            "v",
+            &Value::String(want),
+            Duration::from_secs(10),
+        ));
+    }
+    report("rstate.v after a state.json rewrite", right, reads);
+}
+
 criterion_group!(benches, bench_fsevents_delivery, bench_convergence_l);
-criterion_main!(benches);
+
+fn main() {
+    // A filter is the first argument that is not a flag (`cargo bench` passes
+    // `--bench`); with none, every part runs.
+    let filter = std::env::args().skip(1).find(|a| !a.starts_with('-'));
+    let runs = |name: &str| filter.as_deref().is_none_or(|f| name.contains(f));
+    if runs("fsevents_delivery") || runs("convergence_L") {
+        benches();
+        Criterion::default().configure_from_args().final_summary();
+    }
+    if runs("read_after_mutation") {
+        read_after_mutation();
+    }
+}
 
 /// The built-in providers with the shipped `defaults/00-comb.toml` composed in,
 /// as a running daemon has them: the abstract provider's lines are part of

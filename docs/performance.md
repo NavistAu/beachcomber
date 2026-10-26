@@ -235,6 +235,47 @@ Every client renders templates through `libbeachcomber::resolve`, so its cost is
 | 50 | ~42,000 |
 | 100 | ~41,000 |
 
+### Read validity: the phase 4 baseline
+
+Measured 2026-10-26 at `d744809`, before any phase 4 change, on a 12-core Mac whose load average was between 55
+and 150 throughout. Under that load a median is several times the uncontended cost, so the minimum is given beside
+it; compare a later run with one taken at the same load, interleaved where possible.
+
+`cargo bench --bench validity -- warm_get_percentiles`: a warm `get` over the raw socket, one connection, the
+daemon's own startup path in-process (native watcher), 2000 interleaved rounds (load ~115):
+
+| Read | min | p50 | p90 | p99 |
+|---|---:|---:|---:|---:|
+| config Source, `poll` only (0 watch paths) | 32 µs | 281 µs | 5.3 ms | 28.6 ms |
+| config Source, `watch` of 1 path | 28 µs | 253 µs | 4.7 ms | 24.7 ms |
+| config Source, `watch` of 8 paths | 29 µs | 238 µs | 4.6 ms | 22.7 ms |
+| `git.branch` (git `head` runs on every read) | 66 µs | 753 µs | 13.6 ms | 48.8 ms |
+| `git`, the whole namespace | 97 µs | 798 µs | 11.9 ms | 53.1 ms |
+
+`cargo bench --bench validity -- second_get_after_cold` (audit P9: a `root = lup(…)` plus `watch(…)` Source, the
+cold `get`, then the next ones, in fresh daemons):
+
+- **P9 does not reproduce.** The second `get` took 0.06–0.69 ms in 12 of 12 fresh in-process release daemons (load
+  ~75), 0.15–0.86 ms in 6 of 6 spawned debug `comb daemon`s, and 0.1–0.5 ms in 6 runs of the test harness's
+  in-process polling daemon. A second release run at load ~150 gave 0.08–2.1 ms, 6 of 12 under 1 ms.
+- **What the first demand does cost is the scheduler loop.** It registers the instance's watches inside the loop, so
+  an `introspect watches` sent just after the cold `get` waited 5.5–56 ms (median 16 ms) for a native registration
+  to finish. A request never waits on the loop, but everything the loop answers does: `introspect`, the `status`
+  op's lifecycle and failure snapshots, file events, polls and reloads.
+
+`cargo bench --bench prompt_race -- read_after_mutation` (a change on disk, then at once a `get`, watcher on, 100
+trials each):
+
+| Change, then read | Answered the new value | read p50 | read p99 |
+|---|---:|---:|---:|
+| `.git/HEAD` written, `git.branch` | 100/100 (git `head` runs on every read) | 0.12 ms | 0.37 ms |
+| `state.json` rewritten, a config Source with `watch('state.json')` | 8/100 | 0.13 ms | 2.8 ms |
+
+`convergence_L` (`.git/HEAD` written until the cache shows the new branch, through the watcher): 7.6 ms mean.
+
+The CLI (`hyperfine -N --warmup 20 --runs 200`, release, an isolated daemon, load ~57): `comb get git.branch` has a
+median of 14.8 ms (min 7.3 ms) against 14.2 ms (min 6.4 ms) for `comb get hostname.name`, the process floor.
+
 ### Real-World Impact
 
 | Scenario | Before beachcomber | With beachcomber |
@@ -279,7 +320,9 @@ cargo bench --bench protocol
 cargo bench --bench providers
 cargo bench --bench socket
 cargo bench --bench throughput
-cargo bench --bench resolve     # the client-side resolver, no daemon
+cargo bench --bench resolve       # the client-side resolver, no daemon
+cargo bench --bench validity      # warm reads, and the reads after a cold run (P9)
+cargo bench --bench prompt_race   # needs a host whose native watcher delivers
 
 # Run with baseline comparison (after making changes)
 cargo bench -- --baseline main
