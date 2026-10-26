@@ -1169,9 +1169,6 @@ impl ProviderRegistry {
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
         registry
-            .register(Box::new(crate::provider::asdf::AsdfProvider))
-            .expect("asdf");
-        registry
             .register(Box::new(crate::provider::aws::AwsProvider))
             .expect("aws_profiles");
         registry

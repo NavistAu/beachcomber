@@ -13,7 +13,7 @@ Each provider declares one or more **sources** — independent units of executio
 
 | Provider | Source | Strategy | Root | Fields |
 |---|---|---|---|---|
-| `asdf` | `tools` | watch | project | `tools` (object keyed by tool name) |
+| `asdf` | `tools` | watch (`defaults/asdf.toml`) | project | one field per tool name (e.g. `nodejs`, `ruby`): the nearest `.tool-versions`' first version, then the global file's at `~` |
 | `aws_profiles` | `config_file` | watch + poll 60s (`~/.aws/config`) | none | one object per profile name (`default`, `staging`, …), each `{ region }` |
 | `battery` | `state` | poll 30s (`defaults/battery.toml`) | none | `percent`, `charging`, `status`, `time_remaining_secs`, `status_raw` (Linux) |
 | `direnv` | `state` | watch (`defaults/direnv.toml`) | project | `status`, `allowed` |
@@ -34,7 +34,7 @@ Each provider declares one or more **sources** — independent units of executio
 | `uptime` | `time` | poll 60s (`defaults/uptime.toml`) | none | `seconds`, `days`, `hours`, `minutes` |
 | `user` | `name` | poll 10m (`defaults/user.toml`) | none | `name`, `uid` |
 
-**Shipped files.** A provider whose strategy names a `defaults/` file is that file, written the way a user writes a Source: `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` each have one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform`, `python` and `direnv` read their files in theirs; `mise`'s runs `mise ls --current --json`. Set any of its lines in `config.toml` or `conf.d/` (`[daemon.providers.hostname.sources.host] result.name = "{{ data.name | upper }}"`) and the rest stay as shipped.
+**Shipped files.** A provider whose strategy names a `defaults/` file is that file, written the way a user writes a Source: `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` each have one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform`, `python`, `direnv` and `asdf` read their files in theirs; `mise`'s runs `mise ls --current --json`. Set any of its lines in `config.toml` or `conf.d/` (`[daemon.providers.hostname.sources.host] result.name = "{{ data.name | upper }}"`) and the rest stay as shipped.
 
 **watch + poll** sources watch files for quick invalidation and also poll on a timer as a backstop.
 
@@ -207,7 +207,7 @@ Only `python` and `terraform` have a daemon provider of the same name, so only t
 |---|---|---|---|---|
 | `python` | project | `venv` (bool), `local_venv_name` (string), `venv_version` (string) — plus the `venv_name` and `version` [templates](#template-backed-namespaces) | watch `.venv`, `pyproject.toml` | < 1 µs |
 | `mise` | project | one string field per tool name (e.g. `node`, `rust`) — one `tools` source: what mise resolves at the project, global tools included; outside a project, at `~` | watch `.mise.toml`, `mise.toml` | varies |
-| `asdf` | project | `tools` (object keyed by tool name) | watch `.tool-versions` | < 1 µs |
+| `asdf` | project | one string field per tool name (e.g. `nodejs`, `ruby`) — the project's `.tool-versions`, then the global one's at `~` | watch `.tool-versions` | < 1 µs |
 | `direnv` | project | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
 
 **Example output:**

@@ -27,6 +27,7 @@ pub const MARKER_PREFIX: &str = "# Managed by comb ";
 /// (file name, embedded body) for every shipped default, lexical by name.
 pub const SHIPPED: &[(&str, &str)] = &[
     ("00-comb.toml", include_str!("../../defaults/00-comb.toml")),
+    ("asdf.toml", include_str!("../../defaults/asdf.toml")),
     ("aws.toml", include_str!("../../defaults/aws.toml")),
     ("battery.toml", include_str!("../../defaults/battery.toml")),
     ("conda.toml", include_str!("../../defaults/conda.toml")),

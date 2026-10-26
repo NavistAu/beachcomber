@@ -733,7 +733,7 @@ beachcomber ships 16 built-in providers organized by category, plus template-bac
 | `sudo` | none | `active` (bool) | poll 30s | < 1 µs |
 | `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | poll 1h | < 1 µs |
 
-`hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files (`defaults/<name>.toml`), each one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform`, `python` and `direnv` are shipped files whose Sources read their files; any of their lines can be overridden in `config.toml` or `conf.d/`.
+`hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files (`defaults/<name>.toml`), each one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform`, `python`, `direnv` and `asdf` are shipped files whose Sources read their files; any of their lines can be overridden in `config.toml` or `conf.d/`.
 
 **Example output:**
 
@@ -880,7 +880,7 @@ Only `python` and `terraform` have a daemon provider of the same name, so only t
 |---|---|---|---|---|
 | `python` | project | `venv` (bool), `local_venv_name` (string), `venv_version` (string) — plus the `venv_name` and `version` templates above | watch `.venv/`, `pyproject.toml` | < 1 µs |
 | `mise` | project | one string field per tool name (e.g. `node`, `rust`) — one `tools` source (`defaults/mise.toml`): what mise resolves at the project, global tools included; outside a project, at `~` | watch `.mise.toml`, `mise.toml` | varies |
-| `asdf` | project | `tools` (object: tool-name → version) | watch `.tool-versions` | < 1 µs |
+| `asdf` | project | one string field per tool name (e.g. `nodejs`, `ruby`) — the project's `.tool-versions`, then the global one's at `~` | watch `.tool-versions` | < 1 µs |
 | `direnv` | project | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
 
 **Example output:**

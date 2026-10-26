@@ -1,4 +1,3 @@
-pub mod asdf;
 pub mod aws;
 pub mod config_source;
 pub mod gcloud;
@@ -19,8 +18,6 @@ mod provider_trait_tests;
 mod provider_types_tests;
 #[cfg(test)]
 mod providers_cloud_tests;
-#[cfg(test)]
-mod providers_devtools_tests;
 #[cfg(test)]
 mod registry_tests;
 

@@ -413,6 +413,7 @@ fn shipped_layers_parse_and_load_with_no_errors() {
         assert!(shipped.is_registered(&name), "{name}");
     }
     for name in [
+        "asdf",
         "aws",
         "battery",
         "conda",
