@@ -84,7 +84,7 @@ pub fn spawn_config_seeding(
     if config.config_file().is_none() {
         return;
     }
-    seed_facets(cache, &registry.current(), config.composed_layers());
+    seed_facets(cache, &registry.current(), config);
 
     // The watch stops on the daemon's own shutdown token — its closure holds
     // the cache and the registry, so a watch outliving the daemon would keep
@@ -149,7 +149,7 @@ pub fn reload_providers(
         writes: planned,
         errors,
         ..
-    } = plan(changed.composed_layers(), &next);
+    } = plan(changed, &next);
     if !errors.is_empty() {
         for e in &errors {
             tracing::error!("{e}");
@@ -169,17 +169,18 @@ pub fn reload_providers(
     *last = next;
 }
 
-/// Write every seeded table of every layer into the cache, one `write_static`
-/// per (layer, namespace). Used at daemon start, where startup validation has
-/// already refused any file with an error; what a file with an error would have
-/// seeded is not written, only what validated. Refusals are logged.
-pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, layers: &[(PathBuf, toml::Value)]) {
+/// Write every seeded table of every layer of `config` into the cache, one
+/// `write_static` per (layer, namespace), over `registry`, the registry loaded
+/// from `config`. Used at daemon start, where startup validation has already
+/// refused any file with an error; what a file with an error would have seeded
+/// is not written, only what validated. Refusals are logged.
+pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, config: &Config) {
     // The warnings are the startup load's to log.
     let Plan {
         writes: planned,
         errors,
         ..
-    } = plan(layers, registry);
+    } = plan(config, registry);
     for e in &errors {
         tracing::error!("{e}");
     }
@@ -193,10 +194,10 @@ pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, layers: &[(PathBu
     }
 }
 
-/// What planning the seed of `config`'s layers over `registry` finds: the
-/// errors, and the warnings.
+/// What planning the seed of `config`'s layers over `registry`, the registry
+/// loaded from it, finds: the errors, and the warnings.
 pub fn plan_findings(config: &Config, registry: &ProviderRegistry) -> (Vec<String>, Vec<String>) {
-    let plan = plan(config.composed_layers(), registry);
+    let plan = plan(config, registry);
     (plan.errors, plan.warnings)
 }
 
@@ -216,11 +217,15 @@ fn apply_reseed(cache: &Cache, registry: &ProviderRegistry, mut planned: HashMap
     }
 }
 
-/// The write list per facet namespace, in composition order, and every file's
-/// errors. Pure: registering the namespaces is the caller's, so the plan can be
-/// built and inspected without touching the registry (which only names the
-/// providers there are).
-fn plan(layers: &[(PathBuf, toml::Value)], registry: &ProviderRegistry) -> Plan {
+/// The write list per facet namespace of `config`'s layers, in composition
+/// order, and every file's errors. `registry` is the registry loaded from
+/// `config`: it names the providers there are, and its provider lines
+/// ([`ProviderRegistry::lines`]) are the ones the `template` lines render
+/// from, compiled once by the load. Pure: registering the namespaces is the
+/// caller's, so the plan can be built and inspected without touching the
+/// registry.
+fn plan(config: &Config, registry: &ProviderRegistry) -> Plan {
+    let layers = config.composed_layers();
     let mut plan = Plan::default();
     let mut reads = Vec::with_capacity(layers.len());
     for (file, layer) in layers {
@@ -236,10 +241,9 @@ fn plan(layers: &[(PathBuf, toml::Value)], registry: &ProviderRegistry) -> Plan 
         }
         reads.push(read);
     }
-    let config = Config::from_layers(layers.to_vec());
-    let world = ClientWorld::new(&config, registry, &reads);
+    let world = ClientWorld::new(config, registry, &reads);
     plan_macros(layers, &reads, &world, &mut plan);
-    plan_templates(layers, &reads, &config, &world, &mut plan);
+    plan_templates(layers, &reads, registry.lines(), &world, &mut plan);
     plan
 }
 
@@ -349,8 +353,8 @@ fn plan_macros(
     }
 }
 
-/// The `<p>:template` writes: each provider's `template` line, composed over
-/// every layer, rendered once per layer over that layer's own `[client]` tree.
+/// The `<p>:template` writes: each provider's `template` line in `lines`,
+/// rendered once per layer over that layer's own `[client]` tree.
 /// A line that gives nothing for a layer writes nothing for it. A provider is
 /// any the registry has or a root names: its template may come from a line of
 /// its own, from a layer's `[client.providers]`, or from the abstract
@@ -360,19 +364,10 @@ fn plan_macros(
 fn plan_templates(
     layers: &[(PathBuf, toml::Value)],
     reads: &[crate::shape::seeded::Seeded],
-    config: &Config,
+    lines: &crate::shape::provider::ProviderLines,
     world: &ClientWorld,
     plan: &mut Plan,
 ) {
-    let empty = toml::Table::new();
-    let providers = config.daemon().providers.as_table().unwrap_or(&empty);
-    let lines = match crate::shape::provider::ProviderLines::new(providers) {
-        Ok(lines) => lines,
-        // The same errors the registry's load reports; nothing is rendered
-        // from lines that do not load.
-        Err(errors) => return plan.errors.extend(errors),
-    };
-
     let known = world.known();
     for ((file, layer), read) in layers.iter().zip(reads) {
         let label = Config::config_label(file);
@@ -514,8 +509,15 @@ mod tests {
         (PathBuf::from("/f.toml"), toml::from_str(text).unwrap())
     }
 
+    /// The plan of `layers`, over the registry a load of them builds.
+    fn plan_of(layers: &[(PathBuf, toml::Value)]) -> Plan {
+        let config = Config::from_layers(layers.to_vec());
+        let registry = ProviderRegistry::load(&config, &HashMap::new()).registry;
+        plan(&config, &registry)
+    }
+
     fn planned(layers: &[(PathBuf, toml::Value)]) -> HashMap<String, Writes> {
-        plan(layers, &ProviderRegistry::new()).writes
+        plan_of(layers).writes
     }
 
     fn layer_at(file: &str, text: &str) -> (PathBuf, toml::Value) {
@@ -548,7 +550,7 @@ mod tests {
                 "[client.providers.p]\nmacro.b = '{% macro b() %}B2{% endmacro %}'\n",
             ),
         ];
-        let plan = plan(&layers, &ProviderRegistry::new());
+        let plan = plan_of(&layers);
         assert_eq!(plan.errors, Vec::<String>::new());
         assert_eq!(plan.warnings, Vec::<String>::new());
         assert_eq!(
@@ -587,7 +589,7 @@ mod tests {
              ok = '''\n{%- set th = env.TH -%}\n{%- set block %}captured{% endset -%}\n\
              {%- macro m(x) -%}{{ x ~ th }}{%- endmacro %}\n'''\n",
         )];
-        let plan = plan(&layers, &ProviderRegistry::new());
+        let plan = plan_of(&layers);
         let prints = "a macro library prints nothing: its text, {{ }} and {% call %} belong \
                       inside a {% macro %}";
         let mut errors = plan.errors.clone();
@@ -625,7 +627,7 @@ mod tests {
                  template.u = '{% from \"p:macro.a\" import a %}{{ a() }}'\n",
             ),
         ];
-        let plan = plan(&layers, &ProviderRegistry::new());
+        let plan = plan_of(&layers);
         assert_eq!(plan.errors, Vec::<String>::new());
         let mut warnings = plan.warnings.clone();
         warnings.sort();
@@ -654,7 +656,7 @@ mod tests {
             writes: planned,
             errors,
             ..
-        } = plan(&layers, &ProviderRegistry::new());
+        } = plan_of(&layers);
         assert_eq!(errors.len(), 1, "the bad one is reported once: {errors:?}");
         assert!(
             errors[0].starts_with("config(/f.toml): [client.providers.bad] template 'n'"),
@@ -716,7 +718,7 @@ mod tests {
             writes: planned,
             errors,
             ..
-        } = plan(&layers, &ProviderRegistry::new());
+        } = plan_of(&layers);
         assert!(!planned.contains_key("git:template"), "{planned:?}");
         assert!(
             errors
@@ -732,11 +734,7 @@ mod tests {
             crate::daemon::defaults::comb_layer(),
             layer("[daemon.providers._]\ntemplate = \"{{ {'where': '{{ 1 }}'} }}\"\n"),
         ];
-        let planned = plan(
-            &layers,
-            &ProviderRegistry::shipped(&std::env::vars().collect()),
-        )
-        .writes;
+        let planned = planned(&layers);
         assert!(
             planned.contains_key("git:template"),
             "a built-in no file names has the abstract template: {:?}",

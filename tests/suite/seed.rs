@@ -675,12 +675,14 @@ async fn a_provider_decay_table_seeds_its_own_cache_facet() {
     beachcomber::daemon::seed::seed_facets(
         &cache,
         &registry,
-        &Config::read_layers(
-            Some(&e.cfg_dir.join("defaults")),
-            Some(&main),
-            &e.cfg_dir.join("conf.d"),
-        )
-        .layers,
+        &Config::from_layers(
+            Config::read_layers(
+                Some(&e.cfg_dir.join("defaults")),
+                Some(&main),
+                &e.cfg_dir.join("conf.d"),
+            )
+            .layers,
+        ),
     );
     assert_eq!(cache.resolve_decay("git", None), 2);
     assert_eq!(
@@ -876,7 +878,7 @@ fn a_reload_keeps_the_age_of_records_it_did_not_change() {
 
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(crate::common::registry::with_shipped_defaults());
-    beachcomber::daemon::seed::seed_facets(&cache, &registry, &layers());
+    beachcomber::daemon::seed::seed_facets(&cache, &registry, &Config::from_layers(layers()));
     // When `namespace`'s records from `file` were last written.
     let stamp = |namespace: &str, file: &str| {
         let entry = cache.get_entry(namespace, None).expect(namespace);
@@ -1008,7 +1010,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
     beachcomber::daemon::defaults::write_managed_defaults(&defaults, env!("CARGO_PKG_VERSION"))
         .unwrap();
     let layers = || Config::read_layers(Some(&defaults), Some(&cfg), &conf_d).layers;
-    beachcomber::daemon::seed::seed_facets(&cache, &registry, &layers());
+    beachcomber::daemon::seed::seed_facets(&cache, &registry, &Config::from_layers(layers()));
     let leaf = |name: &str| {
         cache
             .read_merged("scanline:template", None, &[], &registry, Layers::All)
