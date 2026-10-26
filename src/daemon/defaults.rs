@@ -46,6 +46,7 @@ pub const SHIPPED: &[(&str, &str)] = &[
     ("network.toml", include_str!("../../defaults/network.toml")),
     ("op.toml", include_str!("../../defaults/op.toml")),
     ("python.toml", include_str!("../../defaults/python.toml")),
+    ("sudo.toml", include_str!("../../defaults/sudo.toml")),
     ("talos.toml", include_str!("../../defaults/talos.toml")),
     (
         "terraform.toml",

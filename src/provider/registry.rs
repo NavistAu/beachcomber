@@ -1172,9 +1172,6 @@ impl ProviderRegistry {
             .register(Box::new(crate::provider::git::GitProvider))
             .expect("git");
         registry
-            .register(Box::new(crate::provider::sudo::SudoProvider))
-            .expect("sudo");
-        registry
     }
 
     /// [`Self::load`]: the registry, or every error the config has.

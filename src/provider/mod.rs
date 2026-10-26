@@ -2,7 +2,6 @@ pub mod config_source;
 pub mod git;
 pub mod registry;
 pub mod source_call;
-pub mod sudo;
 
 #[cfg(test)]
 mod git_seam_tests;

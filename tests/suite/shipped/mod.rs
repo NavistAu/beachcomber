@@ -37,6 +37,7 @@ mod load;
 mod mise;
 mod network;
 mod python;
+mod sudo;
 mod terraform;
 mod uname;
 mod uptime;

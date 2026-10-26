@@ -733,7 +733,9 @@ beachcomber ships 16 built-in providers organized by category, plus template-bac
 | `sudo` | none | `active` (bool) | poll 30s | < 1 µs |
 | `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | poll 1h | < 1 µs |
 
-`hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files (`defaults/<name>.toml`), each one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform`, `python`, `direnv`, `asdf`, `aws_profiles` and `gcloud_configs` are shipped files whose Sources read their files; any of their lines can be overridden in `config.toml` or `conf.d/`.
+`hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files (`defaults/<name>.toml`), each one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform`, `python`, `direnv`, `asdf`, `aws_profiles`, `gcloud_configs` and `sudo` are shipped files whose Sources read their files; any of their lines can be overridden in `config.toml` or `conf.d/`.
+
+`sudo.active` is whether the user's sudo timestamp (`/var/run/sudo/ts/$USER`, else `/run/sudo/ts/$USER`) is under five minutes old. It is absent, not `false`, where a daemon running as the user cannot read that timestamp: on macOS, where sudo keeps it under `/var/db/sudo`, root's alone, and on Linux wherever `/run/sudo/ts` is root's alone (sudo makes it mode 0700).
 
 **Example output:**
 
