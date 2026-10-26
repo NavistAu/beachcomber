@@ -1,4 +1,5 @@
-use notify::{Config, Event, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::event::{AccessKind, AccessMode};
+use notify::{Config, Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -467,12 +468,14 @@ pub async fn self_test_native_backend_at(base: &Path, timeout: Duration) -> Opti
     delivered
 }
 
+/// The handler every backend calls with each event: the paths of a change,
+/// handed to the scheduler. A read is dropped ([`is_change`]).
 fn event_handler(
     tx: mpsc::Sender<Vec<std::path::PathBuf>>,
 ) -> impl Fn(Result<Event, notify::Error>) + Send + 'static {
     move |result| match result {
         Ok(event) => {
-            if !event.paths.is_empty() {
+            if is_change(&event.kind) && !event.paths.is_empty() {
                 let _ = tx.blocking_send(event.paths);
             }
         }
@@ -480,6 +483,14 @@ fn event_handler(
             warn!("Filesystem watch error: {}", e);
         }
     }
+}
+
+/// Whether an event is a change: anything but a read. inotify reports every
+/// open, so a Source reading the files it watches would refresh itself without
+/// end, and a recursive watch's own walk reports each directory it opens. A
+/// close after writing is a change (an `mmap` write reports nothing else).
+fn is_change(kind: &EventKind) -> bool {
+    !matches!(kind, EventKind::Access(access) if !matches!(access, AccessKind::Close(AccessMode::Write)))
 }
 
 /// A backend for tests: each registration waits until the test opens its
@@ -893,6 +904,76 @@ mod tests {
 
         let event = timeout(EVENT_TIMEOUT, rx.recv()).await;
         assert!(event.is_ok(), "Should receive event from first watched dir");
+    }
+
+    /// A read is not handed to the scheduler; a change is, a close after
+    /// writing included. A Source that read the files it watched refreshed
+    /// itself without end on Linux, where inotify reports every open.
+    #[test]
+    fn the_handler_drops_reads() {
+        use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, ModifyKind};
+        use notify::{Event, EventKind};
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let handle = super::event_handler(tx);
+        let event = |kind, path: &str| Ok(Event::new(kind).add_path(path.into()));
+        handle(event(
+            EventKind::Access(AccessKind::Open(AccessMode::Any)),
+            "/r/open",
+        ));
+        handle(event(EventKind::Access(AccessKind::Read), "/r/read"));
+        handle(event(
+            EventKind::Access(AccessKind::Close(AccessMode::Read)),
+            "/r/close",
+        ));
+        handle(event(
+            EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+            "/c/modify",
+        ));
+        handle(event(EventKind::Create(CreateKind::File), "/c/create"));
+        handle(event(
+            EventKind::Access(AccessKind::Close(AccessMode::Write)),
+            "/c/written",
+        ));
+
+        let mut paths = Vec::new();
+        while let Ok(batch) = rx.try_recv() {
+            paths.extend(batch);
+        }
+        let expected: Vec<std::path::PathBuf> = ["/c/modify", "/c/create", "/c/written"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        assert_eq!(paths, expected);
+    }
+
+    /// The same through inotify: reading a watched file reports nothing.
+    /// `git.head`, rereading `.git/HEAD`, ran about 2,500 times a second.
+    /// FSEvents reports no reads, so this runs where inotify does.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_read_is_not_reported_as_a_change() {
+        let (_tmp, dir) = canonical_tempdir();
+        let read = dir.join("read");
+        let fence = dir.join("fence");
+        fs::write(&read, "x").unwrap();
+        let (mut watcher, mut rx) = FsWatcher::new().expect("Failed to create watcher");
+        watcher.watch(&dir).expect("Failed to watch directory");
+
+        assert_eq!(fs::read_to_string(&read).unwrap(), "x");
+        fs::write(&fence, "f").unwrap();
+
+        let mut seen = Vec::new();
+        while !seen.contains(&fence) {
+            let paths = timeout(EVENT_TIMEOUT, rx.recv())
+                .await
+                .expect("fence event should arrive")
+                .expect("watcher channel should stay open");
+            seen.extend(paths);
+        }
+        assert!(
+            !seen.contains(&read),
+            "reading a file reported it as changed: {seen:?}"
+        );
     }
 
     /// Diagnostic (ignored by default): measure fresh-stream FSEvents delivery

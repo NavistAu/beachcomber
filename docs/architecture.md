@@ -187,7 +187,7 @@ This traces what happens when the user saves a file in a git repository being wa
 
 **Step 1: OS delivers an inotify/kqueue event**
 
-The `notify` crate's `RecommendedWatcher` receives the event on a background thread. It calls the closure registered in `FsWatcher::new()`, which calls `tx.blocking_send(event.paths)` on the mpsc channel.
+The `notify` crate's `RecommendedWatcher` receives the event on a background thread. It calls the closure registered in `FsWatcher::new()`, which drops a read (inotify reports every open; a close after writing is kept) and calls `tx.blocking_send(event.paths)` on the mpsc channel for anything else.
 
 **Step 2: Scheduler receives the event**
 
