@@ -1169,12 +1169,6 @@ impl ProviderRegistry {
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
         registry
-            .register(Box::new(crate::provider::aws::AwsProvider))
-            .expect("aws_profiles");
-        registry
-            .register(Box::new(crate::provider::gcloud::GcloudProvider))
-            .expect("gcloud_configs");
-        registry
             .register(Box::new(crate::provider::git::GitProvider))
             .expect("git");
         registry

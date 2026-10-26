@@ -415,10 +415,12 @@ fn shipped_layers_parse_and_load_with_no_errors() {
     for name in [
         "asdf",
         "aws",
+        "aws_profiles",
         "battery",
         "conda",
         "direnv",
         "gcloud",
+        "gcloud_configs",
         "hostname",
         "kubecontext",
         "load",

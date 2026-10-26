@@ -27,8 +27,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod asdf;
+mod aws;
 mod battery;
 mod direnv;
+mod gcloud;
 mod hostname;
 mod kubecontext;
 mod load;

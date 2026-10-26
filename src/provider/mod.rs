@@ -1,23 +1,15 @@
-pub mod aws;
 pub mod config_source;
-pub mod gcloud;
 pub mod git;
 pub mod registry;
 pub mod source_call;
 pub mod sudo;
 
 #[cfg(test)]
-mod aws_tests;
-#[cfg(test)]
-mod gcloud_tests;
-#[cfg(test)]
 mod git_seam_tests;
 #[cfg(test)]
 mod provider_trait_tests;
 #[cfg(test)]
 mod provider_types_tests;
-#[cfg(test)]
-mod providers_cloud_tests;
 #[cfg(test)]
 mod registry_tests;
 

@@ -733,7 +733,7 @@ beachcomber ships 16 built-in providers organized by category, plus template-bac
 | `sudo` | none | `active` (bool) | poll 30s | < 1 µs |
 | `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | poll 1h | < 1 µs |
 
-`hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files (`defaults/<name>.toml`), each one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform`, `python`, `direnv` and `asdf` are shipped files whose Sources read their files; any of their lines can be overridden in `config.toml` or `conf.d/`.
+`hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files (`defaults/<name>.toml`), each one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform`, `python`, `direnv`, `asdf`, `aws_profiles` and `gcloud_configs` are shipped files whose Sources read their files; any of their lines can be overridden in `config.toml` or `conf.d/`.
 
 **Example output:**
 

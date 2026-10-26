@@ -1,5 +1,4 @@
 use beachcomber::provider::Provider;
-use beachcomber::provider::gcloud::GcloudProvider;
 use beachcomber::provider::git::GitProvider;
 use beachcomber::provider::registry::ProviderRegistry;
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -97,12 +96,7 @@ fn bench_battery_execute(c: &mut Criterion) {
 }
 
 fn bench_gcloud_execute(c: &mut Criterion) {
-    let p = GcloudProvider;
-    c.bench_function("provider_gcloud_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "gcloud_configs", "config_dir");
 }
 
 criterion_group!(
