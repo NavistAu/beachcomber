@@ -9,6 +9,7 @@
 
 use crate::cli::status_format::{bold, dim, sanitize_cell, tree_branch};
 use crate::config::Config;
+use libbeachcomber::term;
 use std::path::{Path, PathBuf};
 
 /// One leaf of the composed configuration.
@@ -175,14 +176,14 @@ pub fn render_human(origins: &[Origin], color: bool, ascii: bool) -> String {
     }
     let width = |pick: fn(&(String, String, String, bool)) -> &String, header: &str| {
         rows.iter()
-            .map(|r| pick(r).chars().count())
+            .map(|r| term::width(pick(r)))
             .chain(std::iter::once(header.len()))
             .max()
             .unwrap_or(0)
     };
     let key_w = width(|r| &r.0, "KEY");
     let source_w = width(|r| &r.1, "SOURCE");
-    let pad = |s: &str, w: usize| format!("{s}{}", " ".repeat(w.saturating_sub(s.chars().count())));
+    let pad = crate::cli::status_format::pad_cols;
 
     let mut out = String::new();
     let header = format!(
@@ -269,6 +270,26 @@ mod tests {
             .iter()
             .find(|o| o.key == key)
             .unwrap_or_else(|| panic!("{key} in {origins:#?}"))
+    }
+
+    /// SOURCE is padded in terminal columns, so a wide path does not push the
+    /// VALUE column out of line.
+    #[test]
+    fn a_wide_value_aligns() {
+        let c = config(&[
+            ("/日本語/a.toml", "[daemon]\nlog_level = \"warn\"\n"),
+            ("/b.toml", "[daemon]\nidle_shutdown_secs = 77\n"),
+        ]);
+        let out = render_human(&origins(&c), false, false);
+        let column = |token: &str| {
+            let line = out
+                .lines()
+                .find(|l| l.contains(token))
+                .unwrap_or_else(|| panic!("{token} in\n{out}"));
+            term::width(&line[..line.rfind(token).unwrap()])
+        };
+        assert_eq!(column("warn"), column("77"), "{out}");
+        assert!(out.contains("日本語"), "{out}");
     }
 
     #[test]

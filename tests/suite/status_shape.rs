@@ -148,6 +148,65 @@ fn sh_preset_emits_sourceable_assignments() {
     );
 }
 
+/// Columns are measured in terminal columns: a wide FIELD or VALUE does not push
+/// PATH out of line, and a cut never splits a wide character.
+#[test]
+fn a_wide_value_is_measured_in_columns() {
+    let row = |provider: &str, field: &str, value: &str| CacheRow {
+        shadowed: false,
+        provider: provider.into(),
+        path: Some("/home/me/ws/foo".into()),
+        source: "refs".into(),
+        field: field.into(),
+        value: serde_json::json!(value),
+        age_ms: Some(14_000),
+        stale: false,
+        kind: None,
+        poll_interval_secs: None,
+        poll_count: None,
+        fsevents_reinstate: None,
+        polls_elapsed: None,
+        next_poll_in_secs: None,
+        failure: None,
+    };
+    let rows = vec![
+        row("git", "branch", "main"),
+        row("日本語", "ブランチ", "値値値値"),
+    ];
+    let opts = RenderOpts {
+        is_tty: true,
+        no_color: true,
+        max_width: None,
+        no_trunc: true,
+        ascii: false,
+        depth: None,
+    };
+    let out = render_preset(&status_preset("human"), &rows, &opts);
+    let columns: Vec<usize> = out
+        .lines()
+        .filter(|l| l.contains("/home/me/ws/foo"))
+        .map(|l| libbeachcomber::term::width(&l[..l.find("/home/me/ws/foo").unwrap()]))
+        .collect();
+    assert_eq!(columns.len(), 2, "{out}");
+    assert_eq!(columns[0], columns[1], "PATH starts in one column:\n{out}");
+
+    // A tight cap cuts the wide value on a character boundary, in columns.
+    let long = vec![row("git", "branch", &"値".repeat(40))];
+    let tight = RenderOpts {
+        max_width: Some(90),
+        no_trunc: false,
+        ..opts
+    };
+    let out = render_preset(&status_preset("human"), &long, &tight);
+    for line in out.lines() {
+        assert!(
+            libbeachcomber::term::width(line) <= 90,
+            "a line over the cap: {line:?}"
+        );
+    }
+    assert!(out.contains('…'), "the wide value is cut:\n{out}");
+}
+
 #[test]
 fn human_preset_truncates_value_to_meet_total_cap() {
     // max_width is now a *total table cap*. The default RenderOpts has max_width=Some(40)

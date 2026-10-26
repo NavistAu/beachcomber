@@ -3,14 +3,17 @@ use crate::cli::output_format::{Format, Preset};
 use crate::cli::style::Glyphs;
 use libbeachcomber::render;
 use libbeachcomber::render::shell_quote;
+use libbeachcomber::term;
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
-// ANSI colour helper (basic-16 palette, fg-only, no external crate)
+// ANSI colour helper (basic-16 palette, fg-only), on libbeachcomber::term
 // ---------------------------------------------------------------------------
 
 #[allow(dead_code)]
 mod ansi {
+    use libbeachcomber::term;
+
     #[derive(Clone, Copy, Debug)]
     pub enum Color {
         BrightGreen,
@@ -24,16 +27,23 @@ mod ansi {
     }
 
     impl Color {
-        pub const fn code(self) -> &'static str {
+        /// The SGR parameters: a colour name through [`term::Colour`], or an
+        /// attribute.
+        pub fn params(self) -> String {
+            let named = |name: &str| {
+                term::Colour::parse(name)
+                    .expect("a colour name")
+                    .params(term::Ground::Fore, term::Depth::Basic)
+            };
             match self {
-                Color::BrightGreen => "\x1b[92m",
-                Color::Yellow => "\x1b[33m",
-                Color::BrightYellow => "\x1b[93m",
-                Color::Red => "\x1b[31m",
-                Color::Cyan => "\x1b[36m",
-                Color::Magenta => "\x1b[35m",
-                Color::Dim => "\x1b[2m",
-                Color::Bold => "\x1b[1m",
+                Color::BrightGreen => named("bright_green"),
+                Color::Yellow => named("yellow"),
+                Color::BrightYellow => named("bright_yellow"),
+                Color::Red => named("red"),
+                Color::Cyan => named("cyan"),
+                Color::Magenta => named("magenta"),
+                Color::Dim => "2".to_string(),
+                Color::Bold => "1".to_string(),
             }
         }
     }
@@ -42,7 +52,7 @@ mod ansi {
         if !enabled {
             return s.to_string();
         }
-        format!("{}{}\x1b[0m", c.code(), s)
+        term::sgr(&c.params(), s)
     }
 
     pub const RESET: &str = "\x1b[0m";
@@ -130,7 +140,7 @@ pub fn compute_ttl_widths(rows: &[CacheRow]) -> TtlWidths {
         if let (Some(pv), Some(k)) = (row.poll_interval_secs, row.poll_count) {
             p = p.max(pv.min(TTL_P_MAX).to_string().len());
             let total_secs = pv.saturating_mul(k as u64);
-            total = total.max(format_duration_compact(total_secs).chars().count());
+            total = total.max(format_duration_compact(total_secs).cols());
         }
     }
     TtlWidths {
@@ -502,12 +512,12 @@ fn align_template_table(body: &str, rendered: &[String]) -> String {
         .max(matrix.iter().map(|r| r.len()).max().unwrap_or(0));
     let mut widths = vec![0usize; n_cols];
     for (i, h) in header.iter().enumerate() {
-        widths[i] = widths[i].max(h.len());
+        widths[i] = widths[i].max(h.cols());
     }
     for row in &matrix {
         for (i, cell) in row.iter().enumerate() {
             if i < n_cols {
-                widths[i] = widths[i].max(cell.len());
+                widths[i] = widths[i].max(cell.cols());
             }
         }
     }
@@ -518,7 +528,7 @@ fn align_template_table(body: &str, rendered: &[String]) -> String {
             out.push_str("  ");
         }
         if i + 1 < header.len() {
-            out.push_str(&format!("{:<width$}", h, width = widths[i]));
+            out.push_str(&pad_cols(h, widths[i]));
         } else {
             out.push_str(h);
         }
@@ -531,7 +541,7 @@ fn align_template_table(body: &str, rendered: &[String]) -> String {
             }
             if i + 1 < row.len() {
                 let w = if i < n_cols { widths[i] } else { 0 };
-                out.push_str(&format!("{:<width$}", cell, width = w));
+                out.push_str(&pad_cols(cell, w));
             } else {
                 out.push_str(cell);
             }
@@ -539,6 +549,11 @@ fn align_template_table(body: &str, rendered: &[String]) -> String {
         out.push('\n');
     }
     out
+}
+
+/// `s` padded on the right with spaces to `width` columns.
+pub fn pad_cols(s: &str, width: usize) -> String {
+    format!("{s}{}", " ".repeat(width.saturating_sub(s.cols())))
 }
 
 /// A row's fields, as the locals of a `status -f` template.
@@ -941,24 +956,6 @@ fn is_the_row(row: &CacheRow, layer: &crate::cache::LayerRecord) -> bool {
         && layer.label == row.source
 }
 
-/// `s` without its ANSI escape sequences.
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' && chars.peek() == Some(&'[') {
-            for c in chars.by_ref() {
-                if c.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 /// `comb status --tree`: each value row followed by the layers behind it
 /// (`children[i]` for `rows[i]`), in the `human`, `table` or `json` preset.
 /// `json` gives each row its whole `layers` array; the tables draw each layer
@@ -1257,38 +1254,28 @@ fn render_table(
         } else {
             0
         };
-        let marker_width = taint_width
-            + template_marker(row.kind.as_ref(), color_enabled, ascii)
-                .chars()
-                .count();
+        let marker_width =
+            taint_width + template_marker(row.kind.as_ref(), color_enabled, ascii).cols();
         if let Some(mark) = mark {
-            nat_field = nat_field.max(mark.field(ascii).chars().count());
-            nat_path = nat_path.max(path.chars().count());
+            nat_field = nat_field.max(mark.field(ascii).cols());
+            nat_path = nat_path.max(path.cols());
             nat_source = nat_source.max(match source_cap {
-                Some(cap) => row.source.chars().count().min(cap),
-                None => row.source.chars().count(),
+                Some(cap) => row.source.cols().min(cap),
+                None => row.source.cols(),
             });
-            nat_value = nat_value.max(value.chars().count() + taint_width);
-            nat_age = nat_age.max(
-                format_age_with_polls(row.age_ms, None, ascii)
-                    .chars()
-                    .count(),
-            );
+            nat_value = nat_value.max(value.cols() + taint_width);
+            nat_age = nat_age.max(format_age_with_polls(row.age_ms, None, ascii).cols());
             continue;
         }
-        nat_provider = nat_provider.max(row.provider.chars().count());
-        nat_path = nat_path.max(path.chars().count());
-        nat_field = nat_field.max(row.field.chars().count());
+        nat_provider = nat_provider.max(row.provider.cols());
+        nat_path = nat_path.max(path.cols());
+        nat_field = nat_field.max(row.field.cols());
         nat_source = nat_source.max(match source_cap {
-            Some(cap) => row.source.chars().count().min(cap),
-            None => row.source.chars().count(),
+            Some(cap) => row.source.cols().min(cap),
+            None => row.source.cols(),
         });
-        nat_value = nat_value.max(value.chars().count() + marker_width);
-        nat_age = nat_age.max(
-            format_age_with_polls(row.age_ms, row.polls_elapsed, ascii)
-                .chars()
-                .count(),
-        );
+        nat_value = nat_value.max(value.cols() + marker_width);
+        nat_age = nat_age.max(format_age_with_polls(row.age_ms, row.polls_elapsed, ascii).cols());
         nat_ttl = nat_ttl.max(
             format_ttl_cell(
                 row.kind.as_ref(),
@@ -1300,8 +1287,7 @@ fn render_table(
                 &ttl_widths,
             )
             .text
-            .chars()
-            .count(),
+            .cols(),
         );
         nat_poll = nat_poll.max(
             format_poll_cell(
@@ -1310,8 +1296,7 @@ fn render_table(
                 row.failure.as_ref(),
                 now_unix_ms,
             )
-            .chars()
-            .count(),
+            .cols(),
         );
     }
 
@@ -1503,7 +1488,7 @@ fn render_table(
             format_age_with_polls(row.age_ms, row.polls_elapsed, ascii),
             width = nat_age
         );
-        let age_vis = age_text.chars().count();
+        let age_vis = age_text.cols();
         let age_cell = if color_enabled {
             if row.stale {
                 ansi::wrap(&age_text, ansi::Color::Yellow, true)
@@ -1536,7 +1521,7 @@ fn render_table(
         } else {
             ttl
         };
-        let ttl_vis = ttl.text.chars().count();
+        let ttl_vis = ttl.text.cols();
         let ttl_cell = match (color_enabled, ttl.color) {
             (true, Some(c)) => ansi::wrap(&ttl.text, c, true),
             _ => ttl.text,
@@ -1560,13 +1545,13 @@ fn render_table(
             },
             width = nat_poll
         );
-        let poll_vis = poll_text.chars().count();
+        let poll_vis = poll_text.cols();
 
-        let provider_vis = provider_text.chars().count();
-        let path_vis = path.chars().count();
-        let field_vis = field_text.chars().count();
-        let source_vis = source_text.chars().count();
-        let value_vis = value.chars().count();
+        let provider_vis = provider_text.cols();
+        let path_vis = path.cols();
+        let field_vis = field_text.cols();
+        let source_vis = source_text.cols();
+        let value_vis = value.cols();
 
         // VALUE cell. Truncation has already happened above, so the colouring
         // here can only ever add escape sequences — it never slices one.
@@ -1638,7 +1623,7 @@ fn render_table(
         // FIELD cell says ([`ChildMark::field`]).
         if color_enabled && mark.is_some_and(|m| !m.answered) {
             for cell in row_cells.iter_mut() {
-                *cell = ansi::wrap(&strip_ansi(cell), ansi::Color::Dim, true);
+                *cell = ansi::wrap(&term::strip_escapes(cell), ansi::Color::Dim, true);
             }
         }
 
@@ -2050,19 +2035,44 @@ fn format_age_with_polls(age_ms: Option<u128>, polls_elapsed: Option<u32>, ascii
     }
 }
 
-/// Truncate to at most `max` characters, keeping the **tail**.
+/// Display columns, as the terminal counts them ([`term::width`]).
+trait Cols {
+    fn cols(&self) -> usize;
+}
+
+impl Cols for str {
+    fn cols(&self) -> usize {
+        term::width(self)
+    }
+}
+
+/// The longest prefix of `s` that fits `cols` columns.
+fn take_head(s: &str, cols: usize) -> String {
+    term::cut(s, cols, "")
+}
+
+/// The longest suffix of `s` that fits `cols` columns.
+fn take_tail(s: &str, cols: usize) -> String {
+    let start = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(s.len()))
+        .find(|&i| s[i..].cols() <= cols)
+        .unwrap_or(s.len());
+    s[start..].to_string()
+}
+
+/// Truncate to at most `max` columns, keeping the **tail**.
 ///
 /// Used for the directory part of PATH, whose discriminating part is at the
 /// end — the project directory — while its head is uniform `~/ws/…` noise
 /// that is safe to drop. FIELD uses [`truncate_middle`] instead.
 fn truncate_tail(s: &str, max: usize, ell: &str) -> String {
-    let count = s.chars().count();
-    if count <= max {
+    if s.cols() <= max {
         s.to_string()
     } else {
-        let keep = max.saturating_sub(ell.chars().count());
-        let tail: String = s.chars().skip(count - keep).collect();
-        format!("{ell}{tail}")
+        let keep = max.saturating_sub(ell.cols());
+        format!("{ell}{}", take_tail(s, keep))
     }
 }
 
@@ -2072,58 +2082,53 @@ fn ellipsis(ascii: bool) -> &'static str {
     Glyphs::of(ascii).ellipsis
 }
 
-/// Truncate a cache path to at most `max` characters. A `#session` suffix
+/// Truncate a cache path to at most `max` columns. A `#session` suffix
 /// compresses first — the directory locates the row, the session id only
 /// discriminates it, so the id keeps its last 4 chars (`~/ws/proj#…abcd`).
 /// If the directory alone still overflows, its own tail is kept. A path
 /// with no `#` falls back to plain tail truncation.
 fn truncate_path(s: &str, max: usize, ell: &str) -> String {
-    if s.chars().count() <= max {
+    if s.cols() <= max {
         return s.to_string();
     }
     if let Some((dir, sess)) = s.rsplit_once('#') {
-        let sess_len = sess.chars().count();
-        let compressed = if sess_len > 4 {
-            let tail: String = s.chars().skip(s.chars().count() - 4).collect();
-            format!("#{ell}{tail}")
+        let compressed = if sess.cols() > 4 {
+            format!("#{ell}{}", take_tail(s, 4))
         } else {
             format!("#{sess}")
         };
-        let dir_budget = max.saturating_sub(compressed.chars().count());
+        let dir_budget = max.saturating_sub(compressed.cols());
         let out = format!("{}{compressed}", truncate_tail(dir, dir_budget, ell));
-        if out.chars().count() <= max {
+        if out.cols() <= max {
             return out;
         }
     }
     truncate_tail(s, max, ell)
 }
 
-/// Truncate to at most `max` characters keeping both edges. Used for FIELD:
+/// Truncate to at most `max` columns keeping both edges. Used for FIELD:
 /// the head names the owning field (`api_status.…`), the tail is the
 /// discriminating leaf key (`….new_status`) — a destructured name needs
 /// both, unlike a path, whose head is uniform `~/ws/…` noise.
 fn truncate_middle(s: &str, max: usize, ell: &str) -> String {
-    let count = s.chars().count();
-    if count <= max {
+    if s.cols() <= max {
         s.to_string()
     } else {
-        let keep = max.saturating_sub(ell.chars().count());
-        let head_n = keep - keep / 2;
-        let head: String = s.chars().take(head_n).collect();
-        let tail: String = s.chars().skip(count - keep / 2).collect();
-        format!("{head}{ell}{tail}")
+        let keep = max.saturating_sub(ell.cols());
+        format!(
+            "{}{ell}{}",
+            take_head(s, keep - keep / 2),
+            take_tail(s, keep / 2)
+        )
     }
 }
 
-/// Truncate a string to at most `max` characters, appending `ell` if
-/// trimmed.
+/// Truncate a string to at most `max` columns, appending `ell` if trimmed.
 fn truncate(s: &str, max: usize, ell: &str) -> String {
-    if s.chars().count() <= max {
+    if s.cols() <= max {
         s.to_string()
     } else {
-        let take = max.saturating_sub(ell.chars().count());
-        let truncated: String = s.chars().take(take).collect();
-        format!("{truncated}{ell}")
+        format!("{}{ell}", take_head(s, max.saturating_sub(ell.cols())))
     }
 }
 
