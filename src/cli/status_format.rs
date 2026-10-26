@@ -93,16 +93,16 @@ pub const TTL_P_WIDTH_MAX: usize = 6;
 const TTL_P_MAX: u64 = 999_999;
 
 /// Maximum width for the humanized total-budget sub-field (`P × K`, e.g.
-/// `99h59m`). Values are clamped before humanizing so the cell can't grow
+/// `99d23h`). Values are clamped before humanizing so the cell can't grow
 /// past this.
 pub const TTL_TOTAL_WIDTH_MAX: usize = 6;
 /// Clamp applied to the total-budget seconds (`poll_interval_secs *
 /// poll_count`) before humanizing, so the formatted string can never
-/// exceed `TTL_TOTAL_WIDTH_MAX` chars (`99h59m`).
-const TTL_TOTAL_MAX_SECS: u64 = 359_999;
+/// exceed `TTL_TOTAL_WIDTH_MAX` chars (`99d23h`).
+const TTL_TOTAL_MAX_SECS: u64 = 8_639_999;
 
 /// Clamp applied to the POLL column's seconds (next-poll or next-retry)
-/// before display, ~11 days (`277h46m`). The POLL column otherwise auto-sizes
+/// before display, ~11 days (`11d13h`). The POLL column otherwise auto-sizes
 /// like any other plain column (via `nat_poll` in `render_table`) — this only
 /// bounds the displayed duration, not a padded sub-field width.
 const TTL_SECONDS_MAX: u64 = 999_999;
@@ -2411,7 +2411,7 @@ mod ttl_cell_tests {
 
     #[test]
     fn total_clamps_at_max() {
-        // P*K clamps to TTL_TOTAL_MAX_SECS (99h59m) before humanizing; the
+        // P*K clamps to TTL_TOTAL_MAX_SECS (99d23h) before humanizing; the
         // raw P itself clamps to TTL_P_MAX (999999).
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
@@ -2426,7 +2426,7 @@ mod ttl_cell_tests {
             false,
             &W6,
         );
-        assert!(cell.text.contains("99h59m"), "got: {:?}", cell.text);
+        assert!(cell.text.contains("99d23h"), "got: {:?}", cell.text);
         assert!(cell.text.contains("999999s"), "got: {:?}", cell.text);
     }
 
@@ -2655,7 +2655,7 @@ mod poll_cell_tests {
                 None,
                 0,
             ),
-            "277h46m"
+            "11d13h"
         );
     }
 }

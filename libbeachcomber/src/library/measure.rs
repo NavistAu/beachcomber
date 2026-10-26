@@ -5,7 +5,7 @@
 //! and emoji-presentation characters are 2, combining marks 0, and escape
 //! sequences (colours, OSC 8 links) 0. There is no character-count variant.
 
-use super::{UNDEFINED, is_absent, text};
+use super::{UNDEFINED, arguments, is_absent, text, whole};
 use crate::engine::{EngineCtx, op_error};
 use crate::term;
 use minijinja::value::{Kwargs, Rest, Value as MjValue};
@@ -51,13 +51,6 @@ pub(super) fn add_truncate(jinja: &mut Environment<'_>, _: &Arc<EngineCtx>) {
     );
 }
 
-/// A whole number argument.
-fn whole(name: &str, what: &str, v: &MjValue) -> Result<i64, Error> {
-    v.as_i64()
-        .filter(|_| !v.is_undefined() && !v.is_none())
-        .ok_or_else(|| op_error(format!("{name}(): {what} must be a whole number")))
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Align {
     Left,
@@ -67,18 +60,10 @@ enum Align {
 
 /// `pad(n, align='left')`: `n` first, then `align`, either by name.
 fn pad_args(args: &[MjValue], kwargs: &Kwargs) -> Result<(i64, Align), Error> {
-    let named = kwargs.get::<Option<MjValue>>("align")?;
-    kwargs.assert_all_used()?;
-    let (n, positional) = match args {
-        [n] => (n, None),
-        [n, align] => (n, Some(align)),
-        _ => return Err(op_error("pad(): takes a width and an optional align")),
-    };
-    if positional.is_some() && named.is_some() {
-        return Err(op_error("pad(): align given twice"));
-    }
-    let n = whole("pad", "the width", n)?;
-    let align = match positional.or(named.as_ref()) {
+    let [n, align] = arguments("pad", args, kwargs, ["n", "align"])?;
+    let n = n.ok_or_else(|| op_error("pad(): takes a width and an optional align"))?;
+    let n = whole("pad", "the width", &n)?;
+    let align = match align.as_ref() {
         None => Align::Left,
         Some(a) => match a.as_str() {
             Some("left") => Align::Left,
@@ -107,20 +92,12 @@ fn pad(s: &str, n: i64, align: Align) -> String {
 
 /// `truncate(n, end='…')`: `n` first, then `end`, either by name.
 fn truncate_args(args: &[MjValue], kwargs: &Kwargs) -> Result<(usize, String), Error> {
-    let named = kwargs.get::<Option<MjValue>>("end")?;
-    kwargs.assert_all_used()?;
-    let (n, positional) = match args {
-        [n] => (n, None),
-        [n, end] => (n, Some(end)),
-        _ => return Err(op_error("truncate(): takes a length and an optional end")),
-    };
-    if positional.is_some() && named.is_some() {
-        return Err(op_error("truncate(): end given twice"));
-    }
-    let n = whole("truncate", "the length", n)?;
+    let [n, end] = arguments("truncate", args, kwargs, ["n", "end"])?;
+    let n = n.ok_or_else(|| op_error("truncate(): takes a length and an optional end"))?;
+    let n = whole("truncate", "the length", &n)?;
     let n =
         usize::try_from(n).map_err(|_| op_error("truncate(): the length must not be negative"))?;
-    let end = match positional.or(named.as_ref()) {
+    let end = match end.as_ref() {
         None => "…".to_string(),
         Some(e) if is_absent(e) => "…".to_string(),
         Some(e) => text("truncate", e)?,

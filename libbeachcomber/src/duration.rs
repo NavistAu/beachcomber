@@ -2,17 +2,65 @@
 //! argument that takes a duration reads. [`crate::render::duration`] is the
 //! one way one is shown, and this grammar reads everything it writes.
 //!
-//! A duration is one or more whole numbers each with a unit, `h`, `m`, `s` or
-//! `ms`, largest first and each unit at most once (`"250ms"`, `"30s"`,
-//! `"1m30s"`, `"2h14m"`); a bare number is seconds (`"60"`). Zero is zero in
-//! every unit; a consumer that cannot take zero, or anything below a whole
-//! second, refuses it itself.
+//! A duration is one or more whole numbers each with a unit, `d`, `h`, `m`, `s`
+//! or `ms`, largest first and each unit at most once (`"250ms"`, `"30s"`,
+//! `"1m30s"`, `"2h14m"`, `"2d3h"`); a bare number is seconds (`"60"`). Zero is
+//! zero in every unit; a consumer that cannot take zero, or anything below a
+//! whole second, refuses it itself.
 
 use std::time::Duration;
 
 /// The grammar, as every refusal states it.
-pub const GRAMMAR: &str = "whole numbers each with a unit, h, m, s or ms, largest first; a bare \
-     number is seconds (\"250ms\", \"30s\", \"1m30s\", \"60\")";
+pub const GRAMMAR: &str = "whole numbers each with a unit, d, h, m, s or ms, largest first; a bare \
+     number is seconds (\"250ms\", \"30s\", \"1m30s\", \"2d3h\", \"60\")";
+
+/// A unit of the grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Unit {
+    Day,
+    Hour,
+    Minute,
+    Second,
+    Milli,
+}
+
+impl Unit {
+    /// Largest first.
+    pub const ALL: [Unit; 5] = [
+        Unit::Day,
+        Unit::Hour,
+        Unit::Minute,
+        Unit::Second,
+        Unit::Milli,
+    ];
+
+    /// The unit's written form.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Unit::Day => "d",
+            Unit::Hour => "h",
+            Unit::Minute => "m",
+            Unit::Second => "s",
+            Unit::Milli => "ms",
+        }
+    }
+
+    /// The unit written as `name`.
+    pub fn from_name(name: &str) -> Option<Unit> {
+        Unit::ALL.into_iter().find(|u| u.name() == name)
+    }
+
+    /// Milliseconds in one.
+    pub const fn millis(self) -> u64 {
+        match self {
+            Unit::Day => 86_400_000,
+            Unit::Hour => 3_600_000,
+            Unit::Minute => 60_000,
+            Unit::Second => 1_000,
+            Unit::Milli => 1,
+        }
+    }
+}
 
 /// Parse a duration in the one grammar, or `None` for text that is not one
 /// (or overflows).
@@ -25,7 +73,13 @@ pub fn parse(s: &str) -> Option<Duration> {
         return Some(Duration::from_secs(secs));
     }
     // Units largest first, each at most once.
-    const UNITS: [(&str, u64); 4] = [("h", 3_600_000), ("m", 60_000), ("s", 1_000), ("ms", 1)];
+    const UNITS: [(&str, u64); 5] = [
+        ("d", 86_400_000),
+        ("h", 3_600_000),
+        ("m", 60_000),
+        ("s", 1_000),
+        ("ms", 1),
+    ];
     let mut rest = s;
     let mut total_ms: u64 = 0;
     let mut next_unit = 0;
@@ -101,6 +155,27 @@ mod tests {
     }
 
     #[test]
+    fn days_are_a_unit() {
+        assert_eq!(parse("1d"), Some(Duration::from_secs(86_400)));
+        assert_eq!(
+            parse("2d3h"),
+            Some(Duration::from_secs(2 * 86_400 + 3 * 3600))
+        );
+        assert_eq!(
+            parse("1d1h1m1s1ms"),
+            Some(Duration::from_millis(
+                86_400_000 + 3_600_000 + 60_000 + 1_000 + 1
+            ))
+        );
+        // Largest first, each once.
+        assert_eq!(parse("3h2d"), None);
+        assert_eq!(parse("1d1d"), None);
+        assert_eq!(Unit::from_name("d"), Some(Unit::Day));
+        assert_eq!(Unit::from_name("w"), None);
+        assert_eq!(crate::render::duration(Duration::from_secs(86_400)), "1d");
+    }
+
+    #[test]
     fn a_template_value_is_a_string_or_whole_seconds() {
         use minijinja::Value;
         assert_eq!(from_value(&Value::from("2s")), Ok(Duration::from_secs(2)));
@@ -119,6 +194,7 @@ mod tests {
             Duration::from_secs(90),
             Duration::from_secs(3600),
             Duration::from_secs(8040),
+            Duration::from_secs(2 * 86_400 + 3 * 3600),
         ] {
             assert_eq!(parse(&crate::render::duration(d)), Some(d), "{d:?}");
         }

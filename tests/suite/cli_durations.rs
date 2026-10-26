@@ -1,6 +1,6 @@
 //! One duration grammar on every flag that takes one: `put --ttl`,
 //! `kill --timeout`, `check --connect-timeout` and `check procs --duration`
-//! each take whole numbers each with a unit (`h`, `m`, `s`, `ms`), largest first, a bare
+//! each take whole numbers each with a unit (`d`, `h`, `m`, `s`, `ms`), largest first, a bare
 //! number being seconds, and refuse anything else in the same words — before a
 //! daemon is started.
 
@@ -41,6 +41,25 @@ fn every_duration_flag_takes_the_one_grammar() {
         let out = comb(&tmp).args(args).output().unwrap();
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(!stderr.contains("invalid value"), "{args:?}: {stderr}");
+    }
+}
+
+/// A day is a unit like the rest: `1d` and `2d3h` are accepted, `1w` is not.
+#[test]
+fn days_are_a_unit_on_the_flags() {
+    let tmp = tempfile::tempdir().unwrap();
+    for ok in ["1d", "2d3h"] {
+        let out = comb(&tmp).args(["kill", "--timeout", ok]).output().unwrap();
+        assert!(out.status.success(), "{ok}: {out:?}");
+    }
+    for bad in ["1w", "3h2d"] {
+        let out = comb(&tmp)
+            .args(["kill", "--timeout", bad])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{bad}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(GRAMMAR), "{bad}: {stderr}");
     }
 }
 

@@ -21,6 +21,7 @@ pub mod number;
 pub mod parse;
 pub mod path;
 pub mod style;
+pub mod time;
 
 use crate::engine::{EngineCtx, op_error};
 use minijinja::value::{Kwargs, Rest, Value as MjValue};
@@ -120,6 +121,8 @@ pub const ITEMS: &[Item] = &[
     item!("pick", Filter, Pure, data::add_pick),
     item!("omit", Filter, Pure, data::add_omit),
     item!("clamp", Filter, Pure, data::add_clamp),
+    item!("seconds", Filter, Pure, time::add_seconds),
+    item!("duration", Filter, Pure, time::add_duration),
     item!("fromjson", Filter, Pure, parse::add_fromjson),
     item!("fromini", Filter, Pure, parse::add_fromini),
     item!("read", Filter, Io, fs::add_read),
@@ -179,6 +182,48 @@ pub(crate) fn is_absent(v: &MjValue) -> bool {
 
 /// Whether `v` is absent, or the empty string. The parse and path filters read
 /// `''` as absent.
+/// The arguments of a call, as `name(a, b=..)` writes them: up to `N`
+/// positional, each also givable by the keyword in `names`, none twice, no
+/// other keyword. Too many, a repeat or an unknown keyword is an error
+/// `name(): ...`.
+pub(crate) fn arguments<const N: usize>(
+    name: &str,
+    args: &[MjValue],
+    kwargs: &Kwargs,
+    names: [&str; N],
+) -> Result<[Option<MjValue>; N], Error> {
+    if args.len() > N {
+        return Err(op_error(format!(
+            "{name}(): takes at most {N} argument{} ({})",
+            if N == 1 { "" } else { "s" },
+            names.join(", ")
+        )));
+    }
+    let mut out: [Option<MjValue>; N] = std::array::from_fn(|i| args.get(i).cloned());
+    for (i, key) in names.iter().enumerate() {
+        if let Some(v) = kwargs.get::<Option<MjValue>>(key)? {
+            if out[i].is_some() {
+                return Err(op_error(format!("{name}(): {key} given twice")));
+            }
+            out[i] = Some(v);
+        }
+    }
+    kwargs.assert_all_used().map_err(|_| {
+        op_error(format!(
+            "{name}(): unknown argument (takes {})",
+            names.join(", ")
+        ))
+    })?;
+    Ok(out)
+}
+
+/// A whole number argument.
+pub(crate) fn whole(name: &str, what: &str, v: &MjValue) -> Result<i64, Error> {
+    v.as_i64()
+        .filter(|_| !is_absent(v))
+        .ok_or_else(|| op_error(format!("{name}(): {what} must be a whole number")))
+}
+
 pub(crate) fn is_absent_text(v: &MjValue) -> bool {
     is_absent(v) || v.as_str() == Some("")
 }

@@ -1206,8 +1206,12 @@ mod tests {
             "poll(): count must be at most 10000"
         );
         assert!(
-            record(&["{{ result | poll('365d') }}"]).is_err(),
-            "no d suffix"
+            record(&["{{ result | poll('365d') }}"]).is_ok(),
+            "a day is a unit"
+        );
+        assert_eq!(
+            record(&["{{ result | poll('366d') }}"]).unwrap_err(),
+            "poll(): interval must be at most 1 year"
         );
         assert!(record(&["{{ result | poll(31536000, 10000) }}"]).is_ok());
     }

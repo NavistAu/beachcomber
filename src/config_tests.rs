@@ -103,18 +103,20 @@ fn log_path_resolves_xdg() {
     );
 }
 
-/// One grammar for every duration: whole numbers each with a unit, `h`, `m`,
-/// `s` or `ms`, largest first, a bare number being seconds — so everything
+/// One grammar for every duration: whole numbers each with a unit, `d`, `h`,
+/// `m`, `s` or `ms`, largest first, a bare number being seconds — so everything
 /// comb shows (`1m30s`) reads back. Zero is zero in every unit; what a
 /// consumer cannot take (a zero interval, a sub-second ttl) is that
 /// consumer's to refuse.
 #[test]
 fn one_duration_grammar_and_zero_is_zero_in_every_unit() {
-    for zero in ["0", "0s", "0ms", "0m", "0h"] {
+    for zero in ["0", "0s", "0ms", "0m", "0h", "0d"] {
         assert_eq!(parse_duration(zero), Some(Duration::ZERO), "{zero}");
     }
     assert_eq!(parse_duration("1m30s"), Some(Duration::from_secs(90)));
-    for bad in ["30s1m", "5S", "1d", "x", "-1s", "1.5s", "ms"] {
+    assert_eq!(parse_duration("1d"), Some(Duration::from_secs(86_400)));
+    assert_eq!(parse_duration("2d3h"), Some(Duration::from_secs(183_600)));
+    for bad in ["30s1m", "5S", "3h2d", "x", "-1s", "1.5s", "ms", "1w"] {
         assert_eq!(parse_duration(bad), None, "{bad}");
     }
     let err = crate::config::duration_arg("30s1m").unwrap_err();

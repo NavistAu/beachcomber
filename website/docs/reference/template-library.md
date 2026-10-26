@@ -49,6 +49,20 @@ error that names it.
 | `obj \| omit(key, ...)` | the object without the named keys; errors as `pick` |
 | `n \| clamp(lo, hi)` | `n` held to `lo..=hi`; a `none` bound is open (`(w - 6) \| clamp(0, none)`); a bound or subject that is not a number, or `lo` above `hi`, is an error |
 
+### Time and durations
+
+A duration is a number of seconds or text in the one grammar: whole numbers each with a unit `d`, `h`, `m`, `s` or
+`ms`, largest first (`'1h30m'`, `'2d3h'`, `'250ms'`). Every flag, setting, decorator and keyword argument that takes a
+duration reads this grammar.
+
+| item | meaning |
+|---|---|
+| `d \| seconds` | a duration as seconds, a whole number when it is one: `'1h30m' \| seconds` is `5400`, `'250ms' \| seconds` is `0.25`; a number passes through, a negative one is an error |
+| `n \| duration(parts=2, floor='ms')` | seconds as a compact duration: `parts` consecutive units from the largest non-zero one, trailing zero parts dropped, none smaller than `floor`. `7500 \| duration` is `2h5m`, `2530 \| duration(floor='m')` is `42m`, `292000 \| duration` is `3d9h`. What the floor cuts is dropped, not rounded. Zero is `0s` (`0m` with `floor='m'`) |
+
+`comb status`, `comb check` and every other place comb shows a duration use the same form, `duration` at its defaults:
+`2d3h`, `2h14m`, `1m18s`, `250ms`, `1s500ms`.
+
 ### Paths
 
 | item | meaning |

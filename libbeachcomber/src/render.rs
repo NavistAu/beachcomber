@@ -30,26 +30,50 @@
 //! uptimes and intervals, a timeout in an error — reads one way too
 //! ([`duration`]).
 
+use crate::duration::Unit;
 use serde_json::Value;
 use std::time::Duration;
 
-/// A duration as comb shows one: `14s`; `3m`, `1m18s`; `2h`, `2h14m` (the
-/// seconds dropped once there are hours); and in milliseconds, `250ms`, when
-/// under a minute and not whole seconds.
+/// A duration as comb shows one: `14s`; `3m`, `1m18s`; `2h`, `2h14m`; `2d3h`;
+/// and in milliseconds under a minute that is not whole seconds, `250ms`,
+/// `1s500ms`. It is [`duration_with`] at its defaults: two parts, down to the
+/// millisecond.
 pub fn duration(d: Duration) -> String {
-    let ms = d.as_millis();
-    if ms < 60_000 && !ms.is_multiple_of(1000) {
-        return format!("{ms}ms");
+    duration_with(d, 2, Unit::Milli)
+}
+
+/// A duration as `parts` consecutive units from its largest non-zero one, none
+/// smaller than `floor`, trailing zero parts dropped: with two parts `2d3h`,
+/// `2h5m`, `1m18s`, `1s500ms`; with `floor` a minute, `2530s` is `42m`. What
+/// the floor cuts is dropped, not rounded. Zero, or less than the floor, is
+/// `0` and the floor's unit (`0s` for a floor of milliseconds).
+pub fn duration_with(d: Duration, parts: usize, floor: Unit) -> String {
+    let mut rest = d.as_millis();
+    let mut shown: Vec<(u128, Unit)> = Vec::new();
+    for unit in Unit::ALL.into_iter().take_while(|u| *u <= floor) {
+        let n = rest / u128::from(unit.millis());
+        rest %= u128::from(unit.millis());
+        if shown.is_empty() && n == 0 {
+            continue;
+        }
+        if shown.len() == parts {
+            break;
+        }
+        shown.push((n, unit));
     }
-    let secs = d.as_secs();
-    let (hours, minutes, secs) = (secs / 3600, secs / 60 % 60, secs % 60);
-    match (hours, minutes, secs) {
-        (0, 0, s) => format!("{s}s"),
-        (0, m, 0) => format!("{m}m"),
-        (0, m, s) => format!("{m}m{s}s"),
-        (h, 0, _) => format!("{h}h"),
-        (h, m, _) => format!("{h}h{m}m"),
+    while shown.last().is_some_and(|(n, _)| *n == 0) {
+        shown.pop();
     }
+    if shown.is_empty() {
+        return match floor {
+            Unit::Milli => "0s".to_string(),
+            unit => format!("0{}", unit.name()),
+        };
+    }
+    shown
+        .into_iter()
+        .map(|(n, unit)| format!("{n}{}", unit.name()))
+        .collect()
 }
 
 /// A value format.
@@ -399,6 +423,74 @@ fn collect_leaves<'v>(prefix: &str, value: &'v Value, out: &mut Vec<(String, &'v
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn duration_with_parts_and_floor() {
+        use super::{Unit, duration_with};
+        use std::time::Duration;
+        let at = |secs: u64, parts, floor| duration_with(Duration::from_secs(secs), parts, floor);
+        assert_eq!(at(7500, 2, Unit::Milli), "2h5m");
+        assert_eq!(at(292_000, 2, Unit::Milli), "3d9h");
+        assert_eq!(at(2530, 2, Unit::Minute), "42m");
+        assert_eq!(at(2530, 2, Unit::Second), "42m10s");
+        assert_eq!(at(2530, 1, Unit::Second), "42m");
+        assert_eq!(at(2530, 3, Unit::Second), "42m10s");
+        // Trailing zero parts go; interior ones stay.
+        assert_eq!(at(3600, 2, Unit::Second), "1h");
+        assert_eq!(at(3600 + 5, 3, Unit::Second), "1h0m5s");
+        assert_eq!(at(86_400 + 300, 2, Unit::Second), "1d");
+        assert_eq!(at(86_400 + 300, 3, Unit::Second), "1d0h5m");
+        // The floor cuts, it does not round.
+        assert_eq!(at(119, 2, Unit::Minute), "1m");
+        assert_eq!(at(7199, 2, Unit::Hour), "1h");
+        // Zero, or under the floor, is 0 and the floor's unit.
+        assert_eq!(at(0, 2, Unit::Milli), "0s");
+        assert_eq!(at(0, 2, Unit::Second), "0s");
+        assert_eq!(at(0, 2, Unit::Minute), "0m");
+        assert_eq!(at(30, 2, Unit::Minute), "0m");
+        assert_eq!(at(3599, 2, Unit::Day), "0d");
+        let ms = |n: u64, parts| duration_with(Duration::from_millis(n), parts, Unit::Milli);
+        assert_eq!(ms(250, 2), "250ms");
+        assert_eq!(ms(1500, 2), "1s500ms");
+        assert_eq!(ms(1500, 1), "1s");
+        assert_eq!(ms(61_001, 3), "1m1s1ms");
+    }
+
+    #[test]
+    fn duration_is_its_default_form() {
+        use super::{Unit, duration, duration_with};
+        use std::time::Duration;
+        for ms in [
+            0,
+            1,
+            250,
+            999,
+            1000,
+            1500,
+            14_000,
+            59_500,
+            60_000,
+            78_000,
+            3_600_000,
+            8_040_000,
+            184_320_000,
+        ] {
+            let d = Duration::from_millis(ms);
+            assert_eq!(duration(d), duration_with(d, 2, Unit::Milli), "{ms}");
+        }
+        for (secs, shown) in [
+            (0, "0s"),
+            (14, "14s"),
+            (180, "3m"),
+            (78, "1m18s"),
+            (7200, "2h"),
+            (8040, "2h14m"),
+            (184_320, "2d3h"),
+        ] {
+            assert_eq!(duration(Duration::from_secs(secs)), shown);
+        }
+        assert_eq!(duration(Duration::from_millis(1500)), "1s500ms");
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -409,7 +501,7 @@ mod tests {
         for (d, text) in [
             (s(0), "0s"),
             (ms(250), "250ms"),
-            (ms(1500), "1500ms"),
+            (ms(1500), "1s500ms"),
             (s(14), "14s"),
             (s(60), "1m"),
             (s(78), "1m18s"),
@@ -417,7 +509,7 @@ mod tests {
             (s(3600), "1h"),
             (s(8040), "2h14m"),
             (s(8070), "2h14m"),
-            (s(90_061), "25h1m"),
+            (s(90_061), "1d1h"),
         ] {
             assert_eq!(duration(d), text, "{d:?}");
         }
