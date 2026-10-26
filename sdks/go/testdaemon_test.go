@@ -1,15 +1,14 @@
 package beachcomber_test
 
 import (
-	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
 
 	beachcomber "github.com/NavistAu/beachcomber/sdks/go"
+	"github.com/NavistAu/beachcomber/sdks/go/internal/testdaemon"
 )
 
 // This SDK now binds to libbeachcomber's C ABI (see ffi.go), so its unit
@@ -86,32 +85,12 @@ func startDaemon(t *testing.T) string {
 
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "sock")
-	cmd := exec.Command(combBin(), "daemon", "--socket", sock)
-	cmd.Stderr = os.Stderr
-	// The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
-	// (falling back to $HOME/.config) and its log under $XDG_STATE_HOME: all
-	// three point into the test's tempdir.
-	cmd.Env = append(os.Environ(), "XDG_CONFIG_HOME="+dir, "HOME="+dir, "XDG_STATE_HOME="+filepath.Join(dir, ".local", "state"))
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start daemon: %v", err)
+	cmd, err := testdaemon.Start(combBin(), sock, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait()
-		}
-	})
-
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if conn, err := net.DialTimeout("unix", sock, 100*time.Millisecond); err == nil {
-			conn.Close()
-			return sock
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("daemon did not create socket within 30s at %s", sock)
-	return ""
+	t.Cleanup(func() { testdaemon.Stop(cmd) })
+	return sock
 }
 
 // requireClient starts a fresh daemon and returns a Client wired to it.

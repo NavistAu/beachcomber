@@ -38,6 +38,7 @@ package.path = sdk_root .. "?.lua;"
 
 local json = require("beachcomber.json")
 local comb = require("beachcomber")
+local testdaemon = require("test.testdaemon")
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -92,27 +93,8 @@ local function start_daemon()
   if not tmpdir or tmpdir == "" then die("mktemp -d failed under " .. base_tmpdir) end
   local socket_path = tmpdir .. "/sock"
 
-  -- The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
-  -- (falling back to $HOME/.config) and its log under $XDG_STATE_HOME: all
-  -- three point into the fixture's tempdir. It writes a newline on its
-  -- `--ready-fd` (fd 3, a FIFO in the tempdir) once it serves its socket, and
-  -- closes it unwritten if it exits first: the shell prints its pid, then
-  -- "served" if that newline came within 5 seconds. bash, for `read -t`.
-  local ready = tmpdir .. "/ready"
-  local start_cmd = "bash -c 'mkfifo \"$1\" || exit 1; "
-    .. "XDG_CONFIG_HOME=\"$2\" HOME=\"$2\" XDG_STATE_HOME=\"$2/.local/state\" "
-    .. "\"$3\" daemon --socket \"$4\" --ready-fd 3 3>\"$1\" > /dev/null 2>&1 & echo $!; "
-    .. "IFS= read -r -t 5 line < \"$1\" && echo served' _ "
-    .. ready .. " " .. tmpdir .. " " .. COMB_BIN .. " " .. socket_path
-  local start_pipe = io.popen(start_cmd, "r")
-  if not start_pipe then die("failed to start daemon") end
-  local pid = start_pipe:read("*l")
-  local served = start_pipe:read("*l")
-  start_pipe:close()
-  if served ~= "served" then
-    if pid then os.execute("kill " .. tostring(pid) .. " 2>/dev/null") end
-    die("daemon did not serve " .. socket_path .. " within 5 seconds")
-  end
+  local pid = testdaemon.start(COMB_BIN, tmpdir, socket_path)
+  if not pid then die("daemon did not serve " .. socket_path .. " within 5 seconds") end
 
   return { pid = pid, socket = socket_path, tmpdir = tmpdir }
 end

@@ -17,9 +17,9 @@
 
 import { spawn } from 'child_process';
 import * as fs from 'fs';
-import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+import type { Readable } from 'stream';
 
 const SDK_DIR = path.dirname(new URL(import.meta.url).pathname);
 const REPO_ROOT = path.resolve(SDK_DIR, '..', '..', '..');
@@ -58,27 +58,20 @@ export function daemonAvailable(): boolean {
   return COMB_BIN !== undefined;
 }
 
-function waitForSocket(sockPath: string, timeoutMs = 5000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+// The daemon writes a newline on its `--ready-fd` pipe once it serves its
+// socket, and closes it unwritten if it exits first.
+function waitForReady(ready: Readable, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
-    function attempt(): void {
-      if (Date.now() > deadline) {
-        resolve(false);
-        return;
-      }
-      const s = new net.Socket();
-      s.setTimeout(100);
-      s.connect(sockPath, () => {
-        s.destroy();
-        resolve(true);
-      });
-      s.on('error', () => setTimeout(attempt, 50));
-      s.on('timeout', () => {
-        s.destroy();
-        setTimeout(attempt, 50);
-      });
+    const timer = setTimeout(() => done(false), timeoutMs);
+    function done(served: boolean): void {
+      clearTimeout(timer);
+      ready.removeAllListeners();
+      ready.destroy();
+      resolve(served);
     }
-    attempt();
+    ready.on('data', (chunk: Buffer) => done(chunk.includes(10)));
+    ready.on('end', () => done(false));
+    ready.on('error', () => done(false));
   });
 }
 
@@ -100,8 +93,9 @@ export async function spawnDaemon(): Promise<TestDaemon> {
   // The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
   // (falling back to $HOME/.config) and its log under $XDG_STATE_HOME: all
   // three point into the test's tempdir.
-  const proc = spawn(COMB_BIN, ['daemon', '--socket', sockPath], {
-    stdio: ['ignore', 'ignore', 'ignore'],
+  // Its fd 3 is a pipe to this process: `--ready-fd 3`.
+  const proc = spawn(COMB_BIN, ['daemon', '--socket', sockPath, '--ready-fd', '3'], {
+    stdio: ['ignore', 'ignore', 'ignore', 'pipe'],
     env: {
       ...process.env,
       XDG_CONFIG_HOME: tmpDir,
@@ -110,11 +104,11 @@ export async function spawnDaemon(): Promise<TestDaemon> {
     },
   });
 
-  const ready = await waitForSocket(sockPath, 5000);
+  const ready = await waitForReady(proc.stdio[3] as Readable, 5000);
   if (!ready) {
     proc.kill('SIGKILL');
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    throw new Error(`daemon did not start within 5s (COMB_BIN=${COMB_BIN})`);
+    throw new Error(`daemon did not serve within 5s (COMB_BIN=${COMB_BIN})`);
   }
 
   return {

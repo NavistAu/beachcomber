@@ -17,13 +17,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	beachcomber "github.com/NavistAu/beachcomber/sdks/go"
+	"github.com/NavistAu/beachcomber/sdks/go/internal/testdaemon"
 )
 
 // ---------------------------------------------------------------------------
@@ -226,48 +226,6 @@ func walkDir(dir string, fn func(string) error) error {
 // Daemon lifecycle
 // ---------------------------------------------------------------------------
 
-func startDaemon(combBin, socketPath string) (*exec.Cmd, error) {
-	// The daemon writes a newline on its `--ready-fd` pipe (the child's fd 3,
-	// its first ExtraFiles) once it serves its socket, and closes it
-	// unwritten if it exits first.
-	ready, signal, err := os.Pipe()
-	if err != nil {
-		return nil, fmt.Errorf("ready pipe: %w", err)
-	}
-	defer ready.Close()
-	cmd := exec.Command(combBin, "daemon", "--socket", socketPath, "--ready-fd", "3")
-	cmd.ExtraFiles = []*os.File{signal}
-	cmd.Stdout = os.Stderr // daemon logs to stderr for visibility
-	cmd.Stderr = os.Stderr
-	// The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
-	// (falling back to $HOME/.config) and its log under $XDG_STATE_HOME: all
-	// three point into the fixture's tempdir.
-	dir := filepath.Dir(socketPath)
-	cmd.Env = append(os.Environ(), "XDG_CONFIG_HOME="+dir, "HOME="+dir, "XDG_STATE_HOME="+filepath.Join(dir, ".local", "state"))
-	err = cmd.Start()
-	signal.Close()
-	if err != nil {
-		return nil, fmt.Errorf("start daemon: %w", err)
-	}
-
-	said := make([]byte, 1)
-	ready.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if n, _ := ready.Read(said); n == 1 && said[0] == '\n' {
-		return cmd, nil
-	}
-	cmd.Process.Kill()
-	cmd.Wait()
-	return nil, fmt.Errorf("daemon did not serve within 5s on %s", socketPath)
-}
-
-func stopDaemon(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	cmd.Process.Kill()
-	cmd.Wait()
-}
-
 // ---------------------------------------------------------------------------
 // Fixture execution
 // ---------------------------------------------------------------------------
@@ -281,11 +239,11 @@ func runFixture(f fixture, combBin string) (bool, string) {
 	defer os.RemoveAll(tmpDir)
 	sockPath := filepath.Join(tmpDir, "sock")
 
-	cmd, err := startDaemon(combBin, sockPath)
+	cmd, err := testdaemon.Start(combBin, sockPath, 5*time.Second)
 	if err != nil {
 		return false, "daemon: " + err.Error()
 	}
-	defer stopDaemon(cmd)
+	defer testdaemon.Stop(cmd)
 
 	client, err := beachcomber.NewClient(beachcomber.WithSocketPath(sockPath), beachcomber.WithTimeoutMs(5000))
 	if err != nil {

@@ -4,6 +4,7 @@
 --- daemon.
 
 return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
+  local testdaemon = require("test.testdaemon")
   local client_mod = require("beachcomber.client")
   local Client = client_mod.Client
 
@@ -315,22 +316,9 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     if p then p:close() end
     if not tmpdir or tmpdir == "" then return nil end
     local socket_path = tmpdir .. "/sock"
-    local pid_pipe = io.popen("XDG_CONFIG_HOME=" .. tmpdir .. " HOME=" .. tmpdir
-      .. " XDG_STATE_HOME=" .. tmpdir .. "/.local/state " .. comb_bin
-      .. " daemon --socket " .. socket_path .. " > /dev/null 2>&1 & echo $!", "r")
-    local pid = pid_pipe and pid_pipe:read("*l")
-    if pid_pipe then pid_pipe:close() end
-    local deadline = os.time() + 5
-    while os.time() < deadline do
-      -- Lua 5.1/LuaJIT return the raw status (256 on failure, truthy); 5.2+
-      -- return true/nil.
-      local rc = os.execute("test -S " .. socket_path)
-      if rc == true or rc == 0 then
-        return { pid = pid, socket = socket_path, tmpdir = tmpdir }
-      end
-      os.execute("sleep 0.05 2>/dev/null || true")
-    end
-    os.execute("kill " .. tostring(pid) .. " 2>/dev/null; rm -rf " .. tmpdir)
+    local pid = testdaemon.start(comb_bin, tmpdir, socket_path)
+    if pid then return { pid = pid, socket = socket_path, tmpdir = tmpdir } end
+    os.execute("rm -rf " .. tmpdir)
     return nil
   end
 

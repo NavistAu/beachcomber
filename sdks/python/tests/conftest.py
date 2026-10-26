@@ -18,16 +18,16 @@ from __future__ import annotations
 import os
 import pathlib
 import shutil
-import signal
-import socket
-import subprocess
 import sys
-import tempfile
 import threading
-import time
 from typing import Optional
 
 import pytest
+
+# The daemon harness is the conformance runner's own: one DaemonProcess, which
+# waits on the daemon's `--ready-fd` pipe.
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+from conformance_runner import DaemonProcess  # noqa: E402
 
 # Hard-kill the entire test process if the suite takes longer than 30 seconds.
 # This mirrors the nextest `global-timeout` for the Rust suite.
@@ -64,70 +64,6 @@ def _find_comb_bin() -> Optional[str]:
     if default.is_file() and os.access(default, os.X_OK):
         return str(default)
     return shutil.which("comb")
-
-
-def _wait_for_socket(sock_path: str, timeout: float = 8.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if os.path.exists(sock_path):
-            try:
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                s.settimeout(0.1)
-                s.connect(sock_path)
-                s.close()
-                return True
-            except OSError:
-                pass
-        time.sleep(0.05)
-    return False
-
-
-class DaemonProcess:
-    """Manages a ``comb daemon`` subprocess for the test session."""
-
-    def __init__(self, comb_bin: str) -> None:
-        self._comb_bin = comb_bin
-        self._tmpdir = tempfile.mkdtemp(prefix="bcpytest_")
-        self.socket_path = os.path.join(self._tmpdir, "comb.sock")
-        self._proc: Optional[subprocess.Popen] = None
-
-    def start(self) -> None:
-        env = os.environ.copy()
-        # The daemon writes its managed defaults under $XDG_CONFIG_HOME on
-        # start (falling back to $HOME/.config) and its log under
-        # $XDG_STATE_HOME: all three point into the tempdir.
-        env["XDG_CONFIG_HOME"] = self._tmpdir
-        env["HOME"] = self._tmpdir
-        env["XDG_STATE_HOME"] = os.path.join(self._tmpdir, ".local", "state")
-        log_path = os.path.join(self._tmpdir, "daemon.log")
-        with open(log_path, "wb") as log:
-            self._proc = subprocess.Popen(
-                [self._comb_bin, "daemon", "--socket", self.socket_path],
-                stdout=log,
-                stderr=log,
-                env=env,
-            )
-        if not _wait_for_socket(self.socket_path):
-            self.stop()
-            tail = ""
-            try:
-                tail = pathlib.Path(log_path).read_text()[-2000:]
-            except OSError:
-                pass
-            raise RuntimeError(f"daemon did not start within 8s\nLog tail:\n{tail}")
-
-    def stop(self) -> None:
-        if self._proc is not None:
-            try:
-                self._proc.send_signal(signal.SIGTERM)
-                self._proc.wait(timeout=3.0)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                try:
-                    self._proc.kill()
-                except ProcessLookupError:
-                    pass
-            self._proc = None
-        shutil.rmtree(self._tmpdir, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")

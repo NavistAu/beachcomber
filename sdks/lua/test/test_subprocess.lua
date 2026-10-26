@@ -11,6 +11,7 @@
 --- ($COMB_BIN, or the workspace's own debug build).
 
 return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
+  local testdaemon = require("test.testdaemon")
   local Client = require("beachcomber.client").Client
 
   suite("subprocess_backend get against a live daemon")
@@ -44,25 +45,18 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     if not tmpdir or tmpdir == "" then return nil end
     local env = "HOME=" .. tmpdir .. " XDG_CONFIG_HOME=" .. tmpdir .. " XDG_STATE_HOME=" .. tmpdir .. "/.local/state"
     local socket_path = tmpdir .. "/sock"
-    local pid = read_line(env .. " " .. comb_bin .. " daemon --socket " .. socket_path .. " > /dev/null 2>&1 & echo $!")
+    local pid = testdaemon.start(comb_bin, tmpdir, socket_path)
+    if not pid then
+      os.execute("rm -rf " .. tmpdir)
+      return nil
+    end
     local argv_log = tmpdir .. "/argv.log"
     local stand_in = tmpdir .. "/comb"
     local f = io.open(stand_in, "w")
     f:write("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" .. argv_log .. "'\n" .. env .. " exec '" .. comb_bin .. "' \"$@\"\n")
     f:close()
     os.execute("chmod +x " .. stand_in)
-    local deadline = os.time() + 5
-    while os.time() < deadline do
-      -- Lua 5.1/LuaJIT return the raw status (256 on failure, truthy); 5.2+
-      -- return true/nil.
-      local rc = os.execute("test -S " .. socket_path)
-      if rc == true or rc == 0 then
-        return { pid = pid, socket = socket_path, tmpdir = tmpdir, comb = stand_in, argv_log = argv_log, home = tmpdir }
-      end
-      os.execute("sleep 0.05 2>/dev/null || true")
-    end
-    os.execute("kill " .. tostring(pid) .. " 2>/dev/null; rm -rf " .. tmpdir)
-    return nil
+    return { pid = pid, socket = socket_path, tmpdir = tmpdir, comb = stand_in, argv_log = argv_log, home = tmpdir }
   end
 
   local function last_call(guard)
