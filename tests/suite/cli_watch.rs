@@ -36,11 +36,10 @@ fn watch_defaults_to_the_callers_cwd() {
 }
 
 /// A put scoped to `project` doesn't merge into `other`'s chain, so a watch
-/// at `other` starts on a miss — and a resolved watch emits nothing for a
-/// miss, where the pre-Task-3 watch printed `render_data(None, _)`, a blank
-/// line. The first line to arrive is therefore `other`'s own later value,
-/// which pins both halves at once: no blank frame came first, and the `1` at
-/// the sibling was never visible.
+/// at `other` starts on a miss — and a text watch prints no line for a miss.
+/// The first line to arrive is therefore `other`'s own later value, which
+/// pins both halves at once: no blank frame came first, and the `1` at the
+/// sibling was never visible.
 #[test]
 fn watch_from_a_sibling_directory_does_not_see_that_directorys_value() {
     let d = TestDaemon::spawn();
@@ -303,4 +302,67 @@ fn watch_json_frames_are_bare_values() {
         .assert()
         .success();
     assert_eq!(w.next_line(), r#""hi!""#);
+}
+
+// ── A miss is a frame as `get` prints one ──────────────────────────────────
+
+/// `comb get -f json` prints `null` for a miss, so a json watch does too: the
+/// first frame on a key nothing answers is `null`, and the value follows when
+/// a `put` gives it one.
+#[test]
+fn json_watch_on_a_missing_key_prints_null_then_the_value() {
+    let d = TestDaemon::spawn();
+
+    let mut w = watch_lines(&d, &d.home, &["--global", "my.a", "-f", "json"]);
+    assert_eq!(w.next_line(), "null");
+
+    d.comb(&d.home)
+        .args(["put", "--global", "my", r#"{"a":1}"#])
+        .assert()
+        .success();
+    assert_eq!(w.next_line(), "1");
+}
+
+/// A value going away is a change like any other: under json, the frame
+/// after `put … null` is `null`.
+#[test]
+fn json_watch_prints_null_when_the_value_goes() {
+    let d = TestDaemon::spawn();
+    d.comb(&d.home)
+        .args(["put", "--global", "my", r#"{"a":1}"#])
+        .assert()
+        .success();
+
+    let mut w = watch_lines(&d, &d.home, &["--global", "my.a", "-f", "json"]);
+    assert_eq!(w.next_line(), "1");
+
+    d.comb(&d.home)
+        .args(["put", "--global", "my", "null"])
+        .assert()
+        .success();
+    assert_eq!(w.next_line(), "null");
+}
+
+/// `comb get` prints nothing for a miss under text, so a text watch prints
+/// no line for one: the value going and coming back shows only the values.
+#[test]
+fn text_watch_prints_no_line_for_a_miss() {
+    let d = TestDaemon::spawn();
+    d.comb(&d.home)
+        .args(["put", "--global", "my", r#"{"a":1}"#])
+        .assert()
+        .success();
+
+    let mut w = watch_lines(&d, &d.home, &["--global", "my.a"]);
+    assert_eq!(w.next_line(), "1");
+
+    d.comb(&d.home)
+        .args(["put", "--global", "my", "null"])
+        .assert()
+        .success();
+    d.comb(&d.home)
+        .args(["put", "--global", "my", r#"{"a":2}"#])
+        .assert()
+        .success();
+    assert_eq!(w.next_line(), "2");
 }

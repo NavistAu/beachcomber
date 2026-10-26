@@ -321,14 +321,18 @@ pub fn render_values(slots: &[(&str, Option<&Value>)], format: Format) -> String
 }
 
 /// One frame of `comb watch`: the value as `comb get` prints it, ending in a
-/// newline, with json on one line so each frame is one line.
-pub fn render_frame(key: &str, value: &Value, format: Format) -> String {
-    let mut frame = match format {
-        Format::Json => format!(
+/// newline, with json on one line so each frame is one line. A miss is what
+/// `get` prints for one: `null` under json, and no frame at all under every
+/// other format.
+pub fn render_frame(key: &str, value: Option<&Value>, format: Format) -> String {
+    let value = present(value);
+    let mut frame = match (format, value) {
+        (Format::Json, value) => format!(
             "{}\n",
-            serde_json::to_string(present(Some(value)).unwrap_or(&Value::Null)).unwrap_or_default()
+            serde_json::to_string(value.unwrap_or(&Value::Null)).unwrap_or_default()
         ),
-        other => render_value(key, Some(value), other),
+        (_, None) => return String::new(),
+        (other, Some(value)) => render_value(key, Some(value), other),
     };
     if !frame.ends_with('\n') {
         frame.push('\n');
@@ -611,12 +615,30 @@ mod tests {
 
     #[test]
     fn a_frame_is_get_rendering_on_its_own_line() {
-        assert_eq!(render_frame("g.b", &json!("main"), Format::Text), "main\n");
         assert_eq!(
-            render_frame("p", &json!({"a": 1}), Format::Json),
+            render_frame("g.b", Some(&json!("main")), Format::Text),
+            "main\n"
+        );
+        assert_eq!(
+            render_frame("p", Some(&json!({"a": 1})), Format::Json),
             "{\"a\":1}\n"
         );
-        assert_eq!(render_frame("p", &json!({"a": 1}), Format::Text), "a=1\n");
+        assert_eq!(
+            render_frame("p", Some(&json!({"a": 1})), Format::Text),
+            "a=1\n"
+        );
+    }
+
+    /// A miss is a frame only where `get` prints something for one: `null`
+    /// under json, and no line at all under every other format.
+    #[test]
+    fn a_miss_is_a_null_frame_under_json_and_no_frame_otherwise() {
+        for value in [None, Some(&Value::Null)] {
+            assert_eq!(render_frame("p.a", value, Format::Json), "null\n");
+            for format in Format::ALL.into_iter().filter(|f| *f != Format::Json) {
+                assert_eq!(render_frame("p.a", value, format), "", "{format:?}");
+            }
+        }
     }
 
     #[test]

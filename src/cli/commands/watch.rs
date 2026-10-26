@@ -13,8 +13,9 @@
 //! This module only renders what the library emits, per output format —
 //! reusing `libbeachcomber::render::render_data` for `text`/`sh` exactly as
 //! `get` does, including the shell-quoting `-f sh` requires (canon
-//! `field_resolution.md` invariant 8). A frame is one line; a miss is no
-//! line at all, because there is no value to print.
+//! `field_resolution.md` invariant 8). A frame is one line. A miss is what
+//! `get` prints for one: `null` under `-f json`, and no line at all under
+//! every other format.
 
 use crate::cli::exit::Outcome;
 use crate::cli::output_format::{Format, template_locals};
@@ -67,31 +68,34 @@ pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format)
 
     loop {
         match watch.next(None) {
-            Ok(WatchOutcome::Value(Some(value))) => {
-                let frame = match (&format, session.as_mut()) {
-                    (Format::Template(template), Some(session)) => {
+            // A miss is a frame as `get` prints one: `null` under json, no
+            // line otherwise. The watch stays open either way: a later `put`
+            // can give the key a value.
+            Ok(WatchOutcome::Value(value)) => {
+                let frame = match (&format, session.as_mut(), value) {
+                    (Format::Template(_), _, None) => Ok(String::new()),
+                    (Format::Template(template), Some(session), Some(value)) => {
                         let locals = template_locals(&[(key, Some(value))]);
                         eval_with(template, "-f", &inputs, session, &locals)
                             .map(|v| render_value("", v.as_ref(), ValueFormat::Text) + "\n")
                             .map_err(|e| e.to_string())
                     }
-                    (Format::Preset(preset), _) => Ok(render_frame(
+                    (Format::Preset(preset), _, value) => Ok(render_frame(
                         key,
-                        &value,
+                        value.as_ref(),
                         preset
                             .value_format()
                             .expect("watch's formats are value formats"),
                     )),
-                    (Format::Template(_), None) => unreachable!("a template opens its session"),
+                    (Format::Template(_), None, Some(_)) => {
+                        unreachable!("a template opens its session")
+                    }
                 };
                 if let Err(e) = frame.map(|frame| print!("{frame}")) {
                     crate::cli::report::error_named(e);
                     return Outcome::Error;
                 }
             }
-            // A miss carries no value, so there is nothing to print. The
-            // watch stays open: a later `put` can give the key a value.
-            Ok(WatchOutcome::Value(None)) => {}
             // Nothing left that could ever answer.
             Ok(WatchOutcome::Eof) => return Outcome::Done,
             // `next(None)` has no deadline and this watch's cancel handle is
