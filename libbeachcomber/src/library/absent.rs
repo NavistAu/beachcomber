@@ -81,6 +81,7 @@ pub(crate) fn guard_builtins(jinja: &mut Environment<'_>) {
         "chain" => filters::chain,
         "zip" => filters::zip,
         "format" => filters::format,
+        "urlencode" => filters::urlencode,
     );
 }
 
@@ -109,6 +110,7 @@ mod tests {
             "fg" | "bg" => vec![MjValue::from("#ff0000")],
             "pluck" => vec![MjValue::from("a")],
             "map" => vec![MjValue::from("upper")],
+            "hash" => vec![MjValue::from("md5")],
             "ramp" => vec![
                 MjValue::from_serialize([50]),
                 MjValue::from_serialize(["lo", "hi"]),

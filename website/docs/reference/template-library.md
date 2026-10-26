@@ -63,6 +63,15 @@ duration reads this grammar.
 `comb status`, `comb check` and every other place comb shows a duration use the same form, `duration` at its defaults:
 `2d3h`, `2h14m`, `1m18s`, `250ms`, `1s500ms`.
 
+### Hashing and encoding
+
+| item | meaning |
+|---|---|
+| `v \| hash(alg)` | the lowercase hex digest; `alg` is `md5`, `sha1`, `sha256` or `crc32` (eight hex digits): `'beachcomber' \| hash('crc32')` is `48484316`. A string is hashed as its bytes, anything else as its JSON with keys sorted |
+| `s \| b64encode` | standard base64 with padding: `'hi'` is `aGk=` |
+| `s \| b64decode` | the UTF-8 text a base64 string holds (padding optional); text that is not base64, or whose bytes are not UTF-8, is an error |
+| `v \| urlencode` | minijinja's: percent-encodes a string, or an object as a query string (`{'q': 'a b'}` is `q=a%20b`) |
+
 ### Paths
 
 | item | meaning |

@@ -16,6 +16,7 @@
 pub mod absent;
 pub mod data;
 pub mod fs;
+pub mod hash;
 pub mod measure;
 pub mod number;
 pub mod parse;
@@ -101,6 +102,9 @@ pub const ITEMS: &[Item] = &[
     item!("truncate", Filter, Pure, measure::add_truncate),
     item!("width", Filter, Pure, measure::add_width),
     item!("pad", Filter, Pure, measure::add_pad),
+    item!("hash", Filter, Pure, hash::add_hash),
+    item!("b64encode", Filter, Pure, hash::add_b64encode),
+    item!("b64decode", Filter, Pure, hash::add_b64decode),
     item!("ramp", Filter, Pure, number::add_ramp),
     item!("pct", Filter, Pure, number::add_pct),
     item!("compact", Filter, Pure, number::add_compact),
@@ -380,6 +384,9 @@ mod tests {
             ("dirname", "{} | dirname"),
             ("pluck", "{} | pluck('a[')"),
             ("map", "{'a': 1} | map(attribute='x')"),
+            ("hash", "'x' | hash('nope')"),
+            ("b64encode", "[1] | b64encode"),
+            ("b64decode", "'!' | b64decode"),
             ("ramp", "1 | ramp([2, 1], [1, 2, 3])"),
             ("pct", "'x' | pct"),
             ("compact", "'x' | compact"),

@@ -17,6 +17,11 @@ minijinja = { workspace = true }
 rust-ini = "0.21.3"
 liblup = "0.3"
 unicode-width = "0.2"
+md-5 = "0.11.0"
+sha1 = "0.11.0"
+sha2 = "0.11"
+crc32fast = "1.5"
+base64 = "0.22"
 
 [dev-dependencies]
 beachcomber = { path = "..", features = ["test-helpers"] }
