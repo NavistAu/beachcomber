@@ -110,6 +110,8 @@ mod tests {
             "fg" | "bg" => vec![MjValue::from("#ff0000")],
             "pluck" => vec![MjValue::from("a")],
             "map" => vec![MjValue::from("upper")],
+            "regex_search" => vec![MjValue::from("a")],
+            "regex_replace" => vec![MjValue::from("a"), MjValue::from("b")],
             "relpath" => vec![MjValue::from("/a")],
             "hash" => vec![MjValue::from("md5")],
             "ramp" => vec![
@@ -176,6 +178,8 @@ mod tests {
             "fromini",
             "basename",
             "dirname",
+            "fromtoml",
+            "fromyaml",
             "expanduser",
             "ext",
         ] {

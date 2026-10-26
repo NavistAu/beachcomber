@@ -106,6 +106,13 @@ the clock of the run they render in, so a stored value is frozen until the next 
 | `s \| fromjson`, `s \| fromini` | text to data; text that is not JSON or INI is an error |
 | `exec(cmd, ...)`, `cmd \| exec()` | runs a command |
 | `p \| realpath` | the absolute path with symlinks followed, against the render's directory and `HOME`; a path that is not there, or `''`, is undefined; any other error names the path. It reads the filesystem, so it is not on a provider's lines |
+| `s \| fromtoml` | a TOML document as a map (a datetime is its text): `'Cargo.toml' \| read \| fromtoml \| pluck('package.version')`; `''` is undefined, text that is not TOML is an error |
+| `s \| fromyaml` | one YAML document as data: `'~/.kube/config' \| read \| fromyaml \| pluck('current-context')`; `''`, or text holding only comments, is undefined; text that is not YAML, or more than one document, is an error |
+| `s \| regex_search(pattern)` | the first match as a list, the whole match then each group (a group that took no part is `none`): `('v22.1.0' \| regex_search('(\d+)\.(\d+)'))[1]` is `22`. No match is undefined |
+| `s \| regex_replace(pattern, repl, count=0)` | matches replaced by `repl`, all of them when `count` is 0, else the first `count`; `$1` and `${name}` are groups (write `${1}x`, since `$1x` names a group `1x`): `branch \| regex_replace('^feat/', '')` |
+
+Patterns use [Rust `regex` syntax](https://docs.rs/regex/latest/regex/#syntax), with Unicode classes and case folding; an invalid
+pattern is an error, found before the subject is looked at.
 
 ### Text and terminal
 
