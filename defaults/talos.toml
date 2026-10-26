@@ -1,3 +1,3 @@
 [client.providers.talos]
-# The talosctl context in effect, honouring the shell's own $TALOSCONFIG; absent when none is set or talosctl is not installed.
-template.context = "{{ (exec('talosctl config info -o json 2>/dev/null || echo {}') | fromjson).context }}"
+# The talosctl context in effect, memoised: re-run when $TALOSCONFIG changes, when the talos config file changes, or every 10 minutes; absent when none is set or talosctl is not installed.
+template.context = "{{ ('talosctl config info -o json 2>/dev/null || echo {}' | watch(env.TALOSCONFIG or '~/.talos/config') | ttl('10m') | cache(env.TALOSCONFIG) | exec() | fromjson).context }}"

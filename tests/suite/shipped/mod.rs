@@ -30,6 +30,7 @@ mod asdf;
 mod battery;
 mod direnv;
 mod hostname;
+mod kubecontext;
 mod load;
 mod mise;
 mod network;

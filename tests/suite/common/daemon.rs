@@ -33,7 +33,7 @@ pub fn stop(process: &mut Child) {
 
 /// Point `cmd` at a throwaway `$HOME`, `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME`
 /// (= `<home>/.local/state`) and `$BEACHCOMBER_SOCKET` (= `sock`), with
-/// `RUST_LOG=error`, so nothing it runs can read or write the developer's real
+/// `RUST_LOG=error`, and `$KUBECONFIG` and `$TALOSCONFIG` removed, so nothing it runs can read or write the developer's real
 /// config, defaults, log or daemon; and put [`stub_bin`] first on its `PATH`,
 /// so no template it renders runs the developer's own tools.
 pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path, sock: &Path) -> &'a mut Command {
@@ -47,6 +47,10 @@ pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path, sock: &Path) -
         .env("BEACHCOMBER_SOCKET", sock)
         .env("RUST_LOG", "error")
         .env("PATH", path)
+        // The variables the shipped templates read (`kubecontext`, `talos`):
+        // the developer's own name their real config files.
+        .env_remove("KUBECONFIG")
+        .env_remove("TALOSCONFIG")
 }
 
 /// The tools the shipped templates run through `exec()` — `kubectl` and
