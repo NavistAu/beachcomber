@@ -376,6 +376,46 @@ context. Each command was run once before `hyperfine` started.
   a resolution of its own), and `talosctl config info -o json` once. T5.3 starts from 3, not the 2 the phase 5 plan
   counted. `comb get kubecontext.context` runs 1.
 
+### Exec caching: phase 5 measured
+
+Measured 2026-10-26 at `f5777a89` against the baseline binary `14bee04`, on the same Mac. The machine was far more
+loaded than during the baseline: load average 105-126 on 12 cores for the CLI and daemon runs, so absolute numbers are
+2-3 times the baseline's. Every comparison below is **interleaved** (each round runs every command once, base and new in
+turn, each with its own isolated daemon and the counting stubs), so a load swing falls on both alike; read the
+differences, not the absolute times. Release builds throughout.
+
+The CLI, 120 interleaved rounds (`comb get` and `comb status`, stand-in `kubectl` and `talosctl` exiting 1):
+
+| Command | base median / min | phase 5 median / min |
+|---|---:|---:|
+| `comb get kubecontext.context` | 80.4 / 47.6 ms | 28.2 / 16.9 ms |
+| `comb get hostname.name` (the process floor) | 24.9 / 14.1 ms | 26.7 / 15.5 ms |
+| `comb status` | 223.9 / 123.5 ms | 55.7 / 24.4 ms |
+
+Processes per warm `comb status`: 3 at `14bee04`, **0** now. Per `comb get kubecontext.context`: 1, now 0.
+
+A miss costs what a spawn costs, and the write-back adds nothing visible: 80 rewrites of the kubeconfig, each followed
+by a `comb get kubecontext.context`, took a median 86.3 ms (min 54.2) against 86.5 ms (min 52.0) for the baseline's
+uncached read, which spawns every time (load 108-126).
+
+| # | Target | Result | Met |
+|---|---|---|---|
+| T5.1 | memo hit <= 20 us over `{{ env.X }}` | 62 vs 46 us (+16) at one variable; 152 vs 131 us (+21) at 140 variables; p50, alternating runs at load about 47 (`benches/resolve.rs`). A re-run at load 112 was too noisy to use (the hit read faster than the floor) | met at 1 variable; 1 us over at 140 |
+| T5.2 | `get kubecontext.context` warm within 1 ms of `get hostname.name` | median +1.5 ms (28.2 vs 26.7), min +1.4 ms at load 105-126; an earlier 40-round run gave +4.8 ms median, +1.5 ms min; the hit also runs a `stat` pass and a filter pipeline the floor does not | missed by about 0.5-4 ms; noise-dominated, the minimum is steady at +1.4 ms |
+| T5.3 | warm `comb status`: 0 processes | 0 (3 at baseline); `a_warm_status_spawns_no_process` | met |
+| T5.4 | daemon memo half <= 5 us per leaf on a warm `get` | `get p.cached` (memo) vs `get p.plain` (template only), 5000 interleaved rounds, one connection, load 105: p50 +14 us, p90 +65 us, min +3.4 us. No `validity.rs` case was built; this is a Python socket client, so it includes the larger response line | missed at p50 (noise at this load is the same order); min is within |
+| T5.5 | after a kubeconfig rewrite the next `get` renders afresh 100/100; first read <= 1 ms over a hit plus the spawn | 100/100 by count: `shipped::kubecontext::kubecontext_runs_again_when_kubeconfig_changes` and `exec_cache::a_change_to_a_watched_file_runs_it_again`. Latency: the rewrite-then-read median equals the baseline's uncached read within 0.2 ms, which is a hit plus a spawn; `prompt_race.rs` has no memo case | count met; latency consistent with the target, not resolved below load noise |
+| T5.6 | a miss exits <= 1 ms after its output | not measured separately: no case built. The miss above is no slower than an uncached read, so the write-back adds under the run-to-run noise (several ms at this load) | not shown |
+| T5.7 | memo record <= 128 B plus value and paths | measured by allocation over 2000 memos in one provider: **635 B** for a memo of absence (hash only), **1403 B** with one watch path and a ttl, **1578 B** with a value `ctx-1` too. A memo is stored as generic `Value` maps in two facets and a stamp map, not a packed struct | **missed**, about 5-12 times the target |
+| T5.8 | suite about 10 s; each new test under 0.1 s | full workspace, 2486 tests, 25.4 s wall at load about 110 (the idle figure is not measurable now). The new `shipped::kubecontext` tests take 0.47-0.58 s each, 1.1 s for the `comb status` one, at the same load; their cost is two or three `comb` processes | not judgeable at this load |
+
+The library's `resolve` benches (`cargo bench --bench resolve`) were taken at load about 47, alternating: `env_read`
+46 us (1 variable) / 131 us (140), `memo_hit` 62 / 152 us, `exec` 5.36 / 14.0 ms. A hyperfine of the CLI at load 32-47:
+a hit 6.1 ms median against 95.5 ms for a render and 4.4 ms for `hostname.name`.
+
+Close-out: `cargo xtask gen-header --check` clean (no ABI change), `scripts/conformance-all.sh` passes every SDK runner
+(Lua 45 pass, 11 skip, as before), `cargo bench --bench resolve -- --test` runs `memo_hit`.
+
 ### Real-World Impact
 
 | Scenario | Before beachcomber | With beachcomber |
