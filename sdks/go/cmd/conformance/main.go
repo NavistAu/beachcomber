@@ -16,7 +16,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -228,7 +227,16 @@ func walkDir(dir string, fn func(string) error) error {
 // ---------------------------------------------------------------------------
 
 func startDaemon(combBin, socketPath string) (*exec.Cmd, error) {
-	cmd := exec.Command(combBin, "daemon", "--socket", socketPath)
+	// The daemon writes a newline on its `--ready-fd` pipe (the child's fd 3,
+	// its first ExtraFiles) once it serves its socket, and closes it
+	// unwritten if it exits first.
+	ready, signal, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("ready pipe: %w", err)
+	}
+	defer ready.Close()
+	cmd := exec.Command(combBin, "daemon", "--socket", socketPath, "--ready-fd", "3")
+	cmd.ExtraFiles = []*os.File{signal}
 	cmd.Stdout = os.Stderr // daemon logs to stderr for visibility
 	cmd.Stderr = os.Stderr
 	// The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
@@ -236,21 +244,20 @@ func startDaemon(combBin, socketPath string) (*exec.Cmd, error) {
 	// three point into the fixture's tempdir.
 	dir := filepath.Dir(socketPath)
 	cmd.Env = append(os.Environ(), "XDG_CONFIG_HOME="+dir, "HOME="+dir, "XDG_STATE_HOME="+filepath.Join(dir, ".local", "state"))
-	if err := cmd.Start(); err != nil {
+	err = cmd.Start()
+	signal.Close()
+	if err != nil {
 		return nil, fmt.Errorf("start daemon: %w", err)
 	}
 
-	// Wait until the socket appears (up to 5s).
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if conn, err := net.DialTimeout("unix", socketPath, 100*time.Millisecond); err == nil {
-			conn.Close()
-			return cmd, nil
-		}
-		time.Sleep(50 * time.Millisecond)
+	said := make([]byte, 1)
+	ready.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, _ := ready.Read(said); n == 1 && said[0] == '\n' {
+		return cmd, nil
 	}
 	cmd.Process.Kill()
-	return nil, fmt.Errorf("daemon did not start within 5s on %s", socketPath)
+	cmd.Wait()
+	return nil, fmt.Errorf("daemon did not serve within 5s on %s", socketPath)
 }
 
 func stopDaemon(cmd *exec.Cmd) {

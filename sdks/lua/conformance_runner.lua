@@ -94,33 +94,24 @@ local function start_daemon()
 
   -- The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
   -- (falling back to $HOME/.config) and its log under $XDG_STATE_HOME: all
-  -- three point into the fixture's tempdir.
-  local start_cmd = "XDG_CONFIG_HOME=" .. tmpdir .. " HOME=" .. tmpdir
-    .. " XDG_STATE_HOME=" .. tmpdir .. "/.local/state "
-    .. COMB_BIN .. " daemon --socket " .. socket_path .. " > /dev/null 2>&1 & echo $!"
-  local pid_pipe = io.popen(start_cmd, "r")
-  if not pid_pipe then die("failed to start daemon") end
-  local pid = pid_pipe:read("*l")
-  pid_pipe:close()
-
-  -- Poll until the socket file appears (max 5s). `test -S`, not io.open:
-  -- opening a Unix domain socket special file with fopen() fails (ENXIO)
-  -- even once the daemon is listening.
-  local deadline = os.time() + 5
-  local ready = false
-  while os.time() < deadline do
-    -- Lua 5.1/LuaJIT return the raw status (256 on failure, truthy); 5.2+
-    -- return true/nil.
-    local rc = os.execute("test -S " .. socket_path)
-    if rc == true or rc == 0 then
-      ready = true
-      break
-    end
-    os.execute("sleep 0.05 2>/dev/null || true")
-  end
-  if not ready then
-    os.execute("kill " .. tostring(pid) .. " 2>/dev/null")
-    die("daemon did not create socket within 5 seconds")
+  -- three point into the fixture's tempdir. It writes a newline on its
+  -- `--ready-fd` (fd 3, a FIFO in the tempdir) once it serves its socket, and
+  -- closes it unwritten if it exits first: the shell prints its pid, then
+  -- "served" if that newline came within 5 seconds. bash, for `read -t`.
+  local ready = tmpdir .. "/ready"
+  local start_cmd = "bash -c 'mkfifo \"$1\" || exit 1; "
+    .. "XDG_CONFIG_HOME=\"$2\" HOME=\"$2\" XDG_STATE_HOME=\"$2/.local/state\" "
+    .. "\"$3\" daemon --socket \"$4\" --ready-fd 3 3>\"$1\" > /dev/null 2>&1 & echo $!; "
+    .. "IFS= read -r -t 5 line < \"$1\" && echo served' _ "
+    .. ready .. " " .. tmpdir .. " " .. COMB_BIN .. " " .. socket_path
+  local start_pipe = io.popen(start_cmd, "r")
+  if not start_pipe then die("failed to start daemon") end
+  local pid = start_pipe:read("*l")
+  local served = start_pipe:read("*l")
+  start_pipe:close()
+  if served ~= "served" then
+    if pid then os.execute("kill " .. tostring(pid) .. " 2>/dev/null") end
+    die("daemon did not serve " .. socket_path .. " within 5 seconds")
   end
 
   return { pid = pid, socket = socket_path, tmpdir = tmpdir }

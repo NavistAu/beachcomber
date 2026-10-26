@@ -19,7 +19,6 @@
 'use strict';
 
 import fs from 'fs';
-import net from 'net';
 import path from 'path';
 import os from 'os';
 import { spawnSync, spawn } from 'child_process';
@@ -85,29 +84,20 @@ if (!fs.existsSync(DIST_CLIENT)) {
 
   const COMB_BIN = process.env['COMB_BIN'] || 'comb';
 
-  function waitForSocket(sockPath, timeoutMs = 5000) {
-    const deadline = Date.now() + timeoutMs;
+  // The daemon writes a newline on its `--ready-fd` pipe once it serves its
+  // socket, and closes it unwritten if it exits first.
+  function waitForReady(ready, timeoutMs = 5000) {
     return new Promise((resolve) => {
-      function attempt() {
-        if (Date.now() > deadline) {
-          resolve(false);
-          return;
-        }
-        const s = new net.Socket();
-        s.setTimeout(100);
-        s.connect(sockPath, () => {
-          s.destroy();
-          resolve(true);
-        });
-        s.on('error', () => {
-          setTimeout(attempt, 50);
-        });
-        s.on('timeout', () => {
-          s.destroy();
-          setTimeout(attempt, 50);
-        });
+      const timer = setTimeout(() => done(false), timeoutMs);
+      function done(served) {
+        clearTimeout(timer);
+        ready.removeAllListeners();
+        ready.destroy();
+        resolve(served);
       }
-      attempt();
+      ready.on('data', (chunk) => done(chunk.includes(10)));
+      ready.on('end', () => done(false));
+      ready.on('error', () => done(false));
     });
   }
 
@@ -118,8 +108,9 @@ if (!fs.existsSync(DIST_CLIENT)) {
     // The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
     // (falling back to $HOME/.config) and its log under $XDG_STATE_HOME: all
     // three point into the fixture's tempdir.
-    const proc = spawn(COMB_BIN, ['daemon', '--socket', sockPath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+    // Its fd 3 is a pipe to this process: `--ready-fd 3`.
+    const proc = spawn(COMB_BIN, ['daemon', '--socket', sockPath, '--ready-fd', '3'], {
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
         COMB_SOCKET: sockPath,
@@ -132,7 +123,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
     proc.stdout.on('data', () => {});
     proc.stderr.on('data', () => {});
 
-    const ready = await waitForSocket(sockPath, 5000);
+    const ready = await waitForReady(proc.stdio[3], 5000);
     if (!ready) {
       proc.kill('SIGKILL');
       fs.rmSync(tmpDir, { recursive: true, force: true });

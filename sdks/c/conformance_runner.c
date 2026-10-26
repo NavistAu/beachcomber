@@ -58,6 +58,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <poll.h>
 
 /* -------------------------------------------------------------------------
  * Limits and constants
@@ -66,8 +67,7 @@
 #define MAX_FIXTURES     256
 #define MAX_FIXTURE_SZ   (128 * 1024)
 #define SOCK_PATH_MAX    256
-#define STARTUP_RETRIES  30
-#define STARTUP_SLEEP_US 100000  /* 100 ms */
+#define STARTUP_TIMEOUT_MS 3000  /* for the daemon to say it serves */
 #define CLIENT_TIMEOUT_MS 5000   /* socket read/write timeout per op */
 #define WATCH_TIMEOUT_MS  3000   /* bc_watch_next budget for the initial event */
 
@@ -386,22 +386,6 @@ static int nodes_equal(const json_node_t *a, const json_node_t *b) {
 }
 
 /* -------------------------------------------------------------------------
- * Envelope helpers
- * ---------------------------------------------------------------------- */
-
-/* Returns 1 if a bc_* envelope string's top-level "ok" is true, 0 otherwise
- * (including on a NULL or unparseable envelope). */
-static int envelope_ok(const char *json) {
-    if (!json) return 0;
-    json_node_t *root = json_parse(json);
-    if (!root) return 0;
-    json_node_t *ok = json_get(root, "ok");
-    int result = ok && ok->type == JSON_BOOL && ok->val.boolean;
-    json_free(root);
-    return result;
-}
-
-/* -------------------------------------------------------------------------
  * Daemon lifecycle
  * ---------------------------------------------------------------------- */
 
@@ -434,10 +418,20 @@ static daemon_proc_t spawn_daemon(const char *bin, const char *sock_path) {
      * fixture. */
     fflush(NULL);
 
+    /* The daemon writes a newline on this pipe (`--ready-fd`) once it serves
+     * its socket, and closes it unwritten if it exits first. */
+    int ready[2];
+    if (pipe(ready) != 0) return dp;
+
     pid_t pid = fork();
-    if (pid < 0) return dp;
+    if (pid < 0) {
+        close(ready[0]);
+        close(ready[1]);
+        return dp;
+    }
 
     if (pid == 0) {
+        close(ready[0]);
         /* Child: exec the daemon with the temp socket path */
         /* Suppress daemon output */
         freopen("/dev/null", "w", stdout);
@@ -459,37 +453,26 @@ static daemon_proc_t spawn_daemon(const char *bin, const char *sock_path) {
 
         char sock_arg[SOCK_PATH_MAX + 16];
         snprintf(sock_arg, sizeof(sock_arg), "--socket=%s", sock_path);
-        execl(bin, bin, "daemon", sock_arg, NULL);
+        char ready_arg[32];
+        snprintf(ready_arg, sizeof(ready_arg), "--ready-fd=%d", ready[1]);
+        execl(bin, bin, "daemon", sock_arg, ready_arg, NULL);
         /* exec failed */
         _exit(127);
     }
 
-    /* Parent: wait for the socket to appear and answer a hello. */
+    /* Parent: wait for the daemon to say it serves. */
+    close(ready[1]);
     dp.pid = pid;
     snprintf(dp.sock_path, sizeof(dp.sock_path), "%s", sock_path);
 
-    for (int i = 0; i < STARTUP_RETRIES; i++) {
-        usleep(STARTUP_SLEEP_US);
+    struct pollfd pfd = { .fd = ready[0], .events = POLLIN };
+    char said = 0;
+    int served = poll(&pfd, 1, STARTUP_TIMEOUT_MS) == 1
+              && read(ready[0], &said, 1) == 1 && said == '\n';
+    close(ready[0]);
+    if (served) return dp;
 
-        char opts[SOCK_PATH_MAX + 64];
-        build_options_json(opts, sizeof(opts), sock_path, 1000);
-        BcClient *probe = bc_client_new(opts);
-        char *resp = bc_hello(probe);
-        int ready = envelope_ok(resp);
-        bc_string_free(resp);
-        bc_client_free(probe);
-        if (ready) return dp;
-
-        /* Check if child died already */
-        int wstatus = 0;
-        pid_t wp = waitpid(pid, &wstatus, WNOHANG);
-        if (wp == pid) {
-            dp.pid = -1;
-            return dp;
-        }
-    }
-
-    /* Timed out */
+    /* It exited, or did not serve in time. */
     kill(pid, SIGTERM);
     waitpid(pid, NULL, 0);
     dp.pid = -1;

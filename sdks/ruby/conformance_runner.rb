@@ -49,11 +49,16 @@ class DaemonHandle
       'XDG_CONFIG_HOME'    => @tmpdir,
       'XDG_STATE_HOME'     => File.join(@tmpdir, '.local', 'state'),
     }
+    # The daemon says on `--ready-fd` when it serves its socket.
+    ready, signal = IO.pipe
     @pid = spawn(env, @comb_bin, 'daemon',
                  '--socket', @socket_path,
+                 '--ready-fd', signal.fileno.to_s,
+                 signal => signal,
                  out: File::NULL,
                  err: File::NULL)
-    wait_for_socket
+    signal.close
+    wait_for_ready(ready)
     self
   end
 
@@ -72,13 +77,13 @@ class DaemonHandle
 
   private
 
-  def wait_for_socket(timeout: 5)
-    deadline = Time.now + timeout
-    loop do
-      break if File.socket?(@socket_path)
-      raise "daemon socket never appeared at #{@socket_path}" if Time.now > deadline
-      sleep 0.05
-    end
+  # The daemon writes a newline on `ready` once it serves its socket, and
+  # closes it unwritten if it exits first.
+  def wait_for_ready(ready, timeout: 5)
+    served = IO.select([ready], nil, nil, timeout) && ready.gets == "\n"
+    raise "daemon did not serve #{@socket_path}" unless served
+  ensure
+    ready.close
   end
 end
 

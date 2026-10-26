@@ -19,12 +19,11 @@ import json
 import os
 import pathlib
 import shutil
+import select
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
-import time
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
@@ -68,21 +67,13 @@ def discover_fixtures() -> list[pathlib.Path]:
 # ---------------------------------------------------------------------------
 
 
-def _wait_for_socket(sock_path: str, timeout: float = 5.0) -> bool:
-    """Poll until the Unix socket exists and accepts connections."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if os.path.exists(sock_path):
-            try:
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                s.settimeout(0.1)
-                s.connect(sock_path)
-                s.close()
-                return True
-            except OSError:
-                pass
-        time.sleep(0.05)
-    return False
+def _wait_for_ready(ready_fd: int, timeout: float) -> bool:
+    """Wait on the daemon's `--ready-fd` pipe: True once it writes its
+    newline (its socket is served), False if it closes the pipe unwritten
+    (it exited) or says nothing within `timeout` seconds."""
+    with os.fdopen(ready_fd, "rb") as ready:
+        readable, _, _ = select.select([ready], [], [], timeout)
+        return bool(readable) and ready.readline() == b"\n"
 
 
 class DaemonProcess:
@@ -105,15 +96,28 @@ class DaemonProcess:
         env["HOME"] = self._tmpdir
         env["XDG_STATE_HOME"] = os.path.join(self._tmpdir, ".local", "state")
 
-        with open(self._log_path, "wb") as log:
-            self._proc = subprocess.Popen(
-                [self._comb_bin, "daemon", "--socket", self.socket_path],
-                stdout=log,
-                stderr=log,
-                env=env,
-            )
+        # The daemon says on `--ready-fd` when it serves its socket.
+        ready_fd, signal_fd = os.pipe()
+        try:
+            with open(self._log_path, "wb") as log:
+                self._proc = subprocess.Popen(
+                    [
+                        self._comb_bin,
+                        "daemon",
+                        "--socket",
+                        self.socket_path,
+                        "--ready-fd",
+                        str(signal_fd),
+                    ],
+                    stdout=log,
+                    stderr=log,
+                    env=env,
+                    pass_fds=(signal_fd,),
+                )
+        finally:
+            os.close(signal_fd)
 
-        if not _wait_for_socket(self.socket_path, timeout=8.0):
+        if not _wait_for_ready(ready_fd, timeout=8.0):
             self.stop()
             log_tail = ""
             try:
@@ -122,7 +126,7 @@ class DaemonProcess:
             except OSError:
                 pass
             raise RuntimeError(
-                f"daemon did not start within 8s (socket: {self.socket_path})\n"
+                f"daemon did not serve within 8s (socket: {self.socket_path})\n"
                 f"Log tail:\n{log_tail}"
             )
 
