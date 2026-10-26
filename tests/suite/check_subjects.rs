@@ -1052,6 +1052,47 @@ async fn check_without_a_config_toml_says_so() {
     }
 }
 
+/// The drop-in scanline generates, as phase 6 writes it (the fixture the
+/// scanline cells are checked against, `libbeachcomber/tests/suite/scanline.rs`),
+/// checks clean: the configuration is valid and no finding names the file.
+#[test]
+fn the_scanline_dropin_checks_clean() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_dir = tmp.path().join("beachcomber");
+    std::fs::create_dir_all(cfg_dir.join("conf.d")).unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        "[daemon]\nlog_level = \"info\"\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/libbeachcomber/tests/fixtures/scanline/10-scanline.toml"
+        ),
+        cfg_dir.join("conf.d/10-scanline.toml"),
+    )
+    .unwrap();
+
+    let output = isolate(
+        &mut std::process::Command::new(comb_binary()),
+        tmp.path(),
+        tmp.path(),
+        &tmp.path().join("no-daemon.sock"),
+    )
+    .args(["check", "--connect-timeout", "0", "config"])
+    .output()
+    .expect("run comb check config");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("[PASS] local    config file valid")
+            && !stdout.contains("[FAIL] local")
+            && !stdout.contains("10-scanline.toml"),
+        "expected the scanline drop-in to check clean, got:\n{stdout}"
+    );
+}
+
 /// `comb check config` on a file still carrying the removed `[providers]` root
 /// prints a local FAIL line that says where its contents went.
 #[test]
