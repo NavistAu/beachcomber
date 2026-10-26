@@ -166,7 +166,7 @@ Read a cached value.
 
 **Response (error):**
 ```json
-{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, put, source or cache)"}
+{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, put, source or cache)"}
 ```
 
 #### Freshness
@@ -261,10 +261,10 @@ spellings, so a key reads the same here as in a template:
 
 Brackets are the one quoting form. Only a colon in the head names a facet; below
 it a colon is an ordinary character, so `git.branch:age` is an ordinary miss.
-There are no metadata suffixes. The facets are a closed set — `template`, `put`,
-`source` and `cache` — and any other name after the colon, a second colon in the
-head or an empty provider before it is `invalid facet key: <head> (a facet is
-template, put, source or cache)`, on every op. Anything else the grammar
+There are no metadata suffixes. The facets are a closed set — `template`,
+`macro`, `put`, `source` and `cache` — and any other name after the colon, a
+second colon in the head or an empty provider before it is `invalid facet key:
+<head> (a facet is template, macro, put, source or cache)`, on every op. Anything else the grammar
 cannot read is `invalid key: <key>`: an empty head or segment (`p..a`, a
 trailing `.`), a head starting with `/` or `~`, a stray `]`, an unterminated
 bracket or quote, an index that is not a canonical decimal (`[01]`).
@@ -284,6 +284,13 @@ readable on its own:
 - `<p>:template` — the templates (data the client renders; the daemon never
   evaluates one, but a `put` of one that does not compile is refused, naming
   the leaf).
+- `<p>:macro` — `<p>`'s macro libraries, `<p>:macro.<name>` each a text of
+  `{% macro %}` definitions. A namespace of its own, read like `:template`:
+  `get scanline:macro` answers `{"rate": "…", "usage": "…"}`, with no template
+  half, and the nearest directory's library wins. A `put` is checked as a
+  configured library is: a string under a name, at `<p>:macro.<name>` or as a
+  table of them at `<p>:macro`, that compiles and prints nothing outside its
+  macros.
 - `<p>:put` — what `put` and `config:<file>` seeds stored.
 - `<p>:source` — what the provider's Sources produced. A `put` does not hide
   it here.
@@ -345,7 +352,7 @@ requested directory — the root its `root` names for it, or the one instance at
 `~` for a Source with no root — so `path` is optional and is only consulted by
 Sources that have a root. A facet outside the closed set is the same
 error `get`/`put`/`watch` give: `{"ok": false, "error": "invalid facet key:
-<head> (a facet is template, put, source or cache)"}`.
+<head> (a facet is template, macro, put, source or cache)"}`.
 
 A key that names no Source has nothing to re-execute and is an **error**: a
 static namespace (one created by `put` or a config seed), an unknown name, or a
@@ -369,7 +376,8 @@ Store static data at any node of the tree. `key` is `namespace` or
 `namespace.node…` — the same address `get` takes, and `namespace` may
 itself be a facet address (`<provider>:<facet>`; a facet outside the closed
 set is `invalid facet key: <head> …`, the same check `get`/`refresh`/`watch`
-apply). Of the facets, `put` writes only `template` and a `cache` `_.decay`.
+apply). Of the facets, `put` writes only `template`, `macro` and a `cache`
+`_.decay`.
 `data` is required. A put **replaces** the node it addresses: nothing merges
 implicitly, so `put my '{"b":2}'` states all of `my` at that directory, and
 `put my.b 2` replaces only `my.b`. `null` means absent: `data: null` removes the
@@ -434,7 +442,7 @@ invalid, `invalid request: missing field `data``.)
 ```
 
 **Error cases:**
-- A facet outside the closed set on the namespace segment: `{"ok": false, "error": "invalid facet key: <head> (a facet is template, put, source or cache)"}`
+- A facet outside the closed set on the namespace segment: `{"ok": false, "error": "invalid facet key: <head> (a facet is template, macro, put, source or cache)"}`
 - A key the grammar cannot read: `{"ok": false, "error": "invalid key: <key>"}`
 - A write to a layer facet: `<p>:put and <p>:source are read-only; write <p>.<node>`
 - A write to `<p>:cache` other than `_.decay`, or a `_.decay` that is not a positive integer: see "The `:cache` facet"
@@ -732,9 +740,10 @@ The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs
 - **Static namespace** — a namespace no provider or config registers; every
   record in it is static.
 - **Facet** — `provider:facet`, a namespace holding data about a provider
-  (e.g. `git:template`), addressed like any namespace. There are four, and no
-  other: `template` is the facet a `Get` resolves for its template half; `put`
-  and `source` are the read-only layer facets; `cache` is the daemon's metadata
+  (e.g. `git:template`), addressed like any namespace. There are five, and no
+  other: `template` is the facet a `Get` resolves for its template half;
+  `macro` holds the macro libraries a client template imports; `put` and
+  `source` are the read-only layer facets; `cache` is the daemon's metadata
   (see "The `:cache` facet").
 - **Cache row** — one line of `Status` output: `{provider, path, source,
   field, value, age_ms, stale, kind}`.

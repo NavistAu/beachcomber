@@ -1378,6 +1378,16 @@ mod tests {
         assert!(got.facets.is_empty());
     }
 
+    /// `macro` is a facet, so a `return` may name it; only the `template`
+    /// facet is read off a `return`, so it is ignored: a library is seeded
+    /// from configuration, never handed out by a provider.
+    #[test]
+    fn a_macro_facet_on_a_return_is_accepted_and_ignored() {
+        let lines = lines("[demo]\nreturn = \"{{ result | facet('macro', {'m': 'x'}) }}\"");
+        let got = lines.returned("demo", None, || None, &|_, _| Ok(None));
+        assert!(got.template.is_none(), "{:?}", got.template);
+    }
+
     #[test]
     fn super_pipes_the_value_into_the_line_above() {
         let lines =
@@ -1410,7 +1420,7 @@ mod tests {
                 errs,
                 vec![
                     "[daemon.providers.demo] return: facet(): 'mine' is not a facet (a facet is \
-                     template, put, source or cache)"
+                     template, macro, put, source or cache)"
                         .to_string()
                 ],
                 "{line}"
@@ -1426,7 +1436,7 @@ mod tests {
             .unwrap_err();
         assert!(
             err.contains(
-                "facet(): 'demo' is not a facet (a facet is template, put, source or cache)"
+                "facet(): 'demo' is not a facet (a facet is template, macro, put, source or cache)"
             ),
             "{err}"
         );

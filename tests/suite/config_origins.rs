@@ -224,6 +224,39 @@ fn a_name_holding_a_dot_prints_as_a_quoted_segment() {
     assert_eq!(rows.len(), 1, "{rows:#?}");
 }
 
+/// A macro library is a leaf like any other: the file that set it, then the
+/// files it shadows; a sibling another file set keeps its own.
+#[test]
+fn a_macro_library_is_an_origin_row() {
+    let home = config_home(&[
+        (
+            "config.toml",
+            "[client.providers.scanline]\nmacro.rate = '{% macro r() %}c{% endmacro %}'\n\
+             macro.usage = '{% macro u() %}c{% endmacro %}'\n",
+        ),
+        (
+            "conf.d/10-a.toml",
+            "[client.providers.scanline]\nmacro.rate = '{% macro r() %}a{% endmacro %}'\n",
+        ),
+    ]);
+    let lines = text(home.path(), &["client.providers.scanline"]);
+    let shown: Vec<&str> = lines
+        .iter()
+        .map(String::as_str)
+        .filter(|l| !l.starts_with("KEY "))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            "client.providers.scanline.macro.rate config(~/beachcomber/conf.d/10-a.toml) \
+             {% macro r() %}a{% endmacro %}",
+            "`- shadowed config(~/beachcomber/config.toml) {% macro r() %}c{% endmacro %}",
+            "client.providers.scanline.macro.usage config(~/beachcomber/config.toml) \
+             {% macro u() %}c{% endmacro %}",
+        ]
+    );
+}
+
 #[test]
 fn a_broken_file_is_reported_and_fails() {
     let home = config_home(&[

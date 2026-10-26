@@ -11,6 +11,9 @@
 //!   `template` line's to say ([`crate::shape::provider`], run by the seeding
 //!   itself over the layer's `[client]` tree), so a file is checked here and
 //!   nothing is written from it.
+//! - `[client.providers.<p>] macro.<name>` is a macro library: a string, under
+//!   a name the name rule allows. Each is kept ([`Seeded::macros`]) for the
+//!   seeding to lint and write at `<p>:macro`.
 //! - `[daemon.providers.<p>.cache._] decay` seeds `<p>:cache`, an integer from
 //!   1 to [`MAX_DECAY`]; the abstract provider `_` seeds `*:cache`, the
 //!   prototype every provider without its own falls back to.
@@ -48,6 +51,22 @@ pub struct Seeded {
     /// The providers whose `[client.providers.<p>] template` failed the fence
     /// above: already reported, so the `template` line is not run over it.
     pub fenced: std::collections::BTreeSet<String>,
+    /// `(provider, libraries)`: each provider's macro libraries that are a
+    /// string under a name the name rule allows, by name.
+    pub macros: Vec<(String, serde_json::Map<String, serde_json::Value>)>,
+}
+
+/// Why `text` at `name` is no macro library, or `None` when it is one: a
+/// string, under a name the name rule allows (`libbeachcomber::key`), so its
+/// address `<p>:macro.<name>` is one bare segment. The one rule for a layer's
+/// `[client.providers.<p>] macro.<name>` and a `put` to `<p>:macro.<name>`;
+/// each caller prefixes where it is.
+pub fn library_error(name: &str, text: Option<&str>) -> Option<String> {
+    if let Some(reason) = libbeachcomber::key::name_error(name) {
+        return Some(format!("is not a library name: {reason}"));
+    }
+    text.is_none()
+        .then(|| "must be a string (a macro library)".to_string())
 }
 
 /// A provider name as a config key, or the reason it is not one. `client`
@@ -103,6 +122,10 @@ impl Reader {
             return self.err(format!("[client.providers.{name}] must be a table"));
         };
         for (key, sub) in table {
+            if key == "macro" {
+                self.macros(name, sub);
+                continue;
+            }
             if key != "template" {
                 self.err(format!("unknown key '{key}' in [client.providers.{name}]"));
                 continue;
@@ -118,6 +141,32 @@ impl Reader {
             if self.out.errors.len() > before {
                 self.out.fenced.insert(name.to_string());
             }
+        }
+    }
+
+    /// `[client.providers.<p>] macro`: a table of macro libraries, each kept
+    /// when it is one ([`library_error`]).
+    fn macros(&mut self, provider: &str, value: &toml::Value) {
+        let Some(table) = value.as_table() else {
+            return self.err(format!(
+                "[client.providers.{provider}] macro must be a table of macro libraries \
+                 (macro.<name> = '''{{% macro … %}}''')"
+            ));
+        };
+        let mut libraries = serde_json::Map::new();
+        for (name, text) in table {
+            match library_error(name, text.as_str()) {
+                Some(e) => self.err(format!(
+                    "[client.providers.{provider}] {} {e}",
+                    libbeachcomber::key::push("macro", name)
+                )),
+                None => {
+                    libraries.insert(name.clone(), text.as_str().unwrap_or_default().into());
+                }
+            }
+        }
+        if !libraries.is_empty() {
+            self.out.macros.push((provider.to_string(), libraries));
         }
     }
 
@@ -473,4 +522,51 @@ pub fn read_labelled(label: String, layer: &toml::Value) -> Seeded {
         }
     }
     r.out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_text(text: &str) -> Seeded {
+        read(Path::new("/f.toml"), &toml::from_str(text).unwrap())
+    }
+
+    /// A macro library is a string named by the name rule; anything else is
+    /// a load error naming it, and only what is one is kept.
+    #[test]
+    fn a_macro_is_a_string_named_by_the_name_rule() {
+        let read = read_text(
+            "[client.providers.p]\nmacro.ok = '{% macro m() %}{% endmacro %}'\nmacro.n = 1\n\
+             macro.t = {}\nmacro.\"a.b\" = 'x'\n\n[client.providers.q]\nmacro = 'x'\n",
+        );
+        assert_eq!(
+            read.errors,
+            [
+                "config(/f.toml): [client.providers.p] macro['a.b'] is not a library name: a \
+                 name is non-empty, holds no ':', '.', '[', ']' or '*', and does not start \
+                 with '/', '~' or '<'",
+                "config(/f.toml): [client.providers.p] macro.n must be a string (a macro library)",
+                "config(/f.toml): [client.providers.p] macro.t must be a string (a macro library)",
+                "config(/f.toml): [client.providers.q] macro must be a table of macro \
+                 libraries (macro.<name> = '''{% macro … %}''')",
+            ]
+        );
+        assert_eq!(
+            read.macros,
+            [(
+                "p".to_string(),
+                serde_json::json!({"ok": "{% macro m() %}{% endmacro %}"})
+                    .as_object()
+                    .unwrap()
+                    .clone()
+            )]
+        );
+        assert!(read.writes.is_empty(), "the seeding writes it, once linted");
+        assert_eq!(
+            read_text("[daemon.providers.p]\nmacro.x = 'x'\n").errors,
+            ["config(/f.toml): unknown key 'macro' in [daemon.providers.p]"],
+            "macros are the client's alone"
+        );
+    }
 }

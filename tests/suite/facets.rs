@@ -1,6 +1,6 @@
 //! Facet keys (`provider:facet`), checked at the request boundary by
-//! `libbeachcomber::key::split_facet`: the facets are `template`, `put`,
-//! `source` and `cache`, and no other.
+//! `libbeachcomber::key::split_facet`: the facets are `template`, `macro`,
+//! `put`, `source` and `cache`, and no other.
 
 use crate::common::git::{GitRepoFixture, has_git};
 use beachcomber::cache::Cache;
@@ -29,7 +29,7 @@ fn setup() -> (
 
 /// The daemon's words for a head whose facet is not one of the four.
 fn invalid_facet(head: &str) -> String {
-    format!("invalid facet key: {head} (a facet is template, put, source or cache)")
+    format!("invalid facet key: {head} (a facet is template, macro, put, source or cache)")
 }
 
 async fn send_recv(stream: &mut UnixStream, request: &str) -> Response {
@@ -97,9 +97,148 @@ async fn get_whole_facet_key_returns_object() {
     handle.abort();
 }
 
-// The facets are a closed set: `template`, `put`, `source` and `cache`. Any
-// other name after the colon is refused by every op that takes a key, naming
-// the head as the caller wrote it, and nothing is stored or read.
+/// `<p>:macro` holds `<p>`'s macro libraries: read whole or one library at a
+/// time, with no template half, the nearest directory's winning.
+#[tokio::test]
+async fn macro_is_a_facet() {
+    let (tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    let rate = "{% macro row() %}r{% endmacro %}";
+    let usage = "{% macro usage() %}u{% endmacro %}";
+    let mine = "{% macro row() %}mine{% endmacro %}";
+
+    let put = send_recv(
+        &mut stream,
+        &serde_json::json!({"op": "put", "key": "scanline:macro", "data": {"rate": rate, "usage": usage}})
+            .to_string(),
+    )
+    .await;
+    assert!(put.ok, "{:?}", put.error);
+    let whole = send_recv(&mut stream, r#"{"op":"get","key":"scanline:macro"}"#).await;
+    assert_eq!(
+        whole.data,
+        Some(serde_json::json!({"rate": rate, "usage": usage}))
+    );
+    assert_eq!(whole.template, None, "a library is no template");
+    let one = send_recv(&mut stream, r#"{"op":"get","key":"scanline:macro.rate"}"#).await;
+    assert_eq!(one.data, Some(serde_json::json!(rate)));
+
+    // A put at a directory shadows the global library there, and only there.
+    let dir = tmp.path().canonicalize().unwrap().join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.to_str().unwrap();
+    let put = send_recv(
+        &mut stream,
+        &serde_json::json!({"op": "put", "key": "scanline:macro.rate", "data": mine, "path": dir})
+            .to_string(),
+    )
+    .await;
+    assert!(put.ok, "{:?}", put.error);
+    let near = send_recv(
+        &mut stream,
+        &serde_json::json!({"op": "get", "key": "scanline:macro", "path": dir}).to_string(),
+    )
+    .await;
+    assert_eq!(
+        near.data,
+        Some(serde_json::json!({"rate": mine, "usage": usage}))
+    );
+    let global = send_recv(&mut stream, r#"{"op":"get","key":"scanline:macro.rate"}"#).await;
+    assert_eq!(global.data, Some(serde_json::json!(rate)));
+
+    handle.abort();
+}
+
+/// A put to `<p>:macro` is checked as a configured library is: a string,
+/// under a name, at `<p>:macro.<name>` or as a table of them, that compiles
+/// and prints nothing. A refused put writes nothing; a library importing one
+/// nothing declares yet is taken.
+#[tokio::test]
+async fn a_put_to_macro_is_linted() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    let prints = "a macro library prints nothing: its text, {{ }} and {% call %} belong inside \
+                  a {% macro %}";
+    for (key, data, error) in [
+        ("p:macro.bad", serde_json::json!("{% macro m( %}"), None),
+        (
+            "p:macro.text",
+            serde_json::json!("hello"),
+            Some(format!("p:macro.text: {prints}")),
+        ),
+        (
+            "p:macro",
+            serde_json::json!({"t": "{{ 1 }}"}),
+            Some(format!("p:macro.t: {prints}")),
+        ),
+        (
+            "p:macro.inc",
+            serde_json::json!("{% include 'p:macro.x' %}"),
+            Some("p:macro.inc: {% include %} is refused: text is reused with a macro".into()),
+        ),
+        (
+            "p:macro.n",
+            serde_json::json!(1),
+            Some("p:macro.n must be a string (a macro library)".into()),
+        ),
+        (
+            "p:macro",
+            serde_json::json!({"x": {"y": "z"}}),
+            Some("p:macro.x must be a string (a macro library)".into()),
+        ),
+        (
+            "p:macro",
+            serde_json::json!("x"),
+            Some(
+                "p:macro: a put writes a macro library at p:macro.<name>, or a table of them"
+                    .into(),
+            ),
+        ),
+        (
+            "p:macro.a.b",
+            serde_json::json!("x"),
+            Some("p:macro.a.b: a macro library is p:macro.<name>".into()),
+        ),
+    ] {
+        let r = send_recv(
+            &mut stream,
+            &serde_json::json!({"op": "put", "key": key, "data": data}).to_string(),
+        )
+        .await;
+        assert!(!r.ok, "{key} {data} is refused");
+        let got = r.error.unwrap_or_default();
+        match error {
+            Some(error) => assert_eq!(got, error, "{key} {data}"),
+            None => assert!(got.starts_with("p:macro.bad: "), "{got}"),
+        }
+    }
+    let r = send_recv(&mut stream, r#"{"op":"get","key":"p:macro"}"#).await;
+    assert_eq!(r.data, None, "nothing was written");
+
+    let r = send_recv(
+        &mut stream,
+        &serde_json::json!({"op": "put", "key": "p:macro.ok", "data":
+            "{% from 'q:macro.later' import m %}{% macro ok() %}{{ m() }}{% endmacro %}"})
+        .to_string(),
+    )
+    .await;
+    assert!(
+        r.ok,
+        "a library no layer declares yet is taken: {:?}",
+        r.error
+    );
+
+    handle.abort();
+}
+
+// The facets are a closed set: `template`, `macro`, `put`, `source` and
+// `cache`. Any other name after the colon is refused by every op that takes a
+// key, naming the head as the caller wrote it, and nothing is stored or read.
 
 #[tokio::test]
 async fn an_unknown_facet_is_an_invalid_facet_key_on_every_op() {

@@ -3194,3 +3194,109 @@ fn render_status_template(template: &str, rows: &[CacheRow]) -> String {
     };
     beachcomber::cli::status_format::render_template_format(template, rows, &mut render).unwrap()
 }
+
+/// A macro library is a facet row, one per library per layer: hidden by
+/// default, shown by `-a` or `--filter facet=macro`, SOURCE its file or `put`
+/// and VALUE its text. No row renders one: a library is not a value.
+#[test]
+fn macro_rows_are_facet_rows() {
+    use crate::common::daemon::TestDaemon;
+    use crate::common::socket::IsolatedSocket;
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().canonicalize().unwrap();
+    let (home, xdg) = (root.join("home"), root.join("xdg"));
+    let config = xdg.join("beachcomber").join("config.toml");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(
+        &config,
+        "[client.providers.demo]\nmacro.a = '''\n{%- macro a() -%}\n  A\n{%- endmacro -%}\n'''\n\
+         macro.b = '{% macro b() %}B{% endmacro %}'\n",
+    )
+    .unwrap();
+    let d = TestDaemon::serve_in_process(IsolatedSocket::new(), home.clone(), xdg);
+    d.comb(&home)
+        .args([
+            "put",
+            "demo:macro.b",
+            r#""{% macro b() %}mine{% endmacro %}""#,
+        ])
+        .assert()
+        .success();
+    let rows = |args: &[&str]| -> Vec<serde_json::Value> {
+        let out = d
+            .comb(&home)
+            .args(["status", "-f", "json", "--filter", "provider=demo"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .filter(|r: &serde_json::Value| r["provider"].as_str().unwrap().starts_with("demo"))
+            .collect()
+    };
+
+    assert_eq!(
+        rows(&[]),
+        Vec::<serde_json::Value>::new(),
+        "hidden by default"
+    );
+    let shown: Vec<(String, String, String)> = rows(&["--filter", "facet=macro"])
+        .iter()
+        .map(|r| {
+            let source = r["source"].as_str().unwrap();
+            let source = if source.starts_with("config(") && source.ends_with("config.toml)") {
+                "config"
+            } else {
+                source
+            };
+            (
+                r["field"].as_str().unwrap().to_string(),
+                source.to_string(),
+                r["value"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let rows_of = |want: &[(&str, &str, &str)]| -> Vec<(String, String, String)> {
+        want.iter()
+            .map(|(f, s, v)| (f.to_string(), s.to_string(), v.to_string()))
+            .collect()
+    };
+    let mut sorted = shown.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted,
+        rows_of(&[
+            ("a", "config", "{%- macro a() -%}\n  A\n{%- endmacro -%}\n"),
+            ("b", "config", "{% macro b() %}B{% endmacro %}"),
+            ("b", "put", "{% macro b() %}mine{% endmacro %}"),
+        ])
+    );
+    assert_eq!(rows(&["-a"]).len(), 3, "-a shows them too");
+
+    // In the table the text is one line.
+    let out = d
+        .comb(&home)
+        .args([
+            "status",
+            "--filter",
+            "provider=demo",
+            "--filter",
+            "facet=macro",
+        ])
+        .args(["--color", "never", "--ascii", "--no-trunc"])
+        .output()
+        .unwrap();
+    let table = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        table
+            .lines()
+            .any(|l| l.contains("{%- macro a() -%}?  A?{%- endmacro -%}?")),
+        "{table}"
+    );
+}

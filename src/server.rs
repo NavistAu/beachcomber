@@ -1996,6 +1996,13 @@ async fn handle_request(
                     return Response::error(format!("{leaf}: {finding}"));
                 }
             }
+            // A macro library is checked as a configured one is: a string,
+            // under a name, that compiles and prints nothing.
+            if facet == Some(Facet::Macro)
+                && let Err(msg) = crate::daemon::seed::check_macro_put(namespace, node, data)
+            {
+                return Response::error(msg);
+            }
 
             // A key arrives off the socket with no length bound of its own, and
             // every segment of the node is one step of a tree walk. Cap the

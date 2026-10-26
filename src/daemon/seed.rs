@@ -1,7 +1,7 @@
 //! Seeding the config-seeded facets (spec §3.1, §3.2, §3.9).
 //!
-//! Two things in configuration are data the daemon writes into the cache, and
-//! nothing else is seeded from config:
+//! Three things in configuration are data the daemon writes into the cache,
+//! and nothing else is seeded from config:
 //!
 //! - a provider's `template` line (`[daemon.providers.<p>] template`, by
 //!   default `[client.providers.<p>] template` of the layer) → namespace
@@ -12,9 +12,13 @@
 //!   that does not compile is an error, and one reading a name no provider
 //!   has is a warning, since a `put` may yet make that provider;
 //! - `[daemon.providers.<p>.cache]` → namespace `<p>:cache` (`*:cache` for the
-//!   abstract provider `<p> = _`), whose only key is the `_.decay` prototype.
+//!   abstract provider `<p> = _`), whose only key is the `_.decay` prototype;
+//! - `[client.providers.<p>] macro.<name>` → namespace `<p>:macro`, one text
+//!   per library, linted as the macro library it is: one that does not compile
+//!   or prints is an error and is not written, and one importing a library no
+//!   layer declares is a warning.
 //!
-//! What the `cache` tables seed, and what is wrong with any file, comes from
+//! What the `cache` and `macro` tables hold, and what is wrong with any file, comes from
 //! one per-file parse (`crate::shape::seeded::read`). Each is written at the global path, every record labelled `config:<file>`
 //! with the file that set it. Layers are written in composition order —
 //! `defaults/*.toml` lexically, then the main config file, then
@@ -232,8 +236,115 @@ fn plan(layers: &[(PathBuf, toml::Value)], registry: &ProviderRegistry) -> Plan 
         }
         reads.push(read);
     }
-    plan_templates(layers, &reads, registry, &mut plan);
+    let config = Config::from_layers(layers.to_vec());
+    let world = ClientWorld::new(&config, registry, &reads);
+    plan_macros(layers, &reads, &world, &mut plan);
+    plan_templates(layers, &reads, &config, &world, &mut plan);
     plan
+}
+
+/// What a client text in a configuration is linted against: the client's
+/// engine (the client renders it), every provider the registry has or a root
+/// names, which a template reads by name, and every macro library a layer
+/// declares, which a template imports by address.
+struct ClientWorld {
+    engine: minijinja::Environment<'static>,
+    providers: Vec<String>,
+    libraries: Vec<String>,
+}
+
+impl ClientWorld {
+    fn new(
+        config: &Config,
+        registry: &ProviderRegistry,
+        reads: &[crate::shape::seeded::Seeded],
+    ) -> Self {
+        let mut providers: std::collections::BTreeSet<String> =
+            registry.provider_names().into_iter().collect();
+        providers.extend(config.named_providers());
+        providers
+            .retain(|name| crate::shape::seeded::provider_name_error("", name, true).is_none());
+        let mut libraries: Vec<String> = reads
+            .iter()
+            .flat_map(|read| &read.macros)
+            .flat_map(|(provider, libraries)| {
+                libraries
+                    .keys()
+                    .map(move |name| library_address(provider, name))
+            })
+            .collect();
+        libraries.sort();
+        libraries.dedup();
+        Self {
+            engine: libbeachcomber::engine::build_engine_env(Default::default()),
+            providers: providers.into_iter().collect(),
+            libraries,
+        }
+    }
+
+    fn known(&self) -> libbeachcomber::eval::Known<'_> {
+        libbeachcomber::eval::Known {
+            providers: &self.providers,
+            libraries: &self.libraries,
+        }
+    }
+}
+
+/// The address of `provider`'s macro library `name`: `<p>:macro.<name>`.
+fn library_address(provider: &str, name: &str) -> String {
+    libbeachcomber::key::join(
+        &format!("{provider}:macro"),
+        &libbeachcomber::key::quote(name),
+    )
+}
+
+/// The `<p>:macro` writes: each layer's `[client.providers.<p>] macro`
+/// libraries, at the global path, labelled with the file, a later file
+/// replacing one library and keeping its siblings. Each is linted as a macro
+/// library: one that does not compile, or prints, is an error and is not
+/// written; one that imports a library no layer declares is a warning.
+fn plan_macros(
+    layers: &[(PathBuf, toml::Value)],
+    reads: &[crate::shape::seeded::Seeded],
+    world: &ClientWorld,
+    plan: &mut Plan,
+) {
+    use libbeachcomber::eval::{Finding, Line, lint};
+    for ((file, _), read) in layers.iter().zip(reads) {
+        let label = Config::config_label(file);
+        let shown = Config::error_label(file);
+        for (provider, libraries) in &read.macros {
+            let mut written = serde_json::Map::new();
+            for (name, text) in libraries {
+                let src = text.as_str().unwrap_or_default();
+                let mut compiles = true;
+                for finding in lint(&world.engine, src, Line::Macro, &world.known()) {
+                    let message = format!(
+                        "{shown}: [client.providers.{provider}] {}: {finding}",
+                        libbeachcomber::key::push("macro", name)
+                    );
+                    match finding {
+                        Finding::Compile(_) => {
+                            compiles = false;
+                            plan.errors.push(message);
+                        }
+                        Finding::Unknown(_) => plan.warnings.push(message),
+                    }
+                }
+                if compiles {
+                    written.insert(name.clone(), text.clone());
+                }
+            }
+            if !written.is_empty() {
+                let value = Value::from_json(&serde_json::Value::Object(written))
+                    .expect("a library is a string");
+                plan.writes
+                    .entry(format!("{provider}:macro"))
+                    .or_default()
+                    .push((label.clone(), value));
+            }
+        }
+    }
 }
 
 /// The `<p>:template` writes: each provider's `template` line, composed over
@@ -247,10 +358,10 @@ fn plan(layers: &[(PathBuf, toml::Value)], registry: &ProviderRegistry) -> Plan 
 fn plan_templates(
     layers: &[(PathBuf, toml::Value)],
     reads: &[crate::shape::seeded::Seeded],
-    registry: &ProviderRegistry,
+    config: &Config,
+    world: &ClientWorld,
     plan: &mut Plan,
 ) {
-    let config = Config::from_layers(layers.to_vec());
     let empty = toml::Table::new();
     let providers = config.daemon().providers.as_table().unwrap_or(&empty);
     let lines = match crate::shape::provider::ProviderLines::new(providers) {
@@ -260,18 +371,7 @@ fn plan_templates(
         Err(errors) => return plan.errors.extend(errors),
     };
 
-    let mut names: std::collections::BTreeSet<String> =
-        registry.provider_names().into_iter().collect();
-    names.extend(config.named_providers());
-    names.retain(|name| crate::shape::seeded::provider_name_error("", name, true).is_none());
-    // A template reads `env`, `comb` and every provider by name; the client
-    // renders it, so it is linted on the client's engine.
-    let engine = libbeachcomber::engine::build_engine_env(Default::default());
-    let providers: Vec<&str> = names.iter().map(String::as_str).collect();
-    let known = libbeachcomber::eval::Known {
-        providers: &providers,
-    };
-
+    let known = world.known();
     for ((file, layer), read) in layers.iter().zip(reads) {
         let label = Config::config_label(file);
         let shown = Config::error_label(file);
@@ -279,11 +379,13 @@ fn plan_templates(
             .get("client")
             .and_then(|c| serde_json::to_value(c).ok())
             .unwrap_or_else(|| serde_json::json!({}));
-        for name in names.iter().filter(|n| !read.fenced.contains(*n)) {
+        for name in world.providers.iter().filter(|n| !read.fenced.contains(*n)) {
             match lines.template_tree(name, &client) {
                 Ok(Some(tree)) => {
                     let mut compiles = true;
-                    for (leaf, finding) in lint_template_tree(&engine, &tree, "template", &known) {
+                    for (leaf, finding) in
+                        lint_template_tree(&world.engine, &tree, "template", &known)
+                    {
                         let message =
                             format!("{shown}: [client.providers.{name}] {leaf}: {finding}");
                         match finding {
@@ -310,6 +412,54 @@ fn plan_templates(
             }
         }
     }
+}
+
+/// What a `put` of `data` to `namespace` (`<p>:macro`) at `node` writes, checked
+/// as a configured library is: each library a string under a name the name
+/// rule allows, at `<p>:macro.<name>` or as a table of them at `<p>:macro`,
+/// that compiles and prints nothing. A library importing one nothing declares
+/// is taken, since a later put may declare it. `null` writes nothing to check.
+pub fn check_macro_put(
+    namespace: &str,
+    node: &str,
+    data: &serde_json::Value,
+) -> Result<(), String> {
+    use libbeachcomber::eval::{Finding, Known, Line, lint};
+    let segments = libbeachcomber::key::segments(node);
+    let libraries: Vec<(String, &serde_json::Value)> = match (segments.as_slice(), data) {
+        ([], serde_json::Value::Object(map)) => map
+            .iter()
+            .map(|(name, text)| (name.clone(), text))
+            .collect(),
+        ([], _) => {
+            return Err(format!(
+                "{namespace}: a put writes a macro library at {namespace}.<name>, or a table \
+                 of them"
+            ));
+        }
+        ([name], text) => vec![(name.to_string(), text)],
+        _ => {
+            return Err(format!(
+                "{}: a macro library is {namespace}.<name>",
+                libbeachcomber::key::join(namespace, node)
+            ));
+        }
+    };
+    let engine = libbeachcomber::engine::build_engine_env(Default::default());
+    for (name, text) in libraries.into_iter().filter(|(_, text)| !text.is_null()) {
+        let at = libbeachcomber::key::join(namespace, &libbeachcomber::key::quote(&name));
+        if let Some(e) = crate::shape::seeded::library_error(&name, text.as_str()) {
+            return Err(format!("{at} {e}"));
+        }
+        let src = text.as_str().unwrap_or_default();
+        if let Some(finding) = lint(&engine, src, Line::Macro, &Known::default())
+            .into_iter()
+            .find(|f| matches!(f, Finding::Compile(_)))
+        {
+            return Err(format!("{at}: {finding}"));
+        }
+    }
+    Ok(())
 }
 
 /// Each string leaf of `tree`, a `:template` tree whose root is at `at`,
@@ -362,6 +512,130 @@ mod tests {
 
     fn planned(layers: &[(PathBuf, toml::Value)]) -> HashMap<String, Writes> {
         plan(layers, &ProviderRegistry::new()).writes
+    }
+
+    fn layer_at(file: &str, text: &str) -> (PathBuf, toml::Value) {
+        (PathBuf::from(file), toml::from_str(text).unwrap())
+    }
+
+    /// The libraries each layer declares, as its writes to `<p>:macro`.
+    fn macro_writes(plan: &Plan, provider: &str) -> Vec<(String, serde_json::Value)> {
+        plan.writes
+            .get(&format!("{provider}:macro"))
+            .into_iter()
+            .flatten()
+            .map(|(label, value)| (label.clone(), serde_json::to_value(value).unwrap()))
+            .collect()
+    }
+
+    /// Each layer writes its own libraries at `<p>:macro`, labelled with its
+    /// file, so a later file replaces one library and keeps its siblings. A
+    /// provider named only by its macros is a provider.
+    #[test]
+    fn a_layer_seeds_its_macro_libraries() {
+        let layers = [
+            layer_at(
+                "/a.toml",
+                "[client.providers.p]\nmacro.a = '{% macro a() %}A{% endmacro %}'\n\
+                 macro.b = '{% macro b() %}B{% endmacro %}'\n",
+            ),
+            layer_at(
+                "/b.toml",
+                "[client.providers.p]\nmacro.b = '{% macro b() %}B2{% endmacro %}'\n",
+            ),
+        ];
+        let plan = plan(&layers, &ProviderRegistry::new());
+        assert_eq!(plan.errors, Vec::<String>::new());
+        assert_eq!(plan.warnings, Vec::<String>::new());
+        assert_eq!(
+            macro_writes(&plan, "p"),
+            [
+                (
+                    "config:/a.toml".to_string(),
+                    serde_json::json!({
+                        "a": "{% macro a() %}A{% endmacro %}",
+                        "b": "{% macro b() %}B{% endmacro %}"
+                    })
+                ),
+                (
+                    "config:/b.toml".to_string(),
+                    serde_json::json!({"b": "{% macro b() %}B2{% endmacro %}"})
+                ),
+            ]
+        );
+        assert!(
+            Config::from_layers(layers.to_vec())
+                .named_providers()
+                .contains(&"p".to_string())
+        );
+    }
+
+    /// A library that does not compile, or prints outside its macros, is a
+    /// load error naming it, and is not written; its siblings are.
+    #[test]
+    fn a_library_that_does_not_compile_or_prints_is_a_load_error() {
+        let layers = [layer(
+            "[client.providers.p.macro]\n\
+             broken = '{% macro m( %}'\n\
+             text = 'hello{% macro m() %}{% endmacro %}'\n\
+             tag = '{% macro m() %}{% endmacro %}{{ m() }}'\n\
+             call = '{% macro m() %}{% endmacro %}{% call m() %}{% endcall %}'\n\
+             ok = '''\n{%- set th = env.TH -%}\n{%- set block %}captured{% endset -%}\n\
+             {%- macro m(x) -%}{{ x ~ th }}{%- endmacro %}\n'''\n",
+        )];
+        let plan = plan(&layers, &ProviderRegistry::new());
+        let prints = "a macro library prints nothing: its text, {{ }} and {% call %} belong \
+                      inside a {% macro %}";
+        let mut errors = plan.errors.clone();
+        errors.sort();
+        assert_eq!(errors.len(), 4, "{errors:?}");
+        assert!(
+            errors[0].starts_with("config(/f.toml): [client.providers.p] macro.broken: "),
+            "{errors:?}"
+        );
+        assert_eq!(
+            errors[1..],
+            [
+                format!("config(/f.toml): [client.providers.p] macro.call: {prints}"),
+                format!("config(/f.toml): [client.providers.p] macro.tag: {prints}"),
+                format!("config(/f.toml): [client.providers.p] macro.text: {prints}"),
+            ]
+        );
+        let written = macro_writes(&plan, "p");
+        assert_eq!(written.len(), 1);
+        let names: Vec<&String> = written[0].1.as_object().unwrap().keys().collect();
+        assert_eq!(names, ["ok"]);
+    }
+
+    /// A library or a template that imports a library no layer declares is a
+    /// warning, and is written: a later `put` may declare it.
+    #[test]
+    fn a_library_naming_an_unknown_one_is_a_warning() {
+        let layers = [
+            crate::daemon::defaults::comb_layer(),
+            layer(
+                "[client.providers.p]\n\
+                 macro.a = '{% from \"p:macro.b\" import b %}{% macro a() %}{{ b() }}{% endmacro %}'\n\
+                 macro.b = '{% from \"p:macro.zz\" import z %}{% macro b() %}{{ z() }}{% endmacro %}'\n\
+                 template.t = '{% from \"q:macro.y\" import y %}{{ y() }}'\n\
+                 template.u = '{% from \"p:macro.a\" import a %}{{ a() }}'\n",
+            ),
+        ];
+        let plan = plan(&layers, &ProviderRegistry::new());
+        assert_eq!(plan.errors, Vec::<String>::new());
+        let mut warnings = plan.warnings.clone();
+        warnings.sort();
+        assert_eq!(
+            warnings,
+            [
+                "config(/f.toml): [client.providers.p] macro.b: unknown macro library \
+                 'p:macro.zz' (no layer declares it)",
+                "config(/f.toml): [client.providers.p] template.t: unknown macro library \
+                 'q:macro.y' (no layer declares it)",
+            ]
+        );
+        assert_eq!(macro_writes(&plan, "p")[0].1.as_object().unwrap().len(), 2);
+        assert!(plan.writes.contains_key("p:template"));
     }
 
     #[test]

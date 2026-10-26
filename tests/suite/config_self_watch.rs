@@ -696,6 +696,32 @@ async fn a_decay_table_edit_reseeds_in_place() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_macro_edit_reseeds_in_place() {
+    let library = |n: u8| {
+        format!("[client.providers.demo]\nmacro.m = \"{{% macro m() %}}{n}{{% endmacro %}}\"\n")
+    };
+    let first = library(1);
+    let mut live = Live::start("", &[("10-macro.toml", first.as_str())]).await;
+    live.until(
+        "demo:macro.m",
+        "demo:macro.m",
+        None,
+        json!("{% macro m() %}1{% endmacro %}"),
+    )
+    .await;
+
+    rewrite(&live.env.drop_in("10-macro.toml"), &library(2));
+    live.until(
+        "demo:macro.m",
+        "demo:macro.m",
+        None,
+        json!("{% macro m() %}2{% endmacro %}"),
+    )
+    .await;
+    live.assert_same_daemon().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn disabling_a_provider_reloads_and_evicts_its_instances() {
     if !has_git() {
         return;

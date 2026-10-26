@@ -494,9 +494,9 @@ pub struct QueryPlan {
 
 /// Split a `:put`, `:source` or `:cache` layer facet off the head of a key:
 /// `git:source.branch` is `("git.branch", Source)`. A plain key, or one
-/// naming the template facet, is returned unchanged with every layer. A head
-/// whose facet is not one of the four is [`parse_facet`]'s error, naming the
-/// head as written.
+/// naming the template or macro facet (a namespace of its own), is returned
+/// unchanged with every layer. A head whose facet is not one of the five is
+/// [`parse_facet`]'s error, naming the head as written.
 pub fn split_layer_facet(
     key: &str,
 ) -> Result<(std::borrow::Cow<'_, str>, crate::cache::Layers), String> {
@@ -508,7 +508,7 @@ pub fn split_layer_facet(
         Some(Facet::Put) => Layers::Put,
         Some(Facet::Source) => Layers::Source,
         Some(Facet::Cache) => Layers::Cache,
-        None | Some(Facet::Template) => return Ok((key.into(), Layers::All)),
+        None | Some(Facet::Template | Facet::Macro) => return Ok((key.into(), Layers::All)),
     };
     Ok((format!("{base}{}", &key[head.len()..]).into(), layers))
 }
@@ -724,6 +724,16 @@ mod tests {
         assert_eq!(layers, crate::cache::Layers::Cache);
     }
 
+    /// The template and macro facets are namespaces of their own, read whole.
+    #[test]
+    fn the_template_and_macro_facets_are_plain_namespaces() {
+        for key in ["scanline:template.rate", "scanline:macro.rate"] {
+            let (split, layers) = split_layer_facet(key).unwrap();
+            assert_eq!(split, key);
+            assert_eq!(layers, crate::cache::Layers::All);
+        }
+    }
+
     #[test]
     fn build_refuses_a_facet_outside_the_closed_set_naming_the_head_as_written() {
         let reg = ProviderRegistry::with_defaults();
@@ -736,7 +746,9 @@ mod tests {
             let err = QueryPlan::build(key, None, &reg).unwrap_err();
             assert_eq!(
                 err,
-                format!("invalid facet key: {head} (a facet is template, put, source or cache)"),
+                format!(
+                    "invalid facet key: {head} (a facet is template, macro, put, source or cache)"
+                ),
                 "{key}"
             );
         }
