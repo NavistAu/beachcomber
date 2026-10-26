@@ -106,6 +106,10 @@ harness = false
 name = "validity"
 harness = false
 
+[[bench]]
+name = "watch"
+harness = false
+
 [profile.dev]
 # macOS: skip dsymutil during link (keep debug info in .o files). Faster link.
 split-debuginfo = "unpacked"

@@ -46,6 +46,7 @@ class MockServer
     @queue    = Queue.new
     @requests = []
     @mutex    = Mutex.new
+    @recorded = ConditionVariable.new
     @server   = UNIXServer.new(@path)
     @thread   = Thread.new { serve }
     @thread.abort_on_exception = true
@@ -54,6 +55,22 @@ class MockServer
   # Push a raw JSON string (without newline) to be sent as the next response.
   def enqueue(response)
     @queue.push(response)
+  end
+
+  # Wait up to +timeout+ seconds for a request whose op is +op+ to be
+  # recorded. A request the client sends without waiting for its answer — a
+  # watch's subscription — is recorded on this server's own thread, after the
+  # call that sent it has returned.
+  def wait_for(op, timeout: 5)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    @mutex.synchronize do
+      until @requests.any? { |r| r['op'] == op }
+        left = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        raise "no #{op} request within #{timeout}s" if left <= 0
+
+        @recorded.wait(@mutex, left)
+      end
+    end
   end
 
   def stop
@@ -95,7 +112,10 @@ class MockServer
         next
       end
 
-      @mutex.synchronize { @requests << req }
+      @mutex.synchronize do
+        @requests << req
+        @recorded.broadcast
+      end
 
       resp = @queue.pop(true) rescue '{"ok":true}'
       conn.write(resp + "\n")

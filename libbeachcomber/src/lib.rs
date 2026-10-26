@@ -47,7 +47,8 @@ pub use protocol::{
 };
 use protocol::{Request, Response};
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -211,34 +212,54 @@ pub struct WatchEvent {
 /// until the daemon emits the next change (or the connection closes).
 ///
 /// The underlying connection is held open for the lifetime of this
-/// stream; drop it to disconnect.
+/// stream; drop it to disconnect. The socket is non-blocking: a read is
+/// [`read_ready`](Self::read_ready)'s, made after a `poll(2)` said there is
+/// something to read, and frames are taken from what it buffered.
 pub struct WatchStream {
-    reader: BufReader<UnixStream>,
-    /// The bytes of a frame that arrived split across two bounded reads, kept
-    /// so [`WatchStream::read_frame_with_timeout`] resumes mid-line rather
-    /// than losing half an event. Bytes, not a `String`: a frame can split
-    /// mid-UTF-8-codepoint at a tick boundary, and only a complete line is
-    /// ever decoded, so a `String` buffer would force decoding (and
-    /// discarding) partial, possibly-invalid bytes on every call.
-    pending: Vec<u8>,
+    socket: UnixStream,
+    /// Bytes read and not yet taken as frames. A frame that arrived split
+    /// across two reads waits here for its newline — bytes, not a `String`,
+    /// since a split can fall mid-UTF-8-codepoint and only a whole line is
+    /// ever decoded — and several frames read at once are taken one by one.
+    buffer: Vec<u8>,
+    /// The daemon closed the connection, or a read failed: nothing more will
+    /// be read. Frames already buffered are still taken first.
+    closed: bool,
 }
 
 impl WatchStream {
-    /// Read the next watch event. Returns Ok(None) on connection close.
-    pub fn next_event(&mut self) -> Result<Option<WatchEvent>, CombError> {
-        let mut line = String::new();
-        let n = self.reader.read_line(&mut line)?;
-        if n == 0 {
-            return Ok(None);
-        }
-        Self::parse_line(&line).map(Some)
+    /// A stream over `socket`, made non-blocking. Nothing may touch the
+    /// socket's options once the daemon can have answered and closed it
+    /// (macOS refuses a socket option on a unix socket whose peer has gone),
+    /// so this comes before the request is sent.
+    fn new(socket: UnixStream) -> std::io::Result<Self> {
+        socket.set_nonblocking(true)?;
+        Ok(Self {
+            socket,
+            buffer: Vec::new(),
+            closed: false,
+        })
     }
 
-    /// Parse one NDJSON watch-event line into a [`WatchEvent`]. Factored out
-    /// of [`Self::next_event`] so the fan-in
-    /// ([`crate::watch::ResolvedWatch`]), which reads frames itself through
-    /// `read_frame_with_timeout` rather than through `next_event`,
-    /// reuses the same parsing instead of duplicating it.
+    /// Read the next watch event, blocking until one arrives. Returns
+    /// `Ok(None)` once the daemon has closed the connection and every frame
+    /// it sent before closing has been read.
+    pub fn next_event(&mut self) -> Result<Option<WatchEvent>, CombError> {
+        loop {
+            if let Some(frame) = self.take_frame() {
+                return Self::parse_line(&frame?).map(Some);
+            }
+            if self.closed {
+                return Ok(None);
+            }
+            watch::wait_readable(&[self.socket.as_raw_fd()], None, None)?;
+            self.read_ready();
+        }
+    }
+
+    /// Parse one NDJSON watch-event line into a [`WatchEvent`]: what
+    /// [`Self::next_event`] answers, and what the fan-in
+    /// ([`crate::watch::ResolvedWatch`]) reads a frame it took with.
     pub fn parse_line(line: &str) -> Result<WatchEvent, CombError> {
         let resp = envelope(line, None)?;
         Ok(WatchEvent {
@@ -248,49 +269,50 @@ impl WatchStream {
         })
     }
 
-    /// Sets the underlying socket's read timeout. `None` blocks
-    /// indefinitely. `read_frame_with_timeout` is the bounded read
-    /// built on it, and is what every poll loop in the workspace uses —
-    /// there is deliberately no raw line-reading escape hatch beside it for
-    /// a caller to rebuild that loop from.
-    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
-        self.reader.get_ref().set_read_timeout(timeout)
+    /// Send the one request the connection carries.
+    fn send(&self, request: &Request) -> Result<(), CombError> {
+        (&self.socket).write_all(&request_line(request))?;
+        Ok(())
     }
 
-    /// Read one whole frame, waiting at most `d` for it.
-    ///
-    /// The three outcomes a fan-in polling several streams in turn has to
-    /// tell apart ([`crate::watch::ResolvedWatch`]): `Ok(Some(line))` is a
-    /// frame, `Ok(None)` the daemon closing the connection, and an `Err`
-    /// whose `kind()` is `WouldBlock` or `TimedOut` the wait expiring with
-    /// nothing to read. Buffers bytes in `pending` rather than a `String`, so
-    /// a frame split across two waits — even mid-UTF-8-codepoint — resumes
-    /// rather than being dropped; a complete line that turns out not to be
-    /// valid UTF-8 is an `Err` of kind `InvalidData`, not a silent drop.
-    pub(crate) fn read_frame_with_timeout(
-        &mut self,
-        d: Duration,
-    ) -> std::io::Result<Option<String>> {
-        // A socket that has just lost its peer can fail the timeout call
-        // itself (macOS `EINVAL` on an abruptly reset unix socket) rather
-        // than surfacing the loss on the read. There is no connection left to
-        // wait on either way, which is what `Ok(None)` says.
-        if self.set_read_timeout(Some(d)).is_err() {
-            return Ok(None);
-        }
-        match self.reader.read_until(b'\n', &mut self.pending) {
-            Ok(0) => Ok(None),
-            Ok(_) if self.pending.ends_with(b"\n") => {
-                let line = std::mem::take(&mut self.pending);
-                String::from_utf8(line)
-                    .map(Some)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    /// The next whole frame already read, if there is one. `poll` cannot see
+    /// these, so a caller takes them before it waits. A frame that is not
+    /// UTF-8 is an error of kind `InvalidData`.
+    pub(crate) fn take_frame(&mut self) -> Option<std::io::Result<String>> {
+        let end = self.buffer.iter().position(|&b| b == b'\n')?;
+        let frame: Vec<u8> = self.buffer.drain(..=end).collect();
+        Some(
+            String::from_utf8(frame)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
+    }
+
+    /// Read everything the socket holds now, without blocking. The daemon
+    /// closing the connection, or any read failing, marks the stream closed;
+    /// a partial frame left at the end is no frame at all.
+    pub(crate) fn read_ready(&mut self) {
+        let mut chunk = [0u8; 8192];
+        while !self.closed {
+            match (&self.socket).read(&mut chunk) {
+                Ok(0) => self.closed = true,
+                Ok(n) => self.buffer.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return,
+                Err(_) => self.closed = true,
             }
-            // `read_until` stops short of a newline only at end of input: a
-            // partial last frame, which is no frame at all.
-            Ok(_) => Ok(None),
-            Err(e) => Err(e),
         }
+    }
+
+    /// Whether nothing more will be read: the daemon has closed the
+    /// connection, or a read failed.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed
+    }
+}
+
+impl std::os::fd::AsRawFd for WatchStream {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        self.socket.as_raw_fd()
     }
 }
 
@@ -560,12 +582,9 @@ impl Client {
     /// connection into streaming mode once a watch is issued — no other
     /// ops can share that connection afterward.
     pub fn watch(&self, key: &str, path: Option<&str>) -> Result<WatchStream, CombError> {
-        let mut conn = self.open()?;
-        conn.send(&watch_request(key, path)?)?;
-        Ok(WatchStream {
-            reader: conn.reader,
-            pending: Vec::new(),
-        })
+        let stream = WatchStream::new(self.open()?.reader.into_inner())?;
+        stream.send(&watch_request(key, path)?)?;
+        Ok(stream)
     }
 
     /// Subscribe to changes in the *value* of `key` — what [`resolve`] makes
@@ -701,13 +720,17 @@ struct Conn {
     reader: BufReader<UnixStream>,
 }
 
+/// A request as it goes on the wire: one JSON line.
+fn request_line(request: &Request) -> Vec<u8> {
+    let mut line = serde_json::to_vec(request).expect("a request serialises");
+    line.push(b'\n');
+    line
+}
+
 impl Conn {
     /// Write one request line.
     fn send(&mut self, request: &Request) -> Result<(), CombError> {
-        let line = serde_json::to_string(request).expect("a request serialises");
-        self.reader
-            .get_mut()
-            .write_all(format!("{line}\n").as_bytes())?;
+        self.reader.get_mut().write_all(&request_line(request))?;
         Ok(())
     }
 
@@ -1140,5 +1163,79 @@ mod tests {
             Err(CombError::ServerError(m)) => assert_eq!(m, "invalid key"),
             other => panic!("a rejected key must be a server error, got {other:?}"),
         }
+    }
+
+    /// A watch stream over one end of a pair; the other end is the daemon's.
+    fn watch_pair() -> (WatchStream, UnixStream) {
+        let (ours, daemon) = UnixStream::pair().expect("a pair");
+        (WatchStream::new(ours).expect("a watch stream"), daemon)
+    }
+
+    /// Wait for `stream` to be readable, then read it, as the fan-in does.
+    fn read_when_ready(stream: &mut WatchStream) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        watch::wait_readable(&[stream.as_raw_fd()], None, Some(deadline)).expect("wait");
+        stream.read_ready();
+    }
+
+    fn frame(stream: &mut WatchStream) -> String {
+        stream
+            .take_frame()
+            .expect("a whole frame")
+            .expect("a UTF-8 frame")
+    }
+
+    /// Two frames in one write are two frames from one read: the second is
+    /// already buffered, so it needs no second wait.
+    #[test]
+    fn two_frames_in_one_write_are_two_frames_from_one_read() {
+        let (mut stream, daemon) = watch_pair();
+        (&daemon)
+            .write_all(b"{\"ok\":true,\"data\":1}\n{\"ok\":true,\"data\":2}\n")
+            .expect("write");
+
+        read_when_ready(&mut stream);
+        assert_eq!(frame(&mut stream), "{\"ok\":true,\"data\":1}\n");
+        assert_eq!(frame(&mut stream), "{\"ok\":true,\"data\":2}\n");
+        assert!(stream.take_frame().is_none());
+        assert!(!stream.is_closed());
+    }
+
+    /// A frame split mid-codepoint across two writes is no frame until its
+    /// second half lands, and then it is whole.
+    #[test]
+    fn a_frame_split_mid_codepoint_resumes() {
+        let (mut stream, daemon) = watch_pair();
+        let whole = "{\"ok\":true,\"data\":\"é\"}\n".as_bytes();
+        let split = whole.iter().position(|&b| b == 0xC3).expect("é") + 1;
+
+        (&daemon).write_all(&whole[..split]).expect("write");
+        read_when_ready(&mut stream);
+        assert!(stream.take_frame().is_none(), "half a frame is no frame");
+
+        (&daemon).write_all(&whole[split..]).expect("write");
+        read_when_ready(&mut stream);
+        let event = WatchStream::parse_line(&frame(&mut stream)).expect("an event");
+        assert_eq!(
+            event.data.expect("data").as_value(),
+            &serde_json::json!("é")
+        );
+    }
+
+    /// A frame the daemon sent before it closed the connection is read before
+    /// the end of the stream: the refusal is the answer, not end-of-stream.
+    #[test]
+    fn a_frame_sent_before_the_daemon_closed_comes_before_the_end() {
+        let (mut stream, daemon) = watch_pair();
+        (&daemon)
+            .write_all(b"{\"ok\":false,\"error\":\"invalid facet key: a:b:c\"}\n")
+            .expect("write");
+        drop(daemon);
+
+        match stream.next_event() {
+            Err(CombError::ServerError(m)) => assert!(m.contains("invalid facet key"), "{m}"),
+            other => panic!("the refusal comes first, got {other:?}"),
+        }
+        assert!(matches!(stream.next_event(), Ok(None)), "then the end");
     }
 }

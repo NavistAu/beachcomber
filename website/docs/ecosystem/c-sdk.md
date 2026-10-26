@@ -222,9 +222,9 @@ SDK documented as safe to invoke from another thread while a
 
 | Function | Description |
 |---|---|
-| `BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const char *env_json)` | Open a watch on `key`, resolved at `cwd` with `env_json`'s environment — the same two inputs `bc_get` takes. `cwd` is as for `bc_get` (NULL watches the global entry); `env_json` is nullable ("no environment": every `env.*` is absent). Returns NULL only on allocation failure. |
+| `BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const char *env_json)` | Open a watch on `key`, resolved at `cwd` with `env_json`'s environment — the same two inputs `bc_get` takes. `cwd` is as for `bc_get` (NULL watches the global entry); `env_json` is nullable ("no environment": every `env.*` is absent). Returns NULL only when the process is out of memory or file descriptors. |
 | `char *bc_watch_next(BcWatch *w, int32_t timeout_ms)` | Wait for the next event. `timeout_ms`: `-1` blocks indefinitely, `0` polls, `>0` waits that long. |
-| `void bc_watch_cancel(BcWatch *w)` | Cancel a pending or future `bc_watch_next` call. Null-safe. Safe to call from another thread. |
+| `void bc_watch_cancel(BcWatch *w)` | Cancel a pending or future `bc_watch_next` call: one in flight returns `cancelled` at once. Null-safe. Safe to call from another thread. |
 | `void bc_watch_free(BcWatch *w)` | Free a watch handle. Null-safe. |
 
 ```c

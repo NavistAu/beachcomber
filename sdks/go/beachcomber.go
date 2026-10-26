@@ -178,8 +178,8 @@ func (w *WatchStream) NextEvent(timeoutMs ...int32) (*WatchEvent, error) {
 }
 
 // Cancel ends the stream: a NextEvent waiting on another goroutine returns
-// nil, nil within one poll tick (see bc_watch_cancel's documentation), as
-// does every later one. The handle stays allocated until Close.
+// nil, nil at once (see bc_watch_cancel's documentation), as does every
+// later one. The handle stays allocated until Close.
 func (w *WatchStream) Cancel() error {
 	if w.handle != 0 {
 		purego.SyscallN(w.lib.bcWatchCancel, w.handle)

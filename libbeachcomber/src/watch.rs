@@ -4,10 +4,11 @@
 //! is a *value*, and a value is what [`resolve`](crate::resolve) makes of
 //! every key it reads — the addressed one, the refs its template names, and
 //! the template tree itself, any of which can change under it. So this module
-//! opens one daemon watch per key that resolution read, polls them in turn,
-//! re-resolves on any frame and emits only when the resolved value changed
-//! (design §5.5). The daemon notifies a namespace's watchers on every write
-//! to it or to one of its facets, so a template edit wakes the key's own watch.
+//! opens one daemon watch per key that resolution read, waits on all of them
+//! at once, re-resolves on any frame and emits only when the resolved value
+//! changed (design §5.5). The daemon notifies a namespace's watchers on every
+//! write to it or to one of its facets, so a template edit wakes the key's own
+//! watch.
 //!
 //! Three key classes, decided at [`ResolvedWatch::open`]:
 //!
@@ -17,30 +18,147 @@
 //!   plain daemon watch whose frames are emitted as they arrive.
 //! - a provider key, `p.rest` — the fan-in.
 //!
-//! The library has no runtime, so the fan-in is synchronous: each stream is
-//! read with a short timeout in turn, which is also what lets
-//! [`ResolvedWatch::cancel_handle`] end a wait from another thread.
+//! The library has no runtime, so the fan-in is synchronous: a wait is one
+//! `poll(2)` over every stream plus the [`CancelHandle`]'s pipe
+//! ([`wait_readable`]). A frame on any stream is seen the moment it lands, a
+//! cancel from another thread ends the wait at once, and a watch with
+//! nothing happening never wakes.
 
-use crate::resolve::{FetchError, Inputs, ResolveError, Slot, resolve_traced};
-use crate::{Client, CombError, WatchStream};
+use crate::resolve::{Fetch, FetchError, Got, Inputs, ResolveError, Slot, resolve_traced};
+use crate::{Client, CombError, Session, WatchStream};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use std::io::Write;
 use std::ops::Deref;
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-/// The longest one read of one stream waits before the fan-in moves on.
-///
-/// It bounds two things: how long a wait can outlive
-/// [`ResolvedWatch::cancel_handle`] being set on another thread, and how far
-/// past its deadline a [`ResolvedWatch::next`] can run.
-const POLL_TICK: Duration = Duration::from_millis(50);
+/// What [`wait_readable`] found.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Ready {
+    /// These of the fds, by index, can be read without blocking. A hang-up or
+    /// an error counts: the read that follows finds the end of the stream.
+    Streams(Vec<usize>),
+    /// The wake fd is readable: the wait was cancelled.
+    Woken,
+    /// The deadline passed with nothing to read.
+    TimedOut,
+}
 
-/// The read attempted when the deadline is already spent but `next` still
-/// owes the current pass a read — a `Some(Duration::ZERO)` poll, or a
-/// deadline that elapsed between two streams of the same pass.
-const MIN_TICK: Duration = Duration::from_millis(1);
+/// Wait until one of `fds` can be read without blocking, `wake` is readable,
+/// or `deadline` passes (`None`: no deadline). `wake` wins over the streams.
+///
+/// One `poll(2)`. A signal restarts it with the time that is left, and it
+/// never answers [`Ready::TimedOut`] before the deadline: `poll` counts in
+/// whole milliseconds, so the time left is rounded up, and a wake that came
+/// early waits again.
+pub(crate) fn wait_readable(
+    fds: &[RawFd],
+    wake: Option<RawFd>,
+    deadline: Option<Instant>,
+) -> std::io::Result<Ready> {
+    let mut polled: Vec<libc::pollfd> = fds
+        .iter()
+        .chain(wake.as_ref())
+        .map(|&fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .collect();
+    loop {
+        let timeout = deadline.map_or(-1, |d| {
+            poll_timeout(d.saturating_duration_since(Instant::now()))
+        });
+        // SAFETY: `polled` is an exclusively borrowed, initialised array of
+        // `polled.len()` `pollfd`s that outlives the call.
+        let n = unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, timeout) };
+        if n < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        if wake.is_some() && polled.last().is_some_and(|p| p.revents != 0) {
+            return Ok(Ready::Woken);
+        }
+        let ready: Vec<usize> = polled[..fds.len()]
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.revents != 0)
+            .map(|(i, _)| i)
+            .collect();
+        if !ready.is_empty() {
+            return Ok(Ready::Streams(ready));
+        }
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return Ok(Ready::TimedOut);
+        }
+    }
+}
+
+/// `left` as `poll(2)`'s timeout: whole milliseconds, rounded up so a wait is
+/// never shorter than asked. A wait longer than `poll` can express is made in
+/// parts by [`wait_readable`]'s loop.
+fn poll_timeout(left: Duration) -> libc::c_int {
+    libc::c_int::try_from(left.as_nanos().div_ceil(1_000_000)).unwrap_or(libc::c_int::MAX)
+}
+
+/// Ends a [`ResolvedWatch::next`] wait, from any thread, at once.
+///
+/// A flag and a self-pipe: [`cancel`](Self::cancel) sets the flag and writes
+/// one byte to the pipe, whose read end every wait polls beside its streams.
+/// The byte is never read, so once cancelled, every later wait ends at once
+/// too. Clones share the one flag and pipe.
+#[derive(Clone, Debug)]
+pub struct CancelHandle(Arc<Cancel>);
+
+#[derive(Debug)]
+struct Cancel {
+    cancelled: AtomicBool,
+    /// The pipe, as a socket pair: `wake` is polled, `signal` written. Both
+    /// ends are non-blocking and close-on-exec.
+    wake: UnixStream,
+    signal: UnixStream,
+}
+
+impl CancelHandle {
+    /// A handle nothing has cancelled. It fails only when the process is out
+    /// of file descriptors.
+    pub fn new() -> std::io::Result<Self> {
+        let (wake, signal) = UnixStream::pair()?;
+        wake.set_nonblocking(true)?;
+        signal.set_nonblocking(true)?;
+        Ok(Self(Arc::new(Cancel {
+            cancelled: AtomicBool::new(false),
+            wake,
+            signal,
+        })))
+    }
+
+    /// End the wait in progress, if there is one, and every one after it.
+    pub fn cancel(&self) {
+        if !self.0.cancelled.swap(true, Ordering::SeqCst) {
+            // The one byte a wait sees. It cannot block, and it cannot fail
+            // while this handle holds both ends.
+            let _ = (&self.0.signal).write(&[1]);
+        }
+    }
+
+    /// Whether [`cancel`](Self::cancel) has been called.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// The fd a wait polls to see the cancel.
+    fn wake_fd(&self) -> RawFd {
+        self.0.wake.as_raw_fd()
+    }
+}
 
 /// What [`ResolvedWatch::next`] found.
 #[derive(Clone, Debug, PartialEq)]
@@ -121,8 +239,12 @@ impl Deref for ClientRef<'_> {
 enum Kind {
     /// A facet key: the daemon's frames, as they arrive.
     Raw,
-    /// A provider key: the fan-in, re-resolved on every frame.
-    Resolved,
+    /// A provider key: the fan-in, re-resolved on every frame. A resolution
+    /// reads each of its keys in turn, so it reads them over one connection
+    /// of its own, held from one resolution to the next, rather than a
+    /// connection per key. `None` after a resolution failed: its connection
+    /// can still carry a late answer, so the next opens another.
+    Resolved(Option<Session>),
 }
 
 /// [`Inputs`], owned — a watch outlives the call that opened it and
@@ -190,6 +312,78 @@ impl OwnedInputs {
     }
 }
 
+/// The nodes a resolution read, by `(key, path)`, `None` for a miss: what a
+/// frame on that subscription is compared with.
+type Read = HashMap<(String, Option<String>), Option<Got>>;
+
+/// A [`Fetch`] that keeps the nodes it fetched.
+struct Recording<'f> {
+    fetch: &'f mut dyn Fetch,
+    read: Read,
+}
+
+impl Fetch for Recording<'_> {
+    fn get(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        force: bool,
+        wait: bool,
+    ) -> Result<Option<Got>, FetchError> {
+        let got = self.fetch.get(key, path, force, wait)?;
+        self.read
+            .insert((key.to_string(), path.map(str::to_string)), got.clone());
+        Ok(got)
+    }
+}
+
+/// What one resolution of the watched key came to.
+struct Resolution {
+    value: Option<JsonValue>,
+    deps: Vec<(String, Option<String>)>,
+    read: Read,
+}
+
+/// `resolve_traced` over `fetch`, keeping what it read.
+fn resolve_reading(
+    key: &str,
+    inputs: &Inputs<'_>,
+    fetch: &mut dyn Fetch,
+) -> Result<Resolution, WatchError> {
+    let mut recording = Recording {
+        fetch,
+        read: Read::new(),
+    };
+    let traced = resolve_traced(key, inputs, &mut recording).map_err(watch_error)?;
+    Ok(Resolution {
+        value: traced.value,
+        deps: traced.deps,
+        read: recording.read,
+    })
+}
+
+/// Whether a frame's node is the one a resolution read: the same data,
+/// template and rest. Ages are not compared; a frame is about what changed.
+fn already_read(read: Option<&Option<Got>>, frame: &Got) -> bool {
+    let Some(read) = read else {
+        return false;
+    };
+    let miss = Got::default();
+    let read = read.as_ref().unwrap_or(&miss);
+    read.data == frame.data && read.template == frame.template && read.rest == frame.rest
+}
+
+/// One daemon watch the fan-in holds: on `(key, path)`, a key the latest
+/// resolution read.
+struct Subscription {
+    key: String,
+    path: Option<String>,
+    stream: WatchStream,
+    /// Whether the daemon's opening frame, its answer to the subscription,
+    /// has been taken. Opening a subscription does not wait for it.
+    opened: bool,
+}
+
 /// A watch over every key one resolution reads.
 ///
 /// Open it with [`ResolvedWatch::open`] or
@@ -203,11 +397,13 @@ pub struct ResolvedWatch<'a> {
     key: String,
     kind: Kind,
     /// One open daemon watch per subscribed `(key, path)`.
-    streams: Vec<(String, Option<String>, WatchStream)>,
+    streams: Vec<Subscription>,
     /// The value last emitted, which is what a new resolution is compared to.
     last: Option<JsonValue>,
     deps: Vec<(String, Option<String>)>,
-    cancelled: Arc<AtomicBool>,
+    /// What the latest resolution read at each dep.
+    read: Read,
+    cancel: CancelHandle,
     /// Whether the resolution `open` already did is still to be emitted.
     pending_initial: bool,
 }
@@ -230,65 +426,52 @@ impl<'a> ResolvedWatch<'a> {
         if namespace(key) == "env" {
             return Err(WatchError::EnvKey("env keys cannot be watched".to_string()));
         }
+        let cancel =
+            CancelHandle::new().map_err(|e| WatchError::Transport(CombError::IoError(e)))?;
         let inputs = OwnedInputs::new(inputs);
         let path = inputs.path().map(str::to_string);
 
         // A facet key is already inside a facet: it has no template half, so
         // there is nothing to render and nothing to re-read on a frame.
         if is_facet_key(key) {
-            let stream = client
-                .watch(key, path.as_deref())
-                .map_err(WatchError::Transport)?;
-            return Ok(Self {
+            let mut watch = Self {
                 client,
                 inputs,
                 key: key.to_string(),
                 kind: Kind::Raw,
-                streams: vec![(key.to_string(), path.clone(), stream)],
+                streams: Vec::new(),
                 last: None,
-                deps: vec![(key.to_string(), path)],
-                cancelled: Arc::new(AtomicBool::new(false)),
+                deps: Vec::new(),
+                read: Read::new(),
+                cancel,
                 // The first frame the daemon sends is the current value.
                 pending_initial: false,
-            });
+            };
+            watch.follow(vec![(key.to_string(), path)])?;
+            return Ok(watch);
         }
 
-        let mut fetch: &Client = &client;
-        let resolved = {
-            let borrowed = inputs.as_inputs();
-            resolve_traced(key, &borrowed, &mut fetch).map(|t| (t.value, t.deps))
-        };
-        let (last, deps) = resolved.map_err(watch_error)?;
+        let mut session = client.session().map_err(WatchError::Transport)?;
+        let opened = resolve_reading(key, &inputs.as_inputs(), &mut session)?;
 
-        let mut streams = Vec::new();
-        for (dep_key, dep_path) in &deps {
-            if let Some(stream) = open_stream(&client, dep_key, dep_path.as_deref())? {
-                streams.push((dep_key.clone(), dep_path.clone(), stream));
-            }
-        }
         let mut watch = Self {
             client,
             inputs,
             key: key.to_string(),
-            kind: Kind::Resolved,
-            streams,
-            last,
-            deps,
-            cancelled: Arc::new(AtomicBool::new(false)),
+            kind: Kind::Resolved(Some(session)),
+            streams: Vec::new(),
+            last: opened.value,
+            deps: Vec::new(),
+            read: opened.read,
+            cancel,
             pending_initial: true,
         };
-        // A change landing between the resolve above and the streams just
-        // opened is consumed as one of those streams' initial frame rather
-        // than ever being emitted — that frame is what seeds subscriptions,
-        // not a change `next` reports — so `last` would stay stale until an
-        // unrelated later change happened to correct it. Re-resolve once
-        // more, now that every stream is open, and reuse `reresolve`'s
-        // bookkeeping to fold the result into `last`/`deps` without emitting
-        // it; `next`'s pending-initial answer is this final value. This
-        // re-read is unforced: it returns what a forced open just
-        // materialised in the daemon's cache, which is what keeps `force`
-        // at open meaningful.
-        watch.reresolve()?;
+        // A change landing between the resolve above and a subscription the
+        // daemon has not yet made is in that subscription's opening frame,
+        // which differs from what the resolve read: `next` re-resolves on it,
+        // so the change is emitted rather than lost, and nothing here waits
+        // for the daemon.
+        watch.follow(opened.deps)?;
         Ok(watch)
     }
 
@@ -300,19 +483,18 @@ impl<'a> ResolvedWatch<'a> {
     /// same value is not one, so a template edited to another spelling of the
     /// same answer, or a poll that found nothing new, keeps the wait going.
     ///
-    /// `Some(Duration::ZERO)` is a poll: one non-blocking-ish pass over every
-    /// open stream, then `Timeout` if none of them had anything — never a
-    /// `Timeout` before that pass runs, so a frame already queued when `next`
-    /// is called is still seen. This is the contract the FFI documents for
-    /// `timeout_ms == 0` (a single ~1ms attempt).
+    /// The wait is one `poll(2)` over every open stream and the
+    /// [`cancel_handle`](Self::cancel_handle)'s pipe, so it ends the moment a
+    /// frame lands on any stream or the handle is cancelled, and a finite
+    /// `timeout` returns [`Timeout`](WatchOutcome::Timeout) once it has passed,
+    /// not before. `Some(Duration::ZERO)` is a poll: frames already queued are
+    /// still seen, and `Timeout` answers only when there are none.
     ///
-    /// The deadline is checked per pass, not per read, so a finite `timeout`
-    /// can be overrun by up to one pass: N streams × 1 ms plus a re-resolve
-    /// round trip per frame consumed in that pass.
-    ///
-    /// Ends with [`Eof`](WatchOutcome::Eof), not a hang, once nothing is left
-    /// that could ever answer — the daemon closing every stream, or a
-    /// re-resolve dropping the last of them.
+    /// On a facet key, a frame the daemon sent before it closed the
+    /// connection — its refusal of the key, say — is answered before the end
+    /// of the stream. Ends with [`Eof`](WatchOutcome::Eof), not a hang, once
+    /// nothing is left that could ever answer — the daemon closing a stream,
+    /// or a re-resolve dropping the last of them.
     pub fn next(&mut self, timeout: Option<Duration>) -> Result<WatchOutcome, WatchError> {
         if self.pending_initial {
             self.pending_initial = false;
@@ -322,63 +504,45 @@ impl<'a> ResolvedWatch<'a> {
         // arithmetic is treated as no deadline at all (effectively forever)
         // rather than panicking.
         let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
-        // At least one full pass over the streams happens before the
-        // deadline can end the wait: otherwise `Some(Duration::ZERO)` would
-        // expire before a single read, and a watch with zero open streams
-        // would busy-spin here instead of ending.
-        let mut first_pass = true;
+        // Frames keep the wait from timing out only until one wait has been
+        // made: a stream of frames that change nothing must not hold a
+        // finite `next` past its deadline.
+        let mut waited = false;
         loop {
-            if self.cancelled.load(Ordering::SeqCst) {
+            if self.cancel.is_cancelled() {
                 return Ok(WatchOutcome::Cancelled);
             }
-            if self.stream_count() == 0 {
+            if let Some(outcome) = self.take_buffered()? {
+                return Ok(outcome);
+            }
+            if self.streams.is_empty() {
                 // Nothing left that can ever fire.
                 return Ok(WatchOutcome::Eof);
             }
-            if !first_pass && tick(deadline).is_none() {
+            if waited && deadline.is_some_and(|d| Instant::now() >= d) {
                 return Ok(WatchOutcome::Timeout);
             }
-            first_pass = false;
-
-            // The count is re-read each time round: a re-resolve can open and
-            // drop subscriptions while this loop is walking them.
-            let mut index = 0;
-            while index < self.stream_count() {
-                // A deadline already spent — `Some(ZERO)`'s first pass, or
-                // one that elapsed between two streams of the same pass —
-                // still gets a minimal read rather than being skipped.
-                let tick = tick(deadline).unwrap_or(MIN_TICK);
-                let frame = match self.stream(index).read_frame_with_timeout(tick) {
-                    Ok(Some(frame)) => frame,
-                    Ok(None) => return Ok(WatchOutcome::Eof),
-                    // Nothing on this one within the tick: try the next.
-                    Err(e) if is_timeout_like(&e) => {
-                        index += 1;
-                        continue;
-                    }
-                    // Any other read failure is the connection ending, not
-                    // this call failing.
-                    Err(_) => return Ok(WatchOutcome::Eof),
-                };
-                match self.kind {
-                    Kind::Raw => return Ok(WatchOutcome::Value(frame_value(&frame)?)),
-                    Kind::Resolved => {
-                        if self.reresolve()? {
-                            return Ok(WatchOutcome::Value(self.last.clone()));
-                        }
-                        index += 1;
+            let fds: Vec<RawFd> = self.streams.iter().map(|s| s.stream.as_raw_fd()).collect();
+            match wait_readable(&fds, Some(self.cancel.wake_fd()), deadline)
+                .map_err(|e| WatchError::Transport(CombError::IoError(e)))?
+            {
+                Ready::Woken => return Ok(WatchOutcome::Cancelled),
+                Ready::TimedOut => return Ok(WatchOutcome::Timeout),
+                Ready::Streams(ready) => {
+                    for index in ready {
+                        self.streams[index].stream.read_ready();
                     }
                 }
             }
+            waited = true;
         }
     }
 
-    /// The flag that ends a wait. Setting it — from this thread or another —
-    /// makes the current or next [`next`](Self::next) answer
-    /// [`Cancelled`](WatchOutcome::Cancelled) within about one poll tick per
-    /// open stream.
-    pub fn cancel_handle(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.cancelled)
+    /// The handle that ends a wait. [`CancelHandle::cancel`] — from this
+    /// thread or another — makes the current or next [`next`](Self::next)
+    /// answer [`Cancelled`](WatchOutcome::Cancelled) at once.
+    pub fn cancel_handle(&self) -> CancelHandle {
+        self.cancel.clone()
     }
 
     /// The `(key, path)` pairs the latest resolution read: what this watch is
@@ -389,50 +553,118 @@ impl<'a> ResolvedWatch<'a> {
         &self.deps
     }
 
-    fn stream_count(&self) -> usize {
-        self.streams.len()
-    }
+    /// The frames already read, which `poll` cannot see, taken before any
+    /// wait: what they come to, or `None` to wait for more.
+    ///
+    /// On a facet key a frame is the value. On a provider key a frame is a
+    /// change notice unless it shows the node the latest resolution read
+    /// there, which that resolution has already answered for: every frame
+    /// buffered is taken, then one re-resolve answers for all the notices. A
+    /// stream's opening frame is read the same way — a change between the
+    /// resolve and the subscription shows in it — unless it is the daemon's
+    /// refusal of the key: that stream is dropped, and the key stays in
+    /// [`Self::deps`] — a `put` can make it answerable later, and the next
+    /// re-resolve subscribes it again. A stream the daemon has closed ends the watch: once its frames
+    /// are taken on a facet key, and at once on a provider key, whose notices
+    /// only a re-resolve against that daemon could act on.
+    fn take_buffered(&mut self) -> Result<Option<WatchOutcome>, WatchError> {
+        if let Kind::Raw = self.kind {
+            let Some(raw) = self.streams.first_mut() else {
+                return Ok(Some(WatchOutcome::Eof));
+            };
+            return match raw.stream.take_frame() {
+                Some(Ok(frame)) => Ok(Some(WatchOutcome::Value(frame_value(&frame)?))),
+                // A frame that is not text is the connection ending, as any
+                // other read failure is.
+                Some(Err(_)) => Ok(Some(WatchOutcome::Eof)),
+                None => Ok(raw.stream.is_closed().then_some(WatchOutcome::Eof)),
+            };
+        }
 
-    /// The `index`th stream, in subscription order. `index` must be below
-    /// [`Self::stream_count`].
-    fn stream(&mut self, index: usize) -> &mut WatchStream {
-        &mut self.streams[index].2
+        let mut changed = false;
+        let mut ended = false;
+        let read = &self.read;
+        self.streams.retain_mut(|sub| {
+            while let Some(frame) = sub.stream.take_frame() {
+                let Ok(frame) = frame else {
+                    ended = true;
+                    return true;
+                };
+                let opening = !std::mem::replace(&mut sub.opened, true);
+                match crate::envelope(&frame, None).map(crate::parse_node) {
+                    Err(_) if opening => return false,
+                    Ok(node)
+                        if already_read(read.get(&(sub.key.clone(), sub.path.clone())), &node) => {}
+                    _ => changed = true,
+                }
+            }
+            ended |= sub.stream.is_closed();
+            true
+        });
+        // A notice is a reason to re-resolve, not a value to deliver; with a
+        // stream closed the daemon is going or gone, and a re-resolve would
+        // only fail on it.
+        if ended {
+            return Ok(Some(WatchOutcome::Eof));
+        }
+        if changed && self.reresolve()? {
+            return Ok(Some(WatchOutcome::Value(self.last.clone())));
+        }
+        Ok(None)
     }
 
     /// Resolve again, move the subscriptions onto that resolution's deps, and
     /// report whether the value changed.
     fn reresolve(&mut self) -> Result<bool, WatchError> {
-        let mut fetch: &Client = &self.client;
-        let resolved = {
-            let inputs = self.inputs.as_reresolve_inputs();
-            resolve_traced(&self.key, &inputs, &mut fetch).map(|t| (t.value, t.deps))
+        let Kind::Resolved(held) = &mut self.kind else {
+            unreachable!("only a provider key resolves");
         };
-        let (value, deps) = resolved.map_err(watch_error)?;
+        let mut session = match held.take() {
+            Some(session) => session,
+            None => self.client.session().map_err(WatchError::Transport)?,
+        };
+        let again = resolve_reading(&self.key, &self.inputs.as_reresolve_inputs(), &mut session)?;
+        *held = Some(session);
+        self.read = again.read;
+        self.follow(again.deps)?;
 
-        // Subscriptions follow the latest resolution: a key it no longer
-        // reads is dropped, a key it has started reading is opened.
-        self.streams
-            .retain(|(key, path, _)| deps.iter().any(|dep| dep.0 == *key && dep.1 == *path));
-        for (dep_key, dep_path) in &deps {
+        if again.value == self.last {
+            return Ok(false);
+        }
+        self.last = again.value;
+        Ok(true)
+    }
+
+    /// Subscribe to `deps` and nothing else: a key the resolution no longer
+    /// reads is dropped, a key it has started reading is opened. Opening one
+    /// sends the request and waits for nothing; its opening frame is taken
+    /// when it arrives.
+    fn follow(&mut self, deps: Vec<(String, Option<String>)>) -> Result<(), WatchError> {
+        self.streams.retain(|sub| {
+            deps.iter()
+                .any(|(key, path)| *key == sub.key && *path == sub.path)
+        });
+        for (key, path) in &deps {
             if self
                 .streams
                 .iter()
-                .any(|(key, path, _)| key == dep_key && path == dep_path)
+                .any(|sub| sub.key == *key && sub.path == *path)
             {
                 continue;
             }
-            if let Some(stream) = open_stream(&self.client, dep_key, dep_path.as_deref())? {
-                self.streams
-                    .push((dep_key.clone(), dep_path.clone(), stream));
-            }
+            let stream = self
+                .client
+                .watch(key, path.as_deref())
+                .map_err(WatchError::Transport)?;
+            self.streams.push(Subscription {
+                key: key.clone(),
+                path: path.clone(),
+                stream,
+                opened: false,
+            });
         }
         self.deps = deps;
-
-        if value == self.last {
-            return Ok(false);
-        }
-        self.last = value;
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -465,31 +697,6 @@ fn namespace(key: &str) -> &str {
     crate::key::head_of(key)
 }
 
-/// One daemon watch, with its first frame taken off the wire.
-///
-/// The daemon answers a watch it refuses with one error frame, so that is
-/// where a refusal shows up: the stream is dropped (`Ok(None)`) while the key
-/// it names stays in [`ResolvedWatch::deps`] — a `put` can make it answerable
-/// later, and that watch fires then. Taking the frame is also what
-/// makes every later frame on the stream a change rather than the
-/// subscription's own opening echo.
-fn open_stream(
-    client: &Client,
-    key: &str,
-    path: Option<&str>,
-) -> Result<Option<WatchStream>, WatchError> {
-    let mut stream = client.watch(key, path).map_err(WatchError::Transport)?;
-    Ok(match stream.read_frame_with_timeout(POLL_TICK) {
-        Ok(Some(frame)) => WatchStream::parse_line(&frame).is_ok().then_some(stream),
-        // Closed before it answered: there is nothing to poll.
-        Ok(None) => None,
-        // Nothing yet. The frame is still coming and costs one re-resolve
-        // that emits nothing when it lands.
-        Err(e) if is_timeout_like(&e) => Some(stream),
-        Err(_) => None,
-    })
-}
-
 /// The value a raw frame carries, or the daemon's refusal of the key.
 fn frame_value(frame: &str) -> Result<Option<JsonValue>, WatchError> {
     WatchStream::parse_line(frame)
@@ -504,24 +711,6 @@ fn watch_error(e: ResolveError) -> WatchError {
         ResolveError::Fetch(FetchError::Transport(transport)) => WatchError::Transport(transport),
         e => WatchError::Resolve(e),
     }
-}
-
-/// How long the next read may wait: a poll tick, or what is left of the
-/// deadline. `None` is the deadline having passed.
-fn tick(deadline: Option<Instant>) -> Option<Duration> {
-    let Some(deadline) = deadline else {
-        return Some(POLL_TICK);
-    };
-    let now = Instant::now();
-    (now < deadline).then(|| (deadline - now).min(POLL_TICK))
-}
-
-/// A read that ran out its timeout rather than failing.
-fn is_timeout_like(e: &std::io::Error) -> bool {
-    matches!(
-        e.kind(),
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-    )
 }
 
 #[cfg(test)]
@@ -571,16 +760,193 @@ mod tests {
             client: ClientRef::Borrowed(&client),
             inputs: owned(false, false),
             key: "p.field".to_string(),
-            kind: Kind::Resolved,
+            kind: Kind::Resolved(None),
             streams: Vec::new(),
             last: None,
             deps: Vec::new(),
-            cancelled: Arc::new(AtomicBool::new(false)),
+            read: Read::new(),
+            cancel: CancelHandle::new().expect("a cancel handle"),
             pending_initial: false,
         };
         match w.next(Some(Duration::from_millis(50))) {
             Ok(WatchOutcome::Eof) => {}
             other => panic!("expected Eof with nothing left to poll, got {other:?}"),
         }
+    }
+
+    /// `n` connected socket pairs: the first of each is what a wait polls,
+    /// the second what a test writes to or closes.
+    fn pairs(n: usize) -> Vec<(UnixStream, UnixStream)> {
+        (0..n)
+            .map(|_| UnixStream::pair().expect("a pair"))
+            .collect()
+    }
+
+    fn polled(pairs: &[(UnixStream, UnixStream)]) -> Vec<RawFd> {
+        pairs.iter().map(|(polled, _)| polled.as_raw_fd()).collect()
+    }
+
+    /// A count that grows by one each time a thread of this process goes
+    /// back to sleep in the kernel. On Linux it is the voluntary context
+    /// switches (`getrusage`'s `ru_nvcsw`). macOS leaves that field 0 and
+    /// counts no voluntary switches anywhere (`task_info`'s `csw` adds the
+    /// preemptions a loaded machine makes), so there it is the BSD system
+    /// calls made (`syscalls_unix`): a thread that wakes from a wait must make
+    /// another to sleep again. Nextest runs each test in a process of its
+    /// own, so a test's delta is its own.
+    #[cfg(target_os = "linux")]
+    fn sleeps() -> i64 {
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+        // SAFETY: `usage` is a writable `rusage` for the call to fill.
+        assert_eq!(
+            unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) },
+            0
+        );
+        // SAFETY: `getrusage` succeeded, so it filled `usage`.
+        i64::from(unsafe { usage.assume_init() }.ru_nvcsw)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn sleeps() -> i64 {
+        /// `task_events_info`, `mach/task_info.h`; the libc crate binds
+        /// `task_info` but not this flavour's struct. The kernel fills every
+        /// field; one is read.
+        #[repr(C)]
+        #[derive(Default)]
+        #[allow(dead_code)]
+        struct TaskEventsInfo {
+            faults: libc::integer_t,
+            pageins: libc::integer_t,
+            cow_faults: libc::integer_t,
+            messages_sent: libc::integer_t,
+            messages_received: libc::integer_t,
+            syscalls_mach: libc::integer_t,
+            syscalls_unix: libc::integer_t,
+            csw: libc::integer_t,
+        }
+        const TASK_EVENTS_INFO: libc::task_flavor_t = 2;
+        let mut info = TaskEventsInfo::default();
+        let mut count = (std::mem::size_of::<TaskEventsInfo>()
+            / std::mem::size_of::<libc::natural_t>())
+            as libc::mach_msg_type_number_t;
+        // SAFETY: `info` is a writable `task_events_info` of `count` words.
+        // `mach_task_self` is deprecated in libc for the `mach2` crate, which
+        // this one measurement does not warrant.
+        #[allow(deprecated)]
+        let kr = unsafe {
+            libc::task_info(
+                libc::mach_task_self(),
+                TASK_EVENTS_INFO,
+                (&raw mut info).cast(),
+                &mut count,
+            )
+        };
+        assert_eq!(kr, libc::KERN_SUCCESS);
+        i64::from(info.syscalls_unix)
+    }
+
+    /// A byte on the last of twenty streams is seen at once: one `poll`
+    /// covers them all, so nothing waits on the nineteen before it.
+    #[test]
+    fn a_byte_on_the_last_of_twenty_streams_is_seen_at_once() {
+        let pairs = pairs(20);
+        (&pairs[19].1).write_all(b"x").expect("write");
+
+        let start = Instant::now();
+        let ready = wait_readable(&polled(&pairs), None, Some(start + Duration::from_secs(5)))
+            .expect("wait");
+        let took = start.elapsed();
+        assert_eq!(ready, Ready::Streams(vec![19]));
+        assert!(took < Duration::from_millis(5), "{took:?}");
+    }
+
+    /// A peer that hung up is readable: the read that follows finds the end.
+    #[test]
+    fn a_closed_peer_is_ready_to_read() {
+        let pairs = pairs(2);
+        let (closed, peer) = UnixStream::pair().expect("a pair");
+        drop(peer);
+        let mut fds = polled(&pairs);
+        fds.push(closed.as_raw_fd());
+        assert_eq!(
+            wait_readable(&fds, None, Some(Instant::now() + Duration::from_secs(5))).expect("wait"),
+            Ready::Streams(vec![2])
+        );
+    }
+
+    /// An idle wait ends at its deadline, never before it and promptly after,
+    /// and it sleeps once: no wake per stream per tick. Twenty idle streams
+    /// for 100 ms cost at most three sleeps.
+    #[test]
+    fn an_idle_wait_times_out_at_its_deadline_and_sleeps_until_then() {
+        let pairs = pairs(20);
+        let cancel = CancelHandle::new().expect("a cancel handle");
+
+        let before = sleeps();
+        let start = Instant::now();
+        let ready = wait_readable(
+            &polled(&pairs),
+            Some(cancel.wake_fd()),
+            Some(start + Duration::from_millis(100)),
+        )
+        .expect("wait");
+        let took = start.elapsed();
+        let slept = sleeps() - before;
+
+        // Never before the deadline; after it, within a margin a loaded
+        // machine's scheduling needs and a 50 ms tick would not meet.
+        // `benches/watch.rs` measures the overshoot itself.
+        assert_eq!(ready, Ready::TimedOut);
+        assert!(
+            took >= Duration::from_millis(100) && took < Duration::from_millis(120),
+            "{took:?}"
+        );
+        assert!(slept <= 3, "{slept} sleeps");
+    }
+
+    /// A cancel from another thread ends a wait at once, and every wait after
+    /// it: the pipe's byte is never read.
+    #[test]
+    fn a_cancel_from_another_thread_ends_the_wait_at_once() {
+        let pairs = pairs(20);
+        let cancel = CancelHandle::new().expect("a cancel handle");
+        let (go, told) = std::sync::mpsc::channel::<()>();
+        let canceller = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                told.recv().expect("told to cancel");
+                let at = Instant::now();
+                cancel.cancel();
+                at
+            })
+        };
+
+        go.send(()).expect("tell the canceller");
+        let ready = wait_readable(
+            &polled(&pairs),
+            Some(cancel.wake_fd()),
+            Some(Instant::now() + Duration::from_secs(5)),
+        )
+        .expect("wait");
+        let woke = Instant::now();
+        let cancelled_at = canceller.join().expect("the canceller");
+
+        assert_eq!(ready, Ready::Woken);
+        // A tick-driven wait would take up to a tick (50 ms); this one wakes
+        // as the thread is scheduled. The bound leaves a loaded machine room
+        // for that; `benches/watch.rs` measures the latency itself.
+        let after = woke.saturating_duration_since(cancelled_at);
+        assert!(after < Duration::from_millis(20), "{after:?}");
+        assert!(cancel.is_cancelled());
+        assert_eq!(
+            wait_readable(
+                &polled(&pairs),
+                Some(cancel.wake_fd()),
+                Some(Instant::now())
+            )
+            .expect("wait"),
+            Ready::Woken,
+            "a cancel ends every later wait too"
+        );
     }
 }

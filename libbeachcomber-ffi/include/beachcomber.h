@@ -52,13 +52,13 @@ typedef struct BcSession BcSession;
  *
  * Guarded the same way [`BcSession`] is: an internal mutex that
  * [`bc_watch_next`] takes with `try_lock`, yielding `kind: "busy"` for a
- * concurrent caller rather than blocking. `cancelled` is deliberately
+ * concurrent caller rather than blocking. `cancel` is deliberately
  * **outside** that mutex — [`bc_watch_cancel`] is the one call in this
  * crate documented as safe to invoke from another thread while an op is in
  * flight, and it must not itself block on the lock a pending
  * [`bc_watch_next`] is holding. It is the watch's own
- * [`cancel_handle`](ResolvedWatch::cancel_handle), not a second flag beside
- * it: setting it is what ends a wait already inside
+ * [`cancel_handle`](ResolvedWatch::cancel_handle), not a second one beside
+ * it: cancelling it is what ends a wait already inside
  * [`ResolvedWatch::next`], which is where a blocked call actually sits.
  */
 typedef struct BcWatch BcWatch;
@@ -311,10 +311,11 @@ char *bc_session_set_context(BcSession *session, const char *path);
  * `exec()` inside a template runs only on a client created with
  * `{"exec":true}`.
  *
- * Returns NULL only on allocation failure — any other failure (a `client`
- * whose own construction failed, a key that cannot be watched, or the
- * opening resolution failing) is recorded on the handle and surfaced on the
- * first [`bc_watch_next`] call instead.
+ * Returns NULL only when the process is out of memory or of file
+ * descriptors — any other failure (a `client` whose own construction failed,
+ * a key that cannot be watched, or the opening resolution failing) is
+ * recorded on the handle and surfaced on the first [`bc_watch_next`] call
+ * instead.
  *
  * # Safety
  * `client` must be a valid, non-null pointer from [`bc_client_new`]; `key`
@@ -325,8 +326,8 @@ BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const
 
 /**
  * Waits for the next value on `w`. `timeout_ms`: `-1` blocks indefinitely,
- * `0` polls (one pass over the open subscriptions, then `timeout` if none
- * of them had anything), `>0` waits that long. Distinguishes five outcomes,
+ * `0` polls (what the open subscriptions already hold, then `timeout` if
+ * none of them had anything), `>0` waits that long and not less. Distinguishes five outcomes,
  * all machine-readable without string matching (see [`WatchOutcome`]):
  * `event` — whose `data` is the resolved value, `null` for a miss —
  * `timeout`, `eof`, `cancelled` (via `ok:true` plus an `outcome` field),
@@ -342,22 +343,17 @@ BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const
  *
  * `error` is the daemon actively rejecting the watched key, or a template
  * the resolution cannot render; any lower-level socket failure (a reset
- * connection, or even a failing `set_read_timeout`, observed on macOS as
- * `EINVAL` from `setsockopt` on an already-reset unix socket rather than
- * the loss surfacing on the next read) is `eof`: from a caller's point of
- * view the stream is over either way, and a binding should not have to
- * special-case platform-specific socket-teardown quirks as a distinct
- * failure mode.
+ * connection) is `eof`: from a caller's point of view the stream is over
+ * either way. A frame the daemon sent before it closed the connection — its
+ * refusal of the key, say — is still read and answered before the `eof`.
  *
  * Both terminal outcomes latch: after `eof`, or after an `error`, every
  * later call reports the same thing rather than resuming the poll.
  *
- * The wait itself is [`ResolvedWatch::next`]'s — a bounded read per open
- * subscription in turn, re-checking the cancellation flag between passes,
- * rather than one read for the full requested wait. That is what lets
- * [`bc_watch_cancel`], called from another thread mid-wait, unblock a
- * pending call within about one poll tick instead of only at the next
- * natural wakeup.
+ * The wait itself is [`ResolvedWatch::next`]'s: one `poll(2)` over every
+ * open subscription and the watch's cancel pipe. A frame on any
+ * subscription ends it at once, [`bc_watch_cancel`] from another thread
+ * ends it at once, and a watch with nothing happening does not wake.
  *
  * # Safety
  * `w` must be a valid, non-null pointer previously returned by
@@ -369,10 +365,10 @@ char *bc_watch_next(BcWatch *w, int32_t timeout_ms);
  * Cancels a pending or future [`bc_watch_next`] call on `w`. Null-safe.
  * The sole function in this crate documented as safe to call from a
  * different thread than the one driving `w`'s other operations — it never
- * takes `w`'s internal lock, only sets an atomic flag a pending
- * `bc_watch_next` polls for. A `bc_watch_next` call already in flight
- * observes it within about one of [`ResolvedWatch::next`]'s poll ticks per
- * open subscription; every call after this one observes it immediately.
+ * takes `w`'s internal lock: it sets a flag and writes one byte to the pipe
+ * a pending `bc_watch_next` polls beside its subscriptions. A
+ * `bc_watch_next` call already in flight returns `cancelled` at once, and
+ * so does every call after this one.
  *
  * # Safety
  * `w` must be either NULL or a pointer previously returned by

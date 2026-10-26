@@ -18,7 +18,6 @@ use libbeachcomber::watch::{ResolvedWatch, WatchError, WatchOutcome};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 /// The deadline a change is expected to arrive within.
@@ -382,12 +381,114 @@ fn the_cancel_handle_ends_a_blocking_next() {
     assert_eq!(value(w.next(Some(SOON))), Some(json!(1)));
 
     let cancel = w.cancel_handle();
-    let setter = std::thread::spawn(move || cancel.store(true, Ordering::SeqCst));
+    let setter = std::thread::spawn(move || cancel.cancel());
     match w.next(Some(Duration::from_secs(5))) {
         Ok(WatchOutcome::Cancelled) => {}
         other => panic!("a set cancel handle ends the wait; got {other:?}"),
     }
     setter.join().expect("join");
+}
+
+/// The daemon's health: its request count so far, this request included, and
+/// the watches it holds.
+fn health(client: &libbeachcomber::Client) -> libbeachcomber::DaemonHealth {
+    match client
+        .introspect(libbeachcomber::IntrospectSubject::Daemon, None)
+        .expect("introspect")
+    {
+        libbeachcomber::IntrospectResponse::Daemon(health) => health,
+        other => panic!("expected the daemon's health, got {other:?}"),
+    }
+}
+
+/// A subscription's opening frame shows the node the opening resolve read —
+/// a template node and data nodes alike — so it is no change and costs no
+/// re-resolve: once the frames are in, the only request the daemon sees is
+/// the one that counts them.
+#[test]
+fn opening_frames_that_match_the_resolve_cost_no_request() {
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
+    let writer = client_for(&guard.path);
+    let env = shell_env();
+
+    for dep in ["o1", "o2"] {
+        writer
+            .put(dep, json!({"x": "a"}), None, None)
+            .expect("put a dep");
+    }
+    writer
+        .put(
+            "open:template",
+            json!({"v": "{{ comb.o1.x ~ comb.o2.x }}"}),
+            None,
+            None,
+        )
+        .expect("put template");
+
+    let mut w = ResolvedWatch::open(&client, "open.v", &inputs(&env)).expect("open");
+    assert_eq!(w.deps().len(), 3, "{:?}", w.deps());
+    assert_eq!(value(w.next(Some(SOON))), Some(json!("aa")));
+
+    // Opening a subscription waits for nothing, so the daemon may take the
+    // watch requests after `open` returns: count from when it holds all three.
+    let deadline = Instant::now() + SOON;
+    let before = loop {
+        let now = health(&writer);
+        if now.active_watchers == 3 {
+            break now.requests_total;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never held the watches"
+        );
+    };
+    match w.next(Some(Duration::from_millis(50))) {
+        Ok(WatchOutcome::Timeout) => {}
+        other => panic!("nothing changed, so nothing is emitted; got {other:?}"),
+    }
+    assert_eq!(
+        health(&writer).requests_total - before,
+        1,
+        "only the count's own request"
+    );
+}
+
+/// A change on the last of five deps is emitted as soon as it lands: the wait
+/// is one `poll` over every stream, not a turn per stream.
+#[test]
+fn a_change_on_the_last_of_five_deps_is_emitted_at_once() {
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
+    let writer = client_for(&guard.path);
+    let env = shell_env();
+
+    for dep in ["d1", "d2", "d3", "d4"] {
+        writer
+            .put(dep, json!({"x": "a"}), None, None)
+            .expect("put a dep");
+    }
+    writer
+        .put(
+            "fan:template",
+            json!({"v": "{{ comb.d1.x ~ comb.d2.x ~ comb.d3.x ~ comb.d4.x }}"}),
+            None,
+            None,
+        )
+        .expect("put template");
+
+    let mut w = ResolvedWatch::open(&client, "fan.v", &inputs(&env)).expect("open");
+    assert_eq!(w.deps().len(), 5, "{:?}", w.deps());
+    assert_eq!(w.deps()[4], ("d4.x".to_string(), None));
+    assert_eq!(value(w.next(Some(SOON))), Some(json!("aaaa")));
+
+    let start = Instant::now();
+    writer
+        .put("d4.x", json!("b"), None, None)
+        .expect("put the last dep");
+    assert_eq!(value(w.next(Some(SOON))), Some(json!("aaab")));
+    let took = start.elapsed();
+    assert!(took < Duration::from_millis(50), "{took:?}");
 }
 
 /// The daemon going away ends the stream.

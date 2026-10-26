@@ -12,6 +12,7 @@
 
 use crate::common::client::{client_for, cs, read};
 use crate::common::daemon::DaemonGuard;
+use crate::common::socket::IsolatedSocket;
 
 use std::ffi::CString;
 use std::ptr;
@@ -297,6 +298,49 @@ fn watch_next_on_an_invalid_key_yields_an_error_envelope() {
     unsafe { bc_client_free(client) };
 }
 
+/// A refusal the daemon has already sent, and closed the connection after, is
+/// still the answer: a frame read off the wire comes before the end of the
+/// stream. The daemon here is a stand-in that answers the watch with its
+/// refusal and hangs up; it has finished, and the connection is closed, before
+/// `bc_watch_next` is called. That is the order a loaded machine produces
+/// when the caller is slower than the daemon, so it is the case a watch must
+/// not turn into `eof`.
+#[test]
+fn a_refusal_sent_before_the_connection_closed_is_still_the_answer() {
+    let socket = IsolatedSocket::new();
+    let listener = std::os::unix::net::UnixListener::bind(&socket.path).expect("bind");
+    let client = client_for(&socket.path);
+
+    let daemon = std::thread::spawn(move || {
+        use std::io::{BufRead, Write};
+        let (stream, _) = listener.accept().expect("accept");
+        let mut request = String::new();
+        std::io::BufReader::new(&stream)
+            .read_line(&mut request)
+            .expect("the watch request");
+        (&stream)
+            .write_all(b"{\"ok\":false,\"error\":\"invalid facet key: a:b:c\"}\n")
+            .expect("the refusal");
+        request
+    });
+    let watch = open_watch(client, "a:b:c.x", None);
+    let request = daemon.join().expect("the stand-in daemon");
+    assert!(request.contains("\"watch\""), "{request}");
+
+    let v = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(v["ok"], serde_json::json!(false), "{v}");
+    assert_eq!(v["error"]["kind"], serde_json::json!("server_error"), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("invalid facet key: a:b:c")),
+        "{v}"
+    );
+
+    unsafe { bc_watch_free(watch) };
+    unsafe { bc_client_free(client) };
+}
+
 /// `env.*` is constant for the life of a process, so there is nothing to
 /// watch. The refusal is the library's own words, made without reaching the
 /// daemon, and it is reported on the handle's first `bc_watch_next` like
@@ -411,21 +455,28 @@ fn watch_cancel_from_another_thread_unblocks_a_pending_next() {
 
     let watch_ptr = SendPtr(watch);
     let watch_ptr = &watch_ptr;
-    let start = std::time::Instant::now();
     std::thread::scope(|scope| {
-        let blocked = scope.spawn(|| read(unsafe { bc_watch_next(watch_ptr.0, -1) }));
+        let blocked = scope.spawn(|| {
+            let v = read(unsafe { bc_watch_next(watch_ptr.0, -1) });
+            (v, std::time::Instant::now())
+        });
 
+        // sleep-justified: the blocked call gives no sign that it has reached
+        // its wait; this gives it time to, so the cancel ends a wait in
+        // progress rather than one not yet begun.
         std::thread::sleep(std::time::Duration::from_millis(10));
+        let cancelled_at = std::time::Instant::now();
         unsafe { bc_watch_cancel(watch_ptr.0) };
 
-        let v = blocked.join().unwrap();
+        let (v, returned_at) = blocked.join().unwrap();
         assert_eq!(v["ok"], serde_json::json!(true));
         assert_eq!(v["outcome"], serde_json::json!("cancelled"));
+        let after = returned_at.saturating_duration_since(cancelled_at);
+        assert!(
+            after < std::time::Duration::from_millis(20),
+            "a cancel ends a pending -1 (block indefinitely) call at once: {after:?}"
+        );
     });
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(2),
-        "cancel must unblock a pending -1 (block indefinitely) call promptly"
-    );
 
     unsafe { bc_watch_free(watch) };
     unsafe { bc_client_free(client) };

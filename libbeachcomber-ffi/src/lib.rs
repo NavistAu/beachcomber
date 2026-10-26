@@ -11,7 +11,7 @@ pub mod envelope;
 
 use envelope::{FfiError, WatchOutcome, call_ffi, call_watch_next, kind};
 use libbeachcomber::resolve::{self, Inputs, Slot};
-use libbeachcomber::watch::{ResolvedWatch, WatchOutcome as LibWatchOutcome};
+use libbeachcomber::watch::{CancelHandle, ResolvedWatch, WatchOutcome as LibWatchOutcome};
 use libbeachcomber::{IntrospectResponse, IntrospectSubject};
 use std::collections::HashMap;
 
@@ -694,13 +694,13 @@ pub unsafe extern "C" fn bc_session_set_context(
 ///
 /// Guarded the same way [`BcSession`] is: an internal mutex that
 /// [`bc_watch_next`] takes with `try_lock`, yielding `kind: "busy"` for a
-/// concurrent caller rather than blocking. `cancelled` is deliberately
+/// concurrent caller rather than blocking. `cancel` is deliberately
 /// **outside** that mutex — [`bc_watch_cancel`] is the one call in this
 /// crate documented as safe to invoke from another thread while an op is in
 /// flight, and it must not itself block on the lock a pending
 /// [`bc_watch_next`] is holding. It is the watch's own
-/// [`cancel_handle`](ResolvedWatch::cancel_handle), not a second flag beside
-/// it: setting it is what ends a wait already inside
+/// [`cancel_handle`](ResolvedWatch::cancel_handle), not a second one beside
+/// it: cancelling it is what ends a wait already inside
 /// [`ResolvedWatch::next`], which is where a blocked call actually sits.
 // `ended` latches the terminal state. A watch that has reported `eof` has
 // nothing left that could ever answer, and one that failed ended on that
@@ -709,7 +709,7 @@ pub unsafe extern "C" fn bc_session_set_context(
 // `ResolvedWatch` in `watch`.
 pub struct BcWatch {
     watch: Mutex<Result<ResolvedWatch<'static>, FfiError>>,
-    cancelled: Arc<AtomicBool>,
+    cancel: CancelHandle,
     ended: AtomicBool,
 }
 
@@ -726,10 +726,11 @@ pub struct BcWatch {
 /// `exec()` inside a template runs only on a client created with
 /// `{"exec":true}`.
 ///
-/// Returns NULL only on allocation failure — any other failure (a `client`
-/// whose own construction failed, a key that cannot be watched, or the
-/// opening resolution failing) is recorded on the handle and surfaced on the
-/// first [`bc_watch_next`] call instead.
+/// Returns NULL only when the process is out of memory or of file
+/// descriptors — any other failure (a `client` whose own construction failed,
+/// a key that cannot be watched, or the opening resolution failing) is
+/// recorded on the handle and surfaced on the first [`bc_watch_next`] call
+/// instead.
 ///
 /// # Safety
 /// `client` must be a valid, non-null pointer from [`bc_client_new`]; `key`
@@ -760,22 +761,26 @@ pub unsafe extern "C" fn bc_watch_open(
         };
         ResolvedWatch::open_owned(c, key, &inputs).map_err(FfiError::from)
     })();
-    // A watch that never opened has no wait to interrupt; the flag exists
-    // only so `bc_watch_cancel` stays null-safe-simple on every handle.
-    let cancelled = match &state {
+    // A watch that never opened has no wait to end, but a cancel still
+    // changes what every later `bc_watch_next` answers, so it has a handle of
+    // its own.
+    let cancel = match &state {
         Ok(watch) => watch.cancel_handle(),
-        Err(_) => Arc::new(AtomicBool::new(false)),
+        Err(_) => match CancelHandle::new() {
+            Ok(cancel) => cancel,
+            Err(_) => return std::ptr::null_mut(),
+        },
     };
     Box::into_raw(Box::new(BcWatch {
         watch: Mutex::new(state),
-        cancelled,
+        cancel,
         ended: AtomicBool::new(false),
     }))
 }
 
 /// Waits for the next value on `w`. `timeout_ms`: `-1` blocks indefinitely,
-/// `0` polls (one pass over the open subscriptions, then `timeout` if none
-/// of them had anything), `>0` waits that long. Distinguishes five outcomes,
+/// `0` polls (what the open subscriptions already hold, then `timeout` if
+/// none of them had anything), `>0` waits that long and not less. Distinguishes five outcomes,
 /// all machine-readable without string matching (see [`WatchOutcome`]):
 /// `event` — whose `data` is the resolved value, `null` for a miss —
 /// `timeout`, `eof`, `cancelled` (via `ok:true` plus an `outcome` field),
@@ -791,22 +796,17 @@ pub unsafe extern "C" fn bc_watch_open(
 ///
 /// `error` is the daemon actively rejecting the watched key, or a template
 /// the resolution cannot render; any lower-level socket failure (a reset
-/// connection, or even a failing `set_read_timeout`, observed on macOS as
-/// `EINVAL` from `setsockopt` on an already-reset unix socket rather than
-/// the loss surfacing on the next read) is `eof`: from a caller's point of
-/// view the stream is over either way, and a binding should not have to
-/// special-case platform-specific socket-teardown quirks as a distinct
-/// failure mode.
+/// connection) is `eof`: from a caller's point of view the stream is over
+/// either way. A frame the daemon sent before it closed the connection — its
+/// refusal of the key, say — is still read and answered before the `eof`.
 ///
 /// Both terminal outcomes latch: after `eof`, or after an `error`, every
 /// later call reports the same thing rather than resuming the poll.
 ///
-/// The wait itself is [`ResolvedWatch::next`]'s — a bounded read per open
-/// subscription in turn, re-checking the cancellation flag between passes,
-/// rather than one read for the full requested wait. That is what lets
-/// [`bc_watch_cancel`], called from another thread mid-wait, unblock a
-/// pending call within about one poll tick instead of only at the next
-/// natural wakeup.
+/// The wait itself is [`ResolvedWatch::next`]'s: one `poll(2)` over every
+/// open subscription and the watch's cancel pipe. A frame on any
+/// subscription ends it at once, [`bc_watch_cancel`] from another thread
+/// ends it at once, and a watch with nothing happening does not wake.
 ///
 /// # Safety
 /// `w` must be a valid, non-null pointer previously returned by
@@ -815,7 +815,7 @@ pub unsafe extern "C" fn bc_watch_open(
 pub unsafe extern "C" fn bc_watch_next(w: *mut BcWatch, timeout_ms: i32) -> *mut c_char {
     call_watch_next(move || {
         let handle = unsafe { &*w };
-        if handle.cancelled.load(Ordering::SeqCst) {
+        if handle.cancel.is_cancelled() {
             return Ok(WatchOutcome::Cancelled);
         }
         if handle.ended.load(Ordering::SeqCst) {
@@ -863,10 +863,10 @@ pub unsafe extern "C" fn bc_watch_next(w: *mut BcWatch, timeout_ms: i32) -> *mut
 /// Cancels a pending or future [`bc_watch_next`] call on `w`. Null-safe.
 /// The sole function in this crate documented as safe to call from a
 /// different thread than the one driving `w`'s other operations — it never
-/// takes `w`'s internal lock, only sets an atomic flag a pending
-/// `bc_watch_next` polls for. A `bc_watch_next` call already in flight
-/// observes it within about one of [`ResolvedWatch::next`]'s poll ticks per
-/// open subscription; every call after this one observes it immediately.
+/// takes `w`'s internal lock: it sets a flag and writes one byte to the pipe
+/// a pending `bc_watch_next` polls beside its subscriptions. A
+/// `bc_watch_next` call already in flight returns `cancelled` at once, and
+/// so does every call after this one.
 ///
 /// # Safety
 /// `w` must be either NULL or a pointer previously returned by
@@ -877,7 +877,7 @@ pub unsafe extern "C" fn bc_watch_cancel(w: *mut BcWatch) {
         return;
     }
     let handle = unsafe { &*w };
-    handle.cancelled.store(true, Ordering::SeqCst);
+    handle.cancel.cancel();
 }
 
 /// Frees a watch handle. Null-safe.

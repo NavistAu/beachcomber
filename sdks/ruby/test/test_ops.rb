@@ -247,6 +247,7 @@ class TestOps < Minitest::Test
     enqueue_many('{"ok":true,"data":"main","age_ms":10,"stale":false}')
     stream = @client.watch('git.branch', cwd: '/repo')
     event = stream.next_event
+    @server.wait_for('watch')
     stream.close
 
     keys = watch_requests.map { |r| r['key'] }
@@ -259,6 +260,7 @@ class TestOps < Minitest::Test
     enqueue_many('{"ok":true,"data":"main","age_ms":0,"stale":false}')
     stream = @client.watch('git.branch', cwd: '/repo')
     stream.next_event
+    @server.wait_for('watch')
     stream.close
     refute_empty watch_requests
     assert(watch_requests.all? { |r| r['path'] == '/repo' })
@@ -306,6 +308,7 @@ class TestOps < Minitest::Test
     enqueue_many('{"ok":true,"data":"main","age_ms":0,"stale":false}')
     stream = @client.watch('git.branch')
     stream.next_event
+    @server.wait_for('watch')
     stream.close
     refute_empty watch_requests
     assert(watch_requests.none? { |r| r.key?('path') }, watch_requests.inspect)
