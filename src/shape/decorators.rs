@@ -110,8 +110,9 @@ struct Render {
     base: Environment<'static>,
     lines: Vec<String>,
     name: String,
-    /// The variables a path argument (`watch('$XDG_CONFIG_HOME/x')`) expands from.
-    vars: HashMap<String, String>,
+    /// The variables a path argument (`watch('$XDG_CONFIG_HOME/x')`) expands
+    /// from: the load's, shared.
+    vars: Arc<HashMap<String, String>>,
     recorded: Mutex<Vec<Line>>,
     /// The first failure, and the level whose line raised it.
     failure: Mutex<Option<ReturnError>>,
@@ -174,7 +175,7 @@ pub fn record_return(
     lines: &[&str],
     name: &str,
     defaults: &EngineDefaults,
-    vars: &HashMap<String, String>,
+    vars: &Arc<HashMap<String, String>>,
     env: &Environment<'static>,
 ) -> Result<Recorded, ReturnError> {
     if lines.is_empty() {
@@ -201,7 +202,7 @@ pub fn record_return(
         base: env.clone(),
         lines: lines.iter().map(|l| l.to_string()).collect(),
         name: name.to_string(),
-        vars: vars.clone(),
+        vars: Arc::clone(vars),
         recorded: Mutex::new(lines.iter().map(|_| Line::default()).collect()),
         failure: Mutex::new(None),
     });
@@ -600,11 +601,13 @@ mod tests {
     }
 
     /// What the expansion of an absolute `watch()` path reads: a map, never the process.
-    fn test_vars() -> HashMap<String, String> {
-        [("HOME", "/home/t"), ("XDG_CONFIG_HOME", "/xdg")]
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn test_vars() -> Arc<HashMap<String, String>> {
+        Arc::new(
+            [("HOME", "/home/t"), ("XDG_CONFIG_HOME", "/xdg")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
     }
 
     fn record(lines: &[&str]) -> Result<Recorded, String> {
@@ -665,7 +668,7 @@ mod tests {
             &["{{ result | watch('$XDG_CONFIG_HOME/mise') }}"],
             "s",
             &defaults(),
-            &HashMap::new(),
+            &Arc::default(),
             &return_env(),
         )
         .unwrap_err();

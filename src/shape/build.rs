@@ -12,6 +12,7 @@ use crate::provider::config_source::{ConfigSourceSpec, ResultSpec};
 use crate::shape::decorators::{EngineDefaults, Recorded, record_return, return_env};
 use crate::shape::prototype::{Kind, Link, chain, effective, source_prototypes, super_chain};
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 /// A provider and the config Sources composed for it.
 #[derive(Debug, Clone)]
@@ -89,7 +90,7 @@ fn check_return(
     links: &[Link<'_>],
     name: &str,
     defaults: &EngineDefaults,
-    vars: &HashMap<String, String>,
+    vars: &Arc<HashMap<String, String>>,
     env: &minijinja::Environment<'static>,
 ) -> Result<Option<Recorded>, String> {
     let lines = super_chain(links, "return");
@@ -137,7 +138,7 @@ pub fn prototype_lines(providers: &toml::Table) -> Vec<PrototypeLines> {
 /// `return` and nothing else until they are shipped as config, and whose
 /// fields a new Source may not declare again. `defaults` is what a Source gets
 /// for a decorator its `return` chain does not name, and `vars` the variables
-/// a `watch()` path expands from.
+/// a `watch()` path expands from, shared by every render.
 ///
 /// A built-in's `return` is read as a config Source's is: its own line, and
 /// what its `| super` reaches in `<p>.sources._` and `_.sources._`. With no
@@ -150,7 +151,7 @@ pub fn build(
     providers: &toml::Table,
     existing: &HashMap<String, Vec<SourceMetadata>>,
     defaults: &EngineDefaults,
-    vars: &HashMap<String, String>,
+    vars: &Arc<HashMap<String, String>>,
 ) -> (Built, Vec<String>) {
     let mut errors: BTreeSet<String> = BTreeSet::new();
     let mut err = |e: String| {
