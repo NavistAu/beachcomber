@@ -1428,7 +1428,7 @@ fn a_prototypes_lines_are_checked_at_load() {
 
 #[test]
 fn all_providers_registered_by_default() {
-    let config = Config::default();
+    let config = with_shipped_defaults("");
     let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
     assert!(registry.provider_sources("hostname").is_some());
     assert!(registry.provider_sources("user").is_some());

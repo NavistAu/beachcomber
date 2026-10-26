@@ -132,10 +132,10 @@ Use this decision table:
 | File changes only | with or without | `watch` |
 | Timer only | with or without | `poll` |
 | File changes + safety timer | with or without | `watch + poll` |
-| Truly static (hostname, uname, user) | none | `watch` (pure-watch, one instance) |
+| Truly static (changes only on a reboot) | none | `watch` (pure-watch, one instance) |
 | Global config file watch (mise config dir) | none | `watch` + `abs_paths` |
 
-**Pure-watch** sources with no root use the `Watch` strategy: no poll of their own. They execute once on first demand and only re-execute when an fs event fires on their registered `abs_paths`. Like every Source they decay once nothing reads them — a watch-only Source's Active window is the default poll lifespan, 60 s × 12 (12 minutes after its last read), after which its watches are dropped — and the next read runs them again. Suitable for values that can only change when a specific file is written: hostname (requires reboot), username (requires reboot), uname (requires reboot), mise global config.
+**Pure-watch** sources with no root use the `Watch` strategy: no poll of their own. They execute once on first demand and only re-execute when an fs event fires on their registered `abs_paths`. Like every Source they decay once nothing reads them — a watch-only Source's Active window is the default poll lifespan, 60 s × 12 (12 minutes after its last read), after which its watches are dropped — and the next read runs them again. Suitable for values that can only change when a specific file is written, such as mise's global config. The shipped `hostname`, `user` and `uname` poll instead (every 10 minutes, 10 minutes and hour while read), so a renamed machine is seen.
 
 ### 2.2 Create the file
 
@@ -873,3 +873,5 @@ Its symbols are the C ABI's own (`const char* symbol(const char* input)`, JSON i
 | `battery` | macOS `{percent, charging, status, time_remaining_secs}`; Linux `{percent, charging, status_raw, status, time_remaining_secs}`; `{}` with no battery | macOS `pmset -g batt`; Linux sysfs (`capacity`, `status`, and the estimate from `time_to_empty_now`/`time_to_full_now` or the energy or charge over the rate) |
 
 The name is reserved: `plugin('sys', …)` never searches `[daemon.plugin] path`, and `comb check config` warns of a `libsys.dylib` or `libsys.so` there, which nothing would load. An unknown symbol is `plugin(): <symbol> in sys: symbol not found`; a symbol given arguments returns `NULL`.
+
+The shipped `hostname`, `user`, `uname`, `load` and `uptime` providers are Sources like the one above, each in its own `defaults/<name>.toml`: read one there to see how it is written, and override any of its lines in `config.toml` or `conf.d/`.

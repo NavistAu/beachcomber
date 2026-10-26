@@ -53,7 +53,7 @@ fn an_absent_directory_gets_every_shipped_file() {
             written: shipped_names().iter().map(|s| s.to_string()).collect(),
             deleted: vec![],
             unmanaged: vec![],
-            files: 9,
+            files: SHIPPED.len(),
         }
     );
     for (name, body) in SHIPPED {
@@ -120,7 +120,11 @@ fn a_current_file_is_left_alone_even_when_edited_below_the_marker() {
         edited,
         "bytes unchanged"
     );
-    assert_eq!(report.written.len(), 8, "the other eight are written");
+    assert_eq!(
+        report.written.len(),
+        SHIPPED.len() - 1,
+        "every other one is written"
+    );
 }
 
 #[test]
@@ -257,14 +261,15 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
     for (name, body) in SHIPPED {
         let parsed: toml::Value = toml::from_str(body).unwrap_or_else(|e| panic!("{name}: {e}"));
         // `00-comb.toml` holds the decay prototype, which is data, not a
-        // template; its own tests are below.
+        // template; its own tests are below. A file of Sources alone
+        // (`hostname.toml`) has no templates.
         let Some(providers) = parsed
             .get("client")
             .and_then(|c| c.get("providers"))
             .and_then(|p| p.as_table())
         else {
-            assert_eq!(
-                *name, "00-comb.toml",
+            assert!(
+                *name == "00-comb.toml" || parsed.get("daemon").is_some(),
                 "{name}: templates live in [client.providers]"
             );
             continue;
@@ -299,6 +304,27 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
         }
     }
     assert_eq!(checked, 13, "every shipped template is covered");
+}
+
+/// A shipped Source is documented where it is written: the line under its
+/// table header is a comment saying what it reads and why it runs when it
+/// does, as a user reading `defaults/` would want.
+#[test]
+fn every_shipped_source_says_what_it_reads() {
+    let mut sources = 0;
+    for (name, body) in SHIPPED {
+        let lines: Vec<&str> = body.lines().collect();
+        for (at, line) in lines.iter().enumerate() {
+            if line.starts_with("[daemon.providers.") && line.contains(".sources.") {
+                assert!(
+                    lines.get(at + 1).is_some_and(|next| next.starts_with("# ")),
+                    "{name}: {line} has no comment under it"
+                );
+                sources += 1;
+            }
+        }
+    }
+    assert!(sources >= 5, "the shipped Sources are found: {sources}");
 }
 
 /// The file-versus-constant pin: the decay the shipped prototype writes is the
@@ -386,7 +412,19 @@ fn shipped_layers_parse_and_load_with_no_errors() {
     for name in ProviderRegistry::with_defaults().provider_names() {
         assert!(shipped.is_registered(&name), "{name}");
     }
-    for name in ["aws", "conda", "gcloud", "kubecontext", "op", "talos"] {
+    for name in [
+        "aws",
+        "conda",
+        "gcloud",
+        "hostname",
+        "kubecontext",
+        "load",
+        "op",
+        "talos",
+        "uname",
+        "uptime",
+        "user",
+    ] {
         assert!(shipped.is_registered(name), "{name}, from its shipped file");
     }
 }
@@ -568,9 +606,10 @@ fn comb_check_config_reports_the_defaults_directory() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains(&format!(
-            "  [WARN] local    defaults {}: 9 shipped file(s) missing or stale — the daemon \
+            "  [WARN] local    defaults {}: {} shipped file(s) missing or stale — the daemon \
              writes them on its next start\n",
-            "~/beachcomber/defaults"
+            "~/beachcomber/defaults",
+            SHIPPED.len()
         )),
         "got:\n{stdout}"
     );
@@ -598,8 +637,9 @@ fn comb_check_config_reports_the_defaults_directory() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains(&format!(
-            "  [PASS] local    defaults {} (9 files, comb {})\n",
+            "  [PASS] local    defaults {} ({} files, comb {})\n",
             "~/beachcomber/defaults",
+            SHIPPED.len(),
             env!("BEACHCOMBER_VERSION")
         )),
         "got:\n{stdout}"
@@ -607,7 +647,7 @@ fn comb_check_config_reports_the_defaults_directory() {
     assert_eq!(out.status.code(), Some(0), "stdout:\n{stdout}");
     assert_eq!(
         beachcomber::config::Config::conf_d_files(&defaults).len(),
-        9,
+        SHIPPED.len(),
         "the daemon wrote the shipped set"
     );
 }
@@ -693,7 +733,7 @@ fn comb_check_config_counts_the_files_comb_did_not_write() {
         "got:\n{stdout}"
     );
     assert!(
-        stdout.contains("(9 files, comb "),
+        stdout.contains(&format!("({} files, comb ", SHIPPED.len())),
         "the shipped set is still complete and current, got:\n{stdout}"
     );
 }

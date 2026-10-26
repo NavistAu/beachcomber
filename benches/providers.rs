@@ -2,11 +2,8 @@ use beachcomber::provider::Provider;
 use beachcomber::provider::battery::BatteryProvider;
 use beachcomber::provider::gcloud::GcloudProvider;
 use beachcomber::provider::git::GitProvider;
-use beachcomber::provider::hostname::HostnameProvider;
-use beachcomber::provider::load::LoadProvider;
 use beachcomber::provider::network::NetworkProvider;
-use beachcomber::provider::uptime::UptimeProvider;
-use beachcomber::provider::user::UserProvider;
+use beachcomber::provider::registry::ProviderRegistry;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 /// Run every Source declared by `provider` once at `path` and return their results.
@@ -19,40 +16,34 @@ fn execute_all_sources<P: Provider>(provider: &P, path: Option<&str>) -> Vec<usi
         .collect()
 }
 
-fn bench_hostname_execute(c: &mut Criterion) {
-    let p = HostnameProvider;
-    c.bench_function("provider_hostname_execute", |b| {
+/// One run of the shipped Source `provider.source` at the instance at `~`,
+/// as the scheduler runs it: its lines over the daemon's environment.
+fn bench_shipped_source(c: &mut Criterion, provider: &str, source: &str) {
+    let registry = ProviderRegistry::shipped(&std::env::vars().collect());
+    let s = registry
+        .source(provider, source)
+        .unwrap_or_else(|| panic!("{provider}.{source} is shipped"));
+    c.bench_function(&format!("provider_{provider}_execute"), |b| {
         b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
+            criterion::black_box(s.execute(None).unwrap().fields.len());
         })
     });
+}
+
+fn bench_hostname_execute(c: &mut Criterion) {
+    bench_shipped_source(c, "hostname", "host");
 }
 
 fn bench_user_execute(c: &mut Criterion) {
-    let p = UserProvider;
-    c.bench_function("provider_user_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "user", "name");
 }
 
 fn bench_load_execute(c: &mut Criterion) {
-    let p = LoadProvider;
-    c.bench_function("provider_load_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "load", "loadavg");
 }
 
 fn bench_uptime_execute(c: &mut Criterion) {
-    let p = UptimeProvider;
-    c.bench_function("provider_uptime_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "uptime", "time");
 }
 
 fn bench_git_execute(c: &mut Criterion) {

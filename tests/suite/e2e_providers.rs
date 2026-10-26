@@ -1,7 +1,6 @@
 use crate::common::fetch::fetch;
 use crate::common::poll::{poll_until, poll_until_eq};
 use beachcomber::client::Client;
-use beachcomber::config::Config;
 use beachcomber::daemon;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -10,7 +9,7 @@ use tempfile::TempDir;
 async fn e2e_all_builtin_providers_registered() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
-    let config = Config::default();
+    let config = crate::common::registry::config_over_shipped(vec![]);
 
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
@@ -57,7 +56,7 @@ async fn e2e_config_source_from_config() {
 
     // An in-process daemon loads no managed defaults, so the Source says its
     // own schedule.
-    let config = Config::from_toml(
+    let config = beachcomber::config::Config::from_toml(
         r#"
 [daemon.providers.test_echo.sources.main]
 data = "{{ exec(['echo', '{\"greeting\":\"hello\"}']) | fromjson }}"

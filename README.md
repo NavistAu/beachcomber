@@ -98,7 +98,7 @@ PROVIDER  PATH    FIELD    VALUE    AGE   TTL
 git       /repo   branch   main     14s   ★     60s×12 ∙
 git       /repo   dirty    true     14s   ★     60s×12 ∙
 battery   -       percent  87       8s    ★     30s×04
-hostname  -       short    artemis  3h    ---
+hostname  -       short    artemis  4m    ★    600s×06
 ```
 
 All commands use single-letter shorthands (`g` get, `s` status, `w` watch, `p` put, `r` refresh, `e` eval, `i` init, `c` check, `d` daemon, `k` kill). Format suffixes (`.s` shell, `.t` tsv, `.T` TSV+header, `.f` template, `.c` csv, `.C` CSV+header, `.j` json) replace the `-f` flag. Text is the default — `comb g` and `comb g git.branch .` both return plain text. Long forms always work too: `comb get git.branch . -f text` is the same as `comb g git.branch .`
@@ -335,7 +335,7 @@ $ comb s
 PROVIDER  PATH    FIELD    SOURCE  VALUE    AGE   TTL
 git       /repo   branch   head    main     14s   ★     60s×12 ∙
 git       /repo   dirty    status  true     14s   ★     60s×12 ∙
-hostname  -       short    host    artemis  3h    ---
+hostname  -       short    host    artemis  4m    ★    600s×06
 
 # Filter to entries in a specific lifecycle state
 comb s --filter=lifecycle=active
@@ -724,14 +724,16 @@ beachcomber ships 16 built-in providers organized by category, plus template-bac
 
 | Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `hostname` | none | `name` (string), `short` (string) | once at startup | 400 ns |
-| `user` | none | `name` (string), `uid` (int) | once at startup | 395 ns |
+| `hostname` | none | `name` (string), `short` (string) | poll 10m | 400 ns |
+| `user` | none | `name` (string), `uid` (int) | poll 10m | 395 ns |
 | `load` | none | `one` (float), `five` (float), `fifteen` (float) | poll 10s / floor 5s | 550 ns |
 | `uptime` | none | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
 | `battery` | none | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s / floor 5s | 6 ms |
 | `network` | none | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s / floor 5s | 2 ms |
 | `sudo` | none | `active` (bool) | poll 30s | < 1 µs |
-| `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | once at startup | < 1 µs |
+| `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | poll 1h | < 1 µs |
+
+`hostname`, `user`, `uname`, `load` and `uptime` are shipped files (`defaults/<name>.toml`), each one Source whose `data` line calls the compiled-in `sys` plugin; any of their lines can be overridden in `config.toml` or `conf.d/`.
 
 **Example output:**
 
@@ -1603,7 +1605,7 @@ PROVIDER  PATH    FIELD    VALUE    AGE   TTL
 git       /repo   branch   main     14s   ★     60s×12 ∙
 git       /repo   dirty    true     14s   ★     60s×12 ∙
 battery   -       percent  87       8s    ★     30s×04
-hostname  -       short    artemis  3h    ---
+hostname  -       short    artemis  4m    ★    600s×06
 
 # Filter to a specific provider
 comb s --filter provider=git

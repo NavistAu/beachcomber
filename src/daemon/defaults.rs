@@ -31,9 +31,14 @@ pub const SHIPPED: &[(&str, &str)] = &[
     ("conda.toml", include_str!("../../defaults/conda.toml")),
     ("gcloud.toml", include_str!("../../defaults/gcloud.toml")),
     (
+        "hostname.toml",
+        include_str!("../../defaults/hostname.toml"),
+    ),
+    (
         "kubecontext.toml",
         include_str!("../../defaults/kubecontext.toml"),
     ),
+    ("load.toml", include_str!("../../defaults/load.toml")),
     ("op.toml", include_str!("../../defaults/op.toml")),
     ("python.toml", include_str!("../../defaults/python.toml")),
     ("talos.toml", include_str!("../../defaults/talos.toml")),
@@ -41,6 +46,9 @@ pub const SHIPPED: &[(&str, &str)] = &[
         "terraform.toml",
         include_str!("../../defaults/terraform.toml"),
     ),
+    ("uname.toml", include_str!("../../defaults/uname.toml")),
+    ("uptime.toml", include_str!("../../defaults/uptime.toml")),
+    ("user.toml", include_str!("../../defaults/user.toml")),
 ];
 
 /// Every shipped file as a configuration layer, in the order the daemon

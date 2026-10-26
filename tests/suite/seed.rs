@@ -1532,12 +1532,14 @@ async fn comb_check_config_renders_both_views_as_one_list() {
     .await
     .unwrap();
 
+    // The file adds none; the shipped files' Sources are config Sources.
+    let sources = crate::common::registry::with_shipped_defaults().config_source_count();
     let expected = format!(
         "Config\n\
          \x20 [PASS] daemon   path {}\n\
-         \x20 [PASS] daemon   parsed ok — 0 config Sources\n\
+         \x20 [PASS] daemon   parsed ok — {sources} config Sources\n\
          \x20 [PASS] daemon   config parsed\n\
-         \x20 [PASS] daemon   0 config Sources loaded\n\
+         \x20 [PASS] daemon   {sources} config Sources loaded\n\
          \x20 [PASS] local    config file valid\n\
          \x20 [PASS] local    defaults {} ({} files, comb {})\n\
          \n",

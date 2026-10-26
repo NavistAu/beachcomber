@@ -20,7 +20,8 @@ pub fn config_over_shipped(layers: Vec<(PathBuf, toml::Value)>) -> Config {
 }
 
 /// The registry of the shipped defaults alone, as a daemon with no files of
-/// its own loads it, its Sources' lines seeing no variables.
+/// its own started in this process loads it: its Sources' lines see this
+/// process's environment (the instance at `~` runs in its `HOME`).
 pub fn with_shipped_defaults() -> ProviderRegistry {
-    ProviderRegistry::shipped(&Default::default())
+    ProviderRegistry::shipped(&std::env::vars().collect())
 }

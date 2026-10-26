@@ -1188,12 +1188,6 @@ impl ProviderRegistry {
             .register(Box::new(crate::provider::git::GitProvider))
             .expect("git");
         registry
-            .register(Box::new(crate::provider::hostname::HostnameProvider))
-            .expect("hostname");
-        registry
-            .register(Box::new(crate::provider::load::LoadProvider))
-            .expect("load");
-        registry
             .register(Box::new(crate::provider::mise::MiseProvider))
             .expect("mise");
         registry
@@ -1208,16 +1202,6 @@ impl ProviderRegistry {
         registry
             .register(Box::new(crate::provider::terraform::TerraformProvider))
             .expect("terraform");
-        registry
-            .register(Box::new(crate::provider::uname::UnameProvider))
-            .expect("uname");
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        registry
-            .register(Box::new(crate::provider::uptime::UptimeProvider))
-            .expect("uptime");
-        registry
-            .register(Box::new(crate::provider::user::UserProvider))
-            .expect("user");
         registry
     }
 
@@ -2071,12 +2055,19 @@ return = "{{ result | poll('5s') }}"
 return = "{{ result | poll('15s') }}"
 "#,
         );
+        // The shipped files' Sources are config Sources too.
+        let shipped = registry_from("").config_source_count();
         assert_eq!(
             reg.config_source_count(),
-            1,
+            shipped + 1,
             "demo.s takes its lines from `_`; the retuned built-in and `_` itself are not config Sources"
         );
-        assert_eq!(registry_from("").config_source_count(), 0);
+        assert_eq!(
+            ProviderRegistry::with_config(&Config::default(), &Default::default())
+                .unwrap()
+                .config_source_count(),
+            0
+        );
     }
 
     #[test]

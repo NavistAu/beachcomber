@@ -142,10 +142,10 @@ Use this decision table:
 | File changes only | with or without | `watch` |
 | Timer only | with or without | `poll` |
 | File changes + safety timer | with or without | `watch + poll` |
-| Truly static (hostname, uname, user) | none | `watch` (pure-watch, one instance) |
+| Truly static (changes only on a reboot) | none | `watch` (pure-watch, one instance) |
 | Global config file watch (mise config dir) | none | `watch` + `abs_paths` |
 
-**Pure-watch** sources with no root use the `Watch` strategy: no poll of their own. They execute once on first demand and only re-execute when an fs event fires on their registered `abs_paths`. Like every Source they decay once nothing reads them — a watch-only Source's Active window is the default poll lifespan, 60 s × 12 (12 minutes after its last read), after which its watches are dropped — and the next read runs them again. Suitable for values that can only change when a specific file is written: hostname (requires reboot), username (requires reboot), uname (requires reboot), mise global config.
+**Pure-watch** sources with no root use the `Watch` strategy: no poll of their own. They execute once on first demand and only re-execute when an fs event fires on their registered `abs_paths`. Like every Source they decay once nothing reads them — a watch-only Source's Active window is the default poll lifespan, 60 s × 12 (12 minutes after its last read), after which its watches are dropped — and the next read runs them again. Suitable for values that can only change when a specific file is written, such as mise's global config. The shipped `hostname`, `user` and `uname` poll instead (every 10 minutes, 10 minutes and hour while read), so a renamed machine is seen.
 
 ### 2.2 Create the file
 
@@ -358,7 +358,7 @@ pub enum InvalidationStrategy {
 }
 ```
 
-There is no `Once` variant. Values that were previously declared `Once` (hostname, user, uname) are now pure-watch globals: `Watch { patterns: [], abs_paths: [...] }`; they decay like any other Source.
+There is no `Once` variant. A value that never changes is a pure-watch global, `Watch { patterns: [], abs_paths: [] }`, run on first demand; it decays like any other Source.
 
 Strategy chooser:
 

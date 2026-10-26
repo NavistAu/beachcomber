@@ -11,11 +11,11 @@ use comb_daemon::daemon;
 use std::path::{Path, PathBuf};
 use tokio::runtime::Runtime;
 
-/// What the daemon composes when it starts: the managed `00-comb.toml` as a
-/// layer, which carries the abstract provider's lines. An in-process daemon
-/// handed no directory has no `defaults/` to read it from.
+/// What the daemon composes when it starts: every managed `defaults/` file as
+/// a layer, the abstract provider's lines and the shipped providers. An
+/// in-process daemon handed no directory has no `defaults/` to read them from.
 fn shipped_defaults() -> Config {
-    Config::from_layers(vec![daemon::defaults::comb_layer()])
+    Config::from_layers(daemon::defaults::shipped_layers())
 }
 
 /// RAII guard for an in-process daemon on its own two-worker runtime, which

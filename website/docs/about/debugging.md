@@ -55,7 +55,7 @@ PROVIDER  PATH    FIELD    VALUE    AGE   TTL
 git       /repo   branch   main     14s   ★     60s×12 ∙
 git       /repo   dirty    true     14s   ★     60s×12 ∙
 battery   -       percent  87       8s    ★     30s×04
-hostname  -       short    artemis  3h    ---
+hostname  -       short    artemis  4m    ★    600s×06
 
 # Filter to entries currently in decay
 comb s --filter=lifecycle=decay1

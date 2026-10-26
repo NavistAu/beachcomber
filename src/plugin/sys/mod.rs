@@ -135,7 +135,7 @@ fn texts<'a>(pairs: impl IntoIterator<Item = (&'a str, String)>) -> Facts {
 }
 
 /// `gethostname(3)`: `None` when it fails or the name is empty.
-pub(crate) fn gethostname() -> Option<String> {
+fn gethostname() -> Option<String> {
     let mut buf = [0u8; 256];
     // SAFETY: `buf` is writable for its length.
     let ret = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
@@ -153,7 +153,7 @@ fn hostname_facts() -> Option<Facts> {
 }
 
 /// `getloadavg(3)`: the 1, 5 and 15 minute averages.
-pub(crate) fn loadavg() -> Option<[f64; 3]> {
+fn loadavg() -> Option<[f64; 3]> {
     let mut avg = [0f64; 3];
     // SAFETY: `avg` holds the three samples asked for.
     (unsafe { libc::getloadavg(avg.as_mut_ptr(), 3) } == 3).then_some(avg)
@@ -169,15 +169,15 @@ fn loadavg_facts() -> Option<Facts> {
 }
 
 /// What `uname(2)` says of the system.
-pub(crate) struct Uname {
-    pub sysname: String,
-    pub release: String,
-    pub version: String,
-    pub machine: String,
+struct Uname {
+    sysname: String,
+    release: String,
+    version: String,
+    machine: String,
 }
 
 /// `uname(2)`.
-pub(crate) fn uname() -> Option<Uname> {
+fn uname() -> Option<Uname> {
     fn text(field: &[c_char]) -> String {
         let bytes: Vec<u8> = field
             .iter()
@@ -219,7 +219,7 @@ fn uptime_facts() -> Option<Facts> {
 }
 
 /// The login name of `uid` (`getpwuid_r(3)`): `None` for a uid with no entry.
-pub(crate) fn username(uid: libc::uid_t) -> Option<String> {
+fn username(uid: libc::uid_t) -> Option<String> {
     // The buffer is `c_char`, signed on some targets and unsigned on others;
     // it grows on ERANGE. A zeroed `passwd` is portable across the platforms'
     // differing layouts, and `getpwuid_r` fills what it uses.

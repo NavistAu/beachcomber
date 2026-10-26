@@ -25,18 +25,18 @@ Each provider declares one or more **sources** — independent units of executio
 | `git` | `diff` | poll 30s | project | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
 | `git` | `lineage` | poll 60s | project | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
 | `git` | `status` | watch + poll | project | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
-| `hostname` | `host` | watch (pure-watch) | none | `name`, `short` |
-| `load` | `loadavg` | poll 10s | none | `one`, `five`, `fifteen` |
+| `hostname` | `host` | poll 10m (`defaults/hostname.toml`) | none | `name`, `short` |
+| `load` | `loadavg` | poll 10s (`defaults/load.toml`) | none | `one`, `five`, `fifteen` |
 | `mise` | `tools` | watch | project | tool versions, one field per tool: the project's, and for a tool it does not set the global config's, found at the instance at `~` |
 | `network` | `interfaces` | poll 10s | none | `interface`, `ip`, `vpn_active`, `vpn_name`, `ssid`, `online` |
 | `python` | `venv` | watch | project | `venv`, `local_venv_name`, `venv_version` (`venv_name` and `version` are [templates](#template-backed-namespaces) over them) |
 | `sudo` | `state` | poll 30s | none | `active` |
 | `terraform` | `state` | watch | project | `workspace` |
-| `uname` | `system` | watch (pure-watch) | none | `sysname`, `release`, `version`, `machine` |
-| `uptime` | `time` | poll 60s | none | `seconds`, `days`, `hours`, `minutes` |
-| `user` | `name` | watch (pure-watch) | none | `name`, `uid` |
+| `uname` | `system` | poll 1h (`defaults/uname.toml`) | none | `sysname`, `release`, `version`, `machine` |
+| `uptime` | `time` | poll 60s (`defaults/uptime.toml`) | none | `seconds`, `days`, `hours`, `minutes` |
+| `user` | `name` | poll 10m (`defaults/user.toml`) | none | `name`, `uid` |
 
-**Pure-watch global** sources execute once on first demand and re-execute only when a registered filesystem path changes. They have no poll, so they decay by the default poll lifespan (60 s × 12 after the last read) and run again on the next read.
+**Shipped files.** A provider whose strategy names a `defaults/` file is that file, written the way a user writes a Source: `hostname`, `user`, `uname`, `load` and `uptime` each have one Source whose `data` line calls the compiled-in `sys` plugin. Set any of its lines in `config.toml` or `conf.d/` (`[daemon.providers.hostname.sources.host] result.name = "{{ data.name | upper }}"`) and the rest stay as shipped.
 
 **watch + poll** sources watch files for quick invalidation and also poll on a timer as a backstop.
 
@@ -46,14 +46,14 @@ Each provider declares one or more **sources** — independent units of executio
 
 | Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `hostname` | none | `name` (string), `short` (string) | once at startup | 400 ns |
-| `user` | none | `name` (string), `uid` (int) | once at startup | 395 ns |
+| `hostname` | none | `name` (string), `short` (string) | poll 10m | 400 ns |
+| `user` | none | `name` (string), `uid` (int) | poll 10m | 395 ns |
 | `load` | none | `one` (float), `five` (float), `fifteen` (float) | poll 10s | 550 ns |
 | `uptime` | none | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
 | `battery` | none | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s | 6 ms |
 | `network` | none | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s | 2 ms |
 | `sudo` | none | `active` (bool) | poll 30s | < 1 µs |
-| `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | once at startup | < 1 µs |
+| `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | poll 1h | < 1 µs |
 
 **Platform notes:**
 

@@ -5,8 +5,6 @@ pub mod config_source;
 pub mod direnv;
 pub mod gcloud;
 pub mod git;
-pub mod hostname;
-pub mod load;
 pub mod mise;
 pub mod network;
 pub mod python;
@@ -14,9 +12,6 @@ pub mod registry;
 pub mod source_call;
 pub mod sudo;
 pub mod terraform;
-pub mod uname;
-pub mod uptime;
-pub mod user;
 
 #[cfg(test)]
 mod aws_tests;
@@ -32,8 +27,6 @@ mod mise_tests;
 mod provider_trait_tests;
 #[cfg(test)]
 mod provider_types_tests;
-#[cfg(test)]
-mod providers_builtin_tests;
 #[cfg(test)]
 mod providers_cloud_tests;
 #[cfg(test)]

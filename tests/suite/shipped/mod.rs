@@ -14,6 +14,12 @@ use crate::common::socket::IsolatedSocket;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+mod hostname;
+mod load;
+mod uname;
+mod uptime;
+mod user;
+
 /// A daemon on the shipped defaults, and a directory to read from.
 pub struct Scenario {
     pub daemon: TestDaemon,
@@ -23,9 +29,21 @@ pub struct Scenario {
 
 /// A fresh [`Scenario`].
 pub fn scenario() -> Scenario {
+    scenario_with(&[])
+}
+
+/// A fresh [`Scenario`] whose configuration directory holds `files` before
+/// the daemon starts: `(path under <XDG_CONFIG_HOME>/beachcomber, body)`, a
+/// `conf.d/` file over the shipped ones, say.
+pub fn scenario_with(files: &[(&str, &str)]) -> Scenario {
     let socket = IsolatedSocket::new();
     let home = socket.dir.path().join("home");
     let xdg = socket.dir.path().join("xdg");
+    for (rel, body) in files {
+        let path = xdg.join("beachcomber").join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).expect("make the config directory");
+        std::fs::write(path, body).expect("write a config file");
+    }
     let project = home.join("project");
     std::fs::create_dir_all(&project).expect("make the project directory");
     let project = project.canonicalize().expect("the project directory");
@@ -34,6 +52,25 @@ pub fn scenario() -> Scenario {
 }
 
 impl Scenario {
+    /// `comb check config --origins <key> -f json` over this daemon's
+    /// configuration directory: one object per leaf, each naming the file
+    /// that set it.
+    pub fn origins(&self, key: &str) -> Vec<Value> {
+        let out = self
+            .daemon
+            .command(&self.project)
+            .args(["check", "--connect-timeout", "0", "config", "--origins"])
+            .args([key, "-f", "json"])
+            .output()
+            .expect("run comb check config --origins");
+        assert!(out.status.success(), "exit {:?}", out.status.code());
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).expect("one JSON object per line"))
+            .collect()
+    }
+
     /// `comb get -f json <key>` run in `dir`, with no environment but the
     /// daemon's isolation (`HOME`, `XDG_*`, the socket, `PATH`): the value,
     /// or `None` on a miss or a failure.

@@ -1,5 +1,4 @@
 use beachcomber::client::Client;
-use beachcomber::config::Config;
 use beachcomber::daemon;
 use tempfile::TempDir;
 
@@ -9,7 +8,7 @@ use crate::common::fetch::fetch;
 async fn e2e_get_hostname_via_daemon() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
-    let config = Config::default();
+    let config = crate::common::registry::config_over_shipped(vec![]);
 
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
@@ -31,7 +30,7 @@ async fn e2e_get_hostname_via_daemon() {
 async fn e2e_get_hostname_single_field() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
-    let config = Config::default();
+    let config = crate::common::registry::config_over_shipped(vec![]);
 
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
@@ -50,7 +49,7 @@ async fn e2e_get_hostname_single_field() {
 async fn e2e_get_user() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
-    let config = Config::default();
+    let config = crate::common::registry::config_over_shipped(vec![]);
 
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
@@ -67,7 +66,7 @@ async fn e2e_get_user() {
 async fn e2e_refresh_and_get() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
-    let config = Config::default();
+    let config = crate::common::registry::config_over_shipped(vec![]);
 
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
@@ -90,7 +89,7 @@ async fn e2e_refresh_and_get() {
 async fn e2e_unknown_provider() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
-    let config = Config::default();
+    let config = crate::common::registry::config_over_shipped(vec![]);
 
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
@@ -114,7 +113,7 @@ async fn e2e_unknown_provider() {
 async fn e2e_multiple_concurrent_clients() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
-    let config = Config::default();
+    let config = crate::common::registry::config_over_shipped(vec![]);
 
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
@@ -149,7 +148,7 @@ async fn daemon_introspect_includes_pid_and_version() {
     // pid and version moved from Request::Status to Request::Introspect{daemon}.
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
-    let config = Config::default();
+    let config = crate::common::registry::config_over_shipped(vec![]);
 
     let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");

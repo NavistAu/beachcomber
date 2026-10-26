@@ -757,7 +757,7 @@ async fn setup_daemon() -> (
 ) {
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
-    let config = Config::default();
+    let config = crate::common::registry::config_over_shipped(vec![]);
     let (handle, ready) = beachcomber::daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
     let client = Client::new(sock.clone());
@@ -1292,11 +1292,24 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn status_response_once_row_has_kind_once() {
-    let (_tmp, sock, client, handle) = setup_daemon().await;
-
-    // hostname is a Watch-only global provider with 60s x 12 — the equivalent
-    // of the old "Once" semantics. It enters the lifecycle map immediately on demand.
-    let _ = fetch(&sock, "hostname.short", None).expect("get hostname.short");
+    // A Source with no root and a return of no decorator is a pure-watch
+    // global, the equivalent of the old "Once" semantics: run on first
+    // demand, then only when evicted. It enters the lifecycle map
+    // immediately on demand.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let config = crate::common::registry::config_over_shipped(vec![(
+        std::path::PathBuf::from("/once.toml"),
+        toml::from_str(
+            "[daemon.providers.fixed.sources.s]\ndata = \"{{ 1 }}\"\n\
+             result.v = \"{{ data }}\"\nreturn = \"{{ result }}\"\n",
+        )
+        .unwrap(),
+    )]);
+    let (handle, ready) = beachcomber::daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
+    let client = Client::new(sock.clone());
+    let _ = fetch(&sock, "fixed.v", None).expect("get fixed.v");
 
     use beachcomber::cache::RowKind;
 
@@ -1304,24 +1317,24 @@ async fn status_response_once_row_has_kind_once() {
     // once the scheduler has processed the demand for this source — poll the
     // status response until that has happened.
     let rows = poll_until(
-        "status rows after get hostname.short",
-        "a hostname row whose kind is Lifecycle",
+        "status rows after get fixed.v",
+        "a fixed row whose kind is Lifecycle",
         std::time::Duration::from_secs(5),
         std::time::Duration::from_millis(20),
         || client.status().expect("status"),
         |rows: &Vec<CacheRow>| {
             rows.iter()
-                .find(|r| r.provider == "hostname")
+                .find(|r| r.provider == "fixed")
                 .is_some_and(|r| matches!(r.kind, Some(RowKind::Lifecycle { .. })))
         },
     );
 
     let row = rows
         .iter()
-        .find(|r| r.provider == "hostname")
-        .expect("hostname row present");
+        .find(|r| r.provider == "fixed")
+        .expect("fixed row present");
 
-    // hostname uses Watch + 60s x 12 — shown as Lifecycle (decay=0, watches_files=true)
+    // Watch with no paths — shown as Lifecycle (decay=0)
     match row.kind.as_ref().expect("kind present") {
         RowKind::Lifecycle {
             decay,
@@ -1333,9 +1346,9 @@ async fn status_response_once_row_has_kind_once() {
             // what matters is the Lifecycle variant is used (not Once/Transient/Static).
             let _ = watches_files;
         }
-        other => panic!("expected RowKind::Lifecycle for hostname, got {:?}", other),
+        other => panic!("expected RowKind::Lifecycle for fixed, got {:?}", other),
     }
-    // hostname uses Watch + pure-watch global — no poll path
+    // A pure-watch global has no poll path
     // → poll_interval_secs is None and poll_count is None.
     assert!(
         row.poll_interval_secs.is_none(),

@@ -1,13 +1,65 @@
-use crate::provider::hostname::HostnameProvider;
 use crate::provider::registry::ProviderRegistry;
-use crate::provider::user::UserProvider;
+use crate::provider::{
+    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
+    Source, SourceMetadata, SourceResult,
+};
+
+/// A provider of one Source, `s`, of one field, `f`, that answers nothing.
+struct Named(&'static str);
+
+fn named_meta() -> SourceMetadata {
+    SourceMetadata {
+        name: "s".into(),
+        fields: vec![FieldSchema {
+            name: "f".into(),
+            field_type: FieldType::String,
+        }],
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 60,
+            count: 1,
+        },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 60,
+        },
+        decay: None,
+        budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
+        timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
+        nearest: false,
+    }
+}
+
+struct Nothing(SourceMetadata);
+
+impl Source for Nothing {
+    fn metadata(&self) -> &SourceMetadata {
+        &self.0
+    }
+
+    fn execute(&self, _: Option<&str>) -> Result<SourceResult, String> {
+        Ok(SourceResult::new())
+    }
+}
+
+impl Provider for Named {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: self.0.into(),
+            sources: vec![named_meta()],
+        }
+    }
+
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(Nothing(named_meta()))]
+    }
+}
 
 #[test]
 fn registry_register_and_get() {
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(HostnameProvider)).unwrap();
+    registry.register(Box::new(Named("a"))).unwrap();
     assert!(
-        registry.provider_metadata("hostname").is_some(),
+        registry.provider_metadata("a").is_some(),
         "Should find registered provider"
     );
 }
@@ -24,13 +76,13 @@ fn registry_get_missing() {
 #[test]
 fn registry_list_providers() {
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(HostnameProvider)).unwrap();
-    registry.register(Box::new(UserProvider)).unwrap();
+    registry.register(Box::new(Named("a"))).unwrap();
+    registry.register(Box::new(Named("b"))).unwrap();
     let name_strings = registry.list();
     let mut names: Vec<&str> = name_strings.iter().map(|s| s.as_str()).collect();
     names.sort();
-    assert!(names.contains(&"hostname"), "Should contain hostname");
-    assert!(names.contains(&"user"), "Should contain user");
+    assert!(names.contains(&"a"), "Should contain a");
+    assert!(names.contains(&"b"), "Should contain b");
 }
 
 #[test]
@@ -58,7 +110,9 @@ fn registry_source_lookup() {
 
 #[test]
 fn registry_execute_via_source() {
-    let registry = ProviderRegistry::shipped(&Default::default());
+    // The instance at `~` runs in the daemon's `HOME`.
+    let home = std::env::temp_dir().to_string_lossy().into_owned();
+    let registry = ProviderRegistry::shipped(&[("HOME".to_string(), home)].into());
     let source = registry.source("hostname", "host").unwrap();
     let result = source.execute(None).unwrap();
     assert!(
