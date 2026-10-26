@@ -5,8 +5,8 @@ use crate::engine::PluginSet;
 use crate::provider::config_source::{ConfigSource, DaemonRead, lint_lines};
 use crate::provider::source_call::Called;
 use crate::provider::{
-    FailbackConfig, InvalidationStrategy, Provider, ProviderMetadata, Source, SourceMetadata,
-    SourceResult, Value, is_sentinel,
+    FailbackConfig, Provider, ProviderMetadata, Source, SourceMetadata, SourceResult, Value,
+    is_sentinel,
 };
 use crate::query::Found;
 use crate::scheduler::lifecycle::{DEFAULT_FAILBACK_COUNT, DEFAULT_FAILBACK_INTERVAL_SECS};
@@ -1485,8 +1485,6 @@ impl ProviderRegistry {
                 meta.budget = budget;
                 meta.timeout = timeout;
                 if let Some(Retune { recorded, .. }) = line {
-                    meta.fsevents_reinstate =
-                        !matches!(recorded.invalidation, InvalidationStrategy::Poll { .. });
                     meta.invalidation = recorded.invalidation.clone();
                     meta.failback = recorded.failback;
                     meta.decay = recorded.decay;
@@ -1618,7 +1616,6 @@ mod tests {
                 reattempts: 3,
                 interval_secs: 30,
             },
-            fsevents_reinstate: false,
             decay: None,
             budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
             timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,

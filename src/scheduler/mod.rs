@@ -101,8 +101,6 @@ pub struct LifecycleSnapshot {
     /// poll_timer.interval`, clamped to now). `None` for pure Watch sources
     /// (no poll timer).
     pub next_poll_in_secs: Option<u64>,
-    /// Whether fsevents are reinstated on demand for this entry.
-    pub fsevents_reinstate: bool,
     /// True if the provider uses Watch or WatchAndPoll invalidation strategy.
     pub watches_files: bool,
     /// Source name for this lifecycle entry.
@@ -312,7 +310,6 @@ fn snapshot_entry(
         poll_count,
         polls_elapsed,
         next_poll_in_secs,
-        fsevents_reinstate: entry.config.fsevents_reinstate,
         watches_files,
         source: key.source.clone(),
     }
@@ -1177,7 +1174,6 @@ fn apply_put_written(
             interval_secs: ttl_secs,
             count: 1,
         },
-        false,
         1,
     );
     lifecycle.on_demand(key, cfg, now);
@@ -1194,7 +1190,6 @@ fn source_lifecycle_config(
 ) -> SourceLifecycleConfig {
     SourceLifecycleConfig::from_strategy(
         &sm.invalidation,
-        sm.fsevents_reinstate,
         sm.decay
             .unwrap_or_else(|| cache.resolve_decay(provider, path)),
     )
@@ -1221,8 +1216,8 @@ struct Retune {
     failback_changed: bool,
     /// What it is invalidated by differs.
     watches_changed: bool,
-    /// Whether it should be watching now (it is Active, or keeps its watches
-    /// through decay) rather than waiting for a demand to reinstate them.
+    /// Whether it should be watching now (it is Active) rather than waiting
+    /// for a demand to reinstate it.
     rewatch: bool,
 }
 
@@ -1242,7 +1237,6 @@ struct ReloadPlan {
 fn same_schedule(a: &crate::provider::SourceMetadata, b: &crate::provider::SourceMetadata) -> bool {
     a.invalidation == b.invalidation
         && a.failback == b.failback
-        && a.fsevents_reinstate == b.fsevents_reinstate
         && a.decay == b.decay
         && a.budget == b.budget
         && a.nearest == b.nearest
@@ -1287,7 +1281,7 @@ fn plan_reload(
             }),
             failback_changed: before.is_none_or(|before| before.failback != now.failback),
             watches_changed: before.is_none_or(|before| before.invalidation != now.invalidation),
-            rewatch: entry.state == LifecycleState::Active || config.fsevents_reinstate,
+            rewatch: entry.state == LifecycleState::Active,
             config,
         });
     }

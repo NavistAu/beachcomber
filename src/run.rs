@@ -809,7 +809,6 @@ mod tests {
                 reattempts: failback,
                 interval_secs: 3600,
             },
-            fsevents_reinstate: false,
             decay: None,
             budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
             timeout,

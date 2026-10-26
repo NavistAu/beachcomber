@@ -603,9 +603,6 @@ pub struct SourceMetadata {
     pub fields: Vec<FieldSchema>,
     pub invalidation: InvalidationStrategy,
     pub failback: FailbackConfig,
-    /// Whether watches survive decay. Default `true` for Watch/WatchAndPoll
-    /// per canon §"fsevents_reinstate default". Meaningless for Poll.
-    pub fsevents_reinstate: bool,
     /// Decay steps before eviction, when the Source sets its own (`ttl(...)`
     /// sets 1). `None` takes the provider's `_.decay` prototype.
     pub decay: Option<u8>,
@@ -719,13 +716,6 @@ fn validate_source(provider: &str, s: &SourceMetadata) -> Result<(), String> {
     if s.fields.is_empty() {
         return Err(format!(
             "provider '{}' source '{}' declares no fields",
-            provider, s.name
-        ));
-    }
-    // fsevents_reinstate is meaningless for Poll
-    if matches!(s.invalidation, InvalidationStrategy::Poll { .. }) && s.fsevents_reinstate {
-        return Err(format!(
-            "provider '{}' source '{}': fsevents_reinstate=true on Poll strategy is meaningless",
             provider, s.name
         ));
     }
@@ -897,7 +887,6 @@ mod tests {
                 reattempts: 3,
                 interval_secs: 30,
             },
-            fsevents_reinstate: false,
             decay: None,
             budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
             timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
@@ -922,17 +911,6 @@ mod tests {
         };
         let err = meta.validate(true).unwrap_err();
         assert!(err.contains("declared by both source"));
-    }
-
-    #[test]
-    fn validate_rejects_fsevents_reinstate_on_poll() {
-        let mut s = make_source("a", vec!["f1"]);
-        s.fsevents_reinstate = true;
-        let meta = ProviderMetadata {
-            name: "x".into(),
-            sources: vec![s],
-        };
-        assert!(meta.validate(true).is_err());
     }
 
     #[test]

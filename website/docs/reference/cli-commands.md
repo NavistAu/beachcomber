@@ -189,7 +189,7 @@ Only a colon in the provider's own segment names a facet (`git:cache`), and the 
 
 ## `comb s` (status)
 
-Show the warm cache as a table — one row per provider field, the values a read would answer. Facet rows (`aws:template`, `*:cache`) and absent values are hidden unless asked for (see [Filters](#filters)). SOURCE names what produced each row's value, and the `TTL` column encodes each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, Active-window poll count, and whether filesystem events will reinstate the entry to Active (`◉`).
+Show the warm cache as a table — one row per provider field, the values a read would answer. Facet rows (`aws:template`, `*:cache`) and absent values are hidden unless asked for (see [Filters](#filters)). SOURCE names what produced each row's value, and the `TTL` column encodes each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, Active-window poll count, and whether the entry watches its files while it is Active (`∙`).
 
 For a live view, ask for colour explicitly — under `watch` and `viddy` stdout is a pipe, so `--color=auto` (the default) resolves to no colour:
 
@@ -203,8 +203,8 @@ viddy 'comb status --color=always'
 ```sh
 $ comb s
 PROVIDER  FIELD    SOURCE          VALUE    PATH    AGE   POLL  TTL
-git       branch   source(head)    main     /repo   14s    46s  ★     60s×12 ◉
-git       dirty    source(status)  true     /repo   14s    46s  ★     60s×12 ◉
+git       branch   source(head)    main     /repo   14s    46s  ★     60s×12 ∙
+git       dirty    source(status)  true     /repo   14s    46s  ★     60s×12 ∙
 hostname  short    source(host)    artemis  -        3h      -  ---
 
 # Every row, facets and absent values included
@@ -213,7 +213,6 @@ comb s -a
 # Filter to entries in a specific lifecycle state
 comb s --filter=lifecycle=active
 comb s --filter=lifecycle=decay1
-comb s --filter=fsevents_reinstate=true
 
 # Sort options
 comb s --sort age             # oldest first
@@ -224,7 +223,7 @@ comb s -f tsv
 comb s -f json
 ```
 
-The machine formats lay a row out in the columns `PROVIDER PATH FIELD SOURCE VALUE AGE_MS STALE KIND DECAY POLL_INTERVAL_SECS POLL_COUNT FSEVENTS_REINSTATE FAILURE_CONSECUTIVE_FAILURES FAILURE_SUPPRESSED_UNTIL_UNIX_MS`, through the same cell encoders as `comb get`: `csv` and `tsv` have no header row and `CSV` and `TSV` do, a VALUE is its raw text (JSON for an object or array), and an absent field is an empty cell. `json` is one row object per line. `sh` names each variable `provider_path_field` with every character outside `[A-Za-z0-9_]` written as `_`, plus `_SOURCE`, `_KIND` and the lifecycle fields beside it.
+The machine formats lay a row out in the columns `PROVIDER PATH FIELD SOURCE VALUE AGE_MS STALE KIND DECAY POLL_INTERVAL_SECS POLL_COUNT FAILURE_CONSECUTIVE_FAILURES FAILURE_SUPPRESSED_UNTIL_UNIX_MS`, through the same cell encoders as `comb get`: `csv` and `tsv` have no header row and `CSV` and `TSV` do, a VALUE is its raw text (JSON for an object or array), and an absent field is an empty cell. `json` is one row object per line. `sh` names each variable `provider_path_field` with every character outside `[A-Za-z0-9_]` written as `_`, plus `_SOURCE`, `_KIND` and the lifecycle fields beside it.
 
 **Flags:** `-f`/`--format` (`human` (default), `table`, `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, or a template), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|stale|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--depth N`, and the global `--color` and `--ascii` ([Colour and glyphs](#colour-and-glyphs)).
 
@@ -245,7 +244,6 @@ A path at or below `$HOME` is written from `~` in both tables, the global entry 
 | `shadowed` | `true` / `false` — a record the read from here does not take: another layer of the same leaf answers (a nearer put, a template over data), or the read answers nothing there (a put replaced the node above it) |
 | `stale` | `true` / `false` |
 | `lifecycle` | `active`, `decay<N>`, `once`, `static`, `rendered` |
-| `fsevents_reinstate` | `true` / `false` |
 
 Three filters apply by default, so the table is what `comb get` here answers: `facet=-` hides facet rows, which are data *about* a provider rather than values a read answers; `value!=-` hides absent values; and `shadowed=false` hides records the read from this directory does not take. A filter you give on any of those keys, with either operator, replaces that key's default; `-a`/`--all` drops all three. Records stored at directories off this one's chain are other directories' values, and are listed as they are.
 
@@ -332,7 +330,7 @@ agent     session  put     {"ctx_pct":42,"name":"claude"}  -     0s      -  ---
 | `0`  | Decay 4   | 0 remaining — next tick evicts |
 | `---` | Once / Static / Template | no lifecycle (hostname, put entries, a rendered template row) |
 
-A `◉` trailing indicator means `fsevents_reinstate=true` — a filesystem event will reinstate the entry to Active even during decay. A `⚠` lead replaces `★` when the provider is in failure-suppress (row renders red).
+A `∙` trailing indicator means the entry watches its files while it is Active; a decaying entry has dropped its watches, and a read checks its files instead. A `⚠` lead replaces `★` when the provider is in failure-suppress (row renders red).
 
 The default output preset is `human` (coloured table) regardless of whether stdout is a TTY. Scripts that want tab-separated data should pass `-f tsv` explicitly. Colour follows `--color`: `auto` (the default) colours only a TTY, so piping into a pager or a live viewer needs `--color=always`.
 

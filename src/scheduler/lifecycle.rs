@@ -4,6 +4,12 @@
 //! State transitions: Cold → Active → Decay(1..=depth) → Evicted (depth defaults to 4). Per-entry state
 //! held in `LifecycleEntry`; scheduler dispatches on demand/fsevent/tick
 //! via `LifecycleRegistry`.
+//!
+//! An instance watches its files only while it is Active: entering decay
+//! drops its watches, a file event on a decaying instance does nothing (it
+//! has no watch, and a late event is not a demand), and a read reinstates it
+//! and registers them again. Until then a read checks the record's files by
+//! stat, so the record is never served past a change.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -88,17 +94,12 @@ pub struct SourceLifecycleConfig {
     pub poll_interval: Option<Duration>,
     /// Polls in the Active window; the window is `interval × count`.
     pub poll_count: u32,
-    pub fsevents_reinstate: bool,
     /// Decay steps before eviction, at least 1.
     pub decay: u8,
 }
 
 impl SourceLifecycleConfig {
-    pub fn from_strategy(
-        strategy: &InvalidationStrategy,
-        fsevents_reinstate: bool,
-        decay: u8,
-    ) -> Self {
+    pub fn from_strategy(strategy: &InvalidationStrategy, decay: u8) -> Self {
         let (kind, poll_interval, poll_count) = match strategy {
             InvalidationStrategy::Poll {
                 interval_secs,
@@ -123,7 +124,6 @@ impl SourceLifecycleConfig {
             strategy_kind: kind,
             poll_interval,
             poll_count,
-            fsevents_reinstate,
             decay,
         }
     }
@@ -251,11 +251,8 @@ impl LifecycleRegistry {
                     }
                 }
                 LifecycleState::Decay(from) => {
-                    // Decay → Active: reset everything. Whether watches were
-                    // dropped depends on the PAST config (fsevents_reinstate
-                    // at the time we entered decay). We consult the current
-                    // entry.config before overwriting it.
-                    let was_keep_during_decay = entry.config.fsevents_reinstate;
+                    // Decay → Active: reset everything, and watch again what
+                    // entering decay stopped watching.
                     entry.state = LifecycleState::Active;
                     if let Some(pt) = entry.poll_timer.as_mut() {
                         pt.last_fired = now;
@@ -268,11 +265,7 @@ impl LifecycleRegistry {
                     entry.config = config;
                     DemandOutcome {
                         transition: StateTransition::Reinstated { from },
-                        watch_registration: if was_keep_during_decay {
-                            WatchAction::Preserve
-                        } else {
-                            WatchAction::Reinstate
-                        },
+                        watch_registration: WatchAction::Reinstate,
                     }
                 }
             },
@@ -302,31 +295,25 @@ impl LifecycleRegistry {
         true
     }
 
+    /// A file event for `key`: an Active instance takes it as a demand and
+    /// runs; anything else (a decaying instance, whose watches went when it
+    /// began to decay, or no instance) ignores it.
     pub fn on_fsevent(&mut self, key: Key, now: Instant) -> FseventOutcome {
-        let Some(entry) = self.entries.get(&key) else {
+        let Some(entry) = self
+            .entries
+            .get(&key)
+            .filter(|entry| entry.state == LifecycleState::Active)
+        else {
             return FseventOutcome {
                 transition: None,
                 refresh: false,
             };
         };
-
-        let is_active = matches!(entry.state, LifecycleState::Active);
-        let reinstate_allowed = entry.config.fsevents_reinstate;
-
-        if is_active || reinstate_allowed {
-            // Treat as demand. Clone config (on_demand consumes it).
-            let config = entry.config.clone();
-            let outcome = self.on_demand(key, config, now);
-            FseventOutcome {
-                transition: Some(outcome.transition),
-                refresh: true,
-            }
-        } else {
-            // In Decay with fsevents_reinstate=false — ignore idempotently.
-            FseventOutcome {
-                transition: None,
-                refresh: false,
-            }
+        let config = entry.config.clone();
+        let outcome = self.on_demand(key, config, now);
+        FseventOutcome {
+            transition: Some(outcome.transition),
+            refresh: true,
         }
     }
 
@@ -384,8 +371,8 @@ impl LifecycleRegistry {
                             pt.interval = p * rate_mult;
                         }
 
-                        // Drop watches on Active→Decay1 if !fsevents_reinstate.
-                        if step == 1 && !entry.config.fsevents_reinstate {
+                        // A watch exists only while the instance is Active.
+                        if step == 1 {
                             actions.watch_drops.push(key.clone());
                         }
                     }
@@ -508,7 +495,6 @@ mod tests {
             strategy_kind: StrategyKind::Poll,
             poll_interval: Some(Duration::from_secs(60)),
             poll_count: 12,
-            fsevents_reinstate: false,
             decay: DEFAULT_DECAY,
         }
     }
@@ -550,10 +536,11 @@ mod tests {
         assert_eq!(entry.decay_timer.last_demand, t1);
     }
 
-    /// Scenario: Consumer request in a decay state reinstates to Active.
+    /// Scenario: Consumer request in a decay state reinstates to Active, and
+    /// registers the watches again that decay dropped.
     /// Uses white-box mutation to put the entry in Decay2 without running tick().
     #[test]
-    fn on_demand_on_decay_reinstates_to_active() {
+    fn a_demand_on_decay_reinstates_to_active_and_registers_again() {
         let mut reg = LifecycleRegistry::new();
         let key = test_key("git", "/repo");
         let t0 = Instant::now();
@@ -580,31 +567,6 @@ mod tests {
         assert_eq!(entry.decay_timer.last_demand, t1);
     }
 
-    /// Reinstatement when fsevents_reinstate = true: watches were preserved,
-    /// so watch_registration is Preserve (not Reinstate).
-    #[test]
-    fn on_demand_reinstatement_preserves_watches_when_fsevents_reinstate() {
-        let mut reg = LifecycleRegistry::new();
-        let key = test_key("mise", "/repo");
-        let t0 = Instant::now();
-        let cfg = SourceLifecycleConfig {
-            fsevents_reinstate: true,
-            ..test_config()
-        };
-
-        reg.on_demand(key.clone(), cfg.clone(), t0);
-
-        {
-            let entry = reg.entries.get_mut(&key).expect("entry exists");
-            entry.state = LifecycleState::Decay(3);
-        }
-
-        let t1 = t0 + Duration::from_secs(1000);
-        let outcome = reg.on_demand(key.clone(), cfg, t1);
-
-        assert_eq!(outcome.watch_registration, WatchAction::Preserve);
-    }
-
     /// fsevent while Active: treated as demand, refresh triggered.
     #[test]
     fn on_fsevent_on_active_triggers_refresh_and_resets() {
@@ -625,35 +587,6 @@ mod tests {
 
         let entry = reg.entries.get(&key).expect("entry exists");
         assert_eq!(entry.decay_timer.last_demand, t1);
-    }
-
-    /// fsevent while decaying with fsevents_reinstate = true: reinstates to Active.
-    #[test]
-    fn on_fsevent_on_decay_with_fsevents_reinstate_true_reinstates() {
-        let mut reg = LifecycleRegistry::new();
-        let key = test_key("mise", "/repo");
-        let t0 = Instant::now();
-        let cfg = SourceLifecycleConfig {
-            fsevents_reinstate: true,
-            ..test_config()
-        };
-
-        reg.on_demand(key.clone(), cfg, t0);
-
-        {
-            let entry = reg.entries.get_mut(&key).expect("entry exists");
-            entry.state = LifecycleState::Decay(3);
-        }
-
-        let t1 = t0 + Duration::from_secs(1000);
-        let outcome = reg.on_fsevent(key.clone(), t1);
-
-        assert!(outcome.refresh);
-        assert!(matches!(
-            outcome.transition,
-            Some(StateTransition::Reinstated { from: 3 })
-        ));
-        assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
     }
 
     /// Scenario: Polling refreshes an active entry.
@@ -710,7 +643,7 @@ mod tests {
         );
     }
 
-    /// Scenario: Active window expiry enters Decay1.
+    /// Scenario: Active window expiry enters Decay1, and drops the watches.
     #[test]
     fn tick_advances_active_to_decay1_when_the_window_elapses() {
         let mut reg = LifecycleRegistry::new();
@@ -727,36 +660,13 @@ mod tests {
         assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(120)));
         assert!(
             actions.watch_drops.contains(&key),
-            "drop-on-decay default: watches dropped on Decay1 entry"
+            "watches dropped on Decay1 entry"
         );
         assert!(
             actions
                 .transitions
                 .iter()
                 .any(|(k, s)| k == &key && s == &LifecycleState::Decay(1))
-        );
-    }
-
-    /// Active → Decay1 with fsevents_reinstate=true: watches NOT dropped.
-    #[test]
-    fn tick_advance_with_fsevents_reinstate_preserves_watches() {
-        let mut reg = LifecycleRegistry::new();
-        let key = test_key("mise", "/repo");
-        let t0 = Instant::now();
-        let cfg = SourceLifecycleConfig {
-            fsevents_reinstate: true,
-            ..test_config()
-        };
-
-        reg.on_demand(key.clone(), cfg, t0);
-
-        let t1 = t0 + Duration::from_secs(721);
-        let actions = reg.tick(t1);
-
-        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
-        assert!(
-            !actions.watch_drops.contains(&key),
-            "watches should be preserved when fsevents_reinstate=true"
         );
     }
 
@@ -896,38 +806,74 @@ mod tests {
         );
     }
 
-    /// fsevent while decaying with fsevents_reinstate = false: ignored.
-    #[test]
-    fn on_fsevent_on_decay_with_fsevents_reinstate_false_is_ignored() {
-        let mut reg = LifecycleRegistry::new();
-        let key = test_key("git", "/repo");
-        let t0 = Instant::now();
-        let cfg = test_config(); // fsevents_reinstate = false
-
-        reg.on_demand(key.clone(), cfg, t0);
-
-        {
-            let entry = reg.entries.get_mut(&key).expect("entry exists");
-            entry.state = LifecycleState::Decay(2);
-        }
-
-        let t1 = t0 + Duration::from_secs(500);
-        let outcome = reg.on_fsevent(key.clone(), t1);
-
-        assert!(!outcome.refresh);
-        assert!(outcome.transition.is_none());
-        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(2)));
-    }
-
     fn watch_only() -> SourceLifecycleConfig {
         SourceLifecycleConfig::from_strategy(
             &InvalidationStrategy::Watch {
                 patterns: vec![],
                 abs_paths: vec![],
             },
-            false,
             DEFAULT_DECAY,
         )
+    }
+
+    fn watch_and_poll() -> SourceLifecycleConfig {
+        SourceLifecycleConfig::from_strategy(
+            &InvalidationStrategy::WatchAndPoll {
+                patterns: vec![],
+                abs_paths: vec![],
+                interval_secs: 60,
+                count: 12,
+            },
+            DEFAULT_DECAY,
+        )
+    }
+
+    /// A file event on a decaying entry does nothing, whatever the entry
+    /// watches: it neither runs the Source nor reinstates the entry, which
+    /// only a read does. It is the rule for every entry.
+    #[test]
+    fn an_fsevent_on_a_decaying_entry_does_nothing() {
+        for cfg in [test_config(), watch_only(), watch_and_poll()] {
+            let mut reg = LifecycleRegistry::new();
+            let key = test_key("git", "/repo");
+            let t0 = Instant::now();
+            reg.on_demand(key.clone(), cfg.clone(), t0);
+            reg.entries.get_mut(&key).expect("entry exists").state = LifecycleState::Decay(2);
+
+            let outcome = reg.on_fsevent(key.clone(), t0 + Duration::from_secs(500));
+
+            assert!(!outcome.refresh, "{cfg:?}");
+            assert!(outcome.transition.is_none(), "{cfg:?}");
+            assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(2)), "{cfg:?}");
+        }
+    }
+
+    /// Entering decay drops the watches of every entry, whatever it watches,
+    /// and a demand then reinstates it and registers them again.
+    #[test]
+    fn decay_always_drops_watches_and_a_demand_registers_them_again() {
+        for cfg in [watch_only(), watch_and_poll(), test_config()] {
+            let mut reg = LifecycleRegistry::new();
+            let key = test_key("mise", "/repo");
+            let t0 = Instant::now();
+            reg.on_demand(key.clone(), cfg.clone(), t0);
+
+            let decayed = t0 + cfg.lifespan();
+            let actions = reg.tick(decayed);
+            assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)), "{cfg:?}");
+            assert_eq!(actions.watch_drops, vec![key.clone()], "{cfg:?}");
+
+            let outcome = reg.on_demand(key.clone(), cfg.clone(), decayed);
+            assert_eq!(
+                outcome,
+                DemandOutcome {
+                    transition: StateTransition::Reinstated { from: 1 },
+                    watch_registration: WatchAction::Reinstate,
+                },
+                "{cfg:?}"
+            );
+            assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
+        }
     }
 
     /// A watch-only Source has no poll of its own and takes 60 s x 12.
@@ -993,7 +939,6 @@ mod tests {
             strategy_kind: StrategyKind::Poll,
             poll_interval: Some(Duration::from_secs(10)),
             poll_count: 1,
-            fsevents_reinstate: false,
             decay,
         }
     }

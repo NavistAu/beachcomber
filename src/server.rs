@@ -2362,7 +2362,6 @@ async fn handle_request(
                             row.polls_elapsed = Some(snap.polls_elapsed);
                             row.next_poll_in_secs = snap.next_poll_in_secs;
                         }
-                        row.fsevents_reinstate = Some(snap.fsevents_reinstate);
                     } else if is_put || is_memo {
                         row.kind = Some(RowKind::Static);
                     } else {

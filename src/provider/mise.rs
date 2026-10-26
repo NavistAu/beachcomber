@@ -143,7 +143,6 @@ fn tools_meta() -> SourceMetadata {
             reattempts: 3,
             interval_secs: 60,
         },
-        fsevents_reinstate: true,
         decay: None,
         budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
         timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,

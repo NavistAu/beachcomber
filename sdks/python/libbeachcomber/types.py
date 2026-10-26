@@ -31,7 +31,6 @@ class CacheRow:
     kind: Optional[Dict[str, Any]] = None
     poll_interval_secs: Optional[int] = None
     poll_count: Optional[int] = None
-    fsevents_reinstate: Optional[bool] = None
     polls_elapsed: Optional[int] = None
     next_poll_in_secs: Optional[int] = None
     failure: Optional[Dict[str, Any]] = None

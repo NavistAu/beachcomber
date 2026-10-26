@@ -104,7 +104,6 @@ describe('the typed shapes are exactly the table fields', () => {
         kind: { kind: 'lifecycle', decay: 0, depth: 4, watches_files: true },
         poll_interval_secs: 10,
         poll_count: 3,
-        fsevents_reinstate: true,
         polls_elapsed: 1,
         next_poll_in_secs: 7,
         failure: { consecutive_failures: 2 },

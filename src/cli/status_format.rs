@@ -186,20 +186,16 @@ pub fn format_ttl_cell(
     kind: Option<&crate::cache::RowKind>,
     poll_interval_secs: Option<u64>,
     poll_count: Option<u32>,
-    fsevents_reinstate: Option<bool>,
     failure: Option<&crate::cache::FailureSnapshot>,
     ascii: bool,
     widths: &TtlWidths,
 ) -> TtlCell {
     use crate::cache::RowKind;
 
-    // Watches-files indicator progression: `dot` for watches only, `ring`
-    // (a bullet with a ring around it) for watches + reinstate. Both glyphs
-    // are math operator class (U+22xx / U+2299), so fonts render them at a
-    // shared baseline. Earlier pairs mixed General Punctuation and Math
-    // Symbols-B blocks and rendered vertically mis-aligned.
+    // Watches-files indicator: `dot` for an entry that watches its files
+    // while it is Active.
     let g = Glyphs::of(ascii);
-    let (star, warn, times, dot, dot_ring) = (g.star, g.warn, g.times, g.dot, g.ring);
+    let (star, warn, times, dot) = (g.star, g.warn, g.times, g.dot);
 
     match kind {
         None
@@ -215,13 +211,8 @@ pub fn format_ttl_cell(
             depth,
             watches_files,
         }) => {
-            // Indicator keyed on fs-watching capability first; reinstate-armed is
-            // the decorator. Poll-only sources render a blank cell trailer.
-            let indicator = match (*watches_files, fsevents_reinstate.unwrap_or(false)) {
-                (false, _) => " ",
-                (true, false) => dot,
-                (true, true) => dot_ring,
-            };
+            // Poll-only sources render a blank cell trailer.
+            let indicator = if *watches_files { dot } else { " " };
 
             if let Some(f) = failure {
                 let attempt = f.consecutive_failures.min(99);
@@ -594,9 +585,6 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
     if let Some(k) = r.poll_count {
         ctx.insert("poll_count".into(), serde_json::json!(k));
     }
-    if let Some(rv) = r.fsevents_reinstate {
-        ctx.insert("fsevents_reinstate".into(), serde_json::Value::Bool(rv));
-    }
     if let Some(n) = r.polls_elapsed {
         ctx.insert("polls_elapsed".into(), serde_json::json!(n));
     }
@@ -676,7 +664,7 @@ fn render_json(rows: &[CacheRow]) -> String {
 
 /// The columns `status -f csv|tsv` lays a row out in, as the uppercase
 /// formats name them in their header.
-const DELIMITED_COLUMNS: [&str; 14] = [
+const DELIMITED_COLUMNS: [&str; 13] = [
     "PROVIDER",
     "PATH",
     "FIELD",
@@ -688,7 +676,6 @@ const DELIMITED_COLUMNS: [&str; 14] = [
     "DECAY",
     "POLL_INTERVAL_SECS",
     "POLL_COUNT",
-    "FSEVENTS_REINSTATE",
     "FAILURE_CONSECUTIVE_FAILURES",
     "FAILURE_SUPPRESSED_UNTIL_UNIX_MS",
 ];
@@ -717,7 +704,6 @@ fn delimited_cells(row: &CacheRow) -> Vec<String> {
         decay,
         opt(row.poll_interval_secs.map(|n| n.to_string())),
         opt(row.poll_count.map(|n| n.to_string())),
-        opt(row.fsevents_reinstate.map(|b| b.to_string())),
         opt(row
             .failure
             .as_ref()
@@ -784,13 +770,6 @@ pub fn render_sh_env(rows: &[CacheRow]) -> String {
             out.push_str(&format!(
                 "{key}_POLL_COUNT={}\n",
                 shell_quote(&k.to_string())
-            ));
-        }
-        // fsevents_reinstate
-        if let Some(r) = row.fsevents_reinstate {
-            out.push_str(&format!(
-                "{key}_FSEVENTS_REINSTATE={}\n",
-                shell_quote(&r.to_string())
             ));
         }
         // failure fields
@@ -997,7 +976,6 @@ pub fn render_tree(
                 kind: None,
                 poll_interval_secs: None,
                 poll_count: None,
-                fsevents_reinstate: None,
                 polls_elapsed: None,
                 next_poll_in_secs: None,
                 failure: None,
@@ -1281,7 +1259,6 @@ fn render_table(
                 row.kind.as_ref(),
                 row.poll_interval_secs,
                 row.poll_count,
-                row.fsevents_reinstate,
                 row.failure.as_ref(),
                 ascii,
                 &ttl_widths,
@@ -1507,7 +1484,6 @@ fn render_table(
             row.kind.as_ref(),
             row.poll_interval_secs,
             row.poll_count,
-            row.fsevents_reinstate,
             row.failure.as_ref(),
             ascii,
             &ttl_widths,
@@ -1759,7 +1735,7 @@ pub fn display_source(row: &CacheRow) -> String {
 /// Keys: `provider` (the base name, exact or `*` glob), `facet` (a name or
 /// glob, `-` for none), `path` (glob, `-` for none), `field`, `source` (glob
 /// over the displayed label), `value` (glob over the displayed value, `-` for
-/// absent), `stale`, `lifecycle`, `fsevents_reinstate`. `!=` negates.
+/// absent), `stale`, `shadowed`, `lifecycle`. `!=` negates.
 /// Returns `Err` if any filter string uses an unknown key or invalid value.
 pub fn apply_filters(rows: Vec<CacheRow>, filters: &[String]) -> Result<Vec<CacheRow>, String> {
     let filters: Vec<Filter> = filters
@@ -1831,8 +1807,6 @@ enum Predicate {
     LifecycleStatic,
     /// Match rows rendered here.
     LifecycleRendered,
-    /// Match on fsevents_reinstate flag value.
-    FseventsReinstate(bool),
 }
 
 fn parse_filter(s: &str) -> Result<Filter, String> {
@@ -1875,15 +1849,6 @@ fn parse_filter(s: &str) -> Result<Filter, String> {
                     ));
                 }
             },
-        },
-        "fsevents_reinstate" => match v {
-            "true" => Predicate::FseventsReinstate(true),
-            "false" => Predicate::FseventsReinstate(false),
-            other => {
-                return Err(format!(
-                    "fsevents_reinstate= must be true or false, got {other}"
-                ));
-            }
         },
         other => return Err(format!("unknown filter key: {other}")),
     };
@@ -1935,7 +1900,6 @@ impl Predicate {
             Predicate::LifecycleOnce => matches!(&r.kind, Some(RowKind::Once)),
             Predicate::LifecycleStatic => matches!(&r.kind, Some(RowKind::Static)),
             Predicate::LifecycleRendered => matches!(&r.kind, Some(RowKind::Rendered)),
-            Predicate::FseventsReinstate(b) => r.fsevents_reinstate.unwrap_or(false) == *b,
         }
     }
 }
@@ -2184,12 +2148,11 @@ mod ttl_cell_tests {
             }),
             Some(60),
             Some(12),
-            Some(true),
             None,
             false,
             &W6,
         );
-        assert_eq!(cell.text, "\u{2605}     60s\u{00d7}12 (   12m) \u{2299}");
+        assert_eq!(cell.text, "\u{2605}     60s\u{00d7}12 (   12m) \u{2219}");
         assert!(matches!(cell.color, Some(ansi::Color::BrightGreen)));
     }
 
@@ -2204,7 +2167,6 @@ mod ttl_cell_tests {
             }),
             Some(480),
             Some(12),
-            Some(false),
             None,
             false,
             &W6,
@@ -2226,7 +2188,6 @@ mod ttl_cell_tests {
                 }),
                 Some(60),
                 Some(1),
-                Some(false),
                 None,
                 false,
                 &W6,
@@ -2253,17 +2214,16 @@ mod ttl_cell_tests {
             }),
             Some(60),
             Some(12),
-            Some(true),
             None,
             true,
             &W6,
         );
-        assert_eq!(cell.text, "*     60sx12 (   12m) +");
+        assert_eq!(cell.text, "*     60sx12 (   12m) -");
     }
 
     #[test]
     fn indicator_blank_when_no_watch_capability() {
-        // Poll-only provider: blank trailer regardless of reinstate flag.
+        // Poll-only provider: blank trailer.
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
@@ -2272,7 +2232,6 @@ mod ttl_cell_tests {
             }),
             Some(60),
             Some(12),
-            Some(true),
             None,
             false,
             &W6,
@@ -2281,8 +2240,8 @@ mod ttl_cell_tests {
     }
 
     #[test]
-    fn indicator_bare_dot_when_watches_files_without_reinstate() {
-        // Watches but reinstate=false: bare dot (decorated glyph progression).
+    fn indicator_dot_when_watches_files() {
+        // Watches files while Active: the dot.
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
@@ -2291,7 +2250,6 @@ mod ttl_cell_tests {
             }),
             Some(60),
             Some(12),
-            Some(false),
             None,
             false,
             &W6,
@@ -2313,7 +2271,6 @@ mod ttl_cell_tests {
             }),
             Some(60),
             Some(12),
-            Some(false),
             None,
             true,
             &W6,
@@ -2327,28 +2284,20 @@ mod ttl_cell_tests {
 
     #[test]
     fn once_renders_dashes() {
-        let cell = format_ttl_cell(Some(&RowKind::Once), None, None, None, None, false, &W6);
+        let cell = format_ttl_cell(Some(&RowKind::Once), None, None, None, false, &W6);
         assert_eq!(cell.text, "---");
         assert!(cell.color.is_none());
     }
 
     #[test]
     fn static_renders_dashes() {
-        let cell = format_ttl_cell(Some(&RowKind::Static), None, None, None, None, false, &W6);
+        let cell = format_ttl_cell(Some(&RowKind::Static), None, None, None, false, &W6);
         assert_eq!(cell.text, "---");
     }
 
     #[test]
     fn transient_renders_dashes() {
-        let cell = format_ttl_cell(
-            Some(&RowKind::Transient),
-            None,
-            None,
-            None,
-            None,
-            false,
-            &W6,
-        );
+        let cell = format_ttl_cell(Some(&RowKind::Transient), None, None, None, false, &W6);
         assert_eq!(cell.text, "---");
     }
 
@@ -2356,7 +2305,7 @@ mod ttl_cell_tests {
     fn template_renders_dashes() {
         // A rendered row has no lifecycle of its own — it is computed at
         // read time and never cached.
-        let cell = format_ttl_cell(Some(&RowKind::Rendered), None, None, None, None, false, &W6);
+        let cell = format_ttl_cell(Some(&RowKind::Rendered), None, None, None, false, &W6);
         assert_eq!(cell.text, "---");
         assert!(cell.color.is_none());
     }
@@ -2378,12 +2327,11 @@ mod ttl_cell_tests {
             }),
             Some(60),
             Some(12),
-            Some(true),
             Some(&snap),
             false,
             &W6,
         );
-        assert_eq!(cell.text, "\u{26a0} #03 \u{2299}");
+        assert_eq!(cell.text, "\u{26a0} #03 \u{2219}");
         assert!(matches!(cell.color, Some(ansi::Color::Red)));
     }
 
@@ -2401,7 +2349,6 @@ mod ttl_cell_tests {
             }),
             Some(60),
             Some(12),
-            Some(true),
             Some(&snap),
             true,
             &W6,
@@ -2421,7 +2368,6 @@ mod ttl_cell_tests {
             }),
             Some(9_999_999),
             Some(99),
-            Some(false),
             None,
             false,
             &W6,
@@ -2440,7 +2386,6 @@ mod ttl_cell_tests {
             }),
             Some(0),
             Some(0),
-            Some(false),
             None,
             false,
             &W6,
@@ -2461,12 +2406,11 @@ mod ttl_cell_tests {
             }),
             Some(1),
             Some(0),
-            Some(true),
             None,
             false,
             &widths,
         );
-        assert_eq!(cell.text, "\u{2605}  1s\u{00d7}00 (0s) \u{2299}");
+        assert_eq!(cell.text, "\u{2605}  1s\u{00d7}00 (0s) \u{2219}");
     }
 
     fn lifecycle_row(poll: u64, keep: u32, next: u64) -> CacheRow {
@@ -2486,7 +2430,6 @@ mod ttl_cell_tests {
             }),
             poll_interval_secs: Some(poll),
             poll_count: Some(keep),
-            fsevents_reinstate: Some(false),
             polls_elapsed: None,
             next_poll_in_secs: Some(next),
             failure: None,

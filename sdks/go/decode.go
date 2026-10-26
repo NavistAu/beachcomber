@@ -69,9 +69,6 @@ func parseCacheRowsFromData(raw json.RawMessage) ([]CacheRow, error) {
 			pInt := uint32(p)
 			row.PollCount = &pInt
 		}
-		if b, ok := m["fsevents_reinstate"].(bool); ok {
-			row.FseventsReinstate = &b
-		}
 		if p, ok := m["polls_elapsed"].(float64); ok {
 			pInt := uint64(p)
 			row.PollsElapsed = &pInt

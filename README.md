@@ -95,8 +95,8 @@ $ comb g.j git .                 # .j = JSON: the bare value, no envelope (age i
 
 $ comb s                         # status: one row per warm cache entry
 PROVIDER  PATH    FIELD    VALUE    AGE   TTL
-git       /repo   branch   main     14s   ★     60s×12 ◉
-git       /repo   dirty    true     14s   ★     60s×12 ◉
+git       /repo   branch   main     14s   ★     60s×12 ∙
+git       /repo   dirty    true     14s   ★     60s×12 ∙
 battery   -       percent  87       8s    ★     30s×04
 hostname  -       short    artemis  3h    ---
 ```
@@ -326,21 +326,20 @@ comb g.j git:cache.branch .    # → {"age_ms": 1240, "stale": false, "source": 
 
 ### `comb s` (status)
 
-Show all warm cache entries as a table — one row per provider field, with SOURCE naming what produced each value: a Source of the provider (`source(head)`), `put`, `config(<file>)`, `computed(return)`, or `rendered` for a row rendered here. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, Active-window poll count, and whether filesystem events will reinstate the entry (`◉`).
+Show all warm cache entries as a table — one row per provider field, with SOURCE naming what produced each value: a Source of the provider (`source(head)`), `put`, `config(<file>)`, `computed(return)`, or `rendered` for a row rendered here. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, Active-window poll count, and whether the entry watches its files while it is Active (`∙`).
 
 `watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time. Each refresh re-renders the caller's template leaves, `exec()` included, so a tight interval multiplies whatever the templates spawn.
 
 ```sh
 $ comb s
 PROVIDER  PATH    FIELD    SOURCE  VALUE    AGE   TTL
-git       /repo   branch   head    main     14s   ★     60s×12 ◉
-git       /repo   dirty    status  true     14s   ★     60s×12 ◉
+git       /repo   branch   head    main     14s   ★     60s×12 ∙
+git       /repo   dirty    status  true     14s   ★     60s×12 ∙
 hostname  -       short    host    artemis  3h    ---
 
 # Filter to entries in a specific lifecycle state
 comb s --filter=lifecycle=active
 comb s --filter=lifecycle=decay1
-comb s --filter=fsevents_reinstate=true
 
 # Sort options
 comb s --sort age             # oldest first
@@ -351,7 +350,7 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay<N>|once|static|rendered`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), and the global `--color=auto|always|never` (wins over `NO_COLOR`) and `--ascii`.
+**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay<N>|once|static|rendered`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), and the global `--color=auto|always|never` (wins over `NO_COLOR`) and `--ascii`.
 
 A namespace holding a `[client.providers.<p>]` template renders one extra row per leaf visible from the caller's directory — resolved with this shell's environment and `exec()` enabled, exactly as `comb get` would render it — beside the raw template row and any cached value at that address; a field that's both cached and templated shows both rows. A rendered row's SOURCE is `rendered`, its VALUE is marked (cyan, or a `▸ `/`> ` lead-in without colour), and `--filter=lifecycle=rendered` selects just those rows.
 
@@ -1601,8 +1600,8 @@ Logs print directly to your terminal. Press Ctrl+C to shut down.
 ```sh
 $ comb s
 PROVIDER  PATH    FIELD    VALUE    AGE   TTL
-git       /repo   branch   main     14s   ★     60s×12 ◉
-git       /repo   dirty    true     14s   ★     60s×12 ◉
+git       /repo   branch   main     14s   ★     60s×12 ∙
+git       /repo   dirty    true     14s   ★     60s×12 ∙
 battery   -       percent  87       8s    ★     30s×04
 hostname  -       short    artemis  3h    ---
 

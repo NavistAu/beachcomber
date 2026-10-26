@@ -97,7 +97,6 @@ fn render_template_rows(
             kind: Some(RowKind::Rendered),
             poll_interval_secs: None,
             poll_count: None,
-            fsevents_reinstate: None,
             polls_elapsed: None,
             next_poll_in_secs: None,
             failure: None,

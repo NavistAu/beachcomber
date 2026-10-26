@@ -25,13 +25,12 @@ use std::process::ExitCode;
 fn status_after_help() -> String {
     let ascii = std::env::args().any(|a| a == "--ascii");
     let g = Glyphs::of(ascii);
-    let (star, warn, times, dot, ring, rendered) =
-        (g.star, g.warn, g.times, g.dot, g.ring, g.rendered);
+    let (star, warn, times, dot, rendered) = (g.star, g.warn, g.times, g.dot, g.rendered);
     let mut help = format!(
         "Reading the output:\n\
         \n\
         \x20 PROVIDER  FIELD   SOURCE        VALUE       PATH              AGE    POLL  TTL\n\
-        \x20 git       branch  source(head)  main        ~/ws/beachcomber  14s{times}2   37s  {star}  60s{times}12 (12m) {ring}\n\
+        \x20 git       branch  source(head)  main        ~/ws/beachcomber  14s{times}2   37s  {star}  60s{times}12 (12m) {dot}\n\
         \x20 git       branch  rendered      {rendered} main-dev  ~/ws/beachcomber  0s       -   ---\n\
         \n\
         \x20 Each row is one cache ENTRY, returned by a Query ie `comb get`.\n\
@@ -56,13 +55,13 @@ fn status_after_help() -> String {
         \x20                      PollRate:   Every 60s\n\
         \x20                      PollCount:  12 times\n\
         \x20        (12m)       EvictTime:    Total time to Eviction\n\
-        \x20        {dot} {ring}       {dot} WatchActive:  Watches files while Active; not during the Idle countdown\n\
-        \x20                 {ring} WatchAlways:   Watches files until Evicted\n\
+        \x20        {dot}         {dot} Watch:        Watches files while Active; not during the Idle countdown,\n\
+        \x20                                  when a Query checks them instead\n\
         \x20                 <blank>          No FSEvents, Refreshes only by Polling"
     );
     if !ascii {
         help.push_str(
-            "\n\nWith --ascii: * ! x - + > replace \u{2605} \u{26a0} \u{00d7} \u{2219} \u{2299} \u{25b8}.",
+            "\n\nWith --ascii: * ! x - > replace \u{2605} \u{26a0} \u{00d7} \u{2219} \u{25b8}.",
         );
     }
     help
@@ -164,8 +163,8 @@ enum Commands {
         #[arg(long, short = 'f', default_value = "human", value_parser = status_format, help = STATUS.help())]
         format: Format,
         /// Filter rows: KEY=VALUE or KEY!=VALUE, repeatable, all must match. Keys: provider (base
-        /// name), facet, path, field, source, value, shadowed, stale, lifecycle,
-        /// fsevents_reinstate; `*` globs, and `-` means none for facet, path and value. Without a
+        /// name), facet, path, field, source, value, shadowed, stale, lifecycle;
+        /// `*` globs, and `-` means none for facet, path and value. Without a
         /// filter on that key, facet=-, value!=- and shadowed=false apply: facet rows, absent values
         /// and records a read here does not take are hidden.
         #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]

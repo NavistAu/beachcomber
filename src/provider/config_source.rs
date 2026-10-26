@@ -32,9 +32,7 @@
 
 use crate::engine::{CallFn, Calls, PluginSet, daemon_engine_env};
 use crate::provider::source_call::{Called, Running, called_in};
-use crate::provider::{
-    FieldSchema, FieldType, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
-};
+use crate::provider::{FieldSchema, FieldType, Source, SourceMetadata, SourceResult, Value};
 use crate::shape::decorators::Recorded;
 use libbeachcomber::engine::EngineCtx;
 use libbeachcomber::eval::{
@@ -386,7 +384,6 @@ impl ConfigSource {
             fields,
             invalidation: recorded.invalidation.clone(),
             failback: recorded.failback,
-            fsevents_reinstate: !matches!(recorded.invalidation, InvalidationStrategy::Poll { .. }),
             decay: recorded.decay,
             budget: recorded.budget,
             timeout: recorded.timeout,
@@ -622,7 +619,7 @@ fn engine<'a>(
 mod tests {
     use super::*;
     use crate::boundaries::library::MockLibraryLoader;
-    use crate::provider::FailbackConfig;
+    use crate::provider::{FailbackConfig, InvalidationStrategy};
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -877,7 +874,6 @@ mod tests {
         let meta = src.metadata();
         let names: Vec<_> = meta.fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b"]);
-        assert!(!meta.fsevents_reinstate);
         assert_eq!(meta.invalidation, recorded().invalidation);
         assert_eq!(meta.failback, recorded().failback);
     }
@@ -885,31 +881,22 @@ mod tests {
     #[test]
     fn the_recorded_schedule_passes_through() {
         let strategies = [
-            (
-                InvalidationStrategy::Watch {
-                    patterns: vec![".git/HEAD".into()],
-                    abs_paths: vec![],
-                },
-                true,
-            ),
-            (
-                InvalidationStrategy::WatchAndPoll {
-                    patterns: vec![".git/HEAD".into()],
-                    abs_paths: vec![],
-                    interval_secs: 30,
-                    count: 2,
-                },
-                true,
-            ),
-            (
-                InvalidationStrategy::Poll {
-                    interval_secs: 30,
-                    count: 2,
-                },
-                false,
-            ),
+            InvalidationStrategy::Watch {
+                patterns: vec![".git/HEAD".into()],
+                abs_paths: vec![],
+            },
+            InvalidationStrategy::WatchAndPoll {
+                patterns: vec![".git/HEAD".into()],
+                abs_paths: vec![],
+                interval_secs: 30,
+                count: 2,
+            },
+            InvalidationStrategy::Poll {
+                interval_secs: 30,
+                count: 2,
+            },
         ];
-        for (invalidation, reinstate) in strategies {
+        for invalidation in strategies {
             let mut sp = spec(Some("/r"), "x", fields(&[("a", "1")]));
             sp.recorded = Recorded {
                 invalidation: invalidation.clone(),
@@ -924,7 +911,6 @@ mod tests {
             };
             let meta = source(sp).metadata().clone();
             assert_eq!(meta.invalidation, invalidation);
-            assert_eq!(meta.fsevents_reinstate, reinstate, "{invalidation:?}");
             assert_eq!(meta.failback.reattempts, 7);
             assert_eq!(meta.failback.interval_secs, 9);
             assert_eq!(meta.budget, Duration::from_millis(321));

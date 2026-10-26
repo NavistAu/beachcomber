@@ -51,20 +51,19 @@ type HelloInfo struct {
 
 // CacheRow is one row of Status response.
 type CacheRow struct {
-	Provider          string
-	Field             string // empty when not set
-	Path              string // empty when not set
-	Value             interface{}
-	AgeMs             uint64
-	Stale             bool
-	Kind              map[string]interface{} // e.g. {"kind":"lifecycle","decay":0,"depth":4,"watches_files":true}
-	PollIntervalSecs  *uint64
-	PollCount         *uint32
-	FseventsReinstate *bool
-	PollsElapsed      *uint64
-	NextPollInSecs    *uint64                // seconds until the next scheduled poll; nil when it has none
-	Failure           map[string]interface{} // e.g. {"consecutive_failures":3}
-	Source            string                 // owning source name within the provider; empty when not set
+	Provider         string
+	Field            string // empty when not set
+	Path             string // empty when not set
+	Value            interface{}
+	AgeMs            uint64
+	Stale            bool
+	Kind             map[string]interface{} // e.g. {"kind":"lifecycle","decay":0,"depth":4,"watches_files":true}
+	PollIntervalSecs *uint64
+	PollCount        *uint32
+	PollsElapsed     *uint64
+	NextPollInSecs   *uint64                // seconds until the next scheduled poll; nil when it has none
+	Failure          map[string]interface{} // e.g. {"consecutive_failures":3}
+	Source           string                 // owning source name within the provider; empty when not set
 }
 
 // Verdict is one daemon-health assertion.

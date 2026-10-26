@@ -137,8 +137,6 @@ impl Source for CountingSource {
 }
 
 fn path_source(name: &str, invalidation: InvalidationStrategy) -> SourceMetadata {
-    // Meaningless on Poll (the registry rejects it there), the default on Watch.
-    let fsevents_reinstate = !matches!(invalidation, InvalidationStrategy::Poll { .. });
     SourceMetadata {
         name: name.into(),
         fields: vec![FieldSchema {
@@ -150,7 +148,6 @@ fn path_source(name: &str, invalidation: InvalidationStrategy) -> SourceMetadata
             reattempts: 3,
             interval_secs: 30,
         },
-        fsevents_reinstate,
         decay: None,
         budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
         timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,

@@ -63,7 +63,6 @@ pub struct SourceMetadata {
     pub fields: Vec<FieldSchema>,
     pub invalidation: InvalidationStrategy,
     pub failback: FailbackConfig,
-    pub fsevents_reinstate: bool,    // default true for Watch / WatchAndPoll
     pub decay: Option<u8>,           // decay steps before eviction; None takes the `_.decay` prototype
     pub budget: Duration,    // how long a read of a stale record waits for its run
     pub nearest: bool,               // the nearest instance answers alone; false cascades up to ~
@@ -171,7 +170,6 @@ fn config_meta() -> SourceMetadata {
             ],
         },
         failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
-        fsevents_reinstate: true,
         // Decay steps before eviction; None takes the provider's `_.decay`.
         decay: None,
         // How long a read of a stale record waits for its run.
@@ -519,7 +517,7 @@ The line replaces everything the Source declares, `nearest` included: git, diren
 
 A config Source sets its own schedule on the same line (`poll`, `watch`, `ttl`, `failback`, `budget`).
 
-The full decay model — state machine, step durations, reinstatement rules — is described in `docs/architecture.md` §5.
+The full decay model — state machine, step durations, reinstatement rules — is described in `docs/architecture.md` §5. A Source's watches exist only while its instance is Active: decay drops them and the read that reinstates the instance registers them again, so a decaying record is checked by stat (its `inputs`) rather than by an event.
 
 **Decay depth is data.** After the Active window an entry steps through its `decay` steps (4 unless told otherwise; step n lasts `lifespan × 2^n`) and is then evicted. A depth is put like any value: `comb put '<provider>:cache._.decay' 6` for one provider, `comb put '*:cache._.decay' 3` for every provider, with `--path` to scope it to a directory and below; the nearest prototype wins, and a lifecycle fixes its depth when it registers. `comb get <provider>:cache.<field>` shows the `poll`, `watch` and `decay` an entry registered with. There is no per-source keep-alive duration: `fsevent_lifespan` was removed, and a watch-only Source's Active window is the default poll lifespan (60 s × 12).
 

@@ -359,7 +359,6 @@ fn source_meta(name: &str, field: &str) -> SourceMetadata {
             reattempts: 3,
             interval_secs: 30,
         },
-        fsevents_reinstate: false,
         decay: None,
         budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
         timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
@@ -1147,7 +1146,6 @@ impl WalkSource {
                 patterns: vec![".values".into()],
                 abs_paths: vec![],
             },
-            fsevents_reinstate: true,
             ..source_meta("s", "<k>")
         }
     }

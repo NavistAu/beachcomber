@@ -84,7 +84,6 @@ fn meta(source: &str, field: &str, budget: Duration, failback: u32) -> SourceMet
             reattempts: failback,
             interval_secs: 3600,
         },
-        fsevents_reinstate: false,
         decay: None,
         budget,
         timeout: Duration::from_secs(600),

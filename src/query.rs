@@ -820,7 +820,6 @@ mod instance_chain_tests {
                     reattempts: 3,
                     interval_secs: 30,
                 },
-                fsevents_reinstate: false,
                 decay: None,
                 budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
                 timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,

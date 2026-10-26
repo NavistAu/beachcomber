@@ -278,3 +278,63 @@ fn an_absent_path_is_watched_through_its_parent_and_its_creation_runs_the_source
         |w| *w == [(path.clone(), json!({"state": "active"}))],
     );
 }
+
+/// A watch exists only while its instance is Active: once the Active window
+/// (here one poll of one second) has passed, the instance decays and drops
+/// the watch, so `introspect watches` reports none. A read after that is
+/// checked by stat and answers the file as it is now, with no watch; and the
+/// read reinstates the instance, which registers the watch again.
+///
+/// The window is real time (the lifecycle runs on the system clock, and a
+/// poll is whole seconds), so this test takes one to two seconds.
+#[test]
+fn a_watch_goes_when_its_instance_decays_and_a_read_brings_it_back() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    let file = dir.join("state");
+    std::fs::write(&file, "1").unwrap();
+    let d = daemon(&format!(
+        "[daemon.providers.w.sources.s]\n\
+         data = \"{{{{ '{file}' | read }}}}\"\n\
+         result.v = \"{{{{ data }}}}\"\n\
+         return = \"{{{{ result | watch('{file}') | poll('1s', 1) | budget('10s') }}}}\"\n",
+        file = file.display()
+    ));
+    let sock = d.socket.path.clone();
+    let get = json!({"op": "get", "key": "w.v"});
+    assert_eq!(ask(&sock, get.clone())["data"], json!("1"));
+    let path = file.to_string_lossy().into_owned();
+    let active = || {
+        poll_until(
+            "introspect watches",
+            "the watch Active",
+            Duration::from_secs(10),
+            Duration::from_millis(5),
+            || watches(&sock),
+            |w| *w == [(path.clone(), json!({"state": "active"}))],
+        )
+    };
+    active();
+
+    let since = std::time::Instant::now();
+    poll_until(
+        "introspect watches",
+        "no watch once the instance has decayed",
+        Duration::from_secs(10),
+        Duration::from_millis(10),
+        || watches(&sock),
+        Vec::is_empty,
+    );
+    eprintln!(
+        "introspect watches reached 0 {:?} after the watch was seen Active (Active window 1s)",
+        since.elapsed()
+    );
+
+    std::fs::write(&file, "2").unwrap();
+    assert_eq!(
+        ask(&sock, get)["data"],
+        json!("2"),
+        "a read after decay is checked by stat: fresh with no watch"
+    );
+    active();
+}

@@ -51,10 +51,8 @@ pub struct Glyphs {
     pub warn: &'static str,
     /// AGE × polls.
     pub times: &'static str,
-    /// No file events.
+    /// An entry that watches its files while it is Active.
     pub dot: &'static str,
-    /// File events reinstate the entry.
-    pub ring: &'static str,
     /// A value rendered here.
     pub rendered: &'static str,
     /// A value whose text was sanitised.
@@ -72,7 +70,6 @@ pub const UNICODE: Glyphs = Glyphs {
     warn: "\u{26a0}",
     times: "\u{00d7}",
     dot: "\u{2219}",
-    ring: "\u{2299}",
     rendered: "\u{25b8}",
     tainted: "\u{203c}",
     branch: "\u{251c}\u{2500}",
@@ -86,7 +83,6 @@ pub const ASCII: Glyphs = Glyphs {
     warn: "!",
     times: "x",
     dot: "-",
-    ring: "+",
     rendered: ">",
     tainted: "!!",
     branch: "|-",

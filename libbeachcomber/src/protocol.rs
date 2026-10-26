@@ -369,8 +369,6 @@ pub struct CacheRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fsevents_reinstate: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polls_elapsed: Option<u32>,
     /// Seconds until this source's next scheduled poll. `None` for pure Watch
     /// sources (no poll path) or when the lifecycle registry has no entry.

@@ -28,7 +28,6 @@ export interface CacheRow {
   kind?: RowKind;
   pollIntervalSecs?: number;
   pollCount?: number;
-  fseventsReinstate?: boolean;
   pollsElapsed?: number;
   /** Seconds until the next scheduled poll; undefined when it has none. */
   nextPollInSecs?: number;

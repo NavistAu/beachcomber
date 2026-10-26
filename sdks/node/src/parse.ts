@@ -47,7 +47,6 @@ export function parseCacheRows(data: unknown, libraryVersion?: string): CacheRow
       kind: optional(r['kind'], (v) => v as RowKind),
       pollIntervalSecs: optional(r['poll_interval_secs'], Number),
       pollCount: optional(r['poll_count'], Number),
-      fseventsReinstate: optional(r['fsevents_reinstate'], Boolean),
       pollsElapsed: optional(r['polls_elapsed'], Number),
       nextPollInSecs: optional(r['next_poll_in_secs'], Number),
       failure: optional(r['failure'], (v) => v as CacheRow['failure']),

@@ -15,7 +15,6 @@ fn test_config() -> SourceLifecycleConfig {
         strategy_kind: StrategyKind::Poll,
         poll_interval: Some(Duration::from_millis(1)),
         poll_count: 1,
-        fsevents_reinstate: false,
         decay: DEFAULT_DECAY,
     }
 }

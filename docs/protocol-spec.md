@@ -639,8 +639,8 @@ present when the row's lifecycle discriminator is known: `{"kind":
 "lifecycle", "decay": N, "depth": D, "watches_files": bool}` for a lifecycle-tracked row,
 `{"kind": "once"}` / `{"kind": "static"}` / `{"kind": "transient"}`
 otherwise; omitted when unknown. A handful of further optional fields
-(`poll_interval_secs`, `poll_count`, `fsevents_reinstate`,
-`polls_elapsed`, `next_poll_in_secs`, `failure`) are omitted here and carry
+(`poll_interval_secs`, `poll_count`, `polls_elapsed`,
+`next_poll_in_secs`, `failure`) are omitted here and carry
 diagnostic detail `comb status` renders as columns; see
 `libbeachcomber::protocol::CacheRow` for the authoritative field list. Every
 request, response and payload on this page is a type in

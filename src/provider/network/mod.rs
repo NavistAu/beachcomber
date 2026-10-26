@@ -65,7 +65,6 @@ fn interfaces_source_metadata() -> SourceMetadata {
             reattempts: 3,
             interval_secs: 30,
         },
-        fsevents_reinstate: false,
         decay: None,
         budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
         timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,

@@ -7,7 +7,7 @@ module Beachcomber
   # One row of #status. +kind+ and +failure+ are the JSON the ABI hands on.
   CacheRow = Struct.new(
     :provider, :path, :source, :field, :value, :age_ms, :stale,
-    :kind, :poll_interval_secs, :poll_count, :fsevents_reinstate, :polls_elapsed,
+    :kind, :poll_interval_secs, :poll_count, :polls_elapsed,
     :next_poll_in_secs, :failure,
     keyword_init: true
   )

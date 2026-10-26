@@ -277,7 +277,7 @@ stateDiagram-v2
     Decay4 --> Active : QueryActivity
 ```
 
-Each decay step doubles the poll interval and the step duration relative to the previous step. The number of steps is the entry's `decay`, which is data (default 4; see `<p>:cache._.decay`), and the diagram shows the default. At `Evicted`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any decay stage, the key is reinstated to `Active` immediately. If `fsevents_reinstate` is true for the source, a matching filesystem event also reinstates it.
+Each decay step doubles the poll interval and the step duration relative to the previous step. The number of steps is the entry's `decay`, which is data (default 4; see `<p>:cache._.decay`), and the diagram shows the default. At `Evicted`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any decay stage, the key is reinstated to `Active` immediately. An instance watches its files only while it is `Active`: entering `Decay1` drops its watches, so an idle daemon holds none, and a file event never reinstates it. The read that reinstates it registers its watches again; until then a read checks the record's files by stat, so a decaying record is never answered past a change to them.
 
 There are no `Grace`, `BackoffState`, `SlowPoll`, or `Frozen` states. The only states are Active, Decay (1 to `decay`), and Evicted.
 

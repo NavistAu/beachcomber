@@ -52,8 +52,8 @@ Logs print directly to your terminal. Press Ctrl+C to shut down.
 ```sh
 $ comb s
 PROVIDER  PATH    FIELD    VALUE    AGE   TTL
-git       /repo   branch   main     14s   ★     60s×12 ◉
-git       /repo   dirty    true     14s   ★     60s×12 ◉
+git       /repo   branch   main     14s   ★     60s×12 ∙
+git       /repo   dirty    true     14s   ★     60s×12 ∙
 battery   -       percent  87       8s    ★     30s×04
 hostname  -       short    artemis  3h    ---
 
@@ -65,7 +65,7 @@ comb s --filter=lifecycle=decay2
 watch -c comb status
 ```
 
-`★` means Active (healthy, polling at base rate). `3`/`2`/`1`/`0` are the decay countdown — `0` means the entry evicts on the next scheduler tick. `◉` means filesystem events will reinstate the entry. `⚠` replaces `★` when the provider is in failure-suppress.
+`★` means Active (healthy, polling at base rate). `3`/`2`/`1`/`0` are the decay countdown — `0` means the entry evicts on the next scheduler tick. `∙` means the entry watches its files while it is Active (a decaying one has dropped its watches, and a read checks its files instead). `⚠` replaces `★` when the provider is in failure-suppress.
 
 For daemon internals, use `comb check` subjects:
 

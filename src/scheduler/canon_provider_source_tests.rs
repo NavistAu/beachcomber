@@ -24,7 +24,6 @@ fn make_source_meta(
     name: &str,
     field_names: &[&str],
     invalidation: InvalidationStrategy,
-    fsevents_reinstate: bool,
 ) -> SourceMetadata {
     SourceMetadata {
         name: name.into(),
@@ -40,7 +39,6 @@ fn make_source_meta(
             reattempts: 3,
             interval_secs: 60,
         },
-        fsevents_reinstate,
         decay: None,
         budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
         timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
@@ -48,12 +46,11 @@ fn make_source_meta(
     }
 }
 
-fn watch_source_config(fsevents_reinstate: bool) -> SourceLifecycleConfig {
+fn watch_source_config() -> SourceLifecycleConfig {
     SourceLifecycleConfig {
         strategy_kind: StrategyKind::Watch,
         poll_interval: None,
         poll_count: DEFAULT_POLL_COUNT,
-        fsevents_reinstate,
         decay: DEFAULT_DECAY,
     }
 }
@@ -63,21 +60,15 @@ fn poll_source_config(interval: Duration, k: u32) -> SourceLifecycleConfig {
         strategy_kind: StrategyKind::Poll,
         poll_interval: Some(interval),
         poll_count: k,
-        fsevents_reinstate: false,
         decay: DEFAULT_DECAY,
     }
 }
 
-fn watch_and_poll_config(
-    interval: Duration,
-    k: u32,
-    fsevents_reinstate: bool,
-) -> SourceLifecycleConfig {
+fn watch_and_poll_config(interval: Duration, k: u32) -> SourceLifecycleConfig {
     SourceLifecycleConfig {
         strategy_kind: StrategyKind::WatchAndPoll,
         poll_interval: Some(interval),
         poll_count: k,
-        fsevents_reinstate,
         decay: DEFAULT_DECAY,
     }
 }
@@ -122,7 +113,7 @@ fn pure_watch_source_never_polls() {
     let t0 = Instant::now();
 
     // Pure-watch global: no poll timer.
-    let cfg = watch_source_config(true);
+    let cfg = watch_source_config();
     reg.on_demand(key.clone(), cfg, t0);
 
     // Tick inside the Active window — nothing should fire.
@@ -163,7 +154,7 @@ fn watch_source_refreshes_on_filesystem_event() {
     };
     let t0 = Instant::now();
 
-    let cfg = watch_source_config(true);
+    let cfg = watch_source_config();
     reg.on_demand(key.clone(), cfg, t0);
 
     // Simulate a filesystem event.
@@ -242,7 +233,7 @@ fn watch_and_poll_source_refreshes_on_both_paths() {
     let t0 = Instant::now();
 
     // interval_secs=60, k=2
-    let cfg = watch_and_poll_config(Duration::from_secs(60), 2, true);
+    let cfg = watch_and_poll_config(Duration::from_secs(60), 2);
     reg.on_demand(key.clone(), cfg.clone(), t0);
 
     // Path 1: filesystem event → refresh.
@@ -287,7 +278,6 @@ fn path_scoped_watch_source_decays_per_k_duration() {
         strategy_kind: StrategyKind::Watch,
         poll_interval: None,
         poll_count: DEFAULT_POLL_COUNT,
-        fsevents_reinstate: false,
         decay: DEFAULT_DECAY,
     };
     reg.on_demand(key.clone(), cfg, t0);
@@ -490,108 +480,6 @@ fn sibling_sources_have_independent_lifecycles() {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 9: fsevents_reinstate default is true for Watch sources
-// ---------------------------------------------------------------------------
-
-/// Canon §"Behaviour assertions": fsevents_reinstate default is true for Watch sources
-///
-/// Given a Source with strategy Watch and no explicit fsevents_reinstate setting,
-/// the effective fsevents_reinstate is true, and watches survive decay transitions.
-#[test]
-fn fsevents_reinstate_default_is_true_for_watch_sources() {
-    // The canon-prescribed default: fsevents_reinstate=true for Watch sources.
-    // We construct a SourceMetadata as a provider author would (using the default).
-    let meta = make_source_meta(
-        "refs",
-        &["branch"],
-        InvalidationStrategy::Watch {
-            patterns: vec![".git".to_string()],
-            abs_paths: vec![],
-        },
-        true, // default: true
-    );
-    let source = FakeSource(meta);
-    assert!(
-        source.metadata().fsevents_reinstate,
-        "Watch source must default to fsevents_reinstate=true"
-    );
-
-    // Verify in lifecycle: watches are NOT dropped on Active→Decay1 when fsevents_reinstate=true.
-    let mut reg = LifecycleRegistry::new();
-    let key = crate::scheduler::lifecycle::Key {
-        provider: "git".to_string(),
-        path: Some("/repo".to_string()),
-        source: "refs".to_string(),
-        node: String::new(),
-    };
-    let t0 = Instant::now();
-    let cfg = watch_source_config(true);
-    reg.on_demand(key.clone(), cfg, t0);
-
-    // Trigger Decay1.
-    let actions = reg.tick(t0 + Duration::from_secs(721));
-    assert!(
-        !actions.watch_drops.contains(&key),
-        "watches must survive decay when fsevents_reinstate=true; watch_drops={:?}",
-        actions.watch_drops
-    );
-
-    // fsevent during Decay1 reinstates to Active.
-    let outcome = reg.on_fsevent(key.clone(), t0 + Duration::from_secs(722));
-    assert!(
-        outcome.refresh,
-        "fsevent during Decay1 must trigger refresh (fsevents_reinstate=true)"
-    );
-    assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
-}
-
-// ---------------------------------------------------------------------------
-// Scenario 10: fsevents_reinstate default is true for WatchAndPoll sources
-// ---------------------------------------------------------------------------
-
-/// Canon §"Behaviour assertions": fsevents_reinstate default is true for WatchAndPoll sources
-///
-/// Given a Source with strategy WatchAndPoll and no explicit fsevents_reinstate setting,
-/// the effective fsevents_reinstate is true.
-#[test]
-fn fsevents_reinstate_default_is_true_for_watch_and_poll_sources() {
-    let meta = make_source_meta(
-        "status",
-        &["staged"],
-        InvalidationStrategy::WatchAndPoll {
-            patterns: vec![".git/index".to_string()],
-            abs_paths: vec![],
-            interval_secs: 60,
-            count: 2,
-        },
-        true, // default: true
-    );
-    let source = FakeSource(meta);
-    assert!(
-        source.metadata().fsevents_reinstate,
-        "WatchAndPoll source must default to fsevents_reinstate=true"
-    );
-
-    // Verify in lifecycle: watches survive Decay1 entry.
-    let mut reg = LifecycleRegistry::new();
-    let key = crate::scheduler::lifecycle::Key {
-        provider: "git".to_string(),
-        path: Some("/repo".to_string()),
-        source: "status".to_string(),
-        node: String::new(),
-    };
-    let t0 = Instant::now();
-    let cfg = watch_and_poll_config(Duration::from_millis(1), 1, true);
-    reg.on_demand(key.clone(), cfg, t0);
-
-    let actions = reg.tick(t0 + Duration::from_millis(100));
-    assert!(
-        !actions.watch_drops.contains(&key),
-        "WatchAndPoll watches must survive decay when fsevents_reinstate=true"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Scenario 11: Field freshness reflects owning Source's last refresh
 // ---------------------------------------------------------------------------
 
@@ -686,7 +574,6 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
             patterns: vec![],
             abs_paths: vec![abs_path.clone()],
         },
-        true,
     );
     let source = FakeSource(meta);
 
@@ -869,7 +756,7 @@ fn watch_registration_failure_leaves_cache_stale() {
     // 3. No automatic poll occurs.
 
     // Verify: Watch-only source has no poll_interval in lifecycle config.
-    let cfg = watch_source_config(true);
+    let cfg = watch_source_config();
     assert!(
         cfg.poll_interval.is_none(),
         "Watch-only source must have no poll_interval — no fallback poll path"

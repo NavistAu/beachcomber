@@ -29,7 +29,6 @@ fn failing_source_meta() -> SourceMetadata {
             reattempts: 3,
             interval_secs: 30,
         },
-        fsevents_reinstate: false,
         decay: None,
         budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
         timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,

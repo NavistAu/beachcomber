@@ -24,7 +24,6 @@ fn sample_rows() -> Vec<CacheRow> {
             kind: None,
             poll_interval_secs: None,
             poll_count: None,
-            fsevents_reinstate: None,
             polls_elapsed: None,
             next_poll_in_secs: None,
             failure: None,
@@ -41,7 +40,6 @@ fn sample_rows() -> Vec<CacheRow> {
             kind: None,
             poll_interval_secs: None,
             poll_count: None,
-            fsevents_reinstate: None,
             polls_elapsed: None,
             next_poll_in_secs: None,
             failure: None,
@@ -58,7 +56,6 @@ fn sample_rows() -> Vec<CacheRow> {
             kind: None,
             poll_interval_secs: None,
             poll_count: None,
-            fsevents_reinstate: None,
             polls_elapsed: None,
             next_poll_in_secs: None,
             failure: None,
@@ -85,7 +82,7 @@ fn tsv_preset_is_tab_separated_no_header() {
     let out = render_preset(&status_preset("tsv"), &rows, &RenderOpts::default());
     let line = out.lines().next().expect("at least one line");
     let cols: Vec<&str> = line.split('\t').collect();
-    assert_eq!(cols.len(), 14, "got: {:?}", cols);
+    assert_eq!(cols.len(), 13, "got: {:?}", cols);
     assert!(!out.starts_with("PROVIDER"), "no header in tsv");
 }
 
@@ -164,7 +161,6 @@ fn a_wide_value_is_measured_in_columns() {
         kind: None,
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -225,7 +221,6 @@ fn human_preset_truncates_value_to_meet_total_cap() {
         kind: None,
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -267,7 +262,6 @@ fn human_preset_color_on_stale_rows() {
         kind: None,
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -301,7 +295,6 @@ fn json_preset_path_none_serializes_as_null() {
         kind: None,
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -329,7 +322,6 @@ fn csv_preset_quotes_values_with_commas() {
         kind: None,
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -366,7 +358,6 @@ fn custom_template_supports_truncate_filter() {
         kind: None,
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -424,7 +415,6 @@ fn custom_template_supports_age_human() {
         kind: None,
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -940,7 +930,6 @@ fn max_width_value_column_shrinks_not_others() {
         kind: None,
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -989,7 +978,6 @@ fn max_width_total_row_width_does_not_exceed_cap() {
         kind: None,
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -1092,7 +1080,6 @@ fn cache_row_new_fields_serde_round_trip() {
         }),
         poll_interval_secs: Some(60),
         poll_count: Some(12),
-        fsevents_reinstate: Some(true),
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -1100,7 +1087,6 @@ fn cache_row_new_fields_serde_round_trip() {
     let v = serde_json::to_value(&row).unwrap();
     assert_eq!(v["poll_interval_secs"], 60);
     assert_eq!(v["poll_count"], 12);
-    assert_eq!(v["fsevents_reinstate"], true);
     assert_eq!(v["kind"]["kind"], "lifecycle");
     assert!(v.get("failure").is_none(), "failure omitted when None");
     assert!(v.get("decay").is_none(), "old decay field is gone");
@@ -1151,7 +1137,6 @@ async fn lifecycle_snapshots_message_returns_per_entry_data() {
 
     let entry = snapshots.values().next().expect("at least one snapshot");
     assert!(entry.poll_interval_secs > 0);
-    let _ = entry.fsevents_reinstate;
     let _ = entry.decay;
     let _ = entry.watches_files;
 
@@ -1451,7 +1436,6 @@ fn human_preset_includes_ttl_column_and_drops_stale() {
         }),
         poll_interval_secs: Some(60),
         poll_count: Some(12),
-        fsevents_reinstate: Some(true),
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -1487,21 +1471,20 @@ fn sample_lifecycle_row() -> beachcomber::cache::CacheRow {
         }),
         poll_interval_secs: Some(60),
         poll_count: Some(12),
-        fsevents_reinstate: Some(true),
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
     }
 }
 
-// Task 1.18: TSV — 14 columns (SOURCE follows FIELD)
+// Task 1.18: TSV — 13 columns (SOURCE follows FIELD)
 #[test]
 fn tsv_preset_14_columns_lifecycle_row() {
     let rows = vec![sample_lifecycle_row()];
     let out = render_preset(&status_preset("tsv"), &rows, &RenderOpts::default());
     let line = out.lines().next().expect("at least one line");
     let cols: Vec<&str> = line.split('\t').collect();
-    assert_eq!(cols.len(), 14, "got: {:?}", cols);
+    assert_eq!(cols.len(), 13, "got: {:?}", cols);
     assert!(!out.starts_with("PROVIDER"), "no header in tsv");
     // Spot-check specific columns
     assert_eq!(cols[0], "git", "provider col");
@@ -1510,15 +1493,14 @@ fn tsv_preset_14_columns_lifecycle_row() {
     assert_eq!(cols[8], "0", "decay col");
     assert_eq!(cols[9], "60", "poll_interval_secs col");
     assert_eq!(cols[10], "12", "poll_count col");
-    assert_eq!(cols[11], "true", "fsevents_reinstate col");
     assert_eq!(
-        cols[12], "",
+        cols[11], "",
         "failure_consecutive_failures empty when no failure"
     );
-    assert_eq!(cols[13], "", "failure_suppressed empty when no failure");
+    assert_eq!(cols[12], "", "failure_suppressed empty when no failure");
 }
 
-// Task 1.19: CSV — 14 columns with header (SOURCE follows FIELD)
+// Task 1.19: CSV — 13 columns with header (SOURCE follows FIELD)
 #[test]
 fn csv_preset_has_full_header_and_all_columns() {
     let rows = vec![sample_lifecycle_row()];
@@ -1526,11 +1508,11 @@ fn csv_preset_has_full_header_and_all_columns() {
     let header = out.lines().next().unwrap();
     assert_eq!(
         header,
-        "PROVIDER,PATH,FIELD,SOURCE,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,POLL_COUNT,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS"
+        "PROVIDER,PATH,FIELD,SOURCE,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,POLL_COUNT,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS"
     );
     let body = out.lines().nth(1).unwrap();
     let cols: Vec<&str> = body.split(',').collect();
-    assert_eq!(cols.len(), 14);
+    assert_eq!(cols.len(), 13);
     assert_eq!(cols[3], "refs", "source col");
 }
 
@@ -1547,11 +1529,6 @@ fn sh_preset_exposes_new_fields() {
     );
     assert!(
         out.contains("git_repo_branch_POLL_COUNT='12'"),
-        "got: {}",
-        out
-    );
-    assert!(
-        out.contains("git_repo_branch_FSEVENTS_REINSTATE='true'"),
         "got: {}",
         out
     );
@@ -1582,14 +1559,10 @@ fn minijinja_row_context_exposes_new_fields() {
         Some(60)
     );
     assert_eq!(v.get("poll_count").and_then(|v| v.as_u64()), Some(12));
-    assert_eq!(
-        v.get("fsevents_reinstate").and_then(|v| v.as_bool()),
-        Some(true)
-    );
 }
 
 // ---------------------------------------------------------------------------
-// Tasks 1.22: new filter keys — lifecycle, fsevents_reinstate
+// Tasks 1.22: new filter keys — lifecycle
 // ---------------------------------------------------------------------------
 
 fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
@@ -1611,7 +1584,6 @@ fn lc_row(provider: &str, decay: u8) -> beachcomber::cache::CacheRow {
         }),
         poll_interval_secs: Some(60),
         poll_count: Some(12),
-        fsevents_reinstate: Some(false),
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -1633,7 +1605,6 @@ fn once_row(provider: &str) -> beachcomber::cache::CacheRow {
         kind: Some(RowKind::Once),
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -1664,14 +1635,16 @@ fn filter_lifecycle_once_matches_once_kind() {
     assert_eq!(out[0].provider, "hostname");
 }
 
+/// No entry keeps its watches through decay, so there is no filter for one:
+/// the key is refused as any unknown key is.
 #[test]
-fn filter_fsevents_reinstate_true() {
-    let mut rows = vec![lc_row("a", 0), lc_row("b", 0)];
-    rows[0].fsevents_reinstate = Some(true);
-    rows[1].fsevents_reinstate = Some(false);
-    let out = apply_filters(rows, &["fsevents_reinstate=true".to_string()]).unwrap();
-    assert_eq!(out.len(), 1);
-    assert_eq!(out[0].provider, "a");
+fn the_fsevents_reinstate_filter_is_an_unknown_key() {
+    let err = apply_filters(
+        vec![lc_row("a", 0)],
+        &["fsevents_reinstate=true".to_string()],
+    )
+    .unwrap_err();
+    assert_eq!(err, "unknown filter key: fsevents_reinstate");
 }
 
 // ---------------------------------------------------------------------------
@@ -1715,7 +1688,6 @@ fn wire_format_round_trip_full_cache_row() {
     assert_eq!(round.kind, original.kind);
     assert_eq!(round.poll_interval_secs, original.poll_interval_secs);
     assert_eq!(round.poll_count, original.poll_count);
-    assert_eq!(round.fsevents_reinstate, original.fsevents_reinstate);
     assert_eq!(round.failure, original.failure);
 }
 
@@ -1739,7 +1711,6 @@ fn human_renders_p_zero_k_zero_without_panic() {
         }),
         poll_interval_secs: Some(0),
         poll_count: Some(0),
-        fsevents_reinstate: Some(false),
         polls_elapsed: None,
         next_poll_in_secs: Some(0),
         failure: None,
@@ -1780,7 +1751,6 @@ fn failure_state_renders_warn_and_red_row() {
         }),
         poll_interval_secs: Some(60),
         poll_count: Some(12),
-        fsevents_reinstate: Some(false),
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: Some(FailureSnapshot {
@@ -1824,7 +1794,6 @@ fn render_preset_ascii_flag_swaps_glyphs() {
         }),
         poll_interval_secs: Some(60),
         poll_count: Some(12),
-        fsevents_reinstate: Some(true),
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -1890,7 +1859,6 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
         }),
         poll_interval_secs: Some(60),
         poll_count: Some(12),
-        fsevents_reinstate: Some(true),
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -1937,7 +1905,6 @@ fn human_preset_compacts_home_path() {
         kind: None,
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -1975,7 +1942,6 @@ fn machine_presets_keep_real_path_under_home() {
         kind: None,
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -2025,7 +1991,6 @@ fn human_preset_path_compaction_frees_width_for_value() {
         kind: None,
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -2092,7 +2057,6 @@ fn wide_value_row() -> CacheRow {
         }),
         poll_interval_secs: Some(60),
         poll_count: Some(12),
-        fsevents_reinstate: Some(true),
         polls_elapsed: Some(3),
         next_poll_in_secs: Some(42),
         failure: None,
@@ -2150,7 +2114,6 @@ fn human_rows_leave_the_right_margin_unpainted() {
         kind: Some(beachcomber::cache::RowKind::Static),
         poll_interval_secs: None,
         poll_count: None,
-        fsevents_reinstate: None,
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: None,
@@ -2475,7 +2438,6 @@ fn nested_row() -> CacheRow {
         kind: Some(beachcomber::cache::RowKind::Once),
         poll_interval_secs: Some(30),
         poll_count: Some(4),
-        fsevents_reinstate: Some(true),
         polls_elapsed: Some(2),
         next_poll_in_secs: Some(9),
         failure: None,
