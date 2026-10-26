@@ -1,0 +1,13 @@
+[daemon.providers.direnv.sources.state]
+# A direnv root: the nearest directory holding an `.envrc`, walking up to `/`.
+root = "{{ lup('.envrc', root=true) | dirname }}"
+# Whether direnv allows that `.envrc`: its allow database, `$XDG_DATA_HOME/direnv/allow` (by default
+# `~/.local/share/direnv/allow`), holds a file named by the sha256 of the `.envrc`'s canonical path.
+# `env` is the daemon's environment, as it started. The allow file is read, so `direnv allow` or
+# `direnv deny` is seen by the next read, though only the `.envrc` is watched.
+data = '''{% set envrc = '.envrc' | realpath %}
+{{ (((env.XDG_DATA_HOME or '~/.local/share') ~ '/direnv/allow/' ~ (envrc | hash('sha256'))) | stat is defined) if envrc }}'''
+result.status = "{{ none if data is none else ('allowed' if data else 'blocked') }}"
+result.allowed = "{{ data }}"
+# Run again when the `.envrc` changes; a failure is retried every minute, three times. The nearest root answers alone.
+return = "{{ result | watch('.envrc') | failback('60s', 3) | nearest }}"

@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod battery;
+mod direnv;
 mod hostname;
 mod load;
 mod mise;

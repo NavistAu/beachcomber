@@ -1,55 +1,6 @@
 use crate::provider::Provider;
 use crate::provider::asdf::AsdfProvider;
-use crate::provider::direnv::DirenvProvider;
 use tempfile::TempDir;
-
-// --- Direnv ---
-
-#[test]
-fn direnv_metadata() {
-    let p = DirenvProvider;
-    let meta = p.metadata();
-    assert_eq!(meta.name, "direnv");
-    assert_eq!(meta.sources.len(), 1);
-    let src = &meta.sources[0];
-    assert_eq!(src.name, "state");
-    let fields: Vec<&str> = src.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(fields.contains(&"status"));
-    assert!(fields.contains(&"allowed"));
-}
-
-#[test]
-fn direnv_returns_none_without_envrc() {
-    let tmp = TempDir::new().unwrap();
-    let sources = DirenvProvider.sources();
-    let result = sources[0]
-        .execute(Some(tmp.path().to_str().unwrap()))
-        .unwrap();
-    assert!(result.fields.is_empty());
-}
-
-#[test]
-fn direnv_root_returns_envrc_dir_from_subdir() {
-    let project = TempDir::new().unwrap();
-    std::fs::write(project.path().join(".envrc"), "export FOO=bar\n").unwrap();
-    let subdir = project.path().join("src").join("nested");
-    std::fs::create_dir_all(&subdir).unwrap();
-
-    let sources = DirenvProvider.sources();
-    let got = sources[0].root(subdir.to_str().unwrap()).unwrap();
-    let expected = project.path().to_string_lossy().to_string();
-    assert_eq!(got, Some(expected));
-}
-
-#[test]
-fn direnv_root_none_outside_project() {
-    let tmp = TempDir::new().unwrap();
-    let sources = DirenvProvider.sources();
-    let got = sources[0].root(tmp.path().to_str().unwrap()).unwrap();
-    if let Some(got) = got {
-        assert_ne!(got, tmp.path().to_string_lossy().to_string());
-    }
-}
 
 // --- Asdf ---
 

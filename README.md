@@ -733,7 +733,7 @@ beachcomber ships 16 built-in providers organized by category, plus template-bac
 | `sudo` | none | `active` (bool) | poll 30s | < 1 µs |
 | `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | poll 1h | < 1 µs |
 
-`hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files (`defaults/<name>.toml`), each one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform` and `python` are shipped files whose Sources read their files; any of their lines can be overridden in `config.toml` or `conf.d/`.
+`hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files (`defaults/<name>.toml`), each one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform`, `python` and `direnv` are shipped files whose Sources read their files; any of their lines can be overridden in `config.toml` or `conf.d/`.
 
 **Example output:**
 
@@ -1880,7 +1880,7 @@ The differences: disk-based (not memory), no daemon, no multi-consumer sharing, 
 
 direnv hooks into the shell's pre-prompt to manage directory-scoped environment variables. It uses mtime-based change detection on `.envrc` files and re-evaluates them when they change.
 
-beachcomber's `direnv` provider wraps `direnv export json` and caches the result. Multiple consumers (different shell sessions, tmux panes) can see the direnv state through beachcomber without each running their own evaluation. This is the integration, not the replacement — direnv's evaluation semantics are preserved.
+beachcomber's `direnv` provider (`defaults/direnv.toml`) reads direnv's allow database to say whether the nearest `.envrc` is allowed, and caches that; it does not evaluate the `.envrc`. Multiple consumers (different shell sessions, tmux panes) can see the direnv state through beachcomber without each asking direnv. This is the integration, not the replacement — direnv's evaluation semantics are its own.
 
 ### The Gap
 

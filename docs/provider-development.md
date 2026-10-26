@@ -206,7 +206,7 @@ impl Source for DockerContextSource {
     }
 
     // `root` and `has_root` keep their defaults: one instance, at ~. A project
-    // Source overrides both (see src/provider/direnv.rs).
+    // Source overrides both (see src/provider/git.rs).
 
     fn execute(&self, _dir: Option<&str>) -> Result<SourceResult, String> {
         let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;

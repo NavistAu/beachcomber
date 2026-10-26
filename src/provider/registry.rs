@@ -1175,9 +1175,6 @@ impl ProviderRegistry {
             .register(Box::new(crate::provider::aws::AwsProvider))
             .expect("aws_profiles");
         registry
-            .register(Box::new(crate::provider::direnv::DirenvProvider))
-            .expect("direnv");
-        registry
             .register(Box::new(crate::provider::gcloud::GcloudProvider))
             .expect("gcloud_configs");
         registry

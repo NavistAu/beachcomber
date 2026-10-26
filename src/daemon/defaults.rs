@@ -30,6 +30,7 @@ pub const SHIPPED: &[(&str, &str)] = &[
     ("aws.toml", include_str!("../../defaults/aws.toml")),
     ("battery.toml", include_str!("../../defaults/battery.toml")),
     ("conda.toml", include_str!("../../defaults/conda.toml")),
+    ("direnv.toml", include_str!("../../defaults/direnv.toml")),
     ("gcloud.toml", include_str!("../../defaults/gcloud.toml")),
     (
         "hostname.toml",
