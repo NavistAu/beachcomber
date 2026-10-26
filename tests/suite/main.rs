@@ -69,6 +69,7 @@ mod json_value_conversion;
 mod key_addressing;
 mod kill_introspect_pid;
 mod memo_facet;
+mod memo_lifecycle;
 mod no_sleep_in_tests;
 mod path_chain;
 mod plugin_real_ffi;

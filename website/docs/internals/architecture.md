@@ -281,6 +281,10 @@ Each decay step doubles the poll interval and the step duration relative to the 
 
 There are no `Grace`, `BackoffState`, `SlowPoll`, or `Frozen` states. The only states are Active, Decay (1 to `decay`), and Evicted.
 
+**Static addresses: puts and memos**
+
+A put with a `ttl` and every memo are lifecycle entries of their own, keyed by their address (`Key.node`), and no read demands them: their write starts the entry afresh (`PutWritten`, `MemoWritten`, each replacing the entries the write displaced) and nothing else renews it. A `ttl` is `poll(ttl, 1)` with decay 1: the poll is the expiry clock (for a put nothing runs; for a memo its hash is dropped) and the entry is evicted one doubled step later, a put's address or a memo's value and record (`Cache::evict_put`, `Cache::evict_memo`). A memo's `watch` paths register through the `Registrar` when it is written and, as every entry's watches, exist only while it is Active: they go when it decays. A write-back that names a path the memo already watches keeps its registration. A memo with no `ttl` is watch-only: Active for the default window (12 minutes), then down its provider's `_.decay` ladder and evicted, about six hours after its write at the default depth. A decayed memo whose file has changed since is the client's to catch: it folds the files' stamps into the memo's hash, so the stored hash no longer matches. A reload leaves both alone; a memo takes a new `_.decay` with its next write.
+
 **Idle shutdown**
 
 When `cache.is_empty()` and `demand.is_empty()` both hold true and no activity has been seen for `[daemon] idle_shutdown`, the daemon exits.

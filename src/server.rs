@@ -2287,7 +2287,17 @@ async fn handle_request(
             ttl.as_deref(),
         ) {
             Ok((provider, path, field, write)) => {
+                let written = crate::scheduler::SchedulerMessage::MemoWritten {
+                    provider: provider.clone(),
+                    path: path.clone(),
+                    node: field.clone(),
+                    ttl_secs: write.ttl_secs,
+                    watch: write.watch.clone(),
+                };
                 cache.write_memo(&provider, path.as_deref(), &field, write);
+                if let Some(sched) = scheduler {
+                    sched.send(written).await;
+                }
                 Response::miss()
             }
             Err(msg) => Response::error(msg),
@@ -2807,10 +2817,14 @@ async fn handle_introspect_lifecycle(scheduler: Option<&SchedulerHandle>) -> Res
         verdicts.push(serde_json::json!({"level": "PASS", "message": "no providers in decay"}));
     } else {
         for entry in &lifecycle {
-            let label = match &entry.path {
-                Some(p) => format!("{} ({p})", entry.provider),
-                None => entry.provider.clone(),
-            };
+            // A static address is named by its node: `kubecontext.context`.
+            let mut label = entry.provider.clone();
+            if !entry.node.is_empty() {
+                label = format!("{label}.{}", entry.node);
+            }
+            if let Some(p) = &entry.path {
+                label = format!("{label} ({p})");
+            }
             verdicts.push(serde_json::json!({
                 "level": "WARN",
                 "message": format!("{label} — stage={} elapsed={}", entry.stage, secs(entry.elapsed_secs)),

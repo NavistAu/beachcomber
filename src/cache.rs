@@ -437,7 +437,7 @@ fn memo_facet_of(namespace: &str) -> String {
 }
 
 /// Whether two canonical addresses overlap: one is the other, or lies below it.
-fn overlaps(a: &str, b: &str) -> bool {
+pub(crate) fn overlaps(a: &str, b: &str) -> bool {
     libbeachcomber::key::within(a, b) || libbeachcomber::key::within(b, a)
 }
 
@@ -1201,10 +1201,10 @@ fn forget_records(records: &mut HashMap<String, RecordFreshness>, tail: &str) {
 pub struct Cache {
     entries: DashMap<CacheKey, CacheEntry>,
     watchers: Option<Arc<WatcherRegistry>>,
-    /// The directories each provider has had a memo written at: where an
-    /// invalidation looks for the memos it drops the hashes of. A write to a
-    /// provider with none is one lookup. A directory stays listed once its
-    /// memos are gone; looking there finds nothing.
+    /// The directories each provider has a memo at: where an invalidation
+    /// looks for the memos it drops the hashes of. A write to a provider with
+    /// none is one lookup. The eviction of a directory's last memo unlists it
+    /// ([`Cache::evict_memo`]), and a provider's last directory the provider.
     memo_paths: DashMap<String, std::collections::HashSet<Option<String>>>,
 }
 
@@ -2165,12 +2165,12 @@ impl Cache {
                 Value::Array(memo.watch.into_iter().map(Value::String).collect()),
             );
         }
-        self.memo_paths
-            .entry(provider.to_string())
-            .or_default()
-            .insert(path.map(str::to_string));
+        // Held until the memo is stored, so an eviction at this directory
+        // (`evict_memo`) cannot see it empty and unlist it in between.
+        let mut listed = self.memo_paths.entry(provider.to_string()).or_default();
+        listed.insert(path.map(str::to_string));
 
-        self.drop_memos(provider, path, field);
+        self.drop_memos(provider, path, |address| overlaps(address, field));
         {
             let mut entry = self
                 .entries
@@ -2204,28 +2204,59 @@ impl Cache {
             crate::provider::insert_path(&mut src.fields, field, Value::Object(keys));
             src.last_refreshed = now;
         }
+        drop(listed);
         if let Some(ref watchers) = self.watchers {
             watchers.notify(provider, path);
         }
     }
 
-    /// Remove every memo of `provider` at `path` whose address overlaps
-    /// `field` — its stamp, its value and its stored keys — and return their
+    /// Evict the memo of `provider`'s template leaf `field` at `path` at the
+    /// end of its lifecycle: its value, its stamp and its stored keys go, and
+    /// the namespace is notified at `path`; a memo at any other address
+    /// stays. A directory left holding no memo of `provider` is no longer
+    /// listed for it. Whether there was one.
+    pub fn evict_memo(&self, provider: &str, path: Option<&str>, field: &str) -> bool {
+        let evicted = {
+            // Under the provider's listing, as `write_memo` stores under it.
+            let listed = self.memo_paths.entry(provider.to_string());
+            let evicted = !self
+                .drop_memos(provider, path, |address| address == field)
+                .is_empty();
+            if let dashmap::Entry::Occupied(mut listed) = listed
+                && !self
+                    .entries
+                    .contains_key(&make_cache_key(&memo_facet_of(provider), path))
+            {
+                listed.get_mut().remove(&path.map(str::to_string));
+                if listed.get().is_empty() {
+                    listed.remove();
+                }
+            }
+            evicted
+        };
+        if evicted && let Some(ref watchers) = self.watchers {
+            watchers.notify(provider, path);
+        }
+        evicted
+    }
+
+    /// Remove every memo of `provider` at `path` whose address `which` names
+    /// — its stamp, its value and its stored keys — and return their
     /// addresses. Each entry is held on its own; an entry left holding
     /// nothing goes.
-    fn drop_memos(&self, provider: &str, path: Option<&str>, field: &str) -> Vec<String> {
+    fn drop_memos(
+        &self,
+        provider: &str,
+        path: Option<&str>,
+        which: impl Fn(&str) -> bool,
+    ) -> Vec<String> {
         let mut gone: Vec<String> = Vec::new();
         if let dashmap::Entry::Occupied(mut occupied) = self
             .entries
             .entry(make_cache_key(&memo_facet_of(provider), path))
         {
             let entry = occupied.get_mut();
-            gone = entry
-                .memos
-                .keys()
-                .filter(|a| overlaps(a, field))
-                .cloned()
-                .collect();
+            gone = entry.memos.keys().filter(|a| which(a)).cloned().collect();
             for address in &gone {
                 entry.memos.remove(address);
             }
@@ -4371,6 +4402,40 @@ mod tests {
             cache.memo_record("k", None, "g.z").unwrap().data,
             Some(Value::Int(4))
         );
+    }
+
+    /// An evicted memo takes its value, its stamp and its keys and wakes the
+    /// namespace there; a memo at another address, or the same address at
+    /// another directory, stays. The last memo of a directory unlists it, and
+    /// the provider's last its listing.
+    #[test]
+    fn evicting_a_memo_removes_that_address_only() {
+        let watchers = Arc::new(WatcherRegistry::new());
+        let cache = Cache::with_watchers(watchers.clone());
+        cache.write_memo("k", None, "f", memo(H1, Some(Value::Int(1)), Some(60)));
+        cache.write_memo("k", None, "g", memo(H1, None, None));
+        cache.write_memo("k", Some("/m"), "f", memo(H2, Some(Value::Int(2)), None));
+        let mut woken = watchers.subscribe("k", None);
+
+        assert!(cache.evict_memo("k", None, "f"));
+        assert!(woken.try_recv().is_ok(), "the namespace was notified");
+        assert!(!cache.evict_memo("k", None, "f"), "only once");
+        assert!(woken.try_recv().is_err(), "nothing went the second time");
+        assert!(cache.memo_record("k", None, "f").is_none());
+        assert!(cache.stored_keys("k", None, MEMO_SOURCE, "f").is_none());
+        assert!(cache.stored_keys("k", None, MEMO_SOURCE, "g").is_some());
+        assert!(cache.memo_record("k", None, "g").is_some());
+        assert_eq!(
+            cache.memo_record("k", Some("/m"), "f").unwrap().data,
+            Some(Value::Int(2))
+        );
+
+        cache.evict_memo("k", None, "g");
+        assert!(cache.get_entry("k:memo", None).is_none());
+        assert!(cache.get_entry("k:cache", None).is_none());
+        assert!(cache.has_memos("k"), "/m holds one still");
+        cache.evict_memo("k", Some("/m"), "f");
+        assert!(!cache.has_memos("k"), "none left anywhere");
     }
 
     #[test]

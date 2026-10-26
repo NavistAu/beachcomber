@@ -567,14 +567,19 @@ fn render_subject(
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
                     let path = entry.get("path").and_then(|v| v.as_str());
+                    // A static address (a memo, a put) is named by its node.
+                    let name = match entry.get("node").and_then(|v| v.as_str()) {
+                        Some(node) => format!("{provider}.{node}"),
+                        None => provider.to_string(),
+                    };
                     let label = match path {
                         Some(p) => {
                             format!(
-                                "{provider} ({})",
+                                "{name} ({})",
                                 libbeachcomber::path::Home::from_env().compact(p)
                             )
                         }
-                        None => provider.to_string(),
+                        None => name,
                     };
                     lines.push_str(&format!(
                         "  [WARN] {label}   stage={stage} elapsed={}\n",
@@ -874,5 +879,20 @@ mod tests {
         });
         let (text, _) = render_subject("lifecycle", &payload, &[]);
         assert!(text.contains("elapsed=1h2m"), "{text}");
+    }
+
+    /// A decaying memo is named by its leaf.
+    #[test]
+    fn a_decaying_memo_is_named_by_its_node() {
+        let payload = serde_json::json!({
+            "lifecycle": [{"provider": "kubecontext", "path": "/w", "source": "memo",
+                           "node": "context", "stage": "Decay1", "elapsed_secs": 60}],
+            "verdicts": [],
+        });
+        let (text, _) = render_subject("lifecycle", &payload, &[]);
+        assert!(
+            text.contains("[WARN] kubecontext.context (/w)   stage=Decay1"),
+            "{text}"
+        );
     }
 }

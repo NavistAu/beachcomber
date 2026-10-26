@@ -5,7 +5,7 @@
 
 use crate::common::daemon::TestDaemon;
 use crate::common::poll::poll_until;
-use crate::common::socket::IsolatedSocket;
+use crate::common::socket::{IsolatedSocket, ask, watches};
 use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -14,41 +14,9 @@ use beachcomber::server::Server;
 use beachcomber::watcher::FsWatcher;
 use beachcomber::watcher_registry::WatcherRegistry;
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
-
-/// One request on a connection of its own.
-fn ask(sock: &Path, request: Value) -> Value {
-    let mut stream = UnixStream::connect(sock).expect("connect");
-    let mut line = request.to_string();
-    line.push('\n');
-    stream.write_all(line.as_bytes()).unwrap();
-    let mut answer = String::new();
-    BufReader::new(stream).read_line(&mut answer).unwrap();
-    serde_json::from_str(&answer).expect("a JSON answer")
-}
-
-/// The watches the daemon reports, as `(path, the rest of the entry)`.
-fn watches(sock: &Path) -> Vec<(String, Value)> {
-    ask(sock, json!({"op": "introspect", "subject": "watches"}))["data"]["watches"]
-        .as_array()
-        .expect("watches")
-        .iter()
-        .map(|w| {
-            let mut rest = w.clone();
-            let path = rest
-                .as_object_mut()
-                .unwrap()
-                .remove("path")
-                .and_then(|p| p.as_str().map(str::to_string))
-                .expect("a path");
-            (path, rest)
-        })
-        .collect()
-}
 
 /// A config Source `w` with one instance, at `~`, whose `data` reads `file`
 /// and which watches `watched`.

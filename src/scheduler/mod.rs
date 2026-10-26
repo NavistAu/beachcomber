@@ -59,6 +59,19 @@ pub enum SchedulerMessage {
         node: String,
         ttl_secs: Option<u64>,
     },
+    /// A `memo` wrote the memo of `provider`'s template leaf `node` at
+    /// `path`. The address is a lifecycle entry of its own, started afresh
+    /// and replacing every memo entry the write displaced there: a ttl is
+    /// poll N x 1 with decay 1, and its `watch` paths are watched while it is
+    /// Active. Its poll and its file events drop its hash; reads never renew
+    /// it.
+    MemoWritten {
+        provider: String,
+        path: Option<String>,
+        node: String,
+        ttl_secs: Option<u64>,
+        watch: Vec<String>,
+    },
     /// Request a snapshot of all (provider, path, source) entries with non-zero failure counts.
     /// Returns an empty map when no failures are tracked.
     GetFailureStates {
@@ -129,11 +142,18 @@ pub struct SchedulerStatus {
     pub watch_backend: String,
 }
 
+// `DemandInfo`, `LifecycleInfo` and `PollTimerInfo` each name a lifecycle
+// entry by its key: `source` is the Source's name, or `put` or `memo` for a
+// static address, whose `node` is its address (omitted for a Source
+// instance).
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DemandInfo {
     pub provider: String,
     pub path: Option<String>,
     pub source: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub node: String,
     pub last_query_secs_ago: u64,
 }
 
@@ -142,6 +162,8 @@ pub struct LifecycleInfo {
     pub provider: String,
     pub path: Option<String>,
     pub source: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub node: String,
     pub stage: String,
     pub elapsed_secs: u64,
 }
@@ -151,15 +173,18 @@ pub struct PollTimerInfo {
     pub provider: String,
     pub path: Option<String>,
     pub source: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub node: String,
     pub interval_secs: u64,
     pub last_run_secs_ago: u64,
 }
 
+/// What routes the events of one watched path to one lifecycle entry: the
+/// entry's key, and the patterns an event below the path must match (none:
+/// every event).
 #[derive(Debug, Clone)]
 pub(crate) struct Subscription {
-    pub(crate) provider: String,
-    pub(crate) path: Option<String>,
-    pub(crate) source: String,
+    pub(crate) key: lifecycle::Key,
     pub(crate) patterns: Vec<String>,
 }
 
@@ -359,13 +384,20 @@ fn build_status(
     let mut demand_info: Vec<DemandInfo> = Vec::new();
 
     for (key, entry) in lifecycle.iter() {
-        let (provider, path, source) = (&key.provider, &key.path, &key.source);
+        let (provider, path, node) = (&key.provider, &key.path, &key.node);
+        // A memo's label as every reader sees it; a Source by its own name.
+        let source = if key.source == crate::cache::MEMO_SOURCE {
+            crate::cache::presented_label(&key.source)
+        } else {
+            key.source.clone()
+        };
         // Poll timer info — only for entries with a poll path.
         if let Some(pt) = &entry.poll_timer {
             poll_timer_info.push(PollTimerInfo {
                 provider: provider.clone(),
                 path: path.clone(),
                 source: source.clone(),
+                node: node.clone(),
                 interval_secs: pt.interval.as_secs(),
                 last_run_secs_ago: pt.last_fired.elapsed().as_secs(),
             });
@@ -377,7 +409,8 @@ fn build_status(
                 demand_info.push(DemandInfo {
                     provider: provider.clone(),
                     path: path.clone(),
-                    source: source.clone(),
+                    source,
+                    node: node.clone(),
                     last_query_secs_ago: entry.decay_timer.last_demand.elapsed().as_secs(),
                 });
             }
@@ -387,7 +420,8 @@ fn build_status(
                 backoff_info.push(LifecycleInfo {
                     provider: provider.clone(),
                     path: path.clone(),
-                    source: source.clone(),
+                    source,
+                    node: node.clone(),
                     stage: format!("Decay{n}"),
                     elapsed_secs,
                 });
@@ -557,6 +591,21 @@ impl Scheduler {
             .start(want, &self.registry, &self.cache, &key);
     }
 
+    /// What `key`'s poll or file event does: a Source instance runs (as
+    /// `want` asks), a memo's hash goes, so the next render of its leaf
+    /// writes it afresh, and a put's poll is its expiry clock, with nothing
+    /// to run.
+    fn fire(&self, key: &lifecycle::Key, want: Want) {
+        match key.source.as_str() {
+            crate::cache::PUT_SOURCE => {}
+            crate::cache::MEMO_SOURCE => {
+                self.cache
+                    .drop_memo_hash(&key.provider, key.path.as_deref(), &key.node);
+            }
+            source => self.execute_source(&key.provider, source, key.path.as_deref(), want),
+        }
+    }
+
     /// Adopt `next` as this scheduler's registry, bring the lifecycle entries
     /// to match it and then put it in force in `registry`, where requests are
     /// served from. Returns the watches the caller must drop and register.
@@ -603,7 +652,7 @@ impl Scheduler {
                 failures.remove(&retune.key);
             }
             failures.retain(|key, _| {
-                key.source == crate::cache::PUT_SOURCE
+                crate::cache::is_static_label(&key.source)
                     || !plan
                         .affected
                         .contains(&(key.provider.clone(), key.source.clone()))
@@ -803,7 +852,16 @@ impl Scheduler {
                             last_activity = tokio::time::Instant::now();
                         }
                         Some(SchedulerMessage::PutWritten { provider, path, node, ttl_secs }) => {
-                            apply_put_written(&mut lifecycle, &provider, path.as_deref(), &node, ttl_secs, Instant::now());
+                            apply_put_written(&mut lifecycle, &self.cache, &provider, path.as_deref(), &node, ttl_secs, Instant::now());
+                            last_activity = tokio::time::Instant::now();
+                        }
+                        Some(SchedulerMessage::MemoWritten { provider, path, node, ttl_secs, watch }) => {
+                            let key = memo_key(&provider, path.as_deref(), &node);
+                            let displaced = apply_memo_written(&mut lifecycle, &self.cache, &key, ttl_secs, &watch, Instant::now());
+                            for gone in &displaced {
+                                drop_watches_for_key(gone, &mut watch_paths, registrar.as_ref());
+                            }
+                            watch_key(registrar.as_ref(), &mut watch_paths, &key, memo_watches(&key, &watch));
                             last_activity = tokio::time::Instant::now();
                         }
                         Some(SchedulerMessage::Reload { next, registry }) => {
@@ -935,7 +993,7 @@ impl Scheduler {
                         // A run that began before the change may have read
                         // the file before it: one that begins after it.
                         if outcome.refresh {
-                            self.execute_source(&key.provider, &key.source, key.path.as_deref(), Want::Fresh);
+                            self.fire(&key, Want::Fresh);
                         }
                     }
                     last_activity = tokio::time::Instant::now();
@@ -986,16 +1044,12 @@ impl Scheduler {
 
                     for key in &actions.polls_due {
                         debug!(
-                            "Poll tick: executing provider={} path={:?} source={}",
-                            key.provider, key.path, key.source
+                            "Poll tick: provider={} path={:?} source={} node={}",
+                            key.provider, key.path, key.source, key.node
                         );
-                        if key.source == crate::cache::PUT_SOURCE {
-                            // A put's poll is its expiry clock; nothing to run.
-                            continue;
-                        }
                         // A run in flight brings the instance up to date as
                         // well as a new one would.
-                        self.execute_source(&key.provider, &key.source, key.path.as_deref(), Want::Any);
+                        self.fire(key, Want::Any);
                     }
 
                     for key in &actions.watch_drops {
@@ -1037,7 +1091,7 @@ impl Scheduler {
 }
 
 /// Subscribe one instance of `provider`'s Source `sm` at `root` to its watches
-/// ([`instance_watches`]). With no watcher there is nothing to watch with.
+/// ([`instance_watches`]).
 fn watch_instance(
     registrar: Option<&Registrar>,
     watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
@@ -1045,21 +1099,19 @@ fn watch_instance(
     sm: &crate::provider::SourceMetadata,
     root: Option<&str>,
 ) {
-    let Some(registrar) = registrar else {
-        return;
+    let key = lifecycle::Key {
+        provider: provider.to_string(),
+        path: root.map(str::to_string),
+        source: sm.name.clone(),
+        node: String::new(),
     };
-    for (watch_path, sub) in instance_watches(provider, sm, root) {
-        debug!(
-            "Watching {:?} for provider={} source={} root={:?}",
-            watch_path, provider, sm.name, root
-        );
-        subscribe(registrar, watch_paths, watch_path, sub);
-    }
+    let watches = instance_watches(&key, sm);
+    watch_key(registrar, watch_paths, &key, watches);
 }
 
-/// The watches an instance of a Source registers when it is first requested:
-/// each as the path to watch and the subscription that routes its events to the
-/// instance's lifecycle key.
+/// The watches an instance of a Source (`key`) registers when it is first
+/// requested: each as the path to watch and the subscription that routes its
+/// events to the instance's lifecycle key.
 ///
 /// A relative `watch` entry is a pattern under the instance's root directory,
 /// so it registers only for a rooted instance: at `~` a recursive watch of
@@ -1069,22 +1121,19 @@ fn watch_instance(
 /// refreshes this instance. A Poll Source registers no watch at all: an empty
 /// pattern list matches every event under its root.
 fn instance_watches(
-    provider: &str,
+    key: &lifecycle::Key,
     sm: &crate::provider::SourceMetadata,
-    root: Option<&str>,
 ) -> Vec<(PathBuf, Subscription)> {
     let mut out = Vec::new();
     if matches!(sm.invalidation, InvalidationStrategy::Poll { .. }) {
         return out;
     }
     let subscription = |patterns: Vec<String>| Subscription {
-        provider: provider.to_string(),
-        path: root.map(str::to_string),
-        source: sm.name.clone(),
+        key: key.clone(),
         patterns,
     };
     let patterns = crate::provider::watch_patterns(&sm.invalidation);
-    if let Some(root) = root
+    if let Some(root) = &key.path
         && !patterns.is_empty()
     {
         out.push((PathBuf::from(root), subscription(patterns.clone())));
@@ -1092,7 +1141,7 @@ fn instance_watches(
     // The instance at `~` has no directory to watch recursively: that would be
     // all of `$HOME`. Its files are the single-component patterns joined to
     // `$HOME` (`mise.toml`, `.tool-versions`), each watched on its own.
-    if root.is_none()
+    if key.path.is_none()
         && let Some(home) = crate::query::home_dir()
     {
         for pattern in &patterns {
@@ -1108,11 +1157,60 @@ fn instance_watches(
     out
 }
 
+/// The watches of the memo `key`: each of its write-back's absolute paths,
+/// every event on it or below it routed to the memo. A path that does not
+/// exist yet is watched through the nearest directory above it that does,
+/// and its creation is an event ([`Registrar`]).
+fn memo_watches(key: &lifecycle::Key, watch: &[String]) -> Vec<(PathBuf, Subscription)> {
+    watch
+        .iter()
+        .map(|path| {
+            let sub = Subscription {
+                key: key.clone(),
+                patterns: Vec::new(),
+            };
+            (PathBuf::from(path), sub)
+        })
+        .collect()
+}
+
+/// Bring `key`'s subscriptions to `watches`: a path it is subscribed to and
+/// no longer names lets go of it, one it names and is not subscribed to yet
+/// registers ([`subscribe`]), and one it keeps keeps its registration. A
+/// registration of one of its paths that failed is asked for again. With no
+/// watcher there is nothing to watch with.
+fn watch_key(
+    registrar: Option<&Registrar>,
+    watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
+    key: &lifecycle::Key,
+    watches: Vec<(PathBuf, Subscription)>,
+) {
+    let Some(registrar) = registrar else {
+        return;
+    };
+    let held: Vec<PathBuf> = paths_of(key, watch_paths).map(PathBuf::from).collect();
+    for path in held
+        .iter()
+        .filter(|p| !watches.iter().any(|(w, _)| w == *p))
+    {
+        unsubscribe(key, path, watch_paths, Some(registrar));
+    }
+    for (path, sub) in watches {
+        if !held.contains(&path) {
+            debug!("Watching {path:?} for {key:?}");
+            subscribe(registrar, watch_paths, path, sub);
+        }
+    }
+    if registrar.has_failed() {
+        registrar.retry(paths_of(key, watch_paths));
+    }
+}
+
 /// Route `path`'s events to `sub`. The first subscriber of a path asks the
 /// registrar for it, so Sources that watch one path (git's `refs` and
 /// `status` at a repository's root) share one registration; `watch_paths` is
-/// the one record of what is watched, which [`drop_watches_for_key`] lets go
-/// of on the last unsubscribe.
+/// the one record of what is watched, which [`unsubscribe`] lets go of on the
+/// last unsubscribe.
 ///
 /// The registration is the registrar's worker's, so the loop goes on at once.
 /// Until it is made the path is Pending and its events are not seen: the OS is
@@ -1132,51 +1230,141 @@ fn subscribe(
     }
 }
 
-/// The paths `key`'s instance is subscribed to.
+/// Stop routing `path`'s events to `key`, and stop watching the path when no
+/// one else is subscribed to it.
+fn unsubscribe(
+    key: &lifecycle::Key,
+    path: &std::path::Path,
+    watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
+    registrar: Option<&Registrar>,
+) {
+    let Some(subs) = watch_paths.get_mut(path) else {
+        return;
+    };
+    subs.retain(|sub| sub.key != *key);
+    if subs.is_empty() {
+        watch_paths.remove(path);
+        if let Some(registrar) = registrar {
+            registrar.unwatch(path);
+        }
+        debug!("Unwatched path {:?} (no subscriptions remaining)", path);
+    }
+}
+
+/// The paths `key`'s entry is subscribed to.
 fn paths_of<'a>(
     key: &'a lifecycle::Key,
     watch_paths: &'a HashMap<PathBuf, Vec<Subscription>>,
 ) -> impl Iterator<Item = &'a std::path::Path> {
     watch_paths
         .iter()
-        .filter(|(_, subs)| {
-            subs.iter().any(|sub| {
-                sub.provider == key.provider && sub.path == key.path && sub.source == key.source
-            })
-        })
+        .filter(|(_, subs)| subs.iter().any(|sub| sub.key == *key))
         .map(|(path, _)| path.as_path())
 }
 
 /// Apply a `PutWritten`: drop every `put` lifecycle key at or below `node`,
-/// then, when the put has a ttl, make the address a lifecycle entry: poll
-/// `ttl x 1`, decay depth 1. Valid for the ttl, readable but stale for one
-/// decay step, then evicted.
+/// then, when the put has a ttl, make the address a lifecycle entry
+/// ([`static_lifecycle_config`]).
 fn apply_put_written(
     lifecycle: &mut LifecycleRegistry,
+    cache: &Cache,
     provider: &str,
     path: Option<&str>,
     node: &str,
     ttl_secs: Option<u64>,
     now: Instant,
 ) {
-    lifecycle.remove_put_keys(provider, path, node);
-    let Some(ttl_secs) = ttl_secs else {
+    lifecycle.remove_static_keys(crate::cache::PUT_SOURCE, provider, path, |address| {
+        crate::cache::is_at_or_below(address, node)
+    });
+    if ttl_secs.is_none() {
         return;
-    };
+    }
     let key = lifecycle::Key {
         provider: provider.to_string(),
         path: path.map(str::to_string),
         source: crate::cache::PUT_SOURCE.to_string(),
         node: node.to_string(),
     };
-    let cfg = SourceLifecycleConfig::from_strategy(
-        &InvalidationStrategy::Poll {
-            interval_secs: ttl_secs,
-            count: 1,
-        },
-        1,
-    );
+    let cfg = static_lifecycle_config(cache, provider, path, ttl_secs, &[]);
     lifecycle.on_demand(key, cfg, now);
+}
+
+/// The lifecycle key of the memo of `provider`'s template leaf `node` at
+/// `path`.
+fn memo_key(provider: &str, path: Option<&str>, node: &str) -> lifecycle::Key {
+    lifecycle::Key {
+        provider: provider.to_string(),
+        path: path.map(str::to_string),
+        source: crate::cache::MEMO_SOURCE.to_string(),
+        node: node.to_string(),
+    }
+}
+
+/// Apply a `MemoWritten` for the memo `key`: every memo entry at its
+/// directory whose address overlaps it goes, as `Cache::write_memo` dropped
+/// those memos, and the address starts its lifecycle afresh
+/// ([`static_lifecycle_config`]), its clock and its poll from `now`. Returns
+/// the entries displaced from other addresses, whose watches go.
+fn apply_memo_written(
+    lifecycle: &mut LifecycleRegistry,
+    cache: &Cache,
+    key: &lifecycle::Key,
+    ttl_secs: Option<u64>,
+    watch: &[String],
+    now: Instant,
+) -> Vec<lifecycle::Key> {
+    let mut displaced = lifecycle.remove_static_keys(
+        crate::cache::MEMO_SOURCE,
+        &key.provider,
+        key.path.as_deref(),
+        |address| crate::cache::overlaps(address, &key.node),
+    );
+    displaced.retain(|gone| gone != key);
+    let cfg = static_lifecycle_config(cache, &key.provider, key.path.as_deref(), ttl_secs, watch);
+    lifecycle.on_demand(key.clone(), cfg, now);
+    displaced
+}
+
+/// The lifecycle of a static address (a put's, a memo's). A ttl is
+/// `poll(ttl, 1)` with decay 1: valid for the ttl, readable but stale for one
+/// decay step, then evicted; `watch` paths beside it make it
+/// `watch_and_poll`. With none, it is watch-only, Active for the default
+/// window and decaying at the depth `provider`'s `_` prototype gives at
+/// `path` (`Cache::resolve_decay`).
+fn static_lifecycle_config(
+    cache: &Cache,
+    provider: &str,
+    path: Option<&str>,
+    ttl_secs: Option<u64>,
+    watch: &[String],
+) -> SourceLifecycleConfig {
+    let abs_paths = watch.to_vec();
+    match ttl_secs {
+        Some(interval_secs) if abs_paths.is_empty() => SourceLifecycleConfig::from_strategy(
+            &InvalidationStrategy::Poll {
+                interval_secs,
+                count: 1,
+            },
+            1,
+        ),
+        Some(interval_secs) => SourceLifecycleConfig::from_strategy(
+            &InvalidationStrategy::WatchAndPoll {
+                patterns: Vec::new(),
+                abs_paths,
+                interval_secs,
+                count: 1,
+            },
+            1,
+        ),
+        None => SourceLifecycleConfig::from_strategy(
+            &InvalidationStrategy::Watch {
+                patterns: Vec::new(),
+                abs_paths,
+            },
+            cache.resolve_decay(provider, path),
+        ),
+    }
 }
 
 /// The lifecycle a Source of `provider` runs under: its own strategy, with the
@@ -1243,7 +1431,8 @@ fn same_schedule(a: &crate::provider::SourceMetadata, b: &crate::provider::Sourc
 }
 
 /// Compare every Source instance in `lifecycle` as `previous` scheduled it with
-/// what `next` says. Puts are not Sources and are skipped.
+/// what `next` says. Puts and memos are not Sources and are skipped: a memo
+/// takes a new `_.decay` with its next write.
 fn plan_reload(
     cache: &Cache,
     lifecycle: &LifecycleRegistry,
@@ -1256,7 +1445,7 @@ fn plan_reload(
         retune: Vec::new(),
     };
     for (key, entry) in lifecycle.iter() {
-        if key.source == crate::cache::PUT_SOURCE {
+        if crate::cache::is_static_label(&key.source) {
             continue;
         }
         let affected = plan
@@ -1289,12 +1478,17 @@ fn plan_reload(
 }
 
 /// Evict one lifecycle key: a put address takes its own subtree with it, a
-/// Source takes its whole contribution.
+/// memo its value and its record, a Source its whole contribution.
 fn evict(cache: &Cache, key: &lifecycle::Key) {
-    if key.source == crate::cache::PUT_SOURCE {
-        cache.evict_put(&key.provider, key.path.as_deref(), &key.node);
-    } else {
-        cache.remove_source(&key.provider, key.path.as_deref(), &key.source);
+    let path = key.path.as_deref();
+    match key.source.as_str() {
+        crate::cache::PUT_SOURCE => {
+            cache.evict_put(&key.provider, path, &key.node);
+        }
+        crate::cache::MEMO_SOURCE => {
+            cache.evict_memo(&key.provider, path, &key.node);
+        }
+        source => cache.remove_source(&key.provider, path, source),
     }
 }
 
@@ -1319,12 +1513,7 @@ fn resolve_keys_from_paths(
             }
             for sub in subscriptions {
                 if event_matches_patterns(&sub.patterns, watch_path, changed_path) {
-                    keys.push(lifecycle::Key {
-                        provider: sub.provider.clone(),
-                        path: sub.path.clone(),
-                        source: sub.source.clone(),
-                        node: String::new(),
-                    });
+                    keys.push(sub.key.clone());
                 }
             }
         }
@@ -1332,31 +1521,16 @@ fn resolve_keys_from_paths(
     keys
 }
 
-/// Remove watch subscriptions for a specific key and unwatch the path if no subscriptions remain.
+/// Remove every subscription of `key`, and unwatch each path no one else is
+/// subscribed to.
 fn drop_watches_for_key(
     key: &lifecycle::Key,
     watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
     registrar: Option<&Registrar>,
 ) {
-    let mut paths_to_unwatch = Vec::new();
-    for (watch_path, subscriptions) in watch_paths.iter_mut() {
-        subscriptions.retain(|sub| {
-            // A Subscription belongs to a Source, whose key has no node.
-            !(sub.provider == key.provider
-                && sub.path == key.path
-                && sub.source == key.source
-                && key.node.is_empty())
-        });
-        if subscriptions.is_empty() {
-            paths_to_unwatch.push(watch_path.clone());
-        }
-    }
-    for wp in paths_to_unwatch {
-        watch_paths.remove(&wp);
-        if let Some(registrar) = registrar {
-            registrar.unwatch(&wp);
-        }
-        debug!("Unwatched path {:?} (no subscriptions remaining)", wp);
+    let held: Vec<PathBuf> = paths_of(key, watch_paths).map(PathBuf::from).collect();
+    for path in held {
+        unsubscribe(key, &path, watch_paths, registrar);
     }
 }
 
@@ -1454,7 +1628,15 @@ mod tests {
     fn a_put_entry_is_not_renewed_by_reads() {
         let mut lifecycle = LifecycleRegistry::new();
         let t0 = Instant::now();
-        apply_put_written(&mut lifecycle, "build", None, "status", Some(10), t0);
+        apply_put_written(
+            &mut lifecycle,
+            &Cache::new(),
+            "build",
+            None,
+            "status",
+            Some(10),
+            t0,
+        );
 
         // No read path touches a put key: the only API that renews an entry is
         // `on_demand`, and `apply_put_written` is its only put caller. The
@@ -1470,7 +1652,15 @@ mod tests {
         assert_eq!(actions.evictions, vec![put_key(None, "status")]);
 
         // The next put starts it over.
-        apply_put_written(&mut lifecycle, "build", None, "status", Some(10), t0);
+        apply_put_written(
+            &mut lifecycle,
+            &Cache::new(),
+            "build",
+            None,
+            "status",
+            Some(10),
+            t0,
+        );
         assert_eq!(put_keys(&lifecycle), vec!["status"]);
     }
 
@@ -1479,18 +1669,34 @@ mod tests {
         let mut lifecycle = LifecycleRegistry::new();
         let t0 = Instant::now();
         for node in ["a", "a.b", "ab", "c"] {
-            apply_put_written(&mut lifecycle, "build", None, node, Some(10), t0);
+            apply_put_written(
+                &mut lifecycle,
+                &Cache::new(),
+                "build",
+                None,
+                node,
+                Some(10),
+                t0,
+            );
         }
-        apply_put_written(&mut lifecycle, "build", Some("/p"), "a", Some(10), t0);
+        apply_put_written(
+            &mut lifecycle,
+            &Cache::new(),
+            "build",
+            Some("/p"),
+            "a",
+            Some(10),
+            t0,
+        );
 
         // A put with no ttl at `a` drops `a` and `a.b`, not `ab`, `c` or the
         // same node at another path.
-        apply_put_written(&mut lifecycle, "build", None, "a", None, t0);
+        apply_put_written(&mut lifecycle, &Cache::new(), "build", None, "a", None, t0);
         assert_eq!(put_keys(&lifecycle), vec!["a", "ab", "c"]);
         assert!(lifecycle.iter().any(|(k, _)| k.path.is_some()));
 
         // The root address covers every node at that (provider, path).
-        apply_put_written(&mut lifecycle, "build", None, "", None, t0);
+        apply_put_written(&mut lifecycle, &Cache::new(), "build", None, "", None, t0);
         assert_eq!(put_keys(&lifecycle), vec!["a"]);
     }
 
@@ -1564,10 +1770,14 @@ mod tests {
         let (held, calls) = Held::new(&Gate::opened());
         let registrar = Registrar::start(FsWatcher::with_backend(Box::new(held)));
         let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
-        let sub = |source: &str, pattern: &str| Subscription {
-            provider: "git".to_string(),
+        let key = |source: &str| lifecycle::Key {
+            provider: "git".into(),
             path: Some(dir.display().to_string()),
-            source: source.to_string(),
+            source: source.into(),
+            node: String::new(),
+        };
+        let sub = |source: &str, pattern: &str| Subscription {
+            key: key(source),
             patterns: vec![pattern.to_string()],
         };
         subscribe(
@@ -1585,12 +1795,6 @@ mod tests {
         assert_eq!(watch_paths[&dir].len(), 2, "both subscriptions route");
         assert_eq!(registrar.watches().len(), 1, "one registration asked for");
 
-        let key = |source: &str| lifecycle::Key {
-            provider: "git".into(),
-            path: Some(dir.display().to_string()),
-            source: source.into(),
-            node: String::new(),
-        };
         drop_watches_for_key(&key("refs"), &mut watch_paths, Some(&registrar));
         assert_eq!(registrar.watches().len(), 1, "status still watches it");
         drop_watches_for_key(&key("status"), &mut watch_paths, Some(&registrar));
@@ -1970,7 +2174,15 @@ mod tests {
             node: "n".into(),
             ..key("")
         };
-        apply_put_written(&mut lifecycle, "p", None, "n", Some(60), Instant::now());
+        apply_put_written(
+            &mut lifecycle,
+            &cache,
+            "p",
+            None,
+            "n",
+            Some(60),
+            Instant::now(),
+        );
 
         let after = load(format!(
             "{}{}{}",
@@ -2045,6 +2257,340 @@ mod tests {
         assert_eq!(plan.retune.len(), 1);
         assert_eq!(plan.retune[0].config.decay, 2);
         assert!(!plan.retune[0].stored_changed && !plan.retune[0].watches_changed);
+    }
+
+    // ── memos ───────────────────────────────────────────────────────────────
+
+    const H: &str = "9c6001d328a94690";
+
+    /// Store the memo of `k.<node>` at `~` in `cache`, as the `memo` op does,
+    /// and start its lifecycle at `at`, as its `MemoWritten` does.
+    fn write_memo(
+        cache: &Cache,
+        lifecycle: &mut LifecycleRegistry,
+        node: &str,
+        ttl_secs: Option<u64>,
+        watch: &[&str],
+        at: Instant,
+    ) -> lifecycle::Key {
+        let watch: Vec<String> = watch.iter().map(|p| p.to_string()).collect();
+        cache.write_memo(
+            "k",
+            None,
+            node,
+            crate::cache::MemoWrite {
+                data: Some(crate::provider::Value::Int(1)),
+                hash: H.into(),
+                watch: watch.clone(),
+                ttl_secs,
+            },
+        );
+        let key = memo_key("k", None, node);
+        apply_memo_written(lifecycle, cache, &key, ttl_secs, &watch, at);
+        key
+    }
+
+    /// A scheduler over `cache` and the shipped defaults, not running: what
+    /// its loop does with one key is [`Scheduler::fire`].
+    fn scheduler_over(cache: &Arc<Cache>) -> Scheduler {
+        let registry = ProviderRegistry::shipped(&Default::default()).share(cache);
+        let watchers = Arc::new(WatcherRegistry::new());
+        Scheduler::new(Arc::clone(cache), registry, Config::default(), watchers).1
+    }
+
+    /// A memo's poll is its ttl running out: its hash goes and the rest of its
+    /// record and its value stay, and its readers are woken.
+    #[test]
+    fn a_memo_poll_drops_the_hash_and_keeps_the_record() {
+        let watchers = Arc::new(WatcherRegistry::new());
+        let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+        let mut lifecycle = LifecycleRegistry::new();
+        let t0 = Instant::now();
+        let key = write_memo(&cache, &mut lifecycle, "f", Some(10), &[], t0);
+        let mut woken = watchers.subscribe("k", None);
+
+        assert!(
+            lifecycle
+                .tick(t0 + Duration::from_secs(9))
+                .polls_due
+                .is_empty()
+        );
+        let actions = lifecycle.tick(t0 + Duration::from_secs(10));
+        assert_eq!(actions.polls_due, vec![key.clone()]);
+        scheduler_over(&cache).fire(&key, Want::Any);
+
+        let record = cache.memo_record("k", None, "f").expect("the record stays");
+        assert_eq!(record.hash(), None);
+        assert!(record.keys.contains_key("poll"), "{:?}", record.keys);
+        assert_eq!(record.data, Some(crate::provider::Value::Int(1)));
+        assert!(woken.try_recv().is_ok(), "the namespace was notified");
+    }
+
+    /// A ttl memo is valid for its ttl, then decays one step (its watches go
+    /// as it does) and is evicted: its value and its record.
+    #[test]
+    fn a_memo_with_a_ttl_is_evicted_after_one_step() {
+        let cache = Cache::new();
+        let mut lifecycle = LifecycleRegistry::new();
+        let t0 = Instant::now();
+        let key = write_memo(&cache, &mut lifecycle, "f", Some(10), &["/w"], t0);
+        let sibling = write_memo(&cache, &mut lifecycle, "g", None, &[], t0);
+
+        let actions = lifecycle.tick(t0 + Duration::from_secs(10));
+        assert_eq!(actions.watch_drops, vec![key.clone()]);
+        assert_eq!(lifecycle.state(&key), Some(&LifecycleState::Decay(1)));
+        assert!(
+            lifecycle
+                .tick(t0 + Duration::from_secs(29))
+                .evictions
+                .is_empty()
+        );
+        let actions = lifecycle.tick(t0 + Duration::from_secs(30));
+        assert_eq!(actions.evictions, vec![key.clone()]);
+        evict(&cache, &key);
+
+        assert!(cache.memo_record("k", None, "f").is_none());
+        assert!(
+            cache
+                .stored_keys("k", None, crate::cache::MEMO_SOURCE, "f")
+                .is_none()
+        );
+        assert!(cache.memo_record("k", None, "g").is_some(), "{sibling:?}");
+    }
+
+    /// A memo's watch registers through the registrar (Pending, then Active),
+    /// and an event on it drops the memo's hash.
+    #[tokio::test]
+    async fn a_memo_file_event_drops_the_hash() {
+        use crate::watcher::WatchState::{Active, Pending};
+        use crate::watcher::test_backend::{Gate, Held};
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().canonicalize().unwrap().join("config");
+        std::fs::write(&file, "a").unwrap();
+        let watchers = Arc::new(WatcherRegistry::new());
+        let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+        let registry = ProviderRegistry::shipped(&Default::default()).share(&cache);
+        let (handle, mut scheduler) =
+            Scheduler::new(cache.clone(), registry, Config::default(), watchers.clone());
+        let gate = Gate::closed();
+        let (held, _) = Held::new(&gate);
+        let (events, rx) = mpsc::channel(1);
+        scheduler.use_watcher(FsWatcher::with_backend(Box::new(held)), rx);
+        tokio::spawn(scheduler.run());
+
+        let watch = vec![file.display().to_string()];
+        cache.write_memo(
+            "k",
+            None,
+            "f",
+            crate::cache::MemoWrite {
+                data: Some(crate::provider::Value::Int(1)),
+                hash: H.into(),
+                watch: watch.clone(),
+                ttl_secs: None,
+            },
+        );
+        handle
+            .send(SchedulerMessage::MemoWritten {
+                provider: "k".into(),
+                path: None,
+                node: "f".into(),
+                ttl_secs: None,
+                watch,
+            })
+            .await;
+        let status = handle.get_status().await.expect("the loop answers");
+        assert_eq!(states(&status), [(file.clone(), Pending)]);
+        let named: Vec<(&str, &str)> = status
+            .demand
+            .iter()
+            .map(|d| (d.source.as_str(), d.node.as_str()))
+            .collect();
+        assert_eq!(named, [("memo", "f")], "an Active entry, named by its node");
+
+        gate.open();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while states(&handle.get_status().await.unwrap()) != [(file.clone(), Active { via: None })]
+        {
+            assert!(std::time::Instant::now() < deadline, "never Active");
+            tokio::task::yield_now().await;
+        }
+
+        let mut woken = watchers.subscribe("k", None);
+        events.send(vec![file.clone()]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), woken.recv())
+            .await
+            .expect("the namespace is woken")
+            .unwrap();
+        let record = cache.memo_record("k", None, "f").unwrap();
+        assert_eq!(record.hash(), None);
+        assert_eq!(record.data, Some(crate::provider::Value::Int(1)));
+    }
+
+    /// A write-back starts its address's lifecycle again, its poll and its
+    /// window from the write, and replaces the entries of the memos it
+    /// displaced there (above or below it), which it returns.
+    #[test]
+    fn a_memo_write_replaces_its_entry() {
+        let cache = Cache::new();
+        let mut lifecycle = LifecycleRegistry::new();
+        let t0 = Instant::now();
+        let key = write_memo(&cache, &mut lifecycle, "f", Some(10), &[], t0);
+        let t1 = t0 + Duration::from_secs(5);
+        write_memo(&cache, &mut lifecycle, "f", Some(20), &[], t1);
+        let entry = lifecycle
+            .iter()
+            .find(|(k, _)| **k == key)
+            .map(|(_, e)| e.clone())
+            .unwrap();
+        let poll = entry.poll_timer.expect("a ttl polls");
+        assert_eq!(
+            (poll.last_fired, poll.interval),
+            (t1, Duration::from_secs(20))
+        );
+        assert_eq!(entry.decay_timer.last_demand, t1);
+
+        let below = write_memo(&cache, &mut lifecycle, "g.x", Some(10), &[], t0);
+        let other = write_memo(&cache, &mut lifecycle, "h", Some(10), &[], t0);
+        let group = memo_key("k", None, "g");
+        let displaced = apply_memo_written(&mut lifecycle, &cache, &group, None, &[], t1);
+        assert_eq!(displaced, vec![below]);
+        let mut nodes: Vec<&str> = lifecycle.iter().map(|(k, _)| k.node.as_str()).collect();
+        nodes.sort();
+        assert_eq!(nodes, ["f", "g", "h"], "{other:?} stays");
+    }
+
+    /// Nothing but its write renews a memo's entry: no read demands it (a
+    /// read's demand names Source instances), and a file event drops its hash
+    /// without starting its window again. The ttl runs out regardless.
+    #[test]
+    fn a_memo_entry_is_not_renewed_by_reads() {
+        let cache = Cache::new();
+        let mut lifecycle = LifecycleRegistry::new();
+        let t0 = Instant::now();
+        let key = write_memo(&cache, &mut lifecycle, "f", Some(10), &["/w"], t0);
+
+        let outcome = lifecycle.on_fsevent(key.clone(), t0 + Duration::from_secs(9));
+        assert!(outcome.refresh && outcome.transition.is_none());
+        let actions = lifecycle.tick(t0 + Duration::from_secs(10));
+        assert_eq!(
+            actions.transitions,
+            vec![(key.clone(), LifecycleState::Decay(1))]
+        );
+        let actions = lifecycle.tick(t0 + Duration::from_secs(30));
+        assert_eq!(actions.evictions, vec![key]);
+    }
+
+    /// Two memos watching one path share its registration, and an event on it
+    /// is routed to each by its node; one letting go leaves the other.
+    #[test]
+    fn a_memo_key_routes_by_node() {
+        use crate::watcher::test_backend::{Gate, Held};
+        let (held, _) = Held::new(&Gate::opened());
+        let registrar = Registrar::start(FsWatcher::with_backend(Box::new(held)));
+        let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
+        let config = PathBuf::from("/h/.kube/config");
+        let (f, g) = (memo_key("k", None, "f"), memo_key("k", None, "g"));
+        for key in [&f, &g] {
+            let watches = memo_watches(key, &["/h/.kube/config".to_string()]);
+            watch_key(Some(&registrar), &mut watch_paths, key, watches);
+        }
+        assert_eq!(registrar.watches().len(), 1, "one registration");
+
+        let routed = resolve_keys_from_paths(std::slice::from_ref(&config), &watch_paths);
+        assert_eq!(routed, vec![f.clone(), g.clone()]);
+
+        drop_watches_for_key(&f, &mut watch_paths, Some(&registrar));
+        assert_eq!(
+            resolve_keys_from_paths(&[config], &watch_paths),
+            vec![g.clone()]
+        );
+        assert_eq!(registrar.watches().len(), 1, "g still watches it");
+    }
+
+    /// A write-back that names the paths its memo already watches keeps their
+    /// registrations: only a path it no longer names is let go of, and only
+    /// one it newly names is asked for.
+    #[test]
+    fn a_memo_rewrite_keeps_the_watches_it_still_names() {
+        use crate::watcher::test_backend::{Call, Gate, Held};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        let [a, b, c] = ["a", "b", "c"].map(|n| {
+            let path = dir.join(n);
+            std::fs::write(&path, n).unwrap();
+            path
+        });
+        let (held, calls) = Held::new(&Gate::opened());
+        let registrar = Registrar::start(FsWatcher::with_backend(Box::new(held)));
+        let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
+        let key = memo_key("k", None, "f");
+        let paths = |ps: &[&PathBuf]| -> Vec<String> {
+            ps.iter().map(|p| p.display().to_string()).collect()
+        };
+        for named in [paths(&[&a, &b]), paths(&[&b, &c])] {
+            let watches = memo_watches(&key, &named);
+            watch_key(Some(&registrar), &mut watch_paths, &key, watches);
+        }
+        let mut watched: Vec<&PathBuf> = watch_paths.keys().collect();
+        watched.sort();
+        assert_eq!(watched, [&b, &c]);
+
+        drop(registrar);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while calls.lock().unwrap().len() < 4 {
+            assert!(std::time::Instant::now() < deadline, "{:?}", calls.lock());
+            std::thread::yield_now();
+        }
+        let recursive = notify::RecursiveMode::Recursive;
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [
+                Call::Watch(a.clone(), recursive),
+                Call::Watch(b.clone(), recursive),
+                Call::Unwatch(a),
+                Call::Watch(c, recursive),
+            ],
+            "b was registered once"
+        );
+    }
+
+    /// A ttl gives `poll(ttl, 1)` with decay 1, and watch paths beside it
+    /// make it watch too; with no ttl a memo is watch-only, Active for the
+    /// default window, at its provider's `_.decay`.
+    #[test]
+    fn a_memos_lifecycle_is_its_ttl_or_the_default_window() {
+        let cache = Cache::new();
+        let w = ["/w".to_string()];
+        let cfg = static_lifecycle_config(&cache, "k", None, Some(600), &[]);
+        assert_eq!(
+            (cfg.lifespan(), cfg.decay, cfg.strategy_kind),
+            (Duration::from_secs(600), 1, lifecycle::StrategyKind::Poll)
+        );
+        let cfg = static_lifecycle_config(&cache, "k", None, Some(600), &w);
+        assert_eq!(
+            (cfg.lifespan(), cfg.decay, cfg.strategy_kind),
+            (
+                Duration::from_secs(600),
+                1,
+                lifecycle::StrategyKind::WatchAndPoll
+            )
+        );
+        cache
+            .write_static(
+                "k:cache",
+                None,
+                crate::cache::PUT_SOURCE,
+                "_.decay",
+                crate::provider::Value::Int(2),
+                None,
+            )
+            .unwrap();
+        let cfg = static_lifecycle_config(&cache, "k", None, None, &w);
+        assert_eq!(
+            (cfg.lifespan(), cfg.decay, cfg.strategy_kind),
+            (Duration::from_secs(720), 2, lifecycle::StrategyKind::Watch)
+        );
     }
 }
 

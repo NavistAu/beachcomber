@@ -51,8 +51,10 @@ pub const DEFAULT_BUDGET: Duration = Duration::from_millis(50);
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Lifecycle key. `path` is the instance's root: None for the instance at `~`,
-/// Some(root) for a rooted one. `node` is the put address a lifecycle belongs to (`source` is
-/// `"put"` then) and `""` for every Source instance.
+/// Some(root) for a rooted one. `node` is the address a static entry belongs
+/// to — a put's (`source` is `"put"` then) or a template leaf's memo
+/// (`source` is [`MEMO_SOURCE`](crate::cache::MEMO_SOURCE)) — and `""` for
+/// every Source instance.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Key {
     pub provider: String,
@@ -295,9 +297,11 @@ impl LifecycleRegistry {
         true
     }
 
-    /// A file event for `key`: an Active instance takes it as a demand and
-    /// runs; anything else (a decaying instance, whose watches went when it
-    /// began to decay, or no instance) ignores it.
+    /// A file event for `key`: an Active entry runs; anything else (a
+    /// decaying entry, whose watches went when it began to decay, or none)
+    /// ignores it. A Source instance takes it as a demand too, and its window
+    /// starts again; a static address (a memo's) is renewed by nothing but
+    /// its own write.
     pub fn on_fsevent(&mut self, key: Key, now: Instant) -> FseventOutcome {
         let Some(entry) = self
             .entries
@@ -309,6 +313,12 @@ impl LifecycleRegistry {
                 refresh: false,
             };
         };
+        if crate::cache::is_static_label(&key.source) {
+            return FseventOutcome {
+                transition: None,
+                refresh: true,
+            };
+        }
         let config = entry.config.clone();
         let outcome = self.on_demand(key, config, now);
         FseventOutcome {
@@ -433,15 +443,28 @@ impl LifecycleRegistry {
         self.entries.remove(key);
     }
 
-    /// Remove every `put` lifecycle key for `(provider, path)` at `node` or
-    /// below it (`""` is the namespace root: every one).
-    pub fn remove_put_keys(&mut self, provider: &str, path: Option<&str>, node: &str) {
+    /// Remove every lifecycle key of the static `label` (a put's, a memo's)
+    /// for `(provider, path)` whose address `displaced` names, and return
+    /// them.
+    pub fn remove_static_keys(
+        &mut self,
+        label: &str,
+        provider: &str,
+        path: Option<&str>,
+        displaced: impl Fn(&str) -> bool,
+    ) -> Vec<Key> {
+        let mut removed = Vec::new();
         self.entries.retain(|key, _| {
-            !(key.source == crate::cache::PUT_SOURCE
+            let gone = key.source == label
                 && key.provider == provider
                 && key.path.as_deref() == path
-                && crate::cache::is_at_or_below(&key.node, node))
+                && displaced(&key.node);
+            if gone {
+                removed.push(key.clone());
+            }
+            !gone
         });
+        removed
     }
 
     pub fn is_empty(&self) -> bool {
@@ -846,6 +869,31 @@ mod tests {
             assert!(outcome.transition.is_none(), "{cfg:?}");
             assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(2)), "{cfg:?}");
         }
+    }
+
+    /// A file event on an Active memo runs it (drops its hash) and is no
+    /// demand: its window is the one its write began.
+    #[test]
+    fn a_file_event_on_a_memo_runs_it_and_renews_nothing() {
+        let mut reg = LifecycleRegistry::new();
+        let key = Key {
+            source: crate::cache::MEMO_SOURCE.to_string(),
+            node: "context".to_string(),
+            ..test_key_global("kubecontext")
+        };
+        let t0 = Instant::now();
+        reg.on_demand(key.clone(), ten_second_poll(1), t0);
+
+        let outcome = reg.on_fsevent(key.clone(), t0 + Duration::from_secs(9));
+        assert_eq!(
+            outcome,
+            FseventOutcome {
+                transition: None,
+                refresh: true
+            }
+        );
+        reg.tick(t0 + Duration::from_secs(10));
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
     }
 
     /// Entering decay drops the watches of every entry, whatever it watches,

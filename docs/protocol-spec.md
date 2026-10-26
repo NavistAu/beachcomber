@@ -310,7 +310,9 @@ The daemon drops a memo's hash, and notifies the namespace's watchers at the
 memo's directory, when the field is invalidated: a `put` or a configuration
 reload of the template at or above the leaf (`<p>:template`), a data write at
 or under the leaf (a `put` to `<p>`, its removal or expiry, a configuration
-seed, or a Source's run storing the field), and a `refresh` of the key.
+seed, or a Source's run storing the field), a `refresh` of the key, the
+memo's `ttl` running out, and a change to one of its `watch` paths while it is
+Active (see the `memo` op's lifecycle).
 
 #### Keys
 
@@ -572,6 +574,19 @@ stored keys and its age together — and any memo at an address above or below
 it there; it notifies the namespace's watchers at `path`. A memo's `hash`,
 `watch`, `poll` and `decay` are read back through `<p>:cache.<field>`, its
 value through `<p>:memo.<field>` and the memo half.
+
+**Lifecycle.** The write starts the memo's lifecycle at its address, afresh
+for a memo written again, and nothing else renews it: a read of the leaf does
+not. A `ttl` is `poll(ttl, 1)` with decay 1: when the ttl runs out the memo's
+hash is dropped (it is stale from then on), and one decay step later (twice
+the ttl) the memo is evicted, its value and its record with it. Its `watch`
+paths are watched while it is Active, each one not there yet through the
+nearest directory above it that is, and a change to one drops its hash;
+entering decay lets go of them. With no `ttl` the memo is Active for the
+default window (12 minutes), then decays at its provider's `_.decay`
+(default 4 steps) and is evicted at the end of that ladder, about six hours
+after its write. `introspect demand`, `lifecycle` and `timers` list it with
+`"source": "memo"` and `"node": "<field>"`.
 
 **Response:**
 ```json

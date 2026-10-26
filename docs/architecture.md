@@ -208,11 +208,11 @@ The scheduler's `tokio::select!` loop picks up `Some(paths) = fs_rx.recv()`. A p
 
 **Step 3: Path matching**
 
-`resolve_keys_from_paths` iterates over the changed paths. For each changed path, it scans `watch_paths` (a `HashMap<PathBuf, Vec<(String, Option<String>)>>`) looking for any registered watch path that is a prefix of (or equal to) the changed path. For a `.git/index` change, the watch path `".git"` matches.
+`resolve_keys_from_paths` iterates over the changed paths. For each changed path, it scans `watch_paths` (a `HashMap<PathBuf, Vec<Subscription>>`, each subscription a lifecycle key and the patterns an event below the path must match) looking for any registered watch path that is a prefix of (or equal to) the changed path. For a `.git/index` change, the watch path `".git"` matches.
 
 **Step 4: the run is started**
 
-`self.execute_source("git", "refs", Some("/home/user/myrepo"), Want::Fresh)` asks the run table for a run of that instance that begins after the event (`Runs::start`): a file event may follow a change the run in flight has already read past.
+An Active entry takes the event (`LifecycleRegistry::on_fsevent`; a decaying one has no watch, and a late event does nothing), and `Scheduler::fire` does what the key's event means. For a Source instance, `self.execute_source("git", "refs", Some("/home/user/myrepo"), Want::Fresh)` asks the run table for a run of that instance that begins after the event (`Runs::start`): a file event may follow a change the run in flight has already read past. For a memo (below), it drops the memo's hash.
 
 **Step 5: One run per instance**
 
@@ -256,6 +256,10 @@ Back in the run's task, under the run table's lock (the one a reload overtakes r
 
 The run's waiters have its outcome, and the run queued behind it, if any, starts; otherwise the instance's slot goes.
 
+**A memo's file event**
+
+A memo (a template leaf's value that `| cache()` stored, §5) watches the absolute paths its write-back named, and its subscription routes an event to the memo's own lifecycle key: `source` `memo:` (shown as `memo`), `node` the leaf. Nothing runs: `fire` calls `Cache::drop_memo_hash`, which drops the memo's `hash` from `<p>:cache.<leaf>` at the memo's directory and notifies the namespace there, so a watcher of the leaf re-renders, misses, and writes the memo afresh. The event is no demand: the memo's window is the one its write began.
+
 ---
 
 ## 5. Demand-Driven Cache Lifecycle
@@ -291,6 +295,10 @@ stateDiagram-v2
 ```
 
 Each decay step doubles the poll interval and the step duration relative to the previous step. The number of steps is the entry's `decay`, which is data (default 4; see `<p>:cache._.decay`), and the diagram shows the default. At `Evicted`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any decay stage, the key is reinstated to `Active` immediately. An instance watches its files only while it is `Active`: entering `Decay1` drops its watches, so an idle daemon holds none, and a file event never reinstates a key. The read that reinstates it registers its watches again; until then a read checks the record's files by stat (§4), so a decaying record is never answered past a change to them.
+
+**Static addresses: puts and memos**
+
+A put with a `ttl` and every memo are lifecycle entries of their own, keyed by their address (`Key.node`), and no read demands them: their write starts the entry afresh (`PutWritten`, `MemoWritten`, each replacing the entries the write displaced) and nothing else renews it. A `ttl` is `poll(ttl, 1)` with decay 1: the poll is the expiry clock (for a put nothing runs; for a memo its hash is dropped) and the entry is evicted one doubled step later, a put's address or a memo's value and record (`Cache::evict_put`, `Cache::evict_memo`). A memo's `watch` paths register through the `Registrar` when it is written and, as every entry's watches, exist only while it is Active: they go when it decays. A write-back that names a path the memo already watches keeps its registration. A memo with no `ttl` is watch-only: Active for the default window (12 minutes), then down its provider's `_.decay` ladder and evicted, about six hours after its write at the default depth. A decayed memo whose file has changed since is the client's to catch: it folds the files' stamps into the memo's hash, so the stored hash no longer matches. A reload leaves both alone; a memo takes a new `_.decay` with its next write.
 
 **Idle shutdown**
 

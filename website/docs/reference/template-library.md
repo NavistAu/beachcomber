@@ -192,6 +192,13 @@ What a read does:
   `watch`. `comb eval`, `-f` and an SDK's `eval` store nothing of their own text: there `cache()`, `watch()` and `ttl()`
   pass their input through. A field such a text reads whose template caches is read as any read of it is.
 
+**How long a memo lives.** Each memo has a lifecycle of its own from its write, and nothing a read does renews it.
+With `ttl(d)` it is valid for `d`, when the daemon drops its hash, and is evicted one decay step (`2d`) later; the files
+`watch()` recorded are watched for those first `d`, and a change to one drops the hash at once. With no `ttl()` its
+files are watched for twelve minutes, and the memo is kept down its provider's `_.decay` ladder (about six hours at the
+default four steps) before it is evicted and the next read renders it afresh. Once its files are no longer watched,
+the reader's own stamp check (below) still sees one that changed.
+
 **What the hash covers.** The inputs: each a string as its text, anything else as its JSON with keys sorted, an absent
 one as itself (so `cache(none)` and `cache('')` differ). Then each watched file's stamp, as its device, inode, size,
 modification time and kind, a symlink's own inode and time too: a file that changed, appeared or went is a different
