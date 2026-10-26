@@ -16,29 +16,41 @@ use crate::common::poll::poll_until_async;
 
 /// A latch the test opens when it wants the in-flight execution to finish.
 /// Holding it shut is what "an execution is still running" means here — no
-/// guess about how long the work takes.
+/// guess about how long the work takes. It opens for good, or lets one
+/// execution through at a time.
 struct Gate {
-    released: std::sync::Mutex<bool>,
+    /// Open for good, and how many executions may pass meanwhile.
+    state: std::sync::Mutex<(bool, u32)>,
     cv: std::sync::Condvar,
 }
 
 impl Gate {
     fn new() -> Self {
         Self {
-            released: std::sync::Mutex::new(false),
+            state: std::sync::Mutex::new((false, 0)),
             cv: std::sync::Condvar::new(),
         }
     }
 
     fn wait(&self) {
-        let mut released = self.released.lock().unwrap();
-        while !*released {
-            released = self.cv.wait(released).unwrap();
+        let mut state = self.state.lock().unwrap();
+        while !state.0 && state.1 == 0 {
+            state = self.cv.wait(state).unwrap();
+        }
+        if !state.0 {
+            state.1 -= 1;
         }
     }
 
     fn release(&self) {
-        *self.released.lock().unwrap() = true;
+        self.state.lock().unwrap().0 = true;
+        self.cv.notify_all();
+    }
+
+    /// Let the execution waiting now (or the next to come) through, and no
+    /// other.
+    fn release_one(&self) {
+        self.state.lock().unwrap().1 += 1;
         self.cv.notify_all();
     }
 }
@@ -436,8 +448,11 @@ async fn a_refresh_during_a_reads_run_queues_one_rerun() {
     );
     assert_eq!(d.runs.load(Ordering::SeqCst), 1, "the refreshes wait");
 
-    d.gate.release();
+    // The read's run alone: the rerun waits until the read has answered,
+    // which it does from the record, where the rerun would have put its 2.
+    d.gate.release_one();
     assert_eq!(read.await.unwrap()["data"], serde_json::json!(1));
+    d.gate.release();
     until_settled(&d.handle).await;
     assert_eq!(
         d.runs.load(Ordering::SeqCst),
