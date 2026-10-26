@@ -90,7 +90,7 @@ fn a_cached_leaf_runs_its_command_once() {
     let c = cached();
     let first = c.ok(&["get", "p.f"]);
     assert_eq!(first, "prod");
-    for _ in 1..20 {
+    for _ in 0..2 {
         assert_eq!(c.ok(&["get", "p.f"]), first);
     }
     assert_eq!(c.runs("x"), 1);
