@@ -62,7 +62,7 @@ no flag to carry it.
 
 The value `comb get` prints for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace; a miss is `null`.
 
-`opts` is `{ cwd?, env?, force?, wait? }`. `cwd` is the directory the read addresses (`~` is home, a relative path is against this process's working directory); omitted, it is the global entry. `env` is the caller's environment for `env.*` refs; omitted, every `env.*` is absent. `force` re-executes every Source the read demands first, as `comb get --force`; `wait` is how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`'0'`, `'50ms'`, `'2s'`) or `'forever'`, anything else a `ParseError`.
+`opts` is `{ cwd?, env?, force?, wait? }`. `cwd` is the directory the read addresses (`~` is home, a relative path is against this process's working directory); omitted, it is the global entry. `env` is the caller's environment for `env.*` refs; omitted, the calling process's environment, as `comb` renders. `force` re-executes every Source the read demands first, as `comb get --force`; `wait` is how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`'0'`, `'50ms'`, `'2s'`) or `'forever'`, anything else a `ParseError`.
 
 ```typescript
 const branch = await client.get('git.branch', { cwd: '/some/repo' });
