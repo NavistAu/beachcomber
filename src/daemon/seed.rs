@@ -390,10 +390,14 @@ fn plan_templates(
         read,
     } in layers
     {
-        let client = value
-            .get("client")
-            .and_then(|c| serde_json::to_value(c).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
+        // The layer's `[client]` tree as the engine reads it, made once for
+        // every provider's line.
+        let client = minijinja::Value::from_serialize(
+            value
+                .get("client")
+                .and_then(|c| serde_json::to_value(c).ok())
+                .unwrap_or_else(|| serde_json::json!({})),
+        );
         for name in world.providers.iter().filter(|n| !read.fenced.contains(*n)) {
             match lines.template_tree(name, &client) {
                 Ok(Some(tree)) => {

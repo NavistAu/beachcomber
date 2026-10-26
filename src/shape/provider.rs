@@ -594,14 +594,15 @@ impl ProviderLines {
     }
 
     /// The `<p>:template` records `provider`'s `template` line gives over one
-    /// layer's `[client]` tree: `Ok(None)` when it gives none, an error when
-    /// what it gives is not a table of value expressions.
+    /// layer's `[client]` tree, `client`, as the engine reads it (made once
+    /// per layer, for every provider): `Ok(None)` when it gives none, an error
+    /// when what it gives is not a table of value expressions.
     pub fn template_tree(
         &self,
         provider: &str,
-        client: &serde_json::Value,
+        client: &MjValue,
     ) -> Result<Option<serde_json::Value>, String> {
-        let vars = vec![("client", MjValue::from_serialize(client))];
+        let vars = vec![("client", client.clone())];
         let Some(value) = self.eval(provider, Key::Template, vars)?.value else {
             return Ok(None);
         };
@@ -1208,7 +1209,8 @@ mod tests {
     #[test]
     fn name_is_the_provider_the_line_is_applied_to() {
         let lines = lines("");
-        let client = json!({"providers": {"aws": {"template": {"p": "x"}}}});
+        let client =
+            MjValue::from_serialize(json!({"providers": {"aws": {"template": {"p": "x"}}}}));
         assert_eq!(
             lines.template_tree("aws", &client).unwrap(),
             Some(json!({"p": "x"}))
@@ -1219,7 +1221,8 @@ mod tests {
     #[test]
     fn a_template_line_may_read_another_providers_client_tree() {
         let lines = lines("[git]\ntemplate = \"{{ client.providers.aws.template }}\"");
-        let client = json!({"providers": {"aws": {"template": {"p": "x"}}}});
+        let client =
+            MjValue::from_serialize(json!({"providers": {"aws": {"template": {"p": "x"}}}}));
         assert_eq!(
             lines.template_tree("git", &client).unwrap(),
             Some(json!({"p": "x"}))
@@ -1229,10 +1232,14 @@ mod tests {
     #[test]
     fn a_template_line_that_gives_a_non_table_is_an_error() {
         let lines = lines("[git]\ntemplate = \"{{ 1 }}\"");
-        let err = lines.template_tree("git", &json!({})).unwrap_err();
+        let err = lines
+            .template_tree("git", &MjValue::from_serialize(json!({})))
+            .unwrap_err();
         assert!(err.starts_with("git template: "), "{err}");
         let lines = self::lines("[git]\ntemplate = \"{{ {'a': 1} }}\"");
-        let err = lines.template_tree("git", &json!({})).unwrap_err();
+        let err = lines
+            .template_tree("git", &MjValue::from_serialize(json!({})))
+            .unwrap_err();
         assert!(err.contains("'a'"), "{err}");
     }
 
