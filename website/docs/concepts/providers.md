@@ -59,7 +59,7 @@ A source's schedule is its `return` line, built from decorators on `result`:
 | `ttl(interval)` | `poll(interval, 1)` with a decay depth of 1: valid for one interval, then gone |
 | `failback(interval, count)` | After `count` failures, suppress execution for `interval`, doubling per level. Always on: the engine's `failback('1s', 3)` applies where a line is silent |
 | `nearest` | The nearest instance answers alone, instead of cascading up to `~`: see [Where an instance lives](#where-an-instance-lives). Takes no arguments; not saying it is cascade |
-| `budget(duration)` | How long a read waits for the Source before answering with what it has; `[daemon] budget` (default `50ms`) where a line is silent. Recorded, not yet enforced |
+| `budget(duration)` | How long a read waits for the Source before answering with what it has; `[daemon] budget` (default `50ms`) where a line is silent. A read of a record past its lifetime runs the Source and waits this long, then answers what is stored |
 | `timeout(duration)` | How long one run of the Source may take before it is cut off and fails; `[daemon] timeout` (default `10s`) where a line is silent |
 
 `poll` and `watch` together make a watch with a timer backstop. A source with neither is watch-only with nothing to watch: it executes on first demand and is served from the cache after that. Like every source it decays once nothing reads it (the default Active window is 60 s × 12).

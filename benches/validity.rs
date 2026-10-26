@@ -17,6 +17,9 @@
 //!     round, as min, p50, p90 and p99. On a loaded machine criterion's means
 //!     swing with the load from one case to the next; interleaving shifts every
 //!     case alike, and the targets are written as percentiles.
+//!   * `budget_accuracy`: a 300 ms Source read once its record is past its
+//!     lifetime: the default read against its budget, and a read with `wait`
+//!     against the run (target T4.4).
 //!   * `second_get_after_cold`: in each of a number of fresh daemons, the cold
 //!     `get` of a `root = lup(…)` plus `watch(…)` Source, the next `get` of it on
 //!     the same connection, a third, and then an `introspect watches`, which
@@ -24,8 +27,8 @@
 //!     start, which a criterion iteration cannot hold.
 //!
 //! Run with `cargo bench --bench validity`. A filter runs one part:
-//! `-- warm_get/` the criterion groups, `-- warm_get_percentiles` or
-//! `-- second_get_after_cold` a printed one.
+//! `-- warm_get/` the criterion groups, `-- warm_get_percentiles`,
+//! `-- second_get_after_cold` or `-- budget_accuracy` a printed one.
 
 use beachcomber::config::Config;
 use criterion::{Criterion, criterion_group};
@@ -329,6 +332,97 @@ fn second_get_after_cold() {
     );
 }
 
+/// Rounds of `budget_accuracy`.
+const BUDGET_ROUNDS: usize = 4;
+
+/// The `[daemon] budget` every Source here has.
+const BUDGET: Duration = Duration::from_millis(50);
+
+/// T4.4 (the lifetime half): a Source whose run takes 300 ms, read once its
+/// record is past its 1 s poll. The default read waits its 50 ms budget and
+/// answers the stored record while `:cache` says the run is executing; a read
+/// with `wait` waits for the run. A server with no scheduler, so nothing but
+/// the reads runs the Source and the record ages as the clock does.
+fn budget_accuracy() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let dir = TempDir::new().expect("socket dir");
+    let sock = dir.path().join("s");
+    let layer: toml::Value = toml::from_str(
+        "[daemon.providers.slow.sources.s]\n\
+         data = \"{{ exec('sleep 0.3; echo 1') | trim }}\"\n\
+         result.v = \"{{ data }}\"\n\
+         return = \"{{ result | poll('1s') }}\"\n",
+    )
+    .expect("the bench Source parses");
+    let config = Config::from_layers(vec![
+        beachcomber::daemon::defaults::comb_layer(),
+        (PathBuf::from("<bench>"), layer),
+    ]);
+    {
+        let _enter = rt.enter();
+        let watchers = std::sync::Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
+        let cache = std::sync::Arc::new(beachcomber::cache::Cache::with_watchers(watchers.clone()));
+        let registry = beachcomber::provider::registry::ProviderRegistry::with_config(
+            &config,
+            &Default::default(),
+        )
+        .expect("the bench lines load")
+        .share(&cache);
+        beachcomber::server::Server::new(sock.clone(), cache, registry, None, watchers)
+            .spawn()
+            .expect("bind the bench socket");
+    }
+    let stream = UnixStream::connect(&sock).expect("connect");
+    let mut conn = Conn {
+        reader: BufReader::new(stream.try_clone().expect("clone stream")),
+        writer: stream,
+    };
+    let get = |conn: &mut Conn, wait: bool| {
+        let t0 = Instant::now();
+        let answer = conn.send(&json!({"op": "get", "key": "slow.v", "wait": wait}));
+        (answer, t0.elapsed())
+    };
+    let executing = |conn: &mut Conn| {
+        conn.send(&json!({"op": "get", "key": "slow:cache.v"}))["data"]["executing"] == json!(true)
+    };
+    let until_idle = |conn: &mut Conn| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while executing(conn) {
+            assert!(Instant::now() < deadline, "the run never ended");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    // A record is stale once its age passes its poll, in whole seconds.
+    let age_past_the_poll = || std::thread::sleep(Duration::from_millis(2100));
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+
+    println!(
+        "budget_accuracy: a 300ms Source, its record stale, budget {}ms, {BUDGET_ROUNDS} rounds",
+        BUDGET.as_millis()
+    );
+    let (cold, took) = get(&mut conn, false);
+    assert_eq!(cold["data"], json!("1"), "{cold}");
+    println!("  cold read (waits for its run): {:.1}ms", ms(took));
+    for round in 1..=BUDGET_ROUNDS {
+        age_past_the_poll();
+        let (late, took) = get(&mut conn, false);
+        let busy = executing(&mut conn);
+        println!(
+            "  {round}: default read {:>6.1}ms  stale {}  executing {busy}",
+            ms(took),
+            late["stale"]
+        );
+        until_idle(&mut conn);
+        age_past_the_poll();
+        let (waited, took) = get(&mut conn, true);
+        println!(
+            "     wait read    {:>6.1}ms  stale {}",
+            ms(took),
+            waited["stale"]
+        );
+    }
+}
+
 criterion_group! {
     name = warm;
     config = Criterion::default().sample_size(200).measurement_time(Duration::from_secs(3));
@@ -349,5 +443,8 @@ fn main() {
     }
     if runs("second_get_after_cold") {
         second_get_after_cold();
+    }
+    if runs("budget_accuracy") {
+        budget_accuracy();
     }
 }

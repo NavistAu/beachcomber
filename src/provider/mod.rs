@@ -595,8 +595,9 @@ pub struct SourceMetadata {
     /// Decay steps before eviction, when the Source sets its own (`ttl(...)`
     /// sets 1). `None` takes the provider's `_.decay` prototype.
     pub decay: Option<u8>,
-    /// How long one `execute` may take before the engine reports it slow.
-    pub budget_execute: std::time::Duration,
+    /// How long a read of a stale record waits for its run before answering
+    /// with the record: the Source's `budget(...)`, else `[daemon] budget`.
+    pub budget: std::time::Duration,
     /// How long one `execute` may take before it is cut off: the Source's
     /// `timeout(...)`, else `[daemon] timeout`.
     pub timeout: std::time::Duration,
@@ -850,7 +851,7 @@ mod tests {
             },
             fsevents_reinstate: false,
             decay: None,
-            budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+            budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
             timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
             nearest: false,
         }

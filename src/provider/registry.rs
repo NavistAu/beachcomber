@@ -1392,7 +1392,7 @@ impl ProviderRegistry {
                 .iter()
                 .find(|r| &r.provider == provider && &r.source == source);
             self.retune(provider, source, |meta| {
-                meta.budget_execute = budget;
+                meta.budget = budget;
                 meta.timeout = timeout;
                 if let Some(Retune { recorded, .. }) = line {
                     meta.fsevents_reinstate =
@@ -1400,7 +1400,7 @@ impl ProviderRegistry {
                     meta.invalidation = recorded.invalidation.clone();
                     meta.failback = recorded.failback;
                     meta.decay = recorded.decay;
-                    meta.budget_execute = recorded.budget_execute;
+                    meta.budget = recorded.budget;
                     meta.timeout = recorded.timeout;
                     meta.nearest = recorded.nearest;
                 }
@@ -1454,7 +1454,7 @@ fn engine_defaults(config: &Config) -> EngineDefaults {
             reattempts: DEFAULT_FAILBACK_COUNT,
             interval_secs: DEFAULT_FAILBACK_INTERVAL_SECS,
         },
-        budget_execute: config.daemon().budget(),
+        budget: config.daemon().budget(),
         timeout: config.daemon().timeout(),
     }
 }
@@ -1530,7 +1530,7 @@ mod tests {
             },
             fsevents_reinstate: false,
             decay: None,
-            budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+            budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
             timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
             nearest: false,
         }
@@ -2020,7 +2020,7 @@ return = "{{ result | poll('15s') }}"
                 crate::scheduler::lifecycle::DEFAULT_FAILBACK_INTERVAL_SECS
             )
         );
-        assert_eq!(diff.budget_execute, std::time::Duration::from_millis(30));
+        assert_eq!(diff.budget, std::time::Duration::from_millis(30));
         assert_eq!(diff.timeout, std::time::Duration::from_secs(4));
         // Its own line wins when it names them.
         let reg = registry_from(
@@ -2032,11 +2032,11 @@ return = "{{ result | poll('15s') }}"
             (diff.failback.reattempts, diff.failback.interval_secs),
             (5, 2)
         );
-        assert_eq!(diff.budget_execute, std::time::Duration::from_millis(7));
+        assert_eq!(diff.budget, std::time::Duration::from_millis(7));
         // And the budget reaches the built-ins that have no return.
         let reg = registry_from("[daemon]\nbudget = \"30ms\"\n");
         assert_eq!(
-            source_meta(&reg, "git", "refs").budget_execute,
+            source_meta(&reg, "git", "refs").budget,
             std::time::Duration::from_millis(30)
         );
     }

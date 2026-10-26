@@ -376,7 +376,7 @@ impl ConfigSource {
             failback: recorded.failback,
             fsevents_reinstate: !matches!(recorded.invalidation, InvalidationStrategy::Poll { .. }),
             decay: recorded.decay,
-            budget_execute: recorded.budget_execute,
+            budget: recorded.budget,
             timeout: recorded.timeout,
             nearest: recorded.nearest,
         };
@@ -642,7 +642,7 @@ mod tests {
                 reattempts: 3,
                 interval_secs: 1,
             },
-            budget_execute: Duration::from_millis(50),
+            budget: Duration::from_millis(50),
             timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
             decay: None,
             nearest: false,
@@ -874,7 +874,7 @@ mod tests {
                     reattempts: 7,
                     interval_secs: 9,
                 },
-                budget_execute: Duration::from_millis(321),
+                budget: Duration::from_millis(321),
                 timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
                 decay: Some(1),
                 nearest: false,
@@ -884,7 +884,7 @@ mod tests {
             assert_eq!(meta.fsevents_reinstate, reinstate, "{invalidation:?}");
             assert_eq!(meta.failback.reattempts, 7);
             assert_eq!(meta.failback.interval_secs, 9);
-            assert_eq!(meta.budget_execute, Duration::from_millis(321));
+            assert_eq!(meta.budget, Duration::from_millis(321));
             assert_eq!(meta.decay, Some(1));
         }
     }

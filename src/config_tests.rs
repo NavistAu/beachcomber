@@ -890,7 +890,7 @@ result.x = "{{ data }}"
     assert_eq!(config.daemon().budget(), Duration::from_millis(20));
     let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
     let source = &registry.provider_sources("budget").unwrap()[0];
-    assert_eq!(source.budget_execute, Duration::from_millis(20));
+    assert_eq!(source.budget, Duration::from_millis(20));
 }
 
 /// Every spelling the one-tree config removed, at every level it could appear.
@@ -1394,10 +1394,7 @@ fn a_source_with_no_return_anywhere_is_watch_only_with_the_engine_defaults() {
             crate::scheduler::lifecycle::DEFAULT_FAILBACK_INTERVAL_SECS
         )
     );
-    assert_eq!(
-        meta.budget_execute,
-        crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE
-    );
+    assert_eq!(meta.budget, crate::scheduler::lifecycle::DEFAULT_BUDGET);
 }
 
 #[test]

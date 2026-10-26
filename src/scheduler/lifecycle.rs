@@ -36,8 +36,9 @@ pub const DEFAULT_FAILBACK_COUNT: u32 = 3;
 /// Seconds between a failing Source's reattempts, unless it says otherwise.
 pub const DEFAULT_FAILBACK_INTERVAL_SECS: u64 = 1;
 
-/// How long one `execute` may take before the engine reports it slow.
-pub const DEFAULT_BUDGET_EXECUTE: Duration = Duration::from_millis(50);
+/// How long a read of a stale record waits for its run, when neither the
+/// Source's `return` (`budget(...)`) nor `[daemon] budget` says.
+pub const DEFAULT_BUDGET: Duration = Duration::from_millis(50);
 
 /// How long one run of a Source may take before it is cut off, when neither
 /// its `return` (`timeout(...)`) nor `[daemon] timeout` says.

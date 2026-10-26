@@ -65,7 +65,7 @@ pub struct SourceMetadata {
     pub failback: FailbackConfig,
     pub fsevents_reinstate: bool,    // default true for Watch / WatchAndPoll
     pub decay: Option<u8>,           // decay steps before eviction; None takes the `_.decay` prototype
-    pub budget_execute: Duration,    // how long one execute may take before it is reported slow
+    pub budget: Duration,    // how long a read of a stale record waits for its run
     pub nearest: bool,               // the nearest instance answers alone; false cascades up to ~
 }
 ```
@@ -174,8 +174,8 @@ fn config_meta() -> SourceMetadata {
         fsevents_reinstate: true,
         // Decay steps before eviction; None takes the provider's `_.decay`.
         decay: None,
-        // How long one execute may take before the engine reports it slow.
-        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        // How long a read of a stale record waits for its run.
+        budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
         nearest: false,
     }
 }

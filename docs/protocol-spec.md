@@ -145,9 +145,18 @@ Read a cached value.
   leaves the last good value, which the read answers. A key naming no
   Source (a static namespace, a facet) is an error: `cannot --force static
   namespace '<name>': no source to re-execute from`.
-- `wait` (bool, optional, default false) — if the entry is stale, wait for a
-  run of it; if fresh, serve the cached value. A no-op on a static
-  namespace — it has no Source to re-execute, so the entry is served as-is.
+- `wait` (bool, optional, default false) — how long a read of a record past
+  its lifetime (`stale`) waits for the record's run. A read of a stale record
+  always runs its Source (or takes the run in flight) and waits up to the
+  Source's budget (`budget(...)`, else `[daemon] budget`, default `50ms`); with
+  `wait` it waits for the run however long it takes. Answered in time, the
+  read has the fresh value; late, it has the stored value, `stale: true`, and
+  `:cache.<field>.executing` is `true` while the run goes on. A read with
+  nothing stored, and `force`, always wait for their run. A record within its
+  lifetime is served as is, and so is an instance in failback backoff. Budget
+  exceeded is not `stale`: that keeps its meaning, past the lifetime. A
+  namespace read starts the runs of every Source it needs before it waits for
+  any, each budget counted from the read's start.
 
 **Response (hit):**
 ```json
@@ -322,6 +331,10 @@ tree of its leaves' answers.
   for a Source. A value served
   by a template has these three only (`age_ms` 0, `stale` false, `source`
   `template`). A miss is a miss.
+- `executing` is derived too, for a Source's record: `true` while a run of the
+  record's instance is in flight, whoever started it (a read that stopped
+  waiting for it, a poll, a file event, a refresh). A template can read it
+  (`comb['git:cache'].branch.executing`, for a spinner).
 - `poll` (`{interval, count}`), `watch` and `decay` are stored: written when a
   Source registers or a `put` carries a `ttl`, and read back here. `watch` is an
   array of patterns.

@@ -536,7 +536,7 @@ comb g.j git:cache.branch .   # → {"age_ms": 1240, "stale": false, "source": "
 comb g.j git:source .         # the Source's whole answer, ignoring any put over it
 ```
 
-`age_ms`, `stale` and `source` are derived at the read and cannot be written. The one `:cache` key you can put is a decay prototype: `comb put '*:cache._.decay' 3` sets the decay depth (default 4) for every provider, `comb put 'git:cache._.decay' 6` for one, and `--path` scopes either to a directory and below.
+`age_ms`, `stale` and `source` are derived at the read, as is `executing` on a Source's record (`true` while a run of its instance is in flight), and none of them can be written. The one `:cache` key you can put is a decay prototype: `comb put '*:cache._.decay' 3` sets the decay depth (default 4) for every provider, `comb put 'git:cache._.decay' 6` for one, and `--path` scopes either to a directory and below.
 
 Only a colon in the provider's own segment names a facet (`git:cache.branch`), and the five above are the only facets: `git:memo` or `git:notes` is `invalid facet key` on every command, `comb put` included. Below the provider's segment a colon is an ordinary character (`mise.cargo:cargo-nextest`), so `git.branch:age` is a miss. Keys take jinja's subscripts too: `p.list[0]`, and `'mise["go:golang.org/x/tools/gopls"]'` for a name holding a `.`.
 
@@ -598,7 +598,8 @@ timeout = "10s"
 
 # How long a read waits for a Source before answering with what it has, for
 # every Source whose own `return` does not say `budget(...)`. Any duration of
-# at least 1ms. (Recorded, not yet enforced: a later release reads it.)
+# at least 1ms. A read of a record past its lifetime runs its Source and waits
+# this long for the run, then answers with what is stored.
 # Default: "50ms"
 # budget = "50ms"
 
@@ -675,7 +676,7 @@ return = "{{ result | poll('86400s') }}"
 | `watchdog_interval` | duration or null | `null` (disabled) | How often the watchdog checks scheduler liveness |
 | `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
 | `idle_shutdown` | duration (whole seconds) or null | `null` (disabled) | How long with no client before the daemon shuts down; unset keeps it resident |
-| `budget` | duration, at least `1ms` | `"50ms"` | How long a read waits for a Source before answering with what it has, for every Source whose `return` does not name `budget(...)`. Recorded, not yet enforced: a later release reads it. |
+| `budget` | duration, at least `1ms` | `"50ms"` | How long a read waits for a Source before answering with what it has, for every Source whose `return` does not name `budget(...)`. A read of a record past its lifetime runs the Source and waits this long for the run before answering with what is stored. |
 
 > Values are checked when the configuration loads, and an error names the file: `log_level` is one of `off`, `error`, `warn`, `info`, `debug`, `trace`; `timeout` and `budget` are durations of at least `1ms`, and `idle_shutdown` whole seconds of at least `1s`; `socket_path` and `env_file` are not empty; `watchdog_interval` and `watchdog_threshold` are whole seconds of at least `1s` (`"30s"`, `"5m"`, `"1h"`), a threshold needs an interval, and a threshold below the interval is an error. `[daemon]` takes no other keys. A file that is not valid TOML is an error too: it is never skipped.
 

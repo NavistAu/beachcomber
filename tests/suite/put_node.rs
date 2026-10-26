@@ -69,7 +69,7 @@ impl Source for SentinelSource {
             },
             fsevents_reinstate: false,
             decay: None,
-            budget_execute: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+            budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
             timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
             nearest: false,
         })
@@ -111,7 +111,7 @@ impl Source for CountingSource {
             },
             fsevents_reinstate: false,
             decay: None,
-            budget_execute: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+            budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
             timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
             nearest: false,
         })

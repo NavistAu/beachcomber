@@ -679,48 +679,117 @@ impl Drop for ChainWatch {
     }
 }
 
-/// How far a read goes to bring a Source up to date before it is read.
-#[derive(Clone, Copy)]
-enum Warm {
-    /// Run the instance only when it has nothing stored (or its Source runs
-    /// on every read).
-    Cold,
-    /// Also when its own map is past its interval (`--wait`).
-    Stale,
-    /// Always a run that begins now, past the failback backoff (`--force`).
-    Always,
+/// How long a read of a record past its lifetime waits for the record's
+/// run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wait {
+    /// The Source's budget, counted from when the read began.
+    Budget,
+    /// To the run's end (`wait`).
+    Forever,
 }
 
-/// Bring one instance of a Source up to date for a read, and say whether the
-/// read waited for a run. `root` is the instance: the cache entry its records
-/// live at.
+/// What a read asks of each instance it reaches.
+#[derive(Clone, Copy, Debug)]
+struct Read {
+    /// `--force`: a run that begins now, past the failback backoff, waited for
+    /// to its end.
+    force: bool,
+    wait: Wait,
+    /// When the read began: every Source's budget counts from here.
+    began: tokio::time::Instant,
+}
+
+impl Read {
+    fn new(force: bool, wait: bool) -> Self {
+        Self {
+            force,
+            wait: if wait { Wait::Forever } else { Wait::Budget },
+            began: tokio::time::Instant::now(),
+        }
+    }
+}
+
+/// A run a read started or took, and how long it waits for it: `None` is to
+/// its end.
+struct Pending {
+    run: crate::run::Run,
+    until: Option<tokio::time::Instant>,
+}
+
+/// Start the run, or take the one in flight, that one instance of a Source
+/// needs for `read`, and say how long the read waits for it. `None` when it
+/// needs none: its record is within its lifetime, or it is in failback backoff
+/// (only `--force` runs past that). `root` is the instance: the cache entry its
+/// records live at.
+///
+/// | The read finds | It runs | It waits for |
+/// |---|---|---|
+/// | a record within its lifetime | nothing | nothing |
+/// | a record past it (`stale`) | the run in flight, or one | the Source's budget, or (`wait`) the run |
+/// | nothing stored | the run in flight, or one | the run |
+/// | anything, with `--force` | one that begins now | the run |
 ///
 /// The decision is per instance, never per provider: a warm sibling says
-/// nothing about this one, so a cold instance is run even when the namespace
-/// already holds records. A run replaces the instance's map when it succeeds
+/// nothing about this one. A run replaces the instance's map when it succeeds
 /// and leaves it when it fails, so the static records sharing the entry, and
 /// the last good value, stand either way.
-async fn warm_source(
+fn start_for_read(
     registry: &Arc<ProviderRegistry>,
     cache: &Arc<Cache>,
     provider: &str,
     source_name: &str,
     root: Option<&str>,
-    warm: Warm,
-) -> Result<bool, String> {
-    let Some(source) = registry.source(provider, source_name) else {
-        return Ok(false);
+    read: Read,
+) -> Option<Pending> {
+    let source = registry.source(provider, source_name)?;
+    let (want, until) = if read.force {
+        (Want::Forced, None)
+    } else if source.read_always() {
+        (Want::Fresh, None)
+    // A warm instance is the common read: answered before anything shared
+    // is locked.
+    } else if !cache.has_provider_records_for(provider, root, source_name) {
+        (Want::Cold, None)
+    } else if cache.source_is_stale(provider, root, source_name) {
+        let until = match read.wait {
+            Wait::Budget => Some(read.began + source.metadata().budget),
+            Wait::Forever => None,
+        };
+        (Want::Any, until)
+    } else {
+        return None;
     };
-    let want = match warm {
-        Warm::Always => Want::Forced,
-        _ if source.read_always() => Want::Fresh,
-        Warm::Stale if cache.source_is_stale(provider, root, source_name) => Want::Any,
-        // A warm instance is the common read: answered before anything shared
-        // is locked.
-        _ if cache.has_provider_records_for(provider, root, source_name) => return Ok(false),
-        Warm::Stale | Warm::Cold => Want::Cold,
-    };
-    run_for_read(registry, cache, want, provider, source_name, root).await
+    let key = instance_key(provider, source_name, root);
+    let run = registry.runs().start(want, registry, cache, &key)?;
+    Some(Pending { run, until })
+}
+
+/// Wait for each of `pending`, all under way together, until its deadline:
+/// whether any ended in time. A run that is not over by then goes on and
+/// records itself; the read answers with what is stored.
+///
+/// A run that failed is a miss (its failure is logged where it is recorded),
+/// and the read goes on to the rest of the chain. One that failed because a
+/// Source it calls failed, or called itself, is a fault in the lines, not in
+/// the world: the read shows it, as it shows a `root` that fails.
+async fn settle(pending: Vec<Pending>) -> Result<bool, String> {
+    let mut ended = false;
+    for Pending { run, until } in pending {
+        let outcome = match until {
+            None => Some(run.outcome().await),
+            Some(deadline) => run.outcome_by(deadline).await,
+        };
+        match outcome {
+            Some(Outcome::Failed {
+                message,
+                fault: true,
+            }) => return Err(message),
+            Some(_) => ended = true,
+            None => {}
+        }
+    }
+    Ok(ended)
 }
 
 /// Start the run of an instance that `want` needs, or take the one in flight
@@ -758,9 +827,9 @@ async fn run_for_read(
 /// Run a Source that runs on every read, before a `watch` sends its first
 /// frame, so the value is fresh off disk rather than what was stored.
 ///
-/// `watch`'s half of [`warm_source`]: a watch never runs a cold instance (the
-/// scheduler populates it, and the stream carries the value then), so only
-/// the read-always case applies to it.
+/// `watch`'s half of [`start_for_read`]: a watch never runs a cold instance
+/// (the scheduler populates it, and the stream carries the value then), so
+/// only the read-always case applies to it.
 async fn maybe_read_always(
     registry: &Arc<ProviderRegistry>,
     cache: &Arc<Cache>,
@@ -813,41 +882,45 @@ async fn called_instances(
     Ok((out, memo.rendered))
 }
 
-/// Bring up to date, as `how` says, every Source of another provider that
+/// Bring up to date, as `read` asks, every Source of another provider that
 /// `provider`'s `result` and `return` lines call, at each instance a read from
-/// `dir` reaches, and say which those were and whether the read must be made
-/// again: a Source ran, or a root was resolved that the first read did not
-/// have. What the lines then render over is stored.
+/// `dir` reaches (their runs started together, then waited for), and say
+/// which those were and whether the read must be made again: a run ended, or
+/// a root was resolved that the first read did not have. What the lines then
+/// render over is stored. These calls are part of the read: its budget
+/// applies to them.
 async fn warm_called(
     registry: &Arc<ProviderRegistry>,
     cache: &Arc<Cache>,
     provider: &str,
     dir: Option<&str>,
-    how: Warm,
+    read: Read,
 ) -> Result<(Vec<(String, Vec<Instance>)>, bool), String> {
     let (called, resolved) = called_instances(registry, provider, dir).await?;
-    let mut ran = resolved;
-    for (called_provider, instances) in &called {
-        for instance in instances {
-            ran |= warm_source(
-                registry,
-                cache,
-                called_provider,
-                &instance.source,
-                instance.root.as_deref(),
-                how,
-            )
-            .await?;
-        }
-    }
-    Ok((called, ran))
+    let pending: Vec<Pending> = called
+        .iter()
+        .flat_map(|(called_provider, instances)| {
+            instances.iter().filter_map(move |instance| {
+                start_for_read(
+                    registry,
+                    cache,
+                    called_provider,
+                    &instance.source,
+                    instance.root.as_deref(),
+                    read,
+                )
+            })
+        })
+        .collect();
+    let ended = settle(pending).await?;
+    Ok((called, resolved || ended))
 }
 
 /// What a climb does at each instance it reaches.
 #[derive(Clone, Copy)]
 enum Climb {
-    /// Bring the instance up to date as `Warm` says, then read.
-    Warm(Warm),
+    /// Bring the instance up to date as the read asks, then read.
+    Warm(Read),
     /// Only find the instances; run nothing (`refresh` hands them to the
     /// scheduler).
     Select,
@@ -902,6 +975,11 @@ fn answers_field(merged: &Option<MergedRead>, target: &KeyParse) -> bool {
 /// After each visit the merged read is tried: a field read stops on a leaf; a
 /// namespace read, and a field that is an object, take every level.
 ///
+/// Each instance's run starts as the climb reaches it, and the read waits for
+/// the runs of a level together before it tries the merged read there. A read
+/// that cannot stop early (a namespace, or a provider whose lines decide what
+/// exists) starts every run it needs before it waits for any.
+///
 /// `honor_put` lets a field a `put` states at an instance be answered there,
 /// without running the Source it hides.
 async fn climb(
@@ -933,6 +1011,8 @@ async fn climb(
         visited: Vec::new(),
         merged: None,
     };
+    let stops_early = by_default && matches!(plan.target, KeyParse::Field(..));
+    let mut pending = Vec::new();
     loop {
         for w in walking.iter_mut() {
             if w.next.is_none() && !w.over {
@@ -947,7 +1027,8 @@ async fn climb(
             .filter_map(|w| w.next.as_ref().map(nearness))
             .max();
         let Some(nearest) = nearest else {
-            if out.merged.is_none() {
+            if !pending.is_empty() || out.merged.is_none() {
+                settle(std::mem::take(&mut pending)).await?;
                 out.merged = read_chain_merged(cache, registry, plan, &out.visited);
             }
             return Ok(out);
@@ -967,17 +1048,27 @@ async fn climb(
             {
                 continue;
             }
-            if let Climb::Warm(how) = mode {
-                warm_source(registry, cache, provider, &w.name, root.as_deref(), how).await?;
+            if let Climb::Warm(read) = mode {
+                pending.extend(start_for_read(
+                    registry,
+                    cache,
+                    provider,
+                    &w.name,
+                    root.as_deref(),
+                    read,
+                ));
             }
             out.reached.push(Instance {
                 source: w.name.clone(),
                 root,
             });
         }
-        out.merged = read_chain_merged(cache, registry, plan, &out.visited);
-        if by_default && answers_field(&out.merged, &plan.target) {
-            return Ok(out);
+        if stops_early {
+            settle(std::mem::take(&mut pending)).await?;
+            out.merged = read_chain_merged(cache, registry, plan, &out.visited);
+            if answers_field(&out.merged, &plan.target) {
+                return Ok(out);
+            }
         }
     }
 }
@@ -1247,7 +1338,8 @@ fn read_watch_value(
 /// (same chain, nearest record), and nothing is warmed or run.
 ///
 /// A leaf answers `age_ms`, `stale` and `source` (derived from the record that
-/// answered), plus the keys stored beside it (`poll`, `watch`, `decay`). A leaf a
+/// answered) and, for a Source's record, `executing` (a run of its instance is
+/// in flight), plus the keys stored beside it (`poll`, `watch`, `decay`). A leaf a
 /// template answers is `{"stale": false, "source": "template"}`, with no
 /// `age_ms`: the client renders it, so it is as old as the inputs the render
 /// reads, which the daemon never sees. `p:cache._` is the prototype node, which
@@ -1294,6 +1386,15 @@ fn cache_facet_response(
         answer.insert("stale".into(), record.is_stale().into());
         let label: &str = &record.source;
         answer.insert("source".into(), crate::cache::presented_label(label).into());
+        // A Source's record is being brought up to date while a run of its
+        // instance is in flight, whoever started it.
+        if !crate::cache::is_static_label(label) {
+            let instance = instance_key(provider, label, record.entry.as_deref());
+            answer.insert(
+                "executing".into(),
+                registry.runs().is_running(&instance).into(),
+            );
+        }
         let stored = cache.stored_keys(provider, record.entry.as_deref(), label, tail);
         for (key, v) in stored.iter().flatten() {
             if let Ok(v) = serde_json::to_value(v) {
@@ -1621,11 +1722,9 @@ async fn handle_request(
             // what `put` wrote: no Source has anything to run for it.
             let demanded =
                 crate::query::demanded_source_names(registry, provider_name, &read_demand(&plan));
-            let how = match (*force, *wait) {
-                (true, _) => Warm::Always,
-                (false, true) => Warm::Stale,
-                (false, false) => Warm::Cold,
-            };
+            // How long the read waits for each run it needs: its budgets
+            // count from now.
+            let read = Read::new(*force, *wait);
 
             // The instance chains, climbed together nearest first ([`climb`]):
             // each instance is brought up to date and the merged read asked for
@@ -1640,7 +1739,7 @@ async fn handle_request(
                 cache,
                 &plan,
                 &demanded,
-                Climb::Warm(how),
+                Climb::Warm(read),
                 !*force && plan.layers != crate::cache::Layers::Source,
             )
             .await
@@ -1665,7 +1764,7 @@ async fn handle_request(
                     cache,
                     provider_name,
                     plan.requested_path.as_deref(),
-                    how,
+                    read,
                 )
                 .await
                 {
@@ -1867,7 +1966,7 @@ async fn handle_request(
             // The one `:cache` key a put may write is a decay prototype. The
             // rest is derived at a read or stored by the daemon.
             if facet == Some(Facet::Cache) {
-                let derived = ["age_ms", "stale", "source"]
+                let derived = ["age_ms", "stale", "source", "executing"]
                     .iter()
                     .any(|k| libbeachcomber::key::last(node).as_deref() == Some(k));
                 if derived {
@@ -2746,6 +2845,12 @@ mod tests {
         (registry, cache)
     }
 
+    /// A read of the instance at `~` of `demo.s`, as a `get` makes it.
+    async fn read_of(registry: &Arc<ProviderRegistry>, cache: &Arc<Cache>) -> Result<bool, String> {
+        let pending = start_for_read(registry, cache, "demo", "s", None, Read::new(false, false));
+        settle(pending.into_iter().collect()).await
+    }
+
     async fn until(what: &str, done: impl Fn() -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !done() {
@@ -2772,7 +2877,7 @@ mod tests {
 
         let read = tokio::spawn({
             let (registry, cache) = (registry.clone(), cache.clone());
-            async move { warm_source(&registry, &cache, "demo", "s", None, Warm::Cold).await }
+            async move { read_of(&registry, &cache).await }
         });
         until("the read to take the poll's run", || {
             registry.runs().callers(&key) == Some(2)
@@ -2792,7 +2897,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (registry, cache) = gated(dir.path());
         {
-            let read = warm_source(&registry, &cache, "demo", "s", None, Warm::Cold);
+            let read = read_of(&registry, &cache);
             tokio::pin!(read);
             tokio::select! {
                 done = &mut read => panic!("the gated run ended: {done:?}"),

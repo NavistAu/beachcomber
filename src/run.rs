@@ -233,6 +233,12 @@ impl Run {
         }
     }
 
+    /// [`Self::outcome`] if the run ends by `deadline`; `None` if it does not
+    /// (it goes on, and records itself).
+    pub async fn outcome_by(&self, deadline: tokio::time::Instant) -> Option<Outcome> {
+        tokio::time::timeout_at(deadline, self.outcome()).await.ok()
+    }
+
     /// [`Self::outcome`], from a blocking thread. From the thread of a run,
     /// [`Cycle`] when waiting would close a ring: the run waited on is
     /// waiting, however far round, on this one (or is this one).
@@ -718,7 +724,7 @@ mod tests {
             },
             fsevents_reinstate: false,
             decay: None,
-            budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+            budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
             timeout,
             nearest: false,
         }

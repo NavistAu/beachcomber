@@ -71,7 +71,7 @@ impl Object for Sentinel {
 pub struct Recorded {
     pub invalidation: InvalidationStrategy,
     pub failback: FailbackConfig,
-    pub budget_execute: Duration,
+    pub budget: Duration,
     /// How long one run may take before it is cut off.
     pub timeout: Duration,
     /// `Some(1)` for a `ttl(...)` Source; otherwise the provider's `_.decay`
@@ -87,7 +87,7 @@ pub struct Recorded {
 #[derive(Debug, Clone, Copy)]
 pub struct EngineDefaults {
     pub failback: FailbackConfig,
-    pub budget_execute: Duration,
+    pub budget: Duration,
     pub timeout: Duration,
 }
 
@@ -252,10 +252,10 @@ fn merge(levels: &[Line], defaults: &EngineDefaults) -> Result<Recorded, ReturnE
             .iter()
             .find_map(|l| l.failback)
             .unwrap_or(defaults.failback),
-        budget_execute: levels
+        budget: levels
             .iter()
             .find_map(|l| l.budget)
-            .unwrap_or(defaults.budget_execute),
+            .unwrap_or(defaults.budget),
         timeout: levels
             .iter()
             .find_map(|l| l.timeout)
@@ -563,8 +563,8 @@ fn calls(line: &str) -> Vec<(&'static str, &str)> {
 mod tests {
     use super::*;
     use crate::scheduler::lifecycle::{
-        DEFAULT_BUDGET_EXECUTE, DEFAULT_FAILBACK_COUNT, DEFAULT_FAILBACK_INTERVAL_SECS,
-        DEFAULT_POLL_COUNT, DEFAULT_TIMEOUT,
+        DEFAULT_BUDGET, DEFAULT_FAILBACK_COUNT, DEFAULT_FAILBACK_INTERVAL_SECS, DEFAULT_POLL_COUNT,
+        DEFAULT_TIMEOUT,
     };
 
     fn defaults() -> EngineDefaults {
@@ -573,7 +573,7 @@ mod tests {
                 reattempts: DEFAULT_FAILBACK_COUNT,
                 interval_secs: DEFAULT_FAILBACK_INTERVAL_SECS,
             },
-            budget_execute: DEFAULT_BUDGET_EXECUTE,
+            budget: DEFAULT_BUDGET,
             timeout: DEFAULT_TIMEOUT,
         }
     }
@@ -681,17 +681,17 @@ mod tests {
         assert_eq!(r.failback, defaults().failback);
         assert_eq!(r.failback.reattempts, 3);
         assert_eq!(r.failback.interval_secs, 1);
-        assert_eq!(r.budget_execute, Duration::from_millis(50));
+        assert_eq!(r.budget, Duration::from_millis(50));
         let r = record_return(
             &["{{ result | poll('60s') }}"],
             "s",
             &EngineDefaults {
-                budget_execute: Duration::from_millis(200),
+                budget: Duration::from_millis(200),
                 ..defaults()
             },
         )
         .unwrap();
-        assert_eq!(r.budget_execute, Duration::from_millis(200));
+        assert_eq!(r.budget, Duration::from_millis(200));
     }
 
     #[test]
@@ -833,7 +833,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(r.failback.reattempts, 4);
-        assert_eq!(r.budget_execute, Duration::from_millis(70));
+        assert_eq!(r.budget, Duration::from_millis(70));
         assert!(matches!(
             r.invalidation,
             InvalidationStrategy::WatchAndPoll {
@@ -921,7 +921,7 @@ mod tests {
             }
         );
         assert_eq!(
-            rec("{{ result | budget('10ms') | budget('80ms') }}").budget_execute,
+            rec("{{ result | budget('10ms') | budget('80ms') }}").budget,
             Duration::from_millis(80)
         );
     }
@@ -1035,15 +1035,15 @@ mod tests {
     #[test]
     fn budget_takes_milliseconds() {
         assert_eq!(
-            rec("{{ result | budget('50ms') }}").budget_execute,
+            rec("{{ result | budget('50ms') }}").budget,
             Duration::from_millis(50)
         );
         assert_eq!(
-            rec("{{ result | budget('1500ms') }}").budget_execute,
+            rec("{{ result | budget('1500ms') }}").budget,
             Duration::from_millis(1500)
         );
         assert_eq!(
-            rec("{{ result | budget(2) }}").budget_execute,
+            rec("{{ result | budget(2) }}").budget,
             Duration::from_secs(2)
         );
     }
@@ -1282,7 +1282,7 @@ mod tests {
     #[test]
     fn a_budget_number_is_whole_seconds() {
         assert_eq!(
-            rec("{{ result | budget(2) }}").budget_execute,
+            rec("{{ result | budget(2) }}").budget,
             Duration::from_secs(2)
         );
         assert_eq!(

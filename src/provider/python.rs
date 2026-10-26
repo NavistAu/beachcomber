@@ -46,7 +46,7 @@ fn venv_source_metadata() -> SourceMetadata {
         },
         fsevents_reinstate: true,
         decay: None,
-        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
         timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
         nearest: true,
     }

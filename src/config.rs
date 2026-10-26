@@ -207,9 +207,9 @@ pub struct DaemonConfig {
     /// Whole seconds, at least 1s, in the one duration grammar.
     #[serde(deserialize_with = "deserialize_duration_text")]
     pub idle_shutdown: Option<String>,
-    /// How long a read waits for a Source before answering with what it has,
-    /// for every Source whose `return` does not say (`budget(...)`); see
-    /// [`DaemonConfig::budget`]. Recorded; nothing enforces it yet.
+    /// How long a read of a record past its lifetime waits for the record's
+    /// run before answering with what is stored, for every Source whose
+    /// `return` does not say (`budget(...)`); see [`DaemonConfig::budget`].
     #[serde(deserialize_with = "deserialize_duration_text")]
     pub budget: Option<String>,
     /// `[daemon.providers.<p>]`: what the daemon holds about a provider:
@@ -290,7 +290,7 @@ impl DaemonConfig {
             .as_deref()
             .and_then(parse_duration)
             .filter(|d| !d.is_zero())
-            .unwrap_or(crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE)
+            .unwrap_or(crate::scheduler::lifecycle::DEFAULT_BUDGET)
     }
 
     /// `[daemon] timeout`: how long one run of a Source may take before it is

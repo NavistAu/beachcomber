@@ -145,7 +145,7 @@ fn tools_meta() -> SourceMetadata {
         },
         fsevents_reinstate: true,
         decay: None,
-        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
         timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
         nearest: false,
     }

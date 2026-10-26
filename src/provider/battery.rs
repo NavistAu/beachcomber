@@ -41,7 +41,7 @@ fn state_meta() -> SourceMetadata {
         },
         fsevents_reinstate: false,
         decay: None,
-        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
         timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
         nearest: false,
     }
@@ -206,7 +206,7 @@ fn level_meta() -> SourceMetadata {
         },
         fsevents_reinstate: false,
         decay: None,
-        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
         timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
         nearest: false,
     }
@@ -236,7 +236,7 @@ fn upower_meta() -> SourceMetadata {
         },
         fsevents_reinstate: false,
         decay: None,
-        budget_execute: crate::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
         timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
         nearest: false,
     }

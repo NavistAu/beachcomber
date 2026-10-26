@@ -1256,7 +1256,7 @@ fn same_schedule(a: &crate::provider::SourceMetadata, b: &crate::provider::Sourc
         && a.failback == b.failback
         && a.fsevents_reinstate == b.fsevents_reinstate
         && a.decay == b.decay
-        && a.budget_execute == b.budget_execute
+        && a.budget == b.budget
         && a.nearest == b.nearest
 }
 

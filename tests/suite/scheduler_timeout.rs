@@ -59,7 +59,7 @@ fn slow_source_meta() -> SourceMetadata {
         },
         fsevents_reinstate: false,
         decay: None,
-        budget_execute: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
         // The Source's own timeout, which the scheduler applies to its run.
         timeout: Duration::from_secs(1),
         nearest: false,

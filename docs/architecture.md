@@ -182,6 +182,10 @@ The client reads the response line, strips metadata, and writes the plain text t
 
 The server finds no record for the instance and starts its run (`Runs::start`), or takes the run already in flight, whoever started it. The run executes on `tokio::task::spawn_blocking` and writes its result to the cache itself; the read waits for it and answers from what it wrote, in the same response. The client receives data on the first query — there is no empty response or polling step. A read that stops waiting (its connection gone) takes nothing with it: the run records itself.
 
+**On a record past its lifetime:**
+
+A record older than its Source's poll interval is `stale`. The read runs the Source (or takes the run in flight) and waits up to the Source's budget (`budget(...)`, else `[daemon] budget`, default `50ms`), counted from when the read began; with `wait` it waits for the run however long. In time, it answers the fresh value; late, it answers the stored one, still `stale`, while `:cache.<field>.executing` says the run goes on, and the run records itself for the next read and for any `watch`. A namespace read starts every run it needs before it waits for any, so its Sources run together.
+
 ---
 
 ## 4. Provider Execution Lifecycle: Filesystem Event -> Cache Write
