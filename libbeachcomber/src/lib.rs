@@ -226,6 +226,33 @@ pub struct WatchStream {
     /// The daemon closed the connection, or a read failed: nothing more will
     /// be read. Frames already buffered are still taken first.
     closed: bool,
+    /// Where to ask the daemon its version when it refuses a frame, so the
+    /// refusal can name the skew as an op's does. `None` for a stream no
+    /// client opened.
+    skew_probe: Option<SkewProbe>,
+}
+
+/// What a [`WatchStream`] needs to ask the daemon for its version after the
+/// fact: the stream is its connection's only user, so the probe takes a
+/// connection of its own, on the failure path only.
+struct SkewProbe {
+    socket: PathBuf,
+    connect_timeout: Duration,
+    timeout: Duration,
+}
+
+impl SkewProbe {
+    /// The skew a `hello` shows; unknown (`None`) when the probe fails.
+    fn skew(&self) -> Option<VersionSkew> {
+        let stream = connect_with_retry_for(&self.socket, self.connect_timeout).ok()?;
+        stream.set_read_timeout(Some(self.timeout)).ok()?;
+        stream.set_write_timeout(Some(self.timeout)).ok()?;
+        Conn {
+            reader: BufReader::new(stream),
+            timeout: self.timeout,
+        }
+        .skew()
+    }
 }
 
 impl WatchStream {
@@ -233,12 +260,13 @@ impl WatchStream {
     /// socket's options once the daemon can have answered and closed it
     /// (macOS refuses a socket option on a unix socket whose peer has gone),
     /// so this comes before the request is sent.
-    fn new(socket: UnixStream) -> std::io::Result<Self> {
+    fn new(socket: UnixStream, skew_probe: Option<SkewProbe>) -> std::io::Result<Self> {
         socket.set_nonblocking(true)?;
         Ok(Self {
             socket,
             buffer: Vec::new(),
             closed: false,
+            skew_probe,
         })
     }
 
@@ -248,7 +276,14 @@ impl WatchStream {
     pub fn next_event(&mut self) -> Result<Option<WatchEvent>, CombError> {
         loop {
             if let Some(frame) = self.take_frame() {
-                return Self::parse_line(&frame?).map(Some);
+                return Self::parse_line(&frame?).map(Some).map_err(|e| match e {
+                    // A refusal names the skew as every op's does.
+                    CombError::ServerError(refusal) => CombError::ServerError(with_skew(
+                        refusal,
+                        self.skew_probe.as_ref().and_then(SkewProbe::skew).as_ref(),
+                    )),
+                    other => other,
+                });
             }
             if self.closed {
                 return Ok(None);
@@ -583,7 +618,13 @@ impl Client {
     /// connection into streaming mode once a watch is issued — no other
     /// ops can share that connection afterward.
     pub fn watch(&self, key: &str, path: Option<&str>) -> Result<WatchStream, CombError> {
-        let stream = WatchStream::new(self.open()?.reader.into_inner())?;
+        let socket = self.find_or_start_socket()?;
+        let probe = SkewProbe {
+            socket,
+            connect_timeout: self.connect_timeout,
+            timeout: self.config.timeout,
+        };
+        let stream = WatchStream::new(self.open()?.reader.into_inner(), Some(probe))?;
         stream.send(&watch_request(key, path)?)?;
         Ok(stream)
     }
@@ -1248,7 +1289,10 @@ mod tests {
     /// A watch stream over one end of a pair; the other end is the daemon's.
     fn watch_pair() -> (WatchStream, UnixStream) {
         let (ours, daemon) = UnixStream::pair().expect("a pair");
-        (WatchStream::new(ours).expect("a watch stream"), daemon)
+        (
+            WatchStream::new(ours, None).expect("a watch stream"),
+            daemon,
+        )
     }
 
     /// Wait for `stream` to be readable, then read it, as the fan-in does.

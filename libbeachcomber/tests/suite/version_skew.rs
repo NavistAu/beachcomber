@@ -213,3 +213,19 @@ fn watch_refusal_names_both_versions() {
     assert!(err.contains(libbeachcomber::VERSION), "{err}");
     assert!(err.contains("9.9.9-totally-different"), "{err}");
 }
+
+/// The Rust `Client::watch`'s `next_event` names the skew in a refusal too:
+/// the same note as `comb watch` and `comb get`.
+#[test]
+fn client_watch_refusal_names_both_versions() {
+    let (_tmp, sock) = spawn_fake_daemon("9.9.9-totally-different", true);
+    let client = client_for(&sock);
+    let mut stream = client.watch("nope", None).expect("opens");
+    let err = stream
+        .next_event()
+        .expect_err("a refusal, not an event")
+        .to_string();
+    assert!(err.contains("boom"), "{err}");
+    assert!(err.contains(libbeachcomber::VERSION), "{err}");
+    assert!(err.contains("9.9.9-totally-different"), "{err}");
+}
