@@ -344,7 +344,7 @@ class TestOps < Minitest::Test
 
   def test_eval_evaluates_raw_template
     result = @client.eval('{{ env.X | truncate(3) }}', cwd: '/tmp', env: { 'X' => 'abcdefgh' })
-    assert_equal 'abc...', result
+    assert_equal 'ab…', result
   end
 
   def test_eval_without_cwd_reads_the_global_entry

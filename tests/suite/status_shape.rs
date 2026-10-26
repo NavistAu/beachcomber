@@ -313,7 +313,7 @@ fn custom_template_supports_truncate_filter() {
         failure: None,
     }];
     let out = render_status_template("{{ value | truncate(7) }}", &rows);
-    assert_eq!(out.trim(), "abcdef1...");
+    assert_eq!(out.trim(), "abcdef…");
 }
 
 #[test]

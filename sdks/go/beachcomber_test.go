@@ -643,8 +643,8 @@ func TestClient_Eval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Eval: %v", err)
 	}
-	if v != "he..." {
-		t.Errorf("Eval() = %#v, want \"he...\"", v)
+	if v != "h…" {
+		t.Errorf("Eval() = %#v, want \"h…\"", v)
 	}
 }
 

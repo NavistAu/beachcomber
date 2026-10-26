@@ -178,9 +178,195 @@ pub fn sgr(params: &str, text: &str) -> String {
     format!("\x1b[{params}m{text}\x1b[0m")
 }
 
+/// A piece of terminal text: characters to show, or an escape sequence that
+/// takes no columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Piece<'a> {
+    Text(&'a str),
+    Escape(&'a str),
+}
+
+/// `s` as text and escape sequences, in order. An escape sequence is a CSI
+/// (`ESC [` ... a final byte `@` to `~`), an OSC (`ESC ]` ... up to BEL or
+/// `ESC \`, OSC 8 hyperlinks included) or `ESC` and the one character after
+/// it. One cut short by the end of `s` runs to it.
+pub fn pieces(s: &str) -> impl Iterator<Item = Piece<'_>> {
+    let mut rest = s;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let bytes = rest.as_bytes();
+        let len = if bytes[0] != 0x1b {
+            rest.find('\x1b').unwrap_or(rest.len())
+        } else {
+            match bytes.get(1) {
+                Some(b'[') => bytes[2..]
+                    .iter()
+                    .position(|b| (0x40..=0x7e).contains(b))
+                    .map_or(rest.len(), |i| 2 + i + 1),
+                Some(b']') => {
+                    let mut end = rest.len();
+                    for (i, b) in bytes.iter().enumerate().skip(2) {
+                        if *b == 0x07 {
+                            end = i + 1;
+                            break;
+                        }
+                        if *b == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
+                            end = i + 2;
+                            break;
+                        }
+                    }
+                    end
+                }
+                Some(_) => 1 + rest[1..].chars().next().map_or(0, char::len_utf8),
+                None => 1,
+            }
+        };
+        let (head, tail) = rest.split_at(len);
+        let piece = if bytes[0] == 0x1b {
+            Piece::Escape(head)
+        } else {
+            Piece::Text(head)
+        };
+        rest = tail;
+        Some(piece)
+    })
+}
+
+/// `s` without its escape sequences.
+pub fn strip_escapes(s: &str) -> String {
+    pieces(s)
+        .filter_map(|p| match p {
+            Piece::Text(t) => Some(t),
+            Piece::Escape(_) => None,
+        })
+        .collect()
+}
+
+/// The terminal columns `s` takes. East Asian wide and emoji-presentation
+/// characters are 2, combining marks 0, and escape sequences 0.
+pub fn width(s: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    strip_escapes(s).width()
+}
+
+/// `s` cut to `n` columns with `end` standing where the cut is, inside the
+/// `n`. Text that already fits is returned as it is. An `end` wider than `n`
+/// is dropped. A wide character that would straddle the cut is dropped whole.
+/// Escape sequences are never cut and all are kept, those after the cut
+/// included, so a reset or a hyperlink closer survives.
+pub fn cut(s: &str, n: usize, end: &str) -> String {
+    use unicode_width::UnicodeWidthStr;
+    if width(s) <= n {
+        return s.to_string();
+    }
+    let end = if width(end) > n { "" } else { end };
+    let budget = n - width(end);
+    let mut out = String::new();
+    let mut kept = String::new();
+    let mut cut = false;
+    for piece in pieces(s) {
+        match piece {
+            Piece::Escape(e) => out.push_str(e),
+            Piece::Text(t) => {
+                for c in t.chars() {
+                    if !cut {
+                        kept.push(c);
+                        if kept.width() <= budget {
+                            out.push(c);
+                            continue;
+                        }
+                        out.push_str(end);
+                        cut = true;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn width_counts_columns() {
+        assert_eq!(width(""), 0);
+        assert_eq!(width("abc"), 3);
+        // Wide: CJK and emoji presentation are two columns.
+        assert_eq!(width("日本"), 4);
+        assert_eq!(width("💭 x"), 4);
+        assert_eq!(width("⚡"), 2);
+        // Combining marks take none.
+        assert_eq!(width("e\u{301}"), 1);
+        // An emoji presentation sequence is two.
+        assert_eq!(width("\u{2764}\u{fe0f}"), 2);
+    }
+
+    #[test]
+    fn width_ignores_csi_and_osc() {
+        assert_eq!(width("\x1b[38;2;1;2;3mab\x1b[0m"), 2);
+        assert_eq!(width("\x1b[1m\x1b[31m日\x1b[0m\x1b[0m"), 2);
+        // OSC 8, ended by ST and by BEL.
+        assert_eq!(width("\x1b]8;;https://x.test/\x1b\\link\x1b]8;;\x1b\\"), 4);
+        assert_eq!(width("\x1b]8;;u\x07link\x1b]8;;\x07"), 4);
+        // A sequence cut short by the end of the text is all escape.
+        assert_eq!(width("a\x1b[3"), 1);
+        assert_eq!(width("a\x1b]8;;u"), 1);
+        assert_eq!(width("a\x1b"), 1);
+    }
+
+    #[test]
+    fn width_pieces_round_trip() {
+        let s = "a\x1b[1mb\x1b]8;;u\x1b\\c\x1b(Bd";
+        let joined: String = pieces(s)
+            .map(|p| match p {
+                Piece::Text(t) | Piece::Escape(t) => t,
+            })
+            .collect();
+        assert_eq!(joined, s);
+        assert_eq!(strip_escapes(s), "abcBd");
+    }
+
+    #[test]
+    fn cut_fits_end_inside_n() {
+        assert_eq!(cut("abcdef", 4, "…"), "abc…");
+        assert_eq!(cut("abcdef", 6, "…"), "abcdef");
+        assert_eq!(cut("abcdef", 4, ""), "abcd");
+        assert_eq!(cut("abcdef", 4, "..."), "a...");
+        // An end wider than n is dropped.
+        assert_eq!(cut("abcdef", 2, "..."), "ab");
+        assert_eq!(cut("abcdef", 0, "…"), "");
+    }
+
+    #[test]
+    fn cut_drops_a_straddling_wide_character_whole() {
+        // 日 is two columns: 日本 is 4, so budget 3 keeps one character.
+        assert_eq!(cut("日本語", 4, "…"), "日…");
+        assert_eq!(cut("a日本", 3, ""), "a日");
+        assert_eq!(cut("a日本", 2, ""), "a");
+        assert_eq!(width(&cut("日本語日本語", 7, "…")), 7);
+    }
+
+    #[test]
+    fn cut_keeps_every_escape_after_the_cut() {
+        assert_eq!(cut("\x1b[31mabcdef\x1b[0m", 4, "…"), "\x1b[31mabc…\x1b[0m");
+        assert_eq!(
+            cut("\x1b[1m\x1b[31mabcdef\x1b[0m\x1b[0m", 3, "…"),
+            "\x1b[1m\x1b[31mab…\x1b[0m\x1b[0m"
+        );
+        let link = "\x1b]8;;https://x.test/\x1b\\abcdef\x1b]8;;\x1b\\";
+        assert_eq!(
+            cut(link, 3, "…"),
+            "\x1b]8;;https://x.test/\x1b\\ab…\x1b]8;;\x1b\\"
+        );
+        // Text that fits is untouched.
+        assert_eq!(cut("\x1b[31mab\x1b[0m", 2, "…"), "\x1b[31mab\x1b[0m");
+        // Escapes inside the dropped part stay too.
+        assert_eq!(cut("abcd\x1b[31mef\x1b[0mgh", 3, ""), "abc\x1b[31m\x1b[0m");
+    }
 
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs

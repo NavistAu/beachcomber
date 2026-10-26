@@ -16,6 +16,7 @@
 pub mod absent;
 pub mod data;
 pub mod fs;
+pub mod measure;
 pub mod parse;
 pub mod path;
 pub mod style;
@@ -95,7 +96,9 @@ macro_rules! item {
 
 /// Every item of the library, and the only list of them.
 pub const ITEMS: &[Item] = &[
-    item!("truncate", Filter, Pure, style::add_truncate),
+    item!("truncate", Filter, Pure, measure::add_truncate),
+    item!("width", Filter, Pure, measure::add_width),
+    item!("pad", Filter, Pure, measure::add_pad),
     item!("fg", Filter, Pure, style::add_fg),
     item!("bg", Filter, Pure, style::add_bg),
     item!("bold", Filter, Pure, style::add_bold),

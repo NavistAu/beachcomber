@@ -56,11 +56,12 @@ fn json(d: &TestDaemon, cwd: &Path, args: &[&str]) -> serde_json::Value {
 fn short_host(d: &TestDaemon, cwd: &Path) -> String {
     let name = stdout(d, cwd, &["hostname.name"]);
     assert!(!name.is_empty(), "hostname.name must resolve on this host");
-    let mut s: String = name.chars().take(3).collect();
     if name.chars().count() > 3 {
-        s.push_str("...");
+        let s: String = name.chars().take(2).collect();
+        format!("{s}…")
+    } else {
+        name
     }
-    s
 }
 
 // ── outcomes 1–3: a nested template, a group, a namespace ────────────────────

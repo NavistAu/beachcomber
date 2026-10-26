@@ -66,10 +66,17 @@ error that names it.
 
 | item | meaning |
 |---|---|
-| `s \| truncate(n)` | the first `n` characters, then `...` |
+| `s \| width` | display width in terminal columns: `'💭 x' \| width` is `4` |
+| `s \| pad(n, align='left')` | padded with spaces to `n` columns; `align` is `left`, `right` or `center` (`center` puts the floor of half the gap on the left); wider text, or a negative `n`, is returned unchanged |
+| `s \| truncate(n, end='…')` | cut to `n` columns with `end` counted inside `n`: `'abcdef' \| truncate(4)` is `abc…`; an `end` wider than `n` is dropped, and a wide character that would straddle the cut is dropped whole |
 | `s \| fg(colour)`, `s \| bg(colour)` | the text in a foreground or background colour (below) |
 | `s \| bold`, `dim`, `italic`, `underline`, `invert` | SGR attributes 1, 2, 3, 4 and 7 |
 | `hyperlink(url, text)` | `text` as an OSC 8 terminal link to `url`; absent `text` is undefined, an absent `url` leaves the text unlinked, and a `url` that is not a string or holds a control character is an error |
+
+**Display width.** Wherever an item measures text it counts terminal columns: East Asian wide and emoji-presentation
+characters are 2, combining marks are 0, and escape sequences (CSI such as colours, and OSC such as `hyperlink`) are 0.
+`truncate` never cuts an escape sequence and keeps every one, so a reset or a link closer after the cut survives. There
+is no character-count variant.
 
 Every styling filter closes with a full reset (`\e[0m`), emits nothing for empty text, and nests as it is written:
 `x | fg(c) | bg(d) | bold`.

@@ -458,7 +458,7 @@ mod tests {
             "git": {"sha": "abcdef1234567890"}
         });
         let out = render_template("{{ git.sha | truncate(7) }}", &ctx).unwrap();
-        assert_eq!(out, "abcdef1...");
+        assert_eq!(out, "abcdef…");
     }
 
     #[test]

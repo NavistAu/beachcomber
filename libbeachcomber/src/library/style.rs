@@ -1,4 +1,4 @@
-//! Text and terminal styling: `truncate`, the colour filters `fg` and `bg`, the
+//! Terminal styling: the colour filters `fg` and `bg`, the
 //! attributes `bold`, `dim`, `italic`, `underline` and `invert`, and
 //! `hyperlink`.
 //!
@@ -26,22 +26,6 @@ fn styled(
         return Ok(UNDEFINED);
     }
     style(text(name, value)?).map(MjValue::from)
-}
-
-pub(super) fn add_truncate(jinja: &mut Environment<'_>, _: &Arc<EngineCtx>) {
-    jinja.add_filter("truncate", |value: MjValue, length: u32| {
-        styled("truncate", &value, |s| Ok(truncate_filter(s, length)))
-    });
-}
-
-fn truncate_filter(value: String, length: u32) -> String {
-    if value.chars().count() <= length as usize {
-        value
-    } else {
-        let mut s: String = value.chars().take(length as usize).collect();
-        s.push_str("...");
-        s
-    }
 }
 
 pub(super) fn add_fg(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
@@ -383,11 +367,5 @@ mod tests {
             eval(&[("NO_COLOR", "1")], "hyperlink('u', 'text')").unwrap(),
             "text"
         );
-    }
-
-    #[test]
-    fn truncate_cuts_characters_for_now() {
-        assert_eq!(eval(&[], "'abcdef' | truncate(3)").unwrap(), "abc...");
-        assert_eq!(eval(&[], "'abc' | truncate(3)").unwrap(), "abc");
     }
 }

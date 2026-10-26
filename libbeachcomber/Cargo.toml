@@ -16,6 +16,7 @@ libc = "0.2"
 minijinja = { workspace = true }
 rust-ini = "0.21.3"
 liblup = "0.3"
+unicode-width = "0.2"
 
 [dev-dependencies]
 beachcomber = { path = "..", features = ["test-helpers"] }

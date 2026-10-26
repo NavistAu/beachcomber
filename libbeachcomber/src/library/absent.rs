@@ -105,7 +105,7 @@ mod tests {
     /// The arguments a filter needs besides its subject.
     fn arguments(name: &str) -> Vec<MjValue> {
         match name {
-            "truncate" => vec![MjValue::from(3)],
+            "truncate" | "pad" => vec![MjValue::from(3)],
             "fg" | "bg" => vec![MjValue::from("#ff0000")],
             "pluck" => vec![MjValue::from("a")],
             "map" => vec![MjValue::from("upper")],

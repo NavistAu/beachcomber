@@ -514,7 +514,7 @@ fn fmt_renders_literal_filter_and_conditional() {
         ])
         .assert()
         .success()
-        .stdout(predicates::str::diff("form..."));
+        .stdout(predicates::str::diff("for…"));
 }
 
 // ── eval_default_filter_fires_on_daemon_miss ─────────────────────────────────

@@ -148,11 +148,11 @@ const WORKSPACE: &str = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}";
 const STATS: &str = "{{ {'cpu': 40, 'mem': 12} }}";
 
 /// The branch `truncate(12)` cuts. The design table writes the truncation as
-/// `feature/long`; the `truncate` filter this crate ships appends an ellipsis
-/// past the cut (`libbeachcomber/src/library/style.rs`), so the value is
-/// `feature/long...`.
+/// `feature/long`; the `truncate` filter this crate ships counts the `…` inside
+/// the length (`libbeachcomber/src/library/measure.rs`), so the value is
+/// `feature/lon…`.
 const BRANCH: &str = "feature/long-name-here";
-const BRANCH_12: &str = "feature/long...";
+const BRANCH_12: &str = "feature/lon…";
 
 fn spec_fetch() -> MapFetch {
     let widgets = json!({ "foo": FOO, "bar": BAR });
@@ -332,7 +332,7 @@ fn a_key_two_leaves_share_is_fetched_once_and_reported_once() {
     .seed("git.branch", Some(CWD), data(json!(BRANCH)));
 
     let Traced { value, deps: d, .. } = resolve_traced("scanline", &inputs(&env), &mut f).unwrap();
-    assert_eq!(value, Some(json!({ "a": BRANCH, "b": "feat..." })));
+    assert_eq!(value, Some(json!({ "a": BRANCH, "b": "fea…" })));
     assert_eq!(f.keys(), vec!["scanline", "git.branch"]);
     assert_eq!(
         d,

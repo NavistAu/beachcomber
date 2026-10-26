@@ -347,7 +347,7 @@ fn bc_eval_truncate_and_basename_filters() {
     let env = Some(r#"{"LONGVAR":"abcdefghij","PYVAR":"/foo/bar/baz"}"#);
 
     let v = eval(client, "{{ env.LONGVAR | truncate(5) }}", "/tmp", env);
-    assert_eq!(hit(&v), &serde_json::json!("abcde..."));
+    assert_eq!(hit(&v), &serde_json::json!("abcd…"));
 
     let v = eval(client, "{{ env.PYVAR | basename }}", "/tmp", env);
     assert_eq!(hit(&v), &serde_json::json!("baz"));
