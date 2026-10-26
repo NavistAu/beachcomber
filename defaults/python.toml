@@ -3,3 +3,26 @@
 template.version = "{{ env.PYENV_VERSION or env.MISE_PYTHON_VERSION or comb.mise.python or comb.asdf.python or comb.python.venv_version }}"
 # The active virtualenv's name: a local .venv, else the basename of $VIRTUAL_ENV; absent when neither is there.
 template.venv_name = "{{ comb.python.local_venv_name or (env.VIRTUAL_ENV | basename) }}"
+
+[daemon.providers.python.sources.venv]
+# A Python project: the nearest directory, walking up to `/`, with a `pyproject.toml` or a virtualenv
+# (`.venv`, `venv`, `.virtualenv` or `env` holding a `pyvenv.cfg`). Each candidate is an ancestor of
+# the directory read, so the longest is the nearest.
+root = '''{{ [lup('pyproject.toml', root=true) | dirname,
+  lup('.venv/pyvenv.cfg', root=true) | dirname | dirname,
+  lup('venv/pyvenv.cfg', root=true) | dirname | dirname,
+  lup('.virtualenv/pyvenv.cfg', root=true) | dirname | dirname,
+  lup('env/pyvenv.cfg', root=true) | dirname | dirname] | select | max }}'''
+# The project's virtualenv: the first of the four names, in that order, holding a `pyvenv.cfg`, and the file's text.
+data = '''{% set found = namespace(venv=none) %}
+{% for name in ['.venv', 'venv', '.virtualenv', 'env'] %}
+  {% set cfg = (name ~ '/pyvenv.cfg') | read if found.venv is none %}
+  {% if cfg is defined %}{% set found.venv = {'name': name, 'cfg': cfg} %}{% endif %}
+{% endfor %}
+{{ found.venv }}'''
+result.venv = "{{ true if data }}"
+result.local_venv_name = "{{ data.name }}"
+# The interpreter version the virtualenv records: the value of its `version` key, when it has one.
+result.venv_version = '''{{ (data.cfg | regex_search('(?m)^[[:blank:]]*version[[:blank:]]*=[[:blank:]]*([^[:space:]].*?)[[:space:]]*$'))[1] }}'''
+# Run again when the virtualenv or `pyproject.toml` changes; a failure is retried every minute, three times. The nearest project answers alone.
+return = "{{ result | watch('.venv', 'pyproject.toml') | failback('60s', 3) | nearest }}"

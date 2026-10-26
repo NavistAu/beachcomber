@@ -1,3 +1,13 @@
 [client.providers.terraform]
 # The workspace in effect: the shell's override, else the one selected on disk.
 template.workspace = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}"
+
+[daemon.providers.terraform.sources.state]
+# A terraform root: the nearest directory holding `.terraform`, walking up to `/`.
+root = "{{ lup('.terraform', root=true) | dirname }}"
+# The workspace selected there: terraform keeps its name in `.terraform/environment`.
+data = "{{ '.terraform/environment' | read }}"
+# No such file is the `default` workspace, as terraform reads it; a file that names none is absent.
+result.workspace = "{{ 'default' if data is none else ((data | trim) or none) }}"
+# Run again when the file changes; a failure is retried every minute, three times. The nearest root answers alone.
+return = "{{ result | watch('.terraform/environment') | failback('60s', 3) | nearest }}"

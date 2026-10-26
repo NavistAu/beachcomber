@@ -4,11 +4,9 @@ pub mod config_source;
 pub mod direnv;
 pub mod gcloud;
 pub mod git;
-pub mod python;
 pub mod registry;
 pub mod source_call;
 pub mod sudo;
-pub mod terraform;
 
 #[cfg(test)]
 mod aws_tests;

@@ -635,19 +635,22 @@ fn git_status_on_empty_repo() {
 
 **Testing when the external tool is not installed**
 
-Sources that depend on optional tools or files must return an empty `SourceResult` (`Ok`) when the relevant files do not exist, and an `Err` when a tool they need cannot run. Test this against a clean tempdir — `terraform`'s source reads `.terraform/environment` and answers nothing without a `.terraform/` directory:
+Sources that depend on optional tools or files must return an empty `SourceResult` (`Ok`) when the relevant files do not exist, and an `Err` when a tool they need cannot run. Test this against a clean tempdir — the worked example's Source reads `~/.docker/config.json` and answers nothing without one:
 
 ```rust
 #[test]
-fn returns_empty_without_terraform_dir() {
-    let dir = tempfile::tempdir().unwrap();
+fn returns_empty_without_a_docker_config() {
+    let home = tempfile::tempdir().unwrap();
+    // SAFETY: nextest runs each test in its own process.
+    unsafe { std::env::set_var("HOME", home.path()) };
 
-    let provider = TerraformProvider;
-    let sources = provider.sources();
-    let result = sources[0].execute(Some(dir.path().to_str().unwrap())).unwrap();
+    let sources = DockerContextProvider.sources();
+    let result = sources[0].execute(None).unwrap();
     assert!(result.fields.is_empty());
 }
 ```
+
+A shipped file's Sources are tested the same way, through the daemon: `tests/suite/shipped/terraform.rs` checks that `terraform` answers nothing in a directory with no `.terraform/` above it.
 
 If a source reads `HOME` or another environment variable, avoid `std::env::set_var` in parallel tests — it mutates global state. Either mark such tests `#[serial]` (via the `serial_test` crate), run them with `cargo nextest run --test-threads=1 <filter>`, or use `cargo test -- --test-threads=1`. Note: cargo-nextest runs each test in its own process by default, so env-var mutations are already isolated per test — the `--test-threads=1` workaround is mainly relevant for plain `cargo test`.
 

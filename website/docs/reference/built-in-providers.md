@@ -27,14 +27,14 @@ Each provider declares one or more **sources** — independent units of executio
 | `load` | `loadavg` | poll 10s (`defaults/load.toml`) | none | `one`, `five`, `fifteen` |
 | `mise` | `tools` | watch (`defaults/mise.toml`) | project | tool versions, one field per tool: what `mise ls --current` resolves at the nearest `mise.toml`/`.mise.toml` directory, else at `~` |
 | `network` | `interfaces` | poll 10s (`defaults/network.toml`) | none | `interface`, `ip`, `ipv6`, `vpn_active`, `vpn_name`, `ssid`, `online` |
-| `python` | `venv` | watch | project | `venv`, `local_venv_name`, `venv_version` (`venv_name` and `version` are [templates](#template-backed-namespaces) over them) |
+| `python` | `venv` | watch (`defaults/python.toml`) | project | `venv`, `local_venv_name`, `venv_version` (`venv_name` and `version` are [templates](#template-backed-namespaces) over them) |
 | `sudo` | `state` | poll 30s | none | `active` |
-| `terraform` | `state` | watch | project | `workspace` |
+| `terraform` | `state` | watch (`defaults/terraform.toml`) | project | `workspace` |
 | `uname` | `system` | poll 1h (`defaults/uname.toml`) | none | `sysname`, `release`, `version`, `machine` |
 | `uptime` | `time` | poll 60s (`defaults/uptime.toml`) | none | `seconds`, `days`, `hours`, `minutes` |
 | `user` | `name` | poll 10m (`defaults/user.toml`) | none | `name`, `uid` |
 
-**Shipped files.** A provider whose strategy names a `defaults/` file is that file, written the way a user writes a Source: `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` each have one Source whose `data` line calls the compiled-in `sys` plugin; `mise`'s runs `mise ls --current --json`. Set any of its lines in `config.toml` or `conf.d/` (`[daemon.providers.hostname.sources.host] result.name = "{{ data.name | upper }}"`) and the rest stay as shipped.
+**Shipped files.** A provider whose strategy names a `defaults/` file is that file, written the way a user writes a Source: `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` each have one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform` and `python` read their files in theirs; `mise`'s runs `mise ls --current --json`. Set any of its lines in `config.toml` or `conf.d/` (`[daemon.providers.hostname.sources.host] result.name = "{{ data.name | upper }}"`) and the rest stay as shipped.
 
 **watch + poll** sources watch files for quick invalidation and also poll on a timer as a backstop.
 

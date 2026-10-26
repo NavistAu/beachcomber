@@ -1184,14 +1184,8 @@ impl ProviderRegistry {
             .register(Box::new(crate::provider::git::GitProvider))
             .expect("git");
         registry
-            .register(Box::new(crate::provider::python::PythonProvider))
-            .expect("python");
-        registry
             .register(Box::new(crate::provider::sudo::SudoProvider))
             .expect("sudo");
-        registry
-            .register(Box::new(crate::provider::terraform::TerraformProvider))
-            .expect("terraform");
         registry
     }
 
