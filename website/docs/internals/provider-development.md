@@ -216,7 +216,7 @@ impl Source for DockerContextSource {
     }
 
     // `root` and `has_root` keep their defaults: one instance, at ~. A project
-    // Source overrides both (see src/provider/direnv.rs).
+    // Source overrides both (see src/provider/git.rs).
 
     fn execute(&self, _dir: Option<&str>) -> Result<SourceResult, String> {
         let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
@@ -549,19 +549,22 @@ fn git_refs_on_empty_repo() {
 
 **Testing when the external tool is not installed**
 
-Sources that depend on optional tools or files must return an empty `SourceResult` gracefully when the tool is absent or when the relevant files do not exist — `terraform`'s source reads `.terraform/environment` and answers nothing without a `.terraform/` directory:
+Sources that depend on optional tools or files must return an empty `SourceResult` gracefully when the tool is absent or when the relevant files do not exist — the worked example's Source reads `~/.docker/config.json` and answers nothing without one:
 
 ```rust
 #[test]
-fn returns_empty_without_terraform_dir() {
-    let dir = tempfile::tempdir().unwrap();
+fn returns_empty_without_a_docker_config() {
+    let home = tempfile::tempdir().unwrap();
+    // SAFETY: nextest runs each test in its own process.
+    unsafe { std::env::set_var("HOME", home.path()) };
 
-    let provider = TerraformProvider;
-    let sources = provider.sources();
-    let result = sources[0].execute(Some(dir.path().to_str().unwrap())).unwrap();
+    let sources = DockerContextProvider.sources();
+    let result = sources[0].execute(None).unwrap();
     assert!(result.fields.is_empty());
 }
 ```
+
+A shipped file's Sources are tested the same way, through the daemon: `tests/suite/shipped/terraform.rs` checks that `terraform` answers nothing in a directory with no `.terraform/` above it.
 
 Avoid `std::env::set_var` in parallel tests — it mutates global state. cargo-nextest runs each test in its own process by default, so env-var mutations are isolated per test; `--test-threads=1` is only needed for plain `cargo test`.
 
