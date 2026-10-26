@@ -123,6 +123,12 @@ debug = "line-tables-only"
 [profile.dev.package.sha2]
 opt-level = 3
 
+# Every daemon start, registry load and `comb` render compiles the shipped
+# templates, and in a debug build minijinja's own lexer and parser are most of
+# that: optimised, the test suite spends a quarter less CPU.
+[profile.dev.package.minijinja]
+opt-level = 3
+
 [profile.release]
 opt-level = "z"
 lto = true
