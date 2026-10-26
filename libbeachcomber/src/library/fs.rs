@@ -1,4 +1,4 @@
-//! Files: `read`, `realpath`, `glob` and `lup`. All read the filesystem, so they are the `io`
+//! Files: `read`, `stat`, `realpath`, `glob` and `lup`. All read the filesystem, so they are the `io`
 //! tier: not on a provider's lines, which run on every read.
 
 use super::{UNDEFINED, is_absent};
@@ -12,6 +12,11 @@ use std::sync::Arc;
 pub(super) fn add_read(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
     let ctx = ctx.clone();
     env.add_filter("read", move |path: MjValue| read(&ctx, &path));
+}
+
+pub(super) fn add_stat(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    let ctx = ctx.clone();
+    env.add_filter("stat", move |path: MjValue| stat(&ctx, &path));
 }
 
 pub(super) fn add_realpath(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
@@ -184,6 +189,46 @@ fn walk(base: &Path, rel: &Path, parts: &[Part], found: &mut Vec<PathBuf>) {
                 }
             }
         }
+    }
+}
+
+/// `p | stat`: `{size, mtime, kind, mode}` of the file `p` names, or undefined
+/// when it is not there (or `p` is empty). A final symlink is described, not
+/// followed (`kind` is `symlink`). `mtime` is epoch seconds, a whole number
+/// unless the filesystem keeps a fraction; `mode` is the permission bits as a
+/// number. A relative path is against the render's directory and `~` is its
+/// `HOME`.
+fn stat(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
+    if super::is_absent_text(path) {
+        return Ok(UNDEFINED);
+    }
+    let Some(p) = path.as_str() else {
+        return Err(op_error("stat(): the path must be a string"));
+    };
+    let full = resolve_path(ctx, p).map_err(|e| op_error(format!("stat(): {e}")))?;
+    match crate::fs::lstat(&full) {
+        Ok(s) => {
+            let mtime = if s.mtime_nanos == 0 {
+                MjValue::from(s.mtime_secs)
+            } else {
+                MjValue::from(s.mtime())
+            };
+            Ok(MjValue::from_iter([
+                ("size", MjValue::from(s.size)),
+                ("mtime", mtime),
+                ("kind", MjValue::from(s.kind.name())),
+                ("mode", MjValue::from(s.mode)),
+            ]))
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(UNDEFINED)
+        }
+        Err(e) => Err(op_error(format!("stat(): {}: {e}", full.display()))),
     }
 }
 
@@ -424,6 +469,122 @@ mod tests {
         assert!(e.contains("glob(): the pattern must be a string"), "{e}");
         let e = g("'~bob/*' | glob").unwrap_err();
         assert!(e.contains("glob(): ~bob/*"), "{e}");
+    }
+
+    #[test]
+    fn stat_describes_a_file_a_directory_and_a_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, root, ctx) = repo();
+        let file = root.join("a/b/c/note.txt");
+        std::fs::write(&file, "hello").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink(&file, root.join("a/b/c/link")).unwrap();
+        let s = |expr: &str| eval_in(ctx.clone(), expr).unwrap();
+        assert_eq!(s("('note.txt' | stat).size"), "5");
+        assert_eq!(s("('note.txt' | stat).kind"), "file");
+        assert_eq!(s("('note.txt' | stat).mode"), "416", "0o640");
+        assert_eq!(s("('.' | stat).kind"), "dir");
+        assert_eq!(s("('link' | stat).kind"), "symlink", "not followed");
+        assert_eq!(
+            s("('link' | stat).size"),
+            std::fs::symlink_metadata(root.join("a/b/c/link"))
+                .unwrap()
+                .len()
+                .to_string()
+        );
+        let mtime = s("('note.txt' | stat).mtime").parse::<f64>().unwrap();
+        let want = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let want = want
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        assert!((mtime - want).abs() < 1e-3, "{mtime} vs {want}");
+        // The keys are exactly the four.
+        assert_eq!(
+            s("('note.txt' | stat) | items | map('first') | join(',')"),
+            "kind,mode,mtime,size"
+        );
+    }
+
+    #[test]
+    fn stat_is_relative_to_the_render_directory_and_expands_home() {
+        let (_dir, root, ctx) = repo();
+        let s = |expr: &str| eval_in(ctx.clone(), expr).unwrap();
+        assert_eq!(s("('..' | stat).kind"), "dir");
+        assert_eq!(s("('~/a/.git/HEAD' | stat).size"), "21");
+        assert_eq!(s("('../../.git/HEAD' | stat).kind"), "file");
+        let abs = root.join("a/.git/HEAD");
+        assert_eq!(s(&format!("('{}' | stat).kind", abs.display())), "file");
+    }
+
+    #[test]
+    fn stat_of_what_is_not_there_is_undefined() {
+        let (_dir, _root, ctx) = repo();
+        let s = |expr: &str| eval_in(ctx.clone(), expr).unwrap();
+        assert_eq!(s("('nope' | stat) is undefined"), "true");
+        assert_eq!(s("('~/a/.git/HEAD/under' | stat) is undefined"), "true");
+        assert_eq!(s("('' | stat) is undefined"), "true");
+        assert_eq!(s("(none | stat) is undefined"), "true");
+        assert_eq!(s("(missing | stat) is undefined"), "true");
+        assert_eq!(s("('nope' | stat | default('gone'))"), "gone");
+    }
+
+    #[test]
+    fn stat_reports_other_errors_naming_the_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, root, ctx) = repo();
+        let locked = root.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("f"), "").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = eval_in(ctx.clone(), "'~/locked/f' | stat");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Root is let through anywhere; everyone else gets EACCES.
+        if let Err(e) = denied {
+            assert!(
+                e.contains("stat(): ") && e.contains("locked/f") && e.contains("denied"),
+                "{e}"
+            );
+        }
+        for bad in ["7", "[1]", "{}", "true"] {
+            let e = eval_in(ctx.clone(), &format!("{bad} | stat")).unwrap_err();
+            assert!(
+                e.contains("stat(): the path must be a string"),
+                "{bad}: {e}"
+            );
+        }
+        let e = eval_in(ctx, "'~bob/x' | stat").unwrap_err();
+        assert!(e.contains("stat(): ~bob/x"), "{e}");
+    }
+
+    #[test]
+    fn stat_mtime_keeps_a_fraction() {
+        let (_dir, root, ctx) = repo();
+        let file = root.join("a/b/c/frac");
+        std::fs::write(&file, "x").unwrap();
+        let t = std::time::UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 250_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+        assert_eq!(
+            eval_in(ctx.clone(), "('frac' | stat).mtime").unwrap(),
+            "1700000000.25"
+        );
+        let whole = std::time::UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 0);
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(whole)
+            .unwrap();
+        assert_eq!(
+            eval_in(ctx, "('frac' | stat).mtime").unwrap(),
+            "1700000000",
+            "a whole second is a whole number"
+        );
     }
 
     #[test]

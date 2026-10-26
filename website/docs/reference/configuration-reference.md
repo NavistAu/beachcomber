@@ -134,6 +134,7 @@ A Source's `data` and `result` lines run on one jinja engine in the daemon. `env
 | `url(address, method='GET', headers={}, body=none, timeout='10s')` | The response body as text; a non-2xx status fails the Source. Daemon only. |
 | `plugin(name, symbol, args...)` | Calls `const char* symbol(const char* input)` in `lib<name>` found on `[daemon.plugin] path`. Daemon only. |
 | `path \| read` | The file's text (`~` is `$HOME`, a relative path is against the instance's directory), or none when it is missing. |
+| `path \| stat` | `{size, mtime, kind, mode}` of the file, or none when it is missing (`kind` is `file`, `dir`, `symlink` or `other`; a final symlink is not followed; `mtime` is epoch seconds, with a fraction where the filesystem has one). |
 | `lup(name, all=false, files=false, dirs=false, follow=true, git=false, root=false)` | The nearest path called `name` at or above the instance's directory (stopping at `~`), or none: `root = "{{ lup('.git') \| dirname }}"`. |
 | `text \| fromjson`, `text \| fromini` | Parse JSON, or INI (`section -> {key: string}`), into a value. |
 | `a \| merge(b, ...)`, `merge(a, b, ...)`, `merge(list)` | Deep-merge objects; the last wins. |

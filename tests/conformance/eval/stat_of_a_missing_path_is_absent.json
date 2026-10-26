@@ -1,0 +1,6 @@
+{
+  "name": "eval_stat_of_a_missing_path_is_absent",
+  "description": "p | stat is absent, not an error, for a path that is not there: the eval of a single tag is a miss, and `| default` fires without a second argument.",
+  "test": { "op": "eval", "args": { "template": "{{ \"/no/such/path/for/stat\" | stat }}" } },
+  "expect": { "status": "miss" }
+}

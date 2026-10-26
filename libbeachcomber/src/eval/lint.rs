@@ -372,6 +372,14 @@ mod tests {
             ),
             vec![]
         );
+        // Every item of the library is a call, whatever its tier: `stat` is no name.
+        for line in [Line::Root, Line::Data, Line::Result, Line::Template] {
+            assert_eq!(
+                lint_as("{{ ('x' | stat).size ~ ('*' | glob | length) }}", line),
+                vec![],
+                "{line:?}"
+            );
+        }
     }
 
     /// The one table of what each kind of line reads.

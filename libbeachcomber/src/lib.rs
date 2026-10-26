@@ -22,6 +22,7 @@ pub mod duration;
 pub mod engine;
 pub mod env;
 pub mod eval;
+pub mod fs;
 // `exec()` spawn engine, backing the `exec()` jinja function registered in
 // `engine::build_engine_env`.
 mod exec;
