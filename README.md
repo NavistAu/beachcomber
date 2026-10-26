@@ -427,7 +427,7 @@ The first line is the value as it is when the watch opens; each later line is on
 
 ### `comb e` (eval) `<template> [path]`
 
-Evaluate a value expression against cached provider data, resolving all referenced keys in a single connection. Two forms: a **single `{{ expr }}` tag** (keeps the expression's natural type), or **literal text and/or several tags** (always string-valued). A source with no tags at all is its own literal text — `comb e hello` prints `hello`; write `{{ }}` to evaluate an expression.
+Evaluate a value expression against cached provider data, resolving all referenced keys in a single connection. Two forms: a **single `{{ expr }}` tag**, which keeps the expression's natural type, as does one after statements (`{% set x = 1 %}{{ x }}` is the number 1); or **literal text and/or several tags**, always string-valued. A source with no tags at all is its own literal text — `comb e hello` prints `hello`; write `{{ }}` to evaluate an expression.
 
 ```sh
 comb e "{{ git.branch }} | {{ battery.percent }}%" .     # → main | 82%

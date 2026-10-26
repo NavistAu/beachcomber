@@ -1586,6 +1586,20 @@ mod tests {
         );
     }
 
+    /// A `return` of statements and one `{{ }}` gives a map, not its text: a
+    /// provider line may set names before what it answers.
+    #[test]
+    fn a_return_of_statements_is_a_map() {
+        let lines = lines(
+            "[demo]\nreturn = \"{% set extra = {'x': result.a + 1} %}{{ result | merge(extra) }}\"",
+        );
+        let got = returned(&lines, "demo");
+        assert_eq!(
+            serde_json::to_value(got.value.unwrap()).unwrap(),
+            json!({"a": 1, "x": 2})
+        );
+    }
+
     /// The refusal is a reading of the library's tier table, not a list of its
     /// own: every item the table does not make available on a provider's line
     /// is refused by name, in whichever form it is called.

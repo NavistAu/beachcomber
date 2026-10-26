@@ -1235,14 +1235,14 @@ mod tests {
         let src = source(spec(
             None,
             "{% macro twice(x) %}{{ x * 2 }}{{ caller() if caller }}{% endmacro %}\
-             {% call twice(20) %}!{% endcall %}{{ twice(21) }}",
+             {% call twice(20) %}!{% endcall %}+{{ twice(21) }}",
             fields(&[(
                 "out",
                 "{% macro tag(x) %}<{{ x }}>{% endmacro %}{{ tag(data) }}",
             )]),
         ));
         let got = src.execute(None).unwrap().fields;
-        assert_eq!(got.get("out"), Some(&s("<40!42>")));
+        assert_eq!(got.get("out"), Some(&s("<40!+42>")));
 
         for (sp, stage) in [
             (
@@ -1270,6 +1270,22 @@ mod tests {
                 )
             );
         }
+    }
+
+    /// A `data` line of statements and one `{{ }}` keeps the expression's
+    /// type, so a list built in a loop is a list, with no JSON round trip.
+    #[test]
+    fn a_data_line_of_statements_returns_a_list() {
+        let src = source(spec(
+            None,
+            "{%- set ns = namespace(out=[]) -%}\n\
+             {%- for x in [1, 2] -%}{%- set ns.out = ns.out + [x * 10] -%}{%- endfor -%}\n\
+             {{- ns.out -}}",
+            fields(&[("n", "{{ data | length }}"), ("first", "{{ data[0] }}")]),
+        ));
+        let got = src.execute(None).unwrap().fields;
+        assert_eq!(got.get("n"), Some(&Value::Int(2)));
+        assert_eq!(got.get("first"), Some(&Value::Int(10)));
     }
 
     #[test]

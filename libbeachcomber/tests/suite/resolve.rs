@@ -245,6 +245,41 @@ fn now_is_one_value_per_resolution() {
     assert_eq!(got, json!(1_791_342_020_i64));
 }
 
+/// A leaf whose statements come before its one `{{ }}` keeps the
+/// expression's type: `{% set x = 1 %}{{ x }}` is the number 1, and a group
+/// holding such a leaf holds the number.
+#[test]
+fn a_leaf_with_a_set_preamble_is_a_number() {
+    let vars = env_of(&[("W", "80")]);
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    let leaf = "{%- set w = env.W | int -%}\n{%- set half = w // 2 -%}\n{{- half -}}";
+    f.seed("calc", p, tmpl(json!({ "half": leaf })))
+        .seed("calc.half", p, tmpl(json!(leaf)))
+        .seed("calc.one", p, tmpl(json!("{% set x = 1 %}{{ x }}")));
+    assert_eq!(
+        resolve("calc.one", &inputs(&vars), &mut f).unwrap(),
+        Some(json!(1))
+    );
+    assert_eq!(
+        resolve("calc.half", &inputs(&vars), &mut f).unwrap(),
+        Some(json!(40))
+    );
+    assert_eq!(
+        resolve("calc", &inputs(&vars), &mut f).unwrap(),
+        Some(json!({ "half": 40 }))
+    );
+    assert_eq!(
+        eval(
+            "{% set xs = [1, 2] %}{{ xs | length }}",
+            &inputs(&vars),
+            &mut f
+        )
+        .unwrap(),
+        Some(json!(2))
+    );
+}
+
 #[test]
 fn a_group_renders_every_leaf_and_keeps_its_shape() {
     assert_eq!(

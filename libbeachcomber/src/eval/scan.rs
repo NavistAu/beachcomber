@@ -163,6 +163,74 @@ pub(super) fn engine_tags(src: &str) -> Vec<Tag<'_>> {
     out
 }
 
+/// What a statement does to the bodies that print nothing where they stand:
+/// a `{% macro %}`'s (it prints when called), a `{% call %}`'s (the macro it
+/// calls prints it) and a block `{% set %}`'s (it is captured).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Capture {
+    /// It opens one.
+    Opens,
+    /// It closes one.
+    Closes,
+    /// Neither.
+    Not,
+}
+
+impl Capture {
+    /// The depth inside such bodies after this statement, from `depth`.
+    pub(super) fn depth(self, depth: usize) -> usize {
+        match self {
+            Capture::Opens => depth + 1,
+            Capture::Closes => depth.saturating_sub(1),
+            Capture::Not => depth,
+        }
+    }
+}
+
+/// What the statement tag whose body is `body` does to the bodies that print
+/// nothing where they stand ([`Capture`]).
+pub(super) fn capture(body: &str) -> Capture {
+    match statement(body) {
+        ("macro" | "call", _) => Capture::Opens,
+        ("set", target) if !assigns(target) => Capture::Opens,
+        ("endmacro" | "endcall" | "endset", _) => Capture::Closes,
+        _ => Capture::Not,
+    }
+}
+
+/// Whether a `{% set %}` whose body after `set` is `rest` assigns
+/// (`x = 1`) rather than opening a block (`x`, `x | upper`): a lone `=`
+/// outside its strings and brackets.
+fn assigns(rest: &str) -> bool {
+    let bytes = rest.as_bytes();
+    let (mut depth, mut quote) = (0i32, None);
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) if c == b'\\' => i += 1,
+            Some(_) => {}
+            None => match c {
+                b'"' | b'\'' => quote = Some(c),
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                b'=' if depth == 0 => {
+                    let before = i.checked_sub(1).map(|j| bytes[j]);
+                    if bytes.get(i + 1) == Some(&b'=') {
+                        i += 1;
+                    } else if !matches!(before, Some(b'!' | b'<' | b'>')) {
+                        return true;
+                    }
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    false
+}
+
 /// A statement tag's keyword and the rest of its body, trimmed: `set` and
 /// `x = 1` for `{% set x = 1 %}`, `endmacro` and `""` for `{% endmacro %}`.
 /// The keyword is the body's leading identifier, as the engine reads it.

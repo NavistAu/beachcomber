@@ -65,6 +65,24 @@ usage = '''
 `comb status -a`, or `--filter facet=macro`, shows one row per library per layer, its SOURCE the file or `put`.
 `comb check config --origins` lists each `client.providers.<p>.macro.<name>` with the files it shadows.
 
+## Typed after statements
+
+A text of statements and comments, then its only `{{ }}`, with nothing but whitespace between, keeps that
+expression's type, on every line:
+
+```jinja
+{%- set ns = namespace(d={}) -%}
+{%- for name in ["five_hour", "seven_day"] -%}
+  {%- set ns.d = ns.d | merge({name: scanline.rate[name].used_pct}) -%}
+{%- endfor -%}
+{{- ns.d -}}
+```
+
+- That is the map `ns.d`, not its text, so no `tojson`/`fromjson` round trip is needed.
+- A macro's, a call's or a block `set`'s body does not count: it prints nothing where it stands.
+- The statements print nothing. One that does, a `{% call %}`, is an error: `a typed line's statements print
+  nothing`.
+
 ## What is refused
 
 `{% include %}`, `{% extends %}` and `{% block %}` are refused on every line:

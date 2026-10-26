@@ -142,8 +142,6 @@ fn scan_tags_respects_strings_in_statement_tags() {
 
 #[test]
 fn classify_template_variants() {
-    // A comment tag alongside an expression tag.
-    assert_eq!(classify("{# note #}{{ git.branch }}"), Form::Template);
     // More than one expression tag.
     assert_eq!(classify("{{ git.branch }}{{ git.dirty }}"), Form::Template);
     // Literal text around the tag.
@@ -151,12 +149,40 @@ fn classify_template_variants() {
     assert_eq!(classify("{{ git.branch }} tail"), Form::Template);
     // A statement tag is never the single-tag form.
     assert_eq!(classify("{% if git.dirty %}*{% endif %}"), Form::Template);
+    // A statement after the expression, or none before it, is text.
+    assert_eq!(classify("{{ x }}{% set y = 1 %}"), Form::Template);
+    assert_eq!(classify("{% set y = 1 %}"), Form::Template);
+    assert_eq!(classify("{% raw %}{% endraw %}{{ x }}"), Form::Template);
+    // A filter block, an `if` or a `for` prints its body where it stands.
+    assert_eq!(
+        classify("{% filter upper %}x{% endfilter %}{{ 1 }}"),
+        Form::Template
+    );
+    assert_eq!(classify("{% if a %}x{% endif %}{{ 1 }}"), Form::Template);
 
     for src in [
         "{# note #}{{ git.branch }}",
         "{{ git.branch }}{{ git.dirty }}",
         "on {{ git.branch }}",
     ] {
+        assert_eq!(single_tag_expression(src), None, "src: {src}");
+    }
+}
+
+/// Statements and comments, then the only `{{ }}`, with nothing but
+/// whitespace between, keep the expression's type: the statements form.
+#[test]
+fn classify_statements_then_one_tag() {
+    for src in [
+        "{# note #}{{ git.branch }}",
+        "{% set x = 1 %}{{ x }}",
+        "{%- set x = 1 -%}\n  {%- for i in [1] %}{% endfor %}\n{{- x -}}{# after #}\n",
+        "{% from 'p:macro.x' import m %}{{ m() }}",
+        // A macro's, a call's and a block set's bodies print nothing there.
+        "{% macro m(x) %}<{{ x }}>{% endmacro %}{{ m(1) }}",
+        "{% set s %}text {{ 1 }}{% endset %}{% call m() %}body{% endcall %}{{ s }}",
+    ] {
+        assert_eq!(classify(src), Form::Statements, "src: {src}");
         assert_eq!(single_tag_expression(src), None, "src: {src}");
     }
 

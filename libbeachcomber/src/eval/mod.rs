@@ -1,10 +1,12 @@
 //! One expression syntax: classification, reference discovery, evaluation.
 //!
 //! Canon `field_resolution.md` §"Value resolution" (invariant 14): `{{ }}`
-//! everywhere. A value expression written as exactly one `{{ expr }}` evaluates
-//! to the expression's natural type; one written with literal text or more than
-//! one tag evaluates to a string. A source with no tags at all is its literal
-//! text — there is no bare-expression form.
+//! everywhere. A value expression written as exactly one `{{ expr }}`
+//! evaluates to the expression's natural type, and so does one whose
+//! statements and comments come before its only `{{ }}` with nothing but
+//! whitespace between; one written with literal text or more than one `{{ }}`
+//! evaluates to a string. A source with no tags at all is its literal text —
+//! there is no bare-expression form.
 //!
 //! This module answers the questions a caller has before evaluating — which of
 //! the forms is this ([`classify`], [`single_tag_expression`]), what does it
@@ -31,9 +33,15 @@ use minijinja::value::Value as MjValue;
 pub enum Form {
     /// Exactly one `{{ }}` tag spanning the whole source — keeps its natural type.
     SingleTag,
-    /// Literal text, more than one tag, any non-expression tag, an
-    /// unterminated tag marker, no tags at all, or an empty source —
-    /// string-valued, and the template compiler owns any syntax diagnostic.
+    /// Statements and comments, then the source's only `{{ }}` as its last
+    /// tag but for comments, with nothing outside the tags but whitespace:
+    /// `{% set x = 1 %}{{ x }}`. The statements run, print nothing, and the
+    /// expression keeps its natural type.
+    Statements,
+    /// Literal text, more than one `{{ }}`, a statement after the `{{ }}` or
+    /// none at all, an unterminated tag marker, no tags at all, or an empty
+    /// source — string-valued, and the template compiler owns any syntax
+    /// diagnostic.
     ///
     /// A source with no tags at all (empty, whitespace-only, or plain text)
     /// is a template of no tags: it renders to its own literal text (`""` for
@@ -44,7 +52,7 @@ pub enum Form {
 
 // ── Classification ────────────────────────────────────────────────────────────
 
-/// Classify a value expression into one of the two [`Form`]s.
+/// Classify a value expression into one of the [`Form`]s.
 ///
 /// Surrounding whitespace is not literal text: it is trimmed before the tag
 /// spans are compared against the source.
@@ -57,6 +65,7 @@ pub enum Form {
 pub fn classify(src: &str) -> Form {
     match analyze(src) {
         Analysis::SingleTag(_) => Form::SingleTag,
+        Analysis::Statements { .. } => Form::Statements,
         Analysis::Template => Form::Template,
     }
 }
@@ -68,22 +77,30 @@ pub fn classify(src: &str) -> Form {
 pub fn single_tag_expression(src: &str) -> Option<&str> {
     match analyze(src) {
         Analysis::SingleTag(expr) => Some(expr),
-        Analysis::Template => None,
+        Analysis::Statements { .. } | Analysis::Template => None,
     }
 }
 
-/// The form of `src`, carrying the inner expression for the single-tag form.
+/// The form of `src`, carrying the inner expression for the typed forms.
 ///
 /// [`Form`] is the public shape of this; `Analysis` is the internal one, so
-/// every consumer matches exhaustively on the two cases and none has to
-/// handle a "single tag with no expression" that cannot occur.
+/// every consumer matches exhaustively on the cases and none has to handle a
+/// "typed form with no expression" that cannot occur.
 ///
-/// One scan, one place the single-tag rule is written down, so [`classify`],
-/// [`single_tag_expression`] and [`discover_refs`] can never disagree about
-/// what the single-tag form is.
+/// One scan, one place the typed rules are written down, so [`classify`],
+/// [`single_tag_expression`], [`discover_refs`] and [`evaluate`] can never
+/// disagree about what the typed forms are.
 enum Analysis<'a> {
     /// Exactly one `{{ }}` tag spanning the whole source, with its trimmed body.
     SingleTag(&'a str),
+    /// [`Form::Statements`]: the source trimmed, the `{{ }}`'s trimmed body,
+    /// and where its tag starts and ends in the trimmed source.
+    Statements {
+        text: &'a str,
+        last: &'a str,
+        start: usize,
+        end: usize,
+    },
     /// Everything else: no tags at all, literal text, more than one tag, an
     /// unterminated tag marker, or an empty source.
     Template,
@@ -104,8 +121,45 @@ fn analyze(src: &str) -> Analysis<'_> {
         [tag] if tag.kind == TagKind::Expression && tag.start == 0 && tag.end == trimmed.len() => {
             Analysis::SingleTag(tag.body)
         }
-        _ => Analysis::Template,
+        tags => statements(trimmed, tags).unwrap_or(Analysis::Template),
     }
+}
+
+/// `text` (trimmed, every tag closed) as [`Form::Statements`]: where it
+/// stands — outside the bodies that print nothing there, a macro's, a call's
+/// and a block set's ([`scan::capture`]) — nothing but whitespace outside its
+/// tags, exactly one `{{ }}`, and no statement after it; comments anywhere. A
+/// `{% raw %}` block prints, so a text with one is not this form.
+fn statements<'a>(text: &'a str, tags: &[Tag<'a>]) -> Option<Analysis<'a>> {
+    let mut at = 0;
+    let mut depth = 0usize;
+    let mut last: Option<&Tag<'a>> = None;
+    for tag in tags {
+        if depth == 0 && !text[at..tag.start].trim().is_empty() {
+            return None;
+        }
+        at = tag.end;
+        match tag.kind {
+            TagKind::Comment => {}
+            TagKind::Statement if last.is_some() || scan::statement(tag.body).0 == "raw" => {
+                return None;
+            }
+            TagKind::Statement => depth = scan::capture(tag.body).depth(depth),
+            TagKind::Expression if depth > 0 => {}
+            TagKind::Expression if last.is_some() => return None,
+            TagKind::Expression => last = Some(tag),
+        }
+    }
+    if depth > 0 || !text[at..].trim().is_empty() {
+        return None;
+    }
+    let last = last?;
+    Some(Analysis::Statements {
+        text,
+        last: last.body,
+        start: last.start,
+        end: last.end,
+    })
 }
 
 // ── Imports ───────────────────────────────────────────────────────────────────
@@ -195,7 +249,7 @@ pub fn discover_refs(src: &str) -> Vec<Ref> {
     match analyze(src) {
         // Already sorted by `discover_expression_refs`.
         Analysis::SingleTag(expr) => discover_expression_refs(expr),
-        Analysis::Template => {
+        Analysis::Statements { .. } | Analysis::Template => {
             // Ref discovery never evaluates anything, so `allow_exec`
             // doesn't matter here — `false` is an arbitrary, harmless
             // choice. (This has nothing to do with `exec` showing up as an
@@ -295,11 +349,11 @@ impl std::fmt::Display for EvalError {
                 ..
             } => "expression eval error",
             EvalError::Compile {
-                form: Form::Template,
+                form: Form::Statements | Form::Template,
                 ..
             } => "template compile error",
             EvalError::Runtime {
-                form: Form::Template,
+                form: Form::Statements | Form::Template,
                 ..
             } => "template render error",
         };
@@ -308,9 +362,15 @@ impl std::fmt::Display for EvalError {
 }
 
 /// Evaluate `src` in `env` against `context`, the one evaluator every line
-/// runs through: exactly one `{{ }}` keeps its expression's type; anything
-/// else, literal text included, renders to a string, a `none` printed in it
-/// as nothing. A `none` or undefined value is `Ok(None)`: absent.
+/// runs through: exactly one `{{ }}` keeps its expression's type, and so does
+/// one after statements ([`Form::Statements`]); anything else, literal text
+/// included, renders to a string, a `none` printed in it as nothing. A `none`
+/// or undefined value is `Ok(None)`: absent.
+///
+/// A statements line runs as one template whose `{{ }}` is rewritten in place
+/// to `{% set value__ = (<expr>) %}`, so what its statements set and import is
+/// in scope; the value is read back from the render's state. Its statements
+/// print nothing: any output but whitespace (a `{% call %}`) is an error.
 ///
 /// A text a load checked (a seeded template, a Source's or provider's line)
 /// passed [`lint`] there; one nothing checked (`comb eval`, `-f`) is refused
@@ -330,14 +390,42 @@ pub fn evaluate(
                 .eval(context)
                 .map_err(|e| EvalError::runtime(form, &e))?
         }
-        Analysis::Template => {
-            let form = Form::Template;
-            if let Some(finding) = refused(src, Line::Template).into_iter().next() {
-                return Err(EvalError::Compile {
+        Analysis::Statements {
+            text,
+            last,
+            start,
+            end,
+        } => {
+            let form = Form::Statements;
+            refuse(src, form)?;
+            let typed = format!(
+                "{}{{% set {TYPED} = ({last}) %}}{}",
+                &text[..start],
+                &text[end..]
+            );
+            let template = match env.template_from_str(&typed) {
+                Ok(template) => template,
+                // The rewrite compiles when the text does: say what is wrong
+                // with the text as it is written.
+                Err(e) => {
+                    let e = env.template_from_str(src).err().unwrap_or(e);
+                    return Err(EvalError::compile(form, &e));
+                }
+            };
+            let captured = template
+                .render_captured(context)
+                .map_err(|e| EvalError::runtime(form, &e))?;
+            if !captured.output().trim().is_empty() {
+                return Err(EvalError::Runtime {
                     form,
-                    message: finding.to_string(),
+                    message: "a typed line's statements print nothing".into(),
                 });
             }
+            captured.state().lookup(TYPED).unwrap_or_default()
+        }
+        Analysis::Template => {
+            let form = Form::Template;
+            refuse(src, form)?;
             let template = env
                 .template_from_str(src)
                 .map_err(|e| EvalError::compile(form, &e))?;
@@ -370,6 +458,21 @@ pub fn without_engine_frame(message: &str) -> String {
         return body[..open].to_string();
     }
     body.to_string()
+}
+
+/// The name a [`Form::Statements`] line's value is set to and read back by.
+const TYPED: &str = "value__";
+
+/// A text nothing linted is refused here as a client template's lint would
+/// refuse it ([`refused`]): the first such statement, as a compile error.
+fn refuse(src: &str, form: Form) -> Result<(), EvalError> {
+    match refused(src, Line::Template).into_iter().next() {
+        Some(finding) => Err(EvalError::Compile {
+            form,
+            message: finding.to_string(),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// [`evaluate`] one daemon line against `context` (a JSON object of the line's
@@ -668,6 +771,77 @@ mod line_tests {
         ));
     }
 
+    /// Statements before one `{{ }}` run, and the expression keeps its type:
+    /// what they set and import is in scope, and a macro they define is
+    /// callable.
+    #[test]
+    fn statements_then_one_tag_is_typed() {
+        let value = |src: &str| {
+            evaluated(src, json!({"n": 2}))
+                .unwrap()
+                .map(|v| serde_json::to_value(v).unwrap())
+        };
+        assert_eq!(value("{% set x = 1 %}{{ x }}"), Some(json!(1)));
+        assert_eq!(
+            value(
+                "{%- set xs = [] -%}\n{%- for i in range(n) -%}{%- set xs = xs + [i] -%}{%- endfor -%}\n{{- xs -}}"
+            ),
+            Some(json!([])),
+            "a loop's set is the loop's"
+        );
+        assert_eq!(
+            value(
+                "{%- set ns = namespace(xs=[]) -%}{%- for i in range(n) -%}\
+                 {%- set ns.xs = ns.xs + [i] -%}{%- endfor -%}{{ ns.xs }}"
+            ),
+            Some(json!([0, 1]))
+        );
+        assert_eq!(
+            value("{% macro two() %}2{% endmacro %}\n  {{ {'n': two() | int} }}\n"),
+            Some(json!({"n": 2}))
+        );
+        assert_eq!(value("{# why #}{{ n > 1 }}{# so #}"), Some(json!(true)));
+        assert_eq!(value("{% set x = none %}{{ x }}"), None, "absent is absent");
+        assert_eq!(
+            value("{% set x = 1 %}{{ x }} and text"),
+            Some(json!("1 and text")),
+            "text makes it a template"
+        );
+        let err = evaluated("{% set x = 1 %}{{ x + }}", json!({})).unwrap_err();
+        assert!(matches!(err, EvalError::Compile { .. }), "{err}");
+        assert!(
+            !err.message().contains("value__"),
+            "the text as written: {err}"
+        );
+    }
+
+    /// A typed line's statements print nothing; a `{% call %}` that prints is
+    /// an error, and whitespace is not printing.
+    #[test]
+    fn a_preamble_that_prints_is_an_error() {
+        let err = evaluated(
+            "{% macro m() %}x{{ caller() }}{% endmacro %}{% call m() %}!{% endcall %}{{ 1 }}",
+            json!({}),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            EvalError::Runtime {
+                form: Form::Statements,
+                message: "a typed line's statements print nothing".into()
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "template render error: a typed line's statements print nothing"
+        );
+        let quiet = evaluated(
+            "{% macro m() %} {{ caller() }}{% endmacro %}{% call m() %}{% endcall %}\n{{ 1 }}",
+            json!({}),
+        );
+        assert_eq!(quiet, Ok(Some(MjValue::from(1))));
+    }
+
     /// A text nothing linted is refused as a linted one would be, before it
     /// renders: `include`, `extends` and `block`, and an import not named by a
     /// string.
@@ -691,7 +865,7 @@ mod line_tests {
             assert_eq!(
                 evaluated(src, json!({})),
                 Err(EvalError::Compile {
-                    form: Form::Template,
+                    form: super::classify(src),
                     message: why.into()
                 }),
                 "{src}"

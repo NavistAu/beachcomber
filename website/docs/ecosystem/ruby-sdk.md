@@ -100,9 +100,9 @@ unrendered halves are facets, read like any key: `p:template.x` is the
 template as stored, `p:put.x` and `p:source.x` those layers' values.
 
 `template` (and each stored template) accepts a single `{{ expr }}` tag, or
-literal text/several tags — the former keeps the expression's natural type,
-the latter is always a string (a source with no tags at all is its literal
-text).
+literal text/several tags — the former keeps the expression's natural type, as
+does one after statements (`{% set x = 1 %}{{ x }}` is 1), the latter is always
+a string (a source with no tags at all is its literal text).
 
 `exec()` inside a template runs only on a client created with
 `Beachcomber::Client.new(exec: true)`; it is off by default, and a

@@ -253,6 +253,7 @@ bar = "{{ comb.git.branch | truncate(12) }}"
 | Written as | Evaluates to | Example |
 |---|---|---|
 | exactly one `{{ expr }}` tag | the expression's natural type; `none` or undefined is absent | `"{{ env.OP_SERVICE_ACCOUNT_TOKEN \| bool }}"` → a bool |
+| statements and comments, then the only `{{ expr }}`, nothing but whitespace between | the expression's natural type; the statements print nothing | `"{% set w = env.W \| int %}{{ w // 2 }}"` → a number |
 | literal text and/or more than one tag | a string, `none` printing as nothing | `"{{ git.branch }}{% if git.dirty %}*{% endif %}"` → `main*` |
 | no tags at all | its own literal text | `"env.HOME"` → the string `env.HOME` |
 

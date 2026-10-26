@@ -224,8 +224,8 @@ fn canonical(name: &str) -> String {
 }
 
 /// Whether `src`, a macro library, prints anything outside its macros: text
-/// that is not whitespace, a `{{ }}` or a `{% call %}` outside every
-/// `{% macro %}` and every block `{% set %}`, whose bodies print nothing.
+/// that is not whitespace, a `{{ }}` or a `{% call %}` where it stands, outside
+/// every body that prints nothing there ([`scan::capture`]).
 fn prints(src: &str) -> bool {
     let mut depth = 0usize;
     let mut at = 0;
@@ -236,50 +236,16 @@ fn prints(src: &str) -> bool {
         at = tag.end;
         match tag.kind {
             TagKind::Expression if depth == 0 => return true,
-            TagKind::Statement => match scan::statement(tag.body) {
-                ("macro", _) => depth += 1,
-                ("set", target) if !assigns(target) => depth += 1,
-                ("endmacro" | "endset", _) => depth = depth.saturating_sub(1),
-                ("call", _) if depth == 0 => return true,
-                _ => {}
-            },
-            _ => {}
+            TagKind::Statement => {
+                if depth == 0 && scan::statement(tag.body).0 == "call" {
+                    return true;
+                }
+                depth = scan::capture(tag.body).depth(depth);
+            }
+            TagKind::Comment | TagKind::Expression => {}
         }
     }
     depth == 0 && !src[at..].trim().is_empty()
-}
-
-/// Whether a `{% set %}` whose body after `set` is `rest` assigns
-/// (`x = 1`) rather than opening a block (`x`, `x | upper`): a lone `=`
-/// outside its strings and brackets.
-fn assigns(rest: &str) -> bool {
-    let bytes = rest.as_bytes();
-    let (mut depth, mut quote) = (0i32, None);
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
-        match quote {
-            Some(q) if c == q => quote = None,
-            Some(_) if c == b'\\' => i += 1,
-            Some(_) => {}
-            None => match c {
-                b'"' | b'\'' => quote = Some(c),
-                b'(' | b'[' | b'{' => depth += 1,
-                b')' | b']' | b'}' => depth -= 1,
-                b'=' if depth == 0 => {
-                    let before = i.checked_sub(1).map(|j| bytes[j]);
-                    if bytes.get(i + 1) == Some(&b'=') {
-                        i += 1;
-                    } else if !matches!(before, Some(b'!' | b'<' | b'>')) {
-                        return true;
-                    }
-                }
-                _ => {}
-            },
-        }
-        i += 1;
-    }
-    false
 }
 
 #[cfg(test)]

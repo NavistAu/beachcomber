@@ -444,9 +444,10 @@ Evaluate a value expression against cached provider data, resolving every refere
 
 `-f` takes the value formats `get` prints in: `text` (the default), `json` or `sh` (`e.j` and `e.s` spell the last two). `-f json` keeps a number a number and prints `null` for an absent value, which is how an SDK's subprocess tier reads an `eval`. Any other format is refused.
 
-A value expression is written in one of two forms:
+A value expression is written in one of three forms:
 
 - **Single tag** — exactly one `{{ expr }}` spanning the whole argument apart from surrounding whitespace (`'{{ git.dirty }} '` is still a single tag): keeps the expression's natural type (bool, number, object, …). A `none` or undefined value is absent: `comb e` prints nothing, and `bc_eval` and every SDK's `eval` give null, as for a miss.
+- **Statements, then one tag** — statements and comments, then the only `{{ expr }}`, with nothing but whitespace between (`'{% set x = 1 %}{{ x }}'`): the statements run and the expression keeps its natural type, so this is the number `1`. A macro's, a call's or a block `set`'s body does not count, since it prints nothing where it stands. The statements print nothing: one that does (a `{% call %}`) is `a typed line's statements print nothing`.
 - **Template** — literal text and/or more than one tag: always string-valued. A source with no tags at all is a template too — it renders to its own literal text.
 
 ```sh
@@ -469,7 +470,7 @@ comb e '{{ git.branch | truncate(20) }}' .
 
 Available filters: minijinja's built-ins (`default`, `upper`, `lower`, `length`, `tojson`, …) plus `truncate`, `basename`, `fg`, `bg`, `bold`, `dim` and `fromjson` (parse a string — typically `exec()` output — as JSON). `fg`, `bg`, `bold` and `dim` hand their text back unchanged under `NO_COLOR` or `--color never` ([Colour and glyphs](#colour-and-glyphs)).
 
-The natural type a single-tag expression keeps is mostly *not* visible
+The natural type a typed expression keeps is mostly *not* visible
 in `comb e`'s own output, which is text: a bool prints `true`, and so does the
 string `"true"`. Where it does show is in the shapes text cannot flatten — an
 object prints as sorted `key=value` lines and an array as JSON — and in every
