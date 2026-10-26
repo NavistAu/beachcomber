@@ -9,7 +9,7 @@
 //! of what is available where exists.
 //!
 //! The items live in modules by what they work on: [`style`] (colour, text),
-//! [`data`] (objects and lists), [`path`] (path text), [`fs`] (files) and
+//! [`number`] (numbers shown), [`data`] (objects and lists), [`path`] (path text), [`fs`] (files) and
 //! [`parse`] (text to data). `exec` is bound to a render's process rules and
 //! lives in [`crate::engine`]; `url` and `plugin` live in the daemon.
 
@@ -17,6 +17,7 @@ pub mod absent;
 pub mod data;
 pub mod fs;
 pub mod measure;
+pub mod number;
 pub mod parse;
 pub mod path;
 pub mod style;
@@ -99,6 +100,10 @@ pub const ITEMS: &[Item] = &[
     item!("truncate", Filter, Pure, measure::add_truncate),
     item!("width", Filter, Pure, measure::add_width),
     item!("pad", Filter, Pure, measure::add_pad),
+    item!("ramp", Filter, Pure, number::add_ramp),
+    item!("pct", Filter, Pure, number::add_pct),
+    item!("compact", Filter, Pure, number::add_compact),
+    item!("bytes", Filter, Pure, number::add_bytes),
     item!("fg", Filter, Pure, style::add_fg),
     item!("bg", Filter, Pure, style::add_bg),
     item!("bold", Filter, Pure, style::add_bold),
@@ -191,6 +196,16 @@ pub(crate) fn text(name: &str, v: &MjValue) -> Result<String, Error> {
         }
         ValueKind::Map => Err(op_error(format!("{name}(): expected text, not a map"))),
         _ => Err(op_error(format!("{name}(): expected text"))),
+    }
+}
+
+/// `v` as a number, or an error `name(): <what> <v> is not a number`.
+pub(crate) fn number(name: &str, what: &str, v: &MjValue) -> Result<f64, Error> {
+    use minijinja::value::ValueKind;
+    match v.kind() {
+        ValueKind::Number => f64::try_from(v.clone())
+            .map_err(|_| op_error(format!("{name}(): {what} {v} is not a number"))),
+        _ => Err(op_error(format!("{name}(): {what} {v} is not a number"))),
     }
 }
 
@@ -320,6 +335,10 @@ mod tests {
             ("dirname", "{} | dirname"),
             ("pluck", "{} | pluck('a[')"),
             ("map", "{'a': 1} | map(attribute='x')"),
+            ("ramp", "1 | ramp([2, 1], [1, 2, 3])"),
+            ("pct", "'x' | pct"),
+            ("compact", "'x' | compact"),
+            ("bytes", "-1 | bytes"),
             ("pick", "[1] | pick('a')"),
             ("omit", "[1] | omit('a')"),
             ("clamp", "'x' | clamp(0, 1)"),

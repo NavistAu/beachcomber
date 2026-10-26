@@ -1,7 +1,7 @@
 //! Objects, lists and numbers: `pluck`, `merge`, `map`, `pick`, `omit` and
 //! `clamp`.
 
-use super::{UNDEFINED, is_absent};
+use super::{UNDEFINED, is_absent, number};
 use crate::engine::{EngineCtx, op_error};
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error, State};
@@ -74,14 +74,6 @@ fn bound(side: &str, v: &MjValue) -> Result<Option<f64>, Error> {
         return Ok(None);
     }
     number("clamp", side, v).map(Some)
-}
-
-fn number(name: &str, what: &str, v: &MjValue) -> Result<f64, Error> {
-    match v.kind() {
-        ValueKind::Number => f64::try_from(v.clone())
-            .map_err(|_| op_error(format!("{name}(): {what} {v} is not a number"))),
-        _ => Err(op_error(format!("{name}(): {what} {v} is not a number"))),
-    }
 }
 
 /// `n | clamp(lo, hi)`: `n` held to `lo..=hi`. A `none` bound is open. The

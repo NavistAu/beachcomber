@@ -75,6 +75,10 @@ error that names it.
 | `s \| fg(colour)`, `s \| bg(colour)` | the text in a foreground or background colour (below) |
 | `s \| bold`, `dim`, `italic`, `underline`, `invert` | SGR attributes 1, 2, 3, 4 and 7 |
 | `hyperlink(url, text)` | `text` as an OSC 8 terminal link to `url`; absent `text` is undefined, an absent `url` leaves the text unlinked, and a `url` that is not a string or holds a control character is an error |
+| `n \| ramp(thresholds, values)` | `values[i]` for the first threshold `t` with `n < t`, else the last value; thresholds ascend and `values` is one longer (`p \| ramp([50, 80], [th.green, th.orange, th.red])`) |
+| `r \| pct(digits=0)` | a ratio as a percentage, rounded as `'%.Nf' \| format` does: `0.423` is `42%` (`digits` up to 20) |
+| `n \| compact` | `1234` is `1.2k`, `56789` is `57k`; units `k M G T P`, chosen after rounding (`999950` is `1.0M`) |
+| `n \| bytes` | a size in 1024 steps: `1288490188` is `1.2G`; units `B K M G T P`; a negative size is an error |
 
 **Display width.** Wherever an item measures text it counts terminal columns: East Asian wide and emoji-presentation
 characters are 2, combining marks are 0, and escape sequences (CSI such as colours, and OSC such as `hyperlink`) are 0.

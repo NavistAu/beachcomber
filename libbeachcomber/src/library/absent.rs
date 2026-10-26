@@ -109,6 +109,10 @@ mod tests {
             "fg" | "bg" => vec![MjValue::from("#ff0000")],
             "pluck" => vec![MjValue::from("a")],
             "map" => vec![MjValue::from("upper")],
+            "ramp" => vec![
+                MjValue::from_serialize([50]),
+                MjValue::from_serialize(["lo", "hi"]),
+            ],
             "pick" | "omit" => vec![MjValue::from("a")],
             "clamp" => vec![MjValue::from(0), MjValue::from(1)],
             _ => vec![],
