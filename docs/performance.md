@@ -475,11 +475,11 @@ uncached read, which spawns every time (load 108-126).
 | # | Target | Result | Met |
 |---|---|---|---|
 | T5.1 | memo hit <= 20 us over `{{ env.X }}` | 62 vs 46 us (+16) at one variable; 152 vs 131 us (+21) at 140 variables; p50, alternating runs at load about 47 (`benches/resolve.rs`). A re-run at load 112 was too noisy to use (the hit read faster than the floor) | met at 1 variable; 1 us over at 140 |
-| T5.2 | `get kubecontext.context` warm within 1 ms of `get hostname.name` | median +1.5 ms (28.2 vs 26.7), min +1.4 ms at load 105-126; an earlier 40-round run gave +4.8 ms median, +1.5 ms min; the hit also runs a `stat` pass and a filter pipeline the floor does not | missed by about 0.5-4 ms; noise-dominated, the minimum is steady at +1.4 ms |
+| T5.2 | `get kubecontext.context` warm within 1 ms of `get hostname.name` | median +1.5 ms (28.2 vs 26.7), min +1.4 ms at load 105-126; an earlier 40-round run gave +4.8 ms median, +1.5 ms min; the hit also runs a `stat` pass and a filter pipeline the floor does not | missed by about 0.5-4 ms at that load; met at a quiet load, see below |
 | T5.3 | warm `comb status`: 0 processes | 0 (3 at baseline); `a_warm_status_spawns_no_process` | met |
-| T5.4 | daemon memo half <= 5 us per leaf on a warm `get` | `get p.cached` (memo) vs `get p.plain` (template only), 5000 interleaved rounds, one connection, load 105: p50 +14 us, p90 +65 us, min +3.4 us. No `validity.rs` case was built; this is a Python socket client, so it includes the larger response line | missed at p50 (noise at this load is the same order); min is within |
-| T5.5 | after a kubeconfig rewrite the next `get` renders afresh 100/100; first read <= 1 ms over a hit plus the spawn | 100/100 by count: `shipped::kubecontext::kubecontext_runs_again_when_kubeconfig_changes` and `exec_cache::a_change_to_a_watched_file_runs_it_again`. Latency: the rewrite-then-read median equals the baseline's uncached read within 0.2 ms, which is a hit plus a spawn; `prompt_race.rs` has no memo case | count met; latency consistent with the target, not resolved below load noise |
-| T5.6 | a miss exits <= 1 ms after its output | not measured separately: no case built. The miss above is no slower than an uncached read, so the write-back adds under the run-to-run noise (several ms at this load) | not shown |
+| T5.4 | daemon memo half <= 5 us per leaf on a warm `get` | `get p.cached` (memo) vs `get p.plain` (template only), 5000 interleaved rounds, one connection, load 105: p50 +14 us, p90 +65 us, min +3.4 us. No `validity.rs` case was built; this is a Python socket client, so it includes the larger response line | not shown at that load; met once the `validity.rs` case existed, see below |
+| T5.5 | after a kubeconfig rewrite the next `get` renders afresh 100/100; first read <= 1 ms over a hit plus the spawn | 100/100 by count: `shipped::kubecontext::kubecontext_runs_again_when_kubeconfig_changes` and `exec_cache::a_change_to_a_watched_file_runs_it_again`. Latency: the rewrite-then-read median equals the baseline's uncached read within 0.2 ms, which is a hit plus a spawn; `prompt_race.rs` has no memo case | count met; latency met once the `prompt_race.rs` case existed, see below |
+| T5.6 | a miss exits <= 1 ms after its output | not measured separately: no case built. The miss above is no slower than an uncached read, so the write-back adds under the run-to-run noise (several ms at this load) | met at a quiet load, see below |
 | T5.7 | memo record <= 128 B plus value and paths | measured by allocation over 2000 memos in one provider: **635 B** for a memo of absence (hash only), **1403 B** with one watch path and a ttl, **1578 B** with a value `ctx-1` too. A memo is stored as generic `Value` maps in two facets and a stamp map, not a packed struct | **missed**, about 5-12 times the target |
 | T5.8 | suite about 10 s; each new test under 0.1 s | full workspace, 2486 tests, 25.4 s wall at load about 110 (the idle figure is not measurable now). The new `shipped::kubecontext` tests take 0.47-0.58 s each, 1.1 s for the `comb status` one, at the same load; their cost is two or three `comb` processes | not judgeable at this load |
 
@@ -489,6 +489,24 @@ a hit 6.1 ms median against 95.5 ms for a render and 4.4 ms for `hostname.name`.
 
 Close-out: `cargo xtask gen-header --check` clean (no ABI change), `scripts/conformance-all.sh` passes every SDK runner
 (Lua 45 pass, 11 skip, as before), `cargo bench --bench resolve -- --test` runs `memo_hit`.
+
+### Exec caching: phase 5 re-measured at a quiet load
+
+Measured 2026-10-27 at `1f53f763` against `14bee04`, release builds, alternating, load 5-14 (the load is given with
+each figure). The three bench cases that were missing from the first measurement exist now: `validity.rs` has
+`tpl.plain` and `tpl.memo`, `prompt_race.rs` has `memo_after_rewrite` and `exit_after_output`. These figures
+replace the T5.1, T5.2, T5.4, T5.5 and T5.6 rows above.
+
+| # | Target | Result | Met |
+|---|---|---|---|
+| T5.1 | memo hit <= 20 us over `{{ env.X }}` | `cargo bench --bench resolve`, load 7: `memo_hit` 39.3 vs `env_read` 24.4 us (+14.9) at one variable; 107.8 vs 98.4 us (+9.4) at 140 | met |
+| T5.2 | `get kubecontext.context` warm within 1 ms of `get hostname.name` | `hyperfine -N --warmup 20 --runs 100`, stub `kubectl`, load 10-11: 4.4 vs 4.4 ms and 4.7 vs 4.5 ms (+0.0, +0.2). Baseline `14bee04`: 51.3 and 48.4 ms against 3.7 and 3.8 ms | met |
+| T5.3 | warm `comb status`: 0 processes | `a_warm_status_spawns_no_process` passes (3 at baseline) | met |
+| T5.4 | the daemon's memo half <= 5 us per template leaf on a warm `get` | `warm_get_percentiles`, `tpl.memo` against `tpl.plain`, 2000 interleaved rounds, one connection, load 26, two runs: p50 +2.6 and +2.4 us (35.5 vs 32.9; 35.1 vs 32.7), p90 +0.9 and +0.6 us, min -0.5 and +0.1 us | met |
+| T5.5 | after a kubeconfig rewrite the next `get` renders afresh 100/100; the first read <= 1 ms over a hit plus the spawn | `memo_after_rewrite`, 100 trials, load 9: 100/100; hit 0.285 ms, spawn 6.92 ms, the read after a rewrite 7.19 ms: **-0.03 ms** over a hit plus a spawn at the median (a second run: -0.25 ms) | met |
+| T5.6 | on a miss `comb get` exits <= 1 ms after its output | `exit_after_output`, 100 runs each, load 10: first byte of output to exit, miss p50 0.30 ms (p90 0.37), hit p50 0.22 ms (p90 0.35). The write-back costs 0.08 ms beyond a hit's process exit | met (reported, not asserted) |
+| T5.7 | a memo record <= 128 B plus its value and paths | not re-measured: no change to the record since the first measurement, 635 B for a memo of absence, 1403 B with a watch path and a ttl, 1578 B with a value. It is stored as generic `Value` maps in two facets and a stamp map, not a packed struct | **missed**, 5-12 times the target |
+| T5.8 | the suite about 10 s; each new test under 0.1 s | full workspace, 2508 tests, **9.2 s** wall, started at load 8 (nextest `--workspace`, unpartitioned). The 23 phase 5 tests (`exec_cache`, `shipped::kubecontext`, `cli_resolve::kubecontext*`), run together at load 25: 3 under 0.1 s, 7 between 0.1 and 0.2 s, 13 between 0.2 and 0.4 s (the slowest 0.38 s); each runs two to four `comb` processes | suite met; **the 0.1 s per test missed** by most of the phase 5 tests |
 
 ### Real-World Impact
 
@@ -535,9 +553,9 @@ cargo bench --bench providers
 cargo bench --bench socket
 cargo bench --bench throughput
 cargo bench --bench resolve       # the client-side resolver, no daemon
-cargo bench --bench validity      # warm reads, and the reads after a cold run (P9)
+cargo bench --bench validity      # warm reads (incl. a template leaf with and without a memo), the reads after a cold run (P9), the budget
 cargo bench --bench watch         # the watch fan-in: delivery, open, cancel, deadline, idle cost
-cargo bench --bench prompt_race   # needs a host whose native watcher delivers
+cargo bench --bench prompt_race   # needs a host whose native watcher delivers; read after a change, a memo after a rewrite, comb's exit after its output
 cargo bench --bench load          # a configuration loaded from text: the shipped files, and with scanline's drop-in
 cargo bench --profile dev --bench load   # the same in the debug build the test suite runs
 
