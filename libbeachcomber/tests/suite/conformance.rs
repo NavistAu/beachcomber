@@ -500,6 +500,45 @@ fn check_expect(fixture: &Fixture, resp: &CanonicalResponse) -> Result<(), Strin
     Ok(())
 }
 
+/// Run `fixture` against a daemon of its own: its failure, if it fails.
+fn run_fixture(fixture: &Fixture) -> Option<String> {
+    let guard = DaemonGuard::spawn();
+    let client = client_for(&guard.path);
+
+    // Default cwd for fixtures that don't declare one: this
+    // fixture's own temp directory (unique per DaemonGuard::spawn()).
+    let default_cwd = guard
+        .path
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let cwd = fixture.cwd.clone().unwrap_or(default_cwd);
+    let resolve_ctx = ResolveCtx {
+        env_vars: &fixture.env_vars,
+        cwd: &cwd,
+    };
+
+    // Run setup ops, ignoring their responses.
+    for setup_op in &fixture.setup {
+        let _ = run_op(&client, setup_op, &resolve_ctx);
+    }
+
+    let resp = run_op(&client, &fixture.test, &resolve_ctx);
+    check_expect(fixture, &resp).err().map(|reason| {
+        format!(
+            "[{}] {}\n  path: {}\n  {}",
+            fixture.name,
+            fixture.description,
+            fixture.source_path.display(),
+            reason
+        )
+    })
+}
+
+/// How many fixtures run at once. Each has a daemon of its own, so they
+/// share nothing.
+const FIXTURES_AT_ONCE: usize = 4;
+
 #[test]
 fn conformance_suite() {
     let fixtures = load_fixtures();
@@ -507,40 +546,26 @@ fn conformance_suite() {
         !fixtures.is_empty(),
         "no fixtures found under tests/conformance/"
     );
-    let mut failures = Vec::new();
-    for fixture in &fixtures {
-        let guard = DaemonGuard::spawn();
-        let client = client_for(&guard.path);
-
-        // Default cwd for fixtures that don't declare one: this
-        // fixture's own temp directory (unique per DaemonGuard::spawn()).
-        let default_cwd = guard
-            .path
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let cwd = fixture.cwd.clone().unwrap_or(default_cwd);
-        let resolve_ctx = ResolveCtx {
-            env_vars: &fixture.env_vars,
-            cwd: &cwd,
-        };
-
-        // Run setup ops, ignoring their responses.
-        for setup_op in &fixture.setup {
-            let _ = run_op(&client, setup_op, &resolve_ctx);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let found = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..FIXTURES_AT_ONCE {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(fixture) = fixtures.get(i) else {
+                        break;
+                    };
+                    if let Some(failure) = run_fixture(fixture) {
+                        found.lock().unwrap().push((i, failure));
+                    }
+                }
+            });
         }
-
-        let resp = run_op(&client, &fixture.test, &resolve_ctx);
-        if let Err(reason) = check_expect(fixture, &resp) {
-            failures.push(format!(
-                "[{}] {}\n  path: {}\n  {}",
-                fixture.name,
-                fixture.description,
-                fixture.source_path.display(),
-                reason
-            ));
-        }
-    }
+    });
+    let mut found = found.into_inner().unwrap();
+    found.sort();
+    let failures: Vec<String> = found.into_iter().map(|(_, failure)| failure).collect();
     assert!(
         failures.is_empty(),
         "{} conformance failures out of {} fixtures:\n{}",
