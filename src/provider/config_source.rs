@@ -5,6 +5,13 @@
 //! field lines over `data`. The schedule comes from the Source's `return`
 //! chain, already recorded as [`Recorded`].
 //!
+//! The files the `data` and `result` lines read (`read`, `stat`, `realpath`,
+//! `lup`, `glob`) are the record's stat inputs, beside its `watch(...)`
+//! declaration: each is stamped before it is read, into the account of the run
+//! executing the lines ([`crate::run::reads_here`]), and a read checks them
+//! before it answers from the record. The `root` line's walk is not: the root
+//! a directory finds is kept by the registry, not checked per record.
+//!
 //! Each line sees only what its stage may (the spec's evaluation table), and
 //! every line also sees `_`, the prototype's own name (`_.name`):
 //!
@@ -33,12 +40,14 @@ use libbeachcomber::engine::EngineCtx;
 use libbeachcomber::eval::{
     Finding, Known, Line, discover_refs, eval_line, eval_line_with, lint, undeclared_names,
 };
+use libbeachcomber::fs::{MOST_TOUCHED, Touched};
 use libbeachcomber::virtual_fields::Ref;
 use minijinja::Environment;
 use minijinja::value::Value as MjValue;
 use serde_json::{Value as Json, json};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// A daemon-side read of one provider node at a directory entry: put over
@@ -187,6 +196,9 @@ pub struct ConfigSource {
     reads_comb: bool,
     /// The Sources the `data` line calls.
     calls: Vec<Called>,
+    /// Whether a run has said its lines read more files than a record is
+    /// checked for: said once per Source.
+    said_capped: AtomicBool,
 }
 
 /// `<provider>.<source>: <stage>: <message>`: the one shape of every error,
@@ -210,7 +222,7 @@ pub fn lint_lines(
     env: &Arc<HashMap<String, String>>,
     plugins: &Arc<PluginSet>,
 ) -> Vec<String> {
-    let probe = engine(env, plugins, None);
+    let probe = engine(env, plugins, None, None);
     let mut lines: Vec<(String, &str, Line)> = Vec::new();
     if let Some(root) = root {
         lines.push(("root".into(), root, Line::Root));
@@ -349,7 +361,7 @@ impl ConfigSource {
             .collect();
 
         let who = format!("{}.{}", spec.provider, spec.name);
-        let calls = called_in(&engine(&env, &plugins, None), &spec.data)
+        let calls = called_in(&engine(&env, &plugins, None, None), &spec.data)
             .map_err(|e| load_error("data", &e))?;
         let itself = |c: &Called| match c {
             Called::Sibling(s) => *s == spec.name,
@@ -389,6 +401,7 @@ impl ConfigSource {
             comb_providers,
             reads_comb,
             calls,
+            said_capped: AtomicBool::new(false),
         })
     }
 
@@ -442,7 +455,25 @@ impl ConfigSource {
                 running.take_calls(),
             );
         }
+        self.say_if_capped();
         result
+    }
+
+    /// A run whose lines read more files than a record is checked for says
+    /// so, once per Source: past [`MOST_TOUCHED`], a change goes unseen by a
+    /// read until the watch or the poll.
+    fn say_if_capped(&self) {
+        let Some(reads) = crate::run::reads_here() else {
+            return;
+        };
+        let read = reads.count();
+        if read > MOST_TOUCHED && !self.said_capped.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                "{}.{}: {read} files read; the first {MOST_TOUCHED} are checked on read",
+                self.spec.provider,
+                self.spec.name
+            );
+        }
     }
 
     fn run_lines(&self, path: Option<&str>) -> Result<SourceResult, String> {
@@ -459,7 +490,14 @@ impl ConfigSource {
                 })?
                 .into(),
         };
-        let mut jinja = engine(&self.env, &self.plugins, Some(cwd));
+        // What the lines read is the run's to check its record by: noted in
+        // the account the run keeps on this thread.
+        let mut jinja = engine(
+            &self.env,
+            &self.plugins,
+            Some(cwd),
+            crate::run::reads_here(),
+        );
         if !self.calls.is_empty() {
             let (reader, dir) = (self.reader.clone(), path.map(str::to_string));
             let call: CallFn =
@@ -532,7 +570,9 @@ impl Source for ConfigSource {
         let Some(line) = self.spec.root.as_deref() else {
             return Ok(None);
         };
-        let jinja = engine(&self.env, &self.plugins, Some(dir.into()));
+        // A root is no run's input: what the walk finds is kept per directory
+        // (`ProviderRegistry`'s kept roots), not checked as a record's files.
+        let jinja = engine(&self.env, &self.plugins, Some(dir.into()), None);
         let context = json!({"env": &*self.env, "_": self.underscore()});
         let rendered =
             eval_line(&jinja, line, &context).map_err(|e| stage_error(&self.spec, "root", e))?;
@@ -559,11 +599,13 @@ impl Source for ConfigSource {
     }
 }
 
-/// The daemon's engine for a Source's lines, `exec` on, `cwd` its directory.
+/// The daemon's engine for a Source's lines, `exec` on, `cwd` its directory,
+/// noting what its file items read in `touched` (a run's account).
 fn engine<'a>(
     env: &HashMap<String, String>,
     plugins: &Arc<PluginSet>,
     cwd: Option<PathBuf>,
+    touched: Option<Arc<Touched>>,
 ) -> Environment<'a> {
     let ctx = EngineCtx {
         env: env.clone(),
@@ -571,6 +613,7 @@ fn engine<'a>(
         allow_exec: true,
         // One clock for the run these lines are rendered in.
         now: std::time::SystemTime::now(),
+        touched,
     };
     daemon_engine_env(Arc::new(ctx), plugins.clone())
 }

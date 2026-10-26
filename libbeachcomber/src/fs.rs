@@ -1,14 +1,15 @@
 //! The one reader of a file's `lstat`, shared by the `stat` template filter
 //! and anything else that must say what a file looked like: size, mtime, kind
 //! and permission bits. Beside it, a path's [`Stamp`] for the validity hash
-//! ([`crate::validity`]), and what a filesystem's stamps can be trusted for
+//! ([`crate::validity`]), what a render read stamped before it read it
+//! ([`Touched`]), and what a filesystem's stamps can be trusted for
 //! ([`mount_of`]).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// What a file is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +214,89 @@ pub fn stamp(path: &Path) -> Stamp {
         kind,
         link,
     })
+}
+
+/// A path a render read, stamped immediately before it was read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Touch {
+    pub path: PathBuf,
+    pub stamp: Stamp,
+    /// When the stamp was taken: read off the clock first, so it never trails
+    /// the stamp. A stamp's racy window is measured from it.
+    pub at: SystemTime,
+}
+
+impl Touch {
+    /// Stamp `path` now.
+    pub fn take(path: &Path) -> Touch {
+        let at = SystemTime::now();
+        Touch {
+            stamp: stamp(path),
+            path: path.to_path_buf(),
+            at,
+        }
+    }
+}
+
+/// The most paths one render's reads are kept for: a render that reads more
+/// keeps the first this many.
+pub const MOST_TOUCHED: usize = 64;
+
+/// What a render read, where someone keeps account of it (a daemon's run of a
+/// Source, through [`crate::engine::EngineCtx::touched`]): each path once, in
+/// the order it was first read, stamped before that read. Past
+/// [`MOST_TOUCHED`] a path is counted, not stamped.
+#[derive(Debug, Default)]
+pub struct Touched {
+    state: Mutex<TouchedState>,
+}
+
+#[derive(Debug, Default)]
+struct TouchedState {
+    touches: Vec<Touch>,
+    seen: HashSet<PathBuf>,
+}
+
+impl Touched {
+    fn state(&self) -> std::sync::MutexGuard<'_, TouchedState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `path` is about to be read: stamp it, unless it has been already.
+    pub fn touch(&self, path: &Path) {
+        let mut state = self.state();
+        if state.seen.contains(path) {
+            return;
+        }
+        state.seen.insert(path.to_path_buf());
+        if state.touches.len() < MOST_TOUCHED {
+            state.touches.push(Touch::take(path));
+        }
+    }
+
+    /// Paths read, each stamped by the caller before it read it: what a walk
+    /// stamped ahead of probing, kept once it knows what it probed.
+    pub fn keep(&self, touches: impl IntoIterator<Item = Touch>) {
+        let mut state = self.state();
+        for touch in touches {
+            if !state.seen.insert(touch.path.clone()) {
+                continue;
+            }
+            if state.touches.len() < MOST_TOUCHED {
+                state.touches.push(touch);
+            }
+        }
+    }
+
+    /// The paths read so far, stamped, in the order first read.
+    pub fn touches(&self) -> Vec<Touch> {
+        self.state().touches.clone()
+    }
+
+    /// How many paths have been read, those past [`MOST_TOUCHED`] included.
+    pub fn count(&self) -> usize {
+        self.state().seen.len()
+    }
 }
 
 /// What a filesystem's stamps can be trusted for.
@@ -505,6 +589,46 @@ mod tests {
         assert_eq!(magic(0x0102_1994), local(NANOS), "tmpfs");
         assert_eq!(magic(0x482B), local(Duration::from_secs(1)), "HFS+");
         assert_eq!(magic(0x4D44), local(Duration::from_secs(2)), "FAT");
+    }
+
+    /// Each path once, in the order first read, stamped when first read: a
+    /// second read of it keeps the first stamp, which is the earlier.
+    #[test]
+    fn touched_keeps_each_path_once_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::write(&a, "1").unwrap();
+        let touched = Touched::default();
+        touched.touch(&a);
+        touched.touch(&b);
+        std::fs::write(&a, "22").unwrap();
+        touched.touch(&a);
+        touched.keep([Touch::take(&b), Touch::take(&dir.path().join("c"))]);
+        let got = touched.touches();
+        let paths: Vec<&Path> = got.iter().map(|t| t.path.as_path()).collect();
+        assert_eq!(paths, [a.as_path(), b.as_path(), &dir.path().join("c")]);
+        assert!(
+            matches!(got[0].stamp, Stamp::Present(p) if p.size == 1),
+            "{got:?}"
+        );
+        assert_eq!(got[1].stamp, Stamp::Absent);
+        assert!(got[0].at <= got[1].at);
+    }
+
+    /// Past the cap a path is counted and not stamped.
+    #[test]
+    fn touched_past_the_cap_counts_and_does_not_stamp() {
+        let touched = Touched::default();
+        for i in 0..MOST_TOUCHED + 36 {
+            touched.touch(Path::new(&format!("/nonexistent-comb/{i}")));
+        }
+        touched.touch(Path::new("/nonexistent-comb/0"));
+        assert_eq!(touched.touches().len(), MOST_TOUCHED);
+        assert_eq!(touched.count(), MOST_TOUCHED + 36);
+        assert_eq!(
+            touched.touches().last().unwrap().path,
+            Path::new(&format!("/nonexistent-comb/{}", MOST_TOUCHED - 1))
+        );
     }
 
     #[test]

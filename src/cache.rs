@@ -4,6 +4,7 @@ use crate::query::Instance;
 use crate::shape::provider::Bound;
 use crate::watcher_registry::WatcherRegistry;
 use dashmap::DashMap;
+use libbeachcomber::fs::Touch;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::time::Instant;
@@ -124,9 +125,11 @@ pub struct Schedule {
 }
 
 /// What a read checks of a Source record before answering from it: its stat
-/// inputs (the files [`crate::provider::Source::inputs`] names), as the run
-/// that made it found them immediately before it began. A change during the
-/// run therefore fails the next check: one more run, never a stale answer.
+/// inputs as the run that made it found them. Those are the files
+/// [`crate::provider::Source::inputs`] names, stamped immediately before the
+/// run began, and the files its lines read, each stamped immediately before
+/// it was read ([`Stamped::and_read`]). A change during the run therefore
+/// fails the next check: one more run, never a stale answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Validity {
     inputs: Arc<[std::path::PathBuf]>,
@@ -146,40 +149,68 @@ pub struct Validity {
 /// filesystem's clock is coarser than its nanosecond field.
 const RACY: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// Stat inputs, stamped before what reads them runs: [`Validity::of`] makes
-/// the validity of what is kept of them.
+/// Stat inputs, each stamped before what reads it ran ([`Touch`]):
+/// [`Validity::of`] makes the validity of what is kept of them.
+#[derive(Debug, Clone)]
 pub struct Stamped {
-    taken: std::time::SystemTime,
+    /// The wall clock and the clock records are kept by, read together: how a
+    /// stamp's racy window, which is on the wall clock, becomes a moment on
+    /// the other.
+    wall: std::time::SystemTime,
     now: Instant,
-    stamps: Vec<(std::path::PathBuf, libbeachcomber::fs::Stamp)>,
+    stamps: Vec<Touch>,
 }
 
 impl Stamped {
     /// Stamp `inputs` now.
     pub fn take(inputs: Vec<std::path::PathBuf>) -> Self {
-        Self::take_at(inputs, std::time::SystemTime::now(), Instant::now())
+        Self::of(inputs.iter().map(|path| Touch::take(path)).collect())
     }
 
-    /// [`Self::take`] at the wall-clock moment `taken`, which is `now` on the
-    /// clock records are kept by.
+    /// Stamps already taken, each before its file was read.
+    pub fn of(stamps: Vec<Touch>) -> Self {
+        Self {
+            wall: std::time::SystemTime::now(),
+            now: Instant::now(),
+            stamps,
+        }
+    }
+
+    /// [`Self::take`] as though at the wall-clock moment `taken`, which is
+    /// `now` on the clock records are kept by.
+    #[cfg(test)]
     fn take_at(
         inputs: Vec<std::path::PathBuf>,
         taken: std::time::SystemTime,
         now: Instant,
     ) -> Self {
         let stamps = inputs
-            .into_iter()
-            .map(|path| {
-                let stamp = libbeachcomber::fs::stamp(&path);
-                (path, stamp)
+            .iter()
+            .map(|path| Touch {
+                at: taken,
+                ..Touch::take(path)
             })
             .collect();
-        Self { taken, now, stamps }
+        Self {
+            wall: taken,
+            now,
+            stamps,
+        }
     }
 
     /// Keep the first `n` inputs only.
     pub fn truncate(&mut self, n: usize) {
         self.stamps.truncate(n);
+    }
+
+    /// These, then `read`: what a run's lines read after it stamped its
+    /// declared inputs. A path in both keeps its stamp here, the earlier.
+    pub fn and_read(mut self, read: Vec<Touch>) -> Self {
+        let mut seen: std::collections::HashSet<std::path::PathBuf> =
+            self.stamps.iter().map(|t| t.path.clone()).collect();
+        self.stamps
+            .extend(read.into_iter().filter(|t| seen.insert(t.path.clone())));
+        self
     }
 }
 
@@ -192,26 +223,27 @@ impl Validity {
     /// The validity of `stamped`: `None` when there are none.
     pub fn of(stamped: Stamped) -> Option<Self> {
         use libbeachcomber::fs::{Mount, Stamp, mount_of};
-        let Stamped { taken, now, stamps } = stamped;
+        let Stamped { wall, now, stamps } = stamped;
         if stamps.is_empty() {
             return None;
         }
         let mut remote = false;
-        // How long from `taken` the stamps stay racy: the latest of each
-        // input's mtime plus its mount's resolution (and at least `RACY`).
-        let mut racy: Option<std::time::Duration> = None;
-        for (path, stamp) in &stamps {
-            let Stamp::Present(p) = stamp else {
+        // Until when, on the wall clock, the stamps stay racy: the latest of
+        // each racy input's mtime plus its mount's resolution (and at least
+        // `RACY`). A stamp is racy when it was taken before that moment.
+        let mut racy: Option<std::time::SystemTime> = None;
+        for touch in &stamps {
+            let Stamp::Present(p) = &touch.stamp else {
                 continue;
             };
-            match mount_of(path, p.dev) {
+            match mount_of(&touch.path, p.dev) {
                 (Mount::Remote { kind }, first) => {
                     remote = true;
                     if first {
                         tracing::warn!(
                             "{} lies on a mount ({}) whose stamps a read does not take: \
                              records that read it are checked only for their lifetime",
-                            path.display(),
+                            touch.path.display(),
                             kind.as_deref().unwrap_or("unknown")
                         );
                     }
@@ -222,20 +254,21 @@ impl Validity {
                             u64::try_from(p.mtime_secs).unwrap_or(0),
                             p.mtime_nanos,
                         );
-                    if let Ok(left) = (mtime + resolution.max(RACY)).duration_since(taken)
-                        && !left.is_zero()
-                    {
-                        racy = Some(racy.map_or(left, |r| r.max(left)));
+                    let trusted = mtime + resolution.max(RACY);
+                    if touch.at < trusted {
+                        racy = Some(racy.map_or(trusted, |r| r.max(trusted)));
                     }
                 }
             }
         }
-        let hash = libbeachcomber::validity::stamps_hash(&stamps);
+        let hashed: Vec<(&std::path::PathBuf, Stamp)> =
+            stamps.iter().map(|t| (&t.path, t.stamp)).collect();
+        let hash = libbeachcomber::validity::stamps_hash(&hashed);
         Some(Self {
             hash,
             remote,
-            racy_until: racy.map(|left| now + left),
-            inputs: stamps.into_iter().map(|(path, _)| path).collect(),
+            racy_until: racy.map(|until| now + until.duration_since(wall).unwrap_or_default()),
+            inputs: stamps.into_iter().map(|t| t.path).collect(),
         })
     }
 
@@ -3508,9 +3541,15 @@ mod tests {
         std::fs::metadata(path).unwrap().modified().unwrap()
     }
 
+    /// `paths` stamped now, as a run's lines stamp what they read.
+    fn touches(paths: &[&std::path::Path]) -> Vec<Touch> {
+        paths.iter().map(|p| Touch::take(p)).collect()
+    }
+
     #[test]
     fn a_record_with_no_inputs_has_no_validity() {
         assert!(Validity::take(Vec::new()).is_none());
+        assert!(Validity::of(Stamped::take(Vec::new()).and_read(Vec::new())).is_none());
     }
 
     #[test]
@@ -3528,6 +3567,60 @@ mod tests {
         let v = Validity::take(vec![f.clone(), absent.clone()]).unwrap();
         std::fs::write(&absent, "").unwrap();
         assert_eq!(v.check(), Check::Invalid, "an absent input created");
+    }
+
+    /// A run's validity is its declared inputs, then what its lines read: a
+    /// change to either is a change, and a path both declared and read keeps
+    /// the stamp it was declared with, taken before the run began.
+    #[test]
+    fn a_runs_validity_is_what_it_declared_then_what_it_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let (declared, read) = (dir.path().join("declared"), dir.path().join("read"));
+        let old = SystemTime::now() - Duration::from_secs(10);
+        rewrite(&declared, "1", old);
+        rewrite(&read, "1", old);
+        let early = Stamped::take(vec![declared.clone()]);
+        // Read during the run: the declared file once more, changed since its
+        // declared stamp, and one more besides.
+        rewrite(&declared, "22", old);
+        let v = Validity::of(early.and_read(touches(&[&read, &declared]))).unwrap();
+        assert_eq!(&*v.inputs, [declared.clone(), read.clone()]);
+        assert_eq!(
+            v.check(),
+            Check::Invalid,
+            "the declared stamp, taken before the change, is the one kept"
+        );
+        let v = Validity::of(Stamped::take(vec![declared.clone()]).and_read(touches(&[&read])))
+            .unwrap();
+        assert_eq!(v.check(), Check::Valid);
+        rewrite(&read, "333", old);
+        assert_eq!(v.check(), Check::Invalid, "a file the lines read changed");
+        let only_read = Validity::of(Stamped::of(touches(&[&read]))).unwrap();
+        assert_eq!(only_read.check(), Check::Valid);
+    }
+
+    /// Each stamp's racy window runs from when it was taken, so a file the
+    /// lines read late in a run is judged by its own stamp's moment.
+    #[test]
+    fn a_read_stamp_is_racy_by_its_own_moment() {
+        let dir = tempfile::tempdir().unwrap();
+        let (early, late) = (dir.path().join("early"), dir.path().join("late"));
+        rewrite(&early, "1", SystemTime::now() - Duration::from_secs(10));
+        std::fs::write(&late, "1").unwrap();
+        let written = mtime(&late);
+        let now = Instant::now();
+        let mut stamps = vec![Touch {
+            at: written + Duration::from_millis(2),
+            ..Touch::take(&late)
+        }];
+        stamps.extend(touches(&[&early]));
+        let stamped = Stamped {
+            wall: written + Duration::from_millis(4),
+            now,
+            stamps,
+        };
+        let v = Validity::of(stamped).unwrap();
+        assert_eq!(v.racy_until, Some(now + Duration::from_millis(6)));
     }
 
     /// A stamp taken within its mount's resolution of the file's mtime (and

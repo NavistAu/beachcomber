@@ -334,6 +334,8 @@ impl<'a> Resolver<'a> {
             cwd: inputs.dir().map(Into::into),
             allow_exec: inputs.allow_exec,
             now: inputs.now,
+            // A client's render: nothing checks what it read.
+            touched: None,
         }));
         // An import loads a library this resolution has read. A name it has
         // not is the engine's "template not found": only a computed name

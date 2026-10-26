@@ -68,8 +68,20 @@ impl Served {
     /// When the record `source` of `provider` at the global entry was last
     /// written: unchanged across reads that ran nothing.
     fn written(&self, provider: &str, source: &str) -> tokio::time::Instant {
+        self.written_at(provider, None, source)
+    }
+
+    /// [`Self::written`] for the instance at `root` (`None`, the global
+    /// entry).
+    fn written_at(
+        &self,
+        provider: &str,
+        root: Option<&Path>,
+        source: &str,
+    ) -> tokio::time::Instant {
+        let root = root.map(|r| r.to_string_lossy().into_owned());
         self.cache
-            .get_source(provider, None, source)
+            .get_source(provider, root.as_deref(), source)
             .expect("a record")
             .last_refreshed
     }
@@ -226,14 +238,21 @@ async fn an_absent_input_created_runs_its_source_again() {
     assert_ne!(s.written("w", "s"), written, "the created input ran it");
 }
 
-/// A Source that only polls declares no files: a read checks only its
-/// lifetime, and the record has no hash.
+/// A Source that only polls and whose lines read no file has no stat inputs:
+/// a read checks only its lifetime, and the record has no hash. What a child
+/// process reads is not the lines' reading.
 #[tokio::test]
 async fn a_source_that_only_polls_is_checked_for_its_lifetime_only() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state.json");
     std::fs::write(&state, "1").unwrap();
-    let s = serve(&config_source(&state, "poll('60s')"));
+    let s = serve(&format!(
+        "[daemon.providers.w.sources.s]\n\
+         data = \"{{{{ exec(['cat', '{}']) }}}}\"\n\
+         result.v = \"{{{{ data }}}}\"\n\
+         return = \"{{{{ result | poll('60s') }}}}\"\n",
+        state.display()
+    ));
     assert_eq!(s.get("w.v", None).await["data"], json!("1"));
     std::fs::write(&state, "2").unwrap();
     assert_eq!(
@@ -291,6 +310,93 @@ async fn a_racy_same_size_write_is_caught_after_the_window() {
         return;
     }
     panic!("no first read took under 50 ms in ten attempts");
+}
+
+// ── what a config Source's lines read ──────────────────────────────────────
+
+/// A config Source `r.s` that declares no file (it polls), rooted at the
+/// directory holding `.rmark`, whose value is the nearest `state.json` above
+/// its root: the files it checks are the ones its lines read.
+const READS_NEAREST: &str = "[daemon.providers.r.sources.s]\n\
+     root = \"{{ lup('.rmark') | dirname }}\"\n\
+     data = \"{{ lup('state.json') | read }}\"\n\
+     result.v = \"{{ data }}\"\n\
+     return = \"{{ result | poll('10m') }}\"\n";
+
+/// With no `watch()`, a rewrite of the file `data` read is seen by the next
+/// read, every time; so is a `state.json` made nearer than the one it found;
+/// and while nothing changes, reads run nothing.
+#[tokio::test]
+async fn a_file_the_lines_read_is_checked_by_the_next_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let top = dir.path().canonicalize().unwrap();
+    let project = top.join("a/project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join(".rmark"), "").unwrap();
+    let far = top.join("state.json");
+    std::fs::write(&far, "far").unwrap();
+    age(&far);
+    let s = serve(READS_NEAREST);
+    let v = |answer: Json| answer["data"].clone();
+    assert_eq!(v(s.get("r.v", Some(&project)).await), json!("far"));
+    let written = s.written_at("r", Some(&project), "s");
+    for _ in 0..50 {
+        assert_eq!(v(s.get("r.v", Some(&project)).await), json!("far"));
+    }
+    assert_eq!(
+        s.written_at("r", Some(&project), "s"),
+        written,
+        "50 reads ran it 0 times"
+    );
+
+    let near = top.join("a/state.json");
+    std::fs::write(&near, "near").unwrap();
+    assert_eq!(
+        v(s.get("r.v", Some(&project)).await),
+        json!("near"),
+        "a marker made nearer"
+    );
+    for i in 0..100 {
+        std::fs::write(&near, format!("v{i}")).unwrap();
+        assert_eq!(
+            v(s.get("r.v", Some(&project)).await),
+            json!(format!("v{i}")),
+            "rewrite {i}"
+        );
+    }
+}
+
+/// A run that reads more files than a record is checked for keeps the first
+/// 64: a change to one of them is seen by the next read, one to a later file
+/// waits for the poll, and the Source answers all the same.
+#[tokio::test]
+async fn a_source_that_reads_100_files_is_checked_for_its_first_64() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = |i: usize| dir.path().join(format!("f{i}"));
+    for i in 0..100 {
+        std::fs::write(file(i), "1").unwrap();
+        age(&file(i));
+    }
+    let s = serve(&format!(
+        "[daemon.providers.many.sources.s]\n\
+         data = \"{{% for i in range(100) %}}{{{{ ('{}/f' ~ i) | read }}}}{{% endfor %}}\"\n\
+         result.n = \"{{{{ data | length }}}}\"\n\
+         return = \"{{{{ result | poll('10m') }}}}\"\n",
+        dir.path().display()
+    ));
+    assert_eq!(s.get("many.n", None).await["data"], json!(100));
+    std::fs::write(file(80), "22").unwrap();
+    assert_eq!(
+        s.get("many.n", None).await["data"],
+        json!(100),
+        "the 81st file read is not checked"
+    );
+    std::fs::write(file(10), "22").unwrap();
+    assert_eq!(
+        s.get("many.n", None).await["data"],
+        json!(102),
+        "the 11th is"
+    );
 }
 
 /// The `hash` of a field's `:cache` answer is its record's validity hash, 16

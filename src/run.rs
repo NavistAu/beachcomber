@@ -15,19 +15,26 @@
 //! waited on is itself waiting, however far round, on the one that would
 //! wait: [`Run::wait`] says so instead ([`Cycle`]), and the caller reads the
 //! last stored value. A Source never waits on itself.
+//!
+//! A run's stat inputs are the files its Source declares, stamped immediately
+//! before it executes, and the files its lines read, each stamped immediately
+//! before it is read: the run keeps that account ([`reads_here`]) for the
+//! lines of its Source to fill.
 
-use crate::cache::{Cache, Validity};
+use crate::cache::{Cache, Stamped, Validity};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::source_call::{in_failback_backoff, ran};
 use crate::provider::{Source, SourceResult};
 use crate::scheduler::lifecycle::Key;
+use libbeachcomber::fs::Touched;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use tracing::{debug, warn};
 
 /// What a run's execution gave: the Source's result with the validity of its
-/// stat inputs as stamped immediately before it began, or its error and
+/// stat inputs (what it declared, stamped immediately before it began, and
+/// what its lines read, each stamped before it was read), or its error and
 /// whether it was a fault in the lines (a Source it calls failed, or it
 /// called itself).
 type Ran = Result<(SourceResult, Option<Validity>), (String, bool)>;
@@ -138,11 +145,14 @@ enum Overtaken {
 /// How one run stands, for everyone waiting on it.
 struct State {
     id: RunId,
-    /// The validity of the run's inputs, set once it has stamped them,
-    /// immediately before it executes. Shared with the run's blocking thread,
-    /// which holds this and not the state: who holds the state are the run's
-    /// callers.
+    /// The validity of the run's declared inputs, set once it has stamped
+    /// them, immediately before it executes. Shared with the run's blocking
+    /// thread, which holds this and not the state: who holds the state are the
+    /// run's callers.
     stamped: Arc<std::sync::OnceLock<Option<Validity>>>,
+    /// What the run's lines have read so far, each stamped before it was
+    /// read: shared with its blocking thread as `stamped` is.
+    reads: Arc<Touched>,
     end: Mutex<Option<End>>,
     ended: Condvar,
     notify: tokio::sync::Notify,
@@ -154,6 +164,7 @@ impl Default for State {
         Self {
             id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             stamped: Arc::default(),
+            reads: Arc::default(),
             end: Mutex::default(),
             ended: Condvar::default(),
             notify: tokio::sync::Notify::default(),
@@ -175,13 +186,16 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl State {
     /// Whether the run reads the inputs as they are now: it has yet to stamp
     /// them, or has none, or they are as it stamped them (or cannot be known
-    /// otherwise).
+    /// otherwise); and the files its lines have read so far are as they were
+    /// when read. What they have yet to read, they will read as it is.
     fn sees_now(&self) -> bool {
-        self.stamped.get().is_none_or(|validity| {
+        let unchanged = |validity: &Option<Validity>| {
             validity
                 .as_ref()
                 .is_none_or(|v| v.check() != libbeachcomber::validity::Check::Invalid)
-        })
+        };
+        self.stamped.get().is_none_or(unchanged)
+            && unchanged(&Validity::of(Stamped::of(self.reads.touches())))
     }
 
     fn finish(&self, end: End) {
@@ -213,17 +227,25 @@ impl State {
     }
 }
 
+/// The run executing on a thread: which it is, and its account of what its
+/// lines read.
+struct Current {
+    id: RunId,
+    reads: Arc<Touched>,
+}
+
 thread_local! {
-    /// The run executing on this thread, if any: what a wait from it is.
-    static HERE: RefCell<Option<RunId>> = const { RefCell::new(None) };
+    /// The run executing on this thread, if any: what a wait from it is, and
+    /// where its lines note what they read.
+    static HERE: RefCell<Option<Current>> = const { RefCell::new(None) };
 }
 
 /// A run executes on this thread for as long as this is held.
-struct Here(Option<RunId>);
+struct Here(Option<Current>);
 
 impl Here {
-    fn enter(run: RunId) -> Self {
-        Here(HERE.with(|h| h.replace(Some(run))))
+    fn enter(id: RunId, reads: Arc<Touched>) -> Self {
+        Here(HERE.with(|h| h.replace(Some(Current { id, reads }))))
     }
 }
 
@@ -231,6 +253,18 @@ impl Drop for Here {
     fn drop(&mut self) {
         HERE.with(|h| *h.borrow_mut() = self.0.take());
     }
+}
+
+/// The account of what the run executing on this thread reads: where a
+/// Source's lines note each file they read, so that a later read checks its
+/// record against them. `None` off a run's thread (a Source executed directly,
+/// as a test does), which then records nothing.
+pub fn reads_here() -> Option<Arc<Touched>> {
+    HERE.with(|h| {
+        h.borrow()
+            .as_ref()
+            .map(|current| Arc::clone(&current.reads))
+    })
 }
 
 /// A caller's hold on a run.
@@ -271,7 +305,7 @@ impl Run {
     /// [`Cycle`] when waiting would close a ring: the run waited on is
     /// waiting, however far round, on this one (or is this one).
     pub fn wait(&self) -> Result<Outcome, Cycle> {
-        let me = HERE.with(|h| *h.borrow());
+        let me = HERE.with(|h| h.borrow().as_ref().map(|current| current.id));
         if let Some(me) = me {
             // Follow the waits from the run in flight for the instance waited
             // on (a run queued behind it waits on it first): reaching this
@@ -434,6 +468,7 @@ impl Runs {
         cache: &Arc<Cache>,
     ) {
         let here = id(&state);
+        let reads = Arc::clone(&state.reads);
         let settle = Settle {
             runs: Arc::clone(self),
             key: key.clone(),
@@ -455,15 +490,26 @@ impl Runs {
                 timeout,
                 tokio::task::spawn_blocking(move || {
                     let _registry = keep;
-                    let _here = Here::enter(here);
-                    // Stamped immediately before the run begins: a change
-                    // while it runs fails the next read's check, which makes
-                    // one run more, never a stale answer.
-                    let inputs = source.inputs(&source.metadata().invalidation, root.as_deref());
-                    let validity = Validity::take(inputs);
-                    let _ = stamped.set(validity.clone());
+                    let _here = Here::enter(here, Arc::clone(&reads));
+                    // Stamped immediately before the run begins, and each
+                    // file its lines read immediately before it is read: a
+                    // change while it runs fails the next read's check, which
+                    // makes one run more, never a stale answer.
+                    let declared = Stamped::take(
+                        source.inputs(&source.metadata().invalidation, root.as_deref()),
+                    );
+                    let _ = stamped.set(Validity::of(declared.clone()));
                     let (result, failed_call) = ran(|| source.execute(dir.as_deref()));
-                    (result.map(|result| (result, validity)), failed_call)
+                    let result = result.map(|result| {
+                        let read = reads.touches();
+                        let validity = if read.is_empty() {
+                            stamped.get().cloned().flatten()
+                        } else {
+                            Validity::of(declared.and_read(read))
+                        };
+                        (result, validity)
+                    });
+                    (result, failed_call)
                 }),
             )
             .await;
@@ -701,6 +747,10 @@ mod tests {
             self.opened.notify_all();
         }
 
+        fn close(&self) {
+            *self.open.lock().unwrap() = false;
+        }
+
         fn wait(&self) {
             let mut open = self.open.lock().unwrap();
             while !*open {
@@ -928,6 +978,162 @@ mod tests {
         assert_eq!(f.stored(), Some(Value::Int(2)), "the queued run's");
     }
 
+    /// A `DaemonRead` for a Source that reads no other provider.
+    struct NoReads;
+
+    impl crate::provider::config_source::DaemonRead for NoReads {
+        fn read(&self, _: &str, _: Option<&str>) -> Result<Option<HashMap<String, Value>>, String> {
+            Ok(None)
+        }
+        fn ran_calling(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+            _: crate::provider::registry::CalleeMap,
+        ) {
+        }
+        fn call(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<Option<serde_json::Value>, String> {
+            Ok(None)
+        }
+    }
+
+    /// A config Source `p.s` whose `data` reads `state` and then waits on
+    /// `gate` in a plugin call, counting each call in `entered`; it polls, so
+    /// it declares no files.
+    fn gated_config_source(
+        state: &std::path::Path,
+        gate: Arc<Gate>,
+        entered: Arc<AtomicU32>,
+    ) -> Arc<ProviderRegistry> {
+        use crate::boundaries::library::{MockLibraryLoader, MockLoadedLibrary};
+        use crate::provider::config_source::{ConfigSource, ConfigSourceSpec, ResultSpec};
+        let mut loader = MockLibraryLoader::new();
+        loader.expect_load().returning(move |_| {
+            let mut lib = MockLoadedLibrary::new();
+            lib.expect_identity().return_const(1usize);
+            let (gate, entered) = (gate.clone(), entered.clone());
+            lib.expect_call_json().returning(move |_, _| {
+                entered.fetch_add(1, Ordering::SeqCst);
+                gate.wait();
+                Ok("\"\"".into())
+            });
+            Ok(Box::new(lib))
+        });
+        let poll = meta(3, Duration::from_secs(60));
+        let spec = ConfigSourceSpec {
+            provider: "p".into(),
+            name: "s".into(),
+            root: None,
+            data: format!(
+                "{{{{ ('{}' | read) ~ plugin('/gate/libgate.so', 'wait') }}}}",
+                state.display()
+            ),
+            result: ResultSpec::Fields(vec![("v".into(), "{{ data }}".into())]),
+            recorded: crate::shape::decorators::Recorded {
+                invalidation: poll.invalidation,
+                failback: poll.failback,
+                budget: poll.budget,
+                timeout: poll.timeout,
+                decay: None,
+                nearest: false,
+            },
+        };
+        let source = ConfigSource::new(
+            spec,
+            Arc::new(std::env::vars().collect()),
+            Arc::new(crate::engine::PluginSet::new(vec![], Arc::new(loader))),
+            Arc::new(NoReads),
+        )
+        .unwrap();
+        let mut registry = ProviderRegistry::new();
+        registry.register_config_sources("p", vec![source]).unwrap();
+        Arc::new(registry)
+    }
+
+    /// A file a config Source's lines read is an input of the record its run
+    /// makes, stamped before the read: rewritten after the run read it, the
+    /// record the run stores is invalid at once, the next read runs it again,
+    /// and a read that finds the change while the run is still going does not
+    /// take that run, which read the file before it changed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_run_stamps_what_its_lines_read_before_it_reads_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let old = std::time::SystemTime::now() - Duration::from_secs(10);
+        let write = |body: &str| {
+            std::fs::write(&state, body).unwrap();
+            // Long since written: no stamp of it is racy.
+            std::fs::File::options()
+                .write(true)
+                .open(&state)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        };
+        write("1");
+        let (gate, entered) = (Arc::new(Gate::default()), Arc::new(AtomicU32::new(0)));
+        let registry = gated_config_source(&state, gate.clone(), entered.clone());
+        let cache = Arc::new(Cache::new());
+        let key = crate::provider::source_call::instance_key("p", "s", None);
+        let start = |want| registry.runs().start(want, &registry, &cache, &key);
+        let stored = || {
+            cache
+                .get_source("p", None, "s")
+                .and_then(|s| s.fields.get("v").cloned())
+        };
+
+        let until_entered = |n: u32| {
+            let entered = entered.clone();
+            async move {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                while entered.load(Ordering::SeqCst) < n {
+                    assert!(std::time::Instant::now() < deadline, "never {n} reads");
+                    tokio::task::yield_now().await;
+                }
+            }
+        };
+
+        let first = start(Want::Cold).unwrap();
+        until_entered(1).await;
+        // The run has read the file and waits at the gate.
+        write("22");
+        gate.open();
+        assert_eq!(first.outcome().await, Outcome::Stored);
+        assert_eq!(stored(), Some(Value::String("1".into())));
+        assert_eq!(
+            cache.record_state("p", None, "s"),
+            crate::cache::RecordState::Invalid,
+            "a Source that only polls is checked for the file its lines read"
+        );
+
+        gate.close();
+        let second = start(Want::Changed).unwrap();
+        until_entered(2).await;
+        write("333");
+        let third = start(Want::Changed).unwrap();
+        assert_eq!(
+            registry.runs().callers(&key),
+            Some(1),
+            "the run in flight read the file before it changed: the read waits for the next"
+        );
+        gate.open();
+        assert_eq!(second.outcome().await, Outcome::Stored);
+        assert_eq!(third.outcome().await, Outcome::Stored);
+        assert_eq!(entered.load(Ordering::SeqCst), 3);
+        assert_eq!(stored(), Some(Value::String("333".into())));
+        assert_eq!(
+            cache.record_state("p", None, "s"),
+            crate::cache::RecordState::Valid,
+            "as its run read it"
+        );
+    }
+
     /// A caller that stops waiting takes nothing with it: the run records
     /// itself.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1077,7 +1283,7 @@ mod tests {
         let on = |me: &Run, waits_on: Run| {
             let me = id(&me.state);
             std::thread::spawn(move || {
-                let _here = Here::enter(me);
+                let _here = Here::enter(me, Arc::default());
                 waits_on.wait()
             })
         };

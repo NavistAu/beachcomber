@@ -1,8 +1,13 @@
 //! Files: `read`, `stat`, `realpath`, `glob` and `lup`. All read the filesystem, so they are the `io`
 //! tier: not on a provider's lines, which run on every read.
+//!
+//! Each notes what it reads in the render's account (`EngineCtx::touched`),
+//! stamping a path before it reads it: a daemon run's record is checked for
+//! those files by a later read. A client's render keeps no account.
 
 use super::{UNDEFINED, is_absent};
 use crate::engine::{EngineCtx, op_error};
+use crate::fs::{Touch, Touched};
 use minijinja::value::{Kwargs, Value as MjValue};
 use minijinja::{Environment, Error};
 use std::os::unix::ffi::OsStrExt;
@@ -46,6 +51,7 @@ fn read(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
         return Err(op_error("read(): the path must be a string"));
     };
     let full = resolve_path(ctx, p).map_err(|e| op_error(format!("read(): {e}")))?;
+    ctx.touch(&full);
     match std::fs::read_to_string(&full) {
         Ok(text) => Ok(MjValue::from(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(UNDEFINED),
@@ -61,6 +67,13 @@ fn read(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
 /// `HOME`, and an absolute pattern gives absolute paths. A trailing `/` keeps
 /// directories only. No match is `[]`; a directory that cannot be read is
 /// passed over.
+///
+/// What it reads, where the render keeps account: each directory it lists, as
+/// a node (an entry made, removed or renamed in it changes it), and each
+/// literal component it probes that is not there (its making is a change) or
+/// that ends the pattern (the match itself). A literal directory passed
+/// through on the way is not: what the walk reads below it is, and moves with
+/// it.
 ///
 /// The `glob` crate matches each component's name (`Pattern`); the walk is
 /// here, since the crate's own cannot be told to match `.*` while skipping
@@ -95,7 +108,13 @@ fn glob(ctx: &EngineCtx, pattern: &MjValue) -> Result<MjValue, Error> {
         (None, false) => PathBuf::from("."),
     };
     let mut found = Vec::new();
-    walk(&base, &PathBuf::new(), &parts, &mut found);
+    walk(
+        &base,
+        &PathBuf::new(),
+        &parts,
+        &mut found,
+        ctx.touched.as_deref(),
+    );
     let dirs_only = p.ends_with('/');
     let mut out: Vec<String> = found
         .into_iter()
@@ -148,8 +167,15 @@ fn names(dir: &Path) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// Match `parts` below `base/rel`, pushing every `rel` that matches the whole.
-fn walk(base: &Path, rel: &Path, parts: &[Part], found: &mut Vec<PathBuf>) {
+/// Match `parts` below `base/rel`, pushing every `rel` that matches the whole,
+/// and noting in `touched` what is read ([`glob`]).
+fn walk(
+    base: &Path,
+    rel: &Path,
+    parts: &[Part],
+    found: &mut Vec<PathBuf>,
+    touched: Option<&Touched>,
+) {
     let Some((part, rest)) = parts.split_first() else {
         if !rel.as_os_str().is_empty() {
             found.push(rel.to_path_buf());
@@ -159,18 +185,33 @@ fn walk(base: &Path, rel: &Path, parts: &[Part], found: &mut Vec<PathBuf>) {
     let here = base.join(rel);
     match part {
         Part::Literal(name) => {
-            if std::fs::symlink_metadata(here.join(name)).is_ok() {
-                walk(base, &rel.join(name), rest, found);
+            let path = here.join(name);
+            // Stamped before the probe; kept once it is known to count.
+            let ahead = touched.map(|_| Touch::take(&path));
+            let there = std::fs::symlink_metadata(&path).is_ok();
+            if let (Some(touched), Some(ahead)) = (touched, ahead)
+                && (!there || rest.is_empty())
+            {
+                touched.keep([ahead]);
+            }
+            if there {
+                walk(base, &rel.join(name), rest, found, touched);
             }
         }
         Part::Wild(pattern) => {
+            if let Some(touched) = touched {
+                touched.touch(&here);
+            }
             for (name, _) in names(&here) {
                 if pattern.matches_with(&name, NAMES) {
-                    walk(base, &rel.join(name), rest, found);
+                    walk(base, &rel.join(name), rest, found, touched);
                 }
             }
         }
         Part::Recursive => {
+            if let Some(touched) = touched {
+                touched.touch(&here);
+            }
             if rest.is_empty() {
                 // A trailing `**` is everything below, files as well.
                 for (name, _) in names(&here)
@@ -181,11 +222,11 @@ fn walk(base: &Path, rel: &Path, parts: &[Part], found: &mut Vec<PathBuf>) {
                 }
             } else {
                 // Zero directories, then each visible directory below.
-                walk(base, rel, rest, found);
+                walk(base, rel, rest, found, touched);
             }
             for (name, real_dir) in names(&here) {
                 if real_dir && !name.starts_with('.') {
-                    walk(base, &rel.join(name), parts, found);
+                    walk(base, &rel.join(name), parts, found, touched);
                 }
             }
         }
@@ -206,6 +247,7 @@ fn stat(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
         return Err(op_error("stat(): the path must be a string"));
     };
     let full = resolve_path(ctx, p).map_err(|e| op_error(format!("stat(): {e}")))?;
+    ctx.touch(&full);
     match crate::fs::lstat(&full) {
         Ok(s) => {
             let mtime = if s.mtime_nanos == 0 {
@@ -243,6 +285,7 @@ fn realpath(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
         return Err(op_error("realpath(): the path must be a string"));
     };
     let full = resolve_path(ctx, p).map_err(|e| op_error(format!("realpath(): {e}")))?;
+    ctx.touch(&full);
     match std::fs::canonicalize(&full) {
         Ok(real) => Ok(MjValue::from(real.to_string_lossy().into_owned())),
         Err(e)
@@ -274,6 +317,11 @@ fn resolve_path(ctx: &EngineCtx, p: &str) -> Result<PathBuf, crate::path::PathEr
 /// directory is under it, else at `/`; `git` stops at the repository root
 /// (outside one, `none`) and `root` at `/`. `files`/`dirs` match only that
 /// kind; `follow=false` matches a symlink itself.
+///
+/// What it reads, where the render keeps account: every path the walk probes,
+/// hits and misses alike (a marker made nearer is a change), each `<dir>/<name>`
+/// from the start to the hit (all of them with `all`) or the boundary, and with
+/// `git` each `<dir>/.git` the walk reads to find the repository's root.
 fn lup(ctx: &EngineCtx, name: &str, kwargs: Kwargs) -> Result<MjValue, Error> {
     let flag = |key: &str, default: bool| -> Result<bool, Error> {
         kwargs
@@ -317,7 +365,23 @@ fn lup(ctx: &EngineCtx, name: &str, kwargs: Kwargs) -> Result<MjValue, Error> {
     } else {
         liblup::Boundary::Home(ctx.env.get("HOME").map(String::as_bytes))
     };
-    let hits = match liblup::lookup(&query, start.as_os_str().as_bytes(), boundary) {
+    // Stamped before the walk probes them; what it did not reach is let go.
+    let ahead = ctx
+        .touched
+        .as_ref()
+        .map(|_| LupProbes::ahead(name, &start, boundary));
+    let found = liblup::lookup(&query, start.as_os_str().as_bytes(), boundary);
+    if let (Some(touched), Some(ahead)) = (&ctx.touched, ahead) {
+        let first_hit = match &found {
+            Ok(hits) if !all => hits.first().and_then(|hit| match hit {
+                liblup::Hit::Path(p) => Some(p.as_slice()),
+                liblup::Hit::Contents(_) => None,
+            }),
+            _ => None,
+        };
+        touched.keep(ahead.reached(first_hit));
+    }
+    let hits = match found {
         Ok(hits) => hits,
         Err(liblup::LupError::NoMatch | liblup::LupError::NotInGitRepo) => return Ok(UNDEFINED),
         Err(liblup::LupError::UsageError(m)) => return Err(op_error(format!("lup(): {m}"))),
@@ -334,6 +398,62 @@ fn lup(ctx: &EngineCtx, name: &str, kwargs: Kwargs) -> Result<MjValue, Error> {
     } else {
         paths.next().unwrap_or(UNDEFINED)
     })
+}
+
+/// The paths a `lup` walk from `start` may probe, stamped before it probes
+/// them: with `git`, `<dir>/.git` from the start to the repository's root
+/// (all the way up outside one), which is how the walk finds its boundary;
+/// then `<dir>/<name>` from the start to the boundary.
+struct LupProbes {
+    git: Vec<Touch>,
+    names: Vec<Touch>,
+}
+
+impl LupProbes {
+    fn ahead(name: &str, start: &Path, boundary: liblup::Boundary) -> Self {
+        let dirs: Vec<&Path> = start.ancestors().collect();
+        let at = |stop: &[u8]| dirs.iter().position(|d| d.as_os_str().as_bytes() == stop);
+        let start = start.as_os_str().as_bytes();
+        let top = dirs.len() - 1;
+        let (git, last) = match boundary {
+            liblup::Boundary::Git => {
+                let mut git: Vec<Touch> =
+                    dirs.iter().map(|d| Touch::take(&d.join(".git"))).collect();
+                // Where the walk will stop, now its probes are stamped.
+                let root = liblup::boundary::find_git_root(start).and_then(|root| at(&root));
+                if let Some(root) = root {
+                    git.truncate(root + 1);
+                }
+                (git, root)
+            }
+            liblup::Boundary::Root | liblup::Boundary::Home(None) => (Vec::new(), Some(top)),
+            liblup::Boundary::Home(Some(home)) => (
+                Vec::new(),
+                Some(at(liblup::boundary::resolve_default(start, home)).unwrap_or(top)),
+            ),
+        };
+        let names = last.map_or_else(Vec::new, |last| {
+            dirs[..=last]
+                .iter()
+                .map(|d| Touch::take(&d.join(name)))
+                .collect()
+        });
+        Self { git, names }
+    }
+
+    /// What the walk read: the `.git` probes, and the name probes as far as
+    /// `first_hit` (all of them without one).
+    fn reached(self, first_hit: Option<&[u8]>) -> impl Iterator<Item = Touch> {
+        let mut names = self.names;
+        if let Some(hit) = first_hit
+            && let Some(i) = names
+                .iter()
+                .position(|t| t.path.as_os_str().as_bytes() == hit)
+        {
+            names.truncate(i + 1);
+        }
+        self.git.into_iter().chain(names)
+    }
 }
 
 #[cfg(test)]
@@ -376,6 +496,130 @@ mod tests {
         }
         let ctx = ctx_with(&[("HOME", root.to_str().unwrap())], Some(&root));
         (dir, root, ctx)
+    }
+
+    /// `ctx`'s render, keeping an account of what is read, and the account.
+    fn recording(ctx: Arc<EngineCtx>) -> (Arc<EngineCtx>, Arc<crate::fs::Touched>) {
+        let touched = Arc::new(crate::fs::Touched::default());
+        let ctx = EngineCtx {
+            env: ctx.env.clone(),
+            cwd: ctx.cwd.clone(),
+            allow_exec: ctx.allow_exec,
+            now: ctx.now,
+            touched: Some(touched.clone()),
+        };
+        (Arc::new(ctx), touched)
+    }
+
+    /// The paths `expr` read, in the order first read.
+    fn read_by(ctx: Arc<EngineCtx>, expr: &str) -> Vec<std::path::PathBuf> {
+        let (ctx, touched) = recording(ctx);
+        eval_in(ctx, expr).unwrap();
+        touched.touches().into_iter().map(|t| t.path).collect()
+    }
+
+    #[test]
+    fn read_records_the_path_it_opened() {
+        let (_d, root, ctx) = repo();
+        let here = root.join("a/b/c");
+        std::fs::write(here.join("note.txt"), "hello").unwrap();
+        let (ctx, touched) = recording(ctx);
+        let got = eval_in(ctx, "('note.txt' | read) ~ ('nope' | read or '-')").unwrap();
+        assert_eq!(got, "hello-");
+        let touches = touched.touches();
+        let paths: Vec<_> = touches.iter().map(|t| t.path.clone()).collect();
+        assert_eq!(paths, [here.join("note.txt"), here.join("nope")]);
+        assert!(matches!(touches[0].stamp, crate::fs::Stamp::Present(p) if p.size == 5));
+        assert_eq!(
+            touches[1].stamp,
+            crate::fs::Stamp::Absent,
+            "a file not there is read too: its making is a change"
+        );
+    }
+
+    #[test]
+    fn stat_and_realpath_record_their_path() {
+        let (_d, root, ctx) = repo();
+        assert_eq!(
+            read_by(ctx.clone(), "('~/a/.git/HEAD' | stat).kind"),
+            [root.join("a/.git/HEAD")]
+        );
+        assert_eq!(read_by(ctx, "'../c' | realpath"), [root.join("a/b/c/../c")]);
+    }
+
+    /// Every probe, hit or miss: a marker made nearer than the one found, or
+    /// anywhere on the way when none is, is a change.
+    #[test]
+    fn lup_records_every_probe() {
+        let (_d, root, ctx) = repo();
+        let at = |dirs: &[&str], name: &str| -> Vec<std::path::PathBuf> {
+            dirs.iter().map(|d| root.join(d).join(name)).collect()
+        };
+        assert_eq!(
+            read_by(ctx.clone(), "lup('.git')"),
+            at(&["a/b/c", "a/b", "a"], ".git"),
+            "to the hit"
+        );
+        assert_eq!(
+            read_by(ctx.clone(), "lup('.nothing')"),
+            at(&["a/b/c", "a/b", "a", ""], ".nothing"),
+            "to the boundary, HOME"
+        );
+        assert_eq!(
+            read_by(ctx.clone(), "lup('HEAD', all=true)"),
+            at(&["a/b/c", "a/b", "a", ""], "HEAD"),
+        );
+        let mut git = at(&["a/b/c", "a/b", "a"], ".git");
+        git.extend(at(&["a/b/c", "a/b", "a"], "x"));
+        assert_eq!(
+            read_by(ctx.clone(), "lup('x', git=true)"),
+            git,
+            "the walk to the repository's root, then the name to it"
+        );
+        let to_slash = read_by(ctx, "lup('.nothing', root=true)");
+        assert_eq!(to_slash.last().unwrap(), std::path::Path::new("/.nothing"));
+        assert_eq!(to_slash.len(), root.join("a/b/c").ancestors().count());
+    }
+
+    /// The directories listed, as nodes; a literal directory passed through
+    /// is not read, one that is not there is, and so is a last component.
+    #[test]
+    fn glob_records_the_directories_it_listed() {
+        let (_dir, root, ctx) = tree();
+        assert_eq!(
+            read_by(ctx.clone(), "'sub/*.tf' | glob"),
+            [root.join("sub")]
+        );
+        let mut recursive = read_by(ctx.clone(), "'**/*.tf' | glob");
+        recursive.sort();
+        assert_eq!(
+            recursive,
+            [root.clone(), root.join("sub"), root.join("sub/deep")]
+        );
+        assert_eq!(
+            read_by(ctx.clone(), "'nodir/*' | glob"),
+            [root.join("nodir")]
+        );
+        assert_eq!(read_by(ctx, "'c.txt' | glob"), [root.join("c.txt")]);
+    }
+
+    /// A client's render keeps no account, and reads as a recorded one does.
+    #[test]
+    fn a_client_render_records_nothing() {
+        assert!(EngineCtx::default().touched.is_none());
+        let (_d, _root, ctx) = repo();
+        for expr in [
+            "lup('.git')",
+            "('nope' | read) is undefined",
+            "'~/a' | realpath",
+        ] {
+            let (recorded, _) = recording(ctx.clone());
+            assert_eq!(
+                eval_in(ctx.clone(), expr).unwrap(),
+                eval_in(recorded, expr).unwrap(),
+                "{expr}"
+            );
+        }
     }
 
     #[test]

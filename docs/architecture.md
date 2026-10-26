@@ -164,7 +164,7 @@ and writes it as a single newline-terminated line.
 
 **Step 7: Cache lookup**
 
-`cache.record_state("git", Some(root), "head")` looks up the instance's record (the key `"git\0<root>"` in the DashMap) and checks it: within its lifetime, and its stat inputs (`Source::inputs`, for `head` the repository's `HEAD`) as its run stamped them. One `stat(2)` per input, on the request task. A valid record is answered as it is; nothing runs.
+`cache.record_state("git", Some(root), "head")` looks up the instance's record (the key `"git\0<root>"` in the DashMap) and checks it: within its lifetime, and its stat inputs as its run stamped them (`Source::inputs`, for `head` the repository's `HEAD`; for a config Source its `watch(...)` declaration and the files its lines read). One `stat(2)` per input, on the request task. A valid record is answered as it is; nothing runs.
 
 **Step 8: Field extraction**
 
@@ -186,7 +186,11 @@ The server finds no record for the instance and starts its run (`Runs::start`), 
 
 A record whose stat inputs changed since its run (a `git checkout` rewrote `HEAD`) is invalid; one older than its Source's poll interval is `stale`. Either way the read runs the Source and waits up to the Source's budget (`budget(...)`, else `[daemon] budget`, default `50ms`), counted from when the read began; with `wait` it waits for the run however long. A stale record takes the run in flight; an invalid one takes it only if that run's own inputs are as they are now (it stamped them after the change, or has yet to), else the run queued behind it. In time, the read answers the fresh value; late, it answers the stored one (`stale` if it is past its lifetime) while `:cache.<field>.executing` says the run goes on, and the run records itself for the next read and for any `watch`. A namespace read starts every run it needs before it waits for any, so its Sources run together.
 
-So a read after a change answers the new value whether or not the file event has arrived: correctness does not wait for the watcher, which keeps the background warming. A run stamps its inputs immediately before it executes, so a change during the run fails the next check: one run more, never a stale answer. Only the files a Source declares are checked: what an `exec` child reads, or a change deeper than a declared directory, stays eventual, brought up to date by the watch and the poll. A read of `:cache`, `:put` or `:source`, a `watch` frame, `status` and `refresh` check nothing.
+So a read after a change answers the new value whether or not the file event has arrived: correctness does not wait for the watcher, which keeps the background warming. A run stamps its declared inputs immediately before it executes, so a change during the run fails the next check: one run more, never a stale answer.
+
+A record's inputs are the files its Source declares and the files its run's lines read. A config Source's lines note each file they read in the run's account (`run::reads_here`, the `EngineCtx`'s `touched`), stamped immediately before it is read: `read`, `stat` and `realpath` the path, `lup` every path its walk probed (a marker made nearer is a change, so misses count as hits do), `glob` each directory it listed, as a node, and each literal component it found missing or ended on. The run's record is checked for its declared inputs and then those, a path both declared and read keeping its declared stamp. A run reads at most 64 files that count (`MOST_TOUCHED` in `libbeachcomber::fs`): past that, a file is not checked and the daemon logs once per Source (`<p>.<s>: 150 files read; the first 64 are checked on read`). A read that finds an input changed takes the run in flight only if that run's declared stamps, and the stamps of what its lines have read so far, are as the files are now. A `root` line's walk is not a run's input: the root a directory finds is kept by the registry.
+
+What an `exec` child reads, or a change deeper than a checked directory, stays eventual, brought up to date by the watch and the poll. A read of `:cache`, `:put` or `:source`, a `watch` frame, `status` and `refresh` check nothing.
 
 ---
 
@@ -226,15 +230,17 @@ runtime.spawn(async move {
     let result = tokio::time::timeout(
         timeout,
         tokio::task::spawn_blocking(move || {
-            let validity = Validity::take(source.inputs(&declared, root));
-            (source.execute(dir), validity)
+            let _here = Here::enter(run, reads.clone()); // the run's account, on its thread
+            let declared = Stamped::take(source.inputs(&invalidation, root));
+            let result = source.execute(dir);             // the lines stamp what they read into `reads`
+            (result, Validity::of(declared.and_read(reads.touches())))
         }),
     ).await;
     settle.finish(result);
 });
 ```
 
-The stamp of the inputs is taken on the blocking thread immediately before `execute`, and stored with the record.
+The stamp of the declared inputs is taken on the blocking thread immediately before `execute`, each file the lines read is stamped as they read it, and the validity of both is stored with the record.
 
 `spawn_blocking` runs `Source::execute()` on tokio's dedicated blocking thread pool, so the scheduler's loop and the request tasks go on while it runs. Nobody waits on the task: the scheduler goes on at once, and a read waits on the `Run` it was handed.
 

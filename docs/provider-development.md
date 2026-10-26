@@ -405,8 +405,10 @@ pub trait Source: Send + Sync {
 
 The default is the Source's `watch(...)` declaration: each relative pattern
 joined to the instance's root, each absolute path as written, and at the `~`
-instance each single-component pattern under `$HOME`. A Source that only polls
-declares none, has no validity, and is checked for its lifetime alone.
+instance each single-component pattern under `$HOME`. Beside those, a record's
+inputs are the files its run's lines read (a config Source's; see §6, "What a
+read checks"). A Source that only polls and reads no file has none, has no
+validity, and is checked for its lifetime alone.
 
 - **A stamp** is `dev`, `ino`, size, mtime in nanoseconds and kind, following
   symlinks, plus the link's own inode and mtime for a symlink. An absent path
@@ -730,6 +732,29 @@ Three things a config Source relies on beyond its own table:
 - **Calling a Source.** `sources.<s>()` reads a sibling's stored record and `daemon.providers.<q>.sources.<s>()` any provider's. A Source with nothing stored is run inline, once, by the read or refresh that needs it (a cold call); a ring of Sources calling each other is a load error; a called Source stays warm and decays with its callers.
 
 A provider is switched off with `[daemon.providers.<p>] enabled = false`: no Source of it runs, a read is a miss with no template half, and puts under it stay readable. An edit under `providers` reloads in place; only the bare `[daemon]` and `[client]` keys restart the daemon. Decay depth is data (`[daemon.providers._.cache._] decay = 4` ships), settable per provider or by `put`.
+
+### What a read checks
+
+A config Source names the files a read checks by reading them. Each file its `data` and `result` lines read is an input of the record the run makes, stamped immediately before the line reads it, beside the files its `watch(...)` declares (§2c). A read stats them again before it answers from the record, and a change runs the Source again: nothing needs declaring, and a path the lines compute (a linked worktree's `HEAD`, a file named by `env.AWS_CONFIG_FILE`, a hash) is checked as a constant one is.
+
+| item | what it reads |
+|---|---|
+| `p \| read`, `p \| stat`, `p \| realpath` | the path |
+| `lup(name)` | every path its walk probed: `<dir>/<name>` from the instance's directory up to the hit (to the boundary when there is none, or with `all`); with `git=true`, each `<dir>/.git` it read to find the repository's root. A miss is read too: a `name` made nearer is a change |
+| `pattern \| glob` | each directory it listed, as a node (an entry made, removed or renamed in it is a change), and each literal component it found missing or ended on. A directory passed through on the way is not: what the glob read below it is |
+
+```toml
+[daemon.providers.flag.sources.s]
+root   = "{{ lup('.flagroot') | dirname }}"
+data   = "{{ lup('state.json') | read }}"     # checked: every state.json probe, and the one read
+result.v = "{{ data }}"
+return = "{{ result | poll('10m') }}"           # no watch() needed for a read to see a rewrite
+```
+
+- The first 64 files a run reads are checked; a run that reads more logs once per Source (`flag.s: 150 files read; the first 64 are checked on read`), and a change to a later file waits for the watch or the poll.
+- What an `exec` child reads is not the lines' reading: a Source that shells out declares what its command reads with `watch(...)`, or lives with its poll.
+- The `root` line's walk is not a record's input. The root a directory finds is kept per directory (see "How config Sources work").
+- A `watch(...)` path is still what the daemon watches in the background, to warm a record before anyone reads it; what the lines read is checked on a read only.
 
 ### When to write a built-in
 

@@ -29,10 +29,15 @@ pub struct EngineCtx {
     pub allow_exec: bool,
     /// The clock `now()`, `ago` and `spinner` read: one value for the render.
     pub now: std::time::SystemTime,
+    /// What the render's file items read (`read`, `stat`, `realpath`, `lup`,
+    /// `glob`), each path stamped before it is read, where a daemon run keeps
+    /// account: what a later read checks of the record it makes. `None`, a
+    /// client's render, records nothing.
+    pub touched: Option<Arc<crate::fs::Touched>>,
 }
 
-/// A render with nothing: no environment, no directory, no `exec`, and the
-/// clock as it is now.
+/// A render with nothing: no environment, no directory, no `exec`, the clock
+/// as it is now, and no account of what it reads.
 impl Default for EngineCtx {
     fn default() -> Self {
         Self {
@@ -40,11 +45,19 @@ impl Default for EngineCtx {
             cwd: None,
             allow_exec: false,
             now: std::time::SystemTime::now(),
+            touched: None,
         }
     }
 }
 
 impl EngineCtx {
+    /// `path` is about to be read: noted, where the render keeps account.
+    pub fn touch(&self, path: &std::path::Path) {
+        if let Some(touched) = &self.touched {
+            touched.touch(path);
+        }
+    }
+
     /// Whether the colour filters draw escapes: unless the render's `env`
     /// sets `NO_COLOR` to something.
     pub fn colour(&self) -> bool {

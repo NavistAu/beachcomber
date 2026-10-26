@@ -775,16 +775,18 @@ pub trait Source: Send + Sync {
         false
     }
 
-    /// The stat inputs of the instance at `root` (`None` is the instance at
-    /// `~`): the files its run reads that a read checks before answering
-    /// from its record ([`crate::cache::Validity`]). A run stamps them
-    /// immediately before it begins. `declared` is the Source's invalidation
-    /// as it stands, which a `return` line can retune; the caller passes
-    /// `metadata().invalidation`.
+    /// The declared stat inputs of the instance at `root` (`None` is the
+    /// instance at `~`): files a read checks before answering from its record
+    /// ([`crate::cache::Validity`]), which a run stamps immediately before it
+    /// begins. `declared` is the Source's invalidation as it stands, which a
+    /// `return` line can retune; the caller passes `metadata().invalidation`.
     ///
-    /// The default is the `watch(...)` declaration ([`declared_inputs`]). A
-    /// Source whose root alone cannot name its files overrides it, as git
-    /// does for a linked worktree's `HEAD`.
+    /// The default is the `watch(...)` declaration ([`declared_inputs`]).
+    /// Beside these, a record's inputs are the files its run's lines read,
+    /// each stamped before it was read ([`crate::run::reads_here`]): that is
+    /// how a config Source names what it reads. A Rust Source whose root alone
+    /// cannot name its files overrides this, as git does for a linked
+    /// worktree's `HEAD`.
     fn inputs(
         &self,
         declared: &InvalidationStrategy,
