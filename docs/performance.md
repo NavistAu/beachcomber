@@ -464,6 +464,8 @@ cargo bench --bench resolve       # the client-side resolver, no daemon
 cargo bench --bench validity      # warm reads, and the reads after a cold run (P9)
 cargo bench --bench watch         # the watch fan-in: delivery, open, cancel, deadline, idle cost
 cargo bench --bench prompt_race   # needs a host whose native watcher delivers
+cargo bench --bench load          # a configuration loaded from text: the shipped files, and with scanline's drop-in
+cargo bench --profile dev --bench load   # the same in the debug build the test suite runs
 
 # Run with baseline comparison (after making changes)
 cargo bench -- --baseline main
