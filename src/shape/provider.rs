@@ -230,6 +230,18 @@ fn links<'t>(providers: &'t toml::Table, name: &str) -> Vec<Link<'t>> {
     chain(providers, Kind::Provider, name, "")
 }
 
+/// Whether `name`'s own table (not the abstract provider's) says anything its
+/// chains read: a line, or `enabled = false`. One that says neither resolves to
+/// the abstract provider's chains, line for line.
+fn has_own_lines(providers: &toml::Table, name: &str) -> bool {
+    name != "_"
+        && (is_disabled_in(providers, name)
+            || providers
+                .get(name)
+                .and_then(toml::Value::as_table)
+                .is_some_and(|table| Key::ALL.iter().any(|key| table.contains_key(key.name()))))
+}
+
 /// The chains of `name` among `providers` (a composed `[daemon.providers]`). A
 /// line of the wrong type is the file check's error, and is not in a chain.
 fn chains(probe: &Probe<'_>, providers: &toml::Table, name: &str) -> Chains {
@@ -397,8 +409,9 @@ pub struct Returned {
 }
 
 /// A provider's compiled lines, for one composed configuration. The chains are
-/// resolved once per provider the configuration names; every other name shares
-/// the abstract provider's.
+/// resolved once per provider whose table sets a line or switches it off;
+/// every other name, a table that sets neither included, shares the abstract
+/// provider's, resolved once.
 pub struct ProviderLines {
     /// The engine the lines render in, which they are read in at load too.
     probe: Probe<'static>,
@@ -426,6 +439,7 @@ impl ProviderLines {
         let probe = Probe::new(env);
         let own: HashMap<String, Arc<Chains>> = providers
             .keys()
+            .filter(|name| has_own_lines(providers, name))
             .map(|name| (name.clone(), Arc::new(chains(&probe, providers, name))))
             .collect();
         let shared = Arc::new(chains(&probe, providers, "_"));
