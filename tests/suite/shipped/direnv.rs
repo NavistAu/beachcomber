@@ -8,25 +8,49 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+/// The name direnv gives an allow file: the sha256 of the `.envrc`'s absolute
+/// path (symlinks not resolved), a newline, and its contents.
+fn allow_name(path: &str, contents: &str) -> String {
+    let hash = Sha256::digest(format!("{path}\n{contents}").as_bytes());
+    hash.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// The allow file direnv writes for the `.envrc` at `envrc`, under the allow
-/// database `db`: named by the sha256 of its canonical path.
+/// database `db`.
 fn allow_file(db: &Path, envrc: &Path) -> PathBuf {
-    let canon = envrc.canonicalize().unwrap();
-    let hash = Sha256::digest(canon.to_string_lossy().as_bytes());
-    let name: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-    db.join(name)
+    let contents = std::fs::read_to_string(envrc).unwrap();
+    db.join(allow_name(envrc.to_str().unwrap(), &contents))
 }
 
 /// `direnv allow` of the `.envrc` at `envrc`, in the allow database `db`.
 fn allow(db: &Path, envrc: &Path) -> PathBuf {
     std::fs::create_dir_all(db).unwrap();
     let file = allow_file(db, envrc);
-    std::fs::write(
-        &file,
-        envrc.canonicalize().unwrap().to_string_lossy().as_bytes(),
-    )
-    .unwrap();
+    std::fs::write(&file, envrc.to_str().unwrap().as_bytes()).unwrap();
     file
+}
+
+/// `direnv deny` of the `.envrc` at `envrc`, in the deny database `db`: named
+/// by the sha256 of the path and a newline, whatever the contents.
+fn deny(db: &Path, envrc: &Path) {
+    std::fs::create_dir_all(db).unwrap();
+    let hash = Sha256::digest(format!("{}\n", envrc.to_str().unwrap()).as_bytes());
+    let name: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::write(db.join(name), envrc.to_str().unwrap().as_bytes()).unwrap();
+}
+
+/// The scheme itself, against a name direnv 2.38.2 wrote: in a scratch HOME
+/// and `XDG_DATA_HOME`, `printf 'export FOO=bar\n' > golden/.envrc` and
+/// `direnv allow` there made this file.
+#[test]
+fn direnv_allow_name_is_what_real_direnv_wrote() {
+    assert_eq!(
+        allow_name(
+            "/private/tmp/claude-501/-Users-jhogendorn-ws-beachcomber/4b310f75-9d71-4175-abb3-1a9096f44efb/scratchpad/dx/golden/.envrc",
+            "export FOO=bar\n"
+        ),
+        "cf08a079efdb564d51813f7e4e09286c3c470e9c3f610e20b62133c8fc71a7bc"
+    );
 }
 
 /// An `.envrc` in `dir`.
@@ -82,19 +106,68 @@ fn direnv_an_empty_xdg_data_home_is_the_default() {
     assert_eq!(s.get("direnv.allowed", Some(&s.project)), Some(json!(true)));
 }
 
-/// A symlinked `.envrc` is allowed by its canonical path, as direnv allows it.
+/// A symlinked `.envrc` is named by the link's path, as direnv names it (it
+/// does not resolve the link), with the target's contents.
 #[test]
-fn direnv_a_symlinked_envrc_is_hashed_by_its_canonical_path() {
+fn direnv_a_symlinked_envrc_is_named_by_the_link() {
     let data = tempfile::tempdir().unwrap();
+    let db = data.path().join("direnv/allow");
     let s = served(&[("XDG_DATA_HOME", data.path().to_str().unwrap())], "");
     let real = s.home.join("shared/envrc");
     std::fs::create_dir_all(real.parent().unwrap()).unwrap();
     std::fs::write(&real, "export FOO=bar\n").unwrap();
-    std::os::unix::fs::symlink(&real, s.project.join(".envrc")).unwrap();
-    allow(&data.path().join("direnv/allow"), &real);
+    let link = s.project.join(".envrc");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    allow(&db, &real);
+    assert_eq!(
+        s.get("direnv.status", Some(&s.project)),
+        Some(json!("blocked")),
+        "the target's name is not the link's"
+    );
+    allow(&db, &link);
     assert_eq!(
         s.get("direnv.status", Some(&s.project)),
         Some(json!("allowed"))
+    );
+}
+
+/// An `.envrc` edited after `direnv allow` is no longer allowed: the next read
+/// reads the new contents, which name another file.
+#[test]
+fn direnv_an_edited_envrc_is_blocked_until_allowed_again() {
+    let data = tempfile::tempdir().unwrap();
+    let db = data.path().join("direnv/allow");
+    let s = served(&[("XDG_DATA_HOME", data.path().to_str().unwrap())], "");
+    let rc = envrc(&s.project);
+    age(&rc);
+    allow(&db, &rc);
+    assert_eq!(
+        s.get("direnv.status", Some(&s.project)),
+        Some(json!("allowed"))
+    );
+    std::fs::write(&rc, "export FOO=baz\n").unwrap();
+    assert_eq!(
+        s.get("direnv.status", Some(&s.project)),
+        Some(json!("blocked"))
+    );
+    allow(&db, &rc);
+    assert_eq!(
+        s.get("direnv.status", Some(&s.project)),
+        Some(json!("allowed"))
+    );
+}
+
+/// `direnv deny` wins over an allow file, and is `denied`, `allowed` false.
+#[test]
+fn direnv_a_denied_envrc_is_denied() {
+    let data = tempfile::tempdir().unwrap();
+    let s = served(&[("XDG_DATA_HOME", data.path().to_str().unwrap())], "");
+    let rc = envrc(&s.project);
+    allow(&data.path().join("direnv/allow"), &rc);
+    deny(&data.path().join("direnv/deny"), &rc);
+    assert_eq!(
+        s.get("direnv", Some(&s.project)),
+        Some(json!({"status": "denied", "allowed": false}))
     );
 }
 
