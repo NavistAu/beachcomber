@@ -1057,6 +1057,48 @@ fn check_config_warns_of_a_template_reading_no_provider() {
     );
 }
 
+/// A client template or macro library that does not compile is a config
+/// error in `comb check config`, naming its key and its file, at any depth of
+/// a template group: the same lint the client renders under.
+#[test]
+fn check_config_fails_a_template_or_macro_that_does_not_compile() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_dir = tmp.path().join("beachcomber");
+    std::fs::create_dir_all(cfg_dir.join("defaults")).unwrap();
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/defaults/00-comb.toml"),
+        cfg_dir.join("defaults/00-comb.toml"),
+    )
+    .unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        "[client.providers.p]\ntemplate.t = \"{{ x( }}\"\ntemplate.g.deep = \"{% if %}\"\n\
+         macro.m = \"{% macro m( %}\"\n",
+    )
+    .unwrap();
+
+    let output = isolate(
+        &mut std::process::Command::new(comb_binary()),
+        tmp.path(),
+        tmp.path(),
+        &tmp.path().join("no-daemon.sock"),
+    )
+    .args(["check", "--connect-timeout", "0", "config"])
+    .output()
+    .expect("run comb check config");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for key in ["template.t", "template.g.deep", "macro.m"] {
+        assert!(
+            stdout.lines().any(|l| l.contains("[FAIL] local")
+                && l.contains("config.toml")
+                && l.contains(&format!("[client.providers.p] {key}:"))),
+            "expected a local FAIL naming {key} and its file, got:\n{stdout}"
+        );
+    }
+    assert_eq!(output.status.code(), Some(2), "a config error exits 2");
+}
+
 /// With no `config.toml`, `check` and `check config` say that and only that: the
 /// `defaults/` and `conf.d/` files may still be composed, so it does not claim
 /// comb is running on its built-in values. A bare `check` runs every subject,
