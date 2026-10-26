@@ -299,28 +299,42 @@ run, at load 140-200 (so read the minimum beside the median):
 
 ### The watch fan-in: one `poll(2)` (phase 3)
 
-Measured 2026-10-26 at the commit that made a watch wait on one `poll(2)`, on the same 12-core Mac with a load average
-between 250 and 320: every tail below is that load's, and the minimum is the cost itself. Before it, the fan-in read
-its streams in turn for up to 50 ms each, so a change on the last of `k` streams took up to `(k − 1) × 50 ms`
-(950 ms at `k = 20`), a cancel up to 50 ms a stream, and an idle watch woke 20 times a second a stream.
+Measured 2026-10-26 at the commit that made a watch wait on one `poll(2)`, on the same 12-core Mac, twice: once at a
+load average of about 28, and once between 250 and 320, where every tail is that load's and the minimum is the cost
+itself. Before it, the fan-in read its streams in turn for up to 50 ms each, so a change on the last of `k` streams
+took up to `(k − 1) × 50 ms` (950 ms at `k = 20`), a cancel up to 50 ms a stream, and an idle watch woke 20 times a
+second a stream.
 
 `cargo bench --bench watch` (release, a spawned `comb daemon`, the client `ResolvedWatch`; a watch of `k` deps reads
-a template naming `k − 1` refs, and each change is a `put` to the last):
+a template naming `k − 1` refs, and each change is a `put` to the last). At load ~28:
 
-| Measurement | min | p50 | p90 | p99 | Target |
-|---|---:|---:|---:|---:|---|
-| `put` to `next` returning it, k = 1 | 0.08 ms | 0.30–0.65 ms | 3.0–14 ms | 41–66 ms | p50 ≤ 1 ms, p99 ≤ 5 ms |
-| the same, k = 5 | 0.24 ms | 0.85–1.17 ms | 3.3–22 ms | 53–101 ms | as above |
-| the same, k = 20 | 0.72 ms | 2.9–3.3 ms | 24–39 ms | 248–259 ms | as above |
-| a `put` alone, for scale | 0.02 ms | 0.05–0.13 ms | 0.4–2.6 ms | 9–23 ms | |
-| opening a warm 20-dep watch | 0.79 ms | 2.6–4.1 ms | 44–109 ms | 254–394 ms | ≤ 5 ms |
-| `cancel()` to a blocked `next(None)` returning | 0.016 ms | 0.034 ms | 0.061 ms | 0.21 ms | ≤ 2 ms |
-| `next(Some(10 ms))`, time past the deadline | 0.04 ms | 0.90–1.05 ms | 1.2–1.7 ms | 2.5–3.2 ms | within 2 ms |
-| `next(Some(50 ms))`, time past the deadline | 0.07 ms | 0.99–1.09 ms | 1.4–5.7 ms | 3.2–25 ms | within 2 ms |
+| Measurement | min | p50 | p90 | p99 | max | Target |
+|---|---:|---:|---:|---:|---:|---|
+| `put` to `next` returning it, k = 1 | 0.059 ms | 0.085 ms | 0.117 ms | 0.265 ms | 0.505 ms | p50 ≤ 1 ms, p99 ≤ 5 ms |
+| the same, k = 5 | 0.163 ms | 0.235 ms | 0.500 ms | 1.106 ms | 1.523 ms | as above |
+| the same, k = 20 | 0.450 ms | 0.617 ms | 0.778 ms | 1.463 ms | 1.683 ms | as above |
+| a `put` alone, for scale | 0.012 ms | 0.027 ms | 0.059 ms | 0.115 ms | 0.151 ms | |
+| opening a warm 20-dep watch | 0.624 ms | 0.790 ms | 0.969 ms | 1.900 ms | 2.939 ms | ≤ 5 ms |
+| `cancel()` to a blocked `next(None)` returning | 0.010 ms | 0.019 ms | 0.028 ms | 0.080 ms | 0.417 ms | ≤ 2 ms |
+| `next(Some(10 ms))`, time past the deadline | 0.015 ms | 1.014 ms | 1.030 ms | 1.298 ms | 1.424 ms | within 2 ms |
+| `next(Some(50 ms))`, time past the deadline | 0.038 ms | 0.969 ms | 1.040 ms | 1.068 ms | 2.814 ms | within 2 ms |
+
+At load 250–320 (two runs, given as ranges):
+
+| Measurement | min | p50 | p90 | p99 |
+|---|---:|---:|---:|---:|
+| `put` to `next` returning it, k = 1 | 0.08 ms | 0.30–0.65 ms | 3.0–14 ms | 41–66 ms |
+| the same, k = 5 | 0.24 ms | 0.85–1.17 ms | 3.3–22 ms | 53–101 ms |
+| the same, k = 20 | 0.72 ms | 2.9–3.3 ms | 24–39 ms | 248–259 ms |
+| a `put` alone, for scale | 0.02 ms | 0.05–0.13 ms | 0.4–2.6 ms | 9–23 ms |
+| opening a warm 20-dep watch | 0.79 ms | 2.6–4.1 ms | 44–109 ms | 254–394 ms |
+| `cancel()` to a blocked `next(None)` returning | 0.016 ms | 0.034 ms | 0.061 ms | 0.21 ms |
+| `next(Some(10 ms))`, time past the deadline | 0.04 ms | 0.90–1.05 ms | 1.2–1.7 ms | 2.5–3.2 ms |
+| `next(Some(50 ms))`, time past the deadline | 0.07 ms | 0.99–1.09 ms | 1.4–5.7 ms | 3.2–25 ms |
 
 - **Delivery no longer depends on which stream changed;** what it costs is the re-resolve, one round trip per key the
-  value reads, over the one connection the watch holds: about 35 µs a key, 0.72 ms at `k = 20`. Under this load a
-  `put` alone has a 9–23 ms p99, so no p99 here can meet 5 ms.
+  value reads, over the one connection the watch holds: about 25–35 µs a key, 0.45–0.72 ms at `k = 20`. At load
+  250–320 a `put` alone has a 9–23 ms p99, so no p99 there can meet 5 ms.
 - **Idle:** a 20-dep watch's `next(Some(10 s))` with nothing happening made 2 system calls (macOS keeps no count of
   voluntary context switches; a thread that wakes must make another call to sleep again) and used 0.3 ms of CPU.
   A `comb watch` of a 20-dep key left idle for 60 s after its first frame used 7.94 ms of CPU and 21 voluntary
