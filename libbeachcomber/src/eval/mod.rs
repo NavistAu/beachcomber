@@ -11,7 +11,8 @@
 //! This module answers the questions a caller has before evaluating — which of
 //! the forms is this ([`classify`], [`single_tag_expression`]), what does it
 //! reference ([`discover_refs`]) and import ([`imports`]), and is it sound
-//! where it is written ([`lint`]) — and owns the one evaluator, [`evaluate`],
+//! where it is written ([`lint`]), each read in a [`Probe`] — and owns the one
+//! evaluator, [`evaluate`],
 //! that the client's templates ([`crate::resolve`], which fetches what a
 //! source references first), a Source's lines and a provider's lines all run.
 
@@ -21,11 +22,11 @@ mod scan;
 pub use lint::{Finding, Known, Line, lint, refused};
 pub use scan::{Tag, TagKind, Use, scan_tags, used_names};
 
-use crate::engine::build_engine_env;
 use crate::library::memo::{MemoHit, hit_in};
 use crate::virtual_fields::{Ref, discover_expression_refs, refs_from_names};
 use minijinja::Environment;
 use minijinja::value::Value as MjValue;
+use std::collections::HashSet;
 
 // ── Forms ─────────────────────────────────────────────────────────────────────
 
@@ -241,12 +242,48 @@ fn string_literal(text: &str) -> Option<(String, &str)> {
     None
 }
 
+// ── Reading a line without running it ─────────────────────────────────────────
+
+/// An engine to read lines in without running them: what compiles in its
+/// environment, and the names of that environment's globals, collected once.
+/// The engine's analysis of a line can report a function it calls by name
+/// (`exec(...)`, `lup(...)`) as a name it reads; that is no name a context
+/// supplies, and every reading here ([`undeclared_names`], [`discover_refs`],
+/// [`lint`]) leaves the globals out. Built once for the lines read alike (a
+/// load's, a resolution's) and handed to each reading, not once per line.
+pub struct Probe<'e> {
+    env: Environment<'e>,
+    globals: HashSet<String>,
+}
+
+impl<'e> Probe<'e> {
+    pub fn new(env: Environment<'e>) -> Self {
+        let globals = env.globals().map(|(name, _)| name.to_string()).collect();
+        Self { env, globals }
+    }
+
+    /// The environment, which a caller may render in too.
+    pub fn env(&self) -> &Environment<'e> {
+        &self.env
+    }
+
+    /// `names` without the engine's own globals.
+    pub(crate) fn not_globals(
+        &self,
+        names: impl IntoIterator<Item = String>,
+    ) -> impl Iterator<Item = String> {
+        names
+            .into_iter()
+            .filter(|name| !self.globals.contains(name))
+    }
+}
+
 // ── Reference discovery ───────────────────────────────────────────────────────
 
 /// Every reference in `src`, for both forms, deduplicated and sorted.
 ///
 /// A `SingleTag` source goes through MiniJinja's expression meta-analysis; a
-/// `Template` source through the template's. Both run on the same environment
+/// `Template` source through the template's. Both run in `probe`'s engine
 /// and classify the dotted names they find identically
 /// (`crate::virtual_fields::classify_dotted`): a `P.rest…` name is
 /// `Resolved(P, "rest…")` with every segment kept, so `scanline.widgets.b`
@@ -260,39 +297,21 @@ fn string_literal(text: &str) -> Option<(String, &str)> {
 /// for reproducibility alone: nothing downstream depends on the order.
 /// [`crate::resolve`] in particular binds a `comb.P` / `comb.P.F` collision
 /// the same way whichever it binds first.
-pub fn discover_refs(src: &str) -> Vec<Ref> {
+pub fn discover_refs(probe: &Probe<'_>, src: &str) -> Vec<Ref> {
     match analyze(src) {
         // Already sorted by `discover_expression_refs`.
-        Analysis::SingleTag(expr) => discover_expression_refs(expr),
+        Analysis::SingleTag(expr) => discover_expression_refs(probe, expr),
         Analysis::Statements { .. } | Analysis::Template => {
-            // Ref discovery never evaluates anything, so `allow_exec`
-            // doesn't matter here — `false` is an arbitrary, harmless
-            // choice. (This has nothing to do with `exec` showing up as an
-            // "undeclared variable": minijinja's meta-analysis never
-            // reports a call's callee name at all, registered or not.)
-            let env = build_engine_env(Default::default());
-            let Ok(template) = env.template_from_str(src) else {
+            // Ref discovery never evaluates anything: what the probe's
+            // engine would do when run does not matter here.
+            let Ok(template) = probe.env().template_from_str(src) else {
                 return Vec::new();
             };
-            let mut refs = refs_from_names(not_globals(&env, template.undeclared_variables(true)));
+            let mut refs = refs_from_names(probe.not_globals(template.undeclared_variables(true)));
             refs.sort();
             refs
         }
     }
-}
-
-/// `names` without the engine's own globals: a function called by name
-/// (`exec(...)`, `lup(...)`) is reported as a name read, and it is not one the
-/// context supplies.
-pub(crate) fn not_globals(
-    env: &Environment<'_>,
-    names: impl IntoIterator<Item = String>,
-) -> impl Iterator<Item = String> {
-    let globals: std::collections::HashSet<String> =
-        env.globals().map(|(name, _)| name.to_string()).collect();
-    names
-        .into_iter()
-        .filter(move |name| !globals.contains(name))
 }
 
 /// How deeply one template may reference another before resolution gives up.
@@ -547,10 +566,11 @@ pub fn eval_line_with(
 /// path read (`comb.aws.region`), and a bare name means the variable is used
 /// other than by attribute (`comb['aws']`, `comb | length`).
 pub fn undeclared_names(
-    env: &Environment<'_>,
+    probe: &Probe<'_>,
     src: &str,
     nested: bool,
 ) -> Result<std::collections::BTreeSet<String>, String> {
+    let env = probe.env();
     let names = match single_tag_expression(src) {
         Some(expr) => env
             .compile_expression(expr)
@@ -563,11 +583,7 @@ pub fn undeclared_names(
     };
     // A registered function called in a template (`exec(...)`) is reported
     // too: it is not a name the context supplies.
-    let globals: std::collections::HashSet<&str> = env.globals().map(|(name, _)| name).collect();
-    Ok(names
-        .into_iter()
-        .filter(|name| !globals.contains(name.as_str()))
-        .collect())
+    Ok(probe.not_globals(names).collect())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -577,8 +593,14 @@ pub fn undeclared_names(
 // and for reference discovery.
 #[cfg(test)]
 mod tests {
-    use super::discover_refs;
+    use super::Probe;
     use crate::virtual_fields::Ref;
+
+    /// [`super::discover_refs`] in the client's engine.
+    fn discover_refs(src: &str) -> Vec<Ref> {
+        let probe = Probe::new(crate::engine::build_engine_env(Default::default()));
+        super::discover_refs(&probe, src)
+    }
 
     /// `src` rendered over `ctx`'s fields as locals, with no daemon behind
     /// it and `exec()` off: what a `-f` template sees of the value it formats.
@@ -1085,8 +1107,8 @@ mod line_tests {
 
     #[test]
     fn undeclared_names_are_the_top_level_variables() {
-        let env = build_engine_env(Default::default());
-        let names = |src: &str| undeclared_names(&env, src, false).unwrap();
+        let probe = super::Probe::new(build_engine_env(Default::default()));
+        let names = |src: &str| undeclared_names(&probe, src, false).unwrap();
         assert_eq!(
             names("{{ comb.a.b ~ env.X }}")
                 .into_iter()
@@ -1099,8 +1121,8 @@ mod line_tests {
                 .collect::<Vec<_>>(),
             vec!["data"]
         );
-        assert!(undeclared_names(&env, "{{ ", false).is_err());
-        let nested = |src: &str| undeclared_names(&env, src, true).unwrap();
+        assert!(undeclared_names(&probe, "{{ ", false).is_err());
+        let nested = |src: &str| undeclared_names(&probe, src, true).unwrap();
         assert!(
             nested("{{ comb.a.b }}")
                 .iter()

@@ -23,8 +23,7 @@ use crate::provider::Value;
 use crate::provider::registry::{CalleeMap, ProviderRegistry};
 use crate::run::{Cycle, Outcome, Want};
 use crate::scheduler::lifecycle::Key;
-use libbeachcomber::eval::undeclared_names;
-use minijinja::Environment;
+use libbeachcomber::eval::{Probe, undeclared_names};
 use serde_json::Value as Json;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -414,8 +413,8 @@ pub enum Called {
 /// Source named any other way could not be warmed before the line renders.
 /// A bare `sources` (the map itself, as `merge(sources)` takes it) is the
 /// caller's to allow or refuse.
-pub fn called_in(env: &Environment<'_>, line: &str) -> Result<Vec<Called>, String> {
-    let names = undeclared_names(env, line, true)?;
+pub fn called_in(probe: &Probe<'_>, line: &str) -> Result<Vec<Called>, String> {
+    let names = undeclared_names(probe, line, true)?;
     let mut out = std::collections::BTreeSet::new();
     for name in names {
         let parts: Vec<&str> = name.split('.').collect();
@@ -457,7 +456,9 @@ mod tests {
 
     fn called(line: &str) -> Result<Vec<Called>, String> {
         called_in(
-            &libbeachcomber::engine::build_pure_engine_env(Default::default()),
+            &Probe::new(libbeachcomber::engine::build_pure_engine_env(
+                Default::default(),
+            )),
             line,
         )
     }

@@ -11,7 +11,16 @@
 use crate::common::daemon::TestDaemon;
 use crate::common::socket::IsolatedSocket;
 use libbeachcomber::engine::build_pure_engine_env;
+use libbeachcomber::virtual_fields::Ref;
 use std::path::{Path, PathBuf};
+
+/// `src`'s refs, read in the client's engine.
+fn discover_refs(src: &str) -> Vec<Ref> {
+    let probe = libbeachcomber::eval::Probe::new(libbeachcomber::engine::build_engine_env(
+        Default::default(),
+    ));
+    libbeachcomber::eval::discover_refs(&probe, src)
+}
 
 // ── basename filter ──────────────────────────────────────────────────────────
 
@@ -66,8 +75,6 @@ fn basename_filter_follows_posix() {
 fn ref_discovery_finds_all_refs_in_cascade() {
     // Guards against first-ref-only regression.
     // "env.A or provider.field or other.field2" must discover ALL three.
-    use libbeachcomber::eval::discover_refs;
-    use libbeachcomber::virtual_fields::Ref;
     let refs = discover_refs("{{ env.A or provider.field or other.field2 }}");
     assert!(refs.contains(&Ref::Env("A".into())), "env.A missing");
     assert!(
@@ -87,8 +94,6 @@ fn nested_ref_discovery_keeps_every_segment_of_a_resolved_ref() {
     // `foo.object.key` is Resolved("foo", "object.key") and the resolver
     // fetches exactly that leaf. Only `env.*` and `comb.*` cut at a fixed
     // depth, where deeper segments are attribute navigation into the value.
-    use libbeachcomber::eval::discover_refs;
-    use libbeachcomber::virtual_fields::Ref;
     assert_eq!(
         discover_refs("{{ foo.object.key }}"),
         vec![Ref::Resolved("foo".into(), "object.key".into())]

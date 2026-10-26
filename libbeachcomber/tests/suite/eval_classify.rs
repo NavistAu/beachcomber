@@ -7,12 +7,16 @@
 //! source with no tags at all is its own literal text — there is no
 //! bare-expression form. Evaluation against fetched data is `tests/suite/resolve.rs`.
 
-use libbeachcomber::eval::{
-    Form, TagKind, classify, discover_refs, scan_tags, single_tag_expression,
-};
+use libbeachcomber::eval::{Form, Probe, TagKind, classify, scan_tags, single_tag_expression};
 use libbeachcomber::virtual_fields::Ref;
 use serde_json::{Value, json};
 use std::collections::HashSet;
+
+/// `src`'s refs, read in the client's engine.
+fn discover_refs(src: &str) -> Vec<Ref> {
+    let probe = Probe::new(libbeachcomber::engine::build_engine_env(Default::default()));
+    libbeachcomber::eval::discover_refs(&probe, src)
+}
 
 fn refs_set(src: &str) -> HashSet<Ref> {
     discover_refs(src).into_iter().collect()

@@ -54,7 +54,7 @@ use crate::shape::prototype::{Kind, Link, chain, super_chain};
 use dashmap::DashSet;
 use libbeachcomber::engine::op_error;
 use libbeachcomber::eval::{
-    Known, Line, Use, evaluate, lint, single_tag_expression, undeclared_names, used_names,
+    Known, Line, Probe, Use, evaluate, lint, single_tag_expression, undeclared_names, used_names,
 };
 use libbeachcomber::library::{Surface, first_refused};
 use minijinja::value::{Object, ObjectRepr, Value as MjValue};
@@ -232,7 +232,7 @@ fn links<'t>(providers: &'t toml::Table, name: &str) -> Vec<Link<'t>> {
 
 /// The chains of `name` among `providers` (a composed `[daemon.providers]`). A
 /// line of the wrong type is the file check's error, and is not in a chain.
-fn chains(env: &Environment<'_>, providers: &toml::Table, name: &str) -> Chains {
+fn chains(probe: &Probe<'_>, providers: &toml::Table, name: &str) -> Chains {
     let links = links(providers, name);
     // `enabled` is read from the provider's own table: on `_` it is a file
     // error, so no prototype holds one.
@@ -291,13 +291,13 @@ fn chains(env: &Environment<'_>, providers: &toml::Table, name: &str) -> Chains 
     ];
     let reads: BTreeSet<String> = lines[Key::Return.index()]
         .iter()
-        .filter_map(|line| undeclared_names(env, line, false).ok())
+        .filter_map(|line| undeclared_names(probe, line, false).ok())
         .flatten()
         .collect();
     let calls_of = |key: Key| -> Vec<(String, String)> {
         let found: BTreeSet<(String, String)> = lines[key.index()]
             .iter()
-            .flat_map(|line| called_in(env, line).unwrap_or_default())
+            .flat_map(|line| called_in(probe, line).unwrap_or_default())
             .filter_map(|called| match called {
                 Called::Of(provider, source) => Some((provider, source)),
                 Called::Sibling(_) => None,
@@ -400,7 +400,8 @@ pub struct Returned {
 /// resolved once per provider the configuration names; every other name shares
 /// the abstract provider's.
 pub struct ProviderLines {
-    env: Environment<'static>,
+    /// The engine the lines render in, which they are read in at load too.
+    probe: Probe<'static>,
     own: HashMap<String, Arc<Chains>>,
     shared: Arc<Chains>,
     /// Whether any provider's lines call a Source: when none does, a read looks
@@ -422,15 +423,16 @@ impl ProviderLines {
     pub fn new(providers: &toml::Table) -> Result<Self, Vec<String>> {
         let mut env = provider_engine_env(Default::default());
         env.add_filter("super", step_up);
+        let probe = Probe::new(env);
         let own: HashMap<String, Arc<Chains>> = providers
             .keys()
-            .map(|name| (name.clone(), Arc::new(chains(&env, providers, name))))
+            .map(|name| (name.clone(), Arc::new(chains(&probe, providers, name))))
             .collect();
-        let shared = Arc::new(chains(&env, providers, "_"));
+        let shared = Arc::new(chains(&probe, providers, "_"));
         let any_calls = shared.has_calls || own.values().any(|c| c.has_calls);
         let any_disabled = own.values().any(|c| c.disabled);
         let lines = Self {
-            env,
+            probe,
             own,
             shared,
             any_calls,
@@ -484,7 +486,7 @@ impl ProviderLines {
                         errors.insert(format!("{at}: {message}"));
                         continue;
                     }
-                    match called_in(&self.env, line) {
+                    match called_in(&self.probe, line) {
                         Err(e) => {
                             errors.insert(format!("{at}: {e}"));
                             continue;
@@ -503,7 +505,7 @@ impl ProviderLines {
                         }
                         Ok(_) => {}
                     }
-                    for finding in lint(&self.env, line, key.line(), &Known::default()) {
+                    for finding in lint(&self.probe, line, key.line(), &Known::default()) {
                         errors.insert(format!("{at}: {finding}"));
                     }
                 }
@@ -525,7 +527,7 @@ impl ProviderLines {
                     let owner = name
                         .filter(|n| *n != "_" && *path == format!("[daemon.providers.{n}]"))
                         .map(str::to_string);
-                    for called in called_in(&self.env, line).unwrap_or_default() {
+                    for called in called_in(&self.probe, line).unwrap_or_default() {
                         found.insert((format!("{path} {}", key.name()), owner.clone(), called));
                     }
                 }
@@ -582,7 +584,7 @@ impl ProviderLines {
             MjValue::from_serialize(serde_json::json!({"name": provider})),
         ));
         let sink = MjValue::from_object(FacetSink::default());
-        let value = render_level(&self.env, &lines, 0, &Arc::new(vars), &sink)
+        let value = render_level(self.probe.env(), &lines, 0, &Arc::new(vars), &sink)
             .map_err(|e| format!("{provider} {}: {e}", key.name()))?;
         let facets = sink
             .downcast_object_ref::<FacetSink>()

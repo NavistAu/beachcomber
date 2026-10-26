@@ -21,7 +21,8 @@
 
 use crate::engine::{EngineCtx, build_engine_env};
 use crate::eval::{
-    EvalError, Import, MAX_VIRTUAL_DEPTH, discover_refs, evaluate, imports, library, too_deep,
+    EvalError, Import, MAX_VIRTUAL_DEPTH, Probe, discover_refs, evaluate, imports, library,
+    too_deep,
 };
 use crate::lazy::{Bridge, LazyNode, Prefetch};
 use crate::library::memo::{Cached, Frame, Leaf, Memo, MemoFrames};
@@ -365,11 +366,12 @@ pub fn eval_with(
 /// directories is two nodes.
 struct Resolver<'a> {
     inputs: &'a Inputs<'a>,
-    /// The one engine every render of this resolution runs in, built once:
-    /// its library bound to the caller's `env` and directory, the only ones
-    /// an `exec()` child sees, and its loader the [`Libraries`] read so far.
-    /// Shared, so a render on another thread (a lazy `comb`) runs in it too.
-    jinja: Arc<Environment<'static>>,
+    /// The one engine every render of this resolution runs in, and every
+    /// text's refs are read in, built once: its library bound to the caller's
+    /// `env` and directory, the only ones an `exec()` child sees, and its
+    /// loader the [`Libraries`] read so far. Shared, so a render on another
+    /// thread (a lazy `comb`) runs in it too.
+    jinja: Arc<Probe<'static>>,
     /// The macro libraries read so far ([`Self::closure`]).
     libraries: Libraries,
     /// The caller's environment as a template reads it, `env`: built once,
@@ -420,7 +422,7 @@ impl<'a> Resolver<'a> {
         });
         Self {
             inputs,
-            jinja: Arc::new(jinja),
+            jinja: Arc::new(Probe::new(jinja)),
             libraries,
             // In name order, so `env | items` and a loop over `env` read the
             // same order every run.
@@ -630,7 +632,7 @@ impl<'a> Resolver<'a> {
         let libraries = self.closure(src, key)?;
         let mut refs: Vec<Ref> = std::iter::once(src)
             .chain(libraries.iter().map(String::as_str))
-            .flat_map(discover_refs)
+            .flat_map(|text| discover_refs(&self.jinja, text))
             .filter(|r| match r {
                 Ref::Dynamic(name) | Ref::Resolved(name, _) => !locals.contains_key(name),
                 Ref::Env(_) | Ref::CombField(..) | Ref::CombProvider(_) => true,
@@ -651,7 +653,7 @@ impl<'a> Resolver<'a> {
         let rendered = if refs.contains(&Ref::Dynamic("comb".to_string())) {
             self.render_with_lazy_comb(src, key, bound, &refs)
         } else {
-            evaluate_node(&self.jinja, src, key, self.context(None, bound))
+            evaluate_node(self.jinja.env(), src, key, self.context(None, bound))
         };
         if let Some(Frame::Leaf(leaf)) = self.frames.pop() {
             self.settle(leaf, &rendered);
@@ -780,7 +782,7 @@ impl<'a> Resolver<'a> {
 
         std::thread::scope(|scope| {
             let render = scope.spawn(move || {
-                let out = evaluate_node(&jinja, src, key, context);
+                let out = evaluate_node(jinja.env(), src, key, context);
                 (out, bridge.take_error())
             });
             for (asked, reply) in questions {

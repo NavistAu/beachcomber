@@ -2147,7 +2147,9 @@ async fn handle_request(
             // compile is refused. A name no provider has is not, since a later
             // put may make that provider.
             if facet == Some(Facet::Template) {
-                let engine = libbeachcomber::engine::build_engine_env(Default::default());
+                let engine = libbeachcomber::eval::Probe::new(
+                    libbeachcomber::engine::build_engine_env(Default::default()),
+                );
                 let at = libbeachcomber::key::join(namespace, node);
                 let known = libbeachcomber::eval::Known::default();
                 let refused = crate::daemon::seed::lint_template_tree(&engine, data, &at, &known)

@@ -4,9 +4,16 @@
 //! test daemon with the templates `put` to `<p>:template`.
 
 use crate::common::daemon::TestDaemon;
-use libbeachcomber::eval::discover_refs;
 use libbeachcomber::virtual_fields::Ref;
 use std::path::{Path, PathBuf};
+
+/// `src`'s refs, read in the client's engine.
+fn discover_refs(src: &str) -> Vec<Ref> {
+    let probe = libbeachcomber::eval::Probe::new(libbeachcomber::engine::build_engine_env(
+        Default::default(),
+    ));
+    libbeachcomber::eval::discover_refs(&probe, src)
+}
 
 // ── Step 1.1: Ref discovery returns kinded refs ───────────────────────────────
 

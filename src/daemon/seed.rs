@@ -248,7 +248,7 @@ fn plan(layers: &[(PathBuf, toml::Value)], registry: &ProviderRegistry) -> Plan 
 /// names, which a template reads by name, and every macro library a layer
 /// declares, which a template imports by address.
 struct ClientWorld {
-    engine: minijinja::Environment<'static>,
+    engine: libbeachcomber::eval::Probe<'static>,
     providers: Vec<String>,
     libraries: Vec<String>,
 }
@@ -276,7 +276,9 @@ impl ClientWorld {
         libraries.sort();
         libraries.dedup();
         Self {
-            engine: libbeachcomber::engine::build_engine_env(Default::default()),
+            engine: libbeachcomber::eval::Probe::new(libbeachcomber::engine::build_engine_env(
+                Default::default(),
+            )),
             providers: providers.into_iter().collect(),
             libraries,
         }
@@ -445,7 +447,9 @@ pub fn check_macro_put(
             ));
         }
     };
-    let engine = libbeachcomber::engine::build_engine_env(Default::default());
+    let engine = libbeachcomber::eval::Probe::new(libbeachcomber::engine::build_engine_env(
+        Default::default(),
+    ));
     for (name, text) in libraries.into_iter().filter(|(_, text)| !text.is_null()) {
         let at = libbeachcomber::key::join(namespace, &libbeachcomber::key::quote(&name));
         if let Some(e) = crate::shape::seeded::library_error(&name, text.as_str()) {
@@ -466,13 +470,13 @@ pub fn check_macro_put(
 /// linted as a client template in a world of `known`, with its address under
 /// `at` (`template.a.b` for a tree at `template`).
 pub fn lint_template_tree(
-    engine: &minijinja::Environment<'_>,
+    engine: &libbeachcomber::eval::Probe<'_>,
     tree: &serde_json::Value,
     at: &str,
     known: &libbeachcomber::eval::Known<'_>,
 ) -> Vec<(String, libbeachcomber::eval::Finding)> {
     fn walk(
-        engine: &minijinja::Environment<'_>,
+        engine: &libbeachcomber::eval::Probe<'_>,
         node: &serde_json::Value,
         at: String,
         known: &libbeachcomber::eval::Known<'_>,

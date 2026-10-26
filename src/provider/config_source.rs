@@ -36,7 +36,7 @@ use crate::provider::{FieldSchema, FieldType, Source, SourceMetadata, SourceResu
 use crate::shape::decorators::Recorded;
 use libbeachcomber::engine::EngineCtx;
 use libbeachcomber::eval::{
-    Finding, Known, Line, discover_refs, eval_line, eval_line_with, lint, undeclared_names,
+    Finding, Known, Line, Probe, discover_refs, eval_line, eval_line_with, lint, undeclared_names,
 };
 use libbeachcomber::fs::{MOST_TOUCHED, Touched};
 use libbeachcomber::virtual_fields::Ref;
@@ -220,7 +220,7 @@ pub fn lint_lines(
     env: &Arc<HashMap<String, String>>,
     plugins: &Arc<PluginSet>,
 ) -> Vec<String> {
-    let probe = engine(env, plugins, None, None);
+    let probe = Probe::new(engine(env, plugins, None, None));
     let mut lines: Vec<(String, &str, Line)> = Vec::new();
     if let Some(root) = root {
         lines.push(("root".into(), root, Line::Root));
@@ -251,7 +251,7 @@ pub fn lint_lines(
 
 /// What only a `data` line can get wrong, once it compiles: reading
 /// `sources` other than by calling one, or calling a Source no way names.
-fn lint_data(probe: &Environment<'_>, data: &str) -> Option<String> {
+fn lint_data(probe: &Probe<'_>, data: &str) -> Option<String> {
     let used = undeclared_names(probe, data, true).ok()?;
     if used.contains("sources") {
         return Some(
@@ -343,7 +343,8 @@ impl ConfigSource {
             return Err(errors);
         }
 
-        let refs = discover_refs(&spec.data);
+        let probe = Probe::new(engine(&env, &plugins, None, None));
+        let refs = discover_refs(&probe, &spec.data);
         let reads_comb = refs.iter().any(|r| {
             matches!(r, Ref::CombProvider(_) | Ref::CombField(..))
                 || *r == Ref::Dynamic("comb".to_string())
@@ -359,8 +360,7 @@ impl ConfigSource {
             .collect();
 
         let who = format!("{}.{}", spec.provider, spec.name);
-        let calls = called_in(&engine(&env, &plugins, None, None), &spec.data)
-            .map_err(|e| load_error("data", &e))?;
+        let calls = called_in(&probe, &spec.data).map_err(|e| load_error("data", &e))?;
         let itself = |c: &Called| match c {
             Called::Sibling(s) => *s == spec.name,
             Called::Of(p, s) => *p == spec.provider && *s == spec.name,

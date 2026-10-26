@@ -129,20 +129,13 @@ pub(crate) fn refs_from_names(names: impl IntoIterator<Item = String>) -> Vec<Re
 /// fails to compile here and yields nothing. [`crate::eval::discover_refs`] is
 /// the entry point that handles both forms, and is what callers outside
 /// this module use.
-pub(crate) fn discover_expression_refs(expr: &str) -> Vec<Ref> {
-    // Ref discovery never evaluates anything, so `allow_exec` doesn't
-    // matter here — an empty ctx is an arbitrary, harmless choice. (This has
-    // nothing to do with `exec` showing up as an "undeclared variable":
-    // minijinja's meta-analysis never reports a call's callee name at all,
-    // registered or not.)
-    let env = crate::engine::build_engine_env(Default::default());
-    let Ok(compiled) = env.compile_expression(expr) else {
+pub(crate) fn discover_expression_refs(probe: &crate::eval::Probe<'_>, expr: &str) -> Vec<Ref> {
+    // Ref discovery never evaluates anything: what the probe's engine would
+    // do when run does not matter here.
+    let Ok(compiled) = probe.env().compile_expression(expr) else {
         return vec![];
     };
-    let mut refs = refs_from_names(crate::eval::not_globals(
-        &env,
-        compiled.undeclared_variables(true),
-    ));
+    let mut refs = refs_from_names(probe.not_globals(compiled.undeclared_variables(true)));
     refs.sort();
     refs
 }

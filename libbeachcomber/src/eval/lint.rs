@@ -5,9 +5,8 @@
 //! load error, a warning, a refused `put`) is the caller's to say.
 
 use super::scan::{self, TagKind, used_names};
-use super::{Analysis, Import, analyze, imports, library};
+use super::{Analysis, Import, Probe, analyze, imports, library};
 use crate::library::{Surface, first_refused};
-use minijinja::Environment;
 
 /// Where a line is written, which decides the names its context supplies and
 /// whether it may import a macro library.
@@ -123,14 +122,14 @@ impl std::fmt::Display for Finding {
     }
 }
 
-/// What is wrong with `src` as a `line`, on `env`'s functions and filters,
+/// What is wrong with `src` as a `line`, on `probe`'s functions and filters,
 /// with `known` the world around it: that it does not compile, alone; or each
 /// statement its place refuses ([`refused`]), then each library it imports
 /// that no layer declares, then what its caching says ([`cached`]), then each
 /// name it reads that its context does not supply, in name order. Nothing is
 /// rendered.
-pub fn lint(env: &Environment<'_>, src: &str, line: Line, known: &Known<'_>) -> Vec<Finding> {
-    let names = match super::undeclared_names(env, src, false) {
+pub fn lint(probe: &Probe<'_>, src: &str, line: Line, known: &Known<'_>) -> Vec<Finding> {
+    let names = match super::undeclared_names(probe, src, false) {
         Err(e) => return vec![Finding::Compile(e)],
         Ok(names) => names,
     };
@@ -318,13 +317,13 @@ fn prints(src: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn env() -> Environment<'static> {
-        crate::engine::build_engine_env(Default::default())
+    fn probe() -> Probe<'static> {
+        Probe::new(crate::engine::build_engine_env(Default::default()))
     }
 
     /// `src` linted as a `line` that knows of no provider.
     fn lint_as(src: &str, line: Line) -> Vec<Finding> {
-        lint(&env(), src, line, &Known::default())
+        lint(&probe(), src, line, &Known::default())
     }
 
     fn compile_findings(src: &str, line: Line) -> Vec<String> {
@@ -375,11 +374,11 @@ mod tests {
             ..Known::default()
         };
         assert_eq!(
-            lint(&env(), "{{ git.branch }}", Line::Template, &known),
+            lint(&probe(), "{{ git.branch }}", Line::Template, &known),
             vec![]
         );
         assert!(matches!(
-            lint(&env(), "{{ git.branch }}", Line::Data, &known).as_slice(),
+            lint(&probe(), "{{ git.branch }}", Line::Data, &known).as_slice(),
             [Finding::Unknown(_)]
         ));
     }
@@ -447,7 +446,7 @@ mod tests {
             ("{% extends 'p:macro.x' %}", "extends"),
             ("{%- block b -%}{%- endblock -%}", "block"),
         ] {
-            assert!(env().template_from_str(src).is_ok(), "{src} parses");
+            assert!(probe().env().template_from_str(src).is_ok(), "{src} parses");
             for line in Line::ALL {
                 assert_eq!(
                     compile_findings(src, line),
@@ -699,7 +698,7 @@ mod tests {
         let src = "{% from \"p:macro['x']\" import a %}{% from 'p:macro.y' import b %}\
                    {% macro c() %}{{ a() ~ b() }}{% endmacro %}";
         for line in [Line::Template, Line::Macro] {
-            let found = lint(&env(), src, line, &known);
+            let found = lint(&probe(), src, line, &known);
             assert_eq!(
                 found,
                 [Finding::Unknown(
