@@ -670,20 +670,17 @@ async fn a_provider_decay_table_seeds_its_own_cache_facet() {
 
     // And the lookup the scheduler makes finds it.
     let cache = Cache::new();
-    let registry = crate::common::registry::with_shipped_defaults();
     let main = e.cfg_dir.join("config.toml");
-    beachcomber::daemon::seed::seed_facets(
-        &cache,
-        &registry,
-        &Config::from_layers(
-            Config::read_layers(
-                Some(&e.cfg_dir.join("defaults")),
-                Some(&main),
-                &e.cfg_dir.join("conf.d"),
-            )
-            .layers,
-        ),
+    let config = Config::from_layers(
+        Config::read_layers(
+            Some(&e.cfg_dir.join("defaults")),
+            Some(&main),
+            &e.cfg_dir.join("conf.d"),
+        )
+        .layers,
     );
+    let load = ProviderRegistry::load(&config, &std::env::vars().collect());
+    beachcomber::daemon::seed::seed_facets(&cache, &load.registry, load.seed);
     assert_eq!(cache.resolve_decay("git", None), 2);
     assert_eq!(
         cache.resolve_decay("hostname", None),
@@ -877,8 +874,9 @@ fn a_reload_keeps_the_age_of_records_it_did_not_change() {
     let layers = || Config::read_layers(Some(&defaults), Some(&cfg), &conf_d).layers;
 
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
-    beachcomber::daemon::seed::seed_facets(&cache, &registry, &Config::from_layers(layers()));
+    let load = ProviderRegistry::load(&Config::from_layers(layers()), &std::env::vars().collect());
+    let registry = Arc::new(load.registry);
+    beachcomber::daemon::seed::seed_facets(&cache, &registry, load.seed);
     // When `namespace`'s records from `file` were last written.
     let stamp = |namespace: &str, file: &str| {
         let entry = cache.get_entry(namespace, None).expect(namespace);
@@ -979,16 +977,8 @@ fn reload(
     last: &mut Arc<ProviderRegistry>,
     layers: Vec<(PathBuf, toml::Value)>,
 ) {
-    let changed = Config::from_layers(layers);
-    let loaded = ProviderRegistry::load(&changed, &HashMap::new());
-    beachcomber::daemon::seed::reload_providers(
-        cache,
-        handle,
-        sink,
-        last,
-        &changed,
-        loaded.registry,
-    );
+    let loaded = ProviderRegistry::load(&Config::from_layers(layers), &HashMap::new());
+    beachcomber::daemon::seed::reload_providers(cache, handle, sink, last, loaded);
 }
 
 /// An invalid edit changes nothing: a reload refuses the layers when called
@@ -1005,12 +995,13 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
     std::fs::write(&drop_in, RESEED_V1).unwrap();
 
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let defaults = tmp.path().join("defaults");
     beachcomber::daemon::defaults::write_managed_defaults(&defaults, env!("CARGO_PKG_VERSION"))
         .unwrap();
     let layers = || Config::read_layers(Some(&defaults), Some(&cfg), &conf_d).layers;
-    beachcomber::daemon::seed::seed_facets(&cache, &registry, &Config::from_layers(layers()));
+    let load = ProviderRegistry::load(&Config::from_layers(layers()), &std::env::vars().collect());
+    let registry = Arc::new(load.registry);
+    beachcomber::daemon::seed::seed_facets(&cache, &registry, load.seed);
     let leaf = |name: &str| {
         cache
             .read_merged("scanline:template", None, &[], &registry, Layers::All)
@@ -1031,7 +1022,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
         Duration::from_millis(10),
         false,
         stop.clone(),
-        move |kind, _, _| {
+        move |kind, _| {
             if kind == beachcomber::daemon::config_watch::ChangeKind::Providers {
                 let layers =
                     Config::read_layers(Some(&watch_defaults), Some(&watch_cfg), &watch_conf_d)

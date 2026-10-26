@@ -68,7 +68,7 @@ fn watch_from(
         Duration::from_millis(ms),
         false, // fs events off — the mtime poll is the mechanism under test
         stop,
-        move |kind, _, _| {
+        move |kind, _| {
             let _ = tx.send(kind);
         },
     )

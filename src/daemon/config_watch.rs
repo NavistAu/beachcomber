@@ -66,7 +66,7 @@
 //! the config directory case above, just one level down.
 
 use crate::config::Config;
-use crate::provider::registry::ProviderRegistry;
+use crate::provider::registry::{ConfigLoad, ProviderRegistry};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
@@ -127,8 +127,8 @@ fn composed_snapshot(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path)
 /// `config.toml`, `defaults/` and `conf.d`. `running` is the configuration
 /// the daemon runs on, and what the first change is judged against. Each time
 /// the composed set changes and parses as valid config, calls `on_change` with
-/// the kind of change (after a 200ms debounce on the fs-event path) and **keeps
-/// watching** — a providers change is handled in place, so there is no process
+/// the kind of change and what the change loaded (after a 200ms debounce on the
+/// fs-event path) and **keeps watching** — a providers change is handled in place, so there is no process
 /// exit to end the watch. A change that fails to parse logs a warning naming the
 /// error and changes nothing: the daemon never restarts into a config that would
 /// fail startup.
@@ -143,9 +143,7 @@ fn composed_snapshot(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path)
 /// for it; the daemon does not, because its own exit is what cancels the token.
 /// `None` for a configuration with no file behind it, which has nothing to
 /// watch.
-pub fn spawn_config_self_watch_with<
-    F: FnMut(ChangeKind, &Config, ProviderRegistry) + Send + 'static,
->(
+pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind, ConfigLoad) + Send + 'static>(
     running: &Config,
     poll_interval: Duration,
     fs_events: bool,
@@ -330,7 +328,7 @@ pub fn spawn_config_self_watch_with<
 /// cleanly is reported and the watch re-arms; an invalid change is logged and
 /// polling continues. Ends when `stop` is cancelled.
 #[allow(clippy::too_many_arguments)]
-fn poll_loop<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
+fn poll_loop<F: FnMut(ChangeKind, ConfigLoad)>(
     config_path: &Path,
     defaults_dir: &Path,
     conf_d_dir: &Path,
@@ -364,7 +362,7 @@ fn poll_loop<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
 /// change that fails the parse gate must not be re-detected on every subsequent
 /// tick, and a further edit landing while the gate runs must still differ from
 /// the snapshot so it fires on the next one.
-fn check_snapshot<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
+fn check_snapshot<F: FnMut(ChangeKind, ConfigLoad)>(
     config_path: &Path,
     defaults_dir: &Path,
     conf_d_dir: &Path,
@@ -386,7 +384,7 @@ fn check_snapshot<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
 /// leaving `settings` holding the new snapshot. A missing main config file is
 /// nothing, not a failure. If any composed file cannot be read or parsed, or
 /// breaks a rule, logs the errors and fires nothing.
-fn try_fire<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
+fn try_fire<F: FnMut(ChangeKind, ConfigLoad)>(
     config_path: &Path,
     settings: &mut toml::Value,
     on_change: &mut F,
@@ -399,15 +397,14 @@ fn try_fire<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
     for w in &loaded.warnings {
         tracing::warn!("{w}");
     }
-    let errors = loaded.errors;
-    if !errors.is_empty() {
-        for e in &errors {
+    if !loaded.errors.is_empty() {
+        for e in &loaded.errors {
             tracing::error!("{e}");
         }
         tracing::warn!(
             "config file changed but does not load ({} error(s)); keeping current config, \
              not restarting",
-            errors.len()
+            loaded.errors.len()
         );
         return;
     }
@@ -419,7 +416,7 @@ fn try_fire<F: FnMut(ChangeKind, &Config, ProviderRegistry)>(
     };
     *settings = next;
     tracing::info!("config file changed and parses cleanly ({kind:?})");
-    on_change(kind, &config, loaded.registry);
+    on_change(kind, loaded);
 }
 
 fn mtime_to_unix_ms(mtime: SystemTime) -> u64 {
@@ -465,7 +462,7 @@ mod tests {
         /// What `try_fire` reports for the files as they are now.
         fn fire(&mut self) -> Vec<ChangeKind> {
             let mut got = Vec::new();
-            try_fire(&self.config, &mut self.settings, &mut |kind, _, _| {
+            try_fire(&self.config, &mut self.settings, &mut |kind, _| {
                 got.push(kind)
             });
             got
@@ -505,26 +502,29 @@ mod tests {
         assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
     }
 
-    /// The `Config` handed to the callback is the one the gate validated, so
-    /// what is reseeded is what was checked.
+    /// The load handed to the callback is the one the gate validated, its
+    /// seed planned with it, so what is reseeded is what was checked.
     #[test]
-    fn the_callback_gets_the_config_that_was_validated() {
+    fn the_callback_gets_the_load_that_was_validated() {
         let mut dir = Dir::new(SOURCE);
         dir.write(
             "conf.d/10-t.toml",
             "[client.providers.x]\ntemplate.a = \"1\"\n",
         );
         let mut seen = Vec::new();
-        try_fire(&dir.config, &mut dir.settings, &mut |kind, config, _| {
-            seen.push((kind, config.composed_layers().len()));
+        try_fire(&dir.config, &mut dir.settings, &mut |kind, loaded| {
+            let labels: Vec<String> = loaded.seed.writes["x:template"]
+                .iter()
+                .map(|(label, _)| label.clone())
+                .collect();
+            seen.push((kind, loaded.errors.len(), labels));
         });
-        assert_eq!(
-            seen,
-            vec![(
-                ChangeKind::Providers,
-                crate::daemon::defaults::SHIPPED.len() + 2
-            )],
-            "the shipped files, config.toml and the drop-in"
+        assert_eq!(seen.len(), 1);
+        let (kind, errors, labels) = &seen[0];
+        assert_eq!((*kind, *errors), (ChangeKind::Providers, 0));
+        assert!(
+            matches!(labels.as_slice(), [label] if label.ends_with("conf.d/10-t.toml")),
+            "the drop-in's template, seeded from the drop-in: {labels:?}"
         );
     }
 

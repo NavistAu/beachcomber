@@ -173,9 +173,18 @@ async fn run_daemon_with_cancel(
     // Facet tables seed their namespaces before the socket is served, so the
     // first `get` already sees them, and the same files are watched for changes:
     // an edit under `providers` reloads in place, a bare `[daemon]` or
-    // `[client]` key cancels `cancel` and the daemon restarts.
+    // `[client]` key cancels `cancel` and the daemon restarts. The seed is
+    // the one the load planned.
     let registry = RegistryHandle::new(registry);
-    seed::spawn_config_seeding(&cache, &registry, &config, &cancel, polling_watch, &handle);
+    seed::spawn_config_seeding(
+        &cache,
+        &registry,
+        &config,
+        load.seed,
+        &cancel,
+        polling_watch,
+        &handle,
+    );
 
     match polling_watch {
         // Daemon path: probe fs-event delivery before trusting the native

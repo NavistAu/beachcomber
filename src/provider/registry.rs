@@ -26,6 +26,9 @@ pub struct ConfigLoad {
     /// a client template reading a name no provider has, which a `put` may
     /// yet make.
     pub warnings: Vec<String>,
+    /// What the configuration seeds into the cache, planned over `registry`:
+    /// written by whoever puts this load in force.
+    pub seed: crate::daemon::seed::Seed,
 }
 
 /// What a configuration declares: the config Sources, by provider, and the
@@ -1272,15 +1275,17 @@ impl ProviderRegistry {
         // a second error for the same fault (`check_calls` knows the tables).
         errors.extend(registry.check_calls(providers));
         errors.extend(config.errors());
-        // What the reseed could not plan (a `template` line that renders no
-        // table, a client template that does not compile): the same refusal a
-        // reload makes, so startup, `comb check config` and the config watch
-        // all see it. What the load and the per-file rules already said is not
-        // said twice.
-        let (seed_errors, mut warnings) = crate::daemon::seed::plan_findings(config, &registry);
-        for e in seed_errors {
-            if !errors.contains(&e) {
-                errors.push(e);
+        // The seed, planned here once for whoever puts this load in force.
+        // What it could not plan (a `template` line that renders no table, a
+        // client template that does not compile) is the same refusal a reload
+        // makes, so startup, `comb check config` and the config watch all see
+        // it. What the load and the per-file rules already said is not said
+        // twice.
+        let mut seed = crate::daemon::seed::plan(config, &registry);
+        let mut warnings = std::mem::take(&mut seed.warnings);
+        for e in &seed.errors {
+            if !errors.contains(e) {
+                errors.push(e.clone());
             }
         }
         // `sys` is the compiled-in plugin's name: a library of that name on
@@ -1304,6 +1309,7 @@ impl ProviderRegistry {
             registry,
             errors: located,
             warnings,
+            seed,
         }
     }
 

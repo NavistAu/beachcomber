@@ -455,9 +455,9 @@ fn the_shipped_cache_prototype_is_the_decay_default() {
     std::fs::write(cfg_dir.join("config.toml"), "").unwrap();
 
     let cache = beachcomber::cache::Cache::new();
-    let registry = crate::common::registry::with_shipped_defaults();
     let config = beachcomber::config::Config::load();
-    beachcomber::daemon::seed::seed_facets(&cache, &registry, &config);
+    let load = beachcomber::provider::registry::ProviderRegistry::load(&config, &config.vars());
+    beachcomber::daemon::seed::seed_facets(&cache, &load.registry, load.seed);
     // `resolve_decay` alone would pass with nothing seeded (it falls back to
     // `DEFAULT_DECAY`), so assert the record itself and its file label.
     let rows: Vec<_> = cache

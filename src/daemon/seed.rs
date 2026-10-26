@@ -34,7 +34,7 @@
 use crate::cache::{CONFIG_SOURCE_PREFIX, Cache};
 use crate::config::Config;
 use crate::provider::Value;
-use crate::provider::registry::{ProviderRegistry, RegistryHandle};
+use crate::provider::registry::{ConfigLoad, ProviderRegistry, RegistryHandle};
 use crate::scheduler::{SchedulerHandle, SchedulerMessage};
 use std::collections::HashMap;
 use std::path::Path;
@@ -47,19 +47,23 @@ use tokio_util::sync::CancellationToken;
 type Writes = Vec<(String, Value)>;
 
 /// The seed of a configuration's layers: the writes per facet namespace, and
-/// what is wrong with them.
+/// what is wrong with them. Planned once, by the load of the configuration
+/// ([`ProviderRegistry::load`], which reports its errors and warnings), and
+/// written by whoever puts that load in force: [`seed_facets`] at start,
+/// [`reload_providers`] on a change.
 #[derive(Default)]
-struct Plan {
-    writes: HashMap<String, Writes>,
+pub struct Seed {
+    pub(crate) writes: HashMap<String, Writes>,
     /// What stops the seed: a startup refusal, an abandoned reload.
-    errors: Vec<String>,
+    pub(crate) errors: Vec<String>,
     /// What is likely a mistake but is seeded all the same.
-    warnings: Vec<String>,
+    pub(crate) warnings: Vec<String>,
 }
 
-/// Seed the config-seeded tables of `config`'s files and watch them for changes:
-/// an edit under `providers` reloads the registry and reseeds in place
-/// ([`reload_providers`]), a bare `[daemon]` or `[client]` key cancels `cancel`.
+/// Seed the config-seeded tables of `config`'s files, `seed` (its load's), and
+/// watch them for changes: an edit under `providers` reloads the registry and
+/// reseeds in place ([`reload_providers`]), a bare `[daemon]` or `[client]` key
+/// cancels `cancel`.
 ///
 /// Both halves are gated on `Config::config_path`, which only
 /// `Config::load_from` sets: a daemon handed a `Config` built in memory (an
@@ -77,6 +81,7 @@ pub fn spawn_config_seeding(
     cache: &Arc<Cache>,
     registry: &RegistryHandle,
     config: &Config,
+    seed: Seed,
     cancel: &CancellationToken,
     polling_watch: Option<Duration>,
     scheduler: &SchedulerHandle,
@@ -84,7 +89,7 @@ pub fn spawn_config_seeding(
     if config.config_file().is_none() {
         return;
     }
-    seed_facets(cache, &registry.current(), config);
+    seed_facets(cache, &registry.current(), seed);
 
     // The watch stops on the daemon's own shutdown token — its closure holds
     // the cache and the registry, so a watch outliving the daemon would keep
@@ -109,10 +114,10 @@ pub fn spawn_config_seeding(
         interval,
         fs_events,
         stop,
-        move |kind, changed, loaded| match kind {
+        move |kind, loaded| match kind {
             // What was compared and reloaded is what the gate validated.
             super::config_watch::ChangeKind::Providers => {
-                reload_providers(&cache, &registry, &scheduler, &mut last, changed, loaded);
+                reload_providers(&cache, &registry, &scheduler, &mut last, loaded);
             }
             super::config_watch::ChangeKind::Settings => {
                 tracing::info!("configuration settings changed; shutting down for restart");
@@ -123,10 +128,11 @@ pub fn spawn_config_seeding(
 }
 
 /// Apply a change under `[daemon.providers]` or `[client.providers]` in place.
-/// `loaded` is the registry the gate built from `changed`; it is made the one
-/// to serve from ([`ProviderRegistry::adopt`]) and the seed is planned for it,
-/// and only when both are sound does anything change: on any error the whole
-/// reload is abandoned, the errors logged, the running registry and seed kept.
+/// `loaded` is what the gate loaded from the changed configuration: its
+/// registry is made the one to serve from ([`ProviderRegistry::adopt`]) and
+/// its seed, planned by that load, is written, and only when the seed is sound
+/// does anything change: on any error the whole reload is abandoned, the
+/// errors logged, the running registry and seed kept.
 /// Then the template and `cache` facets are reseeded and the scheduler is told
 /// to put the registry in force and bring its lifecycle entries to match.
 /// Requests and scheduler runs that took the previous registry finish on it.
@@ -140,16 +146,15 @@ pub fn reload_providers(
     registry: &RegistryHandle,
     scheduler: &SchedulerHandle,
     last: &mut Arc<ProviderRegistry>,
-    changed: &Config,
-    loaded: ProviderRegistry,
+    loaded: ConfigLoad,
 ) {
-    let next = loaded.adopt(last, cache);
+    let next = loaded.registry.adopt(last, cache);
     // The warnings were the gate's to log, from the same load.
-    let Plan {
+    let Seed {
         writes: planned,
         errors,
         ..
-    } = plan(changed, &next);
+    } = loaded.seed;
     if !errors.is_empty() {
         for e in &errors {
             tracing::error!("{e}");
@@ -169,18 +174,19 @@ pub fn reload_providers(
     *last = next;
 }
 
-/// Write every seeded table of every layer of `config` into the cache, one
-/// `write_static` per (layer, namespace), over `registry`, the registry loaded
-/// from `config`. Used at daemon start, where startup validation has already
-/// refused any file with an error; what a file with an error would have seeded
-/// is not written, only what validated. Refusals are logged.
-pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, config: &Config) {
+/// Write `seed`, every seeded table of every layer, into the cache, one
+/// `write_static` per (layer, namespace), registering its namespaces in
+/// `registry`, the registry loaded with it. Used at daemon start, where startup
+/// validation has already refused any file with an error; what a file with an
+/// error would have seeded is not written, only what validated. Refusals are
+/// logged.
+pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, seed: Seed) {
     // The warnings are the startup load's to log.
-    let Plan {
+    let Seed {
         writes: planned,
         errors,
         ..
-    } = plan(config, registry);
+    } = seed;
     for e in &errors {
         tracing::error!("{e}");
     }
@@ -192,13 +198,6 @@ pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, config: &Config) 
             }
         }
     }
-}
-
-/// What planning the seed of `config`'s layers over `registry`, the registry
-/// loaded from it, finds: the errors, and the warnings.
-pub fn plan_findings(config: &Config, registry: &ProviderRegistry) -> (Vec<String>, Vec<String>) {
-    let plan = plan(config, registry);
-    (plan.errors, plan.warnings)
 }
 
 /// Swap in a plan that [`plan`] made without errors.
@@ -217,15 +216,15 @@ fn apply_reseed(cache: &Cache, registry: &ProviderRegistry, mut planned: HashMap
     }
 }
 
-/// The write list per facet namespace of `config`'s layers, in composition
-/// order, and every file's errors. `registry` is the registry loaded from
-/// `config`: it names the providers there are, and its provider lines
-/// ([`ProviderRegistry::lines`]) are the ones the `template` lines render
-/// from, compiled once by the load. Pure: registering the namespaces is the
-/// caller's, so the plan can be built and inspected without touching the
-/// registry.
-fn plan(config: &Config, registry: &ProviderRegistry) -> Plan {
-    let mut plan = Plan::default();
+/// The seed of `config`'s layers: the write list per facet namespace, in
+/// composition order, and every file's errors and warnings. `registry` is the
+/// registry being loaded from `config`: it names the providers there are, and
+/// its provider lines ([`ProviderRegistry::lines`]) are the ones the
+/// `template` lines render from, compiled once by the load. Pure: registering
+/// the namespaces is the caller's, so the seed can be planned and inspected
+/// without touching the registry.
+pub(crate) fn plan(config: &Config, registry: &ProviderRegistry) -> Seed {
+    let mut plan = Seed::default();
     let layers: Vec<Layer<'_>> = config
         .composed_layers()
         .iter()
@@ -328,7 +327,7 @@ fn library_address(provider: &str, name: &str) -> String {
 /// replacing one library and keeping its siblings. Each is linted as a macro
 /// library: one that does not compile, or prints, is an error and is not
 /// written; one that imports a library no layer declares is a warning.
-fn plan_macros(layers: &[Layer<'_>], world: &ClientWorld, plan: &mut Plan) {
+fn plan_macros(layers: &[Layer<'_>], world: &ClientWorld, plan: &mut Seed) {
     use libbeachcomber::eval::{Finding, Line, lint};
     for Layer {
         label, shown, read, ..
@@ -380,7 +379,7 @@ fn plan_templates(
     layers: &[Layer<'_>],
     lines: &crate::shape::provider::ProviderLines,
     world: &ClientWorld,
-    plan: &mut Plan,
+    plan: &mut Seed,
 ) {
     let known = world.known();
     for Layer {
@@ -533,7 +532,7 @@ mod tests {
     }
 
     /// The plan of `layers`, over the registry a load of them builds.
-    fn plan_of(layers: &[(PathBuf, toml::Value)]) -> Plan {
+    fn plan_of(layers: &[(PathBuf, toml::Value)]) -> Seed {
         let config = Config::from_layers(layers.to_vec());
         let registry = ProviderRegistry::load(&config, &HashMap::new()).registry;
         plan(&config, &registry)
@@ -548,7 +547,7 @@ mod tests {
     }
 
     /// The libraries each layer declares, as its writes to `<p>:macro`.
-    fn macro_writes(plan: &Plan, provider: &str) -> Vec<(String, serde_json::Value)> {
+    fn macro_writes(plan: &Seed, provider: &str) -> Vec<(String, serde_json::Value)> {
         plan.writes
             .get(&format!("{provider}:macro"))
             .into_iter()
@@ -675,7 +674,7 @@ mod tests {
                 "[client.providers.bad]\ntemplate.n = 1\n\n[client.providers.ok]\ntemplate.n = \"{{ 1 }}\"\n",
             ),
         ];
-        let Plan {
+        let Seed {
             writes: planned,
             errors,
             ..
@@ -737,7 +736,7 @@ mod tests {
         let layers = [layer(
             "[daemon.providers.git]\ntemplate = \"{{ 1 }}\"\n\n[client.providers.git]\ntemplate.a = \"x\"\n",
         )];
-        let Plan {
+        let Seed {
             writes: planned,
             errors,
             ..
@@ -793,14 +792,7 @@ mod tests {
             "the load that gates startup and the watch refuses it too: {:?}",
             loaded.errors
         );
-        reload_providers(
-            &cache,
-            &registry,
-            &scheduler,
-            &mut last,
-            &broken,
-            loaded.registry,
-        );
+        reload_providers(&cache, &registry, &scheduler, &mut last, loaded);
         assert!(Arc::ptr_eq(&before, &registry.current()));
         assert!(rx.try_recv().is_err(), "the scheduler is told nothing");
         assert!(cache.is_empty(), "and nothing is seeded");
@@ -809,14 +801,7 @@ mod tests {
             "[daemon.providers.etest.sources.u]\ndata = \"{{ 5 }}\"\nresult.u1 = \"{{ data }}\"\n",
         );
         let loaded = ProviderRegistry::load(&sound, &std::env::vars().collect());
-        reload_providers(
-            &cache,
-            &registry,
-            &scheduler,
-            &mut last,
-            &sound,
-            loaded.registry,
-        );
+        reload_providers(&cache, &registry, &scheduler, &mut last, loaded);
         assert!(matches!(rx.try_recv(), Ok(SchedulerMessage::Reload { .. })));
     }
 }
