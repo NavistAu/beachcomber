@@ -44,7 +44,7 @@ pub fn ask(sock: &Path, request: Value) -> Value {
 }
 
 /// The watches the daemon at `sock` reports (`introspect watches`), as
-/// `(path, the rest of the entry)`.
+/// `(path, the rest of the entry)`, less `asked_secs_ago`, a clock reading.
 #[allow(dead_code)]
 pub fn watches(sock: &Path) -> Vec<(String, Value)> {
     ask(
@@ -56,6 +56,7 @@ pub fn watches(sock: &Path) -> Vec<(String, Value)> {
         .iter()
         .map(|w| {
             let mut rest = w.clone();
+            rest.as_object_mut().unwrap().remove("asked_secs_ago");
             let path = rest
                 .as_object_mut()
                 .unwrap()

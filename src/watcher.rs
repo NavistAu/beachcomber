@@ -3,7 +3,7 @@ use notify::{Config, Event, EventKind, PollWatcher, RecommendedWatcher, Recursiv
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
@@ -148,6 +148,9 @@ pub struct Watch {
     pub path: PathBuf,
     #[serde(flatten)]
     pub state: WatchState,
+    /// Whole seconds since the path was last asked for: how long a `pending`
+    /// one has been waiting on the worker.
+    pub asked_secs_ago: u64,
 }
 
 /// The file watches the scheduler asks for, registered by a worker thread
@@ -167,7 +170,8 @@ struct Table {
     /// Every path asked for: the ask that last asked for it, and where it
     /// stands. An ask the worker settles is written only while it is still
     /// the path's latest.
-    paths: BTreeMap<PathBuf, (u64, WatchState)>,
+    /// When it was asked for rides along, for `introspect watches`.
+    paths: BTreeMap<PathBuf, (u64, WatchState, Instant)>,
     asks: u64,
 }
 
@@ -208,7 +212,9 @@ impl Registrar {
             let mut table = lock(&self.table);
             table.asks += 1;
             let ask = table.asks;
-            table.paths.insert(path.clone(), (ask, WatchState::Pending));
+            table
+                .paths
+                .insert(path.clone(), (ask, WatchState::Pending, Instant::now()));
             ask
         };
         let _ = self.commands.send(Command::Watch(path, ask));
@@ -226,7 +232,7 @@ impl Registrar {
             let table = lock(&self.table);
             paths
                 .into_iter()
-                .filter(|p| matches!(table.paths.get(*p), Some((_, WatchState::Failed { .. }))))
+                .filter(|p| matches!(table.paths.get(*p), Some((_, WatchState::Failed { .. }, _))))
                 .map(Path::to_path_buf)
                 .collect()
         };
@@ -241,7 +247,7 @@ impl Registrar {
         lock(&self.table)
             .paths
             .values()
-            .any(|(_, s)| matches!(s, WatchState::Failed { .. }))
+            .any(|(_, s, _)| matches!(s, WatchState::Failed { .. }))
     }
 
     /// `changed`, an entry of a directory a path is watched through, may be
@@ -254,7 +260,7 @@ impl Registrar {
         let due: Vec<PathBuf> = lock(&self.table)
             .paths
             .iter()
-            .filter(|(path, (_, state))| {
+            .filter(|(path, (_, state, _))| {
                 matches!(state, WatchState::Active { via: Some(via) } if via == dir)
                     && path.starts_with(changed)
             })
@@ -276,9 +282,10 @@ impl Registrar {
         lock(&self.table)
             .paths
             .iter()
-            .map(|(path, (_, state))| Watch {
+            .map(|(path, (_, state, asked))| Watch {
                 path: path.clone(),
                 state: state.clone(),
+                asked_secs_ago: asked.elapsed().as_secs(),
             })
             .collect()
     }
@@ -314,7 +321,7 @@ impl Worker {
                     let mut table = lock(&self.table);
                     // Unwatched or asked for again since: a later command
                     // settles it.
-                    if let Some((at, settled)) = table.paths.get_mut(&path)
+                    if let Some((at, settled, _)) = table.paths.get_mut(&path)
                         && *at == ask
                     {
                         *settled = state;

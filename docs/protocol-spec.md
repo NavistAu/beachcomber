@@ -769,20 +769,24 @@ Source, by path, with where its registration stands:
 
 ```json
 {"watches": [
-  {"path": "/home/me/ws/project", "state": "active"},
-  {"path": "/home/me/.config/tool/state.json", "state": "active", "via": "/home/me/.config"},
-  {"path": "/home/me/ws/big", "state": "pending"},
-  {"path": "/srv/locked/state.json", "state": "failed", "error": "Permission denied (os error 13)"}
+  {"path": "/home/me/ws/project", "state": "active", "asked_secs_ago": 310},
+  {"path": "/home/me/.config/tool/state.json", "state": "active", "via": "/home/me/.config", "asked_secs_ago": 310},
+  {"path": "/home/me/ws/big", "state": "pending", "asked_secs_ago": 2},
+  {"path": "/srv/locked/state.json", "state": "failed", "error": "Permission denied (os error 13)", "asked_secs_ago": 40}
  ],
  "verdicts": [{"level": "PASS", "message": "watching 4 paths"}, …]}
 ```
 
-A registration is made off the scheduler's loop, so a path is `pending` until
+Watches exist only while an instance is Active, so a daemon with no Active
+instance lists none and says `PASS` `idle: no instance is Active, so no path
+is watched`: that is healthy, not a warning. `asked_secs_ago` is the whole
+seconds since the path was last asked for. A registration is made off the
+scheduler's loop, so a path is `pending` until
 it is made, and its changes are not seen until then. `active` is registered: on
 the path and everything below it or, with `via`, while the path does not exist,
 on the entries of the nearest directory above it that does; the path's
 creation is then a change like any other. `failed` carries the error, adds a
-`WARN` verdict, and is asked for again by the next read of a Source that
+`WARN` verdict (as does a path still `pending` after 30 seconds), and is asked for again by the next read of a Source that
 watches it.
 
 **Response (subject=providers):** `data.providers` is one object per

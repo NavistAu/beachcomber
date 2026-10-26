@@ -601,10 +601,7 @@ fn render_subject(
             worst = worst.max(vworst);
 
             lines.push_str(&format!("Watches ({} paths)\n", watches.len()));
-            if watches.is_empty() {
-                lines.push_str("  [WARN] not watching any paths\n");
-                worst = worst.max(Outcome::Warning);
-            } else {
+            if !watches.is_empty() {
                 let home = libbeachcomber::path::Home::from_env();
                 let text = |key: &str, w: &serde_json::Value| {
                     w.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())

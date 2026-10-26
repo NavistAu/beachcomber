@@ -2839,15 +2839,7 @@ async fn handle_introspect_watches(scheduler: Option<&SchedulerHandle>) -> Respo
         None => Vec::new(),
     };
 
-    let mut verdicts = vec![if watches.is_empty() {
-        serde_json::json!({"level": "WARN", "message": "not watching any paths"})
-    } else {
-        serde_json::json!({"level": "PASS", "message": format!("watching {} paths", watches.len())})
-    }];
-    verdicts.extend(
-        failed_watches(&watches)
-            .map(|message| serde_json::json!({"level": "WARN", "message": message})),
-    );
+    let verdicts = watch_verdicts(&watches);
 
     Response::ok(
         serde_json::json!({
@@ -2859,6 +2851,10 @@ async fn handle_introspect_watches(scheduler: Option<&SchedulerHandle>) -> Respo
     )
 }
 
+/// How long a path may be `pending` before the worker is called slow: a
+/// registration can take seconds, and a few are normal.
+const PENDING_TOO_LONG_SECS: u64 = 30;
+
 /// What a WARN verdict says of each watch whose registration failed. The next
 /// demand of an instance that watches it asks for it again.
 fn failed_watches(watches: &[crate::watcher::Watch]) -> impl Iterator<Item = String> + '_ {
@@ -2869,6 +2865,42 @@ fn failed_watches(watches: &[crate::watcher::Watch]) -> impl Iterator<Item = Str
         )),
         _ => None,
     })
+}
+
+/// What a WARN verdict says of each watch pending past [`PENDING_TOO_LONG_SECS`].
+fn slow_watches(watches: &[crate::watcher::Watch]) -> impl Iterator<Item = String> + '_ {
+    watches.iter().filter_map(|w| match &w.state {
+        crate::watcher::WatchState::Pending if w.asked_secs_ago >= PENDING_TOO_LONG_SECS => {
+            Some(format!(
+                "watch of {} still registering after {}",
+                w.path.display(),
+                secs(w.asked_secs_ago)
+            ))
+        }
+        _ => None,
+    })
+}
+
+/// The verdicts on the watch table, which holds a path for each watch an
+/// Active instance declares and none otherwise (a watch exists only while its
+/// instance is Active). So an empty table is an idle daemon, healthy; the
+/// warnings are a declared watch that is not registered: one that failed, and
+/// one still pending after [`PENDING_TOO_LONG_SECS`].
+fn watch_verdicts(watches: &[crate::watcher::Watch]) -> Vec<serde_json::Value> {
+    let mut verdicts = vec![if watches.is_empty() {
+        serde_json::json!({
+            "level": "PASS",
+            "message": "idle: no instance is Active, so no path is watched",
+        })
+    } else {
+        serde_json::json!({"level": "PASS", "message": format!("watching {} paths", watches.len())})
+    }];
+    verdicts.extend(
+        failed_watches(watches)
+            .chain(slow_watches(watches))
+            .map(|message| serde_json::json!({"level": "WARN", "message": message})),
+    );
+    verdicts
 }
 
 async fn handle_introspect_timers(scheduler: Option<&SchedulerHandle>) -> Response {
@@ -3004,6 +3036,70 @@ fn secs(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn watch(
+        path: &str,
+        state: crate::watcher::WatchState,
+        asked_secs_ago: u64,
+    ) -> crate::watcher::Watch {
+        crate::watcher::Watch {
+            path: path.into(),
+            state,
+            asked_secs_ago,
+        }
+    }
+
+    fn levels(verdicts: &[serde_json::Value]) -> Vec<&str> {
+        verdicts
+            .iter()
+            .map(|v| v["level"].as_str().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn no_watches_is_an_idle_daemon_not_a_warning() {
+        let verdicts = watch_verdicts(&[]);
+        assert_eq!(levels(&verdicts), ["PASS"]);
+        assert!(verdicts[0]["message"].as_str().unwrap().contains("idle"));
+    }
+
+    #[test]
+    fn a_failed_watch_warns_and_a_registered_one_does_not() {
+        use crate::watcher::WatchState::{Active, Failed};
+        let verdicts = watch_verdicts(&[
+            watch("/a", Active { via: None }, 900),
+            watch(
+                "/b",
+                Failed {
+                    error: "gone".into(),
+                },
+                1,
+            ),
+        ]);
+        assert_eq!(levels(&verdicts), ["PASS", "WARN"]);
+        assert!(verdicts[1]["message"].as_str().unwrap().contains("/b"));
+    }
+
+    #[test]
+    fn a_pending_watch_warns_only_once_it_has_waited_too_long() {
+        use crate::watcher::WatchState::Pending;
+        assert_eq!(
+            levels(&watch_verdicts(&[watch(
+                "/a",
+                Pending,
+                PENDING_TOO_LONG_SECS - 1
+            )])),
+            ["PASS"]
+        );
+        assert_eq!(
+            levels(&watch_verdicts(&[watch(
+                "/a",
+                Pending,
+                PENDING_TOO_LONG_SECS
+            )])),
+            ["PASS", "WARN"]
+        );
+    }
 
     /// A config Source whose run appends to `<dir>/runs`, touches
     /// `<dir>/started`, then waits for `<dir>/go` and answers 1.

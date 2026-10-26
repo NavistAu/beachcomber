@@ -1210,3 +1210,19 @@ fn comb_daemon_refused_by_config_validation_exits_two_and_binds_nothing() {
     );
     assert!(!sock.exists(), "it never bound its socket");
 }
+
+/// An idle daemon watches nothing, which is how a daemon with no Active
+/// instance should look: `comb check watches` says so plainly and exits 0.
+#[test]
+fn check_watches_on_an_idle_daemon_is_healthy() {
+    let d = crate::common::daemon::TestDaemon::spawn();
+    let output = d
+        .comb(&d.home)
+        .args(["check", "watches"])
+        .output()
+        .expect("run comb check watches");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(!stdout.contains("not watching"), "{stdout}");
+    assert!(!stdout.contains("[WARN]"), "{stdout}");
+}
