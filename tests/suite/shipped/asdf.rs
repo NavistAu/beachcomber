@@ -137,6 +137,12 @@ fn asdf_a_rewritten_tool_versions_is_seen_by_the_next_read() {
 /// the Source's record like any other.
 #[test]
 fn asdf_python_version_falls_through_to_asdf() {
+    // `python.version` reads `comb.mise.python` first: the daemon's `PATH`
+    // has no `mise`, so the developer's own never runs (it would take most of
+    // a second, and answer from its own config).
+    // SAFETY: nextest runs each test in its own process, and the daemon that
+    // reads this `PATH` has not started.
+    unsafe { std::env::set_var("PATH", "/usr/bin:/bin") };
     let s = scenario();
     tool_versions(&s.project, "python 3.11.9\n");
     assert_eq!(s.get("python.version", &s.project), Some(json!("3.11.9")));

@@ -207,6 +207,12 @@ fn python_a_rewritten_pyvenv_cfg_is_seen_by_the_next_read() {
 /// virtualenv's, before `$VIRTUAL_ENV`.
 #[test]
 fn python_the_templates_render_over_the_source() {
+    // `python.version` reads `comb.mise.python` first: the daemon's `PATH`
+    // has no `mise`, so the developer's own never runs (it would take most of
+    // a second, and answer from its own config).
+    // SAFETY: nextest runs each test in its own process, and the daemon that
+    // reads this `PATH` has not started.
+    unsafe { std::env::set_var("PATH", "/usr/bin:/bin") };
     let s = scenario();
     venv(&s.project, ".venv", "version = 3.12.4\n");
     assert_eq!(s.get("python.version", &s.project), Some(json!("3.12.4")));
