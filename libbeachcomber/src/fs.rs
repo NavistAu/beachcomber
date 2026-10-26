@@ -372,7 +372,7 @@ fn named(name: String) -> Mount {
 
 #[cfg(target_os = "linux")]
 fn kind_of(fs: &libc::statfs) -> Mount {
-    magic(fs.f_type as i64 as u64 & 0xffff_ffff)
+    magic(fs.f_type as u64 & 0xffff_ffff)
 }
 
 /// A mount by `statfs(2)`'s `f_type`, the filesystem's magic number.
