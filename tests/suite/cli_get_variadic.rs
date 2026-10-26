@@ -5,7 +5,7 @@ use beachcomber::cache::Schedule;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
-use libbeachcomber::{ClientConfig, CombResult, Session};
+use libbeachcomber::{ClientConfig, Session};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,13 +23,9 @@ fn session_for(sock: std::path::PathBuf) -> Session {
     .unwrap()
 }
 
-/// The `data` of a hit; anything else is a panic naming `what`.
-fn hit(result: CombResult, what: &str) -> serde_json::Value {
-    match result {
-        CombResult::Hit { data, .. } => data.as_value().clone(),
-        CombResult::Template { .. } => panic!("{what}: expected a hit, got a template"),
-        CombResult::Miss => panic!("{what}: expected a hit, got a miss"),
-    }
+/// The rendered value; a miss is a panic naming `what`.
+fn hit(result: Option<serde_json::Value>, what: &str) -> serde_json::Value {
+    result.unwrap_or_else(|| panic!("{what}: expected a value, got a miss"))
 }
 
 async fn setup_server() -> (TempDir, std::path::PathBuf) {
@@ -90,7 +86,7 @@ async fn get_variadic_partial_failure_still_emits_successful_key() {
     // The unknown key is a miss, and the connection stays open for the
     // remaining keys.
     match bad {
-        Ok(CombResult::Miss) => {}
+        Ok(None) => {}
         other => panic!("expected a miss, got {other:?}"),
     }
 }

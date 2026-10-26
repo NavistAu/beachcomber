@@ -13,7 +13,7 @@ use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
 /// A `libbeachcomber` client on `sock`, with no daemon auto-start — for the
-/// benches that measure its own API (`get_text`, a `Session`).
+/// benches that measure its own API (`get`, a `Session`).
 fn lib_client(sock: std::path::PathBuf) -> libbeachcomber::Client {
     libbeachcomber::Client::with_config(libbeachcomber::ClientConfig {
         timeout: std::time::Duration::from_secs(2),
@@ -105,7 +105,12 @@ fn bench_socket_roundtrip_text(c: &mut Criterion) {
         b.to_async(&server.rt).iter(|| {
             let sock = server.sock.clone();
             async move {
-                let text = lib_client(sock).get_text("hostname.name", None).unwrap();
+                let value = lib_client(sock).get("hostname.name", None).unwrap();
+                let text = libbeachcomber::render::render_value(
+                    "hostname.name",
+                    value.as_ref(),
+                    libbeachcomber::render::Format::Text,
+                );
                 criterion::black_box(text);
             }
         })

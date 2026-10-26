@@ -3,17 +3,13 @@
 //! A lightweight, synchronous client for the beachcomber (`comb`) shell state daemon.
 //!
 //! ```rust,no_run
-//! use libbeachcomber::{Client, CombResult};
+//! use libbeachcomber::Client;
 //!
 //! let client = Client::new();
+//! // What `comb get git.branch` prints in that directory; `Ok(None)` is a miss.
 //! match client.get("git.branch", Some("/path/to/repo")) {
-//!     Ok(CombResult::Hit { data, age_ms, stale, .. }) => {
-//!         println!("branch: {}", data.get_str("git.branch").unwrap_or("?"));
-//!     }
-//!     Ok(CombResult::Template { template, .. }) => {
-//!         println!("a template, not a value: {template} — render it with `resolve`");
-//!     }
-//!     Ok(CombResult::Miss) => println!("not cached yet"),
+//!     Ok(Some(branch)) => println!("branch: {branch}"),
+//!     Ok(None) => println!("nothing there"),
 //!     Err(e) => println!("error: {}", e),
 //! }
 //! ```
@@ -94,106 +90,6 @@ pub fn connect_with_retry_for(path: &Path, budget: Duration) -> std::io::Result<
                 std::thread::sleep(delay.min(deadline - now));
                 delay *= 2;
             }
-        }
-    }
-}
-
-/// What a raw `get` found at an address: the daemon's answer, classified.
-///
-/// A node may hold a value (`data`), a template (`template`), or both. The
-/// value is the cached half; the template is the half the *client* renders,
-/// because rendering needs the caller's environment and directory. A raw
-/// `get` hands both back as they arrived — [`resolve`] is what renders the
-/// template into the value `comb get` prints.
-#[derive(Debug, PartialEq)]
-pub enum CombResult {
-    /// The node holds a value. It may also hold a template, which wins on
-    /// read when rendered (`resolve`); a raw `get` hands both back.
-    Hit {
-        data: CombData,
-        age_ms: u128,
-        stale: bool,
-        /// The template in effect at the address, if any: a string for a
-        /// leaf, an object tree for a group.
-        template: Option<serde_json::Value>,
-        /// The address left over when the template walk stopped at a string.
-        rest: Option<String>,
-    },
-    /// The node holds only a template: an address whose value is rendered
-    /// client-side (`resolve`). Not a miss — something is stored there — and
-    /// not a hit — there is no value until it is rendered.
-    Template {
-        /// A string for a leaf, an object tree for a group.
-        template: serde_json::Value,
-        /// The address left over when the template walk stopped at a string.
-        rest: Option<String>,
-    },
-    /// Nothing is stored at the address.
-    Miss,
-}
-
-impl CombResult {
-    /// True for [`Hit`](Self::Hit) only: the node holds a value.
-    pub fn is_hit(&self) -> bool {
-        matches!(self, CombResult::Hit { .. })
-    }
-
-    /// True for [`Miss`](Self::Miss) only. A [`Template`](Self::Template) is
-    /// not a miss: render it with [`resolve`].
-    pub fn is_miss(&self) -> bool {
-        matches!(self, CombResult::Miss)
-    }
-
-    /// The template half, from a `Hit` that carries one or a `Template`.
-    pub fn template(&self) -> Option<&serde_json::Value> {
-        match self {
-            CombResult::Hit { template, .. } => template.as_ref(),
-            CombResult::Template { template, .. } => Some(template),
-            CombResult::Miss => None,
-        }
-    }
-
-    /// The address left over past a template string, from either variant.
-    pub fn rest(&self) -> Option<&str> {
-        match self {
-            CombResult::Hit { rest, .. } | CombResult::Template { rest, .. } => rest.as_deref(),
-            CombResult::Miss => None,
-        }
-    }
-}
-
-/// Classify a node: `data` present is a `Hit` (the template half rides
-/// along), a template alone is a `Template`, neither is a `Miss`. `age_ms`
-/// and `stale` always accompany `data` on the wire; the defaults are never
-/// reached. `rest` never arrives without `template` — the daemon sets it only
-/// when the template walk stopped at a string — so a `Miss` ignores it.
-impl From<resolve::Got> for CombResult {
-    fn from(got: resolve::Got) -> Self {
-        match got {
-            resolve::Got {
-                data: Some(value),
-                template,
-                rest,
-                age_ms,
-                stale,
-            } => CombResult::Hit {
-                data: CombData { value },
-                age_ms: age_ms.unwrap_or(0),
-                stale: stale.unwrap_or(false),
-                template,
-                rest,
-            },
-            resolve::Got {
-                data: None,
-                template: Some(template),
-                rest,
-                ..
-            } => CombResult::Template { template, rest },
-            resolve::Got {
-                data: None,
-                template: None,
-                ..
-            } => CombResult::Miss,
         }
     }
 }
@@ -581,43 +477,34 @@ impl Client {
         self
     }
 
-    /// Query a single key, raw: the daemon's answer as it arrived, nothing
-    /// rendered. A [`CombResult::Hit`] carries the value (and the template in
-    /// effect there, if any); a [`CombResult::Template`] is a node that holds
-    /// only a template — not a miss, but not a value until [`resolve`]
-    /// renders it; a [`CombResult::Miss`] has nothing stored.
+    /// The value `comb get key` prints, read from `path` (`None` is the global
+    /// entry) through [`resolve::resolve`], the one function every surface
+    /// shares: a template the daemon holds is rendered here, against this
+    /// process's environment, and `Ok(None)` is a miss. `path` is read as every
+    /// request path is ([`path::normalise_here`]).
     ///
-    /// Examples:
-    /// - `client.get("git.branch", Some("/path/to/repo"))` — single field
-    /// - `client.get("git", Some("/path/to/repo"))` — all fields
+    /// The unrendered stored value is a facet address, read through this same
+    /// `get`: `client.get("git:cache.branch", path)`, `"aws:template.profile"`,
+    /// `"p:put.x"`, `"p:source.x"`. For a caller's own `env`, `force` or
+    /// `wait`, call [`resolve::resolve`] with an [`resolve::Inputs`] and
+    /// `&mut &client` as the [`resolve::Fetch`]. For text, hand the value to
+    /// [`render::render_value`].
+    ///
+    /// - `client.get("git.branch", Some("/path/to/repo"))` — one field
+    /// - `client.get("git", Some("/path/to/repo"))` — all fields, as an object
     /// - `client.get("hostname.short", None)` — global provider
-    /// - `client.get("scanline.widgets.foo", None)` on a templated address —
-    ///   `Template { template: "{{ env.SCANLINE_FOO }}", rest: None }`
-    pub fn get(&self, key: &str, path: Option<&str>) -> Result<CombResult, CombError> {
-        self.get_with_flags(key, path, false, false)
-    }
-
-    /// Query a key with optional flags.
-    ///
-    /// `force = true`: re-execute every Source the key demands before
-    /// answering. `wait = true`: a stale entry is re-executed inline before
-    /// answering; a fresh one is served as it is.
-    pub fn get_with_flags(
+    pub fn get(
         &self,
         key: &str,
         path: Option<&str>,
-        force: bool,
-        wait: bool,
-    ) -> Result<CombResult, CombError> {
-        self.get_node(key, path, force, wait).map(CombResult::from)
+    ) -> Result<Option<serde_json::Value>, resolve::ResolveError> {
+        get_here(key, path, self.allow_exec(), &mut { self })
     }
 
-    /// Query one node and return both halves of the daemon's answer — the
-    /// cached `data` and the `template` in effect at the address — as the
-    /// [`resolve`] module's [`Fetch`](resolve::Fetch) needs them. The same
-    /// `get` request as [`get_with_flags`](Self::get_with_flags); a miss is
-    /// `Got::default()`, a rejected key `CombError::ServerError`.
-    pub fn get_node(
+    /// One node's two halves, as the resolver's [`Fetch`](resolve::Fetch)
+    /// needs them: the cached `data` and the `template` in effect there. A
+    /// miss is `Got::default()`, a rejected key `CombError::ServerError`.
+    fn fetch_node(
         &self,
         key: &str,
         path: Option<&str>,
@@ -626,48 +513,6 @@ impl Client {
     ) -> Result<resolve::Got, CombError> {
         self.call(&get_request(key, path, force, wait)?)
             .map(parse_node)
-    }
-
-    /// Query a single key, rendered by the daemon as plain text.
-    /// Shorthand for `get_formatted(key, path, Format::Text)`.
-    pub fn get_text(&self, key: &str, path: Option<&str>) -> Result<String, CombError> {
-        self.get_formatted(key, path, render::Format::Text)
-    }
-
-    /// Query a single key, rendered into `format` ([`render::render_value`]).
-    pub fn get_formatted(
-        &self,
-        key: &str,
-        path: Option<&str>,
-        format: render::Format,
-    ) -> Result<String, CombError> {
-        self.get_formatted_with_flags(key, path, format, false, false)
-    }
-
-    /// Query a single key with optional flags, rendered into `format` on the
-    /// client side ([`render::render_value`]). This performs a plain JSON `get` and renders
-    /// the result locally (Task 1.8 retired the server-rendered wire
-    /// sub-protocol this used to speak); a failed request surfaces as
-    /// `CombError::ServerError`, never as a rendered `error:` line. This is
-    /// raw like [`get`](Self::get): a template-only node renders its template
-    /// text, not the value [`resolve`] would make of it.
-    pub fn get_formatted_with_flags(
-        &self,
-        key: &str,
-        path: Option<&str>,
-        format: render::Format,
-        force: bool,
-        wait: bool,
-    ) -> Result<String, CombError> {
-        Ok(match self.get_with_flags(key, path, force, wait)? {
-            CombResult::Hit { data, .. } => {
-                render::render_value(key, Some(data.as_value()), format)
-            }
-            CombResult::Template { template, .. } => {
-                render::render_value(key, Some(&template), format)
-            }
-            CombResult::Miss => render::render_value(key, None, format),
-        })
     }
 
     /// Store data at a key, replacing whatever is stored at that address.
@@ -744,7 +589,7 @@ impl Client {
 
     /// Open a persistent session for multiple queries on one connection.
     pub fn session(&self) -> Result<Session, CombError> {
-        Ok(Session::new(self.open()?))
+        Ok(Session::new(self.open()?, self.allow_exec()))
     }
 
     fn find_or_start_socket(&self) -> Result<PathBuf, CombError> {
@@ -805,7 +650,7 @@ impl resolve::Fetch for &Client {
         force: bool,
         wait: bool,
     ) -> Result<Option<resolve::Got>, resolve::FetchError> {
-        fetched(self.get_node(key, path, force, wait))
+        fetched(self.fetch_node(key, path, force, wait))
     }
 }
 
@@ -893,12 +738,15 @@ pub struct Session {
     /// The directory [`Session::set_context`] set, sent with every request
     /// that names no path.
     context: Option<String>,
+    /// Whether templates this session resolves may call `exec()`.
+    allow_exec: bool,
 }
 
 impl Session {
-    fn new(conn: Conn) -> Self {
+    fn new(conn: Conn, allow_exec: bool) -> Self {
         Self {
             conn,
+            allow_exec,
             skew_checked: false,
             version_skew: None,
             context: None,
@@ -924,78 +772,17 @@ impl Session {
         envelope(&line, self.version_skew.as_ref())
     }
 
-    /// Query a single key on this persistent connection. Raw, like
-    /// [`Client::get`]: a template-only node is [`CombResult::Template`].
-    pub fn get(&mut self, key: &str, path: Option<&str>) -> Result<CombResult, CombError> {
-        self.get_with_flags(key, path, false, false)
-    }
-
-    /// Query a key with optional flags on this persistent connection — see
-    /// [`Client::get_with_flags`].
-    pub fn get_with_flags(
+    /// [`Client::get`] on this persistent connection: the value `comb get key`
+    /// prints, `Ok(None)` a miss. A `path` of `None` addresses the session's
+    /// directory ([`set_context`](Self::set_context)), else the global entry.
+    pub fn get(
         &mut self,
         key: &str,
         path: Option<&str>,
-        force: bool,
-        wait: bool,
-    ) -> Result<CombResult, CombError> {
-        self.get_node(key, path, force, wait).map(CombResult::from)
-    }
-
-    /// Query one node on this persistent connection and return both halves
-    /// of the daemon's answer — see [`Client::get_node`].
-    pub fn get_node(
-        &mut self,
-        key: &str,
-        path: Option<&str>,
-        force: bool,
-        wait: bool,
-    ) -> Result<resolve::Got, CombError> {
-        let request = get_request(key, self.path_or_context(path), force, wait)?;
-        self.call(&request).map(parse_node)
-    }
-
-    /// Query a single key on this persistent connection, rendered by the
-    /// daemon as plain text. Shorthand for `get_formatted(key, path, Format::Text)`.
-    pub fn get_text(&mut self, key: &str, path: Option<&str>) -> Result<String, CombError> {
-        self.get_formatted(key, path, render::Format::Text)
-    }
-
-    /// Query a single key on this persistent connection, rendered into
-    /// `format` ([`render::render_value`]).
-    pub fn get_formatted(
-        &mut self,
-        key: &str,
-        path: Option<&str>,
-        format: render::Format,
-    ) -> Result<String, CombError> {
-        self.get_formatted_with_flags(key, path, format, false, false)
-    }
-
-    /// Query a key with optional flags on this persistent connection,
-    /// rendered into `format` on the client side ([`render::render_value`]). This performs a plain JSON `get` and renders
-    /// the result locally (Task 1.8 retired the server-rendered wire
-    /// sub-protocol this used to speak); a failed request surfaces as
-    /// `CombError::ServerError`, never as a rendered `error:` line. This is
-    /// raw like [`get`](Self::get): a template-only node renders its template
-    /// text, not the value [`resolve`] would make of it.
-    pub fn get_formatted_with_flags(
-        &mut self,
-        key: &str,
-        path: Option<&str>,
-        format: render::Format,
-        force: bool,
-        wait: bool,
-    ) -> Result<String, CombError> {
-        Ok(match self.get_with_flags(key, path, force, wait)? {
-            CombResult::Hit { data, .. } => {
-                render::render_value(key, Some(data.as_value()), format)
-            }
-            CombResult::Template { template, .. } => {
-                render::render_value(key, Some(&template), format)
-            }
-            CombResult::Miss => render::render_value(key, None, format),
-        })
+    ) -> Result<Option<serde_json::Value>, resolve::ResolveError> {
+        let path = self.path_or_context(path).map(str::to_string);
+        let allow_exec = self.allow_exec;
+        get_here(key, path.as_deref(), allow_exec, self)
     }
 
     /// Set this session's directory: every later request that names no path
@@ -1080,8 +867,8 @@ impl Session {
 
 // --- Internal helpers ---
 
-/// The `get` request every query sends, whichever of `get_with_flags`,
-/// `get_node` or a [`resolve::Fetch`] builds it, on either transport.
+/// The `get` request every query sends, whichever [`resolve::Fetch`] builds
+/// it, on either transport.
 fn get_request(
     key: &str,
     path: Option<&str>,
@@ -1136,6 +923,31 @@ fn introspect_request(subject: IntrospectSubject, duration_secs: Option<u64>) ->
         subject,
         duration_secs,
     }
+}
+
+/// The value `comb get key` prints at `path` (`None` is the global entry),
+/// read from this process: its environment and directory conventions.
+fn get_here(
+    key: &str,
+    path: Option<&str>,
+    allow_exec: bool,
+    fetch: &mut dyn resolve::Fetch,
+) -> Result<Option<serde_json::Value>, resolve::ResolveError> {
+    let transport = |e| resolve::ResolveError::Fetch(resolve::FetchError::Transport(e));
+    let dir = wire_path(path).map_err(transport)?;
+    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let inputs = resolve::Inputs {
+        cwd: dir.as_deref().unwrap_or(""),
+        env: &env,
+        slot: dir
+            .clone()
+            .map_or(resolve::Slot::Global, resolve::Slot::Path),
+        force: false,
+        wait: false,
+        allow_exec,
+        now: std::time::SystemTime::now(),
+    };
+    resolve::resolve(key, &inputs, fetch)
 }
 
 /// The `path` a request carries: [`path::normalise_here`], so `~` and a
@@ -1216,10 +1028,6 @@ mod tests {
         envelope(line, None).map(parse_node)
     }
 
-    fn response_of(line: &str) -> Result<CombResult, CombError> {
-        node_of(line).map(CombResult::from)
-    }
-
     /// Every failure has its slug, and a read or write that ran out its
     /// timeout is a timeout, not an I/O error.
     #[test]
@@ -1250,105 +1058,6 @@ mod tests {
         ] {
             assert_eq!(e.kind(), slug, "{e:?}");
         }
-    }
-
-    /// A `get` response classifies into the eight response shapes of the one-tree
-    /// design §3.4: `data` present is a `Hit` carrying whatever template
-    /// half came with it; a template alone is a `Template`, with `rest` when
-    /// the walk stopped at a string; neither is a `Miss`; `ok:false` is a
-    /// server error. And it is the `Got` plus `From<Got>` — the two readings
-    /// cannot disagree.
-    #[test]
-    fn parse_response_carries_the_template_half() {
-        use serde_json::json;
-
-        let hit = |value: serde_json::Value,
-                   age_ms: u128,
-                   stale: bool,
-                   template: Option<serde_json::Value>| CombResult::Hit {
-            data: CombData::from_json(value),
-            age_ms,
-            stale,
-            template,
-            rest: None,
-        };
-        let shapes: [(&str, CombResult); 7] = [
-            (
-                r#"{"ok":true,"template":"{{ env.SCANLINE_FOO }}"}"#,
-                CombResult::Template {
-                    template: json!("{{ env.SCANLINE_FOO }}"),
-                    rest: None,
-                },
-            ),
-            (
-                r#"{"ok":true,"template":{"foo":"{{ a }}","bar":"{{ b }}"}}"#,
-                CombResult::Template {
-                    template: json!({"foo": "{{ a }}", "bar": "{{ b }}"}),
-                    rest: None,
-                },
-            ),
-            (
-                r#"{"ok":true,"data":{"lit":1},"age_ms":30,"stale":false,"template":{"theme":"t","widgets":{"foo":"f"}}}"#,
-                hit(
-                    json!({"lit": 1}),
-                    30,
-                    false,
-                    Some(json!({"theme": "t", "widgets": {"foo": "f"}})),
-                ),
-            ),
-            (
-                r#"{"ok":true,"data":"default","age_ms":812,"stale":false,"template":"{{ env.TF_WORKSPACE or comb.terraform.workspace }}"}"#,
-                hit(
-                    json!("default"),
-                    812,
-                    false,
-                    Some(json!("{{ env.TF_WORKSPACE or comb.terraform.workspace }}")),
-                ),
-            ),
-            (
-                r#"{"ok":true,"data":"feature/x","age_ms":812,"stale":true}"#,
-                hit(json!("feature/x"), 812, true, None),
-            ),
-            (
-                r#"{"ok":true,"template":"{{ {'cpu': 40, 'mem': 12} }}","rest":"cpu"}"#,
-                CombResult::Template {
-                    template: json!("{{ {'cpu': 40, 'mem': 12} }}"),
-                    rest: Some("cpu".to_string()),
-                },
-            ),
-            (r#"{"ok":true}"#, CombResult::Miss),
-        ];
-        for (line, expected) in shapes {
-            let parsed = response_of(line).expect("an ok response parses");
-            assert_eq!(parsed, expected, "{line}");
-            assert_eq!(
-                CombResult::from(node_of(line).unwrap()),
-                parsed,
-                "a CombResult is a Got, classified: {line}"
-            );
-        }
-        match response_of(r#"{"ok":false,"error":"invalid key"}"#) {
-            Err(CombError::ServerError(m)) => assert_eq!(m, "invalid key"),
-            other => panic!("a rejected key must be a server error, got {other:?}"),
-        }
-
-        // The accessors: a `Template` is neither a hit nor a miss, and both
-        // halves are reachable from whichever variant carries them.
-        let template_only =
-            response_of(r#"{"ok":true,"template":"{{ x }}","rest":"cpu"}"#).unwrap();
-        assert!(!template_only.is_hit());
-        assert!(!template_only.is_miss());
-        assert_eq!(template_only.template(), Some(&json!("{{ x }}")));
-        assert_eq!(template_only.rest(), Some("cpu"));
-        let both =
-            response_of(r#"{"ok":true,"data":1,"age_ms":0,"stale":false,"template":"{{ 2 }}"}"#)
-                .unwrap();
-        assert!(both.is_hit());
-        assert_eq!(both.template(), Some(&json!("{{ 2 }}")));
-        assert_eq!(both.rest(), None);
-        let miss = response_of(r#"{"ok":true}"#).unwrap();
-        assert!(miss.is_miss());
-        assert_eq!(miss.template(), None);
     }
 
     /// A `get` response read as a `Got` keeps both halves: the eight response shapes of the

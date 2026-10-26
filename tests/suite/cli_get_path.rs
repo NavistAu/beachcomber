@@ -15,7 +15,7 @@ use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
 use libbeachcomber::resolve::FetchError;
-use libbeachcomber::{ClientConfig, CombResult, Session};
+use libbeachcomber::{ClientConfig, Session};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,13 +33,9 @@ fn session_for(sock: std::path::PathBuf) -> Session {
     .unwrap()
 }
 
-/// The `data` of a hit; anything else is a panic naming `what`.
-fn hit(result: CombResult, what: &str) -> serde_json::Value {
-    match result {
-        CombResult::Hit { data, .. } => data.as_value().clone(),
-        CombResult::Template { .. } => panic!("{what}: expected a hit, got a template"),
-        CombResult::Miss => panic!("{what}: expected a hit, got a miss"),
-    }
+/// The rendered value; a miss is a panic naming `what`.
+fn hit(result: Option<serde_json::Value>, what: &str) -> serde_json::Value {
+    result.unwrap_or_else(|| panic!("{what}: expected a value, got a miss"))
 }
 
 /// Set up a server with a real git repo on disk, so the git provider's

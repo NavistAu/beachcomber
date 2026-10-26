@@ -1149,26 +1149,23 @@ libbeachcomber = "0.8"
 ```
 
 ```rust
-use libbeachcomber::{Client, CombResult};
+use libbeachcomber::Client;
 
 let client = Client::new(); // auto-discovers socket, starts daemon if needed
 
-// Single field query
+// What `comb get git.branch` prints in that directory; `None` is a miss
 match client.get("git.branch", Some("/path/to/repo"))? {
-    CombResult::Hit { data, .. } => println!("branch: {}", data.as_text().unwrap()),
-    CombResult::Miss => println!("not cached yet — will be ready on next query"),
+    Some(branch) => println!("branch: {branch}"),
+    None => println!("nothing there"),
 }
 
-// Full provider query with typed field access
-match client.get("git", Some("/path/to/repo"))? {
-    CombResult::Hit { data, age_ms, stale } => {
-        println!("branch: {}", data.get_str("branch").unwrap_or("?"));
-        println!("dirty: {}", data.get_bool("dirty").unwrap_or(false));
-        println!("ahead: {}", data.get_i64("ahead").unwrap_or(0));
-        println!("age: {}ms, stale: {}", age_ms, stale);
-    }
-    CombResult::Miss => {}
+// A provider is its whole object
+if let Some(git) = client.get("git", Some("/path/to/repo"))? {
+    println!("dirty: {}", git["dirty"]);
 }
+
+// The unrendered stored value is a facet address
+let stored = client.get("git:cache.branch", Some("/path/to/repo"))?;
 
 // Persistent session for multiple queries (one connection, multiple requests)
 let mut session = client.session()?;
@@ -1180,7 +1177,7 @@ let battery = session.get("battery.percent", None)?;
 Features:
 - **Synchronous** — no async runtime needed
 - **Socket activation** — starts the daemon automatically if not running
-- **Typed access** — `get_str()`, `get_bool()`, `get_i64()`, `get_f64()`
+- **The value `comb get` prints** — templates rendered, `serde_json::Value` out
 - **Persistent sessions** — reuse one connection for multiple queries (15µs/query vs 34µs)
 - **Configurable timeouts** — default 100ms, adjustable via `ClientConfig`
 

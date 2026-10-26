@@ -4,6 +4,7 @@
 //! that kind.
 
 use libbeachcomber::resolve::{self, Inputs, Slot};
+use libbeachcomber::resolve::{Fetch, FetchError, ResolveError};
 use libbeachcomber::{Client, ClientConfig, CombError, IntrospectSubject};
 use std::collections::HashMap;
 use std::os::unix::net::UnixListener;
@@ -33,6 +34,14 @@ fn impatient_client(sock: &std::path::Path) -> Client {
     .with_socket_path(sock.to_path_buf())
 }
 
+/// The transport failure a resolution stopped on; anything else is a panic.
+fn read<T>(r: Result<T, ResolveError>) -> Result<T, CombError> {
+    r.map_err(|e| match e {
+        ResolveError::Fetch(FetchError::Transport(e)) => e,
+        other => panic!("expected a transport failure, got {other:?}"),
+    })
+}
+
 fn assert_timeout<T: std::fmt::Debug>(op: &str, r: Result<T, CombError>) {
     match r {
         Err(e @ CombError::Timeout) => assert_eq!(e.kind(), "timeout"),
@@ -45,8 +54,14 @@ fn every_client_op_that_waits_too_long_is_a_timeout() {
     let (_tmp, sock) = silent_daemon();
     let client = impatient_client(&sock);
 
-    assert_timeout("get", client.get("p.x", None));
-    assert_timeout("get_node", client.get_node("p.x", None, false, false));
+    assert_timeout("get", read(client.get("p.x", None)));
+    assert_timeout(
+        "fetch",
+        Fetch::get(&mut &client, "p.x", None, false, false).map_err(|e| match e {
+            FetchError::Transport(e) => e,
+            other => panic!("expected a transport failure, got {other:?}"),
+        }),
+    );
     assert_timeout(
         "put",
         client.put("p", serde_json::json!({"x": 1}), None, None),
@@ -66,7 +81,7 @@ fn every_session_op_that_waits_too_long_is_a_timeout() {
     let client = impatient_client(&sock);
     let mut session = client.session().expect("connects");
 
-    assert_timeout("get", session.get("p.x", None));
+    assert_timeout("get", read(session.get("p.x", None)));
     assert_timeout(
         "put",
         session.put("p", serde_json::json!({"x": 1}), None, None),

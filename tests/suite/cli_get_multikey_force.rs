@@ -1,5 +1,5 @@
 // Verify that a multi-key `comb get` propagates force=true and wait=true to
-// every fetch, and that `libbeachcomber::Session::get_formatted_with_flags`
+// every fetch, and that the resolver's `Fetch` over a `libbeachcomber::Session`
 // puts both on the wire. Phase 1 Round 3 bug: the CLI's session wrapper
 // dropped both.
 
@@ -9,6 +9,7 @@ use beachcomber::cache::Schedule;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
+use libbeachcomber::resolve::Fetch;
 use libbeachcomber::{Client, ClientConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -47,21 +48,18 @@ async fn setup_seeded() -> (TempDir, std::path::PathBuf) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn session_get_formatted_with_flags_forwards_force() {
+async fn session_fetch_forwards_force() {
     // force=true must evict a non-stale seeded entry, returning the live
     // provider value.
     let (_tmp, sock) = setup_seeded().await;
     let mut session = client_for(sock).session().unwrap();
 
-    let text = session
-        .get_formatted_with_flags(
-            "hostname.name",
-            None,
-            libbeachcomber::render::Format::Text,
-            true,
-            false,
-        )
-        .unwrap();
+    let text = Fetch::get(&mut session, "hostname.name", None, true, false)
+        .unwrap()
+        .expect("a hit")
+        .data
+        .expect("data")
+        .to_string();
 
     assert!(
         !text.contains("seeded-value"),
@@ -70,23 +68,20 @@ async fn session_get_formatted_with_flags_forwards_force() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn session_get_formatted_with_flags_forwards_wait() {
-    // Calling get_formatted_with_flags with wait=true on a fresh entry must
+async fn session_fetch_forwards_wait() {
+    // Fetching with wait=true on a fresh entry must
     // not error. This locks in that wait is an accepted parameter; the
     // behavioral wait=true semantics (stale-re-execute) are covered in
     // tests/suite/cli_get_wait_propagation.rs and tests/suite/get_wait.rs.
     let (_tmp, sock) = setup_seeded().await;
     let mut session = client_for(sock).session().unwrap();
 
-    let text = session
-        .get_formatted_with_flags(
-            "hostname.name",
-            None,
-            libbeachcomber::render::Format::Text,
-            false,
-            true,
-        )
-        .unwrap();
+    let text = Fetch::get(&mut session, "hostname.name", None, false, true)
+        .unwrap()
+        .expect("a hit")
+        .data
+        .expect("data")
+        .to_string();
 
     // Fresh + wait=true + not stale => returns cached seed.
     assert!(

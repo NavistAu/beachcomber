@@ -4,7 +4,7 @@ mod client_test;
 mod conformance;
 mod connect_retry;
 mod eval_classify;
-mod get_formatted;
+mod get;
 mod resolve;
 mod response_ok_checking;
 mod timeouts;

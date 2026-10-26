@@ -1,5 +1,5 @@
 // Locks in wait=true semantics: at the `libbeachcomber` client layer
-// (`Client::get_formatted_with_flags` and `Session::get_with_flags`) and at
+// (the resolver's `Fetch` over a `Client` and a `Session`) and at
 // the binary (`comb get --wait`), against one stale seeded entry — a value
 // served with wait=true must be the re-executed one, never the stale seed.
 //
@@ -16,7 +16,8 @@ use beachcomber::cache::Schedule;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
-use libbeachcomber::{Client, ClientConfig, CombResult};
+use libbeachcomber::resolve::Fetch;
+use libbeachcomber::{Client, ClientConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -67,20 +68,15 @@ async fn single_key_text_wait_true_re_executes_stale_entry() {
     // provider runs inline — the returned text must not contain the seed.
     let (_tmp, sock) = setup_stale().await;
 
-    let text = tokio::task::spawn_blocking(move || {
-        client_for(sock)
-            .get_formatted_with_flags(
-                "hostname.name",
-                None,
-                libbeachcomber::render::Format::Text,
-                false,
-                true,
-            )
+    let got = tokio::task::spawn_blocking(move || {
+        Fetch::get(&mut &client_for(sock), "hostname.name", None, false, true)
             .unwrap()
+            .expect("a hit")
     })
     .await
     .expect("client call");
 
+    let text = got.data.expect("data").to_string();
     assert!(
         !text.contains("stale-seed"),
         "wait=true on a stale entry must trigger re-execution; got {text:?}"
@@ -114,22 +110,21 @@ async fn comb_get_wait_re_executes_stale_entry() {
 
 #[tokio::test(start_paused = true)]
 async fn multi_key_client_side_wait_true_re_executes_stale_entry() {
-    // The same through a session's get_with_flags, wait=true forwarded.
+    // The same through a session's Fetch, wait=true forwarded.
     let (_tmp, sock) = setup_stale().await;
 
-    let result = tokio::task::spawn_blocking(move || {
+    let got = tokio::task::spawn_blocking(move || {
         let mut session = client_for(sock).session().unwrap();
-        session
-            .get_with_flags("hostname.name", None, false, true)
+        Fetch::get(&mut session, "hostname.name", None, false, true)
             .unwrap()
+            .expect("a hit")
     })
     .await
     .expect("client call");
 
-    let CombResult::Hit { data, age_ms, .. } = result else {
-        panic!("expected a hit, got {result:?}");
-    };
-    let name = data.as_value().as_str().expect("name field is a string");
+    let age_ms = got.age_ms.expect("a hit carries its age");
+    let data = got.data.expect("data");
+    let name = data.as_str().expect("name field is a string");
     assert_ne!(
         name, "stale-seed",
         "wait=true on a stale entry must trigger re-execution; got {name:?}"
