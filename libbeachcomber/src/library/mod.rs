@@ -34,6 +34,8 @@ use std::sync::Arc;
 pub enum Tier {
     /// Its arguments, and the render `env` for `~` and the colour depth.
     Pure,
+    /// The render's clock or a time zone.
+    Clock,
     /// Files.
     Io,
     /// Processes. A client render gates it on `allow_exec`.
@@ -62,7 +64,10 @@ impl Tier {
         matches!(
             (self, surface),
             (Tier::Pure, _)
-                | (Tier::Io | Tier::Exec, Surface::Client | Surface::Source)
+                | (
+                    Tier::Clock | Tier::Io | Tier::Exec,
+                    Surface::Client | Surface::Source
+                )
                 | (Tier::Daemon, Surface::Source)
         )
     }
@@ -129,6 +134,11 @@ pub const ITEMS: &[Item] = &[
     item!("pick", Filter, Pure, data::add_pick),
     item!("omit", Filter, Pure, data::add_omit),
     item!("clamp", Filter, Pure, data::add_clamp),
+    item!("now", Function, Clock, time::add_now),
+    item!("strftime", Filter, Clock, time::add_strftime),
+    item!("fromiso", Filter, Clock, time::add_fromiso),
+    item!("ago", Filter, Clock, time::add_ago),
+    item!("spinner", Function, Clock, time::add_spinner),
     item!("seconds", Filter, Pure, time::add_seconds),
     item!("duration", Filter, Pure, time::add_duration),
     item!("fromjson", Filter, Pure, parse::add_fromjson),
@@ -277,6 +287,7 @@ pub(crate) mod testing {
             env: map,
             cwd: cwd.map(Into::into),
             allow_exec: true,
+            ..Default::default()
         })
     }
 
@@ -302,6 +313,15 @@ pub(crate) mod testing {
 
     pub fn eval(expr: &str) -> Result<String, String> {
         eval_in(ctx_with(&[], None), expr)
+    }
+
+    /// `expr` with `vars` as the render's environment and its clock at `now`
+    /// milliseconds since the epoch.
+    pub fn eval_at(now: u64, vars: &[(&str, &str)], expr: &str) -> Result<String, String> {
+        let mut ctx = ctx_with(vars, None);
+        Arc::get_mut(&mut ctx).unwrap().now =
+            std::time::UNIX_EPOCH + std::time::Duration::from_millis(now);
+        eval_in(ctx, expr)
     }
 }
 

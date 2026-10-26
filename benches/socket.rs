@@ -88,6 +88,7 @@ fn bench_socket_roundtrip_cold(c: &mut Criterion) {
                     force: false,
                     wait: false,
                     allow_exec: true,
+                    now: std::time::SystemTime::now(),
                 };
                 let value = resolve("hostname.name", &inputs, &mut session).unwrap();
                 criterion::black_box(value);

@@ -162,6 +162,7 @@ impl OwnedInputs {
             force: self.force,
             wait: self.wait,
             allow_exec: self.allow_exec,
+            now: std::time::SystemTime::now(),
         }
     }
 
@@ -175,6 +176,7 @@ impl OwnedInputs {
             force: false,
             wait: false,
             allow_exec: self.allow_exec,
+            now: std::time::SystemTime::now(),
         }
     }
 
@@ -534,6 +536,7 @@ mod tests {
             force,
             wait,
             allow_exec: false,
+            now: std::time::SystemTime::now(),
         })
     }
 

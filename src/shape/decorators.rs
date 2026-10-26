@@ -1319,6 +1319,23 @@ mod tests {
     }
 
     #[test]
+    fn a_return_line_cannot_read_the_clock() {
+        for call in [
+            "now()",
+            "1 | strftime('%F')",
+            "'x' | fromiso",
+            "1 | ago",
+            "spinner('ab')",
+        ] {
+            let e = record(&[&format!(
+                "{{% set t = {call} %}}{{{{ result | poll('2s') }}}}"
+            )])
+            .unwrap_err();
+            assert!(e.contains("unknown"), "{call}: {e}");
+        }
+    }
+
+    #[test]
     fn no_lines_is_an_error() {
         assert!(record(&[]).is_err());
     }

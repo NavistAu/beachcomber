@@ -95,6 +95,7 @@ fn a_resolution_keeps_the_transports_kind_over_a_client_and_a_session() {
         force: false,
         wait: false,
         allow_exec: false,
+        now: std::time::SystemTime::now(),
     };
 
     let mut over_client = &client;

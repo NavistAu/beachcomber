@@ -246,6 +246,7 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
         force: false,
         wait: false,
         allow_exec: false,
+        now: std::time::SystemTime::now(),
     };
     let mut checked = 0;
     for (name, body) in SHIPPED {

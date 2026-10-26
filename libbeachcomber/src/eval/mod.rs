@@ -428,6 +428,7 @@ mod tests {
             force: false,
             wait: false,
             allow_exec: false,
+            now: std::time::SystemTime::now(),
         };
         let locals = ctx.as_object().cloned().unwrap_or_default();
         eval_with(src, "<test>", &inputs, &mut NoDaemon, &locals)

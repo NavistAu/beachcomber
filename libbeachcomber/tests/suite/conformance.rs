@@ -48,6 +48,7 @@ impl ResolveCtx<'_> {
             force: false,
             wait: false,
             allow_exec: false,
+            now: std::time::SystemTime::now(),
         }
     }
 }

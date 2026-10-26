@@ -3188,6 +3188,7 @@ fn render_status_template(template: &str, rows: &[CacheRow]) -> String {
         force: false,
         wait: false,
         allow_exec: false,
+        now: std::time::SystemTime::now(),
     };
     let mut render = |src: &str, locals: &serde_json::Map<String, serde_json::Value>| {
         eval_with(src, "-f", &inputs, &mut NoDaemon, locals)

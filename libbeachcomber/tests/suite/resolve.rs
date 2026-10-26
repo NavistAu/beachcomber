@@ -136,6 +136,7 @@ fn inputs(env: &HashMap<String, String>) -> Inputs<'_> {
         force: false,
         wait: false,
         allow_exec: false,
+        now: std::time::SystemTime::now(),
     }
 }
 
@@ -216,6 +217,32 @@ fn a_leaf_template_renders_from_the_env() {
 #[test]
 fn a_leaf_template_renders_from_a_comb_ref() {
     assert_eq!(hit("scanline.widgets.bar"), json!(BRANCH_12));
+}
+
+/// `now()` is one value for a whole resolution: every leaf of a group reads
+/// the clock the caller set, not its own.
+#[test]
+fn now_is_one_value_per_resolution() {
+    let vars = spec_env();
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    let tree =
+        json!({ "a": "{{ now() }}", "b": "{{ now() - 60 }}", "c": "{{ spinner('ab', '10s') }}" });
+    f.seed("clock", p, tmpl(tree))
+        .seed("clock.a", p, tmpl(json!("{{ now() }}")))
+        .seed("clock.b", p, tmpl(json!("{{ now() - 60 }}")))
+        .seed("clock.c", p, tmpl(json!("{{ spinner('ab', '10s') }}")));
+    let mut i = inputs(&vars);
+    i.now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_791_342_010);
+    let got = resolve("clock", &i, &mut f).unwrap().unwrap();
+    assert_eq!(
+        got,
+        json!({ "a": 1_791_342_010_i64, "b": 1_791_341_950_i64, "c": "b" })
+    );
+    // The next resolution is given its own.
+    i.now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_791_342_020);
+    let got = resolve("clock.a", &i, &mut f).unwrap().unwrap();
+    assert_eq!(got, json!(1_791_342_020_i64));
 }
 
 #[test]
@@ -1678,6 +1705,7 @@ fn a_templates_files_are_read_in_the_addressed_directory() {
             force: false,
             wait: false,
             allow_exec: false,
+            now: std::time::SystemTime::now(),
         };
         resolve("t.m", &inputs, &mut f).unwrap()
     };

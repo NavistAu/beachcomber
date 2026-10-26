@@ -1601,6 +1601,26 @@ mod tests {
     /// own: every item the table does not make available on a provider's line
     /// is refused by name, in whichever form it is called.
     #[test]
+    fn a_provider_line_cannot_read_the_clock() {
+        for line in [
+            "{{ now() }}",
+            "{{ 1 | strftime('%F') }}",
+            "{{ 'x' | fromiso }}",
+            "{{ 1 | ago }}",
+            "{{ spinner('ab') }}",
+        ] {
+            for key in ["template", "result", "return"] {
+                let errs = errors(&format!("[demo]\n{key} = \"{line}\""));
+                assert_eq!(errs.len(), 1, "{key} {line}: {errs:?}");
+                assert!(
+                    errs[0].contains("is not available in a provider's line"),
+                    "{key} {line}: {errs:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_refusal_is_the_tier_table() {
         use libbeachcomber::library::{ITEMS, Surface};
         let mut refused = 0;

@@ -416,6 +416,7 @@ impl ReadInputs {
             force: self.force,
             wait: self.wait,
             allow_exec,
+            now: std::time::SystemTime::now(),
         }
     }
 }
@@ -755,6 +756,7 @@ pub unsafe extern "C" fn bc_watch_open(
             force: false,
             wait: false,
             allow_exec: c.allow_exec(),
+            now: std::time::SystemTime::now(),
         };
         ResolvedWatch::open_owned(c, key, &inputs).map_err(FfiError::from)
     })();

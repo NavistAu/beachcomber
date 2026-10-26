@@ -305,6 +305,7 @@ fn render_template(src: &str, ctx: &serde_json::Value) -> Result<String, String>
         force: false,
         wait: false,
         allow_exec: false,
+        now: std::time::SystemTime::now(),
     };
     let locals = ctx.as_object().cloned().unwrap_or_default();
     eval_with(src, "<test>", &inputs, &mut NoDaemon, &locals)

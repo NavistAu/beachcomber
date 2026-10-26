@@ -22,6 +22,7 @@ sha1 = "0.11.0"
 sha2 = "0.11"
 crc32fast = "1.5"
 base64 = "0.22"
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 
 [dev-dependencies]
 beachcomber = { path = "..", features = ["test-helpers"] }

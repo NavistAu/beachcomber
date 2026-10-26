@@ -129,6 +129,7 @@ fn bench_resolve(c: &mut Criterion) {
                 force: false,
                 wait: false,
                 allow_exec: false,
+                now: std::time::SystemTime::now(),
             };
             assert!(
                 matches!(resolve(key, &inputs, &mut fetch), Ok(Some(_))),

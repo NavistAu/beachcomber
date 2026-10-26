@@ -60,6 +60,20 @@ duration reads this grammar.
 | `d \| seconds` | a duration as seconds, a whole number when it is one: `'1h30m' \| seconds` is `5400`, `'250ms' \| seconds` is `0.25`; a number passes through, a negative one is an error |
 | `n \| duration(parts=2, floor='ms')` | seconds as a compact duration: `parts` consecutive units from the largest non-zero one, trailing zero parts dropped, none smaller than `floor`. `7500 \| duration` is `2h5m`, `2530 \| duration(floor='m')` is `42m`, `292000 \| duration` is `3d9h`. What the floor cuts is dropped, not rounded. Zero is `0s` (`0m` with `floor='m'`) |
 
+A time is a number of seconds since the Unix epoch, an integer or a float when there is a fraction; arithmetic is the
+offset (`now() - 3600` is an hour ago). The items below read the render's clock or a time zone, so they are on the
+client and in a Source's lines, and not on a provider's lines. A client render has one clock for the whole resolution:
+every `now()` in it is the same value, and a `comb watch` takes a fresh one for each re-resolve. A Source's lines have
+the clock of the run they render in, so a stored value is frozen until the next run.
+
+| item | meaning |
+|---|---|
+| `now()` | the clock, in whole epoch seconds |
+| `t \| strftime(fmt, tz=none)` | `t` formatted with `strftime` directives (`%F`, `%H:%M`, `%Z`, ...) in a zone: `tz=`, else the render's `TZ`, else the system's. `now() \| strftime('%H:%M')` is `14:05`. An unknown directive or zone is an error |
+| `s \| fromiso` | an ISO 8601 / RFC 3339 date-time as epoch seconds. `'2026-10-07T03:00:00Z'` and `'2026-10-07T13:00:00+10:00'` are `1791342000`. With no offset it is a time in the render's zone, and a date alone is its midnight. A fraction gives a float. `''` is absent; any other text that is not a date-time is an error |
+| `t \| ago(parts=2, floor='s')` | the distance from `t` to `now()`: `(now() - 11520) \| ago` is `3h12m ago`, a future time is `in 3h12m`, and under the floor it is `now` |
+| `spinner(frames, step='1s')` | the frame for the clock: `frames[floor(now / step) % len]`. `frames` is a string (its characters) or a list; `step` is a duration. `spinner('◐◓◑◒')` |
+
 `comb status`, `comb check` and every other place comb shows a duration use the same form, `duration` at its defaults:
 `2d3h`, `2h14m`, `1m18s`, `250ms`, `1s500ms`.
 

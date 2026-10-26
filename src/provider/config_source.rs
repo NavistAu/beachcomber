@@ -595,6 +595,8 @@ fn engine<'a>(
         env: env.clone(),
         cwd,
         allow_exec: true,
+        // One clock for the run these lines are rendered in.
+        now: std::time::SystemTime::now(),
     };
     let mut jinja = daemon_engine_env(Arc::new(ctx), plugins.clone());
     render_none_as_empty(&mut jinja);

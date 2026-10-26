@@ -88,6 +88,7 @@ fn bench_concurrent_throughput(c: &mut Criterion) {
                                     force: false,
                                     wait: false,
                                     allow_exec: true,
+                                    now: std::time::SystemTime::now(),
                                 };
                                 // Each client does 10 gets, as `comb get` does.
                                 for _ in 0..10 {

@@ -20,7 +20,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// What a render knows about where it runs.
-#[derive(Default)]
 pub struct EngineCtx {
     /// The render's `env` map. Also the whole environment of an `exec` child.
     pub env: HashMap<String, String>,
@@ -28,6 +27,21 @@ pub struct EngineCtx {
     pub cwd: Option<PathBuf>,
     /// Whether `exec` may run. Off, a call fails with a message saying so.
     pub allow_exec: bool,
+    /// The clock `now()`, `ago` and `spinner` read: one value for the render.
+    pub now: std::time::SystemTime,
+}
+
+/// A render with nothing: no environment, no directory, no `exec`, and the
+/// clock as it is now.
+impl Default for EngineCtx {
+    fn default() -> Self {
+        Self {
+            env: HashMap::new(),
+            cwd: None,
+            allow_exec: false,
+            now: std::time::SystemTime::now(),
+        }
+    }
 }
 
 impl EngineCtx {
@@ -35,6 +49,13 @@ impl EngineCtx {
     /// sets `NO_COLOR` to something.
     pub fn colour(&self) -> bool {
         crate::term::colour_on(&self.env)
+    }
+
+    /// The render's clock as milliseconds since the Unix epoch.
+    pub fn now_millis(&self) -> u128 {
+        self.now
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis())
     }
 
     /// How many colours the render's terminal shows, from its `env`.
@@ -70,7 +91,7 @@ pub fn build_pure_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
 /// generic "unknown function".
 pub fn build_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
     let mut jinja = build_pure_engine_env(ctx.clone());
-    for tier in [Tier::Io, Tier::Exec, Tier::Daemon] {
+    for tier in [Tier::Clock, Tier::Io, Tier::Exec, Tier::Daemon] {
         library::install(&mut jinja, &ctx, tier);
     }
     jinja

@@ -77,6 +77,9 @@ pub struct Inputs<'a> {
     pub wait: bool,
     /// Whether an evaluated template may call `exec()`.
     pub allow_exec: bool,
+    /// The clock `now()`, `ago` and `spinner` read: one value for the whole
+    /// resolution. Each surface sets it; a test fixes it.
+    pub now: std::time::SystemTime,
 }
 
 impl Inputs<'_> {
@@ -324,6 +327,7 @@ impl<'a> Resolver<'a> {
                 env: inputs.env.clone(),
                 cwd: inputs.dir().map(Into::into),
                 allow_exec: inputs.allow_exec,
+                now: inputs.now,
             }),
             // In name order, so `env | items` and a loop over `env` read the
             // same order every run.

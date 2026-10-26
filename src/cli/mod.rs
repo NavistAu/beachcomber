@@ -40,5 +40,6 @@ pub fn inputs<'a>(
         force,
         wait,
         allow_exec: !NO_EXEC.load(Ordering::Relaxed),
+        now: std::time::SystemTime::now(),
     }
 }
