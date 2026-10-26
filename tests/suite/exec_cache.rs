@@ -20,6 +20,7 @@ const CONFIG: &str = r#"
 [client.providers.p]
 template.f = "{{ 'kubectl x || echo prod' | watch('~/state') | ttl('1h') | cache() | exec() }}"
 template.gone = "{{ 'kubectl y || true' | cache() | exec() or none }}"
+template.kube = "{{ 'kubectl config current-context 2>/dev/null || true' | watch((env.KUBECONFIG or '~/.kube/config') | split(':')) | ttl('10m') | cache(env.KUBECONFIG) | exec() or none }}"
 "#;
 
 struct Cached {
@@ -44,11 +45,13 @@ fn cached() -> Cached {
 }
 
 impl Cached {
-    /// `comb <args>` at `~`, its stub tools counting themselves.
+    /// `comb <args>` at `~`, its stub tools counting themselves, and no
+    /// `KUBECONFIG` of the developer's.
     fn comb(&self, args: &[&str]) -> Output {
         self.d
             .command(&self.home)
             .env("COMB_STUB_LOG", self.home.join("stub.log"))
+            .env_remove("KUBECONFIG")
             .args(args)
             .output()
             .expect("run comb")
@@ -197,6 +200,48 @@ fn a_memo_of_absence_prints_null_and_runs_once() {
     let record = c.json("p:cache.gone");
     assert_eq!(record["source"], "memo", "{record}");
     assert!(record["hash"].is_string(), "{record}");
+}
+
+/// The phase 5 plan's kubecontext pipeline: no context is absence,
+/// remembered; each file of a `KUBECONFIG` colon list is watched, and the
+/// variable is an input, so naming other files runs it again.
+#[test]
+fn a_kubeconfig_pipeline_runs_once_per_config() {
+    let c = cached();
+    for _ in 0..2 {
+        assert_eq!(c.ok(&["get", "-f", "json", "p.kube"]), "null\n");
+    }
+    assert_eq!(c.runs("config current-context"), 1);
+    let record = c.json("p:cache.kube");
+    assert_eq!(
+        record["watch"],
+        json!([c.home.join(".kube/config")]),
+        "{record}"
+    );
+
+    let (a, b) = (c.home.join("a"), c.home.join("b"));
+    let list = format!("{}:{}", a.display(), b.display());
+    let get = || {
+        let out =
+            c.d.command(&c.home)
+                .env("COMB_STUB_LOG", c.home.join("stub.log"))
+                .env("KUBECONFIG", &list)
+                .args(["get", "-f", "json", "p.kube"])
+                .output()
+                .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    };
+    get();
+    get();
+    assert_eq!(c.runs("config current-context"), 2);
+    assert_eq!(c.json("p:cache.kube")["watch"], json!([a, b]));
+    std::fs::write(&b, "contexts: []").unwrap();
+    get();
+    assert_eq!(
+        c.runs("config current-context"),
+        3,
+        "a file of the list appeared"
+    );
 }
 
 /// `--force` means compute afresh: on a namespace a `put` made, a template

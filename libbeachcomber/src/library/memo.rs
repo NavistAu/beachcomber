@@ -328,7 +328,8 @@ fn watch(ctx: &EngineCtx, piped: MjValue, args: &[MjValue]) -> Result<MjValue, E
     Ok(piped)
 }
 
-/// The paths one `watch()` argument names, onto `out`.
+/// The paths one `watch()` argument names, onto `out`: a string, or a list
+/// of them however it was made (`env.KUBECONFIG | split(':')`).
 fn paths_of(arg: &MjValue, out: &mut Vec<String>) -> Result<(), Error> {
     let not_a_path = || op_error("watch(): a path is a string, or a list of strings");
     if is_absent(arg) {
@@ -338,7 +339,9 @@ fn paths_of(arg: &MjValue, out: &mut Vec<String>) -> Result<(), Error> {
         out.push(path.to_string());
         return Ok(());
     }
-    if arg.kind() != ValueKind::Seq {
+    // A list, or what `split` and the other lazy filters give, which the
+    // engine iterates without collecting.
+    if !matches!(arg.kind(), ValueKind::Seq | ValueKind::Iterable) {
         return Err(not_a_path());
     }
     for item in arg.try_iter()? {
@@ -474,6 +477,22 @@ mod tests {
         );
         assert_eq!(out.unwrap(), "v");
         assert_eq!(leaf.paths, [real.join("a"), real.join("b")]);
+    }
+
+    /// A colon list split by the template, as `KUBECONFIG` is, names each of
+    /// its paths: `split` gives a lazy sequence, not a list.
+    #[test]
+    fn watch_takes_a_split_list() {
+        let (out, leaf) = render("'v' | watch('/a:/b::/c' | split(':'))");
+        assert_eq!(out.unwrap(), "v");
+        assert_eq!(
+            leaf.paths,
+            [
+                PathBuf::from("/a"),
+                PathBuf::from("/b"),
+                PathBuf::from("/c")
+            ]
+        );
     }
 
     /// A path that is there is canonicalised; one that is not is kept as it
