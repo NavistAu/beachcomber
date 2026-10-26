@@ -2128,3 +2128,94 @@ async fn cli_carries_the_cwd_for_a_templates_dependency_fetch() {
         "the template and its dependency fetch carry the cwd, so the chain finds both"
     );
 }
+
+// ── a kept root is found again when a marker on its walk changes ─────────────
+
+/// A fixture serving `m`, one config Source rooted at the nearest `.marker`
+/// (`nearest` when asked), whose value is the directory it ran in.
+fn marker_fixture(nearest: bool) -> Fixture {
+    Fixture::start_built(
+        || {
+            let layer: toml::Value = toml::from_str(&format!(
+                "[daemon.providers.m.sources.s]\n\
+                 root = \"{{{{ lup('.marker') | dirname }}}}\"\n\
+                 data = \"{{{{ exec('pwd') | trim }}}}\"\n\
+                 result.at = \"{{{{ data }}}}\"\n{}",
+                if nearest {
+                    "return = \"{{ result | nearest }}\"\n"
+                } else {
+                    ""
+                }
+            ))
+            .unwrap();
+            let load = ProviderRegistry::load(
+                &crate::common::registry::config_over_shipped(vec![(
+                    PathBuf::from("m.toml"),
+                    layer,
+                )]),
+                &Default::default(),
+            );
+            assert!(load.errors.is_empty(), "{:?}", load.errors);
+            load.registry
+        },
+        "",
+        false,
+    )
+}
+
+async fn at(f: &Fixture, dir: &str) -> Option<serde_json::Value> {
+    let mut s = f.connect().await;
+    send_recv(&mut s, get_at("m.at", dir)).await.data
+}
+
+/// A read from `p/sub` gives `p`'s instance; a marker created in `p/sub`
+/// makes `p/sub` the root at the next read, and removing it gives `p` back.
+#[tokio::test]
+async fn a_marker_created_below_a_kept_root_is_found_by_the_next_read() {
+    let f = marker_fixture(false);
+    let (p, sub) = (f.path("ws/project"), f.path("ws/project/foo"));
+    std::fs::write(Path::new(&p).join(".marker"), "").unwrap();
+
+    assert_eq!(at(&f, &sub).await, Some(serde_json::json!(p)));
+    std::fs::write(Path::new(&sub).join(".marker"), "").unwrap();
+    assert_eq!(
+        at(&f, &sub).await,
+        Some(serde_json::json!(sub)),
+        "the kept root was rendered again: the marker is nearer"
+    );
+    std::fs::remove_file(Path::new(&sub).join(".marker")).unwrap();
+    assert_eq!(at(&f, &sub).await, Some(serde_json::json!(p)));
+}
+
+/// Removing the marker at the root a kept answer found renders it again: the
+/// read goes on to the instance at `~`.
+#[tokio::test]
+async fn removing_the_marker_at_a_kept_root_renders_it_again() {
+    let f = marker_fixture(false);
+    let (p, sub) = (f.path("ws/project"), f.path("ws/project/foo"));
+    std::fs::write(Path::new(&p).join(".marker"), "").unwrap();
+
+    assert_eq!(at(&f, &sub).await, Some(serde_json::json!(p)));
+    std::fs::remove_file(Path::new(&p).join(".marker")).unwrap();
+    assert_eq!(
+        at(&f, &sub).await,
+        Some(serde_json::json!(f.home.to_str().unwrap())),
+        "no marker: the instance at ~ answers"
+    );
+}
+
+/// A nearest Source's nothing is rendered again when a marker is created,
+/// at the next read, not once a timer has run out.
+#[tokio::test]
+async fn a_nearest_sources_nothing_is_found_again_when_a_marker_is_created() {
+    let f = marker_fixture(true);
+    let q = f.path("ws/other");
+
+    assert_eq!(at(&f, &q).await, None, "no marker, no instance");
+    std::fs::write(Path::new(&q).join(".marker"), "").unwrap();
+    assert_eq!(
+        at(&f, &q).await,
+        Some(serde_json::json!(q)),
+        "found at the next read"
+    );
+}

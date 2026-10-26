@@ -146,9 +146,17 @@ pub struct Validity {
 /// filesystem's clock is coarser than its nanosecond field.
 const RACY: std::time::Duration = std::time::Duration::from_millis(10);
 
-impl Validity {
-    /// Stamp `inputs` now: `None` when there are none.
-    pub fn take(inputs: Vec<std::path::PathBuf>) -> Option<Self> {
+/// Stat inputs, stamped before what reads them runs: [`Validity::of`] makes
+/// the validity of what is kept of them.
+pub struct Stamped {
+    taken: std::time::SystemTime,
+    now: Instant,
+    stamps: Vec<(std::path::PathBuf, libbeachcomber::fs::Stamp)>,
+}
+
+impl Stamped {
+    /// Stamp `inputs` now.
+    pub fn take(inputs: Vec<std::path::PathBuf>) -> Self {
         Self::take_at(inputs, std::time::SystemTime::now(), Instant::now())
     }
 
@@ -158,55 +166,76 @@ impl Validity {
         inputs: Vec<std::path::PathBuf>,
         taken: std::time::SystemTime,
         now: Instant,
-    ) -> Option<Self> {
-        use libbeachcomber::fs::{Mount, Stamp, mount_of, stamp};
-        if inputs.is_empty() {
+    ) -> Self {
+        let stamps = inputs
+            .into_iter()
+            .map(|path| {
+                let stamp = libbeachcomber::fs::stamp(&path);
+                (path, stamp)
+            })
+            .collect();
+        Self { taken, now, stamps }
+    }
+
+    /// Keep the first `n` inputs only.
+    pub fn truncate(&mut self, n: usize) {
+        self.stamps.truncate(n);
+    }
+}
+
+impl Validity {
+    /// Stamp `inputs` now: `None` when there are none.
+    pub fn take(inputs: Vec<std::path::PathBuf>) -> Option<Self> {
+        Self::of(Stamped::take(inputs))
+    }
+
+    /// The validity of `stamped`: `None` when there are none.
+    pub fn of(stamped: Stamped) -> Option<Self> {
+        use libbeachcomber::fs::{Mount, Stamp, mount_of};
+        let Stamped { taken, now, stamps } = stamped;
+        if stamps.is_empty() {
             return None;
         }
         let mut remote = false;
         // How long from `taken` the stamps stay racy: the latest of each
         // input's mtime plus its mount's resolution (and at least `RACY`).
         let mut racy: Option<std::time::Duration> = None;
-        let stamped: Vec<(&std::path::PathBuf, Stamp)> = inputs
-            .iter()
-            .map(|path| {
-                let s = stamp(path);
-                if let Stamp::Present(p) = &s {
-                    match mount_of(path, p.dev) {
-                        (Mount::Remote { kind }, first) => {
-                            remote = true;
-                            if first {
-                                tracing::warn!(
-                                    "{} lies on a mount ({}) whose stamps a read does not take: \
-                                     records that read it are checked only for their lifetime",
-                                    path.display(),
-                                    kind.as_deref().unwrap_or("unknown")
-                                );
-                            }
-                        }
-                        (Mount::Local { resolution }, _) => {
-                            let mtime = std::time::UNIX_EPOCH
-                                + std::time::Duration::new(
-                                    u64::try_from(p.mtime_secs).unwrap_or(0),
-                                    p.mtime_nanos,
-                                );
-                            if let Ok(left) = (mtime + resolution.max(RACY)).duration_since(taken)
-                                && !left.is_zero()
-                            {
-                                racy = Some(racy.map_or(left, |r| r.max(left)));
-                            }
-                        }
+        for (path, stamp) in &stamps {
+            let Stamp::Present(p) = stamp else {
+                continue;
+            };
+            match mount_of(path, p.dev) {
+                (Mount::Remote { kind }, first) => {
+                    remote = true;
+                    if first {
+                        tracing::warn!(
+                            "{} lies on a mount ({}) whose stamps a read does not take: \
+                             records that read it are checked only for their lifetime",
+                            path.display(),
+                            kind.as_deref().unwrap_or("unknown")
+                        );
                     }
                 }
-                (path, s)
-            })
-            .collect();
-        let hash = libbeachcomber::validity::stamps_hash(&stamped);
+                (Mount::Local { resolution }, _) => {
+                    let mtime = std::time::UNIX_EPOCH
+                        + std::time::Duration::new(
+                            u64::try_from(p.mtime_secs).unwrap_or(0),
+                            p.mtime_nanos,
+                        );
+                    if let Ok(left) = (mtime + resolution.max(RACY)).duration_since(taken)
+                        && !left.is_zero()
+                    {
+                        racy = Some(racy.map_or(left, |r| r.max(left)));
+                    }
+                }
+            }
+        }
+        let hash = libbeachcomber::validity::stamps_hash(&stamps);
         Some(Self {
             hash,
             remote,
             racy_until: racy.map(|left| now + left),
-            inputs: inputs.into(),
+            inputs: stamps.into_iter().map(|(path, _)| path).collect(),
         })
     }
 
@@ -3512,8 +3541,12 @@ mod tests {
         std::fs::write(&f, "1").unwrap();
         let written = mtime(&f);
         let now = Instant::now();
-        let v =
-            Validity::take_at(vec![f.clone()], written + Duration::from_millis(2), now).unwrap();
+        let v = Validity::of(Stamped::take_at(
+            vec![f.clone()],
+            written + Duration::from_millis(2),
+            now,
+        ))
+        .unwrap();
         assert_eq!(v.racy_until, Some(now + Duration::from_millis(8)));
         rewrite(&f, "2", written);
         assert_eq!(
@@ -3524,11 +3557,16 @@ mod tests {
         assert_eq!(v.check_at(now + Duration::from_millis(8)), Check::Invalid);
 
         // A stamp taken past the window is not racy.
-        let v = Validity::take_at(vec![f.clone()], written + RACY, now).unwrap();
+        let v = Validity::of(Stamped::take_at(vec![f.clone()], written + RACY, now)).unwrap();
         assert_eq!(v.racy_until, None);
         // An mtime ahead of the clock keeps the stamp racy until it has
         // passed, by the window.
-        let v = Validity::take_at(vec![f], written - Duration::from_secs(1), now).unwrap();
+        let v = Validity::of(Stamped::take_at(
+            vec![f],
+            written - Duration::from_secs(1),
+            now,
+        ))
+        .unwrap();
         assert_eq!(v.racy_until, Some(now + Duration::from_secs(1) + RACY));
     }
 

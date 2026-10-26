@@ -274,21 +274,24 @@ async fn handle_connection(
 }
 
 /// The root of `provider`'s Source `source` for `dir`
-/// ([`ProviderRegistry::instance_root`]), without holding an async worker for
-/// a first render: a config Source's `root` line can run a command (`exec`, up
-/// to its timeout), fetch a URL or call a plugin. The registry keeps each
-/// rendered root per directory, so only the first request for a directory pays
-/// for the render, on the blocking pool; a kept root, and a built-in's
-/// filesystem walk, resolve in place.
+/// ([`ProviderRegistry::instance_root`]), and whether its line was rendered to
+/// find it, without holding an async worker for a render: a config Source's
+/// `root` line can run a command (`exec`, up to its timeout), fetch a URL or
+/// call a plugin. The registry keeps each rendered root per directory while
+/// the directories on its walk are as they were (one `stat` each, here), so
+/// only the first request for a directory, and the first after a marker on
+/// its walk came or went, pays for the render, on the blocking pool; a kept
+/// root, and a built-in's filesystem walk, resolve in place.
 async fn root_for(
     registry: &Arc<ProviderRegistry>,
     provider: &str,
     source: &str,
     dir: &str,
-) -> Result<Found, String> {
-    if registry.renders_root(provider, source)
-        && registry.kept_root(provider, source, dir).is_none()
-    {
+) -> Result<(Found, bool), String> {
+    if registry.renders_root(provider, source) {
+        if let Some(kept) = registry.kept_root(provider, source, dir) {
+            return Ok((kept, false));
+        }
         let (registry, provider, source, dir) = (
             Arc::clone(registry),
             provider.to_string(),
@@ -299,9 +302,12 @@ async fn root_for(
             registry.instance_root(&provider, &source, &dir)
         })
         .await
-        .map_err(|e| format!("resolving the root failed: {e}"))?;
+        .map_err(|e| format!("resolving the root failed: {e}"))?
+        .map(|found| (found, true));
     }
-    registry.instance_root(provider, source, dir)
+    registry
+        .instance_root(provider, source, dir)
+        .map(|found| (found, false))
 }
 
 /// The roots found so far by one request, so Sources that find theirs the same
@@ -309,7 +315,7 @@ async fn root_for(
 #[derive(Default)]
 struct RootMemo {
     known: HashMap<(String, String, String), Found>,
-    /// Whether any root was rendered for the first time.
+    /// Whether any root was rendered, not answered from a kept one.
     rendered: bool,
 }
 
@@ -332,9 +338,8 @@ async fn next_instance(
             match memo.known.get(&key) {
                 Some(known) => known.clone(),
                 None => {
-                    memo.rendered |= registry.renders_root(provider, source)
-                        && registry.kept_root(provider, source, &dir).is_none();
-                    let found = root_for(registry, provider, source, &dir).await?;
+                    let (found, rendered) = root_for(registry, provider, source, &dir).await?;
+                    memo.rendered |= rendered;
                     memo.known.insert(key, found.clone());
                     found
                 }
@@ -813,8 +818,8 @@ async fn run_for_read(
 
 /// The instances, by provider, of the Sources `provider`'s `result` and
 /// `return` lines call, as a read from `dir` reaches them, and whether a `root`
-/// was rendered for the first time to find them. A `root` that needs rendering
-/// is rendered here, off the async workers.
+/// was rendered to find them, not answered from a kept one. A `root` that
+/// needs rendering is rendered here, off the async workers.
 async fn called_instances(
     registry: &Arc<ProviderRegistry>,
     provider: &str,

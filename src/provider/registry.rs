@@ -276,10 +276,57 @@ impl Source for Retuned {
     }
 }
 
-/// How long a failed `root` line's error, and the nothing a nearest Source's
-/// `root` found, are answered again without re-running the line. Both are timed
-/// on tokio's clock, so a test drives them with `tokio::time::advance`.
+/// How long a failed `root` line's error is answered again without re-running
+/// the line. Timed on tokio's clock, so a test drives it with
+/// `tokio::time::advance`.
 const ROOT_RETRY_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long the nothing a nearest Source's `root` found is kept before a new
+/// one sweeps it: no instance's eviction clears it, so without a sweep a
+/// long-lived daemon would hold one per directory ever asked about. Its
+/// stamps, not this, decide when it is rendered again.
+const UNCLAIMED_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// A rendered `root`, kept for one directory.
+struct KeptRoot {
+    found: Found,
+    /// The directories the answer depends on, from the one asked about up to
+    /// the root found (up to `$HOME`, or `/` outside it, when it found none),
+    /// stamped before the line rendered. Creating or removing a marker in one
+    /// moves its mtime, and the root is rendered again.
+    walked: Option<crate::cache::Validity>,
+    /// When the nothing a nearest Source's root found was kept, for the sweep
+    /// ([`UNCLAIMED_TTL`]); `None` for an answer an eviction clears.
+    unclaimed_since: Option<tokio::time::Instant>,
+}
+
+/// The directories a `root` line's answer for `dir` can depend on, nearest
+/// first: `dir` and each above it, up to `$HOME` (or `/` outside it).
+fn walk_up(dir: &str) -> Vec<std::path::PathBuf> {
+    let home = crate::query::home_dir();
+    let mut out = Vec::new();
+    let mut at = Some(std::path::Path::new(dir));
+    while let Some(here) = at {
+        out.push(here.to_path_buf());
+        if home.as_deref() == Some(here) {
+            break;
+        }
+        at = here.parent();
+    }
+    out
+}
+
+/// How many of `walked` (from [`walk_up`]) the answer `found` depends on: up
+/// to the root it found when that is one of them, else all of them.
+fn walked_to(walked: &[std::path::PathBuf], found: &Found) -> usize {
+    let root = match found {
+        Found::At(root) => Some(std::path::PathBuf::from(root)),
+        Found::Home => crate::query::home_dir(),
+        Found::Nothing => None,
+    };
+    root.and_then(|root| walked.iter().position(|dir| *dir == root))
+        .map_or(walked.len(), |at| at + 1)
+}
 
 pub struct ProviderRegistry {
     /// (provider_name, source_name) → Arc-wrapped Source trait object.
@@ -297,10 +344,9 @@ pub struct ProviderRegistry {
     static_names: Arc<DashMap<String, ()>>,
     /// The `root` of a config Source, by (provider, source, directory): the
     /// line is rendered once per directory (it may run a command) and kept
-    /// until the instance it names is evicted. The second half is when the
-    /// answer lapses: set only for the nothing a nearest Source's root found,
-    /// which no instance's eviction would ever clear.
-    roots: DashMap<(String, String, String), (Found, Option<tokio::time::Instant>)>,
+    /// while the directories on its walk are as they were, until the instance
+    /// it names is evicted.
+    roots: DashMap<(String, String, String), KeptRoot>,
     /// A `root` line that failed, by (provider, source, directory), with when
     /// and what it said: answered again for [`ROOT_RETRY_TTL`] rather than
     /// re-run, so a slow failing line costs its timeout once, not per request.
@@ -613,22 +659,24 @@ impl ProviderRegistry {
             .contains(&(provider.to_string(), source.to_string()))
     }
 
-    /// The kept root of the Source for `dir`, if it has been rendered: never
-    /// renders. `Some(found)` is the answer ([`Self::instance_root`]'s). The
-    /// nothing a nearest Source's root found is kept for [`ROOT_RETRY_TTL`]
-    /// only: the Source has no instance in that case, so no eviction would
-    /// clear it, and a marker created since should be found. For a cascading
-    /// Source nothing found is the instance at `~`, and is kept like any root.
+    /// The kept root of the Source for `dir`, if it has been rendered and the
+    /// directories on its walk are as they were: never renders. `Some(found)`
+    /// is the answer ([`Self::instance_root`]'s). One `stat` per directory
+    /// from `dir` up to the root found (up to `$HOME` when it found none): a
+    /// marker created or removed in one moves its mtime, and the root is
+    /// dropped, to be rendered again.
     pub fn kept_root(&self, provider: &str, source: &str, dir: &str) -> Option<Found> {
         let key = (provider.to_string(), source.to_string(), dir.to_string());
-        let kept = self.roots.get(&key)?;
-        let (found, lapses) = &*kept;
-        if lapses.is_some_and(|at| tokio::time::Instant::now() >= at) {
-            drop(kept);
+        let (found, walked) = {
+            let kept = self.roots.get(&key)?;
+            (kept.found.clone(), kept.walked.clone())
+        };
+        // Stamped with no lock held: a stat is a syscall.
+        if walked.is_some_and(|w| w.check() == libbeachcomber::validity::Check::Invalid) {
             self.roots.remove(&key);
             return None;
         }
-        Some(found.clone())
+        Some(found)
     }
 
     /// A walk for `provider`'s Source `source` from `dir` (the plan's
@@ -653,9 +701,9 @@ impl ProviderRegistry {
     /// ([`crate::query::InstanceWalk`]).
     ///
     /// A config Source renders its `root` line once per directory and the
-    /// answer is kept until the instance it names is evicted
-    /// ([`Self::forget_roots`]); an error, and the nothing a nearest Source's
-    /// root found, are kept for [`ROOT_RETRY_TTL`] only.
+    /// answer is kept while the directories on its walk are as they were
+    /// ([`Self::kept_root`]), until the instance it names is evicted
+    /// ([`Self::forget_roots`]); an error is kept for [`ROOT_RETRY_TTL`] only.
     /// May run a command: callers on an async worker go through
     /// [`Self::renders_root`] and [`Self::kept_root`] first.
     pub fn instance_root(&self, provider: &str, source: &str, dir: &str) -> Result<Found, String> {
@@ -677,6 +725,12 @@ impl ProviderRegistry {
         // each render the line, and the later insert replaces the earlier: a
         // duplicate first render, not a wrong answer, since both ask the same
         // question of the same directory.
+        //
+        // The walk is stamped before the line renders: a marker created while
+        // it renders is a change the next read sees.
+        let walked = self
+            .renders_root(provider, source)
+            .then(|| crate::cache::Stamped::take(walk_up(dir)));
         let found = src.root(dir);
         if let Err(msg) = &found
             && self.renders_root(provider, source)
@@ -707,20 +761,27 @@ impl ProviderRegistry {
             },
             None => Found::Nothing,
         };
-        if self.renders_root(provider, source) {
+        if let Some(mut walked) = walked {
             let now = tokio::time::Instant::now();
-            let lapses = (root == Found::Nothing && src.has_root() && src.metadata().nearest)
-                .then(|| now + ROOT_RETRY_TTL);
-            // Lapsed answers are never read again: sweep them as new ones come
-            // in, so a long-lived daemon does not hold one per directory ever
-            // asked about.
-            if lapses.is_some() {
-                self.roots
-                    .retain(|_, (_, lapses)| lapses.is_none_or(|at| now < at));
+            let unclaimed = root == Found::Nothing && src.has_root() && src.metadata().nearest;
+            // An old unclaimed answer goes as a new one comes in, so a
+            // long-lived daemon does not hold one per directory ever asked
+            // about.
+            if unclaimed {
+                self.roots.retain(|_, kept| {
+                    kept.unclaimed_since
+                        .is_none_or(|at| now.duration_since(at) < UNCLAIMED_TTL)
+                });
             }
+            let depends = walked_to(&walk_up(dir), &root);
+            walked.truncate(depends);
             self.roots.insert(
                 (provider.to_string(), source.to_string(), dir.to_string()),
-                (root.clone(), lapses),
+                KeptRoot {
+                    found: root.clone(),
+                    walked: crate::cache::Validity::of(walked),
+                    unclaimed_since: unclaimed.then_some(now),
+                },
             );
         }
         Ok(root)
@@ -729,13 +790,13 @@ impl ProviderRegistry {
     /// Drop the kept roots of `provider`'s Source `source` that resolved to
     /// the instance at `root` (`None` is the instance at `~`): the scheduler
     /// calls this when that instance is evicted, so a root is looked up again
-    /// once the instance it named has gone cold. A marker created or removed
-    /// while the instance lives is not seen until then.
+    /// once the instance it named has gone cold. A change the walk's stamps
+    /// do not see (what a command in the line reads) is not seen until then.
     pub fn forget_roots(&self, provider: &str, source: &str, root: Option<&str>) {
-        self.roots.retain(|(p, s, _), (kept, _)| {
+        self.roots.retain(|(p, s, _), kept| {
             // Home and Nothing are both answered by the instance at `~`: for
             // a Source that cascades, nothing found is served there.
-            let instance = match kept {
+            let instance = match &kept.found {
                 Found::At(at) => Some(at.as_str()),
                 Found::Home | Found::Nothing => None,
             };
@@ -1695,31 +1756,120 @@ result.x = "{{ data }}"
         );
     }
 
-    #[test]
-    fn a_kept_root_is_re_resolved_once_its_instance_is_forgotten() {
+    /// Give `dir` an mtime well in the past, so a stamp of it is not racy and
+    /// a test may move the clock.
+    fn age(dir: &std::path::Path) {
+        std::fs::File::open(dir)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+            .unwrap();
+    }
+
+    /// A kept root is rendered again when a marker on its walk comes or goes:
+    /// one created below the root it found, the one at that root removed.
+    #[tokio::test(start_paused = true)]
+    async fn a_kept_root_is_rendered_again_when_a_marker_on_its_walk_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().canonicalize().unwrap().join("p");
+        let sub = p.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(p.join(".marker"), "").unwrap();
+        let (p_str, sub_str) = (p.to_str().unwrap(), sub.to_str().unwrap());
+        let reg = registry_from(
+            "[daemon.providers.demo.sources.s]\nroot = \"{{ lup('.marker') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
+        );
+        let at = |d: &str| Ok(Found::At(d.to_string()));
+
+        assert_eq!(reg.instance_root("demo", "s", sub_str), at(p_str));
+        assert_eq!(
+            reg.kept_root("demo", "s", sub_str),
+            Some(Found::At(p_str.into()))
+        );
+        std::fs::write(sub.join(".marker"), "").unwrap();
+        assert_eq!(
+            reg.kept_root("demo", "s", sub_str),
+            None,
+            "sub's mtime moved"
+        );
+        assert_eq!(reg.instance_root("demo", "s", sub_str), at(sub_str));
+        std::fs::remove_file(sub.join(".marker")).unwrap();
+        assert_eq!(reg.instance_root("demo", "s", sub_str), at(p_str));
+        std::fs::remove_file(p.join(".marker")).unwrap();
+        assert_eq!(
+            reg.instance_root("demo", "s", sub_str),
+            Ok(Found::Nothing),
+            "the marker at the root it found is gone"
+        );
+    }
+
+    /// The nothing a nearest Source's root found is checked like any kept
+    /// root: a marker created is found by the next lookup, and with nothing
+    /// changed it is kept however long it has been, with no timer.
+    #[tokio::test(start_paused = true)]
+    async fn a_nearest_sources_nothing_is_rendered_again_when_a_marker_is_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        // The walk of a root that found nothing goes up to `$HOME`: here, the
+        // test's own directory, so no other test's files move its stamps.
+        // SAFETY: nextest gives every test its own process, and nothing else
+        // in it reads the environment yet.
+        unsafe { std::env::set_var("HOME", &base) };
+        let sub = base.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        age(&sub);
+        age(&base);
+        let sub_str = sub.to_str().unwrap();
+        let reg = registry_from(
+            "[daemon.providers.demo.sources.s]\nroot = \"{{ lup('.root') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\nreturn = \"{{ result | nearest }}\"\n",
+        );
+
+        assert_eq!(reg.instance_root("demo", "s", sub_str), Ok(Found::Nothing));
+        tokio::time::advance(ROOT_RETRY_TTL * 10).await;
+        assert_eq!(
+            reg.kept_root("demo", "s", sub_str),
+            Some(Found::Nothing),
+            "kept with nothing changed, past any timer"
+        );
+        std::fs::write(sub.join(".root"), "").unwrap();
+        assert_eq!(
+            reg.instance_root("demo", "s", sub_str),
+            Ok(Found::At(sub_str.to_string())),
+            "a marker created is found at once"
+        );
+    }
+
+    /// A change the walk's stamps do not see (here, what the line reads from
+    /// a file rewritten in place) is kept while its instance lives, and looked
+    /// up again once the instance it resolved to is forgotten.
+    #[tokio::test(start_paused = true)]
+    async fn a_kept_root_is_re_resolved_once_its_instance_is_forgotten() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
         let sub = base.join("sub");
         std::fs::create_dir_all(&sub).unwrap();
-        let sub_str = sub.to_str().unwrap();
+        let (base_str, sub_str) = (base.to_str().unwrap(), sub.to_str().unwrap());
+        std::fs::write(sub.join("root.txt"), base_str).unwrap();
         let reg = registry_from(
-            "[daemon.providers.demo.sources.s]\nroot = \"{{ lup('.root') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
+            "[daemon.providers.demo.sources.s]\nroot = \"{{ 'root.txt' | read }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
         );
 
-        assert_eq!(reg.instance_root("demo", "s", sub_str), Ok(Found::Nothing));
-        std::fs::write(sub.join(".root"), "").unwrap();
         assert_eq!(
             reg.instance_root("demo", "s", sub_str),
-            Ok(Found::Nothing),
+            Ok(Found::At(base_str.to_string()))
+        );
+        std::fs::write(sub.join("root.txt"), sub_str).unwrap();
+        assert_eq!(
+            reg.instance_root("demo", "s", sub_str),
+            Ok(Found::At(base_str.to_string())),
             "the answer is kept while its instance lives"
         );
         reg.forget_roots("demo", "s", Some("/elsewhere"));
         assert_eq!(
             reg.instance_root("demo", "s", sub_str),
-            Ok(Found::Nothing),
+            Ok(Found::At(base_str.to_string())),
             "another instance going cold says nothing about this one"
         );
-        reg.forget_roots("demo", "s", None);
+        reg.forget_roots("demo", "s", Some(base_str));
         assert_eq!(
             reg.instance_root("demo", "s", sub_str),
             Ok(Found::At(sub_str.to_string())),
@@ -1727,76 +1877,41 @@ result.x = "{{ data }}"
         );
     }
 
+    /// A cascading Source's nothing is its instance at `~`, cleared when that
+    /// is evicted; a nearest Source's is no instance's, so an old one is swept
+    /// when a new one is kept.
     #[tokio::test(start_paused = true)]
-    async fn a_root_that_found_nothing_is_looked_up_again_after_the_retry_ttl() {
+    async fn an_old_unclaimed_nothing_is_swept_when_another_is_kept() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
-        let sub = base.join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
-        let sub_str = sub.to_str().unwrap();
-        let reg = registry_from(
-            "[daemon.providers.demo.sources.s]\nroot = \"{{ lup('.root') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\nreturn = \"{{ result | nearest }}\"\n",
+        let (a, b, c) = (base.join("a"), base.join("b"), base.join("c"));
+        for d in [&a, &b, &c] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let (a, b, c) = (
+            a.to_str().unwrap(),
+            b.to_str().unwrap(),
+            c.to_str().unwrap(),
         );
-
-        assert_eq!(reg.instance_root("demo", "s", sub_str), Ok(Found::Nothing));
-        std::fs::write(sub.join(".root"), "").unwrap();
-        tokio::time::advance(ROOT_RETRY_TTL - std::time::Duration::from_secs(1)).await;
-        assert_eq!(
-            reg.instance_root("demo", "s", sub_str),
-            Ok(Found::Nothing),
-            "nothing found is answered again within the ttl"
-        );
-        tokio::time::advance(std::time::Duration::from_secs(1)).await;
-        assert_eq!(
-            reg.instance_root("demo", "s", sub_str),
-            Ok(Found::At(sub_str.to_string())),
-            "a marker created since is found once the ttl has passed"
-        );
-        // A root that was found is kept for as long as its instance lives.
-        tokio::time::advance(ROOT_RETRY_TTL * 10).await;
-        std::fs::remove_file(sub.join(".root")).unwrap();
-        assert_eq!(
-            reg.instance_root("demo", "s", sub_str),
-            Ok(Found::At(sub_str.to_string()))
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn nothing_found_by_a_cascading_root_is_kept_and_lapsed_answers_are_swept() {
-        let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().canonicalize().unwrap();
-        let (a, b) = (base.join("a"), base.join("b"));
-        std::fs::create_dir_all(&a).unwrap();
-        std::fs::create_dir_all(&b).unwrap();
-        let (a, b) = (a.to_str().unwrap(), b.to_str().unwrap());
         let root = "root = \"{{ lup('.root') | dirname }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n";
         let reg = registry_from(&format!(
             "[daemon.providers.casc.sources.s]\n{root}\n\
              [daemon.providers.near.sources.s]\n{root}return = \"{{{{ result | nearest }}}}\"\n"
         ));
 
-        // A cascading Source's nothing is its instance at `~`: kept until that
-        // instance is evicted, however long it takes.
         assert_eq!(reg.instance_root("casc", "s", a), Ok(Found::Nothing));
-        std::fs::write(std::path::Path::new(a).join(".root"), "").unwrap();
-        tokio::time::advance(ROOT_RETRY_TTL * 10).await;
-        assert_eq!(reg.instance_root("casc", "s", a), Ok(Found::Nothing));
-
-        // A nearest Source's lapsed nothing is swept when another is kept, so
-        // directories asked about once do not pile up.
         assert_eq!(reg.instance_root("near", "s", b), Ok(Found::Nothing));
         assert_eq!(reg.roots.len(), 2);
-        tokio::time::advance(ROOT_RETRY_TTL).await;
-        let c = base.join("c");
-        std::fs::create_dir_all(&c).unwrap();
-        assert_eq!(
-            reg.instance_root("near", "s", c.to_str().unwrap()),
-            Ok(Found::Nothing)
-        );
+        tokio::time::advance(UNCLAIMED_TTL).await;
+        assert_eq!(reg.instance_root("near", "s", c), Ok(Found::Nothing));
         assert_eq!(
             reg.roots.len(),
             2,
-            "the lapsed answer for b went when c's was kept"
+            "b's went when c's was kept; the cascading a's stays"
+        );
+        assert!(
+            reg.roots
+                .contains_key(&("casc".into(), "s".into(), a.into()))
         );
     }
 
@@ -2311,12 +2426,21 @@ result.y = "{{ data }}"
     #[test]
     fn a_call_on_the_read_path_never_renders_a_root() {
         let dir = tempfile::tempdir().unwrap();
-        let renders = dir.path().join("renders");
+        // Counted outside the directory the root is asked about: a file the
+        // line created there would move the stamp its kept root is checked
+        // by, and the root would be rendered again. The Source is nearest, so
+        // its one instance is the root found for `dir`: a cascade would ask
+        // the directories above, the system's temporary directory among them,
+        // whose stamps every other test moves.
+        let counts = tempfile::tempdir().unwrap();
+        let renders = counts.path().join("renders");
+        age(dir.path());
         let config = crate::config::Config::from_toml(&format!(
             "[daemon.providers.p.sources.s]\n\
              root = \"{{{{ exec(['sh', '-c', 'echo r >> {}; echo {}']) | trim }}}}\"\n\
              data = \"{{{{ 1 }}}}\"\n\
-             result.a = \"{{{{ data }}}}\"\n",
+             result.a = \"{{{{ data }}}}\"\n\
+             return = \"{{{{ result | nearest }}}}\"\n",
             renders.display(),
             dir.path().canonicalize().unwrap().display(),
         ));
