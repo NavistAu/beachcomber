@@ -201,3 +201,388 @@ async fn rapid_refreshes_are_deduplicated() {
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;
 }
+
+// ── one run path for an instance, whoever starts it ─────────────────────────
+
+/// One request on a connection of its own.
+async fn ask(sock: std::path::PathBuf, request: serde_json::Value) -> serde_json::Value {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let mut stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
+    let mut line = request.to_string();
+    line.push('\n');
+    stream.write_all(line.as_bytes()).await.unwrap();
+    let mut answer = String::new();
+    BufReader::new(stream).read_line(&mut answer).await.unwrap();
+    serde_json::from_str(&answer).expect("a JSON answer")
+}
+
+/// Yield to the runtime until `done` holds: for what a blocking thread does,
+/// which the runtime does not see, and for a paused clock, under which a sleep
+/// would never wake. Bounded in real time.
+async fn until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "never: {what}");
+        tokio::task::yield_now().await;
+    }
+}
+
+/// The runs in flight, as the scheduler's status lists them.
+async fn in_flight(handle: &beachcomber::scheduler::SchedulerHandle) -> Vec<String> {
+    handle.get_status().await.expect("status").in_flight
+}
+
+async fn until_settled(handle: &beachcomber::scheduler::SchedulerHandle) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !in_flight(handle).await.is_empty() {
+        assert!(std::time::Instant::now() < deadline, "runs never settled");
+        tokio::task::yield_now().await;
+    }
+}
+
+/// A Source that counts its runs and holds each one until the test opens
+/// its gate, polled every `poll` seconds.
+struct HeldSource {
+    meta: SourceMetadata,
+    runs: Arc<AtomicU32>,
+    gate: Arc<Gate>,
+}
+
+impl Source for HeldSource {
+    fn metadata(&self) -> &SourceMetadata {
+        &self.meta
+    }
+
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
+        let run = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
+        self.gate.wait();
+        let mut result = SourceResult::new();
+        result.insert("count", Value::Int(i64::from(run)));
+        Ok(result)
+    }
+}
+
+struct HeldProvider {
+    meta: SourceMetadata,
+    runs: Arc<AtomicU32>,
+    gate: Arc<Gate>,
+}
+
+impl Provider for HeldProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: "held".to_string(),
+            sources: vec![self.meta.clone()],
+        }
+    }
+
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(HeldSource {
+            meta: self.meta.clone(),
+            runs: Arc::clone(&self.runs),
+            gate: Arc::clone(&self.gate),
+        })]
+    }
+}
+
+/// A server and a scheduler sharing a registry of the one held Source. The
+/// gate opens when it is dropped, so a failing test does not leave a run's
+/// thread held for the runtime to wait on.
+struct Held {
+    sock: std::path::PathBuf,
+    _dir: tempfile::TempDir,
+    handle: beachcomber::scheduler::SchedulerHandle,
+    heartbeat: Arc<std::sync::atomic::AtomicU64>,
+    runs: Arc<AtomicU32>,
+    gate: Arc<Gate>,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.gate.release();
+    }
+}
+
+fn held(poll_secs: u64) -> Held {
+    let runs = Arc::new(AtomicU32::new(0));
+    let gate = Arc::new(Gate::new());
+    let meta = SourceMetadata {
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: poll_secs,
+            count: 60,
+        },
+        timeout: Duration::from_secs(600),
+        ..counter_source_meta()
+    };
+    let mut registry = ProviderRegistry::new();
+    registry
+        .register(Box::new(HeldProvider {
+            meta,
+            runs: Arc::clone(&runs),
+            gate: Arc::clone(&gate),
+        }))
+        .expect("held");
+    let registry = Arc::new(registry);
+    let watchers = Arc::new(WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+    let (handle, mut scheduler) = Scheduler::new(
+        cache.clone(),
+        registry.clone(),
+        Config::default(),
+        watchers.clone(),
+    );
+    scheduler.use_polling_watcher(Duration::from_millis(50));
+    let heartbeat = scheduler.heartbeat();
+    tokio::spawn(scheduler.run());
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("s");
+    beachcomber::server::Server::new(
+        sock.clone(),
+        cache,
+        registry,
+        Some(handle.clone()),
+        watchers,
+    )
+    .spawn()
+    .unwrap();
+    Held {
+        sock,
+        _dir: dir,
+        handle,
+        heartbeat,
+        runs,
+        gate,
+    }
+}
+
+fn held_instance() -> Vec<Instance> {
+    vec![Instance::new("main", None)]
+}
+
+/// A read finds the instance cold and runs it. While that run is held, the
+/// scheduler's first demand of the instance and then its poll arrive: both
+/// take the run in flight. One run, whoever asked.
+///
+/// The poll is a real one: its interval is a second, the shortest there is,
+/// and the lifecycle's clock is the system's, so this waits that second out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_a_demand_and_a_poll_of_one_instance_run_it_once() {
+    let d = held(1);
+    let read = tokio::spawn(ask(
+        d.sock.clone(),
+        serde_json::json!({"op": "get", "key": "held.count"}),
+    ));
+    until("the read's run to begin", || {
+        d.runs.load(Ordering::SeqCst) == 1
+    })
+    .await;
+
+    d.handle
+        .send(SchedulerMessage::QueryActivity {
+            provider: "held".into(),
+            instances: held_instance(),
+        })
+        .await;
+    let demanded = std::time::Instant::now();
+    d.handle.get_status().await.expect("the demand was handled");
+    // The poll is due a second after the demand; the first tick after that
+    // runs it. Two ticks past the second, and a round trip behind them.
+    let beat = d.heartbeat.load(Ordering::Relaxed);
+    let deadline = demanded + Duration::from_secs(10);
+    while demanded.elapsed() < Duration::from_secs(1)
+        || d.heartbeat.load(Ordering::Relaxed) < beat + 2
+    {
+        assert!(std::time::Instant::now() < deadline, "the ticks stopped");
+        tokio::task::yield_now().await;
+    }
+    d.handle.get_status().await.expect("the poll was handled");
+    assert_eq!(
+        d.runs.load(Ordering::SeqCst),
+        1,
+        "the demand and the poll took the read's run"
+    );
+
+    d.gate.release();
+    assert_eq!(read.await.unwrap()["data"], serde_json::json!(1));
+    until_settled(&d.handle).await;
+    assert_eq!(d.runs.load(Ordering::SeqCst), 1);
+}
+
+/// A refresh that arrives while a read's run is under way waits behind it:
+/// three of them make one more run, after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refresh_during_a_reads_run_queues_one_rerun() {
+    let d = held(60);
+    let read = tokio::spawn(ask(
+        d.sock.clone(),
+        serde_json::json!({"op": "get", "key": "held.count"}),
+    ));
+    until("the read's run to begin", || {
+        d.runs.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    for _ in 0..3 {
+        d.handle
+            .send(SchedulerMessage::Refresh {
+                provider: "held".into(),
+                instances: held_instance(),
+            })
+            .await;
+    }
+    // The channel is FIFO: once this answers, the refreshes were handled.
+    assert_eq!(
+        in_flight(&d.handle).await,
+        ["held:main"],
+        "one run, the read's"
+    );
+    assert_eq!(d.runs.load(Ordering::SeqCst), 1, "the refreshes wait");
+
+    d.gate.release();
+    assert_eq!(read.await.unwrap()["data"], serde_json::json!(1));
+    until_settled(&d.handle).await;
+    assert_eq!(
+        d.runs.load(Ordering::SeqCst),
+        2,
+        "three refreshes, one rerun"
+    );
+}
+
+/// A config Source whose `data` line touches `<dir>/started`, waits for
+/// `<dir>/go`, then answers 1, polled every `poll`.
+fn gated_source(dir: &std::path::Path, poll: &str) -> String {
+    format!(
+        "[daemon.providers.demo.sources.s]\n\
+         data = \"{{{{ exec('touch {d}/started; while [ ! -f {d}/go ]; do sleep 0.01; done; echo 1') | trim }}}}\"\n\
+         result.n = \"{{{{ data }}}}\"\n\
+         return = \"{{{{ result | poll('{poll}') }}}}\"\n",
+        d = dir.display()
+    )
+}
+
+/// A reload that reschedules a Source overtakes the run a read started: the
+/// run's result is not written (it carries the old schedule), the instance
+/// runs again under the Source now in force, and the read waiting on it
+/// answers from that run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reload_supersedes_a_run_a_read_started() {
+    use beachcomber::provider::registry::RegistryHandle;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    let config = Config::from_toml(&gated_source(&dir, "10m"));
+    let watchers = Arc::new(WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+    let before = ProviderRegistry::with_config(&config, &Default::default())
+        .unwrap()
+        .share(&cache);
+    let in_force = RegistryHandle::new(before.clone());
+    let (handle, mut scheduler) =
+        Scheduler::new(cache.clone(), before.clone(), config, watchers.clone());
+    scheduler.use_polling_watcher(Duration::from_millis(50));
+    tokio::spawn(scheduler.run());
+    let sock = dir.join("s");
+    beachcomber::server::Server::new(
+        sock.clone(),
+        cache.clone(),
+        in_force.clone(),
+        Some(handle.clone()),
+        watchers,
+    )
+    .spawn()
+    .unwrap();
+
+    let read = tokio::spawn(ask(
+        sock.clone(),
+        serde_json::json!({"op": "get", "key": "demo.n"}),
+    ));
+    until("the read's run to begin", || dir.join("started").exists()).await;
+
+    let after = ProviderRegistry::with_config(
+        &Config::from_toml(&gated_source(&dir, "11m")),
+        &Default::default(),
+    )
+    .unwrap()
+    .adopt(&before, &cache);
+    handle
+        .send(SchedulerMessage::Reload {
+            next: after,
+            registry: in_force,
+        })
+        .await;
+    handle.get_status().await.expect("the reload was handled");
+
+    std::fs::write(dir.join("go"), "").unwrap();
+    assert_eq!(read.await.unwrap()["data"], serde_json::json!("1"));
+    until_settled(&handle).await;
+    let schedule = ask(
+        sock.clone(),
+        serde_json::json!({"op": "get", "key": "demo:cache.n"}),
+    )
+    .await;
+    assert_eq!(
+        schedule["data"]["poll"]["interval"],
+        serde_json::json!("660s"),
+        "the record is the run under the new Source's, not the overtaken one's: {schedule}"
+    );
+}
+
+/// Two Sources that read each other's provider (`comb.q` in one, `comb.p` in
+/// the other), both cold and run at once by two reads: each run waits for
+/// the other's only until that would close the ring, and the run that would
+/// close it finds the other's last value (nothing yet) instead. Both reads
+/// answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ring_of_reads_between_runs_finds_the_last_value_and_waits_on_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    // `comb[...]` under a computed name is read when the render reaches it,
+    // after the gate (a name written out is read before the line renders).
+    let side = |provider: &str, source: &str, other: &str| {
+        format!(
+            "[daemon.providers.{provider}.sources.{source}]\n\
+             data = \"{{{{ exec('touch {d}/{source}; while [ ! -f {d}/go ]; do sleep 0.01; done') ~ \
+             '{source}<' ~ (comb['{other}' ~ ''].v if comb['{other}' ~ ''] else '-') ~ '>' }}}}\"\n\
+             result.v = \"{{{{ data }}}}\"\n\
+             return = \"{{{{ result | timeout('3s') }}}}\"\n",
+            d = dir.display()
+        )
+    };
+    let config = Config::from_toml(&format!("{}{}", side("p", "a", "q"), side("q", "b", "p")));
+    let watchers = Arc::new(WatcherRegistry::new());
+    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+    let registry = ProviderRegistry::with_config(&config, &Default::default())
+        .unwrap()
+        .share(&cache);
+    let sock = dir.join("s");
+    beachcomber::server::Server::new(sock.clone(), cache, registry, None, watchers)
+        .spawn()
+        .unwrap();
+
+    let p = tokio::spawn(ask(
+        sock.clone(),
+        serde_json::json!({"op": "get", "key": "p.v"}),
+    ));
+    let q = tokio::spawn(ask(
+        sock.clone(),
+        serde_json::json!({"op": "get", "key": "q.v"}),
+    ));
+    until("both runs to begin", || {
+        dir.join("a").exists() && dir.join("b").exists()
+    })
+    .await;
+    std::fs::write(dir.join("go"), "").unwrap();
+    let started = std::time::Instant::now();
+    let (p, q) = (
+        p.await.unwrap()["data"].clone(),
+        q.await.unwrap()["data"].clone(),
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the reads waited {:?}: a run waited on itself round the ring",
+        started.elapsed()
+    );
+    let pair = (p.as_str().unwrap_or("?"), q.as_str().unwrap_or("?"));
+    assert!(
+        pair == ("a<b<->>", "b<->") || pair == ("a<->", "b<a<->>"),
+        "one run read the other's last value (none), the other waited for it: {pair:?}"
+    );
+}

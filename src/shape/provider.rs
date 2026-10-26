@@ -47,8 +47,8 @@ use crate::cache::{
 use crate::engine::{CallFn, Calls, FACET_SINK, FacetSink, facet_name_error, provider_engine_env};
 use crate::provider::Value;
 use crate::provider::registry::ProviderRegistry;
+use crate::provider::source_call::source_call;
 use crate::provider::source_call::{CallOutcome, Called, CalledRecord, called_in};
-use crate::provider::source_call::{Cold, source_call};
 use crate::shape::decorators::named_decorators;
 use crate::shape::prototype::{Kind, Link, chain, super_chain};
 use dashmap::DashSet;
@@ -830,7 +830,7 @@ pub fn returned_over(
                 )
                 .map(|facet| facet.fields)
         },
-        &|p, s| source_call(registry, cache, p, s, path, Cold::Skip),
+        &|p, s| source_call(registry, cache, p, s, path),
     )
 }
 

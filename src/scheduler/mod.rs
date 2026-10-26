@@ -21,7 +21,7 @@ pub use crate::cache::FailureSnapshot;
 use crate::config::Config;
 use crate::provider::InvalidationStrategy;
 use crate::provider::registry::{ProviderRegistry, RegistryHandle};
-use crate::provider::source_call::record_outcome;
+use crate::run::{Overtake, Want};
 use crate::scheduler::lifecycle::{
     LifecycleRegistry, LifecycleState, SourceLifecycleConfig, StateTransition, WatchAction,
 };
@@ -336,14 +336,13 @@ fn instant_to_unix_ms(deadline: std::time::Instant) -> u64 {
 fn build_status(
     lifecycle: &LifecycleRegistry,
     registrar: Option<&Registrar>,
-    in_flight: &std::sync::Mutex<std::collections::HashSet<lifecycle::Key>>,
+    runs: &crate::run::Runs,
     watch_backend: &str,
 ) -> SchedulerStatus {
     let watches = registrar.map(Registrar::watches).unwrap_or_default();
 
-    let in_flight_keys: Vec<String> = in_flight
-        .lock()
-        .unwrap()
+    let in_flight_keys: Vec<String> = runs
+        .in_flight()
         .iter()
         .map(|key| {
             let mut name = match &key.path {
@@ -409,8 +408,6 @@ fn build_status(
     }
 }
 
-/// In-flight set: per-(provider, path, source) deduplication.
-type SourceKeySet = Arc<std::sync::Mutex<std::collections::HashSet<lifecycle::Key>>>;
 /// Failure backoff map: per-(provider, path, source) failure state.
 pub(crate) type SourceFailureMap = Arc<std::sync::Mutex<HashMap<lifecycle::Key, FailureState>>>;
 
@@ -467,21 +464,6 @@ pub struct Scheduler {
     registry: Arc<ProviderRegistry>,
     config: Config,
     rx: mpsc::Receiver<SchedulerMessage>,
-    /// Tracks which (provider, path, source) combinations are currently executing.
-    in_flight: SourceKeySet,
-    /// Tracks which (provider, path, source) need to re-run after current execution completes.
-    pending_rerun: SourceKeySet,
-    /// The runs in flight that a reload has overtaken: the Source is gone, its
-    /// body changed or its schedule was retuned. Such a run writes nothing and
-    /// goes back through the scheduler, so what it produces comes from the
-    /// Source now in force. Marked, and read, under the `in_flight` lock.
-    /// The value says whether the run goes again: a retuned instance does, an
-    /// evicted one (its Source is gone or changed) has nothing to go back to.
-    superseded: Arc<std::sync::Mutex<HashMap<lifecycle::Key, bool>>>,
-    /// Where a run that must go again sends its `Refresh`. Weak, so the
-    /// scheduler's own sender does not keep its queue open once every handle
-    /// is gone.
-    requeue: mpsc::WeakSender<SchedulerMessage>,
     /// Tracks consecutive failures and suppression state per (provider, path, source).
     failure_counts: SourceFailureMap,
     /// Monotonically increasing counter bumped on every tick. Used by the watchdog
@@ -509,7 +491,6 @@ impl Scheduler {
         watchers: Arc<WatcherRegistry>,
     ) -> (SchedulerHandle, Scheduler) {
         let (tx, rx) = mpsc::channel(256);
-        let requeue = tx.downgrade();
         let handle = SchedulerHandle::new(tx);
         let heartbeat = Arc::new(AtomicU64::new(0));
         let failure_counts = Arc::clone(&registry.failures);
@@ -518,10 +499,6 @@ impl Scheduler {
             registry,
             config,
             rx,
-            in_flight: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-            pending_rerun: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
-            superseded: Arc::default(),
-            requeue,
             failure_counts,
             heartbeat,
             watchers,
@@ -545,160 +522,42 @@ impl Scheduler {
         t
     }
 
-    /// Re-execute `instances` of `provider`.
+    /// Re-execute `instances` of `provider`: a run of each that begins after
+    /// now.
     fn refresh_sources(&self, provider: &str, instances: &[Instance]) {
         for instance in instances {
-            self.execute_source(provider, &instance.source, instance.root.as_deref());
+            self.execute_source(
+                provider,
+                &instance.source,
+                instance.root.as_deref(),
+                Want::Fresh,
+            );
         }
     }
 
-    /// Execute one instance of a source (`root` is its cache address, `None`
-    /// for the instance at `~`) on the blocking thread pool and write the result
-    /// to cache.
-    /// This is fire-and-forget: returns immediately while the source runs in the background.
-    /// Deduplicates concurrent executions via in_flight: if the (provider, root, source) triple
-    /// is already running, marks it for a single rerun after completion.
-    /// Suppresses execution when failure backoff is active.
-    fn execute_source(&self, provider_name: &str, source_name: &str, root: Option<&str>) {
-        let Some(source) = self.registry.source(provider_name, source_name) else {
+    /// Start the run of one instance of a Source that `want` needs (`root` is
+    /// its cache address, `None` for the instance at `~`), through the one run
+    /// path ([`crate::run::Runs::start`]): it joins or queues behind a run
+    /// already in flight, whoever started that, applies the failback backoff,
+    /// and records itself. The scheduler does not wait for it.
+    fn execute_source(
+        &self,
+        provider_name: &str,
+        source_name: &str,
+        root: Option<&str>,
+        want: Want,
+    ) {
+        if self.registry.source(provider_name, source_name).is_none() {
             warn!(
                 "Refresh for unknown source '{}.{}'",
                 provider_name, source_name
             );
             return;
-        };
-
-        let key = lifecycle::Key {
-            provider: provider_name.to_string(),
-            path: root.map(|s| s.to_string()),
-            source: source_name.to_string(),
-            node: String::new(),
-        };
-
-        // Check failure backoff — skip if suppressed.
-        {
-            let failures = self.failure_counts.lock().unwrap();
-            if let Some(state) = failures.get(&key)
-                && state.is_suppressed()
-            {
-                debug!(
-                    "Source '{}.{}' suppressed due to failure backoff",
-                    provider_name, source_name
-                );
-                return;
-            }
         }
-
-        // Check if already in flight — if so, queue a rerun and return.
-        {
-            let mut in_flight = self.in_flight.lock().unwrap();
-            if in_flight.contains(&key) {
-                self.pending_rerun.lock().unwrap().insert(key);
-                debug!(
-                    "Source '{}.{}' already in flight, queued rerun",
-                    provider_name, source_name
-                );
-                return;
-            }
-            in_flight.insert(key.clone());
-        }
-
-        let cache = Arc::clone(&self.cache);
-        // The Source's own timeout (its `timeout(...)`, else `[daemon]
-        // timeout`, applied when the registry was built).
-        let timeout = self
-            .registry
-            .source_metadata(provider_name, source_name)
-            .map_or_else(|| self.config.daemon().timeout(), |m| m.timeout);
-        let in_flight = Arc::clone(&self.in_flight);
-        let pending_rerun = Arc::clone(&self.pending_rerun);
-        let superseded = Arc::clone(&self.superseded);
-        let requeue = self.requeue.clone();
-        // The run reads through the registry it began under, which its Source's
-        // `comb.<p>` reader holds only weakly: kept here, a reload mid-run
-        // cannot leave it reading a registry that has gone.
-        let registry = Arc::clone(&self.registry);
-        // And settles under the same one: a reload that retires the Source
-        // marks it, whichever registry has since taken over.
-        let recording_registry = Arc::clone(&registry);
-        // `root` is the cache address; the directory the Source runs in is not
-        // always the same string. The global entry's address is `None` and its
-        // directory is `$HOME` (`query::normalise_path`), so the instance at
-        // `~` runs in `$HOME` and writes the pathless entry.
-        let exec_dir = crate::query::instance_dir(root);
-        let provider_name_owned = provider_name.to_string();
-        let source_name_owned = source_name.to_string();
-
-        tokio::spawn(async move {
-            let result = tokio::time::timeout(
-                timeout,
-                tokio::task::spawn_blocking(move || {
-                    let _registry = registry;
-                    source.execute(exec_dir.as_deref())
-                }),
-            )
-            .await;
-
-            // Settle under the `in_flight` lock, the one a reload marks retuned
-            // and evicted runs under: either this run is overtaken and writes
-            // nothing, or it is recorded like any other run. A run whose Source
-            // a reload has retired is dropped by `record_outcome`, whether or not
-            // the instance had a lifecycle entry to mark.
-            let again = {
-                let mut flight = in_flight.lock().unwrap();
-                let overtaken = superseded.lock().unwrap().remove(&key);
-                let overtaken_rerun = overtaken == Some(true);
-                let overtaken = overtaken.is_some();
-                if overtaken {
-                    debug!(
-                        "Source '{}.{}' run superseded by a reload; result dropped",
-                        provider_name_owned, source_name_owned
-                    );
-                } else {
-                    let outcome = match result {
-                        Ok(Ok(Ok(source_result))) => Ok(source_result),
-                        Ok(Ok(Err(e))) => Err(e),
-                        Ok(Err(e)) => Err(format!("panicked: {e}")),
-                        Err(_) => Err(timed_out(timeout)),
-                    };
-                    match record_outcome(
-                        &recording_registry,
-                        &cache,
-                        &provider_name_owned,
-                        &source_name_owned,
-                        key.path.as_deref(),
-                        outcome,
-                    ) {
-                        Ok(()) => debug!(
-                            "Executed source '{}.{}' path={:?}",
-                            provider_name_owned, source_name_owned, key.path
-                        ),
-                        Err(e) => warn!(
-                            "Source '{}.{}' failed: {}",
-                            provider_name_owned, source_name_owned, e
-                        ),
-                    }
-                }
-                // A refresh that arrived during the run asks for one more; so
-                // does an overtaken run. Either goes back through the
-                // scheduler, which applies the failure backoff and runs the
-                // Source in force. The key is free again before it is asked.
-                let queued = pending_rerun.lock().unwrap().remove(&key);
-                flight.remove(&key);
-                // An evicted instance has no lifecycle entry to run under: its
-                // result, and any refresh queued behind it, are dropped.
-                if overtaken { overtaken_rerun } else { queued }
-            };
-            if again && let Some(tx) = requeue.upgrade() {
-                debug!("Re-running source '{}.{}'", key.provider, key.source);
-                let _ = tx
-                    .send(SchedulerMessage::Refresh {
-                        provider: key.provider.clone(),
-                        instances: vec![Instance::new(&key.source, key.path.as_deref())],
-                    })
-                    .await;
-            }
-        });
+        let key = crate::provider::source_call::instance_key(provider_name, source_name, root);
+        self.registry
+            .runs()
+            .start(want, &self.registry, &self.cache, &key);
     }
 
     /// Adopt `next` as this scheduler's registry, bring the lifecycle entries
@@ -718,9 +577,10 @@ impl Scheduler {
     ///   restamped, with no run.
     /// - Every other instance keeps its records, entry, timers and watches.
     ///
-    /// A run in flight for an evicted or retuned instance is marked
-    /// superseded: it writes nothing and goes again under the new Source. Puts
-    /// are not Sources and are never touched.
+    /// A run in flight of an instance whose Source is gone or changed is
+    /// overtaken and writes nothing; one whose Source was rescheduled runs
+    /// again under the new Source ([`crate::run::Runs::supersede`]). Puts are
+    /// not Sources and are never touched.
     fn reload(
         &mut self,
         next: Arc<ProviderRegistry>,
@@ -735,68 +595,94 @@ impl Scheduler {
         previous.retire(&self.registry, &plan.affected);
         let mut watches = ReloadWatches::default();
 
-        // Under the `in_flight` lock, so a run settling concurrently either
-        // wrote before this or is overtaken by it.
+        // The failure state of a Source that is gone or changed goes, and
+        // that of one whose failback changed starts afresh: a fixed body is
+        // not held back by the backoff the old one earned. First, so a run
+        // overtaken below that settles meanwhile does not have its rerun
+        // held back by it.
         {
-            let flight = self.in_flight.lock().unwrap();
-            let mut superseded = self.superseded.lock().unwrap();
             let mut failures = self.failure_counts.lock().unwrap();
-            for key in &plan.evict {
-                debug!(
-                    "Reload: evicting provider={} path={:?} source={}",
-                    key.provider, key.path, key.source
-                );
-                if flight.contains(key) {
-                    superseded.insert(key.clone(), false);
-                }
-                lifecycle.remove(key);
-                on_evicted(&self.cache, &self.registry, key);
-                watches.drop.push(key.clone());
+            for retune in plan.retune.iter().filter(|r| r.failback_changed) {
+                failures.remove(&retune.key);
             }
-            for (provider, source) in &plan.affected {
-                // Every instance, the ones with no lifecycle entry too.
-                self.cache.remove_source_everywhere(provider, source);
-                self.registry.forget_callees_of(provider, source);
-            }
-            for retune in &plan.retune {
-                debug!(
-                    "Reload: retuning provider={} path={:?} source={}",
-                    retune.key.provider, retune.key.path, retune.key.source
-                );
-                if flight.contains(&retune.key) {
-                    superseded.insert(retune.key.clone(), true);
-                }
-                lifecycle.retune(&retune.key, retune.config.clone());
-                if retune.stored_changed
-                    && let Some(sm) = self
-                        .registry
-                        .source_metadata(&retune.key.provider, &retune.key.source)
-                {
-                    self.cache.restamp_schedule(
-                        &retune.key.provider,
-                        retune.key.path.as_deref(),
-                        &retune.key.source,
-                        crate::cache::Schedule::of(sm),
-                    );
-                }
-                if retune.failback_changed {
-                    failures.remove(&retune.key);
-                }
-                if retune.watches_changed {
-                    watches.drop.push(retune.key.clone());
-                    if retune.rewatch {
-                        watches.rewatch.push(retune.key.clone());
-                    }
-                }
-            }
-            // The failure state of a Source that is gone or changed: a fixed
-            // body is not held back by the backoff the old one earned.
             failures.retain(|key, _| {
                 key.source == crate::cache::PUT_SOURCE
                     || !plan
                         .affected
                         .contains(&(key.provider.clone(), key.source.clone()))
             });
+        }
+
+        // Every run in flight of an instance whose Source is gone, changed or
+        // rescheduled, whoever started it and whether or not the instance has
+        // a lifecycle entry yet: it writes nothing, and a rescheduled one runs
+        // again under the Source now in force. Marked under the run table's
+        // lock, so a run settling concurrently either wrote before this (the
+        // eviction and restamp below then see its record) or is overtaken.
+        let runs = Arc::clone(self.registry.runs());
+        for key in runs.in_flight() {
+            let named = (key.provider.clone(), key.source.clone());
+            let gone = plan.evict.contains(&key)
+                || plan.affected.contains(&named)
+                || self.registry.source(&key.provider, &key.source).is_none();
+            let rescheduled = plan.retune.iter().any(|r| r.key == key)
+                || previous
+                    .source_metadata(&key.provider, &key.source)
+                    .zip(self.registry.source_metadata(&key.provider, &key.source))
+                    .is_some_and(|(before, now)| !same_schedule(before, now));
+            if gone {
+                runs.supersede(&key, Overtake::Gone, &self.registry, &self.cache);
+            } else if rescheduled {
+                runs.supersede(&key, Overtake::Again, &self.registry, &self.cache);
+                if let Some(sm) = self.registry.source_metadata(&key.provider, &key.source) {
+                    self.cache.restamp_schedule(
+                        &key.provider,
+                        key.path.as_deref(),
+                        &key.source,
+                        crate::cache::Schedule::of(sm),
+                    );
+                }
+            }
+        }
+
+        for key in &plan.evict {
+            debug!(
+                "Reload: evicting provider={} path={:?} source={}",
+                key.provider, key.path, key.source
+            );
+            lifecycle.remove(key);
+            on_evicted(&self.cache, &self.registry, key);
+            watches.drop.push(key.clone());
+        }
+        for (provider, source) in &plan.affected {
+            // Every instance, the ones with no lifecycle entry too.
+            self.cache.remove_source_everywhere(provider, source);
+            self.registry.forget_callees_of(provider, source);
+        }
+        for retune in &plan.retune {
+            debug!(
+                "Reload: retuning provider={} path={:?} source={}",
+                retune.key.provider, retune.key.path, retune.key.source
+            );
+            lifecycle.retune(&retune.key, retune.config.clone());
+            if retune.stored_changed
+                && let Some(sm) = self
+                    .registry
+                    .source_metadata(&retune.key.provider, &retune.key.source)
+            {
+                self.cache.restamp_schedule(
+                    &retune.key.provider,
+                    retune.key.path.as_deref(),
+                    &retune.key.source,
+                    crate::cache::Schedule::of(sm),
+                );
+            }
+            if retune.watches_changed {
+                watches.drop.push(retune.key.clone());
+                if retune.rewatch {
+                    watches.rewatch.push(retune.key.clone());
+                }
+            }
         }
         registry.replace(Arc::clone(&self.registry));
         watches
@@ -947,7 +833,7 @@ impl Scheduler {
                             let status = build_status(
                                 &lifecycle,
                                 registrar.as_ref(),
-                                &self.in_flight,
+                                self.registry.runs(),
                                 watch_backend.map_or("disabled", |b| b.as_str()),
                             );
                             let _ = reply.send(status);
@@ -1031,9 +917,7 @@ impl Scheduler {
                                 if matches!(outcome.transition, StateTransition::NewlyActive) {
                                     // Cold → Active: execute to populate the cache,
                                     // at the instance the lifecycle key names.
-                                    if self.cache.get_source(provider, root.as_deref(), &sm.name).is_none() {
-                                        self.execute_source(provider, &sm.name, root.as_deref());
-                                    }
+                                    self.execute_source(provider, &sm.name, root.as_deref(), Want::Cold);
                                 }
                             }
                             last_activity = tokio::time::Instant::now();
@@ -1053,8 +937,10 @@ impl Scheduler {
                     let affected_keys = resolve_keys_from_paths(&paths, &watch_paths);
                     for key in affected_keys {
                         let outcome = lifecycle.on_fsevent(key.clone(), Instant::now());
+                        // A run that began before the change may have read
+                        // the file before it: one that begins after it.
                         if outcome.refresh {
-                            self.execute_source(&key.provider, &key.source, key.path.as_deref());
+                            self.execute_source(&key.provider, &key.source, key.path.as_deref(), Want::Fresh);
                         }
                     }
                     last_activity = tokio::time::Instant::now();
@@ -1112,7 +998,9 @@ impl Scheduler {
                             // A put's poll is its expiry clock; nothing to run.
                             continue;
                         }
-                        self.execute_source(&key.provider, &key.source, key.path.as_deref());
+                        // A run in flight brings the instance up to date as
+                        // well as a new one would.
+                        self.execute_source(&key.provider, &key.source, key.path.as_deref(), Want::Any);
                     }
 
                     for key in &actions.watch_drops {
@@ -2023,9 +1911,17 @@ mod tests {
         let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let a = registry.source("p", "a").unwrap();
         let mut keys = Vec::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         for dir in [&one, &two] {
             let at = dir.path().to_str().unwrap();
-            a.execute(Some(at)).unwrap();
+            // As the daemon runs it: on a blocking thread, where its call to
+            // `b` starts and waits for `b`'s run.
+            let (a, dir) = (Arc::clone(&a), at.to_string());
+            rt.block_on(
+                async move { tokio::task::spawn_blocking(move || a.execute(Some(&dir))).await },
+            )
+            .unwrap()
+            .unwrap();
             keys.push(lifecycle::Key {
                 provider: "p".into(),
                 path: crate::query::address_of(at),

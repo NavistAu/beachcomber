@@ -1583,7 +1583,7 @@ fn a_refresh_runs_a_shared_cold_source_once() {
     let setup = Setup::new(&[]);
     let count = setup.home.join("shared.count");
     // The shared run waits for `go`, which is made once both callers run: the
-    // caller that did not start it finds it cold, and must wait for it.
+    // caller that did not start it finds it in flight, and takes it.
     let go = setup.home.join("go");
     setup.write(
         "config.toml",
@@ -1612,13 +1612,14 @@ result.x2 = "{{{{ data }}}}"
         .output()
         .expect("run comb refresh");
     assert!(out.status.success(), "{out:?}");
+    // In flight: both callers, and the one shared run they wait on.
     poll_until(
         "introspect daemon",
-        "both callers in flight",
+        "both callers and the shared run in flight",
         Duration::from_secs(20),
         Duration::from_millis(10),
         || introspect(&d, "daemon")["in_flight"].as_u64(),
-        |n| *n == Some(2),
+        |n| *n == Some(3),
     );
     std::fs::write(&go, "").unwrap();
     poll_until(

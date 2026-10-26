@@ -221,3 +221,83 @@ return = "{{{{ result | poll('60s') | failback('60s', 3) }}}}"
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;
 }
+
+/// The failback holds back the runs reads start, as it holds back the
+/// scheduler's: after the failure that puts the instance into backoff a read
+/// runs nothing and answers what is stored (nothing); `--force` runs it.
+#[tokio::test]
+async fn failback_skips_the_runs_reads_start_and_force_does_not() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    struct Once(Arc<AtomicU32>);
+    impl Source for Once {
+        fn metadata(&self) -> &SourceMetadata {
+            use std::sync::OnceLock;
+            static M: OnceLock<SourceMetadata> = OnceLock::new();
+            M.get_or_init(|| SourceMetadata {
+                failback: FailbackConfig {
+                    reattempts: 1,
+                    interval_secs: 3600,
+                },
+                ..failing_source_meta()
+            })
+        }
+        fn execute(&self, _: Option<&str>) -> Result<SourceResult, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err("always fails".into())
+        }
+    }
+    struct OnceProvider(Arc<AtomicU32>);
+    impl Provider for OnceProvider {
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "failing".into(),
+                sources: vec![Once(self.0.clone()).metadata().clone()],
+            }
+        }
+        fn sources(&self) -> Vec<Box<dyn Source>> {
+            vec![Box::new(Once(self.0.clone()))]
+        }
+    }
+
+    let runs = Arc::new(AtomicU32::new(0));
+    let mut registry = ProviderRegistry::new();
+    registry
+        .register(Box::new(OnceProvider(runs.clone())))
+        .unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("s");
+    let watchers = Arc::new(WatcherRegistry::new());
+    let server = beachcomber::server::Server::new(
+        sock.clone(),
+        Arc::new(Cache::with_watchers(watchers.clone())),
+        Arc::new(registry),
+        None,
+        watchers,
+    );
+    let handle = server.spawn().unwrap();
+    let get = |force: bool| {
+        let sock = sock.clone();
+        async move {
+            let mut stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
+            let request = serde_json::json!({"op": "get", "key": "failing.value", "force": force});
+            stream
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).await.unwrap();
+            serde_json::from_str::<serde_json::Value>(&line).unwrap()
+        }
+    };
+    assert_eq!(get(false).await["data"], serde_json::Value::Null);
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "the cold read ran it");
+    assert_eq!(get(false).await["data"], serde_json::Value::Null);
+    assert_eq!(
+        runs.load(Ordering::SeqCst),
+        1,
+        "in backoff, a read runs nothing"
+    );
+    get(true).await;
+    assert_eq!(runs.load(Ordering::SeqCst), 2, "--force runs it");
+    handle.abort();
+}

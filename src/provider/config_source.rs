@@ -20,8 +20,8 @@
 //! `daemon.providers.<p>.sources.<s>()` for any provider's. A call answers
 //! with the called Source's record as a read from this instance's directory
 //! would find it (see [`crate::provider::source_call`]); one that has nothing
-//! stored is run inline, once. A Source cannot call itself, and a cycle through
-//! others is an error when it runs.
+//! stored is run once, and the call waits for it. A Source cannot call itself,
+//! and a cycle through others is an error when it runs.
 
 use crate::engine::{CallFn, Calls, PluginSet, daemon_engine_env};
 use crate::provider::source_call::{Called, Running, called_in};
@@ -46,7 +46,7 @@ use std::sync::{Arc, Mutex};
 /// never a template. What `comb.<p>` sees.
 ///
 /// `read` is a read like any other: a cold Source of the provider runs first,
-/// inline, once. A Source never waits on itself, so `comb.<own provider>` in a
+/// once. A Source never waits on itself, so `comb.<own provider>` in a
 /// `data` line, or a ring of such reads, finds the running Source's own last
 /// stored value. A Source call (`sources.<s>()`) differs where that is the
 /// point: it reads one Source's raw records, without a `put` over them or the
@@ -73,7 +73,7 @@ pub trait DaemonRead: Send + Sync {
     );
 
     /// The record of `provider`'s Source `source` as a read from `dir` would
-    /// find it (`None`: nothing stored), running a cold instance inline once.
+    /// find it (`None`: nothing stored), running a cold instance once first.
     /// The caller is a `data` line, on a blocking thread.
     fn call(&self, provider: &str, source: &str, dir: Option<&str>)
     -> Result<Option<Json>, String>;

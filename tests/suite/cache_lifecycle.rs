@@ -395,7 +395,7 @@ async fn integration_repeated_queries_keep_data_warm() {
 /// at full speed, so the two decay together.
 #[tokio::test]
 async fn a_called_sources_demand_follows_its_callers_reads() {
-    use beachcomber::provider::source_call::{Cold, source_call};
+    use beachcomber::provider::source_call::run_call;
     use beachcomber::scheduler::lifecycle::Key;
 
     let config = Config::from_toml(
@@ -430,14 +430,12 @@ result.x = "{{ data }}"
     };
 
     // The caller runs, as a poll of it does, and calls the callee.
-    // A run is blocking work: it takes its instance's turn on a blocking thread.
+    // A run is blocking work: the call waits for it on a blocking thread.
     let ran = {
         let (registry, cache) = (registry.clone(), cache.clone());
-        tokio::task::spawn_blocking(move || {
-            source_call(&registry, &cache, "caller", "s", None, Cold::Run)
-        })
-        .await
-        .unwrap()
+        tokio::task::spawn_blocking(move || run_call(&registry, &cache, "caller", "s", None))
+            .await
+            .unwrap()
     }
     .expect("runs");
     assert!(ran.is_some());

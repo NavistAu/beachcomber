@@ -199,3 +199,117 @@ async fn get_with_wait_field_is_accepted() {
 
     handle.abort();
 }
+
+/// A Source that answers its run count, or fails while `fail` is set.
+struct Flaky {
+    meta: beachcomber::provider::SourceMetadata,
+    runs: Arc<std::sync::atomic::AtomicU32>,
+    fail: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl beachcomber::provider::Source for Flaky {
+    fn metadata(&self) -> &beachcomber::provider::SourceMetadata {
+        &self.meta
+    }
+
+    fn execute(&self, _: Option<&str>) -> Result<beachcomber::provider::SourceResult, String> {
+        use std::sync::atomic::Ordering;
+        let run = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.fail.load(Ordering::SeqCst) {
+            return Err("down".into());
+        }
+        let mut result = beachcomber::provider::SourceResult::new();
+        result.insert("v", Value::Int(i64::from(run)));
+        Ok(result)
+    }
+}
+
+struct FlakyProvider(
+    Arc<std::sync::atomic::AtomicU32>,
+    Arc<std::sync::atomic::AtomicBool>,
+);
+
+fn flaky_meta() -> beachcomber::provider::SourceMetadata {
+    use beachcomber::provider::{FailbackConfig, FieldSchema, FieldType, InvalidationStrategy};
+    beachcomber::provider::SourceMetadata {
+        name: "main".into(),
+        fields: vec![FieldSchema {
+            name: "v".into(),
+            field_type: FieldType::Int,
+        }],
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 60,
+            count: 2,
+        },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 30,
+        },
+        fsevents_reinstate: false,
+        decay: None,
+        budget_execute: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET_EXECUTE,
+        timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
+        nearest: false,
+    }
+}
+
+impl beachcomber::provider::Provider for FlakyProvider {
+    fn metadata(&self) -> beachcomber::provider::ProviderMetadata {
+        beachcomber::provider::ProviderMetadata {
+            name: "flaky".into(),
+            sources: vec![flaky_meta()],
+        }
+    }
+
+    fn sources(&self) -> Vec<Box<dyn beachcomber::provider::Source>> {
+        vec![Box::new(Flaky {
+            meta: flaky_meta(),
+            runs: self.0.clone(),
+            fail: self.1.clone(),
+        })]
+    }
+}
+
+/// `--force` always runs the Source, and a run that fails leaves the last good
+/// value standing, as a run cut off at its timeout does: the forced read
+/// answers it.
+#[tokio::test]
+async fn a_forced_run_that_fails_keeps_the_last_good_value() {
+    use std::sync::atomic::Ordering;
+    let (tmp, sock, cache, _, watchers) = setup();
+    let runs = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut registry = ProviderRegistry::new();
+    registry
+        .register(Box::new(FlakyProvider(runs.clone(), fail.clone())))
+        .unwrap();
+    let server = Server::new(sock.clone(), cache, Arc::new(registry), None, watchers);
+    let handle = server.spawn().unwrap();
+
+    let get = |force: bool| {
+        let sock = sock.clone();
+        async move {
+            let mut stream = UnixStream::connect(&sock).await.unwrap();
+            let request = serde_json::json!({"op": "get", "key": "flaky.v", "force": force});
+            stream
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).await.unwrap();
+            serde_json::from_str::<Response>(&line).unwrap()
+        }
+    };
+    assert_eq!(get(false).await.data, Some(serde_json::json!(1)));
+    fail.store(true, Ordering::SeqCst);
+    let forced = get(true).await;
+    assert_eq!(runs.load(Ordering::SeqCst), 2, "the forced read ran it");
+    assert!(forced.ok, "{:?}", forced.error);
+    assert_eq!(
+        forced.data,
+        Some(serde_json::json!(1)),
+        "the failed run left the last good value"
+    );
+    drop(tmp);
+    handle.abort();
+}

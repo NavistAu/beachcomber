@@ -107,8 +107,8 @@ impl DaemonRead for RegistryReader {
         }
     }
 
-    /// Runs a cold instance inline: the caller is a Source's `data` line, on a
-    /// blocking thread.
+    /// Runs a cold instance first and waits for it: the caller is a Source's
+    /// `data` line, on a blocking thread.
     fn call(
         &self,
         provider: &str,
@@ -122,15 +122,8 @@ impl DaemonRead for RegistryReader {
         let Some(registry) = registry.upgrade() else {
             return Ok(None);
         };
-        crate::provider::source_call::source_call(
-            &registry,
-            cache,
-            provider,
-            source,
-            dir,
-            crate::provider::source_call::Cold::Run,
-        )
-        .map(|record| record.map(|r| r.value))
+        crate::provider::source_call::run_call(&registry, cache, provider, source, dir)
+            .map(|record| record.map(|r| r.value))
     }
 
     /// A read like any other: the provider's cold Sources run first, once
@@ -312,9 +305,9 @@ pub struct ProviderRegistry {
     /// and what it said: answered again for [`ROOT_RETRY_TTL`] rather than
     /// re-run, so a slow failing line costs its timeout once, not per request.
     root_errors: DashMap<(String, String, String), (tokio::time::Instant, String)>,
-    /// Consecutive failures and failback backoff, per instance. The scheduler
-    /// and the inline cold-miss path both record here, so an instance in
-    /// backoff is skipped by either.
+    /// Consecutive failures and failback backoff, per instance. Every run
+    /// records here, whoever started it, so an instance in backoff is skipped
+    /// by all of them.
     pub(crate) failures: crate::scheduler::SourceFailureMap,
     /// What every config Source reads `comb.<p>` through.
     reader: Arc<RegistryReader>,
@@ -328,9 +321,10 @@ pub struct ProviderRegistry {
     /// source, called): checked against the Sources that exist once all are
     /// registered.
     data_calls: Vec<(String, String, Called)>,
-    /// One turn per instance for the callers that find it cold at once; an
-    /// entry lives only while someone holds it.
-    cold_locks: Arc<ColdLocks>,
+    /// Every run of every instance, whoever started it: shared by every
+    /// registry of a daemon, so a run under way at a reload is the one a
+    /// caller on the new registry finds.
+    runs: Arc<crate::run::Runs>,
     /// The instances each instance's last run called, by (provider, source,
     /// root): demanding an instance demands what it calls, so a Source called
     /// only by one that is decaying decays with it.
@@ -368,23 +362,6 @@ struct RetiredAt {
     at: HashMap<(String, String), u64>,
 }
 
-/// The turn for a cold instance a call needs.
-#[derive(Default)]
-pub struct ColdLock {
-    /// How many runs have finished.
-    pub finished: std::sync::atomic::AtomicU64,
-    /// How the last run went.
-    /// A failure is its message and whether it is a fault of the lines.
-    /// Held for as long as a run of the instance is under way, so the next
-    /// caller waits its turn. A read of a read-always Source takes no turn: it
-    /// is cheap, and runs on every read.
-    pub last: tokio::sync::Mutex<Option<Result<(), (String, bool)>>>,
-}
-
-/// The turn for each cold instance, by (provider, source, root); an entry lives
-/// only while someone holds it.
-type ColdLocks = DashMap<(String, String, Option<String>), Arc<ColdLock>>;
-
 /// The instances a run called: (provider, source) to the roots reached.
 pub type CalleeMap = HashMap<(String, String), Vec<Option<String>>>;
 
@@ -413,7 +390,7 @@ impl ProviderRegistry {
             config_sources: HashSet::new(),
             rendered_roots: HashSet::new(),
             data_calls: Vec::new(),
-            cold_locks: Arc::default(),
+            runs: Arc::default(),
             callees: DashMap::new(),
             plugins: None,
             definitions: HashMap::new(),
@@ -428,28 +405,16 @@ impl ProviderRegistry {
         &self.lines
     }
 
-    /// The turn to take before running a cold instance a call needs; give it
-    /// back with [`Self::release_cold`].
-    pub fn cold_lock(&self, provider: &str, source: &str, root: Option<&str>) -> Arc<ColdLock> {
-        self.cold_locks
-            .entry((provider.into(), source.into(), root.map(str::to_string)))
-            .or_default()
-            .clone()
+    /// Every run of every instance ([`crate::run::Runs`]): where a run is
+    /// started, whoever starts it.
+    pub fn runs(&self) -> &Arc<crate::run::Runs> {
+        &self.runs
     }
 
-    /// Give back a turn; the entry goes once no one else holds it.
-    pub fn release_cold(
-        &self,
-        provider: &str,
-        source: &str,
-        root: Option<&str>,
-        lock: Arc<ColdLock>,
-    ) {
-        drop(lock);
-        self.cold_locks.remove_if(
-            &(provider.into(), source.into(), root.map(str::to_string)),
-            |_, held| Arc::strong_count(held) == 1,
-        );
+    /// The reload epoch this registry was put in force at: a later registry
+    /// has a larger one.
+    pub fn epoch(&self) -> u64 {
+        self.born.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Replace what the instance `caller` (provider, source, root) is known
@@ -1313,9 +1278,9 @@ impl ProviderRegistry {
             mine.adopt_loaded(theirs);
         }
         self.failures = Arc::clone(&previous.failures);
-        // A run under way at a reload still holds its instance's turn; a
-        // caller on this registry waits for it as one on the last would.
-        self.cold_locks = Arc::clone(&previous.cold_locks);
+        // A run under way at a reload is the one a caller on this registry
+        // finds, as one on the last would.
+        self.runs = Arc::clone(&previous.runs);
         self.static_names = Arc::clone(&previous.static_names);
         self.retirements = Arc::clone(&previous.retirements);
         for entry in previous.callees.iter() {
@@ -1500,6 +1465,21 @@ mod tests {
     use crate::provider::{
         FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, SourceResult,
     };
+
+    /// `f` where a Source's run executes: on a blocking thread of a runtime,
+    /// so a call it makes can start and wait for another run.
+    fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async { tokio::task::spawn_blocking(f).await })
+            .unwrap()
+    }
+
+    /// Run `source` for `at` as the daemon does, [`blocking`].
+    fn execute(source: &Arc<dyn Source>, at: &str) -> Result<SourceResult, String> {
+        let (source, at) = (Arc::clone(source), at.to_string());
+        blocking(move || source.execute(Some(&at)))
+    }
 
     struct FakeSource(SourceMetadata);
     impl Source for FakeSource {
@@ -1846,17 +1826,15 @@ result.x = "{{ data }}"
     }
 
     #[test]
-    fn a_turn_for_a_cold_instance_survives_a_reload() {
+    fn the_runs_survive_a_reload() {
         let src =
             "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n";
         let cache = Arc::new(crate::cache::Cache::new());
         let before = registry_from(src).share(&cache);
-        let turn = before.cold_lock("demo", "s", None);
-
         let after = registry_from(src).adopt(&before, &cache);
         assert!(
-            Arc::ptr_eq(&turn, &after.cold_lock("demo", "s", None)),
-            "a caller on the new registry waits for the run the old one has under way"
+            Arc::ptr_eq(before.runs(), after.runs()),
+            "a caller on the new registry finds the run the old one has under way"
         );
     }
 
@@ -2322,14 +2300,9 @@ result.y = "{{ data }}"
         }
         let cache = Arc::new(Cache::new());
         let registry = registry.share(&cache);
-        let err = crate::provider::source_call::source_call(
-            &registry,
-            &cache,
-            "cyc",
-            "a",
-            None,
-            crate::provider::source_call::Cold::Run,
-        )
+        let err = blocking(move || {
+            crate::provider::source_call::run_call(&registry, &cache, "cyc", "a", None)
+        })
         .unwrap_err();
         assert!(err.contains("sources: cyc.a calls itself"), "{err}");
         assert!(err.matches("(in <expression>").count() <= 1, "{err}");
@@ -2350,18 +2323,21 @@ result.y = "{{ data }}"
         let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
         let cache = Arc::new(Cache::new());
         let registry = registry.share(&cache);
-        use crate::provider::source_call::{Cold, source_call};
+        use crate::provider::source_call::{run_call, source_call};
         let at = dir.path().canonicalize().unwrap();
-        let at = at.to_str().unwrap();
-        let skipped = source_call(&registry, &cache, "p", "s", Some(at), Cold::Skip).unwrap();
+        let at = at.to_str().unwrap().to_string();
+        let skipped = source_call(&registry, &cache, "p", "s", Some(&at)).unwrap();
         assert!(skipped.is_none(), "an unresolved instance is a miss");
         assert!(!renders.exists(), "the root line was not rendered");
-        let ran = source_call(&registry, &cache, "p", "s", Some(at), Cold::Run).unwrap();
+        let ran = blocking({
+            let (registry, cache, at) = (registry.clone(), cache.clone(), at.clone());
+            move || run_call(&registry, &cache, "p", "s", Some(&at)).unwrap()
+        });
         assert!(
             ran.is_some() && renders.exists(),
             "a call that may run does"
         );
-        let skipped = source_call(&registry, &cache, "p", "s", Some(at), Cold::Skip).unwrap();
+        let skipped = source_call(&registry, &cache, "p", "s", Some(&at)).unwrap();
         assert!(skipped.is_some(), "and then the root is kept, and read");
     }
 
@@ -2385,11 +2361,11 @@ result.y = "{{ data }}"
 
     #[test]
     fn callers_waiting_for_a_failing_cold_source_share_its_one_run() {
-        use crate::provider::source_call::{Cold, source_call};
+        use crate::provider::source_call::run_call;
         let dir = tempfile::tempdir().unwrap();
         let count = dir.path().join("runs");
         // The run waits for `go`, which the test makes once every caller holds
-        // the instance's turn: one running it, two waiting on it.
+        // the instance's one run: one started it, two took it.
         let go = dir.path().join("go");
         let config = crate::config::Config::from_toml(&format!(
             "[daemon.providers.p.sources.t]\n\
@@ -2402,27 +2378,28 @@ result.y = "{{ data }}"
         let registry = ProviderRegistry::with_config(&config, &Default::default())
             .unwrap()
             .share(&cache);
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let start = Arc::new(std::sync::Barrier::new(3));
         let callers: Vec<_> = (0..3)
             .map(|_| {
                 let (registry, cache, start) = (registry.clone(), cache.clone(), start.clone());
+                let runtime = rt.handle().clone();
                 std::thread::spawn(move || {
+                    // A caller is a Source's run, on a blocking thread of the
+                    // daemon's runtime.
+                    let _runtime = runtime.enter();
                     start.wait();
-                    source_call(&registry, &cache, "p", "t", None, Cold::Run)
+                    run_call(&registry, &cache, "p", "t", None)
                 })
             })
             .collect();
-        let holders = || {
-            registry
-                .cold_locks
-                .get(&("p".to_string(), "t".to_string(), None))
-                .map(|lock| Arc::strong_count(&lock) - 1)
-        };
+        let key = crate::provider::source_call::instance_key("p", "t", None);
+        let holders = || registry.runs().callers(&key);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while holders() != Some(3) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "three callers hold the turn: {:?}",
+                "three callers hold the run: {:?}",
                 holders()
             );
             std::thread::yield_now();
@@ -2440,8 +2417,8 @@ result.y = "{{ data }}"
             "the callers that waited did not each run it again"
         );
         assert!(
-            registry.cold_locks.is_empty(),
-            "no lock is kept past its callers"
+            registry.runs().in_flight().is_empty(),
+            "no run is kept past its callers"
         );
     }
 
@@ -2490,13 +2467,13 @@ result.y = "{{ data }}"
         let root = crate::query::address_of(at);
         let a = registry.source("p", "a").unwrap();
 
-        a.execute(Some(at)).unwrap();
+        execute(&a, at).unwrap();
         assert_eq!(demanded_with(&registry, "a", &root), ["p.a", "p.b"]);
 
         // The branch that called `b` is not taken: `b` is no longer demanded
         // by a read of `a`.
         std::fs::write(&flag, "c").unwrap();
-        a.execute(Some(at)).unwrap();
+        execute(&a, at).unwrap();
         assert_eq!(demanded_with(&registry, "a", &root), ["p.a", "p.c"]);
     }
 
@@ -2509,12 +2486,12 @@ result.y = "{{ data }}"
         let at = dir.path().to_str().unwrap();
         let root = crate::query::address_of(at);
         let a = registry.source("p", "a").unwrap();
-        a.execute(Some(at)).unwrap();
+        execute(&a, at).unwrap();
         assert_eq!(demanded_with(&registry, "a", &root), ["p.a", "p.b"]);
 
         // `cat` of a file that is gone fails the line before any call is made.
         std::fs::remove_file(&flag).unwrap();
-        assert!(a.execute(Some(at)).is_err());
+        assert!(execute(&a, at).is_err());
         assert_eq!(demanded_with(&registry, "a", &root), ["p.a"]);
     }
 
@@ -2526,11 +2503,7 @@ result.y = "{{ data }}"
         let (registry, _cache) = calling_registry(&flag);
         let at = dir.path().to_str().unwrap();
         let root = crate::query::address_of(at);
-        registry
-            .source("p", "a")
-            .unwrap()
-            .execute(Some(at))
-            .unwrap();
+        execute(&registry.source("p", "a").unwrap(), at).unwrap();
         assert_eq!(registry.callers_of().len(), 1);
 
         registry.forget_callees("p", "a", Some("/elsewhere"));
@@ -2540,11 +2513,11 @@ result.y = "{{ data }}"
         assert_eq!(demanded_with(&registry, "a", &root), ["p.a"]);
     }
 
-    /// A caller that was waiting for the turn while a run failed finds the
-    /// instance in backoff when it gets the turn, and does not run it again.
+    /// A call that finds the instance in failback backoff (a run of it has
+    /// just failed) does not run it again: it is a miss.
     #[test]
-    fn a_waiter_does_not_rerun_an_instance_a_run_just_failed() {
-        use crate::provider::source_call::{Cold, instance_key, source_call};
+    fn a_call_does_not_run_an_instance_in_backoff() {
+        use crate::provider::source_call::{instance_key, run_call};
         let config = crate::config::Config::from_toml(
             "[daemon.providers.p.sources.t]\n\
              data = \"{{ 1 }}\"\n\
@@ -2556,19 +2529,6 @@ result.y = "{{ data }}"
         let registry = ProviderRegistry::with_config(&config, &vars)
             .unwrap()
             .share(&cache);
-
-        // The runner holds the turn; the waiter has passed the backoff check
-        // and is blocked on it.
-        let lock = registry.cold_lock("p", "t", None);
-        let held = lock.last.blocking_lock();
-        let waiter = {
-            let (registry, cache) = (registry.clone(), cache.clone());
-            std::thread::spawn(move || source_call(&registry, &cache, "p", "t", None, Cold::Run))
-        };
-        while Arc::strong_count(&lock) < 3 {
-            std::thread::yield_now();
-        }
-        // The run that failed ends: the instance goes into backoff.
         registry
             .failures
             .lock()
@@ -2578,13 +2538,16 @@ result.y = "{{ data }}"
                 crate::scheduler::FailureState::new(1, std::time::Duration::from_secs(3600))
             })
             .record_failure();
-        drop(held);
 
-        assert!(waiter.join().unwrap().unwrap().is_none());
+        assert!(
+            run_call(&registry, &cache, "p", "t", None)
+                .unwrap()
+                .is_none()
+        );
         // A run would have succeeded and stored its record.
         assert!(
             !cache.has_provider_records_for("p", None, "t"),
-            "the waiter did not run the instance that had just failed"
+            "the call did not run the instance that had just failed"
         );
     }
 }

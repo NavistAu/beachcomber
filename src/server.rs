@@ -3,8 +3,9 @@ use crate::cache::{Cache, Layers, MergedRead};
 use crate::config::Config;
 use crate::protocol::{IntrospectSubject, Request, Response};
 use crate::provider::registry::{ProviderRegistry, RegistryHandle};
-use crate::provider::source_call::{in_failback_backoff, record_outcome};
+use crate::provider::source_call::instance_key;
 use crate::query::{Ask, Found, Instance, InstanceWalk, KeyParse, QueryPlan};
+use crate::run::{Outcome, Want};
 use crate::scheduler::{
     DemandInfo, LifecycleInfo, PollTimerInfo, SchedulerHandle, SchedulerMessage,
 };
@@ -383,7 +384,7 @@ async fn all_instances(
 async fn handle_watch(
     key: String,
     path: Option<String>,
-    cache: &Cache,
+    cache: &Arc<Cache>,
     handle: &RegistryHandle,
     scheduler: Option<&SchedulerHandle>,
     watchers: &Arc<WatcherRegistry>,
@@ -510,7 +511,7 @@ async fn watch_setup(
     key: &str,
     requested: Option<&str>,
     registry: Arc<ProviderRegistry>,
-    cache: &Cache,
+    cache: &Arc<Cache>,
     scheduler: Option<&SchedulerHandle>,
     watchers: &Arc<WatcherRegistry>,
 ) -> Result<WatchSetup, String> {
@@ -678,150 +679,30 @@ impl Drop for ChainWatch {
     }
 }
 
-/// Cold-miss inline-execute: synchronously run one instance of a Source to
-/// populate the cache, then let the caller re-read. Mirrors the scheduler's
-/// execute_source path (spawn_blocking + cache.put_source) but runs in the
-/// request task so the response carries fresh data (canon §"Cold cache miss
-/// triggers inline fetch").
-///
-/// `root` is the instance: the cache address its records are written at, `None`
-/// for the instance at `~`. Returns true if the Source ran and its result was
-/// written, an empty result included; a failure is logged, writes nothing and
-/// counts toward the instance's failback. An instance in failback backoff is not
-/// run unless `forced`.
-///
-/// The cache *address* and the *directory* the Source runs in are two things:
-/// the global entry's address is `None` and its directory is `$HOME`
-/// (`query::normalise_path`), so the instance at `~` runs at `$HOME` and its
-/// records land on the pathless entry.
-async fn inline_execute_source(
-    registry: &ProviderRegistry,
-    cache: &Cache,
-    provider: &str,
-    source_name: &str,
-    root: Option<&str>,
-    forced: bool,
-    skip_if_stored: bool,
-) -> Result<bool, String> {
-    let Some(source) = registry.source(provider, source_name) else {
-        return Ok(false);
-    };
-    // An instance in failback backoff is left alone by a read, as the
-    // scheduler leaves it alone; only an explicit `--force` or `refresh` tries
-    // it again.
-    if !forced && in_failback_backoff(registry, provider, source_name, root) {
-        debug!(
-            "Source '{provider}.{source_name}' at {root:?} is in failback backoff: not run by this read"
-        );
-        return Ok(false);
-    }
-    // One run of an instance at a time, whoever asks: a call from another
-    // Source's lines takes the same turn. A read-always Source is cheap and
-    // runs on every read, so it takes none.
-    let turn = (!source.read_always()).then(|| registry.cold_lock(provider, source_name, root));
-    let result = async {
-        let mut held = None;
-        let mut arrived = 0;
-        if let Some(turn) = &turn {
-            arrived = turn.finished.load(std::sync::atomic::Ordering::SeqCst);
-            held = Some(turn.last.lock().await);
-        }
-        if skip_if_stored && held.is_some() {
-            // The run this read waited for stored the instance, or failed it.
-            if cache.has_provider_records_for(provider, root, source_name) {
-                return Ok(true);
-            }
-            if in_failback_backoff(registry, provider, source_name, root) {
-                return Ok(false);
-            }
-            if let (Some(turn), Some(Some(Err((message, fault))))) = (&turn, held.as_deref())
-                && turn.finished.load(std::sync::atomic::Ordering::SeqCst) > arrived
-            {
-                return if *fault {
-                    Err(message.clone())
-                } else {
-                    Ok(false)
-                };
-            }
-        }
-        let dir = crate::query::instance_dir(root);
-        let src_clone = std::sync::Arc::clone(&source);
-        // A run a read starts is cut off at the Source's timeout, as one the
-        // scheduler starts is.
-        let timeout = registry
-            .source_metadata(provider, source_name)
-            .map_or(crate::scheduler::lifecycle::DEFAULT_TIMEOUT, |m| m.timeout);
-        let run = tokio::time::timeout(
-            timeout,
-            tokio::task::spawn_blocking(move || {
-                crate::provider::source_call::ran(|| src_clone.execute(dir.as_deref()))
-            }),
-        )
-        .await;
-        let (outcome, failed_call) = match run {
-            Ok(Ok(ran)) => ran,
-            Ok(Err(_)) => return Ok(false),
-            Err(_) => (Err(crate::scheduler::timed_out(timeout)), None),
-        };
-        let recorded = record_outcome(registry, cache, provider, source_name, root, outcome)
-            .map_err(|e| (e, failed_call.is_some()));
-        if let (Some(turn), Some(held)) = (&turn, held.as_mut()) {
-            **held = Some(recorded.clone());
-            turn.finished
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-        match recorded {
-            Ok(()) => Ok(true),
-            Err((e, fault)) => {
-                warn!("Source '{provider}.{source_name}' failed: {e}");
-                // A run that failed because a Source it calls failed, or
-                // called itself, is a fault in the lines, not in the world:
-                // the read shows it, as it shows a `root` that fails. Any
-                // other failure is a miss, and the read goes on to the rest
-                // of the chain.
-                if fault { Err(e) } else { Ok(false) }
-            }
-        }
-    }
-    .await;
-    if let Some(turn) = turn {
-        registry.release_cold(provider, source_name, root, turn);
-    }
-    result
-}
-
 /// How far a read goes to bring a Source up to date before it is read.
 #[derive(Clone, Copy)]
 enum Warm {
-    /// Execute only when the instance has nothing cached (or the Source is
-    /// read-always).
+    /// Run the instance only when it has nothing stored (or its Source runs
+    /// on every read).
     Cold,
-    /// Also re-execute when the instance's own map is past its interval
-    /// (`--wait`).
+    /// Also when its own map is past its interval (`--wait`).
     Stale,
-    /// Always drop the Source's map and re-execute (`--force`, `refresh`).
+    /// Always a run that begins now, past the failback backoff (`--force`).
     Always,
 }
 
-/// Bring one instance of a Source up to date for a read, and say whether it
-/// ran. `root` is the instance: the cache entry its records live at.
+/// Bring one instance of a Source up to date for a read, and say whether the
+/// read waited for a run. `root` is the instance: the cache entry its records
+/// live at.
 ///
-/// The decision is per instance, never per provider: a warm sibling says nothing
-/// about this one, so a cold instance is executed even when the namespace
-/// already holds records. It runs when the Source is `read_always`, when `warm`
-/// asks for it, or when it has nothing cached at its root.
-///
-/// The three modes differ only in when the Source's map is dropped first.
-/// [`Warm::Cold`] never drops it and runs only on a cold miss. [`Warm::Stale`]
-/// (`--wait`) drops it when it is past its own interval. [`Warm::Always`]
-/// (`--force`, `refresh`) drops it unconditionally.
-///
-/// Dropping that one map rather than the entry is what keeps a re-execution
-/// from taking its neighbours with it: the static records sharing the entry
-/// survive.
+/// The decision is per instance, never per provider: a warm sibling says
+/// nothing about this one, so a cold instance is run even when the namespace
+/// already holds records. A run replaces the instance's map when it succeeds
+/// and leaves it when it fails, so the static records sharing the entry, and
+/// the last good value, stand either way.
 async fn warm_source(
-    registry: &ProviderRegistry,
-    cache: &Cache,
+    registry: &Arc<ProviderRegistry>,
+    cache: &Arc<Cache>,
     provider: &str,
     source_name: &str,
     root: Option<&str>,
@@ -830,64 +711,69 @@ async fn warm_source(
     let Some(source) = registry.source(provider, source_name) else {
         return Ok(false);
     };
-    let forced = matches!(warm, Warm::Always);
-    let drop_first = match warm {
-        Warm::Always => true,
-        Warm::Stale => cache.source_is_stale(provider, root, source_name),
-        Warm::Cold => false,
+    let want = match warm {
+        Warm::Always => Want::Forced,
+        _ if source.read_always() => Want::Fresh,
+        Warm::Stale if cache.source_is_stale(provider, root, source_name) => Want::Any,
+        // A warm instance is the common read: answered before anything shared
+        // is locked.
+        _ if cache.has_provider_records_for(provider, root, source_name) => return Ok(false),
+        Warm::Stale | Warm::Cold => Want::Cold,
     };
-    // A warm instance is the common read: answered before anything global is
-    // locked.
-    if !drop_first
-        && !source.read_always()
-        && cache.has_provider_records_for(provider, root, source_name)
-    {
-        return Ok(false);
-    }
-    // An instance in failback backoff keeps what it has: nothing is dropped
-    // for a run that will not happen.
-    if !forced && in_failback_backoff(registry, provider, source_name, root) {
-        debug!(
-            "Source '{provider}.{source_name}' at {root:?} is in failback backoff: not run by this read"
-        );
-        return Ok(false);
-    }
-    if drop_first {
-        cache.remove_source(provider, root, source_name);
-    }
-    inline_execute_source(
-        registry,
-        cache,
-        provider,
-        source_name,
-        root,
-        forced,
-        !drop_first,
-    )
-    .await?;
-    Ok(true)
+    run_for_read(registry, cache, want, provider, source_name, root).await
 }
 
-/// Re-execute a source inline if it is `read_always`, refreshing the cache
-/// before the caller reads from it. Reuses `inline_execute_source`. No-op if
-/// the source is not registered or does not have `read_always() == true`.
+/// Start the run of an instance that `want` needs, or take the one in flight
+/// (whoever started it), and wait for it: whether there was one to wait for.
+/// An instance in failback backoff has none unless `want` is forced.
 ///
-/// `watch`'s half of [`warm_source`]: a watch never executes on a cold miss —
-/// the scheduler will populate the entry and the stream carries the value then
-/// — so only the read-always case applies to it.
+/// A run that failed is a miss (its failure is logged where it is recorded),
+/// and the read goes on to the rest of the chain. One that failed because a
+/// Source it calls failed, or called itself, is a fault in the lines, not in
+/// the world: the read shows it, as it shows a `root` that fails.
+///
+/// The run records itself: a read that stops waiting (its connection gone)
+/// takes nothing with it.
+async fn run_for_read(
+    registry: &Arc<ProviderRegistry>,
+    cache: &Arc<Cache>,
+    want: Want,
+    provider: &str,
+    source_name: &str,
+    root: Option<&str>,
+) -> Result<bool, String> {
+    let key = instance_key(provider, source_name, root);
+    let Some(run) = registry.runs().start(want, registry, cache, &key) else {
+        return Ok(false);
+    };
+    match run.outcome().await {
+        Outcome::Failed {
+            message,
+            fault: true,
+        } => Err(message),
+        _ => Ok(true),
+    }
+}
+
+/// Run a Source that runs on every read, before a `watch` sends its first
+/// frame, so the value is fresh off disk rather than what was stored.
+///
+/// `watch`'s half of [`warm_source`]: a watch never runs a cold instance (the
+/// scheduler populates it, and the stream carries the value then), so only
+/// the read-always case applies to it.
 async fn maybe_read_always(
-    registry: &ProviderRegistry,
-    cache: &Cache,
+    registry: &Arc<ProviderRegistry>,
+    cache: &Arc<Cache>,
     provider: &str,
     source_name: &str,
     root: Option<&str>,
 ) {
-    if let Some(src) = registry.source(provider, source_name)
-        && src.read_always()
+    if registry
+        .source(provider, source_name)
+        .is_some_and(|src| src.read_always())
     {
         // The failure is logged; a watch has no read to fail.
-        let _ =
-            inline_execute_source(registry, cache, provider, source_name, root, false, false).await;
+        let _ = run_for_read(registry, cache, Want::Fresh, provider, source_name, root).await;
     }
 }
 
@@ -934,7 +820,7 @@ async fn called_instances(
 /// have. What the lines then render over is stored.
 async fn warm_called(
     registry: &Arc<ProviderRegistry>,
-    cache: &Cache,
+    cache: &Arc<Cache>,
     provider: &str,
     dir: Option<&str>,
     how: Warm,
@@ -1020,7 +906,7 @@ fn answers_field(merged: &Option<MergedRead>, target: &KeyParse) -> bool {
 /// without running the Source it hides.
 async fn climb(
     registry: &Arc<ProviderRegistry>,
-    cache: &Cache,
+    cache: &Arc<Cache>,
     plan: &QueryPlan,
     demanded: &[String],
     mode: Climb,
@@ -1321,7 +1207,7 @@ fn resolve_halves(
     response.with_template(template, template_rest)
 }
 
-// Watch reads only from cache — no inline-execute on cold miss (unlike Get).
+// Watch reads only from cache — it starts no run on a cold miss (unlike Get).
 // A cache miss in a streaming context means the scheduler has not populated the
 // entry yet; the caller receives an update when it does.
 fn read_watch_value(
@@ -1651,7 +1537,7 @@ async fn write_watch_line(
 #[allow(clippy::too_many_arguments)]
 async fn handle_request(
     request: &Request,
-    cache: &Cache,
+    cache: &Arc<Cache>,
     registry: &Arc<ProviderRegistry>,
     scheduler: Option<&SchedulerHandle>,
     start_instant: Instant,
@@ -1918,15 +1804,17 @@ async fn handle_request(
                         })
                         .await;
                 }
+                // No scheduler (an embedded server): the same runs, a run of
+                // each that begins after now, waited for here.
                 None => {
                     for instance in &instances {
-                        let warmed = warm_source(
+                        let warmed = run_for_read(
                             registry,
                             cache,
+                            Want::Fresh,
                             provider_name,
                             &instance.source,
                             instance.root.as_deref(),
-                            Warm::Always,
                         )
                         .await;
                         if let Err(msg) = warmed {
@@ -2839,64 +2727,84 @@ fn secs(n: u64) -> String {
 mod tests {
     use super::*;
 
-    /// A read that finds a Source's instance cold while a call is already
-    /// running it waits for that run and reads what it stored, rather than
-    /// running the Source a second time beside it.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_read_waits_for_the_run_that_has_its_instance() {
-        use crate::cache::{Cache, Schedule};
-        use crate::provider::Value;
-        use std::collections::HashMap;
-
-        let dir = tempfile::tempdir().unwrap();
-        let runs = dir.path().join("runs");
+    /// A config Source whose run appends to `<dir>/runs`, touches
+    /// `<dir>/started`, then waits for `<dir>/go` and answers 1.
+    fn gated(dir: &std::path::Path) -> (Arc<ProviderRegistry>, Arc<Cache>) {
+        let cache = Arc::new(Cache::new());
         let registry = ProviderRegistry::with_config(
             &crate::config_tests::with_shipped_defaults(&format!(
                 "[daemon.providers.demo.sources.s]\n\
-                 data = \"{{{{ exec(['sh', '-c', 'echo run >> {}; echo 1']) | trim }}}}\"\n\
+                 data = \"{{{{ exec(['sh', '-c', 'echo run >> {d}/runs; touch {d}/started; \
+                 while [ ! -f {d}/go ]; do sleep 0.01; done; echo 1']) | trim }}}}\"\n\
                  result.v = \"{{{{ data }}}}\"\n",
-                runs.display()
+                d = dir.display()
             )),
             &Default::default(),
         )
-        .unwrap();
-        let cache = Cache::new();
+        .unwrap()
+        .share(&cache);
+        (registry, cache)
+    }
 
-        // Another caller is running the instance: it holds its turn.
-        let turn = registry.cold_lock("demo", "s", None);
-        let running = turn.last.lock().await;
-
-        let mut warm = Box::pin(warm_source(
-            &registry,
-            &cache,
-            "demo",
-            "s",
-            None,
-            Warm::Cold,
-        ));
-        tokio::select! {
-            biased;
-            done = &mut warm => panic!("the read ran the Source beside the other run: {done:?}"),
-            () = tokio::task::yield_now() => {}
+    async fn until(what: &str, done: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "never: {what}");
+            tokio::task::yield_now().await;
         }
+    }
 
-        // That run finishes and stores its result, as a call does.
-        cache.put_source(
-            "demo",
-            None,
-            "s",
-            HashMap::from([("v".to_string(), Value::Int(1))]),
-            Schedule::default(),
-        );
-        turn.finished
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        drop(running);
+    /// A read that finds its instance cold while a run of it is under way
+    /// (here a poll's) takes that run rather than running the Source beside it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_read_takes_the_run_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let (registry, cache) = gated(dir.path());
+        let key = instance_key("demo", "s", None);
+        let poll = registry
+            .runs()
+            .start(Want::Any, &registry, &cache, &key)
+            .unwrap();
+        until("the poll's run to begin", || {
+            dir.path().join("started").exists()
+        })
+        .await;
 
-        warm.await.expect("the read goes on");
-        assert!(
-            !runs.exists(),
-            "the Source ran once, in the other caller: the read found it stored"
-        );
+        let read = tokio::spawn({
+            let (registry, cache) = (registry.clone(), cache.clone());
+            async move { warm_source(&registry, &cache, "demo", "s", None, Warm::Cold).await }
+        });
+        until("the read to take the poll's run", || {
+            registry.runs().callers(&key) == Some(2)
+        })
+        .await;
+        std::fs::write(dir.path().join("go"), "").unwrap();
+        assert_eq!(read.await.unwrap(), Ok(true), "the read waited for a run");
+        assert_eq!(poll.outcome().await, Outcome::Stored);
+        let runs = std::fs::read_to_string(dir.path().join("runs")).unwrap();
+        assert_eq!(runs.lines().count(), 1, "the Source ran once, for both");
+    }
+
+    /// A read that stops waiting part-way through the run it started (its
+    /// connection gone, say) takes nothing with it: the run records itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_read_that_stops_waiting_takes_nothing_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (registry, cache) = gated(dir.path());
+        {
+            let read = warm_source(&registry, &cache, "demo", "s", None, Warm::Cold);
+            tokio::pin!(read);
+            tokio::select! {
+                done = &mut read => panic!("the gated run ended: {done:?}"),
+                () = until("the read's run to begin", || dir.path().join("started").exists()) => {}
+            }
+        }
+        std::fs::write(dir.path().join("go"), "").unwrap();
+        until("the run to store its record", || {
+            cache.has_provider_records_for("demo", None, "s")
+        })
+        .await;
+        assert!(registry.runs().in_flight().is_empty());
     }
 
     #[test]

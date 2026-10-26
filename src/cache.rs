@@ -1387,14 +1387,8 @@ impl Cache {
             .result_calls(namespace)
             .iter()
             .map(|(p, s)| {
-                let record = crate::provider::source_call::source_call(
-                    registry,
-                    self,
-                    p,
-                    s,
-                    requested,
-                    crate::provider::source_call::Cold::Skip,
-                );
+                let record =
+                    crate::provider::source_call::source_call(registry, self, p, s, requested);
                 ((p.clone(), s.clone()), record)
             })
             .collect()

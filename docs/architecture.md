@@ -25,7 +25,7 @@ Data flow summary:
 
 - **Read path**: client -> Server -> Cache.get() -> response (no provider involved)
 - **Write path**: trigger (fs event or poll timer) -> Scheduler -> spawn_blocking(provider.execute()) -> Cache.put()
-- **Miss path**: client asks for uncached key -> Server executes provider inline via spawn_blocking -> result written to cache -> response returned directly
+- **Miss path**: client asks for uncached key -> Server starts the instance's run (or takes the one in flight) -> the run executes on spawn_blocking and writes its result to cache -> the read, which waited for it, answers
 
 The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Server sends messages to the Scheduler over an `mpsc::Sender<SchedulerMessage>`. The Scheduler owns all demand/poll state and the table that routes file events to instances; its `Registrar`'s worker thread owns the `FsWatcher` and makes every registration, so the loop never waits for one.
 
@@ -41,6 +41,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/scheduler/` | Single event loop: handles Refresh/QueryActivity/file events/poll tick; owns all demand and watch state; heartbeat counter for watchdog liveness detection |
 | `src/scheduler/lifecycle.rs` | `LifecycleRegistry` — per-key cache lifecycle state machine: Active → Decay (1 to `decay` steps, default 4; the depth is data in `<p>:cache`) → Evicted. Exponential decay of poll interval and step duration each stage. See §5. |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; per-source `SourceResult` sub-entries within each `CacheEntry` |
+| `src/run.rs` | `Runs`: one run per instance at a time, whoever starts it (a read, a poll, a file event, a refresh, `--force`, a Source's call). `start` hands back the run in flight, the one queued behind it, or a new one; the run executes on the blocking pool under its timeout and records itself in a task of its own; a caller waits on the `Run` it was handed. A reload overtakes runs in flight there |
 | `src/watcher.rs` | `FsWatcher`, a thin wrapper around the `notify` crate, and the `Registrar` whose worker thread registers each watched path: Pending, then Active (on the path, or through the nearest directory above it that exists while it does not) or Failed (asked for again by the next demand) |
 | `src/protocol.rs` | Re-exports `libbeachcomber::protocol`, the one definition of the wire: `Request`, `Response` and the `status`, `introspect` and `hello` payloads, which the daemon, the CLI, the C ABI and the SDKs share. Key parsing into a `KeyParse` lives in `src/query.rs` (`parse_key`) |
 | `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` — a source name is never a key segment), `resolve_path`, `validate_key` (one colon form, the facet), `split_layer_facet` (`:put` / `:source` / `:cache`, and the closed facet set of `libbeachcomber::key::split_facet`), and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
@@ -112,8 +113,10 @@ do no IO). A built-in Source takes only a `return`, which replaces its schedule.
 A Source's lines may call other Sources (`sources.<s>()`,
 `daemon.providers.<p>.sources.<s>()`). Calls are found at load, so an unknown
 callee or a ring is a load error. At run time a call answers with the callee's
-stored record, and a callee with nothing stored runs inline once for the read or
-refresh that needs it; the scheduler demands what a Source's last run called, so
+stored record, and a callee with nothing stored runs once for the read or
+refresh that needs it, the caller's run waiting for it on its blocking thread
+(a wait that would close a ring of runs waiting on one another reads the last
+stored value instead); the scheduler demands what a Source's last run called, so
 callees stay warm and decay with their callers. Decay depth is data: the
 `<p>:cache._.decay` prototype is read when a lifecycle registers.
 
@@ -177,7 +180,7 @@ The client reads the response line, strips metadata, and writes the plain text t
 
 **On a cache miss:**
 
-The server detects no cached value for the key and executes the provider inline via `tokio::task::spawn_blocking`, awaiting the result. The result is written to the cache and returned directly in the same response. The client receives data on the first query — there is no empty response or polling step.
+The server finds no record for the instance and starts its run (`Runs::start`), or takes the run already in flight, whoever started it. The run executes on `tokio::task::spawn_blocking` and writes its result to the cache itself; the read waits for it and answers from what it wrote, in the same response. The client receives data on the first query — there is no empty response or polling step. A read that stops waiting (its connection gone) takes nothing with it: the run records itself.
 
 ---
 
@@ -197,44 +200,44 @@ The scheduler's `tokio::select!` loop picks up `Some(paths) = fs_rx.recv()`. A p
 
 `resolve_keys_from_paths` iterates over the changed paths. For each changed path, it scans `watch_paths` (a `HashMap<PathBuf, Vec<(String, Option<String>)>>`) looking for any registered watch path that is a prefix of (or equal to) the changed path. For a `.git/index` change, the watch path `".git"` matches.
 
-**Step 4: execute_provider is called**
+**Step 4: the run is started**
 
-`self.execute_provider("git", Some("/home/user/myrepo"))` is invoked.
+`self.execute_source("git", "refs", Some("/home/user/myrepo"), Want::Fresh)` asks the run table for a run of that instance that begins after the event (`Runs::start`): a file event may follow a change the run in flight has already read past.
 
-**Step 5: Deduplication check**
+**Step 5: One run per instance**
 
-The scheduler checks `in_flight` (a `Mutex<HashSet>`). If an execution for `("git", Some("/home/user/myrepo"))` is already running, the key is inserted into `pending_rerun` and the function returns immediately. This ensures at most one in-flight execution per (provider, path) at any time, with one queued rerun if changes arrive during execution.
+If a run of the instance is in flight, whoever started it (a read, a poll, a refresh), a fresh request queues one run behind it, and every fresh request until it starts shares that one: at most one run in flight per instance, and one queued. A poll or a cold read takes the run in flight instead.
 
 **Step 6: Failure backoff check**
 
-Before launching, the scheduler checks `failure_counts`. If the Source has exceeded its failure threshold (default 3) and is within its exponential backoff window (starting at the failback interval, default `1s`, doubling for 4 levels), execution is skipped. A config Source sets both on its `return` line (`| failback(interval, count)`; the shipped abstract Source has `failback('1s', 3)`). A built-in Source has its own, until `[daemon.providers.<p>.sources.<s>] return` names them: a `return` on a built-in replaces its failback with the line's, or with the engine's `failback('1s', 3)` where the line is silent. The scheduler reads the Source's metadata only; no config table is consulted when scheduling.
+Before a new run starts, `Runs::start` checks the failure state. If the Source has exceeded its failure threshold (default 3) and is within its exponential backoff window (starting at the failback interval, default `1s`, doubling for 4 levels), no run starts; only `--force` runs past it. A config Source sets both on its `return` line (`| failback(interval, count)`; the shipped abstract Source has `failback('1s', 3)`). A built-in Source has its own, until `[daemon.providers.<p>.sources.<s>] return` names them: a `return` on a built-in replaces its failback with the line's, or with the engine's `failback('1s', 3)` where the line is silent. Only the Source's metadata is read; no config table is consulted when scheduling.
 
 **Step 7: spawn_blocking**
 
-The scheduler clones `Arc<dyn Provider>` from the registry and calls:
+The run executes in a task of its own:
 ```rust
-tokio::spawn(async move {
+runtime.spawn(async move {
     let result = tokio::time::timeout(
-        Duration::from_secs(timeout_secs),
-        tokio::task::spawn_blocking(move || provider.execute(path)),
+        timeout,
+        tokio::task::spawn_blocking(move || source.execute(dir)),
     ).await;
-    ...
+    settle.finish(result);
 });
 ```
 
-`spawn_blocking` runs `provider.execute()` on tokio's dedicated blocking thread pool. This is critical: the scheduler's async loop continues processing messages, poll ticks, and more filesystem events while the provider runs.
+`spawn_blocking` runs `Source::execute()` on tokio's dedicated blocking thread pool, so the scheduler's loop and the request tasks go on while it runs. Nobody waits on the task: the scheduler goes on at once, and a read waits on the `Run` it was handed.
 
-**Step 8: Provider executes**
+**Step 8: Source executes**
 
-`GitProvider::execute(Some("/home/user/myrepo"))` runs `git status --porcelain=v2 --branch` in a subprocess and reads `.git/logs/refs/stash` directly. It returns `Some(ProviderResult)`.
+`GitRefs::execute(Some("/home/user/myrepo"))` runs `git status --porcelain=v2 --branch` in a subprocess and reads `.git/logs/refs/stash` directly. It returns a `SourceResult`.
 
 **Step 9: Cache write**
 
-Back in the async context, on success: `cache.put_source("git", Some("/home/user/myrepo"), source_name, fields, schedule)`. It replaces only that Source's record at the entry, leaving sibling Sources untouched, and writes the `Schedule` (poll interval, decay) into the `git:cache` entry beside it. The DashMap insert is lock-free.
+Back in the run's task, under the run table's lock (the one a reload overtakes runs under): on success, `cache.put_source("git", Some("/home/user/myrepo"), "refs", fields, schedule)`. It replaces only that Source's record at the entry, leaving sibling Sources untouched, and writes the `Schedule` (poll interval, decay) into the `git:cache` entry beside it. A failure writes nothing, so the last good value stands, and counts toward the failback.
 
-**Step 10: Rerun check**
+**Step 10: What follows**
 
-After clearing `in_flight`, the scheduler checks `pending_rerun`. If a rerun was queued (another event arrived while this execution was in progress), a new `spawn_blocking` is launched immediately for the same (provider, path).
+The run's waiters have its outcome, and the run queued behind it, if any, starts; otherwise the instance's slot goes.
 
 ---
 
@@ -242,7 +245,7 @@ After clearing `in_flight`, the scheduler checks `pending_rerun`. If a rerun was
 
 **Demand signal**
 
-Every `get` request sends `SchedulerMessage::QueryActivity { provider, instances }` to the scheduler, one `(source, root)` for every instance the read reached. This records the current time in the `demand` HashMap for each. If an instance is new to demand, the scheduler immediately sets up polling (based on provider metadata) and filesystem watching (relative `watch` paths under the instance's root; none for the relative paths of the instance at `~`), and fires `execute_provider` if the cache is cold.
+Every `get` request sends `SchedulerMessage::QueryActivity { provider, instances }` to the scheduler, one `(source, root)` for every instance the read reached. This records the current time in the `demand` HashMap for each. If an instance is new to demand, the scheduler immediately sets up polling (based on provider metadata) and filesystem watching (relative `watch` paths under the instance's root; none for the relative paths of the instance at `~`), and starts the instance's run if it has nothing stored (a read that found it cold has one in flight, which it takes).
 
 **Demand window**
 
@@ -298,7 +301,7 @@ Providers are stored as `Arc<dyn Provider>`. When the scheduler needs to execute
 
 **Scheduler-owned mutable state**
 
-The Scheduler owns all mutable coordination state: `demand`, `poll_states`, `watch_paths`, `backoff`. This state is only accessed from the single scheduler task, so it requires no synchronisation. The `in_flight`, `pending_rerun`, and `failure_counts` maps are wrapped in `Mutex` because they are accessed from both the scheduler task and from within `tokio::spawn` closures that run after `spawn_blocking` completes.
+The Scheduler owns its coordination state: the lifecycle entries (demand, poll and decay timers) and the table that routes file events. This state is only accessed from the single scheduler task, so it requires no synchronisation. The run table (`src/run.rs`) and the failure state are shared, behind a `Mutex`, by the scheduler, the request tasks and the runs' own tasks, and every registry of the daemon holds the same ones.
 
 **No provider-side concurrency**
 
@@ -316,13 +319,13 @@ Early versions used a `(String, Option<String>)` tuple as the DashMap key, requi
 
 The `Provider` trait's `execute` method is synchronous (`fn execute(&self, path: Option<&str>) -> Vec<(Option<String>, ProviderResult)>`). This is intentional. Providers need to call blocking APIs: `std::process::Command`, `std::fs::read_to_string`, `libc` syscalls. Async providers would require those calls to be wrapped in `spawn_blocking` internally anyway. Keeping the interface synchronous is simpler, and `spawn_blocking` at the callsite (the scheduler) is the right place to manage the thread pool boundary. This also means provider authors don't need to think about async.
 
-**Fire-and-forget execution**
+**One run per instance, whoever starts it**
 
-`execute_provider` returns immediately after spawning. The caller (scheduler loop or poll tick) does not wait for the result. This keeps the scheduler loop responsive at all times. Consumers learn about fresh values on their next `get` request, not via push. This is acceptable because the daemon's purpose is to maintain a low-latency cache, not to stream values.
+A run records itself, in a task of its own, so whoever started it need not wait: the scheduler never does, which keeps its loop responsive at all times, and a read waits only as long as it chooses, taking nothing with it when it stops. Consumers learn about fresh values on their next `get` request, not via push.
 
-**Deduplication via in_flight + pending_rerun**
+Naively, a burst of filesystem events (e.g., a `git commit` touching many `.git` files), or a read and a poll at once, would launch many concurrent runs of one instance. The run table allows at most one run in flight per instance and queues at most one more behind it. At most two runs ever answer a burst: the one in flight when it began, and one that starts after it. This bounds both resource usage and cache write rate.
 
-Naively, a burst of filesystem events (e.g., a `git commit` touching many `.git` files) would launch many concurrent provider executions for the same key. The deduplication scheme allows at most one in-flight execution per key and queues at most one rerun. This means at most two executions will ever run for any key in response to a burst: one that was already in-flight when the burst began, and one that starts after it completes. This bounds both resource usage and cache write rate.
+A Source's run that reads another (`comb.<p>`, `sources.<s>()`) waits for that one's run from its blocking thread. The run table knows which runs wait on which, so a wait that would close a ring of runs waiting on one another is refused and the caller reads the last stored value: a Source never waits on itself. When the daemon stops, a run's task that is dropped unfinished still ends its run, so nothing waits on it for ever.
 
 **Two independent backoff mechanisms**
 

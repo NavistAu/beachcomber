@@ -8,35 +8,26 @@
 //! stored records, merged up its instance chain from the directory the call is
 //! made for (a `| nearest` Source's chain is its one instance).
 //!
-//! The warm path only reads. The one cold branch runs the instance inline, once:
-//! after it the record is stored, so a second call in the same read or refresh
-//! finds it warm. It is only taken from a thread that may block (a Source's own
-//! `data` line runs under `spawn_blocking`); a provider's lines render on the
-//! read path and call with [`Cold::Skip`], the read having warmed what they
-//! call first.
+//! [`source_call`] only reads: a provider's lines render on the read path, which
+//! has warmed what they call first. [`run_call`], a Source's `data` line's call,
+//! runs a cold instance first, through the one run path ([`crate::run`]), and
+//! waits for it: from a thread that may block (the calling Source's own run, on
+//! the blocking pool). After it the record is stored, so a second call in the
+//! same read or refresh finds it warm.
 //!
 //! A Source reached again while it is running, through however many others, is
 //! a cycle: the error `sources: <p>.<s> calls itself`.
 
 use crate::cache::{Cache, RecordFreshness};
+use crate::provider::Value;
 use crate::provider::registry::{CalleeMap, ProviderRegistry};
-use crate::provider::{SourceResult, Value};
+use crate::run::{Cycle, Outcome, Want};
 use crate::scheduler::lifecycle::Key;
 use libbeachcomber::eval::undeclared_names;
 use minijinja::Environment;
 use serde_json::Value as Json;
 use std::cell::RefCell;
 use std::sync::Arc;
-
-/// What a call does with an instance that has nothing stored.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cold {
-    /// Execute it inline. The caller may block.
-    Run,
-    /// Leave it: the call answers with what is stored. For a line that renders
-    /// on the read path, where the read has already warmed what is called.
-    Skip,
-}
 
 thread_local! {
     /// Why the last call on this thread failed, for the run that made it to
@@ -58,11 +49,10 @@ struct Frame {
 /// A Source's run, for as long as it is held: a call to it from anything it
 /// calls is a cycle.
 ///
-/// The cycle check is a backstop. It sees only the Sources running on this
-/// thread, so it catches a ring only when one run calls the next inline; it
-/// relies on the load-time check of the calls between Sources being complete
-/// (every call is named in a line), and a ring that check missed could, with
-/// the runs on different threads, wait on itself.
+/// The load-time check of the calls between Sources finds a ring before
+/// anything runs (every call is named in a line). This is the backstop for the
+/// Source running on this thread; a ring round runs on other threads is the
+/// run path's to see ([`crate::run::Run::wait`]).
 pub struct Running(());
 
 impl Running {
@@ -139,68 +129,9 @@ pub fn in_failback_backoff(
     registry
         .failures
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .get(&instance_key(provider, source_name, root))
         .is_some_and(|state| state.is_suppressed())
-}
-
-/// Record how a run of one instance went, and store its result: what the
-/// scheduler's execute and the inline cold-miss path both do after the Source
-/// has run. A failure counts toward the instance's failback and writes nothing.
-pub fn record_outcome(
-    registry: &ProviderRegistry,
-    cache: &Cache,
-    provider: &str,
-    source_name: &str,
-    root: Option<&str>,
-    outcome: Result<SourceResult, String>,
-) -> Result<(), String> {
-    let Some(source) = registry.source(provider, source_name) else {
-        return Err(format!("{provider}.{source_name}: no such source"));
-    };
-    let meta = source.metadata();
-    // A reload that retired this Source since the registry was taken makes the
-    // result stale: neither it nor its failure counts, and nothing is written.
-    registry
-        .unless_retired(provider, source_name, || match outcome {
-            Ok(result) => {
-                // A success ends a streak of failures; an instance that never
-                // failed has no state to end (the common read).
-                {
-                    let mut failures = registry.failures.lock().unwrap();
-                    if !failures.is_empty()
-                        && let Some(state) =
-                            failures.get_mut(&instance_key(provider, source_name, root))
-                    {
-                        state.record_success();
-                    }
-                }
-                cache.put_source(
-                    provider,
-                    root,
-                    source_name,
-                    result.fields,
-                    crate::cache::Schedule::of(meta),
-                );
-                Ok(())
-            }
-            Err(e) => {
-                registry
-                    .failures
-                    .lock()
-                    .unwrap()
-                    .entry(instance_key(provider, source_name, root))
-                    .or_insert_with(|| {
-                        crate::scheduler::FailureState::new(
-                            meta.failback.reattempts,
-                            std::time::Duration::from_secs(meta.failback.interval_secs),
-                        )
-                    })
-                    .record_failure();
-                Err(e)
-            }
-        })
-        .unwrap_or(Ok(()))
 }
 
 /// A Source's record as a call finds it, and how old it is.
@@ -226,107 +157,129 @@ fn call_error(message: String) -> String {
 
 /// `provider`'s Source `source` as a read from the directory `entry` (`None`
 /// is `~`) would find it: its stored records at each instance of its chain,
-/// merged nearest-first. `None` when nothing is stored.
-///
-/// With [`Cold::Run`] an instance of the chain that has nothing stored is
-/// executed here, inline, once (a second caller waits and finds it stored, or
-/// the failure of a run that began after it arrived), unless it is in failback
-/// backoff. The instances reached are noted against the run that is calling, so
-/// a read that demands its Source demands them too. As in a direct read, an
-/// instance whose run failed is a miss and the chain goes on to the rest; only
-/// a fault of the lines is the call's error: a Source that is running on this
-/// thread already is `sources: <p>.<s> calls itself`.
-///
-/// With [`Cold::Skip`] nothing runs and no `root` line is rendered: the chain
-/// is walked over the roots already kept, and an instance not yet resolved is
-/// a miss.
+/// merged nearest-first. `None` when nothing is stored. Nothing runs and no
+/// `root` line is rendered: the chain is walked over the roots already kept,
+/// and an instance not yet resolved is a miss. For a provider's lines, which
+/// render on the read path after the read has warmed what they call.
 pub fn source_call(
     registry: &ProviderRegistry,
     cache: &Cache,
     provider: &str,
     source: &str,
     entry: Option<&str>,
-    cold: Cold,
 ) -> CallOutcome {
-    let Some(src) = registry.source(provider, source) else {
+    if registry.source(provider, source).is_none() {
         return Err(call_error(format!(
             "sources: {provider}.{source}: no such source"
         )));
-    };
-    if cold == Cold::Run && is_running(provider, source) {
-        return Err(call_error(format!(
-            "sources: {provider}.{source} calls itself"
-        )));
     }
-    // A disabled provider produces nothing, and nothing of it runs: a miss.
-    // The call is noted all the same, with no instance: what the caller stored
-    // depends on the answer, and switching the provider on changes it.
+    // A disabled provider produces nothing: a miss.
     if registry.is_disabled(provider) {
-        if cold == Cold::Run {
-            note_call(provider, source, &[]);
-        }
         return Ok(None);
     }
     let entry = entry.and_then(crate::query::address_of);
-    let chain = match cold {
-        Cold::Run => crate::query::instance_chain(registry, provider, source, entry.as_deref())?,
-        Cold::Skip => match kept_chain(registry, provider, source, entry.as_deref())? {
-            Some(chain) => chain,
-            None => return Ok(None),
-        },
-    };
-    if cold == Cold::Run {
-        for root in &chain {
-            let root = root.as_deref();
-            if cache.has_provider_records_for(provider, root, source)
-                || in_failback_backoff(registry, provider, source, root)
-            {
-                continue;
-            }
-            // Callers racing for a cold instance (a refresh runs several
-            // Sources at once) take turns: the first runs it, the rest find
-            // it stored, or share the failure of a run that finished while
-            // they waited.
-            let lock = registry.cold_lock(provider, source, root);
-            let arrived = lock.finished.load(std::sync::atomic::Ordering::SeqCst);
-            let outcome = {
-                let mut last = lock.last.blocking_lock();
-                if cache.has_provider_records_for(provider, root, source)
-                    // A run that failed while this caller waited may have put
-                    // the instance into backoff, whether or not it finished
-                    // before this caller arrived.
-                    || in_failback_backoff(registry, provider, source, root)
-                {
-                    Ok(())
-                } else if lock.finished.load(std::sync::atomic::Ordering::SeqCst) > arrived
-                    && let Some(Err(failed)) = &*last
-                {
-                    Err(failed.clone())
-                } else {
-                    let dir = crate::query::instance_dir(root);
-                    // The run is inline, inside this thread's own run: keep
-                    // what the caller's failed call said, and give it back.
-                    let prior = FAILED_CALL.with(|f| f.borrow_mut().take());
-                    let (outcome, fault) = ran(|| src.execute(dir.as_deref()));
-                    FAILED_CALL.with(|f| *f.borrow_mut() = prior);
-                    let recorded = record_outcome(registry, cache, provider, source, root, outcome)
-                        .map_err(|e| (e, fault.is_some()));
-                    *last = Some(recorded.clone());
-                    lock.finished
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    recorded
-                }
-            };
-            registry.release_cold(provider, source, root, lock);
-            // As a direct read of the Source: an instance that failed is a
-            // miss, and the chain goes on to the rest; only a fault of the
-            // lines (a Source that does not exist, a cycle) is the error.
-            if let Err((message, true)) = outcome {
-                return Err(call_error(message));
-            }
-        }
-        note_call(provider, source, &chain);
+    Ok(kept_chain(registry, provider, source, entry.as_deref())?
+        .and_then(|chain| stored(cache, provider, source, &chain)))
+}
+
+/// [`source_call`] for a Source's `data` line, from a thread that may block:
+/// an instance of the chain that has nothing stored runs first, once, unless
+/// it is in failback backoff (a second caller takes the same run, or finds it
+/// stored), and the call waits for it. The instances reached are noted against
+/// the run that is calling, so a read that demands its Source demands them
+/// too. As in a direct read, an instance whose run failed is a miss and the
+/// chain goes on to the rest; only a fault of the lines is the call's error: a
+/// Source that is running on this thread already, or a run that would wait on
+/// itself round a ring of runs, is `sources: <p>.<s> calls itself`.
+pub fn run_call(
+    registry: &Arc<ProviderRegistry>,
+    cache: &Arc<Cache>,
+    provider: &str,
+    source: &str,
+    entry: Option<&str>,
+) -> CallOutcome {
+    if registry.source(provider, source).is_none() {
+        return Err(call_error(format!(
+            "sources: {provider}.{source}: no such source"
+        )));
     }
+    let itself = || call_error(format!("sources: {provider}.{source} calls itself"));
+    if is_running(provider, source) {
+        return Err(itself());
+    }
+    let chain = match warm_called(registry, cache, provider, source, entry) {
+        Ok(chain) => chain,
+        Err(Unwarmed::Cycle) => return Err(itself()),
+        Err(Unwarmed::Fault(message)) => return Err(call_error(message)),
+    };
+    Ok(stored(cache, provider, source, &chain))
+}
+
+/// Why [`warm_called`] could not bring a chain up to date.
+enum Unwarmed {
+    /// Waiting for a run would close a ring of runs waiting on one another.
+    Cycle,
+    /// A fault of the lines: a `root` that could not be worked out, or a run
+    /// that failed for one.
+    Fault(String),
+}
+
+/// Run each instance of `provider`'s Source `source` reached from `entry` that
+/// has nothing stored, wait for it, and note the call against the run that is
+/// calling. The chain reached. A disabled provider has no instances: nothing
+/// of it runs, and the call is noted all the same, with none, since what the
+/// caller stored depends on the answer and switching the provider on changes
+/// it.
+fn warm_called(
+    registry: &Arc<ProviderRegistry>,
+    cache: &Arc<Cache>,
+    provider: &str,
+    source: &str,
+    entry: Option<&str>,
+) -> Result<Vec<Option<String>>, Unwarmed> {
+    if registry.is_disabled(provider) {
+        note_call(provider, source, &[]);
+        return Ok(Vec::new());
+    }
+    let entry = entry.and_then(crate::query::address_of);
+    let chain = crate::query::instance_chain(registry, provider, source, entry.as_deref())
+        .map_err(Unwarmed::Fault)?;
+    for root in &chain {
+        let root = root.as_deref();
+        // A stored instance is the common call: answered before anything
+        // shared is locked.
+        if cache.has_provider_records_for(provider, root, source) {
+            continue;
+        }
+        let key = instance_key(provider, source, root);
+        let Some(run) = registry.runs().start(Want::Cold, registry, cache, &key) else {
+            continue;
+        };
+        match run.wait() {
+            Err(Cycle) => return Err(Unwarmed::Cycle),
+            // As a direct read of the Source: an instance whose run failed is
+            // a miss, and the chain goes on to the rest; only a fault of the
+            // lines (a Source that does not exist, a cycle) is the error.
+            Ok(Outcome::Failed {
+                message,
+                fault: true,
+            }) => return Err(Unwarmed::Fault(message)),
+            Ok(_) => {}
+        }
+    }
+    note_call(provider, source, &chain);
+    Ok(chain)
+}
+
+/// The stored records of `provider`'s Source `source` at the instances of
+/// `chain` (nearest first), merged nearest-first; `None` when nothing is
+/// stored.
+fn stored(
+    cache: &Cache,
+    provider: &str,
+    source: &str,
+    chain: &[Option<String>],
+) -> Option<CalledRecord> {
     let mut merged = Json::Object(Default::default());
     let mut oldest: Option<RecordFreshness> = None;
     for root in chain.iter().rev() {
@@ -349,26 +302,27 @@ pub fn source_call(
             });
         }
     }
-    Ok(oldest.map(|fresh| CalledRecord {
+    oldest.map(|fresh| CalledRecord {
         value: merged,
         fresh,
-    }))
+    })
 }
 
 /// Bring `provider` up to date for a read from `entry`, as a `get` of it
 /// would before answering: each of its Sources, and each Source its lines
-/// call, runs a cold instance of its chain inline, once ([`source_call`] with
-/// [`Cold::Run`]). What `comb.<p>` in a `data` line does before it reads.
+/// call, runs a cold instance of its chain once ([`warm_called`]). What
+/// `comb.<p>` in a `data` line does before it reads.
 ///
-/// A Source already running on this thread is left as it stands: a run never
-/// waits on itself, so a line that reads its own provider, or reads round a
-/// ring of `comb.` reads back to itself, finds that Source's last stored
-/// value. Each instance reached is noted against the run that is reading, so
-/// whatever keeps the reader warm keeps these warm too. Only a fault of the
-/// lines is an error.
+/// A run never waits on itself: a Source already running on this thread is
+/// left as it stands, and so is one whose run is waiting, round a ring of
+/// `comb.` reads between runs, on this one. A line that reads its own
+/// provider, or reads round such a ring back to itself, finds that Source's
+/// last stored value. Each instance reached is noted against the run that is
+/// reading, so whatever keeps the reader warm keeps these warm too. Only a
+/// fault of the lines is an error.
 pub fn warm_provider(
-    registry: &ProviderRegistry,
-    cache: &Cache,
+    registry: &Arc<ProviderRegistry>,
+    cache: &Arc<Cache>,
     provider: &str,
     entry: Option<&str>,
 ) -> Result<(), String> {
@@ -382,7 +336,10 @@ pub fn warm_provider(
         if is_running(&p, &s) {
             continue;
         }
-        source_call(registry, cache, &p, &s, entry, Cold::Run)?;
+        match warm_called(registry, cache, &p, &s, entry) {
+            Ok(_) | Err(Unwarmed::Cycle) => {}
+            Err(Unwarmed::Fault(message)) => return Err(call_error(message)),
+        }
     }
     Ok(())
 }

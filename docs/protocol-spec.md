@@ -140,11 +140,13 @@ Read a cached value.
   `docs/canon/field_resolution.md`.
 - `force` (bool, optional, default false) — re-execute every Source the key
   demands, at every instance the read reaches, whether or not it was
-  stale; guarantees a fresh value without evicting anything. A key naming no
+  stale, past the failback backoff: a run that begins after the request (one
+  queued behind a run in flight). Nothing is evicted first: a run that fails
+  leaves the last good value, which the read answers. A key naming no
   Source (a static namespace, a facet) is an error: `cannot --force static
   namespace '<name>': no source to re-execute from`.
-- `wait` (bool, optional, default false) — if the entry is stale, wait for
-  inline re-execution; if fresh, serve the cached value. A no-op on a static
+- `wait` (bool, optional, default false) — if the entry is stale, wait for a
+  run of it; if fresh, serve the cached value. A no-op on a static
   namespace — it has no Source to re-execute, so the entry is served as-is.
 
 **Response (hit):**
@@ -594,6 +596,9 @@ Subjects: `daemon`, `providers`, `config`, `cache`, `lifecycle`, `watches`,
 
 `config_path` is omitted when no configuration file was loaded, and `reaper`
 on an embedded server that has none.
+
+`in_flight` counts the runs of Source instances in flight, whoever started
+them: a read, a poll, a file event, a refresh, a Source's call.
 
 `active_watchers` counts open `Watch` connections, not distinct watched keys
 or clients: a resolved `comb watch` opens one `Watch` subscription per

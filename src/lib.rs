@@ -10,6 +10,7 @@ pub mod proc_snapshot;
 pub mod protocol;
 pub mod provider;
 pub mod query;
+pub mod run;
 pub mod scheduler;
 pub mod server;
 pub mod shape;
