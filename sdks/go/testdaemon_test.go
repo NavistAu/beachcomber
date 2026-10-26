@@ -73,6 +73,11 @@ func requireBuiltArtifacts(t *testing.T) {
 	}
 }
 
+// testIOTimeoutMs is how long one read or write of a test's client may take.
+// The library's default (100ms) is a latency choice; these tests are about
+// correctness, and a loaded machine must not turn a slow answer into a failure.
+const testIOTimeoutMs = 30000
+
 // startDaemon starts a fresh comb daemon on a temp socket and returns the
 // socket path. The daemon is killed on test cleanup.
 func startDaemon(t *testing.T) string {
@@ -97,7 +102,7 @@ func startDaemon(t *testing.T) string {
 		}
 	})
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if conn, err := net.DialTimeout("unix", sock, 100*time.Millisecond); err == nil {
 			conn.Close()
@@ -105,14 +110,14 @@ func startDaemon(t *testing.T) string {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("daemon did not create socket within 5s at %s", sock)
+	t.Fatalf("daemon did not create socket within 30s at %s", sock)
 	return ""
 }
 
 // requireClient starts a fresh daemon and returns a Client wired to it.
 func requireClient(t *testing.T) *beachcomber.Client {
 	t.Helper()
-	c, err := beachcomber.NewClient(beachcomber.WithSocketPath(startDaemon(t)))
+	c, err := beachcomber.NewClient(beachcomber.WithSocketPath(startDaemon(t)), beachcomber.WithTimeoutMs(testIOTimeoutMs))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

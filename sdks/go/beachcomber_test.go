@@ -589,7 +589,7 @@ func TestNewClient_AutoDiscovery(t *testing.T) {
 	sock := startDaemon(t)
 	t.Setenv("BEACHCOMBER_SOCKET", sock)
 
-	c, err := beachcomber.NewClient()
+	c, err := beachcomber.NewClient(beachcomber.WithTimeoutMs(testIOTimeoutMs))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
@@ -679,7 +679,7 @@ func TestClient_Get_ExecIsDisabledWithoutTheOption(t *testing.T) {
 
 func TestClient_Get_ExecRunsWithTheOption(t *testing.T) {
 	sock := startDaemon(t)
-	c, err := beachcomber.NewClient(beachcomber.WithSocketPath(sock), beachcomber.WithExec(true))
+	c, err := beachcomber.NewClient(beachcomber.WithSocketPath(sock), beachcomber.WithExec(true), beachcomber.WithTimeoutMs(testIOTimeoutMs))
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

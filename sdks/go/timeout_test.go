@@ -69,7 +69,7 @@ func TestClient_ConnectTimeoutMs_ZeroIsOneAttempt(t *testing.T) {
 	if !errors.Is(err, beachcomber.ErrConnectionFailed) {
 		t.Fatalf("Hello() error = %v, want kind connection_failed", err)
 	}
-	if took >= 250*time.Millisecond {
+	if took >= time.Second { // one attempt, not the default 1500ms of retries
 		t.Errorf("one attempt took %v", took)
 	}
 }
