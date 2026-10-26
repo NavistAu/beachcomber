@@ -19,6 +19,13 @@
 //!     one) and with it off (a server with no scheduler: the read's own check
 //!     of the record's files is all there is).
 //!
+//!   * `memo_after_rewrite` (printed, not criterion) - T5.5: a memoised template
+//!     leaf (`cat <file>`, watching the file) read by the library client, a hit,
+//!     then the same command uncached (the spawn), then the file rewritten and
+//!     the leaf read at once. The first read after the rewrite is counted right
+//!     when it answers the new content, and costs what a hit and a spawn cost
+//!     plus the difference reported.
+//!
 //! Budget B is NOT benched here - it is the prompt's read round-trip: ~5 ms via
 //! the `comb` CLI (process spawn + socket), ~0.3 ms via an in-process SDK client
 //! (see `benches/socket.rs::socket_roundtrip_cold`).
@@ -485,6 +492,135 @@ fn read_after_mutation() {
     });
 }
 
+/// How many reads each memo measurement takes.
+const MEMO_TRIALS: usize = 100;
+
+/// A daemon in this process serving the memoised leaf `p.cached`, the same
+/// command uncached as `p.spawn`, and the file both read.
+struct MemoFixture {
+    rt: Option<Runtime>,
+    cancel: tokio_util::sync::CancellationToken,
+    task: Option<tokio::task::JoinHandle<()>>,
+    sock: PathBuf,
+    /// The configuration and the socket live here.
+    _conf: TempDir,
+    /// The file the leaves `cat`, and the memo watches.
+    file: PathBuf,
+    _kube: TempDir,
+}
+
+impl MemoFixture {
+    fn start() -> Self {
+        let rt = Runtime::new().unwrap();
+        let conf = TempDir::new().unwrap();
+        let kube = fsevents_tempdir();
+        let file = kube.path().canonicalize().unwrap().join("kubeconfig");
+        std::fs::write(&file, "start").unwrap();
+        let file_str = file.to_string_lossy().into_owned();
+        let xdg = conf.path().join("xdg");
+        let config_file = xdg.join("beachcomber").join("config.toml");
+        let defaults = xdg.join("beachcomber").join("defaults");
+        std::fs::create_dir_all(&defaults).unwrap();
+        beachcomber::daemon::defaults::write_managed_defaults(&defaults, env!("CARGO_PKG_VERSION"))
+            .expect("write the defaults");
+        std::fs::write(
+            &config_file,
+            format!(
+                "[client.providers.p]\n\
+                 template.cached = \"{{{{ 'cat {file_str}' | watch('{file_str}') | ttl('1h') | cache() | exec() }}}}\"\n\
+                 template.spawn = \"{{{{ 'cat {file_str}' | exec() }}}}\"\n"
+            ),
+        )
+        .unwrap();
+        let config = Config::load_from(&config_file);
+        assert!(config.errors().is_empty(), "{:?}", config.errors());
+        let sock = conf.path().join("s");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (task, ready) = {
+            let _enter = rt.enter();
+            beachcomber::daemon::start_in_process_with_cancel(sock.clone(), config, cancel.clone())
+        };
+        rt.block_on(ready).expect("the bench daemon starts");
+        Self {
+            rt: Some(rt),
+            cancel,
+            task: Some(task),
+            sock,
+            _conf: conf,
+            file,
+            _kube: kube,
+        }
+    }
+
+    fn client(&self) -> libbeachcomber::Client {
+        libbeachcomber::Client::with_config(libbeachcomber::ClientConfig {
+            auto_start: false,
+            exec: true,
+            timeout: Duration::from_secs(5),
+        })
+        .with_socket_path(self.sock.clone())
+    }
+
+    fn rewrite(&self, content: &str) {
+        std::fs::write(&self.file, content).unwrap();
+    }
+}
+
+impl Drop for MemoFixture {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let (Some(rt), Some(task)) = (self.rt.take(), self.task.take()) {
+            let _ = rt.block_on(task);
+            rt.shutdown_background();
+        }
+    }
+}
+
+fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v[(v.len() - 1) / 2]
+}
+
+/// T5.5: the first read of a memoised leaf after its watched file was
+/// rewritten, against a hit and a spawn, over the library client.
+fn memo_after_rewrite() {
+    let fx = MemoFixture::start();
+    let client = fx.client();
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let read = |key: &str| {
+        let t0 = Instant::now();
+        let got = client.get(key, None);
+        (got, t0.elapsed())
+    };
+    for key in ["p.cached", "p.cached", "p.spawn"] {
+        let (got, _) = read(key);
+        assert!(matches!(got, Ok(Some(_))), "{key} answers: {got:?}");
+    }
+    let (mut right, mut hits, mut spawns, mut misses) = (0, vec![], vec![], vec![]);
+    for i in 0..MEMO_TRIALS {
+        let want = format!("v{i}");
+        let (_, hit) = read("p.cached");
+        let (_, spawn) = read("p.spawn");
+        fx.rewrite(&want);
+        let (got, miss) = read("p.cached");
+        right += usize::from(matches!(&got, Ok(Some(v)) if *v == serde_json::json!(want)));
+        hits.push(ms(hit));
+        spawns.push(ms(spawn));
+        misses.push(ms(miss));
+    }
+    let over: Vec<f64> = (0..MEMO_TRIALS)
+        .map(|i| misses[i] - hits[i] - spawns[i])
+        .collect();
+    println!("memo_after_rewrite: {MEMO_TRIALS} trials, watcher on");
+    println!(
+        "  {right}/{MEMO_TRIALS} answered the new content; p50 hit {:.3}ms, spawn {:.3}ms, read after rewrite {:.3}ms; miss - hit - spawn: p50 {:.3}ms",
+        median(hits),
+        median(spawns),
+        median(misses),
+        median(over)
+    );
+}
+
 /// The change one trial made, for the wait after it.
 enum Trial<'a> {
     Branch(&'a str),
@@ -541,5 +677,8 @@ fn main() {
     }
     if runs("read_after_mutation") {
         read_after_mutation();
+    }
+    if runs("memo_after_rewrite") {
+        memo_after_rewrite();
     }
 }
