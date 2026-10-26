@@ -21,6 +21,7 @@ pub mod measure;
 pub mod number;
 pub mod parse;
 pub mod path;
+pub mod spark;
 pub mod style;
 pub mod time;
 
@@ -110,6 +111,7 @@ pub const ITEMS: &[Item] = &[
     item!("hash", Filter, Pure, hash::add_hash),
     item!("b64encode", Filter, Pure, hash::add_b64encode),
     item!("b64decode", Filter, Pure, hash::add_b64decode),
+    item!("spark", Function, Pure, spark::add_spark),
     item!("ramp", Filter, Pure, number::add_ramp),
     item!("pct", Filter, Pure, number::add_pct),
     item!("compact", Filter, Pure, number::add_compact),
@@ -427,6 +429,7 @@ mod tests {
             ("hash", "'x' | hash('nope')"),
             ("b64encode", "[1] | b64encode"),
             ("b64decode", "'!' | b64decode"),
+            ("spark", "spark(5)"),
             ("ramp", "1 | ramp([2, 1], [1, 2, 3])"),
             ("pct", "'x' | pct"),
             ("compact", "'x' | compact"),

@@ -129,6 +129,7 @@ pattern is an error, found before the subject is looked at.
 | `r \| pct(digits=0)` | a ratio as a percentage, rounded as `'%.Nf' \| format` does: `0.423` is `42%` (`digits` up to 20) |
 | `n \| compact` | `1234` is `1.2k`, `56789` is `57k`; units `k M G T P`, chosen after rounding (`999950` is `1.0M`) |
 | `n \| bytes` | a size in 1024 steps: `1288490188` is `1.2G`; units `B K M G T P`; a negative size is an error |
+| `spark(values, lo=none, hi=none)` | a row of block glyphs (`▁▂▃▄▅▆▇█`), one per number, scaled from `lo` to `hi` (the data's own minimum and maximum when `none`): `spark([1, 5, 3, 8])` is `▁▅▃█`. A value outside the scale is held to it, a `none` value is a space, and equal ends draw the middle glyph. A `values` that is absent is undefined; one that is not a list of numbers is an error |
 
 **Display width.** Wherever an item measures text it counts terminal columns: East Asian wide and emoji-presentation
 characters are 2, combining marks are 0, and escape sequences (CSI such as colours, and OSC such as `hyperlink`) are 0.
