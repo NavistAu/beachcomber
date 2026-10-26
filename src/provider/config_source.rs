@@ -611,6 +611,9 @@ fn engine<'a>(
         // One clock for the run these lines are rendered in.
         now: std::time::SystemTime::now(),
         touched,
+        // A Source's records are the daemon's: no leaf to memoise, so
+        // `cache()`, `watch()` and `ttl()` refuse (and its load does first).
+        memo: None,
     };
     daemon_engine_env(Arc::new(ctx), plugins.clone())
 }

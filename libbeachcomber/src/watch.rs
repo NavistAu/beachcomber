@@ -335,6 +335,10 @@ impl Fetch for Recording<'_> {
             .insert((key.to_string(), path.map(str::to_string)), got.clone());
         Ok(got)
     }
+
+    fn memo(&mut self, write: &crate::resolve::MemoWrite) -> Result<(), FetchError> {
+        self.fetch.memo(write)
+    }
 }
 
 /// What one resolution of the watched key came to.

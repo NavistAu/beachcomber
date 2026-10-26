@@ -8,7 +8,8 @@
 //! §3.1 templates, §4.2 worked example).
 
 use libbeachcomber::resolve::{
-    Fetch, FetchError, Got, Inputs, ResolveError, Slot, Traced, deps, eval, resolve, resolve_traced,
+    Fetch, FetchError, Got, Inputs, MemoWrite, ResolveError, Slot, Traced, deps, eval, eval_with,
+    resolve, resolve_traced,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -40,6 +41,8 @@ struct MapFetch {
     /// Keys the daemon refuses, standing in for `ok: false`.
     rejects: Vec<String>,
     log: Vec<Call>,
+    /// The memos written back, in order.
+    writes: Vec<MemoWrite>,
 }
 
 impl MapFetch {
@@ -80,6 +83,11 @@ impl Fetch for MapFetch {
             .entries
             .get(&(key.to_string(), path.map(str::to_string)))
             .cloned())
+    }
+
+    fn memo(&mut self, write: &MemoWrite) -> Result<(), FetchError> {
+        self.writes.push(write.clone());
+        Ok(())
     }
 }
 
@@ -2220,4 +2228,381 @@ fn a_node_read_again_reports_the_same_deps_and_age() {
         vec!["k.top", "k.a", "e.x", "k.shared", "d.old", "d.new"],
         "each key fetched once"
     );
+}
+
+// ── Caching a template ────────────────────────────────────────────────────────
+
+/// The hash `cache()` computes over these inputs and no file.
+fn hash_of(inputs: &[&str]) -> u64 {
+    let inputs: Vec<minijinja::Value> = inputs.iter().map(|i| minijinja::Value::from(*i)).collect();
+    libbeachcomber::library::memo::memo_hash(&inputs, &[]).unwrap()
+}
+
+/// A memo half: live under `hash`, `age_ms` old, holding `data`.
+fn memo(hash: u64, data: Option<Value>, age_ms: u64) -> Value {
+    let mut half = json!({
+        "hash": libbeachcomber::validity::hex(hash),
+        "stale": false,
+        "age_ms": age_ms,
+    });
+    if let Some(data) = data {
+        half["data"] = data;
+    }
+    half
+}
+
+/// A template leaf with its memo half beside it.
+fn cached(t: &str, half: Option<Value>) -> Got {
+    Got {
+        template: Some(json!(t)),
+        memo: half,
+        ..Got::default()
+    }
+}
+
+fn exec_inputs(env: &HashMap<String, String>) -> Inputs<'_> {
+    Inputs {
+        allow_exec: true,
+        ..inputs(env)
+    }
+}
+
+/// A leaf that misses renders on, and its final output — what follows the
+/// `exec()` included — is queued under the hash of its inputs, at the
+/// resolution's directory, with what `watch()` and `ttl()` recorded. The
+/// library's `resolve` writes it before returning; `resolve_traced` leaves
+/// it to the caller.
+#[test]
+fn a_miss_renders_and_queues_a_write_with_the_leafs_final_output() {
+    let env = env_of(&[]);
+    let t = "{{ 'echo x' | watch('/nonexistent-comb/f') | ttl('10m') | cache() | exec() | upper }}";
+    let mut f = MapFetch::default();
+    f.seed("p.f", Some(CWD), cached(t, None));
+
+    let traced = resolve_traced("p.f", &exec_inputs(&env), &mut f).unwrap();
+    assert_eq!(traced.value, Some(json!("X")));
+    assert!(!traced.memo_hit);
+    let paths = [std::path::PathBuf::from("/nonexistent-comb/f")];
+    let hash =
+        libbeachcomber::library::memo::memo_hash(&[minijinja::Value::from("echo x")], &paths)
+            .unwrap();
+    let want = MemoWrite {
+        key: "p.f".into(),
+        path: Some(CWD.into()),
+        hash,
+        data: Some(json!("X")),
+        watch: paths.to_vec(),
+        ttl: Some(std::time::Duration::from_secs(600)),
+    };
+    assert_eq!(traced.memos, std::slice::from_ref(&want));
+    assert!(f.writes.is_empty(), "traced: the caller writes");
+
+    assert_eq!(
+        resolve("p.f", &exec_inputs(&env), &mut f),
+        Ok(Some(json!("X")))
+    );
+    assert_eq!(f.writes, [want], "resolve writes before it returns");
+}
+
+/// A hit is the memo, and nothing after `cache()` runs: `false` would fail.
+#[test]
+fn a_hit_skips_exec() {
+    let env = env_of(&[]);
+    let hash = hash_of(&["false"]);
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.f",
+        Some(CWD),
+        cached(
+            "{{ 'false' | cache() | exec() }}",
+            Some(memo(hash, Some(json!("prod")), 5)),
+        ),
+    );
+    let traced = resolve_traced("p.f", &exec_inputs(&env), &mut f).unwrap();
+    assert_eq!(traced.value, Some(json!("prod")));
+    assert!(traced.memo_hit);
+    assert!(traced.memos.is_empty(), "a hit writes nothing");
+}
+
+#[test]
+fn a_hit_of_absence_is_absent() {
+    let env = env_of(&[]);
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.f",
+        Some(CWD),
+        cached(
+            "{{ 'false' | cache() | exec() }}",
+            Some(memo(hash_of(&["false"]), None, 5)),
+        ),
+    );
+    assert_eq!(resolve("p.f", &exec_inputs(&env), &mut f), Ok(None));
+    assert!(f.writes.is_empty());
+}
+
+/// A memo past its ttl, one under another hash, and one whose hash was
+/// dropped are each a miss: the leaf renders and is stored again.
+#[test]
+fn a_stale_memo_is_a_miss() {
+    let env = env_of(&[("V", "now")]);
+    let hash = hash_of(&["now"]);
+    let mut half = memo(hash, Some(json!("then")), 5);
+    half["stale"] = json!(true);
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.f",
+        Some(CWD),
+        cached("{{ env.V | cache() | upper }}", Some(half)),
+    );
+    assert_eq!(
+        resolve("p.f", &inputs(&env), &mut f),
+        Ok(Some(json!("NOW")))
+    );
+    assert_eq!(f.writes.len(), 1);
+    assert_eq!(f.writes[0].hash, hash);
+}
+
+#[test]
+fn a_differing_hash_is_a_miss() {
+    let env = env_of(&[("V", "now")]);
+    for half in [
+        memo(hash_of(&["then"]), Some(json!("THEN")), 5),
+        json!({"stale": false, "age_ms": 5, "data": "THEN"}),
+    ] {
+        let mut f = MapFetch::default();
+        f.seed(
+            "p.f",
+            Some(CWD),
+            cached("{{ env.V | cache() | upper }}", Some(half)),
+        );
+        assert_eq!(
+            resolve("p.f", &inputs(&env), &mut f),
+            Ok(Some(json!("NOW")))
+        );
+        assert_eq!(f.writes.len(), 1, "stored again");
+    }
+}
+
+/// `--force` renders past a live memo, and stores what it rendered.
+#[test]
+fn force_renders_past_the_memo() {
+    let env = env_of(&[("V", "now")]);
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.f",
+        Some(CWD),
+        cached(
+            "{{ env.V | cache() | upper }}",
+            Some(memo(hash_of(&["now"]), Some(json!("OLD")), 5)),
+        ),
+    );
+    let forced = Inputs {
+        force: true,
+        ..inputs(&env)
+    };
+    assert_eq!(resolve("p.f", &forced, &mut f), Ok(Some(json!("NOW"))));
+    assert_eq!(f.writes.len(), 1);
+}
+
+/// In a group each leaf reads its own memo, at its place in the half: one
+/// leaf's hit leaves its siblings to render, and only a leaf that missed is
+/// stored.
+#[test]
+fn a_hit_inside_a_group_keeps_its_siblings() {
+    let env = env_of(&[("V", "v")]);
+    let tree = json!({
+        "a": "{{ env.V | cache() | upper }}",
+        "sub": {"b": "{{ env.V | cache() ~ '!' }}"},
+        "c": "{{ env.V }}",
+    });
+    let mut f = MapFetch::default();
+    f.seed(
+        "p",
+        Some(CWD),
+        Got {
+            template: Some(tree),
+            memo: Some(json!({"a": memo(hash_of(&["v"]), Some(json!("MEMO")), 5)})),
+            ..Got::default()
+        },
+    );
+    assert_eq!(
+        resolve("p", &inputs(&env), &mut f),
+        Ok(Some(json!({"a": "MEMO", "sub": {"b": "v!"}, "c": "v"})))
+    );
+    let keys: Vec<&str> = f.writes.iter().map(|w| w.key.as_str()).collect();
+    assert_eq!(keys, ["p.sub.b"]);
+    assert_eq!(f.writes[0].data, Some(json!("v!")));
+}
+
+/// A leaf that fails stores nothing: its memo stays as it was.
+#[test]
+fn a_failed_leaf_writes_nothing() {
+    let env = env_of(&[]);
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.f",
+        Some(CWD),
+        cached("{{ 'false' | cache() | exec() }}", None),
+    );
+    assert!(matches!(
+        resolve("p.f", &exec_inputs(&env), &mut f),
+        Err(ResolveError::Runtime(_))
+    ));
+    assert!(f.writes.is_empty());
+}
+
+/// A value served from a memo is as old as the memo, as one read from any
+/// stored input is.
+#[test]
+fn a_hit_counts_the_memos_age() {
+    let env = env_of(&[("V", "v")]);
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.f",
+        Some(CWD),
+        cached(
+            "{{ env.V | cache() | upper }}",
+            Some(memo(hash_of(&["v"]), Some(json!("V")), 42_000)),
+        ),
+    );
+    let traced = resolve_traced("p.f", &inputs(&env), &mut f).unwrap();
+    assert_eq!(traced.oldest_input_ms, Some(42_000));
+}
+
+/// `comb eval` and a `-f` format are stored nowhere: their own `cache()`
+/// passes through, records nothing and writes nothing, however often it runs.
+/// A field they read whose template caches is served from its memo.
+#[test]
+fn eval_and_a_format_never_write() {
+    let env = env_of(&[("V", "v")]);
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.f",
+        Some(CWD),
+        cached(
+            "{{ env.V | cache() | upper }}",
+            Some(memo(hash_of(&["v"]), Some(json!("MEMO")), 5)),
+        ),
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            eval(
+                "{{ env.V | watch('/f') | ttl('1h') | cache() | upper }}",
+                &inputs(&env),
+                &mut f
+            ),
+            Ok(Some(json!("V")))
+        );
+        let locals = serde_json::Map::from_iter([("value".to_string(), json!("x"))]);
+        assert_eq!(
+            eval_with(
+                "{{ value | cache() }}",
+                "-f",
+                &inputs(&env),
+                &mut f,
+                &locals
+            ),
+            Ok(Some(json!("x")))
+        );
+    }
+    assert_eq!(
+        eval("{{ p.f }}", &inputs(&env), &mut f),
+        Ok(Some(json!("MEMO"))),
+        "a field caches as its template says"
+    );
+    assert!(f.writes.is_empty());
+}
+
+/// A leaf whose render reads `comb[...]` renders on a thread of its own; it
+/// still caches under its own address, and a cached leaf it reads caches
+/// under that leaf's.
+#[test]
+fn a_lazy_comb_render_keeps_its_own_frame() {
+    let env = env_of(&[("N", "d")]);
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.a",
+        Some(CWD),
+        cached("{{ (comb[env.N].x ~ p.b) | cache() | upper }}", None),
+    )
+    .seed(
+        "p.b",
+        Some(CWD),
+        cached("{{ env.N | cache() ~ '-b' }}", None),
+    )
+    .seed("d", Some(CWD), data(json!({"x": "x"})));
+    assert_eq!(
+        resolve("p.a", &inputs(&env), &mut f),
+        Ok(Some(json!("XD-B")))
+    );
+    let written: Vec<(&str, u64, Option<&Value>)> = f
+        .writes
+        .iter()
+        .map(|w| (w.key.as_str(), w.hash, w.data.as_ref()))
+        .collect();
+    assert_eq!(
+        written,
+        [
+            ("p.b", hash_of(&["d"]), Some(&json!("d-b"))),
+            ("p.a", hash_of(&["xd-b"]), Some(&json!("XD-B"))),
+        ]
+    );
+}
+
+/// A memo stored by a client that may run `exec()` serves one that may not:
+/// the hit ends the render before the `exec()` would be refused.
+#[test]
+fn a_hit_on_a_client_without_exec() {
+    let env = env_of(&[]);
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.f",
+        Some(CWD),
+        cached(
+            "{{ 'kubectl x' | cache() | exec() }}",
+            Some(memo(hash_of(&["kubectl x"]), Some(json!("prod")), 5)),
+        ),
+    );
+    assert_eq!(
+        resolve("p.f", &inputs(&env), &mut f),
+        Ok(Some(json!("prod")))
+    );
+    f.entries.clear();
+    f.seed(
+        "p.f",
+        Some(CWD),
+        cached("{{ 'kubectl x' | cache() | exec() }}", None),
+    );
+    assert!(matches!(
+        resolve("p.f", &inputs(&env), &mut f),
+        Err(ResolveError::Runtime(m)) if m.contains("exec() is disabled in this context")
+    ));
+}
+
+/// An address past a cached leaf walks into its memo, and a miss there stores
+/// the leaf's whole value under the leaf's address.
+#[test]
+fn walk_into_a_memo_hit() {
+    let env = env_of(&[]);
+    let t = "{{ '{\"cpu\": 40}' | cache() | fromjson }}";
+    let hash = hash_of(&["{\"cpu\": 40}"]);
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.stats.cpu",
+        Some(CWD),
+        Got {
+            memo: Some(memo(hash, Some(json!({"cpu": 7})), 5)),
+            ..tmpl_rest(json!(t), "cpu")
+        },
+    );
+    assert_eq!(
+        resolve("p.stats.cpu", &inputs(&env), &mut f),
+        Ok(Some(json!(7)))
+    );
+    f.seed("p.stats.cpu", Some(CWD), tmpl_rest(json!(t), "cpu"));
+    let traced = resolve_traced("p.stats.cpu", &inputs(&env), &mut f).unwrap();
+    assert_eq!(traced.value, Some(json!(40)));
+    assert_eq!(traced.memos.len(), 1);
+    assert_eq!(traced.memos[0].key, "p.stats");
+    assert_eq!(traced.memos[0].data, Some(json!({"cpu": 40})));
 }

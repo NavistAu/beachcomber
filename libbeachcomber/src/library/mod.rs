@@ -10,8 +10,9 @@
 //!
 //! The items live in modules by what they work on: [`style`] (colour, text),
 //! [`number`] (numbers shown), [`data`] (objects and lists), [`path`] (path text), [`fs`] (files) and
-//! [`parse`] (text to data). `exec` is bound to a render's process rules and
-//! lives in [`crate::engine`]; `url` and `plugin` live in the daemon.
+//! [`parse`] (text to data), [`memo`] (a leaf's memo). `exec` is bound to a
+//! render's process rules and lives in [`crate::engine`]; `url` and `plugin`
+//! live in the daemon.
 
 pub mod absent;
 pub mod bar;
@@ -19,6 +20,7 @@ pub mod data;
 pub mod fs;
 pub mod hash;
 pub mod measure;
+pub mod memo;
 pub mod number;
 pub mod parse;
 pub mod path;
@@ -42,6 +44,10 @@ pub enum Tier {
     Io,
     /// Processes. A client render gates it on `allow_exec`.
     Exec,
+    /// The memo of the template leaf being rendered (`cache`, `watch`,
+    /// `ttl`): a client template's alone. On a Source's lines they are a load
+    /// error, and `watch` and `ttl` on a `return` are the decorators.
+    Memo,
     /// The network and plugins: only the daemon has them.
     Daemon,
 }
@@ -61,7 +67,9 @@ pub enum Surface {
 
 impl Tier {
     /// Whether an item of this tier is available on `surface`. A client's
-    /// [`Tier::Daemon`] items exist only to refuse clearly: not available.
+    /// [`Tier::Daemon`] items exist only to refuse clearly: not available; so
+    /// do the [`Tier::Memo`] items of a Source's lines, which share the
+    /// client's builder.
     pub fn available(self, surface: Surface) -> bool {
         matches!(
             (self, surface),
@@ -70,6 +78,7 @@ impl Tier {
                     Tier::Clock | Tier::Io | Tier::Exec,
                     Surface::Client | Surface::Source
                 )
+                | (Tier::Memo, Surface::Client)
                 | (Tier::Daemon, Surface::Source)
         )
     }
@@ -157,6 +166,9 @@ pub const ITEMS: &[Item] = &[
     item!("glob", Filter, Io, fs::add_glob),
     item!("lup", Function, Io, fs::add_lup),
     item!("exec", Both, Exec, crate::engine::add_exec),
+    item!("watch", Filter, Memo, memo::add_watch),
+    item!("ttl", Filter, Memo, memo::add_ttl),
+    item!("cache", Filter, Memo, memo::add_cache),
     item!("url", Function, Daemon, add_url_refusal),
     item!("plugin", Function, Daemon, add_plugin_refusal),
 ];
@@ -380,28 +392,51 @@ mod tests {
                     assert!(absent(&pure, item), "{} leaked onto {surface:?}", item.name);
                 }
             }
-            // The client has every item, the daemon's as a clear refusal.
+            // The client's builder has every item, and so the daemon's, which
+            // extends it: what one of them may not call is a clear refusal.
             assert!(
                 present(&client, item),
                 "{} missing on the client",
                 item.name
             );
-            if item.tier == Tier::Daemon {
-                assert!(!item.tier.available(Surface::Client));
-                let err = client
-                    .compile_expression(&format!("{}()", item.name))
-                    .unwrap()
-                    .eval(())
-                    .unwrap_err()
-                    .to_string();
-                assert!(
-                    err.contains(&format!("{}() runs only in a Source's lines", item.name)),
-                    "{err}"
-                );
-            } else {
-                assert!(item.tier.available(Surface::Client), "{}", item.name);
+            match item.tier {
+                Tier::Daemon => {
+                    assert!(!item.tier.available(Surface::Client));
+                    assert!(item.tier.available(Surface::Source), "{}", item.name);
+                    let err = client
+                        .compile_expression(&format!("{}()", item.name))
+                        .unwrap()
+                        .eval(())
+                        .unwrap_err()
+                        .to_string();
+                    assert!(
+                        err.contains(&format!("{}() runs only in a Source's lines", item.name)),
+                        "{err}"
+                    );
+                }
+                // A render with no memo frames is the daemon's.
+                Tier::Memo => {
+                    assert!(item.tier.available(Surface::Client), "{}", item.name);
+                    assert!(!item.tier.available(Surface::Source), "{}", item.name);
+                    let err = client
+                        .compile_expression(&format!("1 | {}", item.name))
+                        .unwrap()
+                        .eval(())
+                        .unwrap_err()
+                        .to_string();
+                    assert!(
+                        err.contains(&format!(
+                            "{}(): a client template's filter; a Source's records are the daemon's",
+                            item.name
+                        )),
+                        "{err}"
+                    );
+                }
+                _ => {
+                    assert!(item.tier.available(Surface::Client), "{}", item.name);
+                    assert!(item.tier.available(Surface::Source), "{}", item.name);
+                }
             }
-            assert!(item.tier.available(Surface::Source), "{}", item.name);
         }
     }
 
@@ -447,6 +482,9 @@ mod tests {
             ("lup", "lup('x', files=true, dirs=true)"),
             ("bar", "bar(-1)"),
             ("exec", "exec(1)"),
+            ("cache", "1 | cache"),
+            ("watch", "1 | watch"),
+            ("ttl", "1 | ttl"),
         ] {
             let err = eval(bad).unwrap_err();
             let why = err.strip_prefix("invalid operation: ").unwrap_or(&err);

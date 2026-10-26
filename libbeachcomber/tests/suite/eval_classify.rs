@@ -322,6 +322,9 @@ fn render_template(src: &str, ctx: &serde_json::Value) -> Result<String, String>
         ) -> Result<Option<Got>, FetchError> {
             Ok(None)
         }
+        fn memo(&mut self, _write: &libbeachcomber::resolve::MemoWrite) -> Result<(), FetchError> {
+            Ok(())
+        }
     }
     let env = std::collections::HashMap::new();
     let inputs = Inputs {

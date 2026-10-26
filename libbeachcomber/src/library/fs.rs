@@ -302,7 +302,7 @@ fn realpath(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
 
 /// `p` as the render reads it: a leading `~` is `ctx.env["HOME"]`
 /// ([`crate::path::expand_tilde`]), and a relative path is against `ctx.cwd`.
-fn resolve_path(ctx: &EngineCtx, p: &str) -> Result<PathBuf, crate::path::PathError> {
+pub(super) fn resolve_path(ctx: &EngineCtx, p: &str) -> Result<PathBuf, crate::path::PathError> {
     let expanded = crate::path::expand_tilde(p, ctx.env.get("HOME").map(String::as_str))?;
     Ok(match &ctx.cwd {
         Some(cwd) => cwd.join(expanded),
@@ -507,6 +507,7 @@ mod tests {
             allow_exec: ctx.allow_exec,
             now: ctx.now,
             touched: Some(touched.clone()),
+            memo: None,
         };
         (Arc::new(ctx), touched)
     }

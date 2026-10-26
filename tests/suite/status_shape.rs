@@ -3139,6 +3139,9 @@ fn render_status_template(template: &str, rows: &[CacheRow]) -> String {
         ) -> Result<Option<Got>, FetchError> {
             Ok(None)
         }
+        fn memo(&mut self, _write: &libbeachcomber::resolve::MemoWrite) -> Result<(), FetchError> {
+            Ok(())
+        }
     }
     let env = std::collections::HashMap::new();
     let inputs = Inputs {

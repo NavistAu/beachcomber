@@ -4,6 +4,8 @@
 //! [`classify`](super::classify) can decide a source's [`Form`](super::Form)
 //! before anything is compiled.
 
+use std::collections::HashMap;
+
 /// The three MiniJinja tag delimiters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TagKind {
@@ -247,4 +249,103 @@ fn trim_tag_body(inner: &str) -> &str {
     let inner = inner.strip_prefix(['-', '+']).unwrap_or(inner);
     let inner = inner.strip_suffix(['-', '+']).unwrap_or(inner);
     inner.trim_ascii()
+}
+
+/// How a name is used in a line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Use {
+    /// After a `|`.
+    Filter,
+    /// Followed by `(`.
+    Call,
+    Both,
+}
+
+/// The names `line` calls or pipes into, inside its tags and outside its
+/// strings, and how. A text scan: it can only miss a name built some way a
+/// line has no use for.
+pub fn used_names(line: &str) -> HashMap<String, Use> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut found: HashMap<String, Use> = HashMap::new();
+    let (mut in_tag, mut quote) = (false, None);
+    let mut depth = 0usize;
+    let mut last_significant = ' ';
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if !in_tag {
+            if c == '{' && matches!(next, Some('{' | '%')) {
+                in_tag = true;
+                depth = 0;
+                last_significant = ' ';
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+        // `}}` ends the tag only outside any dict literal inside it.
+        if depth == 0 && ((c == '}' && next == Some('}')) || (c == '%' && next == Some('}'))) {
+            in_tag = false;
+            i += 2;
+            continue;
+        }
+        if c == '{' {
+            depth += 1;
+        } else if c == '}' {
+            depth = depth.saturating_sub(1);
+        }
+        if c == '\'' || c == '"' {
+            quote = Some(c);
+            last_significant = c;
+            i += 1;
+            continue;
+        }
+        if c.is_alphabetic() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let name: String = chars[start..i].iter().collect();
+            let after_dot = last_significant == '.';
+            let piped = last_significant == '|';
+            let called = chars[i..]
+                .iter()
+                .find(|c| !c.is_whitespace())
+                .is_some_and(|c| *c == '(');
+            if !after_dot {
+                let how = match (piped, called) {
+                    (true, true) => Some(Use::Both),
+                    (true, false) => Some(Use::Filter),
+                    (false, true) => Some(Use::Call),
+                    (false, false) => None,
+                };
+                if let Some(how) = how {
+                    found
+                        .entry(name)
+                        .and_modify(|u| {
+                            if *u != how {
+                                *u = Use::Both;
+                            }
+                        })
+                        .or_insert(how);
+                }
+            }
+            last_significant = 'a';
+            continue;
+        }
+        if !c.is_whitespace() {
+            last_significant = c;
+        }
+        i += 1;
+    }
+    found
 }

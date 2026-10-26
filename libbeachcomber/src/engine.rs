@@ -7,8 +7,9 @@
 //!   chainable. A surface that must do no IO (a provider's lines, a decorator
 //!   render, run on every read) stops here.
 //! - [`build_engine_env`]: the pure environment plus the items that read files
-//!   and run processes (`read`, `lup`, `exec`), bound to the render's
-//!   [`EngineCtx`], and a clear refusal for the daemon's `url` and `plugin`.
+//!   and run processes (`read`, `lup`, `exec`) and memoise a leaf (`cache`,
+//!   `watch`, `ttl`), bound to the render's [`EngineCtx`], and a clear refusal
+//!   for the daemon's `url` and `plugin`.
 //!   The daemon extends the returned environment with those two, so a Source's
 //!   lines and a client template share one engine.
 
@@ -34,10 +35,14 @@ pub struct EngineCtx {
     /// account: what a later read checks of the record it makes. `None`, a
     /// client's render, records nothing.
     pub touched: Option<Arc<crate::fs::Touched>>,
+    /// The frames of the leaves a client's resolution is rendering, which
+    /// `cache()`, `watch()` and `ttl()` read and record into
+    /// ([`crate::library::memo`]). `None`, a daemon's render, refuses them.
+    pub memo: Option<Arc<crate::library::memo::MemoFrames>>,
 }
 
 /// A render with nothing: no environment, no directory, no `exec`, the clock
-/// as it is now, and no account of what it reads.
+/// as it is now, no account of what it reads, and no leaf to memoise.
 impl Default for EngineCtx {
     fn default() -> Self {
         Self {
@@ -46,6 +51,7 @@ impl Default for EngineCtx {
             allow_exec: false,
             now: std::time::SystemTime::now(),
             touched: None,
+            memo: None,
         }
     }
 }
@@ -105,15 +111,17 @@ pub fn build_pure_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
     jinja
 }
 
-/// The pure environment plus every item that reads files or runs processes,
-/// bound to `ctx`, and the client's refusal of `url` and `plugin`.
+/// The pure environment plus every item that reads files, runs processes or
+/// memoises a leaf, bound to `ctx`, and the client's refusal of `url` and
+/// `plugin`. A daemon's render has no memo frames, so its `cache`, `watch` and
+/// `ttl` refuse with their reason.
 ///
 /// `exec` is registered whether or not it is allowed, so a disabled call fails
 /// with the on-topic "exec() is disabled in this context" rather than a
 /// generic "unknown function".
 pub fn build_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
     let mut jinja = build_pure_engine_env(ctx.clone());
-    for tier in [Tier::Clock, Tier::Io, Tier::Exec, Tier::Daemon] {
+    for tier in [Tier::Clock, Tier::Io, Tier::Exec, Tier::Memo, Tier::Daemon] {
         library::install(&mut jinja, &ctx, tier);
     }
     jinja

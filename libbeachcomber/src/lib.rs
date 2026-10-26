@@ -681,6 +681,10 @@ impl resolve::Fetch for &Client {
     ) -> Result<Option<resolve::Got>, resolve::FetchError> {
         fetched(self.fetch_node(key, path, force, wait))
     }
+
+    fn memo(&mut self, write: &resolve::MemoWrite) -> Result<(), resolve::FetchError> {
+        stored(memo_request(write).and_then(|request| self.call(&request)))
+    }
 }
 
 /// [`resolve::Fetch`] over a [`Session`]: one daemon `get` per node on its
@@ -700,6 +704,10 @@ impl resolve::Fetch for Session {
                 .map(parse_node),
         )
     }
+
+    fn memo(&mut self, write: &resolve::MemoWrite) -> Result<(), resolve::FetchError> {
+        stored(memo_request(write).and_then(|request| self.call(&request)))
+    }
 }
 
 /// A node as [`resolve`] reads it. Nothing in it — no `data`, no `template` —
@@ -711,6 +719,16 @@ fn fetched(
 ) -> Result<Option<resolve::Got>, resolve::FetchError> {
     match node {
         Ok(got) => Ok((got != resolve::Got::default()).then_some(got)),
+        Err(CombError::ServerError(msg)) => Err(resolve::FetchError::Rejected(msg)),
+        Err(e) => Err(resolve::FetchError::Transport(e)),
+    }
+}
+
+/// A write's answer as [`resolve`] reads it: a refusal in the daemon's own
+/// words, or the transport's failure, as [`fetched`] reads a node's.
+fn stored(answer: Result<Response, CombError>) -> Result<(), resolve::FetchError> {
+    match answer {
+        Ok(_) => Ok(()),
         Err(CombError::ServerError(msg)) => Err(resolve::FetchError::Rejected(msg)),
         Err(e) => Err(resolve::FetchError::Transport(e)),
     }
@@ -947,6 +965,23 @@ fn put_request(
         data,
         ttl: ttl.map(str::to_string),
         path: wire_path(path)?,
+    })
+}
+
+/// The `memo` op a cached leaf's write-back sends: its path read as every
+/// request's is, its hash as sixteen hex digits, its ttl in whole seconds.
+fn memo_request(write: &resolve::MemoWrite) -> Result<Request, CombError> {
+    Ok(Request::Memo {
+        key: write.key.clone(),
+        path: wire_path(write.path.as_deref())?,
+        hash: validity::hex(write.hash),
+        data: write.data.clone(),
+        watch: write
+            .watch
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+        ttl: write.ttl.map(|d| format!("{}s", d.as_secs())),
     })
 }
 

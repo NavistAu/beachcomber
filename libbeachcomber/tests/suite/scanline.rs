@@ -176,6 +176,9 @@ impl Fetch for Scanline<'_> {
             stale: age_ms.map(|_| false),
         }))
     }
+    fn memo(&mut self, _write: &libbeachcomber::resolve::MemoWrite) -> Result<(), FetchError> {
+        Ok(())
+    }
 }
 
 /// The data at `segments` below `v`, if any.

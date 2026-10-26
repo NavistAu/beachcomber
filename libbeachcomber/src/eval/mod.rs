@@ -19,9 +19,10 @@ mod lint;
 mod scan;
 
 pub use lint::{Finding, Known, Line, lint, refused};
-pub use scan::{Tag, TagKind, scan_tags};
+pub use scan::{Tag, TagKind, Use, scan_tags, used_names};
 
 use crate::engine::build_engine_env;
+use crate::library::memo::{MemoHit, hit_in};
 use crate::virtual_fields::{Ref, discover_expression_refs, refs_from_names};
 use minijinja::Environment;
 use minijinja::value::Value as MjValue;
@@ -389,20 +390,22 @@ impl std::fmt::Display for EvalError {
 /// A text a load checked (a seeded template, a Source's or provider's line)
 /// passed [`lint`] there; one nothing checked (`comb eval`, `-f`) is refused
 /// here the same way, structurally, as a compile error ([`refused`]).
+///
+/// A render `cache()` ended with its leaf's memo ([`MemoHit`]) is that memo,
+/// in every form and from inside an imported macro alike: the hit is found
+/// down the error's sources before the error is anything else.
 pub fn evaluate(
     env: &Environment<'_>,
     src: &str,
     context: MjValue,
 ) -> Result<Option<MjValue>, EvalError> {
-    let value = match analyze(src) {
+    let (form, ran) = match analyze(src) {
         Analysis::SingleTag(expr) => {
             let form = Form::SingleTag;
             let compiled = env
                 .compile_expression(expr)
                 .map_err(|e| EvalError::compile(form, &e))?;
-            compiled
-                .eval(context)
-                .map_err(|e| EvalError::runtime(form, &e))?
+            (form, compiled.eval(context))
         }
         Analysis::Statements {
             text,
@@ -426,16 +429,20 @@ pub fn evaluate(
                     return Err(EvalError::compile(form, &e));
                 }
             };
-            let captured = template
-                .render_captured(context)
-                .map_err(|e| EvalError::runtime(form, &e))?;
-            if !captured.output().trim().is_empty() {
-                return Err(EvalError::Runtime {
-                    form,
-                    message: "a typed line's statements print nothing".into(),
-                });
+            let ran = template.render_captured(context).map(|captured| {
+                let printed = !captured.output().trim().is_empty();
+                (printed, captured.state().lookup(TYPED).unwrap_or_default())
+            });
+            match ran {
+                Ok((true, _)) => {
+                    return Err(EvalError::Runtime {
+                        form,
+                        message: "a typed line's statements print nothing".into(),
+                    });
+                }
+                Ok((false, value)) => (form, Ok(value)),
+                Err(e) => (form, Err(e)),
             }
-            captured.state().lookup(TYPED).unwrap_or_default()
         }
         Analysis::Template => {
             let form = Form::Template;
@@ -443,12 +450,15 @@ pub fn evaluate(
             let template = env
                 .template_from_str(src)
                 .map_err(|e| EvalError::compile(form, &e))?;
-            MjValue::from(
-                template
-                    .render(context)
-                    .map_err(|e| EvalError::runtime(form, &e))?,
-            )
+            (form, template.render(context).map(MjValue::from))
         }
+    };
+    let value = match ran {
+        Ok(value) => value,
+        Err(e) => match hit_in(&e) {
+            Some(MemoHit(memo)) => return Ok(memo.as_ref().map(MjValue::from_serialize)),
+            None => return Err(EvalError::runtime(form, &e)),
+        },
     };
     Ok((!(value.is_undefined() || value.is_none())).then_some(value))
 }
@@ -584,6 +594,9 @@ mod tests {
                 _: crate::Wait,
             ) -> Result<Option<Got>, FetchError> {
                 Ok(None)
+            }
+            fn memo(&mut self, _: &crate::resolve::MemoWrite) -> Result<(), FetchError> {
+                Ok(())
             }
         }
         let env = std::collections::HashMap::new();
@@ -925,6 +938,107 @@ mod line_tests {
             without_engine_frame("invalid operation: x: invalid operation: y (in <expression>:1)"),
             "x: invalid operation: y",
             "once: the text between is the error's own"
+        );
+    }
+
+    /// `src` evaluated as the leaf `p.f` whose memo, under the hash of the
+    /// piped `'cmd'`, holds `memo`; `exec` is allowed, and a macro library
+    /// `p:macro.m` defines `m()`, a cached `'cmd' | exec()`.
+    fn under_a_memo(
+        src: &str,
+        memo: Option<serde_json::Value>,
+    ) -> Result<Option<MjValue>, EvalError> {
+        use crate::library::memo::{Frame, Leaf, Memo, MemoFrames, memo_hash};
+        let frames = std::sync::Arc::<MemoFrames>::default();
+        let hash = memo_hash(&[MjValue::from("cmd")], &[]).unwrap();
+        frames.push(Frame::Leaf(Leaf::new(
+            "p.f".into(),
+            Some(Memo {
+                hash: Some(crate::validity::hex(hash)),
+                stale: false,
+                age_ms: 1,
+                data: memo,
+            }),
+            false,
+            crate::Wait::Budget,
+        )));
+        let mut env = build_engine_env(std::sync::Arc::new(crate::engine::EngineCtx {
+            allow_exec: true,
+            memo: Some(frames),
+            ..Default::default()
+        }));
+        env.set_loader(|name| {
+            Ok((name == "p:macro.m")
+                .then(|| "{% macro m() %}{{ 'cmd' | cache() | exec() }}{% endmacro %}".to_string()))
+        });
+        evaluate(&env, src, MjValue::from(()))
+    }
+
+    /// A hit ends the render with the memo, and nothing after `cache()` runs:
+    /// the `exec('false')` here would fail.
+    #[test]
+    fn a_memo_hit_aborts_a_single_tag() {
+        assert_eq!(
+            under_a_memo(
+                "{{ 'cmd' | cache() | exec() | upper }}",
+                Some(json!("prod"))
+            ),
+            Ok(Some(MjValue::from("prod")))
+        );
+        assert_eq!(
+            under_a_memo(
+                "{{ 'cmd' | cache() | exec(sh='false') }}",
+                Some(json!({"a": [1]}))
+            )
+            .map(|v| v.map(|v| serde_json::to_value(v).unwrap())),
+            Ok(Some(json!({"a": [1]}))),
+            "the memo keeps its type"
+        );
+        assert_eq!(
+            under_a_memo("{{ 'cmd' | cache() | exec() }}", None),
+            Ok(None),
+            "a memo of absence is absent"
+        );
+    }
+
+    #[test]
+    fn a_memo_hit_aborts_a_statements_leaf() {
+        assert_eq!(
+            under_a_memo(
+                "{% set c = 'cmd' %}{{ c | cache() | exec() }}",
+                Some(json!("prod"))
+            ),
+            Ok(Some(MjValue::from("prod")))
+        );
+    }
+
+    #[test]
+    fn a_memo_hit_aborts_inside_a_macro() {
+        assert_eq!(
+            under_a_memo(
+                "{% from 'p:macro.m' import m %}{{ m() }}",
+                Some(json!("prod"))
+            ),
+            Ok(Some(MjValue::from("prod")))
+        );
+        assert_eq!(
+            under_a_memo(
+                "{% import 'p:macro.m' as lib %}{{ lib.m() }}",
+                Some(json!("prod"))
+            ),
+            Ok(Some(MjValue::from("prod")))
+        );
+    }
+
+    /// A miss renders on, and an `exec` that fails then is a runtime error as
+    /// it always was.
+    #[test]
+    fn an_exec_error_is_still_a_runtime_error() {
+        let err =
+            under_a_memo("{{ 'false' | cache() | exec() }}", Some(json!("prod"))).unwrap_err();
+        assert!(
+            matches!(&err, EvalError::Runtime { form: Form::SingleTag, message } if message.contains("`sh -c 'false'`")),
+            "{err:?}"
         );
     }
 

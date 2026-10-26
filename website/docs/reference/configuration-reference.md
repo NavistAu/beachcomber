@@ -145,7 +145,7 @@ A Source's `data` and `result` lines run on one jinja engine in the daemon. `env
 | `path \| dirname` | All but the last component; none stays none. |
 | `value \| tojson` | Serialise, for `exec(..., stdin=...)`. |
 
-`$BAR` inside an `exec` string is expanded by the shell from the child's environment, so the engine never sees it: a Source whose lines are hashed (a future `cache()`) cannot tell `$BAR` changed. Prefer `exec('cmd ' ~ env.bar)` (quote the value if it may hold spaces), so that what the command reads is written in the line.
+`$BAR` inside an `exec` string is expanded by the shell from the child's environment, so the engine never sees it: nothing that hashes the line (a client template's `cache()`) can tell `$BAR` changed. Prefer `exec('cmd ' ~ env.bar)` (quote the value if it may hold spaces), so that what the command reads is written in the line. `cache()`, and `watch()` and `ttl()` as filters, are a client template's: in a Source's `root`, `data` or `result` line they are a load error, `cache(): a client template's filter; a Source's records are the daemon's`.
 
 **Instances.** `root` renders the directory an instance answers for. An empty `root` (or none) is the one instance at `~`. A read from a directory asks the nearest instance first; by default a key missing there is looked for at the parent of that root, and so on up to `~` (cascade, per leaf, the nearer winning). `| nearest` on `return` makes the nearest instance answer alone: a key it lacks is absent, and a directory with no root has no instance (see [Where an instance lives](/docs/concepts/providers#where-an-instance-lives)). `git`, `direnv`, `python` and `terraform` are nearest; `mise` and `asdf` cascade.
 
@@ -301,6 +301,29 @@ template.deploy_tag = "{{ exec('git describe --tags --always') }}"
 A whole-namespace `comb get <provider>` renders every template in that namespace in sequence, so several `exec()`-backed leaves under one namespace can serialise up to N × `timeout` in the worst case — pass an explicit, low `timeout` when the consumer is latency-sensitive (a shell prompt or statusline).
 
 See [CLI Commands](/docs/reference/cli-commands) for the expression-level reference and more examples.
+
+### Caching a template
+
+A template that runs a command runs it on every read, of every surface. Pipe it through `cache()` and the daemon keeps
+its value, the leaf's memo, until something it depends on changes:
+
+```toml
+[client.providers.myapp]
+# The region, re-read when the app's config file changes, and at least every hour.
+template.region = "{{ 'myapp config get region' | watch('~/.config/myapp/config.toml') | ttl('1h') | cache() | exec() }}"
+```
+
+- `watch(paths...)` names the files whose change invalidates the memo; `ttl('1h')` how long it lives.
+- `cache(inputs...)` hashes its inputs (the piped command when it has none) and the watched files as they are now. A memo
+  under the same hash, within its ttl, is the value, and the `exec()` after it does not run; otherwise the leaf renders
+  and its output is stored, after the caller has it.
+- A memo is stored at the reader's directory and serves the directories below it. `comb get --force` renders past it;
+  `comb refresh <p>` and an edit of the template drop it.
+- The environment is in the hash only where an input names it: pass `cache(env.KUBECONFIG)` when the command reads one.
+- A cached leaf is one `{{ }}` expression; text around it is a load error.
+
+The three items, what the hash covers and where a reader can be wrong are in the
+[Template Library](/docs/reference/template-library#caching-a-template).
 
 ### Composition / conf.d
 

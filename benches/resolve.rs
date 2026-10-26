@@ -30,6 +30,9 @@ impl Fetch for MapFetch {
     ) -> Result<Option<Got>, FetchError> {
         Ok(self.0.get(key).cloned())
     }
+    fn memo(&mut self, _write: &libbeachcomber::resolve::MemoWrite) -> Result<(), FetchError> {
+        Ok(())
+    }
 }
 
 fn template(t: Value) -> Got {

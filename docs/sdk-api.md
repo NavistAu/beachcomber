@@ -58,6 +58,15 @@ has no deadline. A cold read with no `wait` waits for its run, so a slow
 Source can outlast the default 100 ms `timeout_ms` and report `timeout`; the
 run goes on, and the next read has its value.
 
+A template leaf that caches its value (`| cache()`) is served from its memo
+when the daemon holds a live one, on every SDK as on `comb get`; `force`
+renders past it. A `get` that renders such a leaf writes the new memo back
+before it returns: a synchronous call has no "after the caller has the
+value", and the write is one more request on the connection the read used.
+A write that fails is dropped, and the next read renders again. `eval`
+stores nothing of its own text. The library does both, in
+`libbeachcomber::resolve`, so no SDK has code of its own for it.
+
 ## Session
 
 A session holds one connection and a directory of its own.

@@ -4,8 +4,9 @@
 //! written, and [`Line`] is the one table of that; what a finding means (a
 //! load error, a warning, a refused `put`) is the caller's to say.
 
-use super::scan::{self, TagKind};
-use super::{Import, imports, library};
+use super::scan::{self, TagKind, used_names};
+use super::{Analysis, Import, analyze, imports, library};
+use crate::library::{Surface, first_refused};
 use minijinja::Environment;
 
 /// Where a line is written, which decides the names its context supplies and
@@ -73,6 +74,12 @@ impl Line {
         matches!(self, Line::Template | Line::Macro)
     }
 
+    /// The surface the library table says what a line of this kind may call
+    /// on, where it is a Source's: its `return` is the decorator render.
+    fn source(self) -> bool {
+        matches!(self, Line::Root | Line::Data | Line::Result)
+    }
+
     /// Whose line it is, as a refusal names it.
     fn whose(self) -> &'static str {
         match self {
@@ -103,7 +110,8 @@ pub enum Finding {
     /// It does not compile, or says something its place refuses, so nothing
     /// it says can run.
     Compile(String),
-    /// It reads a name its context does not supply.
+    /// Worth a warning, and no reason not to run it: it reads a name its
+    /// context may not supply, or caches a value already computed.
     Unknown(String),
 }
 
@@ -118,8 +126,9 @@ impl std::fmt::Display for Finding {
 /// What is wrong with `src` as a `line`, on `env`'s functions and filters,
 /// with `known` the world around it: that it does not compile, alone; or each
 /// statement its place refuses ([`refused`]), then each library it imports
-/// that no layer declares, then each name it reads that its context does not
-/// supply, in name order. Nothing is rendered.
+/// that no layer declares, then what its caching says ([`cached`]), then each
+/// name it reads that its context does not supply, in name order. Nothing is
+/// rendered.
 pub fn lint(env: &Environment<'_>, src: &str, line: Line, known: &Known<'_>) -> Vec<Finding> {
     let names = match super::undeclared_names(env, src, false) {
         Err(e) => return vec![Finding::Compile(e)],
@@ -142,6 +151,7 @@ pub fn lint(env: &Environment<'_>, src: &str, line: Line, known: &Known<'_>) -> 
             _ => None,
         }));
     }
+    found.extend(cached(src, line));
     found.extend(
         names
             .into_iter()
@@ -203,6 +213,80 @@ pub fn refused(src: &str, line: Line) -> Vec<Finding> {
         }
     }
     found
+}
+
+/// What `src`'s `cache()`, `watch()` and `ttl()` say, as a `line`.
+///
+/// On a client template a cached leaf is one expression, after statements or
+/// not: a text around a cached pipeline would be rendered before it could be
+/// skipped, and served whole from a memo. A `cache()` that ends its tag
+/// stores a value already computed, which is legal and pointless. On a
+/// Source's lines the three are a client template's, and refused by name; a
+/// `return`'s `watch` and `ttl` are its decorators, and not read here.
+fn cached(src: &str, line: Line) -> Vec<Finding> {
+    let used = used_names(src);
+    if line.source() {
+        return first_refused(Surface::Source, |n| used.contains_key(n))
+            .map(|item| {
+                Finding::Compile(format!(
+                    "{}(): a client template's filter; a Source's records are the daemon's",
+                    item.name
+                ))
+            })
+            .into_iter()
+            .collect();
+    }
+    if !line.client() || !used.contains_key("cache") {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    if line == Line::Template && matches!(analyze(src), Analysis::Template) {
+        found.push(Finding::Compile(
+            "a cached leaf is one expression: {{ … | cache() | … }}".into(),
+        ));
+    }
+    if cache_ends_a_tag(src) {
+        found.push(Finding::Unknown(
+            "cache() with nothing after it stores a value already computed".into(),
+        ));
+    }
+    found
+}
+
+/// Whether a `{{ }}` of `src` ends with a `| cache(...)`, nothing after it.
+fn cache_ends_a_tag(src: &str) -> bool {
+    scan::engine_tags(src)
+        .into_iter()
+        .filter(|tag| tag.kind == TagKind::Expression)
+        .any(|tag| {
+            let body = without_call(tag.body.trim_end());
+            body.strip_suffix("cache")
+                .is_some_and(|before| before.trim_end().ends_with('|'))
+        })
+}
+
+/// `text` without the argument list it ends with, when it ends with one.
+fn without_call(text: &str) -> &str {
+    if !text.ends_with(')') {
+        return text;
+    }
+    let (mut depth, mut quote, mut open) = (0i32, None, None);
+    for (i, c) in text.char_indices() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '(') => {
+                if depth == 0 {
+                    open = Some(i);
+                }
+                depth += 1;
+            }
+            (None, ')') => depth -= 1,
+            _ => {}
+        }
+    }
+    open.map_or(text, |at| text[..at].trim_end())
 }
 
 /// Whether `src`, a macro library, prints anything outside its macros: text
@@ -513,6 +597,94 @@ mod tests {
                 "a template prints: {src}"
             );
         }
+    }
+
+    /// A cached leaf is one expression, after statements or not; text around
+    /// it is a compile finding, on a template and not in a library.
+    #[test]
+    fn a_cached_leaf_must_be_one_expression() {
+        for src in [
+            "{{ 'k' | cache() | exec() }}",
+            "{% set c = 'k' %}{{ c | watch('~/f') | cache(env.K) | exec() }}",
+            "{{ 'cache(' ~ 'x' }} text",
+        ] {
+            assert_eq!(
+                compile_findings(src, Line::Template),
+                Vec::<String>::new(),
+                "{src}"
+            );
+        }
+        for src in [
+            "ctx: {{ 'k' | cache() | exec() }}",
+            "{{ 'k' | cache() | exec() }}{{ 1 }}",
+        ] {
+            assert_eq!(
+                compile_findings(src, Line::Template),
+                ["a cached leaf is one expression: {{ … | cache() | … }}"],
+                "{src}"
+            );
+        }
+        assert_eq!(
+            compile_findings(
+                "{% macro m() %}{{ 'k' | cache() | exec() }}{% endmacro %}",
+                Line::Macro
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    /// A `cache()` with nothing lazy after it is a warning.
+    #[test]
+    fn cache_with_nothing_after_it_warns() {
+        let warned = Finding::Unknown(
+            "cache() with nothing after it stores a value already computed".into(),
+        );
+        for src in [
+            "{{ env.V | ttl('1h') | cache() }}",
+            "{{- env.V | cache -}}",
+            "{{ env.V | cache(env.X, ')') }}",
+            "{% macro m() %}{{ env.X | cache() }}{% endmacro %}",
+        ] {
+            let line = if src.starts_with("{% macro") {
+                Line::Macro
+            } else {
+                Line::Template
+            };
+            assert_eq!(lint_as(src, line), std::slice::from_ref(&warned), "{src}");
+        }
+        for src in [
+            "{{ 'k' | cache() | exec() }}",
+            "{{ exec('k' | cache()) }}",
+            "{{ ('k' | cache() | exec()) or none }}",
+        ] {
+            assert_eq!(lint_as(src, Line::Template), [], "{src}");
+        }
+    }
+
+    /// `cache()`, and `watch()` and `ttl()` as filters, are a client
+    /// template's: on a Source's lines they are a load error by name. A
+    /// `return` line's `watch` and `ttl` are its decorators.
+    #[test]
+    fn a_source_line_cannot_cache() {
+        for (src, name) in [
+            ("{{ 'k' | cache() | exec() }}", "cache"),
+            ("{{ 'k' | watch('/f') | exec() }}", "watch"),
+            ("{{ data | ttl('1m') }}", "ttl"),
+        ] {
+            for line in [Line::Root, Line::Data, Line::Result] {
+                assert_eq!(
+                    compile_findings(src, line),
+                    [format!(
+                        "{name}(): a client template's filter; a Source's records are the daemon's"
+                    )],
+                    "{src} as {line:?}"
+                );
+            }
+        }
+        assert_eq!(
+            compile_findings("{{ result | watch('/f') | ttl('1m') }}", Line::Return),
+            Vec::<String>::new()
+        );
     }
 
     /// A client line importing a library no layer declares is told so, as

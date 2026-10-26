@@ -53,7 +53,9 @@ use crate::shape::decorators::named_decorators;
 use crate::shape::prototype::{Kind, Link, chain, super_chain};
 use dashmap::DashSet;
 use libbeachcomber::engine::op_error;
-use libbeachcomber::eval::{Known, Line, evaluate, lint, single_tag_expression, undeclared_names};
+use libbeachcomber::eval::{
+    Known, Line, Use, evaluate, lint, single_tag_expression, undeclared_names, used_names,
+};
 use libbeachcomber::library::{Surface, first_refused};
 use minijinja::value::{Object, ObjectRepr, Value as MjValue};
 use minijinja::{Environment, Error};
@@ -875,16 +877,6 @@ fn daemon_of(
     Calls::daemon(answer)
 }
 
-/// How a name is used in a line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Use {
-    /// After a `|`.
-    Filter,
-    /// Followed by `(`.
-    Call,
-    Both,
-}
-
 /// The facet names `line` writes as a literal first argument of `facet(...)`,
 /// so a name outside the set is a load error where it is written. A text
 /// scan, like [`named_decorators`]; a name computed in the line is checked
@@ -905,95 +897,6 @@ fn literal_facet_names(line: &str) -> Vec<&str> {
         if let Some(end) = args[1..].find(quote) {
             found.push(&args[1..1 + end]);
         }
-    }
-    found
-}
-
-/// The names `line` calls or pipes into, inside its tags and outside its
-/// strings. A text scan, like [`named_decorators`]: it can only miss a name
-/// built some way a line has no use for.
-fn used_names(line: &str) -> HashMap<String, Use> {
-    let chars: Vec<char> = line.chars().collect();
-    let mut found: HashMap<String, Use> = HashMap::new();
-    let (mut in_tag, mut quote) = (false, None);
-    let mut depth = 0usize;
-    let mut last_significant = ' ';
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        if let Some(q) = quote {
-            if c == q {
-                quote = None;
-            }
-            i += 1;
-            continue;
-        }
-        if !in_tag {
-            if c == '{' && matches!(next, Some('{' | '%')) {
-                in_tag = true;
-                depth = 0;
-                last_significant = ' ';
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        // `}}` ends the tag only outside any dict literal inside it.
-        if depth == 0 && ((c == '}' && next == Some('}')) || (c == '%' && next == Some('}'))) {
-            in_tag = false;
-            i += 2;
-            continue;
-        }
-        if c == '{' {
-            depth += 1;
-        } else if c == '}' {
-            depth = depth.saturating_sub(1);
-        }
-        if c == '\'' || c == '"' {
-            quote = Some(c);
-            last_significant = c;
-            i += 1;
-            continue;
-        }
-        if c.is_alphabetic() || c == '_' {
-            let start = i;
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                i += 1;
-            }
-            let name: String = chars[start..i].iter().collect();
-            let after_dot = last_significant == '.';
-            let piped = last_significant == '|';
-            let called = chars[i..]
-                .iter()
-                .find(|c| !c.is_whitespace())
-                .is_some_and(|c| *c == '(');
-            if !after_dot {
-                let how = match (piped, called) {
-                    (true, true) => Some(Use::Both),
-                    (true, false) => Some(Use::Filter),
-                    (false, true) => Some(Use::Call),
-                    (false, false) => None,
-                };
-                if let Some(how) = how {
-                    found
-                        .entry(name)
-                        .and_modify(|u| {
-                            if *u != how {
-                                *u = Use::Both;
-                            }
-                        })
-                        .or_insert(how);
-                }
-            }
-            last_significant = 'a';
-            continue;
-        }
-        if !c.is_whitespace() {
-            last_significant = c;
-        }
-        i += 1;
     }
     found
 }
@@ -1560,6 +1463,23 @@ mod tests {
             errors("[demo]\nreturn = \"{{ 'read' }}\"").is_empty(),
             "a word in a string is no call"
         );
+    }
+
+    /// `cache()` is a client template's: a provider's lines run on every
+    /// read, and have no leaf to memoise. (`watch(...)` and `ttl(...)` there
+    /// are the misplaced decorators.)
+    #[test]
+    fn a_provider_line_cannot_cache() {
+        for key in ["template", "result", "return"] {
+            assert_eq!(
+                errors(&format!("[demo]\n{key} = \"{{{{ 'x' | cache() }}}}\"")),
+                [format!(
+                    "[daemon.providers.demo] {key}: cache is not available in a provider's \
+                     line: these lines run on every read and do no IO"
+                )],
+                "{key}"
+            );
+        }
     }
 
     /// A provider's lines may define and call a macro within one line, and may

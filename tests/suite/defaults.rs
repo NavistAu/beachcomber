@@ -230,6 +230,12 @@ impl libbeachcomber::resolve::Fetch for OneTemplate {
             ..Default::default()
         }))
     }
+    fn memo(
+        &mut self,
+        _write: &libbeachcomber::resolve::MemoWrite,
+    ) -> Result<(), libbeachcomber::resolve::FetchError> {
+        Ok(())
+    }
 }
 
 #[test]

@@ -24,6 +24,7 @@ use crate::eval::{
     EvalError, Import, MAX_VIRTUAL_DEPTH, discover_refs, evaluate, imports, library, too_deep,
 };
 use crate::lazy::{Bridge, LazyNode, Prefetch};
+use crate::library::memo::{Cached, Frame, Leaf, Memo, MemoFrames};
 use crate::protocol::Wait;
 use crate::virtual_fields::{Ref, mj_to_json};
 use minijinja::Environment;
@@ -148,7 +149,7 @@ impl std::fmt::Display for FetchError {
     }
 }
 
-/// One request to the daemon.
+/// What the daemon is asked by a resolution.
 ///
 /// `path` is `None` for the global entry. `Ok(None)` is a miss: the daemon
 /// answered, and nothing is stored there.
@@ -161,6 +162,38 @@ pub trait Fetch {
         force: bool,
         wait: Wait,
     ) -> Result<Option<Got>, FetchError>;
+
+    /// Store the memo a cached leaf rendered ([`MemoWrite`]): the `memo` op.
+    fn memo(&mut self, write: &MemoWrite) -> Result<(), FetchError>;
+}
+
+/// What a template leaf whose `cache()` missed rendered, to be stored as its
+/// memo: the `memo` op's request.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemoWrite {
+    /// The leaf's address, `provider.field`.
+    pub key: String,
+    /// The directory the resolution read from; `None` is the global entry.
+    pub path: Option<String>,
+    /// The hash `cache()` computed over the leaf's inputs and files.
+    pub hash: u64,
+    /// The leaf's final output; `None` for a leaf that rendered nothing (a
+    /// memo of absence).
+    pub data: Option<JsonValue>,
+    /// The files `watch()` recorded, absolute.
+    pub watch: Vec<std::path::PathBuf>,
+    /// The lifetime `ttl()` recorded, whole seconds.
+    pub ttl: Option<std::time::Duration>,
+}
+
+/// Store each memo a resolution's cached leaves rendered, after its value has
+/// gone to whoever asked: the one flush, every surface's. A write that fails
+/// is dropped: the value was already rendered, the memo stays cold, and the
+/// next render of the leaf tries again.
+pub fn write_back(memos: &[MemoWrite], fetch: &mut dyn Fetch) {
+    for write in memos {
+        let _ = fetch.memo(write);
+    }
 }
 
 /// Why a resolution failed.
@@ -213,13 +246,17 @@ type Frames = Vec<Coord>;
 /// import writes it with: what its engine's loader hands out.
 type Libraries = Arc<RwLock<BTreeMap<String, String>>>;
 
-/// The value `comb get <key>` prints. `Ok(None)` is a miss.
+/// The value `comb get <key>` prints. `Ok(None)` is a miss. The memos its
+/// cached leaves rendered are written back before it returns ([`write_back`]):
+/// a library call has no "after the caller has it".
 pub fn resolve(
     key: &str,
     inputs: &Inputs<'_>,
     fetch: &mut dyn Fetch,
 ) -> Result<Option<JsonValue>, ResolveError> {
-    Resolver::new(inputs, fetch).resolve(key)
+    let traced = resolve_traced(key, inputs, fetch)?;
+    write_back(&traced.memos, fetch);
+    Ok(traced.value)
 }
 
 /// One resolution's value, and what it read to reach it.
@@ -232,11 +269,18 @@ pub struct Traced {
     /// The age of the oldest cached value it used: a ref's data, or the data
     /// it answered with. `None` when it used none — a template over `env`,
     /// `exec()` or literals alone is computed now. A rendered value has no
-    /// age of its own; it is as old as the oldest input behind it.
+    /// age of its own; it is as old as the oldest input behind it, and a
+    /// value served from a memo is at least as old as the memo.
     pub oldest_input_ms: Option<u128>,
+    /// The memos its cached leaves rendered, not yet written: the caller
+    /// hands its value on first, then calls [`write_back`].
+    pub memos: Vec<MemoWrite>,
+    /// Whether the addressed leaf was served from its memo.
+    pub memo_hit: bool,
 }
 
-/// [`resolve`], traced.
+/// [`resolve`], traced, with its memos left for the caller to write back
+/// once the value is out ([`write_back`]).
 pub fn resolve_traced(
     key: &str,
     inputs: &Inputs<'_>,
@@ -248,6 +292,8 @@ pub fn resolve_traced(
         value,
         deps: r.order,
         oldest_input_ms: r.oldest,
+        memos: r.memos,
+        memo_hit: r.memo_hit,
     })
 }
 
@@ -261,7 +307,9 @@ pub fn deps(
     inputs: &Inputs<'_>,
     fetch: &mut dyn Fetch,
 ) -> Result<Fetched, ResolveError> {
-    resolve_traced(key, inputs, fetch).map(|t| t.deps)
+    let traced = resolve_traced(key, inputs, fetch)?;
+    write_back(&traced.memos, fetch);
+    Ok(traced.deps)
 }
 
 /// `comb eval` / `bc_eval`: render a source that is not stored anywhere,
@@ -282,6 +330,11 @@ pub fn eval(
 /// `comb status -f '{{ provider }}'` the row's provider, while every other
 /// name — `env`, `comb`, a provider ref, `exec()` — reads as it does in any
 /// template.
+///
+/// The source is stored nowhere, so its own `cache()`, `watch()` and `ttl()`
+/// pass their input through and record nothing; a field it reads whose
+/// template caches is served and stored as every read of that field is, and
+/// its memo is written back before this returns.
 pub fn eval_with(
     src: &str,
     name: &str,
@@ -291,8 +344,10 @@ pub fn eval_with(
 ) -> Result<Option<JsonValue>, ResolveError> {
     let mut r = Resolver::new(inputs, fetch);
     r.push(name)?;
-    let rendered = r.render_frame_with(src, name, locals);
+    let rendered = r.render_frame_with(src, name, locals, Frame::Format);
     r.stack.pop();
+    let memos = std::mem::take(&mut r.memos);
+    write_back(&memos, r.fetch);
     rendered
 }
 
@@ -331,10 +386,20 @@ struct Resolver<'a> {
     stack: Frames,
     /// The age of the oldest cached value used so far ([`Traced`]).
     oldest: Option<u128>,
+    /// The frames of the renders in progress, which the memo filters read
+    /// ([`crate::library::memo`]): the engine's [`EngineCtx::memo`].
+    frames: Arc<MemoFrames>,
+    /// The memos the leaves rendered so far missed, to write back.
+    memos: Vec<MemoWrite>,
+    /// Whether the last leaf to finish rendering was served from its memo.
+    last_hit: bool,
+    /// Whether the addressed leaf was ([`Traced::memo_hit`]).
+    memo_hit: bool,
 }
 
 impl<'a> Resolver<'a> {
     fn new(inputs: &'a Inputs<'a>, fetch: &'a mut dyn Fetch) -> Self {
+        let frames = Arc::<MemoFrames>::default();
         let mut jinja = build_engine_env(Arc::new(EngineCtx {
             env: inputs.env.clone(),
             cwd: inputs.dir().map(Into::into),
@@ -342,6 +407,7 @@ impl<'a> Resolver<'a> {
             now: inputs.now,
             // A client's render: nothing checks what it read.
             touched: None,
+            memo: Some(frames.clone()),
         }));
         // An import loads a library this resolution has read. A name it has
         // not is the engine's "template not found": only a computed name
@@ -365,6 +431,10 @@ impl<'a> Resolver<'a> {
             order: Vec::new(),
             stack: Vec::new(),
             oldest: None,
+            frames,
+            memos: Vec::new(),
+            last_hit: false,
+            memo_hit: false,
         }
     }
 
@@ -374,9 +444,14 @@ impl<'a> Resolver<'a> {
         if got.data.is_some()
             && let Some(age) = got.age_ms
         {
-            self.oldest = Some(self.oldest.map_or(age, |o| o.max(age)));
+            self.aged(age);
         }
         got.data
+    }
+
+    /// An input `age` old was used.
+    fn aged(&mut self, age: u128) {
+        self.oldest = Some(self.oldest.map_or(age, |o| o.max(age)));
     }
 
     /// Resolve one address to the value a surface prints.
@@ -429,11 +504,18 @@ impl<'a> Resolver<'a> {
         let Some(got) = self.fetch(key)? else {
             return Ok(None);
         };
+        // The addressed node, rather than one a render of it reads.
+        let addressed = self.stack.is_empty();
         match got.template {
             // A leaf template. An address that ran past it is walked into
-            // what it rendered — an object by key, an array by index.
+            // what it rendered — an object by key, an array by index. Its
+            // memo is the leaf's, at the address the template stands at.
             Some(JsonValue::String(t)) => {
-                let value = self.render(&t, key)?;
+                let leaf = leaf_key(key, got.rest.as_deref());
+                let value = self.render(&t, key, &leaf, got.memo.as_ref())?;
+                if addressed {
+                    self.memo_hit = self.last_hit;
+                }
                 Ok(match got.rest {
                     Some(rest) => value.and_then(|v| walk(v, &rest)),
                     None => value,
@@ -449,7 +531,7 @@ impl<'a> Resolver<'a> {
             // holds as data is a value even when empty: `{}` written by a
             // put or a Source states an empty object.
             Some(JsonValue::Object(tree)) => {
-                let rendered = self.render_tree(&tree, key)?;
+                let rendered = self.render_tree(&tree, key, got.memo.as_ref())?;
                 let data = self.used(Some(Got {
                     template: None,
                     ..got
@@ -507,21 +589,32 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Render one template source, as the node addressed by `key`. `Ok(None)`
-    /// is absent: a one-tag source whose value is `none` or undefined.
-    fn render(&mut self, src: &str, key: &str) -> Result<Option<JsonValue>, ResolveError> {
+    /// Render one template leaf's source, as the node addressed by `key`:
+    /// the leaf at `leaf`, whose memo half the daemon sent as `memo`.
+    /// `Ok(None)` is absent: a one-tag source whose value is `none` or
+    /// undefined.
+    fn render(
+        &mut self,
+        src: &str,
+        key: &str,
+        leaf: &str,
+        memo: Option<&JsonValue>,
+    ) -> Result<Option<JsonValue>, ResolveError> {
         self.push(key)?;
-        let rendered = self.render_frame(src, key);
+        let frame = Frame::Leaf(Leaf::new(
+            leaf.to_string(),
+            memo.and_then(Memo::from_half),
+            self.inputs.force,
+            self.inputs.wait,
+        ));
+        let rendered = self.render_frame_with(src, key, &Map::new(), frame);
         self.stack.pop();
         rendered
     }
 
-    fn render_frame(&mut self, src: &str, key: &str) -> Result<Option<JsonValue>, ResolveError> {
-        self.render_frame_with(src, key, &Map::new())
-    }
-
-    /// [`Self::render_frame`], with `locals` bound over the refs; a ref whose
-    /// name a local binds is not fetched.
+    /// Render `src` as `key`, with `locals` bound over the refs (a ref whose
+    /// name a local binds is not fetched), in `frame`: a leaf's, or a
+    /// format's.
     ///
     /// The refs are those of `src` and of every library in its closure: a
     /// library renders in its importer's context, so what it reads is bound
@@ -532,6 +625,7 @@ impl<'a> Resolver<'a> {
         src: &str,
         key: &str,
         locals: &Map<String, JsonValue>,
+        frame: Frame,
     ) -> Result<Option<JsonValue>, ResolveError> {
         let libraries = self.closure(src, key)?;
         let mut refs: Vec<Ref> = std::iter::once(src)
@@ -548,12 +642,44 @@ impl<'a> Resolver<'a> {
         for (name, value) in locals {
             bound.insert(name.clone(), value.clone());
         }
+        // The frame goes on once everything the render reads is bound, so
+        // the renders that binding made have come and gone: whatever runs
+        // while it is on top is this render.
+        self.frames.push(frame);
         // `comb[...]` reads what the render asks for, so `comb` is a lazy
         // node rather than a prefetched value.
-        if refs.contains(&Ref::Dynamic("comb".to_string())) {
-            return self.render_with_lazy_comb(src, key, bound, &refs);
+        let rendered = if refs.contains(&Ref::Dynamic("comb".to_string())) {
+            self.render_with_lazy_comb(src, key, bound, &refs)
+        } else {
+            evaluate_node(&self.jinja, src, key, self.context(None, bound))
+        };
+        if let Some(Frame::Leaf(leaf)) = self.frames.pop() {
+            self.settle(leaf, &rendered);
         }
-        evaluate_node(&self.jinja, src, key, self.context(None, bound))
+        rendered
+    }
+
+    /// What a leaf's `cache()` decided, once the leaf has rendered: a hit is
+    /// as old as its memo; a miss that rendered is queued to be written back
+    /// with what it recorded, and one that failed writes nothing.
+    fn settle(&mut self, leaf: Leaf, rendered: &Result<Option<JsonValue>, ResolveError>) {
+        self.last_hit = leaf.cached == Some(Cached::Hit);
+        match (leaf.cached, rendered) {
+            (Some(Cached::Hit), _) => {
+                if let Some(memo) = &leaf.memo {
+                    self.aged(memo.age_ms);
+                }
+            }
+            (Some(Cached::Miss(hash)), Ok(value)) => self.memos.push(MemoWrite {
+                key: leaf.key,
+                path: self.inputs.path().map(str::to_string),
+                hash,
+                data: value.clone(),
+                watch: leaf.paths,
+                ttl: leaf.ttl,
+            }),
+            _ => {}
+        }
     }
 
     /// Read every macro library `src` imports by name, and every one those
@@ -677,13 +803,17 @@ impl<'a> Resolver<'a> {
     /// own group is a cycle rather than an infinite assembly. A leaf naming a
     /// sibling resolves that sibling alone — refs carry their full path — so
     /// nothing here needs to be skipped.
+    ///
+    /// `memo` is the group's memo half, a tree shaped like `tree`: each leaf
+    /// renders with the memo at its own place in it.
     fn render_tree(
         &mut self,
         tree: &Map<String, JsonValue>,
         key: &str,
+        memo: Option<&JsonValue>,
     ) -> Result<Map<String, JsonValue>, ResolveError> {
         self.push(key)?;
-        let rendered = self.render_tree_frame(tree, key);
+        let rendered = self.render_tree_frame(tree, key, memo);
         self.stack.pop();
         rendered
     }
@@ -692,15 +822,17 @@ impl<'a> Resolver<'a> {
         &mut self,
         tree: &Map<String, JsonValue>,
         key: &str,
+        memo: Option<&JsonValue>,
     ) -> Result<Map<String, JsonValue>, ResolveError> {
         let mut out = Map::new();
         // `serde_json::Map` is a `BTreeMap` here, so leaves render in name
         // order — one deterministic order for the errors and the fetches.
         for (name, node) in tree {
             let leaf = crate::key::push(key, name);
+            let memo = memo.and_then(|m| m.get(name));
             match node {
                 JsonValue::String(src) => {
-                    match self.render(src, &leaf) {
+                    match self.render(src, &leaf, &leaf, memo) {
                         Ok(Some(value)) => {
                             out.insert(name.clone(), value);
                         }
@@ -715,7 +847,7 @@ impl<'a> Resolver<'a> {
                 // A subgroup with nothing present in it is absent, so it is
                 // not a member either.
                 JsonValue::Object(sub) => {
-                    let value = self.render_tree(sub, &leaf)?;
+                    let value = self.render_tree(sub, &leaf, memo)?;
                     if !value.is_empty() {
                         out.insert(name.clone(), JsonValue::Object(value));
                     }
@@ -859,6 +991,22 @@ fn library_imports(src: &str) -> Vec<String> {
             Import::Named(_) | Import::Computed(_) => None,
         })
         .collect()
+}
+
+/// The address of the template leaf a read of `key` rendered: `key`, less the
+/// `rest` the daemon could not walk past the leaf's string.
+fn leaf_key(key: &str, rest: Option<&str>) -> String {
+    let Some(rest) = rest else {
+        return key.to_string();
+    };
+    let Ok((head, address)) = crate::key::split_key(key) else {
+        return key.to_string();
+    };
+    let segments = crate::key::segments(&address);
+    let kept = segments
+        .len()
+        .saturating_sub(crate::key::segments(rest).len());
+    crate::key::join(head, &crate::key::format_address(&segments[..kept]))
 }
 
 /// What a value is, for a message that must not carry the value.

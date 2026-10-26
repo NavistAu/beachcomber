@@ -31,10 +31,14 @@ Each item has a tier, and the tier says where it is available.
 | pure | its arguments | yes | yes | yes |
 | io | files | yes | yes | no |
 | exec | processes | when `exec` is allowed | yes | no |
+| memo | the template leaf being rendered | a template leaf; in `-f` and `comb eval` they pass their input through | no: a load error | no |
 | daemon | the network, plugins | refused: `url() runs only in a Source's lines` | yes | no |
 
 A provider's lines run on every read, so they use the pure items only. An item that is not available there is a load
-error that names it.
+error that names it. The memo items are a client template's: on a Source's lines they are a load error
+(`cache(): a client template's filter; a Source's records are the daemon's`). A Source's `return` has decorators also
+called `watch` and `ttl`, which say when the Source runs again; they are other items, and this page calls the client's
+"the filter".
 
 ## Items
 
@@ -155,6 +159,56 @@ colour of `none` applies no colour.
 `24bit` is 24-bit, else a `TERM` containing `256color` is 256 colours, else 16. A colour deeper than the terminal is
 mapped to the nearest one it has. A caller that wants 24-bit colour passes `COLORTERM` (and `TERM`) in the render's
 environment; `comb eval` and `comb get` pass the process environment. Without them the render is 16-colour.
+
+### Caching a template
+
+A leaf piped through `cache()` renders once per change rather than once per read. The daemon holds its value, the
+leaf's **memo**, in the `<p>:memo` facet; a read whose `cache()` finds a live memo under the same hash stops there and
+answers with it, so whatever follows `cache()` in the leaf, an `exec()` above all, does not run.
+
+```toml
+[client.providers.kubecontext]
+template.context = "{{ 'kubectl config current-context 2>/dev/null || true' | watch((env.KUBECONFIG or '~/.kube/config') | split(':')) | ttl('10m') | cache(env.KUBECONFIG) | exec() or none }}"
+```
+
+| item | meaning |
+|---|---|
+| `v \| watch(path, ...)` | `v`, with each path recorded as a file whose change invalidates the memo. A path is a string or a list of them (`\| split(':')` splits a colon list); `none` and `''` add nothing; with no argument the path is `v` (`lup('.terraform/environment') \| watch() \| cache() \| read`). `~` is the render's `HOME` and a relative path is against the render's directory, as `read` reads one; a path that is there is canonicalised, one that is not is kept as written, and its appearing is a change |
+| `v \| ttl(d)` | `v`, with `d` recorded as how long the memo is valid: one duration of whole seconds, at least `1s`, as `put --ttl` takes (`'500ms'` is an error); `none` records nothing. A second `ttl()` in one leaf is an error |
+| `v \| cache(input, ...)` | the read. It hashes its inputs, `v` when it is given none, and each file `watch()` recorded as it is now. A memo stored under that hash and within its ttl ends the render with the memo's value; otherwise `v` passes on and the leaf renders, and its final output is stored as the new memo |
+
+What a read does:
+
+- **A hit** is the memo's value, what followed `exec()` included (`or none`, `| fromjson`): the stored value is the
+  leaf's final output. A memo may record absence: a leaf that rendered nothing is remembered as nothing, and a hit on it
+  is a miss of the key (`null` is never stored).
+- **A miss** renders the leaf, hands the value to whoever asked, then writes the memo back at the read's directory, with
+  the hash and what `watch()` and `ttl()` recorded. A memo serves the directories below the one it was stored at, the
+  nearest winning, as every static record does. A leaf that fails stores nothing, and its old memo stays.
+- `--force` (`comb get --force`, an SDK's `force`) renders past the memo and stores a new one.
+- `watch()` and `ttl()` come before `cache()` in the leaf (after it they are an error, since the hash is already
+  taken), and a leaf has one `cache()`.
+- **Every surface reads and writes memos alike**: `comb get`, `comb status`, `comb watch` and every SDK's `get` and
+  `watch`. `comb eval`, `-f` and an SDK's `eval` store nothing of their own text: there `cache()`, `watch()` and `ttl()`
+  pass their input through. A field such a text reads whose template caches is read as any read of it is.
+
+**What the hash covers.** The inputs: each a string as its text, anything else as its JSON with keys sorted, an absent
+one as itself (so `cache(none)` and `cache('')` differ). Then each watched file's stamp, as its device, inode, size,
+modification time and kind, a symlink's own inode and time too: a file that changed, appeared or went is a different
+hash at the next read, whether or not the daemon has heard of it. Nothing else: not the directory, and not the
+environment unless an input names it, which is why the example passes `cache(env.KUBECONFIG)`. A command that reads a
+variable no input names cannot tell when it changed. The hash is FNV-1a 64 over those parts
+(`libbeachcomber::validity`), written as sixteen hex digits in `<p>:cache.<f>.hash`.
+
+**Where it can be wrong.** The reader checks the files' stamps, without the daemon's racy-window rule: a rewrite of a
+watched file in place, to the same size, within the filesystem's timestamp resolution of the memo's write (nanoseconds
+on APFS and ext4, a second on HFS+) can go unseen until the ttl passes or the daemon's file event drops the memo's hash.
+Tools that rewrite a config by renaming over it (kubectl does) are always seen.
+
+A cached leaf is one expression, after statements or not: `ctx: {{ … | cache() | exec() }}` is a load error (`a cached
+leaf is one expression: {{ … | cache() | … }}`), on a seed and on a `put` to `:template`. A `cache()` with nothing after
+it in its tag is a warning (`cache() with nothing after it stores a value already computed`): it is legal, and hits
+skip nothing.
 
 ### Bars
 
