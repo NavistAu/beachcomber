@@ -23,7 +23,7 @@ pub use lint::{Finding, Known, Line, lint, refused};
 pub use scan::{Tag, TagKind, Use, scan_tags, used_names};
 
 use crate::library::memo::{MemoHit, hit_in};
-use crate::virtual_fields::{Ref, discover_expression_refs, refs_from_names};
+use crate::virtual_fields::{Ref, refs_from_names};
 use minijinja::Environment;
 use minijinja::value::Value as MjValue;
 use std::collections::HashSet;
@@ -280,38 +280,34 @@ impl<'e> Probe<'e> {
 
 // ── Reference discovery ───────────────────────────────────────────────────────
 
-/// Every reference in `src`, for both forms, deduplicated and sorted.
+/// Every reference in `src`, for both forms, deduplicated and sorted: the
+/// [`refs_in`] its nested names ([`undeclared_names`]) make.
 ///
 /// A `SingleTag` source goes through MiniJinja's expression meta-analysis; a
-/// `Template` source through the template's. Both run in `probe`'s engine
-/// and classify the dotted names they find identically
-/// (`crate::virtual_fields::classify_dotted`): a `P.rest…` name is
-/// `Resolved(P, "rest…")` with every segment kept, so `scanline.widgets.b`
-/// names that leaf and never the group above it. A source that fails to
-/// compile yields no refs — the compile error surfaces at evaluation time. A
-/// tagless source is literal text, so it references nothing.
-///
-/// Both analyses hand back a `HashSet`, whose iteration order varies run to
-/// run, so **every discovery path in this crate returns its refs sorted** —
-/// this function and the `discover_expression_refs` it delegates to. That is
-/// for reproducibility alone: nothing downstream depends on the order.
-/// [`crate::resolve`] in particular binds a `comb.P` / `comb.P.F` collision
-/// the same way whichever it binds first.
+/// `Template` source through the template's. Both run in `probe`'s engine,
+/// which is never run here. A source that fails to compile yields no refs —
+/// the compile error surfaces at evaluation time. A tagless source is literal
+/// text, so it references nothing.
 pub fn discover_refs(probe: &Probe<'_>, src: &str) -> Vec<Ref> {
-    match analyze(src) {
-        // Already sorted by `discover_expression_refs`.
-        Analysis::SingleTag(expr) => discover_expression_refs(probe, expr),
-        Analysis::Statements { .. } | Analysis::Template => {
-            // Ref discovery never evaluates anything: what the probe's
-            // engine would do when run does not matter here.
-            let Ok(template) = probe.env().template_from_str(src) else {
-                return Vec::new();
-            };
-            let mut refs = refs_from_names(probe.not_globals(template.undeclared_variables(true)));
-            refs.sort();
-            refs
-        }
-    }
+    refs_in(undeclared_names(probe, src, true).unwrap_or_default())
+}
+
+/// The references a line whose nested names ([`undeclared_names`] with
+/// `nested`) are `names` makes, deduplicated and sorted: what a caller that
+/// has the names already reads without reading the line again. Every dotted
+/// name is classified one way (`crate::virtual_fields::classify_dotted`): a
+/// `P.rest…` name is `Resolved(P, "rest…")` with every segment kept, so
+/// `scanline.widgets.b` names that leaf and never the group above it.
+///
+/// The engine's analyses hand back a `HashSet`, whose iteration order varies
+/// run to run, so **every discovery path in this crate returns its refs
+/// sorted**. That is for reproducibility alone: nothing downstream depends on
+/// the order. [`crate::resolve`] in particular binds a `comb.P` / `comb.P.F`
+/// collision the same way whichever it binds first.
+pub fn refs_in(names: impl IntoIterator<Item = String>) -> Vec<Ref> {
+    let mut refs = refs_from_names(names);
+    refs.sort();
+    refs
 }
 
 /// How deeply one template may reference another before resolution gives up.

@@ -414,7 +414,13 @@ pub enum Called {
 /// A bare `sources` (the map itself, as `merge(sources)` takes it) is the
 /// caller's to allow or refuse.
 pub fn called_in(probe: &Probe<'_>, line: &str) -> Result<Vec<Called>, String> {
-    let names = undeclared_names(probe, line, true)?;
+    calls_in(&undeclared_names(probe, line, true)?)
+}
+
+/// [`called_in`] for a line whose nested names ([`undeclared_names`]) are
+/// `names`: what a caller that has read the line already asks, without
+/// reading it again.
+pub fn calls_in(names: &std::collections::BTreeSet<String>) -> Result<Vec<Called>, String> {
     let mut out = std::collections::BTreeSet::new();
     for name in names {
         let parts: Vec<&str> = name.split('.').collect();

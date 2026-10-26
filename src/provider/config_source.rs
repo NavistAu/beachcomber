@@ -31,12 +31,12 @@
 //! and a cycle through others is an error when it runs.
 
 use crate::engine::{CallFn, Calls, PluginSet, daemon_engine_env};
-use crate::provider::source_call::{Called, Running, called_in};
+use crate::provider::source_call::{Called, Running, calls_in};
 use crate::provider::{FieldSchema, FieldType, Source, SourceMetadata, SourceResult, Value};
 use crate::shape::decorators::Recorded;
 use libbeachcomber::engine::EngineCtx;
 use libbeachcomber::eval::{
-    Finding, Known, Line, Probe, discover_refs, eval_line, eval_line_with, lint, undeclared_names,
+    Finding, Known, Line, Probe, eval_line, eval_line_with, lint, refs_in, undeclared_names,
 };
 use libbeachcomber::fs::{MOST_TOUCHED, Touched};
 use libbeachcomber::virtual_fields::Ref;
@@ -266,7 +266,7 @@ fn lint_data(probe: &Probe<'_>, data: &str) -> Option<String> {
                 .into(),
         );
     }
-    called_in(probe, data).err()
+    calls_in(&used).err()
 }
 
 /// What a value is, for an error message that must not carry the value (a
@@ -351,7 +351,10 @@ impl ConfigSource {
             return Err(errors);
         }
 
-        let refs = discover_refs(probe, &spec.data);
+        // What the `data` line reads, read once: the providers its `comb`
+        // names, and the Sources it calls.
+        let used = undeclared_names(probe, &spec.data, true).map_err(|e| load_error("data", &e))?;
+        let refs = refs_in(used.iter().cloned());
         let reads_comb = refs.iter().any(|r| {
             matches!(r, Ref::CombProvider(_) | Ref::CombField(..))
                 || *r == Ref::Dynamic("comb".to_string())
@@ -367,7 +370,7 @@ impl ConfigSource {
             .collect();
 
         let who = format!("{}.{}", spec.provider, spec.name);
-        let calls = called_in(probe, &spec.data).map_err(|e| load_error("data", &e))?;
+        let calls = calls_in(&used).map_err(|e| load_error("data", &e))?;
         let itself = |c: &Called| match c {
             Called::Sibling(s) => *s == spec.name,
             Called::Of(p, s) => *p == spec.provider && *s == spec.name,

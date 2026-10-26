@@ -71,8 +71,8 @@ pub enum Ref {
 /// `scanline.widgets.b` names that leaf, and [`crate::resolve`] fetches it
 /// — never the group above it.
 ///
-/// Shared by [`discover_expression_refs`] and the template discovery path in
-/// [`crate::eval`], so expression and template forms classify identically.
+/// The one classification of a name, whichever form the line it came from is
+/// written in ([`crate::eval::refs_in`]).
 pub(crate) fn classify_dotted(name: &str) -> Option<Ref> {
     let Some((first, rest)) = name.split_once('.') else {
         // A name alone is a name used other than by attribute.
@@ -95,9 +95,8 @@ pub(crate) fn classify_dotted(name: &str) -> Option<Ref> {
 
 /// Classify a batch of undeclared-variable names into a deduplicated ref list.
 ///
-/// Shared by [`discover_expression_refs`] and the template discovery path in
-/// `crate::eval`, so the expression and template forms of one value expression
-/// always yield the same refs.
+/// What [`crate::eval::refs_in`] classifies, so the expression and template
+/// forms of one value expression always yield the same refs.
 ///
 /// VERIFIED against vendor/minijinja 2.19.0 (compiler/meta.rs:141-157): with
 /// nested = true, an attribute chain `a.b.c` is recorded as the dotted string
@@ -114,29 +113,6 @@ pub(crate) fn refs_from_names(names: impl IntoIterator<Item = String>) -> Vec<Re
             refs.push(r);
         }
     }
-    refs
-}
-
-/// Discover all refs in an expression using minijinja's
-/// `Expression::undeclared_variables(true)` (nested = true), classified by
-/// [`classify_dotted`].
-///
-/// Returns a deduplicated list of refs, sorted for reproducibility — see
-/// [`crate::eval::discover_refs`], which states the rule for every discovery
-/// path in this crate.
-///
-/// Takes an expression, not a value expression: a source written with `{{ }}`
-/// fails to compile here and yields nothing. [`crate::eval::discover_refs`] is
-/// the entry point that handles both forms, and is what callers outside
-/// this module use.
-pub(crate) fn discover_expression_refs(probe: &crate::eval::Probe<'_>, expr: &str) -> Vec<Ref> {
-    // Ref discovery never evaluates anything: what the probe's engine would
-    // do when run does not matter here.
-    let Ok(compiled) = probe.env().compile_expression(expr) else {
-        return vec![];
-    };
-    let mut refs = refs_from_names(probe.not_globals(compiled.undeclared_variables(true)));
-    refs.sort();
     refs
 }
 
