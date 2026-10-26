@@ -466,8 +466,15 @@ async fn a_nearest_sources_outer_records_do_not_surface_through_a_cascading_sibl
 static GLOB_RUNS: AtomicUsize = AtomicUsize::new(0);
 static PROJ_RUNS: AtomicUsize = AtomicUsize::new(0);
 
-/// A Source that records how many times it ran and reports the count, so a test
-/// can tell "was not re-executed" from "was re-executed to the same value".
+/// The runs of each Source's instances, by field and directory.
+static INSTANCE_RUNS: std::sync::Mutex<Vec<(&str, Option<String>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// A Source that records how many times it ran, in all and at each instance,
+/// and reports the count at the instance, so a test can tell "was not
+/// re-executed" from "was re-executed to the same value". The count is the
+/// instance's own because a read starts the runs of its instances together:
+/// which of them runs first is not fixed.
 struct CountingSource {
     meta: SourceMetadata,
     runs: &'static AtomicUsize,
@@ -481,8 +488,14 @@ impl Source for CountingSource {
     fn metadata(&self) -> &SourceMetadata {
         &self.meta
     }
-    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
-        let n = self.runs.fetch_add(1, Ordering::SeqCst) + 1;
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        let here = (self.field, path.map(str::to_string));
+        let n = {
+            let mut runs = INSTANCE_RUNS.lock().unwrap();
+            runs.push(here.clone());
+            runs.iter().filter(|run| **run == here).count()
+        };
         let mut result = SourceResult::new();
         result.insert(self.field, Value::Int(n as i64));
         Ok(result)
@@ -624,7 +637,7 @@ async fn force_re_executes_every_source_and_keeps_the_static_records() {
     );
     assert_eq!(
         forced["pv"],
-        serde_json::json!(3),
+        serde_json::json!(2),
         "the rooted source re-ran at the project (and again at `~`, where its \
          record is the farther one)"
     );
@@ -640,7 +653,7 @@ async fn force_re_executes_every_source_and_keeps_the_static_records() {
         send_recv(&mut s, get_forced("c.pv", Some(&project))).await,
         "forced field",
     );
-    assert_eq!(pv, serde_json::json!(5));
+    assert_eq!(pv, serde_json::json!(3), "its third run at the project");
     assert_eq!(
         GLOB_RUNS.load(Ordering::SeqCst),
         2,
@@ -716,7 +729,7 @@ async fn wait_re_executes_a_stale_source_and_keeps_the_static_records() {
         4,
         "the stale rooted source ran again at both its instances"
     );
-    assert_eq!(waited["pv"], serde_json::json!(3));
+    assert_eq!(waited["pv"], serde_json::json!(2));
     assert_eq!(
         waited["note"],
         serde_json::json!("keep"),
