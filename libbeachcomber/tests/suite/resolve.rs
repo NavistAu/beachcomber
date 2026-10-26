@@ -2606,3 +2606,78 @@ fn walk_into_a_memo_hit() {
     assert_eq!(traced.memos[0].key, "p.stats");
     assert_eq!(traced.memos[0].data, Some(json!({"cpu": 40})));
 }
+
+/// A reader that waits nothing takes a stale memo rather than render: one
+/// under its hash, and one whose hash its expiry dropped. It is as old as the
+/// memo, and nothing is written.
+#[test]
+fn a_zero_wait_takes_a_stale_memo() {
+    let env = env_of(&[]);
+    let zero = Inputs {
+        wait: libbeachcomber::Wait::For(std::time::Duration::ZERO),
+        ..exec_inputs(&env)
+    };
+    let mut equal = memo(hash_of(&["false"]), Some(json!("old")), 90_000);
+    equal["stale"] = json!(true);
+    let dropped = json!({"stale": true, "age_ms": 90_000, "data": "old"});
+    for half in [equal, dropped] {
+        let mut f = MapFetch::default();
+        f.seed(
+            "p.f",
+            Some(CWD),
+            cached("{{ 'false' | cache() | exec() }}", Some(half)),
+        );
+        let traced = resolve_traced("p.f", &zero, &mut f).unwrap();
+        assert_eq!(traced.value, Some(json!("old")), "`false` never ran");
+        assert!(traced.memo_hit);
+        assert_eq!(traced.oldest_input_ms, Some(90_000));
+        assert!(traced.memos.is_empty());
+    }
+}
+
+/// Every other reader renders a stale memo, and stores what it rendered; so
+/// does one that waits nothing when the memo within its ttl lost its hash
+/// (an invalidation, not an expiry).
+#[test]
+fn a_budget_wait_renders_a_stale_memo() {
+    let env = env_of(&[("V", "now")]);
+    let mut stale = memo(hash_of(&["now"]), Some(json!("OLD")), 5);
+    stale["stale"] = json!(true);
+    let ms = |n| libbeachcomber::Wait::For(std::time::Duration::from_millis(n));
+    for wait in [
+        libbeachcomber::Wait::Budget,
+        ms(50),
+        libbeachcomber::Wait::Forever,
+    ] {
+        let mut f = MapFetch::default();
+        f.seed(
+            "p.f",
+            Some(CWD),
+            cached("{{ env.V | cache() | upper }}", Some(stale.clone())),
+        );
+        let reader = Inputs {
+            wait,
+            ..inputs(&env)
+        };
+        assert_eq!(
+            resolve("p.f", &reader, &mut f),
+            Ok(Some(json!("NOW"))),
+            "{wait:?}"
+        );
+        assert_eq!(f.writes.len(), 1, "{wait:?}");
+    }
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.f",
+        Some(CWD),
+        cached(
+            "{{ env.V | cache() | upper }}",
+            Some(json!({"stale": false, "age_ms": 5, "data": "OLD"})),
+        ),
+    );
+    let zero = Inputs {
+        wait: ms(0),
+        ..inputs(&env)
+    };
+    assert_eq!(resolve("p.f", &zero, &mut f), Ok(Some(json!("NOW"))));
+}

@@ -124,13 +124,21 @@ impl Leaf {
         }
     }
 
-    /// Whether the memo answers for a leaf whose inputs hash to `hash`: a live
-    /// memo stored under the same hash, never with `--force`.
+    /// Whether the memo answers for a leaf whose inputs hash to `hash`, never
+    /// with `--force`: a live memo stored under the same hash; and for a
+    /// reader that waits nothing (`--wait 0`), a stale one under the same
+    /// hash or one whose hash its expiry dropped, rather than a render. A
+    /// memo within its ttl whose hash was dropped was invalidated, and is a
+    /// miss for every reader.
     fn takes(&self, hash: u64) -> bool {
         let Some(memo) = self.memo.as_ref().filter(|_| !self.force) else {
             return false;
         };
-        !memo.stale && memo.hash.as_deref() == Some(hex(hash).as_str())
+        let equal = memo.hash.as_deref() == Some(hex(hash).as_str());
+        if !memo.stale {
+            return equal;
+        }
+        self.wait == Wait::For(Duration::ZERO) && (equal || memo.hash.is_none())
     }
 }
 
@@ -644,6 +652,45 @@ mod tests {
             "'cmd' | cache() | upper",
         );
         assert_eq!(out.unwrap(), "CMD", "--force renders past the memo");
+    }
+
+    /// The hit table. A live memo answers under its own hash alone; a stale
+    /// one answers only a reader that waits nothing, under its hash or with
+    /// the hash its expiry dropped. A live memo whose hash was dropped was
+    /// invalidated: a miss for every reader. `--force` takes nothing.
+    #[test]
+    fn the_hit_table() {
+        let memo = |stale: bool, hash: Option<u64>| {
+            Some(Memo {
+                hash: hash.map(hex),
+                stale,
+                age_ms: 1,
+                data: None,
+            })
+        };
+        let takes =
+            |memo: Option<Memo>, force, wait| Leaf::new("p.f".into(), memo, force, wait).takes(7);
+        let zero = Wait::For(Duration::ZERO);
+        let waits = Wait::For(Duration::from_millis(50));
+        for (memo, others, waits_nothing) in [
+            (memo(false, Some(7)), true, true),
+            (memo(false, Some(8)), false, false),
+            (memo(false, None), false, false),
+            (memo(true, Some(7)), false, true),
+            (memo(true, Some(8)), false, false),
+            (memo(true, None), false, true),
+            (None, false, false),
+        ] {
+            for wait in [Wait::Budget, waits, Wait::Forever] {
+                assert_eq!(
+                    takes(memo.clone(), false, wait),
+                    others,
+                    "{memo:?} {wait:?}"
+                );
+            }
+            assert_eq!(takes(memo.clone(), false, zero), waits_nothing, "{memo:?}");
+            assert!(!takes(memo, true, zero), "--force");
+        }
     }
 
     /// Bare `cache()` hashes the piped value; arguments replace it. An absent

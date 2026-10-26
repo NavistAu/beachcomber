@@ -223,3 +223,60 @@ fn force_reaches_a_template_a_put_made() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// A reader that waits nothing (`--wait 0`) is served a memo past its ttl and
+/// runs nothing; a reader that waits renders it. The memo is aged on the
+/// daemon's clock, paused, so the ttl passes without a second of wall time.
+#[tokio::test(start_paused = true)]
+async fn wait_zero_on_a_stale_memo_runs_nothing() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().canonicalize().unwrap();
+    let sock = home.join("s");
+    let watchers = std::sync::Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
+    let cache = std::sync::Arc::new(beachcomber::cache::Cache::with_watchers(watchers.clone()));
+    let registry = std::sync::Arc::new(crate::common::registry::with_shipped_defaults());
+    beachcomber::server::Server::new(sock.clone(), cache, registry, None, watchers)
+        .spawn()
+        .expect("the server binds its socket");
+    // A `comb` on a thread of its own, so this runtime's one thread serves it.
+    let comb = |args: &'static [&'static str]| {
+        let (home, sock) = (home.clone(), sock.clone());
+        tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+            crate::common::daemon::isolate(&mut cmd, &home, &home.join("xdg"), &sock)
+                .current_dir(&home)
+                .env("COMB_STUB_LOG", home.join("stub.log"))
+                .args(args);
+            let out = cmd.output().expect("run comb");
+            assert!(out.status.success(), "comb {args:?}: {out:?}");
+            String::from_utf8(out.stdout).unwrap()
+        })
+    };
+    let runs = || {
+        std::fs::read_to_string(home.join("stub.log"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    comb(&[
+        "put",
+        "p:template.f",
+        r#""{{ 'kubectl w || echo fresh' | ttl('1s') | cache() | exec() }}""#,
+    ])
+    .await
+    .unwrap();
+    assert_eq!(comb(&["get", "p.f"]).await.unwrap(), "fresh");
+    assert_eq!(runs(), 1);
+
+    // Past the ttl on the daemon's clock, and on from there in real time.
+    tokio::time::advance(std::time::Duration::from_secs(3)).await;
+    tokio::time::resume();
+    let record: Value =
+        serde_json::from_str(&comb(&["get", "-f", "json", "p:cache.f"]).await.unwrap()).unwrap();
+    assert_eq!(record["stale"], true, "{record}");
+
+    assert_eq!(comb(&["get", "--wait", "0", "p.f"]).await.unwrap(), "fresh");
+    assert_eq!(runs(), 1, "the stale memo, and nothing ran");
+    assert_eq!(comb(&["get", "p.f"]).await.unwrap(), "fresh");
+    assert_eq!(runs(), 2, "a reader that waits renders it");
+}

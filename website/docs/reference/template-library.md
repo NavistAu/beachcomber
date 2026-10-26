@@ -192,6 +192,20 @@ What a read does:
   `watch`. `comb eval`, `-f` and an SDK's `eval` store nothing of their own text: there `cache()`, `watch()` and `ttl()`
   pass their input through. A field such a text reads whose template caches is read as any read of it is.
 
+**When a memo answers.**
+
+| the memo the read finds | under the read's hash | under another hash | its hash dropped |
+|---|---|---|---|
+| within its ttl | the memo | render | render |
+| past its ttl | render; the memo for a reader that waits nothing | render | render; the memo for a reader that waits nothing |
+| none | render | render | render |
+| any, with `--force` | render | render | render |
+
+A reader that waits nothing is one asked for `--wait 0` (an SDK's `wait: "0"`): it takes a memo past its ttl as it
+takes a Source's stale record, rather than run anything, and a reader that waits renders it. A memo within its ttl
+whose hash was dropped was invalidated (an edit of the template, a data write under the field, a `refresh`, a watched
+file's change), so every reader renders it.
+
 **How long a memo lives.** Each memo has a lifecycle of its own from its write, and nothing a read does renews it.
 With `ttl(d)` it is valid for `d`, when the daemon drops its hash, and is evicted one decay step (`2d`) later; the files
 `watch()` recorded are watched for those first `d`, and a change to one drops the hash at once. With no `ttl()` its
