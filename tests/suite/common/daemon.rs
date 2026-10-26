@@ -53,27 +53,33 @@ pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path, sock: &Path) -
         .env_remove("TALOSCONFIG")
 }
 
-/// The tools the shipped templates run through `exec()` — `kubectl` and
-/// `talosctl` — as stand-ins that exit 1, as a tool with nothing to report
-/// does: what [`isolate`] puts first on `PATH`. The developer's own would
-/// make every `comb status` call a cluster, and its answer depend on the
-/// machine. A test about those tools puts a `bin/` of its own first.
+/// The tools the shipped files run through `exec()`, as stand-ins that have
+/// nothing to report: `kubectl` and `talosctl`, which the shipped templates
+/// run, exit 1 as they do with no context; `mise`, which the shipped `mise`
+/// Source runs, lists no tools (`{}`) as it does in an empty `$HOME`. This is
+/// what [`isolate`] puts first on `PATH`. The developer's own would make
+/// every `comb status` call a cluster, and its answer depend on the machine.
+/// A test about those tools puts a `bin/` of its own first.
 ///
 /// Each counts itself: with `$COMB_STUB_LOG` set in the environment it runs
 /// in, an invocation appends one line, the tool's name and its arguments, to
-/// that file before it exits 1, so a test can count the processes a command
-/// spawned. Unset, it only exits 1.
+/// that file before it answers, so a test can count the processes a command
+/// spawned.
 pub fn stub_bin() -> &'static Path {
     use std::os::unix::fs::PermissionsExt;
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("stub-bin");
         std::fs::create_dir_all(&dir).expect("make the stub bin");
-        for tool in ["kubectl", "talosctl"] {
+        for (tool, answer) in [
+            ("kubectl", "exit 1"),
+            ("talosctl", "exit 1"),
+            ("mise", "echo '{}'"),
+        ] {
             // Written beside and renamed over, so a test process that looks
             // while another writes sees the whole script or none.
             let part = dir.join(format!(".{tool}.{}", std::process::id()));
-            std::fs::write(&part, stub_script(tool)).expect("write a stub");
+            std::fs::write(&part, stub_script(tool, answer)).expect("write a stub");
             std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755))
                 .expect("make a stub executable");
             std::fs::rename(&part, dir.join(tool)).expect("put a stub in place");
@@ -83,12 +89,12 @@ pub fn stub_bin() -> &'static Path {
 }
 
 /// The text of the stub `tool`: one line to `$COMB_STUB_LOG` when it is set,
-/// then exit 1.
-fn stub_script(tool: &str) -> String {
+/// then `answer`, a line of shell.
+fn stub_script(tool: &str, answer: &str) -> String {
     format!(
         "#!/bin/sh\n\
          if [ -n \"$COMB_STUB_LOG\" ]; then echo \"{tool} $*\" >> \"$COMB_STUB_LOG\"; fi\n\
-         exit 1\n"
+         {answer}\n"
     )
 }
 
@@ -134,6 +140,18 @@ impl TestDaemon {
     /// otherwise reach the daemon and its log would land in the real one.
     #[allow(dead_code)]
     pub fn spawn_in(socket: IsolatedSocket, home: PathBuf, xdg: PathBuf) -> Self {
+        Self::spawn_with_tools(socket, home, xdg, None)
+    }
+
+    /// [`TestDaemon::spawn_in`] whose Sources run the tools in `tools`, a
+    /// directory of the test's own, ahead of the stand-ins ([`stub_bin`]).
+    #[allow(dead_code)]
+    pub fn spawn_with_tools(
+        socket: IsolatedSocket,
+        home: PathBuf,
+        xdg: PathBuf,
+        tools: Option<&Path>,
+    ) -> Self {
         std::fs::create_dir_all(&home).expect("create temp HOME");
         // `--exit-with-parent`: the daemon self-terminates if this test process
         // dies without running `Drop` (e.g. nextest SIGKILLs a timed-out test),
@@ -143,6 +161,19 @@ impl TestDaemon {
         isolate(&mut cmd, &home, &xdg, &socket.path)
             .args(["daemon", "--exit-with-parent", "--socket"])
             .arg(&socket.path);
+        if let Some(tools) = tools {
+            let isolated = cmd
+                .get_envs()
+                .find(|(k, _)| *k == "PATH")
+                .and_then(|(_, v)| v)
+                .map(std::ffi::OsStr::to_os_string)
+                .unwrap_or_default();
+            let path = std::env::join_paths(
+                std::iter::once(tools.to_path_buf()).chain(std::env::split_paths(&isolated)),
+            )
+            .expect("a PATH of directories");
+            cmd.env("PATH", path);
+        }
         let process = launch(&mut cmd);
         Self {
             socket,

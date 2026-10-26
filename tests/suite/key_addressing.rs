@@ -408,19 +408,10 @@ result."c.d" = "{{ data }}"
         )
         .unwrap();
         std::fs::set_permissions(&mise, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // SAFETY: nextest runs each test in its own process; the daemon below
-        // inherits this `PATH`, so its `mise` is the fake one.
-        unsafe {
-            std::env::set_var(
-                "PATH",
-                format!(
-                    "{}:{}",
-                    bin.display(),
-                    std::env::var("PATH").unwrap_or_default()
-                ),
-            );
-        }
-        (TestDaemon::spawn_in(socket, home, xdg), cwd)
+        (
+            TestDaemon::spawn_with_tools(socket, home, xdg, Some(&bin)),
+            cwd,
+        )
     }
 
     #[test]
