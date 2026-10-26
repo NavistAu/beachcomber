@@ -285,6 +285,30 @@ pub struct Response {
     pub memo: Option<serde_json::Value>,
 }
 
+/// A `get`'s memo half with each memo's `age_ms` taken out, walked beside the
+/// `template` half it was built from: a string template's half is one memo, a
+/// group's a tree of them, so a key of a group is never mistaken for one.
+/// What a watch compares a frame's memo half by, on both sides of the socket:
+/// a dropped hash is a change, a memo that only grew older is not.
+pub fn memo_without_ages(
+    template: Option<&serde_json::Value>,
+    memo: &serde_json::Value,
+) -> serde_json::Value {
+    match (template, memo) {
+        (Some(serde_json::Value::Object(group)), serde_json::Value::Object(tree)) => tree
+            .iter()
+            .map(|(k, v)| (k.clone(), memo_without_ages(group.get(k), v)))
+            .collect::<serde_json::Map<_, _>>()
+            .into(),
+        (_, serde_json::Value::Object(leaf)) => {
+            let mut leaf = leaf.clone();
+            leaf.remove("age_ms");
+            leaf.into()
+        }
+        (_, other) => other.clone(),
+    }
+}
+
 impl Response {
     pub fn ok(data: serde_json::Value, age_ms: u128, stale: bool) -> Self {
         Self {

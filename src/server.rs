@@ -498,30 +498,8 @@ fn frame_identity(frame: &Response) -> FrameIdentity {
         frame
             .memo
             .as_ref()
-            .map(|memo| memo_without_ages(frame.template.as_ref(), memo)),
+            .map(|memo| libbeachcomber::protocol::memo_without_ages(frame.template.as_ref(), memo)),
     )
-}
-
-/// A memo half with each memo's `age_ms` taken out, walked beside the
-/// template it was built from: a string template's half is one memo, a
-/// group's a tree of them, so a key of a group is never mistaken for one.
-fn memo_without_ages(
-    template: Option<&serde_json::Value>,
-    memo: &serde_json::Value,
-) -> serde_json::Value {
-    match (template, memo) {
-        (Some(serde_json::Value::Object(group)), serde_json::Value::Object(tree)) => tree
-            .iter()
-            .map(|(k, v)| (k.clone(), memo_without_ages(group.get(k), v)))
-            .collect::<serde_json::Map<_, _>>()
-            .into(),
-        (_, serde_json::Value::Object(leaf)) => {
-            let mut leaf = leaf.clone();
-            leaf.remove("age_ms");
-            leaf.into()
-        }
-        (_, other) => other.clone(),
-    }
 }
 
 /// What a `watch` follows, made under one registry: the plan for its key, the
@@ -1874,11 +1852,6 @@ async fn handle_request(
                      (enabled = false)"
                 ));
             }
-            if *force && registry.is_static_namespace(provider_name) {
-                return Response::error(format!(
-                    "cannot --force static namespace '{provider_name}': no source to re-execute from"
-                ));
-            }
 
             // Every Source the key demands is brought up to date on its own
             // terms — one cold source is no longer covered for by a warm
@@ -2007,6 +1980,15 @@ async fn handle_request(
                         merged,
                     )
                 };
+            // `--force` computes the value afresh: a Source re-executes, and
+            // a template renders past its memo on the client. A static
+            // namespace has no Source, so only a template half gives a forced
+            // read something to do.
+            if *force && half.template.is_none() && registry.is_static_namespace(provider_name) {
+                return Response::error(format!(
+                    "cannot --force static namespace '{provider_name}': no source to re-execute from"
+                ));
+            }
             resolve_halves(&merged, &plan.target, half)
         }
         Request::Refresh { key, path } => {

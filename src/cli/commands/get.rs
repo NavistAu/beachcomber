@@ -6,13 +6,14 @@
 //! and `exec()` enabled. Nothing here decides what a key is worth: a template
 //! the daemon holds is rendered in the library, a cached value comes back as
 //! it is, `env.*` is answered from the environment. This module only renders
-//! what comes back, per output format.
+//! what comes back, per output format, and then writes back the memos the
+//! keys' cached templates rendered: the output is out first.
 
 use crate::cli::exit::Outcome;
 use crate::cli::output_format::{Format, template_locals};
 use crate::config::Config;
 use libbeachcomber::render::{Format as ValueFormat, render_value, render_values};
-use libbeachcomber::resolve::{Slot, eval_with, resolve};
+use libbeachcomber::resolve::{Slot, eval_with, resolve_traced, write_back};
 use serde_json::Value;
 
 /// Whether `s` is a directory rather than a key: it starts with `/`, `~` or
@@ -85,13 +86,16 @@ pub fn run_get(
     // document keeps its positions. What the keys came to is decided here,
     // before any format is applied: a miss is a miss in every format.
     let mut slots: Vec<(&str, Option<Value>)> = Vec::with_capacity(keys.len());
+    let mut memos = Vec::new();
     let mut outcome = Outcome::Done;
     for key in keys {
-        let value = match resolve(key, &inputs, &mut session) {
-            Ok(Some(value)) => Some(value),
-            Ok(None) => {
-                outcome = outcome.max(Outcome::Miss);
-                None
+        let value = match resolve_traced(key, &inputs, &mut session) {
+            Ok(traced) => {
+                memos.extend(traced.memos);
+                if traced.value.is_none() {
+                    outcome = outcome.max(Outcome::Miss);
+                }
+                traced.value
             }
             Err(e) => {
                 crate::cli::report::resolve_error(key, &e);
@@ -131,12 +135,17 @@ pub fn run_get(
         }
     };
     match rendered {
-        Ok(out) => print!("{out}"),
+        Ok(out) => {
+            print!("{out}");
+            // The caller has its answer before the memos go back.
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
         Err(e) => {
             crate::cli::report::error_named(e);
-            return Outcome::Error;
+            outcome = Outcome::Error;
         }
     }
+    write_back(&memos, &mut session);
     outcome
 }
 

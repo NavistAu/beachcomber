@@ -212,6 +212,55 @@ fn watch_emits_the_resolved_value_and_refires_when_its_template_changes() {
     assert_eq!(w.next_line(), "hi!");
 }
 
+/// A watch on a cached leaf follows its memo: a dropped hash (`comb refresh`)
+/// re-renders it, the render writes the memo back, and the same value is not
+/// printed again; an edit of the template is a new value, printed.
+#[test]
+fn a_watch_rerenders_when_a_memo_hash_drops() {
+    let d = TestDaemon::spawn();
+    let project = d.home.join("ws/project");
+    std::fs::create_dir_all(&project).unwrap();
+    let put = |key: &str, data: &str| {
+        d.comb(&project).args(["put", key, data]).assert().success();
+    };
+    let hash = || {
+        let out = d
+            .comb(&project)
+            .args(["get", "-f", "json", "p:cache.f"])
+            .output()
+            .unwrap();
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap_or_default()["hash"]
+            .as_str()
+            .map(str::to_string)
+    };
+    put("d.v", r#""a""#);
+    put("p:template.f", r#""{{ comb.d.v | cache() | upper }}""#);
+
+    let mut w = watch_lines(&d, &project, &["p.f"]);
+    assert_eq!(w.next_line(), "A");
+    // The opening read stored the memo before it printed.
+    let stored = hash().expect("the watch's read stored a memo");
+
+    d.comb(&project).args(["refresh", "p"]).assert().success();
+    // Only the watch reads `p.f`: the hash comes back when its re-render
+    // writes the memo again.
+    crate::common::poll::poll_until(
+        "p:cache.f's hash",
+        "written back by the watch's re-render",
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(5),
+        hash,
+        |h| h.is_some(),
+    );
+    assert_eq!(hash(), Some(stored), "the same inputs, the same hash");
+
+    put(
+        "p:template.f",
+        r#""{{ comb.d.v | cache() | upper ~ '!' }}""#,
+    );
+    assert_eq!(w.next_line(), "A!", "no frame for the unchanged re-render");
+}
+
 /// A library a watched template imports is a dependency of the watch: a put
 /// that edits the library re-renders the watched value with the new text.
 #[test]

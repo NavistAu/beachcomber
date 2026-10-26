@@ -144,9 +144,11 @@ Read a cached value.
   demands, at every instance the read reaches, whether or not it was
   stale, past the failback backoff: a run that begins after the request (one
   queued behind a run in flight). Nothing is evicted first: a run that fails
-  leaves the last good value, which the read answers. A key naming no
-  Source (a static namespace, a facet) is an error: `cannot --force static
-  namespace '<name>': no source to re-execute from`.
+  leaves the last good value, which the read answers. The client renders a
+  cached template past its memo on a forced read, so a read whose answer has
+  a template half is answered on a namespace with no Source too; one of a
+  static namespace (a facet included) with no template half is an error:
+  `cannot --force static namespace '<name>': no source to re-execute from`.
 - `wait` (string, optional) — how long the read waits for a run it needs: a
   duration in the one grammar (`"0"`, `"50ms"`, `"2s"`, `"1m30s"`; a bare
   number is seconds) or `"forever"`. Absent (or `null`), the read waits its

@@ -59,6 +59,7 @@ mod demand;
 mod e2e;
 mod e2e_git;
 mod e2e_providers;
+mod exec_cache;
 mod facets;
 mod get_force;
 mod get_template;

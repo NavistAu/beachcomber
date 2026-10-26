@@ -11,7 +11,7 @@ use crate::cli::status_format::{
 };
 use crate::cli::style::Style;
 use crate::config::Config;
-use libbeachcomber::resolve::{Slot, eval_with, resolve_traced};
+use libbeachcomber::resolve::{MemoWrite, Slot, eval_with, resolve_traced, write_back};
 use std::collections::HashMap;
 use std::io::IsTerminal;
 
@@ -22,6 +22,9 @@ const TEMPLATE_FACET: &str = ":template";
 /// The SOURCE a rendered row reports: nothing produced it but this
 /// resolution, here.
 const RENDERED_SOURCE: &str = "rendered";
+
+/// The SOURCE of a row whose leaf was served from its memo (`| cache()`).
+const MEMO_SOURCE: &str = "memo";
 
 /// One rendered row per template leaf the caller's directory can see.
 ///
@@ -36,13 +39,18 @@ const RENDERED_SOURCE: &str = "rendered";
 /// A leaf that resolves to nothing is a row with a null value, which the
 /// default `value!=-` filter hides. A leaf that fails carries its failure as
 /// its value — the cell is where the user looks for it, and a broken
-/// expression is exactly what this view exists to show.
+/// expression is exactly what this view exists to show. A leaf served from
+/// its memo says SOURCE `memo`, and is as old as the memo.
+///
+/// The memos the leaves rendered go onto `memos`, for the caller to write
+/// back once the table is out.
 fn render_template_rows(
     rows: &[CacheRow],
     cwd: &str,
     env: &HashMap<String, String>,
     session: &mut libbeachcomber::Session,
     filters: &[String],
+    memos: &mut Vec<MemoWrite>,
 ) -> Vec<CacheRow> {
     let chain = crate::query::path_chain(Some(cwd));
     let mut addrs: Vec<(String, String)> = Vec::new();
@@ -74,22 +82,34 @@ fn render_template_rows(
     for (provider, field) in addrs {
         // A rendered value has no age of its own: it is as old as the oldest
         // cached input it used, and has none when it used none.
-        let (value, age_ms) = match resolve_traced(
+        let (value, age_ms, source) = match resolve_traced(
             &libbeachcomber::key::join(&provider, &field),
             &inputs,
             session,
         ) {
-            Ok(traced) => (
-                traced.value.unwrap_or(serde_json::Value::Null),
-                traced.oldest_input_ms,
+            Ok(traced) => {
+                memos.extend(traced.memos);
+                (
+                    traced.value.unwrap_or(serde_json::Value::Null),
+                    traced.oldest_input_ms,
+                    if traced.memo_hit {
+                        MEMO_SOURCE
+                    } else {
+                        RENDERED_SOURCE
+                    },
+                )
+            }
+            Err(e) => (
+                serde_json::Value::String(e.to_string()),
+                None,
+                RENDERED_SOURCE,
             ),
-            Err(e) => (serde_json::Value::String(e.to_string()), None),
         };
         out.push(CacheRow {
             shadowed: false,
             provider,
             path: Some(cwd.to_string()),
-            source: RENDERED_SOURCE.to_string(),
+            source: source.to_string(),
             field,
             value,
             age_ms,
@@ -263,6 +283,9 @@ pub fn run_status(
     };
 
     let client = crate::client::Client::new(socket_path.clone());
+    // The memos the rendered rows' cached templates rendered, written back
+    // once the table is printed.
+    let mut memos = Vec::new();
     match client.status() {
         Ok(mut rows) => {
             // The daemon never evaluates a template, so the rendered rows are
@@ -283,6 +306,7 @@ pub fn run_status(
                     &crate::cli::shell_env(),
                     &mut session,
                     filters,
+                    &mut memos,
                 );
                 // A render reads what it needs, and a cold read runs the
                 // Source behind it: the table is read again, so what this
@@ -373,6 +397,12 @@ pub fn run_status(
                 _ => render_preset(format, &rows, &opts),
             };
             print!("{out}");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            if !memos.is_empty()
+                && let Ok(mut session) = client.connect()
+            {
+                write_back(&memos, &mut session);
+            }
 
             // Canon provider_source.md invariant 16 and singleton.md
             // invariant 12: watch and reaper

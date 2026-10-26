@@ -4,7 +4,8 @@
 //! Both surfaces are clients of `libbeachcomber::resolve`; this is the test
 //! that keeps them there. One daemon, one cwd, one environment, and a fixed
 //! key list covering every row of the resolver's table — plain fields,
-//! templated leaves and groups, a string template walked into by key and by
+//! templated leaves and groups, a cached leaf (one surface stores its memo,
+//! the other is served it), a string template walked into by key and by
 //! index, misses, `env.*`, a cache facet, and the four error shapes. Each
 //! key is classified on both surfaces as a hit (with its value), a miss, or an
 //! error, and the classes and values must agree. Every disagreement is
@@ -60,6 +61,9 @@ enum Expect {
 /// `(key, expectation)`.
 const KEYS: &[(&str, Expect)] = &[
     ("scanline.widgets.foo", Expect::Hit(Some(r#""hi""#))),
+    // A cached leaf: the CLI's read renders and stores it, `bc_get`'s is
+    // served the memo, and the two agree.
+    ("scanline.cached", Expect::Hit(Some(r#""HI""#))),
     ("scanline.widgets.bar", Expect::Hit(None)),
     ("scanline.widgets", Expect::Hit(None)),
     ("scanline", Expect::Hit(None)),
@@ -91,6 +95,7 @@ const KEYS: &[(&str, Expect)] = &[
 /// The scalar hits `comb eval '{{ key }}'` is checked against `bc_eval` for.
 const EVAL_KEYS: &[&str] = &[
     "scanline.widgets.foo",
+    "scanline.cached",
     "scanline.lit",
     "python.version",
     "hostname.name",
@@ -270,7 +275,7 @@ fn comb_get_json_and_bc_get_answer_identically() {
         &daemon,
         &cwd,
         "scanline:template",
-        r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":{"foo":"{{ env.SCANLINE_FOO }}","bar":"{{ comb.hostname.name | truncate(3) }}"},"stats":"{{ {\"cpu\": 40, \"mem\": 12} }}","list":"{{ [\"a\",\"b\"] }}"}"#,
+        r#"{"theme":"{{ env.SCANLINE_THEME or \"dark\" }}","widgets":{"foo":"{{ env.SCANLINE_FOO }}","bar":"{{ comb.hostname.name | truncate(3) }}"},"stats":"{{ {\"cpu\": 40, \"mem\": 12} }}","list":"{{ [\"a\",\"b\"] }}","cached":"{{ env.SCANLINE_FOO | cache() | upper }}"}"#,
     );
     cli_put(&daemon, &cwd, "scanline", r#"{"lit":1}"#);
     cli_put(

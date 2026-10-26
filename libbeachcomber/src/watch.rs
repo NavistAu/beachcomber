@@ -8,7 +8,8 @@
 //! at once, re-resolves on any frame and emits only when the resolved value
 //! changed (design §5.5). The daemon notifies a namespace's watchers on every
 //! write to it or to one of its facets, so a template edit wakes the key's own
-//! watch.
+//! watch, and so does a cached leaf's memo losing its hash. Each resolution's
+//! memos are written back before its value is handed on.
 //!
 //! Three key classes, decided at [`ResolvedWatch::open`]:
 //!
@@ -24,7 +25,9 @@
 //! cancel from another thread ends the wait at once, and a watch with
 //! nothing happening never wakes.
 
-use crate::resolve::{Fetch, FetchError, Got, Inputs, ResolveError, Slot, resolve_traced};
+use crate::resolve::{
+    Fetch, FetchError, Got, Inputs, MemoWrite, ResolveError, Slot, resolve_traced, write_back,
+};
 use crate::{Client, CombError, Session, Wait, WatchStream};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -336,7 +339,7 @@ impl Fetch for Recording<'_> {
         Ok(got)
     }
 
-    fn memo(&mut self, write: &crate::resolve::MemoWrite) -> Result<(), FetchError> {
+    fn memo(&mut self, write: &MemoWrite) -> Result<(), FetchError> {
         self.fetch.memo(write)
     }
 }
@@ -348,7 +351,9 @@ struct Resolution {
     read: Read,
 }
 
-/// `resolve_traced` over `fetch`, keeping what it read.
+/// `resolve_traced` over `fetch`, keeping what it read, its memos written
+/// back once it has its value: before the value is handed on, since a watch
+/// has no "after", and one request on the connection the read used.
 fn resolve_reading(
     key: &str,
     inputs: &Inputs<'_>,
@@ -359,6 +364,7 @@ fn resolve_reading(
         read: Read::new(),
     };
     let traced = resolve_traced(key, inputs, &mut recording).map_err(watch_error)?;
+    write_back(&traced.memos, recording.fetch);
     Ok(Resolution {
         value: traced.value,
         deps: traced.deps,
@@ -367,14 +373,24 @@ fn resolve_reading(
 }
 
 /// Whether a frame's node is the one a resolution read: the same data,
-/// template and rest. Ages are not compared; a frame is about what changed.
+/// template, rest and memo half. Ages are not compared; a frame is about what
+/// changed, so a memo whose hash was dropped is a change and one that only
+/// grew older is not.
 fn already_read(read: Option<&Option<Got>>, frame: &Got) -> bool {
     let Some(read) = read else {
         return false;
     };
     let miss = Got::default();
     let read = read.as_ref().unwrap_or(&miss);
-    read.data == frame.data && read.template == frame.template && read.rest == frame.rest
+    let memo = |got: &Got| {
+        got.memo
+            .as_ref()
+            .map(|memo| crate::protocol::memo_without_ages(got.template.as_ref(), memo))
+    };
+    read.data == frame.data
+        && read.template == frame.template
+        && read.rest == frame.rest
+        && memo(read) == memo(frame)
 }
 
 /// One daemon watch the fan-in holds: on `(key, path)`, a key the latest
@@ -758,6 +774,25 @@ mod tests {
             Wait::Budget,
             "a re-resolve must not replay wait"
         );
+    }
+
+    /// A frame whose memo half lost its hash is a change; one whose memo only
+    /// grew older is the node the resolution read.
+    #[test]
+    fn a_frame_is_new_when_its_memo_changed_and_not_when_it_aged() {
+        let node = |memo: JsonValue| Got {
+            template: Some(serde_json::json!("{{ x | cache() }}")),
+            memo: Some(memo),
+            ..Got::default()
+        };
+        let read = Some(node(
+            serde_json::json!({"hash": "9c6001d328a94690", "stale": false, "age_ms": 1}),
+        ));
+        let older =
+            node(serde_json::json!({"hash": "9c6001d328a94690", "stale": false, "age_ms": 900}));
+        let dropped = node(serde_json::json!({"stale": false, "age_ms": 900}));
+        assert!(already_read(Some(&read), &older));
+        assert!(!already_read(Some(&read), &dropped));
     }
 
     /// Pins item 1: a watch with nothing left that could ever fire — no dep
