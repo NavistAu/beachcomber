@@ -6,18 +6,16 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 
 ### High Priority (next)
 
-The one-tree rebuild is eight phases; 0 (cleanup), 1 (core model) and 2 (config shape) are done on `feat/one-tree`.
-The rest land there too, in parallel where they are independent (3, 4 and 6 now; 7 after 4 and 6).
+The one-tree rebuild is eight phases; 0 (cleanup), 1 (core model), 2 (config shape) and 4 (read-time validity) are done on `feat/one-tree`.
+The rest land there too, in parallel where they are independent (3 and 6 now; 7 after 6).
 
 - [ ] **Phase 3 — watch fan-in and the Node subprocess tier.** `ResolvedWatch` waits on one `poll(2)` over its
       streams and a cancel pipe, not a 50 ms tick per stream; what is left of the Node subprocess tier.
-- [ ] **Phase 4 — read-time validity.** A `stat` pass and a validity hash, so a warm read can tell a stale record
-      without a run; `budget` (how long a read waits for a fresh value before answering stale) enforced.
 - [ ] **Phase 6 — templates: macros and a library.** `macro.<name>` under a provider, imported by facet address; the
       function library (`bar`, `ramp`, `now`/`strftime`/`fromiso`/`duration`/`ago`, `width`/`pad`/display-width
       `truncate`, path, hash, number and colour helpers). scanline's widgets are the acceptance test.
 - [ ] **Phase 7 — built-ins as config.** `defaults/git.toml` and the rest, with OS reads through a `sys` plugin.
-      Needs phases 4 and 6.
+      Needs phase 6.
 - [ ] **scanline on one-tree.** Its generator emits the new config shape and it renders through
       `libbeachcomber`'s resolver; `docs/superpowers/scanline-one-tree.md` holds the proposed config and the
       migration notes.

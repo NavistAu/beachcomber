@@ -343,6 +343,34 @@ run, at load 140-200 (so read the minimum beside the median):
   against 6.6-6.9 ms.
 - **Size**: `Option<Validity>` is 48 bytes per record, beside its input paths.
 
+### Read validity: phase 4 measured
+
+Measured 2026-10-27 at `1f53f763` (the P4.1 baseline is `5d92ed4`; the exec-cache baseline `14bee04`), release builds, on
+the 12-core Mac once it had gone quiet: load average 5-26 (each row gives its own; the higher figures are the
+benches' own work, the load before them was 6-16). Every comparison is **alternating** (A, B, A, B), baseline then
+current, each with its own isolated daemon (`HOME`, `XDG_*` and socket in a scratch directory). The earlier tables
+above were taken at load 55-200 and are superseded where this one gives a number.
+
+| # | Target | Result | Met |
+|---|---|---|---|
+| T4.1 | warm raw-socket `get git.branch` p50 <= 0.25 ms; `get git` <= 0.4 ms; stat pass <= 2 us per input | `warm_get_percentiles`, 2000 rounds, load 26: `git.branch` p50 39 us (baseline 68 us), min 29 us (52); `git` p50 72 us (97), min 60 us (79); the config Sources unchanged (38 vs 37 us at 0 and 1 watch path); 8 watch paths add 9 us at p50 (45 vs 36 us), about 1.1 us per input. Stat pass (`stat_pass/`, criterion, load 17): 1.46 us for 1 input, 5.74 us for 4, 14.4 us for 10, so 1.4 us per input over a bare `lstat(2)` of 1.25 us | met |
+| T4.2 | `comb get git.branch` within 1 ms of `comb get hostname.name` | `hyperfine -N --warmup 20 --runs 100`, load 5.6: current 4.4 vs 4.4 ms and 4.4 vs 4.3 ms (+0.0, +0.1); baseline 3.9 vs 3.8 and 3.8 vs 3.7. The process floor itself is 0.6 ms higher now (4.4 against 3.8 ms; user time 2.6 against 2.2 ms), which is the larger binary's start-up, not validity | met |
+| T4.3 | after a change, 100/100 new values; the first read <= 1 ms | `read_after_mutation`, two runs, load 7-9: 100/100 in every mode for the `.git/HEAD` write and the `state.json` rewrite (baseline: 8/100 for the latter); read p50 0.07-0.12 ms for `git.branch`, 0.15-0.16 ms for the config Source; p99 <= 0.34 ms. Watcher on and off alike | met |
+| T4.4 | default `get` within budget + 5 ms; `--wait 0` within 1 ms; `--wait forever` about the run | `budget_accuracy`, 300 ms Source, 50 ms budget, two runs of 4 rounds, load 13-16: default read 51.7-53.3 ms, `--wait forever` 315-336 ms (run 300 ms); **`--wait 0` 1.4-1.5 ms in 8 of 8** | default and `forever` met; **`--wait 0` missed by 0.4-0.5 ms** |
+| T4.5 | the second `get` after a cold run <= 1 ms in 4 of 4 fresh daemons | `second_get_after_cold`, two runs of 12 fresh daemons each, load 16: 0.047-0.114 ms, 24 of 24 (baseline 0.038-0.070 ms, 24 of 24; P9 never reproduced at this load). An `introspect watches` sent just after the cold `get` now answers in 0.03-0.04 ms (baseline: 1.8-5.2 ms, waiting on the scheduler loop); two of the 24 took 0.8 and 1.2 ms, the first daemons of one run | met |
+| T4.6 | cold `comb get git` <= 60 % of today's | `t46.py`, fresh daemons, load 6-13, medians: 37.4 vs 61.9 ms (60 %) and 32.6 vs 81.3 ms (40 %); with the logging `git` wrapper (11 `git` processes either way): 176 vs 240 ms and 105 vs 214 ms. The first pair is at the limit | met, at the limit in one of two runs |
+| T4.7 | idle: 0 kernel watches after decay; a 2 s registration leaves no heartbeat gap > 10 ms | `a_watch_goes_when_its_instance_decays_and_a_read_brings_it_back` and `a_memo_decays_lets_go_of_its_watch_and_is_evicted` pass; `heartbeat_gap_during_a_slow_registration` (ignored by default, run at load 11): latest tick 2.5 ms late, a status request sent with the demand waited 1.3 ms | met |
+| T4.8 | validity <= 64 B per record | the `size_of::<Option<Validity>>()` assertion in `src/cache.rs` passes; 48 B | met |
+| T7.8 | the stat pass <= 2 us per input (gcloud's 3 inputs, ~5 us per file at load ~110) | 1.4 us per input at 1, 4 and 10 inputs (above); 3 inputs would be about 4.3 us in all. The 5 us per file was the load, as a bare `lstat` was then 9-12 us. Not measured on `gcloud` itself | met on the stat pass; not re-measured through gcloud |
+
+**T4.4 `--wait 0` is still missed at a quiet machine, and it is not noise: 1.4-1.5 ms every time.** The cause is
+visible by swapping the Source's command. With a Source whose data is a constant (`{{ 1 }}`) the stale `--wait 0` read
+answers in 0.3 ms; with `exec('echo 1')` or `exec('sleep 0.3; echo 1')` it answers in 1.5 ms. So about 1.2 ms of the
+read is the start of the run's process (the spawn on macOS), which the answer waits behind though it does not wait for
+the run. The same read against a daemon with its scheduler running answers in 0.15 ms, most likely because the
+scheduler has already refreshed the record (the answer was not stale); the figure above is the bench's schedulerless
+server, where the read starts the run.
+
 ### The watch fan-in: one `poll(2)` (phase 3)
 
 Measured 2026-10-26 at the commit that made a watch wait on one `poll(2)`, on the same 12-core Mac, twice: once at a
