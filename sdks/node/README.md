@@ -234,7 +234,7 @@ kind from a newer library is a bare `CombError` with the kind kept.
 and watch — all with exact envelope fidelity.
 
 **Subprocess (`comb` CLI fallback)** covers `get`, `put`,
-`refresh`, `status`, `eval`, and session context. `timeoutMs` bounds each spawned
+`refresh`, `status`, `eval`, `watch`, and session context. `timeoutMs` bounds each spawned
 `comb`, with no default of its own; `connectTimeoutMs` is refused. `get` is one `comb get -f json
 <key> [--path P | --global] [--force] [--wait]`: the value `comb get`
 prints, the same value the FFI tier answers — the directory chain up to
@@ -249,15 +249,19 @@ as under FFI. And `--no-exec` goes unless the client was made with `exec:
 true`. `refresh` is one `comb
 refresh <key> [--path P | --global]`, the daemon's op itself; its refusal
 (`nothing to refresh: <key> has no sources`) is the `ServerError`'s `message`,
-the daemon's own words — the same text the FFI transport reports. The tier
-does **not** implement `hello`, `introspect` or `watch`: `comb` has no CLI
-surface for `hello` or `introspect`, and `watch` is not built over the spawn
-yet. `eval` is one `comb eval -f json [--path P | --global] -- <template>`,
-spawned as `get` is; a template that does not compile is a `server_error`
-here, where the FFI tier reports `parse_error`.
-Those calls throw `UnsupportedError` rather than silently
-returning wrong data. An omitted `cwd` or `path` means the global entry,
-as under FFI (the transport passes `--global`).
+the daemon's own words — the same text the FFI transport reports. `eval` is
+one `comb eval -f json [--path P | --global] -- <template>`, spawned as `get`
+is; a template that does not compile is a `server_error` here, where the FFI
+tier reports `parse_error`. `watch` is one long-lived `comb watch -f json
+<key> [--path P | --global]`, spawned as `get` is: the fan-in the FFI tier
+drives, one value per line, a miss the event `null`. `nextEvent(timeoutMs)`
+waits for the next line against a timer; the child exiting 0 ends the stream
+(`null`), and exiting 2 is a `ServerError` in the daemon's or the resolver's
+words. `cancel()` and `close()` send the child SIGTERM. The tier does **not**
+implement `hello` or `introspect`, which `comb` has no CLI surface for: those
+calls throw `UnsupportedError` rather than silently returning wrong data. An
+omitted `cwd` or `path` means the global entry, as under FFI (the transport
+passes `--global`).
 
 ## Library discovery (FFI transport)
 

@@ -48,14 +48,16 @@
  * that does not compile (`parse_error`) from one that fails to render, so
  * both are `server_error`.
  *
- * `watch` went the same way in Plan 4 Task 3, when it became a *resolved*
- * watch: every event is what `get` answers, re-read with the caller's own
- * `cwd` and `env`. The Lua SDK's subprocess backend refuses `watch` because
- * `io.popen` has no timed read and no cancel, which `next_event(timeout_ms)`
- * and `cancel` need.
- *
- * Until it is built, these ops throw `UnsupportedError` naming the FFI
- * transport as the full-fidelity path.
+ * `watch` is one long-lived `comb watch -f json <key> [--path P | --global]`,
+ * spawned as `get` is: the same fan-in `bc_watch_open` drives, so every frame
+ * is the value `get` answers, one JSON document per line, and a miss is the
+ * frame `null`. `watchNext` takes the next line, or waits for one against a
+ * timer (`timeout`). The child exiting 0 is the end of the stream; exiting 2
+ * is an error, its `error: <key>: …` line the message, as for `get`.
+ * `watchCancel` sends the child SIGTERM and ends the stream; `freeWatch`
+ * does too, and is idempotent. The Lua SDK's subprocess backend refuses
+ * `watch` because `io.popen` has no timed read and no cancel, which
+ * `next_event(timeout_ms)` and `cancel` need.
  *
  * `refresh` is one spawn of `comb refresh <key> [--path P | --global]`: the
  * daemon's `refresh` op itself, which re-executes only the Sources the key
@@ -78,11 +80,19 @@
  * for the global entry by name, with `--global`.
  */
 
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { IoError, LibraryNotFoundError, TimeoutError, UnsupportedError } from './errors.js';
-import type { Envelope } from './envelope.js';
+import {
+  BusyError,
+  errorFromEnvelope,
+  IoError,
+  LibraryNotFoundError,
+  ServerError,
+  TimeoutError,
+  UnsupportedError,
+} from './errors.js';
+import type { Envelope, ErrEnvelope, WatchNextResult } from './envelope.js';
 import type { NewClientOptions, Transport } from './transport.js';
 
 interface SubprocessClientHandle {
@@ -95,6 +105,25 @@ interface SubprocessClientHandle {
 interface SubprocessSessionHandle {
   client: SubprocessClientHandle;
   contextPath: string | undefined;
+}
+
+/** One `comb watch` child, and what it has written so far. */
+interface SubprocessWatchHandle {
+  combBin: string;
+  key: string;
+  child: ChildProcess;
+  /** Whole frames not yet taken, oldest first. */
+  lines: string[];
+  /** What stdout has written since its last newline. */
+  partial: string;
+  stderr: string;
+  /** Set once the child has exited and its output is all read. */
+  exit: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+  /** The spawn itself failing: no `comb` to run. */
+  spawnError: NodeJS.ErrnoException | undefined;
+  cancelled: boolean;
+  /** Wakes the `watchNext` waiting now, if there is one. */
+  wake: (() => void) | undefined;
 }
 
 function unsupported(op: string): never {
@@ -171,7 +200,7 @@ function runComb(
 }
 
 /** Best-effort error kind classification from a CLI failure's stderr text. */
-function envelopeFromFailure(stderr: string): Envelope {
+function envelopeFromFailure(stderr: string): ErrEnvelope {
   const text = stderr.trim() || 'comb exited with a non-zero status';
   const kind = /connection refused|no such file or directory|daemon is not running/i.test(text)
     ? 'daemon_not_running'
@@ -304,6 +333,138 @@ function cliStatus(handle: SubprocessClientHandle): Envelope {
   return { ok: true, data: rows };
 }
 
+/**
+ * Spawn `comb watch -f json <key> [--path P | --global]`, spawned as `get` is,
+ * and start taking its lines.
+ */
+function cliOpenWatch(
+  handle: SubprocessClientHandle,
+  key: string,
+  path_: string | undefined,
+  envJson: string | undefined,
+): SubprocessWatchHandle {
+  const vars = renderVars(envJson);
+  const args = [
+    ...socketArgs(handle),
+    ...colourArgs(vars),
+    ...execArgs(handle),
+    'watch',
+    '-f',
+    'json',
+    key,
+    ...pathArgs(path_),
+  ];
+  const child = spawn(handle.combBin, args, { env: vars, stdio: ['ignore', 'pipe', 'pipe'] });
+  const w: SubprocessWatchHandle = {
+    combBin: handle.combBin,
+    key,
+    child,
+    lines: [],
+    partial: '',
+    stderr: '',
+    exit: undefined,
+    spawnError: undefined,
+    cancelled: false,
+    wake: undefined,
+  };
+  const wake = () => w.wake?.();
+  child.stdout?.setEncoding('utf8');
+  child.stdout?.on('data', (chunk: string) => {
+    const lines = (w.partial + chunk).split('\n');
+    w.partial = lines.pop() as string;
+    w.lines.push(...lines.filter((line) => line.trim() !== ''));
+    wake();
+  });
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', (chunk: string) => {
+    w.stderr += chunk;
+  });
+  child.on('error', (err: NodeJS.ErrnoException) => {
+    w.spawnError = err;
+    wake();
+  });
+  // `close`, not `exit`: it comes once the child's output is all read, so a
+  // frame written before the exit is taken before the end.
+  child.on('close', (code, signal) => {
+    w.exit = { code, signal };
+    wake();
+  });
+  return w;
+}
+
+/**
+ * The next frame of `w`, waiting up to `timeoutMs` for one (`-1`: no limit;
+ * `0`: only what has already arrived).
+ */
+async function cliWatchNext(w: SubprocessWatchHandle, timeoutMs: number): Promise<WatchNextResult> {
+  if (w.wake !== undefined) {
+    throw new BusyError('watch handle is in use by another caller', `subprocess:${w.combBin}`);
+  }
+  for (;;) {
+    if (w.cancelled) return { outcome: 'cancelled' };
+    const line = w.lines.shift();
+    if (line !== undefined) return { outcome: 'event', data: JSON.parse(line) };
+    if (w.spawnError !== undefined) {
+      const message = `failed to spawn '${w.combBin}': ${w.spawnError.message}`;
+      const identity = `subprocess:${w.combBin}`;
+      if (w.spawnError.code === 'ENOENT') throw new LibraryNotFoundError(message, identity);
+      throw new IoError(message, identity);
+    }
+    if (w.exit !== undefined) {
+      // A child ended by a signal no cancel sent has ended the stream too.
+      if (w.exit.code === 0 || w.exit.code === null) return { outcome: 'eof' };
+      throw watchFailure(w);
+    }
+    if (timeoutMs === 0 || !(await arrival(w, timeoutMs))) return { outcome: 'timeout' };
+  }
+}
+
+/**
+ * Wait for `w` to have something new, up to `timeoutMs` (`-1`: no limit);
+ * false when the time ran out first.
+ */
+function arrival(w: SubprocessWatchHandle, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer =
+      timeoutMs < 0
+        ? undefined
+        : setTimeout(() => {
+            w.wake = undefined;
+            resolve(false);
+          }, timeoutMs);
+    w.wake = () => {
+      clearTimeout(timer);
+      w.wake = undefined;
+      resolve(true);
+    };
+  });
+}
+
+/**
+ * Why `comb watch` failed: its `error: <key>: ` line — the daemon's refusal
+ * of `key`, or the resolver's own error — is a `ServerError` in those words,
+ * as for `get`; a CLI that never reached the daemon is classified as `get`'s
+ * is.
+ */
+function watchFailure(w: SubprocessWatchHandle): Error {
+  const identity = `subprocess:${w.combBin}`;
+  const prefix = `error: ${w.key}: `;
+  const own = w.stderr
+    .split('\n')
+    .find((line) => line.startsWith(prefix))
+    ?.slice(prefix.length);
+  if (own !== undefined) return new ServerError(own, identity);
+  return errorFromEnvelope(envelopeFromFailure(w.stderr).error, identity);
+}
+
+/** End the stream: the child is sent SIGTERM, and a waiting `watchNext` answers `cancelled`. */
+function cliWatchCancel(w: SubprocessWatchHandle): void {
+  if (w.cancelled) return;
+  w.cancelled = true;
+  if (w.exit === undefined) w.child.kill('SIGTERM');
+  w.wake?.();
+}
+
 export function createSubprocessTransport(): Transport {
   const combBin = resolveCombBin();
 
@@ -377,17 +538,17 @@ export function createSubprocessTransport(): Transport {
       return { ok: true, data: null };
     },
 
-    openWatch() {
-      unsupported('watch');
+    openWatch(handle, key, cwd, envJson) {
+      return cliOpenWatch(handle as SubprocessClientHandle, key, cwd, envJson);
     },
-    async watchNext() {
-      unsupported('watch');
+    async watchNext(watch, timeoutMs) {
+      return cliWatchNext(watch as SubprocessWatchHandle, timeoutMs);
     },
-    watchCancel() {
-      unsupported('watch');
+    watchCancel(watch) {
+      cliWatchCancel(watch as SubprocessWatchHandle);
     },
-    freeWatch() {
-      unsupported('watch');
+    freeWatch(watch) {
+      cliWatchCancel(watch as SubprocessWatchHandle);
     },
   };
 

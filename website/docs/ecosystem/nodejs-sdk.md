@@ -74,7 +74,7 @@ const workspace = await client.get('myapp.workspace', { cwd: '/some/repo', env: 
 
 The unrendered halves are facets, read like any key: `git:template.branch` is the template as stored, `myapp:put.workspace` and `git:source.branch` those layers' values.
 
-Over the subprocess fallback a `get` is one `comb get -f json`, and an `eval` one `comb eval -f json`. The call's `env` map is the spawned `comb`'s whole environment (with no map, this process's), `--socket` carries `socketPath` or `$BEACHCOMBER_SOCKET`, `--color` follows `NO_COLOR` in the render's environment, and `--no-exec` goes unless the client was made with `exec: true`, so it renders as the FFI transport does.
+Over the subprocess fallback a `get` is one `comb get -f json`, an `eval` one `comb eval -f json`, and a `watch` one long-lived `comb watch -f json`. The call's `env` map is the spawned `comb`'s whole environment (with no map, this process's), `--socket` carries `socketPath` or `$BEACHCOMBER_SOCKET`, `--color` follows `NO_COLOR` in the render's environment, and `--no-exec` goes unless the client was made with `exec: true`, so it renders as the FFI transport does.
 
 #### `client.refresh(key, path?)`
 
@@ -102,7 +102,7 @@ Inspect a daemon subsystem (`"daemon"` | `"providers"` | `"config"` | `"cache"` 
 
 #### `client.watch(key, opts?)`
 
-Subscribe to a key's value — what `get(key, opts)` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `opts` is `{ cwd?, env? }`, read as `get` reads them: no `cwd` watches the global entry. Returns a `WatchStream`: `nextEvent(timeoutMs?)` resolves the next `WatchEvent` (whose `data` is the value, `null` for a miss), or `null` once the stream has ended; a `timeoutMs` that runs out with no event rejects with `TimeoutError`, and omitted it waits indefinitely. `cancel()` ends the stream, `close()` ends and releases it, and `for await (const event of stream)` iterates until the end. FFI transport only: the subprocess fallback tier does not implement `watch`, joining `eval` there.
+Subscribe to a key's value — what `get(key, opts)` answers for it — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `opts` is `{ cwd?, env? }`, read as `get` reads them: no `cwd` watches the global entry. Returns a `WatchStream`: `nextEvent(timeoutMs?)` resolves the next `WatchEvent` (whose `data` is the value, `null` for a miss), or `null` once the stream has ended; a `timeoutMs` that runs out with no event rejects with `TimeoutError`, and omitted it waits indefinitely. `cancel()` ends the stream, `close()` ends and releases it, and `for await (const event of stream)` iterates until the end. Over the subprocess fallback a watch is one long-lived `comb watch -f json`, spawned as `get` is, whose child `cancel()` and `close()` stop.
 
 #### `client.eval(templateStr, opts?)`
 
