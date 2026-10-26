@@ -256,7 +256,9 @@ async fn fast_provider_completes_within_timeout() {
 }
 
 /// A run a read starts inline is cut off at the Source's `timeout(...)` too:
-/// the read answers with what it has instead of waiting out the command.
+/// the read answers with what it has instead of waiting out the command, and
+/// the daemon, told to stop, does not wait it out either. (Its test stop
+/// SIGKILLs a daemon that has not exited a second after SIGTERM.)
 #[test]
 fn an_inline_run_is_cut_off_at_the_sources_timeout() {
     let socket = crate::common::socket::IsolatedSocket::new();
@@ -283,5 +285,13 @@ return = "{{ result | timeout('50ms') }}"
         started.elapsed() < Duration::from_secs(3),
         "the read waited {:?} for a run its Source cuts off at 50ms",
         started.elapsed()
+    );
+
+    let stopping = std::time::Instant::now();
+    drop(d);
+    assert!(
+        stopping.elapsed() < Duration::from_millis(900),
+        "the daemon took {:?} to stop: it waited on the cut-off run's command",
+        stopping.elapsed()
     );
 }

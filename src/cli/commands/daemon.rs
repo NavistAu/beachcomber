@@ -144,7 +144,7 @@ pub fn run_daemon(
     }
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    rt.block_on(async {
+    let outcome = rt.block_on(async {
         let cancel = tokio_util::sync::CancellationToken::new();
         let cancel_clone = cancel.clone();
 
@@ -287,7 +287,13 @@ pub fn run_daemon(
             return Outcome::Error;
         }
         Outcome::Done
-    })
+    });
+    // The daemon has shut down. A Source's run that was cut off at its
+    // timeout may still be waiting on its command on a blocking thread:
+    // dropping the runtime would wait for that command to end, so the
+    // process leaves it instead.
+    rt.shutdown_background();
+    outcome
 }
 
 /// The pipe a spawner handed this daemon (`--ready-fd`), written once the
