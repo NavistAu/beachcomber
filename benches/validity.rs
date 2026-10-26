@@ -11,6 +11,8 @@
 //!     Source that declares 0 (it only polls), 1 and 8 `watch` paths;
 //!   * `warm_get/git.branch`, `warm_get/git`: a field and the whole namespace
 //!     on a fixture repository;
+//!   * `warm_get/tpl.plain`, `tpl.memo`: a client template leaf without and
+//!     with a memo record; the difference is the daemon's memo half (T5.4);
 //!   * `stat_pass/1`, `/4`, `/10`: the check a warm read makes of a record's
 //!     stat inputs (`Validity::check`), for that many files, in-process, and
 //!     `stat_pass/lstat`, one bare `lstat(2)`, the floor per input on the
@@ -73,6 +75,13 @@ fn sources() -> String {
     ]
     .join("\n")
 }
+
+/// Two client template leaves that render the same value: `plain` is only a
+/// template, `cached` is memoised, so a warm read of it also carries a memo
+/// record the daemon checks (T5.4).
+const TEMPLATES: &str = "[client.providers.p]\n\
+     template.plain = \"{{ 'x' }}\"\n\
+     template.cached = \"{{ 'x' | ttl('1h') | cache() }}\"\n";
 
 /// The directories the reads address: a project the config Sources root at,
 /// and a git repository.
@@ -143,14 +152,37 @@ struct Daemon {
 }
 
 impl Daemon {
+    /// A daemon on the shipped defaults and the bench Sources.
     fn start() -> Self {
+        Self::start_with(false)
+    }
+
+    /// As [`Daemon::start`]; `from_file` loads the same from a `config.toml`
+    /// in its own directory instead, the one way a daemon seeds the `[client]`
+    /// template leaves, and adds those leaves.
+    fn start_with(from_file: bool) -> Self {
         let rt = tokio::runtime::Runtime::new().expect("runtime");
         let dir = TempDir::new().expect("socket dir");
         let sock = dir.path().join("s");
-        let layer: toml::Value = toml::from_str(&sources()).expect("bench sources parse");
-        let mut layers = beachcomber::daemon::defaults::shipped_layers();
-        layers.push((PathBuf::from("<bench>"), layer));
-        let config = Config::from_layers(layers);
+        let config = if from_file {
+            let file = dir.path().join("conf").join("config.toml");
+            let defaults = dir.path().join("conf").join("defaults");
+            std::fs::create_dir_all(&defaults).unwrap();
+            beachcomber::daemon::defaults::write_managed_defaults(
+                &defaults,
+                env!("CARGO_PKG_VERSION"),
+            )
+            .expect("write the defaults");
+            std::fs::write(&file, format!("{}\n{TEMPLATES}", sources())).unwrap();
+            let config = Config::load_from(&file);
+            assert!(config.errors().is_empty(), "{:?}", config.errors());
+            config
+        } else {
+            let layer: toml::Value = toml::from_str(&sources()).expect("bench sources parse");
+            let mut layers = beachcomber::daemon::defaults::shipped_layers();
+            layers.push((PathBuf::from("<bench>"), layer));
+            Config::from_layers(layers)
+        };
         let cancel = CancellationToken::new();
         let (task, ready) = {
             let _enter = rt.enter();
@@ -208,25 +240,47 @@ impl Conn {
 }
 
 /// The warm reads: `(name, key, directory)`.
-fn warm_cases(fixture: &Fixture) -> [(&'static str, &'static str, &Path); 5] {
+fn warm_cases(fixture: &Fixture) -> [(&'static str, &'static str, &Path); 7] {
     [
         ("watch0", "watch0.n", &fixture.proj),
         ("watch1", "watch1.n", &fixture.proj),
         ("watch8", "watch8.n", &fixture.proj),
         ("git.branch", "git.branch", &fixture.repo),
         ("git", "git", &fixture.repo),
+        ("tpl.plain", "p.plain", &fixture.proj),
+        ("tpl.memo", "p.cached", &fixture.proj),
     ]
 }
 
 /// A daemon with every warm case read once, its Sources run and the
 /// registrations their first demands started given time to finish.
 fn warmed(fixture: &Fixture) -> (Daemon, Conn) {
-    let daemon = Daemon::start();
+    let daemon = Daemon::start_with(true);
     let mut conn = daemon.connect();
     for (_, key, path) in warm_cases(fixture) {
         let first = conn.get(key, path);
-        assert!(first.get("data").is_some(), "{key} answers: {first}");
+        if !key.starts_with("p.") {
+            assert!(first.get("data").is_some(), "{key} answers: {first}");
+        }
     }
+    // A template leaf is rendered by the client, which writes the memo back:
+    // one resolution here leaves the record `p.cached` is read with.
+    let client = libbeachcomber::Client::with_config(libbeachcomber::ClientConfig {
+        auto_start: false,
+        exec: true,
+        ..Default::default()
+    })
+    .with_socket_path(daemon.sock.clone());
+    let proj = fixture.proj.to_str().unwrap();
+    for key in ["p.plain", "p.cached"] {
+        let got = client.get(key, Some(proj));
+        assert_eq!(got.ok().flatten(), Some(json!("x")), "{key} renders");
+    }
+    let record = conn.get("p.cached", &fixture.proj);
+    assert!(
+        record.to_string().contains("memo"),
+        "the memo is stored: {record}"
+    );
     std::thread::sleep(Duration::from_secs(1));
     (daemon, conn)
 }
