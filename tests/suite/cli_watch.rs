@@ -366,3 +366,33 @@ fn text_watch_prints_no_line_for_a_miss() {
         .success();
     assert_eq!(w.next_line(), "2");
 }
+
+/// The daemon refusing a watched key reads as its refusing the same `get`:
+/// `error: <key>: <the daemon's words>`, exit 2 — the words alone, as the C
+/// ABI and every SDK report them.
+#[test]
+fn a_refused_watch_reads_as_a_refused_get() {
+    let d = TestDaemon::spawn();
+    let stderr = |command: &str| {
+        let out = d
+            .comb(&d.home)
+            .args([command, "--global", "a:b:c.x"])
+            .output()
+            .expect("run comb");
+        assert_eq!(out.status.code(), Some(2), "{command}");
+        String::from_utf8(out.stderr).expect("UTF-8 stderr")
+    };
+
+    let watched = stderr("watch");
+    assert!(
+        watched.starts_with("error: a:b:c.x: invalid facet key: a:b:c"),
+        "{watched}"
+    );
+    // A `get` names a version skew after the refusal, which a build from an
+    // uncommitted tree has; the refusal itself is the same line.
+    let got = stderr("get");
+    assert!(
+        got.starts_with(watched.trim_end()),
+        "{got} against {watched}"
+    );
+}

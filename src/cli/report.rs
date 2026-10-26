@@ -7,6 +7,7 @@
 //!   resolver error does (`git.bad: template compile error: …`).
 //! - `warning: <why>` — a diagnostic that does not fail the command.
 
+use libbeachcomber::CombError;
 use libbeachcomber::resolve::ResolveError;
 use libbeachcomber::watch::WatchError;
 use std::fmt::Display;
@@ -47,10 +48,12 @@ pub fn resolve_error(key: &str, e: &ResolveError) {
 }
 
 /// A watch on `key` failed: a resolution as [`resolve_error`] reports one,
+/// the daemon's refusal of `key` in its words alone, as a `get`'s is, and
 /// anything else about `key`.
 pub fn watch_error(key: &str, e: &WatchError) {
     match e {
         WatchError::Resolve(resolve) => resolve_error(key, resolve),
+        WatchError::Transport(CombError::ServerError(refusal)) => error(key, refusal),
         other => error(key, other),
     }
 }
