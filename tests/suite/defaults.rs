@@ -350,6 +350,41 @@ fn the_shipped_comb_file_holds_the_abstract_provider_the_decay_and_the_abstract_
     );
 }
 
+/// Every shipped file is a layer, labelled as the file the daemon writes it to
+/// would be and in the order the daemon composes them (`00-comb.toml`, the
+/// abstract provider, first), and the set loads with no error or warning: the
+/// floor every test, bench and embedder's registry stands on. It has every
+/// provider the Rust built-ins have, and the providers the files add.
+#[test]
+fn shipped_layers_parse_and_load_with_no_errors() {
+    use beachcomber::provider::registry::ProviderRegistry;
+    let layers = beachcomber::daemon::defaults::shipped_layers();
+    let labels: Vec<String> = layers
+        .iter()
+        .map(|(path, _)| path.display().to_string())
+        .collect();
+    let files: Vec<String> = SHIPPED
+        .iter()
+        .map(|(name, _)| format!("/defaults/{name}"))
+        .collect();
+    assert_eq!(labels, files);
+    assert_eq!(layers[0], beachcomber::daemon::defaults::comb_layer());
+
+    let load = ProviderRegistry::load(
+        &beachcomber::config::Config::from_layers(layers),
+        &Default::default(),
+    );
+    assert_eq!(load.errors, Vec::<String>::new());
+    assert_eq!(load.warnings, Vec::<String>::new());
+    let shipped = crate::common::registry::with_shipped_defaults();
+    for name in ProviderRegistry::with_defaults().provider_names() {
+        assert!(shipped.is_registered(&name), "{name}");
+    }
+    for name in ["aws", "conda", "gcloud", "kubecontext", "op", "talos"] {
+        assert!(shipped.is_registered(name), "{name}, from its shipped file");
+    }
+}
+
 /// Seeding the managed defaults stores the shipped `*:cache` prototype, labelled
 /// with the file it came from, and a provider with none of its own resolves
 /// decay 4 through it.
@@ -366,7 +401,7 @@ fn the_shipped_cache_prototype_is_the_decay_default() {
     std::fs::write(cfg_dir.join("config.toml"), "").unwrap();
 
     let cache = beachcomber::cache::Cache::new();
-    let registry = beachcomber::provider::registry::ProviderRegistry::with_defaults();
+    let registry = crate::common::registry::with_shipped_defaults();
     let config = beachcomber::config::Config::load();
     beachcomber::daemon::seed::seed_facets(&cache, &registry, config.composed_layers());
     // `resolve_decay` alone would pass with nothing seeded (it falls back to

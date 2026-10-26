@@ -1,22 +1,26 @@
 //! Registries for tests that build one in-process, with no daemon and so no
-//! `defaults/` directory behind it. The abstract provider (`template`,
-//! `result`, `return`) comes in as it does in production: as a layer, the
-//! shipped `00-comb.toml`, composed under whatever the test adds.
+//! `defaults/` directory behind it. The shipped files come in as they do in
+//! production: as the lowest layers, every one of them
+//! (`daemon::defaults::shipped_layers`), composed under whatever the test adds.
+//!
+//! A test that needs a registry builds it here, never from
+//! `ProviderRegistry::with_defaults()` (the Rust built-ins alone): as the
+//! built-ins move into shipped files, a registry with no shipped layers has
+//! fewer providers, and a test built on one would test less than it says.
 
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use std::path::PathBuf;
 
-/// A configuration of the shipped defaults layer, then `layers`.
+/// A configuration of every shipped layer, then `layers`.
 pub fn config_over_shipped(layers: Vec<(PathBuf, toml::Value)>) -> Config {
-    let mut all = vec![beachcomber::daemon::defaults::comb_layer()];
+    let mut all = beachcomber::daemon::defaults::shipped_layers();
     all.extend(layers);
     Config::from_layers(all)
 }
 
-/// The built-in providers with the shipped defaults layer composed in.
+/// The registry of the shipped defaults alone, as a daemon with no files of
+/// its own loads it, its Sources' lines seeing no variables.
 pub fn with_shipped_defaults() -> ProviderRegistry {
-    let load = ProviderRegistry::load(&config_over_shipped(Vec::new()), &Default::default());
-    assert!(load.errors.is_empty(), "{:?}", load.errors);
-    load.registry
+    ProviderRegistry::shipped(&Default::default())
 }

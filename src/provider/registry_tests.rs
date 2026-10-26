@@ -35,7 +35,7 @@ fn registry_list_providers() {
 
 #[test]
 fn registry_with_defaults_has_builtins() {
-    let registry = ProviderRegistry::with_defaults();
+    let registry = ProviderRegistry::shipped(&Default::default());
     assert!(
         registry.provider_metadata("hostname").is_some(),
         "Should have hostname provider"
@@ -48,7 +48,7 @@ fn registry_with_defaults_has_builtins() {
 
 #[test]
 fn registry_source_lookup() {
-    let registry = ProviderRegistry::with_defaults();
+    let registry = ProviderRegistry::shipped(&Default::default());
     let source = registry.source("hostname", "host");
     assert!(
         source.is_some(),
@@ -58,7 +58,7 @@ fn registry_source_lookup() {
 
 #[test]
 fn registry_execute_via_source() {
-    let registry = ProviderRegistry::with_defaults();
+    let registry = ProviderRegistry::shipped(&Default::default());
     let source = registry.source("hostname", "host").unwrap();
     let result = source.execute(None).unwrap();
     assert!(
@@ -69,7 +69,7 @@ fn registry_execute_via_source() {
 
 #[test]
 fn registry_metadata() {
-    let registry = ProviderRegistry::with_defaults();
+    let registry = ProviderRegistry::shipped(&Default::default());
     let meta = registry.provider_metadata("hostname").unwrap();
     assert_eq!(meta.name, "hostname");
 }
@@ -79,7 +79,7 @@ fn registry_metadata() {
 /// `register_static` shadowing a real provider name.
 #[test]
 fn registry_is_registered_reports_provider_names() {
-    let registry = ProviderRegistry::with_defaults();
+    let registry = ProviderRegistry::shipped(&Default::default());
     assert!(registry.is_registered("hostname"));
     assert!(!registry.is_registered("nonexistent"));
     assert!(
@@ -90,7 +90,7 @@ fn registry_is_registered_reports_provider_names() {
 
 #[test]
 fn registry_sources_for_key() {
-    let registry = ProviderRegistry::with_defaults();
+    let registry = ProviderRegistry::shipped(&Default::default());
     // hostname.host source declares the "name" field
     assert_eq!(
         registry.sources_for_key("hostname", "name"),

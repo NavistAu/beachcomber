@@ -3,7 +3,6 @@ use crate::common::fetch::fetch;
 use beachcomber::cache::Cache;
 use beachcomber::cache::Schedule;
 use beachcomber::provider::Value;
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
 use libbeachcomber::{ClientConfig, Session};
 use std::collections::HashMap;
@@ -33,7 +32,7 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
     let sock = tmp.path().join("test.sock");
     let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
 
     let mut hostname_fields = HashMap::new();
     hostname_fields.insert("name".to_string(), Value::String("myhost".to_string()));

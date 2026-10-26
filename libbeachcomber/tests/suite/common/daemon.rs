@@ -8,7 +8,7 @@ use tokio::runtime::Runtime;
 /// layer, which carries the abstract provider's lines. An in-process daemon
 /// has no `defaults/` directory to read it from.
 fn shipped_defaults() -> Config {
-    Config::from_layers(vec![daemon::defaults::comb_layer()])
+    Config::from_layers(daemon::defaults::shipped_layers())
 }
 
 /// RAII guard for an in-process daemon on its own two-worker runtime, which

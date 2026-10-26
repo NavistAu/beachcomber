@@ -710,17 +710,16 @@ fn a_client_that_is_not_a_table_is_an_error() {
 
 // ── The roots, the bare [daemon] keys and what was removed ───────────────────
 
-/// A `Config` composed from the shipped `00-comb.toml` and then `user`, as the
-/// daemon composes defaults and `config.toml`: two layers, each with its own
-/// label, and no `config_path` (so nothing is read or seeded from disk).
+/// A `Config` composed from every shipped file and then `user`, as the daemon
+/// composes `defaults/` and `config.toml`: each layer with its own label, and
+/// no `config_path` (so nothing is read or seeded from disk).
 pub(crate) fn with_shipped_defaults(user: &str) -> Config {
-    Config::from_layers(vec![
-        crate::daemon::defaults::comb_layer(),
-        (
-            PathBuf::from("/user.toml"),
-            toml::from_str(user).expect("valid toml"),
-        ),
-    ])
+    let mut layers = crate::daemon::defaults::shipped_layers();
+    layers.push((
+        PathBuf::from("/user.toml"),
+        toml::from_str(user).expect("valid toml"),
+    ));
+    Config::from_layers(layers)
 }
 
 /// The load errors of `user` composed over the shipped defaults, against the

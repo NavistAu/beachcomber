@@ -239,7 +239,7 @@ fn bench_convergence_l(c: &mut Criterion) {
     let (_repo, path) = make_repo_with_branches();
 
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(shipped_registry());
+    let registry = Arc::new(ProviderRegistry::shipped(&Default::default()));
     let (handle, scheduler) = Scheduler::new(
         cache.clone(),
         registry,
@@ -390,10 +390,9 @@ fn read_after_mutation() {
          return = \"{{ result | watch('state.json') }}\"\n",
     )
     .unwrap();
-    let config = Config::from_layers(vec![
-        beachcomber::daemon::defaults::comb_layer(),
-        (PathBuf::from("<bench>"), layer),
-    ]);
+    let mut layers = beachcomber::daemon::defaults::shipped_layers();
+    layers.push((PathBuf::from("<bench>"), layer));
+    let config = Config::from_layers(layers);
     let serve = |watched: bool| {
         let watchers = Arc::new(WatcherRegistry::new());
         let cache = Arc::new(Cache::with_watchers(watchers.clone()));
@@ -543,12 +542,4 @@ fn main() {
     if runs("read_after_mutation") {
         read_after_mutation();
     }
-}
-
-/// The built-in providers with the shipped `defaults/00-comb.toml` composed in,
-/// as a running daemon has them: the abstract provider's lines are part of
-/// what a read costs.
-fn shipped_registry() -> ProviderRegistry {
-    let config = Config::from_layers(vec![beachcomber::daemon::defaults::comb_layer()]);
-    ProviderRegistry::with_config(&config, &Default::default()).expect("the shipped lines load")
 }

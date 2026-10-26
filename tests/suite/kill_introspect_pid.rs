@@ -3,7 +3,6 @@
 // Status was changed to return cache rows.
 
 use beachcomber::cache::Cache;
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -16,7 +15,7 @@ async fn introspect_daemon_returns_current_pid() {
     let sock = tmp.path().join("test.sock");
     let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     server.spawn().unwrap();
@@ -59,7 +58,7 @@ async fn status_op_does_not_contain_pid_field() {
     let sock = tmp.path().join("test.sock");
     let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
 
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     server.spawn().unwrap();
@@ -89,7 +88,7 @@ async fn kill_reads_the_pid_the_daemon_reports() {
     let sock = tmp.path().join("test.sock");
     let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     server.spawn().unwrap();
 

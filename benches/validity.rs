@@ -148,10 +148,9 @@ impl Daemon {
         let dir = TempDir::new().expect("socket dir");
         let sock = dir.path().join("s");
         let layer: toml::Value = toml::from_str(&sources()).expect("bench sources parse");
-        let config = Config::from_layers(vec![
-            beachcomber::daemon::defaults::comb_layer(),
-            (PathBuf::from("<bench>"), layer),
-        ]);
+        let mut layers = beachcomber::daemon::defaults::shipped_layers();
+        layers.push((PathBuf::from("<bench>"), layer));
+        let config = Config::from_layers(layers);
         let cancel = CancellationToken::new();
         let (task, ready) = {
             let _enter = rt.enter();
@@ -390,10 +389,9 @@ fn budget_accuracy() {
          return = \"{{ result | poll('1s') }}\"\n",
     )
     .expect("the bench Source parses");
-    let config = Config::from_layers(vec![
-        beachcomber::daemon::defaults::comb_layer(),
-        (PathBuf::from("<bench>"), layer),
-    ]);
+    let mut layers = beachcomber::daemon::defaults::shipped_layers();
+    layers.push((PathBuf::from("<bench>"), layer));
+    let config = Config::from_layers(layers);
     {
         let _enter = rt.enter();
         let watchers = std::sync::Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());

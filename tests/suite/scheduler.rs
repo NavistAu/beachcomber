@@ -16,7 +16,7 @@ use crate::common::poll::poll_until_async;
 #[tokio::test]
 async fn scheduler_refresh_populates_cache() {
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let config = beachcomber::config::Config::default();
 
     let (handle, mut scheduler) = Scheduler::new(
@@ -64,7 +64,7 @@ async fn scheduler_refresh_populates_cache() {
 #[tokio::test]
 async fn scheduler_refresh_unknown_provider() {
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let config = beachcomber::config::Config::default();
 
     let (handle, mut scheduler) = Scheduler::new(
@@ -98,7 +98,7 @@ async fn scheduler_refresh_unknown_provider() {
 #[tokio::test]
 async fn scheduler_shutdown() {
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let config = beachcomber::config::Config::default();
 
     let (handle, mut scheduler) =

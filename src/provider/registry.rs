@@ -1144,7 +1144,27 @@ impl ProviderRegistry {
 
     // ── Construction helpers ─────────────────────────────────────────────────
 
-    /// Build a registry with all built-in providers registered.
+    /// The registry a daemon starting on the shipped defaults alone loads:
+    /// every `defaults/` file composed as the daemon composes them
+    /// ([`crate::daemon::defaults::shipped_layers`]), its Sources' lines
+    /// seeing `vars`. What a test or a bench builds its registry from: every
+    /// new one does, so that a provider moving from Rust to a shipped file
+    /// changes no test. Panics if the shipped files do not load.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn shipped(vars: &HashMap<String, String>) -> Self {
+        let config = Config::from_layers(crate::daemon::defaults::shipped_layers());
+        let load = Self::load(&config, vars);
+        assert!(
+            load.errors.is_empty(),
+            "the shipped defaults do not load: {:?}",
+            load.errors
+        );
+        load.registry
+    }
+
+    /// Build a registry with all built-in providers registered: what
+    /// [`Self::load`] starts from. A test or a bench builds from
+    /// [`Self::shipped`] instead, never from this.
     /// Panics on registration failure (programmer error, not runtime).
     pub fn with_defaults() -> Self {
         let mut registry = Self::new();
@@ -1972,7 +1992,7 @@ result.x = "{{ data }}"
 
     #[test]
     fn built_in_sources_with_a_root_declare_how_their_instances_combine() {
-        let reg = ProviderRegistry::with_defaults();
+        let reg = ProviderRegistry::shipped(&Default::default());
         let mut rooted = Vec::new();
         for (provider, metas) in reg.registered_sources() {
             for sm in metas {
@@ -1993,7 +2013,7 @@ result.x = "{{ data }}"
 
     #[test]
     fn a_providers_sources_that_find_their_root_alike_share_one_lookup() {
-        let reg = ProviderRegistry::with_defaults();
+        let reg = ProviderRegistry::shipped(&Default::default());
         let keys: std::collections::HashSet<String> = reg
             .provider_sources("git")
             .unwrap()
@@ -2073,7 +2093,7 @@ return = "{{ result | poll('15s') }}"
             invalidation(&reg, "git", "diff")
         );
         // The others keep theirs.
-        let stock = ProviderRegistry::with_defaults();
+        let stock = ProviderRegistry::shipped(&Default::default());
         assert_eq!(
             invalidation(&reg, "git", "refs"),
             invalidation(&stock, "git", "refs")
@@ -2092,7 +2112,7 @@ return = "{{ result | poll('15s') }}"
         // The shipped abstract `_` says `poll('60s', 12)`; it applies to config
         // Sources only, so watch-driven built-ins stay watch-driven.
         let reg = registry_from("[daemon.providers.git.sources.diff]\n");
-        let stock = ProviderRegistry::with_defaults();
+        let stock = ProviderRegistry::shipped(&Default::default());
         for (provider, source) in [("git", "diff"), ("git", "refs"), ("mise", "tools")] {
             let (got, want) = (
                 source_meta(&reg, provider, source),
@@ -2118,7 +2138,7 @@ return = "{{ result | poll('15s') }}"
         );
         let diff = source_meta(&reg, "git", "diff");
         assert_ne!(
-            ProviderRegistry::with_defaults()
+            ProviderRegistry::shipped(&Default::default())
                 .provider_sources("git")
                 .unwrap()
                 .iter()
@@ -2233,7 +2253,7 @@ result.y = "{{ data }}"
     #[should_panic(expected = "bound once")]
     fn a_second_bind_is_refused() {
         let cache = Arc::new(Cache::new());
-        let registry = ProviderRegistry::with_defaults().share(&cache);
+        let registry = ProviderRegistry::shipped(&Default::default()).share(&cache);
         registry.bind(&cache);
     }
 
@@ -2407,7 +2427,7 @@ result.y = "{{ data }}"
     #[test]
     fn a_ring_that_got_past_the_load_check_fails_when_run() {
         let config = crate::config::Config::from_toml(RING);
-        let mut registry = ProviderRegistry::with_defaults();
+        let mut registry = ProviderRegistry::shipped(&Default::default());
         let (built, errors) = registry.config_sources(&config, &Default::default());
         assert_eq!(errors, Vec::<String>::new(), "the lines are fine");
         for (name, sources) in built.providers {

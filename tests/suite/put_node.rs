@@ -33,7 +33,7 @@ type Fixture = (
 );
 
 fn setup() -> Fixture {
-    setup_with_registry(ProviderRegistry::with_defaults())
+    setup_with_registry(crate::common::registry::with_shipped_defaults())
 }
 
 fn setup_with_registry(registry: ProviderRegistry) -> Fixture {

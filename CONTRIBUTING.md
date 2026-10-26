@@ -38,6 +38,8 @@ cargo nextest run -E 'not (test(watcher_) + test(uptime_provider_executes))'   #
 
 Some tests require filesystem watching (FSEvents) and may not work inside sandboxed environments. These are the `watcher_*` tests and the `uptime_provider_executes` test; skip them as shown.
 
+A test or bench that needs a provider registry builds it on the shipped defaults, every file in `defaults/`: `ProviderRegistry::shipped(&vars)` in a `src/` unit test or a bench, `crate::common::registry::with_shipped_defaults()` in the suite (`config_over_shipped(layers)` for a `Config` with layers of its own), and `crate::shipped::scenario()` for a daemon reading the shipped files, one module per namespace under `tests/suite/shipped/`. Never `ProviderRegistry::with_defaults()`, the Rust built-ins alone: the built-ins are moving into shipped files, and a registry built without those would test less than it says.
+
 ### Running Benchmarks
 
 ```sh

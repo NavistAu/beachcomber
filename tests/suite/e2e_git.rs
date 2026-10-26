@@ -4,7 +4,6 @@ use crate::common::poll::{poll_until, poll_until_async, poll_until_eq};
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
 use beachcomber::config::Config;
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
 use std::sync::Arc;
@@ -20,7 +19,7 @@ async fn setup_daemon() -> (
     let sock = tmp.path().join("sock");
     let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let config = Config::default();
 
     let (handle, mut scheduler) =

@@ -12,7 +12,6 @@ use beachcomber::cache::Cache;
 /// under `#[cfg(test)] mod path_disambiguation_tests`.
 use beachcomber::cache::Schedule;
 use beachcomber::provider::Value;
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
 use libbeachcomber::resolve::FetchError;
 use libbeachcomber::{ClientConfig, Session};
@@ -52,7 +51,7 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
     let sock = sock_tmp.path().join("test.sock");
     let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
 
     // Create a real git repo the root walk can resolve to.
     let repo_tmp = TempDir::new().unwrap();

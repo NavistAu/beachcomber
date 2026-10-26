@@ -728,7 +728,7 @@ mod tests {
             crate::daemon::defaults::comb_layer(),
             layer("[daemon.providers._]\ntemplate = \"{{ {'where': '{{ 1 }}'} }}\"\n"),
         ];
-        let planned = plan(&layers, &ProviderRegistry::with_defaults()).writes;
+        let planned = plan(&layers, &ProviderRegistry::shipped(&Default::default())).writes;
         assert!(
             planned.contains_key("git:template"),
             "a built-in no file names has the abstract template: {:?}",
@@ -745,7 +745,8 @@ mod tests {
             Config::from_layers(vec![crate::daemon::defaults::comb_layer(), layer(text)])
         };
         let cache = Arc::new(Cache::new());
-        let registry = RegistryHandle::new(Arc::new(ProviderRegistry::with_defaults()));
+        let registry =
+            RegistryHandle::new(Arc::new(ProviderRegistry::shipped(&Default::default())));
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let scheduler = SchedulerHandle::new(tx);
         let before = registry.current();

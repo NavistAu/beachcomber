@@ -3158,7 +3158,7 @@ mod tests {
             crate::cache::Schedule::default(),
         );
 
-        let registry = ProviderRegistry::with_defaults();
+        let registry = ProviderRegistry::shipped(&Default::default());
         let target = KeyParse::Field("git".to_string(), "branch".to_string());
         let resp = read_watch_value(
             &cache,

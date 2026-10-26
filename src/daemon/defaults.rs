@@ -43,19 +43,32 @@ pub const SHIPPED: &[(&str, &str)] = &[
     ),
 ];
 
-/// The shipped `00-comb.toml` as a configuration layer, labelled as the file
-/// the daemon writes it to would be: what a `Config` built in memory (a test,
-/// a bench, an embedder with no `defaults/` directory behind it) composes
-/// first, so the abstract provider's lines are there as they are in a running
-/// daemon. The daemon itself reads the file on disk.
-pub fn comb_layer() -> (PathBuf, toml::Value) {
-    let (name, text) = SHIPPED
+/// Every shipped file as a configuration layer, in the order the daemon
+/// composes them, each labelled as the file the daemon writes it to would be
+/// (`/defaults/<name>`): the lowest layers of a `Config` built in memory (a
+/// test, a bench, an embedder with no `defaults/` directory behind it), so
+/// the shipped providers and templates are there as they are in a running
+/// daemon. The daemon itself reads the files on disk.
+pub fn shipped_layers() -> Vec<(PathBuf, toml::Value)> {
+    SHIPPED
         .iter()
-        .find(|(name, _)| *name == "00-comb.toml")
-        .expect("00-comb.toml is shipped");
+        .map(|(name, text)| layer(name, text))
+        .collect()
+}
+
+/// The first of [`shipped_layers`], `00-comb.toml`, alone: the abstract
+/// provider, for what is about it and no shipped provider.
+pub fn comb_layer() -> (PathBuf, toml::Value) {
+    let (name, text) = SHIPPED[0];
+    debug_assert_eq!(name, "00-comb.toml");
+    layer(name, text)
+}
+
+/// The shipped file `name`, its body `text`, as a layer.
+fn layer(name: &str, text: &str) -> (PathBuf, toml::Value) {
     (
         PathBuf::from("/defaults").join(name),
-        toml::from_str(text).expect("00-comb.toml parses"),
+        toml::from_str(text).unwrap_or_else(|e| panic!("defaults/{name} does not parse: {e}")),
     )
 }
 

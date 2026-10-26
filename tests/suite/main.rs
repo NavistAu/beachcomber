@@ -84,6 +84,7 @@ mod scheduler_failure;
 mod scheduler_timeout;
 mod seed;
 mod server;
+mod shipped;
 mod shutdown;
 mod status_shape;
 mod store;

@@ -4,16 +4,16 @@
 //! This module defines assertion functions and the enumeration helper.
 //! `tests/suite/provider_conformance.rs` wires them into a single nextest test.
 
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{Source, SourceResult};
 
 use crate::provider_conformance::conformance::fixtures::ConformanceFixture;
 
-/// Iterate every `(provider_name, source_name, source)` triple registered by
-/// the default built-in registry. Yields owned data so callers can iterate
-/// without holding registry references.
+/// Iterate every `(provider_name, source_name, source)` triple of the shipped
+/// registry: the Rust built-ins and every Source a shipped file declares, so
+/// each moves under these checks as it moves into a file. Yields owned data
+/// so callers can iterate without holding registry references.
 pub fn enumerate_sources() -> Vec<(String, String, std::sync::Arc<dyn Source>)> {
-    let registry = ProviderRegistry::with_defaults();
+    let registry = crate::common::registry::with_shipped_defaults();
     let mut out = Vec::new();
     for provider_name in registry.provider_names() {
         let source_metas = match registry.provider_sources(&provider_name) {

@@ -3107,7 +3107,7 @@ mod tests {
     #[test]
     fn a_source_refresh_does_not_disturb_a_put_over_it() {
         let cache = Cache::new();
-        let registry = crate::provider::registry::ProviderRegistry::with_defaults();
+        let registry = crate::provider::registry::ProviderRegistry::shipped(&Default::default());
 
         cache.put_source(
             "git",
@@ -3165,7 +3165,7 @@ mod tests {
     #[test]
     fn removing_a_put_shows_the_layer_below_at_once() {
         let cache = Cache::new();
-        let registry = crate::provider::registry::ProviderRegistry::with_defaults();
+        let registry = crate::provider::registry::ProviderRegistry::shipped(&Default::default());
 
         cache.put_source(
             "git",
@@ -3428,7 +3428,7 @@ mod tests {
     }
 
     fn read_tools(cache: &Cache) -> MergedRead {
-        let registry = crate::provider::registry::ProviderRegistry::with_defaults();
+        let registry = crate::provider::registry::ProviderRegistry::shipped(&Default::default());
         cache
             .read_merged(
                 "git",
@@ -3510,7 +3510,7 @@ mod tests {
         put(&cache, "o", tools(&[("c", Value::Int(3))]));
         let entry = cache.get_entry("git", Some("/repo")).unwrap();
         assert_eq!(entry.puts.keys().collect::<Vec<_>>(), ["o"]);
-        let registry = crate::provider::registry::ProviderRegistry::with_defaults();
+        let registry = crate::provider::registry::ProviderRegistry::shipped(&Default::default());
         let read = cache
             .read_merged(
                 "git",

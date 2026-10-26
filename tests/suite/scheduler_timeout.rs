@@ -215,7 +215,7 @@ async fn slow_provider_times_out() {
 #[tokio::test]
 async fn fast_provider_completes_within_timeout() {
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
 
     let config = Config::from_toml("[daemon]\ntimeout = \"5s\"\n");
 

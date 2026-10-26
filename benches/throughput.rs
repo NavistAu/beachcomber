@@ -26,7 +26,7 @@ impl TestServer {
         let sock = tmp.path().join("bench.sock");
 
         let cache = Arc::new(Cache::new());
-        let registry = Arc::new(shipped_registry());
+        let registry = Arc::new(ProviderRegistry::shipped(&Default::default()));
         let config = Config::default();
 
         let (handle, scheduler) = Scheduler::new(
@@ -118,11 +118,3 @@ fn bench_concurrent_throughput(c: &mut Criterion) {
 
 criterion_group!(benches, bench_concurrent_throughput);
 criterion_main!(benches);
-
-/// The built-in providers with the shipped `defaults/00-comb.toml` composed in,
-/// as a running daemon has them: the abstract provider's lines are part of
-/// what a read costs.
-fn shipped_registry() -> ProviderRegistry {
-    let config = Config::from_layers(vec![beachcomber::daemon::defaults::comb_layer()]);
-    ProviderRegistry::with_config(&config, &Default::default()).expect("the shipped lines load")
-}

@@ -1109,13 +1109,12 @@ fn cache_row_new_fields_serde_round_trip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lifecycle_snapshots_message_returns_per_entry_data() {
     use beachcomber::cache::Cache;
-    use beachcomber::provider::registry::ProviderRegistry;
     use beachcomber::query::Instance;
     use beachcomber::watcher_registry::WatcherRegistry;
     use std::sync::Arc;
 
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let config = Config::default();
 
     let (handle, scheduler) = Scheduler::new(
@@ -1163,12 +1162,11 @@ async fn lifecycle_snapshots_message_returns_per_entry_data() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failure_states_message_returns_provider_map() {
     use beachcomber::cache::Cache;
-    use beachcomber::provider::registry::ProviderRegistry;
     use beachcomber::watcher_registry::WatcherRegistry;
     use std::sync::Arc;
 
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let config = Config::default();
 
     let (handle, scheduler) = Scheduler::new(

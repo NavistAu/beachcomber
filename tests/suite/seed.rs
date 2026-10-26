@@ -670,7 +670,7 @@ async fn a_provider_decay_table_seeds_its_own_cache_facet() {
 
     // And the lookup the scheduler makes finds it.
     let cache = Cache::new();
-    let registry = ProviderRegistry::with_defaults();
+    let registry = crate::common::registry::with_shipped_defaults();
     let main = e.cfg_dir.join("config.toml");
     beachcomber::daemon::seed::seed_facets(
         &cache,
@@ -875,7 +875,7 @@ fn a_reload_keeps_the_age_of_records_it_did_not_change() {
     let layers = || Config::read_layers(Some(&defaults), Some(&cfg), &conf_d).layers;
 
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     beachcomber::daemon::seed::seed_facets(&cache, &registry, &layers());
     // When `namespace`'s records from `file` were last written.
     let stamp = |namespace: &str, file: &str| {
@@ -1003,7 +1003,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
     std::fs::write(&drop_in, RESEED_V1).unwrap();
 
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let defaults = tmp.path().join("defaults");
     beachcomber::daemon::defaults::write_managed_defaults(&defaults, env!("CARGO_PKG_VERSION"))
         .unwrap();
@@ -1157,7 +1157,7 @@ async fn a_put_record_wins_over_config_on_re_seed() {
 #[test]
 fn removing_a_put_template_shows_the_seeded_one() {
     let cache = Cache::new();
-    let registry = ProviderRegistry::with_defaults();
+    let registry = crate::common::registry::with_shipped_defaults();
     registry.register_static("p:template");
     cache
         .reseed_static(
@@ -1194,7 +1194,7 @@ fn removing_a_put_template_shows_the_seeded_one() {
 #[test]
 fn a_reseed_keeps_a_put_template_on_top() {
     let cache = Cache::new();
-    let registry = ProviderRegistry::with_defaults();
+    let registry = crate::common::registry::with_shipped_defaults();
     registry.register_static("p:template");
     cache
         .write_static(
@@ -1257,7 +1257,7 @@ fn template_tree(version: &str, title: &str) -> CacheValue {
 #[test]
 fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     registry.register_static("scanline:template");
     let label = "config:/x/10-mine.toml".to_string();
 
@@ -1329,7 +1329,7 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
 #[test]
 fn every_file_keeps_its_record_and_the_last_file_answers() {
     let cache = Cache::new();
-    let registry = ProviderRegistry::with_defaults();
+    let registry = crate::common::registry::with_shipped_defaults();
     let defaults = "config:/c/defaults/aws.toml";
     let main = "config:/c/config.toml";
     let drop_in = "config:/c/conf.d/10-mine.toml";
@@ -1402,7 +1402,7 @@ fn a_refused_write_leaves_the_previous_seed_untouched() {
     // is refused, so the second write is refused — and the first must not
     // have landed, nor the previous seed have gone.
     let cache = Cache::new();
-    let registry = ProviderRegistry::with_defaults();
+    let registry = crate::common::registry::with_shipped_defaults();
     let old = "config:/x/old.toml".to_string();
 
     cache

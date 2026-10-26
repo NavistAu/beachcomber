@@ -1,6 +1,5 @@
 use beachcomber::cache::Cache;
 use beachcomber::config::Config;
-use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
 use beachcomber::watcher_registry::WatcherRegistry;
@@ -12,7 +11,7 @@ use crate::common::poll::poll_until_async;
 #[tokio::test]
 async fn query_activity_triggers_provider_execution() {
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let config = Config::default();
 
     let (handle, mut scheduler) = Scheduler::new(
@@ -57,7 +56,7 @@ async fn query_activity_triggers_provider_execution() {
 #[tokio::test]
 async fn watch_only_providers_do_not_enter_poll_timers() {
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let config = Config::default();
 
     let (handle, mut scheduler) = Scheduler::new(
@@ -103,7 +102,7 @@ async fn watch_only_providers_do_not_enter_poll_timers() {
 #[tokio::test]
 async fn repeated_queries_keep_data_warm() {
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let config = Config::default();
 
     let (handle, mut scheduler) = Scheduler::new(
@@ -153,7 +152,7 @@ async fn repeated_queries_keep_data_warm() {
 #[tokio::test]
 async fn field_demand_warms_only_owning_source() {
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     let config = Config::default();
 
     let (handle, mut scheduler) = Scheduler::new(

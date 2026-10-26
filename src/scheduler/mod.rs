@@ -1390,7 +1390,7 @@ mod tests {
     /// provider's `_.decay`; one that sets none takes the prototype's.
     #[test]
     fn a_source_decay_beats_the_prototype() {
-        let registry = crate::provider::registry::ProviderRegistry::with_defaults();
+        let registry = crate::provider::registry::ProviderRegistry::shipped(&Default::default());
         let mut sm = registry.provider_sources("git").unwrap()[0].clone();
         let cache = crate::cache::Cache::new();
         cache
@@ -1411,7 +1411,7 @@ mod tests {
 
     #[test]
     fn a_source_registers_with_its_providers_decay() {
-        let registry = ProviderRegistry::with_defaults();
+        let registry = ProviderRegistry::shipped(&Default::default());
         let sm = registry.provider_sources("git").unwrap()[0].clone();
         let cache = Cache::new();
         assert_eq!(
