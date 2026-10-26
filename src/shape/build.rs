@@ -9,7 +9,7 @@
 
 use crate::provider::SourceMetadata;
 use crate::provider::config_source::{ConfigSourceSpec, ResultSpec};
-use crate::shape::decorators::{EngineDefaults, Recorded, record_return};
+use crate::shape::decorators::{EngineDefaults, Recorded, record_return, return_env};
 use crate::shape::prototype::{Kind, Link, chain, effective, source_prototypes, super_chain};
 use std::collections::{BTreeSet, HashMap};
 
@@ -82,13 +82,15 @@ fn result_spec(value: &toml::Value) -> Option<ResultSpec> {
     }
 }
 
-/// Render the `return` chain of `links` and name the table that failed.
-/// `Ok(None)` is a line that is not a string, for the file check to report.
+/// Render the `return` chain of `links` in `env` and name the table that
+/// failed. `Ok(None)` is a line that is not a string, for the file check to
+/// report.
 fn check_return(
     links: &[Link<'_>],
     name: &str,
     defaults: &EngineDefaults,
     vars: &HashMap<String, String>,
+    env: &minijinja::Environment<'static>,
 ) -> Result<Option<Recorded>, String> {
     let lines = super_chain(links, "return");
     let mut strs: Vec<&str> = Vec::new();
@@ -103,7 +105,7 @@ fn check_return(
     if strs.is_empty() {
         strs.push("{{ result }}");
     }
-    record_return(&strs, name, defaults, vars)
+    record_return(&strs, name, defaults, vars, env)
         .map(Some)
         .map_err(|e| {
             let at = lines.get(e.level).map_or(0, |(at, _)| *at);
@@ -154,12 +156,14 @@ pub fn build(
     let mut err = |e: String| {
         errors.insert(e);
     };
+    // Every `return` line below renders in a copy of the one engine.
+    let env = return_env();
 
     // Every `_` return line loads, even one no Source's `| super` reaches.
     for name in providers.keys() {
         let links = source_prototypes(providers, name);
         if !links.is_empty()
-            && let Err(e) = check_return(&links, "_", defaults, vars)
+            && let Err(e) = check_return(&links, "_", defaults, vars, &env)
         {
             err(e);
         }
@@ -196,7 +200,7 @@ pub fn build(
                 } else if stable.contains_key("return") {
                     let links = chain(providers, Kind::Source, provider, source);
                     // A line of the wrong type is the file check's error: skip.
-                    match check_return(&links, source, defaults, vars) {
+                    match check_return(&links, source, defaults, vars, &env) {
                         Ok(Some(recorded)) => retunes.push(Retune {
                             provider: provider.clone(),
                             source: source.clone(),
@@ -236,7 +240,7 @@ pub fn build(
                     "{at} has no result (a line, or result.<field> lines)"
                 ));
             }
-            let recorded = match check_return(&links, source, defaults, vars) {
+            let recorded = match check_return(&links, source, defaults, vars, &env) {
                 Ok(recorded) => recorded,
                 Err(e) => {
                     err(e);

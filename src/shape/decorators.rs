@@ -105,6 +105,9 @@ struct Line {
 }
 
 struct Render {
+    /// The engine each line renders in a copy of, its decorators bound to
+    /// this render ([`return_env`]).
+    base: Environment<'static>,
     lines: Vec<String>,
     name: String,
     /// The variables a path argument (`watch('$XDG_CONFIG_HOME/x')`) expands from.
@@ -165,12 +168,14 @@ impl std::error::Error for ReturnError {}
 ///
 /// `vars` are the variables a path argument expands from: the only part of a
 /// decorator's arguments that reads anything outside the line (the rest are
-/// literals and `_.name`).
+/// literals and `_.name`). `env` is the engine the lines render in, a load's
+/// one [`return_env`].
 pub fn record_return(
     lines: &[&str],
     name: &str,
     defaults: &EngineDefaults,
     vars: &HashMap<String, String>,
+    env: &Environment<'static>,
 ) -> Result<Recorded, ReturnError> {
     if lines.is_empty() {
         return Err(ReturnError {
@@ -193,6 +198,7 @@ pub fn record_return(
         }
     }
     let render = Arc::new(Render {
+        base: env.clone(),
         lines: lines.iter().map(|l| l.to_string()).collect(),
         name: name.to_string(),
         vars: vars.clone(),
@@ -274,8 +280,11 @@ fn merge(levels: &[Line], defaults: &EngineDefaults) -> Result<Recorded, ReturnE
     })
 }
 
-/// The strict minijinja setup a recording render (and a probe) runs in.
-fn strict_env() -> Environment<'static> {
+/// The engine a `return` line renders in: the pure library, an undefined
+/// name an error, and no decorator yet. A render copies it and binds its
+/// decorators to the copy; copying shares what it holds, so one is built per
+/// load ([`crate::shape::build`]) and handed to every [`record_return`].
+pub fn return_env() -> Environment<'static> {
     let mut jinja = build_pure_engine_env(Default::default());
     jinja.set_undefined_behavior(UndefinedBehavior::Strict);
     jinja
@@ -294,7 +303,7 @@ fn context(render: &Render, printed: &Arc<AtomicUsize>) -> MjValue {
 /// failure leaves its message and level in `render.failure`.
 fn render_level(render: &Arc<Render>, level: usize) -> Result<(), Error> {
     let printed = Arc::new(AtomicUsize::new(0));
-    let mut jinja = strict_env();
+    let mut jinja = render.base.clone();
     for decorator in DECORATORS {
         let (render, printed) = (render.clone(), printed.clone());
         jinja.add_filter(
@@ -501,10 +510,10 @@ fn watch_paths(
 /// refuses) is named; the engine's error cannot say which call it was. (A
 /// bare undefined name renders fine in `[...]`: `record` catches that one.)
 fn explain(render: &Render, line: &str, error: &Error) -> String {
-    let probe = strict_env();
     for (decorator, args) in calls(line) {
         let printed = Arc::new(AtomicUsize::new(0));
-        if probe
+        if render
+            .base
             .render_str(&format!("{{{{ [{args}] }}}}"), context(render, &printed))
             .is_err()
         {
@@ -599,7 +608,8 @@ mod tests {
     }
 
     fn record(lines: &[&str]) -> Result<Recorded, String> {
-        record_return(lines, "status", &defaults(), &test_vars()).map_err(|e| e.message)
+        record_return(lines, "status", &defaults(), &test_vars(), &return_env())
+            .map_err(|e| e.message)
     }
 
     fn rec(line: &str) -> Recorded {
@@ -656,6 +666,7 @@ mod tests {
             "s",
             &defaults(),
             &HashMap::new(),
+            &return_env(),
         )
         .unwrap_err();
         assert_eq!(
@@ -724,6 +735,7 @@ mod tests {
                 ..defaults()
             },
             &test_vars(),
+            &return_env(),
         )
         .unwrap();
         assert_eq!(r.budget, Duration::from_millis(200));
@@ -827,6 +839,7 @@ mod tests {
                 "s",
                 &defaults(),
                 &test_vars(),
+                &return_env(),
             )
             .unwrap_err();
             assert_eq!((above.level, above.message.as_str()), (1, why), "{line}");
@@ -891,6 +904,7 @@ mod tests {
             "deploy",
             &defaults(),
             &test_vars(),
+            &return_env(),
         )
         .unwrap();
         assert_eq!(r.invalidation, watch(&["deploy.pid"], &[]));
@@ -942,6 +956,7 @@ mod tests {
             "build",
             &defaults(),
             &test_vars(),
+            &return_env(),
         )
         .unwrap();
         assert_eq!(r.invalidation, watch(&[".build.lock"], &[]));
@@ -1148,6 +1163,7 @@ mod tests {
                 ..defaults()
             },
             &test_vars(),
+            &return_env(),
         )
         .unwrap();
         assert_eq!(r.timeout, Duration::from_secs(4));
@@ -1276,7 +1292,8 @@ mod tests {
     #[test]
     fn an_error_names_the_level_that_raised_it() {
         let at = |lines: &[&str]| {
-            let e = record_return(lines, "s", &defaults(), &test_vars()).unwrap_err();
+            let e =
+                record_return(lines, "s", &defaults(), &test_vars(), &return_env()).unwrap_err();
             (e.level, e.message)
         };
         assert_eq!(
@@ -1316,9 +1333,15 @@ mod tests {
             ]),
             (1, "ttl() and poll() cannot be combined".to_string())
         );
-        let shown = record_return(&["{{ result | watch() }}"], "s", &defaults(), &test_vars())
-            .unwrap_err()
-            .to_string();
+        let shown = record_return(
+            &["{{ result | watch() }}"],
+            "s",
+            &defaults(),
+            &test_vars(),
+            &return_env(),
+        )
+        .unwrap_err()
+        .to_string();
         assert_eq!(shown, "watch(): takes at least one path");
     }
 
