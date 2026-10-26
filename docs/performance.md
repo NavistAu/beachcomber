@@ -202,6 +202,52 @@ Every client renders templates through `libbeachcomber::resolve`, so its cost is
 
 **Rule for future changes:** What every render of a resolution reads the same — the environment, the directory — is built once in `Resolver::new`, never in `bind` or per render.
 
+### Round 4: Loading a configuration
+
+Every daemon start, config reload and `comb check config` loads the configuration (`ProviderRegistry::load`), and so does every test that builds a registry (`ProviderRegistry::shipped`). Phase 7 moved the built-in providers into `defaults/*.toml` (3.7 KB → 17.3 KB of Sources and templates), and the load became the test suite's largest cost. A profile of a debug load found most of it in work done again: an engine environment built for every line read, the engine's global names collected for every line, the seed planned twice, the abstract provider's lines analysed once per provider table.
+
+**Fix:** what a load reads lines in is built once per load and handed down; nothing is kept across loads.
+
+| Change | `load/scanline` debug | release |
+|---|---:|---:|
+| Before (`feat/one-tree` at `72f1ff9c`, with the bench) | 21.8 ms | 11.3 ms |
+| A line is read in a `Probe`: an engine with its global names, collected once | 19.8 | 10.6 |
+| One engine per load for every config Source's lines (`config_source::load_probe`) | 17.4 | 9.7 |
+| One engine per load that every `return` render copies (`decorators::return_env`) | 16.1 | 9.1 |
+| The seed plan reads the loaded `Config` and the registry's compiled provider lines | 14.4 | 8.0 |
+| Each file's labels (a `$HOME` look-up on disk each) worked out once per plan | 14.2 | 7.8 |
+| Each file's `[client]` tree made an engine value once, not once per provider | 13.6 | 7.5 |
+| Every `return` render shares the load's variables | 13.1 | 7.3 |
+| A Source's `data` line read once for its refs and its calls (`eval::refs_in`, `calls_in`) | 12.8 | 7.1 |
+| A provider table that sets no line shares the abstract provider's chains | 11.4 | 6.1 |
+
+Two changes are outside the bench: a daemon start and a reload write the seed their load planned (it was planned a second time), and `comb check config` loads the configuration `comb` composed at start (it read and parsed every file again).
+
+**Result:** measured 2026-10-26, the base and the new build run alternately (each round runs every build once, in turn), on the 12-core Mac. Medians, the minimum in brackets. The benches and the CLI at load 7–13; the suite at load 17–137, most of it the suite's own.
+
+| What | Before | After | Change |
+|---|---:|---:|---:|
+| `load/shipped`, debug (`cargo bench --profile dev --bench load`) | 15.3 ms | 6.8 ms | −55% |
+| `load/scanline`, debug | 21.8 ms | 11.4 ms | −48% |
+| `load/shipped`, release | 8.0 ms | 3.9 ms (3.6) | −51% |
+| `load/scanline`, release | 11.3 ms | 6.1 ms (6.0) | −46% |
+| `comb daemon` start to ready (`--ready-fd`), release | 29.6 ms (28.3) | 17.3 ms (16.3) | −42% |
+| `comb check config`, release | 20.8 ms (19.7) | 13.4 ms (12.8) | −36% |
+| `cargo nextest run --workspace`, wall | 11.8 s (11.1) | 10.7 s (10.1) | −9% |
+| `cargo nextest run --workspace`, CPU-seconds | 97.0 (96.0) | 81.8 (79.7) | −16% |
+
+Three rounds for the benches, 15 for the CLI, five for the suite (2508 tests each time). The daemon and `check config` ran on an isolated `$HOME`, `$XDG_CONFIG_HOME` and socket, with an empty `config.toml` and scanline's drop-in in `conf.d`; each daemon was stopped by its pid once it signalled ready. `load/parse` (the shipped files parsed, 1.6 ms debug, 0.25 ms release) did not change.
+
+**What remains** in a release `load/scanline`, by profile:
+
+- **Linting each client template leaf, about a quarter.** Each leaf is linted once, which is the work; but its text is scanned by several passes (its refusals, its imports, its caching, its form), each scanning it again. One scan shared by the passes is the next step, and the larger one in a debug build, where the scanner is unoptimised.
+- **Rendering each provider's `template` line over each file's `[client]` tree, about a quarter.** One render per (file, provider) is the design; about a third of it is compiling the same line again for each. Compiling it once needs the evaluator to hand back a compiled line, which a statements line (rewritten to owned text) cannot borrow from: a change to `eval::evaluate`, not to the load.
+- **Linting each Source's lines (about 14%) and recording each `return` (about 6%)**: each line once.
+- **Parsing the TOML (about 8%)**: the bench's own; a daemon parses its files once.
+- **Labels (about 4%)**: two `$HOME` look-ups per file in the plan and one in the composition.
+
+**Rule for future changes:** what a load reads every line in (an engine, its global names, the configuration, the provider lines, the seed) is built once per load and handed to whatever needs it. Nothing is cached across loads, and nothing that depends on the configuration is a process-wide static.
+
 ---
 
 ## Current Performance Profile
