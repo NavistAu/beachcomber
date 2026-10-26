@@ -3196,6 +3196,85 @@ mod tests {
         assert!(registry.runs().in_flight().is_empty());
     }
 
+    /// The provider `g` of one Source `s`, whose run is held at its start
+    /// until the test sends on its channel (as a process slow to spawn would
+    /// hold it), and then answers 1.
+    struct SlowStart(Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>);
+
+    impl crate::provider::Source for SlowStart {
+        fn metadata(&self) -> &crate::provider::SourceMetadata {
+            static META: std::sync::OnceLock<crate::provider::SourceMetadata> =
+                std::sync::OnceLock::new();
+            META.get_or_init(|| crate::provider::SourceMetadata {
+                name: "s".into(),
+                fields: vec![crate::provider::FieldSchema {
+                    name: "n".into(),
+                    field_type: crate::provider::FieldType::Int,
+                }],
+                invalidation: crate::provider::InvalidationStrategy::Poll {
+                    interval_secs: 60,
+                    count: 2,
+                },
+                failback: crate::provider::FailbackConfig {
+                    reattempts: 3,
+                    interval_secs: 3600,
+                },
+                decay: None,
+                budget: Duration::from_secs(3600),
+                timeout: Duration::from_secs(600),
+                nearest: false,
+            })
+        }
+
+        fn execute(&self, _: Option<&str>) -> Result<crate::provider::SourceResult, String> {
+            self.0.lock().unwrap().recv().map_err(|e| e.to_string())?;
+            let mut result = crate::provider::SourceResult::new();
+            result.insert("n", crate::provider::Value::Int(1));
+            Ok(result)
+        }
+    }
+
+    impl crate::provider::Provider for SlowStart {
+        fn metadata(&self) -> crate::provider::ProviderMetadata {
+            crate::provider::ProviderMetadata {
+                name: "g".into(),
+                sources: vec![crate::provider::Source::metadata(self).clone()],
+            }
+        }
+
+        fn sources(&self) -> Vec<Box<dyn crate::provider::Source>> {
+            vec![Box::new(SlowStart(Arc::clone(&self.0)))]
+        }
+    }
+
+    /// A `--wait 0` read starts the run it needs and is answered on its first
+    /// poll, however long the run takes to get going: it waits on nothing,
+    /// the run and the runtime's timer (which turns in whole milliseconds)
+    /// alike. Nothing ended in time, so the read answers what is stored; the
+    /// run goes on and records itself. One worker, so nothing turns the timer
+    /// between the read's start and its poll.
+    #[tokio::test]
+    async fn a_wait_0_read_is_answered_at_once_with_its_run_held_at_its_start() {
+        let (go, held) = std::sync::mpsc::channel();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .register(Box::new(SlowStart(Arc::new(std::sync::Mutex::new(held)))))
+            .unwrap();
+        let (registry, cache) = (Arc::new(registry), Arc::new(Cache::new()));
+        let read = Read::new(false, Wait::For(Duration::ZERO));
+        let pending =
+            start_for_read(&registry, &cache, "g", "s", None, read).expect("a cold instance runs");
+        let run = pending.run.clone();
+        let answered = tokio_test::task::spawn(settle(vec![pending])).poll();
+        go.send(()).unwrap();
+        assert_eq!(
+            answered,
+            std::task::Poll::Ready(Ok(false)),
+            "answered at once, no run ended"
+        );
+        assert_eq!(run.outcome().await, Outcome::Stored);
+    }
+
     /// A watch frame is new when its data, its template or its memo half
     /// changed, and not when only an age did: a memo's `age_ms` in a group's
     /// tree as much as in a string's object, and never a key of the group that

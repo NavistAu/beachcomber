@@ -296,9 +296,27 @@ impl Run {
     }
 
     /// [`Self::outcome`] if the run ends by `deadline`; `None` if it does not
-    /// (it goes on, and records itself).
+    /// (it goes on, and records itself). A deadline already past (`--wait 0`,
+    /// a budget spent) is answered at once with how the run has ended, if it
+    /// has: tokio's timer turns in whole milliseconds and rounds a deadline up
+    /// to its next turn, so a wait on it would hold the caller for a turn.
     pub async fn outcome_by(&self, deadline: tokio::time::Instant) -> Option<Outcome> {
+        if deadline <= tokio::time::Instant::now() {
+            return self.outcome_now();
+        }
         tokio::time::timeout_at(deadline, self.outcome()).await.ok()
+    }
+
+    /// How the run has ended, if it has, without waiting.
+    fn outcome_now(&self) -> Option<Outcome> {
+        let mut state = Arc::clone(&self.state);
+        loop {
+            let end = lock(&state.end).clone()?;
+            match end {
+                End::Done(outcome) => return Some(outcome),
+                End::Moved(next) => state = next,
+            }
+        }
     }
 
     /// [`Self::outcome`], from a blocking thread. From the thread of a run,
@@ -1145,6 +1163,28 @@ mod tests {
         }
     }
 
+    /// A wait whose deadline has passed is answered on its first poll, with
+    /// what the run has come to by then: nothing while it is held, its outcome
+    /// once it has ended. It waits on no timer: tokio's turns in whole
+    /// milliseconds, and would hold it until the next turn. One worker, so
+    /// nothing turns the timer between the deadline and the poll.
+    #[tokio::test]
+    async fn a_wait_already_over_is_answered_at_once() {
+        use std::task::Poll;
+        let f = fixture(3, Duration::from_secs(60));
+        let run = f.start(Want::Cold).unwrap();
+        let over = tokio::time::Instant::now();
+        let held = tokio_test::task::spawn(run.outcome_by(over)).poll();
+        f.gate.open();
+        assert_eq!(held, Poll::Ready(None), "held: nothing, at once");
+        assert_eq!(run.outcome().await, Outcome::Stored);
+        assert_eq!(
+            tokio_test::task::spawn(run.outcome_by(over)).poll(),
+            Poll::Ready(Some(Outcome::Stored)),
+            "ended: its outcome, at once"
+        );
+    }
+
     /// A failure is the run's outcome, counts toward the failback and leaves
     /// the last good value; in backoff only `--force` runs it, and a queued
     /// run the backoff holds back is dropped.
@@ -1227,6 +1267,11 @@ mod tests {
             run.outcome().await,
             Outcome::Stored,
             "the run that replaced it"
+        );
+        assert_eq!(
+            tokio_test::task::spawn(run.outcome_by(tokio::time::Instant::now())).poll(),
+            std::task::Poll::Ready(Some(Outcome::Stored)),
+            "and so, without waiting, for a wait already over"
         );
         assert_eq!(f.stored(), Some(Value::Int(2)), "the second run's record");
     }
