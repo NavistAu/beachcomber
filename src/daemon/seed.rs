@@ -37,7 +37,7 @@ use crate::provider::Value;
 use crate::provider::registry::{ProviderRegistry, RegistryHandle};
 use crate::scheduler::{SchedulerHandle, SchedulerMessage};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -225,26 +225,49 @@ fn apply_reseed(cache: &Cache, registry: &ProviderRegistry, mut planned: HashMap
 /// caller's, so the plan can be built and inspected without touching the
 /// registry.
 fn plan(config: &Config, registry: &ProviderRegistry) -> Plan {
-    let layers = config.composed_layers();
     let mut plan = Plan::default();
-    let mut reads = Vec::with_capacity(layers.len());
-    for (file, layer) in layers {
-        let label = Config::config_label(file);
-        let read = crate::shape::seeded::read(file, layer);
-        plan.errors.extend(read.errors.iter().cloned());
-        for (namespace, tree) in &read.writes {
+    let layers: Vec<Layer<'_>> = config
+        .composed_layers()
+        .iter()
+        .map(|(file, value)| Layer::of(file, value))
+        .collect();
+    for layer in &layers {
+        plan.errors.extend(layer.read.errors.iter().cloned());
+        for (namespace, tree) in &layer.read.writes {
             let value = Value::from_json(tree).expect("TOML has no null");
             plan.writes
                 .entry(namespace.clone())
                 .or_default()
-                .push((label.clone(), value));
+                .push((layer.label.clone(), value));
         }
-        reads.push(read);
     }
-    let world = ClientWorld::new(config, registry, &reads);
-    plan_macros(layers, &reads, &world, &mut plan);
-    plan_templates(layers, &reads, registry.lines(), &world, &mut plan);
+    let world = ClientWorld::new(config, registry, &layers);
+    plan_macros(&layers, &world, &mut plan);
+    plan_templates(&layers, registry.lines(), &world, &mut plan);
     plan
+}
+
+/// One layer of a configuration as the plan reads it: the labels of its file,
+/// each worked out once (a label looks `$HOME` up on disk), and what it seeds.
+struct Layer<'c> {
+    /// `config:<file>`: what its records are labelled.
+    label: String,
+    /// `config(<file>)`: what its errors and warnings are prefixed with.
+    shown: String,
+    value: &'c toml::Value,
+    read: crate::shape::seeded::Seeded,
+}
+
+impl<'c> Layer<'c> {
+    fn of(file: &Path, value: &'c toml::Value) -> Self {
+        let shown = Config::error_label(file);
+        Self {
+            label: Config::config_label(file),
+            read: crate::shape::seeded::read_labelled(shown.clone(), value),
+            shown,
+            value,
+        }
+    }
 }
 
 /// What a client text in a configuration is linted against: the client's
@@ -258,19 +281,15 @@ struct ClientWorld {
 }
 
 impl ClientWorld {
-    fn new(
-        config: &Config,
-        registry: &ProviderRegistry,
-        reads: &[crate::shape::seeded::Seeded],
-    ) -> Self {
+    fn new(config: &Config, registry: &ProviderRegistry, layers: &[Layer<'_>]) -> Self {
         let mut providers: std::collections::BTreeSet<String> =
             registry.provider_names().into_iter().collect();
         providers.extend(config.named_providers());
         providers
             .retain(|name| crate::shape::seeded::provider_name_error("", name, true).is_none());
-        let mut libraries: Vec<String> = reads
+        let mut libraries: Vec<String> = layers
             .iter()
-            .flat_map(|read| &read.macros)
+            .flat_map(|layer| &layer.read.macros)
             .flat_map(|(provider, libraries)| {
                 libraries
                     .keys()
@@ -309,16 +328,12 @@ fn library_address(provider: &str, name: &str) -> String {
 /// replacing one library and keeping its siblings. Each is linted as a macro
 /// library: one that does not compile, or prints, is an error and is not
 /// written; one that imports a library no layer declares is a warning.
-fn plan_macros(
-    layers: &[(PathBuf, toml::Value)],
-    reads: &[crate::shape::seeded::Seeded],
-    world: &ClientWorld,
-    plan: &mut Plan,
-) {
+fn plan_macros(layers: &[Layer<'_>], world: &ClientWorld, plan: &mut Plan) {
     use libbeachcomber::eval::{Finding, Line, lint};
-    for ((file, _), read) in layers.iter().zip(reads) {
-        let label = Config::config_label(file);
-        let shown = Config::error_label(file);
+    for Layer {
+        label, shown, read, ..
+    } in layers
+    {
         for (provider, libraries) in &read.macros {
             let mut written = serde_json::Map::new();
             for (name, text) in libraries {
@@ -362,17 +377,20 @@ fn plan_macros(
 /// is linted as a client template; a tree with a leaf that does not compile
 /// is not written.
 fn plan_templates(
-    layers: &[(PathBuf, toml::Value)],
-    reads: &[crate::shape::seeded::Seeded],
+    layers: &[Layer<'_>],
     lines: &crate::shape::provider::ProviderLines,
     world: &ClientWorld,
     plan: &mut Plan,
 ) {
     let known = world.known();
-    for ((file, layer), read) in layers.iter().zip(reads) {
-        let label = Config::config_label(file);
-        let shown = Config::error_label(file);
-        let client = layer
+    for Layer {
+        label,
+        shown,
+        value,
+        read,
+    } in layers
+    {
+        let client = value
             .get("client")
             .and_then(|c| serde_json::to_value(c).ok())
             .unwrap_or_else(|| serde_json::json!({}));
@@ -504,6 +522,7 @@ pub fn lint_template_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn layer(text: &str) -> (PathBuf, toml::Value) {
         (PathBuf::from("/f.toml"), toml::from_str(text).unwrap())
