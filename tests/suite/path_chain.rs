@@ -2151,7 +2151,7 @@ fn marker_fixture(nearest: bool) -> Fixture {
                     PathBuf::from("m.toml"),
                     layer,
                 )]),
-                &Default::default(),
+                &std::env::vars().collect(),
             );
             assert!(load.errors.is_empty(), "{:?}", load.errors);
             load.registry

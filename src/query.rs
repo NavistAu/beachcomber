@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn build_provider_demands_all() {
-        let reg = ProviderRegistry::shipped(&Default::default());
+        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         let plan = QueryPlan::build("git", None, &reg).unwrap();
         assert!(matches!(plan.demand, SourceDemand::All));
         assert_eq!(plan.provider, "git");
@@ -647,7 +647,7 @@ mod tests {
 
     #[test]
     fn build_field_demands_only_owning_source() {
-        let reg = ProviderRegistry::shipped(&Default::default());
+        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         // branch is owned by the head source (split from refs).
         let plan = QueryPlan::build("git.branch", None, &reg).unwrap();
         match plan.demand {
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn build_source_name_as_field_demands_nothing() {
-        let reg = ProviderRegistry::shipped(&Default::default());
+        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         // "refs" is a source name, not a field: git.refs parses as Field, and
         // no field owns it, so it demands nothing (same as any unknown field).
         let plan = QueryPlan::build("git.refs", None, &reg).unwrap();
@@ -671,7 +671,7 @@ mod tests {
 
     #[test]
     fn build_source_name_prefixed_field_demands_nothing() {
-        let reg = ProviderRegistry::shipped(&Default::default());
+        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         let plan = QueryPlan::build("git.refs.branch", None, &reg).unwrap();
         match plan.demand {
             SourceDemand::Sources(v) => assert!(v.is_empty(), "git.refs.branch addresses no field"),
@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn build_a_nested_key_demands_its_nearest_ancestors_source() {
-        let reg = ProviderRegistry::shipped(&Default::default());
+        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         let plan = QueryPlan::build("git.branch.x", None, &reg).unwrap();
         match plan.demand {
             SourceDemand::Sources(v) => assert_eq!(v, vec!["head".to_string()]),
@@ -691,7 +691,7 @@ mod tests {
 
     #[test]
     fn build_an_undeclared_field_under_a_sentinel_source_demands_it() {
-        let reg = ProviderRegistry::shipped(&Default::default());
+        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         let plan = QueryPlan::build("mise.node", None, &reg).unwrap();
         match plan.demand {
             SourceDemand::Sources(v) => assert_eq!(v, vec!["tools".to_string()]),
@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn build_an_undeclared_field_without_a_sentinel_demands_nothing() {
-        let reg = ProviderRegistry::shipped(&Default::default());
+        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         let plan = QueryPlan::build("hostname.nonesuch", None, &reg).unwrap();
         match plan.demand {
             SourceDemand::Sources(v) => assert!(v.is_empty(), "no sentinel, nothing declared"),
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn build_unknown_field_demands_nothing() {
-        let reg = ProviderRegistry::shipped(&Default::default());
+        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         let plan = QueryPlan::build("git.totally_bogus_field", None, &reg).unwrap();
         match plan.demand {
             SourceDemand::Sources(v) => assert!(v.is_empty(), "unknown field warms nothing"),
@@ -738,7 +738,7 @@ mod tests {
 
     #[test]
     fn build_refuses_a_facet_outside_the_closed_set_naming_the_head_as_written() {
-        let reg = ProviderRegistry::shipped(&Default::default());
+        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         for (key, head) in [
             ("p:notes.x", "p:notes"),
             ("p:bogus:put.x", "p:bogus:put"),
@@ -758,7 +758,7 @@ mod tests {
 
     #[test]
     fn build_reads_a_colon_below_the_head_as_part_of_a_segment() {
-        let reg = ProviderRegistry::shipped(&Default::default());
+        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         let plan = QueryPlan::build("git.branch:fresh", None, &reg).unwrap();
         assert!(matches!(plan.target, KeyParse::Field(_, ref f) if f == "branch:fresh"));
     }

@@ -3113,7 +3113,7 @@ mod tests {
                  result.v = \"{{{{ data }}}}\"\n",
                 d = dir.display()
             )),
-            &Default::default(),
+            &std::env::vars().collect(),
         )
         .unwrap()
         .share(&cache);
@@ -3255,7 +3255,7 @@ mod tests {
             crate::cache::Schedule::default(),
         );
 
-        let registry = ProviderRegistry::shipped(&Default::default());
+        let registry = ProviderRegistry::shipped(&std::env::vars().collect());
         let target = KeyParse::Field("git".to_string(), "branch".to_string());
         let resp = read_watch_value(
             &cache,

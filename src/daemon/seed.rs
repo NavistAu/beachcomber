@@ -728,7 +728,11 @@ mod tests {
             crate::daemon::defaults::comb_layer(),
             layer("[daemon.providers._]\ntemplate = \"{{ {'where': '{{ 1 }}'} }}\"\n"),
         ];
-        let planned = plan(&layers, &ProviderRegistry::shipped(&Default::default())).writes;
+        let planned = plan(
+            &layers,
+            &ProviderRegistry::shipped(&std::env::vars().collect()),
+        )
+        .writes;
         assert!(
             planned.contains_key("git:template"),
             "a built-in no file names has the abstract template: {:?}",
@@ -745,8 +749,9 @@ mod tests {
             Config::from_layers(vec![crate::daemon::defaults::comb_layer(), layer(text)])
         };
         let cache = Arc::new(Cache::new());
-        let registry =
-            RegistryHandle::new(Arc::new(ProviderRegistry::shipped(&Default::default())));
+        let registry = RegistryHandle::new(Arc::new(ProviderRegistry::shipped(
+            &std::env::vars().collect(),
+        )));
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let scheduler = SchedulerHandle::new(tx);
         let before = registry.current();
@@ -757,7 +762,7 @@ mod tests {
             "[daemon.providers.etest]\ntemplate = \"{{ 1 }}\"\n\n\
              [daemon.providers.etest.sources.u]\ndata = \"{{ 5 }}\"\nresult.u1 = \"{{ data }}\"\n",
         );
-        let loaded = ProviderRegistry::load(&broken, &Default::default());
+        let loaded = ProviderRegistry::load(&broken, &std::env::vars().collect());
         assert!(
             loaded.errors.iter().any(|e| e.contains("etest template")),
             "the load that gates startup and the watch refuses it too: {:?}",
@@ -778,7 +783,7 @@ mod tests {
         let sound = config_of(
             "[daemon.providers.etest.sources.u]\ndata = \"{{ 5 }}\"\nresult.u1 = \"{{ data }}\"\n",
         );
-        let loaded = ProviderRegistry::load(&sound, &Default::default());
+        let loaded = ProviderRegistry::load(&sound, &std::env::vars().collect());
         reload_providers(
             &cache,
             &registry,

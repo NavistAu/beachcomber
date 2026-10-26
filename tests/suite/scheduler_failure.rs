@@ -173,8 +173,9 @@ return = "{{{{ result | poll('60s') | failback('60s', 3) }}}}"
     ));
 
     let cache = Arc::new(Cache::new());
-    let registry =
-        Arc::new(ProviderRegistry::with_config(&config, &Default::default()).expect("registry"));
+    let registry = Arc::new(
+        ProviderRegistry::with_config(&config, &std::env::vars().collect()).expect("registry"),
+    );
     let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
         registry,

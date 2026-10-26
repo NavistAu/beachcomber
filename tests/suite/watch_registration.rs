@@ -74,7 +74,7 @@ fn a_held_registration_is_pending_and_waits_for_no_one() {
         let _enter = rt.enter();
         let watchers = Arc::new(WatcherRegistry::new());
         let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-        let registry = ProviderRegistry::with_config(&config, &Default::default())
+        let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
             .unwrap()
             .share(&cache);
         let (handle, mut scheduler) =

@@ -470,7 +470,7 @@ async fn a_reload_supersedes_a_run_a_read_started() {
     let config = Config::from_toml(&gated_source(&dir, "10m"));
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let before = ProviderRegistry::with_config(&config, &Default::default())
+    let before = ProviderRegistry::with_config(&config, &std::env::vars().collect())
         .unwrap()
         .share(&cache);
     let in_force = RegistryHandle::new(before.clone());
@@ -497,7 +497,7 @@ async fn a_reload_supersedes_a_run_a_read_started() {
 
     let after = ProviderRegistry::with_config(
         &Config::from_toml(&gated_source(&dir, "11m")),
-        &Default::default(),
+        &std::env::vars().collect(),
     )
     .unwrap()
     .adopt(&before, &cache);
@@ -548,7 +548,7 @@ async fn a_ring_of_reads_between_runs_finds_the_last_value_and_waits_on_nothing(
     let config = Config::from_toml(&format!("{}{}", side("p", "a", "q"), side("q", "b", "p")));
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = ProviderRegistry::with_config(&config, &Default::default())
+    let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
         .unwrap()
         .share(&cache);
     let sock = dir.join("s");

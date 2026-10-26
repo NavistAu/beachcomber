@@ -36,7 +36,7 @@ impl TestServer {
         let sock = tmp.path().join("bench.sock");
 
         let cache = Arc::new(Cache::new());
-        let registry = Arc::new(ProviderRegistry::shipped(&Default::default()));
+        let registry = Arc::new(ProviderRegistry::shipped(&std::env::vars().collect()));
         let config = Config::default();
 
         let (handle, scheduler) = Scheduler::new(

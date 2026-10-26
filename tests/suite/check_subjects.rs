@@ -958,11 +958,7 @@ fn check_config_sees_the_env_files_variables() {
         tmp.path(),
         &tmp.path().join("no-daemon.sock"),
     )
-    // The shell keeps a HOME: the shipped `mise` Source expands its
-    // `watch('$XDG_CONFIG_HOME/mise')` from the process's own HOME, not the
-    // env file's, so a check with none would fail it where a daemon (which
-    // applies the env file to its environment) would not.
-    .env("HOME", tmp.path().join("shell-home"))
+    .env_remove("HOME")
     .args(["check", "--connect-timeout", "0", "config"])
     .output()
     .expect("run comb check config");

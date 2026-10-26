@@ -523,10 +523,16 @@ pub fn watch_abs_paths(strategy: &InvalidationStrategy) -> Vec<String> {
 /// `$XDG_CONFIG_HOME`, `$XDG_DATA_HOME`, `$XDG_STATE_HOME`, `$XDG_CACHE_HOME`.
 /// Falls back to platform XDG defaults (e.g. `$HOME/.config` when
 /// `XDG_CONFIG_HOME` is unset). Returns `None` if `$HOME` is unset and no
-/// platform fallback applies, or for a `~user` path. Sources call this in
-/// `metadata()` so the scheduler receives canonical absolute paths.
-pub fn expand_abs_path(s: &str) -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").ok()?;
+/// platform fallback applies, or for a `~user` path. The variables are
+/// `vars` and nothing else (a daemon's are its process's with the env file's
+/// over them, [`crate::config::Config::vars`]), so the daemon and
+/// `comb check config` expand a `watch()` path alike.
+pub fn expand_abs_path(
+    s: &str,
+    vars: &std::collections::HashMap<String, String>,
+) -> Option<std::path::PathBuf> {
+    let var = |name: &str| vars.get(name).cloned();
+    let home = var("HOME")?;
     let s = libbeachcomber::path::expand_tilde(s, Some(&home)).ok()?;
     let s = s.to_string_lossy();
     let mut out = String::new();
@@ -546,16 +552,18 @@ pub fn expand_abs_path(s: &str) -> Option<std::path::PathBuf> {
             let val = match name.as_str() {
                 "HOME" => home.clone(),
                 "XDG_CONFIG_HOME" => {
-                    std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{home}/.config"))
+                    var("XDG_CONFIG_HOME").unwrap_or_else(|| format!("{home}/.config"))
                 }
-                "XDG_DATA_HOME" => std::env::var("XDG_DATA_HOME")
-                    .unwrap_or_else(|_| format!("{home}/.local/share")),
-                "XDG_STATE_HOME" => std::env::var("XDG_STATE_HOME")
-                    .unwrap_or_else(|_| format!("{home}/.local/state")),
+                "XDG_DATA_HOME" => {
+                    var("XDG_DATA_HOME").unwrap_or_else(|| format!("{home}/.local/share"))
+                }
+                "XDG_STATE_HOME" => {
+                    var("XDG_STATE_HOME").unwrap_or_else(|| format!("{home}/.local/state"))
+                }
                 "XDG_CACHE_HOME" => {
-                    std::env::var("XDG_CACHE_HOME").unwrap_or_else(|_| format!("{home}/.cache"))
+                    var("XDG_CACHE_HOME").unwrap_or_else(|| format!("{home}/.cache"))
                 }
-                _ => std::env::var(&name).ok()?,
+                _ => var(&name)?,
             };
             out.push_str(&val);
             continue;
@@ -971,42 +979,58 @@ mod tests {
         assert!(meta.validate(true).is_ok());
     }
 
+    fn vars(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
     #[test]
     fn expand_abs_path_resolves_tilde() {
-        let home = std::env::var("HOME").expect("HOME set");
-        let p = expand_abs_path("~/foo").unwrap();
-        assert_eq!(p.to_string_lossy(), format!("{home}/foo"));
+        let p = expand_abs_path("~/foo", &vars(&[("HOME", "/h")])).unwrap();
+        assert_eq!(p.to_string_lossy(), "/h/foo");
     }
 
     #[test]
     fn expand_abs_path_resolves_xdg_config_home_fallback() {
-        let home = std::env::var("HOME").expect("HOME set");
-        // Use a value we can predict regardless of caller's env.
-        let saved = std::env::var("XDG_CONFIG_HOME").ok();
-        // SAFETY: test single-threaded for env mutation
-        unsafe {
-            std::env::remove_var("XDG_CONFIG_HOME");
-        }
-        let p = expand_abs_path("$XDG_CONFIG_HOME/mise").unwrap();
-        assert_eq!(p.to_string_lossy(), format!("{home}/.config/mise"));
-        if let Some(v) = saved {
-            unsafe {
-                std::env::set_var("XDG_CONFIG_HOME", v);
-            }
-        }
+        let p = expand_abs_path("$XDG_CONFIG_HOME/mise", &vars(&[("HOME", "/h")])).unwrap();
+        assert_eq!(p.to_string_lossy(), "/h/.config/mise");
+        let p = expand_abs_path(
+            "$XDG_CONFIG_HOME/mise",
+            &vars(&[("HOME", "/h"), ("XDG_CONFIG_HOME", "/x")]),
+        )
+        .unwrap();
+        assert_eq!(p.to_string_lossy(), "/x/mise");
+    }
+
+    #[test]
+    fn expand_abs_path_reads_its_variables_not_the_process() {
+        // The process has a HOME; the map does not, and the map is all there is.
+        assert!(std::env::var_os("HOME").is_some());
+        assert!(expand_abs_path("~/foo", &vars(&[])).is_none());
+        assert!(expand_abs_path("$XDG_CONFIG_HOME/mise", &vars(&[])).is_none());
+        assert_eq!(
+            expand_abs_path("$CUSTOM/x", &vars(&[("HOME", "/h"), ("CUSTOM", "/c")]))
+                .unwrap()
+                .to_string_lossy(),
+            "/c/x"
+        );
     }
 
     #[test]
     fn expand_abs_path_expands_only_a_leading_tilde() {
         assert_eq!(
-            expand_abs_path("/a/~/b").unwrap().to_string_lossy(),
+            expand_abs_path("/a/~/b", &vars(&[("HOME", "/h")]))
+                .unwrap()
+                .to_string_lossy(),
             "/a/~/b"
         );
     }
 
     #[test]
     fn expand_abs_path_returns_none_for_relative() {
-        assert!(expand_abs_path("relative/path").is_none());
+        assert!(expand_abs_path("relative/path", &vars(&[("HOME", "/h")])).is_none());
     }
 
     // ── dotted-tail writes: insert_path / remove_path / deep_merge ───────────

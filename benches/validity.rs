@@ -398,7 +398,7 @@ fn budget_accuracy() {
         let cache = std::sync::Arc::new(beachcomber::cache::Cache::with_watchers(watchers.clone()));
         let registry = beachcomber::provider::registry::ProviderRegistry::with_config(
             &config,
-            &Default::default(),
+            &std::env::vars().collect(),
         )
         .expect("the bench lines load")
         .share(&cache);

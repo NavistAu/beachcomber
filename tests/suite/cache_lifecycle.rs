@@ -409,7 +409,7 @@ result.x = "{{ data }}"
 "#,
     );
     let cache = Arc::new(Cache::new());
-    let registry = ProviderRegistry::with_config(&config, &Default::default())
+    let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
         .expect("loads")
         .share(&cache);
     let (handle, mut scheduler) = Scheduler::new(

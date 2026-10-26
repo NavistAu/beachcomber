@@ -363,7 +363,7 @@ async fn a_seeded_template_answers_a_get_on_a_client_only_provider() {
 /// `comb check config` prints.
 fn startup_errors() -> Vec<String> {
     let config = Config::load();
-    ProviderRegistry::load(&config, &Default::default()).errors
+    ProviderRegistry::load(&config, &std::env::vars().collect()).errors
 }
 
 /// Assert the message, then assert the wiring: the message is what an operator
@@ -640,7 +640,7 @@ fn the_abstract_provider_is_never_registered() {
     let config = Config::from_toml(
         "[daemon.providers._.cache._]\ndecay = 4\n\n[client.providers.aws]\ntemplate.p = \"x\"\n",
     );
-    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
+    let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect()).unwrap();
     assert!(registry.is_registered("aws"), "named in [client.providers]");
     assert!(
         !registry.is_registered("_"),

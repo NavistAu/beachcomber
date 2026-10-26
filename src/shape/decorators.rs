@@ -16,6 +16,7 @@ use libbeachcomber::engine::build_pure_engine_env;
 use libbeachcomber::engine::op_error;
 use minijinja::value::{Kwargs, Object, ObjectRepr, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error, ErrorKind, UndefinedBehavior};
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -106,6 +107,8 @@ struct Line {
 struct Render {
     lines: Vec<String>,
     name: String,
+    /// The variables a path argument (`watch('$XDG_CONFIG_HOME/x')`) expands from.
+    vars: HashMap<String, String>,
     recorded: Mutex<Vec<Line>>,
     /// The first failure, and the level whose line raised it.
     failure: Mutex<Option<ReturnError>>,
@@ -159,10 +162,15 @@ impl std::error::Error for ReturnError {}
 /// Across `| super` a Source's own setting beats its prototype's: a decorator
 /// a nearer line set is kept and the farther line's call of it is dropped.
 /// `ttl` is `poll` with a count of 1 and a decay of 1: the two share one slot.
+///
+/// `vars` are the variables a path argument expands from: the only part of a
+/// decorator's arguments that reads anything outside the line (the rest are
+/// literals and `_.name`).
 pub fn record_return(
     lines: &[&str],
     name: &str,
     defaults: &EngineDefaults,
+    vars: &HashMap<String, String>,
 ) -> Result<Recorded, ReturnError> {
     if lines.is_empty() {
         return Err(ReturnError {
@@ -187,6 +195,7 @@ pub fn record_return(
     let render = Arc::new(Render {
         lines: lines.iter().map(|l| l.to_string()).collect(),
         name: name.to_string(),
+        vars: vars.clone(),
         recorded: Mutex::new(lines.iter().map(|_| Line::default()).collect()),
         failure: Mutex::new(None),
     });
@@ -399,7 +408,7 @@ fn record(
         }
         "watch" => {
             arity(!args.is_empty(), "at least one path")?;
-            line.watch = Some(watch_paths(args)?);
+            line.watch = Some(watch_paths(args, &render.vars)?);
         }
         _ => unreachable!("{name} is not a decorator"),
     }
@@ -459,9 +468,12 @@ fn count_of(name: &str, value: &MjValue) -> Result<u32, String> {
 }
 
 /// Split `watch` entries by first character: `/`, `~` and `$` start an
-/// absolute path (expanded now, from the process's own variables); anything
-/// else is relative to the Source's directory.
-fn watch_paths(args: &[MjValue]) -> Result<(Vec<String>, Vec<String>), String> {
+/// absolute path (expanded now, from `vars`); anything else is relative to the
+/// Source's directory.
+fn watch_paths(
+    args: &[MjValue],
+    vars: &HashMap<String, String>,
+) -> Result<(Vec<String>, Vec<String>), String> {
     let (mut patterns, mut abs_paths) = (vec![], vec![]);
     for arg in args {
         let Some(path) = arg.as_str().filter(|p| !p.is_empty()) else {
@@ -473,8 +485,8 @@ fn watch_paths(args: &[MjValue]) -> Result<(Vec<String>, Vec<String>), String> {
             {
                 return Err("watch(): ~user paths are not supported".into());
             }
-            let expanded =
-                expand_abs_path(path).ok_or_else(|| format!("watch(): cannot expand {path}"))?;
+            let expanded = expand_abs_path(path, vars)
+                .ok_or_else(|| format!("watch(): cannot expand {path}"))?;
             abs_paths.push(expanded.to_string_lossy().into_owned());
         } else {
             patterns.push(path.to_string());
@@ -578,8 +590,16 @@ mod tests {
         }
     }
 
+    /// What the expansion of an absolute `watch()` path reads: a map, never the process.
+    fn test_vars() -> HashMap<String, String> {
+        [("HOME", "/home/t"), ("XDG_CONFIG_HOME", "/xdg")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
     fn record(lines: &[&str]) -> Result<Recorded, String> {
-        record_return(lines, "status", &defaults()).map_err(|e| e.message)
+        record_return(lines, "status", &defaults(), &test_vars()).map_err(|e| e.message)
     }
 
     fn rec(line: &str) -> Recorded {
@@ -619,15 +639,29 @@ mod tests {
     }
 
     #[test]
-    fn absolute_watch_entries_expand_from_the_process_home() {
-        let vars = [("HOME", Some("/home/t")), ("XDG_CONFIG_HOME", Some("/xdg"))];
-        temp_env::with_vars(vars, || {
-            let r = rec("{{ result | watch('~/a', '$HOME/b', '$XDG_CONFIG_HOME/c') }}");
-            let InvalidationStrategy::Watch { abs_paths, .. } = r.invalidation else {
-                panic!("watch only");
-            };
-            assert_eq!(abs_paths, ["/home/t/a", "/home/t/b", "/xdg/c"]);
-        });
+    fn absolute_watch_entries_expand_from_the_given_variables() {
+        let r = rec("{{ result | watch('~/a', '$HOME/b', '$XDG_CONFIG_HOME/c') }}");
+        let InvalidationStrategy::Watch { abs_paths, .. } = r.invalidation else {
+            panic!("watch only");
+        };
+        assert_eq!(abs_paths, ["/home/t/a", "/home/t/b", "/xdg/c"]);
+    }
+
+    #[test]
+    fn absolute_watch_entries_do_not_read_the_process_environment() {
+        // The process has a HOME; these variables do not, so there is nothing to expand from.
+        assert!(std::env::var_os("HOME").is_some());
+        let error = record_return(
+            &["{{ result | watch('$XDG_CONFIG_HOME/mise') }}"],
+            "s",
+            &defaults(),
+            &HashMap::new(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.message,
+            "watch(): cannot expand $XDG_CONFIG_HOME/mise"
+        );
     }
 
     #[test]
@@ -689,6 +723,7 @@ mod tests {
                 budget: Duration::from_millis(200),
                 ..defaults()
             },
+            &test_vars(),
         )
         .unwrap();
         assert_eq!(r.budget, Duration::from_millis(200));
@@ -787,8 +822,13 @@ mod tests {
             ),
         ] {
             assert_eq!(record(&[line]).unwrap_err(), why, "{line}");
-            let above =
-                record_return(&["{{ result | super }}", line], "s", &defaults()).unwrap_err();
+            let above = record_return(
+                &["{{ result | super }}", line],
+                "s",
+                &defaults(),
+                &test_vars(),
+            )
+            .unwrap_err();
             assert_eq!((above.level, above.message.as_str()), (1, why), "{line}");
         }
     }
@@ -850,6 +890,7 @@ mod tests {
             &["{{ result | watch(_.name ~ '.pid') }}"],
             "deploy",
             &defaults(),
+            &test_vars(),
         )
         .unwrap();
         assert_eq!(r.invalidation, watch(&["deploy.pid"], &[]));
@@ -900,6 +941,7 @@ mod tests {
             &["{{ result | watch('.' ~ _.name ~ '.lock') }}"],
             "build",
             &defaults(),
+            &test_vars(),
         )
         .unwrap();
         assert_eq!(r.invalidation, watch(&[".build.lock"], &[]));
@@ -1105,6 +1147,7 @@ mod tests {
                 timeout: Duration::from_secs(4),
                 ..defaults()
             },
+            &test_vars(),
         )
         .unwrap();
         assert_eq!(r.timeout, Duration::from_secs(4));
@@ -1233,7 +1276,7 @@ mod tests {
     #[test]
     fn an_error_names_the_level_that_raised_it() {
         let at = |lines: &[&str]| {
-            let e = record_return(lines, "s", &defaults()).unwrap_err();
+            let e = record_return(lines, "s", &defaults(), &test_vars()).unwrap_err();
             (e.level, e.message)
         };
         assert_eq!(
@@ -1273,7 +1316,7 @@ mod tests {
             ]),
             (1, "ttl() and poll() cannot be combined".to_string())
         );
-        let shown = record_return(&["{{ result | watch() }}"], "s", &defaults())
+        let shown = record_return(&["{{ result | watch() }}"], "s", &defaults(), &test_vars())
             .unwrap_err()
             .to_string();
         assert_eq!(shown, "watch(): takes at least one path");

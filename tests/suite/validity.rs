@@ -27,7 +27,7 @@ fn serve(toml: &str) -> Served {
     let layer: toml::Value = toml::from_str(toml).unwrap();
     let config =
         crate::common::registry::config_over_shipped(vec![(PathBuf::from("test.toml"), layer)]);
-    let load = ProviderRegistry::load(&config, &Default::default());
+    let load = ProviderRegistry::load(&config, &std::env::vars().collect());
     assert!(load.errors.is_empty(), "{:?}", load.errors);
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));

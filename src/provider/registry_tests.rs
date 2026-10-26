@@ -87,7 +87,7 @@ fn registry_list_providers() {
 
 #[test]
 fn registry_with_defaults_has_builtins() {
-    let registry = ProviderRegistry::shipped(&Default::default());
+    let registry = ProviderRegistry::shipped(&std::env::vars().collect());
     assert!(
         registry.provider_metadata("hostname").is_some(),
         "Should have hostname provider"
@@ -100,7 +100,7 @@ fn registry_with_defaults_has_builtins() {
 
 #[test]
 fn registry_source_lookup() {
-    let registry = ProviderRegistry::shipped(&Default::default());
+    let registry = ProviderRegistry::shipped(&std::env::vars().collect());
     let source = registry.source("hostname", "host");
     assert!(
         source.is_some(),
@@ -123,7 +123,7 @@ fn registry_execute_via_source() {
 
 #[test]
 fn registry_metadata() {
-    let registry = ProviderRegistry::shipped(&Default::default());
+    let registry = ProviderRegistry::shipped(&std::env::vars().collect());
     let meta = registry.provider_metadata("hostname").unwrap();
     assert_eq!(meta.name, "hostname");
 }
@@ -133,7 +133,7 @@ fn registry_metadata() {
 /// `register_static` shadowing a real provider name.
 #[test]
 fn registry_is_registered_reports_provider_names() {
-    let registry = ProviderRegistry::shipped(&Default::default());
+    let registry = ProviderRegistry::shipped(&std::env::vars().collect());
     assert!(registry.is_registered("hostname"));
     assert!(!registry.is_registered("nonexistent"));
     assert!(
@@ -144,7 +144,7 @@ fn registry_is_registered_reports_provider_names() {
 
 #[test]
 fn registry_sources_for_key() {
-    let registry = ProviderRegistry::shipped(&Default::default());
+    let registry = ProviderRegistry::shipped(&std::env::vars().collect());
     // hostname.host source declares the "name" field
     assert_eq!(
         registry.sources_for_key("hostname", "name"),
@@ -168,12 +168,12 @@ fn an_adopted_registry_carries_what_outlives_the_configuration() {
     let config = Config::from_toml(
         "[daemon.providers.p.sources.s]\ndata = \"{{ 1 }}\"\nresult.f = \"{{ data }}\"\n",
     );
-    let old = ProviderRegistry::with_config(&config, &Default::default())
+    let old = ProviderRegistry::with_config(&config, &std::env::vars().collect())
         .unwrap()
         .share(&cache);
     assert!(old.register_static("kept"));
 
-    let next = ProviderRegistry::with_config(&config, &Default::default())
+    let next = ProviderRegistry::with_config(&config, &std::env::vars().collect())
         .unwrap()
         .adopt(&old, &cache);
     assert!(Arc::ptr_eq(&old.failures, &next.failures));
@@ -202,7 +202,7 @@ fn a_definition_is_the_body_and_not_the_schedule() {
                 "[daemon.providers.p.sources.s]\n{root}data = \"{data}\"\n\
                  result.f = \"{{{{ data }}}}\"\nreturn = \"{{{{ result | poll('{poll}') }}}}\"\n"
             )),
-            &Default::default(),
+            &std::env::vars().collect(),
         )
         .unwrap()
     };

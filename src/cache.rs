@@ -3135,7 +3135,8 @@ mod tests {
     #[test]
     fn a_source_refresh_does_not_disturb_a_put_over_it() {
         let cache = Cache::new();
-        let registry = crate::provider::registry::ProviderRegistry::shipped(&Default::default());
+        let registry =
+            crate::provider::registry::ProviderRegistry::shipped(&std::env::vars().collect());
 
         cache.put_source(
             "git",
@@ -3193,7 +3194,8 @@ mod tests {
     #[test]
     fn removing_a_put_shows_the_layer_below_at_once() {
         let cache = Cache::new();
-        let registry = crate::provider::registry::ProviderRegistry::shipped(&Default::default());
+        let registry =
+            crate::provider::registry::ProviderRegistry::shipped(&std::env::vars().collect());
 
         cache.put_source(
             "git",
@@ -3239,8 +3241,11 @@ mod tests {
             "[daemon.providers.demo.sources.a]\ndata = \"{{{{ 1 }}}}\"\nresult.x = \"{{{{ data }}}}\"\n\
              [daemon.providers.demo.sources.b]\ndata = \"{{{{ 2 }}}}\"\nresult.y = \"{{{{ data }}}}\"\n{extra}"
         ));
-        crate::provider::registry::ProviderRegistry::with_config(&config, &Default::default())
-            .unwrap_or_else(|e| panic!("loads: {e:?}"))
+        crate::provider::registry::ProviderRegistry::with_config(
+            &config,
+            &std::env::vars().collect(),
+        )
+        .unwrap_or_else(|e| panic!("loads: {e:?}"))
     }
 
     fn store_demo(cache: &Cache, source: &str, field: &str, value: i64) {
@@ -3363,9 +3368,11 @@ mod tests {
             "[daemon.providers.ord.sources.zeta]\ndata = \"{{ 1 }}\"\nresult.z = \"{{ data }}\"\n\
              [daemon.providers.ord.sources.alpha]\ndata = \"{{ 2 }}\"\nresult.a = \"{{ data }}\"\n",
         );
-        let registry =
-            crate::provider::registry::ProviderRegistry::with_config(&config, &Default::default())
-                .unwrap();
+        let registry = crate::provider::registry::ProviderRegistry::with_config(
+            &config,
+            &std::env::vars().collect(),
+        )
+        .unwrap();
         let names: Vec<&str> = registry
             .provider_sources("ord")
             .unwrap()
@@ -3421,9 +3428,11 @@ mod tests {
     fn a_provider_with_no_sources_answers_nothing() {
         let config =
             crate::config::Config::from_toml("[client.providers.solo]\ntemplate.t = \"x\"\n");
-        let registry =
-            crate::provider::registry::ProviderRegistry::with_config(&config, &Default::default())
-                .unwrap();
+        let registry = crate::provider::registry::ProviderRegistry::with_config(
+            &config,
+            &std::env::vars().collect(),
+        )
+        .unwrap();
         let cache = Cache::new();
         assert!(
             cache
@@ -3456,7 +3465,8 @@ mod tests {
     }
 
     fn read_tools(cache: &Cache) -> MergedRead {
-        let registry = crate::provider::registry::ProviderRegistry::shipped(&Default::default());
+        let registry =
+            crate::provider::registry::ProviderRegistry::shipped(&std::env::vars().collect());
         cache
             .read_merged(
                 "git",
@@ -3538,7 +3548,8 @@ mod tests {
         put(&cache, "o", tools(&[("c", Value::Int(3))]));
         let entry = cache.get_entry("git", Some("/repo")).unwrap();
         assert_eq!(entry.puts.keys().collect::<Vec<_>>(), ["o"]);
-        let registry = crate::provider::registry::ProviderRegistry::shipped(&Default::default());
+        let registry =
+            crate::provider::registry::ProviderRegistry::shipped(&std::env::vars().collect());
         let read = cache
             .read_merged(
                 "git",

@@ -986,6 +986,7 @@ impl ProviderRegistry {
             providers,
             &self.registered_sources(),
             &engine_defaults(config),
+            &env,
         );
         errors.extend(shape_errors);
         let (decls, retunes) = (built.decls, built.retunes);
@@ -1658,7 +1659,7 @@ mod tests {
 
     fn registry_from(user: &str) -> ProviderRegistry {
         let config = crate::config_tests::with_shipped_defaults(user);
-        ProviderRegistry::with_config(&config, &Default::default()).unwrap()
+        ProviderRegistry::with_config(&config, &std::env::vars().collect()).unwrap()
     }
 
     fn invalidation(reg: &ProviderRegistry, provider: &str, source: &str) -> InvalidationStrategy {
@@ -1951,7 +1952,7 @@ result.x = "{{ data }}"
 
     #[test]
     fn built_in_sources_with_a_root_declare_how_their_instances_combine() {
-        let reg = ProviderRegistry::shipped(&Default::default());
+        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         let mut rooted = Vec::new();
         for (provider, metas) in reg.registered_sources() {
             for sm in metas {
@@ -1972,7 +1973,7 @@ result.x = "{{ data }}"
 
     #[test]
     fn a_providers_sources_that_find_their_root_alike_share_one_lookup() {
-        let reg = ProviderRegistry::shipped(&Default::default());
+        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         let keys: std::collections::HashSet<String> = reg
             .provider_sources("git")
             .unwrap()
@@ -2032,7 +2033,7 @@ return = "{{ result | poll('15s') }}"
             "demo.s takes its lines from `_`; the retuned built-in and `_` itself are not config Sources"
         );
         assert_eq!(
-            ProviderRegistry::with_config(&Config::default(), &Default::default())
+            ProviderRegistry::with_config(&Config::default(), &std::env::vars().collect())
                 .unwrap()
                 .config_source_count(),
             0
@@ -2059,7 +2060,7 @@ return = "{{ result | poll('15s') }}"
             invalidation(&reg, "git", "diff")
         );
         // The others keep theirs.
-        let stock = ProviderRegistry::shipped(&Default::default());
+        let stock = ProviderRegistry::shipped(&std::env::vars().collect());
         assert_eq!(
             invalidation(&reg, "git", "refs"),
             invalidation(&stock, "git", "refs")
@@ -2078,7 +2079,7 @@ return = "{{ result | poll('15s') }}"
         // The shipped abstract `_` says `poll('60s', 12)`; it applies to config
         // Sources only, so watch-driven built-ins stay watch-driven.
         let reg = registry_from("[daemon.providers.git.sources.diff]\n");
-        let stock = ProviderRegistry::shipped(&Default::default());
+        let stock = ProviderRegistry::shipped(&std::env::vars().collect());
         for (provider, source) in [("git", "diff"), ("git", "refs"), ("mise", "tools")] {
             let (got, want) = (
                 source_meta(&reg, provider, source),
@@ -2104,7 +2105,7 @@ return = "{{ result | poll('15s') }}"
         );
         let diff = source_meta(&reg, "git", "diff");
         assert_ne!(
-            ProviderRegistry::shipped(&Default::default())
+            ProviderRegistry::shipped(&std::env::vars().collect())
                 .provider_sources("git")
                 .unwrap()
                 .iter()
@@ -2219,7 +2220,7 @@ result.y = "{{ data }}"
     #[should_panic(expected = "bound once")]
     fn a_second_bind_is_refused() {
         let cache = Arc::new(Cache::new());
-        let registry = ProviderRegistry::shipped(&Default::default()).share(&cache);
+        let registry = ProviderRegistry::shipped(&std::env::vars().collect()).share(&cache);
         registry.bind(&cache);
     }
 
@@ -2280,7 +2281,7 @@ result.y = "{{ data }}"
     fn the_count_first_failback_order_is_a_load_error_naming_its_table() {
         let load = |text: &str| {
             let config = crate::config_tests::with_shipped_defaults(text);
-            ProviderRegistry::load(&config, &Default::default()).errors
+            ProviderRegistry::load(&config, &std::env::vars().collect()).errors
         };
         let order = "failback(): takes the interval first, as a string like '1s', then the count: \
                      failback('1s', 3)";
@@ -2315,7 +2316,7 @@ result.y = "{{ data }}"
     fn enabled_on_a_name_nothing_gives_a_provider_is_a_load_error() {
         let load = |text: &str| {
             let config = crate::config_tests::with_shipped_defaults(text);
-            ProviderRegistry::load(&config, &Default::default()).errors
+            ProviderRegistry::load(&config, &std::env::vars().collect()).errors
         };
         assert_eq!(
             load("[daemon.providers.gti]\nenabled = false\n"),
@@ -2347,7 +2348,7 @@ result.y = "{{ data }}"
              | merge(sources.nope()) }}\"\n\
              return = \"{{ result | merge(daemon.providers.p.sources.zap()) }}\"\n",
         );
-        let errors = ProviderRegistry::load(&config, &Default::default()).errors;
+        let errors = ProviderRegistry::load(&config, &std::env::vars().collect()).errors;
         assert_eq!(
             errors,
             vec![
@@ -2380,7 +2381,7 @@ result.y = "{{ data }}"
     #[test]
     fn sources_that_call_each_other_in_a_ring_are_a_load_error() {
         let config = crate::config::Config::from_toml(RING);
-        let errors = ProviderRegistry::load(&config, &Default::default()).errors;
+        let errors = ProviderRegistry::load(&config, &std::env::vars().collect()).errors;
         assert_eq!(
             errors,
             vec![
@@ -2393,8 +2394,8 @@ result.y = "{{ data }}"
     #[test]
     fn a_ring_that_got_past_the_load_check_fails_when_run() {
         let config = crate::config::Config::from_toml(RING);
-        let mut registry = ProviderRegistry::shipped(&Default::default());
-        let (built, errors) = registry.config_sources(&config, &Default::default());
+        let mut registry = ProviderRegistry::shipped(&std::env::vars().collect());
+        let (built, errors) = registry.config_sources(&config, &std::env::vars().collect());
         assert_eq!(errors, Vec::<String>::new(), "the lines are fine");
         for (name, sources) in built.providers {
             registry.register_config_sources(&name, sources).unwrap();
@@ -2430,7 +2431,7 @@ result.y = "{{ data }}"
             renders.display(),
             dir.path().canonicalize().unwrap().display(),
         ));
-        let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
+        let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect()).unwrap();
         let cache = Arc::new(Cache::new());
         let registry = registry.share(&cache);
         use crate::provider::source_call::{run_call, source_call};
@@ -2461,7 +2462,7 @@ result.y = "{{ data }}"
              data = \"{{ daemon.providers.p.sources.a() }}\"\n\
              result.y = \"{{ data }}\"\n",
         );
-        let errors = ProviderRegistry::load(&config, &Default::default()).errors;
+        let errors = ProviderRegistry::load(&config, &std::env::vars().collect()).errors;
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(
             errors[0].starts_with("config(<in memory>): [daemon.providers.p.sources.a] "),
@@ -2485,7 +2486,7 @@ result.y = "{{ data }}"
             count.display()
         ));
         let cache = Arc::new(Cache::new());
-        let registry = ProviderRegistry::with_config(&config, &Default::default())
+        let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
             .unwrap()
             .share(&cache);
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -2561,7 +2562,7 @@ result.y = "{{ data }}"
             flag.display()
         ));
         let cache = Arc::new(Cache::new());
-        let registry = ProviderRegistry::with_config(&config, &Default::default())
+        let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
             .unwrap()
             .share(&cache);
         (registry, cache)

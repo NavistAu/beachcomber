@@ -88,6 +88,7 @@ fn check_return(
     links: &[Link<'_>],
     name: &str,
     defaults: &EngineDefaults,
+    vars: &HashMap<String, String>,
 ) -> Result<Option<Recorded>, String> {
     let lines = super_chain(links, "return");
     let mut strs: Vec<&str> = Vec::new();
@@ -102,10 +103,12 @@ fn check_return(
     if strs.is_empty() {
         strs.push("{{ result }}");
     }
-    record_return(&strs, name, defaults).map(Some).map_err(|e| {
-        let at = lines.get(e.level).map_or(0, |(at, _)| *at);
-        format!("{} return: {}", links[at].path, e.message)
-    })
+    record_return(&strs, name, defaults, vars)
+        .map(Some)
+        .map_err(|e| {
+            let at = lines.get(e.level).map_or(0, |(at, _)| *at);
+            format!("{} return: {}", links[at].path, e.message)
+        })
 }
 
 /// The lines each `_` Source table holds, for the caller to compile.
@@ -131,7 +134,8 @@ pub fn prototype_lines(providers: &toml::Table) -> Vec<PrototypeLines> {
 /// registered, by provider: the built-in Rust Sources, whose table accepts
 /// `return` and nothing else until they are shipped as config, and whose
 /// fields a new Source may not declare again. `defaults` is what a Source gets
-/// for a decorator its `return` chain does not name.
+/// for a decorator its `return` chain does not name, and `vars` the variables
+/// a `watch()` path expands from.
 ///
 /// A built-in's `return` is read as a config Source's is: its own line, and
 /// what its `| super` reaches in `<p>.sources._` and `_.sources._`. With no
@@ -144,6 +148,7 @@ pub fn build(
     providers: &toml::Table,
     existing: &HashMap<String, Vec<SourceMetadata>>,
     defaults: &EngineDefaults,
+    vars: &HashMap<String, String>,
 ) -> (Built, Vec<String>) {
     let mut errors: BTreeSet<String> = BTreeSet::new();
     let mut err = |e: String| {
@@ -154,7 +159,7 @@ pub fn build(
     for name in providers.keys() {
         let links = source_prototypes(providers, name);
         if !links.is_empty()
-            && let Err(e) = check_return(&links, "_", defaults)
+            && let Err(e) = check_return(&links, "_", defaults, vars)
         {
             err(e);
         }
@@ -191,7 +196,7 @@ pub fn build(
                 } else if stable.contains_key("return") {
                     let links = chain(providers, Kind::Source, provider, source);
                     // A line of the wrong type is the file check's error: skip.
-                    match check_return(&links, source, defaults) {
+                    match check_return(&links, source, defaults, vars) {
                         Ok(Some(recorded)) => retunes.push(Retune {
                             provider: provider.clone(),
                             source: source.clone(),
@@ -231,7 +236,7 @@ pub fn build(
                     "{at} has no result (a line, or result.<field> lines)"
                 ));
             }
-            let recorded = match check_return(&links, source, defaults) {
+            let recorded = match check_return(&links, source, defaults, vars) {
                 Ok(recorded) => recorded,
                 Err(e) => {
                     err(e);

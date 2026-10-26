@@ -270,7 +270,7 @@ fn every_bad_line_of_a_source_is_reported() {
             "[daemon.providers.p.sources.s]\nroot = \"{{ nope1 }}\"\ndata = \"{{ nope2 }}\"\n\
              result.f = \"{{ nope3 }}\"\nreturn = \"{{ result | poll('5s') }}\"\n",
         ),
-        &Default::default(),
+        &std::env::vars().collect(),
     )
     .errors;
     for (stage, name) in [("root", "nope1"), ("data", "nope2"), ("result.f", "nope3")] {
@@ -298,7 +298,7 @@ fn a_client_template_is_linted_where_it_is_loaded() {
             .unwrap(),
         ),
     ]);
-    let load = ProviderRegistry::load(&config, &Default::default());
+    let load = ProviderRegistry::load(&config, &std::env::vars().collect());
     assert_eq!(load.errors.len(), 1, "{:#?}", load.errors);
     assert!(
         load.errors[0].starts_with("config(/user.toml): [client.providers.p] template.bad: "),
@@ -746,7 +746,7 @@ pub(crate) fn with_shipped_defaults(user: &str) -> Config {
 /// built-in providers.
 fn source_errors(user: &str) -> Vec<String> {
     let config = with_shipped_defaults(user);
-    ProviderRegistry::with_config(&config, &Default::default())
+    ProviderRegistry::with_config(&config, &std::env::vars().collect())
         .err()
         .unwrap_or_default()
 }
@@ -807,7 +807,7 @@ fn every_stage_reports_at_once() {
 
 fn shipped_registry(user: &str) -> ProviderRegistry {
     let config = with_shipped_defaults(user);
-    ProviderRegistry::with_config(&config, &Default::default())
+    ProviderRegistry::with_config(&config, &std::env::vars().collect())
         .unwrap_or_else(|e| panic!("loads: {e:?}"))
 }
 
@@ -907,7 +907,7 @@ result.x = "{{ data }}"
     assert_eq!(seeded_errors(user), Vec::<String>::new());
     let config = with_shipped_defaults(user);
     assert_eq!(config.daemon().budget(), Duration::from_millis(20));
-    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
+    let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect()).unwrap();
     let source = &registry.provider_sources("budget").unwrap()[0];
     assert_eq!(source.budget, Duration::from_millis(20));
 }
@@ -1078,7 +1078,7 @@ fn a_type_error_is_a_load_error_not_the_default_config() {
         "{errors:?}"
     );
     assert_eq!(
-        ProviderRegistry::load(&config, &Default::default()).errors,
+        ProviderRegistry::load(&config, &std::env::vars().collect()).errors,
         errors,
         "the loader every caller shares reports it"
     );
@@ -1105,7 +1105,7 @@ fn a_type_error_is_a_load_error_not_the_default_config() {
 fn a_wrongly_typed_source_in_an_in_memory_config_is_an_error() {
     let config =
         in_memory("[daemon.providers.demo.sources.s]\ndata = 5\nresult = \"{{ data }}\"\n");
-    let errors = ProviderRegistry::load(&config, &Default::default()).errors;
+    let errors = ProviderRegistry::load(&config, &std::env::vars().collect()).errors;
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
         errors[0].starts_with("config(<in memory>): ")
@@ -1249,6 +1249,7 @@ fn a_bad_plugin_path_does_not_hide_the_sources_errors() {
         "[daemon.plugin]\npath = [\"~/p\"]\n\
          [daemon.providers.demo.sources.s]\ndata = \"{{ nope_name }}\"\nresult = \"{{ data }}\"\n",
     );
+    // No variables at all: the `~` has no HOME to name.
     let errors = ProviderRegistry::load(&config, &Default::default()).errors;
     assert!(
         errors.iter().any(|e| e.contains("[daemon.plugin] path")),
@@ -1397,7 +1398,7 @@ fn a_source_with_no_return_anywhere_is_watch_only_with_the_engine_defaults() {
     let config = Config::from_toml(
         "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult = \"{{ data }}\"\n",
     );
-    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
+    let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect()).unwrap();
     let meta = &registry.provider_sources("demo").unwrap()[0];
     assert_eq!(
         meta.invalidation,
@@ -1449,7 +1450,7 @@ fn a_prototypes_lines_are_checked_at_load() {
 #[test]
 fn all_providers_registered_by_default() {
     let config = with_shipped_defaults("");
-    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
+    let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect()).unwrap();
     assert!(registry.provider_sources("hostname").is_some());
     assert!(registry.provider_sources("user").is_some());
     assert!(registry.provider_sources("git").is_some());

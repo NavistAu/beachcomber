@@ -1558,7 +1558,8 @@ mod tests {
     /// provider's `_.decay`; one that sets none takes the prototype's.
     #[test]
     fn a_source_decay_beats_the_prototype() {
-        let registry = crate::provider::registry::ProviderRegistry::shipped(&Default::default());
+        let registry =
+            crate::provider::registry::ProviderRegistry::shipped(&std::env::vars().collect());
         let mut sm = registry.provider_sources("git").unwrap()[0].clone();
         let cache = crate::cache::Cache::new();
         cache
@@ -1579,7 +1580,7 @@ mod tests {
 
     #[test]
     fn a_source_registers_with_its_providers_decay() {
-        let registry = ProviderRegistry::shipped(&Default::default());
+        let registry = ProviderRegistry::shipped(&std::env::vars().collect());
         let sm = registry.provider_sources("git").unwrap()[0].clone();
         let cache = Cache::new();
         assert_eq!(
@@ -1860,7 +1861,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (config, dirs) = watching_sources(&tmp.path().canonicalize().unwrap(), 2);
         let cache = Arc::new(Cache::new());
-        let registry = ProviderRegistry::with_config(&config, &Default::default())
+        let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
             .unwrap()
             .share(&cache);
         let (handle, mut scheduler) =
@@ -1935,7 +1936,7 @@ mod tests {
             tree.display()
         ));
         let cache = Arc::new(Cache::new());
-        let registry = ProviderRegistry::with_config(&config, &Default::default())
+        let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
             .unwrap()
             .share(&cache);
         let (handle, mut scheduler) =
@@ -2091,7 +2092,7 @@ mod tests {
              result.va = \"{{ data }}\"\n",
         );
         let cache = Arc::new(Cache::new());
-        let registry = ProviderRegistry::with_config(&config, &Default::default())
+        let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
             .unwrap()
             .share(&cache);
         let (one, two) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -2145,7 +2146,7 @@ mod tests {
         let load = |toml: String| {
             ProviderRegistry::with_config(
                 &crate::config::Config::from_toml(&toml),
-                &Default::default(),
+                &std::env::vars().collect(),
             )
             .unwrap()
             .share(&cache)
@@ -2225,7 +2226,7 @@ mod tests {
         let cache = Arc::new(Cache::new());
         let registry = ProviderRegistry::with_config(
             &crate::config::Config::from_toml(&source("a", "5s", 1)),
-            &Default::default(),
+            &std::env::vars().collect(),
         )
         .unwrap()
         .share(&cache);
@@ -2293,7 +2294,7 @@ mod tests {
     /// A scheduler over `cache` and the shipped defaults, not running: what
     /// its loop does with one key is [`Scheduler::fire`].
     fn scheduler_over(cache: &Arc<Cache>) -> Scheduler {
-        let registry = ProviderRegistry::shipped(&Default::default()).share(cache);
+        let registry = ProviderRegistry::shipped(&std::env::vars().collect()).share(cache);
         let watchers = Arc::new(WatcherRegistry::new());
         Scheduler::new(Arc::clone(cache), registry, Config::default(), watchers).1
     }
@@ -2369,7 +2370,7 @@ mod tests {
         std::fs::write(&file, "a").unwrap();
         let watchers = Arc::new(WatcherRegistry::new());
         let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-        let registry = ProviderRegistry::shipped(&Default::default()).share(&cache);
+        let registry = ProviderRegistry::shipped(&std::env::vars().collect()).share(&cache);
         let (handle, mut scheduler) =
             Scheduler::new(cache.clone(), registry, Config::default(), watchers.clone());
         let gate = Gate::closed();

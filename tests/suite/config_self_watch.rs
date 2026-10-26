@@ -635,7 +635,7 @@ async fn a_broken_providers_edit_changes_nothing() {
     let config_file = live.env.cfg_dir.join("config.toml");
     let refused = beachcomber::provider::registry::ProviderRegistry::load(
         &beachcomber::config::Config::load_from(&config_file),
-        &Default::default(),
+        &std::env::vars().collect(),
     )
     .errors;
     assert!(

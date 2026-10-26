@@ -404,7 +404,7 @@ fn shipped_layers_parse_and_load_with_no_errors() {
 
     let load = ProviderRegistry::load(
         &beachcomber::config::Config::from_layers(layers),
-        &Default::default(),
+        &std::env::vars().collect(),
     );
     assert_eq!(load.errors, Vec::<String>::new());
     assert_eq!(load.warnings, Vec::<String>::new());

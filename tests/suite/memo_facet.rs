@@ -342,7 +342,7 @@ async fn a_source_write_under_the_field_drops_the_hash() {
         ))
         .unwrap(),
     )]);
-    let registry = ProviderRegistry::with_config(&config, &Default::default()).unwrap();
+    let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect()).unwrap();
     let mut d = serve_with(registry);
     assert!(d.put("w:template.v", json!("{{ comb.w.v }}")).await.ok);
     d.memo("w.v", None, H1, Some(json!("1")), &[], None).await;

@@ -130,7 +130,8 @@ async fn a_retuned_builtin_shows_its_new_poll_in_the_cache_facet() {
         )
         .unwrap(),
     )]);
-    let registry = Arc::new(ProviderRegistry::with_config(&config, &Default::default()).unwrap());
+    let registry =
+        Arc::new(ProviderRegistry::with_config(&config, &std::env::vars().collect()).unwrap());
     let (_tmp, mut s, _cache, handle, _sock) = serve_on(tmp, sock, cache, registry, watchers).await;
     let repo = GitRepoFixture::new();
     let p = repo.path_str();

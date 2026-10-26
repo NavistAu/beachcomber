@@ -239,7 +239,7 @@ fn bench_convergence_l(c: &mut Criterion) {
     let (_repo, path) = make_repo_with_branches();
 
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::shipped(&Default::default()));
+    let registry = Arc::new(ProviderRegistry::shipped(&std::env::vars().collect()));
     let (handle, scheduler) = Scheduler::new(
         cache.clone(),
         registry,
@@ -396,7 +396,7 @@ fn read_after_mutation() {
     let serve = |watched: bool| {
         let watchers = Arc::new(WatcherRegistry::new());
         let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-        let registry = ProviderRegistry::with_config(&config, &Default::default())
+        let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
             .expect("the bench lines load")
             .share(&cache);
         let handle = watched.then(|| {
