@@ -156,4 +156,49 @@ colour of `none` applies no colour.
 mapped to the nearest one it has. A caller that wants 24-bit colour passes `COLORTERM` (and `TERM`) in the render's
 environment; `comb eval` and `comb get` pass the process environment. Without them the render is 16-colour.
 
+### Bars
+
+`bar(width, part, ..., empty=none, fill_fg=none, text_fg=none, label_fg=none, bold=false)` is one styled row exactly
+`width` terminal columns wide, made of **labels** and **tracks**, in a single call. Each positional `part` after the
+width is one of:
+
+- a **label**: text, drawn `label_fg` on `empty`, or a mapping `{'label': text, 'fg': colour, 'bg': colour}`. A key left
+  out takes the `bar` default; a key given as `none` applies no colour of that kind;
+- a **track**: a mapping with `value`, below.
+
+Labels take their own display width and the tracks share the rest equally (never below 0), the earlier tracks taking the
+floor: 20 columns left over between two tracks are 10 and 10, and 21 are 10 and 11. A row whose labels are wider than
+`width` is just its labels.
+
+| track key | meaning | default |
+|---|---|---|
+| `value` | the fill as a fraction 0-1 of the track; a list of `[fraction, colour]` pairs stacked from the start edge; or `none` for no fill | required |
+| `colour` | the fill colour; with a list `value` it is an error | required for a number |
+| `from_right` | the fill grows from the right edge | `false` |
+| `marker` | a fraction 0-1 locating one marker column, or `none` | `none` |
+| `marker_round` | `'round'` or `'floor'`: how `marker` times the track width becomes whole columns | `'round'` |
+| `marker_char` | the marker glyph, one column wide | `'▏'` |
+| `marker_fg` | the marker's foreground | the foreground of its region |
+| `text` | text over the track from its first column, cut at the track's width and padded with spaces to it | `''` |
+| `text_fg` | the text's foreground over the unfilled part | the `bar` `text_fg` |
+
+For a track `W` columns wide, rounding half away from zero: the fill is `clamp(round(value x W), 0, W)` columns from the
+left (the right with `from_right`); a stacked value ends segment `i` at `min(round((f0 + ... + fi) x W), W)`; the marker
+column is `round(marker x W)`, counted from the right with `from_right` and clamped into the track.
+
+Each column is its own styled run, nested as `c | fg(..) | bg(..) | bold` nests: a filled column is `fill_fg` on its
+fill colour; an unfilled column holding a character is `text_fg` on `empty`; an unfilled space is `empty` alone, with no
+foreground and not bold. A label is one run. `bold` applies to all but the unfilled spaces. A wide character takes two
+columns as one run. A marker that lands on a wide character keeps the row its width: it replaces the character and a
+space keeps the other column. With colour off the row is its characters only. Pass shared style in a mapping with `**`:
+`bar(w, track, **style)`.
+
+```jinja
+{{ bar(26,
+       {'value': 0.30, 'colour': th.orange, 'from_right': true, 'marker': 0.16, 'text': ' 30%      '},
+       '  5H  ',
+       {'value': 0.16, 'colour': th.green, 'text': ' 4h12m'},
+       empty=th.bar_empty, fill_fg=th.bar_dark_fg, text_fg=th.bar_label_fg, label_fg=th.bar_label_fg, bold=true) }}
+```
+
 With `NO_COLOR` set to something in the render's environment, no item emits an escape sequence, `hyperlink` included.

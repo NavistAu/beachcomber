@@ -87,7 +87,7 @@ pub(super) fn add_hyperlink(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
 
 /// A colour argument: `none` (or undefined) is no colour; a string is a name or
 /// `#rrggbb`; an integer 0-255 is a palette index.
-fn colour_arg(name: &str, value: &MjValue) -> Result<Option<Colour>, Error> {
+pub(super) fn colour_arg(name: &str, value: &MjValue) -> Result<Option<Colour>, Error> {
     if is_absent(value) {
         return Ok(None);
     }
@@ -109,7 +109,13 @@ fn colour_arg(name: &str, value: &MjValue) -> Result<Option<Colour>, Error> {
 
 /// `text` in `colour` on `ground`, closed with a reset; the text itself with
 /// no colour, empty text or colour off.
-fn paint(text: &str, colour: Option<Colour>, ground: Ground, depth: Depth, on: bool) -> String {
+pub(super) fn paint(
+    text: &str,
+    colour: Option<Colour>,
+    ground: Ground,
+    depth: Depth,
+    on: bool,
+) -> String {
     match colour {
         Some(c) if on && !text.is_empty() => sgr(&c.params(ground, depth), text),
         _ => text.to_string(),
@@ -120,7 +126,7 @@ fn paint(text: &str, colour: Option<Colour>, ground: Ground, depth: Depth, on: b
 /// the attribute's own off-code, like the colours: every styling filter ends
 /// its segment at a known default state, which is what makes them safe to
 /// concatenate in any order.
-fn attribute(text: String, code: u8, on: bool) -> String {
+pub(super) fn attribute(text: String, code: u8, on: bool) -> String {
     if text.is_empty() || !on {
         return text;
     }

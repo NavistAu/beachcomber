@@ -14,6 +14,7 @@
 //! lives in [`crate::engine`]; `url` and `plugin` live in the daemon.
 
 pub mod absent;
+pub mod bar;
 pub mod data;
 pub mod fs;
 pub mod hash;
@@ -124,6 +125,7 @@ pub const ITEMS: &[Item] = &[
     item!("underline", Filter, Pure, style::add_underline),
     item!("invert", Filter, Pure, style::add_invert),
     item!("hyperlink", Function, Pure, style::add_hyperlink),
+    item!("bar", Function, Pure, bar::add_bar),
     item!("expanduser", Filter, Pure, path::add_expanduser),
     item!("ext", Filter, Pure, path::add_ext),
     item!("relpath", Filter, Pure, path::add_relpath),
@@ -443,6 +445,7 @@ mod tests {
             ("fromini", "[1] | fromini"),
             ("read", "[1] | read"),
             ("lup", "lup('x', files=true, dirs=true)"),
+            ("bar", "bar(-1)"),
             ("exec", "exec(1)"),
         ] {
             let err = eval(bad).unwrap_err();
