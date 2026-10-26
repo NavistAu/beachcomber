@@ -1,4 +1,4 @@
-//! Files: `read` and `lup`. Both read the filesystem, so they are the `io`
+//! Files: `read`, `realpath` and `lup`. All read the filesystem, so they are the `io`
 //! tier: not on a provider's lines, which run on every read.
 
 use super::{UNDEFINED, is_absent};
@@ -12,6 +12,11 @@ use std::sync::Arc;
 pub(super) fn add_read(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
     let ctx = ctx.clone();
     env.add_filter("read", move |path: MjValue| read(&ctx, &path));
+}
+
+pub(super) fn add_realpath(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
+    let ctx = ctx.clone();
+    env.add_filter("realpath", move |path: MjValue| realpath(&ctx, &path));
 }
 
 pub(super) fn add_lup(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
@@ -35,6 +40,31 @@ fn read(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
         Ok(text) => Ok(MjValue::from(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(UNDEFINED),
         Err(e) => Err(op_error(format!("read(): {}: {e}", full.display()))),
+    }
+}
+
+/// `p | realpath`: the path with symlinks followed and `.` and `..` resolved,
+/// against the render's directory and `HOME` as `read` is. A path that is not
+/// there is undefined, as is an empty one.
+fn realpath(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
+    if super::is_absent_text(path) {
+        return Ok(UNDEFINED);
+    }
+    let Some(p) = path.as_str() else {
+        return Err(op_error("realpath(): the path must be a string"));
+    };
+    let full = resolve_path(ctx, p).map_err(|e| op_error(format!("realpath(): {e}")))?;
+    match std::fs::canonicalize(&full) {
+        Ok(real) => Ok(MjValue::from(real.to_string_lossy().into_owned())),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(UNDEFINED)
+        }
+        Err(e) => Err(op_error(format!("realpath(): {}: {e}", full.display()))),
     }
 }
 
@@ -134,6 +164,54 @@ mod tests {
         let cwd = root.join("a/b/c");
         let ctx = ctx_with(&[("HOME", root.to_str().unwrap())], Some(&cwd));
         (dir, root, ctx)
+    }
+
+    #[test]
+    fn realpath_follows_symlinks_and_resolves_dots() {
+        let (_dir, root, ctx) = repo();
+        std::os::unix::fs::symlink(root.join("a/b"), root.join("link")).unwrap();
+        let real = |expr: &str| eval_in(ctx.clone(), expr).unwrap();
+        let want = root.join("a/b").to_string_lossy().into_owned();
+        assert_eq!(real("'~/link' | realpath"), want);
+        assert_eq!(real("'../c/..' | realpath"), want, "against the render dir");
+        assert_eq!(real("'.' | realpath"), root.join("a/b/c").to_string_lossy());
+        assert_eq!(
+            real("'~/a/b/../.git' | realpath"),
+            root.join("a/.git").to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn realpath_of_what_is_not_there_is_undefined() {
+        let (_dir, _root, ctx) = repo();
+        let real = |expr: &str| eval_in(ctx.clone(), expr).unwrap();
+        assert_eq!(real("('nope' | realpath) is undefined"), "true");
+        assert_eq!(
+            real("('~/a/.git/HEAD/under' | realpath) is undefined"),
+            "true"
+        );
+        assert_eq!(real("('' | realpath) is undefined"), "true");
+        assert_eq!(real("(none | realpath) is undefined"), "true");
+    }
+
+    #[test]
+    fn realpath_reports_other_errors_naming_the_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, root, ctx) = repo();
+        let locked = root.join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("f"), "").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let denied = eval_in(ctx.clone(), "'~/locked/f' | realpath");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Root is let through anywhere; everyone else gets the error.
+        if let Err(e) = denied {
+            assert!(e.contains("realpath(): ") && e.contains("locked/f"), "{e}");
+        }
+        let e = eval_in(ctx.clone(), "7 | realpath").unwrap_err();
+        assert!(e.contains("realpath(): the path must be a string"), "{e}");
+        let e = eval_in(ctx, "'~bob/x' | realpath").unwrap_err();
+        assert!(e.contains("realpath(): ~bob/x"), "{e}");
     }
 
     #[test]

@@ -78,6 +78,10 @@ duration reads this grammar.
 |---|---|
 | `p \| basename` | the last component, as POSIX `basename`: `'/a/b/'` is `b`, `'/'` is `/` |
 | `p \| dirname` | all but the last component, as POSIX `dirname`: `'/a/b/c.txt'` is `/a/b`, `'c.txt'` is `.` |
+| `p \| expanduser` | a leading `~` written as the render's `HOME`; `~user`, or `~` with no `HOME`, is an error; `''` is undefined |
+| `p \| ext` | the last component's extension without its dot: `'a.tar.gz'` is `gz`; none, or a dotfile such as `.bashrc`, is undefined |
+| `p \| relpath(base)` | `p` relative to `base`, worked out from the text alone (symlinks are not followed): `'/a/x' \| relpath('/a/b')` is `../x`, the same place is `.`. A relative operand is against the render's directory, and is an error where there is none (a provider's lines) |
+| `p \| shorten_path(n=1)` | home written as `~`, then every component but the last `n` cut to its first character (a leading `.` keeps the next one): `'/Users/j/ws/beachcomber/docs' \| shorten_path(2)` is `~/w/beachcomber/docs`. The `~` rule is the one `comb status` uses for its PATH column |
 
 ### Files and parsing
 
@@ -87,6 +91,7 @@ duration reads this grammar.
 | `lup(name, all=, files=, dirs=, follow=, git=, root=)` | the nearest path called `name` at or above the render's directory; a miss is undefined |
 | `s \| fromjson`, `s \| fromini` | text to data; text that is not JSON or INI is an error |
 | `exec(cmd, ...)`, `cmd \| exec()` | runs a command |
+| `p \| realpath` | the absolute path with symlinks followed, against the render's directory and `HOME`; a path that is not there, or `''`, is undefined; any other error names the path. It reads the filesystem, so it is not on a provider's lines |
 
 ### Text and terminal
 

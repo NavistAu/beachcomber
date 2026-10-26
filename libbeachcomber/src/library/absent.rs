@@ -110,6 +110,7 @@ mod tests {
             "fg" | "bg" => vec![MjValue::from("#ff0000")],
             "pluck" => vec![MjValue::from("a")],
             "map" => vec![MjValue::from("upper")],
+            "relpath" => vec![MjValue::from("/a")],
             "hash" => vec![MjValue::from("md5")],
             "ramp" => vec![
                 MjValue::from_serialize([50]),
@@ -170,7 +171,14 @@ mod tests {
     fn parsers_and_paths_read_empty_as_absent() {
         let jinja = build_pure_engine_env(Default::default());
         let state = jinja.empty_state();
-        for name in ["fromjson", "fromini", "basename", "dirname"] {
+        for name in [
+            "fromjson",
+            "fromini",
+            "basename",
+            "dirname",
+            "expanduser",
+            "ext",
+        ] {
             let got = state.apply_filter(name, &[MjValue::from("")]).unwrap();
             assert!(got.is_undefined(), "{name} gave {got:?} for ''");
         }

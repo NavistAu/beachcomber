@@ -148,7 +148,7 @@ fn source_text(file: Option<&Path>) -> String {
     };
     format!(
         "config({})",
-        crate::home::Home::from_env().compact_path(file)
+        libbeachcomber::path::Home::from_env().compact_path(file)
     )
 }
 

@@ -1189,8 +1189,8 @@ pub fn sanitize_cell(s: &str, ascii: bool) -> String {
 }
 
 /// A row's PATH as the tables show it: the global entry as `~`, and a path
-/// under home written from `~` ([`crate::home::Home::compact`]).
-fn shown_path(path: Option<&str>, home: &crate::home::Home) -> String {
+/// under home written from `~` ([`libbeachcomber::path::Home::compact`]).
+fn shown_path(path: Option<&str>, home: &libbeachcomber::path::Home) -> String {
     path.map_or_else(|| "~".to_string(), |p| home.compact(p))
 }
 
@@ -1210,7 +1210,7 @@ fn render_table(
     // Display-only: a path under $HOME is written from `~`, and the global
     // entry is `~` itself, in both tables. Machine presets (json/csv/tsv/sh)
     // never call through this path — they use `row.path` directly.
-    let home = crate::home::Home::from_env();
+    let home = libbeachcomber::path::Home::from_env();
 
     let now_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1914,7 +1914,7 @@ impl Predicate {
                 row_facet(&r.provider).is_some_and(|f| simple_glob_match(pat, f))
             }
             Predicate::Path(pat) => {
-                let home = crate::home::Home::from_env();
+                let home = libbeachcomber::path::Home::from_env();
                 simple_glob_match(pat, &shown_path(r.path.as_deref(), &home))
                     || r.path.as_deref().is_some_and(|p| simple_glob_match(pat, p))
             }

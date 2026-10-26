@@ -762,7 +762,7 @@ impl Config {
     /// the file's path with `$HOME` written as `~`
     /// (`config:~/.config/beachcomber/conf.d/10-mine.toml`).
     pub fn config_label(path: &Path) -> String {
-        let shown = crate::home::Home::from_env().compact_path(path);
+        let shown = libbeachcomber::path::Home::from_env().compact_path(path);
         format!("{}{shown}", crate::cache::CONFIG_SOURCE_PREFIX)
     }
 
