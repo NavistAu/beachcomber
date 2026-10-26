@@ -520,8 +520,11 @@ mod tests {
         });
         assert_eq!(
             seen,
-            vec![(ChangeKind::Providers, 2)],
-            "config.toml and the drop-in"
+            vec![(
+                ChangeKind::Providers,
+                crate::daemon::defaults::SHIPPED.len() + 2
+            )],
+            "the shipped files, config.toml and the drop-in"
         );
     }
 

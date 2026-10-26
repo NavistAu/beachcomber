@@ -160,15 +160,23 @@ fn layers_are_defaults_then_the_main_file_then_conf_d_in_lexical_order() {
         "conf.d/10-a.toml",
         "[daemon]\nlog_level = \"trace\"\n",
     );
-    let python = write(
+    // Two shipped names this version already wrote, then edited: the daemon
+    // leaves them be and loads the edit. The rest of the shipped set is
+    // planned too (a daemon writes it on start), at its place in the order.
+    let marker = format!(
+        "{}{}\n",
+        crate::daemon::defaults::MARKER_PREFIX,
+        crate::daemon::defaults::VERSION
+    );
+    write(
         tmp.path(),
         "defaults/python.toml",
-        "[daemon]\nlog_level = \"error\"\n",
+        &format!("{marker}[daemon]\nlog_level = \"error\"\n"),
     );
-    let aws = write(
+    write(
         tmp.path(),
         "defaults/aws.toml",
-        "[daemon]\nlog_level = \"info\"\n",
+        &format!("{marker}[daemon]\nlog_level = \"info\"\n"),
     );
 
     let read = Config::read_layers(
@@ -179,21 +187,28 @@ fn layers_are_defaults_then_the_main_file_then_conf_d_in_lexical_order() {
     assert!(read.errors.is_empty(), "{:?}", read.errors);
     let layers = read.layers;
     let paths: Vec<_> = layers.iter().map(|(p, _)| p.clone()).collect();
+    let mut expected: Vec<_> = crate::daemon::defaults::SHIPPED
+        .iter()
+        .map(|(name, _)| tmp.path().join("defaults").join(name))
+        .collect();
+    expected.extend([main, a, b]);
     assert_eq!(
-        paths,
-        vec![aws, python, main, a, b],
+        paths, expected,
         "layers compose defaults lexically, then the main file, then conf.d lexically"
     );
 
     // Each file is parsed on its own, not merged: an early layer still holds
     // the value the later ones override.
-    assert_eq!(
-        layers[0].1["daemon"]["log_level"].as_str(),
-        Some("info"),
-        "a layer keeps its own value; composition happens later"
-    );
-    assert_eq!(layers[2].1["daemon"]["log_level"].as_str(), Some("debug"));
-    assert_eq!(layers[4].1["daemon"]["log_level"].as_str(), Some("warn"));
+    let level = |name: &str| {
+        let at = paths.iter().position(|p| p.ends_with(name)).unwrap();
+        layers[at].1["daemon"]["log_level"]
+            .as_str()
+            .map(String::from)
+    };
+    assert_eq!(level("aws.toml").as_deref(), Some("info"));
+    assert_eq!(level("python.toml").as_deref(), Some("error"));
+    assert_eq!(level("config.toml").as_deref(), Some("debug"));
+    assert_eq!(level("20-b.toml").as_deref(), Some("warn"));
 }
 
 #[test]
@@ -235,9 +250,14 @@ fn layers_tolerate_a_missing_main_config_file() {
     assert!(read.errors.is_empty(), "{:?}", read.errors);
     let paths: Vec<_> = read.layers.into_iter().map(|(p, _)| p).collect();
     assert_eq!(
-        paths,
-        vec![drop_in],
-        "a missing main file and a missing defaults directory are both nothing"
+        paths.last(),
+        Some(&drop_in),
+        "a missing main file is nothing: the drop-in follows the defaults"
+    );
+    assert_eq!(
+        paths.len(),
+        crate::daemon::defaults::SHIPPED.len() + 1,
+        "a missing defaults directory is every shipped file, as a daemon start would write it"
     );
 }
 

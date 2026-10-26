@@ -2,9 +2,12 @@
 //! files the daemon writes to `<config-dir>/defaults/` and seeds like any
 //! other layer, not a table compiled into a client.
 //!
-//! The files are embedded in the binary so they can be written, and for no
-//! other reason: nothing is loaded from the embed. Configuration is read from the
-//! files on disk, the abstract provider in `00-comb.toml` included. Each
+//! The files are embedded in the binary so they can be written. Configuration
+//! is what [`plan`] says the directory holds once the daemon has written it:
+//! the files on disk, except that a file the daemon is about to write is read
+//! as the text it will write (so `comb check config`, which writes nothing,
+//! loads what a daemon start would), the abstract provider in `00-comb.toml`
+//! included. Each
 //! written file starts with the marker
 //! `# Managed by comb <version>`, which is how a later daemon tells a file it
 //! wrote from one the user put there, and a file from this version from one a
@@ -100,16 +103,62 @@ pub struct Report {
     pub files: usize,
 }
 
-/// What [`write_managed_defaults`] would do to `dir`, read without touching
-/// it — `comb check config` reports this.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct Audit {
-    /// Shipped names that are absent or whose first line is not this version's marker.
-    pub stale: Vec<String>,
-    /// Other `*.toml` files carrying a marker: defaults this version no longer ships.
+/// This build's version: the one the daemon writes into its managed files'
+/// markers and `comb check config` judges them against.
+pub const VERSION: &str = env!("BEACHCOMBER_VERSION");
+
+/// One `*.toml` the daemon will load from the defaults directory.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Planned {
+    pub name: String,
+    /// Whether this version ships the name (else it is a file comb did not write).
+    pub shipped: bool,
+    /// `Some(text)`: the daemon writes this over the file (or creates it) on
+    /// start and then loads it. `None`: the file on disk is loaded as it is.
+    pub write: Option<String>,
+}
+
+/// The daemon's start-up decision for a defaults directory, read without
+/// touching it: which files it writes, which it removes, and the layers it
+/// then loads. [`write_managed_defaults`] carries it out and
+/// [`crate::config::Config`] composes from [`Plan::loaded`], so the daemon and
+/// `comb check config` share this one decision.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Plan {
+    pub dir: PathBuf,
+    /// Every file loaded, lexical by name: the shipped names and any other `*.toml` left alone.
+    pub files: Vec<Planned>,
+    /// Other `*.toml` files carrying a marker: defaults this version no longer ships. Removed, not loaded.
     pub retired: Vec<String>,
-    /// Other `*.toml` files without a marker: not comb's to touch.
-    pub unmanaged: Vec<String>,
+}
+
+impl Plan {
+    /// Shipped names the daemon writes: absent or not this version's marker on the first line.
+    pub fn stale(&self) -> Vec<String> {
+        self.files
+            .iter()
+            .filter(|f| f.shipped && f.write.is_some())
+            .map(|f| f.name.clone())
+            .collect()
+    }
+
+    /// Other `*.toml` files without a marker: not comb's to touch, loaded as they are.
+    pub fn unmanaged(&self) -> Vec<String> {
+        self.files
+            .iter()
+            .filter(|f| !f.shipped)
+            .map(|f| f.name.clone())
+            .collect()
+    }
+
+    /// The files in load order, each with the text standing in for the file
+    /// when the daemon is about to write it (`None`: read it from disk).
+    pub fn loaded(&self) -> Vec<(PathBuf, Option<&str>)> {
+        self.files
+            .iter()
+            .map(|f| (self.dir.join(&f.name), f.write.as_deref()))
+            .collect()
+    }
 }
 
 /// `true` when the first line of `body` is [`MARKER_PREFIX`] followed by `version`.
@@ -124,18 +173,24 @@ fn is_managed(body: &str) -> bool {
         .is_some_and(|l| l.starts_with(MARKER_PREFIX))
 }
 
-/// Read `dir` against the shipped set for `version`. A missing or unreadable
-/// directory audits as every shipped name stale and nothing else.
-pub fn audit(dir: &Path, version: &str) -> Audit {
-    let mut audit = Audit::default();
-    for (name, _) in SHIPPED {
-        let current = std::fs::read_to_string(dir.join(name))
-            .map(|body| is_current(&body, version))
-            .unwrap_or(false);
-        if !current {
-            audit.stale.push((*name).to_string());
-        }
-    }
+/// Decide what a daemon of `version` does with `dir` and loads from it. A
+/// missing or unreadable directory plans every shipped name written and
+/// nothing else.
+pub fn plan(dir: &Path, version: &str) -> Plan {
+    let mut files: Vec<Planned> = SHIPPED
+        .iter()
+        .map(|(name, body)| {
+            let current = std::fs::read_to_string(dir.join(name))
+                .map(|text| is_current(&text, version))
+                .unwrap_or(false);
+            Planned {
+                name: (*name).to_string(),
+                shipped: true,
+                write: (!current).then(|| format!("{MARKER_PREFIX}{version}\n{body}")),
+            }
+        })
+        .collect();
+    let mut retired = Vec::new();
     for file in Config::conf_d_files(dir) {
         let Some(name) = file.file_name().and_then(|n| n.to_str()) else {
             continue;
@@ -147,38 +202,44 @@ pub fn audit(dir: &Path, version: &str) -> Audit {
             .map(|body| is_managed(&body))
             .unwrap_or(false);
         if managed {
-            audit.retired.push(name.to_string());
+            retired.push(name.to_string());
         } else {
-            audit.unmanaged.push(name.to_string());
+            files.push(Planned {
+                name: name.to_string(),
+                shipped: false,
+                write: None,
+            });
         }
     }
-    audit
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    Plan {
+        dir: dir.to_path_buf(),
+        files,
+        retired,
+    }
 }
 
-/// Bring `dir` to the shipped set for `version`, creating it if absent. Each
-/// file is written to `<name>.tmp` and renamed over `<name>`, so a reader
-/// never sees a half-written default. Any io error propagates; the caller
-/// decides — the daemon refuses to start on one.
+/// Bring `dir` to the shipped set for `version`, creating it if absent: carry
+/// out [`plan`]. Each file is written to `<name>.tmp` and renamed over
+/// `<name>`, so a reader never sees a half-written default. Any io error
+/// propagates; the caller decides — the daemon refuses to start on one.
 pub fn write_managed_defaults(dir: &Path, version: &str) -> std::io::Result<Report> {
     std::fs::create_dir_all(dir)?;
-    let audit = audit(dir, version);
-    for name in &audit.stale {
-        let (_, body) = SHIPPED
-            .iter()
-            .find(|(shipped, _)| shipped == name)
-            .expect("audit only names shipped files as stale");
-        let tmp = dir.join(format!("{name}.tmp"));
-        std::fs::write(&tmp, format!("{MARKER_PREFIX}{version}\n{body}"))?;
-        std::fs::rename(&tmp, dir.join(name))?;
+    let plan = plan(dir, version);
+    for file in &plan.files {
+        let Some(text) = &file.write else { continue };
+        let tmp = dir.join(format!("{}.tmp", file.name));
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(&tmp, dir.join(&file.name))?;
     }
-    for name in &audit.retired {
+    for name in &plan.retired {
         std::fs::remove_file(dir.join(name))?;
     }
     Ok(Report {
         dir: dir.to_path_buf(),
-        written: audit.stale,
-        deleted: audit.retired,
-        unmanaged: audit.unmanaged,
+        written: plan.stale(),
+        unmanaged: plan.unmanaged(),
+        deleted: plan.retired,
         files: SHIPPED.len(),
     })
 }

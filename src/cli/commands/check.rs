@@ -250,12 +250,11 @@ pub fn run_check_subjects(
 /// The provider set is `ProviderRegistry::load`'s. A Source's `plugin()` calls
 /// are linted, not run, so nothing is `dlopen`ed in the checking process.
 fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
-    // The loader the daemon and the config watch use, with the variables a
-    // daemon started on this configuration would have.
-    // Composed from this binary's shipped files over the user's, as a daemon
-    // started now would be, not from whatever `defaults/` holds on disk.
-    let would_load =
-        Config::load_shipped_from(config.config_file().unwrap_or(&Config::config_path()));
+    // The composition and loader the daemon uses, with the variables a daemon
+    // started on this configuration would have. `load_from` plans the
+    // `defaults/` directory as a daemon start would (`defaults::plan`): the
+    // files it would write stand in for the ones on disk.
+    let would_load = Config::load_from(config.config_file().unwrap_or(&Config::config_path()));
     let load = crate::provider::registry::ProviderRegistry::load(&would_load, &would_load.vars());
     let mut out: Vec<serde_json::Value> = load
         .errors
@@ -281,14 +280,14 @@ fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
 /// the directory holds files comb did not write, and whether the daemon could
 /// write it — the one thing that stops it starting.
 fn defaults_verdicts(config: &Config) -> Vec<serde_json::Value> {
-    use crate::daemon::defaults::{SHIPPED, audit};
-    let version = env!("BEACHCOMBER_VERSION");
+    use crate::daemon::defaults::{SHIPPED, VERSION as version, plan};
     let dir = Config::defaults_dir_for(config.config_file().unwrap_or(&Config::config_path()));
     let shown = libbeachcomber::path::Home::from_env().compact_path(&dir);
-    let found = audit(&dir, version);
+    let found = plan(&dir, version);
+    let (stale, unmanaged) = (found.stale(), found.unmanaged());
 
     let mut out = Vec::new();
-    if found.stale.is_empty() {
+    if stale.is_empty() {
         out.push(serde_json::json!({
             "level": "PASS",
             "message": format!("defaults {shown} ({} files, comb {version})", SHIPPED.len()),
@@ -299,16 +298,16 @@ fn defaults_verdicts(config: &Config) -> Vec<serde_json::Value> {
             "message": format!(
                 "defaults {shown}: {} shipped file(s) missing or stale — the daemon writes \
                  them on its next start",
-                found.stale.len()
+                stale.len()
             ),
         }));
     }
-    if !found.unmanaged.is_empty() {
+    if !unmanaged.is_empty() {
         out.push(serde_json::json!({
             "level": "WARN",
             "message": format!(
                 "defaults {shown} holds {} file(s) comb did not write",
-                found.unmanaged.len()
+                unmanaged.len()
             ),
         }));
     }

@@ -8,7 +8,7 @@
 
 use crate::common::daemon::isolate;
 use beachcomber::daemon::defaults::{
-    MARKER_PREFIX, Report, SHIPPED, is_current, write_managed_defaults,
+    MARKER_PREFIX, Report, SHIPPED, VERSION, is_current, plan, write_managed_defaults,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -746,6 +746,114 @@ fn comb_check_config_counts_the_files_comb_did_not_write() {
         stdout.contains(&format!("({} files, comb ", SHIPPED.len())),
         "the shipped set is still complete and current, got:\n{stdout}"
     );
+}
+
+/// `comb check config` lints what a daemon start would load from `defaults/`:
+/// an edited body under this version's marker is loaded as it is, so a broken
+/// template in it is a FAIL naming the file; the embedded body is not what is
+/// linted.
+#[test]
+fn comb_check_config_lints_an_edited_current_default_as_the_daemon_loads_it() {
+    let tmp = TempDir::new().unwrap();
+    let defaults = tmp.path().join("beachcomber").join("defaults");
+    write_managed_defaults(&defaults, VERSION).unwrap();
+    std::fs::write(
+        defaults.join("python.toml"),
+        format!(
+            "{}\n[client.providers.p]\ntemplate.t = \"{{{{ x( }}}}\"\n",
+            marker(VERSION)
+        ),
+    )
+    .unwrap();
+
+    let stdout = check_config_stdout(tmp.path());
+
+    assert!(
+        stdout.lines().any(|l| l.contains("[FAIL] local")
+            && l.contains("python.toml")
+            && l.contains("template.t")),
+        "got:\n{stdout}"
+    );
+}
+
+/// The same for a non-comb `*.toml` in `defaults/`: the daemon loads it, so
+/// `check config` lints it (and still warns that comb did not write it).
+#[test]
+fn comb_check_config_lints_a_non_comb_toml_in_defaults_as_the_daemon_loads_it() {
+    let tmp = TempDir::new().unwrap();
+    let defaults = tmp.path().join("beachcomber").join("defaults");
+    std::fs::create_dir_all(&defaults).unwrap();
+    std::fs::write(
+        defaults.join("mine.toml"),
+        "[client.providers.p]\ntemplate.t = \"{{ x( }}\"\n",
+    )
+    .unwrap();
+
+    let stdout = check_config_stdout(tmp.path());
+
+    assert!(
+        stdout.lines().any(|l| l.contains("[FAIL] local")
+            && l.contains("mine.toml")
+            && l.contains("template.t")),
+        "got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("holds 1 file(s) comb did not write"),
+        "got:\n{stdout}"
+    );
+}
+
+/// The plan is the daemon's start-up decision, so what it says is loaded
+/// before the daemon writes is what is on disk after: same names, same text.
+#[test]
+fn the_plan_loads_what_the_directory_holds_once_the_daemon_has_written() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    let edited = format!("{}\n# edited\n", marker(V));
+    std::fs::write(dir.join("python.toml"), &edited).unwrap();
+    std::fs::write(dir.join("aws.toml"), "# no marker\n").unwrap();
+    std::fs::write(dir.join("mine.toml"), "x = 1\n").unwrap();
+    std::fs::write(dir.join("old.toml"), format!("{}\n", marker("0.0.1"))).unwrap();
+
+    let planned = plan(dir, V);
+    assert_eq!(names(&planned.retired), ["old.toml"]);
+    let before: Vec<(String, String)> = planned
+        .loaded()
+        .into_iter()
+        .map(|(path, text)| {
+            let text = text
+                .map(str::to_string)
+                .unwrap_or_else(|| std::fs::read_to_string(&path).unwrap());
+            (
+                path.file_name().unwrap().to_str().unwrap().to_string(),
+                text,
+            )
+        })
+        .collect();
+
+    write_managed_defaults(dir, V).unwrap();
+
+    let after: Vec<(String, String)> = beachcomber::config::Config::conf_d_files(dir)
+        .into_iter()
+        .map(|path| {
+            (
+                path.file_name().unwrap().to_str().unwrap().to_string(),
+                std::fs::read_to_string(&path).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(before, after);
+    assert!(
+        before
+            .iter()
+            .any(|(n, t)| n == "python.toml" && *t == edited)
+    );
+    assert!(
+        before
+            .iter()
+            .any(|(n, t)| n == "mine.toml" && t == "x = 1\n")
+    );
+    assert!(!before.iter().any(|(n, _)| n == "old.toml"));
 }
 
 #[test]

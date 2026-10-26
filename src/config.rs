@@ -352,11 +352,16 @@ impl Config {
         Self::load_from(&Self::config_path())
     }
 
-    /// Compose every `defaults/*.toml` beside `config_path`, then the file
-    /// itself, then every `conf.d/*.toml`, each directory in lexical filename
-    /// order, each layer deep-merged onto the accumulated value. `config_path`
-    /// is recorded even when no file exists there: it is where this config
-    /// resolved to, and a conf.d-only installation is legitimate.
+    /// Compose what a daemon started now would load beside `config_path`: the
+    /// `defaults/` directory as [`crate::daemon::defaults::plan`] decides the
+    /// daemon leaves it (a shipped file it would write is this binary's body,
+    /// one it would leave, edited or not, and any other `*.toml` are the files
+    /// on disk), then the file itself, then every `conf.d/*.toml`, each
+    /// directory in lexical filename order, each layer deep-merged onto the
+    /// accumulated value. Nothing is written: the daemon writes the plan
+    /// before it calls this, and `comb check config` calls it without.
+    /// `config_path` is recorded even when no file exists there: it is where
+    /// this config resolved to, and a conf.d-only installation is legitimate.
     ///
     /// Always returns a `Config`, and every problem with the files (one that
     /// cannot be read or parsed, a rule it breaks, a value the composition
@@ -370,22 +375,6 @@ impl Config {
             Some(config_path),
             &Self::conf_d_dir_for(config_path),
         );
-        Self::compose(read, Some(config_path.to_path_buf()))
-    }
-
-    /// What a daemon started now would load from `config_path`: this binary's
-    /// shipped files ([`crate::daemon::defaults::shipped_layers`], the very
-    /// bodies the daemon writes into `defaults/` on start), then the file
-    /// itself, then every `conf.d/*.toml`. `defaults/` on disk is not read: it
-    /// is whatever the last daemon wrote (an older comb's included), and the
-    /// next start replaces it with these. `comb check config` composes this
-    /// way, so it judges a fresh HOME as it does an established one.
-    pub fn load_shipped_from(config_path: &Path) -> Self {
-        let mut read =
-            Self::read_layers(None, Some(config_path), &Self::conf_d_dir_for(config_path));
-        let mut layers = crate::daemon::defaults::shipped_layers();
-        layers.append(&mut read.layers);
-        read.layers = layers;
         Self::compose(read, Some(config_path.to_path_buf()))
     }
 
@@ -582,24 +571,33 @@ impl Config {
         config_path: Option<&Path>,
         conf_d: &Path,
     ) -> ReadLayers {
-        let mut files: Vec<PathBuf> = Vec::new();
-        if let Some(d) = defaults {
-            files.extend(Self::conf_d_files(d));
+        let mut files: Vec<(PathBuf, Option<&str>)> = Vec::new();
+        let plan =
+            defaults.map(|d| crate::daemon::defaults::plan(d, crate::daemon::defaults::VERSION));
+        if let Some(plan) = &plan {
+            files.extend(plan.loaded());
         }
         if let Some(p) = config_path {
-            files.push(p.to_path_buf());
+            files.push((p.to_path_buf(), None));
         }
-        files.extend(Self::conf_d_files(conf_d));
+        files.extend(
+            Self::conf_d_files(conf_d)
+                .into_iter()
+                .map(|file| (file, None)),
+        );
         let mut out = ReadLayers::default();
-        for file in files {
-            let content = match std::fs::read_to_string(&file) {
-                Ok(c) => c,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => {
-                    out.errors
-                        .push(format!("{}: could not read: {e}", Self::error_label(&file)));
-                    continue;
-                }
+        for (file, text) in files {
+            let content = match text {
+                Some(text) => text.to_string(),
+                None => match std::fs::read_to_string(&file) {
+                    Ok(c) => c,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => {
+                        out.errors
+                            .push(format!("{}: could not read: {e}", Self::error_label(&file)));
+                        continue;
+                    }
+                },
             };
             match toml::from_str::<toml::Value>(&content) {
                 Ok(layer) => out.layers.push((file, layer)),
