@@ -593,7 +593,10 @@ impl<'a> ResolvedWatch<'a> {
                 return Ok(Some(WatchOutcome::Eof));
             };
             return match raw.stream.take_frame() {
-                Some(Ok(frame)) => Ok(Some(WatchOutcome::Value(frame_value(&frame)?))),
+                Some(Ok(frame)) => Ok(Some(WatchOutcome::Value(frame_value(
+                    &frame,
+                    &self.client,
+                )?))),
                 // A frame that is not text is the connection ending, as any
                 // other read failure is.
                 Some(Err(_)) => Ok(Some(WatchOutcome::Eof)),
@@ -718,10 +721,23 @@ fn namespace(key: &str) -> &str {
 }
 
 /// The value a raw frame carries, or the daemon's refusal of the key.
-fn frame_value(frame: &str) -> Result<Option<JsonValue>, WatchError> {
+///
+/// A refusal names the version skew as every other op's does: the frame's
+/// stream is no session to have probed for it, so the client asks the daemon
+/// now (the failure path only), once.
+fn frame_value(frame: &str, client: &Client) -> Result<Option<JsonValue>, WatchError> {
     WatchStream::parse_line(frame)
         .map(|event| event.data.map(|data| data.as_value().clone()))
-        .map_err(WatchError::Transport)
+        .map_err(|e| match e {
+            CombError::ServerError(refusal) => {
+                let _ = client.hello();
+                WatchError::Transport(CombError::ServerError(crate::with_skew(
+                    refusal,
+                    client.version_skew().as_ref(),
+                )))
+            }
+            other => WatchError::Transport(other),
+        })
 }
 
 /// A resolution failure as a watch reports it: a fetch that could not reach

@@ -26,37 +26,40 @@ fn spawn_fake_daemon(daemon_version: &'static str, fail_ops: bool) -> (tempfile:
     let sock = tmp.path().join("sock");
     let listener = UnixListener::bind(&sock).unwrap();
     std::thread::spawn(move || {
-        if let Ok((stream, _)) = listener.accept() {
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut writer = stream;
-            loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {}
+        // A watch opens connections of its own beside the client's.
+        while let Ok((stream, _)) = listener.accept() {
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                loop {
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                    let req: serde_json::Value = match serde_json::from_str(line.trim()) {
+                        Ok(v) => v,
+                        Err(_) => break,
+                    };
+                    let op = req.get("op").and_then(|v| v.as_str()).unwrap_or("");
+                    let resp = if op == "hello" {
+                        serde_json::json!({
+                            "ok": true,
+                            "data": {
+                                "protocol_version": "1",
+                                "daemon_version": daemon_version,
+                            }
+                        })
+                    } else if fail_ops {
+                        serde_json::json!({"ok": false, "error": "boom"})
+                    } else {
+                        serde_json::json!({"ok": true, "data": {"hostname": "fake"}})
+                    };
+                    if writer.write_all(format!("{resp}\n").as_bytes()).is_err() {
+                        break;
+                    }
                 }
-                let req: serde_json::Value = match serde_json::from_str(line.trim()) {
-                    Ok(v) => v,
-                    Err(_) => break,
-                };
-                let op = req.get("op").and_then(|v| v.as_str()).unwrap_or("");
-                let resp = if op == "hello" {
-                    serde_json::json!({
-                        "ok": true,
-                        "data": {
-                            "protocol_version": "1",
-                            "daemon_version": daemon_version,
-                        }
-                    })
-                } else if fail_ops {
-                    serde_json::json!({"ok": false, "error": "boom"})
-                } else {
-                    serde_json::json!({"ok": true, "data": {"hostname": "fake"}})
-                };
-                if writer.write_all(format!("{resp}\n").as_bytes()).is_err() {
-                    break;
-                }
-            }
+            });
         }
     });
     (tmp, sock)
@@ -178,4 +181,35 @@ fn session_subsequent_error_names_both_versions() {
         msg.contains("9.9.9-totally-different"),
         "error must name the daemon's version: {msg}"
     );
+}
+
+/// A watch's refusal of a key names the skew as an op's does: `comb watch`
+/// and `comb get` print the same note.
+#[test]
+fn watch_refusal_names_both_versions() {
+    use libbeachcomber::resolve::{Inputs, Slot};
+    use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
+
+    let (_tmp, sock) = spawn_fake_daemon("9.9.9-totally-different", true);
+    let client = client_for(&sock);
+    let env = std::collections::HashMap::new();
+    let inputs = Inputs {
+        cwd: "/",
+        env: &env,
+        slot: Slot::Global,
+        force: false,
+        wait: libbeachcomber::Wait::Budget,
+        allow_exec: false,
+        now: std::time::SystemTime::now(),
+    };
+    // A facet key is one plain daemon watch: its first frame is the refusal.
+    let mut watch = ResolvedWatch::open(&client, "nope:cache", &inputs).expect("opens");
+    let err = match watch.next(Some(std::time::Duration::from_secs(2))) {
+        Err(e) => e.to_string(),
+        Ok(WatchOutcome::Value(v)) => panic!("a refusal, got {v:?}"),
+        Ok(other) => panic!("a refusal, got {other:?}"),
+    };
+    assert!(err.contains("boom"), "{err}");
+    assert!(err.contains(libbeachcomber::VERSION), "{err}");
+    assert!(err.contains("9.9.9-totally-different"), "{err}");
 }

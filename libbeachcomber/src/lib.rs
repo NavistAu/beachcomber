@@ -1054,13 +1054,20 @@ fn envelope(line: &str, skew: Option<&VersionSkew>) -> Result<Response, CombErro
     let resp: Response =
         serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
     if !resp.ok {
-        let mut error = resp.error.unwrap_or_else(|| "unknown error".to_string());
-        if let Some(s) = skew {
-            error = format!("{error} ({s})");
-        }
-        return Err(CombError::ServerError(error));
+        let error = resp.error.unwrap_or_else(|| "unknown error".to_string());
+        return Err(CombError::ServerError(with_skew(error, skew)));
     }
     Ok(resp)
+}
+
+/// A daemon's `error`, with the version skew named after it when there is
+/// one: the one place that note is written, for every op and every watch
+/// frame.
+pub(crate) fn with_skew(error: String, skew: Option<&VersionSkew>) -> String {
+    match skew {
+        Some(s) => format!("{error} ({s})"),
+        None => error,
+    }
 }
 
 /// A `get` response's halves, each `None` when absent, so a miss is
