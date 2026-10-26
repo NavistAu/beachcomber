@@ -4,10 +4,13 @@
 //! takes: a theme group of eleven leaves, a shared derived leaf that reads
 //! the theme, and a width-dependent leaf that reads both. The widget reads
 //! all three, so one resolution reads the theme four times and the shared
-//! leaf twice. `env_read` is one render of one variable: what a resolution
-//! costs before any template work. Each runs with a one-variable environment
-//! and with a shell's worth (140 variables), since every render sees the
-//! whole environment.
+//! leaf twice. `env_read` is one render of one variable (`{{ env.X }}`): what
+//! a resolution costs before any template work, and the floor a memoised
+//! leaf's frame and hash are measured against. `exec` is one leaf that spawns
+//! (`{{ 'echo x' | exec() }}`): what a leaf costs that a memo exists to skip.
+//! Each runs with a one-variable environment and with a shell's worth (140
+//! variables), since every render sees the whole environment and every spawn
+//! is handed it.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use libbeachcomber::resolve::{Fetch, FetchError, Got, Inputs, Slot, resolve};
@@ -89,6 +92,7 @@ fn widget_fetch() -> MapFetch {
             template(json!("{{ env.SCANLINE_WIDTH }}")),
         ),
         ("scanline.widget", template(json!(widget))),
+        ("scanline.spawn", template(json!("{{ 'echo x' | exec() }}"))),
         ("scanline.theme", template(theme)),
         ("scanline.calc.windows", template(json!(windows))),
         ("scanline.calc.rate", template(json!(rate))),
@@ -115,9 +119,10 @@ fn shell_env(n: usize) -> HashMap<String, String> {
 
 fn bench_resolve(c: &mut Criterion) {
     let mut group = c.benchmark_group("resolve");
-    for (name, key) in [
-        ("widget", "scanline.widget"),
-        ("env_read", "scanline.width"),
+    for (name, key, allow_exec) in [
+        ("widget", "scanline.widget", false),
+        ("env_read", "scanline.width", false),
+        ("exec", "scanline.spawn", true),
     ] {
         for vars in [1usize, 140] {
             let env = shell_env(vars);
@@ -128,7 +133,7 @@ fn bench_resolve(c: &mut Criterion) {
                 slot: Slot::Cwd,
                 force: false,
                 wait: false,
-                allow_exec: false,
+                allow_exec,
                 now: std::time::SystemTime::now(),
             };
             assert!(

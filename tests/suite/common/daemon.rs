@@ -54,6 +54,11 @@ pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path, sock: &Path) -
 /// does: what [`isolate`] puts first on `PATH`. The developer's own would
 /// make every `comb status` call a cluster, and its answer depend on the
 /// machine. A test about those tools puts a `bin/` of its own first.
+///
+/// Each counts itself: with `$COMB_STUB_LOG` set in the environment it runs
+/// in, an invocation appends one line, the tool's name and its arguments, to
+/// that file before it exits 1, so a test can count the processes a command
+/// spawned. Unset, it only exits 1.
 pub fn stub_bin() -> &'static Path {
     use std::os::unix::fs::PermissionsExt;
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -64,13 +69,23 @@ pub fn stub_bin() -> &'static Path {
             // Written beside and renamed over, so a test process that looks
             // while another writes sees the whole script or none.
             let part = dir.join(format!(".{tool}.{}", std::process::id()));
-            std::fs::write(&part, "#!/bin/sh\nexit 1\n").expect("write a stub");
+            std::fs::write(&part, stub_script(tool)).expect("write a stub");
             std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755))
                 .expect("make a stub executable");
             std::fs::rename(&part, dir.join(tool)).expect("put a stub in place");
         }
         dir
     })
+}
+
+/// The text of the stub `tool`: one line to `$COMB_STUB_LOG` when it is set,
+/// then exit 1.
+fn stub_script(tool: &str) -> String {
+    format!(
+        "#!/bin/sh\n\
+         if [ -n \"$COMB_STUB_LOG\" ]; then echo \"{tool} $*\" >> \"$COMB_STUB_LOG\"; fi\n\
+         exit 1\n"
+    )
 }
 
 #[allow(dead_code)]

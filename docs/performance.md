@@ -342,6 +342,40 @@ At load 250–320 (two runs, given as ranges):
   0.12 ms and no wake.
 - **A deadline** is never answered early; the p50 overshoot of about 1 ms is macOS's timer leeway on `poll`.
 
+### Exec caching: the phase 5 baseline
+
+Measured 2026-10-26 at `14bee04`, before any phase 5 change, on the same 12-core Mac, twice: at a load average of
+16–21, and at 41–52. The lower is given first.
+
+`cargo bench --bench resolve` (the resolver over a map `Fetch`, no daemon). `env_read` is `{{ env.X }}`, the floor a
+memo hit's frame and hash are measured against (T5.1); `exec` is `{{ 'echo x' | exec() }}`, one `sh -c` spawn, what a
+memo exists to skip. A first run at load 40–150 was 10–30 times slower in every case and is not given.
+
+| Case | 1 variable | 140 variables |
+|---|---:|---:|
+| `resolve/env_read` | 82 µs | 135 µs |
+| `resolve/exec` | 11.3 ms | 7.5 ms |
+| `resolve/widget` | 0.64 ms | 0.85 ms |
+
+The CLI: `hyperfine -N --warmup 20 --runs 100`, the release build, an isolated daemon (its `$HOME`,
+`$XDG_CONFIG_HOME`, `$XDG_STATE_HOME` and socket in a scratch directory, so it writes and seeds the managed defaults),
+and stand-ins for `kubectl` and `talosctl` first on `PATH`: the suite's `stub_bin` scripts, `#!/bin/sh` that appends
+one line to `$COMB_STUB_LOG` when it is set and exits 1, so `kubecontext.context` is absent, as on a machine with no
+context. Each command was run once before `hyperfine` started.
+
+| Command | median | min | at load 41–52: median / min |
+|---|---:|---:|---:|
+| `comb get kubecontext.context` | 100.9 ms | 51.0 ms | 266.5 / 137.7 ms |
+| `comb get hostname.name` (the process floor, T5.2) | 10.8 ms | 6.8 ms | 19.0 / 7.7 ms |
+| `comb status` | 283.1 ms | 179.6 ms | 912.7 / 448.2 ms |
+
+- **One stub spawn** is the difference between the first two rows: 90 ms at the median, 44 ms at the minimum. The stub
+  is a script run under `sh -c`, so a spawn is two shells; a real `kubectl` costs tens of milliseconds more.
+- **Processes per `comb status`** (`$COMB_STUB_LOG` over one run): 3. `kubectl config current-context` runs twice,
+  once for the `context` row and once more inside `namespace`, whose template reads `kubecontext.context` (each row is
+  a resolution of its own), and `talosctl config info -o json` once. T5.3 starts from 3, not the 2 the phase 5 plan
+  counted. `comb get kubecontext.context` runs 1.
+
 ### Real-World Impact
 
 | Scenario | Before beachcomber | With beachcomber |
