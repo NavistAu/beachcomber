@@ -10,7 +10,7 @@
 //!
 //! Runs against a real in-process daemon spawned by `tests/suite/common/daemon.rs`.
 
-use crate::common::client::{client_for, cs, read};
+use crate::common::client::{Options, client_for, client_with, cs, read};
 use crate::common::daemon::DaemonGuard;
 use crate::common::socket::IsolatedSocket;
 
@@ -304,12 +304,19 @@ fn watch_next_on_an_invalid_key_yields_an_error_envelope() {
 /// refusal and hangs up; it has finished, and the connection is closed, before
 /// `bc_watch_next` is called. That is the order a loaded machine produces
 /// when the caller is slower than the daemon, so it is the case a watch must
-/// not turn into `eof`.
+/// not turn into `eof`. The refusal's version-skew probe finds nobody serving
+/// the socket by then, and tries it once.
 #[test]
 fn a_refusal_sent_before_the_connection_closed_is_still_the_answer() {
     let socket = IsolatedSocket::new();
     let listener = std::os::unix::net::UnixListener::bind(&socket.path).expect("bind");
-    let client = client_for(&socket.path);
+    let client = client_with(
+        &socket.path,
+        Options {
+            connect_timeout_ms: Some(0),
+            ..Options::default()
+        },
+    );
 
     let daemon = std::thread::spawn(move || {
         use std::io::{BufRead, Write};
