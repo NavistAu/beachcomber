@@ -958,7 +958,11 @@ fn check_config_sees_the_env_files_variables() {
         tmp.path(),
         &tmp.path().join("no-daemon.sock"),
     )
-    .env_remove("HOME")
+    // The shell keeps a HOME: the shipped `mise` Source expands its
+    // `watch('$XDG_CONFIG_HOME/mise')` from the process's own HOME, not the
+    // env file's, so a check with none would fail it where a daemon (which
+    // applies the env file to its environment) would not.
+    .env("HOME", tmp.path().join("shell-home"))
     .args(["check", "--connect-timeout", "0", "config"])
     .output()
     .expect("run comb check config");
@@ -1059,44 +1063,54 @@ fn check_config_warns_of_a_template_reading_no_provider() {
 
 /// A client template or macro library that does not compile is a config
 /// error in `comb check config`, naming its key and its file, at any depth of
-/// a template group: the same lint the client renders under.
+/// a template group: the same lint the client renders under. `check config`
+/// composes this binary's shipped files over the user's, as a daemon started
+/// now would, so a fresh HOME (no `defaults/` yet) fails as an established one
+/// does.
 #[test]
 fn check_config_fails_a_template_or_macro_that_does_not_compile() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let cfg_dir = tmp.path().join("beachcomber");
-    std::fs::create_dir_all(cfg_dir.join("defaults")).unwrap();
-    std::fs::copy(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/defaults/00-comb.toml"),
-        cfg_dir.join("defaults/00-comb.toml"),
-    )
-    .unwrap();
-    std::fs::write(
-        cfg_dir.join("config.toml"),
-        "[client.providers.p]\ntemplate.t = \"{{ x( }}\"\ntemplate.g.deep = \"{% if %}\"\n\
-         macro.m = \"{% macro m( %}\"\n",
-    )
-    .unwrap();
+    for with_defaults in [true, false] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cfg_dir = tmp.path().join("beachcomber");
+        if with_defaults {
+            std::fs::create_dir_all(cfg_dir.join("defaults")).unwrap();
+            std::fs::copy(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/defaults/00-comb.toml"),
+                cfg_dir.join("defaults/00-comb.toml"),
+            )
+            .unwrap();
+        } else {
+            std::fs::create_dir_all(&cfg_dir).unwrap();
+        }
+        std::fs::write(
+            cfg_dir.join("config.toml"),
+            "[client.providers.p]\ntemplate.t = \"{{ x( }}\"\ntemplate.g.deep = \"{% if %}\"\n\
+             macro.m = \"{% macro m( %}\"\n",
+        )
+        .unwrap();
 
-    let output = isolate(
-        &mut std::process::Command::new(comb_binary()),
-        tmp.path(),
-        tmp.path(),
-        &tmp.path().join("no-daemon.sock"),
-    )
-    .args(["check", "--connect-timeout", "0", "config"])
-    .output()
-    .expect("run comb check config");
+        let output = isolate(
+            &mut std::process::Command::new(comb_binary()),
+            tmp.path(),
+            tmp.path(),
+            &tmp.path().join("no-daemon.sock"),
+        )
+        .args(["check", "--connect-timeout", "0", "config"])
+        .output()
+        .expect("run comb check config");
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for key in ["template.t", "template.g.deep", "macro.m"] {
-        assert!(
-            stdout.lines().any(|l| l.contains("[FAIL] local")
-                && l.contains("config.toml")
-                && l.contains(&format!("[client.providers.p] {key}:"))),
-            "expected a local FAIL naming {key} and its file, got:\n{stdout}"
-        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for key in ["template.t", "template.g.deep", "macro.m"] {
+            assert!(
+                stdout.lines().any(|l| l.contains("[FAIL] local")
+                    && l.contains("config.toml")
+                    && l.contains(&format!("[client.providers.p] {key}:"))),
+                "expected a local FAIL naming {key} and its file \
+                 (defaults on disk: {with_defaults}), got:\n{stdout}"
+            );
+        }
+        assert_eq!(output.status.code(), Some(2), "a config error exits 2");
     }
-    assert_eq!(output.status.code(), Some(2), "a config error exits 2");
 }
 
 /// With no `config.toml`, `check` and `check config` say that and only that: the

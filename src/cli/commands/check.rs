@@ -252,7 +252,11 @@ pub fn run_check_subjects(
 fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
     // The loader the daemon and the config watch use, with the variables a
     // daemon started on this configuration would have.
-    let load = crate::provider::registry::ProviderRegistry::load(config, &config.vars());
+    // Composed from this binary's shipped files over the user's, as a daemon
+    // started now would be, not from whatever `defaults/` holds on disk.
+    let would_load =
+        Config::load_shipped_from(config.config_file().unwrap_or(&Config::config_path()));
+    let load = crate::provider::registry::ProviderRegistry::load(&would_load, &would_load.vars());
     let mut out: Vec<serde_json::Value> = load
         .errors
         .into_iter()

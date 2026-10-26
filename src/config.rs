@@ -373,6 +373,22 @@ impl Config {
         Self::compose(read, Some(config_path.to_path_buf()))
     }
 
+    /// What a daemon started now would load from `config_path`: this binary's
+    /// shipped files ([`crate::daemon::defaults::shipped_layers`], the very
+    /// bodies the daemon writes into `defaults/` on start), then the file
+    /// itself, then every `conf.d/*.toml`. `defaults/` on disk is not read: it
+    /// is whatever the last daemon wrote (an older comb's included), and the
+    /// next start replaces it with these. `comb check config` composes this
+    /// way, so it judges a fresh HOME as it does an established one.
+    pub fn load_shipped_from(config_path: &Path) -> Self {
+        let mut read =
+            Self::read_layers(None, Some(config_path), &Self::conf_d_dir_for(config_path));
+        let mut layers = crate::daemon::defaults::shipped_layers();
+        layers.append(&mut read.layers);
+        read.layers = layers;
+        Self::compose(read, Some(config_path.to_path_buf()))
+    }
+
     /// The configuration `layers` compose to, in order, with no file behind
     /// it: what an embedder or a test builds. The one constructor besides
     /// [`Self::load_from`], so the same checks run on every `Config`.
