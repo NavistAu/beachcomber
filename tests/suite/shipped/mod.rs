@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 mod battery;
 mod hostname;
 mod load;
+mod mise;
 mod network;
 mod uname;
 mod uptime;

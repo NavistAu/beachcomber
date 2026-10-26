@@ -879,7 +879,7 @@ Only `python` and `terraform` have a daemon provider of the same name, so only t
 | Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
 | `python` | project | `venv` (bool), `local_venv_name` (string), `venv_version` (string) — plus the `venv_name` and `version` templates above | watch `.venv/`, `pyproject.toml` | < 1 µs |
-| `mise` | project | one string field per tool name (e.g. `node`, `rust`) — one `tools` source: the project's instance, then the global config's at `~` | watch `.mise.toml`, `mise.toml` | varies |
+| `mise` | project | one string field per tool name (e.g. `node`, `rust`) — one `tools` source (`defaults/mise.toml`): what mise resolves at the project, global tools included; outside a project, at `~` | watch `.mise.toml`, `mise.toml` | varies |
 | `asdf` | project | `tools` (object: tool-name → version) | watch `.tool-versions` | < 1 µs |
 | `direnv` | project | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
 

@@ -53,7 +53,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/provider/config_source.rs` | `ConfigSource`: a Source whose `root`, `data` and `result` are jinja lines on the daemon's engine (`exec`, `url`, `plugin`); built from `[daemon.providers.<p>.sources.<s>]` by `src/shape/build.rs` |
 | `src/client.rs` | `Client` (one-shot) and `ClientSession` (persistent) for consumer-side socket communication |
 
-The remaining provider files (`aws_profiles`, `gcloud_configs`, `terraform`, `direnv`, `python`, `mise`, `asdf`, `sudo`) follow the same pattern — each implements `Provider` (namespace) declaring one or more `Source` objects. `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files, `defaults/<name>.toml`, each one config Source whose `data` line calls the compiled-in `sys` plugin (`src/plugin/sys/`). `aws_profiles` and `gcloud_configs` are **data providers** whose cached fields are indexed by the templates in the managed `defaults/aws.toml` and `defaults/gcloud.toml`, which the client renders as the `aws` and `gcloud` namespaces (see `docs/canon/field_resolution.md`). `conda`, `op`, `kubecontext` and `talos` are not providers at all: their fields are templates in `defaults/`, the last two rendered by calling `kubectl`/`talosctl` through `exec()`.
+The remaining provider files (`aws_profiles`, `gcloud_configs`, `terraform`, `direnv`, `python`, `asdf`, `sudo`) follow the same pattern — each implements `Provider` (namespace) declaring one or more `Source` objects. `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files, `defaults/<name>.toml`, each one config Source whose `data` line calls the compiled-in `sys` plugin (`src/plugin/sys/`); so is `mise`, whose `data` line runs `mise ls --current --json`. `aws_profiles` and `gcloud_configs` are **data providers** whose cached fields are indexed by the templates in the managed `defaults/aws.toml` and `defaults/gcloud.toml`, which the client renders as the `aws` and `gcloud` namespaces (see `docs/canon/field_resolution.md`). `conda`, `op`, `kubecontext` and `talos` are not providers at all: their fields are templates in `defaults/`, the last two rendered by calling `kubectl`/`talosctl` through `exec()`.
 
 ### Provider→Source layering
 
@@ -85,9 +85,9 @@ its own lifecycle key and cache sub-entry, `(provider, root, source)`.
 
 A read walks a Source's instances: the nearest first (`root(dir)`), then, if the key
 is missing there, the parent of that root (`root(parent(root))`), ending at the
-instance at `~`. `mise` is one Source (`tools`) this way: inside a project
-`mise.node` is the project's, and `mise.go`, set only in the global config, is found
-at `~`. A namespace read merges every instance on the way, the nearer winning.
+instance at `~`. `asdf` is one Source (`tools`) this way: inside a project
+`asdf.node` is the project's `.tool-versions`, and `asdf.go`, set only in
+`~/.tool-versions`, is found at `~`. A namespace read merges every instance on the way, the nearer winning.
 That is a *cascade*, the default. A `nearest` Source (git, direnv, python,
 terraform) is answered by the instance `root(dir)` finds alone: a missing key is
 absent, the walk does not move up, and finding no root means no instance, with no

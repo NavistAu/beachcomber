@@ -25,7 +25,7 @@ Each provider declares one or more **sources** — independent units of executio
 | `git` | `status` | watch + poll | project | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
 | `hostname` | `host` | poll 10m (`defaults/hostname.toml`) | none | `name`, `short` |
 | `load` | `loadavg` | poll 10s (`defaults/load.toml`) | none | `one`, `five`, `fifteen` |
-| `mise` | `tools` | watch | project | tool versions, one field per tool: the project's, and for a tool it does not set the global config's, found at the instance at `~` |
+| `mise` | `tools` | watch (`defaults/mise.toml`) | project | tool versions, one field per tool: what `mise ls --current` resolves at the nearest `mise.toml`/`.mise.toml` directory, else at `~` |
 | `network` | `interfaces` | poll 10s (`defaults/network.toml`) | none | `interface`, `ip`, `ipv6`, `vpn_active`, `vpn_name`, `ssid`, `online` |
 | `python` | `venv` | watch | project | `venv`, `local_venv_name`, `venv_version` (`venv_name` and `version` are [templates](#template-backed-namespaces) over them) |
 | `sudo` | `state` | poll 30s | none | `active` |
@@ -34,7 +34,7 @@ Each provider declares one or more **sources** — independent units of executio
 | `uptime` | `time` | poll 60s (`defaults/uptime.toml`) | none | `seconds`, `days`, `hours`, `minutes` |
 | `user` | `name` | poll 10m (`defaults/user.toml`) | none | `name`, `uid` |
 
-**Shipped files.** A provider whose strategy names a `defaults/` file is that file, written the way a user writes a Source: `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` each have one Source whose `data` line calls the compiled-in `sys` plugin. Set any of its lines in `config.toml` or `conf.d/` (`[daemon.providers.hostname.sources.host] result.name = "{{ data.name | upper }}"`) and the rest stay as shipped.
+**Shipped files.** A provider whose strategy names a `defaults/` file is that file, written the way a user writes a Source: `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` each have one Source whose `data` line calls the compiled-in `sys` plugin; `mise`'s runs `mise ls --current --json`. Set any of its lines in `config.toml` or `conf.d/` (`[daemon.providers.hostname.sources.host] result.name = "{{ data.name | upper }}"`) and the rest stay as shipped.
 
 **watch + poll** sources watch files for quick invalidation and also poll on a timer as a backstop.
 
@@ -206,7 +206,7 @@ Only `python` and `terraform` have a daemon provider of the same name, so only t
 | Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
 | `python` | project | `venv` (bool), `local_venv_name` (string), `venv_version` (string) — plus the `venv_name` and `version` [templates](#template-backed-namespaces) | watch `.venv`, `pyproject.toml` | < 1 µs |
-| `mise` | project | one string field per tool name (e.g. `node`, `rust`) — one `tools` source: the project's instance, then the global config's at `~` | watch `.mise.toml`, `mise.toml` | varies |
+| `mise` | project | one string field per tool name (e.g. `node`, `rust`) — one `tools` source: what mise resolves at the project, global tools included; outside a project, at `~` | watch `.mise.toml`, `mise.toml` | varies |
 | `asdf` | project | `tools` (object keyed by tool name) | watch `.tool-versions` | < 1 µs |
 | `direnv` | project | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
 

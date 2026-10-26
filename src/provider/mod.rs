@@ -4,7 +4,6 @@ pub mod config_source;
 pub mod direnv;
 pub mod gcloud;
 pub mod git;
-pub mod mise;
 pub mod python;
 pub mod registry;
 pub mod source_call;
@@ -17,8 +16,6 @@ mod aws_tests;
 mod gcloud_tests;
 #[cfg(test)]
 mod git_seam_tests;
-#[cfg(test)]
-mod mise_tests;
 #[cfg(test)]
 mod provider_trait_tests;
 #[cfg(test)]

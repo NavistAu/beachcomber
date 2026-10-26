@@ -40,6 +40,7 @@ pub const SHIPPED: &[(&str, &str)] = &[
         include_str!("../../defaults/kubecontext.toml"),
     ),
     ("load.toml", include_str!("../../defaults/load.toml")),
+    ("mise.toml", include_str!("../../defaults/mise.toml")),
     ("network.toml", include_str!("../../defaults/network.toml")),
     ("op.toml", include_str!("../../defaults/op.toml")),
     ("python.toml", include_str!("../../defaults/python.toml")),

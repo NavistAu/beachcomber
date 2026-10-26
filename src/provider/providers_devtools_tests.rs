@@ -1,7 +1,6 @@
 use crate::provider::Provider;
 use crate::provider::asdf::AsdfProvider;
 use crate::provider::direnv::DirenvProvider;
-use crate::provider::mise::MiseProvider;
 use crate::provider::python::PythonProvider;
 use crate::provider::terraform::TerraformProvider;
 use tempfile::TempDir;
@@ -188,29 +187,6 @@ fn python_root_none_outside_project() {
     if let Some(got) = got {
         assert_ne!(got, tmp.path().to_string_lossy().to_string());
     }
-}
-
-// --- Mise ---
-
-#[test]
-fn mise_metadata() {
-    let p = MiseProvider;
-    let meta = p.metadata();
-    assert_eq!(meta.name, "mise");
-    // Mise is a Section I provider; test only the provider name for now
-    // TODO(section-J): assert on source metadata once mise is migrated in Section I
-    let _ = meta;
-}
-
-#[test]
-fn mise_detects_config() {
-    let tmp = TempDir::new().unwrap();
-    std::fs::write(tmp.path().join("mise.toml"), "[tools]\nrust = \"1.85.0\"\n").unwrap();
-
-    let p = MiseProvider;
-    // May return None if mise isn't installed, that's fine
-    // TODO(section-J): update to sources()[0].execute().unwrap() once mise migrated in Section I
-    let _ = p;
 }
 
 // --- Asdf ---

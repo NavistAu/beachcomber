@@ -420,6 +420,7 @@ fn shipped_layers_parse_and_load_with_no_errors() {
         "hostname",
         "kubecontext",
         "load",
+        "mise",
         "network",
         "op",
         "talos",

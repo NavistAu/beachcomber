@@ -1184,9 +1184,6 @@ impl ProviderRegistry {
             .register(Box::new(crate::provider::git::GitProvider))
             .expect("git");
         registry
-            .register(Box::new(crate::provider::mise::MiseProvider))
-            .expect("mise");
-        registry
             .register(Box::new(crate::provider::python::PythonProvider))
             .expect("python");
         registry
