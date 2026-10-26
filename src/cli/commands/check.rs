@@ -251,11 +251,11 @@ pub fn run_check_subjects(
 /// are linted, not run, so nothing is `dlopen`ed in the checking process.
 fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
     // The composition and loader the daemon uses, with the variables a daemon
-    // started on this configuration would have. `load_from` plans the
-    // `defaults/` directory as a daemon start would (`defaults::plan`): the
-    // files it would write stand in for the ones on disk.
-    let would_load = Config::load_from(config.config_file().unwrap_or(&Config::config_path()));
-    let load = crate::provider::registry::ProviderRegistry::load(&would_load, &would_load.vars());
+    // started on this configuration would have. `config` is the one `comb`
+    // composed at start (`Config::load`), which plans the `defaults/`
+    // directory as a daemon start would (`defaults::plan`): the files it would
+    // write stand in for the ones on disk.
+    let load = crate::provider::registry::ProviderRegistry::load(config, &config.vars());
     let mut out: Vec<serde_json::Value> = load
         .errors
         .into_iter()
