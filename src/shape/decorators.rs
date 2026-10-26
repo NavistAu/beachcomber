@@ -170,6 +170,20 @@ pub fn record_return(
             message: "a Source needs a return line".into(),
         });
     }
+    // A statement no Source line may hold (an import, an `include`) is
+    // refused as written, before anything renders.
+    for (level, line) in lines.iter().enumerate() {
+        if let Some(finding) =
+            libbeachcomber::eval::refused(line, libbeachcomber::eval::Line::Return)
+                .into_iter()
+                .next()
+        {
+            return Err(ReturnError {
+                level,
+                message: finding.to_string(),
+            });
+        }
+    }
     let render = Arc::new(Render {
         lines: lines.iter().map(|l| l.to_string()).collect(),
         name: name.to_string(),
@@ -753,6 +767,29 @@ mod tests {
         ] {
             let e = record(&[line]).unwrap_err();
             assert_eq!(e, "a Source's return must decorate result", "{line}");
+        }
+    }
+
+    /// A return line may define and call a macro, as any Source line may; it
+    /// may not import one, nor hold `include`, `extends` or `block`, on its
+    /// own line or a prototype's.
+    #[test]
+    fn a_return_line_refuses_an_import_and_include_extends_and_block() {
+        record(&["{% macro p() %}1s{% endmacro %}{{ result | poll(p()) }}"]).unwrap();
+        for (line, why) in [
+            (
+                "{% import 'p:macro.x' as x %}{{ result | poll('1s') }}",
+                "macros are client templates: a Source's line cannot import",
+            ),
+            (
+                "{% block b %}{{ result | poll('1s') }}{% endblock %}",
+                "{% block %} is refused: text is reused with a macro",
+            ),
+        ] {
+            assert_eq!(record(&[line]).unwrap_err(), why, "{line}");
+            let above =
+                record_return(&["{{ result | super }}", line], "s", &defaults()).unwrap_err();
+            assert_eq!((above.level, above.message.as_str()), (1, why), "{line}");
         }
     }
 

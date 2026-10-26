@@ -53,7 +53,7 @@ use crate::shape::decorators::named_decorators;
 use crate::shape::prototype::{Kind, Link, chain, super_chain};
 use dashmap::DashSet;
 use libbeachcomber::engine::op_error;
-use libbeachcomber::eval::{Line, lint, single_tag_expression, undeclared_names};
+use libbeachcomber::eval::{Known, Line, lint, single_tag_expression, undeclared_names};
 use libbeachcomber::library::{Surface, first_refused};
 use minijinja::value::{Object, ObjectRepr, Value as MjValue};
 use minijinja::{Environment, Error};
@@ -501,7 +501,7 @@ impl ProviderLines {
                         }
                         Ok(_) => {}
                     }
-                    for finding in lint(&self.env, line, key.line().sees()) {
+                    for finding in lint(&self.env, line, key.line(), &Known::default()) {
                         errors.insert(format!("{at}: {finding}"));
                     }
                 }
@@ -1560,6 +1560,30 @@ mod tests {
         assert!(
             errors("[demo]\nreturn = \"{{ 'read' }}\"").is_empty(),
             "a word in a string is no call"
+        );
+    }
+
+    /// A provider's lines may define and call a macro within one line, and may
+    /// not import a library: macros are client templates.
+    #[test]
+    fn a_provider_line_cannot_import() {
+        for key in ["template", "result", "return"] {
+            let errs = errors(&format!(
+                "[demo]\n{key} = \"{{% from 'p:macro.x' import m %}}{{{{ m() }}}}\""
+            ));
+            assert_eq!(
+                errs,
+                [format!(
+                    "[daemon.providers.demo] {key}: macros are client templates: a provider's \
+                     line cannot import"
+                )],
+                "{key}"
+            );
+        }
+        assert_eq!(
+            errors("[demo]\nresult = \"{% macro two() %}2{% endmacro %}{{ two() }}\""),
+            Vec::<String>::new(),
+            "an inline macro loads"
         );
     }
 

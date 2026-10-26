@@ -147,6 +147,32 @@ pub(super) fn scan(src: &str) -> Scan<'_> {
     }
 }
 
+/// The tags of `src` the engine reads as tags: [`scan_tags`], less whatever a
+/// `{% raw %}` block holds, which is text.
+pub(super) fn engine_tags(src: &str) -> Vec<Tag<'_>> {
+    let mut out = Vec::new();
+    let mut raw = false;
+    for tag in scan(src).tags {
+        let keyword = (tag.kind == TagKind::Statement).then(|| statement(tag.body).0);
+        if raw && keyword != Some("endraw") {
+            continue;
+        }
+        raw = keyword == Some("raw");
+        out.push(tag);
+    }
+    out
+}
+
+/// A statement tag's keyword and the rest of its body, trimmed: `set` and
+/// `x = 1` for `{% set x = 1 %}`, `endmacro` and `""` for `{% endmacro %}`.
+/// The keyword is the body's leading identifier, as the engine reads it.
+pub(super) fn statement(body: &str) -> (&str, &str) {
+    let end = body
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(body.len());
+    (&body[..end], body[end..].trim_ascii_start())
+}
+
 /// Strip whitespace-control markers and surrounding whitespace from a tag's
 /// inner text. `{{- x -}}`, `{{+ x +}}` and `{{ x }}` all yield `x`.
 fn trim_tag_body(inner: &str) -> &str {

@@ -267,12 +267,10 @@ fn plan_templates(
     // A template reads `env`, `comb` and every provider by name; the client
     // renders it, so it is linted on the client's engine.
     let engine = libbeachcomber::engine::build_engine_env(Default::default());
-    let sees: Vec<&str> = libbeachcomber::eval::Line::Template
-        .sees()
-        .iter()
-        .copied()
-        .chain(names.iter().map(String::as_str))
-        .collect();
+    let providers: Vec<&str> = names.iter().map(String::as_str).collect();
+    let known = libbeachcomber::eval::Known {
+        providers: &providers,
+    };
 
     for ((file, layer), read) in layers.iter().zip(reads) {
         let label = Config::config_label(file);
@@ -285,7 +283,7 @@ fn plan_templates(
             match lines.template_tree(name, &client) {
                 Ok(Some(tree)) => {
                     let mut compiles = true;
-                    for (leaf, finding) in lint_template_tree(&engine, &tree, "template", &sees) {
+                    for (leaf, finding) in lint_template_tree(&engine, &tree, "template", &known) {
                         let message =
                             format!("{shown}: [client.providers.{name}] {leaf}: {finding}");
                         match finding {
@@ -315,37 +313,42 @@ fn plan_templates(
 }
 
 /// Each string leaf of `tree`, a `:template` tree whose root is at `at`,
-/// linted as a client template against `sees`, with its address under `at`
-/// (`template.a.b` for a tree at `template`).
+/// linted as a client template in a world of `known`, with its address under
+/// `at` (`template.a.b` for a tree at `template`).
 pub fn lint_template_tree(
     engine: &minijinja::Environment<'_>,
     tree: &serde_json::Value,
     at: &str,
-    sees: &[&str],
+    known: &libbeachcomber::eval::Known<'_>,
 ) -> Vec<(String, libbeachcomber::eval::Finding)> {
     fn walk(
         engine: &minijinja::Environment<'_>,
         node: &serde_json::Value,
         at: String,
-        sees: &[&str],
+        known: &libbeachcomber::eval::Known<'_>,
         out: &mut Vec<(String, libbeachcomber::eval::Finding)>,
     ) {
         match node {
             serde_json::Value::Object(map) => {
                 for (key, sub) in map {
-                    walk(engine, sub, libbeachcomber::key::push(&at, key), sees, out);
+                    walk(engine, sub, libbeachcomber::key::push(&at, key), known, out);
                 }
             }
             serde_json::Value::String(line) => out.extend(
-                libbeachcomber::eval::lint(engine, line, sees)
-                    .into_iter()
-                    .map(|finding| (at.clone(), finding)),
+                libbeachcomber::eval::lint(
+                    engine,
+                    line,
+                    libbeachcomber::eval::Line::Template,
+                    known,
+                )
+                .into_iter()
+                .map(|finding| (at.clone(), finding)),
             ),
             _ => {}
         }
     }
     let mut out = Vec::new();
-    walk(engine, tree, at.to_string(), sees, &mut out);
+    walk(engine, tree, at.to_string(), known, &mut out);
     out
 }
 

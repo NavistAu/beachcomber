@@ -16,7 +16,7 @@
 mod lint;
 mod scan;
 
-pub use lint::{Finding, Line, lint};
+pub use lint::{Finding, Known, Line, lint, refused};
 pub use scan::{Tag, TagKind, scan_tags};
 
 use crate::engine::{EngineCtx, build_engine_env};
@@ -107,6 +107,70 @@ fn analyze(src: &str) -> Analysis<'_> {
         }
         _ => Analysis::Template,
     }
+}
+
+// ── Imports ───────────────────────────────────────────────────────────────────
+
+/// What one `{% import … as … %}` or `{% from … import … %}` names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Import<'a> {
+    /// A string literal: the library's address, as the engine reads it.
+    Named(String),
+    /// Anything else: a name the text would compute when it renders. The
+    /// tag's body, as written.
+    Computed(&'a str),
+}
+
+/// Every import in `src`, in source order: the name each `{% import %}` and
+/// `{% from %}` reads its library from. A tag in a `{% raw %}` block is text,
+/// not an import.
+pub fn imports(src: &str) -> Vec<Import<'_>> {
+    scan::engine_tags(src)
+        .into_iter()
+        .filter(|tag| tag.kind == TagKind::Statement)
+        .filter_map(|tag| {
+            let (keyword, rest) = scan::statement(tag.body);
+            let follows = match keyword {
+                "import" => "as",
+                "from" => "import",
+                _ => return None,
+            };
+            Some(match string_literal(rest) {
+                Some((name, after)) if scan::statement(after).0 == follows => Import::Named(name),
+                _ => Import::Computed(tag.body),
+            })
+        })
+        .collect()
+}
+
+/// The string literal `text` starts with, as the engine reads it, and the text
+/// after it; `None` when `text` does not start with one.
+fn string_literal(text: &str) -> Option<(String, &str)> {
+    let quote = *text
+        .as_bytes()
+        .first()
+        .filter(|q| matches!(q, b'"' | b'\''))?;
+    let bytes = text.as_bytes();
+    let mut i = 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b if b == quote => {
+                let literal = &text[..=i];
+                // The engine's own reading of the literal, escapes and all.
+                let value = Environment::empty()
+                    .compile_expression(literal)
+                    .and_then(|e| e.eval(()))
+                    .ok()?;
+                return Some((
+                    value.as_str()?.to_string(),
+                    text[i + 1..].trim_ascii_start(),
+                ));
+            }
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 // ── Reference discovery ───────────────────────────────────────────────────────
@@ -231,11 +295,19 @@ pub fn without_engine_frame(message: &str) -> String {
     body.to_string()
 }
 
+/// Render `src` as a client template over `context`. A statement a client
+/// template may not hold ([`lint`]'s structural findings) does not compile:
+/// a text no load checked (`comb eval`, `-f`) is refused as a seeded one is.
 pub(crate) fn render_template_with(
     src: &str,
     context: MjValue,
     ctx: Arc<EngineCtx>,
 ) -> Result<String, RenderError> {
+    if let Some(finding) = lint::refused(src, Line::Template).into_iter().next() {
+        return Err(RenderError::Compile(crate::engine::op_error(
+            finding.to_string(),
+        )));
+    }
     let mut env = build_engine_env(ctx);
     render_none_as_empty(&mut env);
     let template = env.template_from_str(src).map_err(RenderError::Compile)?;

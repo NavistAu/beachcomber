@@ -176,6 +176,31 @@ fn eval_compile_error_exits_2_naming_it() {
         .stderr(predicates::str::contains("compile error"));
 }
 
+/// A macro defined in the text it is called from renders on the client, and
+/// a call block hands it a body; `include` is refused before anything renders.
+#[test]
+fn eval_renders_an_inline_macro() {
+    let d = TestDaemon::spawn();
+
+    d.comb(Path::new("/"))
+        .args([
+            "eval",
+            "{% macro tag(x) %}<{{ x }}{{ caller() if caller }}>{% endmacro %}\
+             {{ tag('a') }}{% call tag('b') %}!{% endcall %}",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("<a><b!>"));
+
+    d.comb(Path::new("/"))
+        .args(["eval", "{% include 'p:macro.x' %}"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains(
+            "{% include %} is refused: text is reused with a macro",
+        ));
+}
+
 /// `comb eval` runs with `allow_exec = true` — the CLI user already has a
 /// shell, so `exec()` is available to it, same as `comb get`.
 #[test]

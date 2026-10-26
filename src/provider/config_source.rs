@@ -31,7 +31,7 @@ use crate::provider::{
 use crate::shape::decorators::Recorded;
 use libbeachcomber::engine::EngineCtx;
 use libbeachcomber::eval::{
-    Finding, Line, discover_refs, eval_line, eval_line_with, lint, render_none_as_empty,
+    Finding, Known, Line, discover_refs, eval_line, eval_line_with, lint, render_none_as_empty,
     undeclared_names,
 };
 use libbeachcomber::virtual_fields::Ref;
@@ -255,7 +255,7 @@ pub fn lint_lines(
     }
     let mut errors = Vec::new();
     for (stage, line, kind) in lines {
-        let found = lint(&probe, line, kind.sees());
+        let found = lint(&probe, line, kind, &Known::default());
         let compiles = !found.iter().any(|f| matches!(f, Finding::Compile(_)));
         errors.extend(found.iter().map(|f| format!("{who} {stage}: {f}")));
         if kind == Line::Data && compiles {
@@ -1250,6 +1250,50 @@ mod tests {
             assert!(
                 err.starts_with(&format!("[daemon.providers.demo.sources.s] {stage}: ")),
                 "{err}"
+            );
+        }
+    }
+
+    /// A macro defined and called within one line runs on the daemon too;
+    /// importing a library is the client's alone, and a load error here.
+    #[test]
+    fn a_data_line_may_define_and_call_a_macro() {
+        let src = source(spec(
+            None,
+            "{% macro twice(x) %}{{ x * 2 }}{{ caller() if caller }}{% endmacro %}\
+             {% call twice(20) %}!{% endcall %}{{ twice(21) }}",
+            fields(&[(
+                "out",
+                "{% macro tag(x) %}<{{ x }}>{% endmacro %}{{ tag(data) }}",
+            )]),
+        ));
+        let got = src.execute(None).unwrap().fields;
+        assert_eq!(got.get("out"), Some(&s("<40!42>")));
+
+        for (sp, stage) in [
+            (
+                spec(
+                    None,
+                    "{% import 'p:macro.x' as x %}{{ x.m() }}",
+                    fields(&[("a", "1")]),
+                ),
+                "data",
+            ),
+            (
+                spec(
+                    None,
+                    "x",
+                    fields(&[("a", "{% from 'p:macro.x' import m %}{{ m() }}")]),
+                ),
+                "result.a",
+            ),
+        ] {
+            assert_eq!(
+                new_err(sp),
+                format!(
+                    "[daemon.providers.demo.sources.s] {stage}: macros are client templates: a \
+                     Source's line cannot import"
+                )
             );
         }
     }

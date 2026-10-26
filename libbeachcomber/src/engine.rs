@@ -14,7 +14,7 @@
 
 use crate::library::{self, Tier};
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
-use minijinja::{Environment, Error, ErrorKind, UndefinedBehavior};
+use minijinja::{AutoEscape, Environment, Error, ErrorKind, UndefinedBehavior};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,9 +44,14 @@ impl EngineCtx {
 /// an undefined value as empty but *errors* on attribute access into one, so
 /// `{{ p.f.sub }}` would blow up whenever `p.f` missed while `{{ p.f }}`
 /// quietly rendered nothing.
+///
+/// No template's name turns on escaping: the engine would escape a template
+/// named like a file (`*.html`, `*.json`), and a macro library's name is an
+/// address (`p:macro.json`), not a file.
 pub fn build_pure_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
     let mut jinja = Environment::new();
     jinja.set_undefined_behavior(UndefinedBehavior::Chainable);
+    jinja.set_auto_escape_callback(|_| AutoEscape::None);
     library::absent::guard_builtins(&mut jinja);
     library::install(&mut jinja, &ctx, Tier::Pure);
     jinja
@@ -207,6 +212,34 @@ fn coerce_argv(v: &MjValue, position: usize) -> Result<String, Error> {
 mod tests {
     use super::*;
     use crate::library::testing::{ctx_with, eval, eval_in};
+
+    /// A template's name never turns on escaping: a macro library is named by
+    /// its address, and `p:macro.html` or `p:macro.json` is no file.
+    #[test]
+    fn a_template_name_never_turns_on_escaping() {
+        let builders: [fn(Arc<EngineCtx>) -> Environment<'static>; 2] =
+            [build_pure_engine_env, build_engine_env];
+        let text = r#"<a href="x">&'</a>"#;
+        for build in builders {
+            let mut env = build(Default::default());
+            for name in [
+                "p:macro.html",
+                "p:macro.json",
+                "x.htm",
+                "x.xml",
+                "x.yaml",
+                "x.js",
+            ] {
+                env.add_template_owned(name.to_string(), "{{ v }}").unwrap();
+                let out = env
+                    .get_template(name)
+                    .unwrap()
+                    .render(minijinja::context!(v => text))
+                    .unwrap();
+                assert_eq!(out, text, "{name}");
+            }
+        }
+    }
 
     #[test]
     fn exec_string_runs_under_sh() {

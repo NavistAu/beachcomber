@@ -1988,7 +1988,8 @@ async fn handle_request(
             if facet == Some(Facet::Template) {
                 let engine = libbeachcomber::engine::build_engine_env(Default::default());
                 let at = libbeachcomber::key::join(namespace, node);
-                let refused = crate::daemon::seed::lint_template_tree(&engine, data, &at, &[])
+                let known = libbeachcomber::eval::Known::default();
+                let refused = crate::daemon::seed::lint_template_tree(&engine, data, &at, &known)
                     .into_iter()
                     .find(|(_, f)| matches!(f, libbeachcomber::eval::Finding::Compile(_)));
                 if let Some((leaf, finding)) = refused {
