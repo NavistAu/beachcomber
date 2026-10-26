@@ -73,3 +73,4 @@ mod status_shape;
 mod store;
 mod test_isolation;
 mod watch;
+mod watch_registration;

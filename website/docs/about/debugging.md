@@ -71,7 +71,7 @@ For daemon internals, use `comb check` subjects:
 
 ```sh
 comb check daemon     # pid, version, uptime, request counts, active watchers
-comb check watches    # filesystem paths currently being watched for changes
+comb check watches    # paths watched for changes: registering, active (or through a parent until the path exists), or failed
 comb check lifecycle  # keys in the decay/eviction sequence
 comb check timers     # active poll timers and when they last ran
 comb check demand     # demand-tracked keys and last-query times

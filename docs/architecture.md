@@ -14,7 +14,7 @@ graph TB
     Server -->|"scheduler messages (mpsc)"| Scheduler
 
     Scheduler["Scheduler · scheduler.rs<br/>single async event loop"] --> SB["spawn_blocking<br/>(thread pool)"]
-    Scheduler --> FSW["FsWatcher<br/>(notify crate)"]
+    Scheduler --> Registrar["Registrar · watcher.rs<br/>worker thread, owns the FsWatcher (notify crate)"]
     Scheduler --> Watchdog["Watchdog<br/>(heartbeat monitor)"]
 
     SB --> Provider["Arc‹dyn Provider›<br/>executes, returns ProviderResult"]
@@ -27,7 +27,7 @@ Data flow summary:
 - **Write path**: trigger (fs event or poll timer) -> Scheduler -> spawn_blocking(provider.execute()) -> Cache.put()
 - **Miss path**: client asks for uncached key -> Server executes provider inline via spawn_blocking -> result written to cache -> response returned directly
 
-The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Server sends messages to the Scheduler over an `mpsc::Sender<SchedulerMessage>`. The Scheduler owns the `FsWatcher` and all demand/poll state.
+The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Server sends messages to the Scheduler over an `mpsc::Sender<SchedulerMessage>`. The Scheduler owns all demand/poll state and the table that routes file events to instances; its `Registrar`'s worker thread owns the `FsWatcher` and makes every registration, so the loop never waits for one.
 
 ---
 
@@ -38,10 +38,10 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/lib.rs` | Module declarations; no logic |
 | `src/daemon.rs` | Process lifecycle: fork, pid file, wait-for-socket, `run_daemon_with_cancel`; watchdog task monitors scheduler heartbeat |
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
-| `src/scheduler/` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; owns all demand and watch state; heartbeat counter for watchdog liveness detection |
+| `src/scheduler/` | Single event loop: handles Refresh/QueryActivity/file events/poll tick; owns all demand and watch state; heartbeat counter for watchdog liveness detection |
 | `src/scheduler/lifecycle.rs` | `LifecycleRegistry` — per-key cache lifecycle state machine: Active → Decay (1 to `decay` steps, default 4; the depth is data in `<p>:cache`) → Evicted. Exponential decay of poll interval and step duration each stage. See §5. |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; per-source `SourceResult` sub-entries within each `CacheEntry` |
-| `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
+| `src/watcher.rs` | `FsWatcher`, a thin wrapper around the `notify` crate, and the `Registrar` whose worker thread registers each watched path: Pending, then Active (on the path, or through the nearest directory above it that exists while it does not) or Failed (asked for again by the next demand) |
 | `src/protocol.rs` | Re-exports `libbeachcomber::protocol`, the one definition of the wire: `Request`, `Response` and the `status`, `introspect` and `hello` payloads, which the daemon, the CLI, the C ABI and the SDKs share. Key parsing into a `KeyParse` lives in `src/query.rs` (`parse_key`) |
 | `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` — a source name is never a key segment), `resolve_path`, `validate_key` (one colon form, the facet), `split_layer_facet` (`:put` / `:source` / `:cache`, and the closed facet set of `libbeachcomber::key::split_facet`), and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
 | `src/config.rs` | TOML config loading from XDG directories; `Config` (composed from its layers), `DaemonConfig` |
@@ -69,7 +69,7 @@ The registry maps a key to its Source by walking the key: the Source of the near
 
 **Cache layout** — `CacheEntry.sources: HashMap<source_name, SourceResult>`. Each `SourceResult` holds `fields`, `last_refreshed_ms`, and `expected_interval_secs`. Reads flatten across sources; writes are per-source (`cache.put_source(provider, path, source_name, result)`).
 
-**Watch registration** — per `(provider, path, source)`. Each source declares relative `patterns` (matched within the instance's root) and/or absolute `abs_paths` (e.g., `$XDG_CONFIG_HOME/mise`). The `expand_abs_path()` helper expands `~`, `$HOME`, and XDG env vars at registration time.
+**Watch registration** — per `(provider, path, source)`. Each source declares relative `patterns` (matched within the instance's root) and/or absolute `abs_paths` (e.g., `$XDG_CONFIG_HOME/mise`). The `expand_abs_path()` helper expands `~`, `$HOME`, and XDG env vars at registration time. The scheduler subscribes the instance to each path and asks the `Registrar` for a path once, on its first subscriber; the registrar's worker makes the registration (FSEvents can take seconds on a loaded host) while the loop goes on. Until it is made the path is Pending and its events are not seen. A path that does not exist is watched through the entries of the nearest directory above it that does, and moved onto the path once an event there shows it exists; a registration that fails is asked for again by the next demand, and `comb check daemon` warns of it.
 
 ### Provider execution
 
@@ -191,11 +191,11 @@ The `notify` crate's `RecommendedWatcher` receives the event on a background thr
 
 **Step 2: Scheduler receives the event**
 
-The scheduler's `tokio::select!` loop picks up `Some(paths) = fs_rx.recv()`. It calls `self.handle_fs_event(paths, &watch_paths)`.
+The scheduler's `tokio::select!` loop picks up `Some(paths) = fs_rx.recv()`. A path watched through a directory above it is looked for again first (`Registrar::look_again`), then the changed paths are routed.
 
 **Step 3: Path matching**
 
-`handle_fs_event` iterates over the changed paths. For each changed path, it scans `watch_paths` (a `HashMap<PathBuf, Vec<(String, Option<String>)>>`) looking for any registered watch path that is a prefix of (or equal to) the changed path. For a `.git/index` change, the watch path `".git"` matches.
+`resolve_keys_from_paths` iterates over the changed paths. For each changed path, it scans `watch_paths` (a `HashMap<PathBuf, Vec<(String, Option<String>)>>`) looking for any registered watch path that is a prefix of (or equal to) the changed path. For a `.git/index` change, the watch path `".git"` matches.
 
 **Step 4: execute_provider is called**
 

@@ -215,15 +215,15 @@ async fn introspect_lifecycle_returns_list_and_verdicts() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn introspect_watches_returns_paths_and_verdicts() {
+async fn introspect_watches_returns_watches_and_verdicts() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client.introspect("watches", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(
-        d.get("paths").and_then(|v| v.as_array()).is_some(),
-        "paths array missing"
+        d.get("watches").and_then(|v| v.as_array()).is_some(),
+        "watches array missing"
     );
     let verdicts = d
         .get("verdicts")

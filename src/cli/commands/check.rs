@@ -586,8 +586,8 @@ fn render_subject(
             lines.push_str(&vlines);
         }
         "watches" => {
-            let paths = payload
-                .get("paths")
+            let watches = payload
+                .get("watches")
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
@@ -595,15 +595,32 @@ fn render_subject(
             let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
-            lines.push_str(&format!("Watches ({} paths)\n", paths.len()));
-            if paths.is_empty() {
+            lines.push_str(&format!("Watches ({} paths)\n", watches.len()));
+            if watches.is_empty() {
                 lines.push_str("  [WARN] not watching any paths\n");
                 worst = worst.max(Outcome::Warning);
             } else {
                 let home = libbeachcomber::path::Home::from_env();
-                for path in &paths {
-                    let p = home.compact(path.as_str().unwrap_or("?"));
-                    lines.push_str(&format!("  [PASS] {p}\n"));
+                let text = |key: &str, w: &serde_json::Value| {
+                    w.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+                };
+                for w in &watches {
+                    let p = home.compact(&text("path", w).unwrap_or_else(|| "?".into()));
+                    match text("state", w).as_deref() {
+                        Some("active") => match text("via", w) {
+                            Some(via) => lines.push_str(&format!(
+                                "  [PASS] {p} (through {} until it exists)\n",
+                                home.compact(&via)
+                            )),
+                            None => lines.push_str(&format!("  [PASS] {p}\n")),
+                        },
+                        Some("pending") => lines.push_str(&format!("  [INFO] {p} (registering)\n")),
+                        _ => {
+                            let error = text("error", w).unwrap_or_else(|| "failed".into());
+                            lines.push_str(&format!("  [WARN] {p} — {error}\n"));
+                            worst = worst.max(Outcome::Warning);
+                        }
+                    }
                 }
             }
             lines.push_str(&vlines);

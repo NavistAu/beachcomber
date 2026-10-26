@@ -598,7 +598,29 @@ on an embedded server that has none.
 `active_watchers` counts open `Watch` connections, not distinct watched keys
 or clients: a resolved `comb watch` opens one `Watch` subscription per
 dependency its key's resolution reads, so a single client can read as more
-than 1.
+than 1. A watch whose registration failed adds a `WARN` verdict, `watch of
+<path> failed: <error>; …`.
+
+**Response (subject=watches):** `data.watches` is every path watched for a
+Source, by path, with where its registration stands:
+
+```json
+{"watches": [
+  {"path": "/home/me/ws/project", "state": "active"},
+  {"path": "/home/me/.config/tool/state.json", "state": "active", "via": "/home/me/.config"},
+  {"path": "/home/me/ws/big", "state": "pending"},
+  {"path": "/srv/locked/state.json", "state": "failed", "error": "Permission denied (os error 13)"}
+ ],
+ "verdicts": [{"level": "PASS", "message": "watching 4 paths"}, …]}
+```
+
+A registration is made off the scheduler's loop, so a path is `pending` until
+it is made, and its changes are not seen until then. `active` is registered: on
+the path and everything below it or, with `via`, while the path does not exist,
+on the entries of the nearest directory above it that does; the path's
+creation is then a change like any other. `failed` carries the error, adds a
+`WARN` verdict, and is asked for again by the next read of a Source that
+watches it.
 
 **Response (subject=providers):** `data.providers` is one object per
 provider, sorted by name:

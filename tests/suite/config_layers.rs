@@ -450,11 +450,11 @@ fn introspect(d: &TestDaemon, subject: &str) -> Value {
 
 /// The paths the daemon watches for Sources.
 fn watched(d: &TestDaemon) -> Vec<String> {
-    introspect(d, "watches")["paths"]
+    introspect(d, "watches")["watches"]
         .as_array()
-        .expect("paths")
+        .expect("watches")
         .iter()
-        .map(|p| p.as_str().expect("a path").to_string())
+        .map(|w| w["path"].as_str().expect("a path").to_string())
         .collect()
 }
 

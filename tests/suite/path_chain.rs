@@ -1308,9 +1308,9 @@ async fn watches_register_at_the_root_on_first_request() {
 
     let status = sched.get_status().await.expect("scheduler runs");
     assert!(
-        status.watched_paths.is_empty(),
+        status.watches.is_empty(),
         "nothing is watched before a first request: {:?}",
-        status.watched_paths
+        status.watches
     );
     assert!(sched.get_lifecycle_snapshots().await.is_empty());
 
@@ -1335,7 +1335,11 @@ async fn watches_register_at_the_root_on_first_request() {
     );
 
     let status = sched.get_status().await.expect("scheduler runs");
-    let mut watched = status.watched_paths.clone();
+    let mut watched: Vec<String> = status
+        .watches
+        .iter()
+        .map(|w| w.path.to_string_lossy().into_owned())
+        .collect();
     watched.sort();
     let mut want = vec![project, f.path(".values")];
     want.sort();

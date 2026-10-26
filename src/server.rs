@@ -2203,16 +2203,18 @@ async fn handle_request(
             duration_secs,
         } => match subject {
             IntrospectSubject::Daemon => {
-                // Gather in_flight + watch backend from scheduler status if available.
-                let (in_flight_count, watch_backend) = if let Some(sched) = scheduler
+                // Gather in_flight, the watch backend and the watches that
+                // failed from scheduler status if available.
+                let (in_flight_count, watch_backend, watches) = if let Some(sched) = scheduler
                     && let Some(sched_status) = sched.get_status().await
                 {
                     (
                         sched_status.in_flight.len() as u64,
                         sched_status.watch_backend,
+                        sched_status.watches,
                     )
                 } else {
-                    (0, "unknown".to_string())
+                    (0, "unknown".to_string(), Vec::new())
                 };
                 let active_watchers = active_watches.load(Ordering::Relaxed) as u64;
                 let cache_entries = cache.len() as u64;
@@ -2224,6 +2226,7 @@ async fn handle_request(
                     active_watchers,
                     cache_entries,
                     &watch_backend,
+                    &watches,
                     reaper,
                     config.loaded_path(),
                 )
@@ -2289,6 +2292,7 @@ fn handle_introspect_daemon(
     active_watchers: u64,
     cache_entries: u64,
     watch_backend: &str,
+    watches: &[crate::watcher::Watch],
     reaper: Option<&crate::singleton::ReaperHealth>,
     loaded_config: Option<&std::path::Path>,
 ) -> Response {
@@ -2321,6 +2325,9 @@ fn handle_introspect_daemon(
         verdicts.push(verdict("WARN", format!(
                 "watch backend: {watch_backend} — kernel fs events undelivered; watch invalidation degraded to polling"
             )));
+    }
+    for failed in failed_watches(watches) {
+        verdicts.push(verdict("WARN", failed));
     }
 
     // Canon singleton.md invariant 13: reaper capability is never silently
@@ -2638,29 +2645,45 @@ async fn handle_introspect_lifecycle(scheduler: Option<&SchedulerHandle>) -> Res
 }
 
 async fn handle_introspect_watches(scheduler: Option<&SchedulerHandle>) -> Response {
-    let paths: Vec<String> = if let Some(s) = scheduler {
-        s.get_status()
+    let watches = match scheduler {
+        Some(s) => s
+            .get_status()
             .await
-            .map(|st| st.watched_paths)
-            .unwrap_or_default()
-    } else {
-        Vec::new()
+            .map(|st| st.watches)
+            .unwrap_or_default(),
+        None => Vec::new(),
     };
 
-    let verdict = if paths.is_empty() {
+    let mut verdicts = vec![if watches.is_empty() {
         serde_json::json!({"level": "WARN", "message": "not watching any paths"})
     } else {
-        serde_json::json!({"level": "PASS", "message": format!("watching {} paths", paths.len())})
-    };
+        serde_json::json!({"level": "PASS", "message": format!("watching {} paths", watches.len())})
+    }];
+    verdicts.extend(
+        failed_watches(&watches)
+            .map(|message| serde_json::json!({"level": "WARN", "message": message})),
+    );
 
     Response::ok(
         serde_json::json!({
-            "paths": paths,
-            "verdicts": [verdict],
+            "watches": watches,
+            "verdicts": verdicts,
         }),
         0,
         false,
     )
+}
+
+/// What a WARN verdict says of each watch whose registration failed. The next
+/// demand of an instance that watches it asks for it again.
+fn failed_watches(watches: &[crate::watcher::Watch]) -> impl Iterator<Item = String> + '_ {
+    watches.iter().filter_map(|w| match &w.state {
+        crate::watcher::WatchState::Failed { error } => Some(format!(
+            "watch of {} failed: {error}; the next read of a Source that watches it tries again",
+            w.path.display()
+        )),
+        _ => None,
+    })
 }
 
 async fn handle_introspect_timers(scheduler: Option<&SchedulerHandle>) -> Response {

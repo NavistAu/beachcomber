@@ -25,7 +25,7 @@ use crate::provider::source_call::record_outcome;
 use crate::scheduler::lifecycle::{
     LifecycleRegistry, LifecycleState, SourceLifecycleConfig, StateTransition, WatchAction,
 };
-use crate::watcher::FsWatcher;
+use crate::watcher::{FsWatcher, Registrar};
 use crate::watcher_registry::WatcherRegistry;
 
 /// Messages sent from the Server to the Scheduler.
@@ -36,9 +36,6 @@ pub enum SchedulerMessage {
     Refresh {
         provider: String,
         instances: Vec<Instance>,
-    },
-    FsEvent {
-        paths: Vec<PathBuf>,
     },
     Shutdown,
     /// Request scheduler status info. Response sent via oneshot channel.
@@ -122,7 +119,9 @@ pub fn timed_out(timeout: Duration) -> String {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SchedulerStatus {
-    pub watched_paths: Vec<String>,
+    /// Every path watched for a Source, by path, and where its registration
+    /// stands.
+    pub watches: Vec<crate::watcher::Watch>,
     pub in_flight: Vec<String>,
     pub lifecycle: Vec<LifecycleInfo>,
     pub poll_timers: Vec<PollTimerInfo>,
@@ -336,14 +335,11 @@ fn instant_to_unix_ms(deadline: std::time::Instant) -> u64 {
 /// Build a snapshot of the current scheduler state for status reporting.
 fn build_status(
     lifecycle: &LifecycleRegistry,
-    watch_paths: &HashMap<PathBuf, Vec<Subscription>>,
+    registrar: Option<&Registrar>,
     in_flight: &std::sync::Mutex<std::collections::HashSet<lifecycle::Key>>,
     watch_backend: &str,
 ) -> SchedulerStatus {
-    let watched: Vec<String> = watch_paths
-        .keys()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect();
+    let watches = registrar.map(Registrar::watches).unwrap_or_default();
 
     let in_flight_keys: Vec<String> = in_flight
         .lock()
@@ -404,7 +400,7 @@ fn build_status(
     }
 
     SchedulerStatus {
-        watched_paths: watched,
+        watches,
         in_flight: in_flight_keys,
         lifecycle: backoff_info,
         poll_timers: poll_timer_info,
@@ -501,6 +497,8 @@ pub struct Scheduler {
     /// backend at this interval and skips the self-test. See
     /// `use_polling_watcher`.
     polling_watcher: Option<Duration>,
+    /// A watcher and its events a test hands in ([`Self::use_watcher`]).
+    given_watcher: Option<(FsWatcher, mpsc::Receiver<Vec<PathBuf>>)>,
 }
 
 impl Scheduler {
@@ -529,6 +527,7 @@ impl Scheduler {
             watchers,
             run_watch_self_test: false,
             polling_watcher: None,
+            given_watcher: None,
         };
         (handle, scheduler)
     }
@@ -820,6 +819,15 @@ impl Scheduler {
         self.run_watch_self_test = false;
     }
 
+    /// Test seam: serve provider file-watching from `watcher` (a backend the
+    /// test controls, [`FsWatcher::with_backend`]), whose events are what the
+    /// test sends on `events`'s sender. No self-test.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn use_watcher(&mut self, watcher: FsWatcher, events: mpsc::Receiver<Vec<PathBuf>>) {
+        self.given_watcher = Some((watcher, events));
+        self.run_watch_self_test = false;
+    }
+
     pub async fn run(mut self) {
         // Provider file-watching starts on the kernel-native backend
         // immediately; the watch self-test (canon provider_source.md §"Watch
@@ -830,15 +838,20 @@ impl Scheduler {
         // watch path (a stream can be created without error and deliver
         // nothing — sandboxed CI hosts, degraded fseventsd; chosen blind,
         // watch-invalidated entries would silently never invalidate).
-        let watcher = match self.polling_watcher {
-            Some(interval) => FsWatcher::new_polling(interval),
-            None => FsWatcher::new(),
+        // A watcher a test handed in is not the kernel's: it reports as
+        // polling, which is what the self-test would leave it as.
+        let polled = self.polling_watcher.is_some() || self.given_watcher.is_some();
+        let watcher = match (self.given_watcher.take(), self.polling_watcher) {
+            (Some(given), _) => Ok(given),
+            (None, Some(interval)) => FsWatcher::new_polling(interval),
+            (None, None) => FsWatcher::new(),
         };
-        // Without a watcher the loop still serves demand, polls and reloads;
-        // nothing is watched, and `_idle_events` keeps the event channel open
-        // and silent.
-        let (mut fs_watcher, mut fs_rx, _idle_events) = match watcher {
-            Ok((watcher, rx)) => (Some(watcher), rx, None),
+        // The registrations are made by the registrar's worker, which owns
+        // the watcher; the loop keeps the events. Without a watcher the loop
+        // still serves demand, polls and reloads; nothing is watched, and
+        // `_idle_events` keeps the event channel open and silent.
+        let (registrar, mut fs_rx, _idle_events) = match watcher {
+            Ok((watcher, rx)) => (Some(Registrar::start(watcher)), rx, None),
             Err(e) => {
                 warn!(
                     "Failed to create filesystem watcher: {}. Watch triggers disabled.",
@@ -848,8 +861,8 @@ impl Scheduler {
                 (None, rx, Some(tx))
             }
         };
-        let mut watch_backend = fs_watcher.as_ref().map(|_| {
-            if self.polling_watcher.is_some() {
+        let mut watch_backend = registrar.as_ref().map(|_| {
+            if polled {
                 crate::watcher::WatchBackend::Polling
             } else {
                 crate::watcher::WatchBackend::Native
@@ -857,7 +870,7 @@ impl Scheduler {
         });
 
         let mut self_test_rx: Option<tokio::sync::oneshot::Receiver<bool>> =
-            if self.run_watch_self_test && fs_watcher.is_some() {
+            if self.run_watch_self_test && registrar.is_some() {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 tokio::spawn(async move {
                     let ok = crate::watcher::self_test_native_backend(
@@ -912,32 +925,27 @@ impl Scheduler {
                         Some(SchedulerMessage::Reload { next, registry }) => {
                             let watches = self.reload(next, &registry, &mut lifecycle);
                             for key in &watches.drop {
-                                drop_watches_for_key(key, &mut watch_paths, fs_watcher.as_mut());
+                                drop_watches_for_key(key, &mut watch_paths, registrar.as_ref());
                             }
                             for key in &watches.rewatch {
                                 let Some(sm) = self.registry.source_metadata(&key.provider, &key.source) else {
                                     continue;
                                 };
-                                fs_watcher = watch_instance(
-                                    fs_watcher,
+                                watch_instance(
+                                    registrar.as_ref(),
                                     &mut watch_paths,
                                     &self.registry,
                                     &key.provider,
                                     sm,
                                     key.path.as_deref(),
-                                )
-                                .await;
+                                );
                             }
-                            last_activity = Instant::now();
-                        }
-                        Some(SchedulerMessage::FsEvent { paths }) => {
-                            self.handle_fs_event(paths, &watch_paths, &mut lifecycle);
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
                             let status = build_status(
                                 &lifecycle,
-                                &watch_paths,
+                                registrar.as_ref(),
                                 &self.in_flight,
                                 watch_backend.map_or("disabled", |b| b.as_str()),
                             );
@@ -999,20 +1007,24 @@ impl Scheduler {
                                 // The instance's schedule registers when it is
                                 // first requested (and again when decay dropped
                                 // its watches and a demand reinstates them),
-                                // never at load.
+                                // never at load. A registration that failed is
+                                // asked for again by the next demand.
                                 if matches!(
                                     outcome.watch_registration,
                                     WatchAction::Register | WatchAction::Reinstate
                                 ) {
-                                    fs_watcher = watch_instance(
-                                        fs_watcher,
+                                    watch_instance(
+                                        registrar.as_ref(),
                                         &mut watch_paths,
                                         &self.registry,
                                         provider,
                                         sm,
                                         root.as_deref(),
-                                    )
-                                    .await;
+                                    );
+                                } else if let Some(registrar) = &registrar
+                                    && registrar.has_failed()
+                                {
+                                    registrar.retry(paths_of(&key, &watch_paths));
                                 }
 
                                 if matches!(outcome.transition, StateTransition::NewlyActive) {
@@ -1028,8 +1040,15 @@ impl Scheduler {
                     }
                 }
 
-                // Filesystem events from watcher.
+                // Filesystem events from watcher. A path watched through a
+                // directory above it may just have been made: it is looked
+                // for again, and its own creation is routed like any change.
                 Some(paths) = fs_rx.recv() => {
+                    if let Some(registrar) = &registrar {
+                        for path in &paths {
+                            registrar.look_again(path);
+                        }
+                    }
                     let affected_keys = resolve_keys_from_paths(&paths, &watch_paths);
                     for key in affected_keys {
                         let outcome = lifecycle.on_fsevent(key.clone(), Instant::now());
@@ -1041,8 +1060,8 @@ impl Scheduler {
                 }
 
                 // Watch self-test verdict (canon provider_source.md §"Watch backend health").
-                // Failure swaps the live watcher for the polling backend and
-                // re-registers every watch path on it.
+                // Failure hands the registrar the polling backend, which it
+                // registers every watch on again.
                 res = async { self_test_rx.as_mut().expect("guarded by is_some").await },
                     if self_test_rx.is_some() =>
                 {
@@ -1057,13 +1076,10 @@ impl Scheduler {
                         match FsWatcher::new_polling_fallback(
                             crate::watcher::POLLING_FALLBACK_INTERVAL,
                         ) {
-                            Ok((mut poll_watcher, poll_rx)) => {
-                                for path in watch_paths.keys() {
-                                    if let Err(e) = poll_watcher.watch(path) {
-                                        warn!("failed to re-register watch on {path:?}: {e}");
-                                    }
+                            Ok((poll_watcher, poll_rx)) => {
+                                if let Some(registrar) = &registrar {
+                                    registrar.replace_backend(poll_watcher);
                                 }
-                                fs_watcher = Some(poll_watcher);
                                 fs_rx = poll_rx;
                                 watch_backend = Some(crate::watcher::WatchBackend::Polling);
                             }
@@ -1099,7 +1115,7 @@ impl Scheduler {
                     }
 
                     for key in &actions.watch_drops {
-                        drop_watches_for_key(key, &mut watch_paths, fs_watcher.as_mut());
+                        drop_watches_for_key(key, &mut watch_paths, registrar.as_ref());
                     }
 
                     for key in &actions.evictions {
@@ -1111,7 +1127,7 @@ impl Scheduler {
                         // only when its last source evicts (canon: lifecycle is keyed
                         // per (provider, path, source)).
                         on_evicted(&self.cache, &self.registry, key);
-                        drop_watches_for_key(key, &mut watch_paths, fs_watcher.as_mut());
+                        drop_watches_for_key(key, &mut watch_paths, registrar.as_ref());
                     }
 
                     for (key, new_state) in &actions.transitions {
@@ -1134,48 +1150,29 @@ impl Scheduler {
             }
         }
     }
-
-    fn handle_fs_event(
-        &self,
-        paths: Vec<PathBuf>,
-        watch_paths: &HashMap<PathBuf, Vec<Subscription>>,
-        lifecycle: &mut LifecycleRegistry,
-    ) {
-        let affected_keys = resolve_keys_from_paths(&paths, watch_paths);
-        for key in affected_keys {
-            let outcome = lifecycle.on_fsevent(key.clone(), Instant::now());
-            if outcome.refresh {
-                self.execute_source(&key.provider, &key.source, key.path.as_deref());
-            }
-        }
-    }
 }
 
-/// Register the watches of one instance of `provider`'s Source `sm` at `root`
-/// ([`instance_watches`]), and hand the watcher back.
-async fn watch_instance(
-    fs_watcher: Option<FsWatcher>,
+/// Subscribe one instance of `provider`'s Source `sm` at `root` to its watches
+/// ([`instance_watches`]). With no watcher there is nothing to watch with.
+fn watch_instance(
+    registrar: Option<&Registrar>,
     watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
     registry: &ProviderRegistry,
     provider: &str,
     sm: &crate::provider::SourceMetadata,
     root: Option<&str>,
-) -> Option<FsWatcher> {
-    // No watcher, nothing to watch with.
-    let mut fs_watcher = fs_watcher?;
+) {
+    let Some(registrar) = registrar else {
+        return;
+    };
     let src = registry.source(provider, &sm.name);
     for (watch_path, sub) in instance_watches(provider, sm, root, src.as_deref()) {
-        let (returned_watcher, registered) =
-            register_path_watch(fs_watcher, watch_paths, watch_path.clone(), sub).await;
-        fs_watcher = returned_watcher;
-        if registered {
-            debug!(
-                "Watching {:?} for provider={} source={} root={:?}",
-                watch_path, provider, sm.name, root
-            );
-        }
+        debug!(
+            "Watching {:?} for provider={} source={} root={:?}",
+            watch_path, provider, sm.name, root
+        );
+        subscribe(registrar, watch_paths, watch_path, sub);
     }
-    Some(fs_watcher)
 }
 
 /// The watches an instance of a Source registers when it is first requested:
@@ -1237,64 +1234,43 @@ fn instance_watches(
     out
 }
 
-/// Register a fs watch on `path` for `sub`, deduplicating the underlying
-/// kernel registration against already-tracked paths: multiple Sources
-/// subscribing to the same path (e.g. git's `refs` and `status` sources at
-/// the same repo root) share one kernel `watch()` call, keyed off
-/// `watch_paths` — the same map that already governs unwatch-on-last-drop
-/// in `drop_watches_for_key`, so registration and cleanup share one source
-/// of truth for "is this path currently watched".
+/// Route `path`'s events to `sub`. The first subscriber of a path asks the
+/// registrar for it, so Sources that watch one path (git's `refs` and
+/// `status` at a repository's root) share one registration; `watch_paths` is
+/// the one record of what is watched, which [`drop_watches_for_key`] lets go
+/// of on the last unsubscribe.
 ///
-/// When a kernel call is actually needed (first subscriber for `path`), it
-/// runs on the blocking thread pool via `spawn_blocking`: kernel FSEvents
-/// registration has been measured at 1-3s per call on a loaded host, and
-/// running it inline on the scheduler's async task blocks the worker thread
-/// it shares with other tasks (e.g. connection tasks writing already-computed
-/// responses) for that whole duration. `fs_watcher` is moved in and handed
-/// back so the caller's loop keeps ownership across the await point.
-///
-/// Gap semantics: between the moment this call is issued and the moment the
-/// kernel registration completes, no fs events for `path` are observed (the
-/// OS is not yet watching it) — the same gap that existed before this fix's
-/// spawn_blocking off-load, just no longer accompanied by a blocked
-/// scheduler task. A demand signal that arrives for a Source whose
-/// registration is still in flight is not lost: `on_demand` already
-/// recorded the lifecycle transition synchronously, and the scheduler's
-/// message loop processes one `QueryActivity` at a time, so no second
-/// registration attempt races this one for the same path.
-///
-/// Returns the `FsWatcher` plus whether the subscription was recorded —
-/// false only when a fresh kernel registration was required and failed.
-async fn register_path_watch(
-    fs_watcher: FsWatcher,
+/// The registration is the registrar's worker's, so the loop goes on at once.
+/// Until it is made the path is Pending and its events are not seen: the OS is
+/// not watching it yet.
+fn subscribe(
+    registrar: &Registrar,
     watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
     path: PathBuf,
     sub: Subscription,
-) -> (FsWatcher, bool) {
-    if let Some(subs) = watch_paths.get_mut(&path) {
-        subs.push(sub);
-        return (fs_watcher, true);
-    }
-
-    let path_for_call = path.clone();
-    let (fs_watcher, result) = tokio::task::spawn_blocking(move || {
-        let mut fs_watcher = fs_watcher;
-        let result = fs_watcher.watch(&path_for_call);
-        (fs_watcher, result)
-    })
-    .await
-    .expect("watch registration task panicked");
-
-    match result {
-        Ok(()) => {
-            watch_paths.insert(path, vec![sub]);
-            (fs_watcher, true)
-        }
-        Err(e) => {
-            warn!("Failed to watch {:?}: {}", path, e);
-            (fs_watcher, false)
+) {
+    match watch_paths.entry(path) {
+        std::collections::hash_map::Entry::Occupied(mut subs) => subs.get_mut().push(sub),
+        std::collections::hash_map::Entry::Vacant(first) => {
+            registrar.watch(first.key().clone());
+            first.insert(vec![sub]);
         }
     }
+}
+
+/// The paths `key`'s instance is subscribed to.
+fn paths_of<'a>(
+    key: &'a lifecycle::Key,
+    watch_paths: &'a HashMap<PathBuf, Vec<Subscription>>,
+) -> impl Iterator<Item = &'a std::path::Path> {
+    watch_paths
+        .iter()
+        .filter(|(_, subs)| {
+            subs.iter().any(|sub| {
+                sub.provider == key.provider && sub.path == key.path && sub.source == key.source
+            })
+        })
+        .map(|(path, _)| path.as_path())
 }
 
 /// Apply a `PutWritten`: drop every `put` lifecycle key at or below `node`,
@@ -1489,7 +1465,7 @@ fn resolve_keys_from_paths(
 fn drop_watches_for_key(
     key: &lifecycle::Key,
     watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
-    mut fs_watcher: Option<&mut FsWatcher>,
+    registrar: Option<&Registrar>,
 ) {
     let mut paths_to_unwatch = Vec::new();
     for (watch_path, subscriptions) in watch_paths.iter_mut() {
@@ -1506,8 +1482,8 @@ fn drop_watches_for_key(
     }
     for wp in paths_to_unwatch {
         watch_paths.remove(&wp);
-        if let Some(fs_watcher) = fs_watcher.as_deref_mut() {
-            let _ = fs_watcher.unwatch(&wp);
+        if let Some(registrar) = registrar {
+            registrar.unwatch(&wp);
         }
         debug!("Unwatched path {:?} (no subscriptions remaining)", wp);
     }
@@ -1706,50 +1682,233 @@ mod tests {
         assert_eq!(fields, vec!["status"]);
     }
 
-    /// Pinning test for the watch-registration dedup fix: when multiple
-    /// Sources subscribe to the same path (e.g. git's `refs` and `status`
-    /// sources at the same repo root), the underlying kernel `watch()` call
-    /// must happen exactly once — not once per subscribing Source. Kernel
-    /// FSEvents registration costs 1-3s per call on a loaded host; calling
-    /// it redundantly once per source is what caused the scheduler-loop
-    /// stall this fix addresses.
-    #[tokio::test]
-    async fn register_path_watch_dedupes_kernel_registration_for_shared_path() {
+    /// Sources that watch one path (git's `refs` and `status` at a repository's
+    /// root) share one registration: the registrar is asked once, and both
+    /// subscriptions route its events. The last to go lets the path go.
+    #[test]
+    fn subscribers_of_one_path_share_its_registration() {
+        use crate::watcher::test_backend::{Call, Gate, Held};
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().to_path_buf();
-        let (fs_watcher, _rx) =
-            crate::watcher::FsWatcher::new_polling(Duration::from_millis(50)).unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        let (held, calls) = Held::new(&Gate::opened());
+        let registrar = Registrar::start(FsWatcher::with_backend(Box::new(held)));
         let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
-
-        let sub_refs = Subscription {
+        let sub = |source: &str, pattern: &str| Subscription {
             provider: "git".to_string(),
             path: Some(dir.display().to_string()),
-            source: "refs".to_string(),
-            patterns: vec![".git".to_string()],
+            source: source.to_string(),
+            patterns: vec![pattern.to_string()],
         };
-        let sub_status = Subscription {
-            provider: "git".to_string(),
-            path: Some(dir.display().to_string()),
-            source: "status".to_string(),
-            patterns: vec![".git/index".to_string()],
-        };
-
-        let (fs_watcher, ok_a) =
-            register_path_watch(fs_watcher, &mut watch_paths, dir.clone(), sub_refs).await;
-        assert!(ok_a, "first subscriber's registration should succeed");
-        let (fs_watcher, ok_b) =
-            register_path_watch(fs_watcher, &mut watch_paths, dir.clone(), sub_status).await;
-        assert!(ok_b, "second subscriber's registration should succeed");
-
-        assert_eq!(
-            fs_watcher.watch_call_count(),
-            1,
-            "kernel watch() must be called once per path, not once per subscribing source"
+        subscribe(
+            &registrar,
+            &mut watch_paths,
+            dir.clone(),
+            sub("refs", ".git"),
         );
+        subscribe(
+            &registrar,
+            &mut watch_paths,
+            dir.clone(),
+            sub("status", ".git/index"),
+        );
+        assert_eq!(watch_paths[&dir].len(), 2, "both subscriptions route");
+        assert_eq!(registrar.watches().len(), 1, "one registration asked for");
+
+        let key = |source: &str| lifecycle::Key {
+            provider: "git".into(),
+            path: Some(dir.display().to_string()),
+            source: source.into(),
+            node: String::new(),
+        };
+        drop_watches_for_key(&key("refs"), &mut watch_paths, Some(&registrar));
+        assert_eq!(registrar.watches().len(), 1, "status still watches it");
+        drop_watches_for_key(&key("status"), &mut watch_paths, Some(&registrar));
+        assert!(registrar.watches().is_empty() && watch_paths.is_empty());
+
+        drop(registrar);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while calls.lock().unwrap().len() < 2 {
+            assert!(std::time::Instant::now() < deadline, "{:?}", calls.lock());
+            std::thread::yield_now();
+        }
         assert_eq!(
-            watch_paths.get(&dir).unwrap().len(),
-            2,
-            "both subscriptions are recorded despite the single kernel registration"
+            *calls.lock().unwrap(),
+            [
+                Call::Watch(dir.clone(), notify::RecursiveMode::Recursive),
+                Call::Unwatch(dir.clone()),
+            ]
+        );
+    }
+
+    /// Config Sources `w<n>` with one instance, each watching its own
+    /// directory under `base`, which exists.
+    fn watching_sources(base: &Path, n: usize) -> (Config, Vec<PathBuf>) {
+        let mut toml = String::new();
+        let mut dirs = Vec::new();
+        for i in 0..n {
+            let dir = base.join(format!("w{i}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            toml.push_str(&format!(
+                "[daemon.providers.w{i}.sources.s]\n\
+                 data = \"{{{{ 1 }}}}\"\n\
+                 result.n = \"{{{{ data }}}}\"\n\
+                 return = \"{{{{ result | watch('{}') }}}}\"\n",
+                dir.display()
+            ));
+            dirs.push(dir);
+        }
+        (Config::from_toml(&toml), dirs)
+    }
+
+    fn demand(provider: &str) -> SchedulerMessage {
+        SchedulerMessage::QueryActivity {
+            provider: provider.into(),
+            instances: vec![Instance::new("s", None)],
+        }
+    }
+
+    fn states(status: &SchedulerStatus) -> Vec<(PathBuf, crate::watcher::WatchState)> {
+        status
+            .watches
+            .iter()
+            .map(|w| (w.path.clone(), w.state.clone()))
+            .collect()
+    }
+
+    /// A registration the backend holds does not hold the loop: the heartbeat
+    /// ticks, a second demand is taken while the first registration is still
+    /// Pending, and both are Active once the backend lets them through.
+    #[tokio::test(start_paused = true)]
+    async fn the_loop_goes_on_while_a_registration_is_held() {
+        use crate::watcher::WatchState::{Active, Pending};
+        use crate::watcher::test_backend::{Gate, Held};
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, dirs) = watching_sources(&tmp.path().canonicalize().unwrap(), 2);
+        let cache = Arc::new(Cache::new());
+        let registry = ProviderRegistry::with_config(&config, &Default::default())
+            .unwrap()
+            .share(&cache);
+        let (handle, mut scheduler) =
+            Scheduler::new(cache, registry, config, Arc::new(WatcherRegistry::new()));
+        let gate = Gate::closed();
+        let (held, _) = Held::new(&gate);
+        let (_events, rx) = mpsc::channel(1);
+        scheduler.use_watcher(FsWatcher::with_backend(Box::new(held)), rx);
+        let heartbeat = scheduler.heartbeat();
+        tokio::spawn(scheduler.run());
+
+        handle.send(demand("w0")).await;
+        let status = handle.get_status().await.expect("the loop answers");
+        assert_eq!(states(&status), [(dirs[0].clone(), Pending)]);
+
+        handle.send(demand("w1")).await;
+        let status = handle.get_status().await.expect("the loop answers");
+        assert_eq!(
+            states(&status),
+            [(dirs[0].clone(), Pending), (dirs[1].clone(), Pending)],
+            "the second demand was taken, its registration queued behind the first"
+        );
+        assert!(status.demand.iter().any(|d| d.provider == "w1"));
+
+        // The clock is paused: the loop's ticks are the only thing that moves
+        // the heartbeat, and the worker's real thread does not stop them.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let before = heartbeat.load(Ordering::Relaxed);
+        tokio::time::advance(Duration::from_secs(3)).await;
+        while heartbeat.load(Ordering::Relaxed) < before + 3 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the heartbeat stopped"
+            );
+            tokio::task::yield_now().await;
+        }
+
+        gate.open();
+        let active = [
+            (dirs[0].clone(), Active { via: None }),
+            (dirs[1].clone(), Active { via: None }),
+        ];
+        while states(&handle.get_status().await.unwrap()) != active {
+            assert!(std::time::Instant::now() < deadline, "never both Active");
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// T4.7, measured rather than asserted: the heartbeat's latest tick while
+    /// a 20 000-file tree registers on the polling backend, whose first scan
+    /// reads every file, and how long an `introspect`-style status request
+    /// waits meanwhile. Ignored: it builds the tree and runs for seconds.
+    ///
+    /// `cargo nextest run --lib -E 'test(heartbeat_gap)' --run-ignored all --no-capture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn heartbeat_gap_during_a_slow_registration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tree = tmp.path().canonicalize().unwrap().join("tree");
+        for d in 0..100 {
+            let dir = tree.join(format!("d{d}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            for f in 0..200 {
+                std::fs::write(dir.join(format!("f{f}")), format!("{d}/{f}")).unwrap();
+            }
+        }
+        let config = Config::from_toml(&format!(
+            "[daemon.providers.big.sources.s]\n\
+             data = \"{{{{ 1 }}}}\"\n\
+             result.n = \"{{{{ data }}}}\"\n\
+             return = \"{{{{ result | watch('{}') }}}}\"\n",
+            tree.display()
+        ));
+        let cache = Arc::new(Cache::new());
+        let registry = ProviderRegistry::with_config(&config, &Default::default())
+            .unwrap()
+            .share(&cache);
+        let (handle, mut scheduler) =
+            Scheduler::new(cache, registry, config, Arc::new(WatcherRegistry::new()));
+        // One scan: the registration's own.
+        scheduler.use_polling_watcher(Duration::from_secs(3600));
+        let heartbeat = scheduler.heartbeat();
+        tokio::spawn(scheduler.run());
+        let sampler = std::thread::spawn(move || {
+            let mut ticks = Vec::new();
+            let mut seen = heartbeat.load(Ordering::Relaxed);
+            let end = Instant::now() + Duration::from_secs(8);
+            while Instant::now() < end {
+                let beat = heartbeat.load(Ordering::Relaxed);
+                if beat != seen {
+                    seen = beat;
+                    ticks.push(Instant::now());
+                }
+                // No event announces a tick, so the counter is sampled.
+                // sleep-justified: sampling a counter every millisecond
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            ticks
+        });
+        // Two ticks first, so the gaps measured are the ones the
+        // registration falls in.
+        // sleep-justified: let two ticks pass before the demand
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        let demanded = Instant::now();
+        handle
+            .send(SchedulerMessage::QueryActivity {
+                provider: "big".into(),
+                instances: vec![Instance::new("s", None)],
+            })
+            .await;
+        handle.get_status().await.unwrap();
+        let status_waited = demanded.elapsed();
+        let ticks = sampler.join().unwrap();
+        let late = ticks
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .max()
+            .unwrap()
+            .saturating_sub(Duration::from_secs(1));
+        eprintln!(
+            "T4.7: {} ticks; the latest was {late:?} late; a status request sent with the \
+             demand waited {status_waited:?}",
+            ticks.len()
         );
     }
 
