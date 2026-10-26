@@ -73,11 +73,20 @@ impl EngineCtx {
 ///
 /// No template's name turns on escaping: the engine would escape a template
 /// named like a file (`*.html`, `*.json`), and a macro library's name is an
-/// address (`p:macro.json`), not a file.
+/// address (`p:macro.json`), not a file. A `none` printed inside text is
+/// nothing, never the word `none`: every environment comes from here, so
+/// this is the one place that rule is installed.
 pub fn build_pure_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
     let mut jinja = Environment::new();
     jinja.set_undefined_behavior(UndefinedBehavior::Chainable);
     jinja.set_auto_escape_callback(|_| AutoEscape::None);
+    jinja.set_formatter(|out, state, value| {
+        if value.is_none() {
+            Ok(())
+        } else {
+            minijinja::escape_formatter(out, state, value)
+        }
+    });
     library::absent::guard_builtins(&mut jinja);
     library::install(&mut jinja, &ctx, Tier::Pure);
     jinja

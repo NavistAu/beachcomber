@@ -1,4 +1,4 @@
-//! One expression syntax: classification, reference discovery, rendering.
+//! One expression syntax: classification, reference discovery, evaluation.
 //!
 //! Canon `field_resolution.md` §"Value resolution" (invariant 14): `{{ }}`
 //! everywhere. A value expression written as exactly one `{{ expr }}` evaluates
@@ -6,12 +6,12 @@
 //! one tag evaluates to a string. A source with no tags at all is its literal
 //! text — there is no bare-expression form.
 //!
-//! This module answers the two questions a caller has before evaluating — which
-//! of the two forms is this ([`classify`], [`single_tag_expression`]), and what
-//! does it reference ([`discover_refs`]) — and owns the template render
-//! those use. Evaluation itself is [`crate::resolve`]'s: it
-//! fetches what a source references from the daemon and evaluates it against
-//! that, through this module's primitives.
+//! This module answers the questions a caller has before evaluating — which of
+//! the forms is this ([`classify`], [`single_tag_expression`]), what does it
+//! reference ([`discover_refs`]) and import ([`imports`]), and is it sound
+//! where it is written ([`lint`]) — and owns the one evaluator, [`evaluate`],
+//! that the client's templates ([`crate::resolve`], which fetches what a
+//! source references first), a Source's lines and a provider's lines all run.
 
 mod lint;
 mod scan;
@@ -19,11 +19,10 @@ mod scan;
 pub use lint::{Finding, Known, Line, lint, refused};
 pub use scan::{Tag, TagKind, scan_tags};
 
-use crate::engine::{EngineCtx, build_engine_env};
+use crate::engine::build_engine_env;
 use crate::virtual_fields::{Ref, discover_expression_refs, refs_from_names};
 use minijinja::Environment;
 use minijinja::value::Value as MjValue;
-use std::sync::Arc;
 
 // ── Forms ─────────────────────────────────────────────────────────────────────
 
@@ -245,33 +244,111 @@ pub(crate) fn too_deep() -> String {
     format!("virtual field nesting too deep (limit {MAX_VIRTUAL_DEPTH})")
 }
 
-// ── Rendering ─────────────────────────────────────────────────────────────────
+// ── Evaluation ────────────────────────────────────────────────────────────────
 
-/// Why a template render failed, by phase: the source itself does not
-/// compile, or it compiled and failed while rendering. A caller that has to
-/// tell a configuration fault from a runtime one ([`crate::resolve`]) matches
-/// the variant; `Display` prefixes each with its phase.
-#[derive(Debug)]
-pub(crate) enum RenderError {
-    Compile(minijinja::Error),
-    Render(minijinja::Error),
+/// Why a text failed to evaluate, by phase, and in which [`Form`] it is
+/// written: it does not compile, or holds a statement no text may
+/// ([`refused`]), and someone has to go and edit it; or it compiled and
+/// failed while it ran, which is the moment's. The message is the error's own,
+/// without the engine's frame ([`without_engine_frame`]) and never with the
+/// context. `Display` prefixes it with its form and phase
+/// (`template compile error: …`), as the client reports it; a daemon line
+/// reports the [`message`](EvalError::message) alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EvalError {
+    Compile { form: Form, message: String },
+    Runtime { form: Form, message: String },
 }
 
-impl std::fmt::Display for RenderError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RenderError::Compile(e) => write!(
-                f,
-                "template compile error: {}",
-                without_engine_frame(&e.to_string())
-            ),
-            RenderError::Render(e) => write!(
-                f,
-                "template render error: {}",
-                without_engine_frame(&e.to_string())
-            ),
+impl EvalError {
+    fn compile(form: Form, e: &minijinja::Error) -> Self {
+        EvalError::Compile {
+            form,
+            message: without_engine_frame(&e.to_string()),
         }
     }
+
+    fn runtime(form: Form, e: &minijinja::Error) -> Self {
+        EvalError::Runtime {
+            form,
+            message: without_engine_frame(&e.to_string()),
+        }
+    }
+
+    /// What went wrong, without the form and phase.
+    pub fn message(&self) -> &str {
+        match self {
+            EvalError::Compile { message, .. } | EvalError::Runtime { message, .. } => message,
+        }
+    }
+}
+
+impl std::fmt::Display for EvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let what = match self {
+            EvalError::Compile {
+                form: Form::SingleTag,
+                ..
+            } => "expression compile error",
+            EvalError::Runtime {
+                form: Form::SingleTag,
+                ..
+            } => "expression eval error",
+            EvalError::Compile {
+                form: Form::Template,
+                ..
+            } => "template compile error",
+            EvalError::Runtime {
+                form: Form::Template,
+                ..
+            } => "template render error",
+        };
+        write!(f, "{what}: {}", self.message())
+    }
+}
+
+/// Evaluate `src` in `env` against `context`, the one evaluator every line
+/// runs through: exactly one `{{ }}` keeps its expression's type; anything
+/// else, literal text included, renders to a string, a `none` printed in it
+/// as nothing. A `none` or undefined value is `Ok(None)`: absent.
+///
+/// A text a load checked (a seeded template, a Source's or provider's line)
+/// passed [`lint`] there; one nothing checked (`comb eval`, `-f`) is refused
+/// here the same way, structurally, as a compile error ([`refused`]).
+pub fn evaluate(
+    env: &Environment<'_>,
+    src: &str,
+    context: MjValue,
+) -> Result<Option<MjValue>, EvalError> {
+    let value = match analyze(src) {
+        Analysis::SingleTag(expr) => {
+            let form = Form::SingleTag;
+            let compiled = env
+                .compile_expression(expr)
+                .map_err(|e| EvalError::compile(form, &e))?;
+            compiled
+                .eval(context)
+                .map_err(|e| EvalError::runtime(form, &e))?
+        }
+        Analysis::Template => {
+            let form = Form::Template;
+            if let Some(finding) = refused(src, Line::Template).into_iter().next() {
+                return Err(EvalError::Compile {
+                    form,
+                    message: finding.to_string(),
+                });
+            }
+            let template = env
+                .template_from_str(src)
+                .map_err(|e| EvalError::compile(form, &e))?;
+            MjValue::from(
+                template
+                    .render(context)
+                    .map_err(|e| EvalError::runtime(form, &e))?,
+            )
+        }
+    };
+    Ok((!(value.is_undefined() || value.is_none())).then_some(value))
 }
 
 /// An engine error's message without the engine's own framing: the leading
@@ -295,44 +372,10 @@ pub fn without_engine_frame(message: &str) -> String {
     body.to_string()
 }
 
-/// Render `src` as a client template over `context`. A statement a client
-/// template may not hold ([`lint`]'s structural findings) does not compile:
-/// a text no load checked (`comb eval`, `-f`) is refused as a seeded one is.
-pub(crate) fn render_template_with(
-    src: &str,
-    context: MjValue,
-    ctx: Arc<EngineCtx>,
-) -> Result<String, RenderError> {
-    if let Some(finding) = lint::refused(src, Line::Template).into_iter().next() {
-        return Err(RenderError::Compile(crate::engine::op_error(
-            finding.to_string(),
-        )));
-    }
-    let mut env = build_engine_env(ctx);
-    render_none_as_empty(&mut env);
-    let template = env.template_from_str(src).map_err(RenderError::Compile)?;
-    template.render(context).map_err(RenderError::Render)
-}
-
-/// Make a `none` printed inside text render as nothing instead of the word
-/// `none`. The one place that rule is installed.
-pub fn render_none_as_empty(env: &mut Environment<'_>) {
-    env.set_formatter(|out, state, value| {
-        if value.is_none() {
-            Ok(())
-        } else {
-            minijinja::escape_formatter(out, state, value)
-        }
-    });
-}
-
-/// Evaluate one line against `context` (a JSON object of the line's
-/// top-level names) in `env`: exactly one `{{ }}` keeps its expression's type,
-/// converted the way the client's templates convert it; any other mix is a
-/// string with `none` printed as nothing; text with no tags is literal. A
-/// `none` or undefined result is `Ok(None)`: absent. The caller installs
-/// [`render_none_as_empty`] when it builds `env`. Errors are messages; they
-/// never include the context.
+/// [`evaluate`] one daemon line against `context` (a JSON object of the line's
+/// top-level names), its value converted the way the client's templates
+/// convert one. Errors are the [`EvalError::message`]; they never include the
+/// context.
 pub fn eval_line(
     env: &Environment<'_>,
     src: &str,
@@ -348,18 +391,9 @@ pub fn eval_line_with(
     src: &str,
     context: MjValue,
 ) -> Result<Option<serde_json::Value>, String> {
-    match single_tag_expression(src) {
-        Some(expr) => {
-            let value = env
-                .compile_expression(expr)
-                .and_then(|compiled| compiled.eval(context))
-                .map_err(|e| e.to_string())?;
-            crate::virtual_fields::mj_to_json(value)
-        }
-        None => env
-            .render_str(src, context)
-            .map(|s| Some(serde_json::Value::String(s)))
-            .map_err(|e| e.to_string()),
+    match evaluate(env, src, context).map_err(|e| e.message().to_string())? {
+        Some(value) => crate::virtual_fields::mj_to_json(value),
+        None => Ok(None),
     }
 }
 
@@ -553,28 +587,142 @@ mod tests {
             env: [("COLORTERM".to_string(), "truecolor".to_string())].into(),
             ..Default::default()
         };
-        let out = super::render_template_with(
-            tpl,
-            minijinja::Value::from_serialize(&ctx),
-            std::sync::Arc::new(truecolor),
-        )
-        .unwrap();
-        assert_eq!(out, "\x1b[38;2;0;255;0mmain\x1b[0m");
+        let env = crate::engine::build_engine_env(std::sync::Arc::new(truecolor));
+        let out = super::evaluate(&env, tpl, minijinja::Value::from_serialize(&ctx))
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.as_str(), Some("\x1b[38;2;0;255;0mmain\x1b[0m"));
     }
 }
 
 #[cfg(test)]
 mod line_tests {
-    use super::{eval_line, render_none_as_empty, undeclared_names};
+    use super::{EvalError, Form, eval_line, evaluate, undeclared_names, without_engine_frame};
     use crate::engine::build_engine_env;
+    use minijinja::value::Value as MjValue;
     use serde_json::json;
 
     fn run(src: &str, context: serde_json::Value) -> Result<Option<serde_json::Value>, String> {
-        {
-            let mut env = build_engine_env(Default::default());
-            render_none_as_empty(&mut env);
-            eval_line(&env, src, &context)
+        eval_line(&build_engine_env(Default::default()), src, &context)
+    }
+
+    /// `src` through the one evaluator, over `context`.
+    fn evaluated(src: &str, context: serde_json::Value) -> Result<Option<MjValue>, EvalError> {
+        evaluate(
+            &build_engine_env(Default::default()),
+            src,
+            MjValue::from_serialize(context),
+        )
+    }
+
+    /// One `{{ }}` keeps its type; anything else is text, `none` in it
+    /// nothing; `none` and undefined are absent.
+    #[test]
+    fn evaluate_keeps_one_tags_type_and_renders_the_rest_as_text() {
+        let value = |src: &str| {
+            evaluated(src, json!({"d": {"a": [1, "x"]}}))
+                .unwrap()
+                .map(|v| serde_json::to_value(v).unwrap())
+        };
+        assert_eq!(value("{{ 1 }}"), Some(json!(1)));
+        assert_eq!(value("  {{- d -}}\n"), Some(json!({"a": [1, "x"]})));
+        assert_eq!(value("x{{ 1 }}"), Some(json!("x1")));
+        assert_eq!(value("{{ 1 }}{{ 2 }}"), Some(json!("12")));
+        assert_eq!(value("a{{ none }}b"), Some(json!("ab")));
+        assert_eq!(value("lit"), Some(json!("lit")));
+        assert_eq!(value(""), Some(json!("")));
+        assert_eq!(value("{{ none }}"), None);
+        assert_eq!(value("{{ d.nope.x }}"), None);
+    }
+
+    /// Not compiling is a compile error; failing while it runs is a runtime
+    /// one: each in its form's words, the engine's frame taken off.
+    #[test]
+    fn evaluate_tells_a_compile_error_from_a_runtime_one() {
+        let cases = [
+            ("{{ 1 + }}", "expression compile error: "),
+            ("{{ 'a' + 1 }}", "expression eval error: "),
+            ("a {{ 1 + }}", "template compile error: "),
+            ("a {{ 'a' + 1 }}", "template render error: "),
+        ];
+        for (src, words) in cases {
+            let err = evaluated(src, json!({})).unwrap_err();
+            let shown = err.to_string();
+            assert!(shown.starts_with(words), "{src}: {shown}");
+            assert_eq!(shown, format!("{words}{}", err.message()), "{src}");
+            assert!(!err.message().contains("(in <"), "{src}: {shown}");
         }
+        assert!(matches!(
+            evaluated("{{ 1 + }}", json!({})),
+            Err(EvalError::Compile {
+                form: Form::SingleTag,
+                ..
+            })
+        ));
+        assert!(matches!(
+            evaluated("a {{ 'a' + 1 }}", json!({})),
+            Err(EvalError::Runtime {
+                form: Form::Template,
+                ..
+            })
+        ));
+    }
+
+    /// A text nothing linted is refused as a linted one would be, before it
+    /// renders: `include`, `extends` and `block`, and an import not named by a
+    /// string.
+    #[test]
+    fn evaluate_refuses_an_unlinted_text_structurally() {
+        for (src, why) in [
+            (
+                "{% include 'p:macro.x' %}",
+                "{% include %} is refused: text is reused with a macro",
+            ),
+            (
+                "{% block b %}x{% endblock %}",
+                "{% block %} is refused: text is reused with a macro",
+            ),
+            (
+                "{% import name as m %}{{ m.x() }}",
+                "{% import name as m %}: an import names its library as a string, \
+                 \"<p>:macro.<name>\"",
+            ),
+        ] {
+            assert_eq!(
+                evaluated(src, json!({})),
+                Err(EvalError::Compile {
+                    form: Form::Template,
+                    message: why.into()
+                }),
+                "{src}"
+            );
+        }
+    }
+
+    /// The engine's frame is taken off once, at its two places, and the text
+    /// between is the error's own.
+    #[test]
+    fn only_the_engines_own_frame_is_taken_off_an_error() {
+        assert_eq!(
+            without_engine_frame("invalid operation: boom (in <expression>:1)"),
+            "boom"
+        );
+        assert_eq!(
+            without_engine_frame("invalid operation: boom (in <template>:12)"),
+            "boom"
+        );
+        for kept in [
+            "sh said invalid operation: nope (in the middle) and went on",
+            "a command wrote (in <expression>:1) in its stderr and then more",
+            "plain",
+        ] {
+            assert_eq!(without_engine_frame(kept), kept);
+        }
+        assert_eq!(
+            without_engine_frame("invalid operation: x: invalid operation: y (in <expression>:1)"),
+            "x: invalid operation: y",
+            "once: the text between is the error's own"
+        );
     }
 
     #[test]

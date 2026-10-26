@@ -184,7 +184,6 @@ pub fn daemon_engine_env<'a>(ctx: Arc<EngineCtx>, plugins: Arc<PluginSet>) -> En
 /// must not wait on a process, a file, the network or a library.
 pub fn provider_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
     let mut jinja = build_pure_engine_env(ctx);
-    libbeachcomber::eval::render_none_as_empty(&mut jinja);
     jinja.add_filter("facet", facet);
     jinja.add_function(
         "merge",

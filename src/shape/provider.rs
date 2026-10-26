@@ -53,7 +53,7 @@ use crate::shape::decorators::named_decorators;
 use crate::shape::prototype::{Kind, Link, chain, super_chain};
 use dashmap::DashSet;
 use libbeachcomber::engine::op_error;
-use libbeachcomber::eval::{Known, Line, lint, single_tag_expression, undeclared_names};
+use libbeachcomber::eval::{Known, Line, evaluate, lint, single_tag_expression, undeclared_names};
 use libbeachcomber::library::{Surface, first_refused};
 use minijinja::value::{Object, ObjectRepr, Value as MjValue};
 use minijinja::{Environment, Error};
@@ -1163,21 +1163,7 @@ fn render_level(
             }),
         ));
     }
-    let context = MjValue::from_iter(context);
-    let line = &lines[level];
-    match single_tag_expression(line) {
-        Some(expr) => {
-            let value = env
-                .compile_expression(expr)
-                .and_then(|compiled| compiled.eval(context))
-                .map_err(|e| e.to_string())?;
-            Ok((!(value.is_undefined() || value.is_none())).then_some(value))
-        }
-        None => env
-            .render_str(line, context)
-            .map(|text| Some(MjValue::from(text)))
-            .map_err(|e| e.to_string()),
-    }
+    evaluate(env, &lines[level], MjValue::from_iter(context)).map_err(|e| e.message().to_string())
 }
 
 #[cfg(test)]

@@ -20,12 +20,10 @@
 //! and canon `field_resolution.md`.
 
 use crate::engine::{EngineCtx, build_engine_env};
-use crate::eval::{
-    MAX_VIRTUAL_DEPTH, RenderError, discover_refs, render_template_with, single_tag_expression,
-    too_deep, without_engine_frame,
-};
+use crate::eval::{EvalError, MAX_VIRTUAL_DEPTH, discover_refs, evaluate, too_deep};
 use crate::lazy::{Bridge, LazyNode, Prefetch};
 use crate::virtual_fields::{Ref, mj_to_json};
+use minijinja::Environment;
 use minijinja::value::Value as MjValue;
 use serde_json::{Map, Value as JsonValue};
 use std::collections::{BTreeMap, HashMap};
@@ -300,9 +298,11 @@ pub fn eval_with(
 /// directories is two nodes.
 struct Resolver<'a> {
     inputs: &'a Inputs<'a>,
-    /// What every render of this resolution runs in: the caller's `env` and
-    /// directory, the only ones an `exec()` child sees.
-    engine: Arc<EngineCtx>,
+    /// The one engine every render of this resolution runs in, built once:
+    /// its library bound to the caller's `env` and directory, the only ones
+    /// an `exec()` child sees. Shared, so a render on another thread (a lazy
+    /// `comb`) runs in it too.
+    jinja: Arc<Environment<'static>>,
     /// The caller's environment as a template reads it, `env`: built once,
     /// and shared by every render rather than copied into each — an engine
     /// value is reference-counted, so binding it is a pointer copy.
@@ -323,12 +323,12 @@ impl<'a> Resolver<'a> {
     fn new(inputs: &'a Inputs<'a>, fetch: &'a mut dyn Fetch) -> Self {
         Self {
             inputs,
-            engine: Arc::new(EngineCtx {
+            jinja: Arc::new(build_engine_env(Arc::new(EngineCtx {
                 env: inputs.env.clone(),
                 cwd: inputs.dir().map(Into::into),
                 allow_exec: inputs.allow_exec,
                 now: inputs.now,
-            }),
+            }))),
             // In name order, so `env | items` and a loop over `env` read the
             // same order every run.
             env: MjValue::from_serialize(inputs.env.iter().collect::<BTreeMap<_, _>>()),
@@ -517,7 +517,7 @@ impl<'a> Resolver<'a> {
         if refs.contains(&Ref::Dynamic("comb".to_string())) {
             return self.render_with_lazy_comb(src, key, bound, &refs);
         }
-        evaluate(src, key, self.context(None, bound), self.engine.clone())
+        evaluate_node(&self.jinja, src, key, self.context(None, bound))
     }
 
     /// The context a render evaluates against: the caller's environment as
@@ -554,11 +554,11 @@ impl<'a> Resolver<'a> {
         };
         let comb = LazyNode::comb(bridge.clone(), prefetched, Arc::new(Prefetch::of(refs)));
         let context = self.context(Some(comb), bound);
-        let engine = self.engine.clone();
+        let jinja = self.jinja.clone();
 
         std::thread::scope(|scope| {
             let render = scope.spawn(move || {
-                let out = evaluate(src, key, context, engine);
+                let out = evaluate_node(&jinja, src, key, context);
                 (out, bridge.take_error())
             });
             for (asked, reply) in questions {
@@ -753,45 +753,23 @@ impl<'a> Resolver<'a> {
     }
 }
 
-/// Evaluate `src` as the node `key` against `context`: exactly one
-/// `{{ expr }}` takes the typed path (`crate::eval::classify`), everything
-/// else, literal text included, renders to a string.
-fn evaluate(
+/// [`evaluate`] `src` in `jinja` as the node `key` against `context`, its
+/// value as JSON. A source that does not compile is someone's to go and fix,
+/// [`ResolveError::Config`]; a failure while it runs is the moment's,
+/// [`ResolveError::Runtime`]. Either is named by `key`.
+fn evaluate_node(
+    jinja: &Environment<'_>,
     src: &str,
     key: &str,
     context: MjValue,
-    engine: Arc<EngineCtx>,
 ) -> Result<Option<JsonValue>, ResolveError> {
-    match single_tag_expression(src) {
-        Some(expr) => {
-            let env = build_engine_env(engine);
-            let compiled = env.compile_expression(expr).map_err(|e| {
-                ResolveError::Config(format!(
-                    "{key}: expression compile error: {}",
-                    without_engine_frame(&e.to_string())
-                ))
-            })?;
-            let value = compiled.eval(context).map_err(|e| {
-                ResolveError::Runtime(format!(
-                    "{key}: expression eval error: {}",
-                    without_engine_frame(&e.to_string())
-                ))
-            })?;
-            // A `none` or undefined result is absent, as in the daemon's
-            // lines.
+    match evaluate(jinja, src, context) {
+        Ok(Some(value)) => {
             mj_to_json(value).map_err(|e| ResolveError::Runtime(format!("{key}: {e}")))
         }
-        // A source that does not compile is someone's to go and fix; a
-        // failure while rendering is the moment's.
-        None => render_template_with(src, context, engine)
-            .map(|s| Some(JsonValue::String(s)))
-            .map_err(|e| {
-                let message = format!("{key}: {e}");
-                match e {
-                    RenderError::Compile(_) => ResolveError::Config(message),
-                    RenderError::Render(_) => ResolveError::Runtime(message),
-                }
-            }),
+        Ok(None) => Ok(None),
+        Err(e @ EvalError::Compile { .. }) => Err(ResolveError::Config(format!("{key}: {e}"))),
+        Err(e @ EvalError::Runtime { .. }) => Err(ResolveError::Runtime(format!("{key}: {e}"))),
     }
 }
 

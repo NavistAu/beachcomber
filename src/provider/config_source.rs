@@ -31,8 +31,7 @@ use crate::provider::{
 use crate::shape::decorators::Recorded;
 use libbeachcomber::engine::EngineCtx;
 use libbeachcomber::eval::{
-    Finding, Known, Line, discover_refs, eval_line, eval_line_with, lint, render_none_as_empty,
-    undeclared_names,
+    Finding, Known, Line, discover_refs, eval_line, eval_line_with, lint, undeclared_names,
 };
 use libbeachcomber::virtual_fields::Ref;
 use minijinja::Environment;
@@ -191,36 +190,11 @@ pub struct ConfigSource {
 }
 
 /// `<provider>.<source>: <stage>: <message>`: the one shape of every error,
-/// at load and at run.
+/// at load and at run. A line's message comes from the one evaluator, which
+/// has already taken the engine's frame off it, so a render that fails
+/// because a Source it calls failed shows no frame per Source down the chain.
 fn stage_error(spec: &ConfigSourceSpec, stage: &str, message: impl std::fmt::Display) -> String {
-    format!(
-        "{}.{}: {stage}: {}",
-        spec.provider,
-        spec.name,
-        without_engine_frame(&message.to_string())
-    )
-}
-
-/// `message` without the frame the engine put round an error it raised: a
-/// leading `invalid operation: ` and a trailing ` (in <expression>:1)`. Only
-/// those two places, once: the text between is the error's own, a command's
-/// stderr included, and is not touched. A render that fails because a Source it
-/// calls failed would otherwise show the frame once per Source down the chain.
-fn without_engine_frame(message: &str) -> String {
-    let body = message
-        .strip_prefix("invalid operation: ")
-        .unwrap_or(message);
-    if let Some(open) = body.rfind(" (in <")
-        && let Some(rest) = body[open..].strip_suffix(')')
-        && let Some((place, line)) = rest[" (in <".len()..].split_once(">:")
-        && !place.is_empty()
-        && place.chars().all(|c| c.is_ascii_lowercase() || c == '-')
-        && !line.is_empty()
-        && line.chars().all(|c| c.is_ascii_digit())
-    {
-        return body[..open].to_string();
-    }
-    body.to_string()
+    format!("{}.{}: {stage}: {message}", spec.provider, spec.name)
 }
 
 /// The load check of a Source's lines ([`lint`]): each compiles and reads
@@ -598,9 +572,7 @@ fn engine<'a>(
         // One clock for the run these lines are rendered in.
         now: std::time::SystemTime::now(),
     };
-    let mut jinja = daemon_engine_env(Arc::new(ctx), plugins.clone());
-    render_none_as_empty(&mut jinja);
-    jinja
+    daemon_engine_env(Arc::new(ctx), plugins.clone())
 }
 
 #[cfg(test)]
@@ -1390,29 +1362,5 @@ mod tests {
                 "{line}: {err}"
             );
         }
-    }
-
-    #[test]
-    fn only_the_engines_own_frame_is_taken_off_an_error() {
-        assert_eq!(
-            without_engine_frame("invalid operation: boom (in <expression>:1)"),
-            "boom"
-        );
-        assert_eq!(
-            without_engine_frame("invalid operation: boom (in <template>:12)"),
-            "boom"
-        );
-        for kept in [
-            "sh said invalid operation: nope (in the middle) and went on",
-            "a command wrote (in <expression>:1) in its stderr and then more",
-            "plain",
-        ] {
-            assert_eq!(without_engine_frame(kept), kept);
-        }
-        assert_eq!(
-            without_engine_frame("invalid operation: x: invalid operation: y (in <expression>:1)"),
-            "x: invalid operation: y",
-            "once: the text between is the error's own"
-        );
     }
 }
