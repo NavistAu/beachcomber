@@ -196,6 +196,20 @@ pub fn imports(src: &str) -> Vec<Import<'_>> {
         .collect()
 }
 
+/// The canonical address `name` names when it is a macro library's,
+/// `<p>:macro.<name>` (a provider, its `macro` facet, and one segment that
+/// follows the name rule), so `p:macro['x']` is `p:macro.x`; `None` for any
+/// other name.
+pub(crate) fn library(name: &str) -> Option<String> {
+    let (head, address) = crate::key::split_key(name).ok()?;
+    let is_library = matches!(
+        crate::key::split_facet(head),
+        Ok((_, Some(crate::key::Facet::Macro)))
+    ) && crate::key::check_head(head).is_ok()
+        && crate::key::name_error(&address).is_none();
+    is_library.then(|| crate::key::join(head, &address))
+}
+
 /// The string literal `text` starts with, as the engine reads it, and the text
 /// after it; `None` when `text` does not start with one.
 fn string_literal(text: &str) -> Option<(String, &str)> {
@@ -318,14 +332,14 @@ impl EvalError {
     fn compile(form: Form, e: &minijinja::Error) -> Self {
         EvalError::Compile {
             form,
-            message: without_engine_frame(&e.to_string()),
+            message: engine_message(e),
         }
     }
 
     fn runtime(form: Form, e: &minijinja::Error) -> Self {
         EvalError::Runtime {
             form,
-            message: without_engine_frame(&e.to_string()),
+            message: engine_message(e),
         }
     }
 
@@ -437,6 +451,21 @@ pub fn evaluate(
         }
     };
     Ok((!(value.is_undefined() || value.is_none())).then_some(value))
+}
+
+/// What an engine error says, without the engine's own framing. An error
+/// raised inside an imported library comes back wrapped once per import
+/// (`could not render include: error in "p:macro.x"`), so the message is its
+/// innermost cause's, whose place names the library (`(in p:macro.x:3)`).
+fn engine_message(e: &minijinja::Error) -> String {
+    let mut cause = e;
+    while cause.kind() == minijinja::ErrorKind::BadInclude
+        && let Some(inner) = std::error::Error::source(cause)
+            .and_then(|source| source.downcast_ref::<minijinja::Error>())
+    {
+        cause = inner;
+    }
+    without_engine_frame(&cause.to_string())
 }
 
 /// An engine error's message without the engine's own framing: the leading

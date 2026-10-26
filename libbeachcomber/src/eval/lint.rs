@@ -5,8 +5,7 @@
 //! load error, a warning, a refused `put`) is the caller's to say.
 
 use super::scan::{self, TagKind};
-use super::{Import, imports};
-use crate::key::Facet;
+use super::{Import, imports, library};
 use minijinja::Environment;
 
 /// Where a line is written, which decides the names its context supplies and
@@ -134,7 +133,7 @@ pub fn lint(env: &Environment<'_>, src: &str, line: Line, known: &Known<'_>) -> 
     if line.client() {
         found.extend(imports(src).into_iter().filter_map(|import| match import {
             Import::Named(name)
-                if is_library(&name) && !known.libraries.contains(&canonical(&name)) =>
+                if library(&name).is_some_and(|address| !known.libraries.contains(&address)) =>
             {
                 Some(Finding::Unknown(format!(
                     "unknown macro library '{name}' (no layer declares it)"
@@ -195,32 +194,15 @@ pub fn refused(src: &str, line: Line) -> Vec<Finding> {
             Import::Computed(body) => found.push(Finding::Compile(format!(
                 "{{% {body} %}}: an import names its library as a string, \"<p>:macro.<name>\""
             ))),
-            Import::Named(name) if !is_library(&name) => found.push(Finding::Compile(format!(
-                "'{name}' is not a macro library: an import names one \"<p>:macro.<name>\""
-            ))),
+            Import::Named(name) if library(&name).is_none() => {
+                found.push(Finding::Compile(format!(
+                    "'{name}' is not a macro library: an import names one \"<p>:macro.<name>\""
+                )))
+            }
             Import::Named(_) => {}
         }
     }
     found
-}
-
-/// Whether `name` is a macro library's address, `<p>:macro.<name>`: a
-/// provider, its `macro` facet, and one segment that follows the name rule.
-fn is_library(name: &str) -> bool {
-    let Ok((head, address)) = crate::key::split_key(name) else {
-        return false;
-    };
-    matches!(crate::key::split_facet(head), Ok((_, Some(Facet::Macro))))
-        && crate::key::check_head(head).is_ok()
-        && crate::key::name_error(&address).is_none()
-}
-
-/// `name`, a key, in canonical form (`p:macro['x']` is `p:macro.x`).
-fn canonical(name: &str) -> String {
-    crate::key::split_key(name).map_or_else(
-        |_| name.to_string(),
-        |(head, address)| crate::key::join(head, &address),
-    )
 }
 
 /// Whether `src`, a macro library, prints anything outside its macros: text

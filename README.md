@@ -517,7 +517,7 @@ A field's value is the first layer that has it, in this order: the effective **t
 |---|---|
 | `git.branch` | the first layer that has it |
 | `git:template.branch` | the template text, unrendered |
-| `scanline:macro.rate` | a macro library's text (`[client.providers.<p>] macro.<name>`) |
+| `scanline:macro.rate` | a macro library's text, which a client template imports (`[client.providers.<p>] macro.<name>`) |
 | `git:put.branch` | what `put` and `config:` seeds stored (read-only) |
 | `git:source.branch` | what the Source computed, even where a `put` hides it (read-only) |
 | `git:cache.branch` | the daemon's metadata about `git.branch` |
@@ -546,7 +546,7 @@ Only a colon in the provider's own segment names a facet (`git:cache.branch`), a
 
 beachcomber runs with sensible defaults and requires no configuration. The optional config file lives at `~/.config/beachcomber/config.toml`.
 
-The file has two roots. `[daemon]` is the daemon's: its settings (`socket_path`, `log_level`, `plugin.path`, `timeout`, `budget`, ...) and `providers`, where a provider's Sources, its `template`/`result`/`return` lines, its `cache` (decay) and `enabled` live. `[client]` is what clients render: `providers.<p>.template`, and `providers.<p>.macro`, its macro libraries. A provider exists if either root names it. Configuration is read only from `$XDG_CONFIG_HOME/beachcomber` (`defaults/`, `config.toml`, `conf.d/`, `env`); `$XDG_CONFIG_DIRS` is not consulted.
+The file has two roots. `[daemon]` is the daemon's: its settings (`socket_path`, `log_level`, `plugin.path`, `timeout`, `budget`, ...) and `providers`, where a provider's Sources, its `template`/`result`/`return` lines, its `cache` (decay) and `enabled` live. `[client]` is what clients render: `providers.<p>.template`, and `providers.<p>.macro`, its macro libraries, which a template imports (`{% from "p:macro.name" import m %}`). A provider exists if either root names it. Configuration is read only from `$XDG_CONFIG_HOME/beachcomber` (`defaults/`, `config.toml`, `conf.d/`, `env`); `$XDG_CONFIG_DIRS` is not consulted.
 
 A provider is a namespace made of **Sources**, and a Source is a jinja function: `root` says which directory an instance answers for (empty is the one instance at `~`), `data` is the body, `result` shapes it into fields, and `return` says when it runs again (`poll`, `watch`, `ttl`, `failback`, `budget`, `nearest`). A table named `_` is a prototype: a Source's own line wins whole, an absent line takes the nearest `_`'s, and `| super` extends it. The abstract provider and Source ship in `defaults/00-comb.toml`.
 

@@ -201,6 +201,55 @@ fn eval_renders_an_inline_macro() {
         ));
 }
 
+/// `comb eval` and a `-f` format import a library as a stored template does:
+/// the same library, read through the same resolver.
+#[test]
+fn eval_and_a_format_import() {
+    let d = TestDaemon::spawn();
+    d.comb(Path::new("/"))
+        .args([
+            "put",
+            "--global",
+            "fx:macro.wrap",
+            r#""{% macro wrap(x) %}[{{ x }}]{% endmacro %}""#,
+        ])
+        .assert()
+        .success();
+    d.comb(Path::new("/"))
+        .args(["put", "--global", "fx", r#"{"v":"ok"}"#])
+        .assert()
+        .success();
+
+    d.comb(Path::new("/"))
+        .args([
+            "eval",
+            "{% from 'fx:macro.wrap' import wrap %}{{ wrap(fx.v) }}",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("[ok]"));
+    d.comb(Path::new("/"))
+        .args([
+            "get",
+            "-f",
+            "{% import 'fx:macro.wrap' as w %}{{ w.wrap(value) }}",
+            "fx.v",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::diff("[ok]"));
+    d.comb(Path::new("/"))
+        .args([
+            "eval",
+            "{% from 'fx:macro.nope' import wrap %}{{ wrap(1) }}",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "fx:macro.nope: no macro library there",
+        ));
+}
+
 /// `comb eval` runs with `allow_exec = true` — the CLI user already has a
 /// shell, so `exec()` is available to it, same as `comb get`.
 #[test]

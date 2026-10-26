@@ -20,14 +20,16 @@
 //! and canon `field_resolution.md`.
 
 use crate::engine::{EngineCtx, build_engine_env};
-use crate::eval::{EvalError, MAX_VIRTUAL_DEPTH, discover_refs, evaluate, too_deep};
+use crate::eval::{
+    EvalError, Import, MAX_VIRTUAL_DEPTH, discover_refs, evaluate, imports, library, too_deep,
+};
 use crate::lazy::{Bridge, LazyNode, Prefetch};
 use crate::virtual_fields::{Ref, mj_to_json};
 use minijinja::Environment;
 use minijinja::value::Value as MjValue;
 use serde_json::{Map, Value as JsonValue};
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, mpsc};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::{Arc, PoisonError, RwLock, mpsc};
 
 /// One node as the daemon returned it: the `get` response of design §3.4.
 ///
@@ -201,6 +203,10 @@ type Fetched = Vec<Coord>;
 /// The `(key, path)` nodes currently being rendered, innermost last.
 type Frames = Vec<Coord>;
 
+/// The macro libraries a resolution has read, each text by the name an
+/// import writes it with: what its engine's loader hands out.
+type Libraries = Arc<RwLock<BTreeMap<String, String>>>;
+
 /// The value `comb get <key>` prints. `Ok(None)` is a miss.
 pub fn resolve(
     key: &str,
@@ -300,9 +306,11 @@ struct Resolver<'a> {
     inputs: &'a Inputs<'a>,
     /// The one engine every render of this resolution runs in, built once:
     /// its library bound to the caller's `env` and directory, the only ones
-    /// an `exec()` child sees. Shared, so a render on another thread (a lazy
-    /// `comb`) runs in it too.
+    /// an `exec()` child sees, and its loader the [`Libraries`] read so far.
+    /// Shared, so a render on another thread (a lazy `comb`) runs in it too.
     jinja: Arc<Environment<'static>>,
+    /// The macro libraries read so far ([`Self::closure`]).
+    libraries: Libraries,
     /// The caller's environment as a template reads it, `env`: built once,
     /// and shared by every render rather than copied into each — an engine
     /// value is reference-counted, so binding it is a pointer copy.
@@ -321,14 +329,25 @@ struct Resolver<'a> {
 
 impl<'a> Resolver<'a> {
     fn new(inputs: &'a Inputs<'a>, fetch: &'a mut dyn Fetch) -> Self {
+        let mut jinja = build_engine_env(Arc::new(EngineCtx {
+            env: inputs.env.clone(),
+            cwd: inputs.dir().map(Into::into),
+            allow_exec: inputs.allow_exec,
+            now: inputs.now,
+        }));
+        // An import loads a library this resolution has read. A name it has
+        // not is the engine's "template not found": only a computed name
+        // could reach that, and the structural scan refuses those first.
+        let libraries = Libraries::default();
+        let loaded = libraries.clone();
+        jinja.set_loader(move |name| {
+            let loaded = loaded.read().unwrap_or_else(PoisonError::into_inner);
+            Ok(loaded.get(name).cloned())
+        });
         Self {
             inputs,
-            jinja: Arc::new(build_engine_env(Arc::new(EngineCtx {
-                env: inputs.env.clone(),
-                cwd: inputs.dir().map(Into::into),
-                allow_exec: inputs.allow_exec,
-                now: inputs.now,
-            }))),
+            jinja: Arc::new(jinja),
+            libraries,
             // In name order, so `env | items` and a loop over `env` read the
             // same order every run.
             env: MjValue::from_serialize(inputs.env.iter().collect::<BTreeMap<_, _>>()),
@@ -495,19 +514,28 @@ impl<'a> Resolver<'a> {
 
     /// [`Self::render_frame`], with `locals` bound over the refs; a ref whose
     /// name a local binds is not fetched.
+    ///
+    /// The refs are those of `src` and of every library in its closure: a
+    /// library renders in its importer's context, so what it reads is bound
+    /// there, used or not, and a `comb[...]` anywhere in the closure makes
+    /// `comb` the lazy node.
     fn render_frame_with(
         &mut self,
         src: &str,
         key: &str,
         locals: &Map<String, JsonValue>,
     ) -> Result<Option<JsonValue>, ResolveError> {
-        let refs: Vec<Ref> = discover_refs(src)
-            .into_iter()
+        let libraries = self.closure(src, key)?;
+        let mut refs: Vec<Ref> = std::iter::once(src)
+            .chain(libraries.iter().map(String::as_str))
+            .flat_map(discover_refs)
             .filter(|r| match r {
                 Ref::Dynamic(name) | Ref::Resolved(name, _) => !locals.contains_key(name),
                 Ref::Env(_) | Ref::CombField(..) | Ref::CombProvider(_) => true,
             })
             .collect();
+        refs.sort();
+        refs.dedup();
         let mut bound = self.bind(&refs)?;
         for (name, value) in locals {
             bound.insert(name.clone(), value.clone());
@@ -518,6 +546,66 @@ impl<'a> Resolver<'a> {
             return self.render_with_lazy_comb(src, key, bound, &refs);
         }
         evaluate_node(&self.jinja, src, key, self.context(None, bound))
+    }
+
+    /// Read every macro library `src` imports by name, and every one those
+    /// import, into this resolution's [`Libraries`]: each address fetched
+    /// once, through the memo, so it is a dependency a `watch` follows. A
+    /// library is text, like a template, so its age is no input's. The texts
+    /// of the closure, nearest import first, each once.
+    ///
+    /// An import whose name is not a library's address written as a string
+    /// is not read: the render refuses it ([`evaluate`]).
+    fn closure(&mut self, src: &str, key: &str) -> Result<Vec<String>, ResolveError> {
+        let mut texts = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut pending: VecDeque<String> = library_imports(src).into();
+        while let Some(name) = pending.pop_front() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            let text = self.library(&name, key)?;
+            pending.extend(library_imports(&text));
+            texts.push(text);
+        }
+        Ok(texts)
+    }
+
+    /// The text of the library an import names `name`, read once per
+    /// resolution. Nothing there is the leaf's failure,
+    /// [`ResolveError::Runtime`], so a group omits it; something other than
+    /// a string is configuration someone has to fix.
+    fn library(&mut self, name: &str, key: &str) -> Result<String, ResolveError> {
+        let read = |libraries: &Libraries| {
+            libraries
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(name)
+                .cloned()
+        };
+        if let Some(text) = read(&self.libraries) {
+            return Ok(text);
+        }
+        let address = library(name).unwrap_or_else(|| name.to_string());
+        let text = match self.fetch_ref(&address)?.and_then(|got| got.data) {
+            Some(JsonValue::String(text)) => text,
+            None => {
+                return Err(ResolveError::Runtime(format!(
+                    "{key}: {name}: no macro library there"
+                )));
+            }
+            Some(other) => {
+                return Err(ResolveError::Config(format!(
+                    "{key}: {name}: a macro library is a string, not {}",
+                    json_kind(&other)
+                )));
+            }
+        };
+        self.libraries
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(name.to_string(), text.clone());
+        Ok(text)
     }
 
     /// The context a render evaluates against: the caller's environment as
@@ -750,6 +838,30 @@ impl<'a> Resolver<'a> {
         self.stack
             .iter()
             .any(|(k, p)| k == key && p.as_deref() == path)
+    }
+}
+
+/// The libraries `src` imports by name, in source order: each import whose
+/// name is a library's address written as a string.
+fn library_imports(src: &str) -> Vec<String> {
+    imports(src)
+        .into_iter()
+        .filter_map(|import| match import {
+            Import::Named(name) if library(&name).is_some() => Some(name),
+            Import::Named(_) | Import::Computed(_) => None,
+        })
+        .collect()
+}
+
+/// What a value is, for a message that must not carry the value.
+fn json_kind(value: &JsonValue) -> &'static str {
+    match value {
+        JsonValue::Null => "none",
+        JsonValue::Bool(_) => "a bool",
+        JsonValue::Number(_) => "a number",
+        JsonValue::String(_) => "a string",
+        JsonValue::Array(_) => "a list",
+        JsonValue::Object(_) => "a map",
     }
 }
 

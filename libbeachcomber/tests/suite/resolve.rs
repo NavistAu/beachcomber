@@ -280,6 +280,360 @@ fn a_leaf_with_a_set_preamble_is_a_number() {
     );
 }
 
+// ── Macro libraries ───────────────────────────────────────────────────────────
+
+/// A library as the daemon answers `<p>:macro.<name>`: its text as data,
+/// with an age that is no input's.
+fn lib(text: &str) -> Got {
+    data(json!(text))
+}
+
+/// `key` resolved against `f` from the fixture's directory, with `vars`.
+fn resolve_with(
+    key: &str,
+    f: &mut MapFetch,
+    vars: &HashMap<String, String>,
+) -> Result<Option<Value>, ResolveError> {
+    resolve(key, &inputs(vars), f)
+}
+
+const USAGE: &str = "{%- macro usage(p) -%}{{ 'red' if p > 80 else 'green' }}{%- endmacro -%}";
+
+/// A leaf imports a macro from a library by its address and calls it.
+#[test]
+fn a_leaf_imports_a_macro() {
+    let vars = env_of(&[]);
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    f.seed("s:macro.usage", p, lib(USAGE)).seed(
+        "s.colour",
+        p,
+        tmpl(json!(
+            "{% from 's:macro.usage' import usage %}{{ usage(90) ~ '/' ~ usage(10) }}"
+        )),
+    );
+    assert_eq!(
+        resolve_with("s.colour", &mut f, &vars).unwrap(),
+        Some(json!("red/green"))
+    );
+    // `import … as` is the module form of the same library.
+    f.seed(
+        "s.module",
+        p,
+        tmpl(json!(
+            "{% import \"s:macro.usage\" as u %}{{ u.usage(81) }}"
+        )),
+    );
+    assert_eq!(
+        resolve_with("s.module", &mut f, &vars).unwrap(),
+        Some(json!("red"))
+    );
+}
+
+/// A module import exposes the library's top-level `set`s with their types.
+#[test]
+fn a_module_import_exports_typed_sets() {
+    let vars = env_of(&[("W", "80")]);
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    f.seed(
+        "s:macro.k",
+        p,
+        lib("{%- set w = env.W | int -%}{%- set half = w // 2 -%}{%- set xs = [1, 2] -%}"),
+    )
+    .seed(
+        "s.half",
+        p,
+        tmpl(json!(
+            "{% import 's:macro.k' as k %}{{ k.half + k.xs | length }}"
+        )),
+    );
+    assert_eq!(
+        resolve_with("s.half", &mut f, &vars).unwrap(),
+        Some(json!(42))
+    );
+}
+
+/// A library imports another; each is read once.
+#[test]
+fn a_library_imports_a_library() {
+    let vars = env_of(&[]);
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    f.seed("s:macro.usage", p, lib(USAGE))
+        .seed(
+            "s:macro.row",
+            p,
+            lib("{%- from 's:macro.usage' import usage -%}\
+                 {%- macro row(n) -%}[{{ usage(n) }}]{%- endmacro -%}"),
+        )
+        .seed(
+            "s.rows",
+            p,
+            tmpl(json!(
+                "{% from 's:macro.row' import row %}{% from 's:macro.usage' import usage %}\
+                 {{ row(99) ~ usage(1) }}"
+            )),
+        );
+    assert_eq!(
+        resolve_with("s.rows", &mut f, &vars).unwrap(),
+        Some(json!("[red]green"))
+    );
+    let reads = f
+        .keys()
+        .iter()
+        .filter(|k| k.starts_with("s:macro."))
+        .count();
+    assert_eq!(reads, 2, "each library once: {:?}", f.keys());
+}
+
+/// What a library reads is fetched for the render that imports it: a macro
+/// body's provider ref is bound in the importer's context.
+#[test]
+fn a_ref_inside_a_library_is_fetched() {
+    let vars = env_of(&[]);
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    f.seed(
+        "s:macro.tag",
+        p,
+        lib("{%- macro tag() -%}<{{ git.branch }}>{%- endmacro -%}"),
+    )
+    .seed("git.branch", p, data(json!("main")))
+    .seed(
+        "s.tag",
+        p,
+        tmpl(json!("{% from 's:macro.tag' import tag %}{{ tag() }}")),
+    );
+    assert_eq!(
+        resolve_with("s.tag", &mut f, &vars).unwrap(),
+        Some(json!("<main>"))
+    );
+    // The importer's own names are the library's context too.
+    f.seed(
+        "s:macro.hi",
+        p,
+        lib("{%- set greeting = 'hi ' ~ who -%}{%- macro to() -%}{{ greeting }}, {{ who }}{%- endmacro -%}"),
+    )
+    .seed(
+        "s.hi",
+        p,
+        tmpl(json!("{% set who = 'me' %}{% import 's:macro.hi' as h %}{{ h.greeting ~ '/' ~ h.to() }}")),
+    );
+    assert_eq!(
+        resolve_with("s.hi", &mut f, &vars).unwrap(),
+        Some(json!("hi me/hi me, me"))
+    );
+}
+
+/// A `comb[...]` in a library puts the importing render on the lazy path:
+/// the provider is read when the macro asks for it.
+#[test]
+fn a_library_reading_comb_by_subscript_is_lazy() {
+    let vars = env_of(&[]);
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    f.seed(
+        "s:macro.pick",
+        p,
+        lib("{%- macro pick(name) -%}{{ comb[name].branch }}{%- endmacro -%}"),
+    )
+    .seed("git", p, data(json!({"branch": "main"})))
+    .seed(
+        "s.pick",
+        p,
+        tmpl(json!(
+            "{% from 's:macro.pick' import pick %}{{ pick('git') }}"
+        )),
+    );
+    assert_eq!(
+        resolve_with("s.pick", &mut f, &vars).unwrap(),
+        Some(json!("main"))
+    );
+    assert!(f.keys().contains(&"git"), "{:?}", f.keys());
+}
+
+/// A library is a dependency, so a watch follows it, and is text, like a
+/// template, so its age is no input's.
+#[test]
+fn a_library_is_a_dependency_with_no_age() {
+    let vars = env_of(&[]);
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    f.seed("s:macro.usage", p, lib(USAGE)).seed(
+        "s.c",
+        p,
+        tmpl(json!(
+            "{% from 's:macro.usage' import usage %}{{ usage(1) }}"
+        )),
+    );
+    let traced = resolve_traced("s.c", &inputs(&vars), &mut f).unwrap();
+    assert_eq!(traced.value, Some(json!("green")));
+    let deps: Vec<&str> = traced.deps.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(deps, ["s.c", "s:macro.usage"]);
+    assert_eq!(traced.oldest_input_ms, None, "a library is not an input");
+}
+
+/// A library nothing answers fails the leaf that imports it, named; a group
+/// omits that leaf and renders its siblings.
+#[test]
+fn a_missing_library_fails_only_that_leaf() {
+    let vars = env_of(&[]);
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    let bad = "{% from 's:macro.nope' import m %}{{ m() }}";
+    f.seed("s", p, tmpl(json!({"bad": bad, "ok": "{{ 1 }}"})))
+        .seed("s.bad", p, tmpl(json!(bad)))
+        .seed("s.ok", p, tmpl(json!("{{ 1 }}")))
+        .seed("s:macro.n", p, data(json!(1)))
+        .seed(
+            "s.n",
+            p,
+            tmpl(json!("{% from 's:macro.n' import m %}{{ m() }}")),
+        );
+    assert_eq!(
+        resolve_with("s.bad", &mut f, &vars),
+        Err(ResolveError::Runtime(
+            "s.bad: s:macro.nope: no macro library there".into()
+        ))
+    );
+    assert_eq!(
+        resolve_with("s", &mut f, &vars).unwrap(),
+        Some(json!({"ok": 1}))
+    );
+    assert_eq!(
+        resolve_with("s.n", &mut f, &vars),
+        Err(ResolveError::Config(
+            "s.n: s:macro.n: a macro library is a string, not a number".into()
+        ))
+    );
+}
+
+/// An import names its library as a string: a computed name is refused
+/// before anything renders, and nothing is read for it.
+#[test]
+fn a_computed_import_name_is_refused() {
+    let vars = env_of(&[]);
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    f.seed(
+        "s.c",
+        p,
+        tmpl(json!(
+            "{% set n = 's:macro.usage' %}{% import n as u %}{{ u.usage(1) }}"
+        )),
+    );
+    let err = resolve_with("s.c", &mut f, &vars).unwrap_err();
+    assert_eq!(
+        err,
+        ResolveError::Config(
+            "s.c: template compile error: {% import n as u %}: an import names its library as \
+             a string, \"<p>:macro.<name>\""
+                .into()
+        )
+    );
+    assert_eq!(f.keys(), ["s.c"], "nothing read for it");
+}
+
+/// Two libraries that import each other end in an error, not a hang or a
+/// crash: each is read once, and the engine stops the recursion.
+#[test]
+fn an_import_cycle_errors_without_panicking() {
+    let vars = env_of(&[]);
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    f.seed(
+        "s:macro.a",
+        p,
+        lib("{% import 's:macro.b' as b %}{% macro a() %}a{% endmacro %}"),
+    )
+    .seed(
+        "s:macro.b",
+        p,
+        lib("{% import 's:macro.a' as a %}{% macro b() %}b{% endmacro %}"),
+    )
+    .seed(
+        "s.c",
+        p,
+        tmpl(json!("{% import 's:macro.a' as a %}{{ a.a() }}")),
+    );
+    assert_eq!(
+        resolve_with("s.c", &mut f, &vars),
+        Err(ResolveError::Runtime(
+            "s.c: template render error: recursion limit exceeded (in s:macro.b:1)".into()
+        ))
+    );
+    let reads = f
+        .keys()
+        .iter()
+        .filter(|k| k.starts_with("s:macro."))
+        .count();
+    assert_eq!(reads, 2, "each read once: {:?}", f.keys());
+}
+
+/// An error raised inside a library says what went wrong and where in the
+/// library, not that an import failed.
+#[test]
+fn an_error_in_a_library_names_its_place() {
+    let vars = env_of(&[]);
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    f.seed("s:macro.top", p, lib("{% set x = 1 + 'a' %}"))
+        .seed(
+            "s:macro.body",
+            p,
+            lib("{% macro m() %}\n{{ 1 + 'a' }}{% endmacro %}"),
+        )
+        .seed(
+            "s.top",
+            p,
+            tmpl(json!("{% import 's:macro.top' as t %}{{ t.x }}")),
+        )
+        .seed(
+            "s.body",
+            p,
+            tmpl(json!("{% from 's:macro.body' import m %}{{ m() }}")),
+        );
+    let plus = "tried to use + operator on unsupported types number and string";
+    assert_eq!(
+        resolve_with("s.top", &mut f, &vars),
+        Err(ResolveError::Runtime(format!(
+            "s.top: template render error: {plus} (in s:macro.top:1)"
+        )))
+    );
+    assert_eq!(
+        resolve_with("s.body", &mut f, &vars),
+        Err(ResolveError::Runtime(format!(
+            "s.body: template render error: {plus} (in s:macro.body:2)"
+        )))
+    );
+}
+
+/// The nearest directory's library is the one the daemon answers at the
+/// resolution's path: a put there shadows the file's at `~`.
+#[test]
+fn a_library_put_at_a_directory_shadows_the_file() {
+    let vars = env_of(&[]);
+    let mut f = MapFetch::default();
+    f.seed("s:macro.usage", None, lib(USAGE))
+        .seed(
+            "s:macro.usage",
+            Some(CWD),
+            lib("{%- macro usage(p) -%}mine{%- endmacro -%}"),
+        )
+        .seed(
+            "s.c",
+            Some(CWD),
+            tmpl(json!(
+                "{% from 's:macro.usage' import usage %}{{ usage(1) }}"
+            )),
+        );
+    assert_eq!(
+        resolve_with("s.c", &mut f, &vars).unwrap(),
+        Some(json!("mine"))
+    );
+}
+
 #[test]
 fn a_group_renders_every_leaf_and_keeps_its_shape() {
     assert_eq!(

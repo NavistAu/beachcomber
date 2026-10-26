@@ -295,6 +295,38 @@ fn watch_emits_the_resolved_value_and_refires_when_its_template_changes() {
     assert_eq!(w.next_line(), "hi!");
 }
 
+/// A library a watched template imports is a dependency of the watch: a put
+/// that edits the library re-renders the watched value with the new text.
+#[test]
+fn a_library_edit_rerenders_a_watch() {
+    let d = TestDaemon::spawn();
+    let project = d.home.join("ws/project");
+    std::fs::create_dir_all(&project).unwrap();
+    let library = |text: &str| format!("\"{{% macro m() %}}{text}{{% endmacro %}}\"");
+
+    d.comb(&project)
+        .args(["put", "--global", "scanline:macro.lib", &library("one")])
+        .assert()
+        .success();
+    d.comb(&project)
+        .args([
+            "put",
+            "scanline:template",
+            r#"{"w":"{% from 'scanline:macro.lib' import m %}{{ m() }}"}"#,
+        ])
+        .assert()
+        .success();
+
+    let mut w = watch_lines(&d, &project, &["scanline.w"]);
+    assert_eq!(w.next_line(), "one");
+
+    d.comb(&project)
+        .args(["put", "--global", "scanline:macro.lib", &library("two")])
+        .assert()
+        .success();
+    assert_eq!(w.next_line(), "two");
+}
+
 /// `env.*` is constant for the life of a process, so there is nothing to
 /// watch and the library says so before any connection is made. The CLI
 /// prints the library's words and exits 2.
