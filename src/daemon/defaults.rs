@@ -28,6 +28,7 @@ pub const MARKER_PREFIX: &str = "# Managed by comb ";
 pub const SHIPPED: &[(&str, &str)] = &[
     ("00-comb.toml", include_str!("../../defaults/00-comb.toml")),
     ("aws.toml", include_str!("../../defaults/aws.toml")),
+    ("battery.toml", include_str!("../../defaults/battery.toml")),
     ("conda.toml", include_str!("../../defaults/conda.toml")),
     ("gcloud.toml", include_str!("../../defaults/gcloud.toml")),
     (
@@ -39,6 +40,7 @@ pub const SHIPPED: &[(&str, &str)] = &[
         include_str!("../../defaults/kubecontext.toml"),
     ),
     ("load.toml", include_str!("../../defaults/load.toml")),
+    ("network.toml", include_str!("../../defaults/network.toml")),
     ("op.toml", include_str!("../../defaults/op.toml")),
     ("python.toml", include_str!("../../defaults/python.toml")),
     ("talos.toml", include_str!("../../defaults/talos.toml")),

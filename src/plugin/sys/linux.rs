@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Seconds since boot: the first field of `/proc/uptime`.
-pub(crate) fn uptime_secs() -> Result<i64, String> {
+pub(super) fn uptime_secs() -> Result<i64, String> {
     let contents =
         std::fs::read_to_string("/proc/uptime").map_err(|_| "cannot read /proc/uptime")?;
     contents
@@ -18,7 +18,7 @@ pub(crate) fn uptime_secs() -> Result<i64, String> {
 }
 
 /// The first power supply of type `Battery` under `/sys/class/power_supply`.
-pub(crate) fn find_battery_dir() -> Option<PathBuf> {
+fn find_battery_dir() -> Option<PathBuf> {
     std::fs::read_dir("/sys/class/power_supply")
         .ok()?
         .filter_map(Result::ok)
@@ -45,7 +45,7 @@ fn attribute(dir: &Path, name: &str) -> Option<String> {
 }
 
 /// The SSID of the Wi-Fi network: `nmcli`'s active one, else `iw`'s.
-pub(crate) fn wifi_ssid() -> Option<String> {
+pub(super) fn wifi_ssid() -> Option<String> {
     let run = |args: &[&str]| -> Option<String> {
         let (program, args) = args.split_first()?;
         let output = Command::new(program).args(args).output().ok()?;
@@ -64,29 +64,17 @@ pub(crate) fn wifi_ssid() -> Option<String> {
 }
 
 /// A VPN's interface: `tun*`, `tap*`, `wg*`, `tailscale*`.
-pub(crate) fn is_vpn_interface(name: &str) -> bool {
+pub(super) fn is_vpn_interface(name: &str) -> bool {
     ["tun", "tap", "wg", "tailscale"]
         .iter()
         .any(|prefix| name.starts_with(prefix))
 }
 
-/// A wired interface by its name: `eth*`, `ens*`, `enp*`.
-pub(crate) fn preferred_by_prefix(name: &str) -> bool {
-    ["eth", "ens", "enp"]
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
-}
-
-/// Which interface's address a scan prefers: the default route's, read once
-/// from `/proc/net/route`; with no default route, a wired one by its name.
-pub(crate) fn preferred_interface() -> impl Fn(&str) -> bool {
-    let default = std::fs::read_to_string("/proc/net/route")
-        .ok()
-        .and_then(|table| parse::default_route(&table));
-    move |name: &str| match &default {
-        Some(default) => name == default,
-        None => preferred_by_prefix(name),
-    }
+/// Which interface's address a scan prefers ([`parse::preferred_by_route`]):
+/// the default route's, read once from `/proc/net/route`; with no default
+/// route, a wired one by its name.
+pub(super) fn preferred_interface() -> impl Fn(&str) -> bool {
+    parse::preferred_by_route(std::fs::read_to_string("/proc/net/route").ok().as_deref())
 }
 
 #[cfg(test)]
@@ -101,13 +89,5 @@ mod tests {
         for not in ["eth0", "enp0s3", "wlan0"] {
             assert!(!is_vpn_interface(not), "{not}");
         }
-    }
-
-    #[test]
-    fn preferred_interface_prefix_matching() {
-        assert!(preferred_by_prefix("eth0"));
-        assert!(preferred_by_prefix("ens3"));
-        assert!(preferred_by_prefix("enp0s3"));
-        assert!(!preferred_by_prefix("wlan0"));
     }
 }

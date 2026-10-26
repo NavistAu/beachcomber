@@ -15,9 +15,7 @@ Each provider declares one or more **sources** — independent units of executio
 |---|---|---|---|---|
 | `asdf` | `tools` | watch | project | `tools` (object keyed by tool name) |
 | `aws_profiles` | `config_file` | watch + poll 60s (`~/.aws/config`) | none | one object per profile name (`default`, `staging`, …), each `{ region }` |
-| `battery` | `state` | poll 30s | none | `percent`, `charging`, `status`, `time_remaining_secs` (macOS) |
-| `battery` | `level` | poll 30s | none | `percent`, `charging`, `status_raw` (Linux) |
-| `battery` | `upower` | poll 60s | none | `time_remaining_secs`, `status` (Linux, requires UPower) |
+| `battery` | `state` | poll 30s (`defaults/battery.toml`) | none | `percent`, `charging`, `status`, `time_remaining_secs`, `status_raw` (Linux) |
 | `direnv` | `state` | watch | project | `status`, `allowed` |
 | `gcloud_configs` | `config_dir` | poll 60s | none | `active_config`, plus one object per configuration name, each `{ project, account }` |
 | `git` | `head` | watch | project | `branch`, `detached` |
@@ -28,7 +26,7 @@ Each provider declares one or more **sources** — independent units of executio
 | `hostname` | `host` | poll 10m (`defaults/hostname.toml`) | none | `name`, `short` |
 | `load` | `loadavg` | poll 10s (`defaults/load.toml`) | none | `one`, `five`, `fifteen` |
 | `mise` | `tools` | watch | project | tool versions, one field per tool: the project's, and for a tool it does not set the global config's, found at the instance at `~` |
-| `network` | `interfaces` | poll 10s | none | `interface`, `ip`, `vpn_active`, `vpn_name`, `ssid`, `online` |
+| `network` | `interfaces` | poll 10s (`defaults/network.toml`) | none | `interface`, `ip`, `ipv6`, `vpn_active`, `vpn_name`, `ssid`, `online` |
 | `python` | `venv` | watch | project | `venv`, `local_venv_name`, `venv_version` (`venv_name` and `version` are [templates](#template-backed-namespaces) over them) |
 | `sudo` | `state` | poll 30s | none | `active` |
 | `terraform` | `state` | watch | project | `workspace` |
@@ -36,7 +34,7 @@ Each provider declares one or more **sources** — independent units of executio
 | `uptime` | `time` | poll 60s (`defaults/uptime.toml`) | none | `seconds`, `days`, `hours`, `minutes` |
 | `user` | `name` | poll 10m (`defaults/user.toml`) | none | `name`, `uid` |
 
-**Shipped files.** A provider whose strategy names a `defaults/` file is that file, written the way a user writes a Source: `hostname`, `user`, `uname`, `load` and `uptime` each have one Source whose `data` line calls the compiled-in `sys` plugin. Set any of its lines in `config.toml` or `conf.d/` (`[daemon.providers.hostname.sources.host] result.name = "{{ data.name | upper }}"`) and the rest stay as shipped.
+**Shipped files.** A provider whose strategy names a `defaults/` file is that file, written the way a user writes a Source: `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` each have one Source whose `data` line calls the compiled-in `sys` plugin. Set any of its lines in `config.toml` or `conf.d/` (`[daemon.providers.hostname.sources.host] result.name = "{{ data.name | upper }}"`) and the rest stay as shipped.
 
 **watch + poll** sources watch files for quick invalidation and also poll on a timer as a backstop.
 
@@ -50,15 +48,15 @@ Each provider declares one or more **sources** — independent units of executio
 | `user` | none | `name` (string), `uid` (int) | poll 10m | 395 ns |
 | `load` | none | `one` (float), `five` (float), `fifteen` (float) | poll 10s | 550 ns |
 | `uptime` | none | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
-| `battery` | none | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s | 6 ms |
-| `network` | none | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s | 2 ms |
+| `battery` | none | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string), `status_raw` (string, Linux) | poll 30s | 6 ms |
+| `network` | none | `interface` (string), `ip` (string), `ipv6` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s | 2 ms |
 | `sudo` | none | `active` (bool) | poll 30s | < 1 µs |
 | `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | poll 1h | < 1 µs |
 
 **Platform notes:**
 
-- **battery:** `time_remaining_secs` is absent when the platform can't compute an estimate (battery charged, or state unknown). `status` takes one of `charging` / `discharging` / `charged` / `calculating` / `unknown`. On Linux, the numeric estimate requires UPower; without it, `status` is `calculating`.
-- **network:** SSID detection uses `nmcli`/`iw` on Linux (vs `airport` on macOS).
+- **battery:** one Source on both platforms: `pmset -g batt` on macOS, sysfs (`/sys/class/power_supply`) on Linux. `time_remaining_secs` is absent when there is no estimate (a full battery, or none given); on Linux it is the driver's own `time_to_empty_now`/`time_to_full_now`, else the energy or charge over the rate. `status` takes one of `charging` / `discharging` / `charged` / `calculating` / `unknown`; Linux also gives `status_raw`, the kernel's own word. A machine with no battery has no `battery` fields.
+- **network:** the preferred interface is an `en*` one on macOS and the default route's (`/proc/net/route`) on Linux. SSID detection uses `nmcli`/`iw` on Linux (vs `airport` on macOS, gone from macOS 14.4, where `ssid` is absent).
 - **uptime:** reads `/proc/uptime` on Linux (vs `sysctl` on macOS) — transparent to consumers, same fields.
 
 **Example output:**

@@ -769,13 +769,9 @@ The perf breakeven point: if direct file reading brings execution from >1ms to <
 
 ## 7. Platform-Specific Providers
 
-Some providers have different implementations per platform. Two patterns:
+Some facts come from the platform differently. The shipped `battery` and `network` providers show the pattern: one Source, with no platform branch in its file, whose `data` line calls a `sys` symbol that hides the difference. `src/plugin/sys/mod.rs` holds what is shared and dispatches to `sys/macos.rs` or `sys/linux.rs` through one `#[cfg]` alias; the platform modules expose `pub(super)` functions.
 
-**Inline `#[cfg]` (simple cases):** When the platform difference is one or two functions, use `#[cfg(target_os = "...")]` on the differing functions within a single file. See `battery.rs` for an example — shared `BatteryProvider` struct with platform-specific `execute_platform()` functions.
-
-**Submodule split (complex cases):** When platform differences are substantial, split into `provider_name/mod.rs` (shared), `provider_name/macos.rs`, `provider_name/linux.rs`. See `network/` for an example. The platform modules expose `pub(crate)` functions called from `mod.rs` via `#[cfg]` dispatch.
-
-For testing, gate platform-specific tests with `#[cfg(target_os = "...")]`. Make parse functions `pub(crate)` so they can be unit tested from a `#[cfg(test)]` module beside the code in `src/`, without exposing them publicly.
+For testing, keep the platform's text handling pure and put it in `sys/parse.rs`, compiled `#[cfg(any(target_os = "...", test))]`, so the Linux parsers are tested on macOS and the reverse; gate only what reads the live system with `#[cfg(target_os = "...")]`.
 
 ---
 
@@ -874,4 +870,4 @@ Its symbols are the C ABI's own (`const char* symbol(const char* input)`, JSON i
 
 The name is reserved: `plugin('sys', …)` never searches `[daemon.plugin] path`, and `comb check config` warns of a `libsys.dylib` or `libsys.so` there, which nothing would load. An unknown symbol is `plugin(): <symbol> in sys: symbol not found`; a symbol given arguments returns `NULL`.
 
-The shipped `hostname`, `user`, `uname`, `load` and `uptime` providers are Sources like the one above, each in its own `defaults/<name>.toml`: read one there to see how it is written, and override any of its lines in `config.toml` or `conf.d/`.
+The shipped `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` providers are Sources like the one above, each in its own `defaults/<name>.toml`: read one there to see how it is written, and override any of its lines in `config.toml` or `conf.d/`.

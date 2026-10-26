@@ -10,7 +10,7 @@ use serde_json::Value as Json;
 /// facts when no line shows a battery (a machine without one). A missing
 /// estimate (`(no estimate)`, or a full battery) is absent, never 0.
 #[cfg(any(target_os = "macos", test))]
-pub(crate) fn pmset(output: &str) -> Facts {
+pub(super) fn pmset(output: &str) -> Facts {
     let mut percent: i64 = 0;
     let mut charging = false;
     let mut time_remaining_secs: Option<i64> = None;
@@ -85,7 +85,7 @@ pub(crate) fn pmset(output: &str) -> Facts {
 /// `status` is `charged` (Full), `charging` or `discharging` with an estimate,
 /// `calculating` without one, else `unknown`.
 #[cfg(any(target_os = "linux", test))]
-pub(crate) fn sysfs_battery(read: impl Fn(&str) -> Option<String>) -> Facts {
+pub(super) fn sysfs_battery(read: impl Fn(&str) -> Option<String>) -> Facts {
     let number = |name: &str| read(name).and_then(|s| s.parse::<f64>().ok());
     let mut facts = Facts::new();
     if let Some(percent) = read("capacity").and_then(|s| s.parse::<i64>().ok()) {
@@ -139,7 +139,7 @@ pub(crate) fn sysfs_battery(read: impl Fn(&str) -> Option<String>) -> Facts {
 /// mask `00000000`, flagged up), the lowest metric winning; `None` when there
 /// is none.
 #[cfg(any(target_os = "linux", test))]
-pub(crate) fn default_route(table: &str) -> Option<String> {
+pub(super) fn default_route(table: &str) -> Option<String> {
     const RTF_UP: u32 = 0x1;
     table
         .lines()
@@ -161,9 +161,24 @@ pub(crate) fn default_route(table: &str) -> Option<String> {
         .map(|(_, iface)| iface)
 }
 
+/// Which interface's address a Linux scan prefers, given the text of
+/// `/proc/net/route` (`None` when it could not be read): the default route's
+/// ([`default_route`]); with no default route, a wired one by its name
+/// (`eth*`, `ens*`, `enp*`).
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn preferred_by_route(table: Option<&str>) -> impl Fn(&str) -> bool + use<> {
+    let default = table.and_then(default_route);
+    move |name: &str| match &default {
+        Some(default) => name == default,
+        None => ["eth", "ens", "enp"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix)),
+    }
+}
+
 /// `nmcli -t -f active,ssid dev wifi`: the SSID of the line marked active.
 #[cfg(any(target_os = "linux", test))]
-pub(crate) fn nmcli_ssid(output: &str) -> Option<String> {
+pub(super) fn nmcli_ssid(output: &str) -> Option<String> {
     output
         .lines()
         .filter_map(|line| line.strip_prefix("yes:"))
@@ -174,7 +189,7 @@ pub(crate) fn nmcli_ssid(output: &str) -> Option<String> {
 
 /// `iw dev`: the first wireless interface's name.
 #[cfg(any(target_os = "linux", test))]
-pub(crate) fn iw_interface(output: &str) -> Option<String> {
+pub(super) fn iw_interface(output: &str) -> Option<String> {
     output
         .lines()
         .find_map(|line| line.trim().strip_prefix("Interface "))
@@ -183,7 +198,7 @@ pub(crate) fn iw_interface(output: &str) -> Option<String> {
 
 /// `iw dev <iface> info`: the SSID it is associated with.
 #[cfg(any(target_os = "linux", test))]
-pub(crate) fn iw_ssid(output: &str) -> Option<String> {
+pub(super) fn iw_ssid(output: &str) -> Option<String> {
     output
         .lines()
         .filter_map(|line| line.trim().strip_prefix("ssid "))
@@ -194,7 +209,7 @@ pub(crate) fn iw_ssid(output: &str) -> Option<String> {
 
 /// `airport -I`: the SSID it is associated with.
 #[cfg(any(target_os = "macos", test))]
-pub(crate) fn airport_ssid(output: &str) -> Option<String> {
+pub(super) fn airport_ssid(output: &str) -> Option<String> {
     output
         .lines()
         .find_map(|line| line.trim().strip_prefix("SSID:"))
@@ -345,6 +360,28 @@ mod tests {
             "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n";
         assert_eq!(default_route(header), None);
         assert_eq!(default_route(""), None);
+    }
+
+    /// The default route's interface is the one preferred, a wireless one
+    /// included, and a wired name is not preferred over it.
+    #[test]
+    fn the_default_routes_interface_is_preferred() {
+        let table = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+                     wlan0\t00000000\t0101A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n";
+        let preferred = preferred_by_route(Some(table));
+        assert!(preferred("wlan0"));
+        assert!(!preferred("eth0"));
+    }
+
+    /// With no default route, or no table, a wired interface by its name.
+    #[test]
+    fn preferred_interface_prefix_matching() {
+        let header =
+            "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n";
+        for preferred in [preferred_by_route(Some(header)), preferred_by_route(None)] {
+            assert!(preferred("eth0") && preferred("ens3") && preferred("enp0s3"));
+            assert!(!preferred("wlan0"));
+        }
     }
 
     #[test]

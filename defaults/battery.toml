@@ -1,0 +1,9 @@
+[daemon.providers.battery.sources.state]
+# The battery, from the sys plugin: `pmset -g batt` on macOS; on Linux the first battery in /sys/class/power_supply, status_raw as the kernel writes it, and the estimate from the driver or from the energy (or charge) over the rate. A machine with no battery has no fields. Polled every 30 seconds while read; backed off from a minute after repeated failures.
+data = "{{ plugin('sys', 'battery') }}"
+result.percent = "{{ data.percent }}"
+result.charging = "{{ data.charging }}"
+result.status = "{{ data.status }}"
+result.status_raw = "{{ data.status_raw }}"
+result.time_remaining_secs = "{{ data.time_remaining_secs }}"
+return = "{{ result | poll('30s', 4) | failback('60s', 3) }}"

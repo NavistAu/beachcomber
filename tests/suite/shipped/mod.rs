@@ -14,8 +14,10 @@ use crate::common::socket::IsolatedSocket;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+mod battery;
 mod hostname;
 mod load;
+mod network;
 mod uname;
 mod uptime;
 mod user;

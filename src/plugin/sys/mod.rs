@@ -30,10 +30,10 @@
 //! of an `extern "C" fn` aborts.
 
 #[cfg(target_os = "linux")]
-pub(crate) mod linux;
+mod linux;
 #[cfg(target_os = "macos")]
-pub(crate) mod macos;
-pub(crate) mod parse;
+mod macos;
+mod parse;
 
 #[cfg(target_os = "linux")]
 use linux as os;
@@ -47,12 +47,10 @@ use std::ffi::{CStr, CString, c_char};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::thread::LocalKey;
 
-#[cfg(target_os = "linux")]
-pub(crate) use linux::{find_battery_dir, preferred_by_prefix};
-pub(crate) use os::{is_vpn_interface, preferred_interface, uptime_secs, wifi_ssid};
+use os::{is_vpn_interface, preferred_interface, uptime_secs, wifi_ssid};
 
 /// What a symbol answers: a JSON object.
-pub(crate) type Facts = serde_json::Map<String, Json>;
+type Facts = serde_json::Map<String, Json>;
 
 /// Each symbol: an `extern "C"` function in [`symbol`] answering `$facts()`
 /// into a thread-local string of its own; and the table of them, by name.
@@ -264,18 +262,18 @@ fn user_of(uid: libc::uid_t) -> Facts {
 
 /// What one interface scan found. An empty string is "none found".
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct Scan {
-    pub iface: String,
-    pub ip: String,
-    pub ipv6: String,
-    pub vpn_active: bool,
-    pub vpn_name: String,
+struct Scan {
+    iface: String,
+    ip: String,
+    ipv6: String,
+    vpn_active: bool,
+    vpn_name: String,
 }
 
 /// `getifaddrs(3)`: of the interfaces that are up and not loopback, the first
 /// VPN by name, the IPv4 address of the first with a routable one or of the
 /// one `preferred` names, and the first routable IPv6 address.
-pub(crate) fn scan_interfaces(preferred: &dyn Fn(&str) -> bool) -> Scan {
+fn scan_interfaces(preferred: &dyn Fn(&str) -> bool) -> Scan {
     let mut ifaddrs: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: an out-parameter `getifaddrs` fills, freed below.
     if unsafe { libc::getifaddrs(&mut ifaddrs) } != 0 {
@@ -334,7 +332,7 @@ pub(crate) fn scan_interfaces(preferred: &dyn Fn(&str) -> bool) -> Scan {
 /// A scan and an SSID as facts. What the machine has no value for (an
 /// interface, an address, a VPN, a Wi-Fi network) is absent; `online` (an
 /// address of either family) and `vpn_active` are always there.
-pub(crate) fn network_of(scan: Scan, ssid: Option<String>) -> Facts {
+fn network_of(scan: Scan, ssid: Option<String>) -> Facts {
     let online = !scan.ip.is_empty() || !scan.ipv6.is_empty();
     let mut facts = texts([
         ("interface", scan.iface),

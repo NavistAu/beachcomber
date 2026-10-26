@@ -414,11 +414,13 @@ fn shipped_layers_parse_and_load_with_no_errors() {
     }
     for name in [
         "aws",
+        "battery",
         "conda",
         "gcloud",
         "hostname",
         "kubecontext",
         "load",
+        "network",
         "op",
         "talos",
         "uname",

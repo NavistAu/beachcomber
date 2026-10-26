@@ -79,7 +79,7 @@ If this returns nothing, either:
 
 If a key always returns empty, the provider may be switched off (`enabled = false` under `[daemon.providers.<name>]`) or not supported on your platform:
 
-Check your `~/.config/beachcomber/config.toml` if a provider you expect is missing. See the [built-in providers reference](../reference/built-in-providers.md) for every provider and its fields, and [platform notes](../reference/built-in-providers.md) for fields that need optional components (e.g. UPower on Linux for `battery.time_remaining`).
+Check your `~/.config/beachcomber/config.toml` if a provider you expect is missing. See the [built-in providers reference](../reference/built-in-providers.md) for every provider and its fields, and [platform notes](../reference/built-in-providers.md) for fields a platform may not give (e.g. `network.ssid` on macOS 14.4 and later).
 
 ## First query is slow
 

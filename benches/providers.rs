@@ -1,8 +1,6 @@
 use beachcomber::provider::Provider;
-use beachcomber::provider::battery::BatteryProvider;
 use beachcomber::provider::gcloud::GcloudProvider;
 use beachcomber::provider::git::GitProvider;
-use beachcomber::provider::network::NetworkProvider;
 use beachcomber::provider::registry::ProviderRegistry;
 use criterion::{Criterion, criterion_group, criterion_main};
 
@@ -91,21 +89,11 @@ fn bench_git_vs_raw(c: &mut Criterion) {
 }
 
 fn bench_network_execute(c: &mut Criterion) {
-    let p = NetworkProvider;
-    c.bench_function("provider_network_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "network", "interfaces");
 }
 
 fn bench_battery_execute(c: &mut Criterion) {
-    let p = BatteryProvider;
-    c.bench_function("provider_battery_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "battery", "state");
 }
 
 fn bench_gcloud_execute(c: &mut Criterion) {

@@ -1174,10 +1174,6 @@ impl ProviderRegistry {
         registry
             .register(Box::new(crate::provider::aws::AwsProvider))
             .expect("aws_profiles");
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        registry
-            .register(Box::new(crate::provider::battery::BatteryProvider))
-            .expect("battery");
         registry
             .register(Box::new(crate::provider::direnv::DirenvProvider))
             .expect("direnv");
@@ -1190,9 +1186,6 @@ impl ProviderRegistry {
         registry
             .register(Box::new(crate::provider::mise::MiseProvider))
             .expect("mise");
-        registry
-            .register(Box::new(crate::provider::network::NetworkProvider))
-            .expect("network");
         registry
             .register(Box::new(crate::provider::python::PythonProvider))
             .expect("python");

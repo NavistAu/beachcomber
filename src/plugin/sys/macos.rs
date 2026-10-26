@@ -6,7 +6,7 @@ use std::process::Command;
 
 /// Seconds since boot: the kernel's boot time (`sysctl KERN_BOOTTIME`)
 /// against the clock.
-pub(crate) fn uptime_secs() -> Result<i64, String> {
+pub(super) fn uptime_secs() -> Result<i64, String> {
     let mut boottime = libc::timeval {
         tv_sec: 0,
         tv_usec: 0,
@@ -44,7 +44,7 @@ pub(super) fn battery_facts() -> Option<Facts> {
 
 /// The SSID of the Wi-Fi network, from `airport -I`. The tool is gone from
 /// macOS 14.4 on, where there is none: a known gap.
-pub(crate) fn wifi_ssid() -> Option<String> {
+pub(super) fn wifi_ssid() -> Option<String> {
     let output = Command::new(
         "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport",
     )
@@ -58,13 +58,13 @@ pub(crate) fn wifi_ssid() -> Option<String> {
 }
 
 /// A VPN's interface: `utun*`.
-pub(crate) fn is_vpn_interface(name: &str) -> bool {
+pub(super) fn is_vpn_interface(name: &str) -> bool {
     name.starts_with("utun")
 }
 
 /// Which interface's address a scan prefers: an `en*` one (`en0` Wi-Fi,
 /// `en1` Thunderbolt or USB Ethernet, and so on).
-pub(crate) fn preferred_interface() -> impl Fn(&str) -> bool {
+pub(super) fn preferred_interface() -> impl Fn(&str) -> bool {
     |name: &str| name.starts_with("en") && !is_vpn_interface(name)
 }
 

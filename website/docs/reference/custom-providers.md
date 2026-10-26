@@ -265,7 +265,7 @@ One plugin is compiled into `comb`: `sys`, for what only the operating system ca
 
 `sys` is reached the way a library's symbols are, through the same C ABI, and is never looked for on `[daemon.plugin] path`: a `libsys.so` or `libsys.dylib` there is never loaded, and `comb check config` warns of it.
 
-The shipped `hostname`, `user`, `uname`, `load` and `uptime` providers are Sources over these symbols, each in its own managed `defaults/<name>.toml`; any of their lines can be overridden in `config.toml` or `conf.d/`.
+The shipped `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` providers are Sources over these symbols, each in its own managed `defaults/<name>.toml`; any of their lines can be overridden in `config.toml` or `conf.d/`.
 
 See the [Provider Development Guide](/docs/internals/provider-development#8-plugins) for the full C ABI contract, example code, and where each `sys` fact comes from.
 

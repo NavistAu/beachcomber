@@ -1,12 +1,10 @@
 pub mod asdf;
 pub mod aws;
-pub mod battery;
 pub mod config_source;
 pub mod direnv;
 pub mod gcloud;
 pub mod git;
 pub mod mise;
-pub mod network;
 pub mod python;
 pub mod registry;
 pub mod source_call;
@@ -15,8 +13,6 @@ pub mod terraform;
 
 #[cfg(test)]
 mod aws_tests;
-#[cfg(test)]
-mod battery_seam_tests;
 #[cfg(test)]
 mod gcloud_tests;
 #[cfg(test)]
@@ -31,8 +27,6 @@ mod provider_types_tests;
 mod providers_cloud_tests;
 #[cfg(test)]
 mod providers_devtools_tests;
-#[cfg(test)]
-mod providers_system_tests;
 #[cfg(test)]
 mod registry_tests;
 
