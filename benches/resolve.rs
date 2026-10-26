@@ -8,6 +8,10 @@
 //! a resolution costs before any template work, and the floor a memoised
 //! leaf's frame and hash are measured against. `exec` is one leaf that spawns
 //! (`{{ 'echo x' | exec() }}`): what a leaf costs that a memo exists to skip.
+//! `memo_hit` is that leaf cached, `{{ 'echo x' | watch('/etc/hosts') |
+//! cache(env.SCANLINE_WIDTH) | exec() }}`, with a live memo under its hash:
+//! the frame, a hash of one input and one file's stamp, and the abort, and no
+//! spawn.
 //! Each runs with a one-variable environment and with a shell's worth (140
 //! variables), since every render sees the whole environment and every spawn
 //! is handed it.
@@ -96,6 +100,7 @@ fn widget_fetch() -> MapFetch {
         ),
         ("scanline.widget", template(json!(widget))),
         ("scanline.spawn", template(json!("{{ 'echo x' | exec() }}"))),
+        ("scanline.cached", cached()),
         ("scanline.theme", template(theme)),
         ("scanline.calc.windows", template(json!(windows))),
         ("scanline.calc.rate", template(json!(rate))),
@@ -104,6 +109,26 @@ fn widget_fetch() -> MapFetch {
             data(json!({ "five_hour": 30, "seven_day": 55 })),
         ),
     ]))
+}
+
+/// The cached leaf, with a live memo under the hash a read of it computes:
+/// the width every environment here sets, and `/etc/hosts` as it is.
+fn cached() -> Got {
+    let hosts = std::fs::canonicalize("/etc/hosts").expect("/etc/hosts");
+    let hash = libbeachcomber::library::memo::memo_hash(&[minijinja::Value::from("24")], &[hosts])
+        .expect("a hash");
+    Got {
+        template: Some(json!(
+            "{{ 'echo x' | watch('/etc/hosts') | cache(env.SCANLINE_WIDTH) | exec() }}"
+        )),
+        memo: Some(json!({
+            "hash": libbeachcomber::validity::hex(hash),
+            "stale": false,
+            "age_ms": 5,
+            "data": "memo",
+        })),
+        ..Got::default()
+    }
 }
 
 /// A shell's environment: `n` variables, one of them the widget's width.
@@ -126,6 +151,7 @@ fn bench_resolve(c: &mut Criterion) {
         ("widget", "scanline.widget", false),
         ("env_read", "scanline.width", false),
         ("exec", "scanline.spawn", true),
+        ("memo_hit", "scanline.cached", true),
     ] {
         for vars in [1usize, 140] {
             let env = shell_env(vars);
@@ -139,10 +165,11 @@ fn bench_resolve(c: &mut Criterion) {
                 allow_exec,
                 now: std::time::SystemTime::now(),
             };
-            assert!(
-                matches!(resolve(key, &inputs, &mut fetch), Ok(Some(_))),
-                "{key} resolves"
-            );
+            let value = resolve(key, &inputs, &mut fetch);
+            assert!(matches!(value, Ok(Some(_))), "{key} resolves");
+            if name == "memo_hit" {
+                assert_eq!(value, Ok(Some(json!("memo"))), "a hit, not a spawn");
+            }
             group.bench_with_input(BenchmarkId::new(name, vars), &vars, |b, _| {
                 b.iter(|| criterion::black_box(resolve(key, &inputs, &mut fetch)))
             });
