@@ -1,8 +1,10 @@
 //! Dynamic library loader boundary trait.
 //!
 //! The seam between `plugin()` (`crate::engine::PluginSet`) and the real
-//! `libloading` crate. All `unsafe` FFI calls live in `LibloadingLoadedLibrary`;
-//! the engine only calls the safe `LoadedLibrary` trait method.
+//! `libloading` crate. Every call into a plugin symbol goes through
+//! [`call_symbol`], whether `dlsym` found it (`LibloadingLoadedLibrary`) or the
+//! compiled-in table did (`crate::plugin::StaticLibrary`); the engine only
+//! calls the safe `LoadedLibrary` trait method.
 
 #[cfg_attr(test, mockall::automock)]
 pub trait LibraryLoader: Send + Sync {
@@ -58,10 +60,6 @@ impl LoadedLibrary for LibloadingLoadedLibrary {
     }
 
     fn call_json(&self, symbol: String, input: String) -> Result<String, String> {
-        type JsonFn =
-            unsafe extern "C" fn(*const std::os::raw::c_char) -> *const std::os::raw::c_char;
-        let c_input = std::ffi::CString::new(input)
-            .map_err(|_| "the input contains a NUL byte".to_string())?;
         let c_symbol = std::ffi::CString::new(symbol.as_str())
             .map_err(|_| "the symbol name contains a NUL byte".to_string())?;
         let lib = self
@@ -71,19 +69,39 @@ impl LoadedLibrary for LibloadingLoadedLibrary {
         // The lock is held across the call and the copy out of the returned
         // string: that is what keeps "valid until the next call into the same
         // library" true, since no other call can start before we have copied.
-        // A panic cannot unwind out of the `extern "C"` function (it aborts the
-        // process), so there is nothing to catch.
         // SAFETY: symbol lookup is unsafe; we trust the plugin contract.
         let f: libloading::Symbol<JsonFn> = unsafe { lib.get(c_symbol.to_bytes_with_nul()) }
             .map_err(|_| "symbol not found".to_string())?;
-        let ptr = unsafe { f(c_input.as_ptr()) };
-        if ptr.is_null() {
-            return Err("returned NULL".to_string());
-        }
-        // Strict UTF-8, as everywhere in this boundary.
-        unsafe { std::ffi::CStr::from_ptr(ptr) }
-            .to_str()
-            .map(str::to_string)
-            .map_err(|_| "returned output that is not UTF-8".to_string())
+        call_symbol(*f, input)
     }
+}
+
+/// A plugin symbol: `const char* symbol(const char* input)`, the plugin
+/// author's contract ([`crate::engine::PluginSet`]).
+pub type JsonFn = unsafe extern "C" fn(*const std::os::raw::c_char) -> *const std::os::raw::c_char;
+
+/// Call the plugin symbol `f` with `input`, a JSON array: the one way every
+/// plugin call is made, a library's (found by `dlsym`) and a compiled-in
+/// one's ([`crate::plugin::StaticLibrary`]) alike. The input goes in as a
+/// NUL-terminated string; `NULL` back is failure; what comes back otherwise is
+/// copied out as strict UTF-8 before this returns, so the caller decides how
+/// long the symbol's own string must live. A panic cannot unwind out of an
+/// `extern "C"` function (it aborts the process), so there is nothing to
+/// catch.
+pub fn call_symbol(f: JsonFn, input: String) -> Result<String, String> {
+    let c_input =
+        std::ffi::CString::new(input).map_err(|_| "the input contains a NUL byte".to_string())?;
+    // SAFETY: `f` is a plugin symbol, which takes a NUL-terminated string and
+    // returns NULL or one: the contract we trust it to keep.
+    let ptr = unsafe { f(c_input.as_ptr()) };
+    if ptr.is_null() {
+        return Err("returned NULL".to_string());
+    }
+    // Strict UTF-8, as everywhere in this boundary.
+    // SAFETY: a non-NULL return is a NUL-terminated string, valid until the
+    // next call into the same library, which cannot start before this copy.
+    unsafe { std::ffi::CStr::from_ptr(ptr) }
+        .to_str()
+        .map(str::to_string)
+        .map_err(|_| "returned output that is not UTF-8".to_string())
 }

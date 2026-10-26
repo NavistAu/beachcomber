@@ -251,7 +251,21 @@ return = "{{ result | poll('10s') }}"
 
 This calls `read_state` in `libmy_native.so` (or `.dylib`). A symbol is `const char* symbol(const char* input)`: it receives the arguments as a JSON array and returns a JSON value, or `NULL` on failure.
 
-See the [Provider Development Guide](/docs/internals/provider-development#8-plugins) for the full C ABI contract and example code.
+One plugin is compiled into `comb`: `sys`, for what only the operating system can say. Its symbols take no arguments and answer an object, leaving out what the machine has no value for:
+
+| call | answers |
+|---|---|
+| `plugin('sys', 'hostname')` | `{name, short}` |
+| `plugin('sys', 'loadavg')` | `{one, five, fifteen}` |
+| `plugin('sys', 'uname')` | `{sysname, release, version, machine}` |
+| `plugin('sys', 'uptime')` | `{seconds}` |
+| `plugin('sys', 'user')` | `{name, uid}` |
+| `plugin('sys', 'network')` | `{interface, ip, ipv6, vpn_active, vpn_name, ssid, online}` |
+| `plugin('sys', 'battery')` | `{percent, charging, status, time_remaining_secs}` (and `status_raw` on Linux), `{}` with no battery |
+
+`sys` is reached the way a library's symbols are, through the same C ABI, and is never looked for on `[daemon.plugin] path`: a `libsys.so` or `libsys.dylib` there is never loaded, and `comb check config` warns of it.
+
+See the [Provider Development Guide](/docs/internals/provider-development#8-plugins) for the full C ABI contract, example code, and where each `sys` fact comes from.
 
 ## Secrets and Environment Variables
 

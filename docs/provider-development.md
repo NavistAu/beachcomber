@@ -850,3 +850,28 @@ const char* greet(const char* input) {
 Build: `cc -shared -fPIC -o libhello.so hello.c` (Linux) or `cc -shared -o libhello.dylib hello.c` (macOS), and put the file in `~/.config/beachcomber/plugins/`. With the Source above, `comb get hello.greeting` prints `hello, world`.
 
 Plugins are for work where an `exec()` spawn is too expensive or the logic does not belong in the daemon binary: compiled parsing, a vendor SDK, a local socket protocol. A plugin runs inside the daemon with its permissions; only put libraries you trust on `[daemon.plugin] path`.
+
+### `sys`: the plugin compiled in
+
+What only the operating system can say comes from one plugin compiled into `comb`, `sys`, called as any plugin is:
+
+```toml
+[daemon.providers.box.sources.load]
+data = "{{ plugin('sys', 'loadavg') }}"
+result.one = "{{ data.one }}"
+return = "{{ result | poll('10s') }}"
+```
+
+Its symbols are the C ABI's own (`const char* symbol(const char* input)`, JSON in and out, `NULL` for failure), held in a table in the binary: `plugin('sys', …)` takes the same path from the engine function to the C call as a library's symbol does, and only the finding of the function differs (the table, not `dlsym`). Each takes no arguments, answers an object, and leaves out a fact it has no value for, never `""`.
+
+| symbol | answers | from |
+|---|---|---|
+| `hostname` | `{name, short}` | `gethostname`; `short` is the first label |
+| `loadavg` | `{one, five, fifteen}` | `getloadavg` |
+| `uname` | `{sysname, release, version, machine}` | `uname` |
+| `uptime` | `{seconds}` | macOS `sysctl KERN_BOOTTIME`; Linux `/proc/uptime` |
+| `user` | `{name, uid}` | `getuid`, `getpwuid_r`; `name` is absent for a uid with no entry |
+| `network` | `{interface, ip, ipv6, vpn_active, vpn_name, ssid, online}` | `getifaddrs`; the preferred interface is an `en*` one on macOS and the default route's (`/proc/net/route`) on Linux; the SSID from `airport` on macOS (gone from macOS 14.4, where it is absent) and `nmcli`, then `iw`, on Linux |
+| `battery` | macOS `{percent, charging, status, time_remaining_secs}`; Linux `{percent, charging, status_raw, status, time_remaining_secs}`; `{}` with no battery | macOS `pmset -g batt`; Linux sysfs (`capacity`, `status`, and the estimate from `time_to_empty_now`/`time_to_full_now` or the energy or charge over the rate) |
+
+The name is reserved: `plugin('sys', …)` never searches `[daemon.plugin] path`, and `comb check config` warns of a `libsys.dylib` or `libsys.so` there, which nothing would load. An unknown symbol is `plugin(): <symbol> in sys: symbol not found`; a symbol given arguments returns `NULL`.

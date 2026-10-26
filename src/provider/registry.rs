@@ -1316,11 +1316,20 @@ impl ProviderRegistry {
         // reload makes, so startup, `comb check config` and the config watch
         // all see it. What the load and the per-file rules already said is not
         // said twice.
-        let (seed_errors, warnings) = crate::daemon::seed::plan_findings(config, &registry);
+        let (seed_errors, mut warnings) = crate::daemon::seed::plan_findings(config, &registry);
         for e in seed_errors {
             if !errors.contains(&e) {
                 errors.push(e);
             }
+        }
+        // `sys` is the compiled-in plugin's name: a library of that name on
+        // the path is never loaded, which its author should hear of.
+        if let Some(shadowed) = registry.plugins.as_ref().and_then(|p| p.shadowed_sys()) {
+            warnings.push(config.locate(format!(
+                "[daemon.plugin] path: {} is shadowed by the built-in sys plugin, and never \
+                 loaded",
+                shadowed.display()
+            )));
         }
         // Every error in one form: `config(<file>): [table] …`, the file the
         // one that set the table it is about.

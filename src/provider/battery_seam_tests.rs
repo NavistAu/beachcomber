@@ -74,52 +74,10 @@ impl ProcessExecutor for StubProcessExecutor {
 #[cfg(target_os = "macos")]
 mod macos {
     use super::*;
-    use crate::provider::Value;
     use crate::provider::battery::battery_state_source_with_executor;
 
-    fn execute_with(stdout: &[u8]) -> crate::provider::SourceResult {
-        let stub = StubProcessExecutor::new(vec![success_output(stdout)]);
-        let source = battery_state_source_with_executor(stub);
-        source.execute(None).unwrap()
-    }
-
-    #[test]
-    fn pmset_charging_with_estimate_produces_correct_fields() {
-        let sample =
-            b" -InternalBattery-0 (id=1234567)\t85%; charging; 1:23 remaining present: true\n";
-        let result = execute_with(sample);
-        assert_eq!(result.fields.get("percent").unwrap(), &Value::Int(85));
-        assert_eq!(result.fields.get("charging").unwrap(), &Value::Bool(true));
-        assert_eq!(
-            result.fields.get("time_remaining_secs").unwrap(),
-            &Value::Int(4980)
-        ); // 1*3600 + 23*60
-        assert_eq!(result.fields.get("status").unwrap().as_text(), "charging");
-    }
-
-    #[test]
-    fn pmset_discharging_no_estimate_produces_calculating_status() {
-        let sample = b" -InternalBattery-0\t72%; discharging; (no estimate) present: true\n";
-        let result = execute_with(sample);
-        assert_eq!(result.fields.get("percent").unwrap(), &Value::Int(72));
-        assert_eq!(result.fields.get("charging").unwrap(), &Value::Bool(false));
-        // No estimate is no value: absent, never 0.
-        assert!(!result.fields.contains_key("time_remaining_secs"));
-        assert_eq!(
-            result.fields.get("status").unwrap().as_text(),
-            "calculating"
-        );
-    }
-
-    #[test]
-    fn pmset_charged_state_produces_charged_status() {
-        let sample = b" -InternalBattery-0\t100%; charged; 0:00 remaining present: true\n";
-        let result = execute_with(sample);
-        assert_eq!(result.fields.get("percent").unwrap(), &Value::Int(100));
-        assert_eq!(result.fields.get("status").unwrap().as_text(), "charged");
-        // A full battery has no time remaining to report.
-        assert!(!result.fields.contains_key("time_remaining_secs"));
-    }
+    // What pmset's output means is `sys::parse::pmset`'s, tested there; these
+    // are the Source's handling of the spawn.
 
     #[test]
     fn pmset_binary_not_found_fails() {
@@ -145,22 +103,6 @@ mod macos {
             result.fields.is_empty(),
             "malformed output should produce empty result, got: {:?}",
             result.fields
-        );
-    }
-
-    #[test]
-    fn pmset_discharging_with_time_remaining() {
-        let sample = b" -InternalBattery-0\t50%; discharging; 2:30 remaining present: true\n";
-        let result = execute_with(sample);
-        assert_eq!(result.fields.get("percent").unwrap(), &Value::Int(50));
-        assert_eq!(result.fields.get("charging").unwrap(), &Value::Bool(false));
-        assert_eq!(
-            result.fields.get("time_remaining_secs").unwrap(),
-            &Value::Int(9000)
-        ); // 2*3600 + 30*60
-        assert_eq!(
-            result.fields.get("status").unwrap().as_text(),
-            "discharging"
         );
     }
 }

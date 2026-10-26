@@ -1,7 +1,9 @@
 use crate::boundaries::process::{ProcessExecutor, RealProcessExecutor};
+#[cfg(target_os = "linux")]
+use crate::provider::Value;
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, Value,
+    Source, SourceMetadata, SourceResult,
 };
 use std::sync::{Arc, OnceLock};
 
@@ -82,98 +84,10 @@ impl Source for BatteryState {
             return Err("pmset exited with an error".into());
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(parse_pmset_output_to_source(&stdout))
+        Ok(SourceResult::from_json_object(
+            &crate::plugin::sys::parse::pmset(&stdout),
+        ))
     }
-}
-
-#[cfg(target_os = "macos")]
-fn parse_pmset_output_to_source(output: &str) -> SourceResult {
-    let mut percent: i64 = 0;
-    let mut charging = false;
-    // No estimate — none given, or a full battery — is no value: absent.
-    let mut time_remaining_secs: Option<i64> = None;
-    let mut status: String = "unknown".to_string();
-    let mut found = false;
-
-    for line in output.lines() {
-        let line = line.trim();
-        if let Some(pct_pos) = line.find('%') {
-            found = true;
-            let before = &line[..pct_pos];
-            let num_str: String = before
-                .chars()
-                .rev()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect();
-            percent = num_str.parse().unwrap_or(0);
-
-            charging = line.contains("charging")
-                && !line.contains("discharging")
-                && !line.contains("not charging");
-            let discharging = line.contains("discharging");
-
-            if line.contains("(no estimate)") {
-                status = "calculating".into();
-                time_remaining_secs = None;
-            } else if line.contains("charged") {
-                status = "charged".into();
-                time_remaining_secs = None;
-            } else if line.contains("remaining") {
-                if let Some(rem_pos) = line.find("remaining") {
-                    let before_rem = line[..rem_pos].trim();
-                    if let Some(time_str) = before_rem.rsplit(';').next() {
-                        let time_str = time_str.trim();
-                        if let Some((h, m)) = time_str.split_once(':')
-                            && let (Ok(hours), Ok(mins)) =
-                                (h.trim().parse::<i64>(), m.trim().parse::<i64>())
-                        {
-                            time_remaining_secs = Some(hours * 3600 + mins * 60);
-                        }
-                    }
-                }
-                status = if charging {
-                    "charging".into()
-                } else {
-                    "discharging".into()
-                };
-            } else if charging {
-                status = "charging".into();
-            } else if discharging {
-                status = "discharging".into();
-            }
-        }
-    }
-
-    if !found {
-        return SourceResult::new();
-    }
-
-    let mut result = SourceResult::new();
-    result.insert("percent", Value::Int(percent));
-    result.insert("charging", Value::Bool(charging));
-    if let Some(secs) = time_remaining_secs {
-        result.insert("time_remaining_secs", Value::Int(secs));
-    }
-    result.insert("status", Value::String(status));
-    result
-}
-
-/// Expose the pmset parser for integration tests.
-#[cfg(target_os = "macos")]
-pub fn parse_pmset_output(output: &str) -> Option<crate::provider::ProviderResult> {
-    use crate::provider::ProviderResult;
-    let sr = parse_pmset_output_to_source(output);
-    if sr.fields.is_empty() {
-        return None;
-    }
-    let mut result = ProviderResult::new();
-    for (k, v) in sr.fields {
-        result.insert(k, v);
-    }
-    Some(result)
 }
 
 // ── Linux: sysfs + UPower — two sources ──────────────────────────────────────
@@ -253,7 +167,7 @@ impl Source for BatteryLevel {
     }
 
     fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
-        let Some(battery_dir) = find_battery_dir() else {
+        let Some(battery_dir) = crate::plugin::sys::find_battery_dir() else {
             return Ok(SourceResult::new());
         };
         let capacity_str = std::fs::read_to_string(battery_dir.join("capacity"))
@@ -303,7 +217,7 @@ impl Source for BatteryUpower {
 
     fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         // Need the sysfs status to compute the human-readable status.
-        let sysfs_status = find_battery_dir()
+        let sysfs_status = crate::plugin::sys::find_battery_dir()
             .and_then(|d| std::fs::read_to_string(d.join("status")).ok())
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
@@ -337,21 +251,6 @@ impl Source for BatteryUpower {
         result.insert("status", Value::String(status));
         Ok(result)
     }
-}
-
-#[cfg(target_os = "linux")]
-fn find_battery_dir() -> Option<std::path::PathBuf> {
-    let power_supply = std::path::Path::new("/sys/class/power_supply");
-    for entry in std::fs::read_dir(power_supply).ok()? {
-        let entry = entry.ok()?;
-        let type_path = entry.path().join("type");
-        if let Ok(contents) = std::fs::read_to_string(&type_path)
-            && contents.trim() == "Battery"
-        {
-            return Some(entry.path());
-        }
-    }
-    None
 }
 
 #[cfg(target_os = "linux")]
@@ -425,40 +324,4 @@ pub fn battery_state_source_with_executor(executor: Arc<dyn ProcessExecutor>) ->
 #[cfg(all(target_os = "linux", any(test, feature = "test-helpers")))]
 pub fn battery_upower_source_with_executor(executor: Arc<dyn ProcessExecutor>) -> Box<dyn Source> {
     Box::new(BatteryUpower::with_executor(executor))
-}
-
-// `parse_pmset_output` is the macOS pmset parser. These tests exercise it
-// directly, so the whole module is macOS-only; on Linux it compiles to
-// nothing (Linux battery parsing is covered by the seam tests).
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use super::parse_pmset_output;
-    use crate::provider::Value;
-
-    #[test]
-    fn pmset_charging_with_estimate() {
-        let sample =
-            " -InternalBattery-0 (id=1234567)\t85%; charging; 1:23 remaining present: true\n";
-        let r = parse_pmset_output(sample).expect("parses");
-        assert_eq!(r.get("percent").unwrap(), &Value::Int(85));
-        assert_eq!(r.get("charging").unwrap(), &Value::Bool(true));
-        assert_eq!(r.get("time_remaining_secs").unwrap(), &Value::Int(4980)); // 1*3600 + 23*60
-        assert_eq!(r.get("status").unwrap().as_text(), "charging");
-    }
-
-    #[test]
-    fn pmset_discharging_no_estimate() {
-        let sample = " -InternalBattery-0\t72%; discharging; (no estimate) present: true\n";
-        let r = parse_pmset_output(sample).expect("parses");
-        assert_eq!(r.get("percent").unwrap(), &Value::Int(72));
-        assert!(r.get("time_remaining_secs").is_none());
-        assert_eq!(r.get("status").unwrap().as_text(), "calculating");
-    }
-
-    #[test]
-    fn pmset_charged_state() {
-        let sample = " -InternalBattery-0\t100%; charged; 0:00 remaining present: true\n";
-        let r = parse_pmset_output(sample).expect("parses");
-        assert_eq!(r.get("status").unwrap().as_text(), "charged");
-    }
 }

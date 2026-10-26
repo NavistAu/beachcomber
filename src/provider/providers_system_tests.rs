@@ -93,18 +93,4 @@ mod uptime_tests {
         assert!(fields.contains(&"hours"));
         assert!(fields.contains(&"minutes"));
     }
-
-    #[test]
-    fn uptime_provider_executes() {
-        let p = UptimeProvider;
-        let sources = p.sources();
-        let result = sources[0].execute(None).unwrap();
-        // sysctl may be unavailable in sandboxed environments; if data returned, validate it.
-        if !result.fields.is_empty() {
-            assert!(
-                result.fields.contains_key("seconds"),
-                "seconds field should be present"
-            );
-        }
-    }
 }

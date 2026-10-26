@@ -9,6 +9,8 @@
 //!   file report one loaded image
 //! - `load_nonexistent_path` — loading a path with no library fails
 //!   gracefully
+//! - `sys_and_a_cdylib_share_one_call_path` — the compiled-in `sys` and the
+//!   cdylib answer, and fail, through the one call path
 
 use crate::common::fixture::ensure_fixture_built;
 use beachcomber::boundaries::library::{LibloadingLoader, LibraryLoader};
@@ -105,4 +107,44 @@ fn one_file_is_one_image_whatever_the_name() {
     assert_eq!(la.identity(), lf.identity());
     // A copy is another file, so another image.
     assert_ne!(lc.identity(), lf.identity());
+}
+
+/// `sys` and a real cdylib are called down one path: through one plugin set,
+/// the fixture's `bc_sum` (found by `dlsym`) and `sys`'s `loadavg` (found in
+/// the compiled-in table) both answer, and a `NULL` from either reads the
+/// same, the one message `call_symbol` gives.
+#[test]
+fn sys_and_a_cdylib_share_one_call_path() {
+    use beachcomber::engine::{PluginSet, daemon_engine_env};
+    use libbeachcomber::engine::EngineCtx;
+    use std::sync::Arc;
+
+    let path = ensure_fixture_built();
+    let plugins = Arc::new(PluginSet::new(vec![], Arc::new(LibloadingLoader)));
+    let env = daemon_engine_env(Arc::new(EngineCtx::default()), plugins);
+    let p = path.to_string_lossy();
+    let render = |t: &str| env.render_str(t, ()).map_err(|e| e.to_string());
+    assert_eq!(
+        render(&format!("{{{{ plugin('{p}', 'bc_sum', 1, 2) }}}}")).unwrap(),
+        "3"
+    );
+    assert_eq!(
+        render("{{ plugin('sys', 'loadavg') | length }}").unwrap(),
+        "3"
+    );
+    let cdylib = render(&format!(
+        "{{{{ plugin('{p}', 'bc_plugin_returns_null') }}}}"
+    ))
+    .unwrap_err();
+    let sys = render("{{ plugin('sys', 'loadavg', 1) }}").unwrap_err();
+    assert!(
+        cdylib.contains(&format!(
+            "plugin(): bc_plugin_returns_null in {p}: returned NULL"
+        )),
+        "{cdylib}"
+    );
+    assert!(
+        sys.contains("plugin(): loadavg in sys: returned NULL"),
+        "{sys}"
+    );
 }

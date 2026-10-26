@@ -18,7 +18,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// The plugin libraries a daemon can call, found on a search path and loaded
-/// once per resolved path for the daemon's life.
+/// once per resolved path for the daemon's life, and the one compiled in,
+/// [`crate::plugin::sys`], answered by name before any search.
 ///
 /// # The plugin author's contract
 ///
@@ -47,12 +48,30 @@ struct PluginState {
 }
 
 impl PluginSet {
+    /// Libraries found on `search` and loaded by `loader`, and `sys`: the
+    /// name `sys` is the compiled-in plugin's, and is never looked for on the
+    /// path.
     pub fn new(search: Vec<PathBuf>, loader: Arc<dyn LibraryLoader>) -> Self {
+        let sys: Arc<dyn LoadedLibrary> = Arc::new(crate::plugin::StaticLibrary::sys());
+        let state = PluginState {
+            by_name: HashMap::from([(crate::plugin::SYS.to_string(), sys)]),
+            by_image: HashMap::new(),
+        };
         Self {
             search,
-            state: Mutex::new(PluginState::default()),
+            state: Mutex::new(state),
             loader,
         }
+    }
+
+    /// A `libsys.<dylib|so>` on the search path, which nothing loads: the
+    /// name is the compiled-in plugin's.
+    pub fn shadowed_sys(&self) -> Option<PathBuf> {
+        let file = format!("lib{}.{LIBRARY_EXT}", crate::plugin::SYS);
+        self.search
+            .iter()
+            .map(|dir| dir.join(&file))
+            .find(|candidate| candidate.is_file())
     }
 
     /// Call `symbol` in the library `name` with `args` (a JSON array). A
@@ -916,6 +935,46 @@ mod tests {
             .call("moved", "bc_x", &serde_json::json!([]))
             .unwrap();
         assert_eq!(loads_of(&loads), 1);
+    }
+
+    /// `sys` is answered from the compiled-in table: a `libsys` on the search
+    /// path is never looked at, and the loader (which would panic on a call
+    /// it was not told to expect) is never asked.
+    #[test]
+    fn sys_is_answered_from_the_table_before_the_search_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let shadow = dir.path().join(format!("libsys.{EXT}"));
+        std::fs::write(&shadow, b"").unwrap();
+        let plugins = PluginSet::new(
+            vec![dir.path().to_path_buf()],
+            Arc::new(MockLibraryLoader::new()),
+        );
+        assert_eq!(plugins.shadowed_sys(), Some(shadow));
+        let out = render(plugins, "{{ plugin('sys', 'loadavg') | length }}").unwrap();
+        assert_eq!(out, "3");
+        assert_eq!(no_plugins().shadowed_sys(), None);
+    }
+
+    #[test]
+    fn an_unknown_sys_symbol_is_symbol_not_found() {
+        let err = render(no_plugins(), "{{ plugin('sys', 'nope') }}").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("plugin(): nope in sys: symbol not found"),
+            "{err}"
+        );
+    }
+
+    /// A reload's set takes over the libraries the last one loaded, and has
+    /// `sys` all the same.
+    #[test]
+    fn sys_survives_adopting_a_previous_set() {
+        let (first, second) = (no_plugins(), no_plugins());
+        second.adopt_loaded(&first);
+        assert_eq!(
+            render(second, "{{ plugin('sys', 'uname').sysname is string }}").unwrap(),
+            "true"
+        );
     }
 
     #[test]

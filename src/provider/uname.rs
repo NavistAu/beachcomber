@@ -65,7 +65,7 @@ impl Source for UnameSystem {
     }
 
     fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
-        let Some(info) = uname_info() else {
+        let Some(info) = crate::plugin::sys::uname() else {
             return Err("uname failed".into());
         };
         let mut result = SourceResult::new();
@@ -74,34 +74,6 @@ impl Source for UnameSystem {
         result.insert("version", Value::String(info.version));
         result.insert("machine", Value::String(info.machine));
         Ok(result)
-    }
-}
-
-struct UnameInfo {
-    sysname: String,
-    release: String,
-    version: String,
-    machine: String,
-}
-
-fn cstr_to_string(buf: &[libc::c_char]) -> String {
-    let nul_pos = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    let bytes: Vec<u8> = buf[..nul_pos].iter().map(|&c| c as u8).collect();
-    String::from_utf8_lossy(&bytes).to_string()
-}
-
-fn uname_info() -> Option<UnameInfo> {
-    unsafe {
-        let mut buf: libc::utsname = std::mem::zeroed();
-        if libc::uname(&mut buf) != 0 {
-            return None;
-        }
-        Some(UnameInfo {
-            sysname: cstr_to_string(&buf.sysname),
-            release: cstr_to_string(&buf.release),
-            version: cstr_to_string(&buf.version),
-            machine: cstr_to_string(&buf.machine),
-        })
     }
 }
 

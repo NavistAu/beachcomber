@@ -61,11 +61,7 @@ impl Source for LoadAvg {
     }
 
     fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
-        let mut loadavg: [f64; 3] = [0.0; 3];
-        let ret = unsafe { libc::getloadavg(loadavg.as_mut_ptr(), 3) };
-        if ret < 0 {
-            return Err("getloadavg failed".into());
-        }
+        let loadavg = crate::plugin::sys::loadavg().ok_or("getloadavg failed")?;
         let mut result = SourceResult::new();
         result.insert("one", Value::Float(loadavg[0]));
         result.insert("five", Value::Float(loadavg[1]));

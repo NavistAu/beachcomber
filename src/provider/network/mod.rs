@@ -1,13 +1,11 @@
+use crate::plugin::sys;
 use crate::provider::{
     FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, Value,
+    Source, SourceMetadata, SourceResult,
 };
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[cfg(target_os = "linux")]
 pub mod linux;
-#[cfg(target_os = "macos")]
-pub mod macos;
 #[cfg(test)]
 mod network_tests;
 
@@ -84,141 +82,14 @@ impl Source for NetworkInterfaces {
         M.get_or_init(interfaces_source_metadata)
     }
 
+    /// `sys`'s scan and SSID; the preferred interface on Linux is still the
+    /// one `ip route` names, as it has been.
     fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
-        Ok(interfaces_result(scan_interfaces(), get_wifi_ssid()))
+        #[cfg(target_os = "linux")]
+        let preferred = linux::is_preferred_interface;
+        #[cfg(target_os = "macos")]
+        let preferred = sys::preferred_interface();
+        let facts = sys::network_of(sys::scan_interfaces(&preferred), sys::wifi_ssid());
+        Ok(SourceResult::from_json_object(&facts))
     }
-}
-
-/// What one interface scan found. An empty string is "none found".
-#[derive(Default)]
-pub(crate) struct Scan {
-    pub iface: String,
-    pub ip: String,
-    pub ipv6: String,
-    pub vpn_active: bool,
-    pub vpn_name: String,
-}
-
-/// The fields a scan and an SSID make. What the machine has no value for — an
-/// interface, an address, a VPN, a Wi-Fi network — is absent, never `""`;
-/// `online` and `vpn_active` are always values.
-pub(crate) fn interfaces_result(scan: Scan, ssid: String) -> SourceResult {
-    // LIMITATION: online heuristic is IP-presence based (no reachability check).
-    // A future improvement could probe a known host; out of S6 scope.
-    let online = !scan.ip.is_empty() || !scan.ipv6.is_empty();
-
-    let mut result = SourceResult::new();
-    for (field, text) in [
-        ("interface", scan.iface),
-        ("ip", scan.ip),
-        ("ipv6", scan.ipv6),
-        ("vpn_name", scan.vpn_name),
-        ("ssid", ssid),
-    ] {
-        if !text.is_empty() {
-            result.insert(field, Value::String(text));
-        }
-    }
-    result.insert("online", Value::Bool(online));
-    result.insert("vpn_active", Value::Bool(scan.vpn_active));
-    result
-}
-
-fn scan_interfaces() -> Scan {
-    let mut ifaddrs: *mut libc::ifaddrs = std::ptr::null_mut();
-    if unsafe { libc::getifaddrs(&mut ifaddrs) } != 0 {
-        return Scan::default();
-    }
-
-    let mut best_iface = String::new();
-    let mut best_ip = String::new();
-    let mut best_ipv6 = String::new();
-    let mut vpn_active = false;
-    let mut vpn_name = String::new();
-
-    let mut curr = ifaddrs;
-    while !curr.is_null() {
-        let entry = unsafe { &*curr };
-        let name = unsafe { std::ffi::CStr::from_ptr(entry.ifa_name) }
-            .to_string_lossy()
-            .to_string();
-        let flags = entry.ifa_flags;
-
-        let is_up = flags & (libc::IFF_UP as u32) != 0;
-        let is_loopback = flags & (libc::IFF_LOOPBACK as u32) != 0;
-
-        if is_up && !is_loopback {
-            if is_vpn_interface(&name) && !vpn_active {
-                vpn_active = true;
-                vpn_name = name.clone();
-            }
-
-            if !entry.ifa_addr.is_null() {
-                let family = unsafe { (*entry.ifa_addr).sa_family } as i32;
-                if family == libc::AF_INET {
-                    let addr = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in) };
-                    let ip = Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
-                    if !ip.is_loopback()
-                        && !ip.is_link_local()
-                        && (best_iface.is_empty() || is_preferred_interface(&name))
-                    {
-                        best_iface = name.clone();
-                        best_ip = ip.to_string();
-                    }
-                } else if family == libc::AF_INET6 && best_ipv6.is_empty() {
-                    let addr = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_in6) };
-                    let ipv6 = Ipv6Addr::from(addr.sin6_addr.s6_addr);
-                    // Skip link-local (fe80::/10) addresses.
-                    if !ipv6.is_loopback() && !is_link_local_ipv6(&ipv6) {
-                        best_ipv6 = ipv6.to_string();
-                    }
-                }
-            }
-        }
-
-        curr = entry.ifa_next;
-    }
-
-    unsafe { libc::freeifaddrs(ifaddrs) };
-
-    Scan {
-        iface: best_iface,
-        ip: best_ip,
-        ipv6: best_ipv6,
-        vpn_active,
-        vpn_name,
-    }
-}
-
-/// Check if an IPv6 address is link-local (fe80::/10).
-fn is_link_local_ipv6(addr: &Ipv6Addr) -> bool {
-    let segments = addr.segments();
-    (segments[0] & 0xffc0) == 0xfe80
-}
-
-#[cfg(target_os = "macos")]
-fn is_vpn_interface(name: &str) -> bool {
-    macos::is_vpn_interface(name)
-}
-#[cfg(target_os = "linux")]
-fn is_vpn_interface(name: &str) -> bool {
-    linux::is_vpn_interface(name)
-}
-
-#[cfg(target_os = "macos")]
-fn is_preferred_interface(name: &str) -> bool {
-    macos::is_preferred_interface(name)
-}
-#[cfg(target_os = "linux")]
-fn is_preferred_interface(name: &str) -> bool {
-    linux::is_preferred_interface(name)
-}
-
-#[cfg(target_os = "macos")]
-fn get_wifi_ssid() -> String {
-    macos::get_wifi_ssid()
-}
-#[cfg(target_os = "linux")]
-fn get_wifi_ssid() -> String {
-    linux::get_wifi_ssid()
 }

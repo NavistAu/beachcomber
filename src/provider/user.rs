@@ -58,73 +58,12 @@ impl Source for UserName {
 
     fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
         let uid = unsafe { libc::getuid() } as i64;
-        let name = get_username(uid as u32);
+        let name = crate::plugin::sys::username(uid as u32).unwrap_or_else(|| uid.to_string());
         let mut result = SourceResult::new();
         if !name.is_empty() {
             result.insert("name", Value::String(name));
         }
         result.insert("uid", Value::Int(uid));
         Ok(result)
-    }
-}
-
-fn get_username(uid: u32) -> String {
-    // getpwuid is not thread-safe (global static buffer). Use getpwuid_r with a
-    // caller-supplied buffer. Buffer size 1024 is sufficient for most systems;
-    // retry loop doubles on ERANGE (POSIX-compliant).
-    // std::mem::zeroed() is used for the passwd struct — the struct layout differs
-    // between macOS (has pw_change, pw_class, pw_expire) and Linux, so a struct
-    // literal would require #[cfg] guards. zeroed() is portable; getpwuid_r fills
-    // the fields it uses.
-    //
-    // Buffer element type must be `libc::c_char` (not a hardcoded `i8`): C `char`
-    // is signed (`i8`) on x86_64/macOS but unsigned (`u8`) on aarch64-linux, and
-    // `getpwuid_r`'s buffer parameter is `*mut c_char`. Hardcoding `i8` fails to
-    // compile on aarch64-linux (`expected *mut u8, found *mut i8`).
-    let mut buf = vec![0 as libc::c_char; 1024];
-    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
-    let mut result: *mut libc::passwd = std::ptr::null_mut();
-
-    loop {
-        let ret =
-            unsafe { libc::getpwuid_r(uid, &mut pwd, buf.as_mut_ptr(), buf.len(), &mut result) };
-        if ret == libc::ERANGE {
-            // Buffer too small; double and retry.
-            let new_len = buf.len() * 2;
-            buf.resize(new_len, 0);
-            continue;
-        }
-        break;
-    }
-
-    if result.is_null() {
-        return format!("{uid}");
-    }
-    let name = unsafe { std::ffi::CStr::from_ptr(pwd.pw_name) };
-    name.to_string_lossy().to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::get_username;
-
-    #[test]
-    fn get_username_concurrent_no_panic() {
-        // Call get_username from 8 threads simultaneously.
-        // With getpwuid this would race on the global buffer; with getpwuid_r each
-        // thread has its own buffer so this is safe.
-        let uid = unsafe { libc::getuid() };
-        let handles: Vec<_> = (0..8)
-            .map(|_| std::thread::spawn(move || get_username(uid)))
-            .collect();
-        let results: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-        // All results must be identical (same uid → same name).
-        let first = &results[0];
-        for r in &results {
-            assert_eq!(
-                r, first,
-                "concurrent get_username returned different values"
-            );
-        }
     }
 }

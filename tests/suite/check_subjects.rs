@@ -970,6 +970,56 @@ fn check_config_sees_the_env_files_variables() {
     );
 }
 
+/// `sys` is the compiled-in plugin's name: a `libsys` on `[daemon.plugin]
+/// path` is never loaded, and `comb check config` warns of it, naming it.
+#[test]
+fn a_libsys_on_the_plugin_path_is_a_warning() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg_dir = tmp.path().join("beachcomber");
+    let plugins = tmp.path().join("plugins");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::create_dir_all(&plugins).unwrap();
+    let ext = if cfg!(target_os = "macos") {
+        "dylib"
+    } else {
+        "so"
+    };
+    let shadow = plugins.join(format!("libsys.{ext}"));
+    std::fs::write(&shadow, b"").unwrap();
+    std::fs::write(
+        cfg_dir.join("config.toml"),
+        format!(
+            "[daemon.plugin]\npath = [\"{}\"]\n\n\
+             [daemon.providers.box.sources.host]\n\
+             data = \"{{{{ plugin('sys', 'hostname') }}}}\"\n\
+             result = \"{{{{ data }}}}\"\n",
+            plugins.display()
+        ),
+    )
+    .unwrap();
+
+    let output = isolate(
+        &mut std::process::Command::new(comb_binary()),
+        tmp.path(),
+        tmp.path(),
+        &tmp.path().join("no-daemon.sock"),
+    )
+    .args(["check", "--connect-timeout", "0", "config"])
+    .output()
+    .expect("run comb check config");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("[WARN] local")
+            && stdout.contains(&format!(
+                "[daemon.plugin] path: {} is shadowed by the built-in sys plugin",
+                shadow.display()
+            ))
+            && !stdout.contains("[FAIL] local"),
+        "expected a local WARN naming the shadowed library, got:\n{stdout}"
+    );
+}
+
 /// A client template reading a name no provider has is a warning in
 /// `comb check config`, not a failure: a `put` may yet make the provider.
 #[test]

@@ -1,6 +1,7 @@
 use crate::provider::network::NetworkProvider;
 use crate::provider::{InvalidationStrategy, Provider};
-// Tests for network provider wrong-value bugs (S6 scope).
+// The scan, the SSID parsers and the interface rules are `sys`'s, tested there
+// (`src/plugin/sys/`).
 
 #[test]
 fn network_provider_metadata() {
@@ -34,106 +35,6 @@ fn network_provider_executes() {
     assert!(online == "true" || online == "false");
 }
 
-#[cfg(target_os = "linux")]
-mod linux_parse_tests {
-    use crate::provider::network::linux;
-
-    #[test]
-    fn parse_nmcli_active_network() {
-        let output = "yes:HomeWifi\nno:NeighborWifi\n";
-        assert_eq!(
-            linux::parse_nmcli_output(output),
-            Some("HomeWifi".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_nmcli_no_active() {
-        let output = "no:SomeNetwork\nno:OtherNetwork\n";
-        assert_eq!(linux::parse_nmcli_output(output), None);
-    }
-
-    #[test]
-    fn parse_nmcli_empty() {
-        assert_eq!(linux::parse_nmcli_output(""), None);
-    }
-
-    #[test]
-    fn parse_default_route() {
-        let output = "default via 192.168.1.1 dev enp0s3 proto dhcp metric 100\n";
-        assert_eq!(
-            linux::parse_default_route(output),
-            Some("enp0s3".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_default_route_no_dev() {
-        assert_eq!(linux::parse_default_route(""), None);
-    }
-
-    #[test]
-    fn parse_iw_dev_interface() {
-        let output = "phy#0\n\tInterface wlan0\n\t\ttype managed\n";
-        assert_eq!(
-            linux::parse_iw_dev_interface(output),
-            Some("wlan0".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_iw_info_ssid() {
-        let output = "\tssid MyNetwork\n\ttype managed\n";
-        assert_eq!(
-            linux::parse_iw_info_ssid(output),
-            Some("MyNetwork".to_string())
-        );
-    }
-
-    #[test]
-    fn vpn_detection() {
-        assert!(linux::is_vpn_interface("tun0"));
-        assert!(linux::is_vpn_interface("tap0"));
-        assert!(linux::is_vpn_interface("wg0"));
-        assert!(!linux::is_vpn_interface("eth0"));
-        assert!(!linux::is_vpn_interface("enp0s3"));
-    }
-
-    #[test]
-    fn preferred_interface_prefix_matching() {
-        assert!(linux::is_preferred_interface_by_prefix("eth0"));
-        assert!(linux::is_preferred_interface_by_prefix("ens3"));
-        assert!(linux::is_preferred_interface_by_prefix("enp0s3"));
-        assert!(!linux::is_preferred_interface_by_prefix("wlan0"));
-    }
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn tailscale_interface_detected_as_vpn() {
-    use crate::provider::network::linux::is_vpn_interface;
-    assert!(
-        is_vpn_interface("tailscale0"),
-        "tailscale0 must be classified as a VPN interface"
-    );
-    assert!(!is_vpn_interface("eth0"), "eth0 is not a VPN interface");
-}
-
-#[test]
-#[cfg(target_os = "macos")]
-fn macos_en1_is_valid_preferred_interface() {
-    use crate::provider::network::macos::is_preferred_interface;
-    // en1 should also be a candidate (not locked to en0 only).
-    assert!(
-        is_preferred_interface("en1"),
-        "en1 must be a preferred interface candidate"
-    );
-    assert!(
-        !is_preferred_interface("utun3"),
-        "utun3 (VPN) is not a preferred interface"
-    );
-}
-
 // IPv6 test: check the field schema declares ipv6.
 #[test]
 fn network_provider_metadata_includes_ipv6_field() {
@@ -150,35 +51,21 @@ fn network_provider_metadata_includes_ipv6_field() {
     );
 }
 
-/// What the machine does not have — an interface, an address, a VPN, a Wi-Fi
-/// network — is absent, never `""`. The two flags are always values.
-#[test]
-fn network_fields_it_has_no_value_for_are_absent() {
-    use crate::provider::Value;
-    use crate::provider::network::Scan;
-    let offline = super::interfaces_result(Scan::default(), String::new());
-    assert_eq!(offline.fields.len(), 2, "{:?}", offline.fields);
-    assert_eq!(offline.fields.get("online"), Some(&Value::Bool(false)));
-    assert_eq!(offline.fields.get("vpn_active"), Some(&Value::Bool(false)));
+#[cfg(target_os = "linux")]
+mod linux_parse_tests {
+    use crate::provider::network::linux;
 
-    let wired = super::interfaces_result(
-        Scan {
-            iface: "en0".into(),
-            ip: "10.0.0.2".into(),
-            ..Scan::default()
-        },
-        String::new(),
-    );
-    assert_eq!(
-        wired.fields.get("ip"),
-        Some(&Value::String("10.0.0.2".into()))
-    );
-    assert_eq!(wired.fields.get("online"), Some(&Value::Bool(true)));
-    for absent in ["ipv6", "vpn_name", "ssid"] {
-        assert!(
-            !wired.fields.contains_key(absent),
-            "{absent}: {:?}",
-            wired.fields
+    #[test]
+    fn parse_default_route() {
+        let output = "default via 192.168.1.1 dev enp0s3 proto dhcp metric 100\n";
+        assert_eq!(
+            linux::parse_default_route(output),
+            Some("enp0s3".to_string())
         );
+    }
+
+    #[test]
+    fn parse_default_route_no_dev() {
+        assert_eq!(linux::parse_default_route(""), None);
     }
 }
