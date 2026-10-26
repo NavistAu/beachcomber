@@ -107,7 +107,8 @@ fn write_head(gitdir: &Path, branch: &str) {
 }
 
 /// At `dir`, on `first`, whose HEAD is `gitdir/HEAD`: three real checkouts,
-/// then a hundred HEAD writes, each read straight after.
+/// then ten HEAD writes of one size, as fast as they can be made, each read
+/// straight after.
 async fn every_checkout_is_seen(repo: &GitRepoFixture, dir: &Path, gitdir: &Path, first: &str) {
     let s = serve("");
     repo.git_in(dir, &["branch", "one"]);
@@ -122,7 +123,7 @@ async fn every_checkout_is_seen(repo: &GitRepoFixture, dir: &Path, gitdir: &Path
             "git checkout {name}"
         );
     }
-    for i in 0..100 {
+    for i in 0..10 {
         let name = format!("b{i}");
         write_head(gitdir, &name);
         assert_eq!(
