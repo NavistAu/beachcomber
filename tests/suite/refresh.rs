@@ -4,10 +4,9 @@
 //! Most servers here are built without a scheduler, so a refresh runs inline on
 //! the connection task and the response is written only once the Sources have
 //! run. That is what lets those cases advance the clock by a known amount and
-//! assert exact ages. The scheduler-backed case at the bottom cannot: it runs
-//! the refresh in the background on a multi-threaded runtime, so it lets the
-//! records age in real time and waits for the age of `git.commit` to fall back below
-//! what it was.
+//! assert exact ages. The scheduler-backed case at the bottom runs the refresh
+//! in the background, so it waits for the age of `git.commit` to fall back
+//! below what the advanced clock made it.
 //!
 //! `git` is the fixture because it is the one built-in with several Sources
 //! over one namespace. The fields under test are `commit` (source `refs`) and
@@ -84,7 +83,8 @@ async fn age(stream: &mut UnixStream, key: &str, path: &str) -> u64 {
 /// what the "re-executed" assertions below lean on: a re-executed record's
 /// age is the real time between its write and the next `:cache` read, and
 /// under a loaded suite that gap can pass 100 ms. Ten seconds is below every
-/// git source's poll interval, so nothing turns stale.
+/// git source's poll interval, so nothing turns stale, and a scheduler on the
+/// same clock polls nothing.
 async fn advance_10s() {
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(10)).await;
@@ -251,12 +251,11 @@ async fn a_global_refresh_without_a_home_repository_has_nothing_to_refresh() {
     handle.abort();
 }
 
-/// The scheduler runs a refresh in the background, and this runtime is
-/// multi-threaded, so the clock cannot be advanced under it. Both records are
-/// left to age in real time instead — nothing writes to the repository while we
-/// wait, so no file watch can refresh either source behind our back — and a
-/// re-executed record is then the one whose age has fallen back to nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+/// The scheduler runs a refresh in the background: both records are aged by
+/// the clock — nothing writes to the repository meanwhile, so no file watch
+/// can refresh either source behind our back — and a re-executed record is
+/// then the one whose age has fallen back below that.
+#[tokio::test]
 async fn a_scheduler_backed_refresh_runs_the_demanded_source_alone() {
     // SAFETY: nextest gives every test its own process, so no other thread is
     // reading the environment concurrently. A real scheduler runs behind this
@@ -279,17 +278,14 @@ async fn a_scheduler_backed_refresh_runs_the_demanded_source_alone() {
 
     warm(&mut s, "git.lines_added", path).await;
     warm(&mut s, "git.commit", path).await;
+    advance_10s().await;
 
-    let refs_before = poll_until_async(
-        "git:cache.commit age_ms",
-        "at least 50ms",
-        Duration::from_secs(5),
-        Duration::from_millis(5),
-        async || age(&mut s, "git.commit", path).await,
-        |a| *a >= 50,
-    )
-    .await;
+    let refs_before = age(&mut s, "git.commit", path).await;
     let diff_before = age(&mut s, "git.lines_added", path).await;
+    assert!(
+        refs_before >= 10_000 && diff_before >= 10_000,
+        "both records should carry the advanced clock, got refs={refs_before} diff={diff_before}"
+    );
 
     let resp = send_recv(&mut s, &refresh("git.commit", path)).await;
     assert!(resp.ok, "refresh git.commit: {:?}", resp.error);
