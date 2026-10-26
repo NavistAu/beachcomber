@@ -25,6 +25,9 @@
 //!     the leaf read at once. The first read after the rewrite is counted right
 //!     when it answers the new content, and costs what a hit and a spawn cost
 //!     plus the difference reported.
+//!   * `exit_after_output` (printed, not criterion) - T5.6: `comb get` of that
+//!     leaf as a child process, on a miss and on a hit: the time from the first
+//!     byte of its output to its exit.
 //!
 //! Budget B is NOT benched here - it is the prompt's read round-trip: ~5 ms via
 //! the `comb` CLI (process spawn + socket), ~0.3 ms via an in-process SDK client
@@ -502,8 +505,8 @@ struct MemoFixture {
     cancel: tokio_util::sync::CancellationToken,
     task: Option<tokio::task::JoinHandle<()>>,
     sock: PathBuf,
-    /// The configuration and the socket live here.
-    _conf: TempDir,
+    /// The `comb` child's `HOME`, `XDG_CONFIG_HOME` and the socket live here.
+    conf: TempDir,
     /// The file the leaves `cat`, and the memo watches.
     file: PathBuf,
     _kube: TempDir,
@@ -546,7 +549,7 @@ impl MemoFixture {
             cancel,
             task: Some(task),
             sock,
-            _conf: conf,
+            conf,
             file,
             _kube: kube,
         }
@@ -563,6 +566,24 @@ impl MemoFixture {
 
     fn rewrite(&self, content: &str) {
         std::fs::write(&self.file, content).unwrap();
+    }
+
+    /// `comb get <key>` as a child with nothing of the owner's: its own `HOME`,
+    /// `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and socket.
+    fn comb(&self, key: &str) -> std::process::Child {
+        let root = self.conf.path();
+        Command::new(env!("CARGO_BIN_EXE_comb"))
+            .args(["get", key])
+            .env_clear()
+            .env("HOME", root)
+            .env("XDG_CONFIG_HOME", root.join("xdg"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("BEACHCOMBER_SOCKET", &self.sock)
+            .env("PATH", "/usr/bin:/bin")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("run comb")
     }
 }
 
@@ -618,6 +639,48 @@ fn memo_after_rewrite() {
         median(spawns),
         median(misses),
         median(over)
+    );
+}
+
+/// T5.6: `comb get` as a process, from the first byte of its output to its
+/// exit, on a miss (the file rewritten first) and on a hit.
+fn exit_after_output() {
+    let fx = MemoFixture::start();
+    let client = fx.client();
+    client.get("p.cached", None).expect("the leaf renders");
+    let gap = |miss: bool, i: usize| -> f64 {
+        if miss {
+            fx.rewrite(&format!("c{i}"));
+        }
+        let mut child = fx.comb("p.cached");
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        // The output has no newline: the first read returns with its bytes.
+        let first = out.fill_buf().unwrap().len();
+        assert!(first > 0, "comb printed nothing");
+        let wrote = Instant::now();
+        child.wait().unwrap();
+        wrote.elapsed().as_secs_f64() * 1000.0
+    };
+    // One of each first, for the process cache and the daemon's memo.
+    gap(true, 0);
+    gap(false, 0);
+    let (mut misses, mut hits) = (vec![], vec![]);
+    for i in 1..=MEMO_TRIALS {
+        misses.push(gap(true, i));
+        hits.push(gap(false, i));
+    }
+    let p90 = |v: &[f64]| {
+        let mut v = v.to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[((v.len() - 1) as f64 * 0.9).round() as usize]
+    };
+    println!("exit_after_output: `comb get` first byte of output to exit, {MEMO_TRIALS} runs each");
+    println!(
+        "  miss: p50 {:.3}ms p90 {:.3}ms; hit: p50 {:.3}ms p90 {:.3}ms",
+        median(misses.clone()),
+        p90(&misses),
+        median(hits.clone()),
+        p90(&hits)
     );
 }
 
@@ -680,5 +743,8 @@ fn main() {
     }
     if runs("memo_after_rewrite") {
         memo_after_rewrite();
+    }
+    if runs("exit_after_output") {
+        exit_after_output();
     }
 }
