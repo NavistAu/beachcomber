@@ -10,7 +10,7 @@
 //!
 //! The items live in modules by what they work on: [`style`] (colour, text),
 //! [`number`] (numbers shown), [`data`] (objects and lists), [`path`] (path text), [`fs`] (files) and
-//! [`parse`] (text to data), [`memo`] (a leaf's memo). `exec` is bound to a
+//! [`parse`] (text to data), [`icons`] (Nerd Fonts glyphs), [`memo`] (a leaf's memo). `exec` is bound to a
 //! render's process rules and lives in [`crate::engine`]; `url` and `plugin`
 //! live in the daemon.
 
@@ -19,6 +19,7 @@ pub mod bar;
 pub mod data;
 pub mod fs;
 pub mod hash;
+pub mod icons;
 pub mod measure;
 pub mod memo;
 pub mod number;
@@ -134,6 +135,8 @@ pub const ITEMS: &[Item] = &[
     item!("underline", Filter, Pure, style::add_underline),
     item!("invert", Filter, Pure, style::add_invert),
     item!("hyperlink", Function, Pure, style::add_hyperlink),
+    item!("icon", Function, Pure, icons::add_icon),
+    item!("file_icon", Function, Pure, icons::add_file_icon),
     item!("bar", Function, Pure, bar::add_bar),
     item!("expanduser", Filter, Pure, path::add_expanduser),
     item!("ext", Filter, Pure, path::add_ext),
@@ -469,6 +472,7 @@ mod tests {
             ("b64encode", "[1] | b64encode"),
             ("b64decode", "'!' | b64decode"),
             ("spark", "spark(5)"),
+            ("icon", "icon('nope')"),
             ("ramp", "1 | ramp([2, 1], [1, 2, 3])"),
             ("pct", "'x' | pct"),
             ("compact", "'x' | compact"),

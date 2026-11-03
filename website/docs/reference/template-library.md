@@ -135,6 +135,8 @@ pattern is an error, found before the subject is looked at.
 | `n \| compact` | `1234` is `1.2k`, `56789` is `57k`; units `k M G T P`, chosen after rounding (`999950` is `1.0M`) |
 | `n \| bytes` | a size in 1024 steps: `1288490188` is `1.2G`; units `B K M G T P`; a negative size is an error |
 | `spark(values, lo=none, hi=none)` | a row of block glyphs (`▁▂▃▄▅▆▇█`), one per number, scaled from `lo` to `hi` (the data's own minimum and maximum when `none`): `spark([1, 5, 3, 8])` is `▁▅▃█`. A value outside the scale is held to it, a `none` value is a space, and equal ends draw the middle glyph. A `values` that is absent is undefined; one that is not a list of numbers is an error |
+| `icon(name)` | the Nerd Fonts glyph called `name`, as one character: `icon('dev-git')`, `icon('fa-github')`, `icon('md-folder')`. Names are Nerd Fonts' own without the `nf-` prefix (the full table of `glyphnames.json`, version in the error below); an absent `name` is undefined and an unknown one is an error, `icon(): unknown glyph 'x' (Nerd Fonts 3.5.1)` |
+| `file_icon(path)` | the glyph for a file, by basename (exact, then lowercased), then by extension (the longest first, so `x.test.ts` is a test file before it is a `.ts` one), else a plain file glyph; it never errors on an unknown file. An absent or empty `path` is undefined. Glyph only: colour is yours (`file_icon(p) \| fg(c)`). Tables are nvim-web-devicons' |
 
 **Display width.** Wherever an item measures text it counts terminal columns: East Asian wide and emoji-presentation
 characters are 2, combining marks are 0, and escape sequences (CSI such as colours, and OSC such as `hyperlink`) are 0.

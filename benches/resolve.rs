@@ -178,5 +178,19 @@ fn bench_resolve(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_resolve);
+/// T7.7: a glyph lookup is a binary search over the name blob, at most 1 us.
+fn bench_icon(c: &mut Criterion) {
+    use libbeachcomber::library::icons::{file_glyph, glyph};
+    assert_eq!(glyph("dev-git"), Some('\u{e702}'));
+    let mut group = c.benchmark_group("icon");
+    group.bench_function("icon", |b| {
+        b.iter(|| glyph(criterion::black_box("md-folder_open")))
+    });
+    group.bench_function("file_icon", |b| {
+        b.iter(|| file_glyph(criterion::black_box("src/some/where/main.test.ts")))
+    });
+    group.finish();
+}
+
+criterion_group!(benches, bench_resolve, bench_icon);
 criterion_main!(benches);

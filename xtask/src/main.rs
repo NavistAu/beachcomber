@@ -1,6 +1,6 @@
 //! `cargo xtask` — repository automation for beachcomber.
 //!
-//! Two tasks:
+//! Tasks (`gen-icons` and `update-icons` are in `icons.rs`):
 //!
 //! - `set-version`, which bumps the project version across every manifest,
 //!   lockfile, package recipe, and README download URL in a single command.
@@ -20,6 +20,8 @@
 //! Usage:
 //!   cargo xtask set-version <X.Y.Z> [--dry-run] [--no-verify]
 //!   cargo xtask gen-header [--check]
+//!   cargo xtask gen-icons [--check]
+//!   cargo xtask update-icons <nerd-tag> <devicons-commit>
 //!
 //! `--dry-run` reports the plan without touching the tree. `--no-verify` skips
 //! the post-edit `cargo check`. The CHANGELOG is intentionally NOT touched —
@@ -27,6 +29,8 @@
 //! own `--verify` mode: it fails without writing anything if regenerating
 //! would change the committed header, which is what CI's freshness check
 //! runs.
+
+mod icons;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -265,11 +269,16 @@ fn run(args: &[String]) -> Result<(), String> {
             set_version(new, dry_run, no_verify)
         }
         Some("gen-header") => gen_header(check),
+        Some("gen-icons") => icons::gen_icons(&repo_root(), check),
+        Some("update-icons") => match (positional.get(1), positional.get(2)) {
+            (Some(tag), Some(commit)) => icons::update_icons(&repo_root(), tag, commit),
+            _ => Err("update-icons requires <nerd-tag> <devicons-commit>".into()),
+        },
         Some(other) => Err(format!(
-            "unknown task: {other}\n\nUsage:\n  cargo xtask set-version <X.Y.Z> [--dry-run] [--no-verify]\n  cargo xtask gen-header [--check]"
+            "unknown task: {other}\n\nUsage:\n  cargo xtask set-version <X.Y.Z> [--dry-run] [--no-verify]\n  cargo xtask gen-header [--check]\n  cargo xtask gen-icons [--check]\n  cargo xtask update-icons <nerd-tag> <devicons-commit>"
         )),
         None => Err(
-            "no task given\n\nUsage:\n  cargo xtask set-version <X.Y.Z> [--dry-run] [--no-verify]\n  cargo xtask gen-header [--check]"
+            "no task given\n\nUsage:\n  cargo xtask set-version <X.Y.Z> [--dry-run] [--no-verify]\n  cargo xtask gen-header [--check]\n  cargo xtask gen-icons [--check]\n  cargo xtask update-icons <nerd-tag> <devicons-commit>"
                 .into(),
         ),
     }

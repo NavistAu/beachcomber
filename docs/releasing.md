@@ -26,6 +26,13 @@ This updates all 14 files — `Cargo.toml`, `libbeachcomber/Cargo.toml`, both lo
 
 The CHANGELOG is intentionally **not** touched — write release notes by hand (next step).
 
+### Icon tables (only when bumping them)
+
+`cargo xtask update-icons <nerd-fonts-tag> <nvim-web-devicons-commit>` refetches the inputs in `libbeachcomber/icons/`
+(`glyphnames.json`, the two devicons tables, both `LICENSE` files, `VERSIONS`) and regenerates
+`libbeachcomber/src/library/icons/{nerd,files}.rs`. Confirm both licences are still MIT, and add a CHANGELOG line naming
+the versions: Nerd Fonts renames glyphs between majors. CI runs `cargo xtask gen-icons --check`.
+
 ## 2. Changelog
 
 Add a new `## [X.Y.Z] - YYYY-MM-DD` section at the top of `CHANGELOG.md` following Keep a Changelog format. Sections: Added, Changed, Fixed, Removed (as applicable).

@@ -53,6 +53,8 @@ jobs:
         run: cargo install cbindgen --locked
       - name: Verify libbeachcomber-ffi/include/beachcomber.h is up to date
         run: cargo xtask gen-header --check
+      - name: Verify the icon tables match libbeachcomber/icons/
+        run: cargo xtask gen-icons --check
 
   check-linux:
     name: Check (Linux)
