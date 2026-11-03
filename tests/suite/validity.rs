@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-/// An in-process server of the built-in providers and the shipped defaults,
+/// An in-process server of the shipped defaults,
 /// with `toml` over them, and no scheduler.
 struct Served {
     sock: PathBuf,

@@ -1,8 +1,7 @@
 use beachcomber::cache::Cache;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
@@ -141,7 +140,6 @@ fn path_source(name: &str, invalidation: InvalidationStrategy) -> SourceMetadata
         name: name.into(),
         fields: vec![FieldSchema {
             name: format!("{name}_runs"),
-            field_type: FieldType::Int,
         }],
         invalidation,
         failback: FailbackConfig {
@@ -180,13 +178,7 @@ impl PollAndWatchProvider {
     }
 }
 
-impl Provider for PollAndWatchProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "w".to_string(),
-            sources: vec![Self::polled(), Self::watched()],
-        }
-    }
+impl PollAndWatchProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![
             Box::new(CountingSource {
@@ -225,7 +217,9 @@ async fn a_poll_source_registers_no_watch_and_a_watch_source_matches_only_its_pa
 
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(PollAndWatchProvider)).unwrap();
+    registry
+        .register_sources("w", PollAndWatchProvider.sources())
+        .unwrap();
     let (handle, mut scheduler) = Scheduler::new(
         cache,
         Arc::new(registry),

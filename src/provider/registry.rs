@@ -5,12 +5,10 @@ use crate::engine::PluginSet;
 use crate::provider::config_source::{ConfigSource, DaemonRead, lint_lines, load_probe};
 use crate::provider::source_call::Called;
 use crate::provider::{
-    FailbackConfig, Provider, ProviderMetadata, Source, SourceMetadata, SourceResult, Value,
-    is_sentinel,
+    FailbackConfig, ProviderMetadata, Source, SourceMetadata, Value, is_sentinel,
 };
 use crate::query::Found;
 use crate::scheduler::lifecycle::{DEFAULT_FAILBACK_COUNT, DEFAULT_FAILBACK_INTERVAL_SECS};
-use crate::shape::Retune;
 use crate::shape::decorators::EngineDefaults;
 use crate::shape::provider::ProviderLines;
 use dashmap::DashMap;
@@ -31,12 +29,10 @@ pub struct ConfigLoad {
     pub seed: crate::daemon::seed::Seed,
 }
 
-/// What a configuration declares: the config Sources, by provider, and the
-/// built-in Sources a `return` retunes.
+/// What a configuration declares: the config Sources, by provider.
 #[derive(Default)]
 pub struct ConfigSources {
     pub providers: Vec<(String, Vec<ConfigSource>)>,
-    pub retunes: Vec<Retune>,
     /// The plugin libraries the Sources' lines call, on the configured search
     /// path.
     pub plugins: Option<Arc<PluginSet>>,
@@ -237,46 +233,6 @@ fn find_ring(
     edges
         .keys()
         .find_map(|node| visit(node, edges, &mut Vec::new(), &mut done))
-}
-
-/// A built-in Rust Source with other metadata: what its `return` line (or the
-/// daemon's budget) says in place of what it declares. Everything else is the
-/// Source's own: every method of the `Source` trait is forwarded, so a method
-/// added to the trait with a default body must be forwarded here too, or a
-/// retuned Source would quietly take the default.
-struct Retuned {
-    inner: Arc<dyn Source>,
-    meta: SourceMetadata,
-}
-
-impl Source for Retuned {
-    fn metadata(&self) -> &SourceMetadata {
-        &self.meta
-    }
-
-    fn execute(&self, dir: Option<&str>) -> Result<SourceResult, String> {
-        self.inner.execute(dir)
-    }
-
-    fn root(&self, dir: &str) -> Result<Option<String>, String> {
-        self.inner.root(dir)
-    }
-
-    fn root_key(&self) -> String {
-        self.inner.root_key()
-    }
-
-    fn has_root(&self) -> bool {
-        self.inner.has_root()
-    }
-
-    fn inputs(
-        &self,
-        declared: &crate::provider::InvalidationStrategy,
-        root: Option<&str>,
-    ) -> Vec<std::path::PathBuf> {
-        self.inner.inputs(declared, root)
-    }
 }
 
 /// How long a failed `root` line's error is answered again without re-running
@@ -655,8 +611,8 @@ impl ProviderRegistry {
     /// Whether `provider`'s Source `source` finds its root by rendering a
     /// `root` line, which may run a command, fetch a URL or call a plugin. Its
     /// answers are kept per directory, and a first render must not hold an
-    /// async worker. A built-in finds its root by looking at the filesystem
-    /// every time, so a marker created after the first request is seen.
+    /// async worker. A test's Source with a `root` of its own finds it every
+    /// time.
     pub fn renders_root(&self, provider: &str, source: &str) -> bool {
         self.rendered_roots
             .contains(&(provider.to_string(), source.to_string()))
@@ -747,8 +703,8 @@ impl ProviderRegistry {
                 .insert(error_key, (tokio::time::Instant::now(), msg.clone()));
         }
         let root = match found? {
-            // A built-in finds its root by walking up from `dir`, which is
-            // canonical: an ancestor of it is too, and only `~` is special.
+            // A test's Source walks up from `dir`, which is canonical: an
+            // ancestor of it is too, and only `~` is special.
             Some(root) if !self.renders_root(provider, source) => {
                 if crate::query::is_home(&root) {
                     Found::Home
@@ -807,44 +763,33 @@ impl ProviderRegistry {
         });
     }
 
-    /// Register a provider. Validates metadata, builds the field→source and sentinel maps,
-    /// and inserts all sources. Returns `Err` if the provider name is already registered,
-    /// metadata is invalid, or sources() doesn't match metadata.
-    pub fn register(&mut self, provider: Box<dyn Provider>) -> Result<(), String> {
-        let meta = provider.metadata();
-        meta.validate(self.merges_by_default(&meta.name))?;
-        if self.providers.contains_key(&meta.name) {
-            return Err(format!("provider '{}' already registered", meta.name));
+    /// Register `sources` as the provider `provider`: how a test or a bench puts
+    /// a Source of its own (a gated mock, a counter) behind the daemon. Every
+    /// Source a daemon runs comes from its configuration
+    /// ([`Self::register_config_sources`]).
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn register_sources(
+        &mut self,
+        provider: &str,
+        sources: Vec<Box<dyn Source>>,
+    ) -> Result<(), String> {
+        if self.providers.contains_key(provider) {
+            return Err(format!("provider '{provider}' already registered"));
         }
-        let sources = provider.sources();
-        if sources.len() != meta.sources.len() {
-            return Err(format!(
-                "provider '{}' metadata declares {} sources but sources() returned {}",
-                meta.name,
-                meta.sources.len(),
-                sources.len()
-            ));
-        }
-        // Validate that source trait objects line up with metadata by name.
-        let names: std::collections::HashSet<String> =
-            sources.iter().map(|s| s.metadata().name.clone()).collect();
+        let meta = ProviderMetadata {
+            name: provider.to_string(),
+            sources: sources.iter().map(|s| s.metadata().clone()).collect(),
+        };
+        meta.validate(self.merges_by_default(provider))?;
         for sm in &meta.sources {
-            if !names.contains(&sm.name) {
-                return Err(format!(
-                    "provider '{}' metadata declares source '{}' but sources() did not include it",
-                    meta.name, sm.name
-                ));
-            }
+            self.index_fields(provider, sm);
         }
-        for sm in &meta.sources {
-            self.index_fields(&meta.name, sm);
-        }
-        // Insert sources.
         for s in sources {
-            let sn = s.metadata().name.clone();
-            self.sources.insert((meta.name.clone(), sn), Arc::from(s));
+            let name = s.metadata().name.clone();
+            self.sources
+                .insert((provider.to_string(), name), Arc::from(s));
         }
-        self.providers.insert(meta.name.clone(), meta);
+        self.providers.insert(provider.to_string(), meta);
         Ok(())
     }
 
@@ -892,8 +837,7 @@ impl ProviderRegistry {
         }
     }
 
-    /// Add config Sources to `provider`, creating it when no code registered
-    /// it: a new Source of a built-in provider joins that provider.
+    /// Add config Sources to `provider`, creating it.
     pub fn register_config_sources(
         &mut self,
         provider: &str,
@@ -934,8 +878,7 @@ impl ProviderRegistry {
     }
 
     /// How many config Sources are registered: the Sources the files declare,
-    /// counting those whose lines come from a `_` prototype, and not the
-    /// built-ins a `return` retunes.
+    /// counting those whose lines come from a `_` prototype.
     pub fn config_source_count(&self) -> usize {
         self.config_sources.len()
     }
@@ -986,14 +929,8 @@ impl ProviderRegistry {
         }
         // What builds is checked further whatever else does not: one broken
         // table hides no other.
-        let (built, shape_errors) = crate::shape::build(
-            providers,
-            &self.registered_sources(),
-            &engine_defaults(config),
-            &env,
-        );
+        let (decls, shape_errors) = crate::shape::build(providers, &engine_defaults(config), &env);
         errors.extend(shape_errors);
-        let (decls, retunes) = (built.decls, built.retunes);
         let mut out = Vec::new();
         for decl in decls {
             let mut built = Vec::new();
@@ -1018,36 +955,16 @@ impl ProviderRegistry {
         (
             ConfigSources {
                 providers: out,
-                retunes,
                 plugins: Some(plugins),
             },
             errors,
         )
     }
 
-    /// Replace a registered built-in Source's metadata with `edit` of it. The
-    /// Source runs as before: only what the scheduler reads about it changes.
-    fn retune(&mut self, provider: &str, source: &str, edit: impl FnOnce(&mut SourceMetadata)) {
-        let key = (provider.to_string(), source.to_string());
-        let Some(inner) = self.sources.get(&key).cloned() else {
-            return;
-        };
-        let mut meta = inner.metadata().clone();
-        edit(&mut meta);
-        if let Some(listed) = self
-            .providers
-            .get_mut(provider)
-            .and_then(|p| p.sources.iter_mut().find(|s| s.name == source))
-        {
-            *listed = meta.clone();
-        }
-        self.sources.insert(key, Arc::new(Retuned { inner, meta }));
-    }
-
     /// Register a provider only configuration names: it has zero
     /// Sources, its templates and cache settings being data. This is the one
-    /// way to a provider with none; `register` refuses a provider that
-    /// declares no Sources. Returns false if the name is already registered.
+    /// way to a provider with none. Returns false if the name is already
+    /// registered.
     pub fn register_config_named(&mut self, name: &str) -> bool {
         if self.providers.contains_key(name) {
             return false;
@@ -1099,7 +1016,7 @@ impl ProviderRegistry {
             .unwrap_or_default()
     }
 
-    /// The metadata of one Source, as registered (a retuned built-in's own).
+    /// The metadata of one Source, as registered.
     pub fn source_metadata(&self, provider: &str, source: &str) -> Option<&SourceMetadata> {
         self.provider_sources(provider)?
             .iter()
@@ -1119,7 +1036,7 @@ impl ProviderRegistry {
     // ── Static namespace support ─────────────────────────────────────────────
 
     /// Returns true if the provider name belongs to an already-registered
-    /// (builtin or config) provider.
+    /// provider.
     pub fn is_registered(&self, name: &str) -> bool {
         self.providers.contains_key(name)
     }
@@ -1173,14 +1090,6 @@ impl ProviderRegistry {
         load.registry
     }
 
-    /// Build a registry with all built-in providers registered: what
-    /// [`Self::load`] starts from. A test or a bench builds from
-    /// [`Self::shipped`] instead, never from this.
-    /// Panics on registration failure (programmer error, not runtime).
-    pub fn with_defaults() -> Self {
-        Self::new()
-    }
-
     /// [`Self::load`]: the registry, or every error the config has.
     pub fn with_config(
         config: &Config,
@@ -1196,17 +1105,14 @@ impl ProviderRegistry {
 
     /// The one loader: startup, the config watch's gate and `comb check
     /// config` all build the provider set here, so they agree on what loads.
-    /// Built-ins, the config Sources
-    /// (`[daemon.providers.<p>.sources.<s>]`, whose lines see `vars`, the
-    /// daemon's own variables, and call `plugin()` on `[daemon.plugin] path`),
-    /// the built-in Sources a `return` retunes, and the providers only the
-    /// config names; then every check a config has: the per-file ones and the
-    /// Sources against the set built.
-    ///
-    /// Panics on built-in registration failure (programmer error).
+    /// The config Sources (`[daemon.providers.<p>.sources.<s>]`, whose lines see
+    /// `vars`, the daemon's own variables, and call `plugin()` on
+    /// `[daemon.plugin] path`) and the providers only the config names; then every
+    /// check a config has: the per-file ones and the Sources against the set built.
+    /// The shipped providers are layers of `config`, as any other file's are: a
+    /// config with no layers has no providers.
     pub fn load(config: &Config, vars: &HashMap<String, String>) -> ConfigLoad {
-        // Start from the full built-in set, then layer on config-defined providers.
-        let mut registry = Self::with_defaults();
+        let mut registry = Self::new();
 
         // ── The providers' own lines ──────────────────────────────────────────
         // First: what a provider's `result` says decides what its Sources may
@@ -1223,12 +1129,10 @@ impl ProviderRegistry {
             Err(e) => errors.extend(e),
         }
 
-        // ── Config Sources, and the built-ins a return retunes ────────────────
-        let builtins: Vec<(String, String)> = registry.sources.keys().cloned().collect();
+        // ── Config Sources ────────────────────────────────────────────────────
         let (
             ConfigSources {
                 providers: built,
-                retunes,
                 plugins,
             },
             source_errors,
@@ -1240,7 +1144,6 @@ impl ProviderRegistry {
                 errors.push(e);
             }
         }
-        errors.extend(registry.retune_builtins(config, &builtins, &retunes));
 
         // ── Providers only the config names ───────────────────────────────────
         // A provider exists if either root names it. One named only in
@@ -1248,7 +1151,7 @@ impl ProviderRegistry {
         // it: it is registered with zero. `_`, the prototype's name, is never
         // one (`Config::named_providers`).
         // A table that only switches a provider off, for a name that no
-        // built-in, Source or client table gives a provider, is a typo.
+        // Source or client table gives a provider, is a typo.
         for (name, table) in providers {
             if table
                 .as_table()
@@ -1259,7 +1162,7 @@ impl ProviderRegistry {
             {
                 errors.push(format!(
                     "[daemon.providers.{name}] enabled: no provider is named '{name}' (no \
-                     built-in, Source or template gives it one)"
+                     Source or template gives it one)"
                 ));
             }
         }
@@ -1353,7 +1256,7 @@ impl ProviderRegistry {
     }
 
     /// What a config Source is made of apart from its schedule (see the
-    /// `definitions` field); `None` for a built-in or an unknown Source.
+    /// `definitions` field); `None` for a test's Source or an unknown one.
     pub fn definition(&self, provider: &str, source: &str) -> Option<&str> {
         self.definitions
             .get(&(provider.to_string(), source.to_string()))
@@ -1426,75 +1329,6 @@ impl ProviderRegistry {
         }
         errors.into_iter().collect()
     }
-
-    /// Every built-in Source runs on `[daemon] budget` and `[daemon] timeout`;
-    /// one whose `return` the files set takes its schedule, failback, decay,
-    /// budget and timeout from that line instead. A built-in with no `return` keeps the rest of
-    /// what it declares: the `_` lines apply to config Sources only.
-    fn retune_builtins(
-        &mut self,
-        config: &Config,
-        builtins: &[(String, String)],
-        retunes: &[Retune],
-    ) -> Vec<String> {
-        let budget = config.daemon().budget();
-        let timeout = config.daemon().timeout();
-        let mut errors = Vec::new();
-        for (provider, source) in builtins {
-            let line = retunes
-                .iter()
-                .find(|r| &r.provider == provider && &r.source == source);
-            self.retune(provider, source, |meta| {
-                meta.budget = budget;
-                meta.timeout = timeout;
-                if let Some(Retune { recorded, .. }) = line {
-                    meta.invalidation = recorded.invalidation.clone();
-                    meta.failback = recorded.failback;
-                    meta.decay = recorded.decay;
-                    meta.budget = recorded.budget;
-                    meta.timeout = recorded.timeout;
-                    meta.nearest = recorded.nearest;
-                }
-            });
-            if line.is_some()
-                && let Err(e) = self.check_retuned(provider, source)
-            {
-                errors.push(e);
-            }
-        }
-        errors
-    }
-
-    /// A retuned built-in must still be a Source the registry would have
-    /// accepted from code: the checks `register` runs, and the one a `return`
-    /// can newly break. A Source with no root has one instance, at `~`, which
-    /// has no directory to resolve a relative watch path against, so only an
-    /// absolute path is ever watched; a relative one would silently watch
-    /// nothing.
-    fn check_retuned(&self, provider: &str, source: &str) -> Result<(), String> {
-        let at = format!("[daemon.providers.{provider}.sources.{source}]");
-        let meta = self
-            .providers
-            .get(provider)
-            .and_then(|p| p.sources.iter().find(|s| s.name == source))
-            .expect("a retuned Source is registered");
-        let rooted = self
-            .source(provider, source)
-            .expect("a retuned Source is registered")
-            .has_root();
-        if !rooted
-            && let Some(problem) = crate::provider::one_instance_problem(
-                &format!("{provider}.{source}"),
-                &meta.invalidation,
-                meta.nearest,
-            )
-        {
-            return Err(format!("{at} return: {problem}"));
-        }
-        self.providers[provider]
-            .validate(self.merges_by_default(provider))
-            .map_err(|e| format!("{at} return: {e}"))
-    }
 }
 
 /// What a Source gets for a decorator its `return` does not name: every Source
@@ -1513,9 +1347,7 @@ fn engine_defaults(config: &Config) -> EngineDefaults {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{
-        FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, SourceResult,
-    };
+    use crate::provider::{FailbackConfig, FieldSchema, InvalidationStrategy, SourceResult};
 
     /// `f` where a Source's run executes: on a blocking thread of a runtime,
     /// so a call it makes can start and wait for another run.
@@ -1542,23 +1374,12 @@ mod tests {
         }
     }
 
-    struct FakeProvider {
-        name: String,
-        sources: Vec<SourceMetadata>,
-    }
-    impl Provider for FakeProvider {
-        fn metadata(&self) -> ProviderMetadata {
-            ProviderMetadata {
-                name: self.name.clone(),
-                sources: self.sources.clone(),
-            }
-        }
-        fn sources(&self) -> Vec<Box<dyn Source>> {
-            self.sources
-                .iter()
-                .map(|s| Box::new(FakeSource(s.clone())) as Box<dyn Source>)
-                .collect()
-        }
+    /// A Source per metadata, inert.
+    fn fakes(sources: Vec<SourceMetadata>) -> Vec<Box<dyn Source>> {
+        sources
+            .into_iter()
+            .map(|s| Box::new(FakeSource(s)) as Box<dyn Source>)
+            .collect()
     }
 
     fn ms(name: &str, fields: Vec<&str>) -> SourceMetadata {
@@ -1566,10 +1387,7 @@ mod tests {
             name: name.into(),
             fields: fields
                 .into_iter()
-                .map(|n| FieldSchema {
-                    name: n.into(),
-                    field_type: FieldType::String,
-                })
+                .map(|n| FieldSchema { name: n.into() })
                 .collect(),
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 30,
@@ -1588,11 +1406,7 @@ mod tests {
 
     fn registry_of(name: &str, sources: Vec<SourceMetadata>) -> ProviderRegistry {
         let mut reg = ProviderRegistry::new();
-        reg.register(Box::new(FakeProvider {
-            name: name.into(),
-            sources,
-        }))
-        .unwrap();
+        reg.register_sources(name, fakes(sources)).unwrap();
         reg
     }
 
@@ -1652,20 +1466,6 @@ mod tests {
         assert!(reg.sources_for_key("nope", "branch").is_empty());
     }
 
-    /// Only a provider the config names is a provider with zero Sources; one
-    /// that declares Sources and has none is refused, whatever its kind.
-    #[test]
-    fn a_provider_that_declares_no_sources_is_still_rejected() {
-        let mut reg = ProviderRegistry::new();
-        let err = reg
-            .register(Box::new(FakeProvider {
-                name: "x".into(),
-                sources: vec![],
-            }))
-            .unwrap_err();
-        assert!(err.contains("declares no sources"), "{err}");
-    }
-
     fn registry_from(user: &str) -> ProviderRegistry {
         let config = crate::config_tests::with_shipped_defaults(user);
         ProviderRegistry::with_config(&config, &std::env::vars().collect()).unwrap()
@@ -1699,9 +1499,12 @@ result.x = "{{ data }}"
         );
         assert!(
             reg.source("git", "extra").is_some(),
-            "joins the built-in provider"
+            "joins the shipped provider"
         );
-        assert!(reg.source("git", "refs").is_some(), "built-ins stay");
+        assert!(
+            reg.source("git", "refs").is_some(),
+            "the shipped Sources stay"
+        );
         assert_eq!(
             invalidation(&reg, "git", "extra"),
             InvalidationStrategy::Poll {
@@ -1943,14 +1746,14 @@ result.x = "{{ data }}"
     }
 
     #[test]
-    fn a_retune_replaces_nearest_with_the_lines_setting() {
+    fn a_return_replaces_nearest_with_the_lines_setting() {
         let reg = registry_from(
             "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('15s') }}\"\n\
              [daemon.providers.mise.sources.tools]\nreturn = \"{{ result | poll('15s') | nearest }}\"\n",
         );
         assert!(
             !source_meta(&reg, "git", "diff").nearest,
-            "git.diff declared nearest, and its own line does not say it"
+            "the shipped git.diff says nearest, and this line replaces it"
         );
         assert!(source_meta(&reg, "mise", "tools").nearest);
         assert!(
@@ -1960,7 +1763,7 @@ result.x = "{{ data }}"
     }
 
     #[test]
-    fn built_in_sources_with_a_root_declare_how_their_instances_combine() {
+    fn shipped_sources_with_a_root_declare_how_their_instances_combine() {
         let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         let mut rooted = Vec::new();
         for (provider, metas) in reg.registered_sources() {
@@ -2039,7 +1842,7 @@ return = "{{ result | poll('15s') }}"
         assert_eq!(
             reg.config_source_count(),
             shipped + 1,
-            "demo.s takes its lines from `_`; the retuned built-in and `_` itself are not config Sources"
+            "demo.s takes its lines from `_`; a retuned git.diff is the one it was, and `_` is no Source"
         );
         assert_eq!(
             ProviderRegistry::with_config(&Config::default(), &std::env::vars().collect())
@@ -2050,7 +1853,7 @@ return = "{{ result | poll('15s') }}"
     }
 
     #[test]
-    fn a_builtin_source_is_retuned_by_its_return_line() {
+    fn a_shipped_source_is_retuned_by_its_return_line() {
         let reg = registry_from(
             "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('15s', 8) }}\"\n",
         );
@@ -2084,9 +1887,9 @@ return = "{{ result | poll('15s') }}"
     }
 
     #[test]
-    fn a_builtin_source_without_a_return_keeps_its_rust_schedule() {
-        // The shipped abstract `_` says `poll('60s', 12)`; it applies to config
-        // Sources only, so watch-driven built-ins stay watch-driven.
+    fn a_shipped_source_without_a_return_keeps_its_schedule() {
+        // The shipped abstract `_` says `poll('60s', 12)`; a Source's own line
+        // beats it, so the watch-driven stay watch-driven.
         let reg = registry_from("[daemon.providers.git.sources.diff]\n");
         let stock = ProviderRegistry::shipped(&std::env::vars().collect());
         for (provider, source) in [("git", "diff"), ("git", "refs"), ("mise", "tools")] {
@@ -2105,7 +1908,7 @@ return = "{{ result | poll('15s') }}"
     }
 
     #[test]
-    fn a_builtin_source_takes_the_engine_failback_and_budget() {
+    fn a_return_that_names_neither_takes_the_engine_failback_and_budget() {
         // A return that names neither: the engine's failback, the daemon's
         // budget and timeout.
         let reg = registry_from(
@@ -2122,7 +1925,7 @@ return = "{{ result | poll('15s') }}"
                 .unwrap()
                 .failback,
             diff.failback,
-            "git.diff declares its own failback"
+            "the shipped git.diff names a failback"
         );
         assert_eq!(
             (diff.failback.reattempts, diff.failback.interval_secs),
@@ -2144,7 +1947,7 @@ return = "{{ result | poll('15s') }}"
             (5, 2)
         );
         assert_eq!(diff.budget, std::time::Duration::from_millis(7));
-        // And the budget reaches the built-ins that have no return.
+        // And the budget reaches a Source whose line names none.
         let reg = registry_from("[daemon]\nbudget = \"30ms\"\n");
         assert_eq!(
             source_meta(&reg, "git", "refs").budget,
@@ -2153,7 +1956,7 @@ return = "{{ result | poll('15s') }}"
     }
 
     #[test]
-    fn a_builtins_super_reaches_the_prototypes_like_a_config_sources() {
+    fn a_shipped_sources_super_reaches_the_prototypes() {
         // own -> git's `_` -> the abstract `_` (the shipped poll('60s', 12)).
         let reg = registry_from(
             r#"
@@ -2195,6 +1998,48 @@ return = "{{ result | super }}"
             invalidation(&reg, "git", "refs"),
             InvalidationStrategy::Watch { .. }
         ));
+    }
+
+    /// The shipped providers are layers, as any other file's are.
+    #[test]
+    fn a_registry_with_no_layers_has_no_providers() {
+        let reg =
+            ProviderRegistry::with_config(&Config::default(), &std::env::vars().collect()).unwrap();
+        assert_eq!(reg.provider_names(), Vec::<String>::new());
+    }
+
+    /// A shipped Source is a config Source: a later layer can set any line,
+    /// and the others keep theirs.
+    #[test]
+    fn a_shipped_source_takes_any_line_in_a_later_layer() {
+        let stock = ProviderRegistry::shipped(&std::env::vars().collect());
+        let reg = registry_from(
+            "[daemon.providers.git.sources.diff]\n\
+             data = \"{{ {'lines_added': 7} }}\"\n\
+             result.lines_added = \"{{ data.lines_added }}\"\n\
+             result.lines_staged = \"{{ 1 }}\"\n",
+        );
+        let diff = reg.source("git", "diff").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let got = diff.execute(dir.path().to_str()).unwrap().fields;
+        assert_eq!(
+            got.get("lines_added"),
+            Some(&crate::provider::Value::Int(7))
+        );
+        assert_eq!(
+            got.get("lines_staged"),
+            Some(&crate::provider::Value::Int(1))
+        );
+        assert_eq!(
+            invalidation(&reg, "git", "diff"),
+            invalidation(&stock, "git", "diff"),
+            "the return line it did not set"
+        );
+        assert_eq!(
+            reg.source("git", "diff").unwrap().root_key(),
+            stock.source("git", "diff").unwrap().root_key(),
+            "the root line, from the shipped `_`"
+        );
     }
 
     #[test]
@@ -2245,26 +2090,19 @@ result.y = "{{ data }}"
     #[test]
     fn register_rejects_duplicate_provider() {
         let mut reg = ProviderRegistry::new();
-        let p1 = FakeProvider {
-            name: "x".into(),
-            sources: vec![ms("a", vec!["f"])],
-        };
-        let p2 = FakeProvider {
-            name: "x".into(),
-            sources: vec![ms("b", vec!["g"])],
-        };
-        reg.register(Box::new(p1)).unwrap();
-        assert!(reg.register(Box::new(p2)).is_err());
+        reg.register_sources("x", fakes(vec![ms("a", vec!["f"])]))
+            .unwrap();
+        assert!(
+            reg.register_sources("x", fakes(vec![ms("b", vec!["g"])]))
+                .is_err()
+        );
     }
 
     #[test]
     fn source_lookup_returns_arc() {
         let mut reg = ProviderRegistry::new();
-        let p = FakeProvider {
-            name: "mise".into(),
-            sources: vec![ms("global", vec!["python"])],
-        };
-        reg.register(Box::new(p)).unwrap();
+        reg.register_sources("mise", fakes(vec![ms("global", vec!["python"])]))
+            .unwrap();
         assert!(reg.source("mise", "global").is_some());
         assert!(reg.source("mise", "project").is_none());
         assert!(reg.source("unknown", "global").is_none());
@@ -2273,18 +2111,15 @@ result.y = "{{ data }}"
     #[test]
     fn static_registration_blocked_by_real_provider() {
         let mut reg = ProviderRegistry::new();
-        let p = FakeProvider {
-            name: "hostname".into(),
-            sources: vec![ms("name", vec!["value"])],
-        };
-        reg.register(Box::new(p)).unwrap();
+        reg.register_sources("hostname", fakes(vec![ms("name", vec!["value"])]))
+            .unwrap();
         assert!(!reg.register_static("hostname"));
         assert!(reg.register_static("myvar"));
         assert!(reg.is_static_namespace("myvar"));
     }
 
     /// `failback` takes the interval first; the count-first order is a load
-    /// error naming the table, on a config Source and a built-in alike, never
+    /// error naming the table, never
     /// read the other way round.
     #[test]
     fn the_count_first_failback_order_is_a_load_error_naming_its_table() {
@@ -2331,10 +2166,10 @@ result.y = "{{ data }}"
             load("[daemon.providers.gti]\nenabled = false\n"),
             vec![
                 "config(/user.toml): [daemon.providers.gti] enabled: no provider is named 'gti' \
-                 (no built-in, Source or template gives it one)"
+                 (no Source or template gives it one)"
             ]
         );
-        // Named by a built-in, a client template, or a table of its own lines.
+        // Named by a shipped Source, a client template, or a table of its own lines.
         assert!(load("[daemon.providers.git]\nenabled = false\n").is_empty());
         assert!(
             load("[client.providers.mine.template]\nx = \"{{ 1 }}\"\n[daemon.providers.mine]\nenabled = false\n")

@@ -769,8 +769,7 @@ mod instance_chain_tests {
     use super::*;
     use crate::provider::registry::ProviderRegistry;
     use crate::provider::{
-        FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-        Source, SourceMetadata, SourceResult,
+        FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult,
     };
     use std::sync::Arc;
 
@@ -808,10 +807,7 @@ mod instance_chain_tests {
         fn meta(&self) -> SourceMetadata {
             SourceMetadata {
                 name: "main".into(),
-                fields: vec![FieldSchema {
-                    name: "v".into(),
-                    field_type: FieldType::String,
-                }],
+                fields: vec![FieldSchema { name: "v".into() }],
                 invalidation: InvalidationStrategy::Poll {
                     interval_secs: 30,
                     count: 2,
@@ -827,13 +823,7 @@ mod instance_chain_tests {
             }
         }
     }
-    impl Provider for FakeProvider {
-        fn metadata(&self) -> ProviderMetadata {
-            ProviderMetadata {
-                name: self.name.clone(),
-                sources: vec![self.meta()],
-            }
-        }
+    impl FakeProvider {
         fn sources(&self) -> Vec<Box<dyn Source>> {
             vec![Box::new(FakeSource {
                 meta: self.meta(),
@@ -848,12 +838,12 @@ mod instance_chain_tests {
 
     fn registry_of(name: &str, root_fn: Option<RootFn>, nearest: bool) -> ProviderRegistry {
         let mut reg = ProviderRegistry::new();
-        reg.register(Box::new(FakeProvider {
+        let fake = FakeProvider {
             name: name.into(),
             root_fn,
             nearest,
-        }))
-        .unwrap();
+        };
+        reg.register_sources(&fake.name, fake.sources()).unwrap();
         reg
     }
 

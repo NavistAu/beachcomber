@@ -9,9 +9,8 @@ use beachcomber::provider::{Source, SourceResult};
 use crate::provider_conformance::conformance::fixtures::ConformanceFixture;
 
 /// Iterate every `(provider_name, source_name, source)` triple of the shipped
-/// registry: the Rust built-ins and every Source a shipped file declares, so
-/// each moves under these checks as it moves into a file. Yields owned data
-/// so callers can iterate without holding registry references.
+/// registry: every Source a shipped file declares. Yields owned data so callers
+/// can iterate without holding registry references.
 pub fn enumerate_sources() -> Vec<(String, String, std::sync::Arc<dyn Source>)> {
     let registry = crate::common::registry::with_shipped_defaults();
     let mut out = Vec::new();

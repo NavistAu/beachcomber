@@ -3,8 +3,7 @@ use beachcomber::cache::Schedule;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::server::Server;
 use std::collections::HashMap;
@@ -25,7 +24,6 @@ impl Source for RootedSourceImpl {
             name: "main".into(),
             fields: vec![FieldSchema {
                 name: "active_path".into(),
-                field_type: FieldType::String,
             }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
@@ -62,14 +60,7 @@ impl Source for RootedSourceImpl {
 
 struct RootedProvider;
 
-impl Provider for RootedProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "pathprov".to_string(),
-            sources: vec![RootedSourceImpl.metadata().clone()],
-        }
-    }
-
+impl RootedProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(RootedSourceImpl)]
     }
@@ -86,7 +77,6 @@ impl Source for GlobalSourceImpl {
             name: "main".into(),
             fields: vec![FieldSchema {
                 name: "info".into(),
-                field_type: FieldType::String,
             }],
             invalidation: InvalidationStrategy::Watch {
                 patterns: vec![],
@@ -112,14 +102,7 @@ impl Source for GlobalSourceImpl {
 
 struct GlobalProvider;
 
-impl Provider for GlobalProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "globalprov".to_string(),
-            sources: vec![GlobalSourceImpl.metadata().clone()],
-        }
-    }
-
+impl GlobalProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(GlobalSourceImpl)]
     }
@@ -138,10 +121,10 @@ fn setup_with_custom_registry() -> (
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(RootedProvider))
+        .register_sources("pathprov", RootedProvider.sources())
         .expect("pathprov");
     registry
-        .register(Box::new(GlobalProvider))
+        .register_sources("globalprov", GlobalProvider.sources())
         .expect("globalprov");
     let registry = Arc::new(registry);
     (tmp, sock, cache, registry, watchers)

@@ -385,8 +385,7 @@ fn the_shipped_comb_file_holds_the_abstract_provider_the_decay_and_the_abstract_
 /// Every shipped file is a layer, labelled as the file the daemon writes it to
 /// would be and in the order the daemon composes them (`00-comb.toml`, the
 /// abstract provider, first), and the set loads with no error or warning: the
-/// floor every test, bench and embedder's registry stands on. It has every
-/// provider the Rust built-ins have, and the providers the files add.
+/// floor every test, bench and embedder's registry stands on.
 #[test]
 fn shipped_layers_parse_and_load_with_no_errors() {
     use beachcomber::provider::registry::ProviderRegistry;

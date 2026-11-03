@@ -137,7 +137,7 @@ pub struct Schedule {
 
 /// What a read checks of a Source record before answering from it: its stat
 /// inputs as the run that made it found them. Those are the files
-/// [`crate::provider::Source::inputs`] names, stamped immediately before the
+/// [`crate::provider::declared_inputs`] names, stamped immediately before the
 /// run began, and the files its lines read, each stamped immediately before
 /// it was read ([`Stamped::and_read`]). A change during the run therefore
 /// fails the next check: one more run, never a stale answer.

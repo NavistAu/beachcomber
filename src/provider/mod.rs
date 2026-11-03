@@ -422,16 +422,6 @@ impl ProviderResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldSchema {
     pub name: String,
-    pub field_type: FieldType,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum FieldType {
-    String,
-    Int,
-    Bool,
-    Float,
-    Object,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -645,9 +635,6 @@ impl ProviderMetadata {
     /// declare one field. A provider whose `result` merges its Sources in an
     /// order of its own choosing passes `false`.
     pub fn validate(&self, distinct_fields: bool) -> Result<(), String> {
-        if self.sources.is_empty() {
-            return Err(format!("provider '{}' declares no sources", self.name));
-        }
         // Source name uniqueness
         let mut names = std::collections::HashSet::new();
         for s in &self.sources {
@@ -660,8 +647,8 @@ impl ProviderMetadata {
         }
         // Field name uniqueness across all sources within this provider.
         // Dynamic sentinel names (starting with '<') are placeholders for runtime-resolved
-        // field names and may appear in multiple sources within the same provider (a config
-        // Source and a built-in can both answer for the provider node). Skip uniqueness
+        // field names and may appear in multiple sources within the same provider (two
+        // Sources can both answer for the provider node). Skip uniqueness
         // checking for those names.
         let mut field_owners: HashMap<String, String> = HashMap::new();
         for s in &self.sources {
@@ -696,22 +683,12 @@ fn validate_source(provider: &str, s: &SourceMetadata) -> Result<(), String> {
     Ok(())
 }
 
-/// A Provider is a namespace declaring one or more Sources.
-pub trait Provider: Send + Sync {
-    fn metadata(&self) -> ProviderMetadata;
-    fn sources(&self) -> Vec<Box<dyn Source>>;
-}
-
 /// A Source is the unit of refresh. Owns its own invalidation, fields,
 /// lifecycle, and failure backoff. Identified by (provider_name, source_name).
 ///
 /// A Source has one instance per root: the records it makes for a directory
 /// live at the instance [`Source::root`] names for it, and the one instance at
 /// `~` answers for every directory that has no root.
-///
-/// A new method with a default body must also be forwarded by
-/// `provider::registry::Retuned`, which wraps a built-in whose `return`
-/// retunes it.
 pub trait Source: Send + Sync {
     fn metadata(&self) -> &SourceMetadata;
 
@@ -752,28 +729,12 @@ pub trait Source: Send + Sync {
     fn has_root(&self) -> bool {
         false
     }
-
-    /// The declared stat inputs of the instance at `root` (`None` is the
-    /// instance at `~`): files a read checks before answering from its record
-    /// ([`crate::cache::Validity`]), which a run stamps immediately before it
-    /// begins. `declared` is the Source's invalidation as it stands, which a
-    /// `return` line can retune; the caller passes `metadata().invalidation`.
-    ///
-    /// The default is the `watch(...)` declaration ([`declared_inputs`]).
-    /// Beside these, a record's inputs are the files its run's lines read,
-    /// each stamped before it was read ([`crate::run::reads_here`]): that is
-    /// how a config Source names what it reads.
-    fn inputs(
-        &self,
-        declared: &InvalidationStrategy,
-        root: Option<&str>,
-    ) -> Vec<std::path::PathBuf> {
-        declared_inputs(declared, root)
-    }
 }
 
 /// The stat inputs a `watch(...)` declaration names for the instance at
-/// `root`: each relative entry joined to the root, and each absolute one as
+/// `root` (`None` is the instance at `~`), which a run stamps immediately before
+/// it begins; beside them, a record's inputs are the files its run's lines read,
+/// each stamped before it was read ([`crate::run::reads_here`]). Each relative entry joined to the root, and each absolute one as
 /// written. At the instance at `~`, a relative entry of one component is a
 /// file under `$HOME`, as its watch registers it; one of more names nothing
 /// there. A declared directory is an input as a node, by its own mtime: an
@@ -846,10 +807,7 @@ mod tests {
             name: name.into(),
             fields: fields
                 .into_iter()
-                .map(|n| FieldSchema {
-                    name: n.into(),
-                    field_type: FieldType::String,
-                })
+                .map(|n| FieldSchema { name: n.into() })
                 .collect(),
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 30,

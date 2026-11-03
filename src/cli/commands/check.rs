@@ -244,7 +244,7 @@ pub fn run_check_subjects(
     worst
 }
 
-/// Validate the config file against the built-in providers, as
+/// Validate the config file, as
 /// `run_daemon_with_cancel` does at startup.
 ///
 /// The provider set is `ProviderRegistry::load`'s. A Source's `plugin()` calls

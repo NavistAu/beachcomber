@@ -513,9 +513,10 @@ impl Runs {
                     // file its lines read immediately before it is read: a
                     // change while it runs fails the next read's check, which
                     // makes one run more, never a stale answer.
-                    let declared = Stamped::take(
-                        source.inputs(&source.metadata().invalidation, root.as_deref()),
-                    );
+                    let declared = Stamped::take(crate::provider::declared_inputs(
+                        &source.metadata().invalidation,
+                        root.as_deref(),
+                    ));
                     let _ = stamped.set(Validity::of(declared.clone()));
                     let (result, failed_call) = ran(|| source.execute(dir.as_deref()));
                     let result = result.map(|result| {
@@ -746,8 +747,7 @@ fn record(registry: &ProviderRegistry, cache: &Cache, key: &Key, result: Ran) ->
 mod tests {
     use super::*;
     use crate::provider::{
-        FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-        SourceMetadata, Value,
+        FailbackConfig, FieldSchema, InvalidationStrategy, SourceMetadata, Value,
     };
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
@@ -815,10 +815,7 @@ mod tests {
     fn meta(failback: u32, timeout: Duration) -> SourceMetadata {
         SourceMetadata {
             name: "s".into(),
-            fields: vec![FieldSchema {
-                name: "n".into(),
-                field_type: FieldType::Int,
-            }],
+            fields: vec![FieldSchema { name: "n".into() }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
                 count: 2,
@@ -842,13 +839,7 @@ mod tests {
         Arc<std::sync::atomic::AtomicBool>,
     );
 
-    impl Provider for P {
-        fn metadata(&self) -> ProviderMetadata {
-            ProviderMetadata {
-                name: "p".into(),
-                sources: vec![self.0.clone()],
-            }
-        }
+    impl P {
         fn sources(&self) -> Vec<Box<dyn Source>> {
             vec![Box::new(Counted {
                 meta: self.0.clone(),
@@ -869,7 +860,10 @@ mod tests {
         let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut registry = ProviderRegistry::new();
         registry
-            .register(Box::new(P(meta, runs.clone(), gate.clone(), fail.clone())))
+            .register_sources(
+                "p",
+                P(meta, runs.clone(), gate.clone(), fail.clone()).sources(),
+            )
             .unwrap();
         Fixture {
             registry: Arc::new(registry),
@@ -886,12 +880,16 @@ mod tests {
         /// Source, the same runs, a later epoch.
         fn reloaded(&self) -> Arc<ProviderRegistry> {
             let mut next = ProviderRegistry::new();
-            next.register(Box::new(P(
-                meta(3, Duration::from_secs(60)),
-                self.runs.clone(),
-                self.gate.clone(),
-                self.fail.clone(),
-            )))
+            next.register_sources(
+                "p",
+                P(
+                    meta(3, Duration::from_secs(60)),
+                    self.runs.clone(),
+                    self.gate.clone(),
+                    self.fail.clone(),
+                )
+                .sources(),
+            )
             .unwrap();
             let next = next.adopt(&self.registry, &self.cache);
             self.registry

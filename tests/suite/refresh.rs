@@ -8,7 +8,7 @@
 //! in the background, so it waits for the age of `git.commit` to fall back
 //! below what the advanced clock made it.
 //!
-//! `git` is the fixture because it is the one built-in with several Sources
+//! `git` is the fixture because it is the one shipped provider with several Sources
 //! over one namespace. The fields under test are `commit` (source `refs`) and
 //! `lines_added` (source `diff`).
 

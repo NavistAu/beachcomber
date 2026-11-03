@@ -3,10 +3,8 @@
 //! production: as the lowest layers, every one of them
 //! (`daemon::defaults::shipped_layers`), composed under whatever the test adds.
 //!
-//! A test that needs a registry builds it here, never from
-//! `ProviderRegistry::with_defaults()` (the Rust built-ins alone): as the
-//! built-ins move into shipped files, a registry with no shipped layers has
-//! fewer providers, and a test built on one would test less than it says.
+//! A registry with no shipped layers has no providers: a test that needs them
+//! builds its registry here.
 
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;

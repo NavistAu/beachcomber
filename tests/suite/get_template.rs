@@ -19,8 +19,7 @@ use beachcomber::cache::Cache;
 use beachcomber::cache::Schedule;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::server::Server;
 use std::sync::Arc;
@@ -733,10 +732,7 @@ async fn the_cache_age_of_a_warm_field_is_a_number() {
 fn twin_meta(name: &str, field: &str) -> SourceMetadata {
     SourceMetadata {
         name: name.into(),
-        fields: vec![FieldSchema {
-            name: field.into(),
-            field_type: FieldType::Int,
-        }],
+        fields: vec![FieldSchema { name: field.into() }],
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 600,
             count: 2,
@@ -766,13 +762,7 @@ impl Source for TwinSource {
 /// Two Sources in one cache entry, each owning one field.
 struct TwinProvider;
 
-impl Provider for TwinProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "twin".to_string(),
-            sources: vec![twin_meta("alpha", "a"), twin_meta("beta", "b")],
-        }
-    }
+impl TwinProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![
             Box::new(TwinSource(twin_meta("alpha", "a"))),
@@ -792,7 +782,9 @@ impl Provider for TwinProvider {
 #[tokio::test(start_paused = true)]
 async fn field_age_through_get_is_the_owning_sources_age() {
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(TwinProvider)).unwrap();
+    registry
+        .register_sources("twin", TwinProvider.sources())
+        .unwrap();
     let (_tmp, sock, cache, registry, watchers) = setup_with_registry(registry);
 
     cache.put_source(

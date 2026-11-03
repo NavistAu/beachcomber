@@ -1,19 +1,15 @@
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult,
+    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult,
 };
 
 /// A provider of one Source, `s`, of one field, `f`, that answers nothing.
-struct Named(&'static str);
+struct Named;
 
 fn named_meta() -> SourceMetadata {
     SourceMetadata {
         name: "s".into(),
-        fields: vec![FieldSchema {
-            name: "f".into(),
-            field_type: FieldType::String,
-        }],
+        fields: vec![FieldSchema { name: "f".into() }],
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
             count: 1,
@@ -41,14 +37,7 @@ impl Source for Nothing {
     }
 }
 
-impl Provider for Named {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: self.0.into(),
-            sources: vec![named_meta()],
-        }
-    }
-
+impl Named {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(Nothing(named_meta()))]
     }
@@ -57,7 +46,7 @@ impl Provider for Named {
 #[test]
 fn registry_register_and_get() {
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(Named("a"))).unwrap();
+    registry.register_sources("a", Named.sources()).unwrap();
     assert!(
         registry.provider_metadata("a").is_some(),
         "Should find registered provider"
@@ -76,8 +65,8 @@ fn registry_get_missing() {
 #[test]
 fn registry_list_providers() {
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(Named("a"))).unwrap();
-    registry.register(Box::new(Named("b"))).unwrap();
+    registry.register_sources("a", Named.sources()).unwrap();
+    registry.register_sources("b", Named.sources()).unwrap();
     let name_strings = registry.list();
     let mut names: Vec<&str> = name_strings.iter().map(|s| s.as_str()).collect();
     names.sort();
@@ -86,7 +75,7 @@ fn registry_list_providers() {
 }
 
 #[test]
-fn registry_with_defaults_has_builtins() {
+fn the_shipped_registry_has_its_providers() {
     let registry = ProviderRegistry::shipped(&std::env::vars().collect());
     assert!(
         registry.provider_metadata("hostname").is_some(),
@@ -138,7 +127,7 @@ fn registry_is_registered_reports_provider_names() {
     assert!(!registry.is_registered("nonexistent"));
     assert!(
         !registry.register_static("hostname"),
-        "a builtin name cannot be claimed as a static namespace"
+        "a shipped name cannot be claimed as a static namespace"
     );
 }
 
@@ -216,5 +205,9 @@ fn a_definition_is_the_body_and_not_the_schedule() {
         same,
         "a changed root is a changed definition"
     );
-    assert_eq!(base.definition("git", "head"), None, "a built-in has none");
+    assert_eq!(
+        base.definition("nope", "head"),
+        None,
+        "no such Source has none"
+    );
 }

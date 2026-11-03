@@ -204,13 +204,10 @@ struct FlakyProvider(
 );
 
 fn flaky_meta() -> beachcomber::provider::SourceMetadata {
-    use beachcomber::provider::{FailbackConfig, FieldSchema, FieldType, InvalidationStrategy};
+    use beachcomber::provider::{FailbackConfig, FieldSchema, InvalidationStrategy};
     beachcomber::provider::SourceMetadata {
         name: "main".into(),
-        fields: vec![FieldSchema {
-            name: "v".into(),
-            field_type: FieldType::Int,
-        }],
+        fields: vec![FieldSchema { name: "v".into() }],
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
             count: 2,
@@ -226,14 +223,7 @@ fn flaky_meta() -> beachcomber::provider::SourceMetadata {
     }
 }
 
-impl beachcomber::provider::Provider for FlakyProvider {
-    fn metadata(&self) -> beachcomber::provider::ProviderMetadata {
-        beachcomber::provider::ProviderMetadata {
-            name: "flaky".into(),
-            sources: vec![flaky_meta()],
-        }
-    }
-
+impl FlakyProvider {
     fn sources(&self) -> Vec<Box<dyn beachcomber::provider::Source>> {
         vec![Box::new(Flaky {
             meta: flaky_meta(),
@@ -254,7 +244,7 @@ async fn a_forced_run_that_fails_keeps_the_last_good_value() {
     let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(FlakyProvider(runs.clone(), fail.clone())))
+        .register_sources("flaky", FlakyProvider(runs.clone(), fail.clone()).sources())
         .unwrap();
     let server = Server::new(sock.clone(), cache, Arc::new(registry), None, watchers);
     let handle = server.spawn().unwrap();

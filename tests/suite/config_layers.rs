@@ -1226,11 +1226,11 @@ fn the_default_provider_lines_reproduce_todays_read() {
     std::fs::create_dir_all(&nested).unwrap();
     let nested = nested.canonicalize().unwrap();
 
-    // A built-in provider, read from a directory below its root.
+    // A shipped provider, read from a directory below its root.
     assert_eq!(
         get_at(&d, &nested, &["git.branch"]),
         Some(json!("main")),
-        "a built-in answers from below its root"
+        "a shipped Source answers from below its root"
     );
 
     // A config provider, with a put over one Source field at the nested
@@ -1973,7 +1973,7 @@ fn a_later_layer_can_re_enable_a_provider() {
 }
 
 #[test]
-fn a_built_in_provider_can_be_disabled() {
+fn a_shipped_provider_can_be_disabled() {
     let repo = crate::common::git::GitRepoFixture::new();
     let inside = repo.path().canonicalize().unwrap();
     let in_repo = |p: &String| p.starts_with(inside.to_str().unwrap());

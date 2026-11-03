@@ -7,7 +7,6 @@
 //! Source resolves through, its `return` chain rendered once into a schedule,
 //! and the rules between Sources of one provider.
 
-use crate::provider::SourceMetadata;
 use crate::provider::config_source::{ConfigSourceSpec, ResultSpec};
 use crate::shape::decorators::{EngineDefaults, Recorded, record_return, return_env};
 use crate::shape::prototype::{Kind, Link, chain, effective, source_prototypes, super_chain};
@@ -30,24 +29,6 @@ pub struct PrototypeLines {
     pub root: Option<String>,
     pub data: Option<String>,
     pub result: Option<ResultSpec>,
-}
-
-/// A built-in Rust Source whose `return` the files set: the schedule that
-/// replaces its own, whole.
-#[derive(Debug, Clone)]
-pub struct Retune {
-    pub provider: String,
-    pub source: String,
-    pub recorded: Recorded,
-}
-
-/// What a composed `[daemon.providers]` declares.
-#[derive(Debug, Clone, Default)]
-pub struct Built {
-    /// The config Sources, by provider.
-    pub decls: Vec<ProviderDecl>,
-    /// The built-in Sources a `return` retunes.
-    pub retunes: Vec<Retune>,
 }
 
 fn as_table(v: Option<&toml::Value>) -> Option<&toml::Table> {
@@ -132,27 +113,18 @@ pub fn prototype_lines(providers: &toml::Table) -> Vec<PrototypeLines> {
         .collect()
 }
 
-/// The config Sources `providers` (the composed `[daemon.providers]`) declare,
-/// and the built-in Sources they retune. `existing` is every Source already
-/// registered, by provider: the built-in Rust Sources, whose table accepts
-/// `return` and nothing else until they are shipped as config, and whose
-/// fields a new Source may not declare again. `defaults` is what a Source gets
-/// for a decorator its `return` chain does not name, and `vars` the variables
-/// a `watch()` path expands from, shared by every render.
-///
-/// A built-in's `return` is read as a config Source's is: its own line, and
-/// what its `| super` reaches in `<p>.sources._` and `_.sources._`. With no
-/// `return` of its own it is not touched: the `_` lines apply to config
-/// Sources only.
+/// The config Sources `providers` (the composed `[daemon.providers]`) declare.
+/// `defaults` is what a Source gets for a decorator its `return` chain does not
+/// name, and `vars` the variables a `watch()` path expands from, shared by every
+/// render.
 ///
 /// What builds is returned beside every error found, so a table that does
 /// not build hides none of the others: each is checked further on its own.
 pub fn build(
     providers: &toml::Table,
-    existing: &HashMap<String, Vec<SourceMetadata>>,
     defaults: &EngineDefaults,
     vars: &Arc<HashMap<String, String>>,
-) -> (Built, Vec<String>) {
+) -> (Vec<ProviderDecl>, Vec<String>) {
     let mut errors: BTreeSet<String> = BTreeSet::new();
     let mut err = |e: String| {
         errors.insert(e);
@@ -171,7 +143,6 @@ pub fn build(
     }
 
     let mut decls = Vec::new();
-    let mut retunes = Vec::new();
     for (provider, ptable) in providers {
         if provider == "_" {
             continue;
@@ -179,56 +150,13 @@ pub fn build(
         let Some(sources) = as_table(ptable.as_table().and_then(|p| p.get("sources"))) else {
             continue;
         };
-        let builtin: Vec<&str> = existing
-            .get(provider)
-            .map(|v| v.iter().map(|s| s.name.as_str()).collect())
-            .unwrap_or_default();
         let mut specs = Vec::new();
         for (source, stable) in sources {
-            let Some(stable) = stable.as_table() else {
-                continue;
-            };
-            if source == "_" {
+            if !stable.is_table() || source == "_" {
                 continue;
             }
             let at = format!("[daemon.providers.{provider}.sources.{source}]");
-            if builtin.contains(&source.as_str()) {
-                if ["root", "data", "result"]
-                    .iter()
-                    .any(|k| stable.contains_key(*k))
-                {
-                    err(format!("{at} is a built-in Source: only return can be set"));
-                } else if stable.contains_key("return") {
-                    let links = chain(providers, Kind::Source, provider, source);
-                    // A line of the wrong type is the file check's error: skip.
-                    match check_return(&links, source, defaults, vars, &env) {
-                        Ok(Some(recorded)) => retunes.push(Retune {
-                            provider: provider.clone(),
-                            source: source.clone(),
-                            recorded,
-                        }),
-                        Ok(None) => {}
-                        Err(e) => err(e),
-                    }
-                }
-                continue;
-            }
             let links = chain(providers, Kind::Source, provider, source);
-            // A new Source of a built-in provider is data and result, its own
-            // or a `_`'s; a table with neither anywhere is most likely a
-            // built-in's name misspelled.
-            if let Some(known) = existing.get(provider)
-                && effective(&links, "data").is_none()
-                && effective(&links, "result").is_none()
-            {
-                let names: Vec<&str> = known.iter().map(|m| m.name.as_str()).collect();
-                err(format!(
-                    "{at}: {provider} has no Source '{source}' (its Sources: {}); a new Source \
-                     needs data and result",
-                    names.join(", ")
-                ));
-                continue;
-            }
             // A line of the wrong type is the file check's error: skip.
             let root = line(&links, "root");
             let data = line(&links, "data");
@@ -276,5 +204,5 @@ pub fn build(
         });
     }
 
-    (Built { decls, retunes }, errors.into_iter().collect())
+    (decls, errors.into_iter().collect())
 }

@@ -6,8 +6,7 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerHandle, SchedulerMessage};
@@ -23,7 +22,6 @@ fn lc_counter_source_meta() -> SourceMetadata {
         name: "main".into(),
         fields: vec![FieldSchema {
             name: "value".into(),
-            field_type: FieldType::Int,
         }],
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 5,
@@ -70,14 +68,7 @@ impl CountingGlobalProvider {
     }
 }
 
-impl Provider for CountingGlobalProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "lc_counter".to_string(),
-            sources: vec![lc_counter_source_meta()],
-        }
-    }
-
+impl CountingGlobalProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(LcCounterSourceImpl {
             counter: Arc::clone(&self.counter),
@@ -94,9 +85,10 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(CountingGlobalProvider::new(Arc::clone(
-            &poll_count,
-        ))))
+        .register_sources(
+            "lc_counter",
+            CountingGlobalProvider::new(Arc::clone(&poll_count)).sources(),
+        )
         .expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
@@ -161,9 +153,10 @@ async fn integration_active_entry_appears_in_status() {
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(CountingGlobalProvider::new(Arc::clone(
-            &poll_count,
-        ))))
+        .register_sources(
+            "lc_counter",
+            CountingGlobalProvider::new(Arc::clone(&poll_count)).sources(),
+        )
         .expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
@@ -233,7 +226,10 @@ async fn setup_lifecycle_scheduler(
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(CountingGlobalProvider::new(poll_count)))
+        .register_sources(
+            "lc_counter",
+            CountingGlobalProvider::new(poll_count).sources(),
+        )
         .expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();
@@ -312,9 +308,10 @@ async fn integration_repeated_queries_keep_data_warm() {
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(CountingGlobalProvider::new(Arc::clone(
-            &poll_count,
-        ))))
+        .register_sources(
+            "lc_counter",
+            CountingGlobalProvider::new(Arc::clone(&poll_count)).sources(),
+        )
         .expect("lc_counter");
     let registry = Arc::new(registry);
     let config = Config::default();

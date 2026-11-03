@@ -57,17 +57,17 @@ See `docs/architecture.md` for a full overview. Key files:
 - `src/scheduler/` — the core: trigger management, provider execution, subscriptions
 - `src/server.rs` — Unix socket server, protocol handling
 - `src/cache.rs` — concurrent cache (DashMap)
-- `src/provider/` — all provider implementations
+- `defaults/` — the shipped providers, one file each
+- `src/provider/` — the registry and `ConfigSource`; `src/plugin/` — the compiled-in plugins
 - `benches/` — criterion benchmarks
 
 ## Contributing a New Provider
 
-See `docs/provider-development.md` for a step-by-step walkthrough. The short version:
+See `docs/provider-development.md`, "Writing a Source". The short version:
 
-1. Create `src/provider/yourprovider.rs` implementing the `Provider` trait
-2. Add tests in `tests/suite/provider_yourprovider.rs`, registered as a `mod` in `tests/suite/main.rs`
-3. Register in `src/provider/mod.rs` and `src/provider/registry.rs`
-4. Run `cargo nextest run -E 'test(provider_yourprovider)'` and `cargo bench --bench providers`
+1. Write `defaults/yourprovider.toml`, and add it to `SHIPPED` in `src/daemon/defaults.rs`
+2. Add tests in `tests/suite/shipped/yourprovider.rs`, registered as a `mod` in `tests/suite/shipped/mod.rs`
+3. Run `cargo nextest run -E 'test(shipped::yourprovider::)'`
 
 **Performance guidelines:** Read a file instead of spawning a process whenever possible. See the performance tiers in `docs/performance.md`.
 

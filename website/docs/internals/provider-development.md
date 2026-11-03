@@ -1,102 +1,89 @@
 ---
 sidebar_position: 2
-title: Provider Development
+title: Writing a Source
 ---
 
-# Provider Development Guide
+# Writing a Source
 
-Step-by-step reference for writing new built-in providers. Built-in providers live in `src/provider/` and are compiled into the daemon. For a lower-effort path using a config Source, see §6.
+A provider is configuration. Every provider comb ships is a file, `defaults/<name>.toml`, written the way a user writes one, and any line of it can be overridden in `config.toml` or `conf.d/`. There is no other kind: to add a provider, write a Source. What jinja cannot do comes from a plugin (§8).
 
 ---
 
-## 1. The Provider/Source/Field Model
+## 1. The model
 
 ### Three layers
 
-- **Provider** — a namespace. Declares 1+ Sources. Named by the key used in `comb get <name>.<field>`.
-- **Source** — one invalidation strategy, one lifecycle, one set of fields. The unit of execution and scheduling.
-- **Field** — a typed value. Belongs to exactly one Source.
+- **Provider** — a namespace, named by the key used in `comb get <name>.<field>`. It holds one or more Sources. Its table is `[daemon.providers.<name>]`.
+- **Source** — one schedule, one lifecycle, one set of fields: the unit of execution. Its table is `[daemon.providers.<name>.sources.<source>]`.
+- **Field** — a value. Belongs to exactly one Source, unless the provider's `result` merges them in an order of its own.
 
-Every provider implements:
+A Source is up to four lines of jinja:
 
-```rust
-pub trait Provider: Send + Sync {
-    fn metadata(&self) -> ProviderMetadata;
-    fn sources(&self) -> Vec<Box<dyn Source>>;
-}
-```
+| line | says | sees |
+|---|---|---|
+| `root` | the directory an instance answers for (none: one instance, at `~`) | `env`, `_` |
+| `data` | the body, rendered with the root as its working directory, on a blocking thread, so it may run a command | `env`, `comb`, `sources`, `daemon`, `_` |
+| `result` | the fields, each one line over `data` (`result.<field>`), or one line whose object is the whole node | `data`, `_` |
+| `return` | the schedule: `poll`, `watch`, `failback`, `budget`, `timeout`, `nearest` | |
 
-Every source implements:
+A failing `data` or `result` line is a failure: nothing is written and the scheduler counts it toward `failback`. A `result` that renders nothing is a result: the Source has nothing to report here, and it replaces what the instance stored before, so a Source never leaves stale values behind by reporting nothing. A line that renders none leaves its field absent: `null` means absent, never `""`.
 
-```rust
-pub trait Source: Send + Sync {
-    fn metadata(&self) -> &SourceMetadata;
-    fn execute(&self, dir: Option<&str>) -> Result<SourceResult, String>;
-    /// The root `dir` finds: `Some(root)`, or `None` when it finds nothing.
-    fn root(&self, dir: &str) -> Result<Option<String>, String> {
-        let _ = dir;
-        Ok(None)  // default: no root, one instance, at ~
-    }
-    /// True when `root` can name a directory (a Source that overrides `root`
-    /// overrides this too); decides where a relative `watch` can resolve.
-    fn has_root(&self) -> bool { false }
-}
-```
+**`root`** says which instance answers for a directory. A Source whose records depend on a project (git, mise, direnv, asdf, terraform, python) walks up to its marker and renders that directory, or nothing when it finds none; no `root` line is a Source with no root: one instance, at `~`. A root equal to `$HOME` is the instance at `~`, and is not the same as finding nothing (see below). A line that fails is a root that could not be worked out, and it fails the read: it is never answered from the instance at `~`.
 
-**`Provider::metadata()`** returns `ProviderMetadata { name, sources: Vec<SourceMetadata> }`. Called at registration time.
-
-**`Provider::sources()`** returns one `Box<dyn Source>` per declared `SourceMetadata`. The registry validates that names and fields match the metadata declaration.
-
-**`Source::execute(dir)`** runs the source and returns `Ok(SourceResult { fields: HashMap<String, Value> })`. `dir` is the instance's working directory: its root, or `$HOME` for the instance at `~`. Called on a blocking thread pool (`tokio::task::spawn_blocking`), so it may safely call `std::process::Command`, `std::fs::read_to_string`, and other blocking operations. `Err(message)` is a failure: nothing is written and the scheduler counts it toward `failback`. `Ok` with an empty `fields` map is a result — the Source has nothing to report here — and it replaces what the instance stored before, so a Source never leaves stale values behind by reporting nothing.
-
-**`Source::root(dir)`** says which instance answers for `dir`. A Source whose records depend on a project (git, mise, direnv, asdf, terraform, python) walks up from `dir` to its marker and returns that directory, or `None` when it finds none; the default returns `None` for every directory, which is a Source with no root: one instance, at `~`. A root equal to `$HOME` is the instance at `~`, and is not the same as finding nothing (see below). An `Err` is a root that could not be worked out, and it fails the read — it is never answered from the instance at `~`.
-
-A Source's instances combine in one of two ways, set by `nearest` in its metadata (`| nearest` on a config Source's `return` line):
+A Source's instances combine in one of two ways, set by `| nearest` on its `return` line:
 
 - **Cascade** (the default). A read of `p.<key>` from directory `D` asks the nearest instance first (`R1 = root(D)`). If the key is missing there, it asks the parent of that root (`root(parent(R1))`), and so on, ending at the instance at `~` and never past it; finding no root continues to `~`. A namespace read takes every instance on the way and merges them, the nearer winning per leaf. That is how `asdf` is a single Source: inside a project `asdf.node` is the project's `.tool-versions`, and `asdf.go`, which only `~/.tool-versions` sets, is found at `~`.
 - **Nearest.** The instance `root(D)` finds answers alone. A key it lacks is absent: no outer instance fills in, and the walk does not move up. If no root is found there is no instance at all: nothing runs and nothing is read, and `~` is not a fallback. Finding `$HOME` itself is an instance (the one at `~`). That is how `git` works: inside a nested repository `git.branch_parent` is the inner repository's or absent, never the superproject's, and in a directory outside any repository there are no git values.
 
 Choose nearest when the instance is *the one you are in* (git, direnv, a Python venv, a terraform root); keep cascade when instances are layers of one setting (mise, asdf's `.tool-versions`). A Source with no root has its one instance at `~` either way. Records written by `put`, and the `config:` seeds, merge up the directory chain whatever a Source does.
 
-### SourceMetadata fields
-
-```rust
-pub struct SourceMetadata {
-    pub name: String,
-    pub fields: Vec<FieldSchema>,
-    pub invalidation: InvalidationStrategy,
-    pub failback: FailbackConfig,
-    pub decay: Option<u8>,           // decay steps before eviction; None takes the `_.decay` prototype
-    pub budget: Duration,    // how long a read of a stale record waits for its run
-    pub nearest: bool,               // the nearest instance answers alone; false cascades up to ~
-}
-```
-
-An instance's lifecycle key is `(provider, root, source)`, with `root` `None` for the instance at `~`. Its schedule registers when the instance is first requested, never at load: relative `patterns` are watched under the instance's root directory, and absolute `abs_paths` are watched whatever the root. At the instance at `~` relative patterns register nothing (a recursive watch of `$HOME` is the firehose), so a Source with no root declares `abs_paths` only; a relative `watch` on a Source that has no root is an error.
-
-### ProviderMetadata
-
-```rust
-pub struct ProviderMetadata {
-    pub name: String,
-    pub sources: Vec<SourceMetadata>,
-}
-```
-
-There is no `global: bool` field on `ProviderMetadata`. Whether a Source has a root is a per-Source property (`Source::root`).
-
-### FieldSchema
-
-`FieldSchema { name, field_type }` — a root is a Source-level property, not per-field.
-
-
-### expand_abs_path()
-
-The `expand_abs_path(s: &str) -> Option<PathBuf>` helper (in `src/provider/mod.rs`) expands `~`, `$HOME`, `$XDG_CONFIG_HOME`, `$XDG_DATA_HOME`, `$XDG_STATE_HOME`, and `$XDG_CACHE_HOME` at metadata construction time, with XDG defaults when the env vars are unset. Sources should call this in `metadata()` so the scheduler receives canonical absolute paths.
+An instance's lifecycle key is `(provider, root, source)`, with no root for the instance at `~`. Its schedule registers when the instance is first requested, never at load: relative `watch` paths are watched under the instance's root, and absolute ones whatever the root. A relative `watch` on a Source with no root is a load error: it has no directory to resolve it against.
 
 ---
 
-## Implementing a Source — worked example: git
+## 2. Writing one
+
+### 2.1 Decide on Sources
+
+Answer these for each group of fields; a group that differs is another Source, so a cheap field need not run with a dear one:
+
+1. How do these fields change? (a file, a timer, or both)
+2. Does it have a root? (none: one instance, at `~`; a root: one instance per project root. Then: do they cascade, or does the nearest answer alone?)
+3. What can it read rather than run?
+
+| Signal | Root | `return` |
+|---|---|---|
+| File changes only | with or without | `watch(...)` |
+| Timer only | with or without | `poll(...)` |
+| File changes + safety timer | with or without | `watch(...) \| poll(...)` |
+| A file outside any project | none | `watch('/absolute/path')` |
+
+A Source with `watch` and no `poll` runs on first demand and again only when a watched path changes. Like every Source it decays once nothing reads it (its Active window is the default poll lifespan, 60 s × 12) and its watches are dropped; the next read runs it again. There is no spelling for "run once": the shipped `hostname`, `user` and `uname` poll every 10 minutes, 10 minutes and hour while read, so a renamed machine is seen.
+
+### 2.2 Write the file
+
+In `~/.config/beachcomber/conf.d/docker.toml`, say. The current Docker context, read from Docker's own file with no process:
+
+```toml
+[daemon.providers.dockercontext.sources.config]
+# No root: one instance, at ~, so only absolute paths can be watched.
+data = "{{ '~/.docker/config.json' | read | fromjson }}"
+result.name = "{{ (data.currentContext or 'default') if data is not none }}"
+return = "{{ result | watch('~/.docker/config.json') | failback('60s', 3) }}"
+```
+
+A missing file reads as undefined and every line over it renders nothing, so with no Docker config the Source reports nothing, which is not a failure.
+
+### 2.3 Use it
+
+```bash
+comb get dockercontext.name
+comb check config      # lints every line, and names the file that set it
+```
+
+An edit under `providers` reloads in place. Read a shipped file to see how one is written: `defaults/python.toml` is `root` and `data` with some logic, `defaults/hostname.toml` one plugin call, `defaults/git.toml` all of it.
+
+### 2.4 Worked example: git
 
 `git` is `defaults/git.toml`, five Sources with different strategies, sharing one `root` line in their `_` prototype. Four get their data from the compiled-in `git` plugin (§8):
 
@@ -121,526 +108,136 @@ git.status  → watch + poll (watches .git/index + polls every 60s), rooted at t
 
 This decomposition allows git branch lookups (hot path, watch-driven) to stay fresh without dragging along the slower diff computation.
 
-Consumers still use `comb get git.branch .` as before — the registry's `field → source` map routes the query to the `head` source transparently.
+Consumers use `comb get git.branch .`: the registry's `field → source` map routes the query to the `head` Source.
 
 ---
 
-## 2. Step-by-Step: Writing a New Provider
+## 3. Data providers and template-backed namespaces
 
-### 2.1 Decide on sources
+Some providers serve raw data sets that clients consume through templates. The pattern separates two concerns:
 
-Before writing code, answer these questions for each logical group of fields:
+- **Data provider** — a daemon provider that caches all variants of an env-selected source. Its name is descriptive of the data it holds (e.g. `aws_profiles`, `gcloud_configs`). Each field is a variant keyed by name, each value an object of per-variant fields. The daemon caches the whole set regardless of any shell selector.
+- **Consumer namespace** — a `[client.providers.<ns>] template.*` table, shipped as a managed `defaults/<ns>.toml` file, whose templates present the user-facing surface (e.g. `aws`, `gcloud`). These reference `comb.<data_provider>[<selector>].<field>` to index the data provider by the active selector; the daemon serves the templates as data and the client renders them with the caller's environment.
 
-1. How do these fields change? (filesystem event, timer, or both)
-2. Does it have a root? (no root: one instance total, at `~`; a root: one instance per project root. Then: do the instances cascade, each filling in what the nearer lacks up to `~` (`nearest: false`), or does the nearest one answer alone (`nearest: true`)?)
-3. Do I need absolute-path watches? (e.g., watching `~/.config/mise/config.toml`)
+```
+# data provider: daemon-side, env-blind
+aws_profiles.default  → Object{ region: "us-east-1" }
+aws_profiles.staging  → Object{ region: "us-west-2" }
 
-Use this decision table:
-
-| Signal | Root | Use |
-|---|---|---|
-| File changes only | with or without | `watch` |
-| Timer only | with or without | `poll` |
-| File changes + safety timer | with or without | `watch + poll` |
-| Truly static (changes only on a reboot) | none | `watch` (pure-watch, one instance) |
-| Global config file watch (mise config dir) | none | `watch` + `abs_paths` |
-
-**Pure-watch** sources with no root use the `Watch` strategy: no poll of their own. They execute once on first demand and only re-execute when an fs event fires on their registered `abs_paths`. Like every Source they decay once nothing reads them — a watch-only Source's Active window is the default poll lifespan, 60 s × 12 (12 minutes after its last read), after which its watches are dropped — and the next read runs them again. Suitable for values that can only change when a specific file is written, such as mise's global config. The shipped `hostname`, `user` and `uname` poll instead (every 10 minutes, 10 minutes and hour while read), so a renamed machine is seen.
-
-### 2.2 Create the file
-
-Create `src/provider/dockercontext.rs`:
-
-```rust
-use crate::provider::{
-    expand_abs_path, FailbackConfig, FieldSchema, FieldType, InvalidationStrategy,
-    Provider, ProviderMetadata, Source, SourceMetadata, SourceResult, Value,
-};
-use std::path::PathBuf;
-
-// ── SourceMetadata constructor ────────────────────────────────────────────────
-
-fn config_meta() -> SourceMetadata {
-    SourceMetadata {
-        name: "config".to_string(),
-        fields: vec![
-            FieldSchema { name: "name".to_string(), field_type: FieldType::String },
-            FieldSchema { name: "endpoint".to_string(), field_type: FieldType::String },
-        ],
-        // No root: one instance, at ~, so only absolute paths can be watched.
-        invalidation: InvalidationStrategy::Watch {
-            patterns: vec![],
-            abs_paths: vec![
-                expand_abs_path("~/.docker/config.json")
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-                expand_abs_path("~/.docker/contexts")
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            ],
-        },
-        failback: FailbackConfig { reattempts: 3, interval_secs: 60 },
-        // Decay steps before eviction; None takes the provider's `_.decay`.
-        decay: None,
-        // How long a read of a stale record waits for its run.
-        budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
-        nearest: false,
-    }
-}
-
-// ── Provider ──────────────────────────────────────────────────────────────────
-
-pub struct DockerContextProvider;
-
-impl Provider for DockerContextProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "dockercontext".to_string(),
-            sources: vec![config_meta()],
-        }
-    }
-
-    fn sources(&self) -> Vec<Box<dyn Source>> {
-        vec![Box::new(DockerContextSource)]
-    }
-}
-
-// ── Source ────────────────────────────────────────────────────────────────────
-
-struct DockerContextSource;
-
-impl Source for DockerContextSource {
-    fn metadata(&self) -> &SourceMetadata {
-        static META: std::sync::OnceLock<SourceMetadata> = std::sync::OnceLock::new();
-        META.get_or_init(config_meta)
-    }
-
-    // `root` and `has_root` keep their defaults: one instance, at ~. A project
-    // Source overrides both.
-
-    fn execute(&self, _dir: Option<&str>) -> Result<SourceResult, String> {
-        let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
-        let config_path = PathBuf::from(&home).join(".docker").join("config.json");
-        // No Docker config is nothing to report, not a failure.
-        let Ok(config_text) = std::fs::read_to_string(&config_path) else {
-            return Ok(SourceResult::default());
-        };
-        let config: serde_json::Value = serde_json::from_str(&config_text)
-            .map_err(|e| format!("unreadable docker config: {e}"))?;
-        let context_name = config
-            .get("currentContext")
-            .and_then(|v| v.as_str())
-            .unwrap_or("default")
-            .to_string();
-        let endpoint = read_context_endpoint(&home, &context_name)
-            .unwrap_or_else(|| "unix:///var/run/docker.sock".to_string());
-
-        let mut result = SourceResult::new();
-        result.insert("name", Value::String(context_name));
-        result.insert("endpoint", Value::String(endpoint));
-        Ok(result)
-    }
-}
-
-fn read_context_endpoint(home: &str, context_name: &str) -> Option<String> {
-    if context_name == "default" {
-        return None;
-    }
-    // Docker names contexts by the SHA256 of the name; scan the meta directory.
-    let meta_dir = PathBuf::from(home).join(".docker").join("contexts").join("meta");
-    for entry in std::fs::read_dir(&meta_dir).ok()? {
-        let meta_path = entry.ok()?.path().join("meta.json");
-        let text = std::fs::read_to_string(&meta_path).ok()?;
-        let meta: serde_json::Value = serde_json::from_str(&text).ok()?;
-        if meta.get("Name").and_then(|v| v.as_str()) == Some(context_name) {
-            return meta
-                .pointer("/Endpoints/docker/Host")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-        }
-    }
-    None
-}
+# consumer namespace: templates in defaults/aws.toml, rendered by the client
+[client.providers.aws]
+template.profile = "{{ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or 'default' }}"
+template.region = "{{ env.AWS_REGION or env.AWS_DEFAULT_REGION
+              or comb.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT
+                                     or env.AWS_DEFAULT_PROFILE or 'default' ].region }}"
 ```
 
-### 2.3 Register the provider
+`comb get aws_profiles` returns the raw dump. `comb get aws` renders the consumer templates. The daemon never reads `$AWS_PROFILE`.
 
-Add the module to `src/provider/mod.rs`:
+### The `comb.*` reference convention
 
-```rust
-pub mod dockercontext;
+Inside value expressions, `comb.<provider>.<field>` addresses the **raw cached value**, bypassing any field expression. This is distinct from `<provider>.<field>`, which evaluates that field's value expression (recursive, cycle-detected).
+
+This matters when a template needs to override a same-named cached value — a template at a cached field's path wins on read:
+
+```
+# defaults/terraform.toml: the template at terraform.workspace overrides the cached workspace without a cycle
+[client.providers.terraform]
+template.workspace = "{{ env.TF_WORKSPACE or comb.terraform.workspace }}"
 ```
 
-Add the import and registration to `src/provider/registry.rs`:
-
-```rust
-// In with_defaults():
-registry
-    .register(Box::new(crate::provider::dockercontext::DockerContextProvider))
-    .expect("dockercontext");
-```
-
-### 2.4 Use it
-
-```bash
-comb get dockercontext.name
-comb get dockercontext.endpoint
-```
-
-### 2.5 Write a test
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn metadata_is_valid() {
-        let provider = DockerContextProvider;
-        let meta = provider.metadata();
-        assert_eq!(meta.name, "dockercontext");
-        assert_eq!(meta.sources.len(), 1);
-        let src = &meta.sources[0];
-        assert_eq!(src.name, "config");
-        assert!(src.fields.iter().any(|f| f.name == "name"));
-        assert!(src.fields.iter().any(|f| f.name == "endpoint"));
-    }
-
-    #[test]
-    fn returns_empty_without_docker_config() {
-        let dir = tempfile::tempdir().unwrap();
-        // SAFETY: test-only env mutation; nextest runs each test in its own process
-        unsafe { std::env::set_var("HOME", dir.path()); }
-        let source = DockerContextSource;
-        let result = source.execute(None).unwrap();
-        assert!(result.fields.is_empty());
-        unsafe { std::env::remove_var("HOME"); }
-    }
-
-    #[test]
-    fn reads_default_context() {
-        let dir = tempfile::tempdir().unwrap();
-        let docker_dir = dir.path().join(".docker");
-        std::fs::create_dir_all(&docker_dir).unwrap();
-        std::fs::write(
-            docker_dir.join("config.json"),
-            r#"{"auths": {}, "currentContext": "default"}"#,
-        ).unwrap();
-
-        // SAFETY: test-only env mutation; nextest runs each test in its own process
-        unsafe { std::env::set_var("HOME", dir.path()); }
-        let source = DockerContextSource;
-        let result = source.execute(None).unwrap();
-        assert_eq!(
-            result.fields.get("name"),
-            Some(&crate::provider::Value::String("default".to_string()))
-        );
-        unsafe { std::env::remove_var("HOME"); }
-    }
-}
-```
-
-Run with:
-
-```bash
-cargo nextest run -p beachcomber -E 'test(provider::dockercontext)'
-```
+`comb.terraform.workspace` is the stored value; `terraform.workspace` is the resolved field. No self-reference, no rename needed.
 
 ---
 
-## 3. InvalidationStrategy: Choosing the Right Variant
+## 4. What a read checks
 
-```rust
-pub enum InvalidationStrategy {
-    Poll { interval_secs: u64, count: u32 },
-    Watch { patterns: Vec<String>, abs_paths: Vec<String> },
-    WatchAndPoll { patterns: Vec<String>, abs_paths: Vec<String>, interval_secs: u64, count: u32 },
-}
-```
+A read answers from a Source's stored record only while the record is valid: within its lifetime (its poll), and with its **stat inputs** as its run found them. A run stamps its inputs immediately before it reads them, and a read stats them again (one `stat(2)` per input, on the request task) before it answers. If one changed, the record's instance runs again, and the read waits up to the Source's budget for it. A change while the run executes fails the next read's check, so it costs one run more, never a stale answer.
 
-There is no `Once` variant. A value that never changes is a pure-watch global, `Watch { patterns: [], abs_paths: [] }`, run on first demand; it decays like any other Source.
+A record's inputs are the paths its `watch(...)` declares (each relative one joined to the instance's root, each absolute one as written, and at the `~` instance each single-component one under `$HOME`) and the files its `data` and `result` lines read. A path the lines compute (a linked worktree's `HEAD`, a file named by `env.AWS_CONFIG_FILE`, a hash) is checked as a constant one is: nothing needs declaring. A Source that only polls and reads no file has none, has no validity, and is checked for its lifetime alone.
 
-Strategy chooser:
-
-| Signals available | Use |
+| item | what it reads |
 |---|---|
-| Timer only, no watchable file | `Poll` |
-| Filesystem events only, no poll needed | `Watch` |
-| Filesystem events + safety backstop timer | `WatchAndPoll` |
-| Truly static value (hostname, uname, user) | `Watch` (empty patterns + abs_paths) |
-| Global config dir watch | `Watch` (abs_paths only) |
+| `p \| read`, `p \| stat`, `p \| realpath` | the path |
+| `lup(name)` | every path its walk probed: `<dir>/<name>` from the instance's directory up to the hit (to the boundary when there is none, or with `all`); with `git=true`, each `<dir>/.git` it read to find the repository's root. A miss is read too: a `name` made nearer is a change |
+| `pattern \| glob` | each directory it listed, as a node (an entry made, removed or renamed in it is a change), and each literal component it found missing or ended on. A directory passed through on the way is not: what the glob read below it is |
 
-**`Poll { interval_secs, count }`** — re-execute on a timer; the entry stays Active for `count` polls (`interval_secs × count`) after its last read. Use when there is no file to watch that reliably reflects state changes.
-
-```rust
-// battery level: no file to watch reliably, poll every 30s
-invalidation: InvalidationStrategy::Poll { interval_secs: 30, count: 4 },
+```toml
+[daemon.providers.flag.sources.s]
+root   = "{{ lup('.flagroot') | dirname }}"
+data   = "{{ lup('state.json') | read }}"     # checked: every state.json probe, and the one read
+result.v = "{{ data }}"
+return = "{{ result | poll('10m') }}"           # no watch() needed for a read to see a rewrite
 ```
 
-**`Watch { patterns, abs_paths }`** — re-execute when filesystem paths change. `patterns` are relative path components matched within the instance's root (Sources with a root only). `abs_paths` are absolute roots watched directly (typically used by Sources with no root or for cross-repo config files). Use `expand_abs_path()` to expand `~`, `$HOME`, and XDG vars at metadata construction time.
+- The first 64 files a run reads are checked; a run that reads more logs once per Source (`flag.s: 150 files read; the first 64 are checked on read`), and a change to a later file waits for the watch or the poll.
+- What an `exec` child or a plugin reads is not the lines' reading: a Source that shells out declares what its command reads with `watch(...)`, or `stat`s it in its own line (as `git`'s `refs` and `status` do), or lives with its poll.
+- The `root` line's walk is not a record's input. The root a directory finds is kept per directory (see "How config Sources work").
+- A `watch(...)` path is still what the daemon watches in the background, to warm a record before anyone reads it; what the lines read is checked on a read only.
 
-```rust
-// git.refs: re-run on any change under .git/ (under each repository root)
-invalidation: InvalidationStrategy::Watch {
-    patterns: vec![".git".to_string()],
-    abs_paths: vec![],
-},
-// mise.tools: also re-run when the global mise config dir changes
-invalidation: InvalidationStrategy::Watch {
-    patterns: vec![],
-    abs_paths: vec![
-        expand_abs_path("$XDG_CONFIG_HOME/mise")
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-    ],
-},
-```
+- **A stamp** is `dev`, `ino`, size, mtime in nanoseconds and kind, following
+  symlinks, plus the link's own inode and mtime for a symlink. An absent path
+  has a stamp of its own, so creating an input is a change. A path that cannot
+  be stat'd (`EACCES`) is unknown, and keeps the record.
+- **A directory** is an input as a node, by its own mtime: an entry created,
+  removed or renamed in it is a change (git writes `HEAD` and `index` by
+  renaming a lockfile in `.git/`); a change deeper in the tree is left to the
+  watch.
+- **A network or FUSE mount** (NFS, SMB, AFP, FUSE, or one not known) is never
+  stat'd on a read: a stat there can hang and its attribute cache can lie. A
+  record with an input there is checked for its lifetime only, and the daemon
+  logs one warning per mount.
+- **A racy stamp**, taken within the mount's timestamp resolution of the
+  file's mtime (and at least 10 ms), cannot see a same-size write in place in
+  that window. The first read once the window has closed counts the record
+  invalid and runs it again.
 
-There is no automatic poll fallback for `Watch` sources. If filesystem watching registration fails at runtime, the scheduler logs a warning and the source serves its last cached value. If a fallback backstop is needed, use `WatchAndPoll` instead.
+Name only files the run reads: an input that changes when the value does not costs a run for nothing. A directory is the blunt case: `watch('.git')` and `lup('.git')` make `.git` an input, whose mtime moves whenever a git command makes a lockfile there, so the next read runs the Source again. There is no way yet to watch a directory without also checking it on a read.
 
-**`WatchAndPoll { patterns, abs_paths, interval_secs, count }`** — watch files AND poll on a timer. Use when file watching catches most changes quickly but some changes don't touch a watchable file (e.g., network-propagated git changes via `git fetch`).
-
-```rust
-// git.status: watch .git/index for staging changes, poll every 60s for remote drift
-invalidation: InvalidationStrategy::WatchAndPoll {
-    patterns: vec![".git/index".to_string()],
-    abs_paths: vec![],
-    interval_secs: 60,
-    count: 12,
-},
-```
-
-For Sources with a root, `patterns` like `".git"` are relative to the instance's root. The scheduler resolves them to absolute watch roots when the instance is first requested.
+The record's validity hash is shown as `hash` in its `:cache` answer
+(`comb get git:cache.branch`), 16 lowercase hex digits, written by the daemon
+alone.
 
 ---
 
-## 3b. Cache Lifecycle Tuning
+## 5. The schedule
 
-A built-in Source's schedule is its own, set in code, until the files say otherwise. Its table in `[daemon.providers.<name>.sources.<source>]` takes `return` and nothing else (`root`, `data` and `result` are errors), and the line replaces the Source's invalidation, failback, decay and budget whole. A failback, budget or timeout it does not name is the engine's (`failback('1s', 3)`, `[daemon] budget`, `[daemon] timeout`). A built-in with no `return` keeps everything it declares: the `_` Source lines apply to config Sources, and reach a built-in only through `| super`.
+A Source's `return` line maps onto one of three strategies:
 
-Example:
+| Signals available | Line |
+|---|---|
+| Timer only, no watchable file | `poll(interval, count)` |
+| Filesystem events only, no poll needed | `watch(paths...)` |
+| Filesystem events + safety backstop timer | `watch(paths...) \| poll(interval, count)` |
+
+**`poll(interval, count)`** runs the Source on a timer; the entry stays Active for `count` polls (`interval × count`) after its last read. Use it when there is no file that reliably reflects state changes.
+
+```toml
+return = "{{ result | poll('30s', 4) }}"      # battery level: no file to watch reliably
+```
+
+**`watch(paths...)`** runs the Source when a path changes. A relative path is under the instance's root (Sources with a root only). An absolute or `~` one is watched directly, whatever the root. Its arguments are constants: a path a line computes is checked on a read (§4), not watched.
+
+```toml
+return = "{{ result | watch('.git') | nearest }}"    # git.refs: any change under .git/, per repository
+```
+
+There is no automatic poll fallback for a `watch`. If a watch cannot register at runtime, the scheduler logs a warning and the Source serves its last cached value. If a backstop is needed, add a `poll`, as `git.status` does for what does not touch a watchable file:
+
+```toml
+return = "{{ result | watch('.git/index') | poll('60s', 2) | failback('30s', 3) | nearest }}"
+```
+
+A `return` names what it wants, and the line is whole: `nearest` too, so a retune of a nearest Source says `| nearest` again or the Source cascades. A failback, budget or timeout it does not name is the engine's (`failback('1s', 3)`, `[daemon] budget`, `[daemon] timeout`), and a Source with no `return` takes the nearest `_`'s (the abstract Source's `poll('60s', 12) | failback('1s', 3)` ships in `defaults/00-comb.toml`). `| super` extends the `_` line instead of replacing it.
+
+A shipped Source is retuned by setting that line in a later layer, and any other line of it the same way:
 
 ```toml
 [daemon.providers.git.sources.status]
 return = "{{ result | watch('.git/index') | poll('120s', 6) | failback('2s', 5) | nearest }}"
 ```
 
-The line replaces everything the Source declares, `nearest` included: git, direnv, python and terraform Sources are nearest, so a retune of one says `| nearest` again or the Source cascades.
-
-A config Source sets its own schedule on the same line (`poll`, `watch`, `ttl`, `failback`, `budget`).
-
-The full decay model — state machine, step durations, reinstatement rules — is described in the [architecture page](architecture.md) §5. A Source's watches exist only while its instance is Active: decay drops them and the read that reinstates the instance registers them again.
-
-**Decay depth is data.** After the Active window an entry steps through its `decay` steps (4 unless told otherwise; step n lasts `lifespan × 2^n`) and is then evicted. A depth is put like any value: `comb put '<provider>:cache._.decay' 6` for one provider, `comb put '*:cache._.decay' 3` for every provider, with `--path` to scope it to a directory and below; the nearest prototype wins, and a lifecycle fixes its depth when it registers. `comb get <provider>:cache.<field>` shows the `poll`, `watch` and `decay` an entry registered with. There is no per-source keep-alive duration: `fsevent_lifespan` was removed, and a watch-only Source's Active window is the default poll lifespan (60 s × 12).
-
----
-
-## 4. Performance Guidelines
-
-Provider execution happens on tokio's blocking thread pool. Slow providers delay cache freshness but do not block the scheduler loop. Still, keep providers fast. The tier list from `docs/performance.md`:
-
-| Tier | Target | Method |
-|---|---|---|
-| Nanosecond (`<1µs`) | `user`, `hostname`, `gcloud`, `aws` | libc calls, env vars, file reads + line scan |
-| Microsecond (1-100µs) | `terraform`, `python`, `direnv` (no binary) | File existence checks + small reads |
-| Millisecond (1-10ms) | `network`, `battery` | At most one process spawn |
-| Slow (10-50ms) | `mise`, `direnv` (with binary), config Sources that shell out | Multiple spawns or interpreted CLI |
-| A repository's worth | `git` (about 150 ms for all five Sources on this repository, one after another) | One `git` process per fact; `head` none |
-
-**Rule 1: Never fork a process when you can read a file.**
-
-Process spawns cost 2-6ms minimum. File reads cost nanoseconds. Before using `Command::new(...)`, ask: does this tool write its state to a file I can parse?
-
-```rust
-// Bad: 5ms to spawn git just to count stashes
-let output = Command::new("git").args(["stash", "list"]).output().ok()?;
-let count = output.stdout.lines().count();
-
-// Good: ~1µs to read the stash log file directly
-let stash_log = dir.join(".git").join("logs").join("refs").join("stash");
-let count = std::fs::read_to_string(&stash_log)
-    .map(|s| s.lines().count() as i64)
-    .unwrap_or(0);
-```
-
-Real examples from `docs/performance.md`:
-- `gcloud`: reading `~/.config/gcloud/properties` instead of spawning the Python CLI — 500ms to 1µs (~500,000x)
-- `git` stash: reading `.git/logs/refs/stash` instead of `git stash list` — 5ms to 1µs
-
-**Rule 2: If you must spawn a process, spawn exactly one.**
-
-If a file read is truly not feasible, cap the provider at one process spawn. `git`'s `status` Source spawns one (`git status`). The `network` provider spawns one (`airport` for SSID; everything else uses `libc::getifaddrs()`).
-
-**Rule 3: Providers that poll frequently must be fast.**
-
-A provider polling every 5 seconds and taking 50ms per execution consumes 1% of a blocking thread slot continuously. Use `Poll { interval_secs, count }` values that match the provider's actual cost:
-- Sub-microsecond providers: can poll every 5-10s safely
-- Millisecond providers: 30s minimum
-- Slow providers (>10ms): 60s minimum or use `Watch` instead
-
-**Rule 4: Sources must be stateless.**
-
-`execute()` receives no mutable state. Do not use `Mutex`-wrapped fields inside your source struct to cache intermediate results — this adds contention and complexity. If two concurrent calls to `execute()` are needed (different paths), they must be independent.
-
-See `docs/performance.md` for the full performance profile, benchmark commands, and the regression checklist.
-
----
-
-## 5. Testing Patterns
-
-**Basic structure**
-
-Every provider file should have a `#[cfg(test)]` module. At minimum, test:
-1. `metadata()` returns valid, expected values — check `sources.len()`, source names, field names, root, invalidation variant
-2. `source.execute()` returns an empty `SourceResult` when the required file is absent, and an `Err` when a tool it needs cannot run
-3. `source.execute()` returns the expected fields when given a valid fixture
-
-**Using tempdir**
-
-For sources that read files, use `tempfile::tempdir()` to create a controlled environment:
-
-```rust
-#[test]
-fn detects_git_repo() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join(".git")).unwrap();
-    std::fs::write(dir.path().join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
-
-    let provider = GitProvider;
-    let sources = provider.sources();
-    let refs_source = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
-    // Should not panic; may return empty result for a bare .git
-    let _ = refs_source.execute(Some(dir.path().to_str().unwrap()));
-}
-```
-
-**Testing with real git repos**
-
-For sources that shell out (like `git`), test against a real initialized repo:
-
-```rust
-#[test]
-fn git_refs_on_empty_repo() {
-    let dir = tempfile::tempdir().unwrap();
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["commit", "--allow-empty", "-m", "init"])
-        .current_dir(dir.path())
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test")
-        .output()
-        .unwrap();
-
-    let provider = GitProvider;
-    let sources = provider.sources();
-    let refs_source = sources.iter().find(|s| s.metadata().name == "refs").unwrap();
-    let result = refs_source.execute(Some(dir.path().to_str().unwrap())).unwrap();
-    assert_eq!(
-        result.fields.get("branch"),
-        Some(&crate::provider::Value::String("main".to_string()))
-    );
-}
-```
-
-**Testing when the external tool is not installed**
-
-Sources that depend on optional tools or files must return an empty `SourceResult` gracefully when the tool is absent or when the relevant files do not exist — the worked example's Source reads `~/.docker/config.json` and answers nothing without one:
-
-```rust
-#[test]
-fn returns_empty_without_a_docker_config() {
-    let home = tempfile::tempdir().unwrap();
-    // SAFETY: nextest runs each test in its own process.
-    unsafe { std::env::set_var("HOME", home.path()) };
-
-    let sources = DockerContextProvider.sources();
-    let result = sources[0].execute(None).unwrap();
-    assert!(result.fields.is_empty());
-}
-```
-
-A shipped file's Sources are tested the same way, through the daemon: `tests/suite/shipped/terraform.rs` checks that `terraform` answers nothing in a directory with no `.terraform/` above it.
-
-Avoid `std::env::set_var` in parallel tests — it mutates global state. cargo-nextest runs each test in its own process by default, so env-var mutations are isolated per test; `--test-threads=1` is only needed for plain `cargo test`.
-
-**Testing `metadata()` completeness**
-
-A quick structural test catches registration bugs early:
-
-```rust
-#[test]
-fn metadata_sources_match_sources_fn() {
-    let provider = DockerContextProvider;
-    let meta = provider.metadata();
-    let sources = provider.sources();
-    assert_eq!(meta.sources.len(), sources.len());
-    for (m, s) in meta.sources.iter().zip(sources.iter()) {
-        assert_eq!(m.name, s.metadata().name);
-        for field in &m.fields {
-            // Each declared field name should appear in a real execute() result
-            // when given a valid fixture. This is a smoke check, not exhaustive.
-            let _ = field.name.as_str(); // at minimum, names are non-empty
-        }
-    }
-}
-```
-
----
-
-## 6. Config Sources vs Built-in Providers
-
-### When to use a config Source
-
-A config Source is defined in `~/.config/beachcomber/config.toml` (or `conf.d/`) without writing any Rust. Use it when:
-
-- The logic is simple or already exists as a shell script
-- The tool does not have a file-based state representation (forced to shell out)
-- The data changes infrequently so the performance cost is acceptable
-- You need something working today and can write a built-in later
-
-### How config Sources work
-
-A Source entry in config:
-
-```toml
-[daemon.providers.my_vpn.sources.main]
-data = "{{ exec('vpn-status --json') | fromjson }}"
-result = "{{ data }}"
-return = "{{ result | watch('/etc/vpn/state') | poll('10s') }}"
-```
-
-This registers a `ConfigSource` (see `src/provider/config_source.rs`) that:
-1. Runs `sh -c "vpn-status --json"` on the daemon when `data` is evaluated
-2. Parses stdout as JSON (`| fromjson`); `| fromini` reads `key=value` lines
-3. Returns the fields `result` names, or the whole object for `result = "{{ data }}"`
-
-The `return` line's decorators map onto `InvalidationStrategy` (see `src/shape/decorators.rs`):
-- `poll` only -> `Poll { interval_secs, count }`
-- `watch` only -> `Watch { patterns, abs_paths }`
-- Both -> `WatchAndPoll { patterns, abs_paths, interval_secs, count }`
-- A Source with no `return` takes the abstract Source's `poll('60s', 12) | failback('1s', 3)` from `defaults/00-comb.toml`
-
-Set `root` to give the Source instances at project roots (`data` runs with the root as its working directory):
-
-```toml
-[daemon.providers.project_version.sources.main]
-root = "{{ lup('VERSION') | dirname }}"
-data = "{{ exec('cat VERSION 2>/dev/null || echo unknown') | trim }}"
-result.version = "{{ data }}"
-return = "{{ result | watch('VERSION') }}"
-```
-
-The daemon keeps the root each directory resolved to, so a `root` line (it may run a command) is rendered once per directory rather than per request. The kept answer carries the stamps of the directories from the one asked about up to the root it found (up to `$HOME`, or `/` outside it, when it found none), taken before the line rendered, and a read checks them, one `stat` per directory: creating or removing a marker in one moves that directory's mtime, so the next read renders the root again. A marker created below a kept root, or the marker at it removed, is seen at once, and so is one that gives a `| nearest` Source that found nothing its instance. A change the stamps cannot see (what a command in the line reads, a file rewritten in place) is seen when the instance the root named is evicted (it has gone cold and decayed away), which drops the kept answer too. A `root` line that fails is answered with the same error for a few seconds rather than re-run on every request.
-
-An empty `root` (or none) is the one instance at `~`. Instances cascade by default (a key the nearest instance lacks is looked for at the parent of its root, up to `~`); `| nearest` on `return` makes the nearest instance answer alone.
-
-Three things a config Source relies on beyond its own table:
+Three things a Source relies on beyond its own table:
 
 - **Prototypes.** A table named `_` (`[daemon.providers.<p>.sources._]` for one provider's Sources, `[daemon.providers._.sources._]` for all) holds defaults. A Source's own `root`, `data`, `result` or `return` line wins whole; an absent line takes the nearest `_`'s; `| super` on a `return` extends the `_` line instead of replacing it. The abstract Source (`poll('60s', 12) | failback('1s', 3)`) ships in `defaults/00-comb.toml`.
 - **The engine.** `data` can call `exec`, `url`, `plugin`, `read`, `stat`, `lup`, `fromjson`, `fromini`, `merge`, `map` over objects, `pluck`, `dirname` and `tojson` (the table is in the configuration reference). An `exec` string is run by `sh -c`, so `$BAR` in it is invisible to the engine, and to a future `cache()` hash of the line: prefer `exec('cmd ' ~ env.bar)`.
@@ -648,24 +245,78 @@ Three things a config Source relies on beyond its own table:
 
 A provider is switched off with `[daemon.providers.<p>] enabled = false`: no Source of it runs, a read is a miss with no template half, and puts under it stay readable. An edit under `providers` reloads in place; only the bare `[daemon]` and `[client]` keys restart the daemon. Decay depth is data (`[daemon.providers._.cache._] decay = 4` ships), settable per provider or by `put`.
 
-### When to write a built-in
+The root a directory finds is kept: a `root` line (it may run a command) is rendered once per directory rather than per request. The kept answer carries the stamps of the directories from the one asked about up to the root it found (up to `$HOME`, or `/` outside it, when it found none), taken before the line rendered, and a read checks them, one `stat` per directory: creating or removing a marker in one moves that directory's mtime, so the next read renders the root again. A marker created below a kept root, or the marker at it removed, is seen at once, and so is one that gives a `| nearest` Source that found nothing its instance. A change the stamps cannot see (what a command in the line reads, a file rewritten in place) is seen when the instance the root named is evicted (it has gone cold and decayed away), which drops the kept answer too. A `root` line that fails is answered with the same error for a few seconds rather than re-run on every request.
 
-Prefer a built-in provider when:
+### Cache lifecycle
 
-- **Performance matters**: The provider will be queried frequently (prompt, tmux, status bar) and `spawn_blocking` a process every 5-30s adds up
-- **File parsing is required**: The tool stores state in a structured file (INI, TOML, plain text) that you can parse directly without spawning the tool
-- **Cross-platform behaviour**: Shell semantics differ between sh and cmd.exe; Rust handles this uniformly
-- **The provider will be broadly useful**: If most beachcomber users would want it, it belongs in the binary
+The full decay model (state machine, step durations, reinstatement rules) is described in `docs/architecture.md` §5. A Source's watches exist only while its instance is Active: decay drops them and the read that reinstates the instance registers them again, so a decaying record is checked by stat (§4) rather than by an event.
 
-The perf breakeven point: if direct file reading brings execution from `>1ms` to `<100µs`, write a built-in. If the tool must be shelled out anyway and the data changes slowly, a config Source is fine.
+**Decay depth is data.** After the Active window an entry steps through its `decay` steps (4 unless told otherwise; step n lasts `lifespan × 2^n`) and is then evicted. A depth is put like any value: `comb put '<provider>:cache._.decay' 6` for one provider, `comb put '*:cache._.decay' 3` for every provider, with `--path` to scope it to a directory and below; the nearest prototype wins, and a lifecycle fixes its depth when it registers. `comb get <provider>:cache.<field>` shows the `poll`, `watch` and `decay` an entry registered with. There is no per-source keep-alive duration: `fsevent_lifespan` was removed, and a watch-only Source's Active window is the default poll lifespan (60 s × 12).
 
-### Migrating a config Source to built-in
+---
 
-1. Identify what the Source does — which file does it read, or which binary does it call?
-2. Check `docs/performance.md` to see if the tool has already been handled as a file read
-3. Write the built-in following §2 above, matching the field names your existing config consumers expect
-4. Remove the Source from config and register the built-in in `registry.rs`
-5. Run `cargo bench --bench providers` before and after to verify the improvement
+## 6. Performance
+
+A Source runs on tokio's blocking thread pool. A slow one delays cache freshness but does not block the scheduler loop. Still, keep them fast. The tier list from `docs/performance.md`:
+
+| Tier | Target | Method |
+|---|---|---|
+| Nanosecond (<1µs) | `user`, `hostname`, `gcloud`, `aws` | libc calls, env vars, file reads + line scan |
+| Microsecond (1-100µs) | `terraform`, `python`, `direnv` (no binary) | File existence checks + small reads |
+| Millisecond (1-10ms) | `network`, `battery` | At most one process spawn |
+| Slow (10-50ms) | `mise`, `direnv` (with binary), config Sources that shell out | Multiple spawns or interpreted CLI |
+| A repository's worth | `git` (about 150 ms for all five Sources on this repository, one after another) | One `git` process per fact; `head` none |
+
+**Rule 1: Never run a process when you can read a file.**
+
+A process costs 2-6 ms at least; a file read costs microseconds. Before reaching for `exec()`, ask: does this tool write its state to a file I can parse?
+
+```toml
+# Bad: a process for a value that is on disk
+data = "{{ exec('gcloud config get-value project') }}"
+# Good: read the file the tool reads
+data = "{{ '~/.config/gcloud/configurations/config_default' | read | fromini }}"
+```
+
+Real examples from `docs/performance.md`:
+- `gcloud`: reading `~/.config/gcloud/properties` instead of spawning the Python CLI — 500ms to 1µs (~500,000x)
+- `git` stash: reading `.git/logs/refs/stash` instead of `git stash list` — 5ms to 1µs
+- `git`'s `head`: reading `<gitdir>/HEAD` in the file's own line, so `git.branch` costs no process at all
+
+**Rule 2: If you must run a process, run as few as you can.** `git`'s `status` Source runs one (`git status`), which is why it is its own Source: a read of `git.dirty` does not pay for `git.lines_added`.
+
+**Rule 3: What polls often must be fast.** A Source polling every 5 seconds and taking 50 ms per run consumes 1% of a blocking thread slot continuously. Match the interval to the cost:
+- Sub-microsecond: can poll every 5-10s safely
+- Millisecond: 30s minimum
+- Slow (>10 ms): 60s minimum, or `watch` instead
+
+**Rule 4: A plugin symbol must be reentrant, or the library is locked.** A library on the search path is entered by one thread at a time. A compiled-in plugin takes no lock, so its symbols keep nothing between calls.
+
+See `docs/performance.md` for the full performance profile, benchmark commands, and the regression checklist.
+
+---
+
+## 7. Testing
+
+A shipped file is tested as a user reads it: `tests/suite/shipped/<namespace>.rs`, through `tests/suite/shipped/mod.rs`. `scenario()` is a daemon in the test's process over a temp `HOME` and `XDG_CONFIG_HOME`, which writes the managed defaults as `comb daemon` does; `served(vars, conf)` is the same shipped registry behind a server with no scheduler, so a read that answers a changed file found the change itself; and a Source can be run straight, `with_shipped_defaults().source(p, s).execute(dir)`, which needs no daemon and costs no socket.
+
+```rust
+#[test]
+fn terraform_answers_nothing_outside_a_project() {
+    let s = scenario();
+    assert_eq!(s.get("terraform.workspace", &s.project), None);
+}
+```
+
+Set up what the Source reads in the scenario's directory (a repository with `GitRepoFixture`, a `.tool-versions`, a `pyvenv.cfg`), read it, and assert on the JSON. Where a value depends on the machine (the hostname, the load), assert the shape and the type. Where a tool may be absent, put a stand-in on the isolated `PATH` (`TestDaemon::spawn_with_tools`).
+
+What a compiled-in plugin does is unit tested beside it (`src/plugin/`): its parsers over canned output, through a seam like `GitExecutor`, cost no process. A test of the daemon that needs a Source of its own (a gated mock, a counter) implements the `Source` trait and registers it with `ProviderRegistry::register_sources`, gated behind `cfg(test)` and the `test-helpers` feature.
+
+### Platform differences
+
+Some facts come from the platform differently. The shipped `battery` and `network` providers show the pattern: one Source, with no platform branch in its file, whose `data` line calls a `sys` symbol that hides the difference. `src/plugin/sys/mod.rs` holds what is shared and dispatches to `sys/macos.rs` or `sys/linux.rs` through one `#[cfg]` alias; the platform modules expose `pub(super)` functions.
+
+For testing, keep the platform's text handling pure and put it in `sys/parse.rs`, compiled `#[cfg(any(target_os = "...", test))]`, so the Linux parsers are tested on macOS and the reverse; gate only what reads the live system with `#[cfg(target_os = "...")]`.
 
 ---
 
@@ -728,3 +379,47 @@ const char* greet(const char* input) {
 Build: `cc -shared -fPIC -o libhello.so hello.c` (Linux) or `cc -shared -o libhello.dylib hello.c` (macOS), and put the file in `~/.config/beachcomber/plugins/`. With the Source above, `comb get hello.greeting` prints `hello, world`.
 
 Plugins are for work where an `exec()` spawn is too expensive or the logic does not belong in the daemon binary: compiled parsing, a vendor SDK, a local socket protocol. A plugin runs inside the daemon with its permissions; only put libraries you trust on `[daemon.plugin] path`.
+
+### `sys`: the plugin compiled in
+
+What only the operating system can say comes from one plugin compiled into `comb`, `sys`, called as any plugin is:
+
+```toml
+[daemon.providers.box.sources.load]
+data = "{{ plugin('sys', 'loadavg') }}"
+result.one = "{{ data.one }}"
+return = "{{ result | poll('10s') }}"
+```
+
+Its symbols are the C ABI's own (`const char* symbol(const char* input)`, JSON in and out, `NULL` for failure), held in a table in the binary: `plugin('sys', …)` takes the same path from the engine function to the C call as a library's symbol does, and only the finding of the function differs (the table, not `dlsym`). Each takes no arguments, answers an object, and leaves out a fact it has no value for, never `""`.
+
+| symbol | answers | from |
+|---|---|---|
+| `hostname` | `{name, short}` | `gethostname`; `short` is the first label |
+| `loadavg` | `{one, five, fifteen}` | `getloadavg` |
+| `uname` | `{sysname, release, version, machine}` | `uname` |
+| `uptime` | `{seconds}` | macOS `sysctl KERN_BOOTTIME`; Linux `/proc/uptime` |
+| `user` | `{name, uid}` | `getuid`, `getpwuid_r`; `name` is absent for a uid with no entry |
+| `network` | `{interface, ip, ipv6, vpn_active, vpn_name, ssid, online}` | `getifaddrs`; the preferred interface is an `en*` one on macOS and the default route's (`/proc/net/route`) on Linux; the SSID from `airport` on macOS (gone from macOS 14.4, where it is absent) and `nmcli`, then `iw`, on Linux |
+| `battery` | macOS `{percent, charging, status, time_remaining_secs}`; Linux `{percent, charging, status_raw, status, time_remaining_secs}`; `{}` with no battery | macOS `pmset -g batt`; Linux sysfs (`capacity`, `status`, and the estimate from `time_to_empty_now`/`time_to_full_now` or the energy or charge over the rate) |
+
+The name is reserved: `plugin('sys', …)` never searches `[daemon.plugin] path`, and `comb check config` warns of a `libsys.dylib` or `libsys.so` there, which nothing would load. An unknown symbol is `plugin(): <symbol> in sys: symbol not found`; a symbol given arguments returns `NULL`.
+
+The shipped `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` providers are Sources like the one above, each in its own `defaults/<name>.toml`: read one there to see how it is written, and override any of its lines in `config.toml` or `conf.d/`.
+
+### `git`: the plugin compiled in for repositories
+
+`git` is the second compiled-in plugin, by the same table and the same one call path as `sys`. What git says through its own commands needs an environment set, commands that fail in a healthy repository tolerated, and `lineage`'s branching, so it is a plugin and no shell runs on a refresh. Each symbol takes one argument, the work tree's root, and answers an object: a missing fact is left out, never `""`, and a directory that is not a work tree's root answers `{}`.
+
+| symbol | answers | runs |
+|---|---|---|
+| `refs` | `{upstream, ahead, behind, stash, state, state_step, state_total, commit, last_commit_age_secs, commit_summary, tag, push_ahead, push_behind}` | `git status`, `log -1`, `describe`, `config` twice; with a push remote `rev-parse` and `rev-list` |
+| `diff` | `{lines_added, lines_removed, lines_staged_added, lines_staged_removed}` | `git diff --numstat`, `diff --cached --numstat` |
+| `lineage` | `{branch_parent, lines_added_parent, lines_removed_parent, branch_default, lines_added_default, lines_removed_default}` | `git rev-parse`, `merge-base`, `diff --numstat` |
+| `status` | `{staged, unstaged, untracked, conflicted, dirty}` | `git status` |
+
+Every command runs with `GIT_OPTIONAL_LOCKS=0`, so `git status` cannot rewrite the index its Source watches, `GIT_TERMINAL_PROMPT=0` and the askpass guards, and with `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` removed. That environment is in one place in Rust (`src/boundaries/git.rs`), so no Source can forget it. `NULL` is failure: `git status` failing where a symbol needs it, or arguments other than one string.
+
+`git` is reserved as `sys` is: `plugin('git', …)` never searches `[daemon.plugin] path`, and `comb check config` warns of a `libgit.dylib` or `libgit.so` there.
+
+The shipped provider is `defaults/git.toml`, five Sources over those symbols, `head` reading `<gitdir>/HEAD` itself with no process. A `data` line names its directory the way its `root` line does, `lup('.git', root=true) | dirname`: a line renders in the instance's root, so that is `lup`'s first probe. A warm read cannot see a file a plugin reads, so what must be seen by the next read is `stat`ed in the Source's own line: `<commondir>/packed-refs` and `<commondir>/refs/heads/<branch>` for `refs`, `<gitdir>/index` for `status`. A user can override any line of the file, but not copy or edit what a symbol does.

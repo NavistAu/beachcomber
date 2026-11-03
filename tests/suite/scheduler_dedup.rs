@@ -2,8 +2,7 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
@@ -60,7 +59,6 @@ fn counter_source_meta() -> SourceMetadata {
         name: "main".into(),
         fields: vec![FieldSchema {
             name: "count".into(),
-            field_type: FieldType::Int,
         }],
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
@@ -112,14 +110,7 @@ impl CountingProvider {
     }
 }
 
-impl Provider for CountingProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "counter".to_string(),
-            sources: vec![counter_source_meta()],
-        }
-    }
-
+impl CountingProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(CountingSourceImpl {
             counter: Arc::clone(&self.counter),
@@ -136,10 +127,10 @@ async fn rapid_refreshes_are_deduplicated() {
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(CountingProvider::new(
-            Arc::clone(&exec_count),
-            Arc::clone(&gate),
-        )))
+        .register_sources(
+            "counter",
+            CountingProvider::new(Arc::clone(&exec_count), Arc::clone(&gate)).sources(),
+        )
         .expect("counting");
     let registry = Arc::new(registry);
     let config = Config::default();
@@ -279,14 +270,7 @@ struct HeldProvider {
     gate: Arc<Gate>,
 }
 
-impl Provider for HeldProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "held".to_string(),
-            sources: vec![self.meta.clone()],
-        }
-    }
-
+impl HeldProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(HeldSource {
             meta: self.meta.clone(),
@@ -327,11 +311,15 @@ fn held(poll_secs: u64) -> Held {
     };
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(HeldProvider {
-            meta,
-            runs: Arc::clone(&runs),
-            gate: Arc::clone(&gate),
-        }))
+        .register_sources(
+            "held",
+            HeldProvider {
+                meta,
+                runs: Arc::clone(&runs),
+                gate: Arc::clone(&gate),
+            }
+            .sources(),
+        )
         .expect("held");
     let registry = Arc::new(registry);
     let watchers = Arc::new(WatcherRegistry::new());

@@ -3,8 +3,7 @@ use beachcomber::cache::Schedule;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
@@ -28,7 +27,9 @@ fn setup() -> (
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let mut registry = crate::common::registry::with_shipped_defaults();
-    registry.register(Box::new(Watched)).unwrap();
+    registry
+        .register_sources("watched", Watched.sources())
+        .unwrap();
     (tmp, sock, cache, Arc::new(registry), watchers)
 }
 
@@ -43,11 +44,9 @@ fn watched_meta() -> SourceMetadata {
         fields: vec![
             FieldSchema {
                 name: "branch".into(),
-                field_type: FieldType::String,
             },
             FieldSchema {
                 name: "dirty".into(),
-                field_type: FieldType::Bool,
             },
         ],
         invalidation: InvalidationStrategy::Poll {
@@ -65,13 +64,7 @@ fn watched_meta() -> SourceMetadata {
     }
 }
 
-impl Provider for Watched {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "watched".into(),
-            sources: vec![watched_meta()],
-        }
-    }
+impl Watched {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(Watched)]
     }

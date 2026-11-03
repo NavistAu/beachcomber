@@ -281,7 +281,7 @@ async fn handle_connection(
 /// the directories on its walk are as they were (one `stat` each, here), so
 /// only the first request for a directory, and the first after a marker on
 /// its walk came or went, pays for the render, on the blocking pool; a kept
-/// root, and a built-in's filesystem walk, resolve in place.
+/// root, and a test Source's own, resolve in place.
 async fn root_for(
     registry: &Arc<ProviderRegistry>,
     provider: &str,
@@ -2622,7 +2622,7 @@ async fn handle_introspect_providers(
         let source_type = if is_static || sourceless {
             "static"
         } else if is_real {
-            "builtin"
+            "source"
         } else {
             "unknown"
         };
@@ -2637,19 +2637,7 @@ async fn handle_introspect_providers(
                     let fields: Vec<serde_json::Value> = sm
                         .fields
                         .iter()
-                        .map(|f| {
-                            let type_str = match f.field_type {
-                                crate::provider::FieldType::String => "string",
-                                crate::provider::FieldType::Int => "int",
-                                crate::provider::FieldType::Bool => "bool",
-                                crate::provider::FieldType::Float => "float",
-                                crate::provider::FieldType::Object => "object",
-                            };
-                            serde_json::json!({
-                                "name": f.name,
-                                "type": type_str,
-                            })
-                        })
+                        .map(|f| serde_json::json!({"name": f.name}))
                         .collect();
                     serde_json::json!({
                         "name": sm.name,
@@ -3207,10 +3195,7 @@ mod tests {
                 std::sync::OnceLock::new();
             META.get_or_init(|| crate::provider::SourceMetadata {
                 name: "s".into(),
-                fields: vec![crate::provider::FieldSchema {
-                    name: "n".into(),
-                    field_type: crate::provider::FieldType::Int,
-                }],
+                fields: vec![crate::provider::FieldSchema { name: "n".into() }],
                 invalidation: crate::provider::InvalidationStrategy::Poll {
                     interval_secs: 60,
                     count: 2,
@@ -3234,14 +3219,7 @@ mod tests {
         }
     }
 
-    impl crate::provider::Provider for SlowStart {
-        fn metadata(&self) -> crate::provider::ProviderMetadata {
-            crate::provider::ProviderMetadata {
-                name: "g".into(),
-                sources: vec![crate::provider::Source::metadata(self).clone()],
-            }
-        }
-
+    impl SlowStart {
         fn sources(&self) -> Vec<Box<dyn crate::provider::Source>> {
             vec![Box::new(SlowStart(Arc::clone(&self.0)))]
         }
@@ -3258,7 +3236,10 @@ mod tests {
         let (go, held) = std::sync::mpsc::channel();
         let mut registry = ProviderRegistry::new();
         registry
-            .register(Box::new(SlowStart(Arc::new(std::sync::Mutex::new(held)))))
+            .register_sources(
+                "g",
+                SlowStart(Arc::new(std::sync::Mutex::new(held))).sources(),
+            )
             .unwrap();
         let (registry, cache) = (Arc::new(registry), Arc::new(Cache::new()));
         let read = Read::new(false, Wait::For(Duration::ZERO));

@@ -51,7 +51,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/protocol.rs` | Re-exports `libbeachcomber::protocol`, the one definition of the wire: `Request`, `Response` and the `status`, `introspect` and `hello` payloads, which the daemon, the CLI, the C ABI and the SDKs share. Key parsing into a `KeyParse` lives in `src/query.rs` (`parse_key`) |
 | `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` — a source name is never a key segment), `resolve_path`, `validate_key` (one colon form, the facet), `split_layer_facet` (`:put` / `:source` / `:cache`), and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
 | `src/config.rs` | TOML config loading from XDG directories; `Config` (composed from its layers), `DaemonConfig` |
-| `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `FieldSchema`, `InvalidationStrategy`, `FailbackConfig`, `SourceResult`; `expand_abs_path()` helper |
+| `src/provider/mod.rs` | The `Source` trait (`ConfigSource` its one implementation in production); `ProviderMetadata`, `SourceMetadata`, `FieldSchema`, `InvalidationStrategy`, `FailbackConfig`, `SourceResult`; `expand_abs_path()` helper |
 | `src/provider/registry.rs` | `ProviderRegistry`: `sources: HashMap<(String, String), Arc<dyn Source>>` keyed by `(provider_name, source_name)` and `providers: HashMap<String, ProviderMetadata>` (metadata snapshot); `Box<dyn Provider>` objects are consumed at `register()` and not retained; `declared_sources` map (`HashMap<(provider, field), source_name>`) walked by `sources_for_key` (nearest declared ancestor of a key, then sentinel fields); built-in registration; validation at registration |
 | `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
 | `src/plugin/` | The plugins compiled in: `StaticLibrary` over a table of `extern "C"` symbols, answered by name before any search path, each call through the one path a library's takes. `sys/` for what only the OS can say, `git/` for what a repository says through git's commands (the symbols `refs`, `diff`, `lineage`, `status`; `src/boundaries/git.rs` is the one place git's environment is set) |
@@ -112,7 +112,7 @@ function (`root`, `data`, `result`, `return`) whose `_` prototypes and `| super`
 chains are resolved at load, its decorators (`poll`, `watch`, `ttl`, `failback`,
 `budget`, `nearest`) become the Source's `InvalidationStrategy` and failback, and
 a provider's own `template`/`result`/`return` lines are checked at load too (they
-do no IO). A built-in Source takes only a `return`, which replaces its schedule.
+do no IO).
 `enabled = false` makes the registry treat the provider as having no Sources.
 
 A Source's lines may call other Sources (`sources.<s>()`,

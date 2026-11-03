@@ -7,8 +7,7 @@
 use beachcomber::cache::Cache;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
@@ -72,10 +71,7 @@ struct Side {
 fn meta(source: &str, field: &str, budget: Duration, failback: u32) -> SourceMetadata {
     SourceMetadata {
         name: source.into(),
-        fields: vec![FieldSchema {
-            name: field.into(),
-            field_type: FieldType::Int,
-        }],
+        fields: vec![FieldSchema { name: field.into() }],
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
             count: 2,
@@ -93,14 +89,7 @@ fn meta(source: &str, field: &str, budget: Duration, failback: u32) -> SourceMet
 
 struct GProvider(Vec<(SourceMetadata, Arc<AtomicU32>, Arc<Permits>)>);
 
-impl Provider for GProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "g".into(),
-            sources: self.0.iter().map(|(m, _, _)| m.clone()).collect(),
-        }
-    }
-
+impl GProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         self.0
             .iter()
@@ -143,13 +132,17 @@ fn daemon(sources: Vec<SourceMetadata>) -> Daemon {
         .collect();
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(GProvider(
-            sources
-                .into_iter()
-                .zip(&sides)
-                .map(|(m, s)| (m, s.runs.clone(), s.permits.clone()))
-                .collect(),
-        )))
+        .register_sources(
+            "g",
+            GProvider(
+                sources
+                    .into_iter()
+                    .zip(&sides)
+                    .map(|(m, s)| (m, s.runs.clone(), s.permits.clone()))
+                    .collect(),
+            )
+            .sources(),
+        )
         .unwrap();
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
@@ -342,13 +335,7 @@ async fn an_instance_in_failback_backoff_is_read_as_it_is() {
         }
     }
     struct P(SourceMetadata, Arc<AtomicU32>);
-    impl Provider for P {
-        fn metadata(&self) -> ProviderMetadata {
-            ProviderMetadata {
-                name: "g".into(),
-                sources: vec![self.0.clone()],
-            }
-        }
+    impl P {
         fn sources(&self) -> Vec<Box<dyn Source>> {
             vec![Box::new(Failing(self.0.clone(), self.1.clone()))]
         }
@@ -356,7 +343,7 @@ async fn an_instance_in_failback_backoff_is_read_as_it_is() {
     let runs = Arc::new(AtomicU32::new(0));
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(P(meta("s", "n", BUDGET, 1), runs.clone())))
+        .register_sources("g", P(meta("s", "n", BUDGET, 1), runs.clone()).sources())
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("s");

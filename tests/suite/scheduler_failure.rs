@@ -2,8 +2,7 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult,
+    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult,
 };
 use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
@@ -19,7 +18,6 @@ fn failing_source_meta() -> SourceMetadata {
         name: "main".into(),
         fields: vec![FieldSchema {
             name: "value".into(),
-            field_type: FieldType::String,
         }],
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
@@ -63,14 +61,7 @@ impl FailingProvider {
     }
 }
 
-impl Provider for FailingProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "failing".to_string(),
-            sources: vec![failing_source_meta()],
-        }
-    }
-
+impl FailingProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(FailingSourceImpl {
             counter: Arc::clone(&self.counter),
@@ -85,7 +76,10 @@ async fn repeated_failures_trigger_backoff() {
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(FailingProvider::new(Arc::clone(&fail_exec_count))))
+        .register_sources(
+            "failing",
+            FailingProvider::new(Arc::clone(&fail_exec_count)).sources(),
+        )
         .expect("failing");
     let registry = Arc::new(registry);
     let config = Config::default();
@@ -247,13 +241,7 @@ async fn failback_skips_the_runs_reads_start_and_force_does_not() {
         }
     }
     struct OnceProvider(Arc<AtomicU32>);
-    impl Provider for OnceProvider {
-        fn metadata(&self) -> ProviderMetadata {
-            ProviderMetadata {
-                name: "failing".into(),
-                sources: vec![Once(self.0.clone()).metadata().clone()],
-            }
-        }
+    impl OnceProvider {
         fn sources(&self) -> Vec<Box<dyn Source>> {
             vec![Box::new(Once(self.0.clone()))]
         }
@@ -262,7 +250,7 @@ async fn failback_skips_the_runs_reads_start_and_force_does_not() {
     let runs = Arc::new(AtomicU32::new(0));
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(OnceProvider(runs.clone())))
+        .register_sources("failing", OnceProvider(runs.clone()).sources())
         .unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("s");

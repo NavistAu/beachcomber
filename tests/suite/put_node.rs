@@ -14,8 +14,7 @@ use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::server::Server;
 use std::sync::Arc;
@@ -57,7 +56,6 @@ impl Source for SentinelSource {
             name: "tools".into(),
             fields: vec![FieldSchema {
                 name: "<tool>".into(),
-                field_type: FieldType::String,
             }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
@@ -98,7 +96,6 @@ impl Source for CountingSource {
             name: "host".into(),
             fields: vec![FieldSchema {
                 name: "name".into(),
-                field_type: FieldType::String,
             }],
             invalidation: InvalidationStrategy::Poll {
                 interval_secs: 60,
@@ -125,14 +122,7 @@ impl Source for CountingSource {
 
 struct CountingProvider;
 
-impl Provider for CountingProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "counted".to_string(),
-            sources: vec![CountingSource.metadata().clone()],
-        }
-    }
-
+impl CountingProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(CountingSource)]
     }
@@ -140,14 +130,7 @@ impl Provider for CountingProvider {
 
 struct SentinelProvider;
 
-impl Provider for SentinelProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "toolset".to_string(),
-            sources: vec![SentinelSource.metadata().clone()],
-        }
-    }
-
+impl SentinelProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(SentinelSource)]
     }
@@ -694,7 +677,9 @@ async fn a_nearer_source_beats_a_global_put() {
 #[tokio::test]
 async fn a_put_under_a_sentinel_source_layers_over_it() {
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(SentinelProvider)).unwrap();
+    registry
+        .register_sources("toolset", SentinelProvider.sources())
+        .unwrap();
     let (_tmp, sock, cache, registry, watchers) = setup_with_registry(registry);
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -748,7 +733,9 @@ async fn a_put_under_a_sentinel_source_layers_over_it() {
 #[tokio::test]
 async fn a_cold_get_of_a_field_a_sentinel_source_never_declared_runs_it() {
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(SentinelProvider)).unwrap();
+    registry
+        .register_sources("toolset", SentinelProvider.sources())
+        .unwrap();
     let (_tmp, sock, cache, registry, watchers) = setup_with_registry(registry);
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();
@@ -777,7 +764,9 @@ async fn a_cold_get_of_a_field_a_sentinel_source_never_declared_runs_it() {
 #[tokio::test]
 async fn a_put_object_at_the_provider_node_hides_unlisted_source_fields() {
     let mut registry = ProviderRegistry::new();
-    registry.register(Box::new(CountingProvider)).unwrap();
+    registry
+        .register_sources("counted", CountingProvider.sources())
+        .unwrap();
     let (_tmp, sock, cache, registry, watchers) = setup_with_registry(registry);
     let server = Server::new(sock.clone(), cache, registry, None, watchers);
     let handle = server.spawn().unwrap();

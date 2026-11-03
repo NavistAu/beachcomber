@@ -23,8 +23,8 @@ use beachcomber::config::Config;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, InvalidationStrategy, ProviderMetadata, Source, SourceMetadata,
+    SourceResult, Value,
 };
 use beachcomber::scheduler::{Scheduler, SchedulerHandle};
 use beachcomber::server::Server;
@@ -347,10 +347,7 @@ impl Source for InertSource {
 fn source_meta(name: &str, field: &str) -> SourceMetadata {
     SourceMetadata {
         name: name.into(),
-        fields: vec![FieldSchema {
-            name: field.into(),
-            field_type: FieldType::String,
-        }],
+        fields: vec![FieldSchema { name: field.into() }],
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
             count: 2,
@@ -369,7 +366,7 @@ fn source_meta(name: &str, field: &str) -> SourceMetadata {
 /// `p` has one source with no root and one rooted at the directory asked about.
 struct TwoScopeProvider;
 
-impl Provider for TwoScopeProvider {
+impl TwoScopeProvider {
     fn metadata(&self) -> ProviderMetadata {
         ProviderMetadata {
             name: "p".to_string(),
@@ -390,7 +387,8 @@ impl Provider for TwoScopeProvider {
 
 fn two_scope_registry() -> ProviderRegistry {
     let mut reg = ProviderRegistry::new();
-    reg.register(Box::new(TwoScopeProvider)).unwrap();
+    reg.register_sources("p", TwoScopeProvider.sources())
+        .unwrap();
     reg
 }
 
@@ -402,7 +400,7 @@ fn fields(pairs: Vec<(&str, Value)>) -> HashMap<String, Value> {
 /// directory asked about, so the cascading one also reaches every ancestor.
 struct MixedProvider;
 
-impl Provider for MixedProvider {
+impl MixedProvider {
     fn metadata(&self) -> ProviderMetadata {
         let mut near = source_meta("near", "nf");
         near.nearest = true;
@@ -426,7 +424,8 @@ impl Provider for MixedProvider {
 #[tokio::test]
 async fn a_nearest_sources_outer_records_do_not_surface_through_a_cascading_sibling() {
     let mut reg = ProviderRegistry::new();
-    reg.register(Box::new(MixedProvider)).unwrap();
+    reg.register_sources("mix", MixedProvider.sources())
+        .unwrap();
     let f = Fixture::start(reg);
     let outer = f.path("ws/project");
     let nested = f.path("ws/project/foo");
@@ -515,13 +514,7 @@ impl Source for CountingSource {
 /// records — so they go warm, and a second execution is observable.
 struct CountingProvider;
 
-impl Provider for CountingProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "c".to_string(),
-            sources: vec![source_meta("glob", "gv"), source_meta("proj", "pv")],
-        }
-    }
+impl CountingProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![
             Box::new(CountingSource {
@@ -542,7 +535,8 @@ impl Provider for CountingProvider {
 
 fn counting_registry() -> ProviderRegistry {
     let mut reg = ProviderRegistry::new();
-    reg.register(Box::new(CountingProvider)).unwrap();
+    reg.register_sources("c", CountingProvider.sources())
+        .unwrap();
     reg
 }
 
@@ -971,13 +965,7 @@ fn find_root_marker(dir: &str) -> Option<String> {
 /// above where a bare `put` from a subdirectory lands.
 struct RootedProvider;
 
-impl Provider for RootedProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "r".to_string(),
-            sources: vec![source_meta("tree", "field")],
-        }
-    }
+impl RootedProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(RootedSource(source_meta("tree", "field")))]
     }
@@ -987,7 +975,7 @@ impl Provider for RootedProvider {
 /// subdirectory of it, below the entry the provider narrows to.
 fn rooted_fixture() -> Fixture {
     let mut reg = ProviderRegistry::new();
-    reg.register(Box::new(RootedProvider)).unwrap();
+    reg.register_sources("r", RootedProvider.sources()).unwrap();
     let f = Fixture::start(reg);
     std::fs::write(f.home.join("ws/project/.root"), "").unwrap();
     f
@@ -1177,13 +1165,7 @@ impl Source for WalkSource {
 
 struct WalkProvider;
 
-impl Provider for WalkProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "walk".to_string(),
-            sources: vec![WalkSource::meta()],
-        }
-    }
+impl WalkProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(WalkSource(WalkSource::meta()))]
     }
@@ -1191,7 +1173,8 @@ impl Provider for WalkProvider {
 
 fn walk_registry() -> ProviderRegistry {
     let mut reg = ProviderRegistry::new();
-    reg.register(Box::new(WalkProvider)).unwrap();
+    reg.register_sources("walk", WalkProvider.sources())
+        .unwrap();
     reg
 }
 
@@ -1369,7 +1352,7 @@ async fn watches_register_at_the_root_on_first_request() {
 /// because the chain stops at `$HOME` and steps to the global entry.
 fn rooted_fixture_above_home() -> Fixture {
     let mut reg = ProviderRegistry::new();
-    reg.register(Box::new(RootedProvider)).unwrap();
+    reg.register_sources("r", RootedProvider.sources()).unwrap();
     let f = Fixture::start_with_home(reg, "home");
     std::fs::write(f.root.join(".root"), "").unwrap();
     f

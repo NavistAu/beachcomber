@@ -613,7 +613,7 @@ fn only_decay_is_accepted_under_a_cache_prototype() {
 
 const PROVIDERS_MOVED: &str = "unknown table [providers]: a provider's settings are \
      [daemon.providers.<p>] (the daemon's) and [client.providers.<p>] (the client's); a \
-     built-in Source is retuned by [daemon.providers.<p>.sources.<s>] return; templates live \
+     Source's schedule is [daemon.providers.<p>.sources.<s>] return; templates live \
      in [client.providers.<p>] template.<leaf>, decay in [daemon.providers.<p>.cache._]";
 
 #[test]
@@ -743,7 +743,7 @@ pub(crate) fn with_shipped_defaults(user: &str) -> Config {
 }
 
 /// The load errors of `user` composed over the shipped defaults, against the
-/// built-in providers.
+/// shipped providers.
 fn source_errors(user: &str) -> Vec<String> {
     let config = with_shipped_defaults(user);
     ProviderRegistry::with_config(&config, &std::env::vars().collect())
@@ -1302,7 +1302,7 @@ result.same = "{{ data }}"
     for named in ["demo", "same", "'a'", "'b'"] {
         assert!(errors[0].contains(named), "names {named}: {errors:?}");
     }
-    // A new Source of a built-in provider may not take one of its fields.
+    // A new Source of a shipped provider may not take one of its fields.
     let errors = source_errors(
         "[daemon.providers.git.sources.mine]\ndata = \"{{ 1 }}\"\nresult.branch = \"{{ data }}\"\n",
     );
@@ -1404,7 +1404,7 @@ fn a_prototypes_lines_are_checked_at_load() {
     );
 }
 
-// ── Built-ins in the files ───────────────────────────────────────────────────
+// ── The shipped Sources in the files ─────────────────────────────────────────
 
 #[test]
 fn all_providers_registered_by_default() {
@@ -1659,7 +1659,7 @@ fn the_watchdog_accessors_read_whole_seconds_and_default_the_threshold() {
 
 /// `nearest` chooses between instances; a Source with one instance has no
 /// choice to make, so the line that says it is a load error, whether the Source
-/// is a built-in retuned or a config Source with no root.
+/// is shipped or the user's.
 #[test]
 fn nearest_on_a_source_with_one_instance_is_a_load_error() {
     let errors = source_errors(
@@ -1688,7 +1688,7 @@ fn nearest_on_a_source_with_one_instance_is_a_load_error() {
 /// path against, so a retune to one is a load error rather than a Source
 /// that quietly never refreshes.
 #[test]
-fn a_retune_that_watches_nothing_is_a_load_error() {
+fn a_return_that_watches_nothing_is_a_load_error() {
     let errors = source_errors(
         "[daemon.providers.hostname.sources.host]\nreturn = \"{{ result | watch('etc/hosts') }}\"\n",
     );
@@ -1719,7 +1719,7 @@ fn a_retune_that_watches_nothing_is_a_load_error() {
 }
 
 #[test]
-fn a_new_source_of_a_builtin_provider_may_take_its_lines_from_a_prototype() {
+fn a_new_source_of_a_shipped_provider_may_take_its_lines_from_a_prototype() {
     let reg = shipped_registry(
         r#"
 [daemon.providers.git.sources._]
@@ -1731,7 +1731,10 @@ return = "{{ result | poll('5s', 2) }}"
 "#,
     );
     assert!(reg.source("git", "extra").is_some());
-    assert!(reg.source("git", "refs").is_some(), "the built-ins stay");
+    assert!(
+        reg.source("git", "refs").is_some(),
+        "the shipped Sources stay"
+    );
 }
 
 #[test]

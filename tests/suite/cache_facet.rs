@@ -118,10 +118,10 @@ async fn the_cache_facet_of_a_source_leaf_names_the_source_and_its_schedule() {
     handle.abort();
 }
 
-/// `[daemon.providers.git.sources.diff] return = …` retunes the built-in
+/// `[daemon.providers.git.sources.diff] return = …` retunes the shipped
 /// Source, and the `:cache` facet of its leaves shows the new `poll`.
 #[tokio::test]
-async fn a_retuned_builtin_shows_its_new_poll_in_the_cache_facet() {
+async fn a_retuned_shipped_source_shows_its_new_poll_in_the_cache_facet() {
     let (tmp, sock, cache, _stock, watchers) = setup();
     let config = crate::common::registry::config_over_shipped(vec![(
         std::path::PathBuf::from("/t.toml"),

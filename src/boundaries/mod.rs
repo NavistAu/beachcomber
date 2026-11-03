@@ -2,7 +2,7 @@
 //! table, sockets, plugin libraries and http. Most are traits a test
 //! mocks; `http` is one function (`url()` calls it), since a test serves a
 //! real local response instead. Not every side effect goes through one: the
-//! built-in providers read files directly.
+//! shipped Sources read files directly.
 
 pub mod git;
 pub mod http;

@@ -32,7 +32,7 @@
 
 use crate::engine::{CallFn, Calls, PluginSet, daemon_engine_env};
 use crate::provider::source_call::{Called, Running, calls_in};
-use crate::provider::{FieldSchema, FieldType, Source, SourceMetadata, SourceResult, Value};
+use crate::provider::{FieldSchema, Source, SourceMetadata, SourceResult, Value};
 use crate::shape::decorators::Recorded;
 use libbeachcomber::engine::EngineCtx;
 use libbeachcomber::eval::{
@@ -309,7 +309,6 @@ impl ConfigSource {
         let fields = match &spec.result {
             ResultSpec::Whole(_) => vec![FieldSchema {
                 name: "<node>".into(),
-                field_type: FieldType::Object,
             }],
             ResultSpec::Fields(pairs) if pairs.is_empty() => {
                 return Err(load_error("result", "declares no fields"));
@@ -329,11 +328,6 @@ impl ConfigSource {
                         // A declared field is an address; this one is a
                         // single name, so a `.` in it is quoted (`['c.d']`).
                         name: libbeachcomber::key::quote(name).into_owned(),
-                        // Nominal for config Sources: a single-tag line keeps
-                        // its runtime type (an int, bool or float), and
-                        // nothing validates a field against its declared
-                        // type, until phase 7 ships Sources as config.
-                        field_type: FieldType::String,
                     });
                 }
                 fields

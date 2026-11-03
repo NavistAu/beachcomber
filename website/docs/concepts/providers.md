@@ -71,13 +71,13 @@ data = "{{ exec('node --version') | trim }}"
 result.value = "{{ data }}"
 return = "{{ result | watch('.node-version', 'package.json') | poll('60s') }}"
 
-# A built-in Source retuned: git's diff polls every 15 seconds. The line replaces
+# A shipped Source retuned: git's diff polls every 15 seconds. The line replaces
 # everything the Source declares, `nearest` included, so git's says it again
 [daemon.providers.git.sources.diff]
 return = "{{ result | poll('15s', 8) | nearest }}"
 ```
 
-A built-in Source takes `return` and nothing else; the line replaces its schedule whole, and its `nearest` setting with it (a retuned git Source that leaves `| nearest` off cascades), and a built-in with no `return` keeps its own (the `_` Source lines reach it only through `| super`). See the [configuration reference](/docs/reference/configuration-reference).
+Any line of a shipped Source can be set in a later layer. `return` replaces its schedule whole, and its `nearest` setting with it (a retuned git Source that leaves `| nearest` off cascades), and a built-in with no `return` keeps its own (the `_` Source lines reach it only through `| super`). See the [configuration reference](/docs/reference/configuration-reference).
 
 ## What a provider is
 
@@ -121,7 +121,7 @@ Records written by `put`, and the `config:` seeds, merge up the directory chain 
 
 A Source may call another: `sources.<source>()` for a sibling, `daemon.providers.<provider>.sources.<source>()` for any provider's, and a provider's `result` and `return` lines may call the latter: `return = "{{ result | merge(daemon.providers.gitstats.sources.repo()) | facet('template', template) }}"`. A call reads the called Source's stored record for the same directory, and a Source with nothing stored yet is run inline, once, by the read or refresh that needs it. A called Source is kept warm while it is called. Its own failure is the caller's miss. Sources that call each other in a ring do not load; were one run anyway, it fails the read with `sources: <p>.<s> calls itself`.
 
-The Rust-side metadata that describes a built-in (its invalidation strategy, how it finds its root, watch patterns) is internal to the daemon: it is what `return` replaces, not something a config file names. `comb get <provider>:cache.<field>` shows the `poll`, `watch` and `decay` a record registered with.
+A shipped provider is a file, `defaults/<name>.toml`: its invalidation, how it finds its root and what it watches are lines you can read there and override.
 
 ## comb status — source on the wire
 

@@ -2,8 +2,7 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Provider, ProviderMetadata,
-    Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
@@ -47,7 +46,6 @@ fn slow_source_meta() -> SourceMetadata {
         name: "main".into(),
         fields: vec![FieldSchema {
             name: "value".into(),
-            field_type: FieldType::String,
         }],
         invalidation: InvalidationStrategy::Poll {
             interval_secs: 60,
@@ -92,14 +90,7 @@ struct SlowProvider {
     gate: Arc<Gate>,
 }
 
-impl Provider for SlowProvider {
-    fn metadata(&self) -> ProviderMetadata {
-        ProviderMetadata {
-            name: "slow".to_string(),
-            sources: vec![slow_source_meta()],
-        }
-    }
-
+impl SlowProvider {
     fn sources(&self) -> Vec<Box<dyn Source>> {
         vec![Box::new(SlowSourceImpl {
             gate: Arc::clone(&self.gate),
@@ -123,9 +114,13 @@ async fn slow_provider_times_out() {
     let cache = Arc::new(Cache::new());
     let mut registry = ProviderRegistry::new();
     registry
-        .register(Box::new(SlowProvider {
-            gate: Arc::clone(&gate),
-        }))
+        .register_sources(
+            "slow",
+            SlowProvider {
+                gate: Arc::clone(&gate),
+            }
+            .sources(),
+        )
         .expect("slow");
     let registry = Arc::new(registry);
 

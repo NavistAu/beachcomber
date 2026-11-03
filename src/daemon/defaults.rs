@@ -1,5 +1,5 @@
-//! Managed defaults (spec §3.3): the built-in templates are configuration
-//! files the daemon writes to `<config-dir>/defaults/` and seeds like any
+//! Managed defaults (spec §3.3): the shipped providers and templates are
+//! configuration files the daemon writes to `<config-dir>/defaults/` and seeds like any
 //! other layer, not a table compiled into a client.
 //!
 //! The files are embedded in the binary so they can be written. Configuration

@@ -315,7 +315,7 @@ impl Reader {
         let moved = match key {
             "providers" => {
                 ": a provider's settings are [daemon.providers.<p>] (the daemon's) and \
-                 [client.providers.<p>] (the client's); a built-in Source is retuned by \
+                 [client.providers.<p>] (the client's); a Source's schedule is \
                  [daemon.providers.<p>.sources.<s>] return; templates live in \
                  [client.providers.<p>] template.<leaf>, decay in \
                  [daemon.providers.<p>.cache._]"

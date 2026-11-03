@@ -95,6 +95,41 @@ async fn introspect_daemon_returns_expected_fields() {
     handle.abort();
 }
 
+/// One kind of provider has Sources, whatever file they came from, and one has
+/// none; `builtin` was the first when some were Rust.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn providers_kinds_are_source_and_static() {
+    let (_tmp, client, handle) = setup_daemon().await;
+    let data = client.introspect("providers", None).unwrap().data.unwrap();
+    let kind = |name: &str| {
+        data["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is listed"))["source"]
+            .clone()
+    };
+    assert_eq!(kind("git"), serde_json::json!("source"));
+    assert_eq!(kind("hostname"), serde_json::json!("source"));
+    assert_eq!(kind("conda"), serde_json::json!("static"));
+    let git = data["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "git")
+        .unwrap();
+    for source in git["sources"].as_array().unwrap() {
+        for field in source["fields"].as_array().unwrap() {
+            assert!(
+                field["name"].is_string() && field.get("type").is_none(),
+                "a field is its name: nothing typed it: {field}"
+            );
+        }
+    }
+    handle.abort();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_providers_lists_catalog_with_fields() {
     let (_tmp, client, handle) = setup_daemon().await;
@@ -114,7 +149,7 @@ async fn introspect_providers_lists_catalog_with_fields() {
     // Check a known provider like hostname
     let hostname = providers.iter().find(|p| p["name"] == "hostname");
     if let Some(h) = hostname {
-        assert_eq!(h["source"].as_str(), Some("builtin"));
+        assert_eq!(h["source"].as_str(), Some("source"));
         // Providers expose per-source metadata under "sources"; check first source's fields.
         let sources = h.get("sources").and_then(|v| v.as_array());
         assert!(sources.is_some(), "hostname missing 'sources' array");

@@ -14,7 +14,6 @@ The rest land there too, in parallel where they are independent (3 and 6 now; 7 
 - [ ] **Phase 6 — templates: macros and a library.** `macro.<name>` under a provider, imported by facet address; the
       function library (`bar`, `ramp`, `now`/`strftime`/`fromiso`/`duration`/`ago`, `width`/`pad`/display-width
       `truncate`, path, hash, number and colour helpers). scanline's widgets are the acceptance test.
-- [ ] **Phase 7 — built-ins as config.** `defaults/git.toml` and the rest, with OS reads through a `sys` plugin.
       Needs phase 6.
 - [ ] **scanline on one-tree.** Its generator emits the new config shape and it renders through
       `libbeachcomber`'s resolver; `docs/superpowers/scanline-one-tree.md` holds the proposed config and the

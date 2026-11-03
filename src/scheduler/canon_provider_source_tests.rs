@@ -6,8 +6,7 @@
 
 use crate::cache::Cache;
 use crate::provider::{
-    FailbackConfig, FieldSchema, FieldType, InvalidationStrategy, Source, SourceMetadata,
-    SourceResult, Value,
+    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
 use crate::scheduler::lifecycle::{
     DEFAULT_DECAY, DEFAULT_POLL_COUNT, LifecycleRegistry, LifecycleState, SourceLifecycleConfig,
@@ -32,7 +31,6 @@ fn make_source_meta(
             .iter()
             .map(|n| FieldSchema {
                 name: n.to_string(),
-                field_type: FieldType::String,
             })
             .collect(),
         invalidation,

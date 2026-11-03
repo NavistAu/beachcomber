@@ -793,15 +793,15 @@ watches it.
 provider, sorted by name:
 
 ```json
-{"name": "git", "source": "builtin",
- "sources": [{"name": "head", "fields": [{"name": "branch", "type": "string"}],
+{"name": "git", "source": "source",
+ "sources": [{"name": "head", "fields": [{"name": "branch"}],
               "invalidation": "watch .git/HEAD"}],
  "invalidation": "watch .git/HEAD", "in_backoff": null, "disabled": false}
 ```
 
 A provider carries no `scope`: whether a Source has a root is a question asked
 of a directory, not a property of the provider. `source` is `static` (a
-namespace with no Sources), `builtin` or `unknown`. `disabled` is true for a
+namespace with no Sources), `source` or `unknown`. `disabled` is true for a
 provider switched off with `[daemon.providers.<p>] enabled = false`; its
 `invalidation`, and each Source's, then reads `disabled`, because nothing of it
 runs. `data.verdicts` leads with the provider count.
@@ -811,7 +811,7 @@ config_source_count, verdicts}`. `path` is the `config.toml` that was loaded, or
 null when the file does not exist (configuration is read only from
 `$XDG_CONFIG_HOME/beachcomber`: `defaults/`, `config.toml`, `conf.d/`).
 `config_source_count` is the number of `[daemon.providers.<p>.sources.<s>]`
-tables that declare a config Source (prototypes and built-in retunes are not
+tables that declare a config Source (prototypes are not
 counted).
 
 Other subjects return different shapes; see `src/server.rs` for the current

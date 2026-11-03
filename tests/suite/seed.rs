@@ -427,8 +427,8 @@ async fn an_old_facet_table_is_a_config_error() {
             &e,
             "config.toml",
             "unknown table [providers]: a provider's settings are [daemon.providers.<p>] (the \
-             daemon's) and [client.providers.<p>] (the client's); a built-in Source is retuned \
-             by [daemon.providers.<p>.sources.<s>] return; templates live in \
+             daemon's) and [client.providers.<p>] (the client's); a Source's schedule is \
+             [daemon.providers.<p>.sources.<s>] return; templates live in \
              [client.providers.<p>] template.<leaf>, decay in [daemon.providers.<p>.cache._]",
         )
         .await;

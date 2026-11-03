@@ -111,7 +111,7 @@ All commands use single-letter shorthands (`g` get, `s` status, `w` watch, `p` p
 - [How It Works](#how-it-works)
 - [CLI Reference](#cli-reference)
 - [Configuration Reference](#configuration-reference)
-- [Built-in Providers Reference](#built-in-providers-reference)
+- [Shipped Providers Reference](#shipped-providers-reference)
 - [Consumer Integration](#consumer-integration)
 - [Shell Fallback & Integration Scripts](#shell-fallback--integration-scripts)
 - [Client SDKs](#client-sdks)
@@ -687,7 +687,7 @@ return = "{{ result | poll('86400s') }}"
 
 > A Source's schedule is its `return` line (`poll`, `watch`, `ttl`). The `[providers]` root, `[lifecycle]`, `[failback]` and `[tree]` tables, and the `scope`, `marker`, `poll_*`, `fsevent_*`, `failback_*`, `budget_*` keys are config errors, and so is `enabled` anywhere but `[daemon.providers.<name>]`.
 
-**`[daemon.providers.<name>] enabled = false`** switches a provider off, built-in or template-only. It sets the provider's `result` to `"{{ {} }}"` and its `return` to `"{{ result }}"`, and none of its Sources is selected, called or run: a `get` of it is a miss (no data, no template half), and its Sources are not run, polled, watched or refreshed (`comb refresh <name>` is `nothing to refresh: <name> is disabled`, `get --force` is an error). A call to one of its Sources from another line is a miss. The `<name>:template` facet is still seeded and readable, and a `put` under the name is still read. `enabled = false` wins over a `result` or `return` set on the same provider. A later layer may set `enabled = true`; it must be a boolean, it is an error on `[daemon.providers._]`, and on a name nothing gives a provider.
+**`[daemon.providers.<name>] enabled = false`** switches a provider off, shipped or the user's, Sources or templates alone. It sets the provider's `result` to `"{{ {} }}"` and its `return` to `"{{ result }}"`, and none of its Sources is selected, called or run: a `get` of it is a miss (no data, no template half), and its Sources are not run, polled, watched or refreshed (`comb refresh <name>` is `nothing to refresh: <name> is disabled`, `get --force` is an error). A call to one of its Sources from another line is a miss. The `<name>:template` facet is still seeded and readable, and a `put` under the name is still read. `enabled = false` wins over a `result` or `return` set on the same provider. A later layer may set `enabled = true`; it must be a boolean, it is an error on `[daemon.providers._]`, and on a name nothing gives a provider.
 
 **`[daemon.providers.<name>.sources.<source>]` section (config Sources):**
 
@@ -712,9 +712,9 @@ A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.s
 
 ---
 
-## Built-in Providers Reference
+## Shipped Providers Reference
 
-beachcomber ships 16 built-in providers organized by category, plus template-backed namespaces defined in the managed `defaults/` files.
+beachcomber ships 16 providers organized by category, plus template-backed namespaces. Each is a file in the managed `defaults/` directory, written the way a user writes a Source; override any line of one in `config.toml` or `conf.d/`.
 
 ### System
 
