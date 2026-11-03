@@ -88,24 +88,24 @@ pub struct ProviderMetadata {
 
 ## Implementing a Source — worked example: git
 
-`git` decomposes into five sources with different strategies:
+`git` is `defaults/git.toml`, five Sources with different strategies, sharing one `root` line in their `_` prototype. Four get their data from the compiled-in `git` plugin (§8):
 
 ```
-git.head    → watch, rooted at the repository, watches .git/ (pure file read of HEAD, no subprocess)
+git.head    → watch, rooted at the repository, watches .git/ (reads <gitdir>/HEAD itself, no subprocess)
               fields: branch, detached
 
-git.refs    → watch, rooted at the repository, watches .git/
+git.refs    → watch, rooted at the repository, watches .git/, `plugin('git', 'refs', root)`
               fields: commit, tag, ahead, behind, upstream, state, state_step, state_total,
                       stash, last_commit_age_secs, commit_summary, push_ahead, push_behind
 
-git.diff    → poll 30s, rooted at the repository
+git.diff    → poll 30s, rooted at the repository, `plugin('git', 'diff', root)`
               fields: lines_added, lines_removed, lines_staged_added, lines_staged_removed
 
-git.lineage → poll 60s, rooted at the repository
+git.lineage → poll 60s, rooted at the repository, `plugin('git', 'lineage', root)`
               fields: branch_parent, lines_added_parent, lines_removed_parent,
                       branch_default, lines_added_default, lines_removed_default
 
-git.status  → watch + poll (watches .git/index + polls every 60s), rooted at the repository
+git.status  → watch + poll (watches .git/index + polls every 60s), rooted at the repository, `plugin('git', 'status', root)`
               fields: staged, unstaged, untracked, conflicted, dirty
 ```
 
@@ -206,7 +206,7 @@ impl Source for DockerContextSource {
     }
 
     // `root` and `has_root` keep their defaults: one instance, at ~. A project
-    // Source overrides both (see src/provider/git.rs).
+    // Source overrides both.
 
     fn execute(&self, _dir: Option<&str>) -> Result<SourceResult, String> {
         let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
@@ -425,12 +425,9 @@ validity, and is checked for its lifetime alone.
   that window. The first read once the window has closed counts the record
   invalid and runs it again.
 
-Override `inputs` when the root alone cannot name the files a run reads. Git
-does: `head` returns `<gitdir>/HEAD`, plus `<root>/.git` itself when it is a
-gitfile (a linked worktree or a submodule); `refs` adds
-`<commondir>/packed-refs` and `<commondir>/refs/heads/<branch>`; `status`
-returns `<gitdir>/index`. Name only files the run reads: an input that changes
-when the value does not costs a run for nothing.
+Name only files the run reads: an input that changes when the value does not costs a run for
+nothing. A directory is the blunt case: `watch('.git')` makes `.git` an input, whose mtime moves
+whenever a git command makes a lockfile there, so the next read runs the Source again.
 
 The record's validity hash is shown as `hash` in its `:cache` answer
 (`comb get git:cache.branch`), 16 lowercase hex digits, written by the daemon
@@ -531,8 +528,9 @@ Provider execution happens on tokio's blocking thread pool. Slow providers delay
 |---|---|---|
 | Nanosecond (<1µs) | `user`, `hostname`, `gcloud`, `aws` | libc calls, env vars, file reads + line scan |
 | Microsecond (1-100µs) | `terraform`, `python`, `direnv` (no binary) | File existence checks + small reads |
-| Millisecond (1-10ms) | `git`, `network`, `battery` | At most one process spawn |
+| Millisecond (1-10ms) | `network`, `battery` | At most one process spawn |
 | Slow (10-50ms) | `mise`, `direnv` (with binary), config Sources that shell out | Multiple spawns or interpreted CLI |
+| A repository's worth | `git` (about 150 ms for all five Sources on this repository, one after another) | One `git` process per fact; `head` none |
 
 **Rule 1: Never fork a process when you can read a file.**
 
@@ -556,7 +554,7 @@ Real examples from `docs/performance.md`:
 
 **Rule 2: If you must spawn a process, spawn exactly one.**
 
-If a file read is truly not feasible, cap the provider at one process spawn. The `git` provider spawns one (`git status`). The `network` provider spawns one (`airport` for SSID; everything else uses `libc::getifaddrs()`).
+If a file read is truly not feasible, cap the provider at one process spawn. `git`'s `status` Source spawns one (`git status`). The `network` provider spawns one (`airport` for SSID; everything else uses `libc::getifaddrs()`).
 
 **Rule 3: Providers that poll frequently must be fast.**
 
@@ -874,3 +872,20 @@ Its symbols are the C ABI's own (`const char* symbol(const char* input)`, JSON i
 The name is reserved: `plugin('sys', …)` never searches `[daemon.plugin] path`, and `comb check config` warns of a `libsys.dylib` or `libsys.so` there, which nothing would load. An unknown symbol is `plugin(): <symbol> in sys: symbol not found`; a symbol given arguments returns `NULL`.
 
 The shipped `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` providers are Sources like the one above, each in its own `defaults/<name>.toml`: read one there to see how it is written, and override any of its lines in `config.toml` or `conf.d/`.
+
+### `git`: the plugin compiled in for repositories
+
+`git` is the second compiled-in plugin, by the same table and the same one call path as `sys`. What git says through its own commands needs an environment set, commands that fail in a healthy repository tolerated, and `lineage`'s branching, so it is a plugin and no shell runs on a refresh. Each symbol takes one argument, the work tree's root, and answers an object: a missing fact is left out, never `""`, and a directory that is not a work tree's root answers `{}`.
+
+| symbol | answers | runs |
+|---|---|---|
+| `refs` | `{upstream, ahead, behind, stash, state, state_step, state_total, commit, last_commit_age_secs, commit_summary, tag, push_ahead, push_behind}` | `git status`, `log -1`, `describe`, `config` twice; with a push remote `rev-parse` and `rev-list` |
+| `diff` | `{lines_added, lines_removed, lines_staged_added, lines_staged_removed}` | `git diff --numstat`, `diff --cached --numstat` |
+| `lineage` | `{branch_parent, lines_added_parent, lines_removed_parent, branch_default, lines_added_default, lines_removed_default}` | `git rev-parse`, `merge-base`, `diff --numstat` |
+| `status` | `{staged, unstaged, untracked, conflicted, dirty}` | `git status` |
+
+Every command runs with `GIT_OPTIONAL_LOCKS=0`, so `git status` cannot rewrite the index its Source watches, `GIT_TERMINAL_PROMPT=0` and the askpass guards, and with `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` removed. That environment is in one place in Rust (`src/boundaries/git.rs`), so no Source can forget it. `NULL` is failure: `git status` failing where a symbol needs it, or arguments other than one string.
+
+`git` is reserved as `sys` is: `plugin('git', …)` never searches `[daemon.plugin] path`, and `comb check config` warns of a `libgit.dylib` or `libgit.so` there.
+
+The shipped provider is `defaults/git.toml`, five Sources over those symbols, `head` reading `<gitdir>/HEAD` itself with no process. A `data` line names its directory the way its `root` line does, `lup('.git', root=true) | dirname`: a line renders in the instance's root, so that is `lup`'s first probe. A warm read cannot see a file a plugin reads, so what must be seen by the next read is `stat`ed in the Source's own line: `<commondir>/packed-refs` and `<commondir>/refs/heads/<branch>` for `refs`, `<gitdir>/index` for `status`. A user can override any line of the file, but not copy or edit what a symbol does.

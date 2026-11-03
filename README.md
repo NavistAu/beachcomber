@@ -27,7 +27,7 @@ Every shell, every editor plugin, every status bar, every prompt framework is in
 | Cache read (global key) | **157 ns** |
 | Socket query (warm, persistent connection) | **15 µs** |
 | Socket query (cold, new connection) | 34 µs |
-| Git status (at parity with raw `git status`) | **5.6 ms** |
+| A full `git` refresh on this repository: 10 `git` processes, nothing else | **about 150 ms** |
 | Throughput (10 concurrent clients) | **45,000 req/sec** |
 
 **Real-world impact:**
@@ -609,12 +609,12 @@ timeout = "10s"
 # budget = "50ms"
 
 
-# ─── Retuning a built-in Source ────────────────────────────────────────────────
-# A built-in Source takes `return` and nothing else. The line replaces its
-# schedule whole: here git's diff polls every 15 seconds, eight times, then
-# decays. A built-in with no `return` here keeps its own schedule. The line
-# replaces everything it declares, `nearest` included: git, direnv, python and
-# terraform Sources are nearest, so a retune of one says `| nearest` again.
+# ─── Retuning a shipped Source ─────────────────────────────────────────────────
+# A shipped Source is a config Source: any line of it can be set in a later
+# layer, and the rest keep theirs. `return` replaces its schedule whole: here
+# git's diff polls every 15 seconds, eight times, then decays. The line replaces
+# everything it declares, `nearest` included: git, direnv, python and terraform
+# Sources are nearest, so a retune of one says `| nearest` again.
 
 [daemon.providers.git.sources.diff]
 return = "{{ result | poll('15s', 8) | failback('2s', 5) | nearest }}"
@@ -689,10 +689,6 @@ return = "{{ result | poll('86400s') }}"
 
 **`[daemon.providers.<name>] enabled = false`** switches a provider off, built-in or template-only. It sets the provider's `result` to `"{{ {} }}"` and its `return` to `"{{ result }}"`, and none of its Sources is selected, called or run: a `get` of it is a miss (no data, no template half), and its Sources are not run, polled, watched or refreshed (`comb refresh <name>` is `nothing to refresh: <name> is disabled`, `get --force` is an error). A call to one of its Sources from another line is a miss. The `<name>:template` facet is still seeded and readable, and a `put` under the name is still read. `enabled = false` wins over a `result` or `return` set on the same provider. A later layer may set `enabled = true`; it must be a boolean, it is an error on `[daemon.providers._]`, and on a name nothing gives a provider.
 
-**`[daemon.providers.<name>.sources.<source>]` section for a built-in Source:**
-
-A table naming a built-in Rust Source takes `return` only; `root`, `data` and `result` are errors. The line replaces the Source's invalidation, failback, decay, budget and `nearest` whole; a failback, budget or timeout it does not name is the engine's (`failback('1s', 3)`, `[daemon] budget`, `[daemon] timeout`). `| super` extends the nearest `_` Source's line, as for a config Source. A built-in with no `return` keeps its own schedule: the `_` lines do not reach it.
-
 **`[daemon.providers.<name>.sources.<source>]` section (config Sources):**
 
 | Field | Type | Required | Description |
@@ -733,7 +729,7 @@ beachcomber ships 16 built-in providers organized by category, plus template-bac
 | `sudo` | none | `active` (bool) | poll 30s | < 1 µs |
 | `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | poll 1h | < 1 µs |
 
-`hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files (`defaults/<name>.toml`), each one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform`, `python`, `direnv`, `asdf`, `aws_profiles`, `gcloud_configs` and `sudo` are shipped files whose Sources read their files; any of their lines can be overridden in `config.toml` or `conf.d/`.
+`hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files (`defaults/<name>.toml`), each one Source whose `data` line calls the compiled-in `sys` plugin, `git` is `defaults/git.toml`, whose Sources call the compiled-in `git` plugin, and `terraform`, `python`, `direnv`, `asdf`, `aws_profiles`, `gcloud_configs` and `sudo` are shipped files whose Sources read their files; any of their lines can be overridden in `config.toml` or `conf.d/`.
 
 `sudo.active` is whether the user's sudo timestamp (`/var/run/sudo/ts/$USER`, else `/run/sudo/ts/$USER`) is under five minutes old. It is absent, not `false`, where a daemon running as the user cannot read that timestamp: on macOS, where sudo keeps it under `/var/db/sudo`, root's alone, and on Linux wherever `/run/sudo/ts` is root's alone (sudo makes it mode 0700).
 
@@ -770,7 +766,7 @@ beachcomber ships 16 built-in providers organized by category, plus template-bac
 
 | Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `git` | project | 30 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
+| `git` | project | 30 fields (see table below) | watch `.git` + fallback poll | `head` no process; the rest about 150 ms, 10 `git` processes, on this repository |
 
 **Fields:**
 

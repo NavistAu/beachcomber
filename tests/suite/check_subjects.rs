@@ -12,7 +12,7 @@ use beachcomber::proc_snapshot::{ProcSample, ProcSnapshotResult, ReplacementSugg
 async fn setup_daemon() -> (tempfile::TempDir, Client, tokio::task::JoinHandle<()>) {
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");
-    let config = Config::default();
+    let config = crate::common::registry::config_over_shipped(vec![]);
     let (handle, ready) = beachcomber::daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
     let client = Client::new(sock);
@@ -973,7 +973,7 @@ fn check_config_sees_the_env_files_variables() {
 /// `sys` is the compiled-in plugin's name: a `libsys` on `[daemon.plugin]
 /// path` is never loaded, and `comb check config` warns of it, naming it.
 #[test]
-fn a_libsys_on_the_plugin_path_is_a_warning() {
+fn a_libsys_or_libgit_on_the_plugin_path_is_a_warning() {
     let tmp = tempfile::TempDir::new().unwrap();
     let cfg_dir = tmp.path().join("beachcomber");
     let plugins = tmp.path().join("plugins");
@@ -986,6 +986,8 @@ fn a_libsys_on_the_plugin_path_is_a_warning() {
     };
     let shadow = plugins.join(format!("libsys.{ext}"));
     std::fs::write(&shadow, b"").unwrap();
+    let shadow_git = plugins.join(format!("libgit.{ext}"));
+    std::fs::write(&shadow_git, b"").unwrap();
     std::fs::write(
         cfg_dir.join("config.toml"),
         format!(
@@ -1014,6 +1016,10 @@ fn a_libsys_on_the_plugin_path_is_a_warning() {
             && stdout.contains(&format!(
                 "[daemon.plugin] path: {} is shadowed by the built-in sys plugin",
                 shadow.display()
+            ))
+            && stdout.contains(&format!(
+                "[daemon.plugin] path: {} is shadowed by the built-in git plugin",
+                shadow_git.display()
             ))
             && !stdout.contains("[FAIL] local"),
         "expected a local WARN naming the shadowed library, got:\n{stdout}"

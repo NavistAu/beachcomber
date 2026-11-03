@@ -1,4 +1,4 @@
-/// Seam tests for the `git` provider.
+/// Seam tests for the `git` plugin.
 ///
 /// Uses a hand-written `StubGitExecutor` to provide canned git command outputs
 /// without requiring git to be installed or a real repository on disk.
@@ -9,14 +9,13 @@
 /// - detached HEAD: refs source sets detached=true
 /// - no repo (all git commands fail): sources return empty result
 /// - malformed output: provider handles gracefully without panicking
+use super::{diff_facts, refs_facts, status_facts};
 use crate::boundaries::git::GitExecutor;
-use crate::provider::Provider;
-use crate::provider::Value;
-use crate::provider::git::git_provider_with_executor;
+use serde_json::json;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{ExitStatus, Output};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tempfile::TempDir;
 
 // ── Hand-written test double ──────────────────────────────────────────────────
@@ -29,10 +28,10 @@ struct StubGitExecutor {
 }
 
 impl StubGitExecutor {
-    fn new(outputs: Vec<std::io::Result<Output>>) -> Arc<Self> {
-        Arc::new(Self {
+    fn new(outputs: Vec<std::io::Result<Output>>) -> Self {
+        Self {
             outputs: Mutex::new(outputs.into()),
-        })
+        }
     }
 }
 
@@ -154,33 +153,25 @@ fn git_refs_clean_repo_produces_correct_branch() {
     // The refs source now produces commit, ahead, behind, upstream, state, etc.
     let dir = fake_repo();
     let stub = StubGitExecutor::new(refs_outputs_clean());
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let refs_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "refs")
-        .unwrap();
-    let result = refs_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap();
+    let result = refs_facts(dir.path(), &stub).expect("facts");
 
     assert!(
-        !result.fields.contains_key("branch"),
+        !result.contains_key("branch"),
         "branch moved to head source; must not be present in refs"
     );
     assert!(
-        !result.fields.contains_key("detached"),
+        !result.contains_key("detached"),
         "detached moved to head source; must not be present in refs"
     );
-    assert_eq!(result.fields.get("ahead").unwrap(), &Value::Int(0));
-    assert_eq!(result.fields.get("behind").unwrap(), &Value::Int(0));
+    assert_eq!(result.get("ahead").unwrap(), &json!(0));
+    assert_eq!(result.get("behind").unwrap(), &json!(0));
     assert_eq!(
-        result.fields.get("upstream").unwrap().as_text(),
+        result.get("upstream").unwrap().as_str().unwrap(),
         "origin/main"
     );
-    assert_eq!(result.fields.get("commit").unwrap().as_text(), "abc1234");
+    assert_eq!(result.get("commit").unwrap().as_str().unwrap(), "abc1234");
     assert_eq!(
-        result.fields.get("commit_summary").unwrap().as_text(),
+        result.get("commit_summary").unwrap().as_str().unwrap(),
         "init"
     );
     // What the repo does not have is absent, not "" or 0: no tag, no push
@@ -193,12 +184,12 @@ fn git_refs_clean_repo_produces_correct_branch() {
         "state_total",
     ] {
         assert!(
-            !result.fields.contains_key(absent),
+            !result.contains_key(absent),
             "{absent} must be absent: {:?}",
-            result.fields
+            result
         );
     }
-    assert_eq!(result.fields.get("state").unwrap().as_text(), "clean");
+    assert_eq!(result.get("state").unwrap().as_str().unwrap(), "clean");
 }
 
 #[test]
@@ -211,15 +202,7 @@ fn git_refs_without_an_upstream_or_commits_leaves_them_absent() {
         failure(),                    // config --get branch.main.pushRemote
         failure(),                    // config --get remote.pushDefault
     ]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let refs_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "refs")
-        .unwrap();
-    let result = refs_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap();
+    let result = refs_facts(dir.path(), &stub).expect("facts");
 
     for absent in [
         "upstream",
@@ -230,13 +213,13 @@ fn git_refs_without_an_upstream_or_commits_leaves_them_absent() {
         "last_commit_age_secs",
     ] {
         assert!(
-            !result.fields.contains_key(absent),
+            !result.contains_key(absent),
             "{absent} must be absent: {:?}",
-            result.fields
+            result
         );
     }
     // A count is a count: zero stashes is a value.
-    assert_eq!(result.fields.get("stash"), Some(&Value::Int(0)));
+    assert_eq!(result.get("stash"), Some(&json!(0)));
 }
 
 #[test]
@@ -251,46 +234,21 @@ fn git_refs_detached_head_sets_detached_true() {
         failure(),                  // describe
                                     // no push remote queries since branch is "(detached)"
     ]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let refs_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "refs")
-        .unwrap();
-    let result = refs_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap();
+    let result = refs_facts(dir.path(), &stub).expect("facts");
 
     assert!(
-        !result.fields.contains_key("detached"),
+        !result.contains_key("detached"),
         "detached moved to head source; must not be present in refs"
     );
-    assert!(
-        !result.fields.contains_key("push_ahead"),
-        "{:?}",
-        result.fields
-    );
-    assert!(
-        !result.fields.contains_key("push_behind"),
-        "{:?}",
-        result.fields
-    );
+    assert!(!result.contains_key("push_ahead"), "{:?}", result);
+    assert!(!result.contains_key("push_behind"), "{:?}", result);
 }
 
 #[test]
 fn git_refs_git_not_installed_fails() {
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![not_found()]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let refs_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "refs")
-        .unwrap();
-    let err = refs_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap_err();
-    assert_eq!(err, "git status failed");
+    assert!(refs_facts(dir.path(), &stub).is_none());
 }
 
 #[test]
@@ -298,16 +256,7 @@ fn git_refs_git_returns_failure_exit_code_fails() {
     let dir = fake_repo();
     // status exits non-zero → parse_git_status returns None → the execute fails
     let stub = StubGitExecutor::new(vec![failure()]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let refs_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "refs")
-        .unwrap();
-    let err = refs_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap_err();
-    assert_eq!(err, "git status failed");
+    assert!(refs_facts(dir.path(), &stub).is_none());
 }
 
 #[test]
@@ -322,28 +271,8 @@ fn git_refs_malformed_status_output_returns_empty() {
         failure(), // describe
         failure(), // config pushRemote (branch "" → skip immediately)
     ]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let refs_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "refs")
-        .unwrap();
     // Must not panic
-    let _result = refs_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap();
-}
-
-#[test]
-fn git_refs_fails_when_no_path_given() {
-    let stub = StubGitExecutor::new(vec![]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let refs_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "refs")
-        .unwrap();
-    assert!(refs_src.execute(None).is_err());
+    let _result = refs_facts(dir.path(), &stub).expect("facts");
 }
 
 // ── status source seam tests ──────────────────────────────────────────────────
@@ -352,76 +281,42 @@ fn git_refs_fails_when_no_path_given() {
 fn git_status_clean_repo_is_not_dirty() {
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![success(status_clean_main())]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let status_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "status")
-        .unwrap();
-    let result = status_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap();
+    let result = status_facts(dir.path(), &stub).expect("facts");
 
-    assert_eq!(result.fields.get("dirty").unwrap(), &Value::Bool(false));
-    assert_eq!(result.fields.get("staged").unwrap(), &Value::Int(0));
-    assert_eq!(result.fields.get("unstaged").unwrap(), &Value::Int(0));
-    assert_eq!(result.fields.get("untracked").unwrap(), &Value::Int(0));
-    assert_eq!(result.fields.get("conflicted").unwrap(), &Value::Int(0));
+    assert_eq!(result.get("dirty").unwrap(), &json!(false));
+    assert_eq!(result.get("staged").unwrap(), &json!(0));
+    assert_eq!(result.get("unstaged").unwrap(), &json!(0));
+    assert_eq!(result.get("untracked").unwrap(), &json!(0));
+    assert_eq!(result.get("conflicted").unwrap(), &json!(0));
 }
 
 #[test]
 fn git_status_untracked_file_is_dirty() {
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![success(status_dirty_untracked())]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let status_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "status")
-        .unwrap();
-    let result = status_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap();
+    let result = status_facts(dir.path(), &stub).expect("facts");
 
-    assert_eq!(result.fields.get("dirty").unwrap(), &Value::Bool(true));
-    assert_eq!(result.fields.get("untracked").unwrap(), &Value::Int(1));
-    assert_eq!(result.fields.get("staged").unwrap(), &Value::Int(0));
+    assert_eq!(result.get("dirty").unwrap(), &json!(true));
+    assert_eq!(result.get("untracked").unwrap(), &json!(1));
+    assert_eq!(result.get("staged").unwrap(), &json!(0));
 }
 
 #[test]
 fn git_status_staged_file_is_dirty() {
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![success(status_one_staged())]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let status_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "status")
-        .unwrap();
-    let result = status_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap();
+    let result = status_facts(dir.path(), &stub).expect("facts");
 
-    assert_eq!(result.fields.get("dirty").unwrap(), &Value::Bool(true));
-    assert_eq!(result.fields.get("staged").unwrap(), &Value::Int(1));
-    assert_eq!(result.fields.get("unstaged").unwrap(), &Value::Int(0));
+    assert_eq!(result.get("dirty").unwrap(), &json!(true));
+    assert_eq!(result.get("staged").unwrap(), &json!(1));
+    assert_eq!(result.get("unstaged").unwrap(), &json!(0));
 }
 
 #[test]
 fn git_status_git_not_installed_fails() {
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![not_found()]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let status_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "status")
-        .unwrap();
-    assert!(
-        status_src
-            .execute(Some(dir.path().to_str().unwrap()))
-            .is_err()
-    );
+    assert!(status_facts(dir.path(), &stub).is_none());
 }
 
 // ── diff source seam tests ────────────────────────────────────────────────────
@@ -436,26 +331,12 @@ fn git_diff_clean_repo_has_zero_lines() {
         success(diff_empty()), // diff --numstat
         success(diff_empty()), // diff --cached --numstat
     ]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let diff_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "diff")
-        .unwrap();
-    let result = diff_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap();
+    let result = diff_facts(dir.path(), &stub).expect("facts");
 
-    assert_eq!(result.fields.get("lines_added").unwrap(), &Value::Int(0));
-    assert_eq!(result.fields.get("lines_removed").unwrap(), &Value::Int(0));
-    assert_eq!(
-        result.fields.get("lines_staged_added").unwrap(),
-        &Value::Int(0)
-    );
-    assert_eq!(
-        result.fields.get("lines_staged_removed").unwrap(),
-        &Value::Int(0)
-    );
+    assert_eq!(result.get("lines_added").unwrap(), &json!(0));
+    assert_eq!(result.get("lines_removed").unwrap(), &json!(0));
+    assert_eq!(result.get("lines_staged_added").unwrap(), &json!(0));
+    assert_eq!(result.get("lines_staged_removed").unwrap(), &json!(0));
 }
 
 #[test]
@@ -465,26 +346,12 @@ fn git_diff_counts_unstaged_lines() {
         success(diff_3added_1removed()), // diff --numstat
         success(diff_empty()),           // diff --cached --numstat
     ]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let diff_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "diff")
-        .unwrap();
-    let result = diff_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap();
+    let result = diff_facts(dir.path(), &stub).expect("facts");
 
-    assert_eq!(result.fields.get("lines_added").unwrap(), &Value::Int(3));
-    assert_eq!(result.fields.get("lines_removed").unwrap(), &Value::Int(1));
-    assert_eq!(
-        result.fields.get("lines_staged_added").unwrap(),
-        &Value::Int(0)
-    );
-    assert_eq!(
-        result.fields.get("lines_staged_removed").unwrap(),
-        &Value::Int(0)
-    );
+    assert_eq!(result.get("lines_added").unwrap(), &json!(3));
+    assert_eq!(result.get("lines_removed").unwrap(), &json!(1));
+    assert_eq!(result.get("lines_staged_added").unwrap(), &json!(0));
+    assert_eq!(result.get("lines_staged_removed").unwrap(), &json!(0));
 }
 
 #[test]
@@ -495,19 +362,11 @@ fn git_diff_binary_files_are_skipped_gracefully() {
         success(b"-\t-\tsome_binary.bin\n3\t1\tREADME.md\n"), // diff --numstat
         success(diff_empty()),                                // diff --cached --numstat
     ]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let diff_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "diff")
-        .unwrap();
-    let result = diff_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap();
+    let result = diff_facts(dir.path(), &stub).expect("facts");
 
     // Binary file "-" parses as 0 via parse::<i64>().unwrap_or(0)
-    assert_eq!(result.fields.get("lines_added").unwrap(), &Value::Int(3));
-    assert_eq!(result.fields.get("lines_removed").unwrap(), &Value::Int(1));
+    assert_eq!(result.get("lines_added").unwrap(), &json!(3));
+    assert_eq!(result.get("lines_removed").unwrap(), &json!(1));
 }
 
 #[test]
@@ -517,17 +376,9 @@ fn git_diff_git_error_returns_zero_counts() {
         not_found(), // diff --numstat
         not_found(), // diff --cached --numstat
     ]);
-    let provider = git_provider_with_executor(stub);
-    let sources = provider.sources();
-    let diff_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "diff")
-        .unwrap();
-    let result = diff_src
-        .execute(Some(dir.path().to_str().unwrap()))
-        .unwrap();
+    let result = diff_facts(dir.path(), &stub).expect("facts");
 
     // Errors produce (0,0) for both unstaged and staged
-    assert_eq!(result.fields.get("lines_added").unwrap(), &Value::Int(0));
-    assert_eq!(result.fields.get("lines_removed").unwrap(), &Value::Int(0));
+    assert_eq!(result.get("lines_added").unwrap(), &json!(0));
+    assert_eq!(result.get("lines_removed").unwrap(), &json!(0));
 }

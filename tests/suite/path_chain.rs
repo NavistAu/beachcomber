@@ -1869,7 +1869,7 @@ async fn daemon_at_a_temp_home() -> (TempDir, TempDir, PathBuf, PathBuf) {
     let sock = sock_dir.path().join("test.sock");
     let (_handle, ready) = beachcomber::daemon::start_in_process_polling(
         sock.clone(),
-        beachcomber::config::Config::default(),
+        crate::common::registry::config_over_shipped(vec![]),
     );
     ready.await.expect("daemon ready");
     (home_dir, sock_dir, home, sock)

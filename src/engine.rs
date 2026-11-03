@@ -18,8 +18,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// The plugin libraries a daemon can call, found on a search path and loaded
-/// once per resolved path for the daemon's life, and the one compiled in,
-/// [`crate::plugin::sys`], answered by name before any search.
+/// once per resolved path for the daemon's life, and those compiled in
+/// ([`crate::plugin`]), answered by name before any search.
 ///
 /// # The plugin author's contract
 ///
@@ -48,13 +48,13 @@ struct PluginState {
 }
 
 impl PluginSet {
-    /// Libraries found on `search` and loaded by `loader`, and `sys`: the
-    /// name `sys` is the compiled-in plugin's, and is never looked for on the
-    /// path.
+    /// Libraries found on `search` and loaded by `loader`, and the compiled-in
+    /// plugins: their names are theirs, and are never looked for on the path.
     pub fn new(search: Vec<PathBuf>, loader: Arc<dyn LibraryLoader>) -> Self {
-        let sys: Arc<dyn LoadedLibrary> = Arc::new(crate::plugin::StaticLibrary::sys());
         let state = PluginState {
-            by_name: HashMap::from([(crate::plugin::SYS.to_string(), sys)]),
+            by_name: crate::plugin::compiled_in()
+                .map(|(name, lib)| (name.to_string(), lib))
+                .collect(),
             by_image: HashMap::new(),
         };
         Self {
@@ -64,14 +64,19 @@ impl PluginSet {
         }
     }
 
-    /// A `libsys.<dylib|so>` on the search path, which nothing loads: the
-    /// name is the compiled-in plugin's.
-    pub fn shadowed_sys(&self) -> Option<PathBuf> {
-        let file = format!("lib{}.{LIBRARY_EXT}", crate::plugin::SYS);
-        self.search
-            .iter()
-            .map(|dir| dir.join(&file))
-            .find(|candidate| candidate.is_file())
+    /// Each `lib<name>.<dylib|so>` on the search path that nothing loads,
+    /// `name` being a compiled-in plugin's, with that name.
+    pub fn shadowed(&self) -> Vec<(&'static str, PathBuf)> {
+        crate::plugin::reserved_names()
+            .filter_map(|name| {
+                let file = format!("lib{name}.{LIBRARY_EXT}");
+                self.search
+                    .iter()
+                    .map(|dir| dir.join(&file))
+                    .find(|candidate| candidate.is_file())
+                    .map(|path| (name, path))
+            })
+            .collect()
     }
 
     /// Call `symbol` in the library `name` with `args` (a JSON array). A
@@ -937,22 +942,40 @@ mod tests {
         assert_eq!(loads_of(&loads), 1);
     }
 
-    /// `sys` is answered from the compiled-in table: a `libsys` on the search
-    /// path is never looked at, and the loader (which would panic on a call
-    /// it was not told to expect) is never asked.
+    /// `sys` and `git` are answered from their compiled-in tables: a `libsys`
+    /// or `libgit` on the search path is never looked at, and the loader
+    /// (which would panic on a call it was not told to expect) is never asked.
     #[test]
-    fn sys_is_answered_from_the_table_before_the_search_path() {
+    fn a_compiled_in_plugin_is_answered_from_its_table_before_the_search_path() {
         let dir = tempfile::tempdir().unwrap();
-        let shadow = dir.path().join(format!("libsys.{EXT}"));
-        std::fs::write(&shadow, b"").unwrap();
+        let shadow_git = dir.path().join(format!("libgit.{EXT}"));
+        let shadow_sys = dir.path().join(format!("libsys.{EXT}"));
+        std::fs::write(&shadow_git, b"").unwrap();
+        std::fs::write(&shadow_sys, b"").unwrap();
         let plugins = PluginSet::new(
             vec![dir.path().to_path_buf()],
             Arc::new(MockLibraryLoader::new()),
         );
-        assert_eq!(plugins.shadowed_sys(), Some(shadow));
+        assert_eq!(
+            plugins.shadowed(),
+            [("git", shadow_git), ("sys", shadow_sys)]
+        );
         let out = render(plugins, "{{ plugin('sys', 'loadavg') | length }}").unwrap();
         assert_eq!(out, "3");
-        assert_eq!(no_plugins().shadowed_sys(), None);
+        let elsewhere = tempfile::tempdir().unwrap();
+        let out = render(
+            PluginSet::new(
+                vec![dir.path().to_path_buf()],
+                Arc::new(MockLibraryLoader::new()),
+            ),
+            &format!(
+                "{{{{ plugin('git', 'status', '{}') | length }}}}",
+                elsewhere.path().display()
+            ),
+        )
+        .unwrap();
+        assert_eq!(out, "0", "not a work tree: an empty answer");
+        assert_eq!(no_plugins().shadowed(), []);
     }
 
     #[test]
@@ -961,6 +984,12 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("plugin(): nope in sys: symbol not found"),
+            "{err}"
+        );
+        let err = render(no_plugins(), "{{ plugin('git', 'nope', '/') }}").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("plugin(): nope in git: symbol not found"),
             "{err}"
         );
     }

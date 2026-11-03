@@ -98,24 +98,24 @@ The `expand_abs_path(s: &str) -> Option<PathBuf>` helper (in `src/provider/mod.r
 
 ## Implementing a Source — worked example: git
 
-`git` decomposes into five sources with different strategies:
+`git` is `defaults/git.toml`, five Sources with different strategies, sharing one `root` line in their `_` prototype. Four get their data from the compiled-in `git` plugin (§8):
 
 ```
-git.head    → watch, rooted at the repository, watches .git/ (pure file read of HEAD, no subprocess)
+git.head    → watch, rooted at the repository, watches .git/ (reads <gitdir>/HEAD itself, no subprocess)
               fields: branch, detached
 
-git.refs    → watch, rooted at the repository, watches .git/
+git.refs    → watch, rooted at the repository, watches .git/, `plugin('git', 'refs', root)`
               fields: commit, tag, ahead, behind, upstream, state, state_step, state_total,
                       stash, last_commit_age_secs, commit_summary, push_ahead, push_behind
 
-git.diff    → poll 30s, rooted at the repository
+git.diff    → poll 30s, rooted at the repository, `plugin('git', 'diff', root)`
               fields: lines_added, lines_removed, lines_staged_added, lines_staged_removed
 
-git.lineage → poll 60s, rooted at the repository
+git.lineage → poll 60s, rooted at the repository, `plugin('git', 'lineage', root)`
               fields: branch_parent, lines_added_parent, lines_removed_parent,
                       branch_default, lines_added_default, lines_removed_default
 
-git.status  → watch + poll (watches .git/index + polls every 60s), rooted at the repository
+git.status  → watch + poll (watches .git/index + polls every 60s), rooted at the repository, `plugin('git', 'status', root)`
               fields: staged, unstaged, untracked, conflicted, dirty
 ```
 
@@ -216,7 +216,7 @@ impl Source for DockerContextSource {
     }
 
     // `root` and `has_root` keep their defaults: one instance, at ~. A project
-    // Source overrides both (see src/provider/git.rs).
+    // Source overrides both.
 
     fn execute(&self, _dir: Option<&str>) -> Result<SourceResult, String> {
         let home = std::env::var("HOME").map_err(|_| "HOME is not set".to_string())?;
@@ -443,8 +443,9 @@ Provider execution happens on tokio's blocking thread pool. Slow providers delay
 |---|---|---|
 | Nanosecond (`<1µs`) | `user`, `hostname`, `gcloud`, `aws` | libc calls, env vars, file reads + line scan |
 | Microsecond (1-100µs) | `terraform`, `python`, `direnv` (no binary) | File existence checks + small reads |
-| Millisecond (1-10ms) | `git`, `network`, `battery` | At most one process spawn |
+| Millisecond (1-10ms) | `network`, `battery` | At most one process spawn |
 | Slow (10-50ms) | `mise`, `direnv` (with binary), config Sources that shell out | Multiple spawns or interpreted CLI |
+| A repository's worth | `git` (about 150 ms for all five Sources on this repository, one after another) | One `git` process per fact; `head` none |
 
 **Rule 1: Never fork a process when you can read a file.**
 
@@ -468,7 +469,7 @@ Real examples from `docs/performance.md`:
 
 **Rule 2: If you must spawn a process, spawn exactly one.**
 
-If a file read is truly not feasible, cap the provider at one process spawn. The `git` provider spawns one (`git status`). The `network` provider spawns one (`airport` for SSID; everything else uses `libc::getifaddrs()`).
+If a file read is truly not feasible, cap the provider at one process spawn. `git`'s `status` Source spawns one (`git status`). The `network` provider spawns one (`airport` for SSID; everything else uses `libc::getifaddrs()`).
 
 **Rule 3: Providers that poll frequently must be fast.**
 

@@ -754,12 +754,15 @@ mod tests {
     fn a_custom_abstract_template_reaches_providers_no_file_names() {
         let layers = [
             crate::daemon::defaults::comb_layer(),
-            layer("[daemon.providers._]\ntemplate = \"{{ {'where': '{{ 1 }}'} }}\"\n"),
+            layer(
+                "[daemon.providers._]\ntemplate = \"{{ {'where': '{{ 1 }}'} }}\"\n\
+                 [daemon.providers.p.sources.s]\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
+            ),
         ];
         let planned = planned(&layers);
         assert!(
-            planned.contains_key("git:template"),
-            "a built-in no file names has the abstract template: {:?}",
+            planned.contains_key("p:template"),
+            "a provider no client table names has the abstract template: {:?}",
             planned.keys().collect::<Vec<_>>()
         );
     }

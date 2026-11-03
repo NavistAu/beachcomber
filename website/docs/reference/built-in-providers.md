@@ -18,11 +18,11 @@ Each provider declares one or more **sources** — independent units of executio
 | `battery` | `state` | poll 30s (`defaults/battery.toml`) | none | `percent`, `charging`, `status`, `time_remaining_secs`, `status_raw` (Linux) |
 | `direnv` | `state` | watch (`defaults/direnv.toml`) | project | `status`, `allowed` |
 | `gcloud_configs` | `config_dir` | poll 60s (`defaults/gcloud.toml`) | none | `active_config`, plus one object per configuration name, each `{ project, account }` |
-| `git` | `head` | watch | project | `branch`, `detached` |
-| `git` | `refs` | watch | project | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
-| `git` | `diff` | poll 30s | project | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
-| `git` | `lineage` | poll 60s | project | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
-| `git` | `status` | watch + poll | project | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
+| `git` | `head` | watch (`defaults/git.toml`) | project | `branch`, `detached` |
+| `git` | `refs` | watch (`defaults/git.toml`) | project | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
+| `git` | `diff` | poll 30s (`defaults/git.toml`) | project | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
+| `git` | `lineage` | poll 60s (`defaults/git.toml`) | project | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
+| `git` | `status` | watch + poll (`defaults/git.toml`) | project | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
 | `hostname` | `host` | poll 10m (`defaults/hostname.toml`) | none | `name`, `short` |
 | `load` | `loadavg` | poll 10s (`defaults/load.toml`) | none | `one`, `five`, `fifteen` |
 | `mise` | `tools` | watch (`defaults/mise.toml`) | project | tool versions, one field per tool: what `mise ls --current` resolves at the nearest `mise.toml`/`.mise.toml` directory, else at `~` |
@@ -34,7 +34,7 @@ Each provider declares one or more **sources** — independent units of executio
 | `uptime` | `time` | poll 60s (`defaults/uptime.toml`) | none | `seconds`, `days`, `hours`, `minutes` |
 | `user` | `name` | poll 10m (`defaults/user.toml`) | none | `name`, `uid` |
 
-**Shipped files.** A provider whose strategy names a `defaults/` file is that file, written the way a user writes a Source: `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` each have one Source whose `data` line calls the compiled-in `sys` plugin, and `terraform`, `python`, `direnv`, `asdf`, `aws_profiles`, `gcloud_configs` and `sudo` read their files in theirs; `mise`'s runs `mise ls --current --json`. Set any of its lines in `config.toml` or `conf.d/` (`[daemon.providers.hostname.sources.host] result.name = "{{ data.name | upper }}"`) and the rest stay as shipped.
+**Shipped files.** A provider whose strategy names a `defaults/` file is that file, written the way a user writes a Source: `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` each have one Source whose `data` line calls the compiled-in `sys` plugin, `git` is `defaults/git.toml`, whose Sources call the compiled-in `git` plugin, and `terraform`, `python`, `direnv`, `asdf`, `aws_profiles`, `gcloud_configs` and `sudo` read their files in theirs; `mise`'s runs `mise ls --current --json`. Set any of its lines in `config.toml` or `conf.d/` (`[daemon.providers.hostname.sources.host] result.name = "{{ data.name | upper }}"`) and the rest stay as shipped.
 
 **watch + poll** sources watch files for quick invalidation and also poll on a timer as a backstop.
 
@@ -84,7 +84,7 @@ Each provider declares one or more **sources** — independent units of executio
 
 | Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `git` | project | 30 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
+| `git` | project | 30 fields (see table below) | watch `.git` + fallback poll | `head` no process; the rest about 150 ms, 10 `git` processes, on this repository |
 
 **Fields:**
 

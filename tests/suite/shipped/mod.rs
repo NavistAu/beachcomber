@@ -31,6 +31,7 @@ mod aws;
 mod battery;
 mod direnv;
 mod gcloud;
+mod git;
 mod hostname;
 mod kubecontext;
 mod load;

@@ -1287,47 +1287,6 @@ fn a_source_line_that_is_not_a_string_is_an_error() {
 }
 
 #[test]
-fn a_builtin_source_accepts_only_return() {
-    // root, data and result stay refused, with one error naming the Source.
-    let errors = source_errors(
-        "[daemon.providers.git.sources.diff]\ndata = \"{{ 1 }}\"\nresult.x = \"{{ 1 }}\"\n",
-    );
-    assert_eq!(
-        errors,
-        vec![
-            "config(/user.toml): [daemon.providers.git.sources.diff] is a built-in Source: only return can \
-             be set"
-                .to_string()
-        ]
-    );
-    // return alone loads.
-    assert_eq!(
-        source_errors(
-            "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('5s') }}\"\n"
-        ),
-        Vec::<String>::new()
-    );
-    // Anything else is the file check's unknown key.
-    assert_eq!(
-        source_errors("[daemon.providers.git.sources.diff]\nfoo = \"x\"\n"),
-        vec![
-            "config(/user.toml): unknown key 'foo' in [daemon.providers.git.sources.diff]"
-                .to_string()
-        ]
-    );
-    // A return that does not load names its table.
-    let errors = source_errors(
-        "[daemon.providers.git.sources.diff]\nreturn = \"{{ result | poll('banana') }}\"\n",
-    );
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(
-        errors[0]
-            .starts_with("config(/user.toml): [daemon.providers.git.sources.diff] return: poll()"),
-        "{errors:?}"
-    );
-}
-
-#[test]
 fn duplicate_fields_under_the_default_merge_are_a_load_error() {
     let errors = source_errors(
         r#"
@@ -1696,22 +1655,6 @@ fn the_watchdog_accessors_read_whole_seconds_and_default_the_threshold() {
     let c = in_memory("[daemon]\nwatchdog_interval = \"500ms\"\n");
     assert_eq!(c.errors().len(), 1);
     assert_eq!(c.daemon().watchdog_interval_duration(), None);
-}
-
-#[test]
-fn a_misspelled_builtin_source_says_what_the_provider_has() {
-    let errors = source_errors(
-        "[daemon.providers.git.sources.dif]\nreturn = \"{{ result | poll('5s') }}\"\n",
-    );
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(
-        errors[0].starts_with(
-            "config(/user.toml): [daemon.providers.git.sources.dif]: git has no Source 'dif' (its \
-             Sources: "
-        ) && errors[0].contains("diff")
-            && errors[0].ends_with("a new Source needs data and result"),
-        "{errors:?}"
-    );
 }
 
 /// `nearest` chooses between instances; a Source with one instance has no

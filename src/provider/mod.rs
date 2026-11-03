@@ -1,10 +1,7 @@
 pub mod config_source;
-pub mod git;
 pub mod registry;
 pub mod source_call;
 
-#[cfg(test)]
-mod git_seam_tests;
 #[cfg(test)]
 mod provider_trait_tests;
 #[cfg(test)]
@@ -765,9 +762,7 @@ pub trait Source: Send + Sync {
     /// The default is the `watch(...)` declaration ([`declared_inputs`]).
     /// Beside these, a record's inputs are the files its run's lines read,
     /// each stamped before it was read ([`crate::run::reads_here`]): that is
-    /// how a config Source names what it reads. A Rust Source whose root alone
-    /// cannot name its files overrides this, as git does for a linked
-    /// worktree's `HEAD`.
+    /// how a config Source names what it reads.
     fn inputs(
         &self,
         declared: &InvalidationStrategy,

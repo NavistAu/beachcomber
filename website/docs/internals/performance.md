@@ -189,7 +189,7 @@ libc::getifaddrs(&mut ifaddrs);
 |---|---|---|---|
 | **Nanosecond** (< 1µs) | 395ns - 749ns | user, load, hostname, uptime, gcloud_configs, aws_profiles | libc calls, file reads, env vars |
 | **Microsecond** (1-100µs) | ~1-50µs | terraform, python, asdf, direnv (no direnv binary) | File existence checks + reads |
-| **Millisecond** (1-10ms) | 2-6ms | network (2ms), git (5.6ms), battery (6ms) | 1 process spawn each |
+| **Millisecond** (1-10ms) | 2-6ms | network (2ms), git `head` (no process), battery (6ms) | at most 1 process spawn each |
 | **Slow** (10-50ms) | 10-50ms | mise, direnv (with direnv), Sources that call `exec()` | Process spawn (user-defined) |
 
 ### Socket and Cache Latency

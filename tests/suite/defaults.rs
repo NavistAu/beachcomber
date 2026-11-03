@@ -409,9 +409,6 @@ fn shipped_layers_parse_and_load_with_no_errors() {
     assert_eq!(load.errors, Vec::<String>::new());
     assert_eq!(load.warnings, Vec::<String>::new());
     let shipped = crate::common::registry::with_shipped_defaults();
-    for name in ProviderRegistry::with_defaults().provider_names() {
-        assert!(shipped.is_registered(&name), "{name}");
-    }
     for name in [
         "asdf",
         "aws",
@@ -421,6 +418,7 @@ fn shipped_layers_parse_and_load_with_no_errors() {
         "direnv",
         "gcloud",
         "gcloud_configs",
+        "git",
         "hostname",
         "kubecontext",
         "load",

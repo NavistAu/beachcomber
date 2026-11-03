@@ -1178,11 +1178,7 @@ impl ProviderRegistry {
     /// [`Self::shipped`] instead, never from this.
     /// Panics on registration failure (programmer error, not runtime).
     pub fn with_defaults() -> Self {
-        let mut registry = Self::new();
-        registry
-            .register(Box::new(crate::provider::git::GitProvider))
-            .expect("git");
-        registry
+        Self::new()
     }
 
     /// [`Self::load`]: the registry, or every error the config has.
@@ -1288,11 +1284,11 @@ impl ProviderRegistry {
                 errors.push(e.clone());
             }
         }
-        // `sys` is the compiled-in plugin's name: a library of that name on
+        // A compiled-in plugin's name is its own: a library of that name on
         // the path is never loaded, which its author should hear of.
-        if let Some(shadowed) = registry.plugins.as_ref().and_then(|p| p.shadowed_sys()) {
+        for (name, shadowed) in registry.plugins.iter().flat_map(|p| p.shadowed()) {
             warnings.push(config.locate(format!(
-                "[daemon.plugin] path: {} is shadowed by the built-in sys plugin, and never \
+                "[daemon.plugin] path: {} is shadowed by the built-in {name} plugin, and never \
                  loaded",
                 shadowed.display()
             )));

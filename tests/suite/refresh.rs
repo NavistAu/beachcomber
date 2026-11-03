@@ -268,7 +268,7 @@ async fn a_scheduler_backed_refresh_runs_the_demanded_source_alone() {
     let sock = tmp.path().join("test.sock");
     let (handle, ready) = beachcomber::daemon::start_in_process_polling(
         sock.clone(),
-        beachcomber::config::Config::default(),
+        crate::common::registry::config_over_shipped(vec![]),
     );
     ready.await.expect("daemon ready");
 

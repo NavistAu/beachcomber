@@ -1,6 +1,6 @@
 mod common;
 
-/// The test process's own git — the git provider runs in it, through
+/// The test process's own git — the git plugin runs in it, through
 /// `RealGitExecutor` — reads no host configuration, as the fixtures' git
 /// (`common::git::git_cmd`) does not: what a test sees must not depend on the
 /// developer's `~/.gitconfig` or the system's.
@@ -57,7 +57,6 @@ mod daemon_singleton;
 mod defaults;
 mod demand;
 mod e2e;
-mod e2e_git;
 mod e2e_providers;
 mod exec_cache;
 mod facets;
@@ -75,7 +74,6 @@ mod no_sleep_in_tests;
 mod path_chain;
 mod plugin_real_ffi;
 mod provider_conformance;
-mod provider_git;
 mod put_node;
 mod put_remove;
 mod put_ttl;

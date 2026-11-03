@@ -601,6 +601,15 @@ impl Source for ConfigSource {
         }
     }
 
+    /// The `root` line: Sources of one provider with the same line find their
+    /// root alike, so one request renders it once.
+    fn root_key(&self) -> String {
+        self.spec
+            .root
+            .clone()
+            .unwrap_or_else(|| self.spec.name.clone())
+    }
+
     fn has_root(&self) -> bool {
         self.spec.root.is_some()
     }

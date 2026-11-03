@@ -1,16 +1,23 @@
-use beachcomber::provider::Provider;
-use beachcomber::provider::git::GitProvider;
 use beachcomber::provider::registry::ProviderRegistry;
 use criterion::{Criterion, criterion_group, criterion_main};
 
-/// Run every Source declared by `provider` once at `path` and return their results.
-/// Mirrors what the scheduler's per-source dispatch does on a refresh.
-fn execute_all_sources<P: Provider>(provider: &P, path: Option<&str>) -> Vec<usize> {
-    provider
-        .sources()
+/// Every run of `provider`'s shipped Sources once at `path`, one after another:
+/// the fields each answered.
+fn execute_all_sources(provider: &str, path: &str) -> impl FnMut() -> Vec<usize> {
+    let registry = ProviderRegistry::shipped(&std::env::vars().collect());
+    let sources: Vec<_> = registry
+        .provider_sources(provider)
+        .unwrap_or_else(|| panic!("{provider} is shipped"))
         .iter()
-        .map(|s| s.execute(path).unwrap().fields.len())
-        .collect()
+        .map(|meta| registry.source(provider, &meta.name).expect("registered"))
+        .collect();
+    let path = path.to_string();
+    move || {
+        sources
+            .iter()
+            .map(|s| s.execute(Some(&path)).unwrap().fields.len())
+            .collect()
+    }
 }
 
 /// One run of the shipped Source `provider.source` at the instance at `~`,
@@ -44,17 +51,13 @@ fn bench_uptime_execute(c: &mut Criterion) {
 }
 
 fn bench_git_execute(c: &mut Criterion) {
-    // Use the beachcomber repo itself as the target. GitProvider declares
-    // three sources (refs / diff / status); benchmark fires all of them.
-    let repo_path = env!("CARGO_MANIFEST_DIR");
-    let p = GitProvider;
+    // The beachcomber repo itself: its five Sources, one after another, through
+    // the shipped file and the compiled-in plugin.
+    let mut run = execute_all_sources("git", env!("CARGO_MANIFEST_DIR"));
 
     c.bench_function("provider_git_execute", |b| {
         b.iter(|| {
-            criterion::black_box(execute_all_sources(
-                &p,
-                Some(criterion::black_box(repo_path)),
-            ));
+            criterion::black_box(run());
         })
     });
 }
@@ -64,12 +67,9 @@ fn bench_git_vs_raw(c: &mut Criterion) {
     let mut group = c.benchmark_group("git_comparison");
 
     group.bench_function("beachcomber_git_provider", |b| {
-        let p = GitProvider;
+        let mut run = execute_all_sources("git", repo_path);
         b.iter(|| {
-            criterion::black_box(execute_all_sources(
-                &p,
-                Some(criterion::black_box(repo_path)),
-            ));
+            criterion::black_box(run());
         })
     });
 

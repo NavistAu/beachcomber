@@ -21,13 +21,9 @@
 //! leaves out a fact it has no value for, never `""`. `NULL` is failure: the
 //! call it wraps failed, or it was given arguments.
 //!
-//! An answer is written into a thread-local string of that symbol's and its
-//! pointer returned: valid until the next call of the same symbol on the same
-//! thread, which is stricter than the contract and needs no lock. What each
-//! wraps is reentrant (`gethostname`, `getloadavg`, `uname`, `getpwuid_r`,
-//! `getifaddrs`, `sysctl`, file reads, a child process), so two threads may
-//! call at once. A symbol must not unwind, as a library's must not: a panic out
-//! of an `extern "C" fn` aborts.
+//! What each wraps is reentrant (`gethostname`, `getloadavg`, `uname`,
+//! `getpwuid_r`, `getifaddrs`, `sysctl`, file reads, a child process), so two
+//! threads may call at once; an answer's lifetime is [`crate::plugin`]'s.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -40,47 +36,15 @@ use linux as os;
 #[cfg(target_os = "macos")]
 use macos as os;
 
-use crate::boundaries::library::JsonFn;
+use crate::plugin::Facts;
 use serde_json::Value as Json;
-use std::cell::RefCell;
-use std::ffi::{CStr, CString, c_char};
+use std::ffi::{CStr, c_char};
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::thread::LocalKey;
 
 use os::{is_vpn_interface, preferred_interface, uptime_secs, wifi_ssid};
 
-/// What a symbol answers: a JSON object.
-type Facts = serde_json::Map<String, Json>;
-
-/// Each symbol: an `extern "C"` function in [`symbol`] answering `$facts()`
-/// into a thread-local string of its own; and the table of them, by name.
-macro_rules! symbols {
-    ($($name:ident => $facts:path),* $(,)?) => {
-        /// The symbols themselves.
-        mod symbol {
-            use super::*;
-            $(
-                /// # Safety
-                ///
-                /// `input` is `NULL` or a NUL-terminated string, as the
-                /// plugin contract has it.
-                pub(super) unsafe extern "C" fn $name(input: *const c_char) -> *const c_char {
-                    thread_local! {
-                        static OUT: RefCell<CString> = RefCell::new(CString::default());
-                    }
-                    // SAFETY: as the function's own contract.
-                    unsafe { answer(&OUT, input, $facts) }
-                }
-            )*
-        }
-
-        /// Every symbol of `sys`, by name, sorted.
-        pub const SYMBOLS: &[(&str, JsonFn)] =
-            &[$((stringify!($name), symbol::$name as JsonFn)),*];
-    };
-}
-
-symbols! {
+crate::plugin::symbols! {
+    no_args;
     battery => os::battery_facts,
     hostname => hostname_facts,
     loadavg => loadavg_facts,
@@ -90,37 +54,9 @@ symbols! {
     user => user_facts,
 }
 
-/// `facts()` as JSON text in `out`, its pointer; `NULL` when the input is not
-/// `[]` or there are no facts.
-///
-/// # Safety
-///
-/// `input` is `NULL` or a NUL-terminated string.
-unsafe fn answer(
-    out: &'static LocalKey<RefCell<CString>>,
-    input: *const c_char,
-    facts: fn() -> Option<Facts>,
-) -> *const c_char {
-    if input.is_null() {
-        return std::ptr::null();
-    }
-    // SAFETY: a NUL-terminated string, by the caller's contract.
-    let args = unsafe { CStr::from_ptr(input) }.to_bytes();
-    if !serde_json::from_slice::<Vec<Json>>(args).is_ok_and(|args| args.is_empty()) {
-        return std::ptr::null();
-    }
-    let Some(facts) = facts() else {
-        return std::ptr::null();
-    };
-    // JSON text holds no NUL: serde_json writes one in a string as `\u0000`.
-    let Ok(text) = CString::new(Json::Object(facts).to_string()) else {
-        return std::ptr::null();
-    };
-    out.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        *slot = text;
-        slot.as_ptr()
-    })
+/// `facts()`: `None` when it was given arguments.
+fn no_args(facts: fn() -> Option<Facts>, args: Vec<Json>) -> Option<Facts> {
+    if args.is_empty() { facts() } else { None }
 }
 
 /// `pairs` whose text is not empty.
@@ -546,7 +482,7 @@ mod tests {
     #[test]
     fn an_answer_outlives_a_call_of_another_symbol() {
         let find = |name: &str| SYMBOLS.iter().find(|(n, _)| *n == name).unwrap().1;
-        let input = CString::new("[]").unwrap();
+        let input = std::ffi::CString::new("[]").unwrap();
         // SAFETY: the contract's input, a NUL-terminated JSON array.
         let host = unsafe { find("hostname")(input.as_ptr()) };
         let before = unsafe { CStr::from_ptr(host) }.to_owned();
