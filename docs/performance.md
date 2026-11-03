@@ -256,11 +256,12 @@ Three rounds for the benches, 15 for the CLI, five for the suite (2508 tests eac
 
 | Tier | Time | Providers | Method |
 |---|---|---|---|
-| **Nanosecond** (< 1µs) | 395ns - 749ns | user, load, hostname, uptime, gcloud_configs, aws_profiles | libc calls, file reads, env vars |
-| **Microsecond** (1-100µs) | ~1-50µs | terraform, python, asdf, direnv (no direnv binary) | File existence checks + reads |
-| **Millisecond** (1-10ms) | 2-6ms | network (2ms), git `head` (no process), battery (6ms) | at most 1 process spawn each |
-| **Slow** (10-50ms) | 10-50ms | mise, direnv (with direnv), Sources that call `exec()` | Process spawn (user-defined) |
-| **A repository's worth** | about 15-65 ms per Source | git `status` 1, `diff` 2, `lineage` 3+, `refs` 5+ `git` processes | Through the compiled-in `git` plugin; no shell |
+| **A file's lines** | about 90-170 µs | hostname, user, load, uptime (a `sys` call), gcloud_configs (reads files); `git.head` about 0.3 ms over its read | One run of the shipped Source: the engine, the lines, no process |
+| **One process** | 3-12 ms | network 2.7 ms (`getifaddrs`, and `airport` where it exists), battery 11.8 ms (`pmset`) | One spawn, inside `sys` |
+| **Commands** | 10-50 ms | mise, direnv (with direnv), Sources that call `exec()` | Process spawn (user-defined) |
+| **A repository's worth** | `status` 16, `diff` 26, `lineage` 38, `refs` 64 ms on this repository | git: 1, 2, 3 and 4 or more `git` processes | Through the compiled-in `git` plugin; no shell |
+
+These are one run through `ProviderRegistry::shipped` (`cargo bench --bench providers -- --quick`, load about 10), and for git the force-run times below. The sub-microsecond figures this table used to give were the libc call alone; the shipped Source's cost is the render around it, on a timer, never on a read.
 
 ### Socket and Cache Latency
 
@@ -510,6 +511,45 @@ replace the T5.1, T5.2, T5.4, T5.5 and T5.6 rows above.
 | T5.7 | a memo record <= 128 B plus its value and paths | not re-measured: no change to the record since the first measurement, 635 B for a memo of absence, 1403 B with a watch path and a ttl, 1578 B with a value. It is stored as generic `Value` maps in two facets and a stamp map, not a packed struct | **missed**, 5-12 times the target |
 | T5.8 | the suite about 10 s; each new test under 0.1 s | full workspace, 2508 tests, **9.2 s** wall, started at load 8 (nextest `--workspace`, unpartitioned). The 23 phase 5 tests (`exec_cache`, `shipped::kubecontext`, `cli_resolve::kubecontext*`), run together at load 25: 3 under 0.1 s, 7 between 0.1 and 0.2 s, 13 between 0.2 and 0.4 s (the slowest 0.38 s); each runs two to four `comb` processes | suite met; **the 0.1 s per test missed** by most of the phase 5 tests |
 
+### Git as a shipped file: phase 7 measured
+
+Measured 2026-11-04, the Rust provider (`bfa7ccd8`) against the shipped file over the compiled-in plugin (`350975ef`), release builds, macOS, on this repository's main checkout, 120 rounds alternating the two binaries, each its own isolated daemon, over the raw socket, load 10-19. Paired difference is the median of each round's after minus before.
+
+| | Rust p50 | file p50 | paired difference |
+|---|---:|---:|---:|
+| one full refresh, the five Sources started together | 65.96 ms | 66.73 ms | +0.78 ms |
+| the five Sources one after another (what `DEC-261104082440` measured as 149.6 ms) | 143.59 ms | 145.84 ms | +2.40 ms |
+| `head` alone | 0.13 ms | 0.42 ms | +0.30 ms |
+| `status` alone | 15.89 ms | 16.31 ms | +0.15 ms |
+| `diff` alone | 25.53 ms | 26.07 ms | +0.83 ms |
+| `lineage` alone | 37.82 ms | 38.09 ms | +0.51 ms |
+| `refs` alone | 64.35 ms | 64.17 ms | -0.21 ms |
+
+A logging `git` on `PATH` sees the same 10 commands from both, argument for argument, and nothing else runs: no `sh`, no `awk`. `shipped::git::git_a_refresh_spawns_the_same_commands` pins that, and the values of `comb get git` were identical across a plain repository, a subdirectory, a linked worktree, a detached HEAD, a stash, a merge in progress, an upstream and push remote, a relative gitfile, a broken gitfile, no commits, an empty `.git` and outside any repository.
+
+| # | Target | Result | Met |
+|---|---|---|---|
+| T7.1 | warm `get git.branch` p50 <= 0.25 ms; `get git` <= 0.4 ms | 59 and 101 µs (58 and 94 µs before), 480 alternating rounds | met |
+| T7.2 | `comb get git.branch` within 1 ms of `comb get hostname.name` | 7.44 vs 7.64 ms, 120 alternating rounds | met |
+| T7.3 | replaced by the ruling: a full refresh at the baseline plus a few ms for jinja and JSON, the same commands | +0.78 ms together, +2.40 ms one after another; the same 10 commands | met |
+| T7.9 | the suite about 10 s, under the 30 s cap | 1891 tests, 13-15 s at load about 10 | under the cap |
+| T7.10 | after a read of `git.dirty`, 2 s idle runs `status` at most once more | `git_status_does_not_trigger_itself` passes with the `cfg(linux)` lifted on macOS, and fails (1 run became 3) with `GIT_OPTIONAL_LOCKS=0` taken out; **not yet run on Linux** | pending a Linux run |
+
+**The read straight after a lock file.** One cost did move. The Rust Sources overrode `inputs` to name only git's files, to keep `.git`'s own mtime out of a read's check. A config Source has no such override: `head` and `refs` are checked for the `.git` they `watch`, and all five for the `.git` their lines find with `lup`, so whatever makes a lockfile in `.git` invalidates every record, and the next `comb get git` waits out its 50 ms budget for them. One read pays: the one after settles. A read of one field pays only for its Source. Alternating, a clone per binary, 12 rounds, load 10:
+
+| What happened, then the read | Rust p50 | file p50 |
+|---|---:|---:|
+| a lockfile came and went, `get git` | 0.14 ms | 51.66 ms |
+| another tool's plain `git status` refreshed the index, `get git` | 20.42 ms | 51.87 ms |
+| `git add`, `get git` | 20.45 ms | 51.66 ms |
+| `git commit`, `get git` | 51.84 ms | 51.95 ms |
+| a lockfile came and went, `get git.branch` | 0.14 ms | 0.63 ms |
+| `git add`, `get git.branch` | 0.30 ms | 1.01 ms |
+
+Per such event the daemon also runs `diff` and `lineage` on the next read, where they waited for their poll: 15 `git` processes against 10 for a lockfile, 16 against 12 for `git add` or `git commit` (the watch's own runs included). In exchange those counts are current on that read. Closing the gap needs a way to watch a directory without checking it on a read, and a `lup` hit stamped for its presence rather than its mtime.
+
+The cdylib with the icon tables: `libbeachcomber.dylib` 3,455,232 bytes (release, macOS).
+
 ### Real-World Impact
 
 | Scenario | Before beachcomber | With beachcomber |
@@ -575,7 +615,7 @@ When modifying beachcomber, verify these properties:
 
 - [ ] Cache read latency stays under 200ns (run `cargo bench --bench cache`)
 - [ ] Socket round-trip stays under 40µs cold, 20µs warm (run `cargo bench --bench socket`)
-- [ ] Git provider stays under 7ms (run `cargo bench --bench providers`)
+- [ ] A full `git` refresh runs the commands `git_a_refresh_spawns_the_same_commands` lists and no others (run `cargo bench --bench providers`)
 - [ ] No new process spawns added to providers that poll frequently (< 30s interval)
 - [ ] Provider execution does not block the scheduler loop (must use `spawn_blocking`)
 - [ ] New providers that shell out document why a file read is not feasible

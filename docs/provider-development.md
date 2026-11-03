@@ -254,13 +254,12 @@ The full decay model (state machine, step durations, reinstatement rules) is des
 
 A Source runs on tokio's blocking thread pool. A slow one delays cache freshness but does not block the scheduler loop. Still, keep them fast. The tier list from `docs/performance.md`:
 
-| Tier | Target | Method |
-|---|---|---|
-| Nanosecond (<1µs) | `user`, `hostname`, `gcloud`, `aws` | libc calls, env vars, file reads + line scan |
-| Microsecond (1-100µs) | `terraform`, `python`, `direnv` (no binary) | File existence checks + small reads |
-| Millisecond (1-10ms) | `network`, `battery` | At most one process spawn |
-| Slow (10-50ms) | `mise`, `direnv` (with binary), config Sources that shell out | Multiple spawns or interpreted CLI |
-| A repository's worth | `git` (about 150 ms for all five Sources on this repository, one after another) | One `git` process per fact; `head` none |
+| Tier | Time | Providers | Method |
+|---|---|---|---|
+| A file's lines | about 90-170 µs | `hostname`, `user`, `load`, `uptime`, `gcloud_configs` | The engine, the lines, a `sys` call or a file read; no process |
+| One process | 3-12 ms | `network`, `battery` | One spawn, inside `sys` |
+| Commands | 10-50 ms | `mise`, `direnv` (with binary), Sources that call `exec()` | Multiple spawns or an interpreted CLI |
+| A repository's worth | 16-64 ms per Source | `git`'s `status`, `diff`, `lineage`, `refs` | One `git` process per fact, through the plugin; `head` none |
 
 **Rule 1: Never run a process when you can read a file.**
 
@@ -281,7 +280,7 @@ Real examples from `docs/performance.md`:
 **Rule 2: If you must run a process, run as few as you can.** `git`'s `status` Source runs one (`git status`), which is why it is its own Source: a read of `git.dirty` does not pay for `git.lines_added`.
 
 **Rule 3: What polls often must be fast.** A Source polling every 5 seconds and taking 50 ms per run consumes 1% of a blocking thread slot continuously. Match the interval to the cost:
-- Sub-microsecond: can poll every 5-10s safely
+- Microseconds: can poll every 5-10s safely
 - Millisecond: 30s minimum
 - Slow (>10 ms): 60s minimum, or `watch` instead
 
