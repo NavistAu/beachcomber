@@ -307,14 +307,14 @@ api_status = '''
 {%- set th = scanline.theme -%}
 {%- set k = scanline.status_page -%}
 {%- set st = claude_status.status -%}
-{%- set ns = namespace(s="", n=0) -%}
+{%- set ns = namespace(s="", tail="") -%}
 {%- for c in k.components -%}
     {%- if st[c.id] is defined -%}
         {%- set ns.s = ns.s ~ ((("  " ~ c.icon ~ c.abbr ~ "  ") if (w >= 24) else (" " ~ c.ch)) | fg(th.bar_dark_fg) | bg(th[k.colour[st[c.id]] | default("green")]) | bold) -%}
-        {%- set ns.n = ns.n + 1 -%}
+        {%- set ns.tail = " " | fg(th.bar_dark_fg) | bg(th[k.colour[st[c.id]] | default("green")]) | bold -%}
     {%- endif -%}
 {%- endfor -%}
-{{- ns.s ~ (" " if ((w < 24) and (ns.n > 0)) else "") -}}
+{{- ns.s ~ (ns.tail if (w < 24) else "") -}}
 '''
 
 cache_hit = '''
