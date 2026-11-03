@@ -107,7 +107,8 @@ rate = '''
     {%- set hit.d = hit.d | merge({name: (lw > 0) and (x.time_pct > 0) and (mk >= st) and (mk < (st + pl))}) -%}
 {%- endfor -%}
 {%- set either = hit.d.five_hour or hit.d.seven_day -%}
-{%- set left = {"five_hour": either, "seven_day": hit.d.seven_day if scanline.rate.overage else either} -%}
+{%- set no_5h = (not scanline.rate.five_hour) and scanline.rate.seven_day -%}
+{%- set left = {"five_hour": either, "seven_day": hit.d.seven_day if (scanline.rate.overage or no_5h) else either} -%}
 {%- macro row(name, label) -%}
     {%- set x = win[name] -%}
     {%- set ps = ("%.0f" | format(x.pct)) ~ "%" -%}
@@ -117,6 +118,11 @@ rate = '''
         "  " ~ label ~ "  ",
         {"value": x.time_pct / 100, "colour": (100 - x.time_pct) | ramp([20, 50, 80], [th.green, th.yellow, th.orange, th.red]), "text": (" " ~ x.left_str) | pad(rw)},
         empty=th.bar_empty, fill_fg=th.bar_dark_fg, text_fg=th.bar_label_fg, label_fg=th.bar_label_fg, bold=true) -}}
+{%- endmacro -%}
+{%- macro no_limit() -%}
+    {#- A 7D window and no 5H one: the plan has no 5H limit (Ultra, formerly Max 20x). -#}
+    {{- bar(w, {"value": 0, "colour": th.green, "text": "5H  no limit" | pad(w, "center")},
+        empty=th.bar_empty, fill_fg=th.bar_dark_fg, text_fg=th.bar_label_fg, bold=true) -}}
 {%- endmacro -%}
 {%- macro overage() -%}
     {%- set x = win.five_hour -%}
@@ -201,8 +207,9 @@ model = '''
 '''
 
 rate_5h = '''
-{%- from "scanline:macro.rate" import row, overage -%}
-{{- overage() if scanline.rate.overage else row("five_hour", "5H") -}}
+{%- from "scanline:macro.rate" import row, overage, no_limit -%}
+{%- set r = scanline.rate -%}
+{{- overage() if r.overage else (no_limit() if ((not r.five_hour) and r.seven_day) else row("five_hour", "5H")) -}}
 '''
 
 rate_7d = '''
