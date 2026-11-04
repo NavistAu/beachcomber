@@ -36,7 +36,7 @@ pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> Outcome {
             println!("Daemon stopped (pid {pid}).");
             return Outcome::Done;
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 
     crate::cli::report::error(

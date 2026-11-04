@@ -258,6 +258,15 @@ pub fn run_status(
     // leaves unless --depth says otherwise.
     let depth = depth.or(tree.then_some(0));
     let filters = &crate::cli::status_format::effective_filters(user_filters, all);
+    // A typo costs nothing: rendering every row can run commands.
+    if let Err(e) = apply_filters(Vec::new(), filters) {
+        crate::cli::report::error("--filter", e);
+        return Outcome::Error;
+    }
+    if let Err(e) = apply_sort(Vec::new(), sort_col) {
+        crate::cli::report::error("--sort", e);
+        return Outcome::Error;
+    }
     let socket_path = match crate::cli::connect::connect(config) {
         Ok(socket) => socket,
         Err(outcome) => return outcome,
