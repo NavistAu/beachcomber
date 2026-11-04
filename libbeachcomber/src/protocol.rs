@@ -182,11 +182,15 @@ pub enum Request {
 
 impl Request {
     /// How much longer than a client's own timeout the daemon may take to
-    /// answer: a `get`'s [`Wait`] ([`Wait::beyond_timeout`]); every other op
-    /// is answered within the timeout.
+    /// answer: a `get`'s [`Wait`] ([`Wait::beyond_timeout`]), an `introspect`'s
+    /// sample; every other op is answered within the timeout.
     pub fn beyond_timeout(&self) -> Option<Duration> {
         match self {
             Request::Get { wait, .. } => wait.beyond_timeout(),
+            Request::Introspect {
+                duration_secs: Some(secs),
+                ..
+            } => Some(Duration::from_secs(*secs)),
             _ => Some(Duration::ZERO),
         }
     }
@@ -632,6 +636,11 @@ mod tests {
         );
         assert_eq!(get(Wait::Forever).beyond_timeout(), None);
         assert_eq!(Request::Status {}.beyond_timeout(), Some(Duration::ZERO));
+        let sample = Request::Introspect {
+            subject: IntrospectSubject::Procs,
+            duration_secs: Some(90),
+        };
+        assert_eq!(sample.beyond_timeout(), Some(Duration::from_secs(90)));
     }
 
     #[test]

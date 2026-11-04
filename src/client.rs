@@ -3,24 +3,17 @@ use libbeachcomber::{CombError, IntrospectResponse, IntrospectSubject};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Read/write timeout applied to every socket this adapter opens.
+/// Read/write timeout applied to every socket this adapter opens: how long a
+/// command waits on a daemon that says nothing before it says so itself.
 ///
 /// `libbeachcomber::ClientConfig` defaults to 100ms, which is tuned for its
-/// own connect-probe/auto-spawn use, not for a `get`/`put` round trip: a
-/// `force`/`wait` request blocks on the provider's actual execution, and
-/// while this crate's own daemon caps that at the Source's `timeout`
-/// (default 10s, `[daemon] timeout`), a Source can be configured to run
-/// longer. The pre-adapter root client set no timeout at all -- sockets
-/// blocked until the daemon answered or the connection died -- and `watch`
-/// in particular must keep blocking indefinitely between daemon-pushed
-/// events. `ClientConfig::timeout` is a plain `Duration`, not
-/// `Option<Duration>`, so "no timeout" isn't directly expressible; 30 days
-/// is long enough to be a no-op for every real workload here (including
-/// `watch`'s idle gaps) while staying safely under the ~49.7-day
-/// (`u32::MAX` ms) ceiling some platforms impose on socket timeouts --
-/// unlike the 100ms default, which is invisible against fast test
-/// fixtures but would spuriously fail against a real, slower provider.
-const SOCKET_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 30);
+/// own connect-probe/auto-spawn use, not for a `get`/`put` round trip: a cold
+/// or forced read waits for the Source's run, which the daemon cuts off at the
+/// Source's `timeout` (default 10s, `[daemon] timeout`). This outlasts a chain
+/// of those. A Source configured to run longer than this needs a read that
+/// says so (`--wait`, which lengthens its own read); `watch` does not read
+/// under this timeout at all.
+const SOCKET_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Build a `libbeachcomber` client bound to `socket_path`.
 ///
@@ -33,8 +26,12 @@ const SOCKET_TIMEOUT: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 /// `auto_start: false` is set anyway, belt-and-suspenders, so this stays
 /// safe even if that short-circuit ever moves.
 pub fn build_client(socket_path: &Path) -> libbeachcomber::Client {
+    client_with_timeout(socket_path, SOCKET_TIMEOUT)
+}
+
+fn client_with_timeout(socket_path: &Path, timeout: Duration) -> libbeachcomber::Client {
     libbeachcomber::Client::with_config(libbeachcomber::ClientConfig {
-        timeout: SOCKET_TIMEOUT,
+        timeout,
         auto_start: false,
         // `exec` governs `bc_get`/`bc_eval` through `Client::allow_exec`,
         // which the CLI never calls: each command decides at its own `Inputs`
@@ -156,5 +153,24 @@ impl Client {
             .parse()
             .map_err(|e: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         introspect_to_response(self.inner().introspect(subject, duration_secs))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A daemon that takes the connection and never answers ends in a timeout,
+    /// on one-shot calls and sessions both: `comb get` sat on this read for as
+    /// long as such a daemon lived.
+    #[test]
+    fn a_daemon_that_never_answers_is_a_timeout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("sock");
+        let _silent = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let client = client_with_timeout(&socket, Duration::from_millis(20));
+        assert!(matches!(client.hello(), Err(CombError::Timeout)));
+        let mut session = client.session().unwrap();
+        assert!(matches!(session.hello(), Err(CombError::Timeout)));
     }
 }
