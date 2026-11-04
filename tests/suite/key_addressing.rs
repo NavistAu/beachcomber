@@ -51,7 +51,7 @@ mod grammar {
             r#"{"list":[10,20],"o":{"a b":1,"it's":2,"x:y":3,"s/t":4,"say \"hi\"":5}}"#,
         );
 
-        for (key, want) in [
+        let spellings = [
             ("p.list.0", "10"),
             ("p.list[1]", "20"),
             ("p['list'][1]", "20"),
@@ -65,9 +65,15 @@ mod grammar {
             (r"p.o['it\'s']", "2"),
             (r#"p.o['say "hi"']"#, "5"),
             (r#"p.o["say \"hi\""]"#, "5"),
-        ] {
-            assert_eq!(get(&d, &cwd, &[key]), want, "{key}");
-        }
+        ];
+        // One `get`: each key answers on its own line, in order.
+        let (keys, want): (Vec<&str>, Vec<&str>) = spellings.into_iter().unzip();
+        let got = get(&d, &cwd, &keys);
+        let got: Vec<&str> = got.lines().collect();
+        assert_eq!(
+            keys.iter().zip(got).collect::<Vec<_>>(),
+            keys.iter().zip(want).collect::<Vec<_>>()
+        );
     }
 
     /// `env`, `comb`, `_` and `*` mean something of their own, so no `put`
