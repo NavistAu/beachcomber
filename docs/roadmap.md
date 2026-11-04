@@ -6,19 +6,6 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 
 ### High Priority (next)
 
-The one-tree rebuild is eight phases; 0 (cleanup), 1 (core model), 2 (config shape) and 4 (read-time validity) are done on `feat/one-tree`.
-The rest land there too, in parallel where they are independent (3 and 6 now; 7 after 6).
-
-- [ ] **Phase 3 — watch fan-in and the Node subprocess tier.** `ResolvedWatch` waits on one `poll(2)` over its
-      streams and a cancel pipe, not a 50 ms tick per stream; what is left of the Node subprocess tier.
-- [ ] **Phase 6 — templates: macros and a library.** `macro.<name>` under a provider, imported by facet address; the
-      function library (`bar`, `ramp`, `now`/`strftime`/`fromiso`/`duration`/`ago`, `width`/`pad`/display-width
-      `truncate`, path, hash, number and colour helpers). scanline's widgets are the acceptance test.
-      Needs phase 6.
-- [ ] **scanline on one-tree.** Its generator emits the new config shape and it renders through
-      `libbeachcomber`'s resolver; `docs/superpowers/scanline-one-tree.md` holds the proposed config and the
-      migration notes.
-
 - [ ] **Canon ↔ code ↔ docs reconciliation (correctness pass).** The 0.6.1 socket-resolution and Node-dist bugs were
       both canon/docs-said-X / code-did-Y divergences, caught only by a partial README+website audit — which itself
       shipped errors needing a corrective second pass (`02115b2f`). Do a systematic walk of the project's line of truth
