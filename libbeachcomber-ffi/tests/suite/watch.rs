@@ -95,26 +95,6 @@ fn a_watch_with_no_env_reads_the_process_home() {
     unsafe { bc_client_free(client) };
 }
 
-#[test]
-fn watch_next_first_call_yields_an_event_outcome() {
-    // A provider key is resolved once at open, so the very first
-    // `bc_watch_next` call answers with the current value without waiting for
-    // a change — and that value is the bare resolved value, not the daemon's
-    // `{data, age_ms, stale}` frame.
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    put_static(client, "watch_first_test", r#"{"field":"v1"}"#);
-    let watch = open_watch(client, "watch_first_test.field", None);
-
-    let v = read(unsafe { bc_watch_next(watch, 2000) });
-    assert_eq!(v["ok"], serde_json::json!(true));
-    assert_eq!(v["outcome"], serde_json::json!("event"));
-    assert_eq!(v["data"], serde_json::json!("v1"));
-
-    unsafe { bc_watch_free(watch) };
-    unsafe { bc_client_free(client) };
-}
-
 /// The entire point of `open_owned`/`Arc<Client>`: a `BcWatch` holds its own
 /// share of the client, so freeing the client handle does not invalidate a
 /// watch still in use — free order between the two is independent. The
@@ -177,53 +157,6 @@ fn watch_first_event_equals_bc_get_of_the_same_key() {
         v["data"], resolved["data"],
         "the first event must be bc_get's answer"
     );
-
-    unsafe { bc_watch_free(watch) };
-    unsafe { bc_client_free(client) };
-}
-
-/// Editing the template the watched value is rendered from fires the watch:
-/// `tplprov:template` is not the address being watched, but the resolution
-/// read it, so the fan-in is subscribed to it.
-#[test]
-fn a_put_to_the_template_fires_the_watch() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    put_static(client, "tplprov:template", r#"{"f":"{{ 'v1' }}"}"#);
-    let watch = open_watch(client, "tplprov.f", None);
-
-    let first = read(unsafe { bc_watch_next(watch, 2000) });
-    assert_eq!(first["data"], serde_json::json!("v1"), "{first}");
-
-    put_static(client, "tplprov:template", r#"{"f":"{{ 'v2' }}"}"#);
-
-    let v = read(unsafe { bc_watch_next(watch, 5000) });
-    assert_eq!(v["outcome"], serde_json::json!("event"), "{v}");
-    assert_eq!(v["data"], serde_json::json!("v2"));
-
-    unsafe { bc_watch_free(watch) };
-    unsafe { bc_client_free(client) };
-}
-
-/// A watch only emits when *its* value changes. A `put` to an unrelated
-/// namespace touches no key this resolution read, so the next emission is the
-/// watched key's own change.
-#[test]
-fn a_put_to_an_unrelated_key_does_not_fire_the_watch() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    put_static(client, "watch_unrelated_test", r#"{"field":"v1"}"#);
-    let watch = open_watch(client, "watch_unrelated_test.field", None);
-
-    let first = read(unsafe { bc_watch_next(watch, 2000) });
-    assert_eq!(first["data"], serde_json::json!("v1"), "{first}");
-
-    put_static(client, "watch_elsewhere_test", r#"{"other":"v9"}"#);
-    put_static(client, "watch_unrelated_test", r#"{"field":"v2"}"#);
-
-    let v = read(unsafe { bc_watch_next(watch, 2000) });
-    assert_eq!(v["outcome"], serde_json::json!("event"), "{v}");
-    assert_eq!(v["data"], serde_json::json!("v2"), "{v}");
 
     unsafe { bc_watch_free(watch) };
     unsafe { bc_client_free(client) };

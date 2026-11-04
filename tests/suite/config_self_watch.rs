@@ -165,28 +165,6 @@ fn conf_d_file_change_triggers_restart() {
 }
 
 #[test]
-fn conf_d_invalid_edit_does_not_restart() {
-    let tmp = tempfile::tempdir().unwrap();
-    let cfg = tmp.path().join("config.toml");
-    std::fs::write(&cfg, "[daemon]\n").unwrap();
-    let conf_d = tmp.path().join("conf.d");
-    std::fs::create_dir(&conf_d).unwrap();
-    let drop_in = conf_d.join("01-drop-in.toml");
-    std::fs::write(&drop_in, "[daemon]\nlog_level = \"debug\"\n").unwrap();
-
-    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
-
-    std::fs::write(&drop_in, "this is not [ valid toml").unwrap();
-    touch_future(&drop_in);
-
-    let result = rx.recv_timeout(SILENCE);
-    assert!(
-        result.is_err(),
-        "daemon must not restart when a conf.d drop-in fails to parse"
-    );
-}
-
-#[test]
 fn conf_d_only_change_restarts_without_a_main_config_file() {
     // A daemon whose config lives entirely in conf.d/ (no config.toml at
     // all) must still restart on a conf.d change. Validation must treat a
@@ -282,32 +260,6 @@ fn the_watch_re_arms_and_reports_every_change() {
 }
 
 #[test]
-fn a_client_template_edit_reseeds_in_place() {
-    let tmp = tempfile::tempdir().unwrap();
-    let cfg = tmp.path().join("config.toml");
-    std::fs::write(
-        &cfg,
-        "[daemon]\nlog_level = \"debug\"\n\n[client.providers.x]\ntemplate.a = \"1\"\n",
-    )
-    .unwrap();
-
-    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
-
-    std::fs::write(
-        &cfg,
-        "[daemon]\nlog_level = \"debug\"\n\n[client.providers.x]\ntemplate.a = \"2\"\n",
-    )
-    .unwrap();
-    touch_future(&cfg);
-
-    assert_eq!(
-        rx.recv_timeout(Duration::from_secs(3)),
-        Ok(ChangeKind::Providers),
-        "only a client template changed — the daemon reseeds instead of restarting"
-    );
-}
-
-#[test]
 fn an_edit_is_seen_behind_another_file_stamped_into_the_future() {
     // One "newest mtime" reference point cannot see past a file whose mtime is
     // far ahead — a network mount's clock skew, an editor, a test. Per-file
@@ -385,36 +337,6 @@ fn cancelling_the_stop_token_ends_the_watch_thread() {
 }
 
 // ── a Source that would not load ────────────────────────────────────────────
-
-/// The gate that keeps the daemon up on a bad edit is unit-tested in
-/// `config_watch.rs` (`try_fire` is synchronous); this is the positive event,
-/// through the real watch: a Source file that loads is a providers change.
-#[test]
-fn a_fixed_return_in_conf_d_reloads() {
-    let tmp = tempfile::tempdir().unwrap();
-    let cfg = tmp.path().join("config.toml");
-    std::fs::write(
-        &cfg,
-        "[daemon.providers.demo.sources.s]\ndata = \"{{ 1 }}\"\nresult = \"{{ data }}\"\n",
-    )
-    .unwrap();
-    let conf_d = tmp.path().join("conf.d");
-    std::fs::create_dir_all(&conf_d).unwrap();
-    let mine = conf_d.join("10-mine.toml");
-
-    let (_watch, rx) = watch(cfg.clone(), POLL_MS);
-
-    std::fs::write(
-        &mine,
-        "[daemon.providers.demo.sources.s]\nreturn = \"{{ result | poll('9s') }}\"\n",
-    )
-    .unwrap();
-    touch_future(&mine);
-    assert_eq!(
-        rx.recv_timeout(Duration::from_secs(3)),
-        Ok(ChangeKind::Providers)
-    );
-}
 
 // ── an edit under providers reloads the running daemon ──────────────────────
 

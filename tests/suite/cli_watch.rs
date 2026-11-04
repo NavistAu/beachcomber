@@ -108,28 +108,6 @@ fn watch_takes_the_path_as_a_flag() {
     );
 }
 
-/// `--path <dir>` is the positional's other spelling, and the three ways of
-/// naming the entry exclude each other — mirrors
-/// `tests/suite/cli_refresh.rs::refresh_takes_the_path_as_a_flag_and_rejects_two_spellings_at_once`.
-#[test]
-fn watch_rejects_two_spellings_of_a_path_at_once() {
-    let d = TestDaemon::spawn();
-    let home = d.home.to_str().unwrap();
-
-    let rejected: [&[&str]; 3] = [
-        &["watch", "my.a", home, "--path", home],
-        &["watch", "my.a", "--global", "--path", home],
-        &["watch", "my.a", "--global", home],
-    ];
-    for args in rejected {
-        d.comb(&d.home)
-            .args(args)
-            .assert()
-            .code(2)
-            .stderr(predicates::str::contains("cannot be used with"));
-    }
-}
-
 /// The cwd is read only when it is needed, and when it is needed and gone the
 /// answer is an error — never a silent watch of the global entry.
 #[test]

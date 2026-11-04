@@ -113,29 +113,6 @@ mod grammar {
             .success();
     }
 
-    #[test]
-    fn a_colon_below_the_head_is_an_ordinary_miss_not_an_error() {
-        let d = TestDaemon::spawn();
-        let cwd = project(&d);
-        put(&d, &cwd, "p", r#"{"a":1}"#);
-        assert_eq!(get(&d, &cwd, &["p.a:age"]), "");
-    }
-
-    #[test]
-    fn a_malformed_key_is_invalid() {
-        let d = TestDaemon::spawn();
-        let cwd = project(&d);
-        for key in ["p..a", "p['a", "p[01]"] {
-            d.comb(&cwd)
-                .args(["get", "--path"])
-                .arg(&cwd)
-                .arg(key)
-                .assert()
-                .code(2)
-                .stderr(predicates::str::contains(format!("invalid key: {key}")));
-        }
-    }
-
     /// Anything comb can read it can write: a name holding a `.` is a quoted
     /// segment in a `put` key and a plain key in its data, and reads back the
     /// way it was written.

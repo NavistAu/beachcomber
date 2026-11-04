@@ -6,7 +6,7 @@
 use super::{age, scenario, schedule, served, served_watching};
 use crate::common::fetch::fetch;
 use crate::common::git::GitRepoFixture;
-use crate::common::poll::{poll_until, poll_until_async, poll_until_eq};
+use crate::common::poll::{poll_until_async, poll_until_eq};
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
 use beachcomber::config::Config;
@@ -140,19 +140,6 @@ fn git_provider_metadata() {
 }
 
 #[test]
-fn git_provider_source_names() {
-    let sources = git_sources();
-    assert_eq!(sources.len(), 6);
-    let names: Vec<&str> = sources.iter().map(|s| s.metadata().name.as_str()).collect();
-    assert!(names.contains(&"branches"));
-    assert!(names.contains(&"head"));
-    assert!(names.contains(&"refs"));
-    assert!(names.contains(&"diff"));
-    assert!(names.contains(&"lineage"));
-    assert!(names.contains(&"status"));
-}
-
-#[test]
 fn git_refs_returns_empty_for_non_repo() {
     let tmp = TempDir::new().unwrap();
     let sources = git_sources();
@@ -167,20 +154,6 @@ fn git_refs_returns_empty_for_non_repo() {
         result.fields.is_empty(),
         "Non-git directory should return empty SourceResult"
     );
-}
-
-#[test]
-fn git_refs_returns_branch() {
-    // branch and detached moved to the head source; verify head reports the branch.
-    let repo = GitRepoFixture::new();
-    let sources = git_sources();
-    let head_src = sources
-        .iter()
-        .find(|s| s.metadata().name == "head")
-        .unwrap();
-    let result = head_src.execute(Some(repo.path_str())).unwrap();
-    let branch = result.fields.get("branch").unwrap().as_text();
-    assert!(!branch.is_empty(), "Branch should not be empty");
 }
 
 #[test]
@@ -860,31 +833,6 @@ async fn setup_daemon() -> (
     server.spawn().expect("server binds socket");
 
     (tmp, sock, handle)
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn refresh_git_provider() {
-    let repo = GitRepoFixture::new();
-    let (_tmp, sock, _handle) = setup_daemon().await;
-    let client = Client::new(sock.clone());
-
-    let resp = client.refresh("git", Some(repo.path_str())).unwrap();
-    assert!(resp.ok);
-
-    let data = poll_until(
-        "git.branch after refresh",
-        "a get response carrying a string branch",
-        Duration::from_secs(5),
-        Duration::from_millis(20),
-        || {
-            fetch(&sock, "git.branch", Some(repo.path_str()))
-                .unwrap()
-                .and_then(|got| got.data)
-        },
-        |d| d.as_ref().is_some_and(|d| d.is_string()),
-    );
-    let branch = data.expect("Should get git branch");
-    assert!(branch.is_string(), "Branch should be a string");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

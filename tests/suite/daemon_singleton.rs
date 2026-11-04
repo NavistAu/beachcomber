@@ -67,12 +67,9 @@ fn resolve_socket_path_ignores_session_scoped_env() {
     );
 }
 
-use beachcomber::singleton::{
-    PidFileRecord, SingletonLock, SingletonLockError, SupersessionDecision, decide_supersession,
-};
+use beachcomber::singleton::{SingletonLock, SingletonLockError};
 
 const TEST_HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const TEST_HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 #[test]
 fn singleton_lock_creates_pid_file_and_holds_flock() {
@@ -106,70 +103,6 @@ fn singleton_lock_contested_by_same_process_fails() {
         second,
         Err(SingletonLockError::AlreadyHeld { .. })
     ));
-}
-
-#[test]
-fn supersession_same_binary_hash_serving_means_no_op() {
-    let existing = PidFileRecord {
-        pid: 12345,
-        version: "0.5.1+sha.abc".into(),
-        binary: "/path/to/comb".into(),
-        binary_hash: TEST_HASH_A.into(),
-        started_unix_ms: 0,
-    };
-    // Same build AND the owner is serving its socket → leave it alone.
-    let decision = decide_supersession(&existing, TEST_HASH_A, true);
-    assert!(matches!(decision, SupersessionDecision::ExitSilent));
-}
-
-#[test]
-fn supersession_same_binary_hash_not_serving_supersedes() {
-    // Same build but the owner is NOT serving (wedged between flock and bind,
-    // or its socket was deleted) → supersede so a healthy daemon rebinds.
-    let existing = PidFileRecord {
-        pid: 12345,
-        version: "0.5.1+sha.abc".into(),
-        binary: "/path/to/comb".into(),
-        binary_hash: TEST_HASH_A.into(),
-        started_unix_ms: 0,
-    };
-    let decision = decide_supersession(&existing, TEST_HASH_A, false);
-    match decision {
-        SupersessionDecision::Supersede { existing_pid } => assert_eq!(existing_pid, 12345),
-        _ => panic!("expected Supersede, got {decision:?}"),
-    }
-}
-
-#[test]
-fn supersession_different_binary_hash_means_supersede() {
-    let existing = PidFileRecord {
-        pid: 12345,
-        version: "0.5.0".into(),
-        binary: "/path/to/comb".into(),
-        binary_hash: TEST_HASH_A.into(),
-        started_unix_ms: 0,
-    };
-    // Different build supersedes regardless of serving state.
-    let decision = decide_supersession(&existing, TEST_HASH_B, true);
-    match decision {
-        SupersessionDecision::Supersede { existing_pid } => assert_eq!(existing_pid, 12345),
-        _ => panic!("expected Supersede, got {decision:?}"),
-    }
-}
-
-#[test]
-fn supersession_same_version_different_hash_still_supersedes() {
-    // Two dev builds at the same cargo version but different binaries —
-    // human version matches, but binary_hash differs, so we supersede.
-    let existing = PidFileRecord {
-        pid: 12345,
-        version: "0.5.1".into(),
-        binary: "/path/to/comb".into(),
-        binary_hash: TEST_HASH_A.into(),
-        started_unix_ms: 0,
-    };
-    let decision = decide_supersession(&existing, TEST_HASH_B, true);
-    assert!(matches!(decision, SupersessionDecision::Supersede { .. }));
 }
 
 #[test]

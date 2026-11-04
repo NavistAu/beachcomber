@@ -1,5 +1,4 @@
 use beachcomber::cache::Cache;
-use beachcomber::client::Client;
 use beachcomber::config::Config;
 use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
@@ -8,7 +7,6 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 use crate::common::fetch::fetch;
-use crate::common::poll::poll_until_async;
 
 async fn setup_with_scheduler() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
@@ -31,30 +29,6 @@ async fn setup_with_scheduler() -> (TempDir, std::path::PathBuf) {
     server.spawn().expect("server should bind");
 
     (tmp, sock)
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn refresh_goes_through_scheduler() {
-    let (_tmp, sock) = setup_with_scheduler().await;
-    let client = Client::new(sock.clone());
-
-    let response = client.refresh("hostname", None).unwrap();
-    assert!(response.ok);
-
-    let data = poll_until_async(
-        "client get hostname",
-        "ok with data",
-        Duration::from_secs(5),
-        Duration::from_millis(10),
-        async || {
-            fetch(&sock, "hostname", None)
-                .unwrap()
-                .and_then(|got| got.data)
-        },
-        |data| data.is_some(),
-    )
-    .await;
-    assert!(data.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

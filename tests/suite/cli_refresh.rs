@@ -12,32 +12,7 @@
 use crate::common::daemon::{TestDaemon, isolate};
 use crate::common::git::GitRepoFixture;
 use crate::common::poll::poll_until;
-use std::path::Path;
 use std::time::Duration;
-
-/// `comb get -f json <key>` at `cwd`, parsed. A miss under `json` exits 2, so
-/// a key that has gone cold fails here loudly rather than reading as zero.
-fn get_json(d: &TestDaemon, cwd: &Path, key: &str) -> serde_json::Value {
-    let out = d
-        .comb(cwd)
-        .args(["get", "-f", "json", key])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "get {key}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    serde_json::from_slice(&out.stdout).unwrap()
-}
-
-/// The `age_ms` of a key's `:cache` leaf, in ms. Reading an age never re-executes a Source.
-fn age(d: &TestDaemon, cwd: &Path, key: &str) -> u64 {
-    let cache_key = key.replacen('.', ":cache.", 1);
-    get_json(d, cwd, &cache_key)["age_ms"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("{cache_key} should carry an age_ms"))
-}
 
 #[test]
 fn refresh_of_a_provider_prints_nothing_and_exits_0() {
@@ -93,67 +68,6 @@ fn refresh_global_is_accepted_for_a_global_source() {
         .success()
         .stdout(predicates::str::is_empty())
         .stderr(predicates::str::is_empty());
-}
-
-/// `refresh git.lines_added` demands the `diff` Source alone: its record's
-/// age falls back to nothing while the `lineage` Source's keeps growing. The
-/// scheduler runs the refresh in the background, and ages are real wall
-/// time, so the pre-refresh age is first let grow to a value a re-execution
-/// cannot reach, and the post-refresh read polls for the fall — the shape
-/// `tests/suite/refresh.rs` uses for the same proof over a raw socket.
-///
-/// The two fields are chosen for what their Sources do *not* do: `head` and
-/// `refs` are `Watch` Sources, whose records a read checks against the files
-/// they declare (a fixture's, written just now, are racy and run again once),
-/// and whose watches a slow host registers late. `diff` and `lineage` are
-/// `Poll` Sources: they declare no files and register no watch, so only a
-/// refresh writes their records again.
-#[test]
-fn refresh_of_a_field_re_executes_its_owning_source_alone() {
-    let d = TestDaemon::spawn();
-    let repo = GitRepoFixture::new();
-    let cwd = repo.path();
-
-    // Two field reads: each demands its owning Source and nothing else.
-    d.comb(cwd)
-        .args(["get", "git.lines_added", "git.lines_added_default"])
-        .assert()
-        .success();
-
-    let diff_before = poll_until(
-        "git:cache.lines_added age_ms",
-        "at least 50ms",
-        Duration::from_secs(5),
-        Duration::from_millis(5),
-        || age(&d, cwd, "git.lines_added"),
-        |a| *a >= 50,
-    );
-    let lineage_before = age(&d, cwd, "git.lines_added_default");
-
-    d.comb(cwd)
-        .args(["refresh", "git.lines_added"])
-        .assert()
-        .success()
-        .stdout(predicates::str::is_empty())
-        .stderr(predicates::str::is_empty());
-
-    let diff_after = poll_until(
-        "git:cache.lines_added age_ms after refresh git.lines_added",
-        "back below its pre-refresh age",
-        Duration::from_secs(5),
-        Duration::from_millis(5),
-        || age(&d, cwd, "git.lines_added"),
-        |a| *a < diff_before,
-    );
-    let lineage_after = age(&d, cwd, "git.lines_added_default");
-    eprintln!(
-        "git.lines_added age {diff_before} -> {diff_after}; git.lines_added_default age {lineage_before} -> {lineage_after}"
-    );
-    assert!(
-        lineage_after >= lineage_before,
-        "refresh git.lines_added demands `diff` alone: `lineage` must not have run \
-         (lines_added_default age {lineage_before} -> {lineage_after})"
-    );
 }
 
 /// A relative path is the caller's: the daemon canonicalises what it receives

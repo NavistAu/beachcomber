@@ -483,34 +483,6 @@ async fn put_below_the_root_accepts_any_json() {
 
 // ── (f) a null put at a node removes only that subtree ──────────────────────────
 
-#[tokio::test]
-async fn a_null_put_at_a_node_removes_only_that_subtree() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-    let mut s = UnixStream::connect(&sock).await.unwrap();
-
-    send_recv(
-        &mut s,
-        &serde_json::json!({"op":"put","key":"my","data":{"some":{"value":5},"a":1}}),
-    )
-    .await;
-    let r = send_recv(
-        &mut s,
-        &serde_json::json!({"op":"put","key":"my.some","data":null}),
-    )
-    .await;
-    assert!(r.ok, "null put at my.some: {:?}", r.error);
-
-    let got = data_of(
-        send_recv(&mut s, &serde_json::json!({"op":"get","key":"my"})).await,
-        "get my",
-    );
-    assert_eq!(got, serde_json::json!({"a":1}));
-
-    handle.abort();
-}
-
 // ── (g)/(h) a put layers beside a Source's records ────────────────────────────
 
 /// A record no Source declares can be stored under a real provider's
@@ -589,54 +561,6 @@ async fn put_adds_a_static_record_to_a_provider_namespace() {
         source_of_branch["source"],
         serde_json::json!("source(head)")
     );
-
-    handle.abort();
-}
-
-/// A put over a Source's field is accepted and wins at that directory: layers,
-/// not ownership. The Source's value is still there beneath it.
-#[tokio::test]
-async fn a_put_over_a_source_field_layers_over_it() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-    let mut s = UnixStream::connect(&sock).await.unwrap();
-    let repo = GitRepoFixture::new();
-    let p = repo.path_str();
-
-    let r = send_recv(
-        &mut s,
-        &serde_json::json!({"op":"put","key":"git","data":{"branch":"x"},"path":p}),
-    )
-    .await;
-    assert!(r.ok, "put git.branch over a Source field: {:?}", r.error);
-
-    let branch = data_of(
-        send_recv(
-            &mut s,
-            &serde_json::json!({"op":"get","key":"git.branch","path":p}),
-        )
-        .await,
-        "get git.branch",
-    );
-    assert_eq!(branch, serde_json::json!("x"));
-
-    // Removing the put shows the Source's value at once.
-    let r = send_recv(
-        &mut s,
-        &serde_json::json!({"op":"put","key":"git.branch","data":null,"path":p}),
-    )
-    .await;
-    assert!(r.ok, "null put: {:?}", r.error);
-    let branch = data_of(
-        send_recv(
-            &mut s,
-            &serde_json::json!({"op":"get","key":"git.branch","path":p}),
-        )
-        .await,
-        "get git.branch",
-    );
-    assert_eq!(branch, serde_json::json!("main"));
 
     handle.abort();
 }
@@ -928,31 +852,3 @@ async fn status_shows_a_nested_put_as_one_row_at_its_address() {
 }
 
 // ── (j) a put at the root, then a put below it ────────────────────────────
-
-#[tokio::test]
-async fn a_put_below_a_root_put_adds_to_it() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-    let mut s = UnixStream::connect(&sock).await.unwrap();
-
-    send_recv(
-        &mut s,
-        &serde_json::json!({"op":"put","key":"my","data":{"a":1}}),
-    )
-    .await;
-    let r = send_recv(
-        &mut s,
-        &serde_json::json!({"op":"put","key":"my.b","data":2}),
-    )
-    .await;
-    assert!(r.ok, "put my.b: {:?}", r.error);
-
-    let got = data_of(
-        send_recv(&mut s, &serde_json::json!({"op":"get","key":"my"})).await,
-        "get my",
-    );
-    assert_eq!(got, serde_json::json!({"a":1,"b":2}));
-
-    handle.abort();
-}

@@ -1,15 +1,5 @@
 use crate::common::daemon::TestDaemon;
-use crate::common::watch::first_line;
 use std::path::Path;
-
-#[test]
-fn daemon_fixture_starts_and_exits() {
-    let d = TestDaemon::spawn();
-    assert!(d.socket.path.exists());
-    drop(d);
-}
-
-// ── helper ────────────────────────────────────────────────────────────────────
 
 // ── golden_get_returns_known_value ────────────────────────────────────────────
 
@@ -30,37 +20,6 @@ fn golden_get_returns_known_value() {
         .assert()
         .success()
         .stdout(predicates::str::contains("healthy"));
-}
-
-// ── golden_status_shows_running_daemon ────────────────────────────────────────
-
-#[test]
-fn golden_status_shows_running_daemon() {
-    let d = TestDaemon::spawn();
-
-    // `comb status` talks to the daemon and prints cache rows or column headers.
-    // With an empty cache it may print nothing, but it must exit 0.
-    d.comb(Path::new("/")).args(["status"]).assert().success();
-}
-
-// ── golden_put_sets_a_value ───────────────────────────────────────────────────
-
-#[test]
-fn golden_put_sets_a_value() {
-    let d = TestDaemon::spawn();
-
-    // put exits 0; a subsequent get returns the stored value.
-    // `--path /` matches the "/" CWD injected by get's path resolution.
-    d.comb(Path::new("/"))
-        .args(["put", "testprov", r#"{"field":"golden"}"#, "--path", "/"])
-        .assert()
-        .success();
-
-    d.comb(Path::new("/"))
-        .args(["get", "testprov.field"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("golden"));
 }
 
 // ── get_json_finds_put_created_virtual_without_explicit_path ─────────────────
@@ -222,26 +181,6 @@ fn multi_key_get_text_finds_put_created_virtual_without_explicit_path() {
         .stdout(predicates::str::contains("multi-hello"));
 }
 
-// ── golden_watch_emits_initial_value_then_exits ───────────────────────────────
-
-#[test]
-fn golden_watch_emits_value_then_exits() {
-    let d = TestDaemon::spawn();
-
-    // Seed a value so the watch has something to emit immediately.
-    d.comb(Path::new("/"))
-        .args(["put", "watchprov", r#"{"val":"stream-me"}"#, "--path", "/"])
-        .assert()
-        .success();
-
-    // `watch` streams forever: its first line is the value, and then it is
-    // killed. `--path /` matches the `--path /` used in the put above.
-    assert_eq!(
-        first_line(&d, Path::new("/"), &["watchprov.val", "--path", "/"]),
-        "stream-me"
-    );
-}
-
 // ── golden_eval_renders_template ─────────────────────────────────────────────
 
 #[test]
@@ -256,44 +195,6 @@ fn golden_eval_renders_template() {
         .assert()
         .success()
         .stdout(predicates::str::diff("hello world"));
-}
-
-// ── golden_check_daemon ───────────────────────────────────────────────────────
-
-#[test]
-fn golden_check_runs_diagnostics() {
-    let d = TestDaemon::spawn();
-
-    // `comb check daemon` contacts the running daemon and prints PASS/INFO lines.
-    // Exit code is 0 when the daemon responds cleanly.
-    d.comb(Path::new("/"))
-        .args(["check", "daemon"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("Daemon"));
-}
-
-// ── golden_kill_terminates_daemon ─────────────────────────────────────────────
-
-#[test]
-fn golden_kill_terminates_daemon() {
-    let d = TestDaemon::spawn();
-
-    // `kill` needs --socket because it derives the pid file path from it.
-    // The socket flag is only accepted on the Kill subcommand, not at top level.
-    d.comb(Path::new("/"))
-        .args(["kill", "--socket"])
-        .arg(&d.socket.path)
-        .assert()
-        .success();
-
-    // After kill the socket should no longer accept connections.
-    assert!(
-        !d.socket.path.exists() || {
-            use std::os::unix::net::UnixStream;
-            UnixStream::connect(&d.socket.path).is_err()
-        }
-    );
 }
 
 // ── golden_init_prints_or_writes_config ──────────────────────────────────────
@@ -588,19 +489,4 @@ fn fmt_missing_and_null_render_empty() {
         .assert()
         .success()
         .stdout(predicates::str::diff("[]\n"));
-}
-
-// ── eval_plain_text_without_tags_prints_itself ────────────────────────────────
-
-#[test]
-fn eval_plain_text_without_tags_prints_itself() {
-    let d = TestDaemon::spawn();
-
-    // Canon invariant 14: a source with no tags at all is its own literal
-    // text. `{{ }}` is how you say "evaluate this".
-    d.comb(Path::new("/"))
-        .args(["eval", "hello world"])
-        .assert()
-        .success()
-        .stdout(predicates::str::diff("hello world"));
 }

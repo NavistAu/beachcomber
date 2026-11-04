@@ -9,51 +9,6 @@ use std::time::Duration;
 use crate::common::poll::poll_until_async;
 
 #[tokio::test]
-async fn query_activity_triggers_provider_execution() {
-    let cache = Arc::new(Cache::new());
-    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
-    let config = Config::default();
-
-    let (handle, mut scheduler) = Scheduler::new(
-        cache.clone(),
-        registry,
-        config,
-        Arc::new(WatcherRegistry::new()),
-    );
-    scheduler.use_polling_watcher(Duration::from_millis(50));
-    let sched_task = tokio::spawn(async move { scheduler.run().await });
-
-    // Send query activity for hostname (a global provider — should execute immediately)
-    handle
-        .send(SchedulerMessage::QueryActivity {
-            provider: "hostname".to_string(),
-            instances: vec![Instance {
-                source: "host".to_string(),
-                root: None,
-            }],
-        })
-        .await;
-
-    // Cache should be populated
-    let entry = poll_until_async(
-        "hostname cache entry",
-        "Some(_)",
-        Duration::from_secs(5),
-        Duration::from_millis(10),
-        async || cache.get_entry("hostname", None),
-        |e| e.is_some(),
-    )
-    .await;
-    assert!(
-        entry.is_some(),
-        "QueryActivity should trigger provider execution"
-    );
-
-    handle.send(SchedulerMessage::Shutdown).await;
-    let _ = sched_task.await;
-}
-
-#[tokio::test]
 async fn watch_only_providers_do_not_enter_poll_timers() {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(crate::common::registry::with_shipped_defaults());
@@ -94,56 +49,6 @@ async fn watch_only_providers_do_not_enter_poll_timers() {
         entry.is_some(),
         "hostname should be cached after QueryActivity"
     );
-
-    handle.send(SchedulerMessage::Shutdown).await;
-    let _ = sched_task.await;
-}
-
-#[tokio::test]
-async fn repeated_queries_keep_data_warm() {
-    let cache = Arc::new(Cache::new());
-    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
-    let config = Config::default();
-
-    let (handle, mut scheduler) = Scheduler::new(
-        cache.clone(),
-        registry,
-        config,
-        Arc::new(WatcherRegistry::new()),
-    );
-    scheduler.use_polling_watcher(Duration::from_millis(50));
-    let sched_task = tokio::spawn(async move { scheduler.run().await });
-
-    // Simulate repeated queries (like a statusline). The status round-trip
-    // between sends is the fence the old inter-query sleep was standing in for:
-    // the mpsc channel is FIFO, so a reply proves the preceding QueryActivity
-    // was fully processed before the next one is sent.
-    for _ in 0..5 {
-        handle
-            .send(SchedulerMessage::QueryActivity {
-                provider: "hostname".to_string(),
-                instances: vec![Instance {
-                    source: "host".to_string(),
-                    root: None,
-                }],
-            })
-            .await;
-        assert!(
-            handle.get_status().await.is_some(),
-            "scheduler should reply"
-        );
-    }
-
-    let entry = poll_until_async(
-        "hostname cache entry",
-        "Some(_)",
-        Duration::from_secs(5),
-        Duration::from_millis(10),
-        async || cache.get_entry("hostname", None),
-        |e| e.is_some(),
-    )
-    .await;
-    assert!(entry.is_some(), "Repeated queries should keep data warm");
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;

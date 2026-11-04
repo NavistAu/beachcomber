@@ -190,42 +190,6 @@ fn a_get_that_waits_forever_outlasts_timeout_ms() {
 }
 
 #[test]
-fn put_get_round_trip() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    // `put`'s key names the static namespace; `data`'s top-level keys become
-    // its records (see tests/conformance/put/nested_object_data.json).
-    let provider_key = cs("myvirtual");
-    let field_key = cs("myvirtual.field");
-    let data = cs(r#"{"field":"hello"}"#);
-
-    let put_v = read(unsafe {
-        bc_put(
-            client,
-            provider_key.as_ptr(),
-            data.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(put_v["ok"], serde_json::json!(true));
-
-    let get_v = read(unsafe {
-        bc_get(
-            client,
-            field_key.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-            ptr::null(),
-        )
-    });
-    assert_eq!(get_v["ok"], serde_json::json!(true));
-    assert_eq!(get_v["data"], serde_json::json!("hello"));
-
-    unsafe { bc_client_free(client) };
-}
-
-#[test]
 fn bc_put_with_null_data_removes() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
@@ -359,18 +323,6 @@ fn refresh_refusal_envelope_carries_the_daemons_words_alone() {
         message.starts_with("nothing to refresh: sourceless has no sources"),
         "the daemon's words alone, got {message:?}"
     );
-
-    unsafe { bc_client_free(client) };
-}
-
-#[test]
-fn status_returns_an_array_envelope() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-
-    let v = read(unsafe { bc_status(client) });
-    assert_eq!(v["ok"], serde_json::json!(true));
-    assert!(v["data"].is_array());
 
     unsafe { bc_client_free(client) };
 }

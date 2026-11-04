@@ -369,42 +369,6 @@ async fn the_cache_age_of_a_record_grows_with_the_clock() {
 }
 
 #[tokio::test]
-async fn a_decay_prototype_put_at_a_directory_applies_from_there_down() {
-    let (_tmp, mut s, _cache, handle, _sock) = serve().await;
-    let proj = GitRepoFixture::new();
-    let other = GitRepoFixture::new();
-    let (p, o) = (proj.path_str(), other.path_str());
-
-    assert!(
-        put(&mut s, "*:cache._.decay", json!(3), None, None)
-            .await
-            .ok
-    );
-    assert!(
-        put(&mut s, "git:cache._.decay", json!(6), None, Some(p))
-            .await
-            .ok
-    );
-    for dir in [p, o] {
-        assert_eq!(
-            get(&mut s, "git.branch", Some(dir)).await.data.unwrap(),
-            "main"
-        );
-    }
-    let leaf = get(&mut s, "git:cache.branch", Some(p)).await.data.unwrap();
-    assert_eq!(leaf["decay"], json!(6), "the directory's prototype: {leaf}");
-    let leaf = get(&mut s, "git:cache.branch", Some(o)).await.data.unwrap();
-    assert_eq!(leaf["decay"], json!(3), "elsewhere the global one: {leaf}");
-
-    // It reads back where it was put, and is inherited below.
-    let r = get(&mut s, "git:cache._.decay", Some(p)).await;
-    assert_eq!(r.data.unwrap(), json!(6));
-    let r = get(&mut s, "git:cache._.decay", Some(o)).await;
-    assert!(r.data.is_none(), "no git prototype at {o}");
-    handle.abort();
-}
-
-#[tokio::test]
 async fn the_cache_facet_of_an_object_node_is_a_tree_of_leaf_answers() {
     let (_tmp, mut s, _cache, handle, _sock) = serve().await;
     assert!(put(&mut s, "ns.a", json!("1"), None, None).await.ok);

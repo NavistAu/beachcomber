@@ -332,6 +332,7 @@ fn csv_preset_quotes_values_with_commas() {
         out.contains("\"a,b,c\""),
         "csv should quote values containing commas: {out}"
     );
+    assert!(!out.starts_with("PROVIDER"), "no header in csv: {out}");
 }
 
 #[test]
@@ -1527,6 +1528,8 @@ fn csv_preset_has_full_header_and_all_columns() {
     let cols: Vec<&str> = body.split(',').collect();
     assert_eq!(cols.len(), 13);
     assert_eq!(cols[3], "refs", "source col");
+    let tsv = render_preset(&status_preset("TSV"), &rows, &RenderOpts::default());
+    assert!(tsv.starts_with("PROVIDER\tPATH\tFIELD"), "{tsv}");
 }
 
 // Task 1.20: sh — new env-var lines for lifecycle fields
@@ -1900,8 +1903,9 @@ fn render_preset_color_respects_caller_decision_not_re_anding_with_tty() {
 // Home-path compaction (`~`) — human preset only
 // ---------------------------------------------------------------------------
 
+/// Both tables write a path under home from `~`, and the global entry as `~`.
 #[test]
-fn human_preset_compacts_home_path() {
+fn human_and_table_presets_write_paths_from_tilde() {
     use beachcomber::cache::CacheRow;
     use beachcomber::cli::status_format::{RenderOpts, render_preset};
     use serde_json::json;
@@ -1922,19 +1926,32 @@ fn human_preset_compacts_home_path() {
         next_poll_in_secs: None,
         failure: None,
     };
+    let global = CacheRow {
+        path: None,
+        ..row.clone()
+    };
     let opts = RenderOpts::default();
 
-    let out = temp_env::with_var("HOME", Some("/Users/x"), || {
-        render_preset(&status_preset("human"), &[row], &opts)
-    });
-    assert!(
-        out.contains("~/ws/beachcomber"),
-        "expected compacted path: {out}"
-    );
-    assert!(
-        !out.contains("/Users/x/ws/beachcomber"),
-        "raw home-prefixed path should not appear: {out}"
-    );
+    for preset in ["human", "table"] {
+        let out = temp_env::with_var("HOME", Some("/Users/x"), || {
+            render_preset(&status_preset(preset), std::slice::from_ref(&row), &opts)
+        });
+        assert!(
+            out.contains("~/ws/beachcomber"),
+            "{preset}: expected compacted path: {out}"
+        );
+        assert!(
+            !out.contains("/Users/x/ws/beachcomber"),
+            "{preset}: raw home-prefixed path should not appear: {out}"
+        );
+        let out = render_preset(&status_preset(preset), std::slice::from_ref(&global), &opts);
+        assert!(
+            out.lines()
+                .skip(1)
+                .any(|l| l.split_whitespace().any(|cell| cell == "~")),
+            "{preset}: the global entry is ~: {out}"
+        );
+    }
 }
 
 #[test]
@@ -1966,7 +1983,7 @@ fn machine_presets_keep_real_path_under_home() {
         // sanitized shell-variable key (slashes → underscores) rather than
         // embedding the literal path string, so it's checked separately —
         // the shared assertion across all four is simply "no `~` leaks in".
-        // Both tables compact it (`human_preset_compacts_home_path`).
+        // Both tables compact it (`human_and_table_presets_write_paths_from_tilde`).
         for preset in ["json", "csv", "tsv"] {
             let out = render_preset(&status_preset(preset), std::slice::from_ref(&row), &opts);
             assert!(
@@ -2250,7 +2267,7 @@ fn truncation_uses_single_char_ellipsis_outside_ascii_mode() {
         ascii: false,
         depth: Some(1),
     };
-    let out = render_preset(&status_preset("human"), &[row.clone()], &opts);
+    let out = render_preset(&status_preset("human"), std::slice::from_ref(&row), &opts);
     assert!(out.contains('\u{2026}'), "unicode mode uses …: {out}");
     assert!(
         !out.contains("..."),

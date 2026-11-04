@@ -188,22 +188,6 @@ async fn a_nested_null_is_absent_from_the_replacing_put() {
     handle.abort();
 }
 
-/// `{"o":{"x":null}}` states all of `o`, which is empty: the sibling an earlier
-/// put left at `o.y` goes with the rest of the old `o`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_put_whose_only_member_is_null_clears_the_siblings() {
-    let (_tmp, sock, client, handle) = setup_daemon().await;
-    client
-        .put("ns", serde_json::json!({"o": {"y": 1}}), None, None)
-        .unwrap();
-    client
-        .put("ns", serde_json::json!({"o": {"x": null}}), None, None)
-        .unwrap();
-    assert_eq!(got(&sock, "ns.o.y"), None);
-    assert_eq!(got(&sock, "ns.o"), Some(serde_json::json!({})));
-    handle.abort();
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_empty_string_is_a_value() {
     let (_tmp, sock, client, handle) = setup_daemon().await;

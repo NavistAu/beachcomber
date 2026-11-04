@@ -414,6 +414,108 @@ fn seeded_errors(toml_str: &str) -> Vec<String> {
         .collect()
 }
 
+/// What an operator reads for each file that stops the daemon starting.
+#[test]
+fn every_refusal_says_what_it_refuses() {
+    const NAME_RULE: &str = "a name is non-empty, holds no ':', '.', '[', ']' or '*', and does \
+                             not start with '/', '~' or '<'";
+    const STAR: &str = "'*' is reserved: *:cache._.decay is the decay of every provider";
+    let invalid = |name: &str, root: &str, why: &str| {
+        format!("invalid provider name '{name}' in [{root}.providers]: {why}")
+    };
+    let cases = [
+        (
+            "[client.providers.x]\nenabled = false\n".to_string(),
+            "unknown key 'enabled' in [client.providers.x]".to_string(),
+        ),
+        (
+            "[client]\nproviders = 3\n".to_string(),
+            "[client.providers] must be a table".to_string(),
+        ),
+        (
+            "[daemon]\nproviders = 3\n".to_string(),
+            "[daemon.providers] must be a table".to_string(),
+        ),
+        (
+            "[client.providers.x]\ntemplate.width = 12\ntemplate.name = \"{{ n }}\"\n".to_string(),
+            "[client.providers.x] template 'width' is integer, not a value expression or a group."
+                .to_string(),
+        ),
+        (
+            "[client.providers.x]\ntemplate.\"\" = \"e\"\n".to_string(),
+            "[client.providers.x] template has an empty key".to_string(),
+        ),
+        (
+            "[daemon.providers.git.cache._]\ndecay = 17\n".to_string(),
+            "git:cache._.decay must be an integer from 1 to 16 (got 17)".to_string(),
+        ),
+        (
+            "[client.providers.\"*\"]\n".to_string(),
+            invalid("*", "client", STAR),
+        ),
+        (
+            "[daemon.providers.\"*\"]\n".to_string(),
+            invalid("*", "daemon", STAR),
+        ),
+        (
+            "[client.providers._]\n".to_string(),
+            invalid("_", "client", "'_' is reserved: it names a prototype table"),
+        ),
+        (
+            "[client.providers.env]\n".to_string(),
+            invalid(
+                "env",
+                "client",
+                "'env' is reserved: env.X is the caller's environment",
+            ),
+        ),
+        (
+            "[client.providers.\"\"]\n".to_string(),
+            invalid("", "client", NAME_RULE),
+        ),
+        (
+            "[daemon.providers.\"\"]\n".to_string(),
+            invalid("", "daemon", NAME_RULE),
+        ),
+    ]
+    .into_iter()
+    .chain(
+        // A provider name heads a key, so it holds nothing the key grammar
+        // reads as an address and never looks like a directory.
+        ["a[b", "a]b", "/abs", "~home", "<x>", "a*b"].map(|name| {
+            (
+                format!("[client.providers.\"{name}\"]\n"),
+                invalid(name, "client", NAME_RULE),
+            )
+        }),
+    );
+    for (text, message) in cases {
+        assert_eq!(seeded_errors(&text), vec![message], "{text}");
+    }
+    // The `[providers]` root, colon-named tables included, says where it went.
+    for name in ["x:template", "*:cache"] {
+        assert_eq!(
+            seeded_errors(&format!("[providers.\"{name}\"]\nn = \"1\"\n")),
+            vec![PROVIDERS_MOVED.to_string()]
+        );
+    }
+}
+
+/// A `[daemon] providers` that is not a table is the file's error, and building
+/// the registry over it finds no Sources rather than failing again.
+#[test]
+fn a_providers_key_that_is_not_a_table_is_one_error_at_load() {
+    let config = in_memory("[daemon]\nproviders = 3\n");
+    let errors = ProviderRegistry::load(&config, &Default::default()).errors;
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.ends_with("[daemon.providers] must be a table")),
+        "{errors:?}"
+    );
+    assert_eq!(errors.len(), 1, "{errors:?}");
+}
+
 #[test]
 fn plugin_path_is_a_list_of_directories() {
     use std::path::PathBuf;

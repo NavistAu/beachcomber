@@ -366,34 +366,6 @@ fn startup_errors() -> Vec<String> {
     ProviderRegistry::load(&config, &std::env::vars().collect()).errors
 }
 
-/// Assert the message, then assert the wiring: the message is what an operator
-/// reads, and `ready` erroring is the only proof the daemon acts on it. A rule
-/// is checked per file, so the message is prefixed with the label of the file
-/// (`rel`, relative to the config directory) that broke it.
-async fn refuses_to_start(e: &Env, rel: &str, expected: &str) {
-    assert_eq!(
-        startup_errors(),
-        vec![format!("{}: {expected}", e.label(rel))],
-        "validation must produce exactly this error"
-    );
-    let (_h, ready) = e.start();
-    assert!(
-        ready.await.is_err(),
-        "and the daemon must refuse to start on it"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_unknown_key_in_a_client_provider_stops_the_daemon_starting() {
-    let e = Env::new("[client.providers.x]\nenabled = false\n", &[]);
-    refuses_to_start(
-        &e,
-        "config.toml",
-        "unknown key 'enabled' in [client.providers.x]",
-    )
-    .await;
-}
-
 /// `path` is not a provider setting any more (the path-expression setting is
 /// gone), so a template may hold a leaf by that name: the table validates clean
 /// and the leaf is seeded like any other.
@@ -407,71 +379,11 @@ async fn a_leaf_named_path_in_a_template_is_data() {
     assert_eq!(data(&mut s, "git:template.path").await, json!("x"));
 }
 
-/// A table of the wrong type is an error the validation reports, not a
-/// silently emptied config.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_providers_key_that_is_not_a_table_stops_the_daemon_starting() {
-    let e = Env::new("[client]\nproviders = 3\n", &[]);
-    refuses_to_start(&e, "config.toml", "[client.providers] must be a table").await;
-    let e = Env::new("[daemon]\nproviders = 3\n", &[]);
-    refuses_to_start(&e, "config.toml", "[daemon.providers] must be a table").await;
-}
-
-/// The `[providers]` root, colon-named facet tables included, is removed, not
-/// deprecated: it is an unknown table that says where its contents went.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_old_facet_table_is_a_config_error() {
-    for name in ["x:template", "*:cache"] {
-        let e = Env::new(&format!("[providers.\"{name}\"]\nn = \"1\"\n"), &[]);
-        refuses_to_start(
-            &e,
-            "config.toml",
-            "unknown table [providers]: a provider's settings are [daemon.providers.<p>] (the \
-             daemon's) and [client.providers.<p>] (the client's); a Source's schedule is \
-             [daemon.providers.<p>.sources.<s>] return; templates live in \
-             [client.providers.<p>] template.<leaf>, decay in [daemon.providers.<p>.cache._]",
-        )
-        .await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_non_string_leaf_stops_the_daemon_starting() {
-    let e = Env::new(
-        "[client.providers.x]\ntemplate.width = 12\ntemplate.name = \"{{ n }}\"\n",
-        &[],
-    );
-    refuses_to_start(
-        &e,
-        "config.toml",
-        "[client.providers.x] template 'width' is integer, not a value expression or a group.",
-    )
-    .await;
-}
-
-/// A rule is checked in the file that holds the key, because seeding is per
-/// file: a leaf that is an integer in `config.toml` is refused there even
-/// though a drop-in's string would win the merge.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_bad_leaf_is_refused_in_its_own_file_not_in_the_merge() {
-    let e = Env::new(
-        "[client.providers.zz]\ntemplate.width = 12\n",
-        &[(
-            "10-fix.toml",
-            "[client.providers.zz]\ntemplate.width = \"{{ 1 }}\"\n",
-        )],
-    );
-    refuses_to_start(
-        &e,
-        "config.toml",
-        "[client.providers.zz] template 'width' is integer, not a value expression or a group.",
-    )
-    .await;
-}
-
 /// `Config::load` falls back to the default configuration when the composed
 /// file does not deserialize; `client` must not be able to reach that, nor let
-/// the seeding write what was never checked.
+/// the seeding write what was never checked. This is the one test of the wiring
+/// from a refusal to the daemon not starting; the refusals themselves are
+/// `every_refusal_says_what_it_refuses` in `config_tests.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_client_that_is_not_a_table_stops_the_daemon_starting() {
     let e = Env::new(
@@ -492,92 +404,10 @@ async fn a_client_that_is_not_a_table_stops_the_daemon_starting() {
     assert!(ready.await.is_err());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn names_that_spell_a_prototype_or_nothing_are_not_provider_names() {
-    for (root, name, msg) in [
-        (
-            "client",
-            "*",
-            "invalid provider name '*' in [client.providers]: '*' is reserved: \
-             *:cache._.decay is the decay of every provider",
-        ),
-        (
-            "daemon",
-            "*",
-            "invalid provider name '*' in [daemon.providers]: '*' is reserved: \
-             *:cache._.decay is the decay of every provider",
-        ),
-        (
-            "client",
-            "_",
-            "invalid provider name '_' in [client.providers]: '_' is reserved: \
-             it names a prototype table",
-        ),
-        (
-            "client",
-            "env",
-            "invalid provider name 'env' in [client.providers]: 'env' is reserved: \
-             env.X is the caller's environment",
-        ),
-        (
-            "client",
-            "",
-            "invalid provider name '' in [client.providers]: a name is non-empty, holds no ':', \
-             '.', '[', ']' or '*', and does not start with '/', '~' or '<'",
-        ),
-        (
-            "daemon",
-            "",
-            "invalid provider name '' in [daemon.providers]: a name is non-empty, holds no ':', \
-             '.', '[', ']' or '*', and does not start with '/', '~' or '<'",
-        ),
-    ] {
-        let e = Env::new(&format!("[{root}.providers.\"{name}\"]\n"), &[]);
-        refuses_to_start(&e, "config.toml", msg).await;
-    }
-}
-
-/// A provider name is the head of a key, so it holds nothing the key grammar
-/// reads as an address and never looks like a directory.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_name_the_key_grammar_cannot_head_is_not_a_provider_name() {
-    for name in ["a[b", "a]b", "/abs", "~home", "<x>", "a*b"] {
-        let e = Env::new(&format!("[client.providers.\"{name}\"]\n"), &[]);
-        refuses_to_start(
-            &e,
-            "config.toml",
-            &format!(
-                "invalid provider name '{name}' in [client.providers]: a name is non-empty, holds \
-                 no ':', '.', '[', ']' or '*', and does not start with '/', '~' or '<'"
-            ),
-        )
-        .await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_empty_template_leaf_name_stops_the_daemon_starting() {
-    let e = Env::new("[client.providers.x]\ntemplate.\"\" = \"e\"\n", &[]);
-    refuses_to_start(
-        &e,
-        "config.toml",
-        "[client.providers.x] template has an empty key",
-    )
-    .await;
-}
-
 /// Decay is capped at 16, a conservative bound: 2^16 times the base lifespan is
 /// already far beyond any useful decay, and 32 would overflow the shift.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_decay_above_sixteen_is_refused_in_config_and_by_put() {
-    let e = Env::new("[daemon.providers.git.cache._]\ndecay = 17\n", &[]);
-    refuses_to_start(
-        &e,
-        "config.toml",
-        "git:cache._.decay must be an integer from 1 to 16 (got 17)",
-    )
-    .await;
-
+async fn a_decay_above_sixteen_is_refused_by_put() {
     let e = Env::new("", &[]);
     let _h = e.serve().await;
     let mut s = e.connect().await;
@@ -749,34 +579,6 @@ async fn a_decay_table_removed_on_reload_drops_the_seed() {
     )
     .await;
     assert_eq!(data(&mut s, "other:cache._.decay").await, json!(3));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_decay_edit_re_seeds_in_place() {
-    let e = Env::new(
-        "",
-        &[(
-            "10-mine.toml",
-            "[daemon.providers.git.cache._]\ndecay = 2\n",
-        )],
-    );
-    let _h = e.serve().await;
-    let mut s = e.connect().await;
-    assert_eq!(data(&mut s, "git:cache._.decay").await, json!(2));
-
-    rewrite(
-        &e.drop_in("10-mine.toml"),
-        "[daemon.providers.git.cache._]\ndecay = 3\n",
-    );
-    crate::common::poll::poll_until_async(
-        "git:cache._.decay",
-        "the edited decay",
-        Duration::from_secs(5),
-        Duration::from_millis(5),
-        async || data(&mut s, "git:cache._.decay").await,
-        |v| *v == json!(3),
-    )
-    .await;
 }
 
 // ── (d) live re-seed ─────────────────────────────────────────────────────────
@@ -1456,22 +1258,6 @@ fn a_refused_write_leaves_the_previous_seed_untouched() {
 }
 
 // ── (e) a settings change still restarts ─────────────────────────────────────
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_settings_change_shuts_the_daemon_down_for_restart() {
-    let e = Env::new("[daemon]\nlog_level = \"debug\"\n", &[]);
-    let handle = e.serve().await;
-
-    rewrite(
-        &e.cfg_dir.join("config.toml"),
-        "[daemon]\nlog_level = \"trace\"\n",
-    );
-
-    tokio::time::timeout(Duration::from_secs(5), handle)
-        .await
-        .expect("a settings change shuts the daemon down")
-        .expect("the daemon task did not panic");
-}
 
 // ── (f) `comb check config` reports the error ────────────────────────────────
 

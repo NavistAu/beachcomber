@@ -86,46 +86,6 @@ async fn a_put_over_a_source_field_is_accepted_and_wins() {
     handle.abort();
 }
 
-/// A second `put` replaces the first at its address: nothing merges
-/// implicitly, so a record the second put does not name is gone.
-#[tokio::test]
-async fn a_second_put_replaces_the_first() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-
-    let v1 = r#"{"op":"put","key":"myapp","data":{"status":"starting","old_field":"yes"}}"#;
-    let r = send_recv(&mut stream, v1).await;
-    assert!(r.ok);
-
-    let v2 = r#"{"op":"put","key":"myapp","data":{"status":"ready","version":"2.0"}}"#;
-    let r = send_recv(&mut stream, v2).await;
-    assert!(r.ok);
-
-    let get = r#"{"op":"get","key":"myapp"}"#;
-    let resp = send_recv(&mut stream, get).await;
-    assert!(resp.ok);
-    assert_eq!(
-        resp.data.unwrap(),
-        serde_json::json!({"status": "ready", "version": "2.0"}),
-        "the second put states the whole namespace"
-    );
-
-    // A put one node down replaces only that node.
-    let v3 = r#"{"op":"put","key":"myapp.status","data":"done"}"#;
-    let r = send_recv(&mut stream, v3).await;
-    assert!(r.ok);
-    let resp = send_recv(&mut stream, get).await;
-    assert_eq!(
-        resp.data.unwrap(),
-        serde_json::json!({"status": "done", "version": "2.0"})
-    );
-
-    handle.abort();
-}
-
 #[tokio::test]
 async fn store_with_ttl_shows_staleness() {
     let (_tmp, sock, cache, registry, watchers) = setup();

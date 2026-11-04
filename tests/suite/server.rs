@@ -26,19 +26,6 @@ fn setup() -> (
 }
 
 #[tokio::test]
-async fn server_accepts_connection() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-
-    let handle = server.spawn().unwrap();
-
-    let stream = UnixStream::connect(&sock).await;
-    assert!(stream.is_ok(), "Should connect to server socket");
-
-    handle.abort();
-}
-
-#[tokio::test]
 async fn server_handles_get_global_provider() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 

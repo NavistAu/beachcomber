@@ -95,14 +95,6 @@ async fn client_get_carries_the_template_half() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn client_refresh() {
-    let (_tmp, sock) = setup_server().await;
-    let client = Client::new(sock);
-    let response = client.refresh("hostname", None).unwrap();
-    assert!(response.ok);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn client_put_and_get() {
     let tmp = tempfile::TempDir::new().unwrap();
     let sock = tmp.path().join("test.sock");

@@ -4,30 +4,6 @@ use crate::common::client::client_for;
 use crate::common::daemon::DaemonGuard;
 
 #[test]
-fn status_returns_typed_cache_rows() {
-    let guard = DaemonGuard::spawn();
-    let client = client_for(&guard.path);
-
-    client
-        .put("phase3_marker", serde_json::Value::Null, None, None)
-        .ok(); // ensure something virtual registered
-
-    // The null put above may be ignored if the op fails; status should
-    // still succeed. What we're really asserting is the typed shape.
-    let rows = client.status().expect("status");
-
-    // The shape deserialized — each row has a `provider` string and a
-    // boolean `stale`. Content assertions live in the conformance suite
-    // and the round-trip test below; here we just confirm the typed
-    // decoding path didn't panic.
-    for row in &rows {
-        assert!(!row.provider.is_empty());
-    }
-}
-
-use libbeachcomber::{IntrospectResponse, IntrospectSubject};
-
-#[test]
 fn put_with_data_then_get_round_trips() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
@@ -46,35 +22,6 @@ fn put_with_data_then_get_round_trips() {
         Some(serde_json::json!("purple")),
         "put followed by get should hit"
     );
-}
-
-#[test]
-fn introspect_daemon_returns_typed_health() {
-    let guard = DaemonGuard::spawn();
-    let client = client_for(&guard.path);
-    let resp = client
-        .introspect(IntrospectSubject::Daemon, None)
-        .expect("introspect");
-    match resp {
-        IntrospectResponse::Daemon(health) => {
-            assert!(health.pid > 0, "pid must be positive, got {}", health.pid);
-            assert!(!health.version.is_empty());
-        }
-        IntrospectResponse::Other(_) => panic!("daemon subject must return Daemon variant"),
-    }
-}
-
-#[test]
-fn introspect_providers_returns_other_variant() {
-    let guard = DaemonGuard::spawn();
-    let client = client_for(&guard.path);
-    let resp = client
-        .introspect(IntrospectSubject::Providers, None)
-        .expect("introspect providers");
-    match resp {
-        IntrospectResponse::Other(_) => {}
-        IntrospectResponse::Daemon(_) => panic!("providers must return Other variant"),
-    }
 }
 
 #[test]

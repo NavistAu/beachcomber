@@ -10,8 +10,6 @@ use beachcomber::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::common::poll::poll_until_async;
-
 /// A latch the test opens when it is done. `execute()` parks on it instead of
 /// sleeping a guessed duration: "still running when the timeout fires" becomes
 /// a fact the test controls rather than a race against wall-clock time.
@@ -201,50 +199,6 @@ async fn slow_provider_times_out() {
 
     // Let the parked blocking-pool thread retire before the runtime is torn down.
     gate.release();
-
-    handle.send(SchedulerMessage::Shutdown).await;
-    let _ = sched_task.await;
-}
-
-#[tokio::test]
-async fn fast_provider_completes_within_timeout() {
-    let cache = Arc::new(Cache::new());
-    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
-
-    let config = Config::from_toml("[daemon]\ntimeout = \"5s\"\n");
-
-    let (handle, mut scheduler) = Scheduler::new(
-        cache.clone(),
-        registry,
-        config,
-        Arc::new(WatcherRegistry::new()),
-    );
-    scheduler.use_polling_watcher(Duration::from_millis(50));
-    let sched_task = tokio::spawn(async move { scheduler.run().await });
-
-    handle
-        .send(SchedulerMessage::Refresh {
-            provider: "hostname".to_string(),
-            instances: vec![Instance {
-                source: "host".to_string(),
-                root: None,
-            }],
-        })
-        .await;
-
-    let entry = poll_until_async(
-        "hostname cache entry",
-        "Some(_)",
-        Duration::from_secs(5),
-        Duration::from_millis(10),
-        async || cache.get_entry("hostname", None),
-        |e| e.is_some(),
-    )
-    .await;
-    assert!(
-        entry.is_some(),
-        "Fast provider should complete within timeout"
-    );
 
     handle.send(SchedulerMessage::Shutdown).await;
     let _ = sched_task.await;

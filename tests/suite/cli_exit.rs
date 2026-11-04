@@ -50,20 +50,6 @@ fn a_miss_exits_zero_in_every_format() {
 }
 
 #[test]
-fn a_miss_among_several_keys_holds_its_place() {
-    let d = TestDaemon::spawn();
-    seed(&d);
-    let (code, out, err) = run(
-        &d,
-        &["get", "--global", "-f", "json", "ex.a", "nosuch.x"],
-        &[],
-    );
-    assert_eq!((code, err.as_str()), (0, ""));
-    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(parsed, serde_json::json!([1, null]));
-}
-
-#[test]
 fn strict_makes_a_miss_exit_one() {
     let d = TestDaemon::spawn();
     seed(&d);

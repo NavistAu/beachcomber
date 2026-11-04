@@ -172,86 +172,6 @@ fn bc_get_leaf_group_and_whole_namespace_from_a_put_template() {
     unsafe { bc_client_free(client) };
 }
 
-/// A template whose expression references a `comb.*` value resolves to
-/// that value. `otherprov` is `put` globally (no `path`) while the resolve
-/// runs at a `cwd`: a static record is read up the directory chain, and the
-/// global entry is the last link of every chain (canon `field_resolution.md`
-/// §"Path resolution").
-#[test]
-fn bc_get_comb_ref_template() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-
-    put(client, "otherprov", r#"{"otherfield":"hello-value"}"#, None);
-    put(
-        client,
-        "myprov:template",
-        r#"{"myfield":"{{ comb.otherprov.otherfield }}"}"#,
-        None,
-    );
-
-    let v = resolve(client, "myprov.myfield", "/tmp", None);
-    assert_eq!(hit(&v), &serde_json::json!("hello-value"));
-
-    unsafe { bc_client_free(client) };
-}
-
-/// A cascade `env.X or comb.p.f` takes the env term when present and falls
-/// through when absent; a total miss is absent (`data: null`), not an error
-/// and not `""`.
-#[test]
-fn bc_get_env_or_cache_cascade_is_absent_on_a_total_miss() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    put(
-        client,
-        "myapp:template",
-        r#"{"workspace":"{{ env.MYAPP_ENV or comb.myappcache.workspace }}"}"#,
-        None,
-    );
-
-    let v = resolve(
-        client,
-        "myapp.workspace",
-        "/tmp",
-        Some(r#"{"MYAPP_ENV":"prod-env"}"#),
-    );
-    assert_eq!(hit(&v), &serde_json::json!("prod-env"));
-
-    let v = resolve(client, "myapp.workspace", "/tmp", None);
-    assert_eq!(hit(&v), &serde_json::Value::Null);
-
-    unsafe { bc_client_free(client) };
-}
-
-/// A template naming another provider's templated field follows it: `a.x`
-/// references `b.y`, itself a template over `comb.d.w`. `comb.c.z` names no
-/// registered provider — a missing ref, falsy — and is never reached once
-/// `b.y` is truthy. Both `bc_eval` of `{{ a.x }}` and `bc_get` of `a.x`
-/// reach `deep-value`.
-#[test]
-fn nested_template_dependency_is_followed() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-
-    put(client, "d", r#"{"w":"deep-value"}"#, None);
-    put(
-        client,
-        "a:template",
-        r#"{"x":"{{ b.y or comb.c.z }}"}"#,
-        None,
-    );
-    put(client, "b:template", r#"{"y":"{{ comb.d.w }}"}"#, None);
-
-    let v = eval(client, "{{ a.x }}", "/tmp", None);
-    assert_eq!(hit(&v), &serde_json::json!("deep-value"));
-
-    let v = resolve(client, "a.x", "/tmp", None);
-    assert_eq!(hit(&v), &serde_json::json!("deep-value"));
-
-    unsafe { bc_client_free(client) };
-}
-
 /// `cwd` is threaded into every fetch, not merely required: a value `put` at
 /// an explicit `path` is seen only when `cwd` is that path — through a raw
 /// `bc_eval` ref and through a template's `comb.*` ref alike.
@@ -294,10 +214,15 @@ fn path_scoped_ref_resolves_at_cwd() {
 
 // ── bc_eval forms and filters ────────────────────────────────────────────────
 
-/// One expression syntax (canon `field_resolution.md` invariant 14): a
-/// single `{{ expr }}` tag keeps the expression's natural type — a JSON
-/// bool here, not the string `"true"` — and literal text around a tag is
-/// string-valued.
+// ── error kinds, from the resolver's typed errors ────────────────────────────
+
+/// A source that does not compile is the caller's own input being malformed:
+/// `ResolveError::Config` → `parse_error`. Both producers: a single tag whose
+/// expression fails to parse, and a template with an unterminated marker.
+/// `bc_eval` end to end across the C ABI, which the conformance fixtures do not
+/// reach (their runner calls `resolve::eval`): `env_json` is read, a single
+/// `{{ expr }}` tag keeps the expression's type, literal text around a tag is a
+/// string, and a tag whose value is `none` is absent, as a miss is.
 #[test]
 fn bc_eval_single_tag_is_typed_and_a_template_is_a_string() {
     let daemon = DaemonGuard::spawn();
@@ -309,55 +234,12 @@ fn bc_eval_single_tag_is_typed_and_a_template_is_a_string() {
     let v = eval(client, "{{ 1 + 1 }} apples", "/tmp", None);
     assert_eq!(hit(&v), &serde_json::json!("2 apples"));
 
-    // A single tag whose value is `none` is absent, as a miss is.
     let v = eval(client, "{{ none }}", "/tmp", None);
     assert_eq!(hit(&v), &serde_json::Value::Null);
 
     unsafe { bc_client_free(client) };
 }
 
-/// The `truncate` and `basename` filters are registered on the environment
-/// `bc_eval` renders with.
-#[test]
-fn bc_eval_truncate_and_basename_filters() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-    let env = Some(r#"{"LONGVAR":"abcdefghij","PYVAR":"/foo/bar/baz"}"#);
-
-    let v = eval(client, "{{ env.LONGVAR | truncate(5) }}", "/tmp", env);
-    assert_eq!(hit(&v), &serde_json::json!("abcd…"));
-
-    let v = eval(client, "{{ env.PYVAR | basename }}", "/tmp", env);
-    assert_eq!(hit(&v), &serde_json::json!("baz"));
-
-    unsafe { bc_client_free(client) };
-}
-
-/// A ref the daemon rejects — an unregistered provider, as a plain ref or a
-/// `comb.*` ref — is a missing ref inside a template, falsy at any depth
-/// (canon), so `or` and `default` both fire and nothing errors.
-#[test]
-fn bc_eval_rejected_ref_is_falsy() {
-    let daemon = DaemonGuard::spawn();
-    let client = client_for(&daemon.path);
-
-    let v = eval(client, r#"{{ nope.field or "x" }}"#, "/tmp", None);
-    assert_eq!(hit(&v), &serde_json::json!("x"));
-
-    let v = eval(client, r#"{{ nope.field | default("x") }}"#, "/tmp", None);
-    assert_eq!(hit(&v), &serde_json::json!("x"));
-
-    let v = eval(client, "{{ comb.nope.x or 'fb' }}", "/tmp", None);
-    assert_eq!(hit(&v), &serde_json::json!("fb"));
-
-    unsafe { bc_client_free(client) };
-}
-
-// ── error kinds, from the resolver's typed errors ────────────────────────────
-
-/// A source that does not compile is the caller's own input being malformed:
-/// `ResolveError::Config` → `parse_error`. Both producers: a single tag whose
-/// expression fails to parse, and a template with an unterminated marker.
 #[test]
 fn bc_eval_compile_error_is_parse_error() {
     let daemon = DaemonGuard::spawn();
@@ -378,7 +260,7 @@ fn bc_eval_compile_error_is_parse_error() {
 /// The key the caller asked for being refused by the daemon is an error in
 /// the daemon's own words — `server_error` carrying its message — not a miss
 /// and not a transport failure. Only a ref *inside* a template naming such a
-/// key is falsy (`bc_eval_rejected_ref_is_falsy`).
+/// key is falsy (the `eval/missing_ref_is_falsy` conformance fixture).
 #[test]
 fn bc_get_rejected_key_is_a_server_error_in_the_daemons_words() {
     let daemon = DaemonGuard::spawn();

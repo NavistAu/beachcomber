@@ -57,16 +57,6 @@ fn put_takes_a_trailing_path_the_flag_and_global() {
 }
 
 #[test]
-fn get_takes_the_short_flag_too() {
-    let d = TestDaemon::spawn();
-    let (project, elsewhere) = dirs(&d);
-    let at = project.to_str().unwrap();
-    ok(&d, &elsewhere, &["put", "p.v", "1", at]);
-    assert_eq!(ok(&d, &elsewhere, &["get", "-p", at, "p.v"]), "1");
-    assert_eq!(ok(&d, &elsewhere, &["get", "--path", at, "p.v"]), "1");
-}
-
-#[test]
 fn refresh_takes_the_short_flag() {
     let d = TestDaemon::spawn();
     let (project, elsewhere) = dirs(&d);
@@ -126,6 +116,7 @@ fn the_three_spellings_conflict_on_every_command() {
         vec!["refresh", "hostname", at, "--path", at],
         vec!["watch", "p.v", "--path", at, "--global"],
         vec!["watch", "p.v", at, "--global"],
+        vec!["watch", "p.v", at, "--path", at],
         vec!["eval", "{{ 1 }}", "--path", at, "--global"],
         vec!["eval", "{{ 1 }}", at, "--global"],
         vec!["eval", "{{ 1 }}", at, "--path", at],

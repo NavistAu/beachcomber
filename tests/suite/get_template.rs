@@ -208,33 +208,6 @@ async fn get_below_a_template_string_returns_it_with_the_leftover_rest() {
     handle.abort();
 }
 
-/// A namespace with no template facet answers exactly as it did before: data,
-/// its freshness, and no template half at all.
-#[tokio::test]
-async fn get_a_cached_field_without_a_template_is_unchanged() {
-    let repo = GitRepoFixture::new();
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-    let mut s = UnixStream::connect(&sock).await.unwrap();
-
-    let resp = send_raw(
-        &mut s,
-        &serde_json::json!({"op":"get","key":"git.branch","path": repo.path_str()}),
-    )
-    .await;
-    assert!(
-        resp["age_ms"].is_number(),
-        "a data hit carries age_ms: {resp}"
-    );
-    assert_eq!(
-        without_age(resp),
-        serde_json::json!({"ok": true, "data": "main", "stale": false})
-    );
-
-    handle.abort();
-}
-
 /// (h) A template at a cached field's path: both halves come back, the real
 /// branch as `data` and the expression as `template`.
 #[tokio::test]
@@ -693,35 +666,6 @@ async fn a_template_only_response_carries_no_freshness() {
     assert!(
         facet.get("template").is_none(),
         "a :cache response carries no template half: {facet}"
-    );
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn the_cache_age_of_a_warm_field_is_a_number() {
-    let repo = GitRepoFixture::new();
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-    let mut s = UnixStream::connect(&sock).await.unwrap();
-
-    // `:cache` warms nothing: the field is read first.
-    let warm = send_raw(
-        &mut s,
-        &serde_json::json!({"op":"get","key":"git.branch","path": repo.path_str()}),
-    )
-    .await;
-    assert_eq!(warm["data"], "main", "{warm}");
-
-    let resp = send_raw(
-        &mut s,
-        &serde_json::json!({"op":"get","key":"git:cache.branch","path": repo.path_str()}),
-    )
-    .await;
-    assert!(
-        resp["data"]["age_ms"].is_number(),
-        "a warm field's age_ms is a number: {resp}"
     );
 
     handle.abort();

@@ -149,9 +149,9 @@ fn extract_function_bodies(source: &str) -> Vec<(String, String)> {
 fn no_with_config_without_socket_path() {
     // Any file in this list is entirely skipped for the with_config check.
     //
-    // `libbeachcomber/tests/suite/client_test.rs` contains a deliberate
-    // no-I/O compile check (`client_with_config`) that constructs a client
-    // without a socket path because it never calls any network method.
+    // `libbeachcomber/tests/suite/client_test.rs` deliberately builds a client
+    // with no socket path: `client_no_autostart_returns_error` points
+    // `BEACHCOMBER_SOCKET` at a missing socket instead, for the autostart branch.
     let allow_list = [
         "tests/suite/test_isolation.rs",
         "libbeachcomber/tests/suite/client_test.rs",

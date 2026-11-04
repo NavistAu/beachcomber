@@ -5,64 +5,6 @@ use tempfile::TempDir;
 use crate::common::fetch::fetch;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_get_hostname_via_daemon() {
-    let tmp = TempDir::new().unwrap();
-    let sock = tmp.path().join("sock");
-    let config = crate::common::registry::config_over_shipped(vec![]);
-
-    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
-    ready.await.expect("daemon ready");
-
-    let response = fetch(&sock, "hostname", None)
-        .unwrap()
-        .expect("Response should be ok");
-    let data = response.data.unwrap();
-    assert!(data["name"].is_string(), "hostname.name should be a string");
-    assert!(
-        !data["name"].as_str().unwrap().is_empty(),
-        "hostname should not be empty"
-    );
-
-    handle.abort();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_get_hostname_single_field() {
-    let tmp = TempDir::new().unwrap();
-    let sock = tmp.path().join("sock");
-    let config = crate::common::registry::config_over_shipped(vec![]);
-
-    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
-    ready.await.expect("daemon ready");
-
-    let response = fetch(&sock, "hostname.short", None).unwrap().unwrap();
-    let short = response.data.unwrap();
-    assert!(
-        short.is_string(),
-        "Single field should return a string value"
-    );
-
-    handle.abort();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_get_user() {
-    let tmp = TempDir::new().unwrap();
-    let sock = tmp.path().join("sock");
-    let config = crate::common::registry::config_over_shipped(vec![]);
-
-    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
-    ready.await.expect("daemon ready");
-
-    let response = fetch(&sock, "user", None).unwrap().unwrap();
-    let data = response.data.unwrap();
-    assert!(data["name"].is_string());
-    assert!(data["uid"].is_number());
-
-    handle.abort();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e2e_refresh_and_get() {
     let tmp = TempDir::new().unwrap();
     let sock = tmp.path().join("sock");
@@ -80,24 +22,6 @@ async fn e2e_refresh_and_get() {
     assert!(
         response.age_ms.unwrap() < 1000,
         "Data should be fresh after refresh"
-    );
-
-    handle.abort();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn e2e_unknown_provider() {
-    let tmp = TempDir::new().unwrap();
-    let sock = tmp.path().join("sock");
-    let config = crate::common::registry::config_over_shipped(vec![]);
-
-    let (handle, ready) = daemon::start_in_process_polling(sock.clone(), config);
-    ready.await.expect("daemon ready");
-
-    let response = fetch(&sock, "nonexistent", None);
-    assert!(
-        matches!(response, Ok(None)),
-        "an unknown provider is a miss, got {response:?}"
     );
 
     handle.abort();

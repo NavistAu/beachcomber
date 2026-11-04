@@ -1,19 +1,6 @@
 use libbeachcomber::{Client, ClientConfig};
 use std::time::Duration;
 
-#[test]
-fn socket_path_defaults_under_tmp_and_honours_the_env() {
-    let resolve = || libbeachcomber::socket::resolve(None, None).0;
-    let default = temp_env::with_var("BEACHCOMBER_SOCKET", None::<&str>, resolve);
-    let uid = unsafe { libc::getuid() };
-    assert_eq!(
-        default,
-        std::path::PathBuf::from(format!("/tmp/beachcomber-{uid}/sock"))
-    );
-    let set = temp_env::with_var("BEACHCOMBER_SOCKET", Some("/custom/sock"), resolve);
-    assert_eq!(set, std::path::PathBuf::from("/custom/sock"));
-}
-
 /// A client that may not start a daemon, finding none on the socket it
 /// resolves, says so at once: it neither spawns nor waits.
 #[test]

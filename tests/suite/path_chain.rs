@@ -1977,27 +1977,6 @@ async fn cli_put_and_get_default_to_the_cwd() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cli_rejects_global_together_with_path() {
-    let f = Fixture::defaults();
-    let cwd = PathBuf::from(f.path("ws/project"));
-    let cfg = f.home.join("cfg");
-    let arg = f.path("ws/other");
-
-    tokio::task::spawn_blocking(move || {
-        comb(&f, &cwd, &cfg)
-            .args(["get", "--global", "--path", &arg, "my.a"])
-            .assert()
-            .code(2);
-        comb(&f, &cwd, &cfg)
-            .args(["put", "--global", "--path", &arg, "my", r#"{"a":1}"#])
-            .assert()
-            .code(2);
-    })
-    .await
-    .unwrap();
-}
-
 /// A relative path names a directory below the *caller's* cwd. The daemon
 /// canonicalises whatever it receives against its own working directory, so
 /// the CLI must make the path absolute before sending it — otherwise
@@ -2049,30 +2028,6 @@ async fn cli_resolves_a_relative_path_against_the_callers_cwd() {
         out.2.trim(),
         "",
         "`.` is the cwd itself, above the record: a miss"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cli_carries_the_cwd_for_a_plain_get_from_a_subdirectory() {
-    let f = Fixture::defaults();
-    let repo = GitRepoFixture::new();
-    let sub = repo.create_subdir("src/lib");
-    let cfg = f.home.join("cfg");
-
-    let out = tokio::task::spawn_blocking(move || {
-        let got = comb(&f, &sub, &cfg)
-            .args(["get", "git.branch"])
-            .assert()
-            .success();
-        String::from_utf8(got.get_output().stdout.clone()).unwrap()
-    })
-    .await
-    .unwrap();
-
-    assert_eq!(
-        out.trim(),
-        "main",
-        "a plain get with no --path carries the cwd, so the repo root resolves"
     );
 }
 

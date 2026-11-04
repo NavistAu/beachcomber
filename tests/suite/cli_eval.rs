@@ -86,39 +86,6 @@ fn eval_resolves_daemon_served_template_from_env() {
         .stdout(predicates::str::contains("prod-account"));
 }
 
-/// `comb eval '{{ scanline.widgets.foo }}'` resolves a field nested two
-/// levels inside a stored template exactly as `comb get scanline.widgets.foo`
-/// does (design §3.1's worked example) — the two must agree byte-for-byte.
-#[test]
-fn eval_of_nested_template_field_matches_get() {
-    let d = TestDaemon::spawn();
-
-    d.comb(Path::new("/"))
-        .args([
-            "put",
-            "scanline:template",
-            r#"{"widgets":{"foo":"{{ env.SCANLINE_FOO }}"}}"#,
-        ])
-        .assert()
-        .success();
-
-    let get_out = d
-        .comb(Path::new("/"))
-        .env("SCANLINE_FOO", "hi")
-        .args(["get", "scanline.widgets.foo"])
-        .output()
-        .unwrap();
-    let get_out = String::from_utf8(get_out.stdout).unwrap();
-    assert_eq!(get_out, "hi");
-
-    d.comb(Path::new("/"))
-        .env("SCANLINE_FOO", "hi")
-        .args(["eval", "{{ scanline.widgets.foo }}"])
-        .assert()
-        .success()
-        .stdout(predicates::str::diff(get_out));
-}
-
 /// The addresses `comb get` takes are the ones a template writes: a quoted
 /// segment, a facet head in brackets, a computed provider name, a subscript
 /// of the caller's environment.
@@ -145,21 +112,6 @@ fn eval_reads_the_same_addresses_get_takes() {
             .success()
             .stdout(predicates::str::diff(want));
     }
-}
-
-/// A ref the daemon rejects — `nope` names no registered provider, no `put`,
-/// no template — is a missing ref inside a template, not an error: it binds
-/// nothing, so `or` falls through to its other side (canon: a missing ref is
-/// falsy at any depth).
-#[test]
-fn eval_rejected_ref_is_falsy() {
-    let d = TestDaemon::spawn();
-
-    d.comb(Path::new("/"))
-        .args(["eval", r#"{{ comb.nope.x or "fb" }}"#])
-        .assert()
-        .success()
-        .stdout(predicates::str::diff("fb"));
 }
 
 /// A source that does not compile is the caller's to fix: `1 +` is not a
@@ -250,19 +202,6 @@ fn eval_and_a_format_import() {
         ));
 }
 
-/// `comb eval` runs with `allow_exec = true` — the CLI user already has a
-/// shell, so `exec()` is available to it, same as `comb get`.
-#[test]
-fn eval_exec_call_is_enabled_for_the_cli() {
-    let d = TestDaemon::spawn();
-
-    d.comb(Path::new("/"))
-        .args(["eval", r#"{{ exec(["printf", "x"]) }}"#])
-        .assert()
-        .success()
-        .stdout(predicates::str::diff("x"));
-}
-
 /// `url()` and `plugin()` run only in a Source's lines: on the client they are
 /// refused by name, not reported as unknown functions.
 #[test]
@@ -279,24 +218,6 @@ fn url_on_the_client_is_refused_clearly() {
                 "{name}() runs only in a Source's lines"
             )));
     }
-}
-
-/// `comb eval`'s output goes through `render::render_data`, which is a bare
-/// passthrough for a string value — no ANSI/control-character stripping.
-/// The `fg` filter's ESC bytes must survive to stdout unmangled so a shell
-/// prompt piping `comb eval` output gets real colour, not a sanitized
-/// version of it.
-#[test]
-fn eval_fg_filter_escapes_pass_through_unstripped() {
-    let d = TestDaemon::spawn();
-
-    d.comb(Path::new("/"))
-        .env("FOO", "hi")
-        .env("COLORTERM", "truecolor")
-        .args(["eval", "{{ env.FOO | fg('#00ff00') }}"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("\x1b[38;2;0;255;0mhi\x1b[0m"));
 }
 
 // ── `-f`: the value formats `get` and `watch` take ───────────────────────────

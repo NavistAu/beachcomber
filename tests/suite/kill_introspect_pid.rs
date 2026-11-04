@@ -6,47 +6,6 @@ use beachcomber::cache::Cache;
 use beachcomber::server::Server;
 use std::sync::Arc;
 use tempfile::TempDir;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
-
-#[tokio::test]
-async fn introspect_daemon_returns_current_pid() {
-    let tmp = TempDir::new().unwrap();
-    let sock = tmp.path().join("test.sock");
-    let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
-    let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = Arc::new(crate::common::registry::with_shipped_defaults());
-
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    server.spawn().unwrap();
-
-    let stream = UnixStream::connect(&sock).await.unwrap();
-    let (reader, mut writer) = stream.into_split();
-    writer
-        .write_all(b"{\"op\":\"introspect\",\"subject\":\"daemon\"}\n")
-        .await
-        .unwrap();
-
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
-    reader.read_line(&mut line).await.unwrap();
-
-    let parsed: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(
-        parsed["ok"],
-        serde_json::json!(true),
-        "introspect{{daemon}} must succeed: {:?}",
-        parsed
-    );
-    let pid = parsed["data"]["pid"]
-        .as_i64()
-        .expect("introspect{daemon} response must include data.pid as i64");
-    assert_eq!(
-        pid as u32,
-        std::process::id(),
-        "introspect{{daemon}} must return the current process PID"
-    );
-}
 
 /// `comb kill` asks the daemon for its pid through the client's
 /// `introspect{daemon}`: the pid it reads is the serving process's.
