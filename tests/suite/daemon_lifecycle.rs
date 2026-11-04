@@ -263,7 +263,7 @@ fn a_daemon_out_of_descriptors_logs_once_and_recovers() {
     std::fs::create_dir_all(&home).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
     isolate(&mut cmd, &home, &xdg, &socket.path)
-        .env("RUST_LOG", "warn")
+        .env("RUST_LOG", "info")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .args(["daemon", "--exit-with-parent", "--socket"])
@@ -304,30 +304,27 @@ fn a_daemon_out_of_descriptors_logs_once_and_recovers() {
         .map(|_| std::os::unix::net::UnixStream::connect(&socket.path))
         .collect();
     let log = home.join(".local/state/beachcomber/daemon.log");
-    let accept_errors = || {
-        std::fs::read_to_string(&log)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains("Accept error"))
-            .count()
+    // Failed runs logged and runs recovered from, read at one instant.
+    let runs = || {
+        let log = std::fs::read_to_string(&log).unwrap_or_default();
+        let count = |what| log.lines().filter(|l| l.contains(what)).count();
+        (count("Accept error"), count("Accepting connections again"))
     };
     use crate::common::poll::poll_for;
     assert!(
         poll_for(Duration::from_secs(5), Duration::from_millis(5), || {
-            accept_errors() > 0
+            runs().0 > 0
         }),
         "it ran out of descriptors"
     );
     // Nothing to wait on but the absence of more: long enough for the knocks,
-    // and for a loop that did not back off to have logged thousands.
+    // and for a loop that did not back off to have logged thousands. A descriptor
+    // the daemon frees for a moment lets one knock in and starts a new run.
     let more = poll_for(Duration::from_millis(250), Duration::from_millis(5), || {
-        accept_errors() > 1
+        let (failed, recovered) = runs();
+        failed > recovered + 1
     });
-    assert!(
-        !more,
-        "one line for one run of failures: {}",
-        accept_errors()
-    );
+    assert!(!more, "one line for each run of failures: {:?}", runs());
 
     drop(knocks);
     drop(held);
