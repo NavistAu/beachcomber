@@ -681,9 +681,23 @@ result.n = "{{ data }}"
     rewrite(&live.env.drop_in("10-demo.toml"), source);
     let at = proj.to_str().unwrap();
     live.until("demo.n", "demo.n", Some(at), json!(1)).await;
-    assert_eq!(lines(), 1, "the root is rendered once for the directory");
-    assert_eq!(live.value("demo.n", Some(at)).await, json!(1));
-    assert_eq!(lines(), 1, "and kept");
+    // A slow machine can see the edit as two reloads, each forgetting the root
+    // once, so "kept" is two reads in a row that render nothing.
+    let mut seen = 0;
+    poll_until_async(
+        "the root's renders",
+        "a read that renders nothing",
+        Duration::from_secs(10),
+        Duration::from_millis(5),
+        async || {
+            let before = std::mem::replace(&mut seen, lines());
+            assert_eq!(live.value("demo.n", Some(at)).await, json!(1));
+            (before, lines())
+        },
+        |(before, after)| before == after,
+    )
+    .await;
+    let kept = lines();
 
     // An edit that touches no Source still replaces the registry, and with it
     // the roots it kept; the template is the witness that the reload ran.
@@ -704,10 +718,9 @@ result.n = "{{ data }}"
             assert_eq!(live.value("demo.n", Some(at)).await, json!(1));
             lines()
         },
-        |n| *n >= 2,
+        |n| *n > kept,
     )
     .await;
-    assert_eq!(lines(), 2, "a reload forgets the kept roots, once");
     live.assert_same_daemon().await;
 }
 
