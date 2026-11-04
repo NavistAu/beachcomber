@@ -139,13 +139,13 @@ rate = '''
 model = '''
 {#- The model name's effort tag, mirroring `fit_model_name` in src/widgets/context.rs. -#}
 {%- macro effort_tag(level, room) -%}
-    {#- The longest ` ·<form>` of `level` that fits `room` columns. -#}
+    {#- The longest `/<form>` of `level` that fits `room` columns. -#}
     {%- set l = level | lower -%}
     {%- set known = {"low": ["low", "low", "L"], "medium": ["medium", "med", "M"], "high": ["high", "high", "H"], "xhigh": ["xhigh", "xhi", "X"], "max": ["max", "max", "S"]} -%}
     {%- set forms = known[l] if (l in known) else [l, l[:3], l[:1] | upper] -%}
     {%- set pick = namespace(t="") -%}
     {%- for f in forms -%}
-        {%- set t = " ·" ~ f -%}
+        {%- set t = "/" ~ f -%}
         {%- if (not pick.t) and ((t | width) <= room) -%}{%- set pick.t = t -%}{%- endif -%}
     {%- endfor -%}
     {{- pick.t -}}
