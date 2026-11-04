@@ -143,7 +143,7 @@ pub struct Schedule {
 /// fails the next check: one more run, never a stale answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Validity {
-    inputs: Arc<[std::path::PathBuf]>,
+    inputs: Arc<[(std::path::PathBuf, libbeachcomber::fs::Regard)]>,
     /// [`libbeachcomber::validity::stamps_hash`] of the inputs.
     hash: u64,
     /// An input lies on a mount whose stamps are not trusted (network, FUSE,
@@ -217,10 +217,15 @@ impl Stamped {
     /// These, then `read`: what a run's lines read after it stamped its
     /// declared inputs. A path in both keeps its stamp here, the earlier.
     pub fn and_read(mut self, read: Vec<Touch>) -> Self {
-        let mut seen: std::collections::HashSet<std::path::PathBuf> =
-            self.stamps.iter().map(|t| t.path.clone()).collect();
-        self.stamps
-            .extend(read.into_iter().filter(|t| seen.insert(t.path.clone())));
+        let mut seen: std::collections::HashSet<_> = self
+            .stamps
+            .iter()
+            .map(|t| (t.path.clone(), t.regard))
+            .collect();
+        self.stamps.extend(
+            read.into_iter()
+                .filter(|t| seen.insert((t.path.clone(), t.regard))),
+        );
         self
     }
 }
@@ -279,7 +284,7 @@ impl Validity {
             hash,
             remote,
             racy_until: racy.map(|until| now + until.duration_since(wall).unwrap_or_default()),
-            inputs: stamps.into_iter().map(|t| t.path).collect(),
+            inputs: stamps.into_iter().map(|t| (t.path, t.regard)).collect(),
         })
     }
 
@@ -300,14 +305,14 @@ impl Validity {
     }
 
     fn check_at(&self, now: Instant) -> libbeachcomber::validity::Check {
-        use libbeachcomber::fs::{Stamp, stamp};
+        use libbeachcomber::fs::Stamp;
         use libbeachcomber::validity::Check;
         if self.remote {
             return Check::Unknown;
         }
         let mut stamped = Vec::with_capacity(self.inputs.len());
-        for path in self.inputs.iter() {
-            let s = stamp(path);
+        for (path, regard) in self.inputs.iter() {
+            let s = regard.stamp(path);
             if s == Stamp::Unknown {
                 return Check::Unknown;
             }
@@ -4164,7 +4169,8 @@ mod tests {
         // declared stamp, and one more besides.
         rewrite(&declared, "22", old);
         let v = Validity::of(early.and_read(touches(&[&read, &declared]))).unwrap();
-        assert_eq!(&*v.inputs, [declared.clone(), read.clone()]);
+        let inputs: Vec<_> = v.inputs.iter().map(|(path, _)| path.clone()).collect();
+        assert_eq!(inputs, [declared.clone(), read.clone()]);
         assert_eq!(
             v.check(),
             Check::Invalid,
@@ -4246,7 +4252,11 @@ mod tests {
     #[test]
     fn an_input_on_a_mount_whose_stamps_are_not_trusted_is_unknown() {
         let v = Validity {
-            inputs: vec![std::path::PathBuf::from("/nfs/f")].into(),
+            inputs: vec![(
+                std::path::PathBuf::from("/nfs/f"),
+                libbeachcomber::fs::Regard::Whole,
+            )]
+            .into(),
             hash: 0,
             remote: true,
             racy_until: None,

@@ -154,7 +154,7 @@ A record's inputs are the paths its `watch(...)` declares (each relative one joi
 | item | what it reads |
 |---|---|
 | `p \| read`, `p \| stat`, `p \| realpath` | the path |
-| `lup(name)` | every path its walk probed: `<dir>/<name>` from the instance's directory up to the hit (to the boundary when there is none, or with `all`); with `git=true`, each `<dir>/.git` it read to find the repository's root. A miss is read too: a `name` made nearer is a change |
+| `lup(name)` | every path its walk probed, each for its presence: `<dir>/<name>` from the instance's directory up to the hit (to the boundary when there is none, or with `all`); with `git=true`, each `<dir>/.git` it read to find the repository's root. A miss is read too: a `name` made nearer is a change. A hit changes when it goes, or becomes another kind of thing: not when an entry comes and goes in a directory it found. `lup('x') \| read` checks the file's contents as well, by the `read` |
 | `pattern \| glob` | each directory it listed, as a node (an entry made, removed or renamed in it is a change), and each literal component it found missing or ended on. A directory passed through on the way is not: what the glob read below it is |
 
 ```toml
@@ -187,7 +187,7 @@ return = "{{ result | poll('10m') }}"           # no watch() needed for a read t
   that window. The first read once the window has closed counts the record
   invalid and runs it again.
 
-Name only files the run reads: an input that changes when the value does not costs a run for nothing. A directory is the blunt case: `watch('.git')` and `lup('.git')` make `.git` an input, whose mtime moves whenever a git command makes a lockfile there, so the next read runs the Source again. There is no way yet to watch a directory without also checking it on a read.
+Name only files the run reads: an input that changes when the value does not costs a run for nothing. A directory is the blunt case: `watch('.git')` makes `.git` an input, whose mtime moves whenever a git command makes a lockfile there, so the next read runs the Source again. There is no way yet to watch a directory without also checking it on a read.
 
 The record's validity hash is shown as `hash` in its `:cache` answer
 (`comb get git:cache.branch`), 16 lowercase hex digits, written by the daemon

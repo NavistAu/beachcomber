@@ -216,11 +216,42 @@ pub fn stamp(path: &Path) -> Stamp {
     })
 }
 
+/// How much of a path its reader's answer depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Regard {
+    /// What is in it: any stamp field moving is a change.
+    Whole,
+    /// That it is there, and what kind of thing it is, on which device (so a
+    /// mount's trust still applies). A directory's entries coming and going
+    /// are no change.
+    Presence,
+}
+
+impl Regard {
+    /// The stamp of `path`, as far as this regard goes.
+    pub fn stamp(self, path: &Path) -> Stamp {
+        match (self, stamp(path)) {
+            (Regard::Presence, Stamp::Present(p)) => Stamp::Present(Present {
+                dev: p.dev,
+                ino: 0,
+                size: 0,
+                mtime_secs: 0,
+                mtime_nanos: 0,
+                kind: p.kind,
+                link: None,
+            }),
+            (_, stamp) => stamp,
+        }
+    }
+}
+
 /// A path a render read, stamped immediately before it was read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Touch {
     pub path: PathBuf,
     pub stamp: Stamp,
+    /// How much of it the stamp covers: a later check stamps it the same way.
+    pub regard: Regard,
     /// When the stamp was taken: read off the clock first, so it never trails
     /// the stamp. A stamp's racy window is measured from it.
     pub at: SystemTime,
@@ -229,10 +260,20 @@ pub struct Touch {
 impl Touch {
     /// Stamp `path` now.
     pub fn take(path: &Path) -> Touch {
+        Self::regarding(path, Regard::Whole)
+    }
+
+    /// Stamp `path` now, for what its presence says ([`Regard::Presence`]).
+    pub fn presence(path: &Path) -> Touch {
+        Self::regarding(path, Regard::Presence)
+    }
+
+    fn regarding(path: &Path, regard: Regard) -> Touch {
         let at = SystemTime::now();
         Touch {
-            stamp: stamp(path),
+            stamp: regard.stamp(path),
             path: path.to_path_buf(),
+            regard,
             at,
         }
     }
@@ -245,7 +286,8 @@ pub const MOST_TOUCHED: usize = 64;
 /// What a render read, where someone keeps account of it (a daemon's run of a
 /// Source, through [`crate::engine::EngineCtx::touched`]): each path once, in
 /// the order it was first read, stamped before that read. Past
-/// [`MOST_TOUCHED`] a path is counted, not stamped.
+/// [`MOST_TOUCHED`] a path is counted, not stamped. A path read for its presence
+/// and then for what is in it is both: each stamp checks what it was read for.
 #[derive(Debug, Default)]
 pub struct Touched {
     state: Mutex<TouchedState>,
@@ -254,7 +296,7 @@ pub struct Touched {
 #[derive(Debug, Default)]
 struct TouchedState {
     touches: Vec<Touch>,
-    seen: HashSet<PathBuf>,
+    seen: HashSet<(PathBuf, Regard)>,
 }
 
 impl Touched {
@@ -265,10 +307,9 @@ impl Touched {
     /// `path` is about to be read: stamp it, unless it has been already.
     pub fn touch(&self, path: &Path) {
         let mut state = self.state();
-        if state.seen.contains(path) {
+        if !state.seen.insert((path.to_path_buf(), Regard::Whole)) {
             return;
         }
-        state.seen.insert(path.to_path_buf());
         if state.touches.len() < MOST_TOUCHED {
             state.touches.push(Touch::take(path));
         }
@@ -279,7 +320,7 @@ impl Touched {
     pub fn keep(&self, touches: impl IntoIterator<Item = Touch>) {
         let mut state = self.state();
         for touch in touches {
-            if !state.seen.insert(touch.path.clone()) {
+            if !state.seen.insert((touch.path.clone(), touch.regard)) {
                 continue;
             }
             if state.touches.len() < MOST_TOUCHED {
@@ -613,6 +654,40 @@ mod tests {
         );
         assert_eq!(got[1].stamp, Stamp::Absent);
         assert!(got[0].at <= got[1].at);
+    }
+
+    /// A path read for its presence says nothing of what is in it, and read
+    /// for what is in it too is kept for both.
+    #[test]
+    fn presence_stamps_what_it_is_not_what_is_in_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().join("d");
+        std::fs::create_dir(&d).unwrap();
+        let before = Regard::Presence.stamp(&d);
+        let whole = stamp(&d);
+        std::fs::write(d.join("entry"), "x").unwrap();
+        assert_eq!(Regard::Presence.stamp(&d), before, "entries come and go");
+        assert_ne!(stamp(&d), whole, "a whole stamp sees them");
+        assert!(matches!(before, Stamp::Present(p) if p.kind == Kind::Dir));
+
+        std::fs::remove_file(d.join("entry")).unwrap();
+        std::fs::remove_dir(&d).unwrap();
+        assert_eq!(
+            Regard::Presence.stamp(&d),
+            Stamp::Absent,
+            "gone is a change"
+        );
+        std::fs::write(&d, "").unwrap();
+        assert!(
+            matches!(Regard::Presence.stamp(&d), Stamp::Present(p) if p.kind == Kind::File),
+            "and so is another kind"
+        );
+
+        let touched = Touched::default();
+        touched.keep([Touch::presence(&d)]);
+        touched.touch(&d);
+        let regards: Vec<_> = touched.touches().iter().map(|t| t.regard).collect();
+        assert_eq!(regards, [Regard::Presence, Regard::Whole]);
     }
 
     /// Past the cap a path is counted and not stamped.

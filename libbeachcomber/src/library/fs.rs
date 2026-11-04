@@ -401,7 +401,7 @@ fn lup(ctx: &EngineCtx, name: &str, kwargs: Kwargs) -> Result<MjValue, Error> {
 }
 
 /// The paths a `lup` walk from `start` may probe, stamped before it probes
-/// them: with `git`, `<dir>/.git` from the start to the repository's root
+/// them, each for its presence, which is all a walk's answer says of it: with `git`, `<dir>/.git` from the start to the repository's root
 /// (all the way up outside one), which is how the walk finds its boundary;
 /// then `<dir>/<name>` from the start to the boundary.
 struct LupProbes {
@@ -417,8 +417,10 @@ impl LupProbes {
         let top = dirs.len() - 1;
         let (git, last) = match boundary {
             liblup::Boundary::Git => {
-                let mut git: Vec<Touch> =
-                    dirs.iter().map(|d| Touch::take(&d.join(".git"))).collect();
+                let mut git: Vec<Touch> = dirs
+                    .iter()
+                    .map(|d| Touch::presence(&d.join(".git")))
+                    .collect();
                 // Where the walk will stop, now its probes are stamped.
                 let root = liblup::boundary::find_git_root(start).and_then(|root| at(&root));
                 if let Some(root) = root {
@@ -435,7 +437,7 @@ impl LupProbes {
         let names = last.map_or_else(Vec::new, |last| {
             dirs[..=last]
                 .iter()
-                .map(|d| Touch::take(&d.join(name)))
+                .map(|d| Touch::presence(&d.join(name)))
                 .collect()
         });
         Self { git, names }
@@ -546,6 +548,21 @@ mod tests {
             [root.join("a/.git/HEAD")]
         );
         assert_eq!(read_by(ctx, "'../c' | realpath"), [root.join("a/b/c/../c")]);
+    }
+
+    /// A hit is stamped for its presence: what is in it is `read`'s to say.
+    #[test]
+    fn lup_stamps_a_hit_for_its_presence() {
+        let (_d, root, ctx) = repo();
+        let (ctx, touched) = recording(ctx);
+        eval_in(ctx, "lup('.git') ~ (lup('HEAD', all=true) | length)").unwrap();
+        let hit = touched
+            .touches()
+            .into_iter()
+            .find(|t| t.path == root.join("a/.git"))
+            .unwrap();
+        assert_eq!(hit.regard, crate::fs::Regard::Presence);
+        assert!(matches!(hit.stamp, crate::fs::Stamp::Present(p) if p.mtime_secs == 0));
     }
 
     /// Every probe, hit or miss: a marker made nearer than the one found, or
