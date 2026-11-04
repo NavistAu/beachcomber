@@ -8,8 +8,8 @@ mod canon_provider_source_tests;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use tokio::sync::{mpsc, oneshot};
 // The scheduler's one clock is the runtime's: its ticks, its lifecycle and its
 // failure backoff read it, as the cache's ages do. In a daemon it is the
 // system's monotonic clock; a test pauses and advances it.
@@ -190,19 +190,42 @@ pub(crate) struct Subscription {
     pub(crate) patterns: Vec<String>,
 }
 
+/// How long a caller waits on the scheduler, for room in its queue and again
+/// for an answer. What is asked of it is a hint or a report, and a request's
+/// connection is a descriptor: a scheduler that has stopped draining its queue
+/// costs a request this much, not its connection for good.
+pub const SCHEDULER_WAIT: Duration = Duration::from_secs(1);
+
 /// Handle for sending messages to the scheduler.
 #[derive(Clone)]
 pub struct SchedulerHandle {
     tx: mpsc::Sender<SchedulerMessage>,
+    /// Whether the last send found no room in time: one stall, one log line.
+    stalled: Arc<AtomicBool>,
 }
 
 impl SchedulerHandle {
     pub fn new(tx: mpsc::Sender<SchedulerMessage>) -> Self {
-        Self { tx }
+        Self {
+            tx,
+            stalled: Arc::default(),
+        }
     }
 
+    /// Queue `msg`, or drop it after [`SCHEDULER_WAIT`] with the queue still
+    /// full. A demand lost this way comes again with the next read.
     pub async fn send(&self, msg: SchedulerMessage) {
-        let _ = self.tx.send(msg).await;
+        match self.tx.send_timeout(msg, SCHEDULER_WAIT).await {
+            Err(mpsc::error::SendTimeoutError::Timeout(_)) => {
+                if !self.stalled.swap(true, Ordering::Relaxed) {
+                    warn!(
+                        "the scheduler's queue has stayed full for {SCHEDULER_WAIT:?}: \
+                         requests are answered from the cache without it"
+                    );
+                }
+            }
+            _ => self.stalled.store(false, Ordering::Relaxed),
+        }
     }
 
     /// [`Self::send`] for a thread that is not on the runtime (the config
@@ -211,35 +234,33 @@ impl SchedulerHandle {
         let _ = self.tx.blocking_send(msg);
     }
 
+    /// Send `msg` and wait for its `reply`: `None` when no answer comes in time.
+    async fn ask<T>(&self, msg: SchedulerMessage, reply: oneshot::Receiver<T>) -> Option<T> {
+        self.send(msg).await;
+        tokio::time::timeout(SCHEDULER_WAIT, reply).await.ok()?.ok()
+    }
+
     pub async fn get_status(&self) -> Option<SchedulerStatus> {
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(SchedulerMessage::GetStatus { reply: reply_tx })
-            .await
-            .ok()?;
-        reply_rx.await.ok()
+        let (reply, rx) = oneshot::channel();
+        self.ask(SchedulerMessage::GetStatus { reply }, rx).await
     }
 
     /// Return a snapshot of all (provider, path, source) entries with non-zero consecutive failure counts.
     /// Returns an empty map when no failures are tracked.
     pub async fn get_failure_states(&self) -> HashMap<lifecycle::Key, FailureSnapshot> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = self
-            .tx
-            .send(SchedulerMessage::GetFailureStates { reply: tx })
-            .await;
-        rx.await.unwrap_or_default()
+        let (reply, rx) = oneshot::channel();
+        self.ask(SchedulerMessage::GetFailureStates { reply }, rx)
+            .await
+            .unwrap_or_default()
     }
 
     /// Return a full per-entry snapshot of every lifecycle-tracked key.
     /// Missing keys are not in the lifecycle registry (e.g. static/put entries).
     pub async fn get_lifecycle_snapshots(&self) -> HashMap<lifecycle::Key, LifecycleSnapshot> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let _ = self
-            .tx
-            .send(SchedulerMessage::GetLifecycleSnapshots { reply: tx })
-            .await;
-        rx.await.unwrap_or_default()
+        let (reply, rx) = oneshot::channel();
+        self.ask(SchedulerMessage::GetLifecycleSnapshots { reply }, rx)
+            .await
+            .unwrap_or_default()
     }
 }
 
@@ -1869,7 +1890,7 @@ mod tests {
             Scheduler::new(cache, registry, config, Arc::new(WatcherRegistry::new()));
         let gate = Gate::closed();
         let (held, _) = Held::new(&gate);
-        let (_events, rx) = mpsc::channel(1);
+        let (events, rx) = mpsc::channel(1);
         scheduler.use_watcher(FsWatcher::with_backend(Box::new(held)), rx);
         let heartbeat = scheduler.heartbeat();
         tokio::spawn(scheduler.run());
@@ -1877,6 +1898,14 @@ mod tests {
         handle.send(demand("w0")).await;
         let status = handle.get_status().await.expect("the loop answers");
         assert_eq!(states(&status), [(dirs[0].clone(), Pending)]);
+
+        // The loop keeps draining file events meanwhile. A backend's callback
+        // blocks on this channel when it is full, and FSEvents' `watch()` cannot
+        // stop its stream while that callback runs: a loop that waited for the
+        // registration deadlocked with it, for good.
+        for _ in 0..3 {
+            events.send(vec![dirs[0].join("x")]).await.unwrap();
+        }
 
         handle.send(demand("w1")).await;
         let status = handle.get_status().await.expect("the loop answers");
@@ -1909,6 +1938,38 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "never both Active");
             tokio::task::yield_now().await;
         }
+    }
+
+    /// A scheduler that takes nothing from its queue and answers nothing costs
+    /// each caller [`SCHEDULER_WAIT`] at most, and the answer it would have had
+    /// is absent. Not the caller's connection: this wait, unbounded, is what let
+    /// a wedged scheduler hold every request's descriptor until none were left.
+    #[tokio::test(start_paused = true)]
+    async fn a_scheduler_that_does_not_drain_its_queue_holds_nobody() {
+        let (tx, _never_drained) = mpsc::channel(1);
+        let handle = SchedulerHandle::new(tx);
+        let refresh = || SchedulerMessage::Refresh {
+            provider: "p".into(),
+            instances: Vec::new(),
+        };
+        handle.send(refresh()).await;
+
+        let began = tokio::time::Instant::now();
+        handle.send(refresh()).await;
+        assert_eq!(began.elapsed(), SCHEDULER_WAIT, "the send gave up");
+        assert!(handle.get_status().await.is_none());
+        assert!(handle.get_failure_states().await.is_empty());
+        assert!(handle.get_lifecycle_snapshots().await.is_empty());
+    }
+
+    /// A message taken and never answered ends the wait too.
+    #[tokio::test(start_paused = true)]
+    async fn a_scheduler_that_takes_a_question_and_never_answers_holds_nobody() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let handle = SchedulerHandle::new(tx);
+        let asked = tokio::spawn(async move { handle.get_status().await });
+        let _unanswered = rx.recv().await.unwrap();
+        assert!(asked.await.unwrap().is_none());
     }
 
     /// T4.7, measured rather than asserted: the heartbeat's latest tick while

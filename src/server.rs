@@ -443,7 +443,7 @@ async fn handle_watch(
     // connection is done being useful, and the watch ends. This is what lets
     // a dead client's watch drop at once instead of lingering until the next
     // write to the watched key. ("At once" has one hole: a `sched.send` into
-    // a full scheduler queue parks this task until the queue drains.)
+    // a full scheduler queue parks this task for up to `SCHEDULER_WAIT`.)
     //
     // The `notified()` future MUST be constructed inside the loop: a
     // `notify_one` landing mid-write stores a permit that the next fresh
@@ -3040,6 +3040,51 @@ fn secs(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scheduler that has stopped draining its queue does not cost a request
+    /// its connection: `get` and `watch` are answered from the cache with the
+    /// queue full, one [`crate::scheduler::SCHEDULER_WAIT`] later. Parked on
+    /// that send for good, each kept its descriptor after its client had gone.
+    #[tokio::test(start_paused = true)]
+    async fn a_request_is_answered_with_the_schedulers_queue_full() {
+        use tokio::io::AsyncWriteExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("sock");
+        let (tx, _never_drained) = tokio::sync::mpsc::channel(1);
+        let handle = SchedulerHandle::new(tx);
+        handle
+            .send(SchedulerMessage::Refresh {
+                provider: "p".into(),
+                instances: Vec::new(),
+            })
+            .await;
+        let cache = Arc::new(Cache::new());
+        let registry = ProviderRegistry::new().share(&cache);
+        Server::new(
+            socket.clone(),
+            cache,
+            registry,
+            Some(handle),
+            Arc::new(WatcherRegistry::new()),
+        )
+        .spawn()
+        .unwrap();
+
+        for request in [
+            r#"{"op":"get","key":"hostname"}"#,
+            r#"{"op":"watch","key":"hostname"}"#,
+        ] {
+            let stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+            let (reader, mut writer) = stream.into_split();
+            writer
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut answer = String::new();
+            BufReader::new(reader).read_line(&mut answer).await.unwrap();
+            assert!(answer.contains(r#""ok":true"#), "{request}: {answer}");
+        }
+    }
 
     fn watch(
         path: &str,

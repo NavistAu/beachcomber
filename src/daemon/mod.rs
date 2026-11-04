@@ -227,23 +227,38 @@ async fn run_daemon_with_cancel(
             if let Err(e) = result {
                 tracing::error!("Server error: {}", e);
             }
-            // Server returned (bind failure or accept-loop error): shut the
-            // scheduler down too, or `scheduler_task.await` below blocks
-            // forever and the process lingers, unkillable by SIGTERM (the
-            // cancel token has no remaining observer once this select ends).
-            scheduler_handle.send(SchedulerMessage::Shutdown).await;
+            // Server returned (bind failure or accept-loop error): the
+            // scheduler goes too (the cancel token has no remaining observer
+            // once this select ends).
         }
         _ = cancel.cancelled() => {
             info!("Shutdown signal received");
-            scheduler_handle.send(SchedulerMessage::Shutdown).await;
         }
     }
 
     if let Some(task) = watchdog_task {
         task.abort();
     }
-    let _ = scheduler_task.await;
-    info!("Daemon shut down cleanly");
+    if stop_scheduler(&scheduler_handle, scheduler_task).await {
+        info!("Daemon shut down cleanly");
+    } else {
+        warn!("the scheduler did not stop within {SCHEDULER_STOP:?}; leaving it");
+    }
+}
+
+/// How long a stopping daemon waits for its scheduler, which ends the moment
+/// it reads its message. Past this it is wedged, and the process goes without
+/// it: a daemon that cannot be stopped is one its supervisor must kill.
+const SCHEDULER_STOP: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Ask the scheduler to stop and wait for it, for [`SCHEDULER_STOP`] at most:
+/// whether it did.
+async fn stop_scheduler(
+    handle: &crate::scheduler::SchedulerHandle,
+    task: tokio::task::JoinHandle<()>,
+) -> bool {
+    handle.send(SchedulerMessage::Shutdown).await;
+    tokio::time::timeout(SCHEDULER_STOP, task).await.is_ok()
 }
 
 /// What a daemon refusing its configuration says: one line per error, then
@@ -311,4 +326,27 @@ fn spawn_watchdog(
             }
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scheduler that takes nothing and never ends does not keep the daemon
+    /// from stopping: this wait, unbounded, is what SIGTERM got stuck on.
+    #[tokio::test(start_paused = true)]
+    async fn a_wedged_scheduler_does_not_hold_the_daemons_stop() {
+        let (tx, _never_drained) = tokio::sync::mpsc::channel(1);
+        let handle = crate::scheduler::SchedulerHandle::new(tx);
+        handle.send(SchedulerMessage::Shutdown).await;
+        let wedged = tokio::spawn(std::future::pending());
+        assert!(!stop_scheduler(&handle, wedged).await);
+    }
+
+    #[tokio::test]
+    async fn a_scheduler_that_ends_stops_the_daemon_at_once() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = crate::scheduler::SchedulerHandle::new(tx);
+        assert!(stop_scheduler(&handle, tokio::spawn(async {})).await);
+    }
 }
