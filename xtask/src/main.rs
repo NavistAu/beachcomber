@@ -213,6 +213,9 @@ fn release_targets(old: &str) -> Vec<Target> {
         t("packaging/nix/flake.nix", 1),
         t(".github/workflows/release.yml", 1),
         t("README.md", 8),
+        t("website/docs/ecosystem/c-sdk.md", 4),
+        t("website/docs/getting-started/installation.md", 8),
+        t("website/docs/reference/protocol-reference.md", 1),
         Target {
             path: format!("sdks/lua/rockspec/libbeachcomber-{old}-1.rockspec"),
             expected: 2,
@@ -541,11 +544,14 @@ mod tests {
             "packaging/nix/flake.nix",
             ".github/workflows/release.yml",
             "README.md",
+            "website/docs/ecosystem/c-sdk.md",
+            "website/docs/getting-started/installation.md",
+            "website/docs/reference/protocol-reference.md",
             "sdks/lua/rockspec/libbeachcomber-0.6.1-1.rockspec",
         ] {
             assert!(paths.contains(&expected), "missing target: {expected}");
         }
-        assert_eq!(t.len(), 14, "manifest should be exactly 14 files");
+        assert_eq!(t.len(), 17, "manifest should be exactly 17 files");
     }
 
     #[test]
@@ -576,6 +582,6 @@ mod tests {
         assert_eq!(by_path("Cargo.toml"), 3);
         // Total occurrences the tool will rewrite across the tree.
         let total: usize = t.iter().map(|x| x.expected).sum();
-        assert_eq!(total, 27);
+        assert_eq!(total, 40);
     }
 }
