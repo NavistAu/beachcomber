@@ -1090,10 +1090,16 @@ async fn a_namespace_removed_from_config_disappears() {
     )
     .await;
 
-    assert!(
-        data(&mut s, "scanline:template").await.is_null(),
-        "the whole namespace is gone, not just its leaves"
-    );
+    // The re-seed writes one namespace at a time, so a read can land between them.
+    crate::common::poll::poll_until_async(
+        "scanline:template",
+        "the whole namespace is gone, not just its leaves",
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        async || data(&mut s, "scanline:template").await,
+        |v| v.is_null(),
+    )
+    .await;
     assert_eq!(
         row(&mut s, "scanline:template", "version").await,
         None,
