@@ -350,9 +350,12 @@ api_status = '''
 {%- set st = claude_status.status -%}
 {%- set ns = namespace(s="", tail="") -%}
 {%- for c in k.components -%}
-    {%- if st[c.id] is defined -%}
-        {%- set ns.s = ns.s ~ ((("  " ~ c.icon ~ c.abbr ~ "  ") if (w >= 24) else (" " ~ c.ch)) | fg(th.bar_dark_fg) | bg(th[k.colour[st[c.id]] | default("green")]) | bold) -%}
-        {%- set ns.tail = " " | fg(th.bar_dark_fg) | bg(th[k.colour[st[c.id]] | default("green")]) | bold -%}
+    {%- if (not st) or (st[c.id] is defined) -%}
+        {#- Before the status page has answered: every component, in no status's colour. -#}
+        {%- set fgc = th.bar_dark_fg if st else th.bar_label_fg -%}
+        {%- set bgc = th[k.colour[st[c.id]] | default("green")] if st else th.bar_empty -%}
+        {%- set ns.s = ns.s ~ ((("  " ~ c.icon ~ c.abbr ~ "  ") if (w >= 24) else (" " ~ c.ch)) | fg(fgc) | bg(bgc) | bold) -%}
+        {%- set ns.tail = " " | fg(fgc) | bg(bgc) | bold -%}
     {%- endif -%}
 {%- endfor -%}
 {{- ns.s ~ (ns.tail if (w < 24) else "") -}}
