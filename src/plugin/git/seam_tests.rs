@@ -8,7 +8,7 @@
 /// - dirty repo: status source detects staged/unstaged/untracked counts
 /// - detached HEAD: refs source asks about no push remote
 /// - no repo (all git commands fail): sources fail or answer nothing
-use super::{diff_facts, lineage_facts, refs_facts, status_facts};
+use super::{branches_facts, diff_facts, lineage_facts, refs_facts, status_facts};
 use crate::boundaries::git::GitExecutor;
 use serde_json::json;
 use std::os::unix::process::ExitStatusExt;
@@ -271,6 +271,20 @@ fn git_refs_a_repository_git_cannot_read_fails() {
 }
 
 // ── lineage source seam tests ─────────────────────────────────────────────────
+
+/// A branch's names come from its files: with no git to ask, they are still there.
+#[test]
+fn git_branches_runs_nothing() {
+    let dir = fake_repo();
+    let git = dir.path().join(".git");
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/topic\n").unwrap();
+    std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+    std::fs::write(git.join("refs/heads/main"), "").unwrap();
+    let stub = StubGitExecutor::new(vec![]);
+    let facts = branches_facts(dir.path(), &stub).expect("facts");
+    assert_eq!(facts.get("branch_parent"), Some(&json!("main")));
+    assert_eq!(facts.get("branch_default"), Some(&json!("main")));
+}
 
 /// What two commits differ by is asked of git once: a run after a ref was
 /// rewritten with what it held spawns only the `merge-base`. Another commit is

@@ -77,7 +77,7 @@ fn git_root_returns_none_outside_any_repo() {
 #[test]
 fn git_provider_metadata() {
     let meta = git_meta();
-    assert_eq!(meta.len(), 5);
+    assert_eq!(meta.len(), 6);
 
     let head_src = meta.iter().find(|s| s.name == "head").unwrap();
     let head_fields: Vec<&str> = head_src.fields.iter().map(|f| f.name.as_str()).collect();
@@ -112,12 +112,18 @@ fn git_provider_metadata() {
     assert!(diff_fields.contains(&"lines_staged_added"));
     assert!(diff_fields.contains(&"lines_staged_removed"));
 
+    let branches_src = meta.iter().find(|s| s.name == "branches").unwrap();
+    let branches_fields: Vec<&str> = branches_src
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(branches_fields, ["branch_default", "branch_parent"]);
+
     let lineage_src = meta.iter().find(|s| s.name == "lineage").unwrap();
     let lineage_fields: Vec<&str> = lineage_src.fields.iter().map(|f| f.name.as_str()).collect();
-    assert!(lineage_fields.contains(&"branch_parent"));
     assert!(lineage_fields.contains(&"lines_added_parent"));
     assert!(lineage_fields.contains(&"lines_removed_parent"));
-    assert!(lineage_fields.contains(&"branch_default"));
     assert!(lineage_fields.contains(&"lines_added_default"));
     assert!(lineage_fields.contains(&"lines_removed_default"));
 
@@ -136,8 +142,9 @@ fn git_provider_metadata() {
 #[test]
 fn git_provider_source_names() {
     let sources = git_sources();
-    assert_eq!(sources.len(), 5);
+    assert_eq!(sources.len(), 6);
     let names: Vec<&str> = sources.iter().map(|s| s.metadata().name.as_str()).collect();
+    assert!(names.contains(&"branches"));
     assert!(names.contains(&"head"));
     assert!(names.contains(&"refs"));
     assert!(names.contains(&"diff"));
@@ -568,14 +575,10 @@ fn lineage_fixture() -> GitRepoFixture {
 
 fn lineage_fields(path: &str) -> std::collections::HashMap<String, String> {
     let sources = git_sources();
-    let src = sources
+    sources
         .iter()
-        .find(|s| s.metadata().name == "lineage")
-        .unwrap();
-    src.execute(Some(path))
-        .unwrap()
-        .fields
-        .iter()
+        .filter(|s| ["branches", "lineage"].contains(&s.metadata().name.as_str()))
+        .flat_map(|s| s.execute(Some(path)).unwrap().fields)
         .map(|(k, v)| (k.clone(), v.as_text()))
         .collect()
 }
@@ -998,6 +1001,11 @@ fn git_schedules_watch_what_each_source_reads() {
             60,
         ),
         (
+            "branches",
+            watch(&[".git/HEAD", ".git/refs", ".git/packed-refs"]),
+            60,
+        ),
+        (
             "lineage",
             watch(&[".git/HEAD", ".git/refs", ".git/packed-refs"]),
             60,
@@ -1251,7 +1259,7 @@ fn git_reads_with_nothing_changed_run_nothing() {
     s.get("git", Some(&dir)).expect("git answers");
     let ran = |source: &str| s.ran_at("git", Some(&dir), source);
     let every = || -> Vec<_> {
-        ["head", "refs", "diff", "lineage", "status"]
+        ["head", "refs", "diff", "branches", "lineage", "status"]
             .into_iter()
             .map(ran)
             .collect()
@@ -1441,7 +1449,7 @@ fn a_change_in_the_tree_waits_for_a_read() {
 fn first_read_after_a_lockfile_runs_nothing() {
     let f = FirstRead::new();
     let ran = |source: &str| f.s.ran_at("git", Some(&f.dir), source);
-    let sources = ["head", "refs", "diff", "lineage", "status"];
+    let sources = ["head", "refs", "diff", "branches", "lineage", "status"];
     let before: Vec<_> = sources.iter().map(|s| ran(s)).collect();
     let lock = f.dir.join(".git/some.lock");
     std::fs::write(&lock, "").unwrap();
@@ -1461,10 +1469,13 @@ fn first_read_after_git_status_is_unchanged() {
     std::fs::write(f.dir.join(&file), body).unwrap();
     f.settle();
     let ran = |source: &str| f.s.ran_at("git", Some(&f.dir), source);
-    let before = (ran("head"), ran("refs"), ran("lineage"));
+    let before = (ran("head"), ran("refs"), ran("branches"), ran("lineage"));
     f.git(&["status"]);
     f.expect(&[("dirty", json!(false)), ("staged", json!(0))]);
-    assert_eq!(before, (ran("head"), ran("refs"), ran("lineage")));
+    assert_eq!(
+        before,
+        (ran("head"), ran("refs"), ran("branches"), ran("lineage"))
+    );
 }
 
 #[test]
@@ -1481,18 +1492,21 @@ fn first_read_after_git_add() {
     ]);
 }
 
-/// `git add` moves the index and no ref: `refs` and `lineage` do not run.
+/// `git add` moves the index and no ref: `refs`, `branches` and `lineage` do not run.
 #[test]
 fn git_add_runs_only_what_the_index_moves() {
     let f = FirstRead::new();
     f.write("new.txt", "one\n");
     f.settle();
     let ran = |source: &str| f.s.ran_at("git", Some(&f.dir), source);
-    let before = (ran("head"), ran("refs"), ran("lineage"));
+    let before = (ran("head"), ran("refs"), ran("branches"), ran("lineage"));
     f.git(&["add", "new.txt"]);
     assert_eq!(f.get("staged"), Some(json!(1)));
     f.s.get("git", Some(&f.dir)).expect("git answers");
-    assert_eq!(before, (ran("head"), ran("refs"), ran("lineage")));
+    assert_eq!(
+        before,
+        (ran("head"), ran("refs"), ran("branches"), ran("lineage"))
+    );
 }
 
 #[test]

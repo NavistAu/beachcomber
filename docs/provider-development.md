@@ -93,6 +93,7 @@ git.refs    → watch what the refs, the stash and an operation in progress live
 git.diff    → poll 30s, `plugin('git', 'diff', root)`
               fields: lines_added, lines_removed, lines_staged_added, lines_staged_removed
 
+git.branches → watch the refs, `plugin('git', 'branches', root)`
 git.lineage → watch the refs, `plugin('git', 'lineage', root)`
               fields: branch_parent, lines_added_parent, lines_removed_parent,
                       branch_default, lines_added_default, lines_removed_default
@@ -412,7 +413,8 @@ The shipped `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `networ
 | `head` | `{branch, detached}` | none |
 | `refs` | `{stash, state, state_step, state_total, commit, last_commit_age_secs, commit_summary, tag, push_ahead, push_behind}` | `git log -1`, `describe`, `config --list`, started together; with a push remote `rev-parse` and `rev-list` |
 | `diff` | `{lines_added, lines_removed, lines_staged_added, lines_staged_removed}` | `git diff --numstat`, `diff --cached --numstat`, started together |
-| `lineage` | `{branch_parent, lines_added_parent, lines_removed_parent, branch_default, lines_added_default, lines_removed_default}` | `git merge-base`, `diff --numstat` once for any two commits; `rev-parse` for a branch with no loose ref |
+| `branches` | `{branch_parent, branch_default}` | `rev-parse` for a branch with no loose ref |
+| `lineage` | `{lines_added_parent, lines_removed_parent, lines_added_default, lines_removed_default}` | `git merge-base`, `diff --numstat` once for any two commits; `rev-parse` for a branch with no loose ref |
 | `status` | `{upstream, ahead, behind, staged, unstaged, untracked, conflicted, dirty}` | `git status` |
 
 Every command runs with `GIT_OPTIONAL_LOCKS=0`, so `git status` cannot rewrite the index its Source watches, `GIT_TERMINAL_PROMPT=0` and the askpass guards, and with `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` removed. That environment is in one place in Rust (`src/boundaries/git.rs`), so no Source can forget it. `NULL` is failure: `git status` failing where a symbol needs it, or arguments other than one string.

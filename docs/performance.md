@@ -649,7 +649,7 @@ A read of a usual field costs about what `git status` does, 11 to 13 ms, plus ab
 
 **What is not reached.**
 
-- **`lineage` on a long branch.** `git diff --numstat <point>..HEAD` on this branch takes 100 to 130 ms (at load 10), most of it rename detection: `--no-renames` halves it and gives other numbers. No read can wait for that in 50 ms, so after a commit, a checkout or a rebase a whole read of `git` takes the budget, its `lineage` fields are as they were, and the next read has them. Single fields do not wait for it.
+- **`lineage` on a long branch.** `git diff --numstat <point>..HEAD` on this branch takes 100 to 130 ms (at load 10), most of it rename detection: `--no-renames` halves it and gives other numbers. No read waits for that: `lineage` keeps a 50 ms budget where git's other Sources have 100, so after a commit, a checkout or a rebase a whole read of `git` takes those 50 ms, the line counts are as they were, and the next read has them. `branch_parent` and `branch_default` read files in their own Source, `branches`, and are right at once. Single fields do not wait for it.
 - **A wrong answer is not labelled.** A read past its budget answers `stale: false` for what it knows to be invalid.
 
 Measured with a script over the raw socket, each daemon isolated in its own `HOME`, XDG directories and socket; `first_read_after_git` in `benches/validity.rs` is the same read in-process.

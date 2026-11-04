@@ -1950,8 +1950,13 @@ return = "{{ result | poll('15s') }}"
         // And the budget reaches a Source whose line names none.
         let reg = registry_from("[daemon]\nbudget = \"30ms\"\n");
         assert_eq!(
-            source_meta(&reg, "git", "refs").budget,
+            source_meta(&reg, "git", "lineage").budget,
             std::time::Duration::from_millis(30)
+        );
+        // git's others name their own, to have the next prompt right.
+        assert_eq!(
+            source_meta(&reg, "git", "refs").budget,
+            std::time::Duration::from_millis(100)
         );
     }
 

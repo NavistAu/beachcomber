@@ -62,7 +62,7 @@ Shipped files: `terraform`, `python`, `direnv`, `asdf`, `aws_profiles`, `gcloud_
 The Provider/Source/Field model has three layers:
 
 - **Provider** — a named namespace (e.g., `git`). Declares 1+ Sources. The cache key `provider\0path` is still at this level.
-- **Source** — one invalidation strategy, one set of fields, one lifecycle entry. Key for lifecycle, watches, and failure backoff is `(provider, path, source)`. Examples: git's `head`, `refs`, `diff`, `lineage`, `status` sources.
+- **Source** — one invalidation strategy, one set of fields, one lifecycle entry. Key for lifecycle, watches, and failure backoff is `(provider, path, source)`. Examples: git's `head`, `refs`, `diff`, `branches`, `lineage`, `status` sources.
 - **Field** — a typed value. Belongs to exactly one Source within a Provider.
 
 The registry maps a key to its Source by walking the key: the Source of the nearest ancestor node that declares one wins, so `mise.node.version` finds the Source that declares `node`, and a Source that cannot list its field names declares a sentinel (`<tool>`) that answers for the provider node itself.

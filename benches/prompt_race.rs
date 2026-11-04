@@ -278,6 +278,10 @@ fn bench_convergence_l(c: &mut Criterion) {
                         root: Some(path.clone()),
                     },
                     Instance {
+                        source: "branches".to_string(),
+                        root: Some(path.clone()),
+                    },
+                    Instance {
                         source: "lineage".to_string(),
                         root: Some(path.clone()),
                     },

@@ -4,10 +4,11 @@
 root = "{{ lup('.git', root=true) | dirname }}"
 
 # Every Source's lines render in the repository's root, where `.git` is `lup`'s first probe, so
-# `lup('.git', root=true) | dirname` is how a line names that directory. All five get their data from the compiled-in
+# `lup('.git', root=true) | dirname` is how a line names that directory. All six get their data from the compiled-in
 # git plugin, which runs git with its own environment (no optional locks, no prompts), reports what it finds, and notes
 # each file it reads: a read checks exactly those, so a Source runs again only when what it says can have changed, in a
-# linked worktree too. A `watch` names what wakes it before anyone reads: it matches by whole path components, so a
+# linked worktree too. A read waits up to 100 ms for a run after a change, so the next prompt has the answer; `lineage`
+# keeps the usual 50, since a long branch's diff would use all of it for nothing. A `watch` names what wakes it before anyone reads: it matches by whole path components, so a
 # lockfile (`.git/HEAD.lock`) wakes nothing.
 
 [daemon.providers.git.sources.head]
@@ -16,7 +17,7 @@ data = "{{ plugin('git', 'head', lup('.git', root=true) | dirname) if lup('.git'
 result.branch = "{{ data.branch }}"
 result.detached = "{{ data.detached }}"
 # Run again when HEAD changes; a failure is retried every minute, three times. The nearest repository answers alone.
-return = "{{ result | watch('.git/HEAD') | failback('60s', 3) | nearest }}"
+return = "{{ result | watch('.git/HEAD') | failback('60s', 3) | budget('100ms') | nearest }}"
 
 [daemon.providers.git.sources.refs]
 # The commit, its tag, the push remote, the stash and any operation in progress.
@@ -33,7 +34,7 @@ result.push_ahead = "{{ data.push_ahead }}"
 result.push_behind = "{{ data.push_behind }}"
 # Run again when the refs, the stash or an operation in progress change; a failure is retried every minute, three
 # times. The nearest repository answers alone.
-return = "{{ result | watch('.git/HEAD', '.git/refs', '.git/packed-refs', '.git/config', '.git/logs/refs/stash', '.git/MERGE_HEAD', '.git/rebase-merge', '.git/rebase-apply', '.git/CHERRY_PICK_HEAD', '.git/BISECT_LOG', '.git/REVERT_HEAD') | failback('60s', 3) | nearest }}"
+return = "{{ result | watch('.git/HEAD', '.git/refs', '.git/packed-refs', '.git/config', '.git/logs/refs/stash', '.git/MERGE_HEAD', '.git/rebase-merge', '.git/rebase-apply', '.git/CHERRY_PICK_HEAD', '.git/BISECT_LOG', '.git/REVERT_HEAD') | failback('60s', 3) | budget('100ms') | nearest }}"
 
 [daemon.providers.git.sources.diff]
 # Lines changed in the working tree and in the index.
@@ -44,16 +45,23 @@ result.lines_staged_added = "{{ data.lines_staged_added }}"
 result.lines_staged_removed = "{{ data.lines_staged_removed }}"
 # A change in the working tree makes the next read run it, and it is polled every 30 seconds while read. A failure is
 # retried every minute, three times. The nearest repository answers alone.
-return = "{{ result | watch('.', '!.git') | poll('30s', 4) | failback('60s', 3) | nearest }}"
+return = "{{ result | watch('.', '!.git') | poll('30s', 4) | failback('60s', 3) | budget('100ms') | nearest }}"
+
+[daemon.providers.git.sources.branches]
+# The branch this one left (the branch its reflog says it was created from, else the default branch) and the default
+# branch (`origin/HEAD`'s, else `main` or `master`): files, with no diff to wait for. Detached, nothing.
+data = "{{ plugin('git', 'branches', lup('.git', root=true) | dirname) if lup('.git', root=true) }}"
+result.branch_parent = "{{ data.branch_parent }}"
+result.branch_default = "{{ data.branch_default }}"
+# Run again when a ref moves, which is the only thing that moves these. A failure is retried every minute, three times.
+# The nearest repository answers alone.
+return = "{{ result | watch('.git/HEAD', '.git/refs', '.git/packed-refs') | failback('60s', 3) | budget('100ms') | nearest }}"
 
 [daemon.providers.git.sources.lineage]
-# Lines this branch has changed since it left its parent (the branch its reflog says it was created from, else the
-# default branch) and since it left the default branch (`origin/HEAD`'s, else `main` or `master`). Detached, nothing.
+# Lines this branch has changed since it left each of those. Detached, nothing.
 data = "{{ plugin('git', 'lineage', lup('.git', root=true) | dirname) if lup('.git', root=true) }}"
-result.branch_parent = "{{ data.branch_parent }}"
 result.lines_added_parent = "{{ data.lines_added_parent }}"
 result.lines_removed_parent = "{{ data.lines_removed_parent }}"
-result.branch_default = "{{ data.branch_default }}"
 result.lines_added_default = "{{ data.lines_added_default }}"
 result.lines_removed_default = "{{ data.lines_removed_default }}"
 # Run again when a ref moves, which is the only thing that moves these. A failure is retried every minute, three times.
@@ -74,4 +82,4 @@ result.conflicted = "{{ data.conflicted }}"
 result.dirty = "{{ data.dirty }}"
 # Run again when the index or a ref changes and every minute while read; a change in the working tree makes the next
 # read run it. A failure is retried every 30 seconds, three times. The nearest repository answers alone.
-return = "{{ result | watch('.git/index', '.git/HEAD', '.git/refs', '.git/packed-refs', '.git/config', '.', '!.git') | poll('60s', 2) | failback('30s', 3) | nearest }}"
+return = "{{ result | watch('.git/index', '.git/HEAD', '.git/refs', '.git/packed-refs', '.git/config', '.', '!.git') | poll('60s', 2) | failback('30s', 3) | budget('100ms') | nearest }}"

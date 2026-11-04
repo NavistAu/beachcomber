@@ -6,8 +6,9 @@
 //! |---|---|---|---|
 //! | `head` | `{branch, detached}` | none | `HEAD` |
 //! | `refs` | `{stash, state, state_step, state_total, commit, last_commit_age_secs, commit_summary, tag, push_ahead, push_behind}` | `log -1`, `describe`, `config`; with a push remote `rev-parse`, `rev-list` | what `HEAD` resolves through, the tags, the stash's log, a stepped operation's files, `config`, the push remote's ref |
+//! | `branches` | `{branch_parent, branch_default}` | a `rev-parse` for a branch that has no loose ref | what `HEAD` resolves through, the branch's reflog, the parent's and the default branch's refs |
 //! | `diff` | `{lines_added, lines_removed, lines_staged_added, lines_staged_removed}` | `diff --numstat`, `diff --cached --numstat` | what `HEAD` resolves through, the index |
-//! | `lineage` | `{branch_parent, lines_added_parent, lines_removed_parent, branch_default, lines_added_default, lines_removed_default}` | `merge-base`, `diff --numstat` per comparison; a `rev-parse` for a branch that has no loose ref | what `HEAD` resolves through, the branch's reflog, the parent's and the default branch's refs |
+//! | `lineage` | `{lines_added_parent, lines_removed_parent, lines_added_default, lines_removed_default}` | `merge-base`, `diff --numstat` per comparison; a `rev-parse` for a branch that has no loose ref | what `HEAD` resolves through, the branch's reflog, the parent's and the default branch's refs |
 //! | `status` | `{upstream, ahead, behind, staged, unstaged, untracked, conflicted, dirty}` | `status` | what `HEAD` resolves through, the index, `config`, the upstream's ref |
 //!
 //! A symbol takes one argument, the work tree's root: its input is
@@ -38,6 +39,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 crate::plugin::symbols! {
     at_root;
+    branches => branches_facts,
     diff => diff_facts,
     head => head_facts,
     lineage => lineage_facts,
@@ -270,48 +272,67 @@ fn diff_facts(dir: &Path, executor: &dyn GitExecutor) -> Option<Facts> {
     Some(facts)
 }
 
-/// What `lineage` answers: branch-comparison line counts, how much the
-/// checked-out branch has diverged from the branch it was forked off
-/// (`branch_parent`) and from the repository's default branch
-/// (`branch_default`).
+/// A branch to compare with and the rev to compare by: `(name, rev)`.
+type Branch = (String, String);
+
+/// The branch `branch` was forked off and the repository's default branch.
+fn parent_and_default(
+    dirs: &GitDirs,
+    dir: &Path,
+    branch: &str,
+    executor: &dyn GitExecutor,
+) -> (Option<Branch>, Option<Branch>) {
+    let base = detect_default_branch(dirs, dir, executor);
+    // The reflog's recorded fork source when it names a local branch that
+    // still exists and is not this branch; otherwise the default branch.
+    let parent = read_reflog_parent(dirs, branch)
+        .filter(|p| p != branch && local_branch_exists(dirs, dir, p, executor))
+        .map(|p| (p.clone(), p))
+        .or_else(|| base.clone());
+    (parent, base)
+}
+
+/// What `branches` answers: the names [`lineage_facts`] measures against, apart
+/// from it so a name need not wait for a diff. Detached, neither.
+fn branches_facts(dir: &Path, executor: &dyn GitExecutor) -> Option<Facts> {
+    let mut facts = Facts::new();
+    let Some((dirs, branch)) = resolve_git_dir(dir).and_then(|d| head_inputs(&d).map(|b| (d, b)))
+    else {
+        return Some(facts);
+    };
+    let (parent, base) = parent_and_default(&dirs, dir, &branch, executor);
+    if let Some((name, _)) = parent {
+        facts.insert("branch_parent".into(), json!(name));
+    }
+    if let Some((name, _)) = base {
+        facts.insert("branch_default".into(), json!(name));
+    }
+    Some(facts)
+}
+
+/// What `lineage` answers: how much the checked-out branch has diverged from
+/// the branch it was forked off and from the repository's default branch.
 ///
 /// Both counts are taken from the commit DAG, `git diff --numstat <point>..HEAD`
 /// where `<point>` is a merge base, so they agree with what `git log --graph`
-/// shows. The reflog only refines *which* branch the parent is.
+/// shows. The reflog only refines *which* branch the parent is. Detached HEAD
+/// has no branch, so no position relative to one: nothing.
 fn lineage_facts(dir: &Path, executor: &dyn GitExecutor) -> Option<Facts> {
-    let Some(dirs) = resolve_git_dir(dir) else {
-        return Some(Facts::new());
+    let mut facts = Facts::new();
+    let Some((dirs, branch)) = resolve_git_dir(dir).and_then(|d| head_inputs(&d).map(|b| (d, b)))
+    else {
+        return Some(facts);
     };
-
-    // Detached HEAD has no branch, so it has neither a parent nor a
-    // meaningful position relative to one. Emit nothing.
-    let Some(branch) = head_inputs(&dirs) else {
-        return Some(Facts::new());
-    };
-
-    let base = detect_default_branch(&dirs, dir, executor);
+    let (parent, base) = parent_and_default(&dirs, dir, &branch, executor);
     let head = ref_oid(&dirs, &branch);
-
-    // Parent: the reflog's recorded fork source when it names a local branch
-    // that still exists and is not this branch; otherwise the default branch.
-    let parent = read_reflog_parent(&dirs, &branch)
-        .filter(|p| p != &branch && local_branch_exists(&dirs, dir, p, executor))
-        .map(|p| (p.clone(), p))
-        .or_else(|| base.clone());
-
     let parent_counts = parent
         .as_ref()
         .map(|(_, rev)| lines_since(dir, rev, head.as_deref(), executor));
-
-    let mut facts = Facts::new();
-
-    if let (Some((name, _)), Some((added, removed))) = (&parent, parent_counts) {
-        facts.insert("branch_parent".into(), json!(name));
+    if let Some((added, removed)) = parent_counts {
         facts.insert("lines_added_parent".into(), json!(added));
         facts.insert("lines_removed_parent".into(), json!(removed));
     }
-
-    if let Some((name, rev)) = &base {
+    if let Some((_, rev)) = &base {
         // Whenever the parent fell back to the default branch the two revs
         // are identical: reuse the counts rather than spawning the same
         // subprocesses twice.
@@ -320,11 +341,9 @@ fn lineage_facts(dir: &Path, executor: &dyn GitExecutor) -> Option<Facts> {
             (true, Some(counts)) => counts,
             _ => lines_since(dir, rev, head.as_deref(), executor),
         };
-        facts.insert("branch_default".into(), json!(name));
         facts.insert("lines_added_default".into(), json!(added));
         facts.insert("lines_removed_default".into(), json!(removed));
     }
-
     Some(facts)
 }
 
@@ -985,7 +1004,10 @@ mod tests {
     #[test]
     fn the_table_is_sorted_and_names_each_symbol_once() {
         let names: Vec<&str> = SYMBOLS.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, ["diff", "head", "lineage", "refs", "status"]);
+        assert_eq!(
+            names,
+            ["branches", "diff", "head", "lineage", "refs", "status"]
+        );
     }
 
     /// Git finds the repository from its directory, whatever the daemon's own

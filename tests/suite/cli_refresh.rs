@@ -116,7 +116,7 @@ fn refresh_of_a_field_re_executes_its_owning_source_alone() {
 
     // Two field reads: each demands its owning Source and nothing else.
     d.comb(cwd)
-        .args(["get", "git.lines_added", "git.branch_default"])
+        .args(["get", "git.lines_added", "git.lines_added_default"])
         .assert()
         .success();
 
@@ -128,7 +128,7 @@ fn refresh_of_a_field_re_executes_its_owning_source_alone() {
         || age(&d, cwd, "git.lines_added"),
         |a| *a >= 50,
     );
-    let lineage_before = age(&d, cwd, "git.branch_default");
+    let lineage_before = age(&d, cwd, "git.lines_added_default");
 
     d.comb(cwd)
         .args(["refresh", "git.lines_added"])
@@ -145,14 +145,14 @@ fn refresh_of_a_field_re_executes_its_owning_source_alone() {
         || age(&d, cwd, "git.lines_added"),
         |a| *a < diff_before,
     );
-    let lineage_after = age(&d, cwd, "git.branch_default");
+    let lineage_after = age(&d, cwd, "git.lines_added_default");
     eprintln!(
-        "git.lines_added age {diff_before} -> {diff_after}; git.branch_default age {lineage_before} -> {lineage_after}"
+        "git.lines_added age {diff_before} -> {diff_after}; git.lines_added_default age {lineage_before} -> {lineage_after}"
     );
     assert!(
         lineage_after >= lineage_before,
         "refresh git.lines_added demands `diff` alone: `lineage` must not have run \
-         (branch_default age {lineage_before} -> {lineage_after})"
+         (lines_added_default age {lineage_before} -> {lineage_after})"
     );
 }
 

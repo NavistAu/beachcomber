@@ -918,7 +918,7 @@ The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs
   of one or more Sources. Produces a `ProviderResult` — a map of field name →
   `Value`.
 - **Source** — one of a provider's execution strategies (e.g. `git`'s `head`,
-  `refs`, `diff`, `lineage`, `status`), each owning a set of field names and
+  `refs`, `diff`, `branches`, `lineage`, `status`), each owning a set of field names and
   declaring its own invalidation strategy, and answering which instance serves
   a directory (`root`). What `Refresh` re-executes and demand-driven warming keeps warm.
 - **Field** — a named element of a provider's output (e.g. `branch` on `git`).

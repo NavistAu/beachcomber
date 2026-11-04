@@ -30,7 +30,8 @@ Different fields within a provider may need different refresh rates or different
 | `head` | watch on `.git/HEAD` | `branch`, `detached` |
 | `refs` | watch on the refs, the stash's log and an operation's files | `commit`, `tag`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
 | `diff` | poll 30s | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
-| `lineage` | watch on the refs | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
+| `branches` | watch on the refs | `branch_parent`, `branch_default` |
+| `lineage` | watch on the refs | `lines_added_parent`, `lines_removed_parent`, `lines_added_default`, `lines_removed_default` |
 | `status` | watch on `.git/index` and the refs + poll 60s | `upstream`, `ahead`, `behind`, `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
 
 Branch information changes when `.git/HEAD` or `.git/refs/` is written — a filesystem event is the right trigger. Diff line counts need a subprocess call that is slower, so polling once every 30 seconds is a better fit.

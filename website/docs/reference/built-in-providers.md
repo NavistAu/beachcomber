@@ -21,7 +21,8 @@ Each provider declares one or more **sources** — independent units of executio
 | `git` | `head` | watch (`defaults/git.toml`) | project | `branch`, `detached` |
 | `git` | `refs` | watch (`defaults/git.toml`) | project | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
 | `git` | `diff` | poll 30s (`defaults/git.toml`) | project | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
-| `git` | `lineage` | poll 60s (`defaults/git.toml`) | project | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
+| `git` | `branches` | watch on the refs (`defaults/git.toml`) | project | `branch_parent`, `branch_default` |
+| `git` | `lineage` | watch on the refs (`defaults/git.toml`) | project | `lines_added_parent`, `lines_removed_parent`, `lines_added_default`, `lines_removed_default` |
 | `git` | `status` | watch + poll (`defaults/git.toml`) | project | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
 | `hostname` | `host` | poll 10m (`defaults/hostname.toml`) | none | `name`, `short` |
 | `load` | `loadavg` | poll 10s (`defaults/load.toml`) | none | `one`, `five`, `fifteen` |
