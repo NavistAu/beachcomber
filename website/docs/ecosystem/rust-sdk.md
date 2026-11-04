@@ -53,7 +53,7 @@ let battery = session.get("battery.percent", None)?;
 - **Socket activation** — starts the daemon automatically if not running
 - **The value `comb get` prints** — templates rendered, `serde_json::Value` out
 - **Persistent sessions** — reuse one connection for multiple queries (15µs/query vs 34µs)
-- **Configurable timeouts** — default 100ms, adjustable via `ClientConfig`
+- **Configurable timeouts** — default 250ms, adjustable via `ClientConfig`
 
 ## API reference
 

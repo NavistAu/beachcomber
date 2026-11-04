@@ -48,7 +48,7 @@ client = Beachcomber::Client.new(socket_path: '/custom/path', timeout_ms: 500, c
 | Option | Default | Meaning |
 |---|---|---|
 | `socket_path:` | `$BEACHCOMBER_SOCKET`, else `/tmp/beachcomber-<uid>/sock` | The daemon's socket. |
-| `timeout_ms:` | 100 | How long one read or write on the socket may take; at least 1. |
+| `timeout_ms:` | 250 | How long one read or write on the socket may take; at least 1. |
 | `connect_timeout_ms:` | 1500 | How long connecting keeps retrying before it gives up; 0 is one attempt. |
 | `autostart:` | on | Start a daemon when none answers an auto-discovered socket. |
 | `exec:` | off | Whether a template this client renders may call `exec()`. |

@@ -31,7 +31,7 @@ instead.
 int main(void) {
     BcClient *c = bc_client_new(NULL); /* default socket discovery */
     /* Options JSON keys, each optional: socket_path, timeout_ms (default
-     * 100, at least 1), connect_timeout_ms (default 1500, 0 is one attempt),
+     * 250, at least 1), connect_timeout_ms (default 1500, 0 is one attempt),
      * autostart (default on) and exec (default off) —
      * bc_client_new("{\"exec\":true}") lets templates this client renders
      * call exec(). Any other key is refused (parse_error on the first op). */

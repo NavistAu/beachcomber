@@ -20,7 +20,7 @@ out is the ABI's default.
 | Option | ABI default | Meaning |
 |---|---|---|
 | `socket_path` | `$BEACHCOMBER_SOCKET`, else `/tmp/beachcomber-<uid>/sock` | The daemon's socket. |
-| `timeout_ms` | 100 | How long one read or write on the socket may take. |
+| `timeout_ms` | 250 | How long one read or write on the socket may take. |
 | `connect_timeout_ms` | 1500 | How long connecting keeps retrying before it gives up; 0 is one attempt. |
 | `autostart` | on | Start a daemon when none answers an auto-discovered socket. |
 | `exec` | off | Whether a template this client renders may call `exec()`. |
@@ -55,7 +55,7 @@ read or a forced one waits for its run.
 
 A read may take `timeout_ms` plus its `wait`, and one that waits `"forever"`
 has no deadline. A cold read with no `wait` waits for its run, so a slow
-Source can outlast the default 100 ms `timeout_ms` and report `timeout`; the
+Source can outlast the default 250 ms `timeout_ms` and report `timeout`; the
 run goes on, and the next read has its value.
 
 A template leaf that caches its value (`| cache()`) is served from its memo

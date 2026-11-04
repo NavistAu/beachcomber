@@ -150,7 +150,7 @@ library's default.
 | Option | Library default | Meaning |
 |---|---|---|
 | `socket_path` | `$BEACHCOMBER_SOCKET`, else `/tmp/beachcomber-<uid>/sock` | The daemon's socket. |
-| `timeout_ms` | 100 | How long one read or write on the socket may take. 0 is refused. |
+| `timeout_ms` | 250 | How long one read or write on the socket may take. 0 is refused. |
 | `connect_timeout_ms` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
 | `autostart` | on | Start a daemon when none serves the auto-discovered socket. |
 | `exec` | off | Whether a template this client renders may call `exec()`; a template that calls it without the option fails with `exec() is disabled in this context`. |

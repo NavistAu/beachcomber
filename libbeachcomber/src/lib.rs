@@ -449,7 +449,8 @@ pub struct ClientConfig {
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
-            timeout: Duration::from_millis(100),
+            // Past git's 100 ms read budget: a reader gets the stored answer, not a timeout.
+            timeout: Duration::from_millis(250),
             auto_start: true,
             exec: false,
         }
@@ -472,7 +473,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Create a client with default configuration (100ms timeout, auto-start enabled).
+    /// Create a client with default configuration (250ms timeout, auto-start enabled).
     pub fn new() -> Self {
         Self {
             config: ClientConfig::default(),

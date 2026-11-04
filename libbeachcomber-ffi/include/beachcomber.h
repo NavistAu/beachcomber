@@ -73,7 +73,7 @@ char *bc_socket_path(void);
  * | key                  | default                     | meaning |
  * |----------------------|-----------------------------|---------|
  * | `socket_path`        | `bc_socket_path`'s answer   | the daemon's socket |
- * | `timeout_ms`         | 100                         | how long one read or write may take; at least 1 |
+ * | `timeout_ms`         | 250                         | how long one read or write may take; at least 1 |
  * | `connect_timeout_ms` | 1500                        | how long connecting keeps retrying; 0 is one attempt |
  * | `autostart`          | `true`                      | start a daemon when none answers an auto-discovered socket |
  * | `exec`               | `false`                     | whether a template this client renders (`bc_get`, `bc_eval`) may call `exec()` |
