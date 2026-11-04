@@ -8,7 +8,7 @@ lifetimes.
 
 Typical usage::
 
-    from beachcomber import Client
+    from libbeachcomber import Client
 
     client = Client()
     branch = client.get("git.branch", cwd="/path/to/repo")  # None on a miss

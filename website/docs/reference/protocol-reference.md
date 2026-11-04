@@ -40,7 +40,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 ```json
 {"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240, "stale": false}
 {"ok": true, "data": "main", "age_ms": 1240, "stale": false}
-{"ok": true, "data": null, "stale": false}
+{"ok": true}
 {"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, memo, put, source or cache)"}
 ```
 
@@ -49,7 +49,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | Field | Type | Description |
 |---|---|---|
 | `ok` | bool | Whether the operation succeeded |
-| `data` | any | Result: object (full provider), scalar (single field), or null (cache miss) |
+| `data` | any | Result: object (full provider) or scalar (single field); omitted on a miss |
 | `age_ms` | int | Milliseconds since the cached value was last computed |
 | `stale` | bool | Whether the value is past its expected refresh time |
 | `error` | string | Error message when `ok` is false |
@@ -65,16 +65,14 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 Response:
 
 ```json
-{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.6.0"}}
+{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.9.1"}}
 ```
 
 `protocol_version` follows semver (major.minor) and is independent of the daemon binary version.
 
-**`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a path-scoped provider queried outside a matching directory).
+**`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. `ok: true` with no `data` is a miss: nothing answers that address (e.g., a rooted provider queried outside a matching directory).
 
 **`refresh`:** Re-execute the Sources the key demands — every Source of the namespace for a bare `provider`, only the one owning the field for `provider.field` — each at the instance that answers for the requested directory, out-of-band; it does not return the new value. Returns `{"ok": true}` after acknowledging; subsequent `get` calls return the refreshed value once re-execution completes. A key naming no Source — a static namespace, a facet key, an unknown name, or a field no Source owns — is an error: `{"ok": false, "error": "nothing to refresh: <key> has no sources"}`.
-
-**`context`:** Set the working directory for this connection. Subsequent path-scoped `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
 
 **`status`:** Returns warm cache entries as an array of row objects. Each row has `provider`, `path`, `source`, `field`, `value`, `age_ms`, `stale`, `kind`, and `failure` fields (`kind` and `failure` are omitted when null/not applicable; `source` is always present). This is the data that `comb s` renders as a table. For daemon internals (pid, uptime, etc.), use `{"op":"introspect","subject":"daemon"}`.
 
@@ -86,8 +84,8 @@ Response:
 
 ```json
 {"ok":true,"data":[
-  {"provider":"git","path":"/project","source":"refs","field":"branch","value":"main","age_ms":234,"stale":false},
-  {"provider":"battery","path":null,"source":"state","field":"percent","value":85,"age_ms":4200,"stale":false}
+  {"provider":"git","path":"/project","source":"source(head)","field":"branch","value":"main","age_ms":234,"stale":false},
+  {"provider":"battery","path":null,"source":"source(state)","field":"percent","value":85,"age_ms":4200,"stale":false}
 ]}
 ```
 

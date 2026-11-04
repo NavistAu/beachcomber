@@ -94,11 +94,11 @@ $ comb g.j git .                 # .j = JSON: the bare value, no envelope (age i
 }
 
 $ comb s                         # status: one row per warm cache entry
-PROVIDER  PATH    FIELD    VALUE    AGE   TTL
-git       /repo   branch   main     14s   ★     60s×12 ∙
-git       /repo   dirty    true     14s   ★     60s×12 ∙
-battery   -       percent  87       8s    ★     30s×04
-hostname  -       short    artemis  4m    ★    600s×06
+  PROVIDER  FIELD    SOURCE          VALUE    PATH     AGE   POLL  TTL
+  battery   percent  source(state)   87       ~       2s×0    27s  ★  30s×04 (2m)
+  git       branch   source(head)    main     ~/repo    2s      -  ★               ∙
+  git       dirty    source(status)  true     ~/repo  2s×0    57s  ★  60s×02 (2m)  ∙
+  hostname  short    source(host)    artemis  ~       2s×0  9m57s  ★ 600s×06 (1h)
 ```
 
 All commands use single-letter shorthands (`g` get, `s` status, `w` watch, `p` put, `r` refresh, `e` eval, `i` init, `c` check, `d` daemon, `k` kill). Format suffixes (`.s` shell, `.t` tsv, `.T` TSV+header, `.f` template, `.c` csv, `.C` CSV+header, `.j` json) replace the `-f` flag. Text is the default — `comb g` and `comb g git.branch .` both return plain text. Long forms always work too: `comb get git.branch . -f text` is the same as `comb g git.branch .`
@@ -303,7 +303,7 @@ comb g --wait forever git.branch .
 # Answer at once with what is stored, however stale; the run goes on
 comb g --wait 0 git.branch .
 
-# Global providers (no path needed)
+# Providers with no root (no path needed)
 comb g battery.percent
 comb g hostname.short
 
@@ -332,10 +332,11 @@ Show all warm cache entries as a table — one row per provider field, with SOUR
 
 ```sh
 $ comb s
-PROVIDER  PATH    FIELD    SOURCE  VALUE    AGE   TTL
-git       /repo   branch   head    main     14s   ★     60s×12 ∙
-git       /repo   dirty    status  true     14s   ★     60s×12 ∙
-hostname  -       short    host    artemis  4m    ★    600s×06
+  PROVIDER  FIELD    SOURCE          VALUE    PATH     AGE   POLL  TTL
+  battery   percent  source(state)   87       ~       2s×0    27s  ★  30s×04 (2m)
+  git       branch   source(head)    main     ~/repo    2s      -  ★               ∙
+  git       dirty    source(status)  true     ~/repo  2s×0    57s  ★  60s×02 (2m)  ∙
+  hostname  short    source(host)    artemis  ~       2s×0  9m57s  ★ 600s×06 (1h)
 
 # Filter to entries in a specific lifecycle state
 comb s --filter=lifecycle=active
@@ -624,7 +625,7 @@ return = "{{ result | poll('15s', 8) | failback('2s', 5) | nearest }}"
 # Define your own providers as Sources: `data` runs a command, `result` shapes
 # its output into fields, `return` says when it runs again.
 
-# Minimal: a global provider that polls every 30 seconds
+# Minimal: a provider with no root that polls every 30 seconds
 [daemon.providers.docker_context.sources.main]
 data = "{{ exec('docker context show') | trim }}"
 result.value = "{{ data }}"            # one field, `docker_context.value`
@@ -1102,10 +1103,10 @@ sketchybar --add item git_branch right \
 
 ### Python script
 
-The `beachcomber` Python SDK is stdlib-only (no pip dependencies required):
+The `libbeachcomber` Python SDK is stdlib-only (no pip dependencies required):
 
 ```python
-from beachcomber import Client
+from libbeachcomber import Client
 
 client = Client()
 
@@ -1235,11 +1236,11 @@ Every SDK provides typed APIs, socket discovery, timeouts, and error handling by
 |---|---|---|
 | **Rust** (`libbeachcomber`) | `libbeachcomber/` | Sync, no tokio dependency |
 | **C** (`libbeachcomber`) | `sdks/c/` | Shared + static lib, generated header, no embedded JSON parser |
-| **Python** (`beachcomber`) | `sdks/python/` | Dataclasses, sync client + session, ctypes over the C ABI |
-| **Node.js** (`beachcomber`) | `sdks/node/` | TypeScript, async API, koffi (optional peer dep) with subprocess fallback |
+| **Python** (`libbeachcomber`) | `sdks/python/` | Dataclasses, sync client + session, ctypes over the C ABI |
+| **Node.js** (`libbeachcomber`) | `sdks/node/` | TypeScript, async API, koffi (optional peer dep) with subprocess fallback |
 | **Go** (`beachcomber`) | `sdks/go/` | Idiomatic error returns, vendored purego over the C ABI |
 | **Lua** (`beachcomber`) | `sdks/lua/` | LuaJIT ffi, with PUC Lua subprocess fallback |
-| **Ruby** (`beachcomber`) | `sdks/ruby/` | Block-based sessions, fiddle over the C ABI |
+| **Ruby** (`libbeachcomber`) | `sdks/ruby/` | Block-based sessions, fiddle over the C ABI |
 | **Shell** (POSIX function) | In README | Copy-paste fallback pattern |
 
 You don't need an SDK to talk to beachcomber — the protocol is newline-delimited JSON over a Unix socket. See [Protocol Reference](#protocol-reference).
@@ -1288,7 +1289,7 @@ result.value = "{{ data }}"
 
 Then query with `comb g node_version.value`.
 
-### Invalidation Strategies
+### Schedules
 
 The decorators on `return` say when `data` runs again.
 
@@ -1599,11 +1600,11 @@ Logs print directly to your terminal. Press Ctrl+C to shut down.
 
 ```sh
 $ comb s
-PROVIDER  PATH    FIELD    VALUE    AGE   TTL
-git       /repo   branch   main     14s   ★     60s×12 ∙
-git       /repo   dirty    true     14s   ★     60s×12 ∙
-battery   -       percent  87       8s    ★     30s×04
-hostname  -       short    artemis  4m    ★    600s×06
+  PROVIDER  FIELD    SOURCE          VALUE    PATH     AGE   POLL  TTL
+  battery   percent  source(state)   87       ~       2s×0    27s  ★  30s×04 (2m)
+  git       branch   source(head)    main     ~/repo    2s      -  ★               ∙
+  git       dirty    source(status)  true     ~/repo  2s×0    57s  ★  60s×02 (2m)  ∙
+  hostname  short    source(host)    artemis  ~       2s×0  9m57s  ★ 600s×06 (1h)
 
 # Filter to a specific provider
 comb s --filter provider=git
@@ -1743,7 +1744,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 ```json
 {"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240, "stale": false}
 {"ok": true, "data": "main", "age_ms": 1240, "stale": false}
-{"ok": true, "data": null, "age_ms": null, "stale": false}
+{"ok": true}
 {"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, memo, put, source or cache)"}
 ```
 
@@ -1752,7 +1753,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | Field | Type | Description |
 |---|---|---|
 | `ok` | bool | Whether the operation succeeded |
-| `data` | any | Result: object (full provider), scalar (single field), or null (cache miss) |
+| `data` | any | Result: object (full provider) or scalar (single field); omitted on a miss |
 | `age_ms` | int | Milliseconds since the cached value was last computed |
 | `stale` | bool | Whether the value is past its expected refresh time |
 | `error` | string | Error message when `ok` is false |
@@ -1793,8 +1794,6 @@ Server streams responses:
 ```
 
 Field-level filtering applies: watching `git.branch` only emits when the branch value changes, not on every git provider update.
-
-**`context`:** Set the working directory for this connection. Subsequent `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
 
 **`status`:** Returns cache rows — one entry per warm cache key. Each row includes provider, field, value, age, and stale flag. For daemon health information (uptime, scheduler state, active watchers), use `{"op":"introspect","subject":"daemon"}` instead. See [docs/protocol-spec.md](docs/protocol-spec.md) for the full wire contract.
 
@@ -1891,7 +1890,7 @@ No single tool does all of this together:
 | Multiple data types | No | No | Yes (recalc) | Yes (recalc) | Yes (recalc) | **Yes (cached)** |
 | Multiple consumers | No | Yes | Yes | No | No | **Yes** |
 | Event-driven invalidation | No | Yes | No | No | No | **Yes** |
-| Extensible providers | No | N/A | Python only | TOML only | Go only | **Script + config** |
+| Extensible providers | No | N/A | Python only | TOML only | Go only | **Config + plugins** |
 
 ---
 

@@ -18,18 +18,18 @@ Before adding a `comb g` call to any tool's config, test it directly in your ter
 
 ```sh
 # comb g returns plain text by default. g = get, no suffix needed.
-# Path-scoped provider — pass a directory
+# A provider with a root (it walks up from a directory) — pass the directory
 comb g git.branch .
 
-# Global provider — no path needed
+# A provider with no root — no path needed
 comb g battery.percent
 ```
 
 If the command returns nothing, the provider has no data for the current context. This is normal — for example, `git.branch` returns empty outside a git repository, and `kubecontext.context` is empty when no kubectl context is set or `kubectl` is not installed. A template that shells out fails only when its command fails for a reason the template does not expect: `comb g` then prints the error to stderr and exits `2`.
 
-## Path-scoped providers return empty or wrong data
+## Rooted providers return empty or wrong data
 
-Providers like `git`, `terraform`, `python`, `direnv`, `mise`, and `asdf` are path-scoped. They require a directory argument so beachcomber knows which project to query.
+Providers like `git`, `terraform`, `python`, `direnv`, `mise`, and `asdf` have a root: they walk up from a directory to find their project. With no directory argument a read addresses the current directory, so a tool that runs from somewhere else must name the project.
 
 In shells, pass `.` and the shell's working directory is used:
 
@@ -49,7 +49,7 @@ In bar programs (polybar, waybar, sketchybar), `.` resolves to wherever the bar 
 comb g git.branch /home/yourname/myproject
 ```
 
-Global providers (battery, load, network, hostname, uptime, user, sudo, uname) do not take a path argument, and neither do the template-backed namespaces that read only the shell's environment or a global provider (`aws`, `gcloud`, `conda`, `op`, `kubecontext`, `talos`).
+Providers with no root (battery, load, network, hostname, uptime, user, sudo, uname) answer the same from any directory and need no path argument, and neither do the template-backed namespaces that read only the shell's environment or such a provider (`aws`, `gcloud`, `conda`, `op`, `kubecontext`, `talos`).
 
 ## Stale data
 

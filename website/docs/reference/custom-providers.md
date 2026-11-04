@@ -45,7 +45,7 @@ result.value = "{{ data }}"
 
 Then query with `comb g node_version.value`.
 
-## Invalidation Strategies
+## Schedules
 
 The decorators on `return` say when `data` runs again.
 
@@ -106,7 +106,7 @@ return = "{{ result | poll('30s') }}"
 
 Query: `comb g docker_context.context`
 
-**Node.js version provider (path-scoped):**
+**Node.js version provider (rooted):**
 ```sh
 #!/bin/sh
 # ~/.config/beachcomber/providers/node-version.sh
@@ -334,5 +334,5 @@ Then `chmod 600` and restart the daemon (`comb kill` — it socket-activates on 
 - **Stderr:** A command that succeeds has its stderr dropped. One that fails (a non-zero exit, a timeout) has the tail of its stderr in the error message the daemon logs for the refresh.
 - **Timeouts:** `exec` kills a command after `timeout` (default `'10s'`): `exec('slow-tool', timeout='30s')`. A timeout fails the refresh, and the next trigger retries it.
 - **Shell:** A string is executed via `sh -c`; a list (`exec(['cmd', 'arg'])`) is one argument per element with no shell. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
-- **Path-scoped Sources:** `data` runs with the instance's `root` as its working directory. A Source with no `root` is the one instance at `~`.
+- **Rooted Sources:** `data` runs with the instance's `root` as its working directory. A Source with no `root` is the one instance at `~`.
 - **Performance:** Every process spawn costs 2-6ms minimum. For Sources that poll frequently (< 30s), prefer `read` and `lup` over spawning CLI tools. See the design principles in `docs/performance.md`.

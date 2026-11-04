@@ -54,7 +54,7 @@ fn count_stashes(dir: &Path) -> i64 {
 
 **Problem:** Every `cache.get()` call allocated a `(String, Option<String>)` tuple — 2 heap allocations — just to look up a key in the DashMap.
 
-**Fix:** Changed cache key to a single `String` using a null-byte separator: `"provider\0path"` for path-scoped entries, `"provider"` for global entries. One allocation instead of two.
+**Fix:** Changed cache key to a single `String` using a null-byte separator: `"provider\0path"` for an entry at a directory, `"provider"` for the global entry. One allocation instead of two.
 
 ```rust
 // Before: 2 allocations per lookup
@@ -77,7 +77,7 @@ fn make_cache_key(provider: &str, path: Option<&str>) -> String {
 
 **Problem:** `execute_provider()` ran synchronously on the scheduler's tokio task. A git provider taking 5.6ms blocked the entire scheduler loop — no messages processed, no poll timers fired, no filesystem events handled.
 
-**Fix:** Changed `ProviderRegistry` to store `Arc<dyn Provider>` (converted from `Box<dyn Provider>` at registration). The scheduler clones the Arc and moves it into `tokio::task::spawn_blocking`, making execution non-blocking.
+**Fix:** Changed `ProviderRegistry` to store its Sources as `Arc`s (today `Arc<dyn Source>`). The scheduler clones the Arc and moves it into `tokio::task::spawn_blocking`, making execution non-blocking.
 
 ```rust
 // Before: blocks scheduler loop
@@ -199,7 +199,7 @@ These are one run through `ProviderRegistry::shipped` (`cargo bench --bench prov
 | Operation | Latency |
 |---|---|
 | Cache read (global key) | 157 ns |
-| Cache read (path-scoped key) | 205 ns |
+| Cache read (key with a path) | 205 ns |
 | Cache write | 182 ns |
 | Socket round-trip (cold, new connection) | 34 µs |
 | Socket round-trip (warm, ClientSession) | 15 µs |
@@ -232,7 +232,7 @@ A logging `git` on `PATH` sees the same 10 commands from both, argument for argu
 
 | # | Target | Result | Met |
 |---|---|---|---|
-| T7.1 | warm `get git.branch` p50 <= 0.25 ms; `get git` <= 0.4 ms | 59 and 101 µs (58 and 94 µs before), 480 alternating rounds | met |
+| T7.1 | warm `get git.branch` p50 ≤ 0.25 ms; `get git` ≤ 0.4 ms | 59 and 101 µs (58 and 94 µs before), 480 alternating rounds | met |
 | T7.2 | `comb get git.branch` within 1 ms of `comb get hostname.name` | 7.44 vs 7.64 ms, 120 alternating rounds | met |
 | T7.3 | replaced by the ruling: a full refresh at the baseline plus a few ms for jinja and JSON, the same commands | +0.78 ms together, +2.40 ms one after another; the same 10 commands | met |
 | T7.9 | the suite about 10 s, under the 30 s cap | 1891 tests, 13-15 s at load about 10 | under the cap |

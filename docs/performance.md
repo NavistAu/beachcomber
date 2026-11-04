@@ -49,7 +49,7 @@ fn count_stashes(dir: &Path) -> i64 {
 
 **Problem:** Every `cache.get()` call allocated a `(String, Option<String>)` tuple — 2 heap allocations — just to look up a key in the DashMap.
 
-**Fix:** Changed cache key to a single `String` using a null-byte separator: `"provider\0path"` for path-scoped entries, `"provider"` for global entries. One allocation instead of two.
+**Fix:** Changed cache key to a single `String` using a null-byte separator: `"provider\0path"` for an entry at a directory, `"provider"` for the global entry. One allocation instead of two.
 
 ```rust
 // Before: 2 allocations per lookup
@@ -268,7 +268,7 @@ These are one run through `ProviderRegistry::shipped` (`cargo bench --bench prov
 | Operation | Latency |
 |---|---|
 | Cache read (global key) | 157 ns |
-| Cache read (path-scoped key) | 205 ns |
+| Cache read (key with a path) | 205 ns |
 | Cache write | 182 ns |
 | Socket round-trip (cold, new connection) | 34 µs |
 | Socket round-trip (warm, ClientSession) | 15 µs |

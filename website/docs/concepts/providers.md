@@ -11,13 +11,13 @@ beachcomber organizes cached data in three layers: **Providers**, **Sources**, a
 
 ```
 Provider                       (namespace)
-  └── Source                   (one invalidation strategy + lifecycle)
+  └── Source                   (one schedule + lifecycle)
         └── Field              (a single typed value)
 ```
 
 **Provider** — a named namespace that groups related data. The name is the key used in `comb get <name>.<field>`. Examples: `git`, `mise`, `battery`, `hostname`.
 
-**Source** — a single logical unit of execution within a provider. Every source has exactly one invalidation strategy (filesystem events, polling, or both), its own lifecycle entry in the scheduler, and its own set of fields it produces. A provider declares one or more sources.
+**Source** — a single logical unit of execution within a provider. Every source has exactly one schedule (filesystem events, polling, or both), its own lifecycle entry in the scheduler, and its own set of fields it produces. A provider declares one or more sources.
 
 **Field** — a typed value produced by a source. Fields from different sources within the same provider share the provider namespace but are produced independently.
 

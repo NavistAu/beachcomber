@@ -138,8 +138,7 @@ Read a cached value.
   the nearest winning. Provider-produced records live at the instances of
   their Source — the one at the root the Source names for the requested path,
   and the one at `~` — and a read walks them instance by instance (below)
-  rather than the directory chain. See "Path resolution" in
-  `docs/canon/field_resolution.md`.
+  rather than the directory chain.
 - `force` (bool, optional, default false) — re-execute every Source the key
   demands, at every instance the read reaches, whether or not it was
   stale, past the failback backoff: a run that begins after the request (one
@@ -919,7 +918,7 @@ The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs
   `Value`.
 - **Source** — one of a provider's execution strategies (e.g. `git`'s `head`,
   `refs`, `diff`, `branches`, `lineage`, `status`), each owning a set of field names and
-  declaring its own invalidation strategy, and answering which instance serves
+  declaring its own schedule, and answering which instance serves
   a directory (`root`). What `Refresh` re-executes and demand-driven warming keeps warm.
 - **Field** — a named element of a provider's output (e.g. `branch` on `git`).
 - **Namespace** — the `provider` or `provider:facet` a key's first segment
@@ -939,5 +938,5 @@ The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs
   (see "The `:cache` facet").
 - **Cache row** — one line of `Status` output: `{provider, path, source,
   field, value, age_ms, stale, kind}`.
-- **Invalidation strategy** — how a Source decides when to re-execute
-  (poll-based, watch-based, once-only). See `src/scheduler.rs`.
+- **Schedule** — when a Source runs again: the `poll` and `watch` decorators on
+  its `return` line. See `src/scheduler/`.

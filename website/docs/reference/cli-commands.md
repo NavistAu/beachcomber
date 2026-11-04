@@ -112,7 +112,7 @@ The `provider.field` form automatically routes to the source that owns the field
 comb g git.branch .              # → main
 comb get git.branch .            # equivalent long form
 
-# Query a field from a global provider (no path needed)
+# Query a field from a provider with no root (no path needed)
 comb g battery.percent           # → 87
 comb g hostname.short            # → myhost
 
@@ -278,7 +278,7 @@ A cached field with a template over it shows **both** rows at that same address 
 
 A rendered row is marked in its VALUE cell: cyan when colour is on, a `▸ ` lead-in (`> ` under `--ascii`) when it's off. In the structured formats (`json`, `tsv`, `csv`, `sh`, a `-f` template's row fields) it carries `kind: rendered` and `source: rendered` (`memo` when served from its memo), and it's selectable on its own with `--filter lifecycle=rendered`. A `provider` filter that rules a provider out entirely skips resolving that provider's templates — and any `exec()` inside them — rather than rendering them only to discard the rows afterward.
 
-Rendering resolves with this shell's own environment and directory, and `exec()` is enabled — `status` is one of the surfaces canon `field_resolution.md` invariant 15 names, alongside `comb get`, `comb eval` and `comb watch`.
+Rendering resolves with this shell's own environment and directory, and `exec()` is enabled, as for `comb get`, `comb eval` and `comb watch`.
 
 In the `human`/`table` preset, SOURCE keeps its tail past 24 characters (less at a narrow `--max-width`, since it shares the same truncation budget as VALUE and PATH) — a `config(<file>)` label is a whole path, and its tail (`…/defaults/aws.toml`) is what tells one config file from another — unless `--no-trunc`.
 

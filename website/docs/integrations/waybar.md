@@ -100,7 +100,7 @@ waybar's `interval` is in seconds. Setting it to `1` or `2` is safe with beachco
 
 ## Troubleshooting
 
-- **Path-scoped providers return wrong data:** bar programs often run scripts without a defined working directory. Always pass an absolute path for path-scoped providers like `git` and `terraform`.
+- **Rooted providers return wrong data:** bar programs often run scripts without a defined working directory. Always pass an absolute path for rooted providers like `git` and `terraform`.
 - **Distinguishing "no data" from "daemon down":** add a fallback to your exec: `comb g git.branch /path || echo '--'`. If you see `--`, the daemon is not running or the key does not exist.
 - **CSS not applying:** waybar maps `custom/name` to CSS selector `#custom-name` (slash becomes hyphen).
 

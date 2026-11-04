@@ -16,13 +16,13 @@ same methods, options, value shapes and error kinds as every other SDK, which
 ## Installation
 
 ```sh
-pip install beachcomber
+pip install libbeachcomber
 ```
 
 Or with `uv`:
 
 ```sh
-uv add beachcomber
+uv add libbeachcomber
 ```
 
 ## Quick start
@@ -30,7 +30,7 @@ uv add beachcomber
 ```python
 import os
 
-from beachcomber import Client
+from libbeachcomber import Client
 
 client = Client()
 

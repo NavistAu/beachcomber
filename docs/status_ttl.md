@@ -22,7 +22,7 @@ Make `watch -c 'comb status --color=always'` a first-class diagnostic view: you 
 
 ## Columns
 
-`PROVIDER PATH FIELD VALUE AGE TTL`
+`PROVIDER FIELD SOURCE VALUE PATH AGE POLL TTL`
 
 Dropped: `STALE` (folded into `AGE` color + absorbed into `TTL` semantics).
 
@@ -73,30 +73,26 @@ The glyph progression is visual: dot → dot with a ring around it (decoration =
 
 | Entry kind                              | TTL rendering |
 |-----------------------------------------|---------------|
-| `Once` providers (hostname/user/uname)  | `---`         |
 | Static / `comb put` entries            | `---`         |
 
 These still show a real `AGE`.
 
 ### Sample output
 
-Providers: `git` (P=60s, K=12, reinstate), `battery` (P=30s, K=4, no reinstate), `mise` (P=300s, K=6, reinstate), `hostname` (Once).
-
 ```
-PROVIDER  PATH       FIELD    VALUE      AGE     TTL
-git       /repo      branch   main       14s     ★   60s×12 ◉
-git       /repo      dirty    true       14s     ★   60s×12 ◉
-battery   -          percent  87         8s      ★   30s×04
-mise      /repo      version  2025.4.3   47m     1  480s×06 ◉
-hostname  -          short    artemis    3h      ---
+  PROVIDER  FIELD    SOURCE          VALUE    PATH     AGE   POLL  TTL
+  battery   percent  source(state)   87       ~       2s×0    27s  ★  30s×04 (2m)
+  git       branch   source(head)    main     ~/repo    2s      -  ★               ∙
+  git       dirty    source(status)  true     ~/repo  2s×0    57s  ★  60s×02 (2m)  ∙
+  hostname  short    source(host)    artemis  ~       2s×0  9m57s  ★ 600s×06 (1h)
 ```
 
 Reading:
-- `★   60s×12 ◉` → active, polls every 60s, K=12, file events reinstate.
-- `1  480s×06 ◉` → Decay3 (one step before Decay4), currently polling at 480s (8×P for mise's P=300s — yes, that's a typo-free misalignment: mise P=300s, Decay3 P=300×8=2400s, not 480s. See implementation note below).
-- `---` → no lifecycle (Once / static).
+- `★  60s×02 (2m)  ∙` → active, polls every 60s, K=2, about 2m to eviction if nothing reads it, watches its files while Active.
+- `★               ∙` → active and watch-only: no poll of its own.
+- `---` → no lifecycle (a static entry).
 
-**Implementation note on the mise example:** the sample row above uses 480 as illustrative; correct arithmetic for mise with P=300, Decay3 is P×2³=2400s. The implementation should compute the displayed P from the actual `PollTimer.interval` in the lifecycle registry — don't re-derive from base P + step.
+The displayed P is computed from the actual `PollTimer.interval` in the lifecycle registry, not re-derived from base P + step.
 
 ### Coloring
 

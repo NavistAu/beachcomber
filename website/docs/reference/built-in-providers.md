@@ -7,7 +7,7 @@ title: Shipped Providers
 
 beachcomber ships 16 providers organized by category, plus [template-backed namespaces](#template-backed-namespaces). Each is a file in the managed `defaults/` directory, written the way a user writes a Source; override any line of one in `config.toml` or `conf.d/`.
 
-Each provider declares one or more **sources** — independent units of execution with their own invalidation strategy and lifecycle. The tables below show each provider's source breakdown. Consumers use `comb get provider.field` as before; the source is selected automatically by the registry's `field → source` map.
+Each provider declares one or more **sources** — independent units of execution with their own schedule and lifecycle. The tables below show each provider's source breakdown. Consumers use `comb get provider.field` as before; the source is selected automatically by the registry's `field → source` map.
 
 ## Source breakdown by provider
 

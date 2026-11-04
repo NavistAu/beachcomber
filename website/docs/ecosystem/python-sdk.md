@@ -29,7 +29,7 @@ uv add libbeachcomber
 ```python
 import os
 
-from beachcomber import Client
+from libbeachcomber import Client
 
 client = Client()
 

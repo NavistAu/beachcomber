@@ -25,7 +25,7 @@ sketchybar --add item battery right \
                update_freq=5 \
                script='sketchybar --set battery label="BAT: $(comb g battery.percent)%"'
 
-# Git branch (path-scoped — pass the repo path explicitly)
+# Git branch (it walks up from a directory — pass the repo path explicitly)
 sketchybar --add item git_branch left \
            --set git_branch \
                update_freq=2 \
@@ -94,7 +94,7 @@ sketchybar --add item git_branch left \
 
 ## Troubleshooting
 
-- **Path-scoped providers return wrong data:** sketchybar runs scripts without a defined working directory. Always pass an absolute path for path-scoped providers like `git` and `terraform` — use `$HOME/myproject` rather than a relative path.
+- **Rooted providers return wrong data:** sketchybar runs scripts without a defined working directory. Always pass an absolute path for rooted providers like `git` and `terraform` — use `$HOME/myproject` rather than a relative path.
 - **Distinguishing "no data" from "daemon down":** add a fallback in your script: `comb g git.branch "$HOME/myproject" || echo '--'`. If you see `--`, the daemon is not running or the key does not exist.
 
 See the [built-in providers reference](../reference/built-in-providers.md) for the full list of providers and fields, and the [general troubleshooting guide](./troubleshooting.md).

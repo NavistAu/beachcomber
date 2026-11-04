@@ -20,7 +20,7 @@ What just happened:
 
 - `get` — read a cached value (short form: `g`).
 - `git.branch` — the key. Keys are `provider.field`. `git` is the provider; `branch` is the field.
-- `.` — the path to query. `git` is a **path-scoped** provider, so it needs to know which repo you mean. `.` means the current directory.
+- `.` — the path to query. `git` has a root, so it answers for the repo around a directory. `.` means the current directory, and is what `comb g` addresses with no path.
 
 Output is plain text by default — just the value, no JSON envelope. That's designed for shell substitution like `branch=$(comb g git.branch .)`.
 

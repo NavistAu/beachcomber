@@ -51,11 +51,11 @@ Logs print directly to your terminal. Press Ctrl+C to shut down.
 
 ```sh
 $ comb s
-PROVIDER  PATH    FIELD    VALUE    AGE   TTL
-git       /repo   branch   main     14s   ★     60s×12 ∙
-git       /repo   dirty    true     14s   ★     60s×12 ∙
-battery   -       percent  87       8s    ★     30s×04
-hostname  -       short    artemis  4m    ★    600s×06
+  PROVIDER  FIELD    SOURCE          VALUE    PATH     AGE   POLL  TTL
+  battery   percent  source(state)   87       ~       2s×0    27s  ★  30s×04 (2m)
+  git       branch   source(head)    main     ~/repo    2s      -  ★               ∙
+  git       dirty    source(status)  true     ~/repo  2s×0    57s  ★  60s×02 (2m)  ∙
+  hostname  short    source(host)    artemis  ~       2s×0  9m57s  ★ 600s×06 (1h)
 
 # Filter to entries currently in decay
 comb s --filter=lifecycle=decay1

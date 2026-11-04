@@ -6,13 +6,13 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 
 ### High Priority (next)
 
-- [ ] **Canon ↔ code ↔ docs reconciliation (correctness pass).** The 0.6.1 socket-resolution and Node-dist bugs were
-      both canon/docs-said-X / code-did-Y divergences, caught only by a partial README+website audit — which itself
+- [ ] **Code ↔ docs reconciliation (correctness pass).** The 0.6.1 socket-resolution and Node-dist bugs were
+      both docs-said-X / code-did-Y divergences, caught only by a partial README+website audit — which itself
       shipped errors needing a corrective second pass (`02115b2f`). Do a systematic walk of the project's line of truth
-      (`docs/canon/{cache-lifecycle,provider_source,singleton}.md` → test suite → code → `docs/protocol-spec.md` /
-      `docs/architecture.md` / `docs/performance.md` / `docs/status_ttl.md` / `docs/versioning.md` → README → website).
-      For each canon claim verify: (a) a test asserts it, (b) code matches the test, (c) docs/website describe the
-      actual behavior. Log every divergence in `docs/known-issues.md` with either a fix or an explicit, reasoned
+      (test suite → code → `docs/protocol-spec.md` / `docs/architecture.md` / `docs/performance.md` /
+      `docs/status_ttl.md` / `docs/versioning.md` → README → website).
+      For each documented claim verify: (a) a test asserts it, (b) code matches the test, (c) docs/website describe the
+      actual behavior. Settle every divergence with either a fix or an explicit, reasoned
       deferral. Goal: surface the next 0.6.1-class bug before a user does. Theme chosen 2026-05-29 in the post-0.6.1
       retro.
 
@@ -41,7 +41,7 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 ### CLI Ergonomics
 
 - [ ] `comb inspect <path>` (working name) — dump every applicable provider's fields for the given directory in one
-      shot. Globals + path-scoped providers evaluated against the path; single command replaces "ask every provider one
+      shot. Every provider evaluated against the path; single command replaces "ask every provider one
       at a time". Useful for "what does beachcomber know about this dir right now?" as a diagnostic, onboarding, and
       integration-authoring tool. Format-aware output (json/text/human). Naming bikeshed: `inspect`, `dump`, `snapshot`,
       `all`, `info`.

@@ -2,7 +2,7 @@
 
 Quick start::
 
-    from beachcomber import Client
+    from libbeachcomber import Client
 
     client = Client()
     # What `comb get git.branch` prints there; None on a miss.

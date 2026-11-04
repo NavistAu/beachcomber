@@ -60,7 +60,7 @@ This module has the same interface as the SDK-based version below, so lualine an
 
 Inside neovim the SDK binds `libbeachcomber` through LuaJIT's `ffi` — no process forking, sub-millisecond calls. This is the recommended approach if you can install the SDK.
 
-The SDK exposes a single `connect()` call that returns a persistent client. Call `client:get(key, { cwd = ... })` to read a value: it returns what `comb get` prints in that directory, or `nil` on a miss. `cwd` is the working directory, and providers like `git` that are path-scoped need it; without one the read addresses the global entry. A template-backed key such as `kubecontext.context` is rendered the way `comb get` renders it; `kubecontext` calls `kubectl` through `exec()`, so connect with `exec = true`.
+The SDK exposes a single `connect()` call that returns a persistent client. Call `client:get(key, { cwd = ... })` to read a value: it returns what `comb get` prints in that directory, or `nil` on a miss. `cwd` is the working directory, and rooted providers like `git` need it; without one the read addresses the global entry. A template-backed key such as `kubecontext.context` is rendered the way `comb get` renders it; `kubecontext` calls `kubectl` through `exec()`, so connect with `exec = true`.
 
 Create a helper module so the same client is reused across your config:
 

@@ -82,13 +82,13 @@ return = "{{ result | poll('15s', 8) | failback('2s', 5) | nearest }}"
 # Define your own providers as Sources: `data` runs a command, `result` shapes
 # its output into fields, `return` says when it runs again.
 
-# Minimal: a global provider that polls every 30 seconds
+# Minimal: a provider with no root that polls every 30 seconds
 [daemon.providers.docker_context.sources.main]
 data = "{{ exec('docker context show') | trim }}"
 result.value = "{{ data }}"            # one field, `docker_context.value`
 return = "{{ result | poll('30s') }}"
 
-# A path-scoped provider that watches files and has a poll fallback
+# A rooted provider that watches files and has a poll fallback
 [daemon.providers.node_version.sources.main]
 root = "{{ lup('package.json') | dirname }}"   # the directory an instance answers for
 data = "{{ exec('node --version') | trim }}"

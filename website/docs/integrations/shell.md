@@ -44,7 +44,7 @@ precmd() {
 }
 ```
 
-The `.` argument passed to `comb g git.branch .` tells the daemon to scope the lookup to the current directory. Path-scoped providers like `git` return data relative to the nearest repository root from that path. Always pass `.` (or an explicit path) when querying providers that are directory-aware.
+The `.` argument passed to `comb g git.branch .` names the current directory, which is also what `comb g` addresses with no path. Rooted providers like `git` answer from the nearest repository root above that directory.
 
 ### How to reload
 
@@ -155,10 +155,10 @@ Before restarting your shell, verify that the daemon is returning data:
 # Confirm the daemon is reachable
 comb s
 
-# Query a path-scoped provider from within a git repo
+# Query a rooted provider from within a git repo
 comb g git.branch .
 
-# Query a global provider
+# Query a value that does not depend on the directory
 comb g kubecontext.context
 ```
 
@@ -186,7 +186,7 @@ The repository ships two curl-able integration scripts in `scripts/`:
 
 - **`scripts/polyfill.sh`** — Defines a `comb()` shell function that stands in for the real binary. If comb is installed, the script does nothing. If comb is not installed, it handles `comb g <key>` calls by falling back to native tools (git, hostname, uptime, etc.) for known keys. This lets integrations write `comb g git.branch .` and have it work everywhere — with or without beachcomber. See the [Polyfill](../integrating/polyfill.md) guide for the full key list.
 
-- **`scripts/chpwd.sh`** — A directory-change hook that pokes path-scoped providers (`git`, `mise`, `terraform`, `python`, `direnv`, `asdf`) in the background whenever the working directory changes. Warms the cache before your first prompt renders in a new directory. Supports zsh (`chpwd`), bash (`PROMPT_COMMAND`), and fish (separate config file). No-op if comb is not installed.
+- **`scripts/chpwd.sh`** — A directory-change hook that pokes rooted providers (`git`, `mise`, `terraform`, `python`, `direnv`, `asdf`) in the background whenever the working directory changes. Warms the cache before your first prompt renders in a new directory. Supports zsh (`chpwd`), bash (`PROMPT_COMMAND`), and fish (separate config file). No-op if comb is not installed.
 
 ```sh
 # Install via curl (bash/zsh)

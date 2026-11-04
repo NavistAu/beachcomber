@@ -73,7 +73,7 @@ The value `comb get` prints, through `libbeachcomber::resolve`: `Result<Option<s
 
 ```rust
 client.get("git.branch", Some("/path/to/repo"))?;
-client.get("hostname", None)?;  // global provider, no path needed
+client.get("hostname", None)?;  // no root: one instance, no path needed
 client.get("git", Some("/path/to/repo"))?;  // full provider object
 ```
 
