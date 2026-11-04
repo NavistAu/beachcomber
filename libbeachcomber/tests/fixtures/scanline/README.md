@@ -39,7 +39,10 @@ cell for cell (`tests/suite/scanline.rs`).
   answered by them. The 216 renders are byte-identical to the private-daemon renders of scanline-one-tree section
   3.5's validation, and the harness's `oldbench compare` (scanline's own parser and engine, on the pre-one-tree
   `10-scanline.toml`) finds them cell-identical to what scanline drew before one-tree.
-- **`pinned`** is what three rows draw instead, on purpose (plan section 5.2). For `B/N/rate_7d/20` and `B/W/rate_7d/26`
+- **`pinned`** is what two rows draw instead, on purpose (plan section 5.2). For `B/N/rate_7d/20` and `B/W/rate_7d/26`
   it is the section 3.2 file with the time-left text dropping a zero part (`6d0h` is `6d`), drawn by the same painter;
-  that edit, `< 80` for `<= 80` and `width` for `length` in cwd changed no other row. For `A/W/model/22` it is
-  `bars.json`'s `bar_bytes`.
+  that edit, `< 80` for `<= 80` and `width` for `length` in cwd changed no other row.
+- **The `model` rows** were re-recorded when scanline's model widget began to show the effort level in every form
+  (every level including medium, in the plain line and the quota bar; icons given up first, then the effort shrinks
+  full, short, letter): the `10-scanline.toml` here is scanline's generated file, and the seven rows whose drawing
+  changed are what it now draws. `A/W/model/22` no longer has a marker beside a wide glyph, so it is no longer pinned.

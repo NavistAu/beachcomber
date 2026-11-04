@@ -36,10 +36,6 @@ const LOCUS: &str = "/scanline/locus";
 /// on purpose (plan §5.2), and why. `cells.json` holds what each draws now.
 const PINNED: &[(&str, &str)] = &[
     (
-        "A/W/model/22",
-        "§5.2.3: a marker on a wide glyph keeps the row its width (bars.json bar_bytes)",
-    ),
-    (
         "B/N/rate_7d/20",
         "§5.2.1: the time left drops a zero part, 6d0h is 6d",
     ),

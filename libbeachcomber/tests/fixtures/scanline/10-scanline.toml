@@ -82,8 +82,9 @@ major_outage = "red"
 
 # ─── Client: macros ──────────────────────────────────────────────────────────
 # `usage` is a window's colour from its use against its elapsed share; `rate`
-# paints the 5H and 7D rows. The label of each row's left bar moves left when
-# either row's marker would hit it, so the two rows stay aligned.
+# paints the 5H and 7D rows; `model` fits the model name's effort tag and icons
+# to the width. The label of each row's left bar moves left when either row's
+# marker would hit it, so the two rows stay aligned.
 [client.providers.scanline.macro]
 usage = '''
 {%- macro usage(p, tp, th) -%}
@@ -135,6 +136,39 @@ rate = '''
         empty=th.bar_empty, fill_fg=th.bar_dark_fg, text_fg=th.bar_label_fg, bold=true) -}}
 {%- endmacro -%}
 '''
+model = '''
+{#- The model name's effort tag, mirroring `fit_model_name` in src/widgets/context.rs. -#}
+{%- macro effort_tag(level, room) -%}
+    {#- The longest ` ·<form>` of `level` that fits `room` columns. -#}
+    {%- set l = level | lower -%}
+    {%- set known = {"low": ["low", "low", "L"], "medium": ["medium", "med", "M"], "high": ["high", "high", "H"], "xhigh": ["xhigh", "xhi", "X"], "max": ["max", "max", "S"]} -%}
+    {%- set forms = known[l] if (l in known) else [l, l[:3], l[:1] | upper] -%}
+    {%- set pick = namespace(t="") -%}
+    {%- for f in forms -%}
+        {%- set t = " ·" ~ f -%}
+        {%- if (not pick.t) and ((t | width) <= room) -%}{%- set pick.t = t -%}{%- endif -%}
+    {%- endfor -%}
+    {{- pick.t -}}
+{%- endmacro -%}
+{%- macro fit(short, ics, level, budget) -%}
+    {#- The tag after `short` within `budget` columns; `ics` are the icons. Icons go first: the
+        full word stays only with them, else the longest form that fits without. -#}
+    {%- if level -%}
+        {%- set full = effort_tag(level, 999) -%}
+        {%- set iw = ((ics | width) + 1) if ics else 0 -%}
+        {{- full if (((short | width) + iw + (full | width)) <= budget) else effort_tag(level, budget - (short | width)) -}}
+    {%- endif -%}
+{%- endmacro -%}
+{%- macro icons_kept(short, ics, level, budget) -%}
+    {#- Whether the icons stay: no effort to show, no form fits, or the full word fits with them (shown as 1, else empty). -#}
+    {%- if (not level) or (fit(short, ics, level, budget) == "") -%}
+        {{- "1" -}}
+    {%- else -%}
+        {%- set iw = ((ics | width) + 1) if ics else 0 -%}
+        {{- "1" if (((short | width) + iw + (effort_tag(level, 999) | width)) <= budget) else "" -}}
+    {%- endif -%}
+{%- endmacro -%}
+'''
 
 # ─── Client: derived values, shared by several widgets ───────────────────────
 [client.providers.scanline.template.calc]
@@ -177,6 +211,7 @@ context_bar = '''
 '''
 
 model = '''
+{%- from "scanline:macro.model" import fit, icons_kept -%}
 {%- set w = env.SCANLINE_WIDTH | int -%}
 {%- set th = scanline.theme -%}
 {%- set m = comb.scanline.model -%}
@@ -188,21 +223,27 @@ model = '''
     {%- set hasmk = q.timed and (q.time_pct > 0) -%}
     {%- set ps = ("%.0f" | format(p)) ~ "%" -%}
     {%- set budget = [0, w - ((ps | width) + 3)] | max -%}
-    {%- set nm = m.short | truncate(budget, end="") -%}
-    {%- set spok = (m.fast or m.thinking) and (((nm | width) + 1) <= budget) -%}
+    {%- set ics = ("⚡" if m.fast else "") ~ ("💭" if m.thinking else "") -%}
+    {%- set tag = fit(m.short, ics, m.effort, budget) -%}
+    {%- set keep = icons_kept(m.short, ics, m.effort, budget) != "" -%}
+    {%- set fast = m.fast and keep -%}
+    {%- set thinking = m.thinking and keep -%}
+    {%- set nm = (m.short ~ tag) | truncate(budget, end="") -%}
+    {%- set spok = (fast or thinking) and (((nm | width) + 1) <= budget) -%}
     {%- set nm = (nm ~ " ") if spok else nm -%}
-    {%- set ff = m.fast and spok and (((nm | width) + 2) <= budget) -%}
+    {%- set ff = fast and spok and (((nm | width) + 2) <= budget) -%}
     {%- set nm = (nm ~ "⚡") if ff else nm -%}
-    {%- set tf = m.thinking and spok and ((not m.fast) or ff) and (((nm | width) + 2) <= budget) -%}
+    {%- set tf = thinking and spok and ((not fast) or ff) and (((nm | width) + 2) <= budget) -%}
     {%- set nm = (nm ~ "💭") if tf else nm -%}
     {%- set mk = [((q.time_pct / 100 * w) | round | int), ([0, w - 1] | max)] | min -%}
     {%- set rstart = [0, w - ((ps | width) + 1)] | max -%}
     {%- set pstart = ([(nm | width) + 2, rstart] | min) if (hasmk and (mk >= rstart) and (mk < (rstart + (ps | width)))) else rstart -%}
     {{- bar(w, {"value": p / 100, "colour": col, "marker": (q.time_pct / 100) if hasmk else none, "text": ((" " ~ nm) | pad(pstart)) ~ ps, "text_fg": th.bar_label_fg}, empty=th.bar_empty, fill_fg=th.bar_dark_fg, bold=true) -}}
 {%- else -%}
-    {%- set name = m.short ~ ((" " ~ ("⚡" if m.fast else "") ~ ("💭" if m.thinking else "")) if (m.fast or m.thinking) else "") -%}
-    {%- set tag = (" ·" ~ m.effort) if (m.effort and (m.effort != "medium")) else "" -%}
-    {{- name ~ (tag | dim) ~ ((" " ~ (sess.agent | truncate(8))) if sess.agent else "") ~ (" " if sess.name else "") ~ (sess.name | bold) -}}
+    {%- set ics = ("⚡" if m.fast else "") ~ ("💭" if m.thinking else "") -%}
+    {%- set tag = fit(m.short, ics, m.effort, w) -%}
+    {%- set icons = (" " ~ ics) if (ics and (icons_kept(m.short, ics, m.effort, w) != "")) else "" -%}
+    {{- m.short ~ (tag | dim) ~ icons ~ ((" " ~ (sess.agent | truncate(8))) if sess.agent else "") ~ (" " if sess.name else "") ~ (sess.name | bold) -}}
 {%- endif -%}
 '''
 
