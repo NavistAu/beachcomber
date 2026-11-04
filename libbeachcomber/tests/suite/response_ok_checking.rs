@@ -110,6 +110,27 @@ fn session_refresh_reports_daemon_rejection() {
     );
 }
 
+/// A daemon that hangs up without answering is reported as that, not as a
+/// reply that could not be parsed.
+#[test]
+fn a_dropped_connection_says_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sock = tmp.path().join("sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            let mut line = String::new();
+            let _ = BufReader::new(stream).read_line(&mut line);
+        }
+    });
+    let err = client_for(&sock).refresh("p", None).unwrap_err();
+    assert!(
+        matches!(&err, CombError::IoError(e) if e.kind() == std::io::ErrorKind::UnexpectedEof),
+        "{err}"
+    );
+    assert!(err.to_string().contains("closed the connection"), "{err}");
+}
+
 /// `set_context` is the session's own: it sends nothing, so a daemon that
 /// would refuse every request does not see it, and a path it cannot read is
 /// the caller's error.

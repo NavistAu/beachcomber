@@ -812,7 +812,12 @@ impl Conn {
         }
         let answered = self.send(request).and_then(|()| {
             let mut line = String::new();
-            self.reader.read_line(&mut line)?;
+            if self.reader.read_line(&mut line)? == 0 {
+                return Err(CombError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "the daemon closed the connection before answering",
+                )));
+            }
             Ok(line)
         });
         if lengthened {
