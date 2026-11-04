@@ -194,6 +194,8 @@ return = "{{ result | poll('10m') }}"           # no watch() needed for a read t
 
 Name only files the run reads: an input that changes when the value does not costs a run for nothing. A directory is the blunt case: `watch('.git')` makes `.git` an input, whose mtime moves whenever a git command makes a lockfile there, so the next read runs the Source again. There is no way yet to watch a directory without also checking it on a read.
 
+A read that finds an input changed while a run is in flight that stamped it before the change does not wait for that run: one begins at once in its place, and those waiting on it wait on the new one. What the replaced run produces is not written.
+
 The record's validity hash is shown as `hash` in its `:cache` answer
 (`comb get git:cache.branch`), 16 lowercase hex digits, written by the daemon
 alone.

@@ -233,6 +233,7 @@ The configuration is a new shape, and the cache a new model. Config has two root
 
 ### Fixed
 
+- **A read does not wait for a run that cannot have seen the change.** A read that found a record's input changed and a run in flight stamped before the change queued behind that run, spending its budget on a result that could only be thrown away. A run begins at once in its place, and those waiting on it wait on the new one (`Want::Changed`).
 - **A `lup` hit is checked for its presence, not its mtime.** `lup('.git')` made `.git`'s mtime an input, so any lockfile there ran the Source again; the same for any Source over `lup('.venv')`. A hit changes when it goes or becomes another kind of thing; `lup('x') | read` still checks the file's contents, by the `read`.
 - **`comb` gives up on a daemon that never answers.** Every command read its socket under a 30-day timeout, so a `comb get` on a daemon that took the connection and said nothing blocked for as long as it lived. The timeout is now 60 s, after which the command says `operation timed out` and exits 2. A Source that runs longer than that needs a read that says so (`--wait 5m`, `--wait forever`), and `introspect procs` counts its sample on top. `comb watch` reads under no timeout, as before.
 

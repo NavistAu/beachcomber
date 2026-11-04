@@ -50,9 +50,11 @@ pub enum Want {
     /// lifetime.
     Any,
     /// A run that sees the inputs as they are now: the run in flight if its
-    /// inputs are as it stamped them (or it has yet to stamp them), else the
-    /// one queued behind it; a new one if there is none. A read that found an
-    /// input of the record changed.
+    /// inputs are as it stamped them (or it has yet to stamp them), else one
+    /// that begins at once in its place, the run queued behind it if there is
+    /// one: what the other produces could only be thrown away, and the read
+    /// has no budget to spend waiting for that. A read that found an input of
+    /// the record changed.
     Changed,
     /// A run that begins after now: the one queued behind the run in flight,
     /// if there is one. A file event, a refresh.
@@ -175,7 +177,8 @@ impl Default for State {
 #[derive(Clone)]
 enum End {
     Done(Outcome),
-    /// Overtaken by a reload: the run that replaces it ends for them.
+    /// Overtaken by a reload, or by a read that found it behind the files: the
+    /// run that replaces it ends for them.
     Moved(Arc<State>),
 }
 
@@ -198,8 +201,10 @@ impl State {
             && unchanged(&Validity::of(Stamped::of(self.reads.touches())))
     }
 
+    /// The run is over. The first word stands: one replaced in flight has told
+    /// its waiters where to go before its own task comes back.
     fn finish(&self, end: End) {
-        *lock(&self.end) = Some(end);
+        lock(&self.end).get_or_insert(end);
         self.ended.notify_all();
         self.notify.notify_waiters();
     }
@@ -383,6 +388,34 @@ impl Runs {
                 // read found the record changed with a run in flight.
                 Want::Changed if slot.overtaken.is_none() && slot.running.sees_now() => {
                     Arc::clone(&slot.running)
+                }
+                Want::Changed
+                    if slot.overtaken.is_none()
+                        && !in_failback_backoff(
+                            registry,
+                            &key.provider,
+                            &key.source,
+                            key.path.as_deref(),
+                        ) =>
+                {
+                    let found = registry.source(&key.provider, &key.source)?;
+                    slot.queue(registry, cache, false);
+                    let queued = slot.queued.take().expect("queued just now");
+                    let runtime = tokio::runtime::Handle::try_current().expect(
+                        "a run needs the daemon's runtime: start it from a task or a blocking thread",
+                    );
+                    let replaced = std::mem::replace(&mut slot.running, Arc::clone(&queued.state));
+                    drop(table);
+                    replaced.finish(End::Moved(Arc::clone(&queued.state)));
+                    self.launch(
+                        &runtime,
+                        key,
+                        Arc::clone(&queued.state),
+                        found,
+                        &queued.registry,
+                        &queued.cache,
+                    );
+                    return Some(self.run(key, queued.state));
                 }
                 // A run a reload overtook gives a caller nothing: it waits for
                 // the run queued behind it.
@@ -948,8 +981,8 @@ mod tests {
 
     /// A read that found its record's inputs changed takes the run in flight
     /// only while that run's own stamp of them is as they are: a run that
-    /// stamped them before the change cannot have seen it, so the read waits
-    /// for the run queued behind it.
+    /// stamped them before the change cannot have seen it, so one begins at
+    /// once in its place, and those waiting on it wait on that one.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_changed_record_takes_the_run_in_flight_only_if_it_sees_the_change() {
         let dir = tempfile::tempdir().unwrap();
@@ -979,18 +1012,21 @@ mod tests {
             "the input as the run stamped it: the run in flight"
         );
         std::fs::write(&input, "22").unwrap();
-        let queued = f.start(Want::Changed).unwrap();
+        let replacing = f.start(Want::Changed).unwrap();
         assert_eq!(
             f.registry.runs().callers(&f.key),
             Some(2),
-            "the input changed since: the run queued behind it"
+            "the input changed since: a run in its place, this read and the one it replaced"
         );
+        // It begins without the other having ended: the gate is still shut.
+        f.until_runs(2).await;
+        assert_eq!(f.registry.runs().in_flight(), vec![f.key.clone()]);
         f.gate.open();
-        for run in [&first, &joined, &queued] {
+        for run in [&first, &joined, &replacing] {
             assert_eq!(run.outcome().await, Outcome::Stored);
         }
         assert_eq!(f.runs.load(Ordering::SeqCst), 2);
-        assert_eq!(f.stored(), Some(Value::Int(2)), "the queued run's");
+        assert_eq!(f.stored(), Some(Value::Int(2)), "the second run's");
     }
 
     /// A `DaemonRead` for a Source that reads no other provider.
@@ -1131,8 +1167,8 @@ mod tests {
         let third = start(Want::Changed).unwrap();
         assert_eq!(
             registry.runs().callers(&key),
-            Some(1),
-            "the run in flight read the file before it changed: the read waits for the next"
+            Some(2),
+            "the run in flight read the file before it changed: one begins in its place"
         );
         gate.open();
         assert_eq!(second.outcome().await, Outcome::Stored);
