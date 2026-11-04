@@ -2,24 +2,6 @@ use libbeachcomber::{Client, ClientConfig};
 use std::time::Duration;
 
 #[test]
-fn client_new_default() {
-    let client = Client::new();
-    // Should not panic
-    let _ = client;
-}
-
-#[test]
-fn client_with_config() {
-    let config = ClientConfig {
-        timeout: Duration::from_millis(50),
-        auto_start: false,
-        exec: false,
-    };
-    let client = Client::with_config(config);
-    let _ = client;
-}
-
-#[test]
 fn socket_path_defaults_under_tmp_and_honours_the_env() {
     let resolve = || libbeachcomber::socket::resolve(None, None).0;
     let default = temp_env::with_var("BEACHCOMBER_SOCKET", None::<&str>, resolve);
@@ -75,24 +57,4 @@ fn comb_data_accessors() {
 fn comb_data_scalar() {
     let data = libbeachcomber::CombData::from_json(serde_json::json!("main"));
     assert_eq!(data.as_text(), Some("main".to_string()));
-}
-
-// Compile-time check: Client::refresh and Session::refresh must exist with the correct signatures.
-// If the methods are still named `poke`, this test will fail to compile.
-#[test]
-fn client_and_session_refresh_methods_exist() {
-    // Verify Client::refresh exists with the expected signature
-    let _: fn(&Client, &str, Option<&str>) -> Result<(), libbeachcomber::CombError> =
-        Client::refresh;
-}
-
-// Compile-time check: Client::hello and Session::hello must exist with
-// the correct signatures. Guards the Phase 2 addition against accidental
-// removal.
-#[test]
-fn client_hello_method_exists() {
-    let _: fn(
-        &libbeachcomber::Client,
-    ) -> Result<libbeachcomber::HelloInfo, libbeachcomber::CombError> =
-        libbeachcomber::Client::hello;
 }

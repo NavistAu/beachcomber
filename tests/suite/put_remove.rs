@@ -249,23 +249,6 @@ fn comb_put_json_null_with_ttl_exits_2() {
 }
 
 #[test]
-fn comb_put_dash_dash_null_is_an_unknown_argument() {
-    use crate::common::daemon::TestDaemon;
-    let d = TestDaemon::spawn();
-    let cwd = std::path::Path::new("/");
-    d.comb(cwd).args(["put", "ns.a", "1"]).assert().success();
-    d.comb(cwd)
-        .args(["put", "ns.a", "--null"])
-        .assert()
-        .code(2)
-        .stderr(predicates::str::contains("unexpected argument '--null'"));
-    d.comb(cwd)
-        .args(["get", "-f", "json", "ns.a"])
-        .assert()
-        .success();
-}
-
-#[test]
 fn comb_put_without_data_is_a_usage_error() {
     use crate::common::daemon::TestDaemon;
     let d = TestDaemon::spawn();

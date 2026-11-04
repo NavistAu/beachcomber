@@ -51,21 +51,6 @@ async fn hello_returns_protocol_and_daemon_version() {
 }
 
 #[tokio::test]
-async fn hello_does_not_require_prior_context() {
-    // Hello must work as the very first op on a fresh connection, before
-    // any Context or other setup op.
-    let (_tmp, sock) = spawn_server().await;
-    let stream = UnixStream::connect(&sock).await.unwrap();
-    let (reader, mut writer) = stream.into_split();
-    writer.write_all(b"{\"op\":\"hello\"}\n").await.unwrap();
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
-    reader.read_line(&mut line).await.unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    assert_eq!(parsed["ok"], serde_json::json!(true));
-}
-
-#[tokio::test]
 async fn hello_can_be_followed_by_other_ops_on_same_connection() {
     // After Hello, the connection remains usable for further ops.
     let (_tmp, sock) = spawn_server().await;

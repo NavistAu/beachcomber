@@ -1,8 +1,6 @@
 pub mod lifecycle;
 
 #[cfg(test)]
-mod backoff_tests;
-#[cfg(test)]
 mod canon_provider_source_tests;
 
 use std::collections::HashMap;

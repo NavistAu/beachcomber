@@ -197,13 +197,12 @@ async fn a_key_no_source_answers_cannot_be_refreshed() {
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
-    // `refs` is a source name, and a source name is never a field: no source
-    // owns it, so there is nothing for a refresh to re-execute.
-    let resp = send_recv(&mut s, &json!({"op": "refresh", "key": "git.refs"})).await;
-    assert!(!resp.ok, "refresh git.refs should error");
+    // No source owns this field, so there is nothing for a refresh to re-execute.
+    let resp = send_recv(&mut s, &json!({"op": "refresh", "key": "git.nope"})).await;
+    assert!(!resp.ok, "refresh git.nope should error");
     assert_eq!(
         resp.error.as_deref(),
-        Some("nothing to refresh: git.refs has no sources")
+        Some("nothing to refresh: git.nope has no sources")
     );
 
     // An unknown namespace has no sources either — and says so, rather than

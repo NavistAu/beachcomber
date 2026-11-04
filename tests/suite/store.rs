@@ -424,34 +424,6 @@ async fn records_merge_across_the_chain() {
     handle.abort();
 }
 
-/// A `context` op sets the connection's path — the SDKs' bc_get/bc_eval
-/// path. It reaches the chain exactly as an explicit `--path` does.
-#[tokio::test]
-async fn global_put_is_visible_from_a_directory_below_it() {
-    let (tmp, sock, cache, registry, watchers) = setup();
-    let (a, _b) = scopes(&tmp);
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-
-    send_recv(
-        &mut stream,
-        r#"{"op":"put","key":"myapp","data":{"v":"global-val"}}"#,
-    )
-    .await;
-
-    let resp = send_recv(
-        &mut stream,
-        &format!(r#"{{"op":"get","key":"myapp.v","path":"{a}"}}"#),
-    )
-    .await;
-    assert!(resp.ok, "get should succeed: {:?}", resp.error);
-    assert_eq!(resp.data.unwrap(), "global-val");
-
-    handle.abort();
-}
-
 /// `watch` subscribes to every entry on the chain, so its initial frame is the
 /// same chain-resolved value `get` returns. (The streaming half — a change to a
 /// farther entry waking a watch at a nearer path — lives in

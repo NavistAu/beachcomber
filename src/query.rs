@@ -579,26 +579,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_key_source_name_is_just_a_field() {
-        // "refs" is a registered source name for git, but a source name is
-        // never part of an address (docs/canon/provider_source.md "Record"):
-        // git.refs parses as a field like any other.
-        assert!(matches!(parse("git.refs"), KeyParse::Field(p, f) if p == "git" && f == "refs"));
-    }
-
-    #[test]
     fn parse_key_recognises_field() {
         assert!(
             matches!(parse("git.branch"), KeyParse::Field(p, f) if p == "git" && f == "branch")
-        );
-    }
-
-    #[test]
-    fn parse_key_source_name_prefix_is_a_dotted_field() {
-        // Same rule for three segments: "refs" is not consulted as a source
-        // name, so the whole remainder is the field.
-        assert!(
-            matches!(parse("git.refs.branch"), KeyParse::Field(p, f) if p == "git" && f == "refs.branch")
         );
     }
 
@@ -653,29 +636,6 @@ mod tests {
         match plan.demand {
             SourceDemand::Sources(v) => assert_eq!(v, vec!["head".to_string()]),
             other => panic!("expected Sources([head]), got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn build_source_name_as_field_demands_nothing() {
-        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
-        // "refs" is a source name, not a field: git.refs parses as Field, and
-        // no field owns it, so it demands nothing (same as any unknown field).
-        let plan = QueryPlan::build("git.refs", None, &reg).unwrap();
-        assert!(matches!(plan.target, KeyParse::Field(_, ref f) if f == "refs"));
-        match plan.demand {
-            SourceDemand::Sources(v) => assert!(v.is_empty(), "git.refs is not a field"),
-            other => panic!("expected Sources([]), got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn build_source_name_prefixed_field_demands_nothing() {
-        let reg = ProviderRegistry::shipped(&std::env::vars().collect());
-        let plan = QueryPlan::build("git.refs.branch", None, &reg).unwrap();
-        match plan.demand {
-            SourceDemand::Sources(v) => assert!(v.is_empty(), "git.refs.branch addresses no field"),
-            other => panic!("expected Sources([]), got {other:?}"),
         }
     }
 

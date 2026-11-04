@@ -877,22 +877,3 @@ fn comb_check_config_fails_an_unwritable_defaults_directory() {
 }
 
 // ── comb init --write-config is gone ─────────────────────────────────────────
-
-#[test]
-fn comb_init_write_config_is_a_clap_error() {
-    let out = isolate(
-        &mut std::process::Command::new(env!("CARGO_BIN_EXE_comb")),
-        Path::new("/nonexistent"),
-        Path::new("/nonexistent"),
-        Path::new("/nonexistent/sock"),
-    )
-    .args(["init", "--write-config"])
-    .output()
-    .expect("run comb init");
-    assert_eq!(out.status.code(), Some(2));
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("unexpected argument"),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}

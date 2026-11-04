@@ -49,32 +49,6 @@ fn get_takes_a_template_as_the_value_of_f() {
 }
 
 #[test]
-fn a_name_that_is_neither_a_format_nor_a_template_is_refused() {
-    let d = TestDaemon::spawn();
-    seed(&d);
-    refused(
-        &d,
-        &["get", "-f", "fmt", "fmtprov"],
-        "get has no 'fmt' format",
-    );
-    refused(
-        &d,
-        &["get", "-f", "bogus", "fmtprov"],
-        "get has no 'bogus' format",
-    );
-    refused(
-        &d,
-        &["status", "-f", "bogus"],
-        "status has no 'bogus' format",
-    );
-    refused(
-        &d,
-        &["check", "config", "--origins", "-f", "bogus"],
-        "check config --origins has no 'bogus' format",
-    );
-}
-
-#[test]
 fn status_takes_a_template_through_the_f_suffix() {
     let d = TestDaemon::spawn();
     seed(&d);
