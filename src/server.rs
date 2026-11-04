@@ -19,6 +19,11 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tracing::{debug, info, warn};
 
+/// How long the accept loop waits after a failed accept. Out of descriptors, a
+/// pending connection stays readable (on Linux; macOS drops it), so without a
+/// wait the next try fails at once, for as long as none is free.
+const ACCEPT_RETRY: Duration = Duration::from_millis(100);
+
 pub struct Server {
     socket_path: PathBuf,
     cache: Arc<Cache>,
@@ -139,12 +144,16 @@ impl Server {
         Ok(listener)
     }
 
-    /// Accept loop over a listener from [`Server::bind`]. Individual accept
-    /// errors are logged and the loop continues.
+    /// Accept loop over a listener from [`Server::bind`]. An accept that fails
+    /// is tried again every [`ACCEPT_RETRY`]; a run of failures logs once.
     pub async fn serve(&self, listener: UnixListener) -> std::io::Result<()> {
+        let mut failing = false;
         loop {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
+                    if std::mem::take(&mut failing) {
+                        info!("Accepting connections again");
+                    }
                     let cache = Arc::clone(&self.cache);
                     let registry = self.registry.clone();
                     let scheduler = self.scheduler.clone();
@@ -178,7 +187,12 @@ impl Server {
                     });
                 }
                 Err(e) => {
-                    warn!("Accept error: {}", e);
+                    if !std::mem::replace(&mut failing, true) {
+                        warn!(
+                            "Accept error: {e}; trying again every {ACCEPT_RETRY:?} until one works"
+                        );
+                    }
+                    tokio::time::sleep(ACCEPT_RETRY).await;
                 }
             }
         }

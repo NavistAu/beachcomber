@@ -7,6 +7,7 @@
 use crate::common::daemon::{TestDaemon, isolate};
 use crate::common::socket::IsolatedSocket;
 use libbeachcomber::spawn::{self, Error, Spawn, ensure, launch};
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -245,4 +246,94 @@ fn a_test_daemon_is_stopped_cleanly() {
         .expect("the daemon's log");
     assert!(log.contains("Received SIGTERM"), "{log}");
     assert!(log.contains("Daemon shut down cleanly"), "{log}");
+}
+
+/// A daemon out of descriptors logs that once, whatever keeps knocking, and
+/// serves again as soon as one is free. Every failed accept logged a line of
+/// its own, and on Linux, where a pending connection stays pending, the loop
+/// tried again at once for as long as it lasted.
+#[test]
+fn a_daemon_out_of_descriptors_logs_once_and_recovers() {
+    use std::os::unix::process::CommandExt;
+    const LIMIT: u64 = 32;
+
+    let socket = IsolatedSocket::new();
+    let home = socket.dir.path().join("home");
+    let xdg = socket.dir.path().join("xdg");
+    std::fs::create_dir_all(&home).unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
+    isolate(&mut cmd, &home, &xdg, &socket.path)
+        .env("RUST_LOG", "warn")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .args(["daemon", "--exit-with-parent", "--socket"])
+        .arg(&socket.path);
+    // SAFETY: `setrlimit` is async-signal-safe and touches only this child.
+    unsafe {
+        cmd.pre_exec(|| {
+            let limit = libc::rlimit {
+                rlim_cur: LIMIT,
+                rlim_max: LIMIT,
+            };
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let mut child = launch(&mut cmd, None, spawn::READY_TIMEOUT).expect("the daemon serves");
+
+    // A connection the daemon answers, or the last that it does not.
+    let answered = || {
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket.path).ok()?;
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        stream.write_all(b"{\"op\":\"hello\"}\n").ok()?;
+        matches!(stream.read(&mut [0u8; 1]), Ok(1)).then_some(stream)
+    };
+    // Hold connections until the daemon can take no more.
+    let mut held = Vec::new();
+    while let Some(stream) = answered() {
+        assert!(held.len() < LIMIT as usize, "the limit was never reached");
+        held.push(stream);
+    }
+    // More knocking, each a failure of its own while none is free.
+    let knocks: Vec<_> = (0..8)
+        .map(|_| std::os::unix::net::UnixStream::connect(&socket.path))
+        .collect();
+    let log = home.join(".local/state/beachcomber/daemon.log");
+    let accept_errors = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains("Accept error"))
+            .count()
+    };
+    use crate::common::poll::poll_for;
+    assert!(
+        poll_for(Duration::from_secs(5), Duration::from_millis(5), || {
+            accept_errors() > 0
+        }),
+        "it ran out of descriptors"
+    );
+    // Nothing to wait on but the absence of more: long enough for the knocks,
+    // and for a loop that did not back off to have logged thousands.
+    let more = poll_for(Duration::from_millis(250), Duration::from_millis(5), || {
+        accept_errors() > 1
+    });
+    assert!(
+        !more,
+        "one line for one run of failures: {}",
+        accept_errors()
+    );
+
+    drop(knocks);
+    drop(held);
+    let recovered = poll_for(Duration::from_secs(5), Duration::from_millis(5), || {
+        answered().is_some()
+    });
+    crate::common::daemon::stop(&mut child);
+    assert!(recovered, "it serves again once descriptors are free");
 }
