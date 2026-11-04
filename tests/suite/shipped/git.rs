@@ -1370,6 +1370,7 @@ fn first_read_watching() -> Option<FirstRead> {
         if f.get("untracked") == Some(json!(1)) {
             std::fs::remove_file(f.dir.join("probe.txt")).unwrap();
             while f.get("untracked") != Some(json!(0)) && std::time::Instant::now() < until {}
+            f.s.hear_file_events();
             return Some(f);
         }
     }
@@ -1377,25 +1378,62 @@ fn first_read_watching() -> Option<FirstRead> {
     None
 }
 
-/// Nothing in `.git` moves for a save, and nothing stat's the working tree:
-/// the read hears of it from the file watcher.
+/// `change` makes `field` say `want` at the next read, at once. A machine badly
+/// behind can spend the read's wait for a file event: that read is old, and
+/// one of a few being right says it is the machine and not the read.
+fn right_straight_after(f: &FirstRead, field: &str, want: serde_json::Value, change: impl Fn(u32)) {
+    for attempt in 0..20 {
+        change(attempt);
+        if f.get(field) == Some(want.clone()) {
+            return;
+        }
+    }
+    panic!("{field} was never {want} straight after the change");
+}
+
+/// Nothing in `.git` moves for a save, and nothing stat's the working tree: the
+/// read hears of it from the file watcher, before it answers.
 #[test]
-fn a_change_in_the_tree_reaches_the_read_after_its_event() {
+fn first_read_after_an_edit() {
     let Some(f) = first_read_watching() else {
         return;
     };
     let file = tracked_file(&f);
     let body = std::fs::read_to_string(f.dir.join(&file)).unwrap();
-    f.write(&file, &format!("{body}more\n"));
-    let until = std::time::Instant::now() + Duration::from_secs(5);
-    while f.get("unstaged") != Some(json!(1)) {
-        assert!(
-            std::time::Instant::now() < until,
-            "unstaged never came to 1"
-        );
-    }
+    right_straight_after(&f, "unstaged", json!(1), |_| {
+        f.write(&file, &format!("{body}more\n"));
+    });
     assert_eq!(f.get("dirty"), Some(json!(true)));
     assert_eq!(f.get("lines_added"), Some(json!(1)));
+}
+
+#[test]
+fn first_read_after_making_an_untracked_file() {
+    let Some(f) = first_read_watching() else {
+        return;
+    };
+    right_straight_after(&f, "dirty", json!(true), |attempt| {
+        f.write(&format!("new{attempt}.txt"), "n\n");
+    });
+    assert!(f.get("untracked").is_some_and(|n| n != json!(0)));
+}
+
+/// A change in the tree runs nothing by itself: a build's output that no read
+/// asks about costs no `git`. The next read runs what it reads.
+#[test]
+fn a_change_in_the_tree_waits_for_a_read() {
+    let Some(f) = first_read_watching() else {
+        return;
+    };
+    let ran = |source: &str| f.s.ran_at("git", Some(&f.dir), source);
+    let before = (ran("status"), ran("diff"));
+    let refs = ran("refs");
+    f.write("new.txt", "n\n");
+    f.s.hear_file_events();
+    assert_eq!(before, (ran("status"), ran("diff")));
+    assert_eq!(f.get("untracked"), Some(json!(1)));
+    assert_ne!(before.0, ran("status"));
+    assert_eq!(refs, ran("refs"));
 }
 
 /// A lockfile comes and goes: every record stands, no Source runs.

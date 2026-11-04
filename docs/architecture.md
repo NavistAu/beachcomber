@@ -217,6 +217,8 @@ An Active entry takes the event (`LifecycleRegistry::on_fsevent`; a decaying one
 
 A Source whose `watch` has a `.` covers the tree below its root. An event there runs nothing and resets no decay: it moves a count the record's run noted before it began (`TreeEvents`), so `Validity::check` says the record is invalid and the next read runs the Source. Until the root's registration has been made, and from entering decay until the next demand makes it again, no record is valid: nothing would say what changed.
 
+A read of such a Source first passes `Barrier` (`src/watcher.rs`), so the event is in before it looks. It touches a sentinel file in a directory of the daemon's, watched like any other path, and waits for that event at the scheduler's own loop, at most 20 ms: a watcher delivers in order, so what came before has been through that loop. On macOS, 17 more touches take the kernel past the 16 pending events at which it wakes `fseventsd` at once, about 0.9 ms where its timer takes about 11; were that ever to change a read would take the 11 ms and still be right. Readers that arrive during a barrier share the next, and a whole read of `git` passes one. Under the polling fallback there is none.
+
 **Step 5: One run per instance**
 
 If a run of the instance is in flight, whoever started it (a read, a poll, a refresh), a fresh request queues one run behind it, and every fresh request until it starts shares that one: at most one run in flight per instance, and one queued. A poll or a cold read takes the run in flight instead.

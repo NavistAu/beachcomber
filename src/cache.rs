@@ -1268,6 +1268,9 @@ pub struct Cache {
     /// The file events of each instance whose tree is watched now.
     trees: DashMap<CacheKey, Arc<TreeEvents>>,
     trees_watchable: std::sync::atomic::AtomicBool,
+    /// How a read knows the file events of before it have arrived; set by a
+    /// scheduler whose watcher delivers in order.
+    barrier: std::sync::OnceLock<Arc<crate::watcher::Barrier>>,
 }
 
 impl Cache {
@@ -1278,6 +1281,7 @@ impl Cache {
             memo_paths: DashMap::new(),
             trees: DashMap::new(),
             trees_watchable: Default::default(),
+            barrier: std::sync::OnceLock::new(),
         }
     }
 
@@ -1288,6 +1292,7 @@ impl Cache {
             memo_paths: DashMap::new(),
             trees: DashMap::new(),
             trees_watchable: Default::default(),
+            barrier: std::sync::OnceLock::new(),
         }
     }
 
@@ -1363,6 +1368,14 @@ impl Cache {
         self.trees
             .get(&Self::tree_key(provider, path, source))
             .is_some_and(|e| !e.gone.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    pub fn set_barrier(&self, barrier: Arc<crate::watcher::Barrier>) {
+        let _ = self.barrier.set(barrier);
+    }
+
+    pub fn barrier(&self) -> Option<&Arc<crate::watcher::Barrier>> {
+        self.barrier.get()
     }
 
     /// Write a single source's result into the cache entry for (provider, path).

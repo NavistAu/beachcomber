@@ -222,6 +222,19 @@ impl Served {
         answer.get("data").filter(|d| !d.is_null()).cloned()
     }
 
+    /// Until the file events of everything done so far have been heard. The
+    /// watch's first event is awaited first: until then a barrier only knocks.
+    pub fn hear_file_events(&self) {
+        let barrier = self.cache.barrier().expect("a watching scheduler");
+        self.runtime.block_on(async {
+            while !barrier.delivering() {
+                barrier.pass(tokio::time::Instant::now()).await;
+                tokio::task::yield_now().await;
+            }
+            barrier.pass(tokio::time::Instant::now()).await;
+        });
+    }
+
     /// One request, one answer.
     pub fn ask(&self, request: &Value) -> Value {
         let mut stream = std::os::unix::net::UnixStream::connect(&self.sock).expect("connect");

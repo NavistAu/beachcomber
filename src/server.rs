@@ -791,6 +791,31 @@ fn start_for_read(
     Some(Pending { run, until })
 }
 
+/// A read of an instance whose Source watches its tree waits until the file
+/// events from before it have arrived: a change in the tree, which no stat
+/// sees, is then in the record's state for [`start_for_read`] to find.
+async fn hear_tree(
+    registry: &Arc<ProviderRegistry>,
+    cache: &Arc<Cache>,
+    provider: &str,
+    source_name: &str,
+    root: Option<&str>,
+    read: Read,
+) {
+    if read.force {
+        return;
+    }
+    let Some(source) = registry.source(provider, source_name) else {
+        return;
+    };
+    if crate::provider::watches_tree(&source.metadata().invalidation)
+        && cache.tree_is_watched(provider, root, source_name)
+        && let Some(barrier) = cache.barrier()
+    {
+        barrier.pass(read.began).await;
+    }
+}
+
 /// Wait for each of `pending`, all under way together, until its deadline:
 /// whether any ended in time. A run that is not over by then goes on and
 /// records itself; the read answers with what is stored.
@@ -901,6 +926,20 @@ async fn warm_called(
     read: Read,
 ) -> Result<(Vec<(String, Vec<Instance>)>, bool), String> {
     let (called, resolved) = called_instances(registry, provider, dir).await?;
+    for (called_provider, instances) in &called {
+        for instance in instances {
+            let root = instance.root.as_deref();
+            hear_tree(
+                registry,
+                cache,
+                called_provider,
+                &instance.source,
+                root,
+                read,
+            )
+            .await;
+        }
+    }
     let pending: Vec<Pending> = called
         .iter()
         .flat_map(|(called_provider, instances)| {
@@ -1053,6 +1092,7 @@ async fn climb(
                 continue;
             }
             if let Climb::Warm(read) = mode {
+                hear_tree(registry, cache, provider, &w.name, root.as_deref(), read).await;
                 pending.extend(start_for_read(
                     registry,
                     cache,

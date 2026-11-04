@@ -124,6 +124,146 @@ impl FsWatcher {
     }
 }
 
+/// How long a read waits for [`Barrier`] at most. FSEvents' own wake-up comes
+/// by about 12 ms, so this is reached only when the machine is badly behind.
+const BARRIER_WAIT: Duration = Duration::from_millis(20);
+
+/// Events after the sentinel's that make the kernel hand FSEvents what it holds
+/// at once, instead of on its 10 ms timer: it wakes `fseventsd` past 16 pending.
+/// Should that ever change, a barrier takes the timer's 11 ms and is as right.
+/// inotify queues an event before the write returns, and needs none.
+const BARRIER_FILL: usize = if cfg!(target_os = "macos") { 17 } else { 0 };
+
+/// Sentinels taken in turn, so a late or repeated event of one barrier's is not
+/// taken for the next's.
+const BARRIER_SENTINELS: usize = 8;
+
+/// How a read knows every file event from before it has been heard. A watcher
+/// delivers in order, so when a change the read made itself comes back, what
+/// came before it has been through the scheduler. The change is to a file of
+/// the daemon's, in a directory of its own.
+pub struct Barrier {
+    dir: PathBuf,
+    sentinels: Vec<(PathBuf, std::ffi::CString)>,
+    fill: Vec<std::ffi::CString>,
+    /// The sentinel the barrier under way waits on.
+    awaited: std::sync::atomic::AtomicUsize,
+    heard: tokio::sync::watch::Sender<u64>,
+    /// When the last barrier to complete began: a read that arrived before
+    /// that shares it.
+    last: tokio::sync::Mutex<Option<tokio::time::Instant>>,
+    on: std::sync::atomic::AtomicBool,
+}
+
+fn touch(file: &std::ffi::CStr) {
+    // SAFETY: a valid C string, and null asks for the time now.
+    unsafe { libc::utimes(file.as_ptr(), std::ptr::null()) };
+}
+
+impl Barrier {
+    /// Its files, in a directory of this process's. The caller watches
+    /// [`Self::dir`] on the watcher whose events reach [`Self::hear`].
+    pub fn new() -> std::io::Result<Self> {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        // `mkdtemp`: on a shared `/tmp` another user could lay symlinks in a
+        // directory with a name they can guess, and the writes below follow them.
+        let mut template = std::env::temp_dir()
+            .join("comb-barrier-XXXXXX")
+            .into_os_string()
+            .into_vec();
+        template.push(0);
+        // SAFETY: a writable, NUL-terminated template, which it fills in place.
+        if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        template.pop();
+        let dir = PathBuf::from(std::ffi::OsString::from_vec(template)).canonicalize()?;
+        let file = |name: String| -> std::io::Result<(PathBuf, std::ffi::CString)> {
+            let path = dir.join(name);
+            std::fs::write(&path, b"")?;
+            let c = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+            Ok((path, c))
+        };
+        let sentinels = (0..BARRIER_SENTINELS)
+            .map(|i| file(format!("sentinel{i}")))
+            .collect::<std::io::Result<_>>()?;
+        let fill = (0..BARRIER_FILL)
+            .map(|i| file(format!("fill{i}")).map(|(_, c)| c))
+            .collect::<std::io::Result<_>>()?;
+        Ok(Self {
+            dir,
+            sentinels,
+            fill,
+            awaited: std::sync::atomic::AtomicUsize::new(0),
+            heard: tokio::sync::watch::Sender::new(0),
+            last: tokio::sync::Mutex::new(None),
+            on: std::sync::atomic::AtomicBool::new(true),
+        })
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Take its files away, and with them any further wait on it: the daemon
+    /// is stopping.
+    pub fn remove(&self) {
+        self.off();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+
+    /// The watcher turned out not to deliver: no read waits on it again.
+    pub fn off(&self) {
+        self.on.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether its own watch has delivered: until it has, a read does not wait.
+    pub fn delivering(&self) -> bool {
+        *self.heard.borrow() > 0
+    }
+
+    /// The scheduler has been through `paths`, an event of its watcher.
+    pub fn hear(&self, paths: &[PathBuf]) {
+        let awaited = self.awaited.load(std::sync::atomic::Ordering::SeqCst);
+        if paths.contains(&self.sentinels[awaited].0) {
+            self.heard.send_modify(|n| *n += 1);
+        }
+    }
+
+    /// Wait until the file events from before `arrived` have been heard, for
+    /// [`BARRIER_WAIT`] at most. Until its own watch delivers, it only knocks.
+    pub async fn pass(&self, arrived: tokio::time::Instant) {
+        if !self.on.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let mut last = self.last.lock().await;
+        if last.is_some_and(|began| began >= arrived) {
+            return;
+        }
+        let began = tokio::time::Instant::now();
+        let mut heard = self.heard.subscribe();
+        let delivering = self.delivering();
+        let awaited =
+            (self.awaited.load(std::sync::atomic::Ordering::SeqCst) + 1) % BARRIER_SENTINELS;
+        self.awaited
+            .store(awaited, std::sync::atomic::Ordering::SeqCst);
+        touch(&self.sentinels[awaited].1);
+        if delivering {
+            for file in &self.fill {
+                touch(file);
+            }
+            let _ = tokio::time::timeout(BARRIER_WAIT, heard.changed()).await;
+            *last = Some(began);
+        }
+    }
+}
+
+impl Drop for Barrier {
+    fn drop(&mut self) {
+        self.remove();
+    }
+}
+
 /// Where one watched path stands, as `introspect watches` reports it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
@@ -521,6 +661,88 @@ fn event_handler(
 /// close after writing is a change (an `mmap` write reports nothing else).
 fn is_change(kind: &EventKind) -> bool {
     !matches!(kind, EventKind::Access(access) if !matches!(access, AccessKind::Close(AccessMode::Write)))
+}
+
+#[cfg(test)]
+mod barrier_tests {
+    use super::*;
+
+    fn delivering() -> Barrier {
+        let barrier = Barrier::new().expect("a barrier");
+        barrier.heard.send_modify(|n| *n += 1);
+        barrier
+    }
+
+    async fn pending(pass: &mut (impl std::future::Future<Output = ()> + Unpin)) -> bool {
+        tokio::select! {
+            biased;
+            _ = pass => false,
+            _ = std::future::ready(()) => true,
+        }
+    }
+
+    /// What its own sentinel is, once a pass has touched it.
+    fn awaited(barrier: &Barrier) -> Vec<PathBuf> {
+        let at = barrier.awaited.load(std::sync::atomic::Ordering::SeqCst);
+        vec![barrier.sentinels[at].0.clone()]
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_read_passes_when_its_own_sentinel_is_heard() {
+        let barrier = delivering();
+        let began = tokio::time::Instant::now();
+        let pass = barrier.pass(began);
+        tokio::pin!(pass);
+        assert!(pending(&mut pass).await);
+        // A late event of the barrier before it is not its answer.
+        let other = (barrier.awaited.load(std::sync::atomic::Ordering::SeqCst) + BARRIER_SENTINELS
+            - 1)
+            % BARRIER_SENTINELS;
+        barrier.hear(&[barrier.sentinels[other].0.clone()]);
+        assert!(pending(&mut pass).await);
+        barrier.hear(&awaited(&barrier));
+        pass.await;
+        assert_eq!(tokio::time::Instant::now(), began);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_read_stops_waiting_at_the_limit() {
+        let barrier = delivering();
+        let began = tokio::time::Instant::now();
+        barrier.pass(began).await;
+        assert_eq!(began.elapsed(), BARRIER_WAIT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_read_from_before_a_barrier_shares_it_and_a_later_one_does_not() {
+        let barrier = delivering();
+        let first = tokio::time::Instant::now();
+        barrier.pass(first).await;
+        // It began after `first` arrived, so `first` needs no other.
+        let at = barrier.awaited.load(std::sync::atomic::Ordering::SeqCst);
+        barrier.pass(first).await;
+        assert_eq!(
+            barrier.awaited.load(std::sync::atomic::Ordering::SeqCst),
+            at
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+        barrier.pass(tokio::time::Instant::now()).await;
+        assert_ne!(
+            barrier.awaited.load(std::sync::atomic::Ordering::SeqCst),
+            at
+        );
+    }
+
+    #[tokio::test]
+    async fn off_or_before_it_delivers_a_read_does_not_wait() {
+        let barrier = Barrier::new().expect("a barrier");
+        barrier.pass(tokio::time::Instant::now()).await;
+        let barrier = delivering();
+        barrier.off();
+        let began = std::time::Instant::now();
+        barrier.pass(tokio::time::Instant::now()).await;
+        assert!(began.elapsed() < BARRIER_WAIT);
+    }
 }
 
 /// A backend for tests: each registration waits until the test opens its

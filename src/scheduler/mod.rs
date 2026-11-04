@@ -888,6 +888,16 @@ impl Scheduler {
                 (None, rx, Some(tx))
             }
         };
+        // A barrier needs a watcher that delivers in order, at once: not a
+        // poll, nor a watcher a test sends its own events through.
+        let barrier = (!polled)
+            .then(crate::watcher::Barrier::new)
+            .and_then(|made| made.map_err(|e| warn!("no barrier for reads: {e}")).ok());
+        let barrier = barrier.map(Arc::new);
+        if let (Some(barrier), Some(registrar)) = (&barrier, &registrar) {
+            registrar.watch(barrier.dir().to_path_buf());
+            self.cache.set_barrier(Arc::clone(barrier));
+        }
         let mut settled_rx = registrar.as_mut().and_then(Registrar::take_settled);
         let mut watch_backend = registrar.as_ref().map(|_| {
             if polled {
@@ -1098,6 +1108,9 @@ impl Scheduler {
                     for key in resolve_tree_keys(&paths, &watch_paths) {
                         self.cache.tree_changed(&key.provider, key.path.as_deref(), &key.source);
                     }
+                    if let Some(barrier) = &barrier {
+                        barrier.hear(&paths);
+                    }
                     let affected_keys = resolve_keys_from_paths(&paths, &watch_paths);
                     for key in affected_keys {
                         let outcome = lifecycle.on_fsevent(key.clone(), Instant::now());
@@ -1156,6 +1169,9 @@ impl Scheduler {
                                     registrar.replace_backend(poll_watcher);
                                 }
                                 fs_rx = poll_rx;
+                                if let Some(barrier) = &barrier {
+                                    barrier.off();
+                                }
                                 watch_backend = Some(crate::watcher::WatchBackend::Polling);
                             }
                             Err(e) => {
@@ -1223,6 +1239,11 @@ impl Scheduler {
                     }
                 }
             }
+        }
+        // The cache that holds it outlives this, and a daemon stops without
+        // dropping it.
+        if let Some(barrier) = &barrier {
+            barrier.remove();
         }
     }
 }

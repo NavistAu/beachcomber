@@ -680,7 +680,35 @@ The size of the repository does not enter into it. Nor does `notify`, whose late
 
 An editor mostly wins that race and a shell command mostly loses it.
 
-**Linux, not measured.** inotify queues an event inside the `write`, before it returns, and `notify`'s thread reads it in a poll loop: there should be no timer to wait for, and so little race. Nothing here has been run on Linux.
+**The read waits for what came before it.** It touches a file of the daemon's and waits for that event at the scheduler (`Barrier`, `docs/architecture.md`): delivery is in order, so what came before has arrived. On macOS 17 more touches pass the kernel's threshold. Measured directly: an edit is heard 0.88 ms after a write followed by 16 touches, against 10.9 alone.
+
+Each option, at a real `zsh` prompt running `comb get git.dirty`, 10 rounds of each, at load 7 to 30: right, and the median whole `comb get` after the change. Option A re-runs at a read of a record over 1 s old, and trusts one younger; the prompt before had read it 0.1 s earlier. `sub`, `wait` and option A went through a wrapper script costing about 4 ms, so their times are about that much high; base and the barrier are direct, in a later run.
+
+| Command, then the prompt | base | watch the tree only | and wait for the timer (no touches) | option A | **and the barrier** |
+|---|---:|---:|---:|---:|---:|
+| `echo x >> f` | 0/10, 9.2 ms | 6/10, 22.5 | 10/10, 28.0 | 8/10, 24.6 | **9/10, 25.9** |
+| `sed -i` | 0/10, 9.4 | 7/10, 23.9 | 10/10, 35.5 | 9/10, 23.5 | **10/10, 25.9** |
+| `vim`, `:wq` | 0/10, 9.1 | 10/10, 23.0 | 10/10, 34.4 | 10/10, 24.5 | **9/10, 25.9** |
+| `nvim`, `:wq` | 0/10, 8.9 | 10/10, 23.5 | 10/10, 35.1 | 10/10, 23.8 | **10/10, 28.7** |
+| a new untracked file | 0/10, 9.0 | 6/10, 24.1 | 10/10, 29.4 | 8/10, 24.6 | **10/10, 26.7** |
+
+Straight after the write over the raw socket, the hardest case, the barrier was right in 45 of 45 edits and 43 of 45 new files at load about 10, and 54 of 60 at load 30 to 35. Every wrong answer that was timed had taken 51 to 63 ms: a read past its budget, on a spike, which is the limit that was already there.
+
+**What it costs when nothing changed.** Reads 50 ms apart; ms.
+
+| Read | base p50, p90 | tree only | wait for the timer | **barrier** |
+|---|---:|---:|---:|---:|
+| `git.dirty`, raw socket | 0.26, 0.36 | 0.25, 0.30 | 11.45, 12.18 | **1.12, 1.76** |
+| `git.lines_added`, raw socket | 0.24, 0.29 | | | **1.11, 1.56** |
+| `git`, raw socket | 0.35, 0.42 | 0.36, 0.43 | 11.46, 11.92 | **1.23, 1.52** |
+| `git.branch`, raw socket | 0.23, 0.29 | 0.22, 0.31 | 0.23, 0.28 | **0.23, 0.27** |
+| `git.dirty`, `comb get` | 7.85, 10.16 | | | **8.74, 10.53** |
+
+Option A, reads 1.2 s apart on a fresh clone: 38 ms for `git.dirty` and 49 for `git`, over its budget on a whole read. The clone's index was racily clean, so part of that is git re-hashing; at the prompt above it costs about 16 ms over base.
+
+**A large repository.** On 100,000 files `git status` takes about 250 ms, past the 50 ms a read waits for it. The read after an edit took about 58 ms and answered old, 0 right in 6; the next read after about 180 ms was right, where before it was the poll, over 5 s in every trial. The budget was not raised.
+
+**Linux, not measured.** inotify queues an event inside the `write`, before it returns, and `notify`'s thread reads it in a poll loop. So the barrier needs no extra touches there and should cost about one touch and a thread's wake-up. Nothing here has been run on Linux.
 
 **Measured and given up.** Flushing FSEvents (`FSEventStreamFlushSync`, `FSEventStreamFlushAsync`) cannot help, and `notify` does not expose its stream anyway: for the first 10 ms the event is in the kernel and the service does not know of it. `FlushAsync`, whose answer is the last event queued for the stream, said nothing was pending in 50 of 50 calls made straight after a write, and tight calls in a loop stalled for a second, two or three in 500. `lstat` of a repository's files is 0.7 ms for 608 of them and grows with the tree, past the read it would save. APFS's recursive generation count (`ATTR_CMNEXT_RECURSIVE_GENCOUNT`) is a documented read but needs a private call to switch on, which marks the user's directories for good.
 
