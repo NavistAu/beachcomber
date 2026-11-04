@@ -568,7 +568,7 @@ The first read after a git command is the one a prompt makes. It has to be fast 
 | `git push` | new | new | **old** (`ahead`) | new | new | new | new | all new |
 | `git rebase` | new | new | **old**, or absent | **old** | **old** (`state` still `rebase`, 2 in 5 under Rust, 4 in 5 under the file) | new | **old** | new but lineage on a long branch |
 | a rebase stopping on a conflict | new | new | new | new | new | Rust **old** | Rust **old** | all new |
-| editing a tracked file, making an untracked one | new | **old** | new | new | new | **old** | new | still **old**: see below |
+| editing a tracked file, making an untracked one | new | **old** | new | new | new | **old** | new | right once the file event is in: see "A change in the working tree" |
 
 **Where the time went.** Forced runs, alternating, 20 rounds, load about 8. A `git` process costs 7.5 ms here before it does anything (`git --version`), so a Source's cost is mostly how many it starts.
 
@@ -650,10 +650,41 @@ A read of a usual field costs about what `git status` does, 11 to 13 ms, plus ab
 **What is not reached.**
 
 - **`lineage` on a long branch.** `git diff --numstat <point>..HEAD` on this branch takes 100 to 130 ms (at load 10), most of it rename detection: `--no-renames` halves it and gives other numbers. No read can wait for that in 50 ms, so after a commit, a checkout or a rebase a whole read of `git` takes the budget, its `lineage` fields are as they were, and the next read has them. Single fields do not wait for it.
-- **A change in the working tree.** Editing a tracked file, or making an untracked one, touches nothing in `.git`, so no stat a read can afford sees it: `dirty`, `unstaged`, `untracked` and `lines_*` stay old until `status`'s or `diff`'s poll, as they always did. A shorter poll does not help (a 1 s lifetime was right 0 times in 8: the poll keeps the record younger than its lifetime, so the read trusts it). Seeing it means running `git status` on every read, about 13 ms and `diff` about 11, where a warm read costs under 0.3 ms.
 - **A wrong answer is not labelled.** A read past its budget answers `stale: false` for what it knows to be invalid.
 
 Measured with a script over the raw socket, each daemon isolated in its own `HOME`, XDG directories and socket; `first_read_after_git` in `benches/validity.rs` is the same read in-process.
+
+### A change in the working tree
+
+Saving a file or making a new one touches nothing in `.git`. The kernel watch was already over the whole repository, because a rooted Source registers its root; `status` listed only files under `.git` and `diff` listed nothing, so the event was heard and dropped, and `dirty`, `unstaged`, `untracked` and `lines_*` stayed old until a poll, up to a minute. Both now list the tree, `watch('.', '!.git')`. An event only marks the record: a read runs the Source. An event that ran it would have a build's ignored output keep the instance Active and `git status` going twice a second, a quarter of a second each on a 100,000-file repository.
+
+**How long an event takes on macOS.** From `write` returning to `notify`'s callback, 100 changes each, load about 8, nothing else writing:
+
+| Repository | min | p10 | p50 | p90 | p99 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| 608 files | 1.4 ms | 10.3 | 10.8 | 11.3 | 13.0 | 20.8 |
+| 100,000 files | 0.5 | 3.0 | 10.8 | 11.5 | 13.5 | 14.1 |
+
+The size of the repository does not enter into it. Nor does `notify`, whose latency setting is 0 with `NoDefer`, or the 30 ms quiet period, which delays a run and not the hearing. The cluster at about 11 ms is the kernel: it wakes `fseventsd` on a 10 ms timer unless more than 16 events are pending.
+
+**How long a prompt gives it.** File's mtime to `precmd` in a real `zsh` on a pty, 15 of each; `comb get` then takes about 7 ms to reach the daemon and come back.
+
+| Command | min | p50 | p90 | max |
+|---|---:|---:|---:|---:|
+| `echo x >> f` | 0.1 ms | 0.1 | 0.1 | 0.3 |
+| `perl`, write and exit | 0.3 | 0.3 | 0.8 | 2.5 |
+| `sed -i` | 0.4 | 0.6 | 1.3 | 2.1 |
+| `python3`, write and exit | 1.9 | 2.5 | 4.1 | 8.2 |
+| `vim -u NONE`, `:wq` | 6.9 | 9.2 | 15.5 | 18.7 |
+| `nvim --clean`, `:wq` | 6.4 | 8.5 | 12.6 | 14.1 |
+
+An editor mostly wins that race and a shell command mostly loses it.
+
+**Linux, not measured.** inotify queues an event inside the `write`, before it returns, and `notify`'s thread reads it in a poll loop: there should be no timer to wait for, and so little race. Nothing here has been run on Linux.
+
+**Measured and given up.** Flushing FSEvents (`FSEventStreamFlushSync`, `FSEventStreamFlushAsync`) cannot help, and `notify` does not expose its stream anyway: for the first 10 ms the event is in the kernel and the service does not know of it. `FlushAsync`, whose answer is the last event queued for the stream, said nothing was pending in 50 of 50 calls made straight after a write, and tight calls in a loop stalled for a second, two or three in 500. `lstat` of a repository's files is 0.7 ms for 608 of them and grows with the tree, past the read it would save. APFS's recursive generation count (`ATTR_CMNEXT_RECURSIVE_GENCOUNT`) is a documented read but needs a private call to switch on, which marks the user's directories for good.
+
+**After decay.** A watch exists only while an instance is Active. Its records, and those decay polls make, are not valid until it is watched again, whatever their age: the first read back runs the Source, and is right, about 14 ms.
 
 ### Real-World Impact
 

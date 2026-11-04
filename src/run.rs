@@ -537,6 +537,7 @@ impl Runs {
             let keep = Arc::clone(&settle.registry);
             let root = settle.key.path.clone();
             let stamped = Arc::clone(&settle.state.stamped);
+            let (tree_cache, tree_key) = (Arc::clone(&settle.cache), settle.key.clone());
             let ran = tokio::time::timeout(
                 timeout,
                 tokio::task::spawn_blocking(move || {
@@ -546,10 +547,22 @@ impl Runs {
                     // file its lines read immediately before it is read: a
                     // change while it runs fails the next read's check, which
                     // makes one run more, never a stale answer.
+                    let invalidation = &source.metadata().invalidation;
                     let declared = Stamped::take(crate::provider::declared_inputs(
-                        &source.metadata().invalidation,
+                        invalidation,
                         root.as_deref(),
-                    ));
+                    ))
+                    .with_tree(
+                        if crate::provider::watches_tree(invalidation) {
+                            tree_cache.tree_stamp(
+                                &tree_key.provider,
+                                root.as_deref(),
+                                &tree_key.source,
+                            )
+                        } else {
+                            None
+                        },
+                    );
                     let _ = stamped.set(Validity::of(declared.clone()));
                     let (result, failed_call) = ran(|| source.execute(dir.as_deref()));
                     let result = result.map(|result| {

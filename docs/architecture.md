@@ -215,6 +215,8 @@ The scheduler's `tokio::select!` loop picks up `Some(paths) = fs_rx.recv()`. A p
 
 An Active entry takes the event (`LifecycleRegistry::on_fsevent`; a decaying one has no watch, and a late event does nothing). A Source instance waits for its files to go quiet, 30 ms after the last change and at most 500 ms after the first (`Settling`): one command makes a burst of changes, and a run during the burst reads a state about to go and shares the budget of the read that follows. Then `Scheduler::fire` does what the key's event means. For a Source instance, `self.execute_source("git", "refs", Some("/home/user/myrepo"), Want::Fresh)` asks the run table for a run of that instance that begins after the event (`Runs::start`): a file event may follow a change the run in flight has already read past. For a memo (below), it drops the memo's hash.
 
+A Source whose `watch` has a `.` covers the tree below its root. An event there runs nothing and resets no decay: it moves a count the record's run noted before it began (`TreeEvents`), so `Validity::check` says the record is invalid and the next read runs the Source. Until the root's registration has been made, and from entering decay until the next demand makes it again, no record is valid: nothing would say what changed.
+
 **Step 5: One run per instance**
 
 If a run of the instance is in flight, whoever started it (a read, a poll, a refresh), a fresh request queues one run behind it, and every fresh request until it starts shares that one: at most one run in flight per instance, and one queued. A poll or a cold read takes the run in flight instead.

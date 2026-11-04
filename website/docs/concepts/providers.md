@@ -35,7 +35,7 @@ Different fields within a provider may need different refresh rates or different
 
 Branch information changes when `.git/HEAD` or `.git/refs/` is written — a filesystem event is the right trigger. Diff line counts need a subprocess call that is slower, so polling once every 30 seconds is a better fit.
 
-Splitting into sources means a branch lookup only demands the `head` source lifecycle, not the slower `diff` source. A read checks the files each Source read and runs only those that changed, so `git add` runs `status` and `diff`, and a lockfile runs nothing. A change in the working tree that has not reached the index waits for the poll.
+Splitting into sources means a branch lookup only demands the `head` source lifecycle, not the slower `diff` source. A read checks the files each Source read and runs only those that changed, so `git add` runs `status` and `diff`, and a lockfile runs nothing. A change in the working tree makes the next read run `status` and `diff`.
 
 ## Addressing
 

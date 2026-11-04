@@ -1260,7 +1260,7 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     assert!(refs_row.poll_count.is_none());
     assert_eq!(refs_row.failure, None);
 
-    // Cross-check the diff source: poll strategy → poll_interval_secs is Some, watches_files=false.
+    // Cross-check the diff source: watch and poll → poll_interval_secs is Some, watches_files=true.
     let diff_row = rows
         .iter()
         .find(|r| r.provider == "git" && r.source == "source(diff)")
@@ -1268,8 +1268,8 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     match diff_row.kind.as_ref().expect("kind present") {
         RowKind::Lifecycle { watches_files, .. } => {
             assert!(
-                !*watches_files,
-                "git.diff uses Poll strategy → watches_files=false"
+                *watches_files,
+                "git.diff watches its working tree → watches_files=true"
             );
         }
         other => panic!("expected Lifecycle for diff row, got {:?}", other),

@@ -213,7 +213,7 @@ A Source's `return` line maps onto one of three strategies:
 return = "{{ result | poll('30s', 4) }}"      # battery level: no file to watch reliably
 ```
 
-**`watch(paths...)`** runs the Source when a path changes. A relative path is under the instance's root (Sources with a root only). An absolute or `~` one is watched directly, whatever the root. Its arguments are constants: a path a line computes is checked on a read (§4), not watched.
+**`watch(paths...)`** runs the Source when a path changes. A relative path is under the instance's root (Sources with a root only). An absolute or `~` one is watched directly, whatever the root. Its arguments are constants: a path a line computes is checked on a read (§4), not watched. A `.` covers the tree below the instance's root (Sources with a root only), and each `!name` leaves out every path with that component, so `watch('.', '!.git')` is a repository's working tree. A change there runs nothing: it makes the record invalid for the next read, which runs the Source, so a build's output no read asks about costs nothing, and the Source does not have to read anything a stat could see. While the instance is not Active nothing watches its tree, and a read of it always runs the Source.
 
 ```toml
 return = "{{ result | watch('.git/HEAD', '.git/refs') | nearest }}"    # those paths and anything below them, per repository

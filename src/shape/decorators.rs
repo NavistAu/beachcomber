@@ -502,6 +502,9 @@ fn watch_paths(
             patterns.push(path.to_string());
         }
     }
+    if patterns.iter().any(|p: &String| p.starts_with('!')) && !patterns.iter().any(|p| p == ".") {
+        return Err("watch(): a '!' path leaves something out of '.', which is not watched".into());
+    }
     Ok((patterns, abs_paths))
 }
 
@@ -676,6 +679,19 @@ mod tests {
             error.message,
             "watch(): cannot expand $XDG_CONFIG_HOME/mise"
         );
+    }
+
+    #[test]
+    fn watch_of_a_tree() {
+        let r = rec("{{ result | watch('.git/index', '.', '!.git') }}");
+        assert_eq!(r.invalidation, watch(&[".git/index", ".", "!.git"], &[]));
+    }
+
+    #[test]
+    fn leaving_something_out_of_no_tree_is_refused() {
+        let vars = HashMap::new();
+        let args = [MjValue::from("!.git")];
+        assert!(watch_paths(&args, &vars).unwrap_err().contains("'!'"));
     }
 
     #[test]

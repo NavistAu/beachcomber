@@ -42,9 +42,9 @@ result.lines_added = "{{ data.lines_added }}"
 result.lines_removed = "{{ data.lines_removed }}"
 result.lines_staged_added = "{{ data.lines_staged_added }}"
 result.lines_staged_removed = "{{ data.lines_staged_removed }}"
-# Polled every 30 seconds while read: nothing says when a file in the working tree changes. A failure is retried every
-# minute, three times. The nearest repository answers alone.
-return = "{{ result | poll('30s', 4) | failback('60s', 3) | nearest }}"
+# A change in the working tree makes the next read run it, and it is polled every 30 seconds while read. A failure is
+# retried every minute, three times. The nearest repository answers alone.
+return = "{{ result | watch('.', '!.git') | poll('30s', 4) | failback('60s', 3) | nearest }}"
 
 [daemon.providers.git.sources.lineage]
 # Lines this branch has changed since it left its parent (the branch its reflog says it was created from, else the
@@ -72,7 +72,6 @@ result.unstaged = "{{ data.unstaged }}"
 result.untracked = "{{ data.untracked }}"
 result.conflicted = "{{ data.conflicted }}"
 result.dirty = "{{ data.dirty }}"
-# Run again when the index or a ref changes and every minute while read: a change in the working tree that has not
-# reached the index is left to the poll. A failure is retried every 30 seconds, three times. The nearest repository
-# answers alone.
-return = "{{ result | watch('.git/index', '.git/HEAD', '.git/refs', '.git/packed-refs', '.git/config') | poll('60s', 2) | failback('30s', 3) | nearest }}"
+# Run again when the index or a ref changes and every minute while read; a change in the working tree makes the next
+# read run it. A failure is retried every 30 seconds, three times. The nearest repository answers alone.
+return = "{{ result | watch('.git/index', '.git/HEAD', '.git/refs', '.git/packed-refs', '.git/config', '.', '!.git') | poll('60s', 2) | failback('30s', 3) | nearest }}"

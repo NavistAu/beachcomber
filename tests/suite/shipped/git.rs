@@ -3,7 +3,7 @@
 //! daemon runs them, on `GitRepoFixture` repositories; what a read does with
 //! them is read through a daemon below.
 
-use super::{age, scenario, schedule, served};
+use super::{age, scenario, schedule, served, served_watching};
 use crate::common::fetch::fetch;
 use crate::common::git::GitRepoFixture;
 use crate::common::poll::{poll_until, poll_until_async, poll_until_eq};
@@ -989,7 +989,9 @@ fn git_schedules_watch_what_each_source_reads() {
         ),
         (
             "diff",
-            InvalidationStrategy::Poll {
+            InvalidationStrategy::WatchAndPoll {
+                patterns: vec![".".into(), "!.git".into()],
+                abs_paths: vec![],
                 interval_secs: 30,
                 count: 4,
             },
@@ -1009,6 +1011,8 @@ fn git_schedules_watch_what_each_source_reads() {
                     ".git/refs",
                     ".git/packed-refs",
                     ".git/config",
+                    ".",
+                    "!.git",
                 ]
                 .map(String::from)
                 .to_vec(),
@@ -1346,6 +1350,52 @@ fn tracked_file(f: &FirstRead) -> String {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     text.lines().next().expect("a tracked file").to_string()
+}
+
+/// A repository served with the host's own file watcher, once a change in its
+/// tree is known to come through; `None` where none is delivered (a sandbox).
+fn first_read_watching() -> Option<FirstRead> {
+    let repo = GitRepoFixture::new();
+    let dir = repo.path().canonicalize().unwrap();
+    let f = FirstRead {
+        repo,
+        _bare: TempDir::new().unwrap(),
+        dir,
+        s: served_watching(),
+    };
+    f.settle();
+    let until = std::time::Instant::now() + Duration::from_secs(2);
+    while std::time::Instant::now() < until {
+        f.write("probe.txt", "");
+        if f.get("untracked") == Some(json!(1)) {
+            std::fs::remove_file(f.dir.join("probe.txt")).unwrap();
+            while f.get("untracked") != Some(json!(0)) && std::time::Instant::now() < until {}
+            return Some(f);
+        }
+    }
+    eprintln!("skipped: this host's file watcher delivers nothing");
+    None
+}
+
+/// Nothing in `.git` moves for a save, and nothing stat's the working tree:
+/// the read hears of it from the file watcher.
+#[test]
+fn a_change_in_the_tree_reaches_the_read_after_its_event() {
+    let Some(f) = first_read_watching() else {
+        return;
+    };
+    let file = tracked_file(&f);
+    let body = std::fs::read_to_string(f.dir.join(&file)).unwrap();
+    f.write(&file, &format!("{body}more\n"));
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while f.get("unstaged") != Some(json!(1)) {
+        assert!(
+            std::time::Instant::now() < until,
+            "unstaged never came to 1"
+        );
+    }
+    assert_eq!(f.get("dirty"), Some(json!(true)));
+    assert_eq!(f.get("lines_added"), Some(json!(1)));
 }
 
 /// A lockfile comes and goes: every record stands, no Source runs.

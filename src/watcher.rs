@@ -163,6 +163,7 @@ pub struct Watch {
 pub struct Registrar {
     commands: std::sync::mpsc::Sender<Command>,
     table: Arc<Mutex<Table>>,
+    settled: Option<mpsc::UnboundedReceiver<PathBuf>>,
 }
 
 #[derive(Default)]
@@ -191,9 +192,11 @@ impl Registrar {
     pub fn start(watcher: FsWatcher) -> Self {
         let (commands, rx) = std::sync::mpsc::channel();
         let table = Arc::new(Mutex::new(Table::default()));
+        let (settled_tx, settled) = mpsc::unbounded_channel();
         let worker = Worker {
             watcher,
             table: Arc::clone(&table),
+            settled: settled_tx,
             held: HashMap::new(),
             kernel: HashMap::new(),
         };
@@ -201,7 +204,25 @@ impl Registrar {
             .name("comb-watches".into())
             .spawn(move || worker.run(rx))
             .expect("start the watch worker");
-        Self { commands, table }
+        Self {
+            commands,
+            table,
+            settled: Some(settled),
+        }
+    }
+
+    /// Each path as its registration is made, from now on: events below it
+    /// are delivered from then. Once.
+    pub fn take_settled(&mut self) -> Option<mpsc::UnboundedReceiver<PathBuf>> {
+        self.settled.take()
+    }
+
+    /// Whether `path`'s registration has been made, on the path itself.
+    pub fn is_active(&self, path: &Path) -> bool {
+        matches!(
+            lock(&self.table).paths.get(path),
+            Some((_, WatchState::Active { via: None }, _))
+        )
     }
 
     /// Watch `path`: [`WatchState::Pending`] until the worker has registered
@@ -295,6 +316,7 @@ impl Registrar {
 struct Worker {
     watcher: FsWatcher,
     table: Arc<Mutex<Table>>,
+    settled: mpsc::UnboundedSender<PathBuf>,
     /// The registration each path asked for rests on: itself, or the
     /// directory it is watched through.
     held: HashMap<PathBuf, PathBuf>,
@@ -325,6 +347,7 @@ impl Worker {
                         && *at == ask
                     {
                         *settled = state;
+                        let _ = self.settled.send(path);
                     }
                 }
                 Command::Unwatch(path) => self.release(&path),

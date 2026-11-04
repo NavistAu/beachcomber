@@ -766,7 +766,7 @@ beachcomber ships 16 providers organized by category, plus template-backed names
 
 | Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `git` | project | 30 fields (see table below) | watch `.git` + fallback poll | `head` no process; the rest about 150 ms, 10 `git` processes, on this repository |
+| `git` | project | 30 fields (see table below) | watch `.git` and the working tree + fallback poll | `head` no process; the rest about 150 ms, 10 `git` processes, on this repository |
 
 **Fields:**
 

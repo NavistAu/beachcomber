@@ -129,7 +129,8 @@ impl Scenario {
     }
 }
 
-/// The shipped defaults, with `conf` over them, served with no scheduler.
+/// The shipped defaults, with `conf` over them, served by a [`served`] with no
+/// scheduler or a [`served_watching`] with one on the host's own file watcher.
 pub struct Served {
     /// The Sources' `HOME`, and this process's: a temp directory, canonical.
     pub home: PathBuf,
@@ -145,6 +146,16 @@ pub struct Served {
 /// this process's `HOME`, so its instance is the one at `~`) and `vars`, and
 /// nothing else of this process's environment.
 pub fn served(vars: &[(&str, &str)], conf: &str) -> Served {
+    serve(vars, conf, false)
+}
+
+/// [`served`] with a scheduler on the host's own file watcher (FSEvents,
+/// inotify), not the polling one: what a read does with a file event.
+pub fn served_watching() -> Served {
+    serve(&[], "", true)
+}
+
+fn serve(vars: &[(&str, &str)], conf: &str, watching: bool) -> Served {
     let dir = tempfile::tempdir().expect("a temp directory");
     let home = dir.path().canonicalize().unwrap().join("home");
     let project = home.join("project");
@@ -173,7 +184,17 @@ pub fn served(vars: &[(&str, &str)], conf: &str) -> Served {
     {
         let _enter = runtime.enter();
         let registry = load.registry.share(&cache);
-        Server::new(sock.clone(), cache.clone(), registry, None, watchers)
+        let handle = watching.then(|| {
+            let (handle, scheduler) = beachcomber::scheduler::Scheduler::new(
+                cache.clone(),
+                registry.clone(),
+                config.clone(),
+                watchers.clone(),
+            );
+            tokio::spawn(async move { scheduler.run().await });
+            handle
+        });
+        Server::new(sock.clone(), cache.clone(), registry, handle, watchers)
             .spawn()
             .expect("serve");
     }

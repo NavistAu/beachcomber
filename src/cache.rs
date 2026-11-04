@@ -135,6 +135,39 @@ pub struct Schedule {
     pub validity: Option<Validity>,
 }
 
+/// The file events of one instance whose Source watches the tree below its
+/// directory ([`crate::provider::watches_tree`]). Nothing stats that tree, so
+/// a change in it reaches a record through here: a run notes the count before
+/// it begins, and a record whose count has moved is invalid.
+#[derive(Debug, Default)]
+pub struct TreeEvents {
+    changes: std::sync::atomic::AtomicU64,
+    /// No longer watched: what the record's run left unnoted, nothing says.
+    gone: std::sync::atomic::AtomicBool,
+}
+
+/// [`TreeEvents`] as a run found them.
+#[derive(Debug, Clone)]
+pub struct TreeStamp {
+    events: Arc<TreeEvents>,
+    changes: u64,
+}
+
+impl TreeStamp {
+    fn moved(&self) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.events.gone.load(SeqCst) || self.events.changes.load(SeqCst) != self.changes
+    }
+}
+
+impl PartialEq for TreeStamp {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.events, &other.events) && self.changes == other.changes
+    }
+}
+
+impl Eq for TreeStamp {}
+
 /// What a read checks of a Source record before answering from it: its stat
 /// inputs as the run that made it found them. Those are the files
 /// [`crate::provider::declared_inputs`] names, stamped immediately before the
@@ -144,6 +177,9 @@ pub struct Schedule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Validity {
     inputs: Arc<[(std::path::PathBuf, libbeachcomber::fs::Regard)]>,
+    /// The tree's file events as the run found them, for a Source that
+    /// watches its tree.
+    tree: Option<TreeStamp>,
     /// [`libbeachcomber::validity::stamps_hash`] of the inputs.
     hash: u64,
     /// An input lies on a mount whose stamps are not trusted (network, FUSE,
@@ -170,6 +206,7 @@ pub struct Stamped {
     wall: std::time::SystemTime,
     now: Instant,
     stamps: Vec<Touch>,
+    tree: Option<TreeStamp>,
 }
 
 impl Stamped {
@@ -184,7 +221,14 @@ impl Stamped {
             wall: std::time::SystemTime::now(),
             now: Instant::now(),
             stamps,
+            tree: None,
         }
+    }
+
+    /// These, and the tree's file events as they stand.
+    pub fn with_tree(mut self, tree: Option<TreeStamp>) -> Self {
+        self.tree = tree;
+        self
     }
 
     /// [`Self::take`] as though at the wall-clock moment `taken`, which is
@@ -206,6 +250,7 @@ impl Stamped {
             wall: taken,
             now,
             stamps,
+            tree: None,
         }
     }
 
@@ -239,8 +284,13 @@ impl Validity {
     /// The validity of `stamped`: `None` when there are none.
     pub fn of(stamped: Stamped) -> Option<Self> {
         use libbeachcomber::fs::{Mount, Stamp, mount_of};
-        let Stamped { wall, now, stamps } = stamped;
-        if stamps.is_empty() {
+        let Stamped {
+            wall,
+            now,
+            stamps,
+            tree,
+        } = stamped;
+        if stamps.is_empty() && tree.is_none() {
             return None;
         }
         let mut remote = false;
@@ -285,6 +335,7 @@ impl Validity {
             remote,
             racy_until: racy.map(|until| now + until.duration_since(wall).unwrap_or_default()),
             inputs: stamps.into_iter().map(|t| (t.path, t.regard)).collect(),
+            tree,
         })
     }
 
@@ -307,6 +358,9 @@ impl Validity {
     fn check_at(&self, now: Instant) -> libbeachcomber::validity::Check {
         use libbeachcomber::fs::Stamp;
         use libbeachcomber::validity::Check;
+        if self.tree.as_ref().is_some_and(TreeStamp::moved) {
+            return Check::Invalid;
+        }
         if self.remote {
             return Check::Unknown;
         }
@@ -1211,6 +1265,9 @@ pub struct Cache {
     /// none is one lookup. The eviction of a directory's last memo unlists it
     /// ([`Cache::evict_memo`]), and a provider's last directory the provider.
     memo_paths: DashMap<String, std::collections::HashSet<Option<String>>>,
+    /// The file events of each instance whose tree is watched now.
+    trees: DashMap<CacheKey, Arc<TreeEvents>>,
+    trees_watchable: std::sync::atomic::AtomicBool,
 }
 
 impl Cache {
@@ -1219,6 +1276,8 @@ impl Cache {
             entries: DashMap::new(),
             watchers: None,
             memo_paths: DashMap::new(),
+            trees: DashMap::new(),
+            trees_watchable: Default::default(),
         }
     }
 
@@ -1227,7 +1286,83 @@ impl Cache {
             entries: DashMap::new(),
             watchers: Some(watchers),
             memo_paths: DashMap::new(),
+            trees: DashMap::new(),
+            trees_watchable: Default::default(),
         }
+    }
+
+    fn tree_key(provider: &str, path: Option<&str>, source: &str) -> CacheKey {
+        make_cache_key(&format!("{provider}\0{source}"), path)
+    }
+
+    /// The instance's tree is watched from now on. A record from when it was
+    /// not says nothing of what changed meanwhile: it is invalid.
+    pub fn tree_watched(&self, provider: &str, path: Option<&str>, source: &str) {
+        let key = Self::tree_key(provider, path, source);
+        if let Some(old) = self.trees.insert(key, Arc::default()) {
+            old.gone.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// The instance's tree is no longer watched. Nothing will say it changed,
+    /// so no record of it is valid until it is watched again.
+    pub fn tree_unwatched(&self, provider: &str, path: Option<&str>, source: &str) {
+        if let Some(events) = self.trees.get(&Self::tree_key(provider, path, source)) {
+            events.gone.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// The instance is gone, its records with it.
+    pub fn tree_forget(&self, provider: &str, path: Option<&str>, source: &str) {
+        self.trees.remove(&Self::tree_key(provider, path, source));
+    }
+
+    /// Something changed in the instance's tree.
+    pub fn tree_changed(&self, provider: &str, path: Option<&str>, source: &str) {
+        if let Some(events) = self.trees.get(&Self::tree_key(provider, path, source)) {
+            events
+                .changes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// A scheduler serves this cache: what a run finds of a tree that is not
+    /// watched yet says nothing of what comes before the watch. Told before
+    /// anything can read, so a first read is not taken for one with no watcher.
+    pub fn trees_watchable(&self) {
+        self.trees_watchable
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The instance's file events as they stand, for a run about to begin.
+    /// With no scheduler there is nothing to stamp; with one, a tree not yet
+    /// watched has a stamp that has already moved.
+    pub fn tree_stamp(
+        &self,
+        provider: &str,
+        path: Option<&str>,
+        source: &str,
+    ) -> Option<TreeStamp> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if !self.trees_watchable.load(SeqCst) {
+            return None;
+        }
+        let events = match self.trees.get(&Self::tree_key(provider, path, source)) {
+            Some(events) => Arc::clone(&events),
+            None => Arc::new(TreeEvents {
+                changes: Default::default(),
+                gone: true.into(),
+            }),
+        };
+        let changes = events.changes.load(SeqCst);
+        Some(TreeStamp { events, changes })
+    }
+
+    /// Whether events of this instance's tree can arrive.
+    pub fn tree_is_watched(&self, provider: &str, path: Option<&str>, source: &str) -> bool {
+        self.trees
+            .get(&Self::tree_key(provider, path, source))
+            .is_some_and(|e| !e.gone.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     /// Write a single source's result into the cache entry for (provider, path).
@@ -2854,6 +2989,59 @@ impl Cache {
 }
 
 #[cfg(test)]
+mod tree_tests {
+    use super::*;
+    use libbeachcomber::validity::Check;
+
+    fn validity_now(cache: &Cache) -> Option<Validity> {
+        Validity::of(Stamped::of(Vec::new()).with_tree(cache.tree_stamp("g", Some("/r"), "s")))
+    }
+
+    #[test]
+    fn with_no_scheduler_there_is_nothing_to_stamp() {
+        let cache = Cache::new();
+        cache.tree_watched("g", Some("/r"), "s");
+        assert!(validity_now(&cache).is_none());
+    }
+
+    #[test]
+    fn a_change_in_the_tree_invalidates_what_a_run_stamped_before_it() {
+        let cache = Cache::new();
+        cache.trees_watchable();
+        cache.tree_watched("g", Some("/r"), "s");
+        let before = validity_now(&cache).expect("a stamp");
+        assert_eq!(before.check(), Check::Valid);
+        cache.tree_changed("g", Some("/r"), "s");
+        assert_eq!(before.check(), Check::Invalid);
+        assert_eq!(validity_now(&cache).expect("a stamp").check(), Check::Valid);
+    }
+
+    /// Before the watch, and while it is gone (decay), a run says nothing of
+    /// what it did not hear, however young its record is.
+    #[test]
+    fn a_record_made_unwatched_is_never_valid() {
+        let cache = Cache::new();
+        cache.trees_watchable();
+        let first = validity_now(&cache).expect("a stamp");
+        assert_eq!(first.check(), Check::Invalid);
+        cache.tree_watched("g", Some("/r"), "s");
+        assert_eq!(first.check(), Check::Invalid);
+        assert!(cache.tree_is_watched("g", Some("/r"), "s"));
+        let watched = validity_now(&cache).expect("a stamp");
+        assert_eq!(watched.check(), Check::Valid);
+
+        cache.tree_unwatched("g", Some("/r"), "s");
+        assert!(!cache.tree_is_watched("g", Some("/r"), "s"));
+        assert_eq!(watched.check(), Check::Invalid);
+        let in_decay = validity_now(&cache).expect("a stamp");
+        assert_eq!(in_decay.check(), Check::Invalid);
+
+        cache.tree_watched("g", Some("/r"), "s");
+        assert_eq!(in_decay.check(), Check::Invalid);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -4201,6 +4389,7 @@ mod tests {
         }];
         stamps.extend(touches(&[&early]));
         let stamped = Stamped {
+            tree: None,
             wall: written + Duration::from_millis(4),
             now,
             stamps,
@@ -4252,6 +4441,7 @@ mod tests {
     #[test]
     fn an_input_on_a_mount_whose_stamps_are_not_trusted_is_unknown() {
         let v = Validity {
+            tree: None,
             inputs: vec![(
                 std::path::PathBuf::from("/nfs/f"),
                 libbeachcomber::fs::Regard::Whole,

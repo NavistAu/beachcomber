@@ -473,6 +473,22 @@ pub fn watch_patterns(strategy: &InvalidationStrategy) -> Vec<String> {
         .collect()
 }
 
+/// Whether a `watch` pattern speaks of the tree below the Source's directory
+/// (`.`, and `!name`, what it leaves out) and not of one path in it.
+pub fn is_tree_pattern(pattern: &str) -> bool {
+    pattern == "." || pattern.starts_with('!')
+}
+
+/// Whether a Source's `watch` covers the tree below its directory: a change
+/// there, which nothing stats, makes its record invalid for the next read.
+pub fn watches_tree(strategy: &InvalidationStrategy) -> bool {
+    match strategy {
+        InvalidationStrategy::Watch { patterns, .. }
+        | InvalidationStrategy::WatchAndPoll { patterns, .. } => patterns.iter().any(|p| p == "."),
+        InvalidationStrategy::Poll { .. } => false,
+    }
+}
+
 /// What is wrong with a Source of one instance (no `root`, so the one at `~`)
 /// whose schedule is `invalidation` and `nearest`, in words for `subject`
 /// (`<provider>.<source>`); `None` when nothing is. The one instance has no
@@ -745,6 +761,9 @@ pub fn declared_inputs(
 ) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     for pattern in watch_patterns(strategy) {
+        if is_tree_pattern(&pattern) {
+            continue;
+        }
         match root {
             Some(root) => out.push(std::path::Path::new(root).join(&pattern)),
             None if !pattern.contains('/') => {
@@ -766,6 +785,19 @@ pub fn declared_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tree_pattern_is_no_stat_input() {
+        let strategy = InvalidationStrategy::Watch {
+            patterns: vec![".git/index".into(), ".".into(), "!.git".into()],
+            abs_paths: vec![],
+        };
+        assert!(watches_tree(&strategy));
+        assert_eq!(
+            declared_inputs(&strategy, Some("/r")),
+            vec![std::path::PathBuf::from("/r/.git/index")]
+        );
+    }
 
     #[test]
     fn watch_patterns_strips_trailing_slash() {

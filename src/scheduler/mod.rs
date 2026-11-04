@@ -465,8 +465,34 @@ fn build_status(
 /// Failure backoff map: per-(provider, path, source) failure state.
 pub(crate) type SourceFailureMap = Arc<std::sync::Mutex<HashMap<lifecycle::Key, FailureState>>>;
 
+/// Whether an event at `event_path` is in the tree a `.` among the watch
+/// `patterns` of an instance rooted at `root` covers, and not below a name a
+/// `!name` pattern leaves out.
+pub(crate) fn event_in_tree(
+    patterns: &[String],
+    root: &std::path::Path,
+    event_path: &std::path::Path,
+) -> bool {
+    if !patterns.iter().any(|p| p == ".") {
+        return false;
+    }
+    let Ok(relative) = event_path.strip_prefix(root) else {
+        return false;
+    };
+    !relative.as_os_str().is_empty()
+        && !patterns
+            .iter()
+            .filter_map(|p| p.strip_prefix('!'))
+            .any(|left_out| {
+                relative
+                    .components()
+                    .any(|c| c.as_os_str().to_string_lossy() == left_out)
+            })
+}
+
 /// Whether an event at `event_path` matches any of the watch `patterns` of an
-/// instance rooted at `root`.
+/// instance rooted at `root`, as a path it names: [`event_in_tree`] says
+/// whether it is in the tree.
 ///
 /// A pattern naming one file or directory (`.git`, `mise.toml`) matches any
 /// path component at any depth: an event at `some/nested/.git/HEAD` matches
@@ -502,7 +528,9 @@ pub(crate) fn event_matches_patterns(
     }
     patterns.iter().any(|pattern| {
         let pattern = pattern.trim_end_matches('/');
-        if pattern.contains('/') {
+        if crate::provider::is_tree_pattern(pattern) {
+            false
+        } else if pattern.contains('/') {
             relative.starts_with(pattern)
         } else {
             relative
@@ -591,6 +619,7 @@ impl Scheduler {
         let handle = SchedulerHandle::new(tx);
         let heartbeat = Arc::new(AtomicU64::new(0));
         let failure_counts = Arc::clone(&registry.failures);
+        cache.trees_watchable();
         let scheduler = Scheduler {
             cache,
             registry,
@@ -848,7 +877,7 @@ impl Scheduler {
         // the watcher; the loop keeps the events. Without a watcher the loop
         // still serves demand, polls and reloads; nothing is watched, and
         // `_idle_events` keeps the event channel open and silent.
-        let (registrar, mut fs_rx, _idle_events) = match watcher {
+        let (mut registrar, mut fs_rx, _idle_events) = match watcher {
             Ok((watcher, rx)) => (Some(Registrar::start(watcher)), rx, None),
             Err(e) => {
                 warn!(
@@ -859,6 +888,7 @@ impl Scheduler {
                 (None, rx, Some(tx))
             }
         };
+        let mut settled_rx = registrar.as_mut().and_then(Registrar::take_settled);
         let mut watch_backend = registrar.as_ref().map(|_| {
             if polled {
                 crate::watcher::WatchBackend::Polling
@@ -936,6 +966,7 @@ impl Scheduler {
                             let watches = self.reload(next, &registry, &mut lifecycle);
                             for key in &watches.drop {
                                 drop_watches_for_key(key, &mut watch_paths, registrar.as_ref());
+                                self.cache.tree_unwatched(&key.provider, key.path.as_deref(), &key.source);
                             }
                             for key in &watches.rewatch {
                                 let Some(sm) = self.registry.source_metadata(&key.provider, &key.source) else {
@@ -948,6 +979,9 @@ impl Scheduler {
                                     sm,
                                     key.path.as_deref(),
                                 );
+                                if crate::provider::watches_tree(&sm.invalidation) {
+                                    tree_if_registered(&self.cache, registrar.as_ref(), key);
+                                }
                             }
                             last_activity = Instant::now();
                         }
@@ -1029,6 +1063,9 @@ impl Scheduler {
                                         sm,
                                         root.as_deref(),
                                     );
+                                    if crate::provider::watches_tree(&sm.invalidation) {
+                                        tree_if_registered(&self.cache, registrar.as_ref(), &key);
+                                    }
                                 } else if let Some(registrar) = &registrar
                                     && registrar.has_failed()
                                 {
@@ -1055,6 +1092,12 @@ impl Scheduler {
                             registrar.look_again(path);
                         }
                     }
+                    // A change in a watched tree runs nothing: the next read
+                    // finds the record invalid, and a build's output that no
+                    // read asks about costs nothing.
+                    for key in resolve_tree_keys(&paths, &watch_paths) {
+                        self.cache.tree_changed(&key.provider, key.path.as_deref(), &key.source);
+                    }
                     let affected_keys = resolve_keys_from_paths(&paths, &watch_paths);
                     for key in affected_keys {
                         let outcome = lifecycle.on_fsevent(key.clone(), Instant::now());
@@ -1067,6 +1110,19 @@ impl Scheduler {
                         }
                     }
                     last_activity = Instant::now();
+                }
+
+                // A registration has been made: a tree it covers is watched
+                // from here.
+                Some(path) = async { settled_rx.as_mut().expect("guarded by is_some").recv().await },
+                    if settled_rx.is_some() =>
+                {
+                    for sub in watch_paths.get(&path).into_iter().flatten() {
+                        let (provider, root, source) = (&sub.key.provider, sub.key.path.as_deref(), &sub.key.source);
+                        if sub.patterns.iter().any(|p| p == ".") && !self.cache.tree_is_watched(provider, root, source) {
+                            self.cache.tree_watched(provider, root, source);
+                        }
+                    }
                 }
 
                 // What changed has gone quiet. A run that began before the
@@ -1133,6 +1189,7 @@ impl Scheduler {
 
                     for key in &actions.watch_drops {
                         drop_watches_for_key(key, &mut watch_paths, registrar.as_ref());
+                        self.cache.tree_unwatched(&key.provider, key.path.as_deref(), &key.source);
                     }
 
                     for key in &actions.evictions {
@@ -1145,6 +1202,7 @@ impl Scheduler {
                         // per (provider, path, source)).
                         on_evicted(&self.cache, &self.registry, key);
                         drop_watches_for_key(key, &mut watch_paths, registrar.as_ref());
+                        self.cache.tree_forget(&key.provider, key.path.as_deref(), &key.source);
                     }
 
                     for (key, new_state) in &actions.transitions {
@@ -1225,7 +1283,8 @@ fn instance_watches(
     {
         for pattern in &patterns {
             let file = home.join(pattern);
-            if !pattern.contains('/') && file.exists() {
+            if !pattern.contains('/') && !crate::provider::is_tree_pattern(pattern) && file.exists()
+            {
                 out.push((file, subscription(Vec::new())));
             }
         }
@@ -1600,6 +1659,37 @@ fn resolve_keys_from_paths(
     keys
 }
 
+/// The instance `key`, just subscribed, has its tree watched already if its
+/// root's registration has been made; otherwise when it is.
+fn tree_if_registered(cache: &Cache, registrar: Option<&Registrar>, key: &lifecycle::Key) {
+    if let (Some(registrar), Some(root)) = (registrar, &key.path)
+        && registrar.is_active(std::path::Path::new(root))
+    {
+        cache.tree_watched(&key.provider, key.path.as_deref(), &key.source);
+    }
+}
+
+/// The instances whose watched tree `changed_paths` lie in.
+fn resolve_tree_keys(
+    changed_paths: &[PathBuf],
+    watch_paths: &HashMap<PathBuf, Vec<Subscription>>,
+) -> Vec<lifecycle::Key> {
+    let mut keys = Vec::new();
+    for changed_path in changed_paths {
+        for (watch_path, subscriptions) in watch_paths {
+            if !changed_path.starts_with(watch_path) {
+                continue;
+            }
+            for sub in subscriptions {
+                if event_in_tree(&sub.patterns, watch_path, changed_path) {
+                    keys.push(sub.key.clone());
+                }
+            }
+        }
+    }
+    keys
+}
+
 /// Remove every subscription of `key`, and unwatch each path no one else is
 /// subscribed to.
 fn drop_watches_for_key(
@@ -1617,6 +1707,46 @@ fn drop_watches_for_key(
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_tree_event_is_anything_below_the_root_but_what_is_left_out() {
+        let patterns: Vec<String> = [".git/index", ".", "!.git"].map(String::from).to_vec();
+        let root = Path::new("/r");
+        let in_tree = |p: &str| event_in_tree(&patterns, root, Path::new(p));
+        assert!(in_tree("/r/README.md"));
+        assert!(in_tree("/r/src/deep/new.txt"));
+        assert!(in_tree("/r/.gitignore"));
+        assert!(!in_tree("/r/.git/index"));
+        assert!(!in_tree("/r/vendor/x/.git/HEAD"));
+        assert!(!in_tree("/r"));
+        assert!(!in_tree("/elsewhere/README.md"));
+        assert!(!event_in_tree(
+            &[".git/index".into()],
+            root,
+            Path::new("/r/README.md")
+        ));
+    }
+
+    #[test]
+    fn a_tree_pattern_names_no_path() {
+        let patterns: Vec<String> = [".git/index", ".", "!.git"].map(String::from).to_vec();
+        let root = Path::new("/r");
+        assert!(event_matches_patterns(
+            &patterns,
+            root,
+            Path::new("/r/.git/index")
+        ));
+        assert!(!event_matches_patterns(
+            &patterns,
+            root,
+            Path::new("/r/README.md")
+        ));
+        assert!(!event_matches_patterns(
+            &patterns,
+            root,
+            Path::new("/r/.git/x.lock")
+        ));
+    }
 
     fn put_key(path: Option<&str>, node: &str) -> lifecycle::Key {
         lifecycle::Key {
