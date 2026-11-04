@@ -213,7 +213,7 @@ The scheduler's `tokio::select!` loop picks up `Some(paths) = fs_rx.recv()`. A p
 
 **Step 4: the run is started**
 
-An Active entry takes the event (`LifecycleRegistry::on_fsevent`; a decaying one has no watch, and a late event does nothing), and `Scheduler::fire` does what the key's event means. For a Source instance, `self.execute_source("git", "refs", Some("/home/user/myrepo"), Want::Fresh)` asks the run table for a run of that instance that begins after the event (`Runs::start`): a file event may follow a change the run in flight has already read past. For a memo (below), it drops the memo's hash.
+An Active entry takes the event (`LifecycleRegistry::on_fsevent`; a decaying one has no watch, and a late event does nothing). A Source instance waits for its files to go quiet, 30 ms after the last change and at most 500 ms after the first (`Settling`): one command makes a burst of changes, and a run during the burst reads a state about to go and shares the budget of the read that follows. Then `Scheduler::fire` does what the key's event means. For a Source instance, `self.execute_source("git", "refs", Some("/home/user/myrepo"), Want::Fresh)` asks the run table for a run of that instance that begins after the event (`Runs::start`): a file event may follow a change the run in flight has already read past. For a memo (below), it drops the memo's hash.
 
 **Step 5: One run per instance**
 

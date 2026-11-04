@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 // The scheduler's one clock is the runtime's: its ticks, its lifecycle and its
 // failure backoff read it, as the cache's ages do. In a daemon it is the
 // system's monotonic clock; a test pauses and advances it.
-use tokio::time::{Duration, Instant, interval};
+use tokio::time::{Duration, Instant, interval, sleep_until};
 use tracing::{debug, info, warn};
 
 use crate::query::Instance;
@@ -512,6 +512,49 @@ pub(crate) fn event_matches_patterns(
     })
 }
 
+/// How long a Source's watched files stay quiet before a file event runs it.
+/// One command makes a burst of changes (`git commit`: the index, a ref, a log,
+/// `HEAD`), and a run during the burst reads a state that is about to go. A read
+/// straight after the command must not find its budget shared with it.
+const QUIET: Duration = Duration::from_millis(30);
+
+/// However busy the files stay, a run this soon after the first change: what
+/// watches them hears of a long operation as it goes.
+const MOST_QUIET: Duration = Duration::from_millis(500);
+
+/// The instances whose watched files changed and have yet to go quiet: for
+/// each, when the first change was heard, and when it runs.
+#[derive(Default)]
+struct Settling {
+    keys: HashMap<lifecycle::Key, (Instant, Instant)>,
+}
+
+impl Settling {
+    fn changed(&mut self, key: lifecycle::Key, now: Instant) {
+        let (first, due) = self.keys.entry(key).or_insert((now, now));
+        *due = (now + QUIET).min(*first + MOST_QUIET);
+    }
+
+    /// When the next one is due.
+    fn next(&self) -> Option<Instant> {
+        self.keys.values().map(|(_, due)| *due).min()
+    }
+
+    /// Those due by `now`, taken.
+    fn due(&mut self, now: Instant) -> Vec<lifecycle::Key> {
+        let due: Vec<lifecycle::Key> = self
+            .keys
+            .iter()
+            .filter(|(_, (_, at))| *at <= now)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &due {
+            self.keys.remove(key);
+        }
+        due
+    }
+}
+
 /// The scheduler core loop: executes providers on demand and manages subscriptions.
 pub struct Scheduler {
     cache: Arc<Cache>,
@@ -849,6 +892,9 @@ impl Scheduler {
         let mut last_activity = Instant::now();
         let idle_shutdown = self.config.daemon().idle_shutdown();
 
+        // The instances whose watched files changed, until they go quiet.
+        let mut settling = Settling::default();
+
         // Tick every second to check poll timers.
         let mut tick = interval(Duration::from_secs(1));
 
@@ -1012,13 +1058,24 @@ impl Scheduler {
                     let affected_keys = resolve_keys_from_paths(&paths, &watch_paths);
                     for key in affected_keys {
                         let outcome = lifecycle.on_fsevent(key.clone(), Instant::now());
-                        // A run that began before the change may have read
-                        // the file before it: one that begins after it.
                         if outcome.refresh {
-                            self.fire(&key, Want::Fresh);
+                            if crate::cache::is_static_label(&key.source) {
+                                self.fire(&key, Want::Fresh);
+                            } else {
+                                settling.changed(key, Instant::now());
+                            }
                         }
                     }
                     last_activity = Instant::now();
+                }
+
+                // What changed has gone quiet. A run that began before the
+                // change may have read the file before it: one that begins
+                // after it.
+                _ = sleep_until(settling.next().unwrap_or_else(Instant::now)), if settling.next().is_some() => {
+                    for key in settling.due(Instant::now()) {
+                        self.fire(&key, Want::Fresh);
+                    }
                 }
 
                 // Watch self-test verdict (canon provider_source.md §"Watch backend health").
@@ -2048,6 +2105,37 @@ mod tests {
              demand waited {status_waited:?}",
             ticks.len()
         );
+    }
+
+    /// A burst runs once, after the last of it; a burst that does not end runs
+    /// at the cap, and starts over.
+    #[test]
+    fn a_change_waits_for_quiet_and_no_longer_than_the_cap() {
+        let key = lifecycle::Key {
+            provider: "p".into(),
+            path: None,
+            source: "s".into(),
+            node: String::new(),
+        };
+        let t0 = Instant::now();
+        let mut settling = Settling::default();
+        assert_eq!(settling.next(), None);
+        settling.changed(key.clone(), t0);
+        assert_eq!(settling.next(), Some(t0 + QUIET));
+        let later = t0 + QUIET / 2;
+        settling.changed(key.clone(), later);
+        assert_eq!(
+            settling.next(),
+            Some(later + QUIET),
+            "a change starts it over"
+        );
+        assert!(settling.due(later).is_empty());
+        assert_eq!(settling.due(later + QUIET), vec![key.clone()]);
+        assert_eq!(settling.next(), None, "taken");
+
+        settling.changed(key.clone(), t0);
+        settling.changed(key.clone(), t0 + MOST_QUIET - Duration::from_millis(1));
+        assert_eq!(settling.next(), Some(t0 + MOST_QUIET), "the cap");
     }
 
     #[test]
