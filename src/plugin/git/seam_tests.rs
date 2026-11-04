@@ -343,6 +343,167 @@ fn git_lineage_keeps_no_failed_comparison() {
     assert_eq!(facts.get("lines_added_default"), Some(&json!(5)));
 }
 
+/// A repository on `branch` as its files: empty loose refs for `heads` (so no
+/// head commit is known and nothing is kept between runs), and a reflog naming
+/// what the branch was created from, when there is one.
+fn repo_on(branch: &str, heads: &[&str], created_from: Option<&str>) -> TempDir {
+    let dir = fake_repo();
+    let git = dir.path().join(".git");
+    std::fs::write(git.join("HEAD"), format!("ref: refs/heads/{branch}\n")).unwrap();
+    std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+    for head in heads {
+        std::fs::write(git.join("refs/heads").join(head), "").unwrap();
+    }
+    if let Some(start) = created_from {
+        std::fs::create_dir_all(git.join("logs/refs/heads")).unwrap();
+        std::fs::write(
+            git.join("logs/refs/heads").join(branch),
+            format!("0 1 N <n@x> 0 +0000\tbranch: Created from {start}\n"),
+        )
+        .unwrap();
+    }
+    dir
+}
+
+/// The fields of the `branches` and `lineage` Sources, by name.
+fn lineage_of(
+    dir: &TempDir,
+    outputs: Vec<(&'static str, std::io::Result<Output>)>,
+) -> Vec<(String, serde_json::Value)> {
+    let names = branches_facts(dir.path(), &StubGitExecutor::new(vec![])).expect("facts");
+    let counts = lineage_facts(dir.path(), &StubGitExecutor::new(outputs)).expect("facts");
+    let mut fields: Vec<_> = names.into_iter().chain(counts).collect();
+    fields.sort_by(|a, b| a.0.cmp(&b.0));
+    fields
+}
+
+fn fields(want: serde_json::Value) -> Vec<(String, serde_json::Value)> {
+    want.as_object().unwrap().clone().into_iter().collect()
+}
+
+#[test]
+fn git_lineage_counts_removed_lines() {
+    let dir = repo_on("feature", &["main", "devel"], Some("devel"));
+    let got = lineage_of(
+        &dir,
+        vec![
+            ("merge-base --fork-point devel HEAD", success(b"p\n")),
+            ("diff --numstat p..HEAD", success(b"2\t0\tg\n0\t2\tf\n")),
+            ("merge-base --fork-point main HEAD", success(b"q\n")),
+            ("diff --numstat q..HEAD", success(b"5\t2\tf\n")),
+        ],
+    );
+    assert_eq!(
+        got,
+        fields(json!({
+            "branch_default": "main",
+            "branch_parent": "devel",
+            "lines_added_default": 5,
+            "lines_added_parent": 2,
+            "lines_removed_default": 2,
+            "lines_removed_parent": 2,
+        }))
+    );
+}
+
+/// With no reflog, one naming a branch that is gone, or one saying `HEAD`, the
+/// parent is the default branch, and the two comparisons are one: the stub
+/// answers each command once.
+#[test]
+fn git_lineage_parent_falls_back_to_the_default_branch() {
+    for (heads, created_from) in [
+        (&["main"][..], None),
+        (&["main"][..], Some("devel")),
+        (&["main", "devel"][..], Some("HEAD")),
+    ] {
+        let dir = repo_on("feature", heads, created_from);
+        let got = lineage_of(
+            &dir,
+            vec![
+                ("merge-base --fork-point main HEAD", success(b"p\n")),
+                ("diff --numstat p..HEAD", success(b"5\t0\tf\n")),
+            ],
+        );
+        assert_eq!(
+            got,
+            fields(json!({
+                "branch_default": "main",
+                "branch_parent": "main",
+                "lines_added_default": 5,
+                "lines_added_parent": 5,
+                "lines_removed_default": 0,
+                "lines_removed_parent": 0,
+            })),
+            "{created_from:?}"
+        );
+    }
+}
+
+/// No `origin/HEAD`: the default branch is the local `main`, which is HEAD.
+/// Deterministically zero rather than absent.
+#[test]
+fn git_lineage_on_default_branch_without_remote_reports_zero() {
+    let dir = repo_on("main", &["main"], None);
+    let got = lineage_of(
+        &dir,
+        vec![
+            ("merge-base --fork-point main HEAD", success(b"p\n")),
+            ("diff --numstat p..HEAD", success(diff_empty())),
+        ],
+    );
+    assert_eq!(
+        got,
+        fields(json!({
+            "branch_default": "main",
+            "branch_parent": "main",
+            "lines_added_default": 0,
+            "lines_added_parent": 0,
+            "lines_removed_default": 0,
+            "lines_removed_parent": 0,
+        }))
+    );
+}
+
+/// `origin/HEAD` names the default branch, and the comparison is with the
+/// remote-tracking ref: on that branch, the work not yet pushed.
+#[test]
+fn git_lineage_default_branch_from_origin_head_measures_unpushed_work() {
+    let dir = repo_on("main", &["main"], None);
+    let origin = dir.path().join(".git/refs/remotes/origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    std::fs::write(origin.join("HEAD"), "ref: refs/remotes/origin/main\n").unwrap();
+    let got = lineage_of(
+        &dir,
+        vec![
+            ("merge-base --fork-point origin/main HEAD", success(b"p\n")),
+            ("diff --numstat p..HEAD", success(b"2\t0\tg\n")),
+        ],
+    );
+    assert_eq!(
+        got,
+        fields(json!({
+            "branch_default": "main",
+            "branch_parent": "main",
+            "lines_added_default": 2,
+            "lines_added_parent": 2,
+            "lines_removed_default": 0,
+            "lines_removed_parent": 0,
+        }))
+    );
+}
+
+/// Detached HEAD has no branch, so no lineage fields, and runs nothing.
+#[test]
+fn git_lineage_detached_head_emits_nothing() {
+    let dir = repo_on("main", &["main"], None);
+    std::fs::write(
+        dir.path().join(".git/HEAD"),
+        format!("{}\n", "a".repeat(40)),
+    )
+    .unwrap();
+    assert_eq!(lineage_of(&dir, vec![]), vec![]);
+}
+
 // ── status source seam tests ──────────────────────────────────────────────────
 
 #[test]
