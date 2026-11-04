@@ -141,8 +141,8 @@ model = '''
 {%- macro effort_tag(level, room) -%}
     {#- The longest `/<form>` of `level` that fits `room` columns. -#}
     {%- set l = level | lower -%}
-    {%- set known = {"low": ["low", "low", "L"], "medium": ["medium", "med", "M"], "high": ["high", "high", "H"], "xhigh": ["xhigh", "xhi", "X"], "max": ["max", "max", "S"]} -%}
-    {%- set forms = known[l] if (l in known) else [l, l[:3], l[:1] | upper] -%}
+    {%- set known = {"low": ["Low", "Low", "L"], "medium": ["Medium", "Med", "M"], "high": ["High", "High", "H"], "xhigh": ["Xhigh", "Xhi", "X"], "max": ["Max", "Max", "S"]} -%}
+    {%- set forms = known[l] if (l in known) else [(l[:1] | upper) ~ l[1:], (l[:1] | upper) ~ l[1:3], l[:1] | upper] -%}
     {%- set pick = namespace(t="") -%}
     {%- for f in forms -%}
         {%- set t = "/" ~ f -%}
