@@ -1,7 +1,8 @@
 //! `[daemon.providers.<p>.sources.<s>]`: a Source is a function. These tests
 //! run a daemon in the test process over a config directory (one test spawns a
-//! real `comb daemon`) and read through `comb get`, so they cover the layers (defaults, `config.toml`, `conf.d`),
-//! the moments each line runs at, and whose environment `data` sees.
+//! real `comb daemon`) and read through `libbeachcomber`'s resolver on a `Session`,
+//! the one `comb get` prints from, so they cover the layers (defaults, `config.toml`,
+//! `conf.d`), the moments each line runs at, and whose environment `data` sees.
 //!
 //! A scenario here is a daemon started over the files as they are. An edit
 //! under `providers` reloads a running daemon in place; that is covered in
@@ -60,22 +61,25 @@ impl Setup {
     }
 }
 
-/// `comb get -f json <args>` from `cwd`: the parsed value, or `None` on a miss
-/// (`null`) or an error.
+/// What `comb get <args>` reads at `cwd` (`--global` before the key reads the
+/// global entry): the value, or `None` on a miss or an error.
 fn get_at(d: &TestDaemon, cwd: &Path, args: &[&str]) -> Option<Value> {
-    let out = d
-        .comb(cwd)
-        .args(["get", "-f", "json"])
-        .args(args)
-        .output()
-        .expect("run comb get");
-    out.status
-        .success()
-        .then(|| {
-            serde_json::from_slice::<Value>(&out.stdout)
-                .unwrap_or_else(|e| panic!("get {args:?}: not JSON ({e}): {:?}", out.stdout))
-        })
-        .filter(|v| !v.is_null())
+    let (key, path) = match args {
+        [key] => (*key, Some(cwd.to_str().expect("a UTF-8 path"))),
+        ["--global", key] => (*key, None),
+        other => panic!("get_at takes a key, or --global and a key: {other:?}"),
+    };
+    libbeachcomber::Client::with_config(libbeachcomber::ClientConfig {
+        timeout: Duration::from_secs(5),
+        auto_start: false,
+        exec: true,
+    })
+    .with_socket_path(d.socket.path.clone())
+    .session()
+    .expect("a session on the daemon")
+    .get(key, path)
+    .ok()
+    .flatten()
 }
 
 fn get(d: &TestDaemon, key: &str) -> Option<Value> {
