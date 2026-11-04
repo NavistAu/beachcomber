@@ -261,6 +261,45 @@ async fn stop_scheduler(
     tokio::time::timeout(SCHEDULER_STOP, task).await.is_ok()
 }
 
+/// How long a daemon told to stop has to do so. Past [`SCHEDULER_STOP`], so a
+/// stop that is only slow finishes on its own.
+pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Turn SIGINT and SIGTERM into `cancel`, on a thread and a runtime of their
+/// own, so a daemon whose workers are all stuck still hears them. A daemon
+/// still running `grace` later gets `overrun`.
+pub fn spawn_signal_thread(
+    cancel: CancellationToken,
+    grace: std::time::Duration,
+    overrun: impl FnOnce() + Send + 'static,
+) -> std::io::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let (mut sigint, mut sigterm) = {
+        let _entered = rt.enter();
+        (
+            signal(SignalKind::interrupt())?,
+            signal(SignalKind::terminate())?,
+        )
+    };
+    std::thread::Builder::new()
+        .name("comb-signal".into())
+        .spawn(move || {
+            rt.block_on(async {
+                tokio::select! {
+                    _ = sigint.recv() => info!("Received SIGINT, shutting down..."),
+                    _ = sigterm.recv() => info!("Received SIGTERM, shutting down..."),
+                }
+            });
+            cancel.cancel();
+            std::thread::sleep(grace);
+            overrun();
+        })?;
+    Ok(())
+}
+
 /// What a daemon refusing its configuration says: one line per error, then
 /// the verdict. The same lines whether it refuses before its logger is built
 /// (`comb daemon`, on stderr) or after it (in the log).
@@ -331,6 +370,26 @@ fn spawn_watchdog(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No runtime but the signal thread's own exists here, as none is left
+    /// for it in a daemon whose workers are stuck. nextest gives each test its
+    /// own process, so the signal reaches only this one.
+    #[test]
+    fn a_stop_signal_is_heard_with_no_worker_running_and_then_overruns() {
+        let cancel = CancellationToken::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn_signal_thread(
+            cancel.clone(),
+            std::time::Duration::from_millis(10),
+            move || tx.send(()).unwrap(),
+        )
+        .unwrap();
+        // SAFETY: raise has no preconditions; the signal thread handles it.
+        assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the overrun runs");
+        assert!(cancel.is_cancelled());
+    }
 
     /// A scheduler that takes nothing and never ends does not keep the daemon
     /// from stopping: this wait, unbounded, is what SIGTERM got stuck on.

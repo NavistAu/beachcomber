@@ -146,30 +146,19 @@ pub fn run_daemon(
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let outcome = rt.block_on(async {
         let cancel = tokio_util::sync::CancellationToken::new();
-        let cancel_clone = cancel.clone();
 
-        tokio::spawn(async move {
-            use tokio::signal::unix::{SignalKind, signal};
-            let mut sigint = match signal(SignalKind::interrupt()) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!("Failed to install SIGINT handler: {e}");
-                    return;
-                }
-            };
-            let mut sigterm = match signal(SignalKind::terminate()) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!("Failed to install SIGTERM handler: {e}");
-                    return;
-                }
-            };
-            tokio::select! {
-                _ = sigint.recv() => tracing::info!("Received SIGINT, shutting down..."),
-                _ = sigterm.recv() => tracing::info!("Received SIGTERM, shutting down..."),
-            }
-            cancel_clone.cancel();
-        });
+        if let Err(e) = crate::daemon::spawn_signal_thread(
+            cancel.clone(),
+            crate::daemon::STOP_GRACE,
+            || {
+                tracing::error!("still running {:?} after a stop signal, exiting", crate::daemon::STOP_GRACE);
+                // SAFETY: ends the process at once; a wedged daemon must not
+                // wait on anything on its way out.
+                unsafe { libc::_exit(1) }
+            },
+        ) {
+            tracing::error!("Failed to install signal handlers: {e}");
+        }
 
         // Tie our lifetime to the spawning process when asked (tests). Survives a
         // SIGKILL of the parent, where Drop-based cleanup in the spawner cannot run.
