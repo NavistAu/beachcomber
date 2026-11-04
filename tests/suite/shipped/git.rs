@@ -94,9 +94,6 @@ fn git_provider_metadata() {
         !refs_fields.contains(&"detached"),
         "detached moved to head source"
     );
-    assert!(refs_fields.contains(&"ahead"));
-    assert!(refs_fields.contains(&"behind"));
-    assert!(refs_fields.contains(&"upstream"));
     assert!(refs_fields.contains(&"commit"));
     assert!(refs_fields.contains(&"tag"));
     assert!(refs_fields.contains(&"stash"));
@@ -131,6 +128,9 @@ fn git_provider_metadata() {
     assert!(status_fields.contains(&"untracked"));
     assert!(status_fields.contains(&"conflicted"));
     assert!(status_fields.contains(&"dirty"));
+    assert!(status_fields.contains(&"ahead"));
+    assert!(status_fields.contains(&"behind"));
+    assert!(status_fields.contains(&"upstream"));
 }
 
 #[test]
@@ -960,16 +960,33 @@ async fn git_returns_miss_for_non_repo() {
 
 // ── the file itself ───────────────────────────────────────────────────────────
 
-/// The schedules are the Rust provider's, Source for Source.
+/// Each Source's schedule, and that what wakes one is what it says something
+/// about: no watch of `.git` itself, which a lockfile would set off.
 #[test]
-fn git_schedules_are_as_they_were() {
+fn git_schedules_watch_what_each_source_reads() {
     let watch = |patterns: &[&str]| InvalidationStrategy::Watch {
         patterns: patterns.iter().map(|p| p.to_string()).collect(),
         abs_paths: vec![],
     };
     for (source, invalidation, failback) in [
-        ("head", watch(&[".git"]), 60),
-        ("refs", watch(&[".git"]), 60),
+        ("head", watch(&[".git/HEAD"]), 60),
+        (
+            "refs",
+            watch(&[
+                ".git/HEAD",
+                ".git/refs",
+                ".git/packed-refs",
+                ".git/config",
+                ".git/logs/refs/stash",
+                ".git/MERGE_HEAD",
+                ".git/rebase-merge",
+                ".git/rebase-apply",
+                ".git/CHERRY_PICK_HEAD",
+                ".git/BISECT_LOG",
+                ".git/REVERT_HEAD",
+            ]),
+            60,
+        ),
         (
             "diff",
             InvalidationStrategy::Poll {
@@ -980,16 +997,21 @@ fn git_schedules_are_as_they_were() {
         ),
         (
             "lineage",
-            InvalidationStrategy::Poll {
-                interval_secs: 60,
-                count: 2,
-            },
+            watch(&[".git/HEAD", ".git/refs", ".git/packed-refs"]),
             60,
         ),
         (
             "status",
             InvalidationStrategy::WatchAndPoll {
-                patterns: vec![".git/index".into()],
+                patterns: [
+                    ".git/index",
+                    ".git/HEAD",
+                    ".git/refs",
+                    ".git/packed-refs",
+                    ".git/config",
+                ]
+                .map(String::from)
+                .to_vec(),
                 abs_paths: vec![],
                 interval_secs: 60,
                 count: 2,
@@ -1155,7 +1177,7 @@ fn write_head(gitdir: &Path, branch: &str) {
 /// With the watcher off, at `dir`: 100 checkouts in a row are each seen by the
 /// next read of the branch; a commit by the next read of the commit, and a
 /// `git add` by the next read of the staged count, the plugin's reads being
-/// checked by what the Source's own lines stat.
+/// checked by the files it notes.
 fn every_change_is_seen(repo: &GitRepoFixture, dir: &Path, gitdir: &Path) {
     let s = served(&[], "");
     let at = Some(dir);
@@ -1237,6 +1259,346 @@ fn git_reads_with_nothing_changed_run_nothing() {
     assert_eq!(first, every());
 }
 
+// ── the first read after an event ─────────────────────────────────────────────
+
+/// A repository on `main`, level with an upstream, with a branch `side` at the
+/// same commit; every file in its `.git` old enough that a stamp of it is not
+/// racy, and every Source warm.
+struct FirstRead {
+    repo: GitRepoFixture,
+    _bare: TempDir,
+    dir: std::path::PathBuf,
+    s: super::Served,
+}
+
+impl FirstRead {
+    fn new() -> Self {
+        let repo = GitRepoFixture::new();
+        let bare = TempDir::new().unwrap();
+        let dir = repo.path().canonicalize().unwrap();
+        let origin = bare.path().to_str().unwrap();
+        repo.git_in(&dir, &["init", "-q", "--bare", origin]);
+        repo.git_in(&dir, &["remote", "add", "origin", origin]);
+        repo.git_in(&dir, &["push", "-q", "-u", "origin", "main"]);
+        repo.git_in(&dir, &["branch", "side"]);
+        let s = served(&[], "");
+        let this = Self {
+            repo,
+            _bare: bare,
+            dir,
+            s,
+        };
+        this.settle();
+        this
+    }
+
+    /// What has happened so far, long ago: the next change is a change.
+    fn settle(&self) {
+        for entry in walk(&self.dir.join(".git")) {
+            age(&entry);
+        }
+        self.s.get("git", Some(&self.dir)).expect("git answers");
+    }
+
+    fn git(&self, args: &[&str]) {
+        self.repo.git_in(&self.dir, args);
+    }
+
+    /// What the next read answers for `field`.
+    fn get(&self, field: &str) -> Option<serde_json::Value> {
+        self.s.get(&format!("git.{field}"), Some(&self.dir))
+    }
+
+    /// The whole of the next read, checked field by field against `want`.
+    fn expect(&self, want: &[(&str, serde_json::Value)]) {
+        let got = self.s.get("git", Some(&self.dir)).expect("git answers");
+        for (field, value) in want {
+            assert_eq!(got.get(*field), Some(value), "{field} of {got}");
+        }
+    }
+
+    fn write(&self, name: &str, body: &str) {
+        std::fs::write(self.dir.join(name), body).unwrap();
+    }
+
+    fn sha(&self, rev: &str) -> String {
+        let out = crate::common::git::git_cmd(&self.dir, &["rev-parse", "--short", rev])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+}
+
+/// Every path below `dir`, and `dir`; no object, which nothing reads a stamp of.
+fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = vec![dir.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten().filter(|e| e.file_name() != "objects") {
+            out.extend(walk(&entry.path()));
+        }
+    }
+    out
+}
+
+fn tracked_file(f: &FirstRead) -> String {
+    let out = crate::common::git::git_cmd(&f.dir, &["ls-files"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines().next().expect("a tracked file").to_string()
+}
+
+/// A lockfile comes and goes: every record stands, no Source runs.
+#[test]
+fn first_read_after_a_lockfile_runs_nothing() {
+    let f = FirstRead::new();
+    let ran = |source: &str| f.s.ran_at("git", Some(&f.dir), source);
+    let sources = ["head", "refs", "diff", "lineage", "status"];
+    let before: Vec<_> = sources.iter().map(|s| ran(s)).collect();
+    let lock = f.dir.join(".git/some.lock");
+    std::fs::write(&lock, "").unwrap();
+    std::fs::remove_file(&lock).unwrap();
+    f.expect(&[("branch", json!("main")), ("dirty", json!(false))]);
+    let after: Vec<_> = sources.iter().map(|s| ran(s)).collect();
+    assert_eq!(before, after);
+}
+
+/// A plain `git status` rewrites a stat-dirty index: what depends on the index
+/// runs again and says what it said; what does not, stands.
+#[test]
+fn first_read_after_git_status_is_unchanged() {
+    let f = FirstRead::new();
+    let file = tracked_file(&f);
+    let body = std::fs::read(f.dir.join(&file)).unwrap();
+    std::fs::write(f.dir.join(&file), body).unwrap();
+    f.settle();
+    let ran = |source: &str| f.s.ran_at("git", Some(&f.dir), source);
+    let before = (ran("head"), ran("refs"), ran("lineage"));
+    f.git(&["status"]);
+    f.expect(&[("dirty", json!(false)), ("staged", json!(0))]);
+    assert_eq!(before, (ran("head"), ran("refs"), ran("lineage")));
+}
+
+#[test]
+fn first_read_after_git_add() {
+    let f = FirstRead::new();
+    f.write("new.txt", "one\n");
+    f.settle();
+    f.git(&["add", "new.txt"]);
+    f.expect(&[
+        ("staged", json!(1)),
+        ("untracked", json!(0)),
+        ("dirty", json!(true)),
+        ("lines_staged_added", json!(1)),
+    ]);
+}
+
+/// `git add` moves the index and no ref: `refs` and `lineage` do not run.
+#[test]
+fn git_add_runs_only_what_the_index_moves() {
+    let f = FirstRead::new();
+    f.write("new.txt", "one\n");
+    f.settle();
+    let ran = |source: &str| f.s.ran_at("git", Some(&f.dir), source);
+    let before = (ran("head"), ran("refs"), ran("lineage"));
+    f.git(&["add", "new.txt"]);
+    assert_eq!(f.get("staged"), Some(json!(1)));
+    f.s.get("git", Some(&f.dir)).expect("git answers");
+    assert_eq!(before, (ran("head"), ran("refs"), ran("lineage")));
+}
+
+#[test]
+fn first_read_after_git_commit() {
+    let f = FirstRead::new();
+    f.write("new.txt", "one\n");
+    f.git(&["add", "new.txt"]);
+    f.settle();
+    f.git(&["commit", "-qm", "the next one"]);
+    f.expect(&[
+        ("commit", json!(f.sha("HEAD"))),
+        ("commit_summary", json!("the next one")),
+        ("ahead", json!(1)),
+        ("behind", json!(0)),
+        ("staged", json!(0)),
+        ("dirty", json!(false)),
+        ("lines_staged_added", json!(0)),
+        ("lines_added_default", json!(0)),
+    ]);
+}
+
+#[test]
+fn first_read_after_git_checkout() {
+    let f = FirstRead::new();
+    f.git(&["checkout", "-q", "-b", "elsewhere", "side"]);
+    f.write("there.txt", "x\n");
+    f.git(&["add", "there.txt"]);
+    f.git(&["commit", "-qm", "on elsewhere"]);
+    f.git(&["checkout", "-q", "main"]);
+    f.settle();
+    f.git(&["checkout", "-q", "elsewhere"]);
+    f.expect(&[
+        ("branch", json!("elsewhere")),
+        ("commit", json!(f.sha("HEAD"))),
+        ("commit_summary", json!("on elsewhere")),
+    ]);
+    let whole = f.s.get("git", Some(&f.dir)).unwrap();
+    for gone in ["upstream", "ahead", "behind"] {
+        assert_eq!(whole.get(gone), None, "{gone}: elsewhere has no upstream");
+    }
+}
+
+#[test]
+fn first_read_after_git_stash() {
+    let f = FirstRead::new();
+    let file = tracked_file(&f);
+    f.write(&file, "changed\n");
+    f.settle();
+    f.git(&["stash", "-q"]);
+    f.expect(&[
+        ("stash", json!(1)),
+        ("dirty", json!(false)),
+        ("unstaged", json!(0)),
+        ("lines_added", json!(0)),
+    ]);
+}
+
+#[test]
+fn first_read_after_git_fetch_sees_the_upstream_move() {
+    let f = FirstRead::new();
+    let other = TempDir::new().unwrap();
+    let origin = crate::common::git::git_cmd(&f.dir, &["remote", "get-url", "origin"])
+        .output()
+        .unwrap();
+    let origin = String::from_utf8_lossy(&origin.stdout).trim().to_string();
+    f.git(&[
+        "clone",
+        "-q",
+        "-b",
+        "main",
+        &origin,
+        other.path().to_str().unwrap(),
+    ]);
+    let clone = other.path();
+    std::fs::write(clone.join("up.txt"), "up\n").unwrap();
+    f.repo.git_in(clone, &["add", "up.txt"]);
+    f.repo.git_in(clone, &["commit", "-qm", "upstream moved"]);
+    f.repo.git_in(clone, &["push", "-q", "origin", "HEAD:main"]);
+    f.settle();
+    assert_eq!(f.get("behind"), Some(json!(0)));
+    f.git(&["fetch", "-q", "origin"]);
+    assert_eq!(f.get("behind"), Some(json!(1)));
+}
+
+#[test]
+fn first_read_after_git_push_sees_ahead_fall() {
+    let f = FirstRead::new();
+    f.write("new.txt", "one\n");
+    f.git(&["add", "new.txt"]);
+    f.git(&["commit", "-qm", "to push"]);
+    f.settle();
+    assert_eq!(f.get("ahead"), Some(json!(1)));
+    f.git(&["push", "-q", "origin", "main"]);
+    assert_eq!(f.get("ahead"), Some(json!(0)));
+}
+
+#[test]
+fn first_read_after_git_rebase() {
+    let f = FirstRead::new();
+    f.git(&["checkout", "-q", "side"]);
+    f.write("base.txt", "b\n");
+    f.git(&["add", "base.txt"]);
+    f.git(&["commit", "-qm", "the base moved"]);
+    f.git(&["checkout", "-q", "main"]);
+    f.write("mine.txt", "m\n");
+    f.git(&["add", "mine.txt"]);
+    f.git(&["commit", "-qm", "mine"]);
+    f.settle();
+    f.git(&["rebase", "-q", "side"]);
+    f.expect(&[
+        ("branch", json!("main")),
+        ("commit", json!(f.sha("HEAD"))),
+        ("commit_summary", json!("mine")),
+        ("ahead", json!(2)),
+        ("state", json!("clean")),
+    ]);
+}
+
+/// A rebase stopped on a conflict: the operation, its step and the conflict.
+#[test]
+fn first_read_after_a_rebase_stops() {
+    let f = FirstRead::new();
+    let file = tracked_file(&f);
+    f.git(&["checkout", "-q", "side"]);
+    f.write(&file, "theirs\n");
+    f.git(&["commit", "-qam", "theirs"]);
+    f.git(&["checkout", "-q", "main"]);
+    f.write(&file, "ours\n");
+    f.git(&["commit", "-qam", "ours"]);
+    f.settle();
+    let out = crate::common::git::git_cmd(&f.dir, &["rebase", "-q", "side"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "a conflict");
+    f.expect(&[
+        ("state", json!("rebase")),
+        ("state_step", json!(1)),
+        ("state_total", json!(1)),
+        ("conflicted", json!(1)),
+        ("detached", json!(true)),
+    ]);
+}
+
+/// A linked worktree is checked by the same files, where `.git` is a gitfile:
+/// its index, its HEAD, and the refs it shares.
+#[test]
+fn first_read_after_events_in_a_linked_worktree() {
+    let f = FirstRead::new();
+    let wt = f.repo.add_worktree("wt", "start").canonicalize().unwrap();
+    let at = Some(wt.as_path());
+    let read = |field: &str| f.s.get(&format!("git.{field}"), at);
+    assert_eq!(read("staged"), Some(json!(0)));
+    let lock = f.dir.join(".git/worktrees/wt/some.lock");
+    std::fs::write(&lock, "").unwrap();
+    std::fs::remove_file(&lock).unwrap();
+    assert_eq!(read("staged"), Some(json!(0)));
+
+    std::fs::write(wt.join("w.txt"), "w\n").unwrap();
+    f.repo.git_in(&wt, &["add", "w.txt"]);
+    assert_eq!(read("staged"), Some(json!(1)), "git add");
+    f.repo.git_in(&wt, &["commit", "-qm", "in the worktree"]);
+    assert_eq!(read("commit_summary"), Some(json!("in the worktree")));
+    assert_eq!(read("staged"), Some(json!(0)), "git commit");
+    std::fs::write(wt.join("w.txt"), "w2\n").unwrap();
+    f.repo.git_in(&wt, &["stash", "-q"]);
+    assert_eq!(read("stash"), Some(json!(1)), "git stash");
+}
+
+/// The reads the owner of a Source gets from `lup`: a directory found is there,
+/// whatever comes and goes in it, and made or removed nearer is a change.
+#[test]
+fn a_source_over_lup_does_not_run_for_entries_coming_and_going() {
+    let s = served(
+        &[],
+        "[daemon.providers.m.sources.s]\n\
+         root = \"{{ lup('.marker') | dirname }}\"\n\
+         data = \"{{ lup('.marker') }}\"\n\
+         result.found = \"{{ data }}\"\n\
+         return = \"{{ result | poll('10m') }}\"\n",
+    );
+    let marker = s.project.join(".marker");
+    std::fs::create_dir(&marker).unwrap();
+    age(&marker);
+    let at = Some(s.project.as_path());
+    let found = s.get("m.found", at).expect("found");
+    let first = s.ran_at("m", at, "s");
+    std::fs::write(marker.join("entry"), "").unwrap();
+    assert_eq!(s.get("m.found", at), Some(found));
+    assert_eq!(s.ran_at("m", at, "s"), first, "an entry in it is no change");
+    std::fs::remove_file(marker.join("entry")).unwrap();
+    std::fs::remove_dir(&marker).unwrap();
+    assert_eq!(s.get("m.found", at), None, "gone is a change");
+}
+
 // ── what it spawns ────────────────────────────────────────────────────────────
 
 /// A `git` that logs each command and its environment, then runs the real one.
@@ -1262,8 +1624,9 @@ fn logging_git(dir: &Path, log: &Path) {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-/// A refresh spawns the git commands the Rust provider did, in git's
-/// environment, and nothing else: `head` none, no shell, no helper.
+/// A refresh spawns these, in git's environment, and nothing else: `head` none,
+/// one `git status` for everything it says, one `git config` for both of its
+/// keys, no `rev-parse` for a branch with a loose ref, no shell, no helper.
 #[test]
 fn git_a_refresh_spawns_the_same_commands() {
     let repo = GitRepoFixture::new();
@@ -1289,14 +1652,11 @@ fn git_a_refresh_spawns_the_same_commands() {
         .unwrap();
     let point = String::from_utf8_lossy(&point.stdout);
     let mut want: Vec<String> = [
-        "status --porcelain=v2 --branch", // refs
-        "log -1 --format=%h %ct %s",
+        "log -1 --format=%h %ct %s", // refs
         "describe --tags --abbrev=0",
-        "config --get branch.main.pushRemote",
-        "config --get remote.pushDefault",
+        "config --list --null",
         "diff --numstat", // diff
         "diff --cached --numstat",
-        "rev-parse --verify --quiet refs/heads/main", // lineage: the default branch
         "merge-base --fork-point main HEAD",
         &format!("diff --numstat {}..HEAD", point.trim()),
         "status --porcelain=v2 --branch", // status

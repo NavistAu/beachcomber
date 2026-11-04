@@ -259,7 +259,7 @@ Three rounds for the benches, 15 for the CLI, five for the suite (2508 tests eac
 | **A file's lines** | about 90-170 µs | hostname, user, load, uptime (a `sys` call), gcloud_configs (reads files); `git.head` about 0.3 ms over its read | One run of the shipped Source: the engine, the lines, no process |
 | **One process** | 3-12 ms | network 2.7 ms (`getifaddrs`, and `airport` where it exists), battery 11.8 ms (`pmset`) | One spawn, inside `sys` |
 | **Commands** | 10-50 ms | mise, direnv (with direnv), Sources that call `exec()` | Process spawn (user-defined) |
-| **A repository's worth** | `status` 16, `diff` 26, `lineage` 38, `refs` 64 ms on this repository | git: 1, 2, 3 and 4 or more `git` processes | Through the compiled-in `git` plugin; no shell |
+| **A repository's worth** | `status` 13, `diff` 11, `refs` 11, `lineage` 15 ms on this repository, `lineage` about 125 on a 400-commit branch | git: 1, 2, 3 and 2 or 3 `git` processes | Through the compiled-in `git` plugin; no shell |
 
 These are one run through `ProviderRegistry::shipped` (`cargo bench --bench providers -- --quick`, load about 10), and for git the force-run times below. The sub-microsecond figures this table used to give were the libc call alone; the shipped Source's cost is the render around it, on a timer, never on a read.
 
@@ -546,9 +546,114 @@ A logging `git` on `PATH` sees the same 10 commands from both, argument for argu
 | a lockfile came and went, `get git.branch` | 0.14 ms | 0.63 ms |
 | `git add`, `get git.branch` | 0.30 ms | 1.01 ms |
 
-Per such event the daemon also runs `diff` and `lineage` on the next read, where they waited for their poll: 15 `git` processes against 10 for a lockfile, 16 against 12 for `git add` or `git commit` (the watch's own runs included). In exchange those counts are current on that read. Closing the gap needs a way to watch a directory without checking it on a read, and a `lup` hit stamped for its presence rather than its mtime.
+Per such event the daemon also ran `diff` and `lineage` on the next read, where they waited for their poll: 15 `git` processes against 10 for a lockfile, 16 against 12 for `git add` or `git commit` (the watch's own runs included). "The first read after git activity", below, is what became of this.
 
 The cdylib with the icon tables: `libbeachcomber.dylib` 3,455,232 bytes (release, macOS).
+
+### The first read after git activity
+
+The first read after a git command is the one a prompt makes. It has to be fast and it has to be right, and before this work the 50 ms in the table above was neither: the read had spent its budget and answered what was stored, with `stale` unset. That was so under the Rust provider too.
+
+**What the first read answered.** Each event on a clone of this repository, then at once a read over the raw socket, each field compared with what real git said. Five rounds, a daemon per build, `feat/one-tree` as a 400-commit branch with an upstream. `old` is `bfa7ccd8` (Rust) and `0599a5c8` (the file) alike unless it says; the last column is this work's.
+
+| Event | `branch` | `dirty`, `staged`, `unstaged`, `untracked` | `ahead`, `behind` | `commit`, `tag`, `commit_summary` | `stash`, `state` | `lines_*` (diff) | `lines_*_parent`, `_default` (lineage) | now |
+|---|---|---|---|---|---|---|---|---|
+| lockfile only | new | new | new | new | new | new | new | all new |
+| plain `git status` | new | new | new | new | new | new | new | all new |
+| `git add` | new | new | new | new | new | Rust **old**, file new | new | all new |
+| `git commit` | new | new | **old** up to 4/5 | **old** up to 4/5 | new | new under the file, Rust **old** | **old** | new but lineage on a long branch |
+| `git checkout` | new | new | **old** | **old** | new | new | **old** | new but lineage on a long branch |
+| `git stash` | new | new | new | new | **old** (`stash`, every time under Rust, up to 5 in 5 under the file) | Rust new, file up to 2 in 5 **old** | Rust **old** | all new |
+| `git fetch` | new | new | **old** (`behind`) | new | new | new | new | all new |
+| `git push` | new | new | **old** (`ahead`) | new | new | new | new | all new |
+| `git rebase` | new | new | **old**, or absent | **old** | **old** (`state` still `rebase`, 2 in 5 under Rust, 4 in 5 under the file) | new | **old** | new but lineage on a long branch |
+| a rebase stopping on a conflict | new | new | new | new | new | Rust **old** | Rust **old** | all new |
+| editing a tracked file, making an untracked one | new | **old** | new | new | new | **old** | new | still **old**: see below |
+
+**Where the time went.** Forced runs, alternating, 20 rounds, load about 8. A `git` process costs 7.5 ms here before it does anything (`git --version`), so a Source's cost is mostly how many it starts.
+
+| Source | before, 400-commit branch | now | before, ordinary branch | now |
+|---|---:|---:|---:|---:|
+| `head` | 0.75 ms | 0.57 ms | 0.79 ms | 0.65 ms |
+| `status` | 14.8 | 15.3 | 12.5 | 13.5 |
+| `refs` | 53.7 | 13.5 | 40.5 | 10.8 |
+| `diff` | 17.8 | 11.6 | 15.9 | 10.7 |
+| `lineage` | 126.7 | 25.3 with its comparison kept; about 125 for a new one | 22.4 | 14.5 |
+| all five together | 131.2 | 31.8 | 46.8 | 21.9 |
+
+Four things spent the budget, and the first was the one written down at the end of phase 7:
+
+1. **Everything was invalidated by anything.** `.git`'s mtime was an input of all five Sources. Each now checks what it reads: the plugin notes each file as it reads it, in the run's account, and a `lup` hit is stamped for its presence, not its mtime.
+2. **The same command ran several times.** `refs` and `status` each ran `git status`, and the `git config` for a push remote ran twice. `upstream`, `ahead` and `behind` moved to `status`, which already had the answer, and one `git config --list` says both keys. `refs` and `diff` start their commands together, so they wait for the slowest and not the sum.
+3. **Runs started during the event, and the read waited for them.** A file event ran the Source mid-command, on a state about to go; the read found that run, could not use it, and queued behind it. A read now replaces a run that cannot have seen the change, and a file event waits for the files to go quiet (30 ms, at most 500) before it runs anything.
+4. **`lineage` recomputed what had not moved.** `git stash` and `git reset` rewrite a ref with the commit it held; what two commits differ by never changes, so `git diff --numstat <point>..<head>` is kept per pair. `lineage` no longer polls: nothing but a ref moves it.
+
+Processes per event, the logging `git` of `git_a_refresh_spawns_the_same_commands`, 0.8 s past the read:
+
+| Event | before | now |
+|---|---:|---:|
+| lockfile | 17 | **0** |
+| plain `git status`, `git add` | 18 | **4** |
+| `git commit` | 18 | 17 |
+| `git checkout` | 21 | 22 |
+| `git stash` | 18 | 16 |
+| `git fetch` | 10 | 8 |
+
+For the events that move a ref the count did not fall: the read runs what it needs, about 8 processes, and the file event's run, 30 ms after, runs them again. That second run no longer shares the read's budget, and costs CPU only. Skipping it needs knowing that the change the event reports is one the read's run saw, which a file's stamp cannot say inside its racy window.
+
+**Before and after.** Alternating `bfa7ccd8`, `0599a5c8` and this work, each its own isolated daemon, five rounds of each cell, p50 ms and how many of the five answered what real git says, load falling from 17 to 7. A whole read is right when every field is.
+
+On the 400-commit branch:
+
+| Event, then the read | Rust | `0599a5c8` | now |
+|---|---:|---:|---:|
+| lockfile, `git` | 0.20 ms | 51.52 ms | **0.26 ms** |
+| lockfile, `git.branch` | 0.17 | 0.97 | 0.51 |
+| lockfile, `git.dirty` | 0.20 | 15.27 | 0.48 |
+| lockfile, `git.ahead` | 0.22 | 43.45 | 0.15 |
+| `git status`, `git` | 11.54 | 51.84 | 17.02 |
+| `git status`, `git.dirty` | 11.88 | 14.57 | 12.01 |
+| `git add`, `git` | 12.36, 0/5 right | 52.25, 3/5 | 21.06, 5/5 |
+| `git add`, `git.staged` | 13.15 | 15.38, 4/5 | 14.30 |
+| `git add`, `git.branch` | 0.22 | 1.02 | 0.54 |
+| `git commit`, `git` | 52.08, 0/5 | 52.28, 0/5 | 52.77, 0/5: only `lineage` is wrong |
+| `git commit`, `git.dirty` | 18.42 | 18.43 | 16.82 |
+| `git commit`, `git.ahead` | 51.67, 4/5 | 52.08, 3/5 | 16.43, 5/5 |
+| `git checkout`, `git` | 52.47, 0/5 | 52.25, 0/5 | 51.62, 3/5 |
+| `git checkout`, `git.ahead` | 52.51, 4/5 | 52.15, 4/5 | 12.85, 4/5 |
+| `git stash`, `git` | 13.53, 0/5 | 52.30, 4/5 | 37.02, 5/5 |
+| `git fetch`, `git` | 0.26, 0/5 | 0.25, 0/5 | 15.31, 4/5 |
+| `git push`, `git.ahead` | 0.30, 0/5 | 0.51, 0/5 | 14.88, 5/5 |
+| `git rebase`, `git` | 52.03, 0/5 | 51.44, 0/5 | 52.16, 0/5: only `lineage` is wrong |
+| `git rebase`, `git.ahead` | 51.36, 0/5 | 51.49, 1/5 | 14.96, 5/5 |
+
+On an ordinary branch (four commits, 80 lines, off the default branch):
+
+| Event, then the read | Rust | `0599a5c8` | now |
+|---|---:|---:|---:|
+| lockfile, `git` | 0.19 ms | 42.51 ms | **0.29 ms** |
+| `git add`, `git` | 13.18, 0/5 right | 41.98, 5/5 | 14.40, 5/5 |
+| `git add`, `git.dirty` | 12.59 | 12.17 | 12.34 |
+| `git commit`, `git` | 52.17, 0/5 | 51.52, 5/5 | **33.45, 5/5** |
+| `git commit`, `git.dirty` | 18.57 | 18.51 | 11.89 |
+| `git commit`, `git.ahead` | 34.41 | 52.03 | 12.10 |
+| `git checkout`, `git` | 39.45, 0/5 | 47.09, 4/5 | 37.65, 4/5 |
+| `git checkout`, `git.ahead` | 41.49 | 42.74 | 12.36 |
+| `git stash`, `git` | 12.42, 0/5 | 51.65, 5/5 | 29.59, 5/5 |
+| `git fetch`, `git` | 0.24, 0/5 | 0.23, 0/5 | 12.88, 5/5 |
+| `git push`, `git.ahead` | 0.19, 0/5 | 0.42, 0/5 | 12.49, 5/5 |
+| `git rebase`, `git` | 46.51, 0/5 | 50.77, 3/5 | 30.95, 4/5 |
+| `git rebase`, `git.ahead` | 52.77, 1/5 | 50.27, 3/5 | 12.64, 5/5 |
+
+A read of a usual field costs about what `git status` does, 11 to 13 ms, plus about a millisecond. A lockfile costs what it did under Rust. In 200 further single-field reads, under load up to 40, the only wrong answers were two at 61 and 66 ms: a read past its budget, on a spike, is still a read past its budget.
+
+**What is not reached.**
+
+- **`lineage` on a long branch.** `git diff --numstat <point>..HEAD` on this branch takes 100 to 130 ms (at load 10), most of it rename detection: `--no-renames` halves it and gives other numbers. No read can wait for that in 50 ms, so after a commit, a checkout or a rebase a whole read of `git` takes the budget, its `lineage` fields are as they were, and the next read has them. Single fields do not wait for it.
+- **A change in the working tree.** Editing a tracked file, or making an untracked one, touches nothing in `.git`, so no stat a read can afford sees it: `dirty`, `unstaged`, `untracked` and `lines_*` stay old until `status`'s or `diff`'s poll, as they always did. A shorter poll does not help (a 1 s lifetime was right 0 times in 8: the poll keeps the record younger than its lifetime, so the read trusts it). Seeing it means running `git status` on every read, about 13 ms and `diff` about 11, where a warm read costs under 0.3 ms.
+- **A wrong answer is not labelled.** A read past its budget answers `stale: false` for what it knows to be invalid.
+
+Measured with a script over the raw socket, each daemon isolated in its own `HOME`, XDG directories and socket; `first_read_after_git` in `benches/validity.rs` is the same read in-process.
 
 ### Real-World Impact
 

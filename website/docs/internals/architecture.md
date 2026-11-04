@@ -201,7 +201,7 @@ The scheduler's `tokio::select!` loop picks up `Some(paths) = fs_rx.recv()`. It 
 
 **Step 3: Path matching**
 
-`handle_fs_event` iterates over the changed paths. For each changed path, it scans `watch_paths` (a `HashMap<PathBuf, Vec<(String, Option<String>)>>`) looking for any registered watch path that is a prefix of (or equal to) the changed path. For a `.git/index` change, the watch path `".git"` matches.
+`handle_fs_event` iterates over the changed paths. For each changed path, it scans `watch_paths` (a `HashMap<PathBuf, Vec<(String, Option<String>)>>`) looking for any registered watch path that is a prefix of (or equal to) the changed path. A pattern with a `/` matches by whole components, so `.git/index` matches `.git/index` and `.git/refs` matches `.git/refs/heads/main`; `.git/index.lock` matches neither.
 
 **Step 4: execute_provider is called**
 

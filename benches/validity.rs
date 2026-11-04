@@ -19,6 +19,9 @@
 //!     machine as it is.
 //!
 //! Printed:
+//!   * `first_read_after_git`: a real event on a repository with an upstream,
+//!     then at once a read, whole and of one field: its latency, and whether it
+//!     answered what real git says.
 //!   * `warm_get_percentiles`: the same reads interleaved, one of each case per
 //!     round, as min, p50, p90 and p99. On a loaded machine criterion's means
 //!     swing with the load from one case to the next; interleaving shifts every
@@ -369,6 +372,120 @@ fn warm_get_percentiles() {
     }
 }
 
+/// What real git says of `field` in `repo`, as `git` the provider words it.
+fn git_says(repo: &Path, field: &str) -> Value {
+    let ask = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .output()
+            .expect("git");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    match field {
+        "branch" => json!(ask(&["symbolic-ref", "--short", "HEAD"])),
+        "commit" => json!(ask(&["log", "-1", "--format=%h"])),
+        "dirty" => json!(!ask(&["status", "--porcelain"]).is_empty()),
+        "staged" => json!(ask(&["diff", "--cached", "--name-only"]).lines().count()),
+        "ahead" => json!(
+            ask(&["rev-list", "--count", "@{u}..HEAD"])
+                .parse::<u64>()
+                .unwrap()
+        ),
+        "behind" => json!(
+            ask(&["rev-list", "--count", "HEAD..@{u}"])
+                .parse::<u64>()
+                .unwrap()
+        ),
+        _ => panic!("{field}"),
+    }
+}
+
+/// The first read after each event, whole and of the fields a prompt reads.
+fn first_read_after_git() {
+    type Event = (&'static str, fn(&Path, usize), fn(&Path));
+    let lock: fn(&Path, usize) = |repo, _| {
+        let lock = repo.join(".git/bench.lock");
+        std::fs::write(&lock, "").unwrap();
+        std::fs::remove_file(&lock).unwrap();
+    };
+    let add: fn(&Path, usize) = |repo, n| {
+        std::fs::write(repo.join("a.txt"), format!("{n}\n")).unwrap();
+        git(repo, &["add", "a.txt"]);
+    };
+    let commit: fn(&Path, usize) = |repo, n| {
+        std::fs::write(repo.join("a.txt"), format!("{n}\n")).unwrap();
+        git(repo, &["add", "a.txt"]);
+        git(repo, &["commit", "-qm", "bench"]);
+    };
+    let checkout: fn(&Path, usize) = |repo, _| git(repo, &["checkout", "-q", "other"]);
+    let none: fn(&Path) = |_| {};
+    let back: fn(&Path) = |repo| git(repo, &["checkout", "-q", "main"]);
+    let events: [Event; 4] = [
+        ("lockfile", lock, none),
+        ("git add", add, none),
+        ("git commit", commit, none),
+        ("git checkout", checkout, back),
+    ];
+    let upstream = TempDir::new().unwrap();
+    let dir = TempDir::new().unwrap();
+    let repo = dir.path().canonicalize().unwrap();
+    git(&repo, &["init", "-q", "--initial-branch=main"]);
+    git(&repo, &["config", "user.name", "bench"]);
+    git(&repo, &["config", "user.email", "bench@bench"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "first"]);
+    git(upstream.path(), &["init", "-q", "--bare"]);
+    let origin = upstream.path().to_str().unwrap();
+    git(&repo, &["remote", "add", "origin", origin]);
+    git(&repo, &["push", "-q", "-u", "origin", "main"]);
+    git(&repo, &["branch", "other"]);
+    git(&repo, &["push", "-q", "origin", "other"]);
+    git(
+        &repo,
+        &["branch", "-q", "--set-upstream-to=origin/other", "other"],
+    );
+
+    let daemon = Daemon::start();
+    let mut conn = daemon.connect();
+    eprintln!("first_read_after_git (p50 ms of 20, how many answered what real git says):");
+    for (name, event, undo) in events {
+        for (key, field) in [
+            ("git", "commit"),
+            ("git.dirty", "dirty"),
+            ("git.ahead", "ahead"),
+        ] {
+            let mut took = Vec::new();
+            let mut right = 0;
+            for n in 0..20 {
+                for _ in 0..3 {
+                    conn.send(&json!({"op": "get", "key": "git", "path": repo, "wait": "forever"}));
+                    std::thread::sleep(Duration::from_millis(30));
+                }
+                event(&repo, n);
+                let began = Instant::now();
+                let answer = conn.get(key, &repo);
+                took.push(began.elapsed());
+                let value = match key {
+                    "git" => answer["data"][field].clone(),
+                    _ => answer["data"].clone(),
+                };
+                right += usize::from(value == git_says(&repo, field));
+                undo(&repo);
+            }
+            took.sort_unstable();
+            eprintln!(
+                "  {name:<13} {key:<10} {:>8.2} ms  {right}/20",
+                took[took.len() / 2].as_secs_f64() * 1e3
+            );
+        }
+    }
+}
+
 /// Audit P9: the second `get` right after a cold run, in fresh daemons.
 fn second_get_after_cold() {
     let fixture = Fixture::new();
@@ -541,6 +658,9 @@ fn main() {
     }
     if runs("warm_get_percentiles") {
         warm_get_percentiles();
+    }
+    if runs("first_read_after_git") {
+        first_read_after_git();
     }
     if runs("second_get_after_cold") {
         second_get_after_cold();

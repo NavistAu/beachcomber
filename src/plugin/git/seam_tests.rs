@@ -4,12 +4,11 @@
 /// without requiring git to be installed or a real repository on disk.
 ///
 /// Coverage:
-/// - clean repo: refs source produces correct branch/commit fields
+/// - clean repo: refs source produces correct commit fields
 /// - dirty repo: status source detects staged/unstaged/untracked counts
-/// - detached HEAD: refs source sets detached=true
-/// - no repo (all git commands fail): sources return empty result
-/// - malformed output: provider handles gracefully without panicking
-use super::{diff_facts, refs_facts, status_facts};
+/// - detached HEAD: refs source asks about no push remote
+/// - no repo (all git commands fail): sources fail or answer nothing
+use super::{diff_facts, lineage_facts, refs_facts, status_facts};
 use crate::boundaries::git::GitExecutor;
 use serde_json::json;
 use std::os::unix::process::ExitStatusExt;
@@ -20,17 +19,18 @@ use tempfile::TempDir;
 
 // ── Hand-written test double ──────────────────────────────────────────────────
 
-/// A `GitExecutor` that returns a pre-programmed sequence of `Output` values.
-/// Each call to `run_git` pops from the front of the queue.
-/// If the queue is empty, returns a "command not found" IO error.
+/// A `GitExecutor` that answers each command from a list by its leading words
+/// (a symbol starts some of its commands together, so order says nothing): the
+/// first entry the command's arguments start with, taken once. With none left,
+/// a "command not found" IO error.
 struct StubGitExecutor {
-    outputs: Mutex<std::collections::VecDeque<std::io::Result<Output>>>,
+    outputs: Mutex<Vec<(&'static str, std::io::Result<Output>)>>,
 }
 
 impl StubGitExecutor {
-    fn new(outputs: Vec<std::io::Result<Output>>) -> Self {
+    fn new(outputs: Vec<(&'static str, std::io::Result<Output>)>) -> Self {
         Self {
-            outputs: Mutex::new(outputs.into()),
+            outputs: Mutex::new(outputs),
         }
     }
 }
@@ -59,12 +59,13 @@ fn not_found() -> std::io::Result<Output> {
 }
 
 impl GitExecutor for StubGitExecutor {
-    fn run_git(&self, _dir: &Path, _args: Vec<String>) -> std::io::Result<Output> {
-        self.outputs
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or_else(not_found)
+    fn run_git(&self, _dir: &Path, args: Vec<String>) -> std::io::Result<Output> {
+        let command = args.join(" ");
+        let mut outputs = self.outputs.lock().unwrap();
+        match outputs.iter().position(|(c, _)| command.starts_with(c)) {
+            Some(i) => outputs.remove(i).1,
+            None => not_found(),
+        }
     }
 }
 
@@ -108,12 +109,6 @@ fn status_one_staged() -> &'static [u8] {
       1 A. N... 0 0 0 0000000 abc1234 staged.txt\n"
 }
 
-/// `git status --porcelain=v2 --branch` output for a detached HEAD.
-fn status_detached() -> &'static [u8] {
-    b"# branch.oid abc1234def5678901234567890123456789abcde\n\
-      # branch.head (detached)\n"
-}
-
 /// `git log -1 --format=%h %ct %s` output.
 fn log_output() -> &'static [u8] {
     b"abc1234 1700000000 init\n"
@@ -131,44 +126,26 @@ fn diff_3added_1removed() -> &'static [u8] {
 
 // ── refs source seam tests ────────────────────────────────────────────────────
 
-/// For the refs source, `execute` makes these calls in order:
-///   1. `git status --porcelain=v2 --branch`
-///   2. `git log -1 --format=%h %ct %s`
-///   3. `git describe --tags --abbrev=0`
-///   4. `git config --get branch.<name>.pushRemote`  (returns non-zero → skip)
-///   5. `git config --get remote.pushDefault`         (returns non-zero → skip)
-fn refs_outputs_clean() -> Vec<std::io::Result<Output>> {
+/// The refs source starts these together, and asks about nothing else with no
+/// push remote configured.
+fn refs_outputs_clean() -> Vec<(&'static str, std::io::Result<Output>)> {
     vec![
-        success(status_clean_main()), // status --porcelain=v2 --branch
-        success(log_output()),        // log -1 --format=...
-        failure(),                    // describe --tags (no tags)
-        failure(),                    // config --get branch.main.pushRemote
-        failure(),                    // config --get remote.pushDefault
+        ("log -1", success(log_output())),
+        ("describe", failure()), // no tags
+        ("config --list", success(b"user.name\nme\0")),
     ]
 }
 
 #[test]
-fn git_refs_clean_repo_produces_correct_branch() {
-    // Note: branch and detached are the head source's.
-    // The refs source now produces commit, ahead, behind, upstream, state, etc.
+fn git_refs_clean_repo_produces_correct_commit() {
     let dir = fake_repo();
     let stub = StubGitExecutor::new(refs_outputs_clean());
     let result = refs_facts(dir.path(), &stub).expect("facts");
 
-    assert!(
-        !result.contains_key("branch"),
-        "branch moved to head source; must not be present in refs"
-    );
-    assert!(
-        !result.contains_key("detached"),
-        "detached moved to head source; must not be present in refs"
-    );
-    assert_eq!(result.get("ahead").unwrap(), &json!(0));
-    assert_eq!(result.get("behind").unwrap(), &json!(0));
-    assert_eq!(
-        result.get("upstream").unwrap().as_str().unwrap(),
-        "origin/main"
-    );
+    // The head source's and the status source's are not said here.
+    for other in ["branch", "detached", "ahead", "behind", "upstream", "dirty"] {
+        assert!(!result.contains_key(other), "{other}: {result:?}");
+    }
     assert_eq!(result.get("commit").unwrap().as_str().unwrap(), "abc1234");
     assert_eq!(
         result.get("commit_summary").unwrap().as_str().unwrap(),
@@ -193,25 +170,17 @@ fn git_refs_clean_repo_produces_correct_branch() {
 }
 
 #[test]
-fn git_refs_without_an_upstream_or_commits_leaves_them_absent() {
+fn git_refs_without_commits_leaves_them_absent() {
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![
-        success(status_one_staged()), // no branch.upstream, but a branch.ab line
-        failure(),                    // log -1: no commits yet
-        failure(),                    // describe --tags
-        failure(),                    // config --get branch.main.pushRemote
-        failure(),                    // config --get remote.pushDefault
+        ("log -1", failure()), // no commits yet
+        ("describe", failure()),
+        ("config --list", failure()),
+        ("rev-parse --git-dir", success(b".git\n")),
     ]);
     let result = refs_facts(dir.path(), &stub).expect("facts");
 
-    for absent in [
-        "upstream",
-        "ahead",
-        "behind",
-        "commit",
-        "commit_summary",
-        "last_commit_age_secs",
-    ] {
+    for absent in ["commit", "commit_summary", "last_commit_age_secs"] {
         assert!(
             !result.contains_key(absent),
             "{absent} must be absent: {:?}",
@@ -223,56 +192,141 @@ fn git_refs_without_an_upstream_or_commits_leaves_them_absent() {
 }
 
 #[test]
-fn git_refs_detached_head_sets_detached_true() {
-    // detached is now owned by the head source (reads .git/HEAD directly).
-    // The refs source no longer emits detached, and has no push divergence
-    // to report in the detached case.
+fn git_refs_detached_head_asks_for_no_push_remote() {
     let dir = fake_repo();
+    std::fs::write(
+        dir.path().join(".git/HEAD"),
+        "abc1234def5678901234567890123456789abcde\n",
+    )
+    .unwrap();
     let stub = StubGitExecutor::new(vec![
-        success(status_detached()), // status
-        success(log_output()),      // log
-        failure(),                  // describe
-                                    // no push remote queries since branch is "(detached)"
+        ("log -1", success(log_output())),
+        ("describe", failure()),
     ]);
     let result = refs_facts(dir.path(), &stub).expect("facts");
 
-    assert!(
-        !result.contains_key("detached"),
-        "detached moved to head source; must not be present in refs"
-    );
     assert!(!result.contains_key("push_ahead"), "{:?}", result);
     assert!(!result.contains_key("push_behind"), "{:?}", result);
+}
+
+/// The last value of each key stands, and a branch's own push remote beats the
+/// default, as `git config --get` has it.
+#[test]
+fn git_refs_push_remote_from_the_one_listing() {
+    let dir = fake_repo();
+    std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let listing: &[u8] = b"remote.pushdefault\nfirst\0remote.pushdefault\nsecond\0\
+        branch.other.pushremote\nnot-this\0novalue\0";
+    let stub = StubGitExecutor::new(vec![
+        ("log -1", success(log_output())),
+        ("describe", failure()),
+        ("config --list", success(listing)),
+        (
+            "rev-parse --verify --quiet refs/remotes/second/main",
+            success(b"abc\n"),
+        ),
+        (
+            "rev-list --count --left-right HEAD...second/main",
+            success(b"2\t3\n"),
+        ),
+    ]);
+    let result = refs_facts(dir.path(), &stub).expect("facts");
+    assert_eq!(result.get("push_ahead"), Some(&json!(2)));
+    assert_eq!(result.get("push_behind"), Some(&json!(3)));
+
+    let listing: &[u8] = b"remote.pushdefault\nsecond\0branch.main.pushremote\nmine\0";
+    let stub = StubGitExecutor::new(vec![
+        ("log -1", success(log_output())),
+        ("describe", failure()),
+        ("config --list", success(listing)),
+        (
+            "rev-parse --verify --quiet refs/remotes/mine/main",
+            success(b"abc\n"),
+        ),
+        (
+            "rev-list --count --left-right HEAD...mine/main",
+            success(b"1\t0\n"),
+        ),
+    ]);
+    let result = refs_facts(dir.path(), &stub).expect("facts");
+    assert_eq!(result.get("push_ahead"), Some(&json!(1)));
 }
 
 #[test]
 fn git_refs_git_not_installed_fails() {
     let dir = fake_repo();
-    let stub = StubGitExecutor::new(vec![not_found()]);
+    let stub = StubGitExecutor::new(vec![]);
     assert!(refs_facts(dir.path(), &stub).is_none());
 }
 
 #[test]
-fn git_refs_git_returns_failure_exit_code_fails() {
+fn git_refs_a_repository_git_cannot_read_fails() {
     let dir = fake_repo();
-    // status exits non-zero → parse_git_status returns None → the execute fails
-    let stub = StubGitExecutor::new(vec![failure()]);
-    assert!(refs_facts(dir.path(), &stub).is_none());
-}
-
-#[test]
-fn git_refs_malformed_status_output_returns_empty() {
-    let dir = fake_repo();
-    // success exit code but no parseable branch header → parse_git_status returns
-    // a struct with empty branch (which is non-None), so we still get a result.
-    // The important thing: no panic.
     let stub = StubGitExecutor::new(vec![
-        success(b"this is not valid git status output\n"),
-        success(log_output()),
-        failure(), // describe
-        failure(), // config pushRemote (branch "" → skip immediately)
+        ("log -1", failure()),
+        ("describe", failure()),
+        ("rev-parse --git-dir", failure()),
     ]);
-    // Must not panic
-    let _result = refs_facts(dir.path(), &stub).expect("facts");
+    assert!(refs_facts(dir.path(), &stub).is_none());
+}
+
+// ── lineage source seam tests ─────────────────────────────────────────────────
+
+/// What two commits differ by is asked of git once: a run after a ref was
+/// rewritten with what it held spawns only the `merge-base`. Another commit is
+/// another comparison.
+#[test]
+fn git_lineage_compares_two_commits_once() {
+    let dir = fake_repo();
+    let git = dir.path().join(".git");
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/topic\n").unwrap();
+    std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+    std::fs::write(git.join("refs/heads/main"), "").unwrap();
+    let at = |hex: &str| {
+        std::fs::write(
+            git.join("refs/heads/topic"),
+            format!("{}\n", hex.repeat(40)),
+        )
+        .unwrap();
+    };
+    let point = "merge-base --fork-point main HEAD";
+    let counted = |numstat: &'static [u8]| {
+        let stub = StubGitExecutor::new(vec![
+            (point, success(b"p0int\n")),
+            ("diff --numstat p0int..HEAD", success(numstat)),
+        ]);
+        let facts = lineage_facts(dir.path(), &stub).expect("facts");
+        facts.get("lines_added_default").cloned().unwrap()
+    };
+    at("a");
+    assert_eq!(counted(b"3\t1\tf\n"), json!(3));
+    assert_eq!(counted(b"9\t9\tf\n"), json!(3), "the same two commits");
+    at("b");
+    assert_eq!(counted(b"9\t9\tf\n"), json!(9), "another commit");
+}
+
+/// A comparison that failed says nothing about the two commits: it is not kept.
+#[test]
+fn git_lineage_keeps_no_failed_comparison() {
+    let dir = fake_repo();
+    let git = dir.path().join(".git");
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/topic\n").unwrap();
+    std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+    std::fs::write(git.join("refs/heads/main"), "").unwrap();
+    std::fs::write(
+        git.join("refs/heads/topic"),
+        format!("{}\n", "c".repeat(40)),
+    )
+    .unwrap();
+    let point = "merge-base --fork-point main HEAD";
+    let stub = StubGitExecutor::new(vec![(point, success(b"p0int\n"))]);
+    lineage_facts(dir.path(), &stub).expect("facts");
+    let stub = StubGitExecutor::new(vec![
+        (point, success(b"p0int\n")),
+        ("diff --numstat p0int..HEAD", success(b"5\t0\tf\n")),
+    ]);
+    let facts = lineage_facts(dir.path(), &stub).expect("facts");
+    assert_eq!(facts.get("lines_added_default"), Some(&json!(5)));
 }
 
 // ── status source seam tests ──────────────────────────────────────────────────
@@ -280,7 +334,7 @@ fn git_refs_malformed_status_output_returns_empty() {
 #[test]
 fn git_status_clean_repo_is_not_dirty() {
     let dir = fake_repo();
-    let stub = StubGitExecutor::new(vec![success(status_clean_main())]);
+    let stub = StubGitExecutor::new(vec![("status", success(status_clean_main()))]);
     let result = status_facts(dir.path(), &stub).expect("facts");
 
     assert_eq!(result.get("dirty").unwrap(), &json!(false));
@@ -288,12 +342,29 @@ fn git_status_clean_repo_is_not_dirty() {
     assert_eq!(result.get("unstaged").unwrap(), &json!(0));
     assert_eq!(result.get("untracked").unwrap(), &json!(0));
     assert_eq!(result.get("conflicted").unwrap(), &json!(0));
+    assert_eq!(result.get("ahead").unwrap(), &json!(0));
+    assert_eq!(result.get("behind").unwrap(), &json!(0));
+    assert_eq!(
+        result.get("upstream").unwrap().as_str().unwrap(),
+        "origin/main"
+    );
+}
+
+#[test]
+fn git_status_without_an_upstream_leaves_it_absent() {
+    let dir = fake_repo();
+    // No branch.upstream, but a branch.ab line.
+    let stub = StubGitExecutor::new(vec![("status", success(status_one_staged()))]);
+    let result = status_facts(dir.path(), &stub).expect("facts");
+    for absent in ["upstream", "ahead", "behind"] {
+        assert!(!result.contains_key(absent), "{absent}: {result:?}");
+    }
 }
 
 #[test]
 fn git_status_untracked_file_is_dirty() {
     let dir = fake_repo();
-    let stub = StubGitExecutor::new(vec![success(status_dirty_untracked())]);
+    let stub = StubGitExecutor::new(vec![("status", success(status_dirty_untracked()))]);
     let result = status_facts(dir.path(), &stub).expect("facts");
 
     assert_eq!(result.get("dirty").unwrap(), &json!(true));
@@ -304,7 +375,7 @@ fn git_status_untracked_file_is_dirty() {
 #[test]
 fn git_status_staged_file_is_dirty() {
     let dir = fake_repo();
-    let stub = StubGitExecutor::new(vec![success(status_one_staged())]);
+    let stub = StubGitExecutor::new(vec![("status", success(status_one_staged()))]);
     let result = status_facts(dir.path(), &stub).expect("facts");
 
     assert_eq!(result.get("dirty").unwrap(), &json!(true));
@@ -315,21 +386,18 @@ fn git_status_staged_file_is_dirty() {
 #[test]
 fn git_status_git_not_installed_fails() {
     let dir = fake_repo();
-    let stub = StubGitExecutor::new(vec![not_found()]);
+    let stub = StubGitExecutor::new(vec![]);
     assert!(status_facts(dir.path(), &stub).is_none());
 }
 
 // ── diff source seam tests ────────────────────────────────────────────────────
 
-/// For the diff source, `execute` makes these two calls:
-///   1. `git diff --numstat`
-///   2. `git diff --cached --numstat`
 #[test]
 fn git_diff_clean_repo_has_zero_lines() {
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![
-        success(diff_empty()), // diff --numstat
-        success(diff_empty()), // diff --cached --numstat
+        ("diff --numstat", success(diff_empty())),
+        ("diff --cached --numstat", success(diff_empty())),
     ]);
     let result = diff_facts(dir.path(), &stub).expect("facts");
 
@@ -343,8 +411,8 @@ fn git_diff_clean_repo_has_zero_lines() {
 fn git_diff_counts_unstaged_lines() {
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![
-        success(diff_3added_1removed()), // diff --numstat
-        success(diff_empty()),           // diff --cached --numstat
+        ("diff --numstat", success(diff_3added_1removed())),
+        ("diff --cached --numstat", success(diff_empty())),
     ]);
     let result = diff_facts(dir.path(), &stub).expect("facts");
 
@@ -359,8 +427,11 @@ fn git_diff_binary_files_are_skipped_gracefully() {
     // Binary files produce "-\t-\tfile.bin" in numstat output
     let dir = fake_repo();
     let stub = StubGitExecutor::new(vec![
-        success(b"-\t-\tsome_binary.bin\n3\t1\tREADME.md\n"), // diff --numstat
-        success(diff_empty()),                                // diff --cached --numstat
+        (
+            "diff --numstat",
+            success(b"-\t-\tsome_binary.bin\n3\t1\tREADME.md\n"),
+        ),
+        ("diff --cached --numstat", success(diff_empty())),
     ]);
     let result = diff_facts(dir.path(), &stub).expect("facts");
 
@@ -372,10 +443,7 @@ fn git_diff_binary_files_are_skipped_gracefully() {
 #[test]
 fn git_diff_git_error_returns_zero_counts() {
     let dir = fake_repo();
-    let stub = StubGitExecutor::new(vec![
-        not_found(), // diff --numstat
-        not_found(), // diff --cached --numstat
-    ]);
+    let stub = StubGitExecutor::new(vec![]);
     let result = diff_facts(dir.path(), &stub).expect("facts");
 
     // Errors produce (0,0) for both unstaged and staged

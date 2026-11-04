@@ -209,7 +209,7 @@ The scheduler's `tokio::select!` loop picks up `Some(paths) = fs_rx.recv()`. A p
 
 **Step 3: Path matching**
 
-`resolve_keys_from_paths` iterates over the changed paths. For each changed path, it scans `watch_paths` (a `HashMap<PathBuf, Vec<Subscription>>`, each subscription a lifecycle key and the patterns an event below the path must match) looking for any registered watch path that is a prefix of (or equal to) the changed path. For a `.git/index` change, the watch path `".git"` matches.
+`resolve_keys_from_paths` iterates over the changed paths. For each changed path, it scans `watch_paths` (a `HashMap<PathBuf, Vec<Subscription>>`, each subscription a lifecycle key and the patterns an event below the path must match) looking for any registered watch path that is a prefix of (or equal to) the changed path. A pattern with a `/` matches by whole components, so `.git/index` matches `.git/index` and `.git/refs` matches `.git/refs/heads/main`; `.git/index.lock` matches neither.
 
 **Step 4: the run is started**
 

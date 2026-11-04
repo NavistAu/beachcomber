@@ -80,28 +80,28 @@ An edit under `providers` reloads in place. Read a shipped file to see how one i
 
 ### 2.4 Worked example: git
 
-`git` is `defaults/git.toml`, five Sources with different strategies, sharing one `root` line in their `_` prototype. Four get their data from the compiled-in `git` plugin (§8):
+`git` is `defaults/git.toml`, five Sources with different strategies, sharing one `root` line in their `_` prototype. All get their data from the compiled-in `git` plugin (§8):
 
 ```
-git.head    → watch, rooted at the repository, watches .git/ (reads <gitdir>/HEAD itself, no subprocess)
+git.head    → watch .git/HEAD, `plugin('git', 'head', root)`, no subprocess
               fields: branch, detached
 
-git.refs    → watch, rooted at the repository, watches .git/, `plugin('git', 'refs', root)`
-              fields: commit, tag, ahead, behind, upstream, state, state_step, state_total,
+git.refs    → watch what the refs, the stash and an operation in progress live in, `plugin('git', 'refs', root)`
+              fields: commit, tag, state, state_step, state_total,
                       stash, last_commit_age_secs, commit_summary, push_ahead, push_behind
 
-git.diff    → poll 30s, rooted at the repository, `plugin('git', 'diff', root)`
+git.diff    → poll 30s, `plugin('git', 'diff', root)`
               fields: lines_added, lines_removed, lines_staged_added, lines_staged_removed
 
-git.lineage → poll 60s, rooted at the repository, `plugin('git', 'lineage', root)`
+git.lineage → watch the refs, `plugin('git', 'lineage', root)`
               fields: branch_parent, lines_added_parent, lines_removed_parent,
                       branch_default, lines_added_default, lines_removed_default
 
-git.status  → watch + poll (watches .git/index + polls every 60s), rooted at the repository, `plugin('git', 'status', root)`
-              fields: staged, unstaged, untracked, conflicted, dirty
+git.status  → watch the index and the refs + poll 60s, `plugin('git', 'status', root)`
+              fields: upstream, ahead, behind, staged, unstaged, untracked, conflicted, dirty
 ```
 
-This decomposition allows git branch lookups (hot path, watch-driven) to stay fresh without dragging along the slower diff computation.
+This decomposition lets a read wait for only what it asked for, and an event run only what it can have changed: `git add` runs `status` and `diff`, and a read of `git.branch` waits for neither. Each `git status` says the upstream and the counts together, so one Source holds both and an event runs it once.
 
 Consumers use `comb get git.branch .`: the registry's `field → source` map routes the query to the `head` Source.
 
@@ -166,7 +166,7 @@ return = "{{ result | poll('10m') }}"           # no watch() needed for a read t
 ```
 
 - The first 64 files a run reads are checked; a run that reads more logs once per Source (`flag.s: 150 files read; the first 64 are checked on read`), and a change to a later file waits for the watch or the poll.
-- What an `exec` child or a plugin reads is not the lines' reading: a Source that shells out declares what its command reads with `watch(...)`, or `stat`s it in its own line (as `git`'s `refs` and `status` do), or lives with its poll.
+- What an `exec` child or a plugin library reads is not the lines' reading: a Source that shells out declares what its command reads with `watch(...)`, or `stat`s it in its own line, or lives with its poll. A plugin compiled into comb notes what it reads itself (§8).
 - The `root` line's walk is not a record's input. The root a directory finds is kept per directory (see "How config Sources work").
 - A `watch(...)` path is still what the daemon watches in the background, to warm a record before anyone reads it; what the lines read is checked on a read only.
 
@@ -187,7 +187,7 @@ return = "{{ result | poll('10m') }}"           # no watch() needed for a read t
   that window. The first read once the window has closed counts the record
   invalid and runs it again.
 
-Name only files the run reads: an input that changes when the value does not costs a run for nothing. A directory is the blunt case: `watch('.git')` makes `.git` an input, whose mtime moves whenever a git command makes a lockfile there, so the next read runs the Source again. There is no way yet to watch a directory without also checking it on a read.
+Name only files the run reads: an input that changes when the value does not costs a run for nothing. A directory is the blunt case: `watch('.git')` makes `.git` an input, whose mtime moves whenever a git command makes a lockfile there, so the next read runs the Source again. Name what the run reads instead: `watch('.git/HEAD', '.git/refs')` matches by whole path components, so `.git/HEAD.lock` wakes nothing and `.git/refs/heads/main` wakes it, and only `.git/HEAD` and the `.git/refs` directory itself are stat'd on a read.
 
 A read that finds an input changed while a run is in flight that stamped it before the change does not wait for that run: one begins at once in its place, and those waiting on it wait on the new one. What the replaced run produces is not written.
 
@@ -216,13 +216,13 @@ return = "{{ result | poll('30s', 4) }}"      # battery level: no file to watch 
 **`watch(paths...)`** runs the Source when a path changes. A relative path is under the instance's root (Sources with a root only). An absolute or `~` one is watched directly, whatever the root. Its arguments are constants: a path a line computes is checked on a read (§4), not watched.
 
 ```toml
-return = "{{ result | watch('.git') | nearest }}"    # git.refs: any change under .git/, per repository
+return = "{{ result | watch('.git/HEAD', '.git/refs') | nearest }}"    # those paths and anything below them, per repository
 ```
 
 There is no automatic poll fallback for a `watch`. If a watch cannot register at runtime, the scheduler logs a warning and the Source serves its last cached value. If a backstop is needed, add a `poll`, as `git.status` does for what does not touch a watchable file:
 
 ```toml
-return = "{{ result | watch('.git/index') | poll('60s', 2) | failback('30s', 3) | nearest }}"
+return = "{{ result | watch('.git/index', '.git/refs') | poll('60s', 2) | failback('30s', 3) | nearest }}"
 ```
 
 A `return` names what it wants, and the line is whole: `nearest` too, so a retune of a nearest Source says `| nearest` again or the Source cascades. A failback, budget or timeout it does not name is the engine's (`failback('1s', 3)`, `[daemon] budget`, `[daemon] timeout`), and a Source with no `return` takes the nearest `_`'s (the abstract Source's `poll('60s', 12) | failback('1s', 3)` ships in `defaults/00-comb.toml`). `| super` extends the `_` line instead of replacing it.
@@ -277,7 +277,7 @@ data = "{{ '~/.config/gcloud/configurations/config_default' | read | fromini }}"
 Real examples from `docs/performance.md`:
 - `gcloud`: reading `~/.config/gcloud/properties` instead of spawning the Python CLI — 500ms to 1µs (~500,000x)
 - `git` stash: reading `.git/logs/refs/stash` instead of `git stash list` — 5ms to 1µs
-- `git`'s `head`: reading `<gitdir>/HEAD` in the file's own line, so `git.branch` costs no process at all
+- `git`'s `head`: reading `<gitdir>/HEAD` in the plugin, so `git.branch` costs no process at all
 
 **Rule 2: If you must run a process, run as few as you can.** `git`'s `status` Source runs one (`git status`), which is why it is its own Source: a read of `git.dirty` does not pay for `git.lines_added`.
 
@@ -409,13 +409,14 @@ The shipped `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `networ
 
 | symbol | answers | runs |
 |---|---|---|
-| `refs` | `{upstream, ahead, behind, stash, state, state_step, state_total, commit, last_commit_age_secs, commit_summary, tag, push_ahead, push_behind}` | `git status`, `log -1`, `describe`, `config` twice; with a push remote `rev-parse` and `rev-list` |
-| `diff` | `{lines_added, lines_removed, lines_staged_added, lines_staged_removed}` | `git diff --numstat`, `diff --cached --numstat` |
-| `lineage` | `{branch_parent, lines_added_parent, lines_removed_parent, branch_default, lines_added_default, lines_removed_default}` | `git rev-parse`, `merge-base`, `diff --numstat` |
-| `status` | `{staged, unstaged, untracked, conflicted, dirty}` | `git status` |
+| `head` | `{branch, detached}` | none |
+| `refs` | `{stash, state, state_step, state_total, commit, last_commit_age_secs, commit_summary, tag, push_ahead, push_behind}` | `git log -1`, `describe`, `config --list`, started together; with a push remote `rev-parse` and `rev-list` |
+| `diff` | `{lines_added, lines_removed, lines_staged_added, lines_staged_removed}` | `git diff --numstat`, `diff --cached --numstat`, started together |
+| `lineage` | `{branch_parent, lines_added_parent, lines_removed_parent, branch_default, lines_added_default, lines_removed_default}` | `git merge-base`, `diff --numstat` once for any two commits; `rev-parse` for a branch with no loose ref |
+| `status` | `{upstream, ahead, behind, staged, unstaged, untracked, conflicted, dirty}` | `git status` |
 
 Every command runs with `GIT_OPTIONAL_LOCKS=0`, so `git status` cannot rewrite the index its Source watches, `GIT_TERMINAL_PROMPT=0` and the askpass guards, and with `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` removed. That environment is in one place in Rust (`src/boundaries/git.rs`), so no Source can forget it. `NULL` is failure: `git status` failing where a symbol needs it, or arguments other than one string.
 
 `git` is reserved as `sys` is: `plugin('git', …)` never searches `[daemon.plugin] path`, and `comb check config` warns of a `libgit.dylib` or `libgit.so` there.
 
-The shipped provider is `defaults/git.toml`, five Sources over those symbols, `head` reading `<gitdir>/HEAD` itself with no process. A `data` line names its directory the way its `root` line does, `lup('.git', root=true) | dirname`: a line renders in the instance's root, so that is `lup`'s first probe. A warm read cannot see a file a plugin reads, so what must be seen by the next read is `stat`ed in the Source's own line: `<commondir>/packed-refs` and `<commondir>/refs/heads/<branch>` for `refs`, `<gitdir>/index` for `status`. A user can override any line of the file, but not copy or edit what a symbol does.
+The shipped provider is `defaults/git.toml`, five Sources over those symbols, one each. A `data` line names its directory the way its `root` line does, `lup('.git', root=true) | dirname`: a line renders in the instance's root, so that is `lup`'s first probe. A symbol notes each file it reads, stamped before it reads it, in the account of the run it is called in, as a Source's own lines do: what `HEAD` resolves through (`HEAD`, `packed-refs`, the branch's loose ref), and for each symbol what else it says something about (the index, the upstream's ref, the default branch's, the tags, the stash's log, a stepped operation's files). So a read checks exactly those, in a linked worktree too. A plugin library has no such account: its Source `stat`s what it must see in its own lines. A user can override any line of the file, but not copy or edit what a symbol does.

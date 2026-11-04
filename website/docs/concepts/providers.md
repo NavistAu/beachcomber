@@ -27,15 +27,15 @@ Different fields within a provider may need different refresh rates or different
 
 | Source | Strategy | Fields produced |
 |---|---|---|
-| `head` | watch on `.git/` | `branch`, `detached` |
-| `refs` | watch on `.git/` | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
+| `head` | watch on `.git/HEAD` | `branch`, `detached` |
+| `refs` | watch on the refs, the stash's log and an operation's files | `commit`, `tag`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
 | `diff` | poll 30s | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
-| `lineage` | poll 60s | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
-| `status` | watch on `.git/index` + poll 60s | `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
+| `lineage` | watch on the refs | `branch_parent`, `lines_added_parent`, `lines_removed_parent`, `branch_default`, `lines_added_default`, `lines_removed_default` |
+| `status` | watch on `.git/index` and the refs + poll 60s | `upstream`, `ahead`, `behind`, `staged`, `unstaged`, `untracked`, `conflicted`, `dirty` |
 
 Branch information changes when `.git/HEAD` or `.git/refs/` is written — a filesystem event is the right trigger. Diff line counts need a subprocess call that is slower, so polling once every 30 seconds is a better fit.
 
-Splitting into sources means a branch lookup only demands the `head` source lifecycle, not the slower `diff` source. The cache delivers `git.branch` from a filesystem-event-driven entry with millisecond freshness while `git.lines_added` waits for its poll cycle.
+Splitting into sources means a branch lookup only demands the `head` source lifecycle, not the slower `diff` source. A read checks the files each Source read and runs only those that changed, so `git add` runs `status` and `diff`, and a lockfile runs nothing. A change in the working tree that has not reached the index waits for the poll.
 
 ## Addressing
 

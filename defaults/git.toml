@@ -4,39 +4,25 @@
 root = "{{ lup('.git', root=true) | dirname }}"
 
 # Every Source's lines render in the repository's root, where `.git` is `lup`'s first probe, so
-# `lup('.git', root=true) | dirname` is how a line names that directory. `gitdir` is where the repository's per-worktree
-# state lives: `.git` itself, or what a gitfile's `gitdir:` line names, against the root when it is relative. `refs`,
-# `diff`, `lineage` and `status` get their data from the compiled-in git plugin, which runs git with its own environment
-# (no optional locks, no prompts) and reports what it finds. A warm read cannot see what the plugin reads, so `refs` and
-# `status` `stat` in their own lines what must be seen by the next read.
+# `lup('.git', root=true) | dirname` is how a line names that directory. All five get their data from the compiled-in
+# git plugin, which runs git with its own environment (no optional locks, no prompts), reports what it finds, and notes
+# each file it reads: a read checks exactly those, so a Source runs again only when what it says can have changed, in a
+# linked worktree too. A `watch` names what wakes it before anyone reads: it matches by whole path components, so a
+# lockfile (`.git/HEAD.lock`) wakes nothing.
 
 [daemon.providers.git.sources.head]
-# The branch HEAD is on, or that it is detached: `<gitdir>/HEAD`, read here, with no process. So a checkout is seen by
-# the next read, in a linked worktree too. A HEAD that cannot be read is neither on a branch nor detached.
-data = '''{% set gitdir = '.git' if ('.git' | realpath | stat).kind == 'dir' else ('.git' | read | regex_search('(?m)\Agitdir:[[:space:]]*(.*?)[[:space:]]*$'))[1] %}
-{{ {'head': ((gitdir ~ '/HEAD') | read or '') | trim} if gitdir }}'''
-result.branch = "{{ (data.head | regex_search('^ref: refs/heads/(.+)$'))[1] }}"
-result.detached = "{{ (data.head | regex_search('^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$') is defined) if data }}"
-# Run again when `.git` changes; a failure is retried every minute, three times. The nearest repository answers alone.
-return = "{{ result | watch('.git') | failback('60s', 3) | nearest }}"
+# The branch HEAD is on, or that it is detached: `<gitdir>/HEAD`, with no process.
+data = "{{ plugin('git', 'head', lup('.git', root=true) | dirname) if lup('.git', root=true) }}"
+result.branch = "{{ data.branch }}"
+result.detached = "{{ data.detached }}"
+# Run again when HEAD changes; a failure is retried every minute, three times. The nearest repository answers alone.
+return = "{{ result | watch('.git/HEAD') | failback('60s', 3) | nearest }}"
 
 [daemon.providers.git.sources.refs]
-# The commit, its tag, the upstream and push remote, the stash and any operation in progress. `<commondir>` holds what
-# worktrees share: `<gitdir>/commondir` names it (against the gitdir when relative), else it is the gitdir. HEAD,
-# `packed-refs` and the branch's loose ref are what the branch resolves through, so a checkout or a commit is seen by
-# the next read. What else this reads (the upstream's refs, the stash, a merge in progress) the watch of `.git` brings
-# up to date.
-data = '''{% set gitdir = '.git' if ('.git' | realpath | stat).kind == 'dir' else ('.git' | read | regex_search('(?m)\Agitdir:[[:space:]]*(.*?)[[:space:]]*$'))[1] %}
-{% set shared = ((gitdir ~ '/commondir') | read | trim) if gitdir and gitdir != '.git' %}
-{% set common = (shared if shared is startingwith('/') else gitdir ~ '/' ~ shared) if shared else gitdir %}
-{% set branch = ((gitdir ~ '/HEAD') | read | regex_search('\Aref: refs/heads/(.+?)[[:space:]]*\z'))[1] if gitdir %}
-{% set checked = [(common ~ '/packed-refs') | stat, (common ~ '/refs/heads/' ~ branch) | stat if branch] if gitdir %}
-{{ plugin('git', 'refs', lup('.git', root=true) | dirname) if gitdir }}'''
+# The commit, its tag, the push remote, the stash and any operation in progress.
+data = "{{ plugin('git', 'refs', lup('.git', root=true) | dirname) if lup('.git', root=true) }}"
 result.commit = "{{ data.commit }}"
 result.tag = "{{ data.tag }}"
-result.ahead = "{{ data.ahead }}"
-result.behind = "{{ data.behind }}"
-result.upstream = "{{ data.upstream }}"
 result.state = "{{ data.state }}"
 result.stash = "{{ data.stash }}"
 result.state_step = "{{ data.state_step }}"
@@ -45,8 +31,9 @@ result.last_commit_age_secs = "{{ data.last_commit_age_secs }}"
 result.commit_summary = "{{ data.commit_summary }}"
 result.push_ahead = "{{ data.push_ahead }}"
 result.push_behind = "{{ data.push_behind }}"
-# Run again when `.git` changes; a failure is retried every minute, three times. The nearest repository answers alone.
-return = "{{ result | watch('.git') | failback('60s', 3) | nearest }}"
+# Run again when the refs, the stash or an operation in progress change; a failure is retried every minute, three
+# times. The nearest repository answers alone.
+return = "{{ result | watch('.git/HEAD', '.git/refs', '.git/packed-refs', '.git/config', '.git/logs/refs/stash', '.git/MERGE_HEAD', '.git/rebase-merge', '.git/rebase-apply', '.git/CHERRY_PICK_HEAD', '.git/BISECT_LOG', '.git/REVERT_HEAD') | failback('60s', 3) | nearest }}"
 
 [daemon.providers.git.sources.diff]
 # Lines changed in the working tree and in the index.
@@ -69,22 +56,23 @@ result.lines_removed_parent = "{{ data.lines_removed_parent }}"
 result.branch_default = "{{ data.branch_default }}"
 result.lines_added_default = "{{ data.lines_added_default }}"
 result.lines_removed_default = "{{ data.lines_removed_default }}"
-# Polled every minute while read: a handful of processes, too many to run on every `.git` event, for values that move
-# only when refs move. A failure is retried every minute, three times. The nearest repository answers alone.
-return = "{{ result | poll('60s', 2) | failback('60s', 3) | nearest }}"
+# Run again when a ref moves, which is the only thing that moves these. A failure is retried every minute, three times.
+# The nearest repository answers alone.
+return = "{{ result | watch('.git/HEAD', '.git/refs', '.git/packed-refs') | failback('60s', 3) | nearest }}"
 
 [daemon.providers.git.sources.status]
-# Counts of what is staged, changed, untracked and conflicted. `<gitdir>/index` is where the index is, which in a linked
-# worktree is not the `.git/index` the watch declares, so staging is seen by the next read there too. A change in the
-# working tree that has not reached the index is left to the poll.
-data = '''{% set gitdir = '.git' if ('.git' | realpath | stat).kind == 'dir' else ('.git' | read | regex_search('(?m)\Agitdir:[[:space:]]*(.*?)[[:space:]]*$'))[1] %}
-{% set checked = (gitdir ~ '/index') | stat if gitdir %}
-{{ plugin('git', 'status', lup('.git', root=true) | dirname) if gitdir }}'''
+# The branch's upstream and how far it has moved, and counts of what is staged, changed, untracked and conflicted: one
+# `git status` says all of it.
+data = "{{ plugin('git', 'status', lup('.git', root=true) | dirname) if lup('.git', root=true) }}"
+result.upstream = "{{ data.upstream }}"
+result.ahead = "{{ data.ahead }}"
+result.behind = "{{ data.behind }}"
 result.staged = "{{ data.staged }}"
 result.unstaged = "{{ data.unstaged }}"
 result.untracked = "{{ data.untracked }}"
 result.conflicted = "{{ data.conflicted }}"
 result.dirty = "{{ data.dirty }}"
-# Run again when the index changes and every minute while read; a failure is retried every 30 seconds, three times. The
-# nearest repository answers alone.
-return = "{{ result | watch('.git/index') | poll('60s', 2) | failback('30s', 3) | nearest }}"
+# Run again when the index or a ref changes and every minute while read: a change in the working tree that has not
+# reached the index is left to the poll. A failure is retried every 30 seconds, three times. The nearest repository
+# answers alone.
+return = "{{ result | watch('.git/index', '.git/HEAD', '.git/refs', '.git/packed-refs', '.git/config') | poll('60s', 2) | failback('30s', 3) | nearest }}"
