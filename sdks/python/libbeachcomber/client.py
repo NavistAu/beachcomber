@@ -88,7 +88,6 @@ def _parse_cache_rows(data: Any) -> list[CacheRow]:
             source=str(row.get("source", "")),
             field=str(row.get("field", "")),
             value=row.get("value"),
-            stale=bool(row.get("stale", False)),
             age_ms=row.get("age_ms"),
             kind=row.get("kind"),
             poll_interval_secs=row.get("poll_interval_secs"),

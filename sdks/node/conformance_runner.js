@@ -238,7 +238,6 @@ if (!fs.existsSync(DIST_CLIENT)) {
             path: r.path,
             value: r.value,
             age_ms: r.ageMs,
-            stale: r.stale,
           }));
           return makeOk({ data: arr });
         }

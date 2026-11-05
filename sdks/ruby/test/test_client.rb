@@ -13,7 +13,7 @@ class TestClient < Minitest::Test
   # --- get: the value `comb get` prints ---
 
   def test_get_is_the_value
-    @server.enqueue('{"ok":true,"data":"main","age_ms":42,"stale":false}')
+    @server.enqueue('{"ok":true,"data":"main","age_ms":42}')
     assert_equal 'main', @client.get('git.branch')
   end
 
@@ -28,7 +28,7 @@ class TestClient < Minitest::Test
   end
 
   def test_get_reads_at_cwd
-    @server.enqueue('{"ok":true,"data":"main","age_ms":5,"stale":false}')
+    @server.enqueue('{"ok":true,"data":"main","age_ms":5}')
     @client.get('git.branch', cwd: '/repo')
     req = @server.requests.last
     assert_equal 'get',    req['op']
@@ -44,7 +44,7 @@ class TestClient < Minitest::Test
   end
 
   def test_get_sends_force_and_the_wait
-    @server.enqueue('{"ok":true,"data":"main","age_ms":5,"stale":false}')
+    @server.enqueue('{"ok":true,"data":"main","age_ms":5}')
     @client.get('git.branch', force: true, wait: 'forever')
     req = @server.requests.last
     assert_equal true, req['force']
@@ -52,7 +52,7 @@ class TestClient < Minitest::Test
   end
 
   def test_get_hash_data
-    @server.enqueue('{"ok":true,"data":{"branch":"main","dirty":false},"age_ms":1,"stale":false}')
+    @server.enqueue('{"ok":true,"data":{"branch":"main","dirty":false},"age_ms":1}')
     assert_equal({ 'branch' => 'main', 'dirty' => false }, @client.get('git'))
   end
 
@@ -64,7 +64,7 @@ class TestClient < Minitest::Test
   end
 
   def test_get_a_template_wins_over_the_value_beside_it
-    @server.enqueue('{"ok":true,"data":1,"age_ms":12,"stale":false,"template":"{{ 2 }}"}')
+    @server.enqueue('{"ok":true,"data":1,"age_ms":12,"template":"{{ 2 }}"}')
     assert_equal 2, @client.get('fx.v')
   end
 
@@ -173,7 +173,7 @@ class TestClient < Minitest::Test
   # --- session ---
 
   def test_session_block_yields_session
-    @server.enqueue('{"ok":true,"data":"main","age_ms":1,"stale":false}')
+    @server.enqueue('{"ok":true,"data":"main","age_ms":1}')
     @client.session do |s|
       assert_instance_of Beachcomber::Session, s
       assert_equal 'main', s.get('git.branch')
@@ -183,7 +183,7 @@ class TestClient < Minitest::Test
   # set_context is the session's own: nothing reaches the daemon for it,
   # and the directory rides along on the next request that names none.
   def test_session_set_context
-    @server.enqueue('{"ok":true,"data":"main","age_ms":1,"stale":false}')
+    @server.enqueue('{"ok":true,"data":"main","age_ms":1}')
 
     @client.session do |s|
       s.set_context('/repo')
@@ -197,7 +197,7 @@ class TestClient < Minitest::Test
   end
 
   def test_session_multiple_requests_on_one_connection
-    3.times { @server.enqueue('{"ok":true,"data":"main","age_ms":1,"stale":false}') }
+    3.times { @server.enqueue('{"ok":true,"data":"main","age_ms":1}') }
 
     @client.session do |s|
       3.times { s.get('git.branch') }
@@ -212,12 +212,12 @@ class TestClient < Minitest::Test
       @client.session { |s| s.get('git.branch') }
     end
     # The server should still accept a new connection (connection was closed).
-    @server.enqueue('{"ok":true,"data":"x","age_ms":0,"stale":false}')
+    @server.enqueue('{"ok":true,"data":"x","age_ms":0}')
     assert_equal 'x', @client.get('git.branch')
   end
 
   def test_session_returns_block_value
-    @server.enqueue('{"ok":true,"data":"main","age_ms":1,"stale":false}')
+    @server.enqueue('{"ok":true,"data":"main","age_ms":1}')
     value = @client.session { |s| s.get('git.branch') }
     assert_equal 'main', value
   end

@@ -78,9 +78,8 @@ fn introspect_to_response(r: Result<IntrospectResponse, CombError>) -> std::io::
         IntrospectResponse::Daemon(h) => Response::ok(
             serde_json::to_value(h).expect("daemon health serialises"),
             0,
-            false,
         ),
-        IntrospectResponse::Other(value) => Response::ok(value, 0, false),
+        IntrospectResponse::Other(value) => Response::ok(value, 0),
     })
 }
 

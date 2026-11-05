@@ -152,7 +152,6 @@ async fn a_memo_op_stores_a_value_and_its_keys() {
 
     let r = d.get("demo:memo.f", None).await;
     assert_eq!(r.data, Some(json!("prod")));
-    assert_eq!(r.stale, Some(false));
     assert!(
         r.template.is_none() && r.memo.is_none(),
         "a facet has no halves"
@@ -167,7 +166,7 @@ async fn a_memo_op_stores_a_value_and_its_keys() {
     leaf.as_object_mut().unwrap().remove("age_ms");
     assert_eq!(
         leaf,
-        json!({"source": "memo", "stale": false, "hash": H1,
+        json!({"source": "memo", "hash": H1,
                "watch": ["/h/.kube/config"],
                "poll": {"interval": "600s", "count": 1}, "decay": 1})
     );

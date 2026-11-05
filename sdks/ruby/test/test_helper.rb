@@ -33,7 +33,7 @@ require 'beachcomber'
 # Usage:
 #
 #   server = MockServer.new
-#   server.enqueue('{"ok":true,"data":"main","age_ms":10,"stale":false}')
+#   server.enqueue('{"ok":true,"data":"main","age_ms":10}')
 #   client = Beachcomber::Client.new(socket_path: server.path)
 #   result = client.get('git.branch')
 #   server.stop

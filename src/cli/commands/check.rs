@@ -55,7 +55,7 @@ pub enum CheckCommands {
     },
     /// Check provider health and lifecycle state
     Providers,
-    /// Check cache entry counts and staleness
+    /// Check cache entry counts
     Cache,
     /// Show providers currently in a decay lifecycle state
     Lifecycle,
@@ -527,22 +527,12 @@ fn render_subject(
                 .get("total_entries")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let stale = payload
-                .get("stale_entries")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
 
             let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             lines.push_str("Cache\n");
             lines.push_str(&format!("  [PASS] entries   {total} total\n"));
-            if stale > 0 {
-                lines.push_str(&format!("  [WARN] stale     {stale} stale entries\n"));
-                worst = worst.max(Outcome::Warning);
-            } else {
-                lines.push_str("  [PASS] stale     none\n");
-            }
             lines.push_str(&vlines);
         }
         "lifecycle" => {

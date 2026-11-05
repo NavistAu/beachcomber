@@ -169,11 +169,11 @@ and writes it as a single newline-terminated line.
 
 **Step 8: Field extraction**
 
-The handler accesses `entry.result.get("branch")` and converts the `Value::String` to a `serde_json::Value`. It packages this into `Response::ok(data, age_ms, stale)`.
+The handler accesses `entry.result.get("branch")` and converts the `Value::String` to a `serde_json::Value`. It packages this into `Response::ok(data, age_ms)`.
 
 **Step 9: Response formatting**
 
-The server always emits the JSON envelope (`Response::ok(data, age_ms, stale)`) over the wire. Rendering into other shapes — plain text, `sh`, csv/tsv, fmt — happens client-side (e.g. in the `comb` CLI), not on the server.
+The server always emits the JSON envelope (`Response::ok(data, age_ms)`) over the wire. Rendering into other shapes — plain text, `sh`, csv/tsv, fmt — happens client-side (e.g. in the `comb` CLI), not on the server.
 
 **Step 10: CLI prints and exits**
 

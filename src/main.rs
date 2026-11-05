@@ -163,7 +163,7 @@ enum Commands {
         #[arg(long, short = 'f', default_value = "human", value_parser = status_format, help = STATUS.help())]
         format: Format,
         /// Filter rows: KEY=VALUE or KEY!=VALUE, repeatable, all must match. Keys: provider (base
-        /// name), facet, path, field, source, value, shadowed, stale, lifecycle;
+        /// name), facet, path, field, source, value, shadowed, lifecycle;
         /// `*` globs, and `-` means none for facet, path and value. Without a
         /// filter on that key, facet=-, value!=- and shadowed=false apply: facet rows, absent values
         /// and records a read here does not take are hidden.
@@ -173,7 +173,7 @@ enum Commands {
         #[arg(long, short = 'a')]
         all: bool,
         /// Sort by column: default (provider, then its facets, field, path), provider, path, field,
-        /// value, age, stale, lifecycle, poll_interval
+        /// value, age, lifecycle, poll_interval
         #[arg(long, default_value = "default")]
         sort: String,
         /// Disable value truncation

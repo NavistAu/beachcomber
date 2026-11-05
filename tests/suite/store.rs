@@ -87,43 +87,6 @@ async fn a_put_over_a_source_field_is_accepted_and_wins() {
 }
 
 #[tokio::test]
-async fn store_with_ttl_shows_staleness() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-
-    let mut stream = UnixStream::connect(&sock).await.unwrap();
-
-    // Store with TTL of 1 second
-    let req = r#"{"op":"put","key":"myapp","data":{"status":"ok"},"ttl":"1s"}"#;
-    let r = send_recv(&mut stream, req).await;
-    assert!(r.ok);
-
-    // Immediately get — should not be stale
-    let get = r#"{"op":"get","key":"myapp"}"#;
-    let resp = send_recv(&mut stream, get).await;
-    assert!(resp.ok);
-    assert_eq!(
-        resp.stale,
-        Some(false),
-        "should not be stale immediately after store"
-    );
-
-    // Advance mock clock by 3 seconds past the 1s TTL.
-    // is_stale() checks elapsed().as_secs() > interval; with ttl=1, need elapsed >= 2s.
-    // Hybrid: pause tokio clock, advance past TTL, then resume so subsequent I/O works normally.
-    tokio::time::pause();
-    tokio::time::advance(std::time::Duration::from_secs(3)).await;
-    tokio::time::resume();
-
-    let resp2 = send_recv(&mut stream, get).await;
-    assert!(resp2.ok);
-    assert_eq!(resp2.stale, Some(true), "should be stale after TTL expires");
-
-    handle.abort();
-}
-
-#[tokio::test]
 async fn refresh_on_a_sourceless_namespace_is_an_error() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let server = Server::new(sock.clone(), cache, registry, None, watchers);

@@ -236,7 +236,7 @@ A Source that calls `url()` has the same lifecycle as any config Source:
 - **`timeout`** (default `"10s"`, set under `[daemon]`, or per Source with `| timeout('30s')` on its `return`) — the maximum time a single execute may take; `url()` also takes its own `timeout=` (default `'10s'`). A request that exceeds the limit fails and the last good cached value is retained.
 - **`failback(interval, count)`** on the `return` line (the shipped default is `failback('1s', 3)`) — after `count` consecutive failures the Source backs off exponentially, the first step being `interval` and the cap 8× `interval` (8 s with the shipped default). Attempts before the count are not delayed. The interval comes first, as in `poll`, and is a duration string: a number there (`failback(3, '1s')`, the count-first order) is a load error that says the order. A non-2xx response, a connection error and a timeout all count.
 
-A transient 5xx or network error will not remove the last cached value — consumers will see `stale: true` on the wire (`comb g.j <provider>:cache.<field>` from the CLI) once the value is past its expected refresh time.
+A transient 5xx or network error will not remove the last cached value — consumers keep the last value, and `comb status` shows the failure on its row.
 
 ## Plugins: shared libraries
 

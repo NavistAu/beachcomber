@@ -243,7 +243,6 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
                             "path": r.path,
                             "value": r.value,
                             "age_ms": r.age_ms,
-                            "stale": r.stale,
                         })
                     })
                     .collect();

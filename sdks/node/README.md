@@ -121,7 +121,7 @@ Store data as static data. `data` is required; `put(key, null)` removes the node
 #### `client.status()`
 
 Return the cache rows: `CacheRow[]`, each with `provider`, `path`,
-`source`, `field`, `value`, `ageMs`, `stale`, `kind`, `pollIntervalSecs`,
+`source`, `field`, `value`, `ageMs`, `kind`, `pollIntervalSecs`,
 `pollCount`, `pollsElapsed`, `nextPollInSecs` and
 `failure`, as the daemon writes them (a field with no value is undefined).
 Status data that is not an array is a `ParseError`.

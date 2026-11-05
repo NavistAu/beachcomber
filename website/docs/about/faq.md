@@ -64,8 +64,3 @@ comb kill                # stop the running daemon
 comb s                   # triggers socket activation of the new binary
 ```
 
-### What is the `stale` flag in responses?
-
-Each provider has an expected refresh interval. If the cached value is older than that interval plus some tolerance, `stale: true` is set in the response. The value is still returned — beachcomber never blocks a read waiting for fresh data.
-
-Consumers can use `stale` to decide whether to show a loading indicator or use a different visual style. For prompt use, ignoring `stale` is usually the right choice — showing a slightly old branch name is better than blocking the prompt.

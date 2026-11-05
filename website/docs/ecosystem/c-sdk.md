@@ -211,7 +211,7 @@ Opens a watch on the *value* of a key — what `bc_get(key, cwd, env_json, NULL)
 answers — and emits it again whenever it changes: the fan-in underneath
 subscribes to every key the resolution reads, and a write to a namespace or
 any of its facets wakes its watchers, so a template edited under the watch
-fires it exactly as a changed cache record does. An event carries no `age_ms`/`stale` — a
+fires it exactly as a changed cache record does. An event carries no `age_ms` — a
 value resolved from several cache records has no single age or staleness.
 
 Blocking poll with five machine-readable outcomes (see [The JSON

@@ -1,5 +1,5 @@
 //! The `:cache` facet: `p:cache.<path>` answers what is known about the record
-//! a read of `p.<path>` resolves to — its derived keys (`age_ms`, `stale`,
+//! a read of `p.<path>` resolves to — its derived keys (`age_ms`,
 //! `source`) and the stored ones (`poll`, `watch`, `decay`). Like every read, a
 //! get of a node returns that part of the tree: an object node answers a tree
 //! shaped like its value, with the leaf answer at each leaf.
@@ -108,7 +108,6 @@ async fn the_cache_facet_of_a_source_leaf_names_the_source_and_its_schedule() {
     assert!(r.ok, "{:?}", r.error);
     let leaf = r.data.unwrap();
     assert!(leaf["age_ms"].is_u64(), "{leaf}");
-    assert_eq!(leaf["stale"], json!(false));
     assert_eq!(leaf["source"], json!("source(head)"));
     // head is a Watch Source on `.git/HEAD`; an array is an index-keyed object.
     assert_eq!(leaf["watch"], json!([".git/HEAD"]), "{leaf}");
@@ -161,7 +160,6 @@ async fn the_cache_facet_of_a_put_leaf_says_put() {
 
     let leaf = get(&mut s, "ns:cache.a", None).await.data.unwrap();
     assert!(leaf["age_ms"].is_u64(), "{leaf}");
-    assert_eq!(leaf["stale"], json!(false));
     assert_eq!(leaf["source"], json!("put"));
     // A put without a ttl is not a lifecycle entry: no stored keys, no decay.
     for key in ["poll", "watch", "decay"] {
@@ -188,7 +186,7 @@ async fn the_cache_facet_of_a_template_answer_has_derived_keys_only() {
     );
 
     let leaf = get(&mut s, "ns:cache.greeting", None).await.data.unwrap();
-    assert_eq!(leaf, json!({"stale": false, "source": "template"}));
+    assert_eq!(leaf, json!({"source": "template"}));
     handle.abort();
 }
 
@@ -276,7 +274,7 @@ async fn a_ttl_put_reports_its_schedule_and_a_reput_without_one_drops_it() {
 #[tokio::test]
 async fn a_put_to_a_derived_cache_key_is_refused() {
     let (_tmp, mut s, _cache, handle, _sock) = serve().await;
-    for key in ["age_ms", "stale", "source"] {
+    for key in ["age_ms", "source"] {
         let r = put(&mut s, &format!("ns:cache.x.{key}"), json!(1), None, None).await;
         assert!(!r.ok);
         assert_eq!(
@@ -399,7 +397,7 @@ async fn the_cache_facet_of_an_object_node_is_a_tree_of_leaf_answers() {
         "a leaf below a ttl'd address carries that address's schedule: {whole}"
     );
     assert_eq!(whole["b"]["d"]["decay"], json!(1));
-    assert_eq!(whole["t"], json!({"stale": false, "source": "template"}));
+    assert_eq!(whole["t"], json!({"source": "template"}));
     assert!(
         whole.get("_").is_none(),
         "the prototypes are not part of the value"
@@ -515,7 +513,7 @@ async fn layers_list_a_put_over_a_source_and_mark_the_put_answered() {
     );
     assert_eq!(list[0]["value"], json!("from-put"));
     assert_eq!(list[1]["value"], json!("from-source"));
-    assert!(list[0]["age_ms"].is_u64() && list[0]["stale"] == json!(false));
+    assert!(list[0]["age_ms"].is_u64());
     handle.abort();
 }
 

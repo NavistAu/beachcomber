@@ -316,7 +316,7 @@ comb g python:template.version # the raw template text, unrendered
 comb g --global myapp.status
 
 # Field metadata — the :cache facet mirrors the tree
-comb g.j git:cache.branch .    # → {"age_ms": 1240, "stale": false, "source": "source(head)", ...}
+comb g.j git:cache.branch .    # → {"age_ms": 1240, "source": "source(head)", ...}
 ```
 
 **Exit codes:**
@@ -351,7 +351,7 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay<N>|once|static|rendered`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), and the global `--color=auto|always|never` (wins over `NO_COLOR`) and `--ascii`.
+**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay<N>|once|static|rendered`, `--sort <default|provider|path|field|value|age|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), and the global `--color=auto|always|never` (wins over `NO_COLOR`) and `--ascii`.
 
 A namespace holding a `[client.providers.<p>]` template renders one extra row per leaf visible from the caller's directory — resolved with this shell's environment and `exec()` enabled, exactly as `comb get` would render it — beside the raw template row and any cached value at that address; a field that's both cached and templated shows both rows. A rendered row's SOURCE is `rendered`, its VALUE is marked (cyan, or a `▸ `/`> ` lead-in without colour), and `--filter=lifecycle=rendered` selects just those rows.
 
@@ -531,17 +531,16 @@ A field's value is the first layer that has it, in this order: the effective **t
 | `:cache` key | Meaning |
 |---|---|
 | `age_ms` | Milliseconds since the value was last computed (0 for a rendered template) |
-| `stale` | Whether the value is past its expected refresh time |
 | `source` | What answered: `put`, `template`, `memo` (a template leaf's stored value), `config(<file>)`, `computed(<line>)`, or `source(<name>)`, e.g. `source(head)` |
 | `poll`, `watch`, `decay` | The lifecycle the entry registered with: poll `{interval, count}`, watched paths, decay steps before eviction |
 | `hash` | What the record's validity is checked against: a Source's inputs as its run stamped them, or the hash a memo was stored under, until an invalidation drops it |
 
 ```sh
-comb g.j git:cache.branch .   # → {"age_ms": 1240, "stale": false, "source": "source(head)", ...}
+comb g.j git:cache.branch .   # → {"age_ms": 1240, "source": "source(head)", ...}
 comb g.j git:source .         # the Source's whole answer, ignoring any put over it
 ```
 
-`age_ms`, `stale` and `source` are derived at the read, as is `executing` on a Source's record (`true` while a run of its instance is in flight), and none of them can be written. The one `:cache` key you can put is a decay prototype: `comb put '*:cache._.decay' 3` sets the decay depth (default 4) for every provider, `comb put 'git:cache._.decay' 6` for one, and `--path` scopes either to a directory and below.
+`age_ms` and `source` are derived at the read, as is `executing` on a Source's record (`true` while a run of its instance is in flight), and none of them can be written. The one `:cache` key you can put is a decay prototype: `comb put '*:cache._.decay' 3` sets the decay depth (default 4) for every provider, `comb put 'git:cache._.decay' 6` for one, and `--path` scopes either to a directory and below.
 
 Only a colon in the provider's own segment names a facet (`git:cache.branch`), and the six above are the only facets: `git:notes` or `git:memos` is `invalid facet key` on every command, `comb put` included. Below the provider's segment a colon is an ordinary character (`mise.cargo:cargo-nextest`), so `git.branch:age` is a miss. Keys take jinja's subscripts too: `p.list[0]`, and `'mise["go:golang.org/x/tools/gopls"]'` for a name holding a `.`.
 
@@ -1480,7 +1479,7 @@ A Source that calls `url()` has the same lifecycle as any config Source:
 - **`timeout`** (default `"10s"`, set under `[daemon]`, or per Source with `| timeout('30s')` on its `return`) — the maximum time a single execute may take; `url()` also takes its own `timeout=` (default `'10s'`). A request that exceeds the limit fails and the last good cached value is retained.
 - **`failback(interval, count)`** on the `return` line (the shipped default is `failback('1s', 3)`) — after `count` consecutive failures the Source backs off exponentially, the first step being `interval` and the cap 8× `interval` (8 s with the shipped default). Attempts before the count are not delayed. The interval comes first, as in `poll`, and is a duration string: a number there (`failback(3, '1s')`, the count-first order) is a load error that says the order. A non-2xx response, a connection error and a timeout all count.
 
-A transient 5xx or network error will not remove the last cached value — consumers will see `stale: true` on the wire (`comb g.j <provider>:cache.<field>` from the CLI) once the value is past its expected refresh time.
+A transient 5xx or network error will not remove the last cached value — consumers keep the last value, and `comb status` shows the failure on its row.
 
 ### Secrets and Environment Variables
 
@@ -1742,8 +1741,8 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 ### Response Format
 
 ```json
-{"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240, "stale": false}
-{"ok": true, "data": "main", "age_ms": 1240, "stale": false}
+{"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240}
+{"ok": true, "data": "main", "age_ms": 1240}
 {"ok": true}
 {"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, memo, put, source or cache)"}
 ```
@@ -1755,7 +1754,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | `ok` | bool | Whether the operation succeeded |
 | `data` | any | Result: object (full provider) or scalar (single field); omitted on a miss |
 | `age_ms` | int | Milliseconds since the cached value was last computed |
-| `stale` | bool | Whether the value is past its expected refresh time |
 | `error` | string | Error message when `ok` is false |
 
 ### Operations
@@ -1789,17 +1787,17 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 Server streams responses:
 
 ```json
-{"ok":true,"data":"main","age_ms":0,"stale":false}
-{"ok":true,"data":"feature/foo","age_ms":0,"stale":false}
+{"ok":true,"data":"main","age_ms":0}
+{"ok":true,"data":"feature/foo","age_ms":0}
 ```
 
 Field-level filtering applies: watching `git.branch` only emits when the branch value changes, not on every git provider update.
 
-**`status`:** Returns cache rows — one entry per warm cache key. Each row includes provider, field, value, age, and stale flag. For daemon health information (uptime, scheduler state, active watchers), use `{"op":"introspect","subject":"daemon"}` instead. See [docs/protocol-spec.md](docs/protocol-spec.md) for the full wire contract.
+**`status`:** Returns cache rows — one entry per warm cache key. Each row includes provider, field, value and age. For daemon health information (uptime, scheduler state, active watchers), use `{"op":"introspect","subject":"daemon"}` instead. See [docs/protocol-spec.md](docs/protocol-spec.md) for the full wire contract.
 
 ### Wire Format
 
-The wire protocol is JSON-only: every response is the JSON envelope with `ok`, `data`, `age_ms`, `stale` shown above. There is no request-level `format` field — rendering into other output shapes happens client-side.
+The wire protocol is JSON-only: every response is the JSON envelope with `ok`, `data`, `age_ms` shown above. There is no request-level `format` field — rendering into other output shapes happens client-side.
 
 ### CLI-only Output Formats
 
@@ -1936,13 +1934,6 @@ If you need per-project isolation (e.g., different config for work vs personal p
 
 Write a Source. See the [Custom Providers Guide](#custom-providers-guide). If the provider would be useful to everyone (not just your specific setup), consider contributing it as a built-in — see [Contributing](#contributing).
 
-### What is the `stale` flag in responses?
-
-Each provider has an expected refresh interval. If the cached value is older than that interval plus some tolerance, `stale: true` is set in the response. The value is still returned — beachcomber never blocks a read waiting for fresh data.
-
-Consumers can use `stale` to decide whether to show a loading indicator or use a different visual style. For prompt use, ignoring `stale` is usually the right choice — showing a slightly old branch name is better than blocking the prompt.
-
----
 
 ## Contributing
 

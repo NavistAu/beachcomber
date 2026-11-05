@@ -38,8 +38,8 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 ## Response Format
 
 ```json
-{"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240, "stale": false}
-{"ok": true, "data": "main", "age_ms": 1240, "stale": false}
+{"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240}
+{"ok": true, "data": "main", "age_ms": 1240}
 {"ok": true}
 {"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, memo, put, source or cache)"}
 ```
@@ -51,7 +51,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | `ok` | bool | Whether the operation succeeded |
 | `data` | any | Result: object (full provider) or scalar (single field); omitted on a miss |
 | `age_ms` | int | Milliseconds since the cached value was last computed |
-| `stale` | bool | Whether the value is past its expected refresh time |
 | `error` | string | Error message when `ok` is false |
 
 ## Operations
@@ -74,7 +73,7 @@ Response:
 
 **`refresh`:** Re-execute the Sources the key demands — every Source of the namespace for a bare `provider`, only the one owning the field for `provider.field` — each at the instance that answers for the requested directory, out-of-band; it does not return the new value. Returns `{"ok": true}` after acknowledging; subsequent `get` calls return the refreshed value once re-execution completes. A key naming no Source — a static namespace, a facet key, an unknown name, or a field no Source owns — is an error: `{"ok": false, "error": "nothing to refresh: <key> has no sources"}`.
 
-**`status`:** Returns warm cache entries as an array of row objects. Each row has `provider`, `path`, `source`, `field`, `value`, `age_ms`, `stale`, `kind`, and `failure` fields (`kind` and `failure` are omitted when null/not applicable; `source` is always present). This is the data that `comb s` renders as a table. For daemon internals (pid, uptime, etc.), use `{"op":"introspect","subject":"daemon"}`.
+**`status`:** Returns warm cache entries as an array of row objects. Each row has `provider`, `path`, `source`, `field`, `value`, `age_ms`, `kind`, and `failure` fields (`kind` and `failure` are omitted when null/not applicable; `source` is always present). This is the data that `comb s` renders as a table. For daemon internals (pid, uptime, etc.), use `{"op":"introspect","subject":"daemon"}`.
 
 ```json
 {"op":"status"}
@@ -84,8 +83,8 @@ Response:
 
 ```json
 {"ok":true,"data":[
-  {"provider":"git","path":"/project","source":"source(head)","field":"branch","value":"main","age_ms":234,"stale":false},
-  {"provider":"battery","path":null,"source":"source(state)","field":"percent","value":85,"age_ms":4200,"stale":false}
+  {"provider":"git","path":"/project","source":"source(head)","field":"branch","value":"main","age_ms":234},
+  {"provider":"battery","path":null,"source":"source(state)","field":"percent","value":85,"age_ms":4200}
 ]}
 ```
 
@@ -126,8 +125,8 @@ Returns `put data at the root must be an object` for a non-object at a namespace
 The server streams responses:
 
 ```json
-{"ok":true,"data":"main","age_ms":0,"stale":false}
-{"ok":true,"data":"feature/foo","age_ms":0,"stale":false}
+{"ok":true,"data":"main","age_ms":0}
+{"ok":true,"data":"feature/foo","age_ms":0}
 ```
 
 The first line is emitted immediately with the current cached value (or a null data miss). Subsequent lines are emitted on each cache update. Watching a field path (e.g. `git.branch`) only emits when that field's value changes, not on every provider update. The client disconnects to stop the stream.

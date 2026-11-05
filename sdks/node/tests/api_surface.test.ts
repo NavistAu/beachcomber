@@ -100,7 +100,6 @@ describe('the typed shapes are exactly the table fields', () => {
         field: 'branch',
         value: 'main',
         age_ms: 12,
-        stale: false,
         kind: { kind: 'lifecycle', decay: 0, depth: 4, watches_files: true },
         poll_interval_secs: 10,
         poll_count: 3,

@@ -82,7 +82,6 @@ pub struct LayerRecord {
     pub path: Option<String>,
     pub value: serde_json::Value,
     pub age_ms: u128,
-    pub stale: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub answered: bool,
 }
@@ -94,7 +93,6 @@ impl LayerRecord {
         path: Option<&str>,
         value: &Value,
         age_ms: u128,
-        stale: bool,
     ) -> Self {
         Self {
             label: presented_label(label),
@@ -102,7 +100,6 @@ impl LayerRecord {
             path: path.map(str::to_string),
             value: serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
             age_ms,
-            stale,
             answered: false,
         }
     }
@@ -563,11 +560,10 @@ impl MemoRecord {
     }
 
     /// The memo as `<p>:cache.<field>` answers for it: `source` `memo`, its
-    /// `age_ms` and `stale`, and its stored keys.
+    /// `age_ms`, and its stored keys.
     pub fn cache_answer(&self) -> serde_json::Value {
         let mut answer = serde_json::Map::new();
         answer.insert("age_ms".into(), (self.age_ms as u64).into());
-        answer.insert("stale".into(), self.stale.into());
         answer.insert("source".into(), presented_label(MEMO_SOURCE).into());
         for (key, v) in &self.keys {
             if let Ok(v) = serde_json::to_value(v) {
@@ -2154,7 +2150,6 @@ impl Cache {
                             path: link.clone(),
                             value,
                             age_ms: stamp.age_ms(),
-                            stale: stamp.is_stale(),
                             answered: false,
                         },
                     ));
@@ -2191,7 +2186,6 @@ impl Cache {
                             link.as_deref(),
                             &value,
                             src.age_ms(),
-                            src.is_stale(),
                         ),
                     ));
                 }
@@ -2212,13 +2206,8 @@ impl Cache {
                 let stamp = entry
                     .put_address_for(&tail)
                     .and_then(|address| entry.puts.get(address));
-                let (age, stale) = stamp.map_or((src.age_ms(), src.is_stale()), |s| {
-                    (s.age_ms(), s.is_stale())
-                });
-                out.push((
-                    tail,
-                    LayerRecord::new(PUT_SOURCE, facet, link, &value, age, stale),
-                ));
+                let age = stamp.map_or(src.age_ms(), |s| s.age_ms());
+                out.push((tail, LayerRecord::new(PUT_SOURCE, facet, link, &value, age)));
             }
         }
         // A later file wins a leaf two files set, so the files are listed
@@ -2228,7 +2217,7 @@ impl Cache {
             for (tail, value) in leaves_of(&src.fields) {
                 out.push((
                     tail,
-                    LayerRecord::new(name, facet, link, &value, src.age_ms(), src.is_stale()),
+                    LayerRecord::new(name, facet, link, &value, src.age_ms()),
                 ));
             }
         }
@@ -2824,7 +2813,6 @@ impl Cache {
                             field: address.clone(),
                             value: serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
                             age_ms: Some(stamp.age_ms()),
-                            stale: stamp.is_stale(),
                             // The server fills in its lifecycle.
                             kind: None,
                             poll_interval_secs: None,
@@ -2867,7 +2855,6 @@ impl Cache {
                                 field,
                                 value: serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
                                 age_ms: Some(stamp.age_ms()),
-                                stale: stamp.is_stale(),
                                 // Only an address written with a ttl is a lifecycle entry; the
                                 // server fills its kind in.
                                 kind: stamp.interval_secs.is_none().then_some(RowKind::Static),
@@ -2882,7 +2869,6 @@ impl Cache {
                     continue;
                 }
                 let age = src.age_ms();
-                let stale = src.is_stale();
                 // A row whose source is the synthetic `put` label or a
                 // `config:<file>` seed carries no Source instance — it is a
                 // static entry (canon `provider_source.md` "Cache entry").
@@ -2904,7 +2890,6 @@ impl Cache {
                         field: libbeachcomber::key::quote(field).into_owned(),
                         value,
                         age_ms: Some(age),
-                        stale,
                         kind: kind.clone(),
                         poll_interval_secs: None,
                         poll_count: None,
@@ -2937,7 +2922,6 @@ impl Cache {
                     provider,
                     path,
                     age_ms: ce.age_ms(),
-                    stale: ce.is_stale(),
                     field_count,
                 }
             })
@@ -2950,7 +2934,6 @@ pub struct CacheEntryInfo {
     pub provider: String,
     pub path: Option<String>,
     pub age_ms: u128,
-    pub stale: bool,
     pub field_count: usize,
 }
 
@@ -4303,7 +4286,7 @@ mod tests {
             .write_static("git", Some("/repo"), PUT_SOURCE, "b", Value::Int(2), None)
             .unwrap();
         tokio::time::advance(std::time::Duration::from_secs(5)).await;
-        assert!(cache.list_entries().iter().all(|e| !e.stale));
+        assert!(!cache.get_entry("git", Some("/repo")).unwrap().is_stale());
     }
 
     // ── validity ────────────────────────────────────────────────────────────

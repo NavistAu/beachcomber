@@ -96,7 +96,6 @@ fn a_cached_leaf_runs_its_command_once() {
     assert_eq!(c.runs("x"), 1);
     let record = c.json("p:cache.f");
     assert_eq!(record["source"], "memo", "{record}");
-    assert_eq!(record["stale"], false, "{record}");
     assert_eq!(record["watch"], json!([c.home.join("state")]), "{record}");
     assert_eq!(record["poll"]["count"], 1, "{record}");
     assert_eq!(record["decay"], 1, "{record}");
@@ -316,10 +315,6 @@ async fn wait_zero_on_a_stale_memo_runs_nothing() {
     // Past the ttl on the daemon's clock, and on from there in real time.
     tokio::time::advance(std::time::Duration::from_secs(3)).await;
     tokio::time::resume();
-    let record: Value =
-        serde_json::from_str(&comb(&["get", "-f", "json", "p:cache.f"]).await.unwrap()).unwrap();
-    assert_eq!(record["stale"], true, "{record}");
-
     assert_eq!(comb(&["get", "--wait", "0", "p.f"]).await.unwrap(), "fresh");
     assert_eq!(runs(), 1, "the stale memo, and nothing ran");
     assert_eq!(comb(&["get", "p.f"]).await.unwrap(), "fresh");

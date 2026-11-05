@@ -56,7 +56,6 @@ type CacheRow struct {
 	Path             string // empty when not set
 	Value            interface{}
 	AgeMs            uint64
-	Stale            bool
 	Kind             map[string]interface{} // e.g. {"kind":"lifecycle","decay":0,"depth":4,"watches_files":true}
 	PollIntervalSecs *uint64
 	PollCount        *uint32
@@ -125,7 +124,7 @@ type IntrospectResponse struct {
 // WatchEvent is one emitted change on a watch. Data is the value Get answers
 // for the watched key at that moment, or nil when nothing answers there — a
 // miss, not the end of the stream. A value resolved from several cache
-// records has no single age or staleness, so a watch reports neither.
+// records has no single age, so a watch reports none.
 type WatchEvent struct {
 	Data interface{}
 }

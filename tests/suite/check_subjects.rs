@@ -197,15 +197,13 @@ async fn introspect_config_reports_path_and_parse_status() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn introspect_cache_reports_totals_and_stale_ratio() {
+async fn introspect_cache_reports_totals() {
     let (_tmp, client, handle) = setup_daemon().await;
 
     let resp = client.introspect("cache", None).unwrap();
     assert!(resp.ok, "error: {:?}", resp.error);
     let d = resp.data.unwrap();
     assert!(d.get("total_entries").and_then(|v| v.as_u64()).is_some());
-    assert!(d.get("stale_entries").and_then(|v| v.as_u64()).is_some());
-    assert!(d.get("stale_ratio").and_then(|v| v.as_f64()).is_some());
     let verdicts = d.get("verdicts").and_then(|v| v.as_array()).unwrap();
     assert!(!verdicts.is_empty());
     // PASS count message should be present
@@ -663,27 +661,6 @@ async fn providers_introspect_has_entries_with_required_fields() {
             "provider missing invalidation: {p:?}"
         );
     }
-
-    handle.abort();
-}
-
-/// Cache stale_ratio is in the valid range [0.0, 1.0].
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cache_introspect_stale_ratio_coherent() {
-    let (_tmp, client, handle) = setup_daemon().await;
-
-    let resp = client.introspect("cache", None).expect("cache introspect");
-
-    assert!(resp.ok, "error: {:?}", resp.error);
-    let data = resp.data.unwrap();
-    let ratio = data
-        .get("stale_ratio")
-        .and_then(|v| v.as_f64())
-        .expect("stale_ratio present");
-    assert!(
-        (0.0..=1.0).contains(&ratio),
-        "stale_ratio out of range: {ratio}"
-    );
 
     handle.abort();
 }

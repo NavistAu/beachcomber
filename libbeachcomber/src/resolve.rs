@@ -41,8 +41,8 @@ use std::sync::{Arc, PoisonError, RwLock, mpsc};
 /// address left over when the template walk stopped at a string, so the
 /// client can walk it into what that string renders to. `memo` is what
 /// `| cache()` stored for the template's leaves, beside the template and
-/// shaped like it ([`crate::protocol::Response::memo`]). `age_ms` and `stale`
-/// accompany `data` and nothing else. All-`None` is a miss.
+/// shaped like it ([`crate::protocol::Response::memo`]). `age_ms` accompanies
+/// `data` and nothing else. All-`None` is a miss.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Got {
     /// The cached value at the address, if any.
@@ -56,8 +56,6 @@ pub struct Got {
     pub memo: Option<JsonValue>,
     /// Age of `data`, present only with it.
     pub age_ms: Option<u128>,
-    /// Staleness of `data`, present only with it.
-    pub stale: Option<bool>,
 }
 
 /// Which directory a query addresses.

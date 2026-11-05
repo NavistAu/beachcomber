@@ -206,7 +206,6 @@ pub enum IntrospectResponse {
 pub struct WatchEvent {
     pub data: Option<CombData>,
     pub age_ms: u64,
-    pub stale: bool,
 }
 
 /// Streaming iterator over watch events. Each `next_event` call blocks
@@ -301,7 +300,6 @@ impl WatchStream {
         Ok(WatchEvent {
             data: resp.data.map(CombData::from_json),
             age_ms: resp.age_ms.unwrap_or(0) as u64,
-            stale: resp.stale.unwrap_or(false),
         })
     }
 
@@ -948,7 +946,7 @@ impl Session {
 
     /// The layers a read of `key` from `path` consults, per leaf: a tree
     /// shaped like the value with an ordered array of
-    /// `{label, facet?, path, value, age_ms, stale, answered?}` at each leaf
+    /// `{label, facet?, path, value, age_ms, answered?}` at each leaf
     /// (a leaf key answers with its array). `None` is a miss. Warms nothing.
     /// A diagnostic for `comb status --tree`; no SDK binds it.
     pub fn layers(
@@ -1126,7 +1124,6 @@ fn parse_node(resp: Response) -> resolve::Got {
         rest: resp.rest,
         memo: resp.memo,
         age_ms: resp.age_ms,
-        stale: resp.stale,
     }
 }
 
@@ -1230,7 +1227,7 @@ mod tests {
         );
         assert_eq!(
             node(
-                r#"{"ok":true,"data":{"lit":1},"age_ms":30,"stale":false,"template":{"theme":"t","widgets":{"foo":"f"}}}"#
+                r#"{"ok":true,"data":{"lit":1},"age_ms":30,"template":{"theme":"t","widgets":{"foo":"f"}}}"#
             ),
             Got {
                 data: Some(json!({"lit": 1})),
@@ -1238,12 +1235,11 @@ mod tests {
                 rest: None,
                 memo: None,
                 age_ms: Some(30),
-                stale: Some(false),
             }
         );
         assert_eq!(
             node(
-                r#"{"ok":true,"data":"default","age_ms":812,"stale":false,"template":"{{ env.TF_WORKSPACE or comb.terraform.workspace }}"}"#
+                r#"{"ok":true,"data":"default","age_ms":812,"template":"{{ env.TF_WORKSPACE or comb.terraform.workspace }}"}"#
             ),
             Got {
                 data: Some(json!("default")),
@@ -1251,18 +1247,16 @@ mod tests {
                 rest: None,
                 memo: None,
                 age_ms: Some(812),
-                stale: Some(false),
             }
         );
         assert_eq!(
-            node(r#"{"ok":true,"data":"feature/x","age_ms":812,"stale":true}"#),
+            node(r#"{"ok":true,"data":"feature/x","age_ms":812}"#),
             Got {
                 data: Some(json!("feature/x")),
                 template: None,
                 rest: None,
                 memo: None,
                 age_ms: Some(812),
-                stale: Some(true),
             }
         );
         assert_eq!(

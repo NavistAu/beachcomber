@@ -59,7 +59,6 @@ fn status_row_exposes_lifecycle_fields() {
         "path": "/tmp",
         "value": "main",
         "age_ms": 100u64,
-        "stale": false,
         "kind": {"kind": "lifecycle", "decay": 0, "depth": 4, "watches_files": true},
         "poll_interval_secs": 5u64,
         "poll_count": 3u32,

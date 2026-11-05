@@ -61,8 +61,7 @@ All responses are a single line of JSON:
 {
   "ok": true,
   "data": <any>,
-  "age_ms": 0,
-  "stale": false
+  "age_ms": 0
 }
 ```
 
@@ -70,8 +69,6 @@ All responses are a single line of JSON:
 - `data` (any, optional) — response payload. Shape depends on the op.
 - `age_ms` (integer, optional) — for `Get` responses, milliseconds since the
   record answering the request was last refreshed. See "Freshness" under `Get`.
-- `stale` (bool, optional) — for `Get` responses, whether the record is past
-  its expected refresh window. See "Freshness" under `Get`.
 - `error` (string, optional) — present when `ok=false`. A human-readable
   message; not stable enough to parse.
 - `template` (any, optional) — for `Get` responses, the template half. See
@@ -167,11 +164,9 @@ Read a cached value.
   | anything, with `force` | the run's end | as above |
 
   Each wait counts from the read's start. Answered in time, the read has the
-  fresh value; late, it has what is stored (`stale: true` if it is past its
-  lifetime, a miss when nothing is), `:cache.<field>.executing` is `true` while
+  fresh value; late, it has what is stored (a miss when nothing is), `:cache.<field>.executing` is `true` while
   the run goes on, and the run records itself for the next read and for any
-  `watch` of the key. Budget exceeded is not `stale`: that keeps its meaning,
-  past the lifetime. A namespace read starts the runs of every Source it needs
+  `watch` of the key. A namespace read starts the runs of every Source it needs
   before it waits for any. A client's read of the answer may take its own
   timeout plus the `wait`; `"forever"` has no deadline.
 
@@ -180,8 +175,7 @@ Read a cached value.
 {
   "ok": true,
   "data": {"branch": "main", "dirty": false},
-  "age_ms": 42,
-  "stale": false
+  "age_ms": 42
 }
 ```
 
@@ -199,20 +193,17 @@ Read a cached value.
 
 #### Freshness
 
-`age_ms` and `stale` describe the *record* that answered the request, not the
+`age_ms` describes the *record* that answered the request, not the
 cache entry it lives in:
 
-- a leaf reports its own record's Source: how long since that Source last
-  refreshed, and whether that is past the Source's expected interval;
-- an object assembled from several records reports the largest of their ages,
-  and is stale if any one of them is;
+- a leaf reports how long since its own record's Source last refreshed;
+- an object assembled from several records reports the largest of their ages;
 - a static record (source `put` or `config:<file>`) reports the time since it
-  was written, and is stale only if its `put` carried a `ttl`;
-- a rendered template value is a lookup, not a stored record: it reports age 0
-  and not stale;
-- a response with no `data` carries **neither** field.
+  was written;
+- a rendered template value is a lookup, not a stored record: it reports age 0;
+- a response with no `data` carries no `age_ms`.
 
-The same two numbers, and the record's source and lifecycle, are readable as
+The same number, and the record's source and lifecycle, are readable as
 data through the `:cache` facet (see "Keys").
 
 #### Template half
@@ -364,7 +355,7 @@ readable on its own:
 - `<p>:memo` — the values `| cache()` stored for `<p>`'s template leaves, each
   at its leaf's address (see "Memo half"). A namespace of its own, read like
   `:template` (`get kubecontext:memo.context`), with no template half; each
-  value's `age_ms` and `stale` are its memo's. A memo of absence holds no
+  value's `age_ms` is its memo's. A memo of absence holds no
   value here. Written only by the `memo` op: a `put` to it is `<p>:memo is
   written by cache(); edit <p>:template.<f>, or refresh <p>`.
 - `<p>:put` — what `put` and `config:<file>` seeds stored.
@@ -386,16 +377,16 @@ any node: a leaf answers with an object, and an object node answers with the
 tree of its leaves' answers.
 
 ```json
-{"age_ms": 1200, "stale": false, "source": "source(head)", "executing": false,
+{"age_ms": 1200, "source": "source(head)", "executing": false,
  "watch": [".git"], "hash": "9c6001d328a94690", "decay": 4}
 ```
 
-- `age_ms`, `stale`, `source` are derived at the read. `source` is `put`,
+- `age_ms`, `source` are derived at the read. `source` is `put`,
   `template`, `memo`, `config(<file>)` for a configuration seed,
   `computed(result)` / `computed(return)` for a leaf a provider line computed,
   or `source(<name>)` for a Source. A value served by a template with no memo
-  has two only (`stale` false, `source` `template`). A template leaf with a
-  memo answers for the memo: `source` `memo`, the memo's `age_ms` and `stale`,
+  has one only (`source` `template`). A template leaf with a
+  memo answers for the memo: `source` `memo`, the memo's `age_ms`,
   and its stored keys. A miss is a miss.
 - `executing` is derived too, for a Source's record: `true` while a run of the
   record's instance is in flight, whoever started it (a read that stopped
@@ -626,7 +617,7 @@ List all cache entries currently held by the daemon.
       "field": "branch",
       "value": "main",
       "age_ms": 120,
-      "stale": false,
+      
       "kind": {"kind": "lifecycle", "decay": 0, "depth": 4, "watches_files": true}
     },
     {
@@ -636,13 +627,12 @@ List all cache entries currently held by the daemon.
       "field": "status",
       "value": "healthy",
       "age_ms": 4200,
-      "stale": false,
+      
       "kind": {"kind": "static"}
     },
     ...
   ],
-  "age_ms": 0,
-  "stale": false
+  "age_ms": 0
 }
 ```
 
@@ -685,7 +675,7 @@ a layer facet or `:cache` key warms no Source.
 
 **Response (initial + per-event):**
 ```json
-{"ok": true, "data": {"branch": "main"}, "age_ms": 0, "stale": false}
+{"ok": true, "data": {"branch": "main"}, "age_ms": 0}
 ```
 
 The daemon emits one initial event with the current value, then one
@@ -746,8 +736,7 @@ Subjects: `daemon`, `providers`, `config`, `cache`, `lifecycle`, `watches`,
     "reaper": {"armed": true, "visibility": "system-wide", "sweeps": 12, "reaped": 0, "kill_denied": 0},
     "verdicts": [{"level": "PASS", "message": "daemon responsive"}]
   },
-  "age_ms": 0,
-  "stale": false
+  "age_ms": 0
 }
 ```
 
@@ -838,10 +827,10 @@ leaf key answers with its array alone):
 ```json
 [{"label": "config(/home/me/.config/beachcomber/defaults/aws.toml)",
   "facet": "template", "path": null,
-  "value": "{{ env.AWS_REGION or … }}", "age_ms": 72000, "stale": false,
+  "value": "{{ env.AWS_REGION or … }}", "age_ms": 72000,
   "answered": true},
  {"label": "put", "path": "/home/me/ws/project", "value": "eu-west-1",
-  "age_ms": 3000, "stale": false}]
+  "age_ms": 3000}]
 ```
 
 The order is the read's: the memo records for a template leaf first
@@ -937,6 +926,6 @@ The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs
   `source` are the read-only layer facets; `cache` is the daemon's metadata
   (see "The `:cache` facet").
 - **Cache row** — one line of `Status` output: `{provider, path, source,
-  field, value, age_ms, stale, kind}`.
+  field, value, age_ms, kind}`.
 - **Schedule** — when a Source runs again: the `poll` and `watch` decorators on
   its `return` line. See `src/scheduler/`.

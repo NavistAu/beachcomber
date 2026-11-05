@@ -264,8 +264,6 @@ pub struct Response {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub age_ms: Option<u128>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stale: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// The template half of a `get`: the node at the requested address in the
     /// `template` facet of the same namespace. A JSON tree whose string leaves
@@ -314,11 +312,10 @@ pub fn memo_without_ages(
 }
 
 impl Response {
-    pub fn ok(data: serde_json::Value, age_ms: u128, stale: bool) -> Self {
+    pub fn ok(data: serde_json::Value, age_ms: u128) -> Self {
         Self {
             data: Some(data),
             age_ms: Some(age_ms),
-            stale: Some(stale),
             ..Self::miss()
         }
     }
@@ -328,7 +325,6 @@ impl Response {
             ok: true,
             data: None,
             age_ms: None,
-            stale: None,
             error: None,
             template: None,
             rest: None,
@@ -389,7 +385,6 @@ pub struct CacheRow {
     /// and has none when it read no cached value at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub age_ms: Option<u128>,
-    pub stale: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<RowKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

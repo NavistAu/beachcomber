@@ -62,7 +62,7 @@ s:close()
 -- daemon cache status rows
 local rows = client:status()
 for _, row in ipairs(rows or {}) do
-  print(row.provider, row.field, row.age_ms, row.stale)
+  print(row.provider, row.field, row.age_ms)
 end
 
 client:close()
@@ -104,7 +104,7 @@ Re-execute the Sources `key` demands — every Source of the namespace for a bar
 
 ### `Client:status()` → `table[] | nil, error`
 
-Return the cache rows (one per warm cache entry) as an array of tables with the fields `libbeachcomber::protocol::CacheRow` defines — `provider`, `path` (`nil` for the global entry), `source`, `field`, `value`, `age_ms`, `stale` and the lifecycle fields. A status that cannot be read is `nil, err` on either transport, never an empty list.
+Return the cache rows (one per warm cache entry) as an array of tables with the fields `libbeachcomber::protocol::CacheRow` defines — `provider`, `path` (`nil` for the global entry), `source`, `field`, `value`, `age_ms` and the lifecycle fields. A status that cannot be read is `nil, err` on either transport, never an empty list.
 
 ### `Client:hello()` → `table | nil, error`
 

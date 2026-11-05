@@ -123,7 +123,7 @@ s:close()
 -- daemon cache status rows
 local rows = client:status()
 for _, row in ipairs(rows or {}) do
-  print(row.provider, row.field, row.age_ms, row.stale)
+  print(row.provider, row.field, row.age_ms)
 end
 
 client:close()
@@ -205,7 +205,7 @@ directory; `nil` is the global entry.
 Cache rows (one per warm cache entry), with the fields
 `libbeachcomber::protocol::CacheRow` defines: `provider`, `path`
 (`nil` for the global entry), `source`, `field`, `value`, `age_ms`,
-`stale`, plus lifecycle fields. A status that cannot be read is
+plus lifecycle fields. A status that cannot be read is
 `nil, Error` on either transport, never an empty list.
 
 ### `Client:put(key, data [, opts])` → `true | nil, Error`

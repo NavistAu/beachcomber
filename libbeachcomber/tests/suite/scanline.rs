@@ -169,7 +169,6 @@ impl Fetch for Scanline<'_> {
             rest,
             memo: None,
             age_ms,
-            stale: age_ms.map(|_| false),
         }))
     }
     fn memo(&mut self, _write: &libbeachcomber::resolve::MemoWrite) -> Result<(), FetchError> {

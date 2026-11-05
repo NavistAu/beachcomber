@@ -217,7 +217,6 @@ async fn a_stale_record_answers_within_its_budget_and_the_run_goes_on() {
         json!(1),
         "the stored value, while the run is held"
     );
-    assert_eq!(late["stale"], json!(true));
     let cache = ask(d.sock.clone(), get("g:cache.n")).await;
     assert_eq!(cache["data"]["executing"], json!(true), "{cache}");
 
@@ -226,7 +225,6 @@ async fn a_stale_record_answers_within_its_budget_and_the_run_goes_on() {
     loop {
         let answer = ask(d.sock.clone(), get("g.n")).await;
         if answer["data"] == json!(2) {
-            assert_eq!(answer["stale"], json!(false));
             break;
         }
         assert!(std::time::Instant::now() < deadline, "the run never stored");
@@ -262,7 +260,6 @@ async fn a_budget_of_an_hour_waits_for_the_run() {
     d.sides[0].permits.grant(1);
     let answer = read.await.unwrap();
     assert_eq!(answer["data"], json!(2));
-    assert_eq!(answer["stale"], json!(false));
 }
 
 /// A read with nothing stored waits for its run, past the budget: there is
@@ -365,7 +362,6 @@ async fn an_instance_in_failback_backoff_is_read_as_it_is() {
     until("the failing run", || runs.load(Ordering::SeqCst) == 2).await;
     let answer = ask(sock.clone(), get("g.n")).await;
     assert_eq!(answer["data"], json!(1), "as it is");
-    assert_eq!(answer["stale"], json!(true));
     assert_eq!(runs.load(Ordering::SeqCst), 2, "no run in backoff");
     handle.abort();
 }
@@ -415,7 +411,6 @@ async fn wait_0_answers_a_stale_record_with_its_run_held() {
 
     let answer = ask(d.sock.clone(), waiting("g.n", "0")).await;
     assert_eq!(answer["data"], json!(1), "the stored value: {answer}");
-    assert_eq!(answer["stale"], json!(true));
     let cache = ask(d.sock.clone(), get("g:cache.n")).await;
     assert_eq!(cache["data"]["executing"], json!(true), "{cache}");
     until("the read's run to begin", || {
@@ -470,7 +465,6 @@ async fn wait_forever_waits_past_the_budget() {
     d.sides[0].permits.grant(1);
     let answer = read.await.unwrap();
     assert_eq!(answer["data"], json!(2));
-    assert_eq!(answer["stale"], json!(false));
 }
 
 /// `--force` with `--wait 0` starts its run and answers what is stored, the

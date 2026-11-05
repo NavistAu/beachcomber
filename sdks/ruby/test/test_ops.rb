@@ -171,8 +171,8 @@ class TestOps < Minitest::Test
     payload = {
       ok: true,
       data: [
-        { provider: 'git', field: 'branch', path: '/repo', source: 'source(head)', value: 'main', age_ms: 100, stale: false },
-        { provider: 'git', field: 'dirty',  path: '/repo', source: 'source(dirty)', value: true, age_ms: 200, stale: true },
+        { provider: 'git', field: 'branch', path: '/repo', source: 'source(head)', value: 'main', age_ms: 100 },
+        { provider: 'git', field: 'dirty',  path: '/repo', source: 'source(dirty)', value: true, age_ms: 200 },
       ]
     }.to_json
     @server.enqueue(payload)
@@ -183,8 +183,6 @@ class TestOps < Minitest::Test
     assert_equal 'branch', rows[0].field
     assert_equal 'main',  rows[0].value
     assert_equal 100,     rows[0].age_ms
-    refute rows[0].stale
-    assert rows[1].stale
   end
 
   def test_status_raises_protocol_error_when_data_not_array
@@ -195,7 +193,7 @@ class TestOps < Minitest::Test
   # --- get options ---
 
   def test_get_sends_force
-    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    @server.enqueue('{"ok":true,"data":"main","age_ms":0}')
     @client.get('git.branch', force: true)
     req = @server.requests.last
     assert_equal 'get', req['op']
@@ -204,7 +202,7 @@ class TestOps < Minitest::Test
   end
 
   def test_get_sends_the_wait_as_a_duration
-    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    @server.enqueue('{"ok":true,"data":"main","age_ms":0}')
     @client.get('git.branch', wait: '0')
     req = @server.requests.last
     assert_equal '0s', req['wait']
@@ -221,7 +219,7 @@ class TestOps < Minitest::Test
   end
 
   def test_get_omits_the_options_by_default
-    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    @server.enqueue('{"ok":true,"data":"main","age_ms":0}')
     @client.get('git.branch')
     req = @server.requests.last
     refute req.key?('force')
@@ -253,7 +251,7 @@ class TestOps < Minitest::Test
   end
 
   def test_watch_subscribes_to_the_key
-    enqueue_many('{"ok":true,"data":"main","age_ms":10,"stale":false}')
+    enqueue_many('{"ok":true,"data":"main","age_ms":10}')
     stream = @client.watch('git.branch', cwd: '/repo')
     event = stream.next_event
     @server.wait_for('watch')
@@ -266,7 +264,7 @@ class TestOps < Minitest::Test
   end
 
   def test_watch_addresses_the_given_cwd
-    enqueue_many('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    enqueue_many('{"ok":true,"data":"main","age_ms":0}')
     stream = @client.watch('git.branch', cwd: '/repo')
     stream.next_event
     @server.wait_for('watch')
@@ -292,7 +290,7 @@ class TestOps < Minitest::Test
   end
 
   def test_watch_cancel_unblocks_pending_next
-    enqueue_many('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    enqueue_many('{"ok":true,"data":"main","age_ms":0}')
     stream = @client.watch('git.branch', cwd: '/repo')
     stream.next_event
     stream.cancel
@@ -305,7 +303,7 @@ class TestOps < Minitest::Test
   # A wait that runs out with no event is the timeout error, not the end of
   # the stream: the stream is still open, and a later change still arrives.
   def test_next_event_that_runs_out_its_timeout_raises_timeout_error
-    enqueue_many('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    enqueue_many('{"ok":true,"data":"main","age_ms":0}')
     stream = @client.watch('git.branch', cwd: '/repo')
     stream.next_event
     err = assert_raises(Beachcomber::TimeoutError) { stream.next_event(0) }
@@ -314,7 +312,7 @@ class TestOps < Minitest::Test
   end
 
   def test_watch_without_cwd_watches_the_global_entry
-    enqueue_many('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    enqueue_many('{"ok":true,"data":"main","age_ms":0}')
     stream = @client.watch('git.branch')
     stream.next_event
     @server.wait_for('watch')
@@ -324,7 +322,7 @@ class TestOps < Minitest::Test
   end
 
   def test_close_is_idempotent
-    enqueue_many('{"ok":true,"data":"main","age_ms":0,"stale":false}')
+    enqueue_many('{"ok":true,"data":"main","age_ms":0}')
     stream = @client.watch('git.branch', cwd: '/repo')
     stream.close
     stream.close
@@ -350,7 +348,7 @@ class TestOps < Minitest::Test
   end
 
   def test_get_plain_field_is_its_cached_value
-    @server.enqueue('{"ok":true,"data":"main","age_ms":10,"stale":false}')
+    @server.enqueue('{"ok":true,"data":"main","age_ms":10}')
     assert_equal 'main', @client.get('git.branch', cwd: '/repo')
   end
 
@@ -360,7 +358,7 @@ class TestOps < Minitest::Test
   end
 
   def test_eval_without_cwd_reads_the_global_entry
-    @server.enqueue('{"ok":true,"data":"x","age_ms":0,"stale":false}')
+    @server.enqueue('{"ok":true,"data":"x","age_ms":0}')
     assert_equal 'x', @client.eval('{{ p.f }}')
     req = @server.requests.last
     assert_equal 'get', req['op']
@@ -406,7 +404,6 @@ class TestOps < Minitest::Test
           source: 'source(head)',
           value: 'main',
           age_ms: 100,
-          stale: false,
           kind: { kind: 'lifecycle', decay: 0, depth: 4, watches_files: true },
           poll_interval_secs: 30,
           poll_count: 3,

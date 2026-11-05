@@ -184,7 +184,7 @@ fn a_memo_decays_lets_go_of_its_watch_and_is_evicted() {
     );
     assert_eq!(
         record(sock, &s.project),
-        json!({"stale": false, "source": "template"}),
+        json!({"source": "template"}),
         "the template leaf with no memo"
     );
     assert!(entries(sock, "lifecycle").is_empty());

@@ -24,7 +24,6 @@ export interface CacheRow {
   value: unknown;
   /** How old the value is; undefined when the row has no age. */
   ageMs?: number;
-  stale: boolean;
   kind?: RowKind;
   pollIntervalSecs?: number;
   pollCount?: number;

@@ -20,7 +20,7 @@ Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) 
 | `.t` / `.T` | `tsv` / `TSV` | tab-separated; uppercase adds a header row |
 | `.f TEMPLATE` | `TEMPLATE` | a template: any `-f` value holding `{{` or `{%` |
 
-A `-f` template renders exactly as `comb eval` renders one — `env`, `comb.*`, provider refs and `exec()` all read as they do there — with what the command read bound beside them: `value` (`values`, in key order, for several keys) and an object's fields by name on `get` and `watch`, and each row's fields (`provider`, `path`, `field`, `source`, `value`, `age_ms`, `age_human`, `stale`, `kind`, …) on `status`. A name it binds is never fetched as a provider. A template that does not compile fails the command once (`-f: template compile error: …`, exit 2); a `status` row whose render fails shows the error in its place.
+A `-f` template renders exactly as `comb eval` renders one — `env`, `comb.*`, provider refs and `exec()` all read as they do there — with what the command read bound beside them: `value` (`values`, in key order, for several keys) and an object's fields by name on `get` and `watch`, and each row's fields (`provider`, `path`, `field`, `source`, `value`, `age_ms`, `age_human`, `kind`, …) on `status`. A name it binds is never fetched as a provider. A template that does not compile fails the command once (`-f: template compile error: …`, exit 2); a `status` row whose render fails shows the error in its place.
 
 A template is recognised by its tags, never by not being a format's name: `-f` with anything else must name a format the command has, or it's refused (`get has no 'bogus' format: expected text (default), json, sh, csv, CSV, tsv, TSV, or a template ({{ … }})`). `status` also has `table` (an uncoloured `human`), and `check config --origins` takes `human` or `json`.
 
@@ -157,7 +157,7 @@ comb g scanline:template.widgets.foo # → {{ env.SCANLINE_FOO }} (the raw templ
 comb g --global myapp.status
 
 # Field metadata — the :cache facet mirrors the tree
-comb g.j git:cache.branch .      # → {"age_ms": 1523, "stale": false, "source": "source(head)", ...}
+comb g.j git:cache.branch .      # → {"age_ms": 1523, "source": "source(head)", ...}
 comb g.j git:source .            # → what the Source computed, even where a put hides it
 ```
 
@@ -174,7 +174,6 @@ comb g.j git:source .            # → what the Source computed, even where a pu
 | `:cache` key | Type | Description |
 |--------|------|-------------|
 | `age_ms` | int | Milliseconds since the value was last computed (0 for a rendered template) |
-| `stale` | bool | Whether the value is past its expected refresh time |
 | `source` | string | What answered: `put`, `template`, `memo` (a cached template's memo), `config(<file>)`, `computed(<line>)`, or `source(<name>)` such as `source(head)` |
 | `hash` | string | The validity hash, 16 hex digits: a Source record's inputs as its run stamped them, or the hash a memo was stored under, until an invalidation drops it |
 | `poll` | object | `{interval, count}` — present for polled Sources, `--ttl` puts and memos with a `ttl()` |
@@ -217,7 +216,6 @@ comb s --filter=lifecycle=decay1
 
 # Sort options
 comb s --sort age             # oldest first
-comb s --sort stale           # stale entries first
 
 # Script-friendly formats (bypass the human preset)
 comb s -f tsv
@@ -226,7 +224,7 @@ comb s -f json
 
 The machine formats lay a row out in the columns `PROVIDER PATH FIELD SOURCE VALUE AGE_MS STALE KIND DECAY POLL_INTERVAL_SECS POLL_COUNT FAILURE_CONSECUTIVE_FAILURES FAILURE_SUPPRESSED_UNTIL_UNIX_MS`, through the same cell encoders as `comb get`: `csv` and `tsv` have no header row and `CSV` and `TSV` do, a VALUE is its raw text (JSON for an object or array), and an absent field is an empty cell. `json` is one row object per line. `sh` names each variable `provider_path_field` with every character outside `[A-Za-z0-9_]` written as `_`, plus `_SOURCE`, `_KIND` and the lifecycle fields beside it.
 
-**Flags:** `-f`/`--format` (`human` (default), `table`, `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, or a template), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|stale|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--depth N`, and the global `--color` and `--ascii` ([Colour and glyphs](#colour-and-glyphs)).
+**Flags:** `-f`/`--format` (`human` (default), `table`, `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, or a template), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--depth N`, and the global `--color` and `--ascii` ([Colour and glyphs](#colour-and-glyphs)).
 
 A path at or below `$HOME` is written from `~` in both tables, the global entry as `~` itself — in its symlinked form or its real one — and so is a file in a SOURCE label, `check`'s path lines and `check config --origins`. The machine formats keep the stored path, the global entry as an empty cell (`null` in json).
 
@@ -243,7 +241,6 @@ A path at or below `$HOME` is written from `~` in both tables, the global entry 
 | `source` | the SOURCE label shown |
 | `value` | the value shown; `-` absent. A glob matches present values only, so `value=*` is "not absent" |
 | `shadowed` | `true` / `false` — a record the read from here does not take: another layer of the same leaf answers (a nearer put, a template over data), or the read answers nothing there (a put replaced the node above it) |
-| `stale` | `true` / `false` |
 | `lifecycle` | `active`, `decay<N>`, `once`, `static`, `rendered` |
 
 Three filters apply by default, so the table is what `comb get` here answers: `facet=-` hides facet rows, which are data *about* a provider rather than values a read answers; `value!=-` hides absent values; and `shadowed=false` hides records the read from this directory does not take. A filter you give on any of those keys, with either operator, replaces that key's default; `-a`/`--all` drops all three. Records stored at directories off this one's chain are other directories' values, and are listed as they are.
@@ -295,7 +292,7 @@ aws       profile                rendered                        ▸ work       
           └─ :template shadowed  config(…/defaults/aws.toml)     {{ env.AWS_PROFILE or … }} -              2d
 ```
 
-A layer row's AGE is its record's own: how long since that file or `put` last changed it. Facet rows are not value rows and get no layers (`-a` still lists them). `--tree` destructures every value to its leaves unless `--depth` says otherwise, and works with the `human`, `table` and `json` formats — in `json` each row gains a `layers` array (`{label, facet?, path, value, age_ms, stale, answered?}`); any other format is an error. The layers come from the daemon's `layers` op ([protocol spec](https://github.com/NavistAu/beachcomber/blob/main/docs/protocol-spec.md)), which warms nothing.
+A layer row's AGE is its record's own: how long since that file or `put` last changed it. Facet rows are not value rows and get no layers (`-a` still lists them). `--tree` destructures every value to its leaves unless `--depth` says otherwise, and works with the `human`, `table` and `json` formats — in `json` each row gains a `layers` array (`{label, facet?, path, value, age_ms, answered?}`); any other format is an error. The layers come from the daemon's `layers` op ([protocol spec](https://github.com/NavistAu/beachcomber/blob/main/docs/protocol-spec.md)), which warms nothing.
 
 **Destructuring (`--depth`):** object values expand into one row per key, recursively, with the parent's path, age and lifecycle metadata carried down. `--depth 0` is unlimited, `1` shows top-level fields only, `2` goes one level down, and so on.
 
@@ -526,7 +523,7 @@ comb c daemon            # daemon health: pid, version, uptime, request counts, 
 comb c providers         # provider health and failure-suppress state
 comb c config            # validate config file syntax
 comb c config --origins  # every config key, the file that set it, what it overrode
-comb c cache             # cache entries, staleness, hit/miss summary
+comb c cache             # cache entries, hit/miss summary
 comb c lifecycle         # keys in the decay/drain sequence
 comb c watches           # active filesystem watch registrations
 comb c timers            # poll timers and last-run times

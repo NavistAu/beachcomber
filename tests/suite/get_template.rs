@@ -4,7 +4,7 @@
 //! namespace's merged tree, where the provider's records live, and the node at
 //! `rest` in the merged tree of the `template` facet (`p:template`), read from
 //! the requested directory because a template is a static record. Whichever
-//! exist come back — `data` with its own `age_ms`/`stale`, `template` (plus
+//! exist come back — `data` with its own `age_ms`, `template` (plus
 //! `rest` when the walk stopped on a string with segments left over) with none.
 //!
 //! Freshness is per record: a leaf reports its own record's source entry, an
@@ -177,7 +177,6 @@ async fn get_a_namespace_returns_data_and_the_whole_template_tree() {
         serde_json::json!({
             "ok": true,
             "data": {"lit": 1},
-            "stale": false,
             "template": scanline_template_tree(),
         })
     );
@@ -239,7 +238,6 @@ async fn get_a_cached_field_with_a_template_returns_both_halves() {
         serde_json::json!({
             "ok": true,
             "data": "main",
-            "stale": false,
             "template": "{{ env.GIT_BRANCH or comb.git.branch }}"
         })
     );
@@ -262,7 +260,6 @@ async fn get_on_the_facet_itself_returns_the_template_as_data() {
         serde_json::json!({
             "ok": true,
             "data": "{{ env.SCANLINE_FOO }}",
-            "stale": false
         })
     );
 
@@ -271,7 +268,6 @@ async fn get_on_the_facet_itself_returns_the_template_as_data() {
         serde_json::json!({
             "ok": true,
             "data": scanline_template_tree(),
-            "stale": false
         })
     );
 
@@ -407,7 +403,6 @@ async fn a_template_answers_where_the_data_half_has_nothing() {
         serde_json::json!({
             "ok": true,
             "data": {"bar": 1},
-            "stale": false,
             "template": {"foo": "{{ env.FOO }}"}
         })
     );
@@ -416,7 +411,7 @@ async fn a_template_answers_where_the_data_half_has_nothing() {
     let data_only = get(&mut s, "box.widgets.bar").await;
     assert_eq!(
         without_age(data_only),
-        serde_json::json!({"ok": true, "data": 1, "stale": false})
+        serde_json::json!({"ok": true, "data": 1})
     );
 
     // A miss where neither half answers — an address into an existing object
@@ -652,15 +647,15 @@ async fn a_template_only_response_carries_no_freshness() {
 
     let resp = get(&mut s, "scanline.widgets.foo").await;
     assert!(
-        resp.get("age_ms").is_none() && resp.get("stale").is_none(),
-        "a response with no data carries neither age_ms nor stale: {resp}"
+        resp.get("age_ms").is_none(),
+        "a response with no data carries no age_ms: {resp}"
     );
 
     // The cache facet reports on what is cached and never carries a template.
     let facet = get(&mut s, "scanline:cache.widgets.foo").await;
     assert_eq!(
         facet["data"],
-        serde_json::json!({"stale": false, "source": "template"}),
+        serde_json::json!({"source": "template"}),
         "got {facet}"
     );
     assert!(
@@ -840,7 +835,7 @@ async fn a_watch_wakes_on_a_template_change_and_on_a_value() {
     put(&mut s, "scanline.widgets", serde_json::json!({"foo": 1})).await;
     assert_eq!(
         next_frame(&mut reader).await,
-        serde_json::json!({"ok": true, "data": 1, "stale": false, "template": "{{ 2 }}"}),
+        serde_json::json!({"ok": true, "data": 1, "template": "{{ 2 }}"}),
         "a value arrived under the same template"
     );
 

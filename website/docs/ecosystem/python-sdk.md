@@ -151,7 +151,7 @@ Inspect a daemon subsystem. `subject` is an `IntrospectSubject` enum value (`DAE
 
 #### `client.watch(key, cwd=None, env=None)`
 
-Subscribe to a key's value — the same value `get(key, cwd, env)` returns — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `cwd=None` watches the global entry. Returns a `WatchStream` (context manager / iterator) yielding `WatchEvent` instances, whose `data` carries no `age_ms`/`stale` — a value resolved from several cache records has no single age or staleness. `stream.next_event(timeout_ms=None)` answers the next event, or `None` once the stream has ended; a `timeout_ms` that runs out with no event raises `TimeoutError` and leaves the stream open. `stream.cancel()` ends the stream from any thread; `stream.close()` ends it and frees it.
+Subscribe to a key's value — the same value `get(key, cwd, env)` returns — and receive it again whenever it changes; a template edited under the watch fires it just as a changed cache record does. `cwd=None` watches the global entry. Returns a `WatchStream` (context manager / iterator) yielding `WatchEvent` instances, whose `data` carries no `age_ms` — a value resolved from several cache records has no single age or staleness. `stream.next_event(timeout_ms=None)` answers the next event, or `None` once the stream has ended; a `timeout_ms` that runs out with no event raises `TimeoutError` and leaves the stream open. `stream.cancel()` ends the stream from any thread; `stream.close()` ends it and frees it.
 
 #### `client.session()`
 

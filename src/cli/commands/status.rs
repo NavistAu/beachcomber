@@ -113,7 +113,6 @@ fn render_template_rows(
             field,
             value,
             age_ms,
-            stale: false,
             kind: Some(RowKind::Rendered),
             poll_interval_secs: None,
             poll_count: None,

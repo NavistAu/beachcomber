@@ -372,7 +372,7 @@ pub fn default_depth(format: &Format) -> usize {
 ///
 /// A row `(git, /repo, session, {"agent":"claude","color":"blue"})` becomes
 /// rows `session.agent` and `session.color`, each inheriting the parent's
-/// path, age, staleness and lifecycle metadata — they describe the same cache
+/// path, age and lifecycle metadata — they describe the same cache
 /// entry, just a deeper slice of it.
 ///
 /// `depth` counts field-name segments: 1 is the un-destructured original, 2
@@ -570,7 +570,6 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
         "age_human".into(),
         serde_json::Value::String(r.age_ms.map_or_else(|| "-".to_string(), format_age)),
     );
-    ctx.insert("stale".into(), serde_json::Value::Bool(r.stale));
     // kind — empty string when None
     let kind_str = r.kind.as_ref().map_or("", RowKind::name);
     ctx.insert("kind".into(), serde_json::Value::String(kind_str.into()));
@@ -664,14 +663,13 @@ fn render_json(rows: &[CacheRow]) -> String {
 
 /// The columns `status -f csv|tsv` lays a row out in, as the uppercase
 /// formats name them in their header.
-const DELIMITED_COLUMNS: [&str; 13] = [
+const DELIMITED_COLUMNS: [&str; 12] = [
     "PROVIDER",
     "PATH",
     "FIELD",
     "SOURCE",
     "VALUE",
     "AGE_MS",
-    "STALE",
     "KIND",
     "DECAY",
     "POLL_INTERVAL_SECS",
@@ -699,7 +697,6 @@ fn delimited_cells(row: &CacheRow) -> Vec<String> {
         row.source.clone(),
         csv_cell(Some(&row.value)),
         opt(row.age_ms.map(|a| a.to_string())),
-        row.stale.to_string(),
         kind.to_string(),
         decay,
         opt(row.poll_interval_secs.map(|n| n.to_string())),
@@ -972,7 +969,6 @@ pub fn render_tree(
                 field: row.field.clone(),
                 value: layer.value.clone(),
                 age_ms: Some(layer.age_ms),
-                stale: layer.stale,
                 kind: None,
                 poll_interval_secs: None,
                 poll_count: None,
@@ -998,7 +994,7 @@ pub fn render_tree(
 
 /// Render rows as aligned columns for the `human` preset.
 ///
-/// - `color_enabled`: apply per-cell ANSI colour (AGE yellow/green by stale, TTL by decay,
+/// - `color_enabled`: apply per-cell ANSI colour (AGE yellow when its last run failed, else green, TTL by decay,
 ///   failure rows red on non-TTL cells, JSON syntax highlighting in structured VALUE cells).
 /// - `trunc`: maximum width for the VALUE column (in characters). `None` = no truncation.
 /// - `header`: prepend a PROVIDER / FIELD / SOURCE / VALUE / PATH / AGE / POLL / TTL header row.
@@ -1459,7 +1455,7 @@ fn render_table(
         }
 
         // AGE cell — right-aligned against the floored column width (see the
-        // watch-jitter note above), coloured by stale state.
+        // watch-jitter note above), yellow when its last run failed.
         let age_text = format!(
             "{:>width$}",
             format_age_with_polls(row.age_ms, row.polls_elapsed, ascii),
@@ -1467,7 +1463,11 @@ fn render_table(
         );
         let age_vis = age_text.cols();
         let age_cell = if color_enabled {
-            if row.stale {
+            if row
+                .failure
+                .as_ref()
+                .is_some_and(|f| f.consecutive_failures > 0)
+            {
                 ansi::wrap(&age_text, ansi::Color::Yellow, true)
             } else {
                 ansi::wrap(&age_text, ansi::Color::BrightGreen, true)
@@ -1735,7 +1735,7 @@ pub fn display_source(row: &CacheRow) -> String {
 /// Keys: `provider` (the base name, exact or `*` glob), `facet` (a name or
 /// glob, `-` for none), `path` (glob, `-` for none), `field`, `source` (glob
 /// over the displayed label), `value` (glob over the displayed value, `-` for
-/// absent), `stale`, `shadowed`, `lifecycle`. `!=` negates.
+/// absent), `shadowed`, `lifecycle`. `!=` negates.
 /// Returns `Err` if any filter string uses an unknown key or invalid value.
 pub fn apply_filters(rows: Vec<CacheRow>, filters: &[String]) -> Result<Vec<CacheRow>, String> {
     let filters: Vec<Filter> = filters
@@ -1796,7 +1796,6 @@ enum Predicate {
     Source(String),
     /// The displayed value as a glob, or absent (`-`).
     Value(Option<String>),
-    Stale(bool),
     /// A record the read from the caller's directory does not take.
     Shadowed(bool),
     /// Match Lifecycle rows with the given decay level (0=active, 1-4=decayN).
@@ -1823,11 +1822,6 @@ fn parse_filter(s: &str) -> Result<Filter, String> {
         "field" => Predicate::Field(v.to_string()),
         "source" => Predicate::Source(v.to_string()),
         "value" => Predicate::Value(dash(v)),
-        "stale" => match v {
-            "true" => Predicate::Stale(true),
-            "false" => Predicate::Stale(false),
-            other => return Err(format!("stale= must be true or false, got {other}")),
-        },
         "shadowed" => match v {
             "true" => Predicate::Shadowed(true),
             "false" => Predicate::Shadowed(false),
@@ -1891,7 +1885,6 @@ impl Predicate {
                 !r.value.is_null()
                     && simple_glob_match(pat, &libbeachcomber::render::csv_cell(Some(&r.value)))
             }
-            Predicate::Stale(b) => r.stale == *b,
             Predicate::Shadowed(b) => r.shadowed == *b,
             Predicate::LifecycleDecay(target) => matches!(
                 &r.kind,
@@ -1931,7 +1924,7 @@ fn simple_glob_match(pattern: &str, text: &str) -> bool {
 
 /// Sort `rows` by the given column name (ascending, stable).
 ///
-/// Valid columns: `provider`, `path`, `field`, `value`, `age`, `stale`, `lifecycle`,
+/// Valid columns: `provider`, `path`, `field`, `value`, `age`, `lifecycle`,
 /// `poll_interval`.
 /// Returns `Err` for any other column name.
 pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, String> {
@@ -1952,7 +1945,6 @@ pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, S
         "field" => rows.sort_by(|a, b| a.field.cmp(&b.field)),
         "value" => rows.sort_by_key(|r| r.value.to_string()),
         "age" => rows.sort_by_key(|r| r.age_ms),
-        "stale" => rows.sort_by_key(|r| r.stale),
         // Closest to eviction first (fewest steps left), Active last,
         // then Once, Static, Rendered, Transient, None.
         "lifecycle" => rows.sort_by_key(|r| match &r.kind {
@@ -2422,7 +2414,6 @@ mod ttl_cell_tests {
             field: "one".into(),
             value: serde_json::json!(0.5),
             age_ms: Some(0),
-            stale: false,
             kind: Some(RowKind::Lifecycle {
                 decay: 0,
                 depth: 4,

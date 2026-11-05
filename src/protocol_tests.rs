@@ -51,12 +51,11 @@ fn parse_refresh_request() {
 
 #[test]
 fn response_ok_serializes() {
-    let response = Response::ok(serde_json::json!({"branch": "main"}), 50, false);
+    let response = Response::ok(serde_json::json!({"branch": "main"}), 50);
     let json = serde_json::to_value(&response).unwrap();
     assert_eq!(json["ok"], true);
     assert_eq!(json["data"]["branch"], "main");
     assert_eq!(json["age_ms"], 50);
-    assert_eq!(json["stale"], false);
 }
 
 #[test]

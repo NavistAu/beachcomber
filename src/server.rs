@@ -1150,13 +1150,13 @@ fn lookup_merged(merged: &Option<MergedRead>, field: &str) -> Option<serde_json:
 /// with no freshness is a bug in the merge rather than a value to report. The
 /// fields are omitted rather than filled in with a zero that would read as
 /// "just refreshed".
-fn hit_response(data: serde_json::Value, freshness: Option<(u128, bool)>) -> Response {
+fn hit_response(data: serde_json::Value, freshness: Option<u128>) -> Response {
     debug_assert!(
         freshness.is_some(),
         "a data hit with no record behind it: the merge lost provenance"
     );
     match freshness {
-        Some((age_ms, stale)) => Response::ok(data, age_ms, stale),
+        Some(age_ms) => Response::ok(data, age_ms),
         None => Response {
             data: Some(data),
             ..Response::miss()
@@ -1164,36 +1164,33 @@ fn hit_response(data: serde_json::Value, freshness: Option<(u128, bool)>) -> Res
     }
 }
 
-/// The `age_ms`/`stale` pair to report for the node at `rest` (`""` for the
+/// The `age_ms` to report for the node at `rest` (`""` for the
 /// whole namespace) in a merged read.
 ///
 /// A leaf is answered by its own record's source entry — canon
 /// `provider_source.md` §"Field freshness". An object is answered by the
-/// records under it together: the largest of their ages, and stale if any one
-/// of them is. `None` when no record sits at or below the address, which is
+/// records under it together: the largest of their ages. `None` when no record sits at or below the address, which is
 /// also when there is no `data` to report freshness for.
-fn freshness(read: &MergedRead, rest: &str) -> Option<(u128, bool)> {
+fn freshness(read: &MergedRead, rest: &str) -> Option<u128> {
     if let Some(record) = read.records.get(rest) {
-        return Some((record.age_ms(), record.is_stale()));
+        return Some(record.age_ms());
     }
     let mut oldest: Option<u128> = None;
-    let mut stale = false;
     for (tail, record) in &read.records {
         if !libbeachcomber::key::within(tail, rest) {
             continue;
         }
         let age = record.age_ms();
         oldest = Some(oldest.map_or(age, |o| o.max(age)));
-        stale |= record.is_stale();
     }
     if oldest.is_some() {
-        return oldest.map(|age| (age, stale));
+        return oldest;
     }
     // Inside a leaf — an array's element: the record is the array's own.
     let mut at = rest.to_string();
     while let Some(up) = libbeachcomber::key::parent(&at) {
         if let Some(record) = read.records.get(&up) {
-            return Some((record.age_ms(), record.is_stale()));
+            return Some(record.age_ms());
         }
         if up.is_empty() {
             break;
@@ -1423,10 +1420,10 @@ fn read_watch_value(
 /// a leaf answer at each leaf. The address resolves exactly as the read does
 /// (same chain, nearest record), and nothing is warmed or run.
 ///
-/// A leaf answers `age_ms`, `stale` and `source` (derived from the record that
+/// A leaf answers `age_ms` and `source` (derived from the record that
 /// answered) and, for a Source's record, `executing` (a run of its instance is
 /// in flight), plus the keys stored beside it (`poll`, `watch`, `decay`). A leaf a
-/// template answers is `{"stale": false, "source": "template"}`, with no
+/// template answers is `{"source": "template"}`, with no
 /// `age_ms`: the client renders it, so it is as old as the inputs the render
 /// reads, which the daemon never sees. A template leaf with a memo answers for
 /// the memo instead ([`crate::cache::MemoRecord::cache_answer`]): `source`
@@ -1453,7 +1450,7 @@ fn cache_facet_response(
         return match prototypes.and_then(|m| {
             crate::provider::lookup_path(&m.fields, rest).and_then(|v| serde_json::to_value(v).ok())
         }) {
-            Some(value) => Response::ok(value, 0, false),
+            Some(value) => Response::ok(value, 0),
             None => Response::miss(),
         };
     }
@@ -1471,7 +1468,6 @@ fn cache_facet_response(
         let record = merged.as_ref()?.records.get(tail)?;
         let mut answer = serde_json::Map::new();
         answer.insert("age_ms".into(), (record.age_ms() as u64).into());
-        answer.insert("stale".into(), record.is_stale().into());
         let label: &str = &record.source;
         answer.insert("source".into(), crate::cache::presented_label(label).into());
         // A Source's record is being brought up to date while a run of its
@@ -1510,7 +1506,7 @@ fn cache_facet_response(
         };
         match cache.memo_record(provider, requested, at) {
             Some(memo) => memo.cache_answer(),
-            None => serde_json::json!({"stale": false, "source": "template"}),
+            None => serde_json::json!({"source": "template"}),
         }
     };
 
@@ -1521,7 +1517,7 @@ fn cache_facet_response(
         &leaf,
         &template_leaf,
     ) {
-        Some(tree) => Response::ok(tree, 0, false),
+        Some(tree) => Response::ok(tree, 0),
         None => Response::miss(),
     }
 }
@@ -1652,7 +1648,6 @@ fn layers_response(
                     record.entry.as_deref(),
                     value,
                     record.age_ms(),
-                    record.is_stale(),
                 ),
             ));
         }
@@ -1730,9 +1725,9 @@ fn layers_response(
         insert_at(&mut tree, &relative, list);
     }
     match alone {
-        Some(list) => Response::ok(list, 0, false),
+        Some(list) => Response::ok(list, 0),
         None if tree.is_empty() => Response::miss(),
-        None => Response::ok(serde_json::Value::Object(tree), 0, false),
+        None => Response::ok(serde_json::Value::Object(tree), 0),
     }
 }
 
@@ -2176,7 +2171,7 @@ async fn handle_request(
             // The one `:cache` key a put may write is a decay prototype. The
             // rest is derived at a read or stored by the daemon.
             if facet == Some(Facet::Cache) {
-                let derived = ["age_ms", "stale", "source", "executing"]
+                let derived = ["age_ms", "source", "executing"]
                     .iter()
                     .any(|k| libbeachcomber::key::last(node).as_deref() == Some(k));
                 if derived {
@@ -2430,7 +2425,7 @@ async fn handle_request(
             }
 
             match serde_json::to_value(&rows) {
-                Ok(v) => Response::ok(v, 0, false),
+                Ok(v) => Response::ok(v, 0),
                 Err(e) => Response::error(format!("serialization failed: {e}")),
             }
         }
@@ -2513,7 +2508,7 @@ async fn handle_request(
                 "protocol_version": crate::protocol::PROTOCOL_VERSION,
                 "daemon_version": env!("BEACHCOMBER_VERSION"),
             });
-            Response::ok(data, 0, false)
+            Response::ok(data, 0)
         }
         // Watch is intercepted in handle_connection before reaching here
         Request::Watch { .. } => unreachable!("Watch handled before handle_request"),
@@ -2615,7 +2610,6 @@ fn handle_introspect_daemon(
     Response::ok(
         serde_json::to_value(health).expect("daemon health serialises"),
         0,
-        false,
     )
 }
 
@@ -2766,7 +2760,6 @@ async fn handle_introspect_providers(
             "verdicts": verdicts,
         }),
         0,
-        false,
     )
 }
 
@@ -2789,42 +2782,23 @@ fn handle_introspect_config(config: &Config, registry: &ProviderRegistry) -> Res
             "verdicts": verdicts,
         }),
         0,
-        false,
     )
 }
 
 fn handle_introspect_cache(cache: &Cache) -> Response {
     let entries = cache.list_entries();
     let total = entries.len() as u64;
-    let stale = entries.iter().filter(|e| e.stale).count() as u64;
-    let ratio = if total == 0 {
-        0.0_f64
-    } else {
-        stale as f64 / total as f64
-    };
-
-    let mut verdicts = vec![serde_json::json!({
+    let verdicts = vec![serde_json::json!({
         "level": "PASS",
         "message": format!("{total} entries"),
     })];
-    if stale > 0 {
-        verdicts.push(serde_json::json!({
-            "level": "WARN",
-            "message": format!("{stale} stale — run `comb status --filter stale=true` to inspect"),
-        }));
-    } else if total > 0 {
-        verdicts.push(serde_json::json!({"level": "PASS", "message": "no stale entries"}));
-    }
 
     Response::ok(
         serde_json::json!({
             "total_entries": total,
-            "stale_entries": stale,
-            "stale_ratio": ratio,
             "verdicts": verdicts,
         }),
         0,
-        false,
     )
 }
 
@@ -2869,7 +2843,6 @@ async fn handle_introspect_lifecycle(scheduler: Option<&SchedulerHandle>) -> Res
             "verdicts": verdicts,
         }),
         0,
-        false,
     )
 }
 
@@ -2891,7 +2864,6 @@ async fn handle_introspect_watches(scheduler: Option<&SchedulerHandle>) -> Respo
             "verdicts": verdicts,
         }),
         0,
-        false,
     )
 }
 
@@ -2986,7 +2958,6 @@ async fn handle_introspect_timers(scheduler: Option<&SchedulerHandle>) -> Respon
             "verdicts": verdicts,
         }),
         0,
-        false,
     )
 }
 
@@ -3013,7 +2984,6 @@ async fn handle_introspect_demand(scheduler: Option<&SchedulerHandle>) -> Respon
             "verdicts": [verdict],
         }),
         0,
-        false,
     )
 }
 
@@ -3065,7 +3035,6 @@ fn handle_introspect_procs(procs: &dyn ProcessSnapshotter, duration_secs: Option
                     "verdicts": verdicts,
                 }),
                 0,
-                false,
             )
         }
         Err(e) => Response::error(format!("procs snapshot failed: {e}")),
@@ -3469,18 +3438,14 @@ mod tests {
 
         assert_eq!(
             freshness(&read, "x"),
-            Some((5000, true)),
-            "the older record's own age, stale past its 1s ttl"
+            Some(5000),
+            "the older record's own age"
         );
-        assert_eq!(
-            freshness(&read, "y"),
-            Some((0, false)),
-            "the newer record's own age, fresh inside its 100s ttl"
-        );
+        assert_eq!(freshness(&read, "y"), Some(0), "the newer record's own age");
         assert_eq!(
             freshness(&read, ""),
-            Some((5000, true)),
-            "the assembled object takes the largest age and any record's staleness"
+            Some(5000),
+            "the assembled object takes the largest age"
         );
         assert_eq!(freshness(&read, "nope"), None, "no record, no freshness");
     }
@@ -3520,12 +3485,12 @@ mod tests {
 
         assert_eq!(
             freshness(&read, "tree"),
-            Some((0, false)),
+            Some(0),
             "the node reports the record that answers it, not the empty one it replaced"
         );
         assert_eq!(
             freshness(&read, ""),
-            Some((0, false)),
+            Some(0),
             "and so does the root the node sits in"
         );
     }

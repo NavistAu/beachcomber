@@ -26,7 +26,6 @@ class CacheRow:
     source: str
     field: str
     value: Any
-    stale: bool
     age_ms: Optional[int] = None
     kind: Optional[Dict[str, Any]] = None
     poll_interval_secs: Optional[int] = None

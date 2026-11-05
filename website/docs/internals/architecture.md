@@ -171,7 +171,7 @@ and writes it as a single newline-terminated line.
 
 **Step 8: Field extraction**
 
-The handler looks up the `head` source (via `sources_for_key` for `git.branch`) and accesses `entry.sources["head"].fields.get("branch")`. It converts the `Value::String` to a `serde_json::Value` and packages it into `Response::ok(data, age_ms, stale)`.
+The handler looks up the `head` source (via `sources_for_key` for `git.branch`) and accesses `entry.sources["head"].fields.get("branch")`. It converts the `Value::String` to a `serde_json::Value` and packages it into `Response::ok(data, age_ms)`.
 
 **Step 9: Response formatting**
 

@@ -86,7 +86,7 @@ await client.refresh('git', '/some/repo');
 
 #### `client.status()`
 
-Return typed cache rows as `CacheRow[]` (one per warm cache entry): `provider`, `path`, `source`, `field`, `value`, `ageMs`, `stale`, `kind`, `pollIntervalSecs`, `pollCount`, `pollsElapsed`, `nextPollInSecs` and `failure`, a field with no value undefined. Status data that is not an array is a `ParseError`.
+Return typed cache rows as `CacheRow[]` (one per warm cache entry): `provider`, `path`, `source`, `field`, `value`, `ageMs`, `kind`, `pollIntervalSecs`, `pollCount`, `pollsElapsed`, `nextPollInSecs` and `failure`, a field with no value undefined. Status data that is not an array is a `ParseError`.
 
 #### `client.hello()`
 

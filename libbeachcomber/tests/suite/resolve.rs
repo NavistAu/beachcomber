@@ -97,7 +97,6 @@ fn data(d: Value) -> Got {
     Got {
         data: Some(d),
         age_ms: Some(812),
-        stale: Some(false),
         ..Got::default()
     }
 }
@@ -122,7 +121,6 @@ fn both(d: Value, t: Value) -> Got {
         data: Some(d),
         template: Some(t),
         age_ms: Some(30),
-        stale: Some(false),
         rest: None,
         memo: None,
     }
@@ -887,7 +885,7 @@ fn a_cache_facet_ref_is_not_rendered() {
     let mut f = spec_fetch();
     // A facet key carries no template half, so its answer is opaque by
     // construction: even were a field of it template-shaped text, it is data.
-    let leaf = json!({"age_ms": 812, "stale": false, "source": "{{ head }}"});
+    let leaf = json!({"age_ms": 812, "source": "{{ head }}"});
     f.seed("git:cache.branch", Some(CWD), data(leaf.clone()));
 
     assert_eq!(
@@ -1988,7 +1986,6 @@ fn aged(value: Value, age_ms: u128) -> Got {
     Got {
         data: Some(value),
         age_ms: Some(age_ms),
-        stale: Some(false),
         ..Got::default()
     }
 }

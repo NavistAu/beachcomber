@@ -43,7 +43,6 @@ export function parseCacheRows(data: unknown, libraryVersion?: string): CacheRow
       field: String(r['field'] ?? ''),
       value: r['value'],
       ageMs: optional(r['age_ms'], Number),
-      stale: Boolean(r['stale']),
       kind: optional(r['kind'], (v) => v as RowKind),
       pollIntervalSecs: optional(r['poll_interval_secs'], Number),
       pollCount: optional(r['poll_count'], Number),

@@ -28,7 +28,6 @@ fn bench_serialize_response_json(c: &mut Criterion) {
     let response = Response::ok(
         serde_json::json!({"branch": "main", "dirty": false, "ahead": 2}),
         150,
-        false,
     );
 
     c.bench_function("serialize_response_json", |b| {

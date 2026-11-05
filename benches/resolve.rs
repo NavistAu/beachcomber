@@ -50,7 +50,6 @@ fn data(d: Value) -> Got {
     Got {
         data: Some(d),
         age_ms: Some(100),
-        stale: Some(false),
         ..Got::default()
     }
 }

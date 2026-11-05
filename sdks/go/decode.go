@@ -55,9 +55,6 @@ func parseCacheRowsFromData(raw json.RawMessage) ([]CacheRow, error) {
 		if f, ok := m["age_ms"].(float64); ok {
 			row.AgeMs = uint64(f)
 		}
-		if b, ok := m["stale"].(bool); ok {
-			row.Stale = b
-		}
 		if k, ok := m["kind"].(map[string]interface{}); ok {
 			row.Kind = k
 		}
