@@ -2371,6 +2371,32 @@ async fn handle_request(
                 (Default::default(), Default::default())
             };
 
+            // A Source that has failed every run has stored nothing, so it
+            // has no row: give it an absent one, which the loop below fills
+            // with its lifecycle and its failure.
+            for key in failures.keys() {
+                let has_row = rows.iter().any(|r| {
+                    r.provider == key.provider && r.path == key.path && r.source == key.source
+                });
+                if key.node.is_empty() && !has_row {
+                    rows.push(crate::cache::CacheRow {
+                        shadowed: false,
+                        provider: key.provider.clone(),
+                        path: key.path.clone(),
+                        source: key.source.clone(),
+                        field: String::new(),
+                        value: serde_json::Value::Null,
+                        age_ms: None,
+                        kind: None,
+                        poll_interval_secs: None,
+                        poll_count: None,
+                        polls_elapsed: None,
+                        next_poll_in_secs: None,
+                        failure: None,
+                    });
+                }
+            }
+
             use crate::cache::RowKind;
             for row in rows.iter_mut() {
                 // `Cache::list_rows` already marked static rows (source ==
@@ -2676,6 +2702,10 @@ async fn handle_introspect_providers(
     } else {
         Vec::new()
     };
+    let failures = match scheduler {
+        Some(s) => s.get_failure_states().await,
+        None => Default::default(),
+    };
 
     let mut providers_out = Vec::new();
     let mut verdicts = Vec::new();
@@ -2761,8 +2791,30 @@ async fn handle_introspect_providers(
             }));
         }
 
+        // A Source whose latest runs failed, whether or not one ever succeeded.
+        let mut failing: Vec<(&str, u32)> = failures
+            .iter()
+            .filter(|(k, _)| &k.provider == name)
+            .map(|(k, f)| (k.source.as_str(), f.consecutive_failures))
+            .collect();
+        failing.sort();
+        failing.dedup_by_key(|(source, _)| *source);
+        for (source, n) in &failing {
+            verdicts.push(serde_json::json!({
+                "level": "WARN",
+                "message": format!("{name}.{source} failing: {n} run(s) in a row (the daemon log says why)"),
+            }));
+        }
+        let failing = (!failing.is_empty()).then(|| {
+            serde_json::json!({
+                "sources": failing.iter().map(|(s, _)| s).collect::<Vec<_>>(),
+                "consecutive_failures": failing.iter().map(|(_, n)| n).max(),
+            })
+        });
+
         providers_out.push(serde_json::json!({
             "name": name,
+            "failing": failing,
             "source": source_type,
             "sources": sources_out,
             "invalidation": invalidation,

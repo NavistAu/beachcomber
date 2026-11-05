@@ -469,6 +469,62 @@ async fn introspect_procs_without_a_tracer_is_info() {
     );
 }
 
+/// A Source that has never succeeded stored nothing, yet its failure shows
+/// where users look: an absent `status` row carrying the failure, and a WARN
+/// in `introspect providers`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_source_that_never_succeeded_is_visible() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let config = Config::from_toml(
+        "[daemon.providers.broke.sources.main]\n\
+         data = \"{{ exec(['false']) }}\"\n\
+         result.x = \"{{ data }}\"\n",
+    );
+    let (handle, ready) = beachcomber::daemon::start_in_process_polling(sock.clone(), config);
+    ready.await.expect("daemon ready");
+    let read = crate::common::fetch::fetch(&sock, "broke.x", None);
+    assert!(
+        matches!(read, Ok(None)),
+        "a failed Source reads absent: {read:?}"
+    );
+
+    let status = crate::common::socket::ask(&sock, serde_json::json!({"op": "status"}));
+    let providers = crate::common::socket::ask(
+        &sock,
+        serde_json::json!({"op": "introspect", "subject": "providers"}),
+    );
+    handle.abort();
+
+    let rows = status["data"].as_array().expect("status rows");
+    let row = rows
+        .iter()
+        .find(|r| r["provider"] == "broke")
+        .unwrap_or_else(|| panic!("no row for broke: {rows:?}"));
+    assert!(row.get("value").is_none_or(|v| v.is_null()), "{row}");
+    assert_eq!(row["failure"]["consecutive_failures"], 1, "{row}");
+
+    let broke = providers["data"]["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "broke")
+        .expect("broke registered")
+        .clone();
+    assert_eq!(
+        broke["failing"],
+        serde_json::json!({"sources": ["main"], "consecutive_failures": 1})
+    );
+    assert!(
+        providers["data"]["verdicts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["level"] == "WARN" && v["message"].as_str().unwrap().contains("broke.main")),
+        "{providers}"
+    );
+}
+
 // ── CLI aggregation tests ──────────────────────────────────────────────────
 
 /// All eight fast subjects (excluding procs which requires elevated permissions)

@@ -448,7 +448,22 @@ fn render_subject(
                     .unwrap_or("?");
                 let in_backoff = !p.get("in_backoff").map(|v| v.is_null()).unwrap_or(true);
 
-                if in_backoff {
+                if let Some(f) = p.get("failing").filter(|f| !f.is_null()) {
+                    let n = f
+                        .get("consecutive_failures")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let sources: Vec<&str> = f
+                        .get("sources")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|s| s.as_str()).collect())
+                        .unwrap_or_default();
+                    lines.push_str(&format!(
+                        "  [WARN] {source:<8} {name:<12} fields={fields_str:<30} {invalidation} — failing {n} in a row ({})\n",
+                        sources.join(",")
+                    ));
+                    worst = worst.max(Outcome::Warning);
+                } else if in_backoff {
                     let stage = p
                         .get("in_backoff")
                         .and_then(|b| b.get("stage"))
