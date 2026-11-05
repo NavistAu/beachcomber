@@ -14,7 +14,7 @@ use crate::library::{Surface, first_refused};
 pub enum Line {
     /// A client template: a `[client.providers.<p>] template` leaf, or what a
     /// `put` writes to `<p>:template`. The client renders it, and it reads
-    /// every provider by name besides.
+    /// every provider by name besides ([`Line::reads_providers`]).
     Template,
     /// A macro library: a `[client.providers.<p>] macro.<name>` text, or what
     /// a `put` writes to `<p>:macro.<name>`. It reads what a template reads,
@@ -22,7 +22,8 @@ pub enum Line {
     Macro,
     /// A Source's `root`.
     Root,
-    /// A Source's `data`.
+    /// A Source's `data`. It reads every provider by name besides, as its
+    /// `comb` does: what the daemon stores.
     Data,
     /// A Source's `result`, whole or one field's.
     Result,
@@ -51,9 +52,11 @@ impl Line {
     ];
 
     /// The names a line of this kind reads that its context supplies: the
-    /// one table of them. A template also reads each provider by name, which
-    /// is no fixed set: its caller says which providers it knows
-    /// ([`Known::providers`]).
+    /// one table of them. A line that [reads providers by
+    /// name](Line::reads_providers) also reads each provider, which is no
+    /// fixed set: its caller says which providers it knows
+    /// ([`Known::providers`]). A line's own words win over a provider of the
+    /// same name, which `comb.<name>` still reads.
     pub fn sees(self) -> &'static [&'static str] {
         match self {
             Line::Template | Line::Macro => &["env", "comb"],
@@ -68,9 +71,17 @@ impl Line {
     }
 
     /// Whether the client renders a line of this kind: only it may import a
-    /// macro library, and only it reads providers by name.
+    /// macro library.
     fn client(self) -> bool {
         matches!(self, Line::Template | Line::Macro)
+    }
+
+    /// Whether a line of this kind reads each provider by name: the lines
+    /// that read `comb`. A plain name reads what `comb get` would answer as
+    /// far as the line's renderer can give it: the client renders templates,
+    /// a Source's `data` reads what the daemon stores, as its `comb.` does.
+    pub fn reads_providers(self) -> bool {
+        matches!(self, Line::Template | Line::Macro | Line::Data)
     }
 
     /// The surface the library table says what a line of this kind may call
@@ -96,11 +107,16 @@ impl Line {
 /// read beyond what its kind supplies.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Known<'a> {
-    /// The providers a client line reads by name.
+    /// The providers a line that [reads providers by
+    /// name](Line::reads_providers) reads.
     pub providers: &'a [String],
     /// The macro libraries some layer declares, by address
     /// (`<p>:macro.<name>`): a client line importing any other is told so.
     pub libraries: &'a [String],
+    /// The addresses only a client template gives a value (`aws.profile`):
+    /// a `data` line reading one, by name or through `comb`, is told it is
+    /// absent in the daemon.
+    pub templates: &'a [String],
 }
 
 /// What is wrong with a line, as a message that carries no value.
@@ -127,14 +143,15 @@ impl std::fmt::Display for Finding {
 /// statement its place refuses ([`refused`]), then each library it imports
 /// that no layer declares, then what its caching says ([`cached`]), then each
 /// name it reads that its context does not supply, in name order. Nothing is
-/// rendered.
+/// rendered. Last, on a `data` line, each value it reads that only a client
+/// template gives ([`Known::templates`]), in name order.
 pub fn lint(probe: &Probe<'_>, src: &str, line: Line, known: &Known<'_>) -> Vec<Finding> {
     let names = match super::undeclared_names(probe, src, false) {
         Err(e) => return vec![Finding::Compile(e)],
         Ok(names) => names,
     };
     let mut sees: Vec<&str> = line.sees().to_vec();
-    if line.client() {
+    if line.reads_providers() {
         sees.extend(known.providers.iter().map(String::as_str));
     }
     let mut found = refused(src, line);
@@ -151,9 +168,9 @@ pub fn lint(probe: &Probe<'_>, src: &str, line: Line, known: &Known<'_>) -> Vec<
         }));
     }
     found.extend(cached(src, line));
-    // A client line reads any namespace by name, and a `put` can make one the
-    // configuration never names: say so, or a put namespace reads as a typo.
-    let unless = if line.client() {
+    // A line that reads any namespace by name may read one a `put` makes,
+    // which the configuration never names: say so, or it reads as a typo.
+    let unless = if line.reads_providers() {
         "no provider has it, so it is absent unless a put makes it; "
     } else {
         ""
@@ -169,7 +186,40 @@ pub fn lint(probe: &Probe<'_>, src: &str, line: Line, known: &Known<'_>) -> Vec<
                 ))
             }),
     );
+    if line.reads_providers() && !line.client() {
+        found.extend(template_only(probe, src, line, known.templates));
+    }
     found
+}
+
+/// Each value `src`, a `line` the daemon renders, reads that only a client
+/// template gives: by name or through `comb`, at a template's address or
+/// below it. The daemon stores nothing there, so the read is always absent
+/// unless a put makes it: a warning, as a name no provider has is.
+fn template_only(probe: &Probe<'_>, src: &str, line: Line, templates: &[String]) -> Vec<Finding> {
+    let Ok(reads) = super::undeclared_names(probe, src, true) else {
+        return Vec::new();
+    };
+    reads
+        .into_iter()
+        .filter(|read| {
+            let address = read.strip_prefix("comb.").unwrap_or(read);
+            let head = address.split('.').next().unwrap_or_default();
+            (read.starts_with("comb.") || !line.sees().contains(&head))
+                && templates.iter().any(|t| {
+                    address == t
+                        || address
+                            .strip_prefix(t.as_str())
+                            .is_some_and(|below| below.starts_with('.'))
+                })
+        })
+        .map(|read| {
+            Finding::Unknown(format!(
+                "{read} is only a client template's value: a Source reads what the daemon \
+                 stores, where it is absent unless a put makes it"
+            ))
+        })
+        .collect()
 }
 
 /// Each statement of `src` a `line` may not hold, whether or not it compiles:
@@ -374,8 +424,8 @@ mod tests {
     /// A client line reading a name no provider has may be reading a
     /// namespace a `put` makes (`comb put team.name x`), which no
     /// configuration can see: the finding says so, so it does not read as a
-    /// plain typo. A daemon line reads no namespace by name, so its finding
-    /// does not.
+    /// plain typo. A `data` line's says so too (above); a daemon line that
+    /// reads no namespace by name does not.
     #[test]
     fn a_client_lines_unknown_name_says_a_put_may_make_it() {
         for line in [Line::Template, Line::Macro] {
@@ -396,23 +446,108 @@ mod tests {
         }
     }
 
-    /// A client template reads the providers its caller knows by name; no
-    /// other line does.
+    /// A client template and a Source's `data` line read the providers their
+    /// caller knows by name, the lines that read `comb`; no other line does.
     #[test]
-    fn a_template_reads_the_providers_its_caller_knows() {
+    fn a_template_and_a_data_line_read_the_providers_their_caller_knows() {
         let providers = ["git".to_string()];
         let known = Known {
             providers: &providers,
             ..Known::default()
         };
+        for line in [Line::Template, Line::Data] {
+            assert_eq!(
+                lint(&probe(), "{{ git.branch }}", line, &known),
+                vec![],
+                "{line:?}"
+            );
+        }
+        for line in [Line::Root, Line::Result, Line::Return] {
+            assert!(
+                matches!(
+                    lint(&probe(), "{{ git.branch }}", line, &known).as_slice(),
+                    [Finding::Unknown(_)]
+                ),
+                "{line:?}"
+            );
+        }
+        let shown: Vec<String> = lint_as("{{ team.name }}", Line::Data)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         assert_eq!(
-            lint(&probe(), "{{ git.branch }}", Line::Template, &known),
-            vec![]
+            shown,
+            [
+                "unknown name 'team' (no provider has it, so it is absent unless a put makes it; \
+              this line sees env, comb, sources, daemon, _)"
+            ],
+            "a data line reads a put's namespace by name, as a template does"
         );
-        assert!(matches!(
-            lint(&probe(), "{{ git.branch }}", Line::Data, &known).as_slice(),
-            [Finding::Unknown(_)]
-        ));
+    }
+
+    /// A line's own words win over a provider of the same name, on either
+    /// side: in a `data` line `sources` and `daemon` call Sources whatever
+    /// providers there are (`comb.<name>` reads such a provider), and in a
+    /// template, whose words `env` and `comb` no provider may take, both are
+    /// providers like any other.
+    #[test]
+    fn a_lines_own_words_win_over_a_provider_of_that_name() {
+        let providers = ["sources".to_string(), "daemon".to_string()];
+        let known = Known {
+            providers: &providers,
+            ..Known::default()
+        };
+        let src = "{{ sources.x ~ daemon.y }}";
+        assert_eq!(lint(&probe(), src, Line::Template, &known), vec![]);
+        assert_eq!(
+            lint(&probe(), src, Line::Data, &known),
+            vec![],
+            "its own words: lint_data says how a Source is called"
+        );
+        for word in ["env", "comb"] {
+            assert!(crate::key::reserved(word).is_some(), "{word}");
+        }
+    }
+
+    /// A value only a client template gives is never in the daemon: a `data`
+    /// line reading one, by name or through `comb`, is told it is absent
+    /// there unless a put makes it. A template reads it rendered, and
+    /// `comb.<p>.<f>` there is the value under the template, which a put may
+    /// give: neither is a finding.
+    #[test]
+    fn a_data_line_reading_a_template_only_value_is_told_so() {
+        let providers = ["aws".to_string()];
+        let templates = ["aws.profile".to_string()];
+        let known = Known {
+            providers: &providers,
+            templates: &templates,
+            ..Known::default()
+        };
+        let src = "{{ aws.profile ~ (comb.aws.profile | upper) ~ aws.region ~ aws.profile.x }}";
+        let shown: Vec<String> = lint(&probe(), src, Line::Data, &known)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let only = |read: &str| {
+            format!(
+                "{read} is only a client template's value: a Source reads what the daemon \
+                 stores, where it is absent unless a put makes it"
+            )
+        };
+        assert_eq!(
+            shown,
+            [
+                only("aws.profile"),
+                only("aws.profile.x"),
+                only("comb.aws.profile")
+            ]
+        );
+        assert!(
+            lint(&probe(), src, Line::Data, &known)
+                .iter()
+                .all(|f| matches!(f, Finding::Unknown(_)))
+        );
+        assert_eq!(lint(&probe(), src, Line::Template, &known), vec![]);
     }
 
     #[test]

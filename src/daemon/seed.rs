@@ -60,6 +60,39 @@ pub struct Seed {
     pub(crate) warnings: Vec<String>,
 }
 
+impl Seed {
+    /// Every leaf a client template is planned at, as `(provider, field)`,
+    /// `field` its canonical address below the provider: each once.
+    pub(crate) fn template_leaves(&self) -> std::collections::BTreeSet<(String, String)> {
+        fn leaves(node: &serde_json::Value, at: String, out: &mut Vec<String>) {
+            match node {
+                serde_json::Value::Object(map) => {
+                    for (name, child) in map {
+                        leaves(child, libbeachcomber::key::push(&at, name), out);
+                    }
+                }
+                _ => out.push(at),
+            }
+        }
+        let mut found = std::collections::BTreeSet::new();
+        for (namespace, writes) in &self.writes {
+            let Some(provider) = namespace.strip_suffix(":template") else {
+                continue;
+            };
+            for (_, tree) in writes {
+                let mut fields = Vec::new();
+                leaves(
+                    &serde_json::to_value(tree).unwrap_or_default(),
+                    String::new(),
+                    &mut fields,
+                );
+                found.extend(fields.into_iter().map(|f| (provider.to_string(), f)));
+            }
+        }
+        found
+    }
+}
+
 /// Seed the config-seeded tables of `config`'s files, `seed` (its load's), and
 /// watch them for changes: an edit under `providers` reloads the registry and
 /// reseeds in place ([`reload_providers`]), a bare `[daemon]` or `[client]` key
@@ -310,6 +343,7 @@ impl ClientWorld {
         libbeachcomber::eval::Known {
             providers: &self.providers,
             libraries: &self.libraries,
+            ..Default::default()
         }
     }
 }

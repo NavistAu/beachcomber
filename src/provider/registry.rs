@@ -2,7 +2,9 @@ use crate::boundaries::library::LibloadingLoader;
 use crate::cache::{Cache, Layers};
 use crate::config::Config;
 use crate::engine::PluginSet;
-use crate::provider::config_source::{ConfigSource, DaemonRead, lint_lines, load_probe};
+use crate::provider::config_source::{
+    ConfigSource, DaemonRead, data_warnings, lint_lines, load_probe,
+};
 use crate::provider::source_call::Called;
 use crate::provider::{
     FailbackConfig, ProviderMetadata, Source, SourceMetadata, Value, is_sentinel,
@@ -1139,6 +1141,21 @@ impl ProviderRegistry {
         ) = registry.config_sources(config, vars);
         errors.extend(source_errors);
         registry.plugins = plugins;
+        // Each Source's `data` line, for the warnings below.
+        let data_lines: Vec<(String, String)> = built
+            .iter()
+            .flat_map(|(provider, sources)| {
+                sources.iter().map(move |s| {
+                    (
+                        format!(
+                            "[daemon.providers.{provider}.sources.{}]",
+                            s.metadata().name
+                        ),
+                        s.data().to_string(),
+                    )
+                })
+            })
+            .collect();
         for (name, sources) in built {
             if let Err(e) = registry.register_config_sources(&name, sources) {
                 errors.push(e);
@@ -1182,6 +1199,12 @@ impl ProviderRegistry {
         // twice.
         let mut seed = crate::daemon::seed::plan(config, &registry);
         let mut warnings = std::mem::take(&mut seed.warnings);
+        warnings.extend(
+            registry
+                .data_line_warnings(config, &seed, vars, &data_lines)
+                .into_iter()
+                .map(|w| config.locate(w)),
+        );
         for e in &seed.errors {
             if !errors.contains(e) {
                 errors.push(e.clone());
@@ -1210,6 +1233,42 @@ impl ProviderRegistry {
             warnings,
             seed,
         }
+    }
+
+    /// What each of `data_lines`, a `(table, data line)` per config Source,
+    /// reads that may be absent, as load warnings: a name no provider has,
+    /// and a value only a client template of `seed` gives, which no Source
+    /// stores, so the daemon never has it.
+    fn data_line_warnings(
+        &self,
+        config: &Config,
+        seed: &crate::daemon::seed::Seed,
+        vars: &HashMap<String, String>,
+        data_lines: &[(String, String)],
+    ) -> Vec<String> {
+        let Some(plugins) = &self.plugins else {
+            return Vec::new();
+        };
+        let mut providers: Vec<String> = self.provider_names();
+        providers.extend(config.named_providers());
+        providers.sort();
+        providers.dedup();
+        let templates: Vec<String> = seed
+            .template_leaves()
+            .into_iter()
+            .filter(|(provider, field)| self.sources_for_key(provider, field).is_empty())
+            .map(|(provider, field)| libbeachcomber::key::join(&provider, &field))
+            .collect();
+        let known = libbeachcomber::eval::Known {
+            providers: &providers,
+            templates: &templates,
+            ..Default::default()
+        };
+        let probe = load_probe(vars, plugins);
+        data_lines
+            .iter()
+            .flat_map(|(who, data)| data_warnings(&probe, who, data, &known))
+            .collect()
     }
 
     /// Make `self`, freshly loaded from the configuration that replaces

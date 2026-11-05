@@ -254,6 +254,36 @@ result.y = "{{ data }}!"
     );
 }
 
+/// A plain provider name in a `data` line reads what `comb.<p>` does there,
+/// the stored value: another provider's Source and a namespace only a `put`
+/// made alike. The line's own words win over a provider of the same name: a
+/// provider called `daemon` is read as `comb.daemon`.
+#[test]
+fn a_data_line_reads_providers_by_plain_name() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        r#"
+[daemon.providers.one.sources.s]
+data = "{{ exec('echo src') | trim }}"
+result.x = "{{ data }}"
+
+[daemon.providers.daemon.sources.s]
+data = "d"
+result.v = "{{ data }}"
+
+[daemon.providers.two.sources.s]
+data = "{{ one.x ~ '/' ~ (team.name or 'none') ~ '/' ~ comb.one.x ~ '/' ~ comb.daemon.v }}"
+result.y = "{{ data }}"
+"#,
+    )]);
+    let d = setup.daemon();
+    d.comb(&d.home)
+        .args(["put", "team.name", "\"ops\""])
+        .assert()
+        .success();
+    assert_eq!(get(&d, "two.y"), Some(json!("src/ops/src/d")));
+}
+
 /// `comb.<p>` in a `data` line is a read like any other: a provider nothing
 /// has read yet runs, once, for the line that reads it.
 #[test]

@@ -262,24 +262,69 @@ fn layers_tolerate_a_missing_main_config_file() {
 }
 
 /// Every line of a Source that reads a name its stage does not see is
-/// reported, not the first alone.
+/// reported, not the first alone. In `data`, which reads every provider by
+/// name, a name no provider has is a warning: a `put` may yet make it.
 #[test]
 fn every_bad_line_of_a_source_is_reported() {
-    let errors = ProviderRegistry::load(
+    let load = ProviderRegistry::load(
         &in_memory(
             "[daemon.providers.p.sources.s]\nroot = \"{{ nope1 }}\"\ndata = \"{{ nope2 }}\"\n\
              result.f = \"{{ nope3 }}\"\nreturn = \"{{ result | poll('5s') }}\"\n",
         ),
         &std::env::vars().collect(),
-    )
-    .errors;
-    for (stage, name) in [("root", "nope1"), ("data", "nope2"), ("result.f", "nope3")] {
+    );
+    for (stage, name) in [("root", "nope1"), ("result.f", "nope3")] {
         let want = format!("[daemon.providers.p.sources.s] {stage}: unknown name '{name}'");
         assert!(
-            errors.iter().any(|e| e.contains(&want)),
-            "{want} in {errors:#?}"
+            load.errors.iter().any(|e| e.contains(&want)),
+            "{want} in {:#?}",
+            load.errors
         );
     }
+    assert!(
+        !load.errors.iter().any(|e| e.contains("nope2")),
+        "{:#?}",
+        load.errors
+    );
+}
+
+/// A Source's `data` line is checked where the daemon loads it, against
+/// every provider and every client template: a name no provider has, and a
+/// value only a client template gives (never stored, by plain name or
+/// through `comb`), are warnings, since a `put` may make either. A
+/// provider's plain name, or a field a Source stores, is no finding.
+#[test]
+fn a_data_line_is_warned_of_what_the_daemon_never_stores() {
+    let mut layers = crate::daemon::defaults::shipped_layers();
+    layers.push((
+        PathBuf::from("/user.toml"),
+        toml::from_str(
+            "[daemon.providers.p.sources.s]\n\
+             data = \"{{ aws.profile ~ comb.git.last_commit_age_secs ~ git.branch ~ gti.branch }}\"\n\
+             result.x = \"{{ data }}\"\n",
+        )
+        .unwrap(),
+    ));
+    let load = ProviderRegistry::load(&Config::from_layers(layers), &std::env::vars().collect());
+    assert_eq!(load.errors, Vec::<String>::new());
+    let at = "config(/user.toml): [daemon.providers.p.sources.s] data: ";
+    let only = |read: &str| {
+        format!(
+            "{at}{read} is only a client template's value: a Source reads what the daemon \
+             stores, where it is absent unless a put makes it"
+        )
+    };
+    let ours: Vec<&String> = load.warnings.iter().filter(|w| w.starts_with(at)).collect();
+    assert_eq!(ours.len(), 3, "{:#?}", load.warnings);
+    assert_eq!(ours[1], &only("aws.profile"), "{ours:#?}");
+    assert_eq!(ours[2], &only("comb.git.last_commit_age_secs"));
+    assert!(
+        ours[0].starts_with(&format!(
+            "{at}unknown name 'gti' (no provider has it, so it is absent unless a put makes it; "
+        )),
+        "{:#?}",
+        load.warnings
+    );
 }
 
 /// A client template is checked where the daemon loads it: one that does not
@@ -313,6 +358,33 @@ fn a_client_template_is_linted_where_it_is_loaded() {
         ),
         "{:#?}",
         load.warnings
+    );
+}
+
+/// A `data` line's own words win over a provider of the same name: there
+/// `daemon.<x>` calls a Source, so a provider called `daemon` is read as
+/// `comb.daemon`, which loads clean.
+#[test]
+fn a_data_lines_own_words_win_over_a_provider_of_that_name() {
+    let provider = "[daemon.providers.daemon.sources.s]\ndata = \"d\"\nresult.v = \"{{ data }}\"\n";
+    let errors = source_errors(&format!(
+        "{provider}[daemon.providers.p.sources.s]\ndata = \"{{{{ daemon.v }}}}\"\n\
+         result.x = \"{{{{ data }}}}\"\n"
+    ));
+    assert_eq!(
+        errors,
+        vec![
+            "config(/user.toml): [daemon.providers.p.sources.s] data: daemon.v: a Source is \
+             called as daemon.providers.<provider>.sources.<source>()"
+                .to_string()
+        ]
+    );
+    assert_eq!(
+        source_errors(&format!(
+            "{provider}[daemon.providers.p.sources.s]\ndata = \"{{{{ comb.daemon.v }}}}\"\n\
+             result.x = \"{{{{ data }}}}\"\n"
+        )),
+        Vec::<String>::new()
     );
 }
 
@@ -859,12 +931,10 @@ fn source_errors(user: &str) -> Vec<String> {
 #[test]
 fn a_load_error_names_its_file_and_its_table() {
     assert_eq!(
-        source_errors(
-            "[daemon.providers.p.sources.s]\ndata = \"{{ nope }}\"\nresult.x = \"{{ data }}\"\n"
-        ),
+        source_errors("[daemon.providers.p.sources.s]\ndata = \"x\"\nresult.x = \"{{ nope }}\"\n"),
         vec![
-            "config(/user.toml): [daemon.providers.p.sources.s] data: unknown name 'nope' (this \
-             line sees env, comb, sources, daemon, _)"
+            "config(/user.toml): [daemon.providers.p.sources.s] result.x: unknown name 'nope' \
+             (this line sees data, _)"
                 .to_string()
         ]
     );
@@ -893,12 +963,12 @@ fn every_stage_reports_at_once() {
     let errors = source_errors(
         "[daemon]\nsocket_path = 3\n\
          [daemon.providers.p.sources.s]\nresult.x = \"{{ 1 }}\"\n\
-         [daemon.providers.q.sources.t]\ndata = \"{{ nope }}\"\nresult.x = \"{{ data }}\"\n",
+         [daemon.providers.q.sources.t]\ndata = \"x\"\nresult.x = \"{{ nope }}\"\n",
     );
     for want in [
         "config(/user.toml): [daemon] socket_path must be a string",
         "config(/user.toml): [daemon.providers.p.sources.s] has no data line",
-        "config(/user.toml): [daemon.providers.q.sources.t] data: unknown name 'nope'",
+        "config(/user.toml): [daemon.providers.q.sources.t] result.x: unknown name 'nope'",
     ] {
         assert!(
             errors.iter().any(|e| e.starts_with(want)),
@@ -1349,7 +1419,7 @@ fn the_watchdog_keys_are_whole_seconds_of_at_least_one() {
 fn a_bad_plugin_path_does_not_hide_the_sources_errors() {
     let config = Config::from_toml(
         "[daemon.plugin]\npath = [\"~/p\"]\n\
-         [daemon.providers.demo.sources.s]\ndata = \"{{ nope_name }}\"\nresult = \"{{ data }}\"\n",
+         [daemon.providers.demo.sources.s]\ndata = \"x\"\nresult = \"{{ nope_name }}\"\n",
     );
     // No variables at all: the `~` has no HOME to name.
     let errors = ProviderRegistry::load(&config, &Default::default()).errors;
@@ -1498,10 +1568,10 @@ fn a_wrong_type_in_a_prototype_is_the_file_checks_alone() {
 
 #[test]
 fn a_prototypes_lines_are_checked_at_load() {
-    let errors = source_errors("[daemon.providers.git.sources._]\ndata = \"{{ nope_name }}\"\n");
+    let errors = source_errors("[daemon.providers.demo.sources._]\nroot = \"{{ nope_name }}\"\n");
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
-        errors[0].contains("nope_name") && errors[0].contains("[daemon.providers.git.sources._]"),
+        errors[0].contains("nope_name") && errors[0].contains("[daemon.providers.demo.sources._]"),
         "{errors:?}"
     );
 }

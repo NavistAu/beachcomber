@@ -18,10 +18,14 @@
 //! | line | sees |
 //! |---|---|
 //! | `root` | `env`, `_` |
-//! | `data` | `env`, `comb`, `sources`, `daemon`, `_` |
+//! | `data` | `env`, `comb`, `sources`, `daemon`, `_`, each provider by name |
 //! | `result.*` | `data`, `_` |
 //!
-//! A name outside that list is a load error, not a silent `none`.
+//! In `data` a plain provider name reads what `comb.<p>` does, the stored
+//! value; the line's own words win over a provider of the same name, which
+//! `comb.<name>` still reads. A name no provider has is a load warning (a
+//! `put` may make it); on the other lines a name outside the list is a load
+//! error, not a silent `none`.
 //!
 //! `data` calls other Sources: `sources.<s>()` for a sibling and
 //! `daemon.providers.<p>.sources.<s>()` for any provider's. A call answers
@@ -187,10 +191,14 @@ pub struct ConfigSource {
     env: Arc<HashMap<String, String>>,
     plugins: Arc<PluginSet>,
     reader: Arc<dyn DaemonRead>,
-    /// The providers the `data` line reads through `comb`, each once.
+    /// The providers the `data` line reads through `comb` or by plain name,
+    /// each once.
     comb_providers: Vec<String>,
+    /// The providers the `data` line reads by plain name.
+    plain: Vec<String>,
     /// Whether the `data` line reads through `comb` at all, by name or by a
-    /// computed `comb[...]`: a read runs cold Sources, which the run notes.
+    /// computed `comb[...]`, or a provider by plain name: a read runs cold
+    /// Sources, which the run notes.
     reads_comb: bool,
     /// The Sources the `data` line calls.
     calls: Vec<Called>,
@@ -247,12 +255,31 @@ pub fn lint_lines(
     for (stage, line, kind) in lines {
         let found = lint(probe, line, kind, &Known::default());
         let compiles = !found.iter().any(|f| matches!(f, Finding::Compile(_)));
-        errors.extend(found.iter().map(|f| format!("{who} {stage}: {f}")));
+        // A `data` line reads providers by name, and what it reads that may
+        // be absent is a warning the load says once it knows every provider
+        // ([`data_warnings`]).
+        errors.extend(
+            found
+                .iter()
+                .filter(|f| kind != Line::Data || matches!(f, Finding::Compile(_)))
+                .map(|f| format!("{who} {stage}: {f}")),
+        );
         if kind == Line::Data && compiles {
             errors.extend(lint_data(probe, line).map(|e| format!("{who} data: {e}")));
         }
     }
     errors
+}
+
+/// What a load warns of in the `data` line of the Source at `who`, `known`
+/// the world around it: each name it reads that no provider has, and each
+/// value it reads that only a client template gives.
+pub fn data_warnings(probe: &Probe<'_>, who: &str, data: &str, known: &Known<'_>) -> Vec<String> {
+    lint(probe, data, Line::Data, known)
+        .into_iter()
+        .filter(|f| matches!(f, Finding::Unknown(_)))
+        .map(|f| format!("{who} data: {f}"))
+        .collect()
 }
 
 /// What only a `data` line can get wrong, once it compiles: reading
@@ -349,16 +376,23 @@ impl ConfigSource {
         // names, and the Sources it calls.
         let used = undeclared_names(probe, &spec.data, true).map_err(|e| load_error("data", &e))?;
         let refs = refs_in(used.iter().cloned());
-        let reads_comb = refs.iter().any(|r| {
-            matches!(r, Ref::CombProvider(_) | Ref::CombField(..))
-                || *r == Ref::Dynamic("comb".to_string())
-        });
+        let plain: Vec<String> = undeclared_names(probe, &spec.data, false)
+            .map_err(|e| load_error("data", &e))?
+            .into_iter()
+            .filter(|name| !Line::Data.sees().contains(&name.as_str()))
+            .collect();
+        let reads_comb = !plain.is_empty()
+            || refs.iter().any(|r| {
+                matches!(r, Ref::CombProvider(_) | Ref::CombField(..))
+                    || *r == Ref::Dynamic("comb".to_string())
+            });
         let comb_providers: Vec<String> = refs
             .into_iter()
             .filter_map(|r| match r {
                 Ref::CombProvider(p) | Ref::CombField(p, _) => Some(p),
                 _ => None,
             })
+            .chain(plain.iter().cloned())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -400,10 +434,16 @@ impl ConfigSource {
             plugins,
             reader,
             comb_providers,
+            plain,
             reads_comb,
             calls,
             said_capped: AtomicBool::new(false),
         })
+    }
+
+    /// The `data` line, as resolved.
+    pub fn data(&self) -> &str {
+        &self.spec.data
     }
 
     /// The Sources the `data` line calls.
@@ -510,12 +550,19 @@ impl ConfigSource {
             jinja.add_global("daemon", Calls::daemon(call));
         }
         let comb = Arc::new(self.comb(path)?);
+        // A plain provider name is what `comb.<p>` is: bound only when stored,
+        // so an absent one is undefined and `or` fires on it.
+        let plain = self.plain.iter().filter_map(|name| {
+            minijinja::value::Object::get_value(&comb, &MjValue::from(name.as_str()))
+                .map(|node| (name.as_str(), node))
+        });
         let data_context: MjValue = [
             ("env", MjValue::from_serialize(&*self.env)),
             ("comb", MjValue::from_dyn_object(comb.clone())),
             ("_", MjValue::from_serialize(self.underscore())),
         ]
         .into_iter()
+        .chain(plain)
         .collect();
         let data = eval_line_with(&jinja, &self.spec.data, data_context);
         if let Some(failed) = comb.failed.lock().ok().and_then(|mut f| f.take()) {
@@ -1059,6 +1106,42 @@ mod tests {
         assert_eq!(got.get("r"), Some(&s("eu-1eu-1")));
         // One read per provider the data line names, a miss included, at the
         // directory being executed.
+        let mut calls = reader.calls.lock().unwrap().clone();
+        calls.sort();
+        assert_eq!(
+            calls,
+            vec![
+                ("aws".to_string(), Some("/work/proj".to_string())),
+                ("missing".to_string(), Some("/work/proj".to_string())),
+            ]
+        );
+    }
+
+    /// A plain provider name in a `data` line reads what `comb.<p>` reads:
+    /// the stored value, through the same one read per provider; a name
+    /// nothing stores is absent, so `or` fires on it.
+    #[test]
+    fn a_plain_name_reads_what_comb_reads() {
+        let mut answer = HashMap::new();
+        answer.insert(
+            "aws".to_string(),
+            HashMap::from([("region".to_string(), s("eu-1"))]),
+        );
+        let reader = Arc::new(FakeReader {
+            answer,
+            ..Default::default()
+        });
+        let src = build(
+            spec(
+                None,
+                "{{ aws.region ~ '/' ~ comb.aws.region ~ '/' ~ aws['region'] ~ '/' ~ \
+                 (missing.x or 'none') }}",
+                fields(&[("r", "{{ data }}")]),
+            ),
+            reader.clone(),
+        );
+        let got = src.execute(Some("/work/proj")).unwrap().fields;
+        assert_eq!(got.get("r"), Some(&s("eu-1/eu-1/eu-1/none")));
         let mut calls = reader.calls.lock().unwrap().clone();
         calls.sort();
         assert_eq!(

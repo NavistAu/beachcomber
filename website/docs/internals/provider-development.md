@@ -22,7 +22,7 @@ A Source is up to four lines of jinja:
 | line | says | sees |
 |---|---|---|
 | `root` | the directory an instance answers for (none: one instance, at `~`) | `env`, `_` |
-| `data` | the body, rendered with the root as its working directory, on a blocking thread, so it may run a command | `env`, `comb`, `sources`, `daemon`, `_` |
+| `data` | the body, rendered with the root as its working directory, on a blocking thread, so it may run a command | `env`, `comb`, `sources`, `daemon`, `_`, each provider by plain name (its stored value, as `comb.<p>`) |
 | `result` | the fields, each one line over `data` (`result.<field>`), or one line whose object is the whole node | `data`, `_` |
 | `return` | the schedule: `poll`, `watch`, `failback`, `budget`, `timeout`, `nearest` | |
 
