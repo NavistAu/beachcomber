@@ -502,7 +502,11 @@ async fn a_source_that_never_succeeded_is_visible() {
         .find(|r| r["provider"] == "broke")
         .unwrap_or_else(|| panic!("no row for broke: {rows:?}"));
     assert!(row.get("value").is_none_or(|v| v.is_null()), "{row}");
-    assert_eq!(row["failure"]["consecutive_failures"], 1, "{row}");
+    // A retry may land between the read and the status: count what was seen.
+    assert!(
+        row["failure"]["consecutive_failures"].as_u64() >= Some(1),
+        "{row}"
+    );
     let error = row["failure"]["last_error"].as_str().expect("last_error");
     assert!(
         error.starts_with("data: `false`") && error.ends_with("exit status: 1"),
@@ -516,10 +520,11 @@ async fn a_source_that_never_succeeded_is_visible() {
         .find(|p| p["name"] == "broke")
         .expect("broke registered")
         .clone();
-    assert_eq!(
-        broke["failing"],
-        serde_json::json!({"sources": ["main"], "consecutive_failures": 1})
-    );
+    assert_eq!(broke["failing"]["sources"], serde_json::json!(["main"]));
+    let runs = broke["failing"]["consecutive_failures"]
+        .as_u64()
+        .expect("a failure count");
+    assert!(runs >= 1, "{broke}");
     assert!(
         providers["data"]["verdicts"]
             .as_array()
@@ -527,7 +532,7 @@ async fn a_source_that_never_succeeded_is_visible() {
             .iter()
             .any(|v| v["level"] == "WARN"
                 && v["message"]
-                    == format!("broke.main failing, 1 run(s) in a row: {error}").as_str()),
+                    == format!("broke.main failing, {runs} run(s) in a row: {error}").as_str()),
         "{providers}"
     );
 }
