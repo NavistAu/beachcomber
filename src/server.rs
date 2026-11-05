@@ -1455,6 +1455,35 @@ fn cache_facet_response(
         };
     }
 
+    // A key below a leaf (`p:cache.f.age_ms`) reads into that leaf's answer:
+    // the deepest node of the key the read reaches answers, and the rest of
+    // the key walks into that answer.
+    let segments = libbeachcomber::key::segments(rest);
+    let answered = (segments.len().min(1)..=segments.len())
+        .rev()
+        .find_map(|n| {
+            let node = libbeachcomber::key::format_address(&segments[..n]);
+            let tree = cache_facet_tree(cache, registry, provider, &node, requested, reached)?;
+            Some((tree, libbeachcomber::key::format_address(&segments[n..])))
+        });
+    match answered {
+        Some((tree, left)) if left.is_empty() => Response::ok(tree, 0),
+        Some((tree, left)) => libbeachcomber::resolve::walk(tree, &left)
+            .map_or_else(Response::miss, |v| Response::ok(v, 0)),
+        None => Response::miss(),
+    }
+}
+
+/// The `:cache` tree at `rest`, or `None` when the read does not reach a node
+/// there ([`cache_facet_response`]).
+fn cache_facet_tree(
+    cache: &Cache,
+    registry: &ProviderRegistry,
+    provider: &str,
+    rest: &str,
+    requested: Option<&str>,
+    reached: &[Instance],
+) -> Option<serde_json::Value> {
     let merged = cache.read_merged(provider, requested, reached, registry, Layers::All);
     let Answered { merged, half } = answer(cache, registry, provider, rest, requested, merged);
     let value = merged.as_ref().and_then(|m| {
@@ -1464,6 +1493,11 @@ fn cache_facet_response(
             crate::provider::lookup_path(&m.fields, rest).cloned()
         }
     });
+    // A template string reached with key left over answers at its own, shallower
+    // node, as a read renders it there.
+    if half.rest.is_some() || (value.is_none() && half.template.is_none()) {
+        return None;
+    }
     let leaf = |tail: &str| -> Option<serde_json::Value> {
         let record = merged.as_ref()?.records.get(tail)?;
         let mut answer = serde_json::Map::new();
@@ -1498,28 +1532,19 @@ fn cache_facet_response(
     };
 
     let template_leaf = |tail: &str| -> serde_json::Value {
-        // A string reached with segments left over answers at its own address.
-        let at = if half.rest.is_some() {
-            half.at.as_str()
-        } else {
-            tail
-        };
-        match cache.memo_record(provider, requested, at) {
+        match cache.memo_record(provider, requested, tail) {
             Some(memo) => memo.cache_answer(),
             None => serde_json::json!({"source": "template"}),
         }
     };
 
-    match cache_facet_node(
+    cache_facet_node(
         rest,
         value.as_ref(),
         half.template.as_ref(),
         &leaf,
         &template_leaf,
-    ) {
-        Some(tree) => Response::ok(tree, 0),
-        None => Response::miss(),
-    }
+    )
 }
 
 /// The tree of leaf answers for the node at `tail`: the one place the answer

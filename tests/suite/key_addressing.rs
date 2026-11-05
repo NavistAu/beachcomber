@@ -390,6 +390,40 @@ result."c.d" = "{{ data }}"
         assert_eq!(tree["o"]["x"]["source"], "put", "{tree:#}");
     }
 
+    /// A key below a `:cache` leaf reads into that leaf's answer, as a
+    /// template walking `comb['p:cache']` does; a node has no leaf answer.
+    #[test]
+    fn the_cache_facet_reads_below_a_leaf() {
+        let d = TestDaemon::spawn();
+        let cwd = project(&d);
+        put(&d, &cwd, "p", r#"{"a.b":5,"o":{"x":1}}"#);
+        put(&d, &cwd, "p:template.t", r#""{{ 1 }}""#);
+        d.comb(&cwd)
+            .args(["put", "--ttl", "60s", "--path"])
+            .arg(&cwd)
+            .args(["p.n", "1"])
+            .assert()
+            .success();
+
+        let keys = [
+            ("p:cache.o.x.source", "put"),
+            ("p:cache['a.b'].source", "put"),
+            ("p:cache.n.decay", "1"),
+            ("p:cache.n.poll.count", "1"),
+            ("p:cache.t.source", "template"),
+            ("p:cache.o.source", ""),
+            ("p:cache.o.x.nonesuch", ""),
+            ("p:cache.t.deeper", ""),
+        ];
+        let (keys, want): (Vec<&str>, Vec<&str>) = keys.into_iter().unzip();
+        let got = get(&d, &cwd, &keys);
+        let got: Vec<&str> = got.lines().collect();
+        assert_eq!(
+            keys.iter().zip(got).collect::<Vec<_>>(),
+            keys.iter().zip(want).collect::<Vec<_>>()
+        );
+    }
+
     /// `put` names a provider by the rule configuration does.
     #[test]
     fn put_refuses_the_names_config_refuses() {

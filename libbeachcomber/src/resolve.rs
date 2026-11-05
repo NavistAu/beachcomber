@@ -1044,7 +1044,7 @@ fn evaluate_node(
 /// Walk `rest`, a canonical address, into a rendered value: an object by key,
 /// an array by decimal index. A scalar reached with address left over, or a
 /// key or index that is not there, is a miss.
-fn walk(value: JsonValue, rest: &str) -> Option<JsonValue> {
+pub fn walk(value: JsonValue, rest: &str) -> Option<JsonValue> {
     // A `rest` is sent only with address left over, so an empty one names
     // nothing.
     if rest.is_empty() {
