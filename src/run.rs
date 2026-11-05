@@ -11,10 +11,13 @@
 //! blocking thread ([`Run::wait`]).
 //!
 //! A run waits for another only from its blocking thread, when a line of its
-//! Source reads one that is cold. Waiting would close a ring when the run
-//! waited on is itself waiting, however far round, on the one that would
-//! wait: [`Run::wait`] says so instead ([`Cycle`]), and the caller reads the
-//! last stored value. A Source never waits on itself.
+//! Source reads one that is cold. It waits from the moment it asks for that
+//! run ([`Runs::start`]), before the run can begin. Asking would close a ring
+//! when the run asked for is itself waiting, however far round, on the one
+//! asking: [`Run::wait`] says so instead ([`Cycle`]), and the caller reads the
+//! last stored value. So of two runs that read each other, the one that asks
+//! second is told, however their threads are scheduled. A Source never waits
+//! on itself.
 //!
 //! A run's stat inputs are the files its Source declares, stamped immediately
 //! before it executes, and the files its lines read, each stamped immediately
@@ -97,6 +100,47 @@ struct Table {
     /// run, [`RunId`]: a run a reload overtook may still be executing beside
     /// the one that replaced it), to that instance.
     waits: HashMap<RunId, Key>,
+}
+
+impl Table {
+    /// The run executing on this thread, if any, waits from now on the run of
+    /// `key` in flight: unless that run waits, however far round, on this one
+    /// (or is this one), which is a ring.
+    fn ask(&mut self, key: &Key) -> Asked {
+        let Some(me) = HERE.with(|h| h.borrow().as_ref().map(|current| current.id)) else {
+            return Asked::Outside;
+        };
+        // Follow the waits from the run in flight for the instance asked for
+        // (a run queued behind it waits on it first): reaching this run's own
+        // is a ring.
+        let mut at = key.clone();
+        for _ in 0..=self.waits.len() {
+            let Some(slot) = self.slots.get(&at) else {
+                break;
+            };
+            let running = id(&slot.running);
+            if running == me {
+                return Asked::Ring;
+            }
+            match self.waits.get(&running) {
+                Some(next) => at = next.clone(),
+                None => break,
+            }
+        }
+        self.waits.insert(me, key.clone());
+        Asked::By(me)
+    }
+}
+
+/// Who asked for a run, as [`Table::ask`] found it.
+#[derive(Clone, Copy, Debug)]
+enum Asked {
+    /// Not a run: a task, or a thread of no run.
+    Outside,
+    /// The run of this id, which waits on it until [`Run::wait`] returns.
+    By(RunId),
+    /// A run that waiting would close a ring for.
+    Ring,
 }
 
 /// A run, by the number its [`State`] was made with: never reused, so a
@@ -278,6 +322,7 @@ pub struct Run {
     key: Key,
     state: Arc<State>,
     runs: Arc<Runs>,
+    asked: Asked,
 }
 
 impl std::fmt::Debug for Run {
@@ -324,31 +369,12 @@ impl Run {
         }
     }
 
-    /// [`Self::outcome`], from a blocking thread. From the thread of a run,
-    /// [`Cycle`] when waiting would close a ring: the run waited on is
-    /// waiting, however far round, on this one (or is this one).
+    /// [`Self::outcome`], from a blocking thread. Asked for from the thread
+    /// of a run, [`Cycle`] when waiting would close a ring: the run asked for
+    /// was waiting, however far round, on that one (or is that one).
     pub fn wait(&self) -> Result<Outcome, Cycle> {
-        let me = HERE.with(|h| h.borrow().as_ref().map(|current| current.id));
-        if let Some(me) = me {
-            // Follow the waits from the run in flight for the instance waited
-            // on (a run queued behind it waits on it first): reaching this
-            // run's own is a ring.
-            let mut table = lock(&self.runs.table);
-            let mut at = self.key.clone();
-            for _ in 0..=table.waits.len() {
-                let Some(slot) = table.slots.get(&at) else {
-                    break;
-                };
-                let running = id(&slot.running);
-                if running == me {
-                    return Err(Cycle);
-                }
-                match table.waits.get(&running) {
-                    Some(next) => at = next.clone(),
-                    None => break,
-                }
-            }
-            table.waits.insert(me, self.key.clone());
+        if let Asked::Ring = self.asked {
+            return Err(Cycle);
         }
         let mut moved: Option<Arc<State>> = None;
         let outcome = loop {
@@ -358,7 +384,7 @@ impl Run {
                 End::Moved(next) => moved = Some(next),
             }
         };
-        if let Some(me) = me {
+        if let Asked::By(me) = self.asked {
             lock(&self.runs.table).waits.remove(&me);
         }
         Ok(outcome)
@@ -372,7 +398,8 @@ impl Runs {
     /// [`Want::Forced`] runs past it), or ([`Want::Cold`]) it has a record.
     ///
     /// Must be called within the daemon's runtime (from a task, or from a
-    /// blocking thread of it).
+    /// blocking thread of it). Called from a run's thread, that run waits on
+    /// the one handed back from now on, so it must [`Run::wait`] on it.
     pub fn start(
         self: &Arc<Self>,
         want: Want,
@@ -405,6 +432,7 @@ impl Runs {
                         "a run needs the daemon's runtime: start it from a task or a blocking thread",
                     );
                     let replaced = std::mem::replace(&mut slot.running, Arc::clone(&queued.state));
+                    let asked = table.ask(key);
                     drop(table);
                     replaced.finish(End::Moved(Arc::clone(&queued.state)));
                     self.launch(
@@ -415,13 +443,14 @@ impl Runs {
                         &queued.registry,
                         &queued.cache,
                     );
-                    return Some(self.run(key, queued.state));
+                    return Some(self.run(key, queued.state, asked));
                 }
                 // A run a reload overtook gives a caller nothing: it waits for
                 // the run queued behind it.
                 _ => slot.queue(registry, cache, want == Want::Forced),
             };
-            return Some(self.run(key, state));
+            let asked = table.ask(key);
+            return Some(self.run(key, state, asked));
         }
         let (provider, source, root) = (&key.provider, &key.source, key.path.as_deref());
         if want == Want::Cold && cache.has_provider_records_for(provider, root, source) {
@@ -443,9 +472,12 @@ impl Runs {
                 overtaken: None,
             },
         );
+        // Before the run begins, so a run it asks for in turn finds this one
+        // waiting on it.
+        let asked = table.ask(key);
         drop(table);
         self.launch(&runtime, key, Arc::clone(&state), found, registry, cache);
-        Some(self.run(key, state))
+        Some(self.run(key, state, asked))
     }
 
     /// Whether a run of `key` is in flight.
@@ -496,11 +528,12 @@ impl Runs {
         });
     }
 
-    fn run(self: &Arc<Self>, key: &Key, state: Arc<State>) -> Run {
+    fn run(self: &Arc<Self>, key: &Key, state: Arc<State>, asked: Asked) -> Run {
         Run {
             key: key.clone(),
             state,
             runs: Arc::clone(self),
+            asked,
         }
     }
 
@@ -1351,46 +1384,50 @@ mod tests {
     }
 
     /// Two runs whose threads would wait on each other: whichever asks second
-    /// is told it would close the ring, and neither waits for ever. A run
-    /// that asks for itself is told the same.
+    /// is told it would close the ring, however soon the first then waits, so
+    /// neither waits for ever and which reads the other's last value does not
+    /// hang on the threads' timing. A run that asks for itself is told the
+    /// same.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_wait_that_would_close_a_ring_is_refused() {
+    async fn the_run_that_asks_second_closes_the_ring() {
         let f = fixture(3, Duration::from_secs(60));
         let a = f.key.clone();
         let b = crate::provider::source_call::instance_key("p", "s", Some("/b"));
         let runs = Arc::clone(f.registry.runs());
         // Two runs in flight, as far as the table goes, whose threads are
         // these two.
-        let table_run = |key: &Key| {
+        let in_flight = |key: &Key| {
+            let state: Arc<State> = Arc::default();
             lock(&runs.table).slots.insert(
                 key.clone(),
                 Slot {
-                    running: Arc::default(),
+                    running: Arc::clone(&state),
                     queued: None,
                     overtaken: None,
                 },
             );
-            runs.run(key, Arc::clone(&lock(&runs.table).slots[key].running))
+            state
         };
-        let (run_a, run_b) = (table_run(&a), table_run(&b));
-        let on = |me: &Run, waits_on: Run| {
-            let me = id(&me.state);
-            std::thread::spawn(move || {
-                let _here = Here::enter(me, Arc::default());
-                waits_on.wait()
-            })
+        let (state_a, state_b) = (in_flight(&a), in_flight(&b));
+        let ask = |me: &Arc<State>, of: &Key| {
+            let _here = Here::enter(id(me), Arc::default());
+            runs.start(Want::Cold, &f.registry, &f.cache, of).unwrap()
         };
-        let a_waits_b = on(&run_a, run_b.clone());
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !lock(&runs.table).waits.contains_key(&id(&run_a.state)) {
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::yield_now();
-        }
-        assert_eq!(on(&run_b, run_a.clone()).join().unwrap(), Err(Cycle));
-        assert_eq!(on(&run_a, run_a.clone()).join().unwrap(), Err(Cycle));
-        // B ends; A, which waited on it, has its outcome.
+        // A asks for B and has yet to wait on it when B asks for A.
+        let a_asked_b = ask(&state_a, &b);
+        let b_asked_a = ask(&state_b, &a);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(b_asked_a.wait()));
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)),
+            Ok(Err(Cycle)),
+            "B, which asked second, closes the ring"
+        );
+        assert_eq!(ask(&state_a, &a).wait(), Err(Cycle));
+        // B ends; A, which waits on it, has its outcome.
+        let a_waits_b = std::thread::spawn(move || a_asked_b.wait());
         lock(&runs.table).slots.remove(&b);
-        run_b.state.finish(End::Done(Outcome::Stored));
+        state_b.finish(End::Done(Outcome::Stored));
         assert_eq!(a_waits_b.join().unwrap(), Ok(Outcome::Stored));
         assert!(lock(&runs.table).waits.is_empty());
     }
