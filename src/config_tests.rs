@@ -308,8 +308,8 @@ fn a_client_template_is_linted_where_it_is_loaded() {
     assert_eq!(load.warnings.len(), 1, "{:#?}", load.warnings);
     assert!(
         load.warnings[0].starts_with(
-            "config(/user.toml): [client.providers.p] template.typo: unknown name 'gti' (this \
-             line sees env, comb, "
+            "config(/user.toml): [client.providers.p] template.typo: unknown name 'gti' (no \
+             provider has it, so it is absent unless a put makes it; this line sees env, comb, "
         ),
         "{:#?}",
         load.warnings

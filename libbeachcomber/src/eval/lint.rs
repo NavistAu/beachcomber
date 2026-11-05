@@ -151,13 +151,20 @@ pub fn lint(probe: &Probe<'_>, src: &str, line: Line, known: &Known<'_>) -> Vec<
         }));
     }
     found.extend(cached(src, line));
+    // A client line reads any namespace by name, and a `put` can make one the
+    // configuration never names: say so, or a put namespace reads as a typo.
+    let unless = if line.client() {
+        "no provider has it, so it is absent unless a put makes it; "
+    } else {
+        ""
+    };
     found.extend(
         names
             .into_iter()
             .filter(|name| !sees.contains(&name.as_str()))
             .map(|name| {
                 Finding::Unknown(format!(
-                    "unknown name '{name}' (this line sees {})",
+                    "unknown name '{name}' ({unless}this line sees {})",
                     sees.join(", ")
                 ))
             }),
@@ -362,6 +369,31 @@ mod tests {
             ]
         );
         assert!(found.iter().all(|f| matches!(f, Finding::Unknown(_))));
+    }
+
+    /// A client line reading a name no provider has may be reading a
+    /// namespace a `put` makes (`comb put team.name x`), which no
+    /// configuration can see: the finding says so, so it does not read as a
+    /// plain typo. A daemon line reads no namespace by name, so its finding
+    /// does not.
+    #[test]
+    fn a_client_lines_unknown_name_says_a_put_may_make_it() {
+        for line in [Line::Template, Line::Macro] {
+            let src = if line == Line::Macro {
+                "{% macro m() %}{{ team.name }}{% endmacro %}"
+            } else {
+                "{{ team.name }}"
+            };
+            let shown: Vec<String> = lint_as(src, line).iter().map(ToString::to_string).collect();
+            assert_eq!(
+                shown,
+                [
+                    "unknown name 'team' (no provider has it, so it is absent unless a put makes \
+                  it; this line sees env, comb)"
+                ],
+                "{line:?}"
+            );
+        }
     }
 
     /// A client template reads the providers its caller knows by name; no
