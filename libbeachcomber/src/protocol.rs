@@ -444,13 +444,16 @@ impl RowKind {
 }
 
 /// Failure state for a cache entry, embedded in status rows: how many
-/// consecutive execution failures have occurred and whether the provider is
-/// currently suppressed (back-off in effect).
+/// consecutive execution failures have occurred, whether the provider is
+/// currently suppressed (back-off in effect), and what the latest one said.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FailureSnapshot {
     pub consecutive_failures: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suppressed_until_unix_ms: Option<u64>,
+    /// The latest failure's message: its first line, cut short.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
 }
 
 /// The `introspect` `daemon` payload: the daemon's own health.

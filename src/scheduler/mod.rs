@@ -268,6 +268,24 @@ pub(crate) struct FailureState {
     suppressed_until: Option<Instant>,
     threshold: u32,
     backoff_interval: Duration,
+    /// The latest failure's message, its first line at most
+    /// [`LAST_ERROR_CHARS`] characters.
+    last_error: Option<String>,
+}
+
+/// How much of a failure's message a status row and a check verdict carry.
+const LAST_ERROR_CHARS: usize = 160;
+
+/// `message`'s first line, cut to [`LAST_ERROR_CHARS`] characters with an
+/// ellipsis when longer.
+fn first_line(message: &str) -> String {
+    let line = message.lines().next().unwrap_or_default().trim_end();
+    if line.chars().count() <= LAST_ERROR_CHARS {
+        return line.to_string();
+    }
+    let mut cut: String = line.chars().take(LAST_ERROR_CHARS - 1).collect();
+    cut.push('\u{2026}');
+    cut
 }
 
 impl FailureState {
@@ -277,11 +295,13 @@ impl FailureState {
             suppressed_until: None,
             threshold,
             backoff_interval,
+            last_error: None,
         }
     }
 
-    pub(crate) fn record_failure(&mut self) {
+    pub(crate) fn record_failure(&mut self, message: &str) {
         self.consecutive_failures += 1;
+        self.last_error = Some(first_line(message));
         if self.consecutive_failures >= self.threshold {
             // 4 levels of exponential backoff from base interval, stays at level 4
             let level = (self.consecutive_failures - self.threshold).min(3);
@@ -292,6 +312,7 @@ impl FailureState {
 
     pub(crate) fn record_success(&mut self) {
         self.consecutive_failures = 0;
+        self.last_error = None;
         self.suppressed_until = None;
     }
 
@@ -1019,6 +1040,7 @@ impl Scheduler {
                                             suppressed_until_unix_ms: state
                                                 .suppressed_until
                                                 .map(instant_to_unix_ms),
+                                            last_error: state.last_error.clone(),
                                         },
                                     ))
                                 })
@@ -1726,6 +1748,22 @@ fn drop_watches_for_key(
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_failure_keeps_the_first_line_of_its_message_cut_to_length() {
+        let mut state = FailureState::new(3, Duration::from_secs(60));
+        state.record_failure("p.s: data: `false`: exit status: 1\nCaused by: more");
+        assert_eq!(
+            state.last_error.as_deref(),
+            Some("p.s: data: `false`: exit status: 1")
+        );
+        state.record_failure(&"x".repeat(500));
+        let cut = state.last_error.clone().unwrap();
+        assert_eq!(cut.chars().count(), LAST_ERROR_CHARS);
+        assert!(cut.ends_with('\u{2026}'), "{cut}");
+        state.record_success();
+        assert_eq!(state.last_error, None);
+    }
 
     #[test]
     fn a_tree_event_is_anything_below_the_root_but_what_is_left_out() {

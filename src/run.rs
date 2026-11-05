@@ -778,7 +778,12 @@ fn record(registry: &ProviderRegistry, cache: &Cache, key: &Key, result: Ran) ->
                             std::time::Duration::from_secs(meta.failback.interval_secs),
                         )
                     })
-                    .record_failure();
+                    // The row and the verdict already name the Source.
+                    .record_failure(
+                        message
+                            .strip_prefix(&format!("{provider}.{source_name}: "))
+                            .unwrap_or(&message),
+                    );
                 warn!("Source '{provider}.{source_name}' failed: {message}");
                 Outcome::Failed { message, fault }
             }

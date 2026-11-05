@@ -2497,7 +2497,7 @@ result.y = "{{ data }}"
             .or_insert_with(|| {
                 crate::scheduler::FailureState::new(1, std::time::Duration::from_secs(3600))
             })
-            .record_failure();
+            .record_failure("p.t: failed");
 
         assert!(
             run_call(&registry, &cache, "p", "t", None)

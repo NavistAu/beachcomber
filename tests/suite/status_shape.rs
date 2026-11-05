@@ -79,7 +79,7 @@ fn tsv_preset_is_tab_separated_no_header() {
     let out = render_preset(&status_preset("tsv"), &rows, &RenderOpts::default());
     let line = out.lines().next().expect("at least one line");
     let cols: Vec<&str> = line.split('\t').collect();
-    assert_eq!(cols.len(), 12, "got: {:?}", cols);
+    assert_eq!(cols.len(), 13, "got: {:?}", cols);
     assert!(!out.starts_with("PROVIDER"), "no header in tsv");
 }
 
@@ -278,6 +278,7 @@ fn human_preset_colours_the_age_of_a_failing_row() {
     failing[0].failure = Some(FailureSnapshot {
         consecutive_failures: 1,
         suppressed_until_unix_ms: None,
+        last_error: None,
     });
     assert_ne!(
         render_preset(&status_preset("human"), &failing, &opts),
@@ -1035,6 +1036,7 @@ fn failure_snapshot_serde_round_trip() {
     let snap = FailureSnapshot {
         consecutive_failures: 5,
         suppressed_until_unix_ms: Some(1_700_000_000_000),
+        last_error: None,
     };
     let v = serde_json::to_value(&snap).unwrap();
     assert_eq!(
@@ -1048,6 +1050,7 @@ fn failure_snapshot_serde_round_trip() {
     let snap2 = FailureSnapshot {
         consecutive_failures: 1,
         suppressed_until_unix_ms: None,
+        last_error: None,
     };
     let v2 = serde_json::to_value(&snap2).unwrap();
     assert_eq!(v2, json!({"consecutive_failures": 1}));
@@ -1488,7 +1491,7 @@ fn tsv_preset_columns_of_a_lifecycle_row() {
     let out = render_preset(&status_preset("tsv"), &rows, &RenderOpts::default());
     let line = out.lines().next().expect("at least one line");
     let cols: Vec<&str> = line.split('\t').collect();
-    assert_eq!(cols.len(), 12, "got: {:?}", cols);
+    assert_eq!(cols.len(), 13, "got: {:?}", cols);
     assert!(!out.starts_with("PROVIDER"), "no header in tsv");
     // Spot-check specific columns
     assert_eq!(cols[0], "git", "provider col");
@@ -1512,11 +1515,11 @@ fn csv_preset_has_full_header_and_all_columns() {
     let header = out.lines().next().unwrap();
     assert_eq!(
         header,
-        "PROVIDER,PATH,FIELD,SOURCE,VALUE,AGE_MS,KIND,DECAY,POLL_INTERVAL_SECS,POLL_COUNT,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS"
+        "PROVIDER,PATH,FIELD,SOURCE,VALUE,AGE_MS,KIND,DECAY,POLL_INTERVAL_SECS,POLL_COUNT,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS,FAILURE_LAST_ERROR"
     );
     let body = out.lines().nth(1).unwrap();
     let cols: Vec<&str> = body.split(',').collect();
-    assert_eq!(cols.len(), 12);
+    assert_eq!(cols.len(), 13);
     assert_eq!(cols[3], "refs", "source col");
     let tsv = render_preset(&status_preset("TSV"), &rows, &RenderOpts::default());
     assert!(tsv.starts_with("PROVIDER\tPATH\tFIELD"), "{tsv}");
@@ -1758,6 +1761,7 @@ fn failure_state_renders_warn_and_red_row() {
         failure: Some(FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
+            last_error: None,
         }),
     };
     // Use render_preset("human", ...) with is_tty=true so color is enabled.
@@ -3334,4 +3338,38 @@ fn memo_rows_are_facet_rows() {
     assert_eq!(row["source"], serde_json::json!("memo"));
     assert_eq!(row["value"], serde_json::json!(1));
     assert!(row["age_ms"].is_u64(), "{row}");
+}
+
+/// A failing Source's row with nothing stored says why where its value
+/// would be, in the tables, and in its own column and variable elsewhere.
+#[test]
+fn a_failing_row_with_no_value_shows_its_latest_error() {
+    use beachcomber::cache::FailureSnapshot;
+    let mut row = sample_lifecycle_row();
+    row.value = serde_json::Value::Null;
+    row.failure = Some(FailureSnapshot {
+        consecutive_failures: 2,
+        suppressed_until_unix_ms: None,
+        last_error: Some("git.refs: data: `git`: exit status: 128".into()),
+    });
+    let rows = vec![row];
+    for preset in ["human", "table"] {
+        let out = render_preset(&status_preset(preset), &rows, &RenderOpts::default());
+        assert!(
+            out.contains("exit status: 128") && !out.contains("null"),
+            "{preset}:\n{out}"
+        );
+    }
+    let csv = render_preset(&status_preset("csv"), &rows, &RenderOpts::default());
+    assert!(
+        csv.trim_end()
+            .ends_with(",git.refs: data: `git`: exit status: 128"),
+        "{csv}"
+    );
+    assert!(
+        render_sh_env(&rows)
+            .contains("_FAILURE_LAST_ERROR='git.refs: data: `git`: exit status: 128'"),
+        "{}",
+        render_sh_env(&rows)
+    );
 }

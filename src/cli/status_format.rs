@@ -663,7 +663,7 @@ fn render_json(rows: &[CacheRow]) -> String {
 
 /// The columns `status -f csv|tsv` lays a row out in, as the uppercase
 /// formats name them in their header.
-const DELIMITED_COLUMNS: [&str; 12] = [
+const DELIMITED_COLUMNS: [&str; 13] = [
     "PROVIDER",
     "PATH",
     "FIELD",
@@ -676,6 +676,7 @@ const DELIMITED_COLUMNS: [&str; 12] = [
     "POLL_COUNT",
     "FAILURE_CONSECUTIVE_FAILURES",
     "FAILURE_SUPPRESSED_UNTIL_UNIX_MS",
+    "FAILURE_LAST_ERROR",
 ];
 
 /// One row's cells, in [`DELIMITED_COLUMNS`] order, before encoding: a
@@ -709,6 +710,7 @@ fn delimited_cells(row: &CacheRow) -> Vec<String> {
             .failure
             .as_ref()
             .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))),
+        opt(row.failure.as_ref().and_then(|f| f.last_error.clone())),
     ]
 }
 
@@ -781,6 +783,9 @@ pub fn render_sh_env(rows: &[CacheRow]) -> String {
                     shell_quote(&su.to_string())
                 ));
             }
+            if let Some(e) = &f.last_error {
+                out.push_str(&format!("{key}_FAILURE_LAST_ERROR={}\n", shell_quote(e)));
+            }
         }
     }
     out
@@ -851,6 +856,15 @@ const MAX_SOURCE_WIDTH: usize = 24;
 /// What the human and table presets show for an absent value: a template leaf
 /// that rendered nothing (shown with `--all` or `--filter value=-`).
 const ABSENT_TEXT: &str = "null";
+
+/// What a row's VALUE cell says: its value, or, for a failing Source with
+/// nothing stored, the latest failure's message. `None` is absent.
+fn shown_value(row: &CacheRow) -> Option<String> {
+    if row.value.is_null() {
+        return row.failure.as_ref().and_then(|f| f.last_error.clone());
+    }
+    Some(libbeachcomber::render::csv_cell(Some(&row.value)))
+}
 
 /// The glyph that marks a rendered row's VALUE cell when colour is off.
 ///
@@ -1216,11 +1230,7 @@ fn render_table(
     for (index, row) in rows.iter().enumerate() {
         let mark = marks.get(index).copied().flatten();
         let path = shown_path(row.path.as_deref(), &home);
-        let value = if row.value.is_null() {
-            ABSENT_TEXT.to_string()
-        } else {
-            libbeachcomber::render::csv_cell(Some(&row.value))
-        };
+        let value = shown_value(row).unwrap_or_else(|| ABSENT_TEXT.to_string());
         // Sanitizing swaps one char for one char, so it never changes a
         // natural width. Only the taint marker does.
         let taint_width = if row_is_tainted(row, &path, &value) {
@@ -1408,11 +1418,7 @@ fn render_table(
         // the other way round, so a truncation can't leave half an escape
         // sequence intact.
         let path_raw = shown_path(row.path.as_deref(), &home);
-        let value_raw = if row.value.is_null() {
-            ABSENT_TEXT.to_string()
-        } else {
-            libbeachcomber::render::csv_cell(Some(&row.value))
-        };
+        let value_raw = shown_value(row).unwrap_or_else(|| ABSENT_TEXT.to_string());
         let tainted = row_is_tainted(row, &path_raw, &value_raw);
 
         let ell = ellipsis(ascii);
@@ -1550,7 +1556,10 @@ fn render_table(
             // full reset, so on-screen only the cell's opening brace stays
             // cyan — the row is marked by that lead-in plus its SOURCE, not
             // by an unbroken cyan span.
-            let body = if row.value.is_null() {
+            let failed = row.failure.as_ref().is_some_and(|f| f.last_error.is_some());
+            let body = if row.value.is_null() && failed {
+                ansi::wrap(&body, ansi::Color::Red, true)
+            } else if row.value.is_null() {
                 ansi::wrap(&body, ansi::Color::Dim, true)
             } else if matches!(row.kind, Some(crate::cache::RowKind::Rendered)) {
                 let body = if body.starts_with(['{', '[']) {
@@ -2311,6 +2320,7 @@ mod ttl_cell_tests {
         let snap = FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
+            last_error: None,
         };
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
@@ -2333,6 +2343,7 @@ mod ttl_cell_tests {
         let snap = FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
+            last_error: None,
         };
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
@@ -2539,6 +2550,7 @@ mod poll_cell_tests {
         let snap = FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
+            last_error: None,
         };
         assert_eq!(
             format_poll_cell(
@@ -2560,6 +2572,7 @@ mod poll_cell_tests {
         let snap = FailureSnapshot {
             consecutive_failures: 5,
             suppressed_until_unix_ms: Some(10_000),
+            last_error: None,
         };
         // (10_000 - 3_000) / 1000 = 7s remaining until suppression lifts.
         assert_eq!(

@@ -30,7 +30,7 @@ export interface CacheRow {
   pollsElapsed?: number;
   /** Seconds until the next scheduled poll; undefined when it has none. */
   nextPollInSecs?: number;
-  failure?: { consecutive_failures: number; suppressed_until_unix_ms?: number };
+  failure?: { consecutive_failures: number; suppressed_until_unix_ms?: number; last_error?: string };
 }
 
 export interface Verdict {

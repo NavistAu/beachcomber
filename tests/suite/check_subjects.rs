@@ -503,6 +503,11 @@ async fn a_source_that_never_succeeded_is_visible() {
         .unwrap_or_else(|| panic!("no row for broke: {rows:?}"));
     assert!(row.get("value").is_none_or(|v| v.is_null()), "{row}");
     assert_eq!(row["failure"]["consecutive_failures"], 1, "{row}");
+    let error = row["failure"]["last_error"].as_str().expect("last_error");
+    assert!(
+        error.starts_with("data: `false`") && error.ends_with("exit status: 1"),
+        "{row}"
+    );
 
     let broke = providers["data"]["providers"]
         .as_array()
@@ -520,7 +525,9 @@ async fn a_source_that_never_succeeded_is_visible() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v["level"] == "WARN" && v["message"].as_str().unwrap().contains("broke.main")),
+            .any(|v| v["level"] == "WARN"
+                && v["message"]
+                    == format!("broke.main failing, 1 run(s) in a row: {error}").as_str()),
         "{providers}"
     );
 }

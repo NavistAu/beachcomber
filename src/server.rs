@@ -2792,23 +2792,31 @@ async fn handle_introspect_providers(
         }
 
         // A Source whose latest runs failed, whether or not one ever succeeded.
-        let mut failing: Vec<(&str, u32)> = failures
+        // One verdict per Source: the instance with the longest streak.
+        let mut failing: Vec<(&str, u32, Option<&str>)> = failures
             .iter()
             .filter(|(k, _)| &k.provider == name)
-            .map(|(k, f)| (k.source.as_str(), f.consecutive_failures))
+            .map(|(k, f)| {
+                (
+                    k.source.as_str(),
+                    f.consecutive_failures,
+                    f.last_error.as_deref(),
+                )
+            })
             .collect();
-        failing.sort();
-        failing.dedup_by_key(|(source, _)| *source);
-        for (source, n) in &failing {
+        failing.sort_by(|a, b| a.0.cmp(b.0).then(b.1.cmp(&a.1)));
+        failing.dedup_by_key(|(source, _, _)| *source);
+        for (source, n, error) in &failing {
+            let why = error.map_or(String::new(), |e| format!(": {e}"));
             verdicts.push(serde_json::json!({
                 "level": "WARN",
-                "message": format!("{name}.{source} failing: {n} run(s) in a row (the daemon log says why)"),
+                "message": format!("{name}.{source} failing, {n} run(s) in a row{why}"),
             }));
         }
         let failing = (!failing.is_empty()).then(|| {
             serde_json::json!({
-                "sources": failing.iter().map(|(s, _)| s).collect::<Vec<_>>(),
-                "consecutive_failures": failing.iter().map(|(_, n)| n).max(),
+                "sources": failing.iter().map(|(s, _, _)| s).collect::<Vec<_>>(),
+                "consecutive_failures": failing.iter().map(|(_, n, _)| n).max(),
             })
         });
 
