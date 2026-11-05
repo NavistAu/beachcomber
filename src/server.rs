@@ -3062,7 +3062,20 @@ fn handle_introspect_procs(procs: &dyn ProcessSnapshotter, duration_secs: Option
                 0,
             )
         }
-        Err(e) => Response::error(format!("procs snapshot failed: {e}")),
+        // The machine cannot trace process starts (no eslogger privileges,
+        // an unsupported platform): a missing capability, not comb failing.
+        Err(e) => Response::ok(
+            serde_json::json!({
+                "duration_secs": dur,
+                "samples": [],
+                "replacement_suggestions": [],
+                "verdicts": [{
+                    "level": "INFO",
+                    "message": format!("process sampling unavailable: {e}"),
+                }],
+            }),
+            0,
+        ),
     }
 }
 

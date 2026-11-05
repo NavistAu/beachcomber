@@ -430,6 +430,45 @@ async fn introspect_procs_returns_sample_structure() {
     );
 }
 
+/// A machine whose process tracer cannot run (eslogger without elevated
+/// privileges, say).
+struct NoTracer;
+
+impl ProcessSnapshotter for NoTracer {
+    fn capture(&self, _duration_secs: u64) -> Result<ProcSnapshotResult, String> {
+        Err("no process events captured (eslogger may need elevated privileges)".into())
+    }
+}
+
+/// A tracer the machine cannot run is a missing capability, not a failure of
+/// comb: `introspect procs` answers, with an INFO naming what is unavailable,
+/// so `comb check` keeps its exit code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn introspect_procs_without_a_tracer_is_info() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let sock = tmp.path().join("test.sock");
+    let (handle, ready) = beachcomber::daemon::start_in_process_polling_sampling(
+        sock.clone(),
+        Config::default(),
+        std::sync::Arc::new(NoTracer),
+    );
+    ready.await.expect("daemon ready");
+    let resp = Client::new(sock)
+        .introspect("procs", Some(1))
+        .expect("introspect procs request");
+    handle.abort();
+
+    assert!(resp.ok, "error: {:?}", resp.error);
+    let d = resp.data.expect("payload present");
+    assert_eq!(
+        d["verdicts"],
+        serde_json::json!([{
+            "level": "INFO",
+            "message": "process sampling unavailable: no process events captured (eslogger may need elevated privileges)",
+        }])
+    );
+}
+
 // ── CLI aggregation tests ──────────────────────────────────────────────────
 
 /// All eight fast subjects (excluding procs which requires elevated permissions)
