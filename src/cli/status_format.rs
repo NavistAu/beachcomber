@@ -1733,7 +1733,7 @@ pub fn display_source(row: &CacheRow) -> String {
 /// returning only the rows that match ALL of them (AND semantics).
 ///
 /// Keys: `provider` (the base name, exact or `*` glob), `facet` (a name or
-/// glob, `-` for none), `path` (glob, `-` for none), `field`, `source` (glob
+/// glob, `-` for none), `path` (glob, `-` for none), `field` (glob), `source` (glob
 /// over the displayed label), `value` (glob over the displayed value, `-` for
 /// absent), `shadowed`, `lifecycle`. `!=` negates.
 /// Returns `Err` if any filter string uses an unknown key or invalid value.
@@ -1791,6 +1791,7 @@ enum Predicate {
     Facet(Option<String>),
     /// The path as shown or as stored: a glob, the global entry being `~`.
     Path(String),
+    /// The field name, exact or glob.
     Field(String),
     /// The displayed SOURCE label, as a glob.
     Source(String),
@@ -1877,7 +1878,7 @@ impl Predicate {
                 simple_glob_match(pat, &shown_path(r.path.as_deref(), &home))
                     || r.path.as_deref().is_some_and(|p| simple_glob_match(pat, p))
             }
-            Predicate::Field(v) => &r.field == v,
+            Predicate::Field(pat) => simple_glob_match(pat, &r.field),
             Predicate::Source(pat) => simple_glob_match(pat, &display_source(r)),
             Predicate::Value(None) => r.value.is_null(),
             // A glob matches a present value only: `value=*` is "not absent".

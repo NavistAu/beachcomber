@@ -505,6 +505,13 @@ fn multiple_filters_and_together() {
     assert_eq!(out[0].field, "branch");
 }
 
+#[test]
+fn filter_by_field_glob() {
+    let out = apply_filters(sample_rows(), &["field=br*".to_string()]).unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].field, "branch");
+}
+
 fn facet_rows() -> Vec<CacheRow> {
     let mut rows = sample_rows();
     let mut tpl = rows[0].clone();
