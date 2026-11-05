@@ -239,11 +239,11 @@ A path at or below `$HOME` is written from `~` in both tables, the global entry 
 | `path` | the row's directory, as the table shows it or as stored: `~` is the global entry and `~/ws/*` a glob under home, as `/Users/me/ws/*` is |
 | `field` | the field, exactly (destructured names included) |
 | `source` | the SOURCE label shown |
-| `value` | the value shown; `-` absent. A glob matches present values only, so `value=*` is "not absent" |
+| `value` | the value shown, which for a failing Source with nothing stored is its latest error; `-` absent. A glob matches present values only, so `value=*` is "not absent" |
 | `shadowed` | `true` / `false` — a record the read from here does not take: another layer of the same leaf answers (a nearer put, a template over data), or the read answers nothing there (a put replaced the node above it) |
 | `lifecycle` | `active`, `decay<N>`, `once`, `static`, `rendered` |
 
-Three filters apply by default, so the table is what `comb get` here answers: `facet=-` hides facet rows, which are data *about* a provider rather than values a read answers; `value!=-` hides absent values; and `shadowed=false` hides records the read from this directory does not take. A filter you give on any of those keys, with either operator, replaces that key's default; `-a`/`--all` drops all three. Records stored at directories off this one's chain are other directories' values, and are listed as they are.
+Three filters apply by default, so the table is what `comb get` here answers: `facet=-` hides facet rows, which are data *about* a provider rather than values a read answers; `value!=-` hides absent values, though not a failing Source's row, whose VALUE is its error; and `shadowed=false` hides records the read from this directory does not take. A filter you give on any of those keys, with either operator, replaces that key's default; `-a`/`--all` drops all three. Records stored at directories off this one's chain are other directories' values, and are listed as they are.
 
 ```sh
 comb s                              # values only

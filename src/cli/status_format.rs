@@ -1804,7 +1804,8 @@ enum Predicate {
     Field(String),
     /// The displayed SOURCE label, as a glob.
     Source(String),
-    /// The displayed value as a glob, or absent (`-`).
+    /// The displayed value as a glob, or absent (`-`): a failing Source's
+    /// row with nothing stored displays its latest error.
     Value(Option<String>),
     /// A record the read from the caller's directory does not take.
     Shadowed(bool),
@@ -1889,11 +1890,12 @@ impl Predicate {
             }
             Predicate::Field(pat) => simple_glob_match(pat, &r.field),
             Predicate::Source(pat) => simple_glob_match(pat, &display_source(r)),
-            Predicate::Value(None) => r.value.is_null(),
+            // Over the VALUE cell: a failing Source's error counts as shown,
+            // so the default `value!=-` keeps its row.
+            Predicate::Value(None) => shown_value(r).is_none(),
             // A glob matches a present value only: `value=*` is "not absent".
             Predicate::Value(Some(pat)) => {
-                !r.value.is_null()
-                    && simple_glob_match(pat, &libbeachcomber::render::csv_cell(Some(&r.value)))
+                shown_value(r).is_some_and(|v| simple_glob_match(pat, &v))
             }
             Predicate::Shadowed(b) => r.shadowed == *b,
             Predicate::LifecycleDecay(target) => matches!(

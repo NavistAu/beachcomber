@@ -3373,3 +3373,27 @@ fn a_failing_row_with_no_value_shows_its_latest_error() {
         render_sh_env(&rows)
     );
 }
+
+/// The default filters hide a row with nothing stored, but not a failing
+/// Source's: its VALUE is its latest error, which `value=` globs like any.
+#[test]
+fn the_defaults_show_a_failing_row_with_no_value() {
+    use beachcomber::cache::FailureSnapshot;
+    use beachcomber::cli::status_format::effective_filters;
+    let mut failing = sample_lifecycle_row();
+    failing.value = serde_json::Value::Null;
+    failing.failure = Some(FailureSnapshot {
+        consecutive_failures: 1,
+        suppressed_until_unix_ms: None,
+        last_error: Some("data: `git`: exit status: 128".into()),
+    });
+    let mut absent = sample_lifecycle_row();
+    absent.field = "nothing".into();
+    absent.value = serde_json::Value::Null;
+    let rows = vec![failing, absent];
+    let shown = apply_filters(rows.clone(), &effective_filters(&[], false)).unwrap();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].field, "branch");
+    let by_error = apply_filters(rows, &["value=*128".to_string()]).unwrap();
+    assert_eq!(by_error.len(), 1);
+}
