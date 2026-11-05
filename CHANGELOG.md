@@ -219,6 +219,7 @@ The configuration is a new shape, and the cache a new model. Config has two root
 
 ### Fixed
 
+- **A `conf.d/` made while the daemon runs is watched from the moment it appears.** The config watch registered `conf.d/` only if it existed at startup, so a drop-in written into one made later waited for the 5 s poll backstop, and every later edit in it did too until a restart. The directory's creation is now a change, and it gets its own fs-event watch then, so its drop-ins load within the 200 ms debounce like the main file's edits.
 - **A daemon always obeys a stop signal.** SIGTERM and SIGINT were handled on the daemon's own worker threads, so a daemon whose workers were all stuck ignored them and needed `kill -9`. They now have a thread of their own, and a daemon still running 5 s after the signal exits at once.
 - **An SDK's default socket timeout is 250 ms, not 100.** It matched git's 100 ms read budget, so a read that waited out the budget could time out instead of getting the stored answer. A daemon that has stopped answering now takes up to 250 ms to report.
 - **A dropped connection says so.** A daemon that hangs up before answering was reported as `parse error: EOF`. It is now `I/O error: the daemon closed the connection before answering`, kind `io_error` in the C ABI and the SDKs instead of `parse_error`.

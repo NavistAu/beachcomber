@@ -46,24 +46,18 @@
 //! are subdirectories, not siblings of the config file, each needs its own
 //! fs-event registration (the parent-dir watch is `NonRecursive` and doesn't
 //! see inside them) — registered separately, best-effort, when the directory
-//! exists at watch-registration time. The mtime-poll backstop holds a
+//! exists at watch-registration time or once it appears. The mtime-poll backstop holds a
 //! snapshot of the whole composed set — one mtime per file — and calls any
 //! difference a change, so an edit, an addition and a deletion are all noticed
 //! (a deletion bumps no remaining file's mtime) and an edit to one file is
 //! seen even while another carries a far-future mtime from clock skew.
 //!
-//! Known limitation: if the config *directory* doesn't exist yet at daemon
-//! startup, the fs-event watch can't be registered against a missing
-//! directory (falls back to poll-only), and the poll's `stat` keeps failing
-//! (`NotFound`) until the directory exists too — so a config file created
-//! inside a directory that didn't exist at daemon startup is not picked up
-//! until some other restart trigger fires (binary self-watch, manual
-//! restart, `comb daemon` re-invocation). The same limitation applies to
-//! conf.d specifically: if `conf.d/` doesn't exist yet at watch-registration
-//! time, no fs-event watch is registered for it (there's nothing to watch),
-//! so its later creation and population is only picked up by the poll
-//! backstop (file-count delta), not the fast path — same honest tradeoff as
-//! the config directory case above, just one level down.
+//! A drop-in directory that does not exist at registration time is watched
+//! from the moment it appears: the parent-dir watch reports its creation,
+//! which counts as a change (the files written into it arrive with it) and
+//! registers the directory's own watch, so later edits inside it take the fast
+//! path too. The config directory itself always exists by then: the daemon
+//! writes `defaults/` into it before it loads the configuration.
 
 use crate::config::Config;
 use crate::provider::registry::{ConfigLoad, ProviderRegistry};
@@ -179,16 +173,7 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind, ConfigLoad) + Send + 's
                         // of the watch (the poll backstop covers both either
                         // way).
                         for dir in [&defaults_dir, &conf_d_dir] {
-                            if !dir.is_dir() {
-                                continue;
-                            }
-                            match w.watch(dir, RecursiveMode::NonRecursive) {
-                                Ok(()) => tracing::debug!("config-watch: watching dir {dir:?}"),
-                                Err(e) => tracing::warn!(
-                                    "config-watch: failed to watch dir {dir:?}: {e}; \
-                                     its changes rely on the poll backstop"
-                                ),
-                            }
+                            watch_dir(&mut w, dir);
                         }
                         Some(w)
                     }
@@ -225,7 +210,7 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind, ConfigLoad) + Send + 's
             );
             return;
         }
-        let _watcher = watcher;
+        let mut watcher = watcher;
 
         let debounce = Duration::from_millis(200);
         let mut last_event: Option<Instant> = None;
@@ -250,27 +235,28 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind, ConfigLoad) + Send + 's
                         event.kind,
                         event.paths
                     );
-                    let target = config_path
-                        .canonicalize()
-                        .unwrap_or_else(|_| config_path.clone());
-                    let canonical_dir =
-                        |dir: &PathBuf| dir.canonicalize().unwrap_or_else(|_| dir.clone());
-                    let dirs = [
-                        (&defaults_dir, canonical_dir(&defaults_dir)),
-                        (&conf_d_dir, canonical_dir(&conf_d_dir)),
-                    ];
+                    let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+                    let target = canonical(&config_path);
+                    let dirs = [defaults_dir.as_path(), conf_d_dir.as_path()];
+                    let dir_targets = dirs.map(canonical);
+                    let dir_targets = [dir_targets[0].as_path(), dir_targets[1].as_path()];
                     let path_match = event.paths.iter().any(|p| {
-                        let canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
-                        if canonical == target || p == &config_path {
-                            return true;
-                        }
-                        let is_toml = p.extension().and_then(|e| e.to_str()) == Some("toml");
-                        is_toml
-                            && dirs.iter().any(|(dir, dir_target)| {
-                                p.parent() == Some(dir.as_path())
-                                    || canonical.parent() == Some(dir_target.as_path())
-                            })
+                        touches_composed_set(p, &config_path, &dirs)
+                            || touches_composed_set(&canonical(p), &target, &dir_targets)
                     });
+                    // A directory of the set that has just appeared (or come
+                    // back) needs its own registration to see inside it.
+                    if let (Some(w), EventKind::Create(_)) = (watcher.as_mut(), event.kind) {
+                        for (dir, dir_target) in dirs.into_iter().zip(dir_targets) {
+                            if event
+                                .paths
+                                .iter()
+                                .any(|p| p == dir || canonical(p) == dir_target)
+                            {
+                                watch_dir(w, dir);
+                            }
+                        }
+                    }
                     if path_match {
                         let is_change = matches!(
                             event.kind,
@@ -321,6 +307,34 @@ pub fn spawn_config_self_watch_with<F: FnMut(ChangeKind, ConfigLoad) + Send + 's
             }
         }
     }))
+}
+
+/// Register a non-recursive watch on `dir` if it exists. Best-effort: a
+/// directory that is absent, or cannot be watched, leaves its changes to the
+/// poll backstop.
+fn watch_dir(w: &mut impl notify::Watcher, dir: &Path) {
+    if !dir.is_dir() {
+        return;
+    }
+    match w.watch(dir, notify::RecursiveMode::NonRecursive) {
+        Ok(()) => tracing::debug!("config-watch: watching dir {dir:?}"),
+        Err(e) => tracing::warn!(
+            "config-watch: failed to watch dir {dir:?}: {e}; its changes rely on the poll backstop"
+        ),
+    }
+}
+
+/// Whether an fs event at `p` touches the composed set whose main file is
+/// `file` and whose drop-in directories are `dirs`: the main file, a `*.toml`
+/// directly in one of `dirs`, or one of `dirs` itself appearing or going (the
+/// parent-dir watch is the only one that sees that, and the files inside it
+/// arrive with it).
+fn touches_composed_set(p: &Path, file: &Path, dirs: &[&Path]) -> bool {
+    let is_toml = p.extension().and_then(|e| e.to_str()) == Some("toml");
+    p == file
+        || dirs
+            .iter()
+            .any(|d| p == *d || (is_toml && p.parent() == Some(*d)))
 }
 
 /// Poll fallback used both when the fs-event watcher couldn't be set up at
@@ -467,6 +481,26 @@ mod tests {
             });
             got
         }
+    }
+
+    /// `conf.d/` created after the watch began is reported by the parent-dir
+    /// watch as the directory itself, not as a file in it: that is a change,
+    /// or the drop-ins written into it wait for the poll backstop.
+    #[test]
+    fn a_drop_in_directory_appearing_touches_the_composed_set() {
+        let file = Path::new("/c/config.toml");
+        let dirs = [Path::new("/c/defaults"), Path::new("/c/conf.d")];
+        let touches = |p: &str| touches_composed_set(Path::new(p), file, &dirs);
+        assert!(touches("/c/conf.d"), "conf.d itself appearing");
+        assert!(touches("/c/defaults"), "defaults/ itself appearing");
+        assert!(touches("/c/conf.d/50-mine.toml"));
+        assert!(touches("/c/config.toml"));
+        assert!(!touches("/c/conf.d/notes.txt"), "not a drop-in");
+        assert!(!touches("/c/state"), "a sibling the set does not include");
+        assert!(
+            !touches("/c/conf.d/sub/10-x.toml"),
+            "not directly in conf.d"
+        );
     }
 
     #[test]
