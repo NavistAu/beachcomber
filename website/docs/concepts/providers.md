@@ -28,7 +28,7 @@ Different fields within a provider may need different refresh rates or different
 | Source | Strategy | Fields produced |
 |---|---|---|
 | `head` | watch on `.git/HEAD` | `branch`, `detached` |
-| `refs` | watch on the refs, the stash's log and an operation's files | `commit`, `tag`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
+| `refs` | watch on the refs, the stash's log and an operation's files | `commit`, `tag`, `state`, `state_step`, `state_total`, `stash`, `last_commit_timestamp`, `commit_summary`, `push_ahead`, `push_behind` |
 | `diff` | poll 30s | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
 | `branches` | watch on the refs | `branch_parent`, `branch_default` |
 | `lineage` | watch on the refs | `lines_added_parent`, `lines_removed_parent`, `lines_added_default`, `lines_removed_default` |

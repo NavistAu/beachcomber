@@ -331,6 +331,16 @@ fn comb_get_json_and_bc_get_answer_identically() {
             }
         }
 
+        // An age worked out at the read moves with the clock between the two
+        // reads, so it is compared for presence only.
+        const CLOCK: &str = "last_commit_age_secs";
+        let without_clock = |v: &Value| {
+            let mut v = v.clone();
+            if let Some(map) = v.as_object_mut() {
+                map.remove(CLOCK);
+            }
+            v
+        };
         match (&cli, &ffi) {
             (Class::Hit(c), Class::Hit(f)) => {
                 if key.contains(":cache") {
@@ -349,7 +359,9 @@ fn comb_get_json_and_bc_get_answer_identically() {
                     {
                         report.push(format!("{key}: cache answers differ; cli={c} ffi={f}"));
                     }
-                } else if c != f {
+                } else if without_clock(c) != without_clock(f)
+                    || c.get(CLOCK).is_some() != f.get(CLOCK).is_some()
+                {
                     report.push(format!(
                         "{key}: values differ\n    cli: {}\n    ffi: {}",
                         serde_json::to_string(c).unwrap(),

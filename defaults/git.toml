@@ -1,3 +1,8 @@
+[client.providers.git]
+# Seconds since the last commit, as of the read: a function of the clock, so the client works it out from the commit's
+# timestamp, which `refs` reports and caches until a ref moves.
+template.last_commit_age_secs = "{{ (now() - comb.git.last_commit_timestamp) if comb.git.last_commit_timestamp is number }}"
+
 [daemon.providers.git.sources._]
 # The repository: the nearest `.git` (a directory, or the gitfile of a linked worktree or submodule), walking up to
 # `/`. Outside one the line renders nothing, and a nearest Source has no instance there.
@@ -20,7 +25,8 @@ result.detached = "{{ data.detached }}"
 return = "{{ result | watch('.git/HEAD') | failback('60s', 3) | budget('100ms') | nearest }}"
 
 [daemon.providers.git.sources.refs]
-# The commit, its tag, the push remote, the stash and any operation in progress.
+# The commit (its hash, summary and committer timestamp in Unix seconds), its tag, the push remote, the stash and any
+# operation in progress.
 data = "{{ plugin('git', 'refs', lup('.git', root=true) | dirname) if lup('.git', root=true) }}"
 result.commit = "{{ data.commit }}"
 result.tag = "{{ data.tag }}"
@@ -28,7 +34,7 @@ result.state = "{{ data.state }}"
 result.stash = "{{ data.stash }}"
 result.state_step = "{{ data.state_step }}"
 result.state_total = "{{ data.state_total }}"
-result.last_commit_age_secs = "{{ data.last_commit_age_secs }}"
+result.last_commit_timestamp = "{{ data.last_commit_timestamp }}"
 result.commit_summary = "{{ data.commit_summary }}"
 result.push_ahead = "{{ data.push_ahead }}"
 result.push_behind = "{{ data.push_behind }}"

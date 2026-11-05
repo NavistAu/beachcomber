@@ -191,11 +191,13 @@ fn a_literal_comb_field_beside_a_lazy_comb_still_demands_only_its_own_source() {
 
     assert_eq!(stdout(&d, &cwd, &["t.v"]), "main");
     let cache = json(&d, &cwd, &["-f", "json", "git:cache"]);
+    // A template leaf (`last_commit_age_secs`) is the client's; no Source ran for it.
     let mut fields: Vec<&str> = cache
         .as_object()
         .expect("git:cache is a tree")
-        .keys()
-        .map(String::as_str)
+        .iter()
+        .filter(|(_, leaf)| leaf["source"] != "template")
+        .map(|(f, _)| f.as_str())
         .collect();
     fields.sort();
     assert!(

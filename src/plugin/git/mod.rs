@@ -5,7 +5,7 @@
 //! | symbol | answers | commands | a change to these runs it again |
 //! |---|---|---|---|
 //! | `head` | `{branch, detached}` | none | `HEAD` |
-//! | `refs` | `{stash, state, state_step, state_total, commit, last_commit_age_secs, commit_summary, tag, push_ahead, push_behind}` | `log -1`, `describe`, `config`; with a push remote `rev-parse`, `rev-list` | what `HEAD` resolves through, the tags, the stash's log, a stepped operation's files, `config`, the push remote's ref |
+//! | `refs` | `{stash, state, state_step, state_total, commit, last_commit_timestamp, commit_summary, tag, push_ahead, push_behind}` | `log -1`, `describe`, `config`; with a push remote `rev-parse`, `rev-list` | what `HEAD` resolves through, the tags, the stash's log, a stepped operation's files, `config`, the push remote's ref |
 //! | `branches` | `{branch_parent, branch_default}` | a `rev-parse` for a branch that has no loose ref | what `HEAD` resolves through, the branch's reflog, the parent's and the default branch's refs |
 //! | `diff` | `{lines_added, lines_removed, lines_staged_added, lines_staged_removed}` | `diff --numstat`, `diff --cached --numstat` | what `HEAD` resolves through, the index |
 //! | `lineage` | `{lines_added_parent, lines_removed_parent, lines_added_default, lines_removed_default}` | `merge-base`, `diff --numstat` per comparison; a `rev-parse` for a branch that has no loose ref | what `HEAD` resolves through, the branch's reflog, the parent's and the default branch's refs |
@@ -35,7 +35,7 @@ use serde_json::{Value as Json, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 crate::plugin::symbols! {
     at_root;
@@ -192,11 +192,6 @@ fn refs_facts(dir: &Path, executor: &dyn GitExecutor) -> Option<Facts> {
         return None;
     }
 
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
     let mut facts = Facts::new();
     facts.insert("stash".into(), json!(stash_count));
     facts.insert("state".into(), json!(state));
@@ -206,10 +201,7 @@ fn refs_facts(dir: &Path, executor: &dyn GitExecutor) -> Option<Facts> {
     }
     if let Some(head) = head {
         facts.insert("commit".into(), json!(head.hash));
-        facts.insert(
-            "last_commit_age_secs".into(),
-            json!(now_secs.saturating_sub(head.timestamp)),
-        );
+        facts.insert("last_commit_timestamp".into(), json!(head.timestamp));
         facts.insert("commit_summary".into(), json!(head.subject));
     }
     if let Some(tag) = tag {

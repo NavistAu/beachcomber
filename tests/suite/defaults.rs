@@ -303,7 +303,7 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
             }
         }
     }
-    assert_eq!(checked, 13, "every shipped template is covered");
+    assert_eq!(checked, 14, "every shipped template is covered");
 }
 
 /// A shipped Source is documented where it is written: the line under its

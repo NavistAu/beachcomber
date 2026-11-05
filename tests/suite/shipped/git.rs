@@ -100,7 +100,7 @@ fn git_provider_metadata() {
     assert!(refs_fields.contains(&"state"));
     assert!(refs_fields.contains(&"state_step"));
     assert!(refs_fields.contains(&"state_total"));
-    assert!(refs_fields.contains(&"last_commit_age_secs"));
+    assert!(refs_fields.contains(&"last_commit_timestamp"));
     assert!(refs_fields.contains(&"commit_summary"));
     assert!(refs_fields.contains(&"push_ahead"));
     assert!(refs_fields.contains(&"push_behind"));
@@ -290,7 +290,7 @@ fn git_refs_commit_hash_format() {
 }
 
 #[test]
-fn git_refs_last_commit_age_secs() {
+fn git_refs_last_commit_timestamp() {
     let repo = GitRepoFixture::new();
     let sources = git_sources();
     let refs_src = sources
@@ -298,15 +298,18 @@ fn git_refs_last_commit_age_secs() {
         .find(|s| s.metadata().name == "refs")
         .unwrap();
     let result = refs_src.execute(Some(repo.path_str())).unwrap();
-    let age: i64 = result
+    let at: i64 = result
         .fields
-        .get("last_commit_age_secs")
+        .get("last_commit_timestamp")
         .unwrap()
         .as_text()
         .parse()
         .unwrap();
-    assert!(age >= 0, "age should be non-negative");
-    assert!(age < 60, "last_commit_age_secs should be recent: {age}");
+    let now = now_secs();
+    assert!(
+        (now - 60..=now).contains(&at),
+        "a recent commit: {at}, now {now}"
+    );
 }
 
 #[test]
@@ -867,7 +870,18 @@ fn git_get_answers_every_field_with_its_type() {
     assert_eq!(got["stash"], json!(0));
     assert_eq!(got["commit_summary"], json!("init"));
     assert!(got["commit"].is_string(), "{got}");
-    assert!(got["last_commit_age_secs"].is_i64(), "{got}");
+    // An age is a function of the clock, so it is worked out at the read from
+    // the cached timestamp, never cached: a watch-only Source would answer the
+    // same age until the next commit.
+    let (at, age) = (&got["last_commit_timestamp"], &got["last_commit_age_secs"]);
+    let (at, age) = (at.as_i64().expect("timestamp"), age.as_i64().expect("age"));
+    let now = now_secs();
+    assert!(
+        (now - at - 5..=now - at).contains(&age),
+        "{age} at {at}, now {now}"
+    );
+    let source = s.get("git:cache.last_commit_age_secs.source", repo.path());
+    assert_eq!(source, Some(json!("template")), "not a cached record");
     assert_eq!(got["lines_added"], json!(0));
     assert_eq!(got["lines_staged_added"], json!(2));
     assert_eq!(got["staged"], json!(1));
@@ -877,6 +891,13 @@ fn git_get_answers_every_field_with_its_type() {
     for absent in ["upstream", "ahead", "tag", "state_step", "push_ahead"] {
         assert!(got.get(absent).is_none(), "{absent}: {got}");
     }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
 
 /// A free-text value reaches the record as it is: no quoting on the way.

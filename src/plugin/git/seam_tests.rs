@@ -180,7 +180,7 @@ fn git_refs_without_commits_leaves_them_absent() {
     ]);
     let result = refs_facts(dir.path(), &stub).expect("facts");
 
-    for absent in ["commit", "commit_summary", "last_commit_age_secs"] {
+    for absent in ["commit", "commit_summary", "last_commit_timestamp"] {
         assert!(
             !result.contains_key(absent),
             "{absent} must be absent: {:?}",

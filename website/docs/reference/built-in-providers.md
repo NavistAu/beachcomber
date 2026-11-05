@@ -19,7 +19,7 @@ Each provider declares one or more **sources** — independent units of executio
 | `direnv` | `state` | watch (`defaults/direnv.toml`) | project | `status`, `allowed` |
 | `gcloud_configs` | `config_dir` | poll 60s (`defaults/gcloud.toml`) | none | `active_config`, plus one object per configuration name, each `{ project, account }` |
 | `git` | `head` | watch (`defaults/git.toml`) | project | `branch`, `detached` |
-| `git` | `refs` | watch (`defaults/git.toml`) | project | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_age_secs`, `commit_summary`, `push_ahead`, `push_behind` |
+| `git` | `refs` | watch (`defaults/git.toml`) | project | `commit`, `tag`, `ahead`, `behind`, `upstream`, `state`, `state_step`, `state_total`, `stash`, `last_commit_timestamp`, `commit_summary`, `push_ahead`, `push_behind` |
 | `git` | `diff` | poll 30s (`defaults/git.toml`) | project | `lines_added`, `lines_removed`, `lines_staged_added`, `lines_staged_removed` |
 | `git` | `branches` | watch on the refs (`defaults/git.toml`) | project | `branch_parent`, `branch_default` |
 | `git` | `lineage` | watch on the refs (`defaults/git.toml`) | project | `lines_added_parent`, `lines_removed_parent`, `lines_added_default`, `lines_removed_default` |
@@ -111,7 +111,8 @@ Each provider declares one or more **sources** — independent units of executio
 | `state` | string | Repo state: "clean", "merge", "rebase", "cherry-pick", "bisect", "revert" |
 | `state_step` | int | Current step of a rebase in progress; absent otherwise |
 | `state_total` | int | Total steps of a rebase in progress; absent otherwise |
-| `last_commit_age_secs` | int | Seconds since last commit |
+| `last_commit_timestamp` | int | When HEAD was committed (committer date), Unix seconds |
+| `last_commit_age_secs` | int | Seconds since HEAD was committed, as of the read: a client template over `last_commit_timestamp` and `now()`, so it is not cached and `comb.git.last_commit_age_secs` (the raw cached value) has none |
 | `commit_summary` | string | First line of the HEAD commit message |
 | `push_ahead` | int | Commits ahead of the push remote |
 | `push_behind` | int | Commits behind the push remote |
@@ -156,6 +157,7 @@ absent when no default branch can be detected.
   "state": "clean",
   "state_step": 0,
   "state_total": 0,
+  "last_commit_timestamp": 1793898717,
   "last_commit_age_secs": 3420,
   "commit_summary": "feat: add synchronous cache miss",
   "push_ahead": 2,

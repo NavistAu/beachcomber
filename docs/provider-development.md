@@ -88,7 +88,7 @@ git.head    → watch .git/HEAD, `plugin('git', 'head', root)`, no subprocess
 
 git.refs    → watch what the refs, the stash and an operation in progress live in, `plugin('git', 'refs', root)`
               fields: commit, tag, state, state_step, state_total,
-                      stash, last_commit_age_secs, commit_summary, push_ahead, push_behind
+                      stash, last_commit_timestamp, commit_summary, push_ahead, push_behind
 
 git.diff    → poll 30s, `plugin('git', 'diff', root)`
               fields: lines_added, lines_removed, lines_staged_added, lines_staged_removed
@@ -411,7 +411,7 @@ The shipped `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `networ
 | symbol | answers | runs |
 |---|---|---|
 | `head` | `{branch, detached}` | none |
-| `refs` | `{stash, state, state_step, state_total, commit, last_commit_age_secs, commit_summary, tag, push_ahead, push_behind}` | `git log -1`, `describe`, `config --list`, started together; with a push remote `rev-parse` and `rev-list` |
+| `refs` | `{stash, state, state_step, state_total, commit, last_commit_timestamp, commit_summary, tag, push_ahead, push_behind}` | `git log -1`, `describe`, `config --list`, started together; with a push remote `rev-parse` and `rev-list` |
 | `diff` | `{lines_added, lines_removed, lines_staged_added, lines_staged_removed}` | `git diff --numstat`, `diff --cached --numstat`, started together |
 | `branches` | `{branch_parent, branch_default}` | `rev-parse` for a branch with no loose ref |
 | `lineage` | `{lines_added_parent, lines_removed_parent, lines_added_default, lines_removed_default}` | `git merge-base`, `diff --numstat` once for any two commits; `rev-parse` for a branch with no loose ref |
