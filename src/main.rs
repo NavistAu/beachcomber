@@ -206,7 +206,7 @@ enum Commands {
             value_parser = trailing_dir
         )]
         at: Option<String>,
-        /// Expire the node: valid for this long (e.g., "30s", "5m"), stale for one decay step, then removed; the next put renews it. Whole seconds, at least 1s; not with null data
+        /// Expire the node: kept for this long (e.g., "30s", "5m") and one decay step more (twice as long), then removed; the next put renews it. Whole seconds, at least 1s; not with null data
         #[arg(long, value_name = "DURATION", value_parser = beachcomber::config::duration_arg)]
         ttl: Option<std::time::Duration>,
         #[command(flatten)]

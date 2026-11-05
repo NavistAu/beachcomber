@@ -222,7 +222,7 @@ comb s -f tsv
 comb s -f json
 ```
 
-The machine formats lay a row out in the columns `PROVIDER PATH FIELD SOURCE VALUE AGE_MS STALE KIND DECAY POLL_INTERVAL_SECS POLL_COUNT FAILURE_CONSECUTIVE_FAILURES FAILURE_SUPPRESSED_UNTIL_UNIX_MS`, through the same cell encoders as `comb get`: `csv` and `tsv` have no header row and `CSV` and `TSV` do, a VALUE is its raw text (JSON for an object or array), and an absent field is an empty cell. `json` is one row object per line. `sh` names each variable `provider_path_field` with every character outside `[A-Za-z0-9_]` written as `_`, plus `_SOURCE`, `_KIND` and the lifecycle fields beside it.
+The machine formats lay a row out in the columns `PROVIDER PATH FIELD SOURCE VALUE AGE_MS KIND DECAY POLL_INTERVAL_SECS POLL_COUNT FAILURE_CONSECUTIVE_FAILURES FAILURE_SUPPRESSED_UNTIL_UNIX_MS`, through the same cell encoders as `comb get`: `csv` and `tsv` have no header row and `CSV` and `TSV` do, a VALUE is its raw text (JSON for an object or array), and an absent field is an empty cell. `json` is one row object per line. `sh` names each variable `provider_path_field` with every character outside `[A-Za-z0-9_]` written as `_`, plus `_SOURCE`, `_KIND` and the lifecycle fields beside it.
 
 **Flags:** `-f`/`--format` (`human` (default), `table`, `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, or a template), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--depth N`, and the global `--color` and `--ascii` ([Colour and glyphs](#colour-and-glyphs)).
 
@@ -342,7 +342,7 @@ Write static data into the cache. External processes use this to expose state to
 # Put application status into cache — scoped to the current directory
 comb p myapp '{"status":"healthy","version":"1.2.3"}'
 
-# Put with TTL — valid 30s, stale for one decay step, then removed; the next put renews it
+# Put with TTL — kept 30s and one decay step more (60s), then removed; the next put renews it
 comb p myapp '{"status":"healthy"}' --ttl 30s
 
 # Put with path scope

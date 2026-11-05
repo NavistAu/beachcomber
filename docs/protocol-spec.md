@@ -159,7 +159,7 @@ Read a cached value.
 
   | The read finds | With no `wait` it waits | With a `wait` |
   |---|---|---|
-  | a record past its lifetime (`stale`), or whose inputs changed | the Source's budget (`budget(...)`, else `[daemon] budget`, default `50ms`) | that long (`"forever"`: the run's end) |
+  | a record past its lifetime, or whose inputs changed | the Source's budget (`budget(...)`, else `[daemon] budget`, default `50ms`) | that long (`"forever"`: the run's end) |
   | nothing stored | the run's end, which its `timeout` bounds | as above |
   | anything, with `force` | the run's end | as above |
 
@@ -479,7 +479,7 @@ values at its node. The Source keeps refreshing its own layer beneath it, and
 removing the put shows that layer at once.
 
 `ttl` (`"30s"`, `"5m"`, at least 1s) makes the put a lifecycle entry of its own:
-it is valid for the ttl, readable but `stale` for one decay step, then evicted.
+it is kept for the ttl and one decay step more (twice the ttl), then evicted.
 Each put address (key and directory) has its own lifecycle, so `comb put --ttl 300
 build.status '"passing"'` and `comb put --ttl 60 build.eta '"4m"'` expire independently, and
 a re-put without a `ttl` drops the expiry. `status` shows such a row as any

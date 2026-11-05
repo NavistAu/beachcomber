@@ -380,7 +380,7 @@ Write static data at any node of the tree. The key is `namespace` or `namespace.
 ```sh
 comb p myapp '{"status":"healthy","version":"1.2.3"}'
 comb p myapp.deploy.count 3                                # any node, any JSON below the root
-comb p myapp '{"status":"healthy"}' --ttl 30s             # valid 30s, stale for one decay step, then gone
+comb p myapp '{"status":"healthy"}' --ttl 30s             # kept 30s and one decay step more (60s), then gone
 comb p myapp '{"status":"building"}' --path ~/project     # a directory instead of the cwd
 comb p myapp '{"status":"ok"}' --global                    # the global entry ($HOME)
 comb p myapp null                                          # remove the node (null means absent)
@@ -473,7 +473,7 @@ comb c                   # aggregate across all subjects
 comb c daemon            # daemon health: pid, version, uptime, request counts, watchers
 comb c providers         # provider health and backoff state
 comb c config            # validate config file syntax
-comb c cache             # cache entries, staleness, hit/miss summary
+comb c cache             # cache entries, hit/miss summary
 comb c lifecycle         # keys in the decay sequence
 comb c watches           # active filesystem watch registrations
 comb c timers            # poll timers and last-run times
@@ -1764,7 +1764,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 **`refresh`:** Re-execute Sources out-of-band; does not return the new value. The key selects which Sources run, exactly as it selects which a `get` warms: `refresh git` re-executes every Source of `git`, `refresh git.branch` only the Source that owns `branch`. Each runs at the instance that answers for the requested directory — the root its `root` names for it, or the one instance at `~` for a Source with no root — so `path` is optional and is only consulted by Sources that have a root. A key that names no Source has nothing to re-execute and is an error — a static namespace, an unknown name, or a field no Source owns (a layer facet or `:cache` key is `cannot refresh <key>: a layer facet is read-only`): `{"ok": false, "error": "nothing to refresh: <key> has no sources"}`. Reading configuration afresh is not a refresh; the config watcher does that.
 
-**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write replaces whatever a put left at that node; `"data": null` removes it. A put replaces the node at that directory, hiding Source and seed values; removing it shows them again. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`, at least `1s`) makes the put its own lifecycle entry: valid for that long, stale for one decay step, then evicted. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success.
+**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write replaces whatever a put left at that node; `"data": null` removes it. A put replaces the node at that directory, hiding Source and seed values; removing it shows them again. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`, at least `1s`) makes the put its own lifecycle entry: kept for that long and one decay step more (twice as long), then evicted. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success.
 
 ```json
 {"op":"put","key":"myapp","data":{"status":"healthy"}}

@@ -91,6 +91,18 @@ fn get_and_watch_list_the_same_formats_in_their_help() {
     }
 }
 
+/// The `stale` flag is gone, so no help names it, `put --ttl`'s included.
+#[test]
+fn no_help_mentions_stale() {
+    let d = TestDaemon::spawn();
+    for command in [
+        "daemon", "get", "status", "put", "refresh", "watch", "eval", "init", "check", "kill",
+    ] {
+        let help = ok(&d, &[command, "--help"]);
+        assert!(!help.contains("stale"), "{command} --help:\n{help}");
+    }
+}
+
 // ── one encoder per format ───────────────────────────────────────────────────
 
 // ── one way to show a path under home ────────────────────────────────────────
