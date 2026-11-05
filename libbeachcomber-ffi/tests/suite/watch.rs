@@ -16,8 +16,6 @@ use crate::common::socket::IsolatedSocket;
 
 use std::ffi::CString;
 use std::ptr;
-use std::sync::Barrier;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use beachcomber::{
     BcClient, BcWatch, bc_client_free, bc_get, bc_put, bc_watch_cancel, bc_watch_free,
@@ -423,52 +421,47 @@ fn watch_cancel_from_another_thread_unblocks_a_pending_next() {
 }
 
 #[test]
-fn watch_next_called_concurrently_from_two_threads_yields_busy_for_one() {
+fn watch_next_called_while_another_thread_is_in_it_yields_busy() {
     let daemon = DaemonGuard::spawn();
     let client = client_for(&daemon.path);
     put_static(client, "watch_busy_test", r#"{"field":"v1"}"#);
     let watch = open_watch(client, "watch_busy_test.field", None);
 
+    // Consume the initial-value event so the holder below blocks.
+    let first = read(unsafe { bc_watch_next(watch, 2000) });
+    assert_eq!(first["outcome"], serde_json::json!("event"));
+
     let watch_ptr = SendPtr(watch);
-    let ok_count = AtomicUsize::new(0);
-    let busy_count = AtomicUsize::new(0);
-    let threads = 8;
-    let iters = 25;
-    let barrier = Barrier::new(threads);
-
+    let watch_ptr = &watch_ptr;
     std::thread::scope(|scope| {
-        for _ in 0..threads {
-            let watch_ptr = &watch_ptr;
-            let ok_count = &ok_count;
-            let busy_count = &busy_count;
-            let barrier = &barrier;
-            scope.spawn(move || {
-                barrier.wait();
-                for _ in 0..iters {
-                    // timeout_ms = 0: whichever thread wins the lock returns
-                    // promptly (event or timeout), so this doesn't hang on
-                    // the one thread that does win it.
-                    let v = read(unsafe { bc_watch_next(watch_ptr.0, 0) });
-                    if v["ok"] == serde_json::json!(true) {
-                        ok_count.fetch_add(1, Ordering::SeqCst);
-                    } else if v["error"]["kind"] == serde_json::json!("busy") {
-                        busy_count.fetch_add(1, Ordering::SeqCst);
-                    } else {
-                        panic!("unexpected envelope: {v}");
-                    }
+        // Refused while a call below holds the lock for an instant: it tries again.
+        let holder = scope.spawn(|| {
+            loop {
+                let v = read(unsafe { bc_watch_next(watch_ptr.0, -1) });
+                if v["error"]["kind"] != serde_json::json!("busy") {
+                    return v;
                 }
-            });
-        }
-    });
+            }
+        });
 
-    assert!(
-        ok_count.load(Ordering::SeqCst) > 0,
-        "at least one concurrent caller must win the lock"
-    );
-    assert!(
-        busy_count.load(Ordering::SeqCst) > 0,
-        "at least one concurrent caller must observe busy rather than interleave on the socket"
-    );
+        // The holder gives no sign it has the lock but this: before it does,
+        // a call here wins it and times out at once.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let v = read(unsafe { bc_watch_next(watch_ptr.0, 0) });
+            if v["error"]["kind"] == serde_json::json!("busy") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a second caller must be refused while the first holds the watch: {v}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        unsafe { bc_watch_cancel(watch_ptr.0) };
+        assert_eq!(holder.join().unwrap()["ok"], serde_json::json!(true));
+    });
 
     unsafe { bc_watch_free(watch) };
     unsafe { bc_client_free(client) };
