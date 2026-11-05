@@ -470,8 +470,9 @@ async fn introspect_procs_without_a_tracer_is_info() {
 }
 
 /// A Source that has never succeeded stored nothing, yet its failure shows
-/// where users look: an absent `status` row carrying the failure, and a WARN
-/// in `introspect providers`.
+/// where users look: an absent `status` row per declared field carrying the
+/// failure (a whole-node Source's one row names `<node>`), and a WARN in
+/// `introspect providers`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_source_that_never_succeeded_is_visible() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -479,15 +480,21 @@ async fn a_source_that_never_succeeded_is_visible() {
     let config = Config::from_toml(
         "[daemon.providers.broke.sources.main]\n\
          data = \"{{ exec(['false']) }}\"\n\
-         result.x = \"{{ data }}\"\n",
+         result.x = \"{{ data }}\"\n\
+         result.y = \"{{ data }}\"\n\
+         [daemon.providers.whole.sources.main]\n\
+         data = \"{{ exec(['false']) }}\"\n\
+         result = \"{{ data }}\"\n",
     );
     let (handle, ready) = beachcomber::daemon::start_in_process_polling(sock.clone(), config);
     ready.await.expect("daemon ready");
-    let read = crate::common::fetch::fetch(&sock, "broke.x", None);
-    assert!(
-        matches!(read, Ok(None)),
-        "a failed Source reads absent: {read:?}"
-    );
+    for key in ["broke.x", "whole.any"] {
+        let read = crate::common::fetch::fetch(&sock, key, None);
+        assert!(
+            matches!(read, Ok(None)),
+            "a failed Source reads absent: {read:?}"
+        );
+    }
 
     let status = crate::common::socket::ask(&sock, serde_json::json!({"op": "status"}));
     let providers = crate::common::socket::ask(
@@ -497,6 +504,17 @@ async fn a_source_that_never_succeeded_is_visible() {
     handle.abort();
 
     let rows = status["data"].as_array().expect("status rows");
+    let fields_of = |p: &str| {
+        let mut f: Vec<&str> = rows
+            .iter()
+            .filter(|r| r["provider"] == p)
+            .map(|r| r["field"].as_str().unwrap())
+            .collect();
+        f.sort();
+        f
+    };
+    assert_eq!(fields_of("broke"), ["x", "y"], "{rows:?}");
+    assert_eq!(fields_of("whole"), ["<node>"], "{rows:?}");
     let row = rows
         .iter()
         .find(|r| r["provider"] == "broke")

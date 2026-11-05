@@ -2372,19 +2372,29 @@ async fn handle_request(
             };
 
             // A Source that has failed every run has stored nothing, so it
-            // has no row: give it an absent one, which the loop below fills
-            // with its lifecycle and its failure.
+            // has no row: give it an absent one per field it declares, which
+            // the loop below fills with its lifecycle and its failure. A
+            // whole-node Source's fields are unknown until it runs; its one
+            // row names its sentinel (`<node>`), as `introspect providers`
+            // lists it.
             for key in failures.keys() {
                 let has_row = rows.iter().any(|r| {
                     r.provider == key.provider && r.path == key.path && r.source == key.source
                 });
-                if key.node.is_empty() && !has_row {
+                if !key.node.is_empty() || has_row {
+                    continue;
+                }
+                let fields = registry
+                    .source_metadata(&key.provider, &key.source)
+                    .map(|sm| sm.fields.iter().map(|f| f.name.clone()).collect())
+                    .unwrap_or_else(|| vec![String::new()]);
+                for field in fields {
                     rows.push(crate::cache::CacheRow {
                         shadowed: false,
                         provider: key.provider.clone(),
                         path: key.path.clone(),
                         source: key.source.clone(),
-                        field: String::new(),
+                        field,
                         value: serde_json::Value::Null,
                         age_ms: None,
                         kind: None,
