@@ -136,6 +136,9 @@ fn the_daemon_log_has_no_ansi_without_a_terminal() {
     .env("RUST_LOG", "info")
     .args(["daemon", "--exit-with-parent", "--socket"])
     .arg(&sock)
+    // Not the test's stdout: anything the daemon started would hold it open
+    // past the kill, and the runner would call the test leaky.
+    .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::piped())
     .spawn()
     .unwrap();
