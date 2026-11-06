@@ -7,14 +7,15 @@ export default function Hero(): JSX.Element {
 
   return (
     <section className={styles.hero}>
+      <div className={styles.titleSpace}>
       <div
         className={`${styles.header} ${isVisible ? styles.visible : ''}`}
         ref={ref as React.RefObject<HTMLDivElement>}
       >
-        <h1 className={styles.title}>beachcomber</h1>
+        <h1 className={styles.title}>beach<span className={styles.bin}>comb</span>er</h1>
         <p className={styles.tagline}>
-          A single daemon that caches your shell environment. Every prompt, status bar, and editor
-          reads from one shared cache instead of recomputing everything independently.
+          Faster prompts, less load. comb works out your shell's state once, and every prompt, status
+          bar, editor and agent reads it in microseconds.
         </p>
 
         <div className={styles.metrics}>
@@ -59,6 +60,8 @@ export default function Hero(): JSX.Element {
           <span className={styles.registrySep} aria-hidden="true">·</span>
           <a className={styles.registryLink} href="https://luarocks.org/modules/navist/libbeachcomber" target="_blank" rel="noopener noreferrer">LuaRocks</a>
         </div>
+      </div>
+
       </div>
 
       {/* Gradient fade from header into animation */}
