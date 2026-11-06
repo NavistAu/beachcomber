@@ -65,13 +65,13 @@ Download the `.rpm` from the latest release:
 
 ```sh
 curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.10.0-1.x86_64.rpm
-sudo rpm -i beachcomber-0.10.0-1.x86_64.rpm
+sudo dnf install ./beachcomber-0.10.0-1.x86_64.rpm
 ```
 
 ```sh
 # ARM64
 curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.10.0-1.aarch64.rpm
-sudo rpm -i beachcomber-0.10.0-1.aarch64.rpm
+sudo dnf install ./beachcomber-0.10.0-1.aarch64.rpm
 ```
 
 ## Arch Linux (AUR)

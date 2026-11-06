@@ -30,7 +30,7 @@ sudo dpkg -i libbeachcomber-dev_0.10.0_amd64.deb
 
 ```sh
 curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/libbeachcomber-devel-0.10.0-1.x86_64.rpm
-sudo rpm -i libbeachcomber-devel-0.10.0-1.x86_64.rpm
+sudo dnf install ./libbeachcomber-devel-0.10.0-1.x86_64.rpm
 ```
 
 ### Arch Linux (AUR)

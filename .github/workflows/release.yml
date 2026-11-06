@@ -212,8 +212,7 @@ jobs:
               apt-get update && apt-get install -y pkg-config
               dpkg -i /pkg/*.deb
             else
-              dnf install -y pkg-config
-              rpm -i /pkg/*.rpm
+              dnf install -y pkg-config /pkg/*.rpm
             fi
             pkg-config --exists libbeachcomber
             pkg-config --cflags libbeachcomber
@@ -300,7 +299,7 @@ jobs:
       - name: Test install in container
         run: |
           docker run --rm -v ${{ github.workspace }}/pkg:/pkg ${{ matrix.image }} \
-            bash -c 'pkg_file=$(find /pkg -name "*.${{ matrix.format }}" -type f); echo "Installing $pkg_file"; if [ "${{ matrix.format }}" = "deb" ]; then dpkg -i "$pkg_file"; else rpm -i "$pkg_file"; fi && comb --version'
+            bash -c 'pkg_file=$(find /pkg -name "*.${{ matrix.format }}" -type f); echo "Installing $pkg_file"; if [ "${{ matrix.format }}" = "deb" ]; then dpkg -i "$pkg_file"; else dnf install -y "$pkg_file"; fi && comb --version'
 
   release:
     name: Create Release
