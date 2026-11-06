@@ -36,7 +36,8 @@ pub fn stop(process: &mut Child) {
 /// persisted puts live) and `$BEACHCOMBER_SOCKET` (= `sock`), with
 /// `RUST_LOG=error`, and `$KUBECONFIG` and `$TALOSCONFIG` removed, so nothing it runs can read or write the developer's real
 /// config, defaults, log or daemon; and put [`stub_bin`] first on its `PATH`,
-/// so no template it renders runs the developer's own tools.
+/// so no template it renders runs the developer's own tools. A coverage run's
+/// `$LLVM_PROFILE_FILE` is kept, even for a caller that cleared the rest.
 pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path, sock: &Path) -> &'a mut Command {
     let path = std::env::join_paths(std::iter::once(stub_bin().to_path_buf()).chain(
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
@@ -52,7 +53,15 @@ pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path, sock: &Path) -
         // The variables the shipped templates read (`kubecontext`, `talos`):
         // the developer's own name their real config files.
         .env_remove("KUBECONFIG")
-        .env_remove("TALOSCONFIG")
+        .env_remove("TALOSCONFIG");
+    // Under `cargo llvm-cov` an instrumented `comb` writes its profile where
+    // this names; a caller that cleared the environment would otherwise have
+    // it write `default_*.profraw` into its cwd, a file in a work tree a test
+    // reads.
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        cmd.env("LLVM_PROFILE_FILE", profile);
+    }
+    cmd
 }
 
 /// The tools the shipped files run through `exec()`, as stand-ins that have
