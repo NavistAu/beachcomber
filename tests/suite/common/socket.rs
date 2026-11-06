@@ -67,3 +67,42 @@ pub fn watches(sock: &Path) -> Vec<(String, Value)> {
         })
         .collect()
 }
+
+/// Write `body` to `path`, a file the memo at `cache_key` (`provider:cache.
+/// field`) watches, and wait until the daemon at `sock` has heard it: the
+/// memo's hash is gone. The watcher hands a change over a moment after it is
+/// made, and a hash dropped after the next read wrote a new memo makes the
+/// read after that run again: a count of runs would be one too many.
+#[allow(dead_code)]
+pub fn rewrite_watched(sock: &Path, cache_key: &str, path: &Path, body: &str) {
+    use crate::common::poll::poll_until;
+    use std::time::Duration;
+    let memo = || ask(sock, serde_json::json!({"op": "get", "key": cache_key}))["data"].clone();
+    // Every path the memo names is watched first, so the write is an event.
+    poll_until(
+        &format!("{cache_key} and introspect watches"),
+        "a hash, and each path the memo watches Active",
+        Duration::from_secs(10),
+        Duration::from_millis(5),
+        || (memo(), watches(sock)),
+        |(memo, watched)| {
+            memo.get("hash").is_some()
+                && memo["watch"].as_array().is_some_and(|paths| {
+                    paths.iter().all(|p| {
+                        watched.iter().any(|(w, state)| {
+                            Some(w.as_str()) == p.as_str() && state["state"] == "active"
+                        })
+                    })
+                })
+        },
+    );
+    std::fs::write(path, body).unwrap();
+    poll_until(
+        cache_key,
+        "the memo's record without its hash",
+        Duration::from_secs(10),
+        Duration::from_millis(5),
+        memo,
+        |memo| memo.get("hash").is_none(),
+    );
+}

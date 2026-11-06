@@ -4,10 +4,11 @@
 //! command ran is what each test asserts.
 //!
 //! The daemon runs in this process, and nothing of the memo's lifecycle is
-//! awaited: a read that runs the command again found the change itself.
+//! awaited, but for a write that more reads follow: a read that runs the
+//! command again found the change itself.
 
 use crate::common::daemon::TestDaemon;
-use crate::common::socket::IsolatedSocket;
+use crate::common::socket::{IsolatedSocket, rewrite_watched};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::Output;
@@ -109,11 +110,13 @@ fn a_cached_leaf_runs_its_command_once() {
 
 /// The reader stamps the watched file: its appearing, and each rewrite, are a
 /// new hash, so the next read runs the command, whatever the daemon has heard.
+/// The first write is heard before the reads after it, so its late event
+/// cannot drop the memo the next read stores; the last read ends the test.
 #[test]
 fn a_change_to_a_watched_file_runs_it_again() {
     let c = cached();
     c.ok(&["get", "p.f"]);
-    std::fs::write(c.home.join("state"), "1").unwrap();
+    rewrite_watched(&c.d.socket.path, "p:cache.f", &c.home.join("state"), "1");
     c.ok(&["get", "p.f"]);
     c.ok(&["get", "p.f"]);
     assert_eq!(c.runs("x"), 2);
