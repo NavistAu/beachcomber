@@ -3,9 +3,12 @@
 //! stand-in `kubectl` and `talosctl` that log themselves to `$COMB_STUB_LOG`.
 
 use super::{Scenario, scenario};
+use crate::common::poll::poll_until;
+use crate::common::socket::{ask, watches};
 use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// A scenario, and a `bin/` of stand-in tools beside its home: `kubectl`
 /// answers `ctx-1` and the namespace `ns-1`; `talosctl` answers the JSON of a
@@ -83,6 +86,47 @@ impl Tools {
     fn home(&self) -> &Path {
         &self.s.daemon.home
     }
+
+    /// The record of the memo of `kubecontext.context` (`:cache`).
+    fn memo(&self) -> Value {
+        let get = json!({"op": "get", "key": "kubecontext:cache.context"});
+        ask(&self.s.daemon.socket.path, get)["data"].clone()
+    }
+
+    /// Write `body` to `path`, a file the memo watches, and wait until the
+    /// daemon has heard it: the memo's hash is gone. The watcher hands a
+    /// change over a moment after it is made, and a hash dropped after the
+    /// next read wrote a new memo makes the read after that run again.
+    fn rewrite(&self, path: &Path, body: &str) {
+        let sock = &self.s.daemon.socket.path;
+        // Every path the memo names is watched first, so the write is an event.
+        poll_until(
+            "the memo and introspect watches",
+            "a hash, and each path the memo watches Active",
+            Duration::from_secs(10),
+            Duration::from_millis(5),
+            || (self.memo(), watches(sock)),
+            |(memo, watched)| {
+                memo.get("hash").is_some()
+                    && memo["watch"].as_array().is_some_and(|paths| {
+                        paths.iter().all(|p| {
+                            watched.iter().any(|(w, state)| {
+                                Some(w.as_str()) == p.as_str() && state["state"] == "active"
+                            })
+                        })
+                    })
+            },
+        );
+        std::fs::write(path, body).unwrap();
+        poll_until(
+            "kubecontext:cache.context",
+            "the memo's record without its hash",
+            Duration::from_secs(10),
+            Duration::from_millis(5),
+            || self.memo(),
+            |memo| memo.get("hash").is_none(),
+        );
+    }
 }
 
 /// The second read of a context runs nothing.
@@ -114,10 +158,10 @@ fn kubecontext_runs_again_when_kubeconfig_changes() {
     assert_eq!(t.runs().len(), 2, "another KUBECONFIG");
     get(&both);
     assert_eq!(t.runs().len(), 2);
-    std::fs::write(&b, "contexts: []").unwrap();
+    t.rewrite(&b, "contexts: []");
     get(&both);
     assert_eq!(t.runs().len(), 3, "a file of the list appeared");
-    std::fs::write(&b, "contexts: [one]").unwrap();
+    t.rewrite(&b, "contexts: [one]");
     get(&both);
     assert_eq!(t.runs().len(), 4, "a file of the list was rewritten");
     get(&both);
