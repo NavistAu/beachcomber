@@ -5,407 +5,308 @@ title: Configuration Reference
 
 # Configuration Reference
 
-beachcomber runs with sensible defaults and requires no configuration. The optional config file lives at `~/.config/beachcomber/config.toml`.
-
-```toml
-# ~/.config/beachcomber/config.toml
-
-# ─── Daemon ────────────────────────────────────────────────────────────────────
-
-[daemon]
-
-# Override the Unix socket path.
-# Default resolution order: BEACHCOMBER_SOCKET env var →
-#          /tmp/beachcomber-<uid>/sock
-# socket_path = "/path/to/socket.sock"
-
-# Log level for daemon output.
-# Options: "error", "warn", "info", "debug", "trace"
-# Default: "info"
-# Logs go to: $XDG_STATE_HOME/beachcomber/daemon.log
-log_level = "info"
-
-# Maximum time (in seconds) to wait for any provider to complete.
-# Providers that exceed this are cancelled; the last good cached value is retained.
-# Default: 10
-provider_timeout_secs = 10
-
-# Path to an environment file loaded at daemon startup.
-# Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
-# These vars are available to ${VAR} expansion in HTTP headers, script commands, etc.
-# Default: ~/.config/beachcomber/env (loaded automatically if present)
-# env_file = "~/.config/beachcomber/env"
-
-# How often the watchdog checks the scheduler heartbeat.
-# If the heartbeat hasn't advanced within the threshold, the daemon shuts down
-# for the process supervisor (launchd, systemd) to restart.
-# Default: disabled (no watchdog)
-# watchdog_interval = "30s"
-
-# How long the heartbeat can be stale before the watchdog triggers shutdown.
-# Default: 3x watchdog_interval
-# watchdog_threshold = "90s"
-
-
-# ─── Lifecycle ─────────────────────────────────────────────────────────────────
-
-[lifecycle]
-
-# Base polling interval used while an entry is in Active state (P in the
-# cache lifecycle model). See docs/cache-lifecycle.md.
-# Default: "60s"
-poll_interval = "60s"
-
-# Keep-alive count in polls (K in the cache lifecycle model). An Active
-# entry stays warm for K × poll_interval seconds after the last demand
-# signal, then enters the exponential decay ladder (Decay1..4, each step
-# doubling interval and duration) until eviction.
-# Default: 12
-poll_live_count = 12
-
-# Whether an fsevent during decay reinstates the entry to Active.
-# When set, overrides all per-source defaults. When unset (default),
-# each source uses its own declared default (true for Watch/WatchAndPoll
-# sources that benefit from it, false for Poll-only sources).
-# Default: unset (each source uses its own default)
-# fsevents_reinstate = true
-
-# How long (in seconds) the daemon waits with no active connections before
-# shutting itself down. The next client connection will socket-activate a
-# fresh instance.
-# Set to null to disable idle shutdown (daemon stays resident permanently).
-# Default: null (disabled — daemon stays resident)
-# idle_shutdown_secs = 300
-
-
-# ─── Failback (failure suppression) ────────────────────────────────────────────
-
-[failback]
-
-# Consecutive failures before suppression (provider stops executing).
-# Default: 3
-# count = 3
-
-# Duration of suppression after count failures.
-# Default: "1s"
-# interval = "1s"
-
-
-# ─── Built-in Provider Overrides ───────────────────────────────────────────────
-# Provider config uses per-source nesting: [providers.<name>.<source>]
-# The source name matches the source field carried per row in `comb status`'s
-# wire response. Use [providers.<name>] only for whole-provider switches (e.g. enabled).
-
-# Key reference for per-source blocks:
-#
-# type              string    Strategy: "poll", "fsevent", "fsevent_poll"
-# scope             string    "path" or "global" (informational for built-ins)
-# poll_interval     duration  Poll interval (poll, fsevent_poll)
-# poll_count        integer   Keep-alive polls before decay (poll, fsevent_poll)
-# fsevent_patterns  [string]  Relative path components to watch (fsevent, fsevent_poll)
-# fsevent_abs_paths [string]  Absolute roots to watch (fsevent, fsevent_poll)
-# fsevent_lifespan  duration  Keep-alive duration before decay (fsevent, path-scoped)
-# fsevent_reinstates bool     Whether watches survive decay. Default true.
-# failback_count    integer   Consecutive failures before suppression
-# failback_interval duration  Suppression duration after failback_count hit
-# enabled           bool      When false, source never executes. Default true.
-
-# Disable a provider entirely (it will never execute or appear in results)
-[providers.conda]
-enabled = false
-
-# Override the git.diff source to poll more frequently
-[providers.git.diff]
-poll_interval = "15s"         # default: "30s"
-poll_count = 24               # keep-alive = 24 × 15s = 6 min
-
-# Make git.refs reinstate faster from decay
-[providers.git.refs]
-fsevent_reinstates = true     # .git fsevent during decay reinstates to Active
-fsevent_lifespan = "600s"     # stay warm for 10 min after last query
-
-# Slow down battery polling (less important on desktop)
-[providers.battery.state]
-poll_interval = "60s"         # default: "30s"
-poll_count = 4
-
-# Override network polling interval
-[providers.network.interfaces]
-poll_interval = "30s"         # default: "10s"
-
-
-# ─── Custom Script Providers ───────────────────────────────────────────────────
-# Define your own providers backed by any executable.
-
-# Minimal: a global provider that polls every 30 seconds
-[providers.docker_context]
-command = "docker context show"
-output = "text"         # single-line output becomes { "value": "<output>" }
-# or use output = "json" for structured output: { "key": value, ... }
-# or use output = "kv" for key=value line format
-
-[providers.docker_context.invalidation]
-poll = "30s"
-
-# A path-scoped provider that watches a file and has a poll fallback
-[providers.node_version]
-command = "node --version"
-output = "text"
-scope = "path"          # scoped to a directory; path argument required
-
-[providers.node_version.invalidation]
-watch = [".node-version", ".nvmrc", "package.json"]
-poll = "60s"            # safety-net poll in case filesystem events are missed
-
-# A provider with structured JSON output
-[providers.cargo_meta]
-command = "cargo metadata --format-version=1 --no-deps --quiet"
-output = "json"         # parse stdout as JSON object; top-level keys become fields
-scope = "path"
-
-[providers.cargo_meta.invalidation]
-watch = ["Cargo.toml", "Cargo.lock"]
-poll = "120s"
-
-# Explicitly disable a custom provider without removing its config
-[providers.my_slow_thing]
-command = "my-slow-script"
-enabled = false
-
-
-# ─── HTTP Providers ──────────────────────────────────────────────────────────
-# Fetch data directly from REST APIs — no curl fork, no shell spawning.
-# Uses in-process HTTP client with connection reuse.
-
-# Basic: poll a status API
-[providers.service_status]
-type = "http"
-url = "https://status.anthropic.com/api/v2/summary.json"
-extract = "status"              # dot-path into the JSON response
-                                # e.g., response.status.indicator → provider field "indicator"
-
-[providers.service_status.invalidation]
-poll = "60s"
-
-# With auth headers (env vars expanded at runtime)
-[providers.github_rate]
-type = "http"
-url = "https://api.github.com/rate_limit"
-headers = { Authorization = "Bearer ${GITHUB_TOKEN}" }
-extract = "rate"                # extracts { "limit": 5000, "remaining": 4999, ... }
-
-[providers.github_rate.invalidation]
-poll = "30s"
-
-# Infrequent poll (daily)
-[providers.exchange_rate]
-type = "http"
-url = "https://api.exchangerate-api.com/v4/latest/USD"
-extract = "rates.AUD"           # extracts a single nested value
-
-[providers.exchange_rate.invalidation]
-poll = "86400s"
-```
-
-### Per-field scope
-
-Script and library providers can declare scope per field. The provider-level
-`scope` acts as the default; individual fields can override.
-
-```toml
-[providers.mixed]
-type = "script"
-command = "/usr/bin/myscript --json"
-scope = "path"
-
-[providers.mixed.fields.branch]
-type = "string"
-# inherits provider-level "path"
-
-[providers.mixed.fields.status]
-type = "string"
-scope = "global"   # override — always cached globally
-```
-
-Back-compat: `fields = { branch = "string" }` continues to parse. All fields
-inherit the provider-level `scope`.
-
-Library providers (.so / .dylib) use the same per-field scope model in their
-JSON metadata:
-
-```json
-{
-  "fields": {
-    "branch": {"type": "string", "scope": "path"},
-    "system": {"type": "string", "scope": "global"}
-  }
-}
-```
-
-### Virtual fields
-
-A **virtual field** is a value expression computed client-side over `env.*`, `cache.*`, and other fields' resolved values — it need not have a cached value of its own. Declare one under `[providers.<name>]` as a dotted `virtual.<field>` key:
-
-```toml
-[providers.myapp]
-virtual.region = "{{ env.AWS_REGION or cache.aws_profiles[env.AWS_PROFILE or \"default\"].region }}"
-
-[providers.git]
-virtual.summary = "{{ git.branch }}{% if git.dirty %}*{% endif %}"
-```
-
-`myapp.region` is a single `{{ expr }}` tag spanning the whole value, so it keeps the expression's natural type (here, whatever type the indexed `region` field is — typically a string, but a boolean or number cascades the same way). `git.summary` is not a single tag — it carries several, and the `{% if %}`/`{% endif %}` pair are `{% %}` statements rather than `{{ }}` expressions — so it is a template, and always string-valued. Either fact disqualifies it on its own: only exactly one `{{ }}` tag spanning the whole value takes the typed path, and the `*` here is literal text inside the `if`, not around the tags.
-
-A value expression may also be written **bare** — no `{{ }}` at all (`env.AWS_REGION or cache.aws_profiles[...].region`) — which is equivalent to the single-tag form and stays accepted for backward compatibility. `{{ }}` is the documented form; `comb init --write-config` materialises the built-in virtual fields into `~/.config/beachcomber/config.toml` in this form.
-
-### `exec()` in virtual fields
-
-A `virtual.<field>` expression can call `exec()` to shell out to a script and use its output as the field's value:
-
-```toml
-[providers.myapp]
-virtual.deploy_tag = "{{ exec(\"git\", \"describe\", \"--tags\", \"--always\") }}"
-```
-
-| | |
-|---|---|
-| Signature | `exec(cmd, arg1, arg2, ..., timeout_ms=10000, stdin=none)` |
-| Spawn | argv only — no shell. `cmd` and each positional become one argv entry; no interpolation, no `\|`/`&&`/redirection. |
-| Argument coercion | string → itself; bool → `"true"`/`"false"`; number → its canonical string form; `undefined`/`none`, a sequence, or a map → error (structured data goes through `stdin=` instead) |
-| `timeout_ms` | keyword, default `10000` |
-| `stdin` | keyword, default none; must be a string — `\| tojson` first for structured data |
-| Output | stdout, lossy-UTF-8, at most one trailing newline stripped; capped at 1 MiB (an oversized stdout is a failure, not a truncation) |
-| Failure | non-zero exit / timeout / oversized stdout / spawn failure → eval error naming the command, with truncated stderr attached |
-| Availability | `comb eval` and `comb get` only — evaluation is always client-side, never on the daemon. Disabled (`exec() is disabled in this context`) in path expressions, formatting surfaces (`-f fmt`, `watch -f fmt`, the status formatter), and the FFI/SDK surface (`bc_eval`/`bc_resolve`) |
-
-A whole-namespace `comb get <provider>` evaluates every virtual field in that provider in sequence, so several `exec()`-backed fields under one provider can serialise up to N × `timeout_ms` in the worst case — pass an explicit, low `timeout_ms` when the consumer is latency-sensitive (a shell prompt or statusline).
-
-See [CLI Commands](/docs/reference/cli-commands) for the expression-level reference and more examples.
-
-### Composition / conf.d
-
-Config can be split across multiple files using the `conf.d` convention —
-no `include =` directive needed. Any `*.toml` file placed in
-`~/.config/beachcomber/conf.d/` is composed onto `config.toml` automatically:
+Every configuration key, table by table. comb needs no configuration to run. [Configuration](../concepts/configuration.md)
+explains how the pieces fit; [Custom Providers](../custom-providers/overview.md) shows how to use them.
+
+Every duration below takes the one grammar in [CLI Commands: Durations](./cli-commands.md#durations) (`250ms`, `30s`,
+`1m30s`, a bare number of seconds; in TOML an integer is seconds too). Every error names its file and table, in the form
+`config(<file>): …`.
+
+## Files and composition
+
+| File | Written by | Layer |
+|---|---|---|
+| `~/.config/beachcomber/defaults/*.toml` | the daemon: the shipped providers, headed `# Managed by comb <version>` | lowest, in lexical order |
+| `~/.config/beachcomber/config.toml` | you; optional | over `defaults/` |
+| `~/.config/beachcomber/conf.d/*.toml` | you | over `config.toml`, in lexical order |
+| `~/.config/beachcomber/env` | you | not TOML: the [env file](#daemon) |
+
+`~/.config/beachcomber` is `$XDG_CONFIG_HOME/beachcomber`; `$XDG_CONFIG_DIRS` is not read.
+
+- Each file is deep-merged onto the ones before it: tables merge key by key, and a scalar or array from a later file
+  replaces the earlier one whole.
+- A file that is not valid TOML is an error, never skipped: the daemon refuses to start on it and `comb check config`
+  fails.
+- The daemon rewrites a `defaults/` file when its version changes; set the key in your own file rather than editing it.
+  A file in `defaults/` that comb did not write is a warning in `comb check config`. A `defaults/` directory the daemon
+  cannot write is a refusal to start.
+- `comb check config --origins [KEY]` shows each key, the file that set it, and each file it overrode (`shadowed`).
 
 ```
 ~/.config/beachcomber/
+├── defaults/          # git.toml, battery.toml, aws.toml, 00-comb.toml, ...
 ├── config.toml
-└── conf.d/
-    ├── 10-scanline.toml
-    └── 20-overrides.toml
+├── conf.d/
+│   ├── 10-mine.toml
+│   └── 20-overrides.toml
+├── plugins/           # default [daemon.plugin] path
+└── env
 ```
 
-Composition rules:
+### Reloading
 
-- Files in `conf.d/` are merged in **lexical filename order** (a numeric
-  prefix like `10-`, `20-` is a common way to control that order).
-- Each file is **deep-merged** onto the accumulated config: tables merge key
-  by key (a drop-in overriding one key of `[providers.x]` doesn't clobber the
-  rest of that block), while scalars and arrays are **last-wins** (the last
-  file to set a given key or array wins outright — arrays are replaced, not
-  concatenated).
-- `config.toml` itself is optional; `conf.d/*.toml` files compose fine with
-  no main file present.
-- A `conf.d` file that fails to parse is **skipped** (with a warning naming
-  the file) rather than blocking daemon startup — the rest of the composed
-  set still loads.
-- Config changes take effect via **automatic daemon restart** — no manual
-  restart, no in-place reload. Changes to `config.toml` or any `conf.d/*.toml`
-  file (including files added or removed) trigger the daemon's config
-  self-watch, which restarts only once the *whole* composed set parses
-  cleanly; an edit that doesn't parse is ignored with a logged warning.
+The daemon watches every file above. An edit takes effect once the whole composed set loads; one that does not is
+ignored, logged, and shown by `comb check config`, and the previous configuration keeps serving.
 
-## Config field summary
+| An edit to | Takes effect by |
+|---|---|
+| anything under `[daemon.providers]` or `[client.providers]` | reloading in place, within seconds; puts are untouched |
+| a bare `[daemon]` key or `[daemon.plugin]` | restarting the daemon, automatically |
+| the env file | `comb kill`; the next read starts a daemon that loads it |
 
-**`[daemon]` section:**
+On an in-place reload, a Source whose `root`, `data` or `result` changed is evicted and runs on its next read; one whose
+schedule changed keeps its records and takes the new schedule; every other Source is untouched. Plugin libraries stay
+loaded.
 
-| Field | Type | Default | Description |
+## Roots
+
+A file has two top-level tables. Anything else at the top level is an error.
+
+| Table | Holds |
+|---|---|
+| `[daemon]` | the daemon's settings, `[daemon.plugin]` and `[daemon.providers]` |
+| `[client]` | `[client.providers]`: what clients render (templates, macros) |
+
+`[providers]`, `[lifecycle]`, `[failback]` and `[tree]` are errors that say where their contents moved.
+
+## `[daemon]`
+
+| Key | Type | Default | Meaning |
 |---|---|---|---|
-| `socket_path` | string | (see resolution order) | Unix socket path. Resolution order: this key → `BEACHCOMBER_SOCKET` env var → `/tmp/beachcomber-<uid>/sock` |
-| `log_level` | string | `"info"` | Tracing log level |
-| `provider_timeout_secs` | int | `10` | Max seconds for any provider to run |
-| `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
-| `watchdog_interval` | duration or null | `null` (disabled) | How often the watchdog checks scheduler liveness |
-| `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
+| `socket_path` | path | `$BEACHCOMBER_SOCKET`, else `/tmp/beachcomber-<uid>/sock` | The Unix socket. The CLI's `--socket` beats it |
+| `log_level` | `off` `error` `warn` `info` `debug` `trace` | `info` | Log level. Logs go to `$XDG_STATE_HOME/beachcomber/daemon.log` |
+| `timeout` | duration, ≥ 1ms | `10s` | How long one run of a Source may take, for every Source whose `return` has no `timeout(...)` |
+| `budget` | duration, ≥ 1ms | `50ms` | How long a read of an out-of-date record waits for its Source's run before answering with what is stored, for every Source whose `return` has no `budget(...)` |
+| `env_file` | path | `env` beside `config.toml` | `KEY=VALUE` lines loaded into the daemon's environment at startup; blanks and `#` comments skipped, one pair of quotes stripped |
+| `idle_shutdown` | duration, whole seconds, ≥ 1s | unset: stay resident | How long with no client before the daemon exits; the next client starts a new one |
+| `watchdog_interval` | duration, whole seconds, ≥ 1s | unset: no watchdog | How often the watchdog checks the scheduler's heartbeat |
+| `watchdog_threshold` | duration, whole seconds | 3 × `watchdog_interval` | How stale the heartbeat may get before the daemon exits for its supervisor to restart. Needs an interval and may not be below it |
 
-**`[lifecycle]` section:**
+A path may start `~/` (`~user` is an error) and may not be empty. Any other key is an error. Removed keys name their
+replacement: `provider_timeout_secs` is `timeout`, `idle_shutdown_secs` is `idle_shutdown`, the `[daemon.budget]` table
+is `budget`.
 
-| Field | Type | Default | Description |
+```toml
+[daemon]
+log_level = "debug"
+timeout = "30s"
+idle_shutdown = "30m"
+env_file = "~/.secrets/comb.env"
+```
+
+## `[daemon.plugin]`
+
+| Key | Type | Default | Meaning |
 |---|---|---|---|
-| `poll_interval` | duration | `"60s"` | Base polling interval `P` used in Active state |
-| `poll_live_count` | int | `12` | Keep-alive count `K` in polls (see `docs/cache-lifecycle.md`) |
-| `fsevents_reinstate` | bool or null | `null` (unset — per-source defaults apply) | Global override for fsevent-during-decay policy; unset means each source uses its own default |
-| `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down |
+| `path` | list of directories, each absolute or `~/` | `["<config dir>/plugins"]` | Where `plugin(name, …)` looks for `lib<name>.dylib` or `lib<name>.so`, in order. A later file's list replaces the earlier one |
 
-> `cache_lifespan`, `poll_idle_interval`, and `poll_live_interval` have been removed. Cache warmth is now `poll_interval × poll_live_count`; the decay ladder plus `fsevents_reinstate` replaces the single idle rate. Legacy configs parse cleanly — the daemon emits a `WARN` log at startup for each deprecated key.
+```toml
+[daemon.plugin]
+path = ["~/.local/lib/beachcomber", "/opt/beachcomber/plugins"]
+```
 
-> Duration strings use whole-second values: `"30s"` (seconds), `"2m"` (minutes), `"1h"` (hours), `"2h30m"` (compound). Sub-second values (e.g. `"500ms"`) are not accepted.
+See [Shared-library plugins](../custom-providers/plugins.md).
 
-**`[failback]` section:**
+## `[daemon.providers.<p>]`
 
-Global failure-suppression defaults. These apply to all providers and sources unless overridden at the per-source level with `failback_count`/`failback_interval`.
+One table per provider. `<p>` names a provider, or is `_`, the **abstract provider** whose lines every provider without
+its own takes.
 
-| Field | Type | Default | Description |
+| Key | Type | Default | Meaning |
 |---|---|---|---|
-| `count` | int | `3` | Consecutive failures before suppression (provider stops executing until interval elapses) |
-| `interval` | duration | `"1s"` | Suppression duration after `count` failures |
+| `sources.<s>` | table | none | A Source ([below](#daemonproviderspsourcess)) |
+| `enabled` | bool | `true` | `false` switches the provider off ([below](#enabled)). Not on `_` |
+| `template` | jinja line | from `_` | Builds the provider's `:template` facet from `[client]` |
+| `result` | jinja line | from `_` | What the provider holds at a directory, from its Sources |
+| `return` | jinja line | from `_` | What a read of the provider answers |
+| `cache._.decay` | integer, 1 to 16 | 4 (from `_`) | Backoff steps an unread entry takes before eviction. Seeded as `<p>:cache._.decay`; on `_`, every provider's |
 
-> `[lifecycle] failure_reattempts` and `[lifecycle] failure_backoff_interval` are deprecated aliases for `[failback] count` and `[failback] interval`. They still parse but emit a `WARN` log at startup.
+Any other key is an error. A provider exists once either root names it, even with no Sources.
 
-**`[providers.<name>]` section (built-in overrides):**
+```toml
+[daemon.providers.kv]
+return = "{{ result | merge({'label': 'kv'}) | super }}"
 
-Only `enabled` is valid directly under `[providers.<name>]` for built-in providers. Source knobs belong in a per-source sub-table: `[providers.<name>.<source>]`.
+[daemon.providers.kv.cache._]
+decay = 2
+```
 
-| Field | Type | Default | Description |
+### Provider lines
+
+The shipped abstract provider, in `defaults/00-comb.toml`:
+
+```toml
+[daemon.providers._]
+template = "{{ client.providers[_.name].template }}"
+result   = "{{ merge(sources) }}"
+return   = "{{ result | facet('template', template) }}"
+```
+
+| Line | Runs | Sees | Gives |
 |---|---|---|---|
-| `enabled` | bool | `true` | Set `false` to disable provider entirely |
+| `template` | when facets are seeded, once per file | `client` (that file's `[client]` tree), `_` | a table of template leaves: the `:template` facet |
+| `result` | on a read, at each directory it reaches | `sources`, `daemon`, `_` | the provider's data there. `merge(sources)` merges every Source's record; `sources.<s>()` is one Source's |
+| `return` | once per read | `result`, `template`, `daemon`, `_` | the answer. `\| facet('template', template)` attaches the template half |
 
-**`[providers.<name>.<source>]` section (built-in source overrides):**
+- `_.name` is the provider the line applies to.
+- An absent line is `_`'s, whole. `| super` on `return` pipes into `_`'s `return`; on `template` or `result` it is an
+  error.
+- The lines run on every read and do no IO: `exec`, `read`, `lup`, `url`, `plugin` and the schedule decorators are load
+  errors in them.
+- Under any `result` or `return` other than the shipped ones, a field read runs every Source of the provider.
+- With the default `result`, two Sources of one provider may not declare the same field. A `result` that names them,
+  `merge(sources.a(), sources.b())`, chooses the order, and the last wins.
+- A line that fails to render makes the read a miss, logged once.
+- `facet(name, value)` takes `template`, `macro`, `memo`, `put`, `source` or `cache`; only `template` is read off a
+  `return`.
 
-| Field | Type | Default | Description |
+### `enabled`
+
+```toml
+[daemon.providers.battery]
+enabled = false
+```
+
+| Effect | |
+|---|---|
+| reads | a miss: no data and no template half. `<p>:template` is still readable by name, and puts under `<p>` still read |
+| Sources | none is run, polled, watched or kept warm, built-in ones included |
+| `comb refresh <p>` | error `nothing to refresh: <p> is disabled` |
+| `comb get --force <p>` | error |
+| a call of one of its Sources from another line | `none`; not a load error |
+| `comb check providers` | `disabled` |
+| `result`, `return` on the same provider | not used (still checked at load) |
+
+It is a bool, and a later file may set `true` again. A table holding only `enabled` for a name no provider has is an
+error (`no provider is named 'gti'`).
+
+## `[daemon.providers.<p>.sources.<s>]`
+
+A Source. `<s>` is a name, or `_` for a **prototype**: `[daemon.providers.<p>.sources._]` gives defaults to every Source
+of `<p>`, and `[daemon.providers._.sources._]` to every Source of every provider. A prototype is never a Source itself.
+
+| Line | Type | Required | Sees | Meaning |
+|---|---|---|---|---|
+| `root` | jinja line | no | `env`, `_` | The directory an instance answers for, usually `{{ lup('<marker>') \| dirname }}`. Empty or none: one instance at `~`. Under `nearest`, none means no instance |
+| `data` | jinja line | yes | `env`, `comb`, `sources`, `daemon`, `_`, and any provider by name | The body, run in the daemon with the root as working directory. Can call every engine function, `exec`, `url` and `plugin` included |
+| `result` | jinja line, or a table of them | yes | `data`, `_` | `result = "{{ data }}"` makes the whole value the provider's node; `result.<field> = "…"` declares fields one by one |
+| `return` | jinja line | no | `result`, `_` | The schedule: `result` piped through [decorators](#return-decorators) |
+
+- `env` is the daemon's environment, env file included. `comb.<p>` reads another provider as a `get` would.
+  `sources.<s>()` calls a sibling Source, `daemon.providers.<p>.sources.<s>()` any provider's; a Source cannot call
+  itself.
+- In `data`, a provider is also read by its plain name, `{{ git.branch }}`, and means the same as `comb.git.branch`:
+  the value the daemon stores. The line's own words (`env`, `comb`, `sources`, `daemon`, `_`) win over a provider of
+  the same name; `comb.<p>` still reads it.
+- A name in `data` that no provider has, or that only a client template gives (the daemon never renders one), is a
+  load **warning**, since a `put` may yet supply it. In the other lines, a name the line does not see is a load error,
+  not a silent `none`.
+- An absent line is the nearest prototype's. `| super` on `return` pipes into the next prototype's `return`; a
+  decorator the nearer line sets wins.
+- The shipped default is `[daemon.providers._.sources._] return = "{{ result | poll('60s', 12) | failback('1s', 3) }}"`.
+- Any other key is an error.
+
+The functions and filters `data` and `result` can call are in the [Template Library](./template-library.md); `url()`'s
+arguments are in [From an HTTP API](../custom-providers/from-an-http-api.md#url-arguments). `cache()`, and `watch()` and
+`ttl()` as filters, are client-template items and a load error here.
+
+```toml
+[daemon.providers.pkg.sources.main]
+root = "{{ lup('package.json') | dirname }}"
+data = "{{ 'package.json' | read | fromjson }}"
+result.name = "{{ data.name }}"
+result.version = "{{ data.version }}"
+return = "{{ result | watch('package.json') | poll('5m') | nearest }}"
+```
+
+### `return` decorators
+
+A `return` line must decorate `result`. Arguments are constants; a decorator takes no keyword arguments. A later call of
+one decorator in a line replaces an earlier one.
+
+| Decorator | Arguments | Default | Meaning |
 |---|---|---|---|
-| `poll_interval` | duration | inherited from `[lifecycle]` | Override base poll rate `P` |
-| `poll_count` | int | inherited from `[lifecycle]` | Override keep-alive count `K` |
-| `fsevent_reinstates` | bool | per-source default | Override fsevent-during-decay policy |
-| `fsevent_patterns` | array of strings | per-source default | Relative path components to watch |
-| `fsevent_abs_paths` | array of strings | per-source default | Absolute roots to watch |
-| `fsevent_lifespan` | duration | per-source default | Keep-alive duration before decay (path-scoped fsevent sources) |
-| `failback_count` | int | inherited from `[failback]` | Consecutive failures before suppression |
-| `failback_interval` | duration | inherited from `[failback]` | Suppression duration after failback_count hit |
+| `poll(interval, count)` | interval: whole seconds, 1s to 1 year; count: 1 to 10000 | count 12 | Re-run every `interval` while read; after `count` runs unread, start decaying |
+| `watch(path, …)` | one or more non-empty paths | | Re-run when a path changes. Relative to the root; `/`, `~` or `$` start an absolute path; `'.'` is the whole root; `'!dir'` leaves `dir` out of `'.'` (needs `'.'`) |
+| `ttl(interval)` | as `poll`'s interval | | `poll(interval, 1)` with a decay of 1: the value expires. Not with `poll` |
+| `failback(interval, count)` | interval first, as a string (`'1s'`); count 1 to 10000 | `'1s', 3` | After `count` failures in a row, retry from `interval`, doubling |
+| `budget(d)` | duration ≥ 1ms; a number is whole seconds | `[daemon] budget` | How long a read waits for this Source's run |
+| `timeout(d)` | duration ≥ 1ms | `[daemon] timeout` | How long one run may take |
+| `nearest` | none | off | The nearest instance answers alone; no fallback up the directory chain |
+| `super` | none | | Continue with the next prototype's `return` |
 
-**`[providers.<name>]` section (custom script providers):**
+`watch` and `poll` together re-run on either. A Source with neither runs on its first read and keeps that value until
+`comb refresh` or eviction. A decorator on a provider's own line is a load error.
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `command` | string | yes | Shell command to execute |
-| `output` | string | no | `"json"` (default), `"kv"`, or `"text"` |
-| `scope` | string | no | `"global"` (default) or `"path"` |
-| `enabled` | bool | no | `false` to disable |
-| `invalidation.poll` | string | no | Poll interval as duration string (`"30s"`, `"2m"`) |
-| `invalidation.watch` | array of strings | no | File/directory patterns to watch |
+```toml
+return = '''{{ result
+  | watch('.', '!.git')
+  | poll('30s', 4)
+  | failback('60s', 3)
+  | budget('100ms')
+  | nearest }}'''
+```
 
-**`[providers.<name>]` section (HTTP providers):**
+## `[client.providers.<p>]`
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `type` | string | yes | Must be `"http"` |
-| `url` | string | yes | URL to fetch. Supports `${ENV_VAR}` expansion. |
-| `method` | string | no | HTTP method: `"GET"` (default), `"POST"`, `"PUT"` |
-| `headers` | table | no | HTTP headers. Values support `${ENV_VAR}` expansion. |
-| `body` | string | no | Request body (for POST/PUT) |
-| `extract` | string | no | Dot-separated path into the JSON response (e.g., `"status.indicator"`, `"rates.AUD"`) |
-| `enabled` | bool | no | `false` to disable |
-| `invalidation.poll` | string | no | Poll interval (default `"60s"`) |
+What clients render. The daemon stores these and never evaluates them.
 
-**`[providers.<name>]` section (shared library providers):**
+| Key | Type | Meaning |
+|---|---|---|
+| `template.<leaf>` | string, or a table of them | A template, seeded as `<p>:template.<leaf>`. Nested tables are groups |
+| `macro.<name>` | string | A [macro library](./macros.md), seeded as `<p>:macro.<name>` |
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `type` | string | yes | Must be `"library"` |
-| `library_path` | string | yes | Path to `.so`/`.dylib` file. Supports `~/` expansion. |
-| `scope` | string | no | `"global"` (default) or `"path"` — overrides library metadata |
-| `fields` | table | no | Field name to type mapping — overrides library metadata |
-| `enabled` | bool | no | `false` to disable |
-| `invalidation.poll` | string | no | Poll interval — overrides library metadata |
-| `invalidation.watch` | array of strings | no | Watch patterns — overrides library metadata |
+Any other key in `[client]` or `[client.providers.<p>]` is an error.
+
+```toml
+[client.providers.prompt.template]
+project = "{{ pkg.name ~ '@' ~ pkg.version if pkg.version else none }}"
+
+[client.providers.prompt.template.widgets]
+mode = "{{ env.THEME_MODE or 'dark' }}"
+```
+
+### Template leaves
+
+| Written as | Evaluates to |
+|---|---|
+| exactly one `{{ expr }}` | the expression's own type; `none` or undefined is absent |
+| statements, then one `{{ expr }}`, only whitespace between | the expression's own type |
+| text and/or more than one tag | a string |
+| no tags | its literal text |
+
+- A leaf that is not a string or a table is an error. A leaf that does not compile is an error, and nothing of that
+  file's tree for `<p>` is seeded.
+- A leaf that reads a name nothing supplies is a warning, not an error: a `put` may create that provider later.
+- A template at the same path as a cached field wins on read.
+- A later file replaces one leaf, or one macro library, and keeps its siblings.
+
+The language is in [Templates](../concepts/templates.md) and the [Template Library](./template-library.md).
+
+## Names
+
+A provider name, a Source name, a template leaf and a macro name follow one rule:
+
+- no `:`, `.`, `[`, `]` or `*`, and not starting with `/`, `~` or `<`;
+- not empty; a quoted key holding a `.` (`"a.b" = …`) is one name, read as `t['a.b']`;
+- not `env`, `comb`, `_` or `*` as a provider name.
+
+A dotted key (`template.glyph = …` under `[client.providers.p]`) cannot add to a table a
+`[client.providers.p.template.…]` header already created; TOML forbids it. Write such keys under the
+`[client.providers.p.template]` header instead.
+
+## Errors
+
+The daemon at startup, a reload and `comb check config` check the same rules and report every mistake at once, each
+naming its file and table:
+
+```
+  [FAIL] local    config(~/.config/beachcomber/conf.d/96-bad.toml): [daemon.providers.p.sources.s] return: failback(): takes the interval first, as a string like '1s', then the count: failback('1s', 3)
+  [FAIL] local    config(~/.config/beachcomber/conf.d/96-bad.toml): [daemon.providers.q.sources.s] result.x: cache(): a client template's filter; a Source's records are the daemon's
+  [FAIL] local    config(~/.config/beachcomber/conf.d/96-bad.toml): unknown key 'other' in [client.providers.r]
+  [FAIL] local    config(~/.config/beachcomber/conf.d/96-bad.toml): unknown key 'bogus' in [daemon]
+  [FAIL] local    config(~/.config/beachcomber/conf.d/96-bad.toml): [daemon] budget must be a duration of at least 1ms ("50ms", "2s"), got 0
+  [WARN] local    config(~/.config/beachcomber/conf.d/96-bad.toml): [client.providers.r] template.ok: unknown name 'gti' (this line sees env, comb, …)
+```
+
+A `FAIL` stops the daemon starting, or a reload applying. A `WARN` loads.

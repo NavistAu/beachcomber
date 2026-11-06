@@ -1,73 +1,63 @@
-use beachcomber::provider::Provider;
-use beachcomber::provider::battery::BatteryProvider;
-use beachcomber::provider::gcloud::GcloudProvider;
-use beachcomber::provider::git::GitProvider;
-use beachcomber::provider::hostname::HostnameProvider;
-use beachcomber::provider::kubecontext::KubecontextProvider;
-use beachcomber::provider::load::LoadProvider;
-use beachcomber::provider::network::NetworkProvider;
-use beachcomber::provider::uptime::UptimeProvider;
-use beachcomber::provider::user::UserProvider;
+use beachcomber::provider::registry::ProviderRegistry;
 use criterion::{Criterion, criterion_group, criterion_main};
 
-/// Run every Source declared by `provider` once at `path` and return their results.
-/// Mirrors what the scheduler's per-source dispatch does on a refresh.
-fn execute_all_sources<P: Provider>(provider: &P, path: Option<&str>) -> Vec<usize> {
-    provider
-        .sources()
+/// Every run of `provider`'s shipped Sources once at `path`, one after another:
+/// the fields each answered.
+fn execute_all_sources(provider: &str, path: &str) -> impl FnMut() -> Vec<usize> {
+    let registry = ProviderRegistry::shipped(&std::env::vars().collect());
+    let sources: Vec<_> = registry
+        .provider_sources(provider)
+        .unwrap_or_else(|| panic!("{provider} is shipped"))
         .iter()
-        .map(|s| s.execute(path).fields.len())
-        .collect()
+        .map(|meta| registry.source(provider, &meta.name).expect("registered"))
+        .collect();
+    let path = path.to_string();
+    move || {
+        sources
+            .iter()
+            .map(|s| s.execute(Some(&path)).unwrap().fields.len())
+            .collect()
+    }
+}
+
+/// One run of the shipped Source `provider.source` at the instance at `~`,
+/// as the scheduler runs it: its lines over the daemon's environment.
+fn bench_shipped_source(c: &mut Criterion, provider: &str, source: &str) {
+    let registry = ProviderRegistry::shipped(&std::env::vars().collect());
+    let s = registry
+        .source(provider, source)
+        .unwrap_or_else(|| panic!("{provider}.{source} is shipped"));
+    c.bench_function(&format!("provider_{provider}_execute"), |b| {
+        b.iter(|| {
+            criterion::black_box(s.execute(None).unwrap().fields.len());
+        })
+    });
 }
 
 fn bench_hostname_execute(c: &mut Criterion) {
-    let p = HostnameProvider;
-    c.bench_function("provider_hostname_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "hostname", "host");
 }
 
 fn bench_user_execute(c: &mut Criterion) {
-    let p = UserProvider;
-    c.bench_function("provider_user_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "user", "name");
 }
 
 fn bench_load_execute(c: &mut Criterion) {
-    let p = LoadProvider;
-    c.bench_function("provider_load_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "load", "loadavg");
 }
 
 fn bench_uptime_execute(c: &mut Criterion) {
-    let p = UptimeProvider;
-    c.bench_function("provider_uptime_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "uptime", "time");
 }
 
 fn bench_git_execute(c: &mut Criterion) {
-    // Use the beachcomber repo itself as the target. GitProvider declares
-    // three sources (refs / diff / status); benchmark fires all of them.
-    let repo_path = env!("CARGO_MANIFEST_DIR");
-    let p = GitProvider;
+    // The beachcomber repo itself: its five Sources, one after another, through
+    // the shipped file and the compiled-in plugin.
+    let mut run = execute_all_sources("git", env!("CARGO_MANIFEST_DIR"));
 
     c.bench_function("provider_git_execute", |b| {
         b.iter(|| {
-            criterion::black_box(execute_all_sources(
-                &p,
-                Some(criterion::black_box(repo_path)),
-            ));
+            criterion::black_box(run());
         })
     });
 }
@@ -77,12 +67,9 @@ fn bench_git_vs_raw(c: &mut Criterion) {
     let mut group = c.benchmark_group("git_comparison");
 
     group.bench_function("beachcomber_git_provider", |b| {
-        let p = GitProvider;
+        let mut run = execute_all_sources("git", repo_path);
         b.iter(|| {
-            criterion::black_box(execute_all_sources(
-                &p,
-                Some(criterion::black_box(repo_path)),
-            ));
+            criterion::black_box(run());
         })
     });
 
@@ -101,39 +88,15 @@ fn bench_git_vs_raw(c: &mut Criterion) {
 }
 
 fn bench_network_execute(c: &mut Criterion) {
-    let p = NetworkProvider;
-    c.bench_function("provider_network_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "network", "interfaces");
 }
 
 fn bench_battery_execute(c: &mut Criterion) {
-    let p = BatteryProvider;
-    c.bench_function("provider_battery_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
-}
-
-fn bench_kubecontext_execute(c: &mut Criterion) {
-    let p = KubecontextProvider;
-    c.bench_function("provider_kubecontext_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "battery", "state");
 }
 
 fn bench_gcloud_execute(c: &mut Criterion) {
-    let p = GcloudProvider;
-    c.bench_function("provider_gcloud_execute", |b| {
-        b.iter(|| {
-            criterion::black_box(execute_all_sources(&p, None));
-        })
-    });
+    bench_shipped_source(c, "gcloud_configs", "config_dir");
 }
 
 criterion_group!(
@@ -146,7 +109,6 @@ criterion_group!(
     bench_git_vs_raw,
     bench_network_execute,
     bench_battery_execute,
-    bench_kubecontext_execute,
     bench_gcloud_execute,
 );
 criterion_main!(benches);

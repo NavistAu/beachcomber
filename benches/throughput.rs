@@ -6,6 +6,8 @@ use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use libbeachcomber::resolve::{Inputs, Slot, resolve};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tempfile::TempDir;
@@ -24,7 +26,7 @@ impl TestServer {
         let sock = tmp.path().join("bench.sock");
 
         let cache = Arc::new(Cache::new());
-        let registry = Arc::new(ProviderRegistry::with_defaults());
+        let registry = Arc::new(ProviderRegistry::shipped(&std::env::vars().collect()));
         let config = Config::default();
 
         let (handle, scheduler) = Scheduler::new(
@@ -77,11 +79,21 @@ fn bench_concurrent_throughput(c: &mut Criterion) {
                             let sock = sock.clone();
                             let counter = Arc::clone(&counter);
                             handles.push(tokio::spawn(async move {
-                                let client = Client::new(sock);
-                                // Each client does 10 gets.
+                                let mut session = Client::new(sock).connect().unwrap();
+                                let env = HashMap::new();
+                                let inputs = Inputs {
+                                    cwd: "/",
+                                    env: &env,
+                                    slot: Slot::Global,
+                                    force: false,
+                                    wait: libbeachcomber::Wait::Budget,
+                                    allow_exec: true,
+                                    now: std::time::SystemTime::now(),
+                                };
+                                // Each client does 10 gets, as `comb get` does.
                                 for _ in 0..10 {
-                                    if let Ok(resp) = client.get("hostname.name", None)
-                                        && resp.ok
+                                    if let Ok(Some(_)) =
+                                        resolve("hostname.name", &inputs, &mut session)
                                     {
                                         counter.fetch_add(1, Ordering::Relaxed);
                                     }

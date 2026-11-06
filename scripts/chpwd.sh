@@ -1,5 +1,5 @@
 #!/bin/sh
-# beachcomber chpwd hook — poke path-scoped providers on directory change.
+# beachcomber chpwd hook — poke rooted providers on directory change.
 # Warms git, mise, terraform, python, direnv, asdf caches before the first
 # prompt renders in a new directory.
 #

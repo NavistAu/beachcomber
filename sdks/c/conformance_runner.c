@@ -28,9 +28,8 @@
  *     "description": "...",
  *     "setup": [ { "op": "put", "args": {...} } ],
  *     "test":  { "op": "get",  "args": {...} },
- *     "virtual": { "provider.field": "expr" },   // resolve/eval fixtures only
- *     "env": { "VAR": "value" },                 // resolve/eval fixtures only
- *     "cwd": "/some/path",                       // resolve/eval fixtures only
+ *     "env": { "VAR": "value" },                 // get/eval/watch fixtures only
+ *     "cwd": "/some/path",                       // get/eval/watch fixtures only
  *     "expect": {
  *       "status": "hit"|"miss"|"ok"|"error",
  *       "data_type": "string"|"number"|"bool"|"object"|"array"|"null",
@@ -38,8 +37,6 @@
  *       "data_as_text": "...",
  *       "data_contains_field": "...",
  *       "data_field_equals": { "field": "...", "value": <json> },
- *       "age_ms_present": true|false,
- *       "stale": true|false,
  *       "error_contains": "..."
  *     }
  *   }
@@ -61,6 +58,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <poll.h>
 
 /* -------------------------------------------------------------------------
  * Limits and constants
@@ -69,8 +67,7 @@
 #define MAX_FIXTURES     256
 #define MAX_FIXTURE_SZ   (128 * 1024)
 #define SOCK_PATH_MAX    256
-#define STARTUP_RETRIES  30
-#define STARTUP_SLEEP_US 100000  /* 100 ms */
+#define STARTUP_TIMEOUT_MS 3000  /* for the daemon to say it serves */
 #define CLIENT_TIMEOUT_MS 5000   /* socket read/write timeout per op */
 #define WATCH_TIMEOUT_MS  3000   /* bc_watch_next budget for the initial event */
 
@@ -102,15 +99,14 @@ static void report_skip(const char *name, const char *op) {
     g_skip++;
 }
 
-/* Every op the fixture format defines is implemented directly over the ABI
- * (bc_resolve and bc_eval give us the two client-side ops, "resolve" and
- * "eval"). Kept as an explicit allow-list, rather than assuming, so a future
+/* Every op the fixture format defines is implemented directly over the ABI.
+ * Kept as an explicit allow-list, rather than assuming, so a future
  * op the ABI doesn't yet cover skips loudly instead of crashing into a
  * NULL. */
 static int op_supported(const char *op) {
     static const char *supported[] = {
         "hello", "get", "refresh", "put", "status", "context", "watch",
-        "introspect", "resolve", "eval", NULL
+        "introspect", "eval", NULL
     };
     for (int i = 0; supported[i]; i++) {
         if (strcmp(op, supported[i]) == 0) return 1;
@@ -220,8 +216,8 @@ static int collect_fixtures(const char *dir,
 
 /*
  * serialise_node: serialise a parsed json_node_t back into a malloc'd JSON
- * string. Used to turn fixture "data" (put), "env" and "virtual" (resolve)
- * blocks into the JSON text bc_put / bc_resolve expect.
+ * string. Used to turn fixture "data" (put) and "env" (resolve/eval) blocks
+ * into the JSON text bc_put / bc_get / bc_eval expect.
  */
 static char *serialise_node(const json_node_t *node) {
     if (!node) return NULL;
@@ -390,22 +386,6 @@ static int nodes_equal(const json_node_t *a, const json_node_t *b) {
 }
 
 /* -------------------------------------------------------------------------
- * Envelope helpers
- * ---------------------------------------------------------------------- */
-
-/* Returns 1 if a bc_* envelope string's top-level "ok" is true, 0 otherwise
- * (including on a NULL or unparseable envelope). */
-static int envelope_ok(const char *json) {
-    if (!json) return 0;
-    json_node_t *root = json_parse(json);
-    if (!root) return 0;
-    json_node_t *ok = json_get(root, "ok");
-    int result = ok && ok->type == JSON_BOOL && ok->val.boolean;
-    json_free(root);
-    return result;
-}
-
-/* -------------------------------------------------------------------------
  * Daemon lifecycle
  * ---------------------------------------------------------------------- */
 
@@ -438,48 +418,61 @@ static daemon_proc_t spawn_daemon(const char *bin, const char *sock_path) {
      * fixture. */
     fflush(NULL);
 
+    /* The daemon writes a newline on this pipe (`--ready-fd`) once it serves
+     * its socket, and closes it unwritten if it exits first. */
+    int ready[2];
+    if (pipe(ready) != 0) return dp;
+
     pid_t pid = fork();
-    if (pid < 0) return dp;
+    if (pid < 0) {
+        close(ready[0]);
+        close(ready[1]);
+        return dp;
+    }
 
     if (pid == 0) {
+        close(ready[0]);
         /* Child: exec the daemon with the temp socket path */
         /* Suppress daemon output */
         freopen("/dev/null", "w", stdout);
         freopen("/dev/null", "w", stderr);
 
+        /* The daemon writes its managed defaults under $XDG_CONFIG_HOME on
+         * start (falling back to $HOME/.config) and its log under
+         * $XDG_STATE_HOME: all three point at the socket's per-run directory,
+         * never the user's. */
+        char config_dir[SOCK_PATH_MAX];
+        snprintf(config_dir, sizeof(config_dir), "%s", sock_path);
+        char *slash = strrchr(config_dir, '/');
+        if (slash) *slash = '\0';
+        setenv("XDG_CONFIG_HOME", config_dir, 1);
+        setenv("HOME", config_dir, 1);
+        char state_dir[SOCK_PATH_MAX + 16];
+        snprintf(state_dir, sizeof(state_dir), "%s/.local/state", config_dir);
+        setenv("XDG_STATE_HOME", state_dir, 1);
+
         char sock_arg[SOCK_PATH_MAX + 16];
         snprintf(sock_arg, sizeof(sock_arg), "--socket=%s", sock_path);
-        execl(bin, bin, "daemon", sock_arg, NULL);
+        char ready_arg[32];
+        snprintf(ready_arg, sizeof(ready_arg), "--ready-fd=%d", ready[1]);
+        execl(bin, bin, "daemon", sock_arg, ready_arg, NULL);
         /* exec failed */
         _exit(127);
     }
 
-    /* Parent: wait for the socket to appear and answer a hello. */
+    /* Parent: wait for the daemon to say it serves. */
+    close(ready[1]);
     dp.pid = pid;
     snprintf(dp.sock_path, sizeof(dp.sock_path), "%s", sock_path);
 
-    for (int i = 0; i < STARTUP_RETRIES; i++) {
-        usleep(STARTUP_SLEEP_US);
+    struct pollfd pfd = { .fd = ready[0], .events = POLLIN };
+    char said = 0;
+    int served = poll(&pfd, 1, STARTUP_TIMEOUT_MS) == 1
+              && read(ready[0], &said, 1) == 1 && said == '\n';
+    close(ready[0]);
+    if (served) return dp;
 
-        char opts[SOCK_PATH_MAX + 64];
-        build_options_json(opts, sizeof(opts), sock_path, 1000);
-        BcClient *probe = bc_client_new(opts);
-        char *resp = bc_hello(probe);
-        int ready = envelope_ok(resp);
-        bc_string_free(resp);
-        bc_client_free(probe);
-        if (ready) return dp;
-
-        /* Check if child died already */
-        int wstatus = 0;
-        pid_t wp = waitpid(pid, &wstatus, WNOHANG);
-        if (wp == pid) {
-            dp.pid = -1;
-            return dp;
-        }
-    }
-
-    /* Timed out */
+    /* It exited, or did not serve in time. */
     kill(pid, SIGTERM);
     waitpid(pid, NULL, 0);
     dp.pid = -1;
@@ -502,10 +495,52 @@ static void stop_daemon(daemon_proc_t *dp) {
  * ---------------------------------------------------------------------- */
 
 /*
- * default_cwd: the directory `resolve`/`eval` fixtures get when they don't
+ * The directory a get/eval/watch op reads at: the fixture's "cwd", else
+ * default_cwd.
+ */
+static const char *fixture_cwd(const json_node_t *fixture_root, const char *default_cwd) {
+    const char *cwd = json_as_str(json_get(fixture_root, "cwd"));
+    return cwd ? cwd : default_cwd;
+}
+
+/*
+ * The caller's environment a get/eval/watch op reads with, as the JSON text
+ * the ABI takes, or NULL for none. Caller frees.
+ */
+/*
+ * get_options: bc_get's options_json for a get op's args, malloc'd: `force`
+ * when it is true, and `wait` as the fixture gives it, for the library to
+ * read. NULL when there is neither.
+ */
+static char *get_options(const json_node_t *args) {
+    json_node_t *force = args ? json_get(args, "force") : NULL;
+    json_node_t *wait  = args ? json_get(args, "wait")  : NULL;
+    int forced = force && force->type == JSON_BOOL && force->val.boolean;
+    if (!forced && !wait) return NULL;
+    char *wait_json = wait ? serialise_node(wait) : NULL;
+    size_t n = 32 + (wait_json ? strlen(wait_json) : 0);
+    char *out = (char *)malloc(n);
+    if (out) {
+        snprintf(out, n, "{%s%s%s%s}",
+                 forced ? "\"force\":true" : "",
+                 forced && wait_json ? "," : "",
+                 wait_json ? "\"wait\":" : "",
+                 wait_json ? wait_json : "");
+    }
+    free(wait_json);
+    return out;
+}
+
+static char *fixture_env(const json_node_t *fixture_root) {
+    json_node_t *env_node = json_get(fixture_root, "env");
+    return (env_node && env_node->type == JSON_OBJECT) ? serialise_node(env_node) : NULL;
+}
+
+/*
+ * default_cwd: the directory `get`/`eval`/`watch` fixtures get when they don't
  * declare their own "cwd" — this run's shared per-run temp directory (real,
- * existing, but otherwise inert; path-expression fixtures that care about a
- * specific cwd always declare one explicitly).
+ * existing, but otherwise inert; fixtures that care about a specific cwd
+ * always declare one explicitly).
  */
 static char *run_op(BcClient *client, BcSession *session,
                      const json_node_t *op_node, const json_node_t *fixture_root,
@@ -525,12 +560,16 @@ static char *run_op(BcClient *client, BcSession *session,
     }
 
     if (strcmp(op_str, "get") == 0) {
-        uint32_t flags = 0;
-        json_node_t *force = args ? json_get(args, "force") : NULL;
-        json_node_t *wait  = args ? json_get(args, "wait")  : NULL;
-        if (force && force->type == JSON_BOOL && force->val.boolean) flags |= BC_GET_FORCE;
-        if (wait  && wait->type  == JSON_BOOL && wait->val.boolean)  flags |= BC_GET_WAIT;
-        return bc_session_get(session, key ? key : "", path, flags);
+        char *options_json = get_options(args);
+        /* cwd / env are fixture-level fields, not op args — see
+         * tests/conformance/README.md's "get" section. */
+        char *env_json = fixture_env(fixture_root);
+        char *result = bc_session_get(session, key ? key : "",
+                                      fixture_cwd(fixture_root, default_cwd), env_json,
+                                      options_json);
+        free(env_json);
+        free(options_json);
+        return result;
     }
 
     if (strcmp(op_str, "refresh") == 0) {
@@ -544,7 +583,8 @@ static char *run_op(BcClient *client, BcSession *session,
     if (strcmp(op_str, "put") == 0) {
         json_node_t *data_node = args ? json_get(args, "data") : NULL;
         char *data_json = data_node ? serialise_node(data_node) : strdup("null");
-        char *result = bc_session_put(session, key ? key : "", data_json, NULL, path);
+        bool persist = args && json_as_bool(json_get(args, "persist"), NULL);
+        char *result = bc_session_put(session, key ? key : "", data_json, NULL, path, persist);
         free(data_json);
         return result;
     }
@@ -570,55 +610,25 @@ static char *run_op(BcClient *client, BcSession *session,
     }
 
     if (strcmp(op_str, "watch") == 0) {
-        BcWatch *w = bc_watch_open(client, key ? key : "", path);
+        /* A watch is of the value: the same fixture-level cwd / env "get"
+         * takes, and every event is the value bc_get would answer. */
+        char *env_json = fixture_env(fixture_root);
+        BcWatch *w = bc_watch_open(client, key ? key : "",
+                                   fixture_cwd(fixture_root, default_cwd), env_json);
         char *result = bc_watch_next(w, WATCH_TIMEOUT_MS);
         bc_watch_free(w);
-        return result;
-    }
-
-    if (strcmp(op_str, "resolve") == 0) {
-        /* cwd / env / virtual are fixture-level fields, not op args — see
-         * tests/conformance/README.md's "resolve" section. */
-        const char *cwd = json_as_str(json_get(fixture_root, "cwd"));
-        if (!cwd) cwd = default_cwd;
-
-        json_node_t *env_node = json_get(fixture_root, "env");
-        char *env_json = (env_node && env_node->type == JSON_OBJECT)
-                              ? serialise_node(env_node)
-                              : NULL;
-
-        json_node_t *virtual_node = json_get(fixture_root, "virtual");
-        char *overrides_json = (virtual_node && virtual_node->type == JSON_OBJECT)
-                                    ? serialise_node(virtual_node)
-                                    : NULL;
-
-        char *result = bc_resolve(client, key ? key : "", cwd, env_json, overrides_json);
         free(env_json);
-        free(overrides_json);
         return result;
     }
 
     if (strcmp(op_str, "eval") == 0) {
-        /* Same fixture-level cwd / env / virtual as "resolve" — see
+        /* Same fixture-level cwd / env as "get" — see
          * tests/conformance/README.md's "eval" section. */
-        const char *cwd = json_as_str(json_get(fixture_root, "cwd"));
-        if (!cwd) cwd = default_cwd;
-
-        json_node_t *env_node = json_get(fixture_root, "env");
-        char *env_json = (env_node && env_node->type == JSON_OBJECT)
-                              ? serialise_node(env_node)
-                              : NULL;
-
-        json_node_t *virtual_node = json_get(fixture_root, "virtual");
-        char *overrides_json = (virtual_node && virtual_node->type == JSON_OBJECT)
-                                    ? serialise_node(virtual_node)
-                                    : NULL;
-
+        char *env_json = fixture_env(fixture_root);
         const char *template_str = args ? json_as_str(json_get(args, "template")) : NULL;
-        char *result = bc_eval(client, template_str ? template_str : "", cwd,
-                               env_json, overrides_json);
+        char *result = bc_eval(client, template_str ? template_str : "",
+                               fixture_cwd(fixture_root, default_cwd), env_json);
         free(env_json);
-        free(overrides_json);
         return result;
     }
 
@@ -647,8 +657,7 @@ static const char *stringify_scalar(const json_node_t *n, char *buf, size_t buf_
 static int is_known_expect_key(const char *key) {
     static const char *known[] = {
         "status", "data_type", "data_equals", "data_as_text",
-        "data_contains_field", "data_field_equals", "age_ms_present",
-        "stale", "error_contains",
+        "data_contains_field", "data_field_equals", "error_contains",
     };
     for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
         if (strcmp(key, known[i]) == 0) return 1;
@@ -657,7 +666,7 @@ static int is_known_expect_key(const char *key) {
 }
 
 static int check_expect(const char *name, const json_node_t *expect,
-                        const char *op_str, char *envelope_json) {
+                        char *envelope_json) {
     if (!expect) {
         report_pass(name);
         return 1;
@@ -687,6 +696,13 @@ static int check_expect(const char *name, const json_node_t *expect,
     int ok = ok_node && ok_node->type == JSON_BOOL && ok_node->val.boolean;
 
     const char *status = json_as_str(json_get(expect, "status"));
+
+    if (status && strcmp(status, "ok") != 0 && strcmp(status, "hit") != 0 &&
+        strcmp(status, "miss") != 0 && strcmp(status, "error") != 0) {
+        report_fail(name, "unknown expect status \"%s\"", status);
+        json_free(root);
+        return 0;
+    }
 
     if (status && strcmp(status, "error") == 0) {
         if (ok) {
@@ -719,20 +735,9 @@ static int check_expect(const char *name, const json_node_t *expect,
         return 0;
     }
 
-    /* Only "get" and "watch" (event outcome) wrap their payload as
-     * {"data":{"data":<value>,"age_ms":...,"stale":...}}; every other op's
-     * envelope "data" field IS the value. */
-    json_node_t *data = json_get(root, "data");
-    json_node_t *value = data;
-    json_node_t *age_node = NULL;
-    json_node_t *stale_node = NULL;
-    int is_nested = strcmp(op_str, "get") == 0 || strcmp(op_str, "watch") == 0;
-    if (is_nested && data && data->type == JSON_OBJECT) {
-        value = json_get(data, "data");
-        age_node = json_get(data, "age_ms");
-        stale_node = json_get(data, "stale");
-    }
-
+    /* Every op's envelope "data" field IS the value: a get's, an eval's and
+     * a watch event's alike. */
+    json_node_t *value = json_get(root, "data");
     int is_null = !value || value->type == JSON_NULL;
 
     if (status) {
@@ -820,37 +825,6 @@ static int check_expect(const char *name, const json_node_t *expect,
         }
     }
 
-    /* age_ms_present. A fresh hit legitimately has age_ms=0, so this checks
-     * key presence (age_node != NULL) rather than a truthy/nonzero value —
-     * combresult_to_json emits "age_ms" on both Hit and Miss. */
-    json_node_t *amp = json_get(expect, "age_ms_present");
-    if (amp && amp->type == JSON_BOOL) {
-        int want = amp->val.boolean;
-        int got = age_node != NULL;
-        if (want && !got) {
-            report_fail(name, "age_ms_present: expected age_ms to be present");
-            json_free(root);
-            return 0;
-        }
-        if (!want && got) {
-            report_fail(name, "age_ms_present: expected age_ms to be absent");
-            json_free(root);
-            return 0;
-        }
-    }
-
-    /* stale */
-    json_node_t *stale_expect = json_get(expect, "stale");
-    if (stale_expect && stale_expect->type == JSON_BOOL) {
-        int want = stale_expect->val.boolean;
-        int got = stale_node && stale_node->type == JSON_BOOL && stale_node->val.boolean;
-        if (want != got) {
-            report_fail(name, "stale: expected %d, got %d", want, got);
-            json_free(root);
-            return 0;
-        }
-    }
-
     report_pass(name);
     json_free(root);
     return 1;
@@ -921,11 +895,10 @@ static int run_fixture(const char *fixture_path,
     }
 
     json_node_t *test_node = json_get(root, "test");
-    const char *op_str = test_node ? json_as_str(json_get(test_node, "op")) : "";
     char *result = run_op(client, session, test_node, root, sock_dir);
 
     json_node_t *expect = json_get(root, "expect");
-    int passed = check_expect(name, expect, op_str, result);
+    int passed = check_expect(name, expect, result);
 
     bc_string_free(result);
     bc_session_close(session);

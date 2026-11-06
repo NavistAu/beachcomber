@@ -1,11 +1,11 @@
 //! Spawn engine backing the `exec()` jinja function, registered in
-//! `virtual_fields::build_expression_env`.
+//! `engine::build_engine_env`.
 //!
 //! [`run`] spawns one argv command in its own process group, writes+closes
 //! stdin, and drains stdout/stderr concurrently — each on its own thread —
 //! while the calling thread polls [`std::process::Child::try_wait`] against
 //! a deadline. The whole point is a *bounded* deadline: `run` must never
-//! block meaningfully longer than `timeout_ms` (plus a small fixed grace),
+//! block meaningfully longer than `timeout` (plus a small fixed grace),
 //! no matter what the child does. Three things threaten that, and the
 //! shape of this module is the fix for all three:
 //!
@@ -32,15 +32,14 @@
 //!   some descendant manages to escape the group (e.g. by calling
 //!   `setsid`), a `run` call still returns instead of hanging on it.
 //!
-//! Error strings returned here are plain text. They must never contain the
-//! substring `"compile error"` — `libbeachcomber-ffi::eval_error_kind`
-//! matches that substring to classify eval failures, and the
-//! `"expression eval error: "` / `"template render error: "` prefixes that
-//! wrap these messages on the eval path are added by the caller
-//! (`eval/mod.rs`), not here.
+//! Error strings returned here are plain text; the `"expression eval error: "`
+//! / `"template render error: "` prefixes that wrap them on the eval path are
+//! added by the caller (`eval/mod.rs`), not here.
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,12 +75,19 @@ const STDERR_RETENTION_BYTES: usize = STDERR_ERROR_BYTES * 4;
 /// dead; this is a defensive ceiling, not an expected wait.
 const READER_JOIN_GRACE: Duration = Duration::from_millis(300);
 
-/// A single argv command to spawn and drain.
+/// A single argv command to spawn and drain. The child's environment is
+/// exactly `env` (nothing is inherited from this process) and its working
+/// directory is `cwd` when set.
 pub(crate) struct ExecRequest<'a> {
     pub cmd: &'a str,
+    /// What failure messages call the command when `cmd` alone would
+    /// mislead (a script run as `sh -c`); `cmd` when `None`.
+    pub label: Option<&'a str>,
     pub args: &'a [String],
     pub stdin: Option<&'a str>,
-    pub timeout_ms: u64,
+    pub timeout: Duration,
+    pub env: &'a HashMap<String, String>,
+    pub cwd: Option<&'a Path>,
 }
 
 /// How the deadline loop broke.
@@ -101,24 +107,33 @@ enum Outcome {
 ///
 /// On success, stdout is decoded lossy-UTF-8 with at most one trailing `\n`
 /// (and a preceding `\r`, if present) stripped. On failure, the error names
-/// `req.cmd`, what happened (a non-zero exit status, a timeout, an oversized
+/// the command (`req.label`, else `req.cmd`), what happened (a non-zero exit status, a timeout, an oversized
 /// stdout, or the spawn `io::Error`), and stderr truncated to
 /// [`STDERR_ERROR_BYTES`].
 pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
-    let mut child = Command::new(req.cmd)
+    let name = req.label.unwrap_or(req.cmd);
+    let mut command = Command::new(req.cmd);
+    command
         .args(req.args)
+        .env_clear()
+        .envs(req.env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()
-        .map_err(|e| format!("`{}`: failed to spawn: {e}", req.cmd))?;
+        .process_group(0);
+    if let Some(cwd) = req.cwd {
+        command.current_dir(cwd);
+    }
+    let mut child = command.spawn().map_err(|e| match req.cwd {
+        Some(cwd) => format!("`{name}`: failed to spawn in {}: {e}", cwd.display()),
+        None => format!("`{name}`: failed to spawn: {e}"),
+    })?;
 
     // Computed immediately after spawn, before anything that could block —
     // in particular, before the stdin write (now threaded, see below), which
     // used to run synchronously right here and left the deadline blind to
     // however long it took.
-    let deadline = Instant::now() + Duration::from_millis(req.timeout_ms);
+    let deadline = Instant::now() + req.timeout;
     // `process_group(0)` makes the child its own group leader, so its pid
     // is also the process group id — the target for the group-wide kill
     // once we're done (see module doc).
@@ -213,21 +228,21 @@ pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
 
     match outcome {
         Outcome::Exited(status) if status.success() => {
-            stdout_outcome(stdout_result, req.cmd, &stderr_buf)
+            stdout_outcome(stdout_result, name, &stderr_buf)
         }
-        Outcome::Exited(status) => Err(failure_message(req.cmd, format!("{status}"), &stderr_buf)),
+        Outcome::Exited(status) => Err(failure_message(name, format!("{status}"), &stderr_buf)),
         Outcome::TimedOut => Err(failure_message(
-            req.cmd,
-            format!("timed out after {}ms", req.timeout_ms),
+            name,
+            format!("timed out after {}", crate::render::duration(req.timeout)),
             &stderr_buf,
         )),
         Outcome::Capped => Err(failure_message(
-            req.cmd,
+            name,
             format!("stdout exceeded {MAX_EXEC_STDOUT} bytes"),
             &stderr_buf,
         )),
         Outcome::WaitFailed(e) => Err(failure_message(
-            req.cmd,
+            name,
             format!("wait failed: {e}"),
             &stderr_buf,
         )),
@@ -361,13 +376,21 @@ fn truncate_lossy(bytes: &[u8], limit: usize) -> String {
 mod tests {
     use super::*;
 
+    /// The child gets only what it is handed, so tests hand it a PATH.
+    fn test_env() -> HashMap<String, String> {
+        HashMap::from([("PATH".to_string(), "/usr/bin:/bin".to_string())])
+    }
+
     #[test]
     fn echo_roundtrip_strips_trailing_newline() {
         let req = ExecRequest {
             cmd: "/bin/echo",
+            label: None,
             args: &["hello".to_string()],
             stdin: None,
-            timeout_ms: 1000,
+            timeout: Duration::from_millis(1000),
+            env: &test_env(),
+            cwd: None,
         };
         assert_eq!(run(&req).expect("echo should succeed"), "hello");
     }
@@ -376,9 +399,12 @@ mod tests {
     fn stdin_roundtrip_via_cat() {
         let req = ExecRequest {
             cmd: "cat",
+            label: None,
             args: &[],
             stdin: Some("round trip"),
-            timeout_ms: 1000,
+            timeout: Duration::from_millis(1000),
+            env: &test_env(),
+            cwd: None,
         };
         assert_eq!(run(&req).expect("cat should succeed"), "round trip");
     }
@@ -390,9 +416,12 @@ mod tests {
         // `stdin` is `None`, not left open until the child times out.
         let req = ExecRequest {
             cmd: "cat",
+            label: None,
             args: &[],
             stdin: None,
-            timeout_ms: 1000,
+            timeout: Duration::from_millis(1000),
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let out = run(&req).expect("cat should exit as soon as stdin closes");
@@ -413,9 +442,12 @@ mod tests {
         let payload = "x".repeat(256 * 1024);
         let req = ExecRequest {
             cmd: "cat",
+            label: None,
             args: &[],
             stdin: Some(&payload),
-            timeout_ms: 3000,
+            timeout: Duration::from_millis(3000),
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let out = run(&req).expect("cat should succeed");
@@ -432,13 +464,16 @@ mod tests {
         // `sleep` never reads stdin, so a 256 KiB payload (past the pipe
         // buffer) blocks the write until something reads it or the pipe
         // breaks. If the deadline were computed (or the write performed)
-        // before threading, this would time out at ~3s instead of ~200ms.
+        // before threading, this would time out at ~3s instead of ~50ms.
         let payload = "x".repeat(256 * 1024);
         let req = ExecRequest {
             cmd: "sh",
+            label: None,
             args: &["-c".to_string(), "sleep 3".to_string()],
             stdin: Some(&payload),
-            timeout_ms: 200,
+            timeout: Duration::from_millis(50),
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let err = run(&req).unwrap_err();
@@ -447,7 +482,7 @@ mod tests {
             "took {:?}",
             start.elapsed()
         );
-        assert!(err.contains("timed out after 200ms"), "{err}");
+        assert!(err.contains("timed out after 50ms"), "{err}");
     }
 
     #[test]
@@ -459,9 +494,12 @@ mod tests {
         // even though the command we asked for already finished.
         let req = ExecRequest {
             cmd: "sh",
+            label: None,
             args: &["-c".to_string(), "sleep 3 & echo started".to_string()],
             stdin: None,
-            timeout_ms: 200,
+            timeout: Duration::from_millis(200),
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let out = run(&req).expect("sh should succeed");
@@ -477,9 +515,12 @@ mod tests {
     fn nonzero_exit_error_carries_stderr() {
         let req = ExecRequest {
             cmd: "sh",
+            label: None,
             args: &["-c".to_string(), "echo boom >&2; exit 3".to_string()],
             stdin: None,
-            timeout_ms: 1000,
+            timeout: Duration::from_millis(1000),
+            env: &test_env(),
+            cwd: None,
         };
         let err = run(&req).unwrap_err();
         assert!(err.contains("sh"), "should name the command: {err}");
@@ -494,9 +535,12 @@ mod tests {
     fn spawn_failure_for_nonexistent_command() {
         let req = ExecRequest {
             cmd: "definitely-not-a-real-command-xyz",
+            label: None,
             args: &[],
             stdin: None,
-            timeout_ms: 1000,
+            timeout: Duration::from_millis(1000),
+            env: &test_env(),
+            cwd: None,
         };
         let err = run(&req).unwrap_err();
         assert!(err.contains("definitely-not-a-real-command-xyz"), "{err}");
@@ -506,9 +550,12 @@ mod tests {
     fn timeout_kills_child() {
         let req = ExecRequest {
             cmd: "sh",
+            label: None,
             args: &["-c".to_string(), "sleep 5".to_string()],
             stdin: None,
-            timeout_ms: 100,
+            timeout: Duration::from_millis(20),
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let err = run(&req).unwrap_err();
@@ -517,7 +564,7 @@ mod tests {
             "took {:?}",
             start.elapsed()
         );
-        assert!(err.contains("timed out after 100ms"), "{err}");
+        assert!(err.contains("timed out after 20ms"), "{err}");
     }
 
     #[test]
@@ -528,9 +575,12 @@ mod tests {
         // proves stdout and stderr are drained concurrently.
         let req = ExecRequest {
             cmd: "sh",
+            label: None,
             args: &["-c".to_string(), "head -c 2000000 /dev/zero".to_string()],
             stdin: None,
-            timeout_ms: 5000,
+            timeout: Duration::from_millis(5000),
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let err = run(&req).unwrap_err();
@@ -543,30 +593,33 @@ mod tests {
     }
 
     #[test]
-    fn cap_beats_a_tight_timeout() {
-        // Same oversized writer, but with a timeout so tight (100ms) that a
-        // buggy ordering (checking the deadline before the cap flag, or
-        // detecting the cap too slowly) could plausibly report a timeout
-        // instead. The cap must still win, and well within the 100ms
-        // budget itself.
+    fn the_cap_ends_a_run_that_would_otherwise_go_on() {
+        // The writer exceeds the cap at once and then would run for half a
+        // minute: only the cap can end it before the timeout, so a run that
+        // reports a timeout (or takes anything near one) is not acting on the
+        // cap as it is crossed. The timeout is generous so that load cannot
+        // bring the deadline forward of the cap.
         let req = ExecRequest {
             cmd: "sh",
-            args: &["-c".to_string(), "head -c 2000000 /dev/zero".to_string()],
+            label: None,
+            args: &[
+                "-c".to_string(),
+                "head -c 2000000 /dev/zero; sleep 30".to_string(),
+            ],
             stdin: None,
-            timeout_ms: 100,
+            timeout: Duration::from_millis(20_000),
+            env: &test_env(),
+            cwd: None,
         };
         let start = Instant::now();
         let err = run(&req).unwrap_err();
-        // The real assertion is which error wins (below); elapsed time is
-        // just a generous sanity check that this didn't fall back to
-        // waiting out some much larger timeout.
+        assert!(err.contains("exceeded"), "{err}");
+        assert!(!err.contains("timed out"), "{err}");
         assert!(
-            start.elapsed() < Duration::from_secs(1),
+            start.elapsed() < Duration::from_secs(15),
             "took {:?}",
             start.elapsed()
         );
-        assert!(err.contains("exceeded"), "{err}");
-        assert!(!err.contains("timed out"), "{err}");
     }
 
     #[test]

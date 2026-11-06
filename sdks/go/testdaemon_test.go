@@ -1,15 +1,14 @@
 package beachcomber_test
 
 import (
-	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
 
 	beachcomber "github.com/NavistAu/beachcomber/sdks/go"
+	"github.com/NavistAu/beachcomber/sdks/go/internal/testdaemon"
 )
 
 // This SDK now binds to libbeachcomber's C ABI (see ffi.go), so its unit
@@ -73,6 +72,11 @@ func requireBuiltArtifacts(t *testing.T) {
 	}
 }
 
+// testIOTimeoutMs is how long one read or write of a test's client may take.
+// The library's default (100ms) is a latency choice; these tests are about
+// correctness, and a loaded machine must not turn a slow answer into a failure.
+const testIOTimeoutMs = 30000
+
 // startDaemon starts a fresh comb daemon on a temp socket and returns the
 // socket path. The daemon is killed on test cleanup.
 func startDaemon(t *testing.T) string {
@@ -81,32 +85,21 @@ func startDaemon(t *testing.T) string {
 
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "sock")
-	cmd := exec.Command(combBin(), "daemon", "--socket", sock)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start daemon: %v", err)
+	cmd, err := testdaemon.Start(combBin(), sock, 30*time.Second)
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait()
-		}
-	})
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if conn, err := net.DialTimeout("unix", sock, 100*time.Millisecond); err == nil {
-			conn.Close()
-			return sock
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("daemon did not create socket within 5s at %s", sock)
-	return ""
+	t.Cleanup(func() { testdaemon.Stop(cmd) })
+	return sock
 }
 
 // requireClient starts a fresh daemon and returns a Client wired to it.
 func requireClient(t *testing.T) *beachcomber.Client {
 	t.Helper()
-	return beachcomber.NewClientWithPath(startDaemon(t))
+	c, err := beachcomber.NewClient(beachcomber.WithSocketPath(startDaemon(t)), beachcomber.WithTimeoutMs(testIOTimeoutMs))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c
 }

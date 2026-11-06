@@ -17,7 +17,7 @@ Each `comb g` call also signals demand to the daemon, which keeps the relevant p
 - The beachcomber daemon is running (`comb s` should return successfully)
 - tmux is installed and you have an active session
 
-If the daemon is not running, see the [Getting Started](../getting-started/quick-start.md) guide.
+If the daemon is not running, see the [Getting Started](../concepts/values-and-names.md) guide.
 
 ## Plain tmux setup
 
@@ -44,9 +44,9 @@ comb get <key> [path]         # equivalent long form
 
 `g` is the short form used throughout this guide — `g` is `get`, text is the default output format. See the [CLI reference](/docs/reference/cli-commands) for all shorthands.
 
-Global providers (battery, load, hostname, uptime, network) do not require a path. Path-scoped providers like `git` require a directory to query against.
+Providers with no root (battery, load, hostname, uptime, network) do not require a path. Rooted providers like `git` answer for a directory.
 
-**Important:** `#()` commands in the tmux status bar run in the tmux server process, not inside any pane. The server has no concept of the current pane's working directory. For path-scoped providers you must pass the path explicitly using tmux's own format variables:
+**Important:** `#()` commands in the tmux status bar run in the tmux server process, not inside any pane. The server has no concept of the current pane's working directory. For rooted providers you must pass the path explicitly using tmux's own format variables:
 
 ```
 #(comb g git.branch "#{pane_current_path}")
@@ -305,10 +305,10 @@ No changes to `.tmux.conf` are required at any point.
 ## Troubleshooting
 
 - **Status bar not updating:** check `tmux show -g status-interval`. If set to a large value or 0, reduce it: `tmux set -g status-interval 5`.
-- **Path-scoped providers empty in tmux:** `#()` runs in the tmux server process, not a pane. Verify tmux is expanding the path variable: `tmux display-message -p '#{pane_current_path}'`. The output should be the pane's working directory.
+- **Rooted providers empty in tmux:** `#()` runs in the tmux server process, not a pane. Verify tmux is expanding the path variable: `tmux display-message -p '#{pane_current_path}'`. The output should be the pane's working directory.
 - **oh-my-tmux changes not taking effect:** after editing `.tmux.conf.local`, run `tmux source-file ~/.tmux.conf` — oh-my-tmux re-reads the local file as part of sourcing the main config. Sourcing only `.tmux.conf.local` will not trigger the custom variable wiring.
 - **Custom functions not rendering:** oh-my-tmux's custom variable parser rejects function names starting with `_`. Use names like `comb_battery`, not `_comb_battery`.
 - **Battery bar not rendering:** the `_bar()` call requires `$TMUX_CONF` to be set (oh-my-tmux sets this automatically). If you see the status and percentage but no bar, check that the `cut -c3-` path is correct.
 - **SSH username/hostname showing local values:** verify `pgrep -P <pane_pid> ssh` detects the SSH process. If your SSH session is nested deeper in the process tree, the `pgrep -P` check may not find it and the function will use the local cache. The fallback (`|| cut -c3- ...`) ensures graceful degradation.
 
-See the [Troubleshooting](./troubleshooting.md) guide for general diagnostics.
+See the [Troubleshooting](../getting-started/troubleshooting.md) guide for general diagnostics.

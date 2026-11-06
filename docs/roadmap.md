@@ -6,13 +6,13 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 
 ### High Priority (next)
 
-- [ ] **Canon ↔ code ↔ docs reconciliation (correctness pass).** The 0.6.1 socket-resolution and Node-dist bugs were
-      both canon/docs-said-X / code-did-Y divergences, caught only by a partial README+website audit — which itself
+- [ ] **Code ↔ docs reconciliation (correctness pass).** The 0.6.1 socket-resolution and Node-dist bugs were
+      both docs-said-X / code-did-Y divergences, caught only by a partial README+website audit — which itself
       shipped errors needing a corrective second pass (`02115b2f`). Do a systematic walk of the project's line of truth
-      (`docs/canon/{cache-lifecycle,provider_source,singleton}.md` → test suite → code → `docs/protocol-spec.md` /
-      `docs/architecture.md` / `docs/performance.md` / `docs/status_ttl.md` / `docs/versioning.md` → README → website).
-      For each canon claim verify: (a) a test asserts it, (b) code matches the test, (c) docs/website describe the
-      actual behavior. Log every divergence in `docs/known-issues.md` with either a fix or an explicit, reasoned
+      (test suite → code → `docs/protocol-spec.md` / `docs/architecture.md` / `docs/performance.md` /
+      `docs/status_ttl.md` / `docs/versioning.md` → README → website).
+      For each documented claim verify: (a) a test asserts it, (b) code matches the test, (c) docs/website describe the
+      actual behavior. Settle every divergence with either a fix or an explicit, reasoned
       deferral. Goal: surface the next 0.6.1-class bug before a user does. Theme chosen 2026-05-29 in the post-0.6.1
       retro.
 
@@ -33,44 +33,17 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       integration could let the daemon precompute and cache these per-path env-derived values, turning those live reads
       back into cache hits where direnv is in play. Deferred until the env/cascade work lands; needs a way to ingest a
       directory's direnv-exported env and key the affected cache entries by `(path, that env)`.
-- [ ] **`watch` on a virtual provider: take the global-slot fallback.** `get` on a virtual provider reads the requested
-      path's slot if it holds an entry and the global one otherwise (canon `field_resolution.md` §"Path resolution");
-      `watch` deliberately does not. Its initial read is paired with a `watchers.subscribe` keyed by the same path, so
-      moving only the read would emit the global value once and then never update when that value changed — a first
-      value that silently goes stale, which is worse than the clean miss it returns today
-      (`tests/store.rs::watch_does_not_take_the_global_fallback` pins the current behavior). Doing this properly means
-      re-keying the subscription alongside the read, and deciding what happens when a path slot is later `put` into
-      while a watcher is subscribed to the global one — the watch should presumably switch slots and emit.
-- [ ] **`watch` support for computed fields.** The env/cascade design adds client-side **computed fields** (jinja
-      expressions over `env.*` + `provider.field`, evaluated in the CLI). v1 wires them into `comb get` and `comb eval`
-      only. `comb watch <computed.field>` is deferred — users will reasonably expect `watch python.version` to behave
-      like `get python.version`, so this needs a client-side re-evaluation loop driven by the underlying daemon fields'
-      changes (and a story for `env.*`, which the daemon can't watch). Pick up after the env/cascade P1 lands.
 - [ ] **`eval`'s "JSON null" ambiguity across conformance runners.** A daemon-fetched ref that resolves to JSON `null`
       is treated as data-present in the Rust and C conformance runners but as a miss in Node, Ruby, Lua and Python.
       Settle whether `eval` has a genuine "miss" notion distinct from "resolved to null", and pin the answer with a
       conformance fixture.
-- [ ] **A path-expression compile error is swallowed to `None`.** `path_expr::evaluate_path` returns
-      `Option<String>`, where `None` means "empty/falsy result ⇒ the global slot" (canon `field_resolution.md`
-      §"Path resolution"). A source that fails to compile takes the same `None` — so a typo in a config `path =`
-      silently collapses the provider to the global slot instead of reporting the syntax error. Both forms now
-      compile (`{{ }}` and bare), which removes the most common way to hit this, but the wart stands: the return
-      type needs to distinguish "no path" from "bad expression", and every caller (`comb get`'s resolution layer,
-      `bc_resolve`'s path-expression arm, the conformance runners) needs to surface it.
 - [ ] **Per-directory customization.** In tool-heavy directories the prompt drowns in `mise` tool/version output —
       there's no way to shape what comb feeds a given project's prompt. Two candidate mechanisms: (a) a computed
-      field (e.g. `tools_prompt`) that filters `mise.project` through an allowlist and the prompt pulls instead of the
+      field (e.g. `tools_prompt`) that filters the `mise` tools through an allowlist and the prompt pulls instead of the
       raw tool list — the env/cascade computed-fields work gives the expression machinery, but config is global today;
-      (b) a project config file (`.beachcomber.toml`?) carrying per-dir allowlists / virtual-field definitions — new
+      (b) a project config file (`.beachcomber.toml`?) carrying per-dir allowlists / template definitions — new
       discovery and trust surface, since config would come from arbitrary repos. Cross-references the env/cascade item
       above. The mise prompt-spam case is the acceptance test.
-- [ ] **Typed `EvalError` from `libbeachcomber::eval`.** `eval::evaluate` (and `VirtualFields::evaluate`) return a
-      plain `String` on failure; `libbeachcomber-ffi`'s `eval_error_kind` classifies `parse_error` vs `server_error` by
-      a substring check on `"compile error"`. Replace the `String` with a typed `EvalError { Compile, Eval, Render,
-      Cycle }` so the FFI (and any other caller) can match on the failure kind instead of parsing the message.
-      Exposing `exec()` on the FFI/SDK surface is blocked on this: an `exec()` failure message carries the child's
-      stderr verbatim, which can contain arbitrary text (including, incidentally, the substring `"compile error"`),
-      so string-substring classification is unsafe once exec-sourced messages can reach it.
 
 ### CLI Ergonomics
 
@@ -79,17 +52,10 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       read-time validity check timed out — `docs/superpowers/specs/2026-09-23-read-validity-design.md`). A flag
       could write that metadata to stderr while stdout stays the bare value. Flag name and stderr format open.
 - [ ] `comb inspect <path>` (working name) — dump every applicable provider's fields for the given directory in one
-      shot. Globals + path-scoped providers evaluated against the path; single command replaces "ask every provider one
+      shot. Every provider evaluated against the path; single command replaces "ask every provider one
       at a time". Useful for "what does beachcomber know about this dir right now?" as a diagnostic, onboarding, and
       integration-authoring tool. Format-aware output (json/text/human). Naming bikeshed: `inspect`, `dump`, `snapshot`,
       `all`, `info`.
-- [ ] **`comb status` shows the client view by default.** Status currently dumps raw daemon cache rows; a consumer
-      never sees those raw values — the client applies env overrides, cascades, and computed fields on top. Default
-      status should render what a client would actually resolve; `--raw` / `--daemon` (naming open) keeps today's
-      cache-truth view. Design wrinkle to settle first: client resolution is caller-env-relative while status spans
-      all cached paths — a per-shell env override applies to rows matching the caller's context but would be a lie
-      overlaid on other directories' rows; needs a rule (e.g. overlay only rows whose path matches the caller's
-      context). Depends on the env/cascade work.
 - [ ] `comb ui` — live TUI as a sister binary. `watch comb status` works but can't render nested-object values and has
       no interactivity; a proper TUI could add controls (force refresh, inspect lifecycle state, drill into a value).
       Keep TUI dependencies out of `comb` itself: separate `comb-ui` binary, dispatched git-style (`comb ui` execs
@@ -107,8 +73,8 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
   - [ ] this could also be project path specific in the case of docker-compose files perhaps?
 - [ ] `brew` provider — count of outdated packages. Global, poll (daily). Extend pattern to other package managers:
       `apt`, `dnf`/`yum`, `apk`, `pacman`.
-- [ ] have claude-scanline make a virtual provider that injects the usage stats in as cached values every time it gets
-      hit.
+- [ ] have claude-scanline `put` the usage stats into a static namespace every time it gets hit, so they read back as
+      cached values.
 
 ### Performance Validation
 
@@ -126,12 +92,12 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 - [ ] We should do a llm/agent md page in the website that gives a compact token efficient summary of the tool for llm
       purposes. this is different to llm.txt which is more for training datasets and marketing.
   - [ ] Is there any possible utility in making a beachcomber skill/plugin?
-- [ ] Fun examples — copy-paste script provider recipes for the website. Show beachcomber as a general-purpose cached
+- [ ] Fun examples — copy-paste config Source recipes for the website. Show beachcomber as a general-purpose cached
       data layer, not just a devtools daemon. Practical: local weather, quote of the day, today's Wordle number,
       countdown to next One Piece episode, ISS overhead pass, Hacker News top story, Spotify current track, Home
       Assistant entity state (front door lock, thermostat, lights via HA REST API). Weird/fun (not all committed, pick
       the best):
-  - Mercury Retrograde deploy guard — HTTP provider polling an astrology API, git pre-push hook refuses to push to
+  - Mercury Retrograde deploy guard — a Source polling an astrology API with `url()`, git pre-push hook refuses to push to
     production during retrograde. `mercury_yolo_mode = true` to override.
   - Don't Deploy On Friday — same pattern, simpler astrology. Block or warn on pushes to production branches after
     Thursday EOD.
@@ -146,7 +112,7 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
     height ÷ 17.78cm). Display as a literal string of 🍌 emoji. Utterly useless, deeply satisfying.
   - Claude token odometer — `wc -l` of Claude Code conversation history from the last 24 hours. Show in tmux/prompt as a
     rolling count of how much you've been talking to your AI pair programmer today.
-  - Magic 8-Ball deploy oracle — script provider that caches a random 8-ball response ("Outlook not so good", "Signs
+  - Magic 8-Ball deploy oracle — config Source that caches a random 8-ball response ("Outlook not so good", "Signs
     point to yes", etc.) and reshakes at random intervals. Git pre-push hook checks `comb get 8ball.sentiment` and
     blocks deploys on negative readings. Show the current reading in tmux. The universe has opinions about your release
     schedule.

@@ -1,6 +1,6 @@
 # `comb status` UX Redesign — TTL column
 
-**Status:** implemented 2026-04-24; extended 2026-08-23 — the TTL cell gained a humanized total time-to-eviction segment (`<lead> Ps×K (total) <indicator>`), the next-poll countdown moved to a dedicated POLL column placed before TTL, failing rows render `⚠ #N` with the retry countdown in POLL, and `$HOME` paths compact to `~` in the human preset. The rendering source of truth is now `src/cli/status_format.rs` and its pinned tests; the current legend is in `comb status --help`. The design below is the 2026-04-24 record and describes the pre-extension cell.
+**Status:** implemented 2026-04-24; extended 2026-08-23 — the TTL cell gained a humanized total time-to-eviction segment (`<lead> Ps×K (total) <indicator>`), the next-poll countdown moved to a dedicated POLL column placed before TTL, failing rows render `⚠ #N` with the retry countdown in POLL, and `$HOME` paths compact to `~` in the human preset. The rendering source of truth is now `src/cli/status_format.rs` and its pinned tests; the current legend is in `comb status --help`. The design below is the 2026-04-24 record and describes the pre-extension cell. Since 2026-10-26 (phase 4) an entry watches its files only while it is Active, so `fsevents_reinstate`, its filter, its column and the `⊙`/`+` indicator are gone: `∙`/`-` marks an entry that watches its files, and the record below of a reinstating indicator is history.
 
 **Source:** brainstorm session 2026-04-23/24, refined and approved 2026-04-24. Authoritative design directive from user: the `comb status` output must carry the full lifecycle story per row, render well under `watch(1)`, and let you watch entries evolve (fresh → stale, Active → Decay → eviction) live.
 
@@ -10,11 +10,11 @@ The five "Open micro-decisions" listed at the bottom of this document are resolv
 
 - **`◉` cell colouring:** the whole TTL cell shares the lifecycle colour, including the trailing indicator. (Overrides this doc's "Trailing `◉` / `F`: default color" line below.)
 - **Indicator capability gate:** `◉` renders only when `fsevents_reinstate=true` AND provider has Watch / WatchAndPoll capability.
-- **`CacheRow` discriminator:** new `Option<RowKind>` enum with `Lifecycle { decay, watches_files } | Once | Virtual | Transient`. The previous `decay: Option<u8>` field is removed (superseded; SDKs never exposed it).
+- **`CacheRow` discriminator:** new `Option<RowKind>` enum with `Lifecycle { decay, watches_files } | Once | Static | Transient`. The previous `decay: Option<u8>` field is removed (superseded; SDKs never exposed it).
 - **TSV/CSV/sh/minijinja:** mirror the data model — every `CacheRow` field is its own column/key; the synthesised `TTL` column is human-preset only.
 - **Failure indicator IN scope:** `★`→`⚠` swap when provider is in failure-suppress; row turns red. Cell *content* (P × K) unchanged. Backoff/retry data in cell content is roadmap-deferred.
 - **CLI:** `--no-color` removed in favour of `--color=auto|always|never`; `--max-width` default bumped 40→120, with new `auto` value (`terminal_size` crate); new `--filter=lifecycle:…`, `--filter=fsevents_reinstate:…`, `--sort=lifecycle`, `--sort=poll_interval`.
-- **Tests:** mirror `tests/status_shape.rs`'s hand-maintained `assert!(out.contains(...))` style; do not introduce `insta`.
+- **Tests:** mirror `tests/suite/status_shape.rs`'s hand-maintained `assert!(out.contains(...))` style; do not introduce `insta`.
 
 ## Goal
 
@@ -22,7 +22,7 @@ Make `watch -c 'comb status --color=always'` a first-class diagnostic view: you 
 
 ## Columns
 
-`PROVIDER PATH FIELD VALUE AGE TTL`
+`PROVIDER FIELD SOURCE VALUE PATH AGE POLL TTL`
 
 Dropped: `STALE` (folded into `AGE` color + absorbed into `TTL` semantics).
 
@@ -32,7 +32,7 @@ Encodes four per-entry lifecycle facts in one fixed-width column:
 
 - current lifecycle position (Active or which Decay step)
 - current poll interval `P` (scales with decay: `P × 2^step`)
-- keep-alive count `K` (provider-wide, constant across all steps — see `docs/cache-lifecycle.md`)
+- poll count (`poll_count`, `K`) (provider-wide, constant across all steps — see `docs/architecture.md` §5)
 - whether fs-event reinstatement is armed (`fsevents_reinstate` provider flag)
 
 ### Format
@@ -73,30 +73,26 @@ The glyph progression is visual: dot → dot with a ring around it (decoration =
 
 | Entry kind                              | TTL rendering |
 |-----------------------------------------|---------------|
-| `Once` providers (hostname/user/uname)  | `---`         |
-| Virtual / `comb put` entries            | `---`         |
+| Static / `comb put` entries            | `---`         |
 
 These still show a real `AGE`.
 
 ### Sample output
 
-Providers: `git` (P=60s, K=12, reinstate), `battery` (P=30s, K=4, no reinstate), `mise` (P=300s, K=6, reinstate), `hostname` (Once).
-
 ```
-PROVIDER  PATH       FIELD    VALUE      AGE     TTL
-git       /repo      branch   main       14s     ★   60s×12 ◉
-git       /repo      dirty    true       14s     ★   60s×12 ◉
-battery   -          percent  87         8s      ★   30s×04
-mise      /repo      version  2025.4.3   47m     1  480s×06 ◉
-hostname  -          short    artemis    3h      ---
+  PROVIDER  FIELD    SOURCE          VALUE    PATH     AGE   POLL  TTL
+  battery   percent  source(state)   87       ~       2s×0    27s  ★  30s×04 (2m)
+  git       branch   source(head)    main     ~/repo    2s      -  ★               ∙
+  git       dirty    source(status)  true     ~/repo  2s×0    57s  ★  60s×02 (2m)  ∙
+  hostname  short    source(host)    artemis  ~       2s×0  9m57s  ★ 600s×06 (1h)
 ```
 
 Reading:
-- `★   60s×12 ◉` → active, polls every 60s, K=12, file events reinstate.
-- `1  480s×06 ◉` → Decay3 (one step before Decay4), currently polling at 480s (8×P for mise's P=300s — yes, that's a typo-free misalignment: mise P=300s, Decay3 P=300×8=2400s, not 480s. See implementation note below).
-- `---` → no lifecycle (Once / virtual).
+- `★  60s×02 (2m)  ∙` → active, polls every 60s, K=2, about 2m to eviction if nothing reads it, watches its files while Active.
+- `★               ∙` → active and watch-only: no poll of its own.
+- `---` → no lifecycle (a static entry).
 
-**Implementation note on the mise example:** the sample row above uses 480 as illustrative; correct arithmetic for mise with P=300, Decay3 is P×2³=2400s. The implementation should compute the displayed P from the actual `PollTimer.interval` in the lifecycle registry — don't re-derive from base P + step.
+The displayed P is computed from the actual `PollTimer.interval` in the lifecycle registry, not re-derived from base P + step.
 
 ### Coloring
 
@@ -119,7 +115,7 @@ Unchanged from today's rendering logic, plus color:
 - Humanized (`14s`, `2m`, `1h23m`) — keep current `format_age` output.
 - Color: green when fresh (`age_ms < expected_interval`), amber when stale.
 - No prefix (the earlier F/S proposal is dropped — countdown in TTL carries the "is this fading?" signal; stale color covers "poll overdue").
-- Age is shown unconditionally, including for `Once` and virtual entries.
+- Age is shown unconditionally, including for `Once` and static entries.
 
 ## Watch-friendly default behaviour
 
@@ -164,13 +160,13 @@ Touches:
 
 - `src/cli/status_format.rs` — column logic, color, new TTL formatter, `--ascii` handling.
 - `src/main.rs` — default preset change, `--ascii` flag.
-- `src/cache.rs::CacheRow` — needs `poll_interval_secs`, `keep_alive_polls`, `fsevents_reinstate` fields added (wired from the lifecycle registry via the same path already used for `decay`).
+- `src/cache.rs::CacheRow` — needs `poll_interval_secs`, `poll_count`, `fsevents_reinstate` fields added (wired from the lifecycle registry via the same path already used for `decay`).
 - `src/server.rs::Request::Status` — populate the new CacheRow fields from `LifecycleRegistry::iter()` (same pattern as `get_lifecycle_decay_levels`).
 
 No protocol change — wire format is already JSON with extensible row structure. SDKs don't need to change (they already tolerate unknown fields).
 
 Tests:
-- Unit tests in `cli/status_format.rs` for TTL formatting (all 5 lifecycle states, reinstate on/off, Once, virtual, ASCII fallback).
+- Unit tests in `cli/status_format.rs` for TTL formatting (all 5 lifecycle states, reinstate on/off, Once, static, ASCII fallback).
 - Integration test in `tests/` that runs `comb status` via the client and asserts the new columns appear.
 - Snapshot tests (via `insta` or similar, or hand-maintained expected strings) for the human preset.
 
@@ -182,4 +178,4 @@ The provider-source model (Phases 1-5) added per-source lifecycle keying. Each `
 
 - Verbatim directive (2026-04-23T05:03:47Z, session `cef25c94`): "we should output a Col (or cols if required) in status cli command that gives `[Decay Level 0-4]/[K]/[P]/[indicator if we are watching fsevents / do they reinit]`. decay level 0 is alive. we might need to revisit age/stale to make it clearer whats going on there. ie a col thats AGE with a prefix of F/S and coloured green/orange. all these values kind of interact so its going to take some thought on how to represent them."
 - Follow-ups (2026-04-23/24) refined: pack into one `TTL` column; drop F/S prefix on AGE (color-only); countdown numbering; `★` active symbol; `◉` reinstate indicator; fixed-width P/K padding; watch-friendly defaults.
-- Related spec: `docs/cache-lifecycle.md` (authoritative for the state machine — the TTL column is its visual dual).
+- Related: `docs/architecture.md` §5 (describes for the state machine — the TTL column is its visual dual).

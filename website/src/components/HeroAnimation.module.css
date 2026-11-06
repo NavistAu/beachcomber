@@ -1,8 +1,6 @@
 .animationContainer {
-  position: relative;
-  width: 100%;
-  flex: 1;
-  min-height: 300px;
+  position: absolute;
+  inset: 0;
   cursor: ew-resize;
   user-select: none;
 }
@@ -50,20 +48,20 @@
   top: 0;
   bottom: 0;
   width: 2px;
-  background: rgba(0, 0, 0, 0.2);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0) 30%, rgba(0, 0, 0, 0.2) 50%);
   z-index: 5;
   pointer-events: none;
 }
 
 [data-theme='dark'] .wiper {
-  background: rgba(255, 255, 255, 0.3);
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0) 30%, rgba(255, 255, 255, 0.3) 50%);
 }
 
 .wiperHandle {
   position: absolute;
-  top: 50%;
+  bottom: var(--comb-y, 225px);
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, 50%);
   width: 26px;
   height: 48px;
   background: rgba(44, 36, 22, 0.7);
@@ -105,14 +103,25 @@
 
 .zoneLabels {
   position: absolute;
-  top: 12px;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: space-between;
-  padding: 0 20px;
+  inset: 0;
   pointer-events: none;
   z-index: 5;
+}
+
+.zoneLabels span {
+  position: absolute;
+  bottom: var(--cloud-y, 330px);
+  white-space: nowrap;
+}
+
+.zoneLabels .chaosLabel {
+  left: 22px;
+  transform: translate(-50%, 50%) rotate(-90deg) translateY(50%);
+}
+
+.zoneLabels .hubLabel {
+  right: 22px;
+  transform: translate(50%, 50%) rotate(90deg) translateY(50%);
 }
 
 .chaosLabel {
@@ -120,18 +129,22 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.15em;
-  color: rgba(232, 68, 26, 0.85);
+  color: #842405;
 }
+
+[data-theme='dark'] .chaosLabel { color: #ff9a73; }
 
 .hubLabel {
   font-size: 0.9rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.15em;
-  color: rgba(6, 214, 240, 0.85);
+  color: #04505f;
 }
 
-/* Stats overlays */
+[data-theme='dark'] .hubLabel { color: #06d6f0; }
+
+/* Live counters, one column per side */
 .statsContainer {
   position: absolute;
   bottom: 60px;
@@ -144,25 +157,126 @@
   z-index: 5;
 }
 
-.statsGroup {
+.statsGroup dl {
+  display: grid;
+  gap: 0.1rem;
+  margin: 0;
+}
+
+/* Under the sources, each side's counters run in one row of four, large, with the bar beneath them. */
+.statsContainer[data-mode='below'] {
+  bottom: auto;
+  padding: 0;
+  justify-content: space-around;
+}
+
+.statsContainer[data-mode='below'] .statsGroup dl {
+  grid-template-columns: repeat(4, auto);
+  column-gap: 2.75rem;
+}
+
+.statsContainer[data-mode='below'] .statItem {
+  grid-template-columns: auto;
+  gap: 0.15rem;
+}
+
+.statsContainer[data-mode='below'] .statItem dd {
+  font-size: 2rem;
+  line-height: 1.1;
+  text-align: left;
+  letter-spacing: -0.02em;
+}
+
+.statsContainer[data-mode='below'] .statItem dt {
+  font-size: 0.95rem;
+}
+
+.statsContainer[data-mode='below'] .bar {
+  width: 100%;
+  margin-top: 1rem;
+  height: 8px;
+  border-radius: 4px;
+}
+
+/* Each side's name heads its counters: BC on the left, AD on the right. */
+.era {
   display: flex;
-  gap: 1.5rem;
-  font-family: 'Courier New', monospace;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin: 0 0 0.6rem;
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.2;
 }
 
-.statsGroup.chaos { color: rgba(232, 68, 26, 0.85); }
-.statsGroup.hub { color: rgba(6, 214, 240, 0.85); }
+.era abbr {
+  font-size: 1.75rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+}
 
-.statItem { text-align: center; }
+.era span {
+  color: var(--ifm-font-color-base);
+}
 
-.statVal {
-  font-size: 1.1rem;
+.statsGroup.chaos .era abbr { color: #842405; }
+.statsGroup.hub .era abbr { color: #04505f; }
+[data-theme='dark'] .statsGroup.chaos .era abbr { color: #ff9a73; }
+[data-theme='dark'] .statsGroup.hub .era abbr { color: #06d6f0; }
+
+/* the right-hand side reads from the right edge */
+.statsGroup.hub .era { flex-direction: row-reverse; }
+.statsContainer[data-mode='below'] .statsGroup.hub .statItem dd,
+.statsContainer[data-mode='below'] .statsGroup.hub .statItem dt { text-align: right; }
+.statsGroup.hub .bar { margin-left: auto; transform: scaleX(-1); }
+
+/* time spent waiting, both sides on one scale */
+.bar {
+  margin-top: 0.5rem;
+  height: 6px;
+  width: 14rem;
+  border-radius: 3px;
+  background: rgba(127, 127, 127, 0.18);
+  overflow: hidden;
+}
+
+.bar span {
+  display: block;
+  height: 100%;
+  width: 2px;
+  border-radius: 3px;
+}
+
+.statsGroup.chaos .bar span { background: #842405; }
+.statsGroup.hub .bar span { background: #04505f; }
+[data-theme='dark'] .statsGroup.chaos .bar span { background: #ff9a73; }
+[data-theme='dark'] .statsGroup.hub .bar span { background: #06d6f0; }
+
+.statItem {
+  display: grid;
+  grid-template-columns: 7.5rem auto;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.statItem dd {
+  margin: 0;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 1.25rem;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  order: -1;
 }
 
-.statLbl {
-  font-size: 0.55rem;
-  opacity: 0.6;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+.statItem dt {
+  font-size: 0.95rem;
+  font-weight: 400;
+  color: var(--ifm-font-color-base);
 }
+
+.statsGroup.chaos dd { color: #842405; }
+.statsGroup.hub dd { color: #04505f; }
+[data-theme='dark'] .statsGroup.chaos dd { color: #ff9a73; }
+[data-theme='dark'] .statsGroup.hub dd { color: #06d6f0; }

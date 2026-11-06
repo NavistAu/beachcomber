@@ -16,13 +16,14 @@
 
 :root {
   /* Primary: Vivid ocean teal */
-  --ifm-color-primary: #0891b2;
-  --ifm-color-primary-dark: #0782a0;
-  --ifm-color-primary-darker: #077a97;
-  --ifm-color-primary-darkest: #06647c;
-  --ifm-color-primary-light: #09a0c4;
-  --ifm-color-primary-lighter: #0aa8cd;
-  --ifm-color-primary-lightest: #1bbde4;
+  /* Deep enough for text: 7.3:1 or better on every light background. */
+  --ifm-color-primary: #04505f;
+  --ifm-color-primary-dark: #04485a;
+  --ifm-color-primary-darker: #034350;
+  --ifm-color-primary-darkest: #023742;
+  --ifm-color-primary-light: #05586b;
+  --ifm-color-primary-lighter: #066276;
+  --ifm-color-primary-lightest: #077a91;
 
   /* Background: Warm sand */
   --ifm-background-color: #f5f0e8;
@@ -30,15 +31,15 @@
 
   /* Text: Deep driftwood charcoal */
   --ifm-font-color-base: #2c2416;
-  --ifm-font-color-secondary: #5a4d3a;
+  --ifm-font-color-secondary: #4a3f2e;
 
   /* Secondary accent: Vivid coral */
   --bc-accent-secondary: #e8441a;
   --bc-accent-secondary-light: #f26641;
 
   /* Code blocks: Wet sand */
-  --ifm-code-background: #e4dccb;
-  --prism-background-color: #ddd5c2;
+  --ifm-code-background: #e6dfcf;
+  --prism-background-color: #ede7d8;
   --docusaurus-highlighted-code-line-bg: rgba(8, 145, 178, 0.12);
 
   /* Navbar — light mode uses warm sand */
@@ -48,7 +49,7 @@
   /* Footer */
   --ifm-footer-background-color: #000000;
   --ifm-footer-color: #a89878;
-  --ifm-footer-link-color: #0891b2;
+  --ifm-footer-link-color: #06d6f0;
   --ifm-footer-title-color: #d4cabc;
 
   /* Typography */
@@ -57,20 +58,21 @@
   --ifm-font-family-monospace: 'JetBrains Mono', 'Fira Code', monospace;
 
   /* Font sizes */
-  --ifm-font-size-base: 16px;
-  --ifm-code-font-size: 90%;
+  --ifm-font-size-base: 18px;
+  --ifm-line-height-base: 1.65;
+  --ifm-code-font-size: 0.88em;
 
   /* Borders */
   --ifm-color-emphasis-200: #d6cdb8;
   --ifm-color-emphasis-300: #c4baa4;
 
   /* Link */
-  --ifm-link-color: #0891b2;
-  --ifm-link-hover-color: #06647c;
+  --ifm-link-color: #04505f;
+  --ifm-link-hover-color: #023742;
 
   /* Sidebar */
   --ifm-menu-color: #3d3024;
-  --ifm-menu-color-active: #0891b2;
+  --ifm-menu-color-active: #04505f;
 
   /* Landing page section backgrounds */
   --bc-problem-bg: #2c2416;
@@ -203,10 +205,57 @@ pre {
   font-family: var(--ifm-font-family-monospace);
 }
 
+/* JetBrains Mono sets larger than Source Sans 3 at the same size, so code is
+   sized down to match the body's x-height and sits on its baseline. */
+:not(pre) > code {
+  font-size: var(--ifm-code-font-size);
+  vertical-align: baseline;
+  line-height: 1;
+  padding: 0.15em 0.3em;
+  border: none;
+}
+
+pre code,
 div[class*='codeBlock'],
 pre.prism-code {
   font-family: var(--ifm-font-family-monospace);
-  font-size: var(--ifm-code-font-size);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+/* A measure you can read: about 75 characters of body text. */
+.theme-doc-markdown {
+  max-width: 46rem;
+}
+
+.theme-doc-markdown table {
+  font-size: 0.95em;
+}
+
+.menu {
+  font-size: 1rem;
+}
+
+/* The page's own contents, the breadcrumbs and the prev/next links were sized
+   for 16px body text; keep them close to the body, not a step below it. */
+.table-of-contents {
+  font-size: 1rem;
+}
+
+.table-of-contents__link {
+  color: var(--ifm-font-color-secondary);
+}
+
+.breadcrumbs__link {
+  font-size: 0.95rem;
+}
+
+.pagination-nav__sublabel {
+  font-size: 0.9rem;
+}
+
+.pagination-nav__label {
+  font-size: 1.1rem;
 }
 
 /* ============================================================
@@ -249,4 +298,40 @@ body::before {
 /* Pad the bottom of the page so content isn't hidden behind the fixed footer */
 .main-wrapper {
   padding-bottom: 3rem;
+}
+
+/* Terminal output shown with its colours: the same block as a code block, with
+   the colours a terminal would draw, each at least 7:1 on the block. */
+pre.terminal {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  background: var(--prism-background-color);
+  color: var(--ifm-font-color-base);
+  white-space: pre-wrap;
+}
+
+.terminal-prompt {
+  opacity: 0.8;
+}
+
+.terminal-cyan {
+  color: #044e5c;
+}
+
+.terminal-red {
+  color: #7f1414;
+}
+
+[data-theme='dark'] .terminal-cyan {
+  color: #67e8f9;
+}
+
+[data-theme='dark'] .terminal-red {
+  color: #fca5a5;
+}
+
+/* A short code value in a table cell stays on one line. */
+.theme-doc-markdown td > code:only-child {
+  white-space: nowrap;
 }

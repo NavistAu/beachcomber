@@ -16,9 +16,10 @@ line-delimited JSON. Each request is a single line starting with `{"op": ...}`.
 Each response is a single line with `{"ok": bool, ...}`. There is no framing
 beyond the newline delimiter.
 
-The daemon is stateless per connection except for:
-- A per-connection context path set via the `Context` op.
-- `Watch` streams, which hold the connection open until the client disconnects.
+The daemon is stateless per connection except for `Watch` streams, which hold
+the connection open until the client disconnects. A connection holds no
+directory of its own: every request carries its `path`, and an SDK session that
+keeps a directory sends it with each request.
 
 All other ops are stateless and can be sent on any connection in any order.
 
@@ -47,7 +48,10 @@ All requests are a single line of JSON with an `"op"` discriminator:
 {"op": "<op_name>", ...}
 ```
 
-Additional fields vary per op (see Op reference).
+Additional fields vary per op (see Op reference). A field the op does not
+take is refused — `{"ok":false,"error":"invalid request: unknown field
+`format`, expected …"}` — never silently ignored, on every op including
+`status` and `hello`.
 
 ## Response envelope
 
@@ -57,19 +61,22 @@ All responses are a single line of JSON:
 {
   "ok": true,
   "data": <any>,
-  "age_ms": 0,
-  "stale": false
+  "age_ms": 0
 }
 ```
 
 - `ok` (bool, required) — `true` if the op succeeded, `false` on error.
 - `data` (any, optional) — response payload. Shape depends on the op.
 - `age_ms` (integer, optional) — for `Get` responses, milliseconds since the
-  cache entry was last refreshed.
-- `stale` (bool, optional) — for `Get` responses, whether the entry is older
-  than the provider's expected refresh interval.
+  record answering the request was last refreshed. See "Freshness" under `Get`.
 - `error` (string, optional) — present when `ok=false`. A human-readable
   message; not stable enough to parse.
+- `template` (any, optional) — for `Get` responses, the template half. See
+  "Template half" under `Get`.
+- `rest` (string, optional) — for `Get` responses, the part of the key the
+  template walk could not consume.
+- `memo` (any, optional) — for `Get` responses, the memo half beside the
+  template half. See "Memo half" under `Get`.
 
 All optional fields are omitted (not set to null) when not applicable.
 
@@ -108,27 +115,67 @@ Read a cached value.
 {
   "op": "get",
   "key": "git.branch",
-  "path": "/absolute/or/relative/path",
+  "path": "/absolute/path",
   "force": false,
-  "wait": false
+  "wait": "50ms"
 }
 ```
 
 - `key` (string, required) — `provider` or `provider.field`. See "Keys" below.
-- `path` (string, optional) — directory context for path-scoped providers.
-- `force` (bool, optional, default false) — evict the cache entry before
-  executing, guaranteeing a fresh value.
-- `wait` (bool, optional, default false) — if the entry is stale, wait for
-  inline re-execution; if fresh, serve the cached value. Idempotent on
-  virtual providers.
+- `path` (string, optional) — the directory the read is addressed at. Omitting
+  it — or giving `$HOME`, which is the same address — reads the **global
+  entry**. A `path` is absolute on every op that takes one: the client makes a
+  relative or `~` path absolute against the caller's own directory and home
+  (`libbeachcomber::path::normalise`), which the daemon cannot see. A path that
+  is not absolute (`""`, `"."`, `"rel/x"`, `"~/x"`) is refused,
+  `path must be absolute: "<path>"`, never joined to the daemon's working
+  directory. A `path` returns the **chain-resolved tree**: static records (source
+  `put` or `config:<file>`) are collected from that path and every ancestor up
+  to `$HOME` (or to `/` for a path outside `$HOME`) and then the global entry,
+  the nearest winning. Provider-produced records live at the instances of
+  their Source — the one at the root the Source names for the requested path,
+  and the one at `~` — and a read walks them instance by instance (below)
+  rather than the directory chain.
+- `force` (bool, optional, default false) — re-execute every Source the key
+  demands, at every instance the read reaches, whether or not it was
+  stale, past the failback backoff: a run that begins after the request (one
+  queued behind a run in flight). Nothing is evicted first: a run that fails
+  leaves the last good value, which the read answers. The client renders a
+  cached template past its memo on a forced read, so a read whose answer has
+  a template half is answered on a namespace with no Source too; one of a
+  static namespace (a facet included) with no template half is an error:
+  `cannot --force static namespace '<name>': no source to re-execute from`.
+- `wait` (string, optional) — how long the read waits for a run it needs: a
+  duration in the one grammar (`"0"`, `"50ms"`, `"2s"`, `"1m30s"`; a bare
+  number is seconds) or `"forever"`. Absent (or `null`), the read waits its
+  **budget**. Anything else, a boolean included, is an invalid request
+  (``invalid wait `soon`: …``, ``invalid type: boolean `true`, …``).
+
+  A record is valid while it is within its lifetime and its stat inputs (the
+  files its Source declares, stat'd on the read) are as its run found them,
+  and a valid record is served as is, as is an instance in failback backoff.
+  Otherwise the read runs the instance's Source (or takes the run in flight,
+  when that run sees the inputs as they are) and waits:
+
+  | The read finds | With no `wait` it waits | With a `wait` |
+  |---|---|---|
+  | a record past its lifetime, or whose inputs changed | the Source's budget (`budget(...)`, else `[daemon] budget`, default `50ms`) | that long (`"forever"`: the run's end) |
+  | nothing stored | the run's end, which its `timeout` bounds | as above |
+  | anything, with `force` | the run's end | as above |
+
+  Each wait counts from the read's start. Answered in time, the read has the
+  fresh value; late, it has what is stored (a miss when nothing is), `:cache.<field>.executing` is `true` while
+  the run goes on, and the run records itself for the next read and for any
+  `watch` of the key. A namespace read starts the runs of every Source it needs
+  before it waits for any. A client's read of the answer may take its own
+  timeout plus the `wait`; `"forever"` has no deadline.
 
 **Response (hit):**
 ```json
 {
   "ok": true,
   "data": {"branch": "main", "dirty": false},
-  "age_ms": 42,
-  "stale": false
+  "age_ms": 42
 }
 ```
 
@@ -141,58 +188,327 @@ Read a cached value.
 
 **Response (error):**
 ```json
-{"ok": false, "error": "unknown provider: foo"}
+{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, memo, put, source or cache)"}
 ```
+
+#### Freshness
+
+`age_ms` describes the *record* that answered the request, not the
+cache entry it lives in:
+
+- a leaf reports how long since its own record's Source last refreshed;
+- an object assembled from several records reports the largest of their ages;
+- a static record (source `put` or `config:<file>`) reports the time since it
+  was written;
+- a rendered template value is a lookup, not a stored record: it reports age 0;
+- a response with no `data` carries no `age_ms`.
+
+The same number, and the record's source and lifecycle, are readable as
+data through the `:cache` facet (see "Keys").
+
+#### Template half
+
+A `get` on a key whose namespace carries no facet does two lookups: the data at
+the addressed node, and the same node in the merged tree of that namespace's
+`template` facet (`<provider>:template`). Whichever exist come back, so a
+response may carry the template half with no `data` at all — a namespace holding
+only templates is a hit. An unknown provider is a miss, as is any address nothing
+answers; only invalid facet syntax is an error. A sub-path neither half answers
+is a miss (`{"ok":true}`), at any depth: an address into an existing object that
+has no such key, or past a scalar, misses exactly as a missing top-level field
+does. There is no `unknown field` error.
+
+The two halves are addressed from different places. The data half sits where the
+provider's records live: at the instances of the Source that owns the key. A
+Source answers `root(dir)` — the directory whose instance serves `dir`, or none
+for the one instance at `~` — and a read asks the nearest instance first
+(`R1 = root(dir)`). If it lacks the key, the read moves to the parent of that
+root and asks again (`root(parent(R1))`), ending at the instance at `~` and
+never past it. A namespace read takes every instance on the way and merges
+them, the nearer winning per leaf: from `~/ws/proj` with a `mise.toml`,
+`mise.node` is the project's, and `mise.go`, set only in the global config, is
+found at `~`. That is a **cascade**, the default. A Source marked `nearest` is
+answered by `R1` alone: a key it lacks is absent, the read does not move up, and
+no root found means no instance and no value (git works this way: a nested
+repository never shows its superproject's values). A template is a **static record**, so the template half is
+read from the requested directory itself and resolves up the chain from there:
+`get git.branch --path <repo>/sub` reads git's records at `<repo>` and its
+templates from `<repo>/sub`.
+
+`template` is a JSON tree whose string leaves are value expressions the
+**client** renders and whose objects are groups. The daemon never renders one.
+The client is `libbeachcomber::resolve`: `comb get`, `bc_get` and every SDK's
+`get` answer with the rendered value, and none of them hands back this
+two-halved response. A caller that wants the template unrendered reads it as a
+facet, `<provider>:template.<field>`, like any other key.
+Walking the key through that tree:
+
+- landing on an object or a string with the key consumed → that node is
+  `template`;
+- landing on a string with segments left over → that string is `template` and
+  the unused remainder, rejoined with `.`, is `rest`;
+- a miss, or a non-string scalar — in the way, or *at* the address — → neither
+  field is attached. A non-string leaf **inside** a group is passed through
+  untouched as part of that group's object: only the client decides an
+  expression is not one.
+
+A `get` on a facet key (`<provider>:<facet>…`) is already inside a facet and
+never carries a template half; it reads the facet's own records as `data`.
+
+```json
+{"ok": true, "template": "{{ {'cpu': 40, 'mem': 12} }}", "rest": "cpu"}
+```
+
+`Watch` frames carry the same halves, so a streamed value renders exactly as
+a fetched one. A write to a namespace or to any of its facets notifies the
+namespace's watchers, so editing a template alone delivers a frame with no new
+`data`.
+
+#### Memo half
+
+A template leaf whose expression pipes through `| cache()` has its value
+stored by the client after it renders (the `memo` op, below): its **memo**,
+at the leaf's address in the `<p>:memo` facet, with its record (the client's
+hash of the leaf's inputs, and the triggers that invalidate it) in
+`<p>:cache`. A `get` that attaches a template half attaches the memo half
+beside it, `memo`, when a leaf of that template has a memo:
+
+- for a string template, one object, the memo of that leaf;
+- for a group, a tree shaped like the template tree, with that object at each
+  leaf that has a memo, and no key for a leaf that has none.
+
+```json
+{"ok": true, "template": "{{ 'kubectl config current-context' | cache() | exec() }}",
+ "memo": {"hash": "9c6001d328a94690", "stale": false, "age_ms": 5200, "data": "prod"}}
+```
+
+- `hash` — the hash the client computed when it stored the memo, 16 lowercase
+  hex digits. Absent once an invalidation has dropped it: a memo with no hash
+  is a miss for every reader.
+- `stale` — whether the memo is past its `ttl`; `age_ms` — how long since it
+  was stored.
+- `data` — the leaf's value. Absent for a **memo of absence**: a leaf that
+  rendered nothing is remembered as having rendered nothing, and `null` is
+  never stored.
+
+A memo is found as a static record is: up the chain from the requested path,
+nearest first, so a memo stored at a directory serves the directories below it.
+It is read only through its template: a namespace with no template at an
+address carries no memo half there, whatever `<p>:memo` holds. The daemon does
+not decide a hit: the client compares the hash with its own and takes the memo
+only when they are equal and the memo is not stale.
+
+The daemon drops a memo's hash, and notifies the namespace's watchers at the
+memo's directory, when the field is invalidated: a `put` or a configuration
+reload of the template at or above the leaf (`<p>:template`), a data write at
+or under the leaf (a `put` to `<p>`, its removal or expiry, a configuration
+seed, or a Source's run storing the field), a `refresh` of the key, the
+memo's `ttl` running out, and a change to one of its `watch` paths while it is
+Active (see the `memo` op's lifecycle).
 
 #### Keys
 
-Keys are `<provider>` or `<provider>.<field>`. Providers may also accept
-metadata suffixes:
+A key is a **head** and an **address** below it. The head is `<provider>` or a
+facet address, `<provider>:<facet>`, and runs to the first `.` or `[`. The
+address is any run of segments, each written one of three ways — jinja's own
+spellings, so a key reads the same here as in a template:
 
-- `:age` — returns `age_ms` as the `data` value.
-- `:stale` — returns `stale` as the `data` value.
-- `:fresh` — returns `!stale` as the `data` value.
-- `:cache` — returns `true` if the value was served from cache (no re-exec).
-- `:source` — returns `"builtin"`, `"script"`, or `"virtual"`.
+- `.seg` — any characters but `.`, `[` and `]`: `git.branch`,
+  `mise.cargo:cargo-nextest`, `mise.npm:@scope/pkg`;
+- `[n]` — an array index, the same segment as `.n`: `p.list[0]` is `p.list.0`;
+  a negative index counts from the end (`p.list[-1]`, `p.list.-1`);
+- `['…']` or `["…"]` — a quoted segment, where a backslash escapes only the quote
+  and the backslash: `mise['go:golang.org/x/tools/gopls']`.
+
+Brackets are the one quoting form. Only a colon in the head names a facet; below
+it a colon is an ordinary character, so `git.branch:age` is an ordinary miss.
+There are no metadata suffixes. The facets are a closed set — `template`,
+`macro`, `memo`, `put`, `source` and `cache` — and any other name after the colon, a
+second colon in the head or an empty provider before it is `invalid facet key:
+<head> (a facet is template, macro, memo, put, source or cache)`, on every op. Anything else the grammar
+cannot read is `invalid key: <key>`: an empty head or segment (`p..a`, a
+trailing `.`), a head starting with `/` or `~`, a stray `]`, an unterminated
+bracket or quote, an index that is not a canonical decimal (`[01]`).
+
+Every address the daemon or a client prints is in **canonical form**, so it can
+be sent back as a key: bare segments joined by `.`, and a segment that is empty
+or holds `.`, `[` or `]` written `['…']`. A `rest` (below) is canonical.
+
+Every facet has the provider's shape: `get git` returns that part of the tree,
+and so does `get git:cache`. An unknown provider is a miss, and so is a facet
+nothing has written.
+
+A field's value is the first layer that has it, in this order: the effective
+template (rendered by the client), then `put`, then the Source. Each layer is
+readable on its own:
+
+- `<p>:template` — the templates (data the client renders; the daemon never
+  evaluates one, but a `put` of one that does not compile is refused, naming
+  the leaf).
+- `<p>:macro` — `<p>`'s macro libraries, `<p>:macro.<name>` each a text of
+  `{% macro %}` definitions. A namespace of its own, read like `:template`:
+  `get scanline:macro` answers `{"rate": "…", "usage": "…"}`, with no template
+  half, and the nearest directory's library wins. A `put` is checked as a
+  configured library is: a string under a name, at `<p>:macro.<name>` or as a
+  table of them at `<p>:macro`, that compiles and prints nothing outside its
+  macros.
+- `<p>:memo` — the values `| cache()` stored for `<p>`'s template leaves, each
+  at its leaf's address (see "Memo half"). A namespace of its own, read like
+  `:template` (`get kubecontext:memo.context`), with no template half; each
+  value's `age_ms` is its memo's. A memo of absence holds no
+  value here. Written only by the `memo` op: a `put` to it is `<p>:memo is
+  written by cache(); edit <p>:template.<f>, or refresh <p>`.
+- `<p>:put` — what `put` and `config:<file>` seeds stored.
+- `<p>:source` — what the provider's Sources produced. A `put` does not hide
+  it here.
+- `<p>:cache` — the daemon's metadata about `<p>`, below.
+
+`<p>:put` and `<p>:source` are read-only: a `put` to either is `<p>:put and
+<p>:source are read-only; write <p>.<node>`, and they never warm a Source or
+start a lifecycle. `null` means absent, never `""`: a Source or put that has no
+value for a field has no node for it.
+
+##### The `:cache` facet
+
+`<p>:cache.<field>` holds the daemon's metadata about `<p>.<field>` at the same
+path and for the same record that a read of `<p>.<field>` resolves to, so a value
+cannot be reported with another record's metadata. It mirrors `<p>.<path>` for
+any node: a leaf answers with an object, and an object node answers with the
+tree of its leaves' answers.
+
+```json
+{"age_ms": 1200, "source": "source(head)", "executing": false,
+ "watch": [".git"], "hash": "9c6001d328a94690", "decay": 4}
+```
+
+- `age_ms`, `source` are derived at the read. `source` is `put`,
+  `template`, `memo`, `config(<file>)` for a configuration seed,
+  `computed(result)` / `computed(return)` for a leaf a provider line computed,
+  or `source(<name>)` for a Source. A value served by a template with no memo
+  has one only (`source` `template`). A template leaf with a
+  memo answers for the memo: `source` `memo`, the memo's `age_ms`,
+  and its stored keys. A miss is a miss.
+- `executing` is derived too, for a Source's record: `true` while a run of the
+  record's instance is in flight, whoever started it (a read that stopped
+  waiting for it, a poll, a file event, a refresh). A template can read it
+  (`comb['git:cache'].branch.executing`, for a spinner).
+- `poll` (`{interval, count}`), `watch` and `decay` are stored: written when a
+  Source registers or a `put` carries a `ttl`, and read back here. `watch` is an
+  array of patterns.
+- `persist` is stored, `true`, for a put made with `persist` (on a root put,
+  at each top-level key) while the daemon keeps it; absent otherwise.
+- `hash` is stored, for a Source's record with stat inputs: the validity hash
+  of those inputs as its run stamped them (FNV-1a 64 over each input's path and
+  stamp, `libbeachcomber::validity`), 16 lowercase hex digits. A read checks
+  the record by stamping the inputs again. A Source that only polls has none.
+  A memo's `hash` is the one its `memo` op carried, until an invalidation drops
+  it; its `watch` is the absolute paths the op named, and a `ttl` stores `poll`
+  (`{interval, count: 1}`) and `decay` 1, as a `put`'s does.
+- `decay` is the number of decay steps before eviction. It is data: a Source
+  takes the nearest `_` prototype, looking at each directory from the requested
+  one up to `$HOME` for `<p>:cache._.decay` and then `*:cache._.decay` (every
+  provider), and 4 when there is none; so does a memo without a `ttl`, and
+  `:cache` reports that inherited depth for each. A `put` with a `ttl` stores 1. A
+  prototype is put like any value (`put git:cache._.decay 6`, `put
+  '*:cache._.decay' 3`, with `--path` for a directory) and read back with `get
+  git:cache._.decay`; a lifecycle fixes its depth when it registers.
+- The only `:cache` key a `put` may write is `_.decay`, a positive integer. A
+  derived key is `{key} is derived and cannot be written`; any other key is
+  `{key} is written by the daemon`.
+- A `:cache` key cannot be refreshed, and a watch on it wakes on a data write to
+  its namespace.
 
 ### `Refresh`
 
-Trigger a provider re-execution out-of-band. Does not return the new value.
+Re-execute Sources out-of-band. Does not return the new value.
 
 **Request:**
 ```json
 {"op": "refresh", "key": "git", "path": "/some/path"}
 ```
 
-`path` is optional for path-scoped providers.
+The key selects which Sources run, exactly as it selects which a `get` warms:
+`refresh git` re-executes every Source of `git`, `refresh git.branch` only the
+Source that owns `branch`. Each runs at the instance that answers for the
+requested directory — the root its `root` names for it, or the one instance at
+`~` for a Source with no root — so `path` is optional and is only consulted by
+Sources that have a root. A facet outside the closed set is the same
+error `get`/`put`/`watch` give: `{"ok": false, "error": "invalid facet key:
+<head> (a facet is template, macro, memo, put, source or cache)"}`.
+
+A `refresh` also drops the hash of every memo at or under the key, at every
+directory, so the next read of a cached template renders it afresh, and notifies
+the namespace's watchers there.
+
+A key that names no Source and no memo has nothing to re-execute and is an
+**error**: a static namespace (one created by `put` or a config seed), an
+unknown name, or a field no Source owns. A layer facet or `:cache` key is `cannot refresh <key>: a
+layer facet is read-only`. Reading configuration afresh is not a
+refresh — the config watcher does that.
 
 **Response:**
 ```json
 {"ok": true}
 ```
 
-### `Context`
-
-Set a default path for subsequent ops on the same connection.
-
-**Request:**
+**Response (error):**
 ```json
-{"op": "context", "path": "/some/dir"}
+{"ok": false, "error": "nothing to refresh: my.a has no sources"}
 ```
-
-**Response:**
-```json
-{"ok": true}
-```
-
-Subsequent `Get` / `Refresh` calls without an explicit `path` field use
-this default. Stateless per connection — fresh connections have no context.
 
 ### `Put`
 
-Store data in a virtual provider. Virtual providers have no source code
-and are pure data containers. Namespace hierarchy (builtin > script > virtual)
-prevents accidentally shadowing a real provider.
+Store static data at any node of the tree. `key` is `namespace` or
+`namespace.node…` — the same address `get` takes, and `namespace` may
+itself be a facet address (`<provider>:<facet>`; a facet outside the closed
+set is `invalid facet key: <head> …`, the same check `get`/`refresh`/`watch`
+apply). Of the facets, `put` writes only `template`, `macro` and a `cache`
+`_.decay`; `memo` is the `memo` op's.
+`data` is required. A put **replaces** the node it addresses: nothing merges
+implicitly, so `put my '{"b":2}'` states all of `my` at that directory, and
+`put my.b 2` replaces only `my.b`. `null` means absent: `data: null` removes the
+node, and a `null` inside `data` is an absent leaf, never `""`. An array is
+stored and returned as an array, and is a leaf: a put of an array at an address
+replaces whatever is there whole, and a nearer layer's array replaces a farther
+one's whole. A `null` element is absent and the array closes up behind it
+(`[1, null, 3]` is `[1, 3]`). An element is addressed by decimal index
+(`my.list.0`, `my.list[0]`): a put at an index inside the put's own array
+replaces that element, at one past its end appends, and `null` there removes it
+and closes the array up; a put at any other index, or into an array another
+layer holds, writes the address as an object like any other node.
+
+A put sits above the Source in the layer order, so it hides Source and seed
+values at its node. The Source keeps refreshing its own layer beneath it, and
+removing the put shows that layer at once.
+
+`ttl` (`"30s"`, `"5m"`, at least 1s) makes the put a lifecycle entry of its own:
+it is kept for the ttl and one decay step more (twice the ttl), then evicted.
+Each put address (key and directory) has its own lifecycle, so `comb put --ttl 300
+build.status '"passing"'` and `comb put --ttl 60 build.eta '"4m"'` expire independently, and
+a re-put without a `ttl` drops the expiry. `status` shows such a row as any
+lifecycle entry, source `put`; `<p>:cache.<node>` reports its `poll` and `decay`.
+
+`persist: true` keeps the put across a daemon restart, best effort. The daemon
+keeps one entry per put address (key and directory) in
+`$XDG_CACHE_HOME/beachcomber/puts.json` (default `~/.cache/beachcomber/puts.json`):
+the key, the directory, the `data`, and for a put with a `ttl` the wall-clock
+expiry (`expires`, milliseconds since the Unix epoch). The file is written
+whole, through a temporary file and a rename, after each change. Before it
+serves, the daemon puts each entry again, with the ttl it has left; an entry
+whose expiry has passed is dropped. A missing file is nothing to replay; an
+unreadable or invalid one is a logged warning, ignored, and replaced on the
+next persisted write; an entry the daemon now refuses is logged and dropped.
+The latest put to an address decides: a put without `persist` there, a `null`
+put, or the ttl's eviction drops its entry, and a put at an address above it
+drops it as the put replaces the node. A daemon with no file (an embedded or
+test one) takes `persist` and keeps nothing. Persistence is not a guarantee:
+the file lives in the cache directory, which the system or the user may clear,
+and a value may be lost; it is for convenience, not for data that cannot be
+recreated.
+
+An object key in `data` may hold a `.`: it is one name, read back as the
+quoted segment `['a.b']`, and a node segment of `key` may be that quoted
+segment too. The node part of `key` is capped at ten segments.
 
 **Request (set):**
 ```json
@@ -201,16 +517,29 @@ prevents accidentally shadowing a real provider.
   "key": "myapp",
   "data": {"status": "healthy", "last_deploy": "2026-04-22T10:00:00Z"},
   "ttl": "30s",
-  "path": "/optional/scope"
+  "path": "/optional/scope",
+  "persist": true
 }
 ```
 
+`data` at the root of a namespace must be an object — the root is a map of
+records, not a value. Below the root, any JSON: `{"op": "put", "key":
+"myapp.deploy.count", "data": 3}`.
+
+`path` addresses the entry the record is written to, canonicalised the same
+way `Get`'s is: omitted — or `$HOME` — writes the global entry, which every
+path's chain ends at.
+
 **Request (clear):**
 ```json
-{"op": "put", "key": "myapp"}
+{"op": "put", "key": "myapp", "data": null}
 ```
 
-(Omit `data` to clear the cache entry while keeping the registration.)
+(A `put` whose `data` is JSON `null` removes the put layer at the addressed
+node: the node and every put address at or below it. The layer below shows
+through; the entry itself survives if a Source still contributes to it.
+There is no other spelling of removal: a request without a `data` field is
+invalid, `invalid request: missing field `data``.)
 
 **Response:**
 ```json
@@ -218,8 +547,76 @@ prevents accidentally shadowing a real provider.
 ```
 
 **Error cases:**
-- Non-object `data`: `{"ok": false, "error": "put data must be a JSON object"}`
-- Name collision with builtin/script provider: `{"ok": false, "error": "cannot store under '<name>': name is used by a builtin or script provider"}`
+- A facet outside the closed set on the namespace segment: `{"ok": false, "error": "invalid facet key: <head> (a facet is template, macro, memo, put, source or cache)"}`
+- A key the grammar cannot read: `{"ok": false, "error": "invalid key: <key>"}`
+- A write to a layer facet: `<p>:put and <p>:source are read-only; write <p>.<node>`
+- A write to `<p>:memo`: `<p>:memo is written by cache(); edit <p>:template.<f>, or refresh <p>`
+- A write to `<p>:cache` other than `_.decay`, or a `_.decay` that is not a positive integer: see "The `:cache` facet"
+- A `ttl` of `0s`: `ttl must be at least 1s`; an unparsable one: `invalid ttl: <ttl>`; a `ttl` with `data: null`: `a ttl on an absent value has no meaning`
+- Non-object `data` at a namespace root: `{"ok": false, "error": "put data at the root must be an object"}`
+- More than ten node segments in `key`: `{"ok": false, "error": "put key is nested too deeply (limit 10 segments)"}`
+
+### `Memo`
+
+Store what a template leaf's `| cache()` computed. The client's resolver sends
+it after a render that missed, once the value has been handed to its caller;
+no SDK binds it.
+
+**Request:**
+```json
+{"op": "memo", "key": "kubecontext.context", "path": "/Users/j/ws/p",
+ "hash": "9c6001d328a94690", "data": "prod",
+ "watch": ["/Users/j/.kube/config"], "ttl": "10m"}
+```
+
+- `key` (string, required) — the template leaf, `provider.field`: a facet or a
+  bare provider is refused.
+- `path` (string, optional) — the reader's directory, as every op's: omitted
+  (or `$HOME`) is the global entry. A memo is stored at the reader's directory
+  and serves the directories below it.
+- `hash` (string, required) — the client's hash of the leaf's inputs, sixteen
+  lowercase hex digits.
+- `data` (any, optional) — the leaf's value. Absent (or `null`) stores a memo
+  of absence.
+- `watch` (array of strings, optional) — the files whose change invalidates
+  the memo, absolute: the client expanded `~` and made them absolute.
+- `ttl` (string, optional) — how long the memo is valid, whole seconds and at
+  least `1s`, as a `put`'s `ttl`.
+
+The write replaces the memo at that address and directory — its value, its
+stored keys and its age together — and any memo at an address above or below
+it there; it notifies the namespace's watchers at `path`. A memo's `hash`,
+`watch`, `poll` and `decay` are read back through `<p>:cache.<field>`, its
+value through `<p>:memo.<field>` and the memo half.
+
+**Lifecycle.** The write starts the memo's lifecycle at its address, afresh
+for a memo written again, and nothing else renews it: a read of the leaf does
+not. A `ttl` is `poll(ttl, 1)` with decay 1: when the ttl runs out the memo's
+hash is dropped (it is stale from then on), and one decay step later (twice
+the ttl) the memo is evicted, its value and its record with it. Its `watch`
+paths are watched while it is Active, each one not there yet through the
+nearest directory above it that is, and a change to one drops its hash;
+entering decay lets go of them. With no `ttl` the memo is Active for the
+default window (12 minutes), then decays at its provider's `_.decay`
+(default 4 steps) and is evicted at the end of that ladder, about six hours
+after its write. `introspect demand`, `lifecycle` and `timers` list it with
+`"source": "memo"` and `"node": "<field>"`.
+
+**Response:**
+```json
+{"ok": true}
+```
+
+**Error cases:**
+- A facet key: `memo takes a provider.field key, not a facet: <key>`; a bare
+  provider: `memo takes a provider.field key: <key> names no field`
+- A hash that is not sixteen lowercase hex digits: `invalid memo hash: <hash>
+  (sixteen lowercase hex digits)`
+- A relative watch path: `a memo's watch paths are absolute: <path>`
+- A `ttl` of `0s`: `ttl must be at least 1s`; an unparsable one or one finer
+  than a second: `invalid ttl: <ttl>`
+- More than ten node segments in `key`, an invalid key or provider name: as
+  for `put`
 
 ### `Status`
 
@@ -237,18 +634,47 @@ List all cache entries currently held by the daemon.
   "data": [
     {
       "provider": "git",
-      "field": "branch",
       "path": "/Users/me/project",
+      "source": "head",
+      "field": "branch",
       "value": "main",
       "age_ms": 120,
-      "stale": false
+      
+      "kind": {"kind": "lifecycle", "decay": 0, "depth": 4, "watches_files": true}
+    },
+    {
+      "provider": "myapp",
+      "path": null,
+      "source": "put",
+      "field": "status",
+      "value": "healthy",
+      "age_ms": 4200,
+      
+      "kind": {"kind": "static"}
     },
     ...
   ],
-  "age_ms": 0,
-  "stale": false
+  "age_ms": 0
 }
 ```
+
+`source` is the row's record's label, presented as a `:cache` answer's is:
+`source(<name>)` for a Source of the provider (`source(head)`, …), `put`,
+`config(<file>)`, `computed(<line>)`, or `memo` for a `<p>:memo` row (one per
+memo that holds a value, aged by its memo; a memo's stored keys are not rows
+of their own). `kind` is
+present when the row's lifecycle discriminator is known: `{"kind":
+"lifecycle", "decay": N, "depth": D, "watches_files": bool}` for a lifecycle-tracked row,
+`{"kind": "once"}` / `{"kind": "static"}` / `{"kind": "transient"}`
+otherwise; omitted when unknown. A handful of further optional fields
+(`poll_interval_secs`, `poll_count`, `polls_elapsed`,
+`next_poll_in_secs`, `failure`) are omitted here and carry
+diagnostic detail `comb status` renders as columns; see
+`libbeachcomber::protocol::CacheRow` for the authoritative field list. Every
+request, response and payload on this page is a type in
+`libbeachcomber::protocol`: the daemon writes them, and `bc_status` and
+`bc_introspect` hand them to the SDKs as written, a field with no value
+omitted.
 
 **Note:** `data` is an array of cache rows, NOT a daemon-health object.
 Daemon-health information lives on `Introspect{daemon}`. This was a breaking
@@ -259,7 +685,10 @@ migrated.
 
 Subscribe to changes on a single key. The connection switches to streaming
 mode; the daemon will emit a new response line whenever the key's value
-changes, and continue until the client disconnects.
+changes, and continue until the client disconnects. A watch may address any
+key, including one nothing answers yet (an unknown provider, a node not yet
+written): the first frame is then a miss, and a later write wakes it. A watch on
+a layer facet or `:cache` key warms no Source.
 
 **Request:**
 ```json
@@ -268,11 +697,34 @@ changes, and continue until the client disconnects.
 
 **Response (initial + per-event):**
 ```json
-{"ok": true, "data": {"branch": "main"}, "age_ms": 0, "stale": false}
+{"ok": true, "data": {"branch": "main"}, "age_ms": 0}
 ```
 
 The daemon emits one initial event with the current value, then one
-response per subsequent change.
+response per subsequent change. The initial event and every later one are
+the same chain-resolved read `Get` returns — **every half**, `data`,
+`template` and `memo` — and the watch fires on a change to **any entry on either
+chain**: a `put` at an ancestor, or at the global entry, reaches a watch
+opened at a project path. Any write to a namespace or one of its facets
+(`p:template`, `p:put`, `p:cache`) wakes the namespace's watchers, so a template
+edited on its own delivers a frame carrying the new `template` and no new
+`data`. The
+daemon drops the subscription as soon as the client closes the connection,
+not on the next write to the watched key. The connection is single-purpose:
+after the watch request the client must not write again, and any further
+bytes from it — a pipelined line, a stray newline — end the watch just as a
+close does. A frame is sent when its `data`, its `template` or its `memo` half
+changed; ages are not compared, so a memo whose hash was dropped is a frame, and
+one that only grew older is not.
+
+This op is unchanged by, and knows nothing about, *resolved* watching — a
+value re-resolved over every key its resolution reads, emitted only when that
+value actually changes. That layering
+is client-side: `libbeachcomber::watch` (`ResolvedWatch`) opens several `Watch`
+subscriptions like the one above and re-resolves on their frames, and `comb
+watch`, `bc_watch_open` and every SDK's `watch` are clients of it. The wire op
+itself still answers about exactly one address, both halves included, as
+described above.
 
 ### `Introspect`
 
@@ -283,7 +735,7 @@ Diagnostic queries into daemon internals. Subject determines shape.
 {"op": "introspect", "subject": "daemon"}
 ```
 
-Subjects: `daemon`, `providers`, `config`, `cache`, `backoff`, `watches`,
+Subjects: `daemon`, `providers`, `config`, `cache`, `lifecycle`, `watches`,
 `timers`, `demand`, `procs`.
 
 `procs` accepts an optional `duration_secs` integer for profiling.
@@ -302,16 +754,126 @@ Subjects: `daemon`, `providers`, `config`, `cache`, `backoff`, `watches`,
     "in_flight": 0,
     "active_watchers": 3,
     "cache_entries": 42,
+    "watch_backend": "native",
+    "reaper": {"armed": true, "visibility": "system-wide", "sweeps": 12, "reaped": 0, "kill_denied": 0},
     "verdicts": [{"level": "PASS", "message": "daemon responsive"}]
   },
-  "age_ms": 0,
-  "stale": false
+  "age_ms": 0
 }
 ```
+
+`config_path` is omitted when no configuration file was loaded, and `reaper`
+on an embedded server that has none.
+
+`in_flight` counts the runs of Source instances in flight, whoever started
+them: a read, a poll, a file event, a refresh, a Source's call.
+
+`active_watchers` counts open `Watch` connections, not distinct watched keys
+or clients: a resolved `comb watch` opens one `Watch` subscription per
+dependency its key's resolution reads, so a single client can read as more
+than 1. A watch whose registration failed adds a `WARN` verdict, `watch of
+<path> failed: <error>; …`.
+
+**Response (subject=watches):** `data.watches` is every path watched for a
+Source, by path, with where its registration stands:
+
+```json
+{"watches": [
+  {"path": "/home/me/ws/project", "state": "active", "asked_secs_ago": 310},
+  {"path": "/home/me/.config/tool/state.json", "state": "active", "via": "/home/me/.config", "asked_secs_ago": 310},
+  {"path": "/home/me/ws/big", "state": "pending", "asked_secs_ago": 2},
+  {"path": "/srv/locked/state.json", "state": "failed", "error": "Permission denied (os error 13)", "asked_secs_ago": 40}
+ ],
+ "verdicts": [{"level": "PASS", "message": "watching 4 paths"}, …]}
+```
+
+Watches exist only while an instance is Active, so a daemon with no Active
+instance lists none and says `PASS` `idle: no instance is Active, so no path
+is watched`: that is healthy, not a warning. `asked_secs_ago` is the whole
+seconds since the path was last asked for. A registration is made off the
+scheduler's loop, so a path is `pending` until
+it is made, and its changes are not seen until then. `active` is registered: on
+the path and everything below it or, with `via`, while the path does not exist,
+on the entries of the nearest directory above it that does; the path's
+creation is then a change like any other. `failed` carries the error, adds a
+`WARN` verdict (as does a path still `pending` after 30 seconds), and is asked for again by the next read of a Source that
+watches it.
+
+**Response (subject=providers):** `data.providers` is one object per
+provider, sorted by name:
+
+```json
+{"name": "git", "source": "source",
+ "sources": [{"name": "head", "fields": [{"name": "branch"}],
+              "invalidation": "watch .git/HEAD"}],
+ "invalidation": "watch .git/HEAD", "in_backoff": null, "disabled": false}
+```
+
+A provider carries no `scope`: whether a Source has a root is a question asked
+of a directory, not a property of the provider. `source` is `static` (a
+namespace with no Sources), `source` or `unknown`. `disabled` is true for a
+provider switched off with `[daemon.providers.<p>] enabled = false`; its
+`invalidation`, and each Source's, then reads `disabled`, because nothing of it
+runs. `data.verdicts` leads with the provider count.
+
+**Response (subject=config):** `data` is `{path, parsed, errors,
+config_source_count, verdicts}`. `path` is the `config.toml` that was loaded, or
+null when the file does not exist (configuration is read only from
+`$XDG_CONFIG_HOME/beachcomber`: `defaults/`, `config.toml`, `conf.d/`).
+`config_source_count` is the number of `[daemon.providers.<p>.sources.<s>]`
+tables that declare a config Source (prototypes are not
+counted).
 
 Other subjects return different shapes; see `src/server.rs` for the current
 authoritative shape of each subject. Per-subject typed documentation is
 Phase 3+ work.
+
+### `Layers`
+
+The stack of layers a read of `key` from `path` consults, per leaf. It is
+the data behind `comb status --tree` and is **CLI-only**: no SDK or C ABI
+function binds it.
+
+```json
+{"op": "layers", "key": "aws.region", "path": "/home/me/ws/project"}
+```
+
+`key` is a provider or a field (`p`, `p.f`, `p.group.f`); a facet key is an
+error. Like a `:cache` read, it finds the instances a read would reach but
+warms none of them and signals no demand: a Source with nothing stored adds
+no layer, and a namespace with nothing anywhere is a miss (`{"ok": true}`).
+
+`data` is a tree shaped like the value with an ordered array at each leaf (a
+leaf key answers with its array alone):
+
+```json
+[{"label": "config(/home/me/.config/beachcomber/defaults/aws.toml)",
+  "facet": "template", "path": null,
+  "value": "{{ env.AWS_REGION or … }}", "age_ms": 72000,
+  "answered": true},
+ {"label": "put", "path": "/home/me/ws/project", "value": "eu-west-1",
+  "age_ms": 3000}]
+```
+
+The order is the read's: the memo records for a template leaf first
+(`<p>:memo` up the chain from `path`, nearest first, label `memo`, `facet:
+"memo"`, `value` the memo's value, `null` for a memo of absence), then the
+template records for the leaf (`<p>:template` up the chain from `path`,
+nearest first, `facet: "template"`, `value` the raw expression), then a leaf the provider's
+`result` or `return` line computed (`computed(<line>)`), then, for each
+directory of the read's chain nearest first, its `put`, its `config(<file>)`
+seeds (every file that sets the leaf, the last in composition order first,
+so a file's record is followed by those it overrides), and the records of
+each Source instance the read reaches there
+(`source(<name>)`; cascade and `| nearest` as for `Get`). A leaf's list also
+holds a record that stands as a scalar on an ancestor of it, which hides the
+leaf in that layer. `label` is presented as a `:cache` answer's `source` is;
+`path` is the directory the record is stored at (`null`: the global entry).
+`answered` is present, and true, on the one layer the read takes: when a
+template stands at the leaf, the nearest memo while it is live (it has a
+`hash` and is not stale), else the first template record; otherwise the record the
+merged read resolves to (a `put` that replaced a node can hide nearer
+records below it, so the answer is not always the first data layer).
 
 ## Versioning
 
@@ -342,12 +904,9 @@ the wire. `comb get -f text`/`-f sh` and `comb watch -f text`/`-f sh` still
 work — the CLI renders locally from the JSON response — only the wire
 contract changed.
 
-This was a breaking change (semantics, not framing): a request that still
-sets `"format": "text"` or `"format": "sh"` is not rejected — `Get`/`Watch`
-requests have never rejected unrecognised fields — it is simply ignored,
-and the caller gets a normal JSON response instead of the rendered text/sh
-form it may have expected. Clients that depended on server-side rendering
-must render locally after this change.
+This was a breaking change: a request that still sets `"format": "text"` or
+`"format": "sh"` is refused, as every field an op does not take is. Clients
+that depended on server-side rendering must render locally.
 
 The removed sub-protocol was also unsound: a stored value that began with
 `error:` was indistinguishable on the wire from a genuine failure (both
@@ -357,21 +916,38 @@ any request issued afterward on the same persistent connection. JSON framing
 has neither failure mode: errors are carried by `ok:false`, and values are
 escaped strings.
 
-## Env-cascade P2 — no wire change
+## Data-provider rename — no wire change
 
-Env-cascade P2 (env-selected file resolution, Tier B providers: `kubecontext`, `talos`) adds **no** wire-protocol change. The client resolves the env-selected file path via a path expression (`env.KUBECONFIG or '~/.kube/config'`, etc.) and passes the result as the existing `path` field of the `Get` request. The daemon receives only the resolved path as a cache coordinate — it never reads `$KUBECONFIG`, `$TALOSCONFIG`, or any other selector env var.
-
-The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs`) is a provider-name change visible in the `key` field of `Get`/`Refresh` requests and in `Status` rows — not a change to request/response shape or encoding.
+The data-provider rename (`aws` → `aws_profiles`, `gcloud` → `gcloud_configs`) is a provider-name change visible in the `key` field of `Get`/`Refresh` requests and in `Status` rows — not a change to request/response shape or encoding. The `aws` and `gcloud` names live on as template-backed namespaces: a `get aws.region` returns the template the client renders, not a daemon-computed value.
 
 ---
 
 ## Glossary
 
-- **Provider** — a source of data (e.g. `git`, `hostname`, `mise`). Produces
-  a `ProviderResult` — a map of field name → `Value`.
+- **Provider** — a source of data (e.g. `git`, `hostname`, `mise`), made up
+  of one or more Sources. Produces a `ProviderResult` — a map of field name →
+  `Value`.
+- **Source** — one of a provider's execution strategies (e.g. `git`'s `head`,
+  `refs`, `diff`, `branches`, `lineage`, `status`), each owning a set of field names and
+  declaring its own schedule, and answering which instance serves
+  a directory (`root`). What `Refresh` re-executes and demand-driven warming keeps warm.
 - **Field** — a named element of a provider's output (e.g. `branch` on `git`).
-- **Virtual provider** — a provider whose data is entirely injected via
-  `Put`. No execution.
-- **Cache row** — one line of `Status` output: `{provider, field, path, value, age_ms, stale}`.
-- **Invalidation strategy** — how a provider decides when to re-execute
-  (poll-based, watch-based, once-only). See `src/scheduler.rs`.
+- **Namespace** — the `provider` or `provider:facet` a key's first segment
+  names.
+- **Record** — one stored value at (key, path), with exactly one source: a
+  provider's Source (`head`, `refs`, …), `put`, or `config:<file>`.
+- **Static record** — a record whose source is `put` or `config:<file>`; no
+  Source produces it, so it is never polled, and it is evicted only when its
+  `put` carried a `ttl`. It resolves up the directory chain to `$HOME` (see "Path resolution" under `Get`).
+- **Static namespace** — a namespace no provider or config registers; every
+  record in it is static.
+- **Facet** — `provider:facet`, a namespace holding data about a provider
+  (e.g. `git:template`), addressed like any namespace. There are five, and no
+  other: `template` is the facet a `Get` resolves for its template half;
+  `macro` holds the macro libraries a client template imports; `put` and
+  `source` are the read-only layer facets; `cache` is the daemon's metadata
+  (see "The `:cache` facet").
+- **Cache row** — one line of `Status` output: `{provider, path, source,
+  field, value, age_ms, kind}`.
+- **Schedule** — when a Source runs again: the `poll` and `watch` decorators on
+  its `return` line. See `src/scheduler/`.

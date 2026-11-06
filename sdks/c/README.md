@@ -30,38 +30,47 @@ instead.
 
 int main(void) {
     BcClient *c = bc_client_new(NULL); /* default socket discovery */
+    /* Options JSON keys, each optional: socket_path, timeout_ms (default
+     * 250, at least 1), connect_timeout_ms (default 1500, 0 is one attempt),
+     * autostart (default on) and exec (default off) —
+     * bc_client_new("{\"exec\":true}") lets templates this client renders
+     * call exec(). Any other key is refused (parse_error on the first op). */
 
-    char *r = bc_get(c, "git.branch", "/path/to/repo", 0);
+    /* The value `comb get git.branch` prints at that directory. NULL cwd is
+     * the global entry; env_json is the caller's environment for env.*. */
+    char *r = bc_get(c, "git.branch", "/path/to/repo", NULL, NULL);
     printf("%s\n", r);
-    /* {"ok":true,"data":{"data":"main","age_ms":12,"stale":false}}
-     * or {"ok":true,"data":{"data":null,"age_ms":null,"stale":null}} on miss
+    /* {"ok":true,"data":"main"}
+     * or {"ok":true,"data":null} on miss
      * or {"ok":false,"error":{"kind":"...","message":"..."}} on error */
     bc_string_free(r);
 
-    /* Force recompute then wait for the fresh value */
-    r = bc_get(c, "git.branch", "/path/to/repo", BC_GET_FORCE | BC_GET_WAIT);
+    /* Re-execute what the read demands, waiting for the fresh value; a wait
+     * is a duration ("0", "50ms") or "forever" */
+    r = bc_get(c, "git.branch", "/path/to/repo", NULL,
+               "{\"force\":true,\"wait\":\"forever\"}");
     bc_string_free(r);
 
-    /* Put / clear a virtual provider entry */
-    r = bc_put(c, "myapp", "{\"theme\":\"dark\",\"version\":3}", NULL, NULL);
-    bc_string_free(r);
-    r = bc_put_null(c, "myapp", NULL);
+    /* The template itself, unrendered: a facet, read like any key */
+    r = bc_get(c, "myapp:template.theme", NULL, NULL, NULL);
     bc_string_free(r);
 
-    /* Client-side field resolution — no daemon config file involved */
-    r = bc_resolve(c, "myapp.theme", "/path/to/repo", NULL, NULL);
+    /* Put / remove a static-data entry ("null" removes) */
+    r = bc_put(c, "myapp", "{\"theme\":\"dark\",\"version\":3}", NULL, NULL, false);
+    bc_string_free(r);
+    r = bc_put(c, "myapp", "null", NULL, NULL, false);
     bc_string_free(r);
 
     /* A persistent connection, for a context set once and reused */
     BcSession *s = bc_session_open(c);
     r = bc_session_set_context(s, "/path/to/repo");
     bc_string_free(r);
-    r = bc_session_get(s, "git.branch", NULL, 0); /* uses the context path */
+    r = bc_session_get(s, "git.branch", NULL, NULL, NULL); /* reads at the context path */
     bc_string_free(r);
     bc_session_close(s);
 
     /* Watch — blocking poll */
-    BcWatch *w = bc_watch_open(c, "git.branch", "/path/to/repo");
+    BcWatch *w = bc_watch_open(c, "git.branch", "/path/to/repo", NULL);
     r = bc_watch_next(w, 5000 /* ms; -1 blocks, 0 polls */);
     printf("%s\n", r); /* {"ok":true,"outcome":"event"|"timeout"|"eof"|"cancelled",...} */
     bc_string_free(r);
@@ -81,30 +90,54 @@ cc -o myapp myapp.c -I/usr/local/include -L/usr/local/lib -lbeachcomber \
 
 `beachcomber.h` is a one-line passthrough to the cbindgen-generated
 `libbeachcomber-ffi/include/beachcomber.h` — see that file's doc comments
-for the full bc_* contract (ownership, NULL-safety, flag bits). In short:
+for the full bc_* contract (ownership, NULL-safety, options JSON). In short:
 
 - Every call returns a caller-owned, NUL-terminated `char *` JSON envelope
   — `{"ok":true,"data":...}` or `{"ok":false,"error":{"kind":...,"message":...}}`
   — except `bc_version()` (static, never freed) and the handle constructors
-  (`bc_client_new`, `bc_session_open`, `bc_watch_open`).
+  (`bc_client_new`, `bc_session_open`, `bc_watch_open`). `data` is always
+  present, and for `bc_get`, `bc_session_get` and `bc_eval` a `null` is a
+  miss. The `kind` slugs, and the one API every other
+  SDK builds on these functions, are in `docs/sdk-api.md`.
 - Free every other returned string with `bc_string_free()`.
-- `BcClient` (`bc_get`/`bc_put`/`bc_put_null`/`bc_refresh`/`bc_status`/
-  `bc_introspect`/`bc_hello`/`bc_resolve`/`bc_eval`/`bc_watch_open`)
+- `BcClient` (`bc_get`/`bc_put`/`bc_refresh`/`bc_status`/
+  `bc_introspect`/`bc_hello`/`bc_eval`/`bc_watch_open`)
   reconnects per call. `BcSession` (`bc_session_open` on a `BcClient`, then
-  `bc_session_get`/`put`/`set_context`) holds one persistent connection —
+  `bc_session_get`/`put`/`refresh`/`set_context`) holds one persistent
+  connection, and a directory of its own that a NULL `cwd` or `path` sends —
   use it when a `set_context` needs to be visible to later calls.
-- `bc_get` / `bc_session_get` take a `flags` bitmask: `BC_GET_FORCE`,
-  `BC_GET_WAIT`. Any other bit set is rejected (`kind: "bad_flags"`).
-- `bc_resolve` / `bc_eval` are client-side field resolution — virtual field
-  expressions and path expressions, evaluated in-process against an
-  explicit `cwd` (required) and optional `env_json` / `overrides_json`.
-  Every `cache.*` and plain `provider.field` ref the expression names is
-  fetched from the daemon at `cwd`, following virtual fields transitively;
-  an expression with only `env.*` refs never contacts the daemon.
-- `bc_eval`'s `template_str` accepts a bare expression, a single `{{ expr
-  }}` tag, or literal text/several tags — the first two keep the
-  expression's natural type, the third is always a string.
-- `bc_watch_open` + `bc_watch_next(w, timeout_ms)` + `bc_watch_cancel` /
+- `bc_put(client, key, json_data, ttl, path, persist)` / `bc_session_put`: `persist` keeps the put across a daemon
+  restart, best effort.
+- `bc_get(client, key, cwd, env_json, options_json)` / `bc_session_get(session, …)`
+  return the same value `comb get` prints for this key, cwd and env: the
+  daemon holds the templates (`<provider>:template`, seeded from
+  configuration or `bc_put`) and the client renders them. A plain field is
+  its cached value, a templated one is rendered, and a bare provider name is
+  the whole merged namespace; a miss is `data: null`. `cwd` is the directory
+  the read addresses, read as `comb get --path` reads one (`~` is the home
+  directory, a relative path is against the process's working directory);
+  NULL is the global entry. `env_json` is nullable (NULL is the calling process's
+  environment, as `comb` renders). `options_json` is nullable; its keys, each
+  optional, are `force` (`true` re-executes every Source the read demands, as
+  `comb get --force`) and `wait` (how long to wait for a run the read needs
+  before answering what is stored, as `comb get --wait`: a duration such as
+  `"0"`, `"50ms"` or `"2s"`, or `"forever"`; left out, a stored record waits
+  its Source's budget and a cold read waits for its run). The read may take
+  `timeout_ms` plus the wait; `"forever"` has no deadline. Any other key, or
+  a `wait` that is neither, is a `parse_error`.
+- The unrendered halves are facets, read with `bc_get` like any key:
+  `p:template.x` is the template as stored, `p:put.x` and `p:source.x`
+  those layers' values. There is no raw read.
+- `bc_eval(client, template_str, cwd, env_json)` renders a template that is
+  stored nowhere — the same value `comb eval` prints. `template_str`
+  accepts a single `{{ expr }}` tag, or literal text/several tags — the
+  former keeps the expression's natural type, the latter is always a
+  string (a source with no tags at all is its literal text).
+- `exec()` inside a template runs only on a client created with
+  `bc_client_new("{\"exec\":true}")`; it is off by default, and a template
+  that calls it then fails with `exec() is disabled in this context`.
+- `bc_watch_open(c, key, cwd, env_json)` + `bc_watch_next(w, timeout_ms)` +
+  `bc_watch_cancel` /
   `bc_watch_free`: blocking poll, five machine-readable outcomes
   (`event`/`timeout`/`eof`/`cancelled`/the ordinary `ok:false` error
   envelope). `bc_watch_cancel` is the one call safe to invoke from another

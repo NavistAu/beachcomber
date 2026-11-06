@@ -44,7 +44,7 @@ precmd() {
 }
 ```
 
-The `.` argument passed to `comb g git.branch .` tells the daemon to scope the lookup to the current directory. Path-scoped providers like `git` return data relative to the nearest repository root from that path. Always pass `.` (or an explicit path) when querying providers that are directory-aware.
+The `.` argument passed to `comb g git.branch .` names the current directory, which is also what `comb g` addresses with no path. Rooted providers like `git` answer from the nearest repository root above that directory.
 
 ### How to reload
 
@@ -66,22 +66,19 @@ Add the function and `PROMPT_COMMAND` assignment to your `~/.bashrc`. bash evalu
 
 ```bash
 # ~/.bashrc
-# comb g.s is shorthand for `comb get -f shell`. g = get, .s = shell format (key=value output).
+# comb g.s is shorthand for `comb get -f sh`. g = get, .s = shell format (key='value' lines).
 __beachcomber_prompt() {
-    # Fetch entire git state in one query, parse key=value output
-    local git_state
-    git_state=$(comb g.s git . 2>/dev/null)
-
-    local branch dirty
-    while IFS='=' read -r key value; do
-        case "$key" in
-            branch) branch="$value" ;;
-            dirty)  dirty="$value" ;;
-        esac
-    done <<< "$git_state"
+    # One query for the whole git namespace. `.s` output is key='value' lines,
+    # shell-quoted, so eval it into prefixed locals rather than parsing by hand.
+    local git_branch="" git_dirty=""
+    eval "$(comb g.s git . 2>/dev/null | sed 's/^/local git_/')"
 
     local git_part=""
-    [[ -n "$branch" ]] && git_part="(${branch}${dirty:+*}) "
+    if [[ -n "$git_branch" ]]; then
+        git_part="(${git_branch}"
+        [[ "$git_dirty" == true ]] && git_part+="*"
+        git_part+=") "
+    fi
 
     local kube
     kube=$(comb g kubecontext.context 2>/dev/null)
@@ -94,7 +91,7 @@ __beachcomber_prompt() {
 PROMPT_COMMAND=__beachcomber_prompt
 ```
 
-The bash example queries the entire `git` namespace at once with `comb g.s git .`, which returns all fields as `key=value` lines. Parsing that single response is more efficient than making one `comb g` call per field. The `kubecontext.context` query has no path argument because the current Kubernetes context is global, not directory-scoped.
+The bash example queries the entire `git` namespace at once with `comb g.s git .`, which returns all fields as `key='value'` lines with every value shell-quoted, so `eval` is the right parser — the `sed` prefixes each line with `local git_` so the fields land in this function's scope and never collide with your own variables. Parsing that single response is more efficient than making one `comb g` call per field. The `kubecontext.context` query has no path argument because the current Kubernetes context is global, not directory-scoped.
 
 ### How to reload
 
@@ -158,10 +155,10 @@ Before restarting your shell, verify that the daemon is returning data:
 # Confirm the daemon is reachable
 comb s
 
-# Query a path-scoped provider from within a git repo
+# Query a rooted provider from within a git repo
 comb g git.branch .
 
-# Query a global provider
+# Query a value that does not depend on the directory
 comb g kubecontext.context
 ```
 
@@ -189,7 +186,7 @@ The repository ships two curl-able integration scripts in `scripts/`:
 
 - **`scripts/polyfill.sh`** — Defines a `comb()` shell function that stands in for the real binary. If comb is installed, the script does nothing. If comb is not installed, it handles `comb g <key>` calls by falling back to native tools (git, hostname, uptime, etc.) for known keys. This lets integrations write `comb g git.branch .` and have it work everywhere — with or without beachcomber. See the [Polyfill](../integrating/polyfill.md) guide for the full key list.
 
-- **`scripts/chpwd.sh`** — A directory-change hook that pokes path-scoped providers (`git`, `mise`, `terraform`, `python`, `direnv`, `asdf`) in the background whenever the working directory changes. Warms the cache before your first prompt renders in a new directory. Supports zsh (`chpwd`), bash (`PROMPT_COMMAND`), and fish (separate config file). No-op if comb is not installed.
+- **`scripts/chpwd.sh`** — A directory-change hook that pokes rooted providers (`git`, `mise`, `terraform`, `python`, `direnv`, `asdf`) in the background whenever the working directory changes. Warms the cache before your first prompt renders in a new directory. Supports zsh (`chpwd`), bash (`PROMPT_COMMAND`), and fish (separate config file). No-op if comb is not installed.
 
 ```sh
 # Install via curl (bash/zsh)
@@ -206,4 +203,4 @@ source ~/.local/share/beachcomber/polyfill.sh
 - **Prompt shows no dynamic data:** the `2>/dev/null` in the examples silences errors, so if the daemon is not running you get an empty prompt with no error message. Remove `2>/dev/null` temporarily to see what `comb g` reports.
 - **Wrong branch after switching:** the cache updates on its next poll cycle. Run `comb g --force git .` to force an immediate recomputation.
 
-See the [Troubleshooting](./troubleshooting.md) guide for general diagnostics.
+See the [Troubleshooting](../getting-started/troubleshooting.md) guide for general diagnostics.

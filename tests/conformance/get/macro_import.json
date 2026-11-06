@@ -1,0 +1,33 @@
+{
+  "name": "get_a_template_imports_a_macro_library",
+  "description": "A template imports a macro from a library by its address, <p>:macro.<name>, and a get renders it: the library is read through the same resolver, over the C ABI as on the CLI.",
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "fxm:macro.wrap",
+        "data": "{% macro wrap(x) %}[{{ x }}]{% endmacro %}"
+      }
+    },
+    {
+      "op": "put",
+      "args": {
+        "key": "fxm:template",
+        "data": {
+          "t": "{% from 'fxm:macro.wrap' import wrap %}{{ wrap('ok') }}"
+        }
+      }
+    }
+  ],
+  "test": {
+    "op": "get",
+    "args": {
+      "key": "fxm.t"
+    }
+  },
+  "expect": {
+    "status": "hit",
+    "data_type": "string",
+    "data_equals": "[ok]"
+  }
+}

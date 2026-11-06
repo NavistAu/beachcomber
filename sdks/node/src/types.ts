@@ -1,5 +1,6 @@
 /**
- * Typed response shapes for the beachcomber protocol.
+ * The typed shapes of docs/sdk-api.md: `libbeachcomber::protocol`'s fields,
+ * in camelCase, and no others (sdks/api.json lists them under `types`).
  */
 
 export interface HelloInfo {
@@ -8,26 +9,28 @@ export interface HelloInfo {
 }
 
 export type RowKind =
-  | { kind: 'lifecycle'; decay: number; watches_files: boolean }
+  | { kind: 'lifecycle'; decay: number; depth: number; watches_files: boolean }
   | { kind: 'once' }
-  | { kind: 'virtual' }
+  | { kind: 'static' }
   | { kind: 'transient' };
 
 export interface CacheRow {
   provider: string;
-  field: string | null;
+  /** The directory the row is stored at; `null` for the global entry. */
   path: string | null;
+  /** What produced the field, as the daemon presents it (`source(head)`, `put`, `config(<file>)`). */
+  source: string;
+  field: string;
   value: unknown;
-  ageMs: number;
-  stale: boolean;
+  /** How old the value is; undefined when the row has no age. */
+  ageMs?: number;
   kind?: RowKind;
   pollIntervalSecs?: number;
-  keepAlivePolls?: number;
+  pollCount?: number;
   pollsElapsed?: number;
-  fseventsReinstate?: boolean;
-  failure?: { consecutive_failures: number; suppressed_until_unix_ms?: number };
-  /** Owning source name within the provider; undefined when not present on the wire. */
-  source?: string;
+  /** Seconds until the next scheduled poll; undefined when it has none. */
+  nextPollInSecs?: number;
+  failure?: { consecutive_failures: number; suppressed_until_unix_ms?: number; last_error?: string };
 }
 
 export interface Verdict {
@@ -53,8 +56,10 @@ export interface DaemonHealth {
   inFlight: number;
   activeWatchers: number;
   cacheEntries: number;
-  watchBackend?: string;
-  reaper?: ReaperStatus;
+  /** `native`, `polling`, `disabled` or `unknown`. */
+  watchBackend: string;
+  /** The reaper's capability; `null` on a daemon that has none. */
+  reaper: ReaperStatus | null;
   verdicts: Verdict[];
 }
 
@@ -69,12 +74,23 @@ export type IntrospectSubject =
   | 'demand'
   | 'procs';
 
-export type IntrospectResponse =
-  | { subject: 'daemon'; daemon: DaemonHealth }
-  | { subject: Exclude<IntrospectSubject, 'daemon'>; other: unknown };
+/**
+ * An introspect report: `daemon` is typed for the `daemon` subject (and
+ * `null` otherwise); `other` is any other subject's JSON as the ABI hands it
+ * on (and `null` for `daemon`).
+ */
+export interface IntrospectResponse {
+  subject: IntrospectSubject;
+  daemon: DaemonHealth | null;
+  other: unknown;
+}
 
+/**
+ * One emitted change on a watch. `data` is the value `get` answers for the
+ * watched key at that moment, or `null` when nothing answers there — a miss,
+ * not the end of the stream. A value read from several cache records has no
+ * single age or staleness, so a watch reports neither.
+ */
 export interface WatchEvent {
   data: unknown;
-  ageMs: number;
-  stale: boolean;
 }

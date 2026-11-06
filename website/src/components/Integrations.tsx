@@ -22,7 +22,7 @@ const sdks = [
   {name: 'Lua', href: '/docs/ecosystem/lua-sdk'},
   {name: 'Ruby', href: '/docs/ecosystem/ruby-sdk'},
   {name: 'C', href: '/docs/ecosystem/c-sdk'},
-  {name: 'Shell', href: '/docs/ecosystem/shell'},
+  {name: 'Shell', href: '/docs/integrations/shell'},
 ];
 
 export default function Integrations(): JSX.Element {

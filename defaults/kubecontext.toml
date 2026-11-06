@@ -1,0 +1,5 @@
+[client.providers.kubecontext]
+# The kubectl context in effect, memoised: re-run when $KUBECONFIG changes, when a kubeconfig file changes, or every 10 minutes; absent when none is set or kubectl is not installed.
+template.context = "{{ 'kubectl config current-context 2>/dev/null || true' | watch((env.KUBECONFIG or '~/.kube/config') | split(':')) | ttl('10m') | cache(env.KUBECONFIG) | exec() or none }}"
+# The context's namespace, memoised the same way; `default` when it sets none; absent when there is no context.
+template.namespace = "{{ (['kubectl', 'config', 'view', '--minify', '-o', 'jsonpath={..namespace}'] | watch((env.KUBECONFIG or '~/.kube/config') | split(':')) | ttl('10m') | cache(env.KUBECONFIG) | exec() or 'default') if kubecontext.context }}"

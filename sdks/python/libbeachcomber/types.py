@@ -1,10 +1,12 @@
-"""Typed response shapes for beachcomber SDK."""
+"""Typed response shapes: ``libbeachcomber::protocol``'s, field for field
+(``sdks/api.json`` ``types``), as ``bc_status``, ``bc_hello`` and
+``bc_introspect`` hand them on. A field the ABI leaves out is ``None``."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -15,18 +17,22 @@ class HelloInfo:
 
 @dataclass(frozen=True)
 class CacheRow:
+    """One row of ``status``: one per (provider, path, source, field).
+    ``path`` is ``None`` for the global entry; ``kind`` and ``failure`` are
+    the JSON objects the ABI hands on."""
+
     provider: str
-    field: Optional[str]
     path: Optional[str]
+    source: str
+    field: str
     value: Any
-    age_ms: int
-    stale: bool
+    age_ms: Optional[int] = None
     kind: Optional[Dict[str, Any]] = None
     poll_interval_secs: Optional[int] = None
-    keep_alive_polls: Optional[int] = None
-    fsevents_reinstate: Optional[bool] = None
+    poll_count: Optional[int] = None
+    polls_elapsed: Optional[int] = None
+    next_poll_in_secs: Optional[int] = None
     failure: Optional[Dict[str, Any]] = None
-    source: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -36,7 +42,20 @@ class Verdict:
 
 
 @dataclass(frozen=True)
+class ReaperStatus:
+    """The reaper's capability, in :class:`DaemonHealth`."""
+
+    armed: bool
+    visibility: str  # "system-wide" or "confined"
+    sweeps: int
+    reaped: int
+    kill_denied: int
+
+
+@dataclass(frozen=True)
 class DaemonHealth:
+    """The ``introspect`` ``daemon`` report."""
+
     pid: int
     version: str
     uptime_secs: int
@@ -46,7 +65,9 @@ class DaemonHealth:
     in_flight: int
     active_watchers: int
     cache_entries: int
-    verdicts: list = field(default_factory=list)  # list[Verdict]
+    watch_backend: str  # "native", "polling", "disabled" or "unknown"
+    reaper: Optional[ReaperStatus]
+    verdicts: List[Verdict] = field(default_factory=list)
 
 
 class IntrospectSubject(str, Enum):
@@ -70,6 +91,12 @@ class IntrospectResponse:
 
 @dataclass(frozen=True)
 class WatchEvent:
+    """One emitted change on a watch.
+
+    ``data`` is the resolved value — what ``comb get`` would print for the
+    watched key at that moment — or ``None`` when nothing is stored there.
+    A value resolved from several cache records has no single age or
+    staleness, so a watch reports neither.
+    """
+
     data: Any
-    age_ms: int
-    stale: bool

@@ -6,8 +6,8 @@
 -- own freshly-spawned daemon on a private socket (tests/conformance/
 -- README.md, "Isolation": fixtures may reuse provider keys such as
 -- `myappcache` across files, so a shared daemon leaks cache state between
--- them — see e.g. resolve/cascade_falls_through_to_cache.json and
--- resolve/cascade_miss_yields_empty_string.json, which both `put` the same
+-- them — see e.g. get/cascade_falls_through_to_comb.json and
+-- get/cascade_miss_is_absent.json, which both `put` the same
 -- key with different values and would otherwise observe each other's
 -- writes depending on run order).
 --
@@ -15,7 +15,8 @@
 -- init.lua): "ffi" under LuaJIT, "subprocess" under PUC Lua. A fixture
 -- whose op the active transport's backend doesn't implement (Error.kind ==
 -- "unsupported") is reported SKIP, never PASS or FAIL — see
--- tests/conformance/README.md's note on partial `resolve` support.
+-- tests/conformance/README.md's note on partial `eval` support. Over the
+-- subprocess transport that is hello, introspect and watch.
 --
 -- Invoke:
 --   COMB_BIN=/path/to/comb lua sdks/lua/conformance_runner.lua
@@ -37,6 +38,7 @@ package.path = sdk_root .. "?.lua;"
 
 local json = require("beachcomber.json")
 local comb = require("beachcomber")
+local testdaemon = require("test.testdaemon")
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -91,28 +93,8 @@ local function start_daemon()
   if not tmpdir or tmpdir == "" then die("mktemp -d failed under " .. base_tmpdir) end
   local socket_path = tmpdir .. "/sock"
 
-  local start_cmd = COMB_BIN .. " daemon --socket " .. socket_path .. " > /dev/null 2>&1 & echo $!"
-  local pid_pipe = io.popen(start_cmd, "r")
-  if not pid_pipe then die("failed to start daemon") end
-  local pid = pid_pipe:read("*l")
-  pid_pipe:close()
-
-  -- Poll until the socket file appears (max 5s). `test -S`, not io.open:
-  -- opening a Unix domain socket special file with fopen() fails (ENXIO)
-  -- even once the daemon is listening.
-  local deadline = os.time() + 5
-  local ready = false
-  while os.time() < deadline do
-    if os.execute("test -S " .. socket_path) then
-      ready = true
-      break
-    end
-    os.execute("sleep 0.05 2>/dev/null || true")
-  end
-  if not ready then
-    os.execute("kill " .. tostring(pid) .. " 2>/dev/null")
-    die("daemon did not create socket within 5 seconds")
-  end
+  local pid = testdaemon.start(COMB_BIN, tmpdir, socket_path)
+  if not pid then die("daemon did not serve " .. socket_path .. " within 5 seconds") end
 
   return { pid = pid, socket = socket_path, tmpdir = tmpdir }
 end
@@ -138,10 +120,9 @@ end
 -- ── Op dispatch ──────────────────────────────────────────────────────────────
 
 --- Run one op descriptor {op=, args=} through the Client's public API and
--- return a canonical response table {ok, data, age_ms, stale, error}.
--- `resolve_ctx` supplies the fixture's top-level cwd/env/virtual for the
--- `resolve` and `eval` ops, neither of which is a wire op (see
--- tests/conformance/README.md).
+-- return a canonical response table {ok, data, error}.
+-- `resolve_ctx` supplies the fixture's top-level cwd/env for the `get`,
+-- `eval` and `watch` ops (see tests/conformance/README.md).
 local function run_op(client, descriptor, resolve_ctx)
   local op, args = descriptor.op, descriptor.args or {}
 
@@ -155,21 +136,28 @@ local function run_op(client, descriptor, resolve_ctx)
     return { ok = true, data = { protocol_version = info.protocol_version, daemon_version = info.daemon_version } }
 
   elseif op == "get" then
-    local r, err = client:get_with_flags(args.key, args.path, args.force, args.wait)
-    if not r then return fail(err) end
-    return { ok = true, data = r.data, age_ms = r.age_ms, stale = r.stale }
+    local value, err = client:get(args.key, {
+      cwd = resolve_ctx.cwd, env = resolve_ctx.env, force = args.force, wait = args.wait,
+    })
+    if value == nil and err then return fail(err) end
+    return { ok = true, data = value }
 
   elseif op == "refresh" then
-    local ok, err = client:refresh(args.key, args.path)
+    local ok, err = client:refresh(args.key, { path = args.path })
     if not ok then return fail(err) end
     return { ok = true }
 
   elseif op == "context" then
-    client:set_context(args.path)
+    -- A directory is a session's: set it on one, which keeps it.
+    local session, err = client:session()
+    if not session then return fail(err) end
+    local ok, serr = session:set_context(args.path)
+    session:close()
+    if not ok then return fail(serr) end
     return { ok = true }
 
   elseif op == "put" then
-    local ok, err = client:put(args.key, args.data, args.ttl, args.path)
+    local ok, err = client:put(args.key, args.data, { ttl = args.ttl, path = args.path, persist = args.persist })
     if not ok then return fail(err) end
     return { ok = true }
 
@@ -179,7 +167,7 @@ local function run_op(client, descriptor, resolve_ctx)
     return { ok = true, data = rows }
 
   elseif op == "introspect" then
-    local result, err = client:introspect(args.subject, args.duration_secs)
+    local result, err = client:introspect(args.subject, { duration_secs = args.duration_secs })
     if not result then return fail(err) end
     if args.subject == "daemon" then
       return { ok = true, data = result.daemon }
@@ -187,26 +175,19 @@ local function run_op(client, descriptor, resolve_ctx)
     return { ok = true, data = result.other }
 
   elseif op == "watch" then
-    local stream, err = client:watch(args.key, args.path)
+    local stream, err = client:watch(args.key, { cwd = resolve_ctx.cwd, env = resolve_ctx.env })
     if not stream then return fail(err) end
     local ev, everr = stream:next_event()
     stream:close()
     if not ev then
       return fail(everr or { kind = "eof", message = "watch stream closed with no event" })
     end
-    return { ok = true, data = ev.data, age_ms = ev.age_ms, stale = ev.stale }
-
-  elseif op == "resolve" then
-    local value, err = client:resolve(args.key, {
-      cwd = resolve_ctx.cwd, env = resolve_ctx.env, virtual = resolve_ctx.virtual,
-    })
-    if value == nil and err then return fail(err) end
-    return { ok = true, data = value }
+    -- A watch event carries a resolved value, which can come from several
+    -- records at once: no age, no staleness.
+    return { ok = true, data = ev.data }
 
   elseif op == "eval" then
-    local value, err = client:eval(args.template, {
-      cwd = resolve_ctx.cwd, env = resolve_ctx.env, virtual = resolve_ctx.virtual,
-    })
+    local value, err = client:eval(args.template, { cwd = resolve_ctx.cwd, env = resolve_ctx.env })
     if value == nil and err then return fail(err) end
     return { ok = true, data = value }
 
@@ -254,8 +235,7 @@ end
 -- asserting something the harness doesn't actually check.
 local KNOWN_EXPECT_KEYS = {
   status = true, data_type = true, data_equals = true, data_as_text = true,
-  data_contains_field = true, data_field_equals = true, age_ms_present = true,
-  stale = true, error_contains = true,
+  data_contains_field = true, data_field_equals = true, error_contains = true,
 }
 
 --- @return true, or false, reason_string
@@ -337,28 +317,25 @@ local function check_expect(resp, expect)
     end
   end
 
-  if expect.age_ms_present ~= nil then
-    local present = type(resp.age_ms) == "number"
-    if present ~= expect.age_ms_present then
-      return false, "age_ms_present=" .. tostring(expect.age_ms_present) .. " expected but got " .. tostring(present)
-    end
-  end
-
-  if expect.stale ~= nil then
-    if resp.stale ~= expect.stale then
-      return false, "stale=" .. tostring(expect.stale) .. " expected but got " .. tostring(resp.stale)
-    end
-  end
-
   return true
 end
 
 -- ── Fixture execution ─────────────────────────────────────────────────────────
 
+--- The options a fixture's client connects with. A read may take up to 5s
+-- under the ffi transport; the subprocess transport takes no timeout (it
+-- cannot bound a spawn, and refuses one), so none is passed there.
+local HAS_FFI = pcall(require, "ffi")
+local function connect_options(socket)
+  local opts = { socket_path = socket, autostart = false, comb_bin = COMB_BIN }
+  if HAS_FFI then opts.timeout_ms = 5000 end
+  return opts
+end
+
 --- @return "pass"|"fail"|"skip", reason_string_on_fail_or_skip
 local function run_fixture(fixture)
   local guard = start_daemon()
-  local client, cerr = comb.connect({ socket_path = guard.socket, autostart = false, timeout_ms = 3000, comb_bin = COMB_BIN })
+  local client, cerr = comb.connect(connect_options(guard.socket))
   if not client then
     stop_daemon(guard)
     return "fail", "could not connect: " .. tostring(cerr)
@@ -366,8 +343,7 @@ local function run_fixture(fixture)
 
   local resolve_ctx = {
     cwd = fixture.cwd or guard.tmpdir,
-    env = fixture.env or {},
-    virtual = fixture.virtual or {},
+    env = fixture.env, -- nil when the fixture has none: the process environment
   }
 
   for i, step in ipairs(fixture.setup or {}) do
@@ -407,7 +383,7 @@ end
 -- is visible rather than discovered in a profile.
 do
   local probe = start_daemon()
-  local probe_client, err = comb.connect({ socket_path = probe.socket, autostart = false, timeout_ms = 2000, comb_bin = COMB_BIN })
+  local probe_client, err = comb.connect(connect_options(probe.socket))
   stop_daemon(probe)
   if not probe_client then
     die("could not establish a connection to probe the active transport: " .. tostring(err))
@@ -439,10 +415,6 @@ for _, fpath in ipairs(fixture_paths) do
       -- roadmap-logged gap in this binding, not a runner or daemon bug.
       -- Reported as SKIP with the defect named so the gate stays green on
       -- honest terms; remove the entry when the defect is fixed.
-      --
-      -- mapping_null_value_becomes_empty_string was here (nested JSON null
-      -- collapsing to key-absent before put() ran) — fixed by the M.NULL
-      -- sentinel in beachcomber.json; see its doc comment.
       local KNOWN_DEFECTS = {}
       local defect = fixture.name and KNOWN_DEFECTS[fixture.name]
       local outcome, reason

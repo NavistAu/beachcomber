@@ -28,8 +28,7 @@ conformance run in the same commit.
   "expect": {
     "status": "hit",
     "data_type": "number",
-    "data_equals": 1,
-    "stale": false
+    "data_equals": 1
   }
 }
 ```
@@ -43,93 +42,99 @@ conformance run in the same commit.
 | `setup` | no | array of op descriptors to run first (ignored for expectations) |
 | `test` | yes | the op descriptor whose response is asserted |
 | `expect` | yes | assertions — see below |
-| `virtual` | no | object mapping a field key (`"provider.field"`) or a bare provider name to an expression string. Feeds the client-side resolver for `resolve` and `eval` fixtures — see below. Defaults to empty. |
-| `env` | no | object mapping env var name to string value. Feeds the client-side resolver's `env.*` refs for `resolve` and `eval` fixtures. Defaults to empty. |
-| `cwd` | no | string. Feeds the client-side resolver's `cwd`: the path-expression variable for `resolve` fixtures, and the path daemon queries are scoped to for both `resolve` and `eval`. Defaults to the runner's per-fixture temp directory. |
+| `env` | no | object mapping env var name to string value. The caller's environment for `get`, `eval` and `watch` fixtures — the only source of `env.*`. Defaults to empty. |
+| `cwd` | no | string. The directory a `get`, `eval` or `watch` fixture reads at: every daemon query the read makes addresses it. Defaults to the runner's per-fixture temp directory. |
+
+There is no `virtual` block. A fixture declares a template the way any
+caller does — by a `setup` `put` to `<provider>:template`:
+
+```json
+{ "op": "put", "args": { "key": "widget:template", "data": { "label": "{{ comb.widgetdata.label }}" } } }
+```
+
+A nested field (`widget.group.label`) is a nested object in `data`. The
+daemon is the only source of templates; the resolver takes no overrides.
 
 ### Op descriptor
 
 ```json
-{ "op": "<hello|get|refresh|context|put|status|watch|introspect|resolve|eval>", "args": {...} }
+{ "op": "<hello|get|refresh|context|put|status|watch|introspect|eval>", "args": {...} }
 ```
 
 `args` matches the wire request body for that op (minus `op` itself). See
 `docs/protocol-spec.md` for each op's request schema.
 
-### The `resolve` op
+### The `get` op
 
-`resolve` is not a wire op — it never reaches the daemon. It exercises
-client-side field resolution: virtual field expressions and path expressions,
-both evaluated in-process against the fixture's `virtual`, `env`, and `cwd`.
-`args.key` is the only argument:
+`get` is what `comb get` prints, the same in every SDK: the client-side
+resolver (`libbeachcomber::resolve`, which every SDK's `get` binds through
+the C ABI's `bc_get`) asks the daemon for each node — the cached value and
+the template in effect at the address — and renders the template with the
+fixture's `env` and `cwd`. `args.key` resolves exactly as `comb get <key>`
+does; `args.force` (a boolean) and `args.wait` (a string: a duration or
+`"forever"`) are the SDK's `force` and `wait`, handed on as given, so a
+`wait` the library cannot read is refused in its words on every SDK:
 
-- `"provider.field"` (contains a `.`) — evaluate that virtual field. The
-  fixture's `virtual` entry for the same `"provider.field"` key (if any)
-  overrides the built-in expression; otherwise the built-in default (if one
-  exists) is used. Refs of the form `cache.P.F` / `cache.P` inside the
-  expression are fetched live from the daemon — seed them with `setup` `put`
-  ops first. `env.X` refs come from the fixture's `env` map, not the
-  ambient process environment.
-- `"provider"` (no `.`) — evaluate that provider's path expression. The
-  fixture's `virtual` entry keyed by the bare provider name (if any)
-  overrides the built-in path expression; `cwd` and `env` come from the
-  fixture. A falsy/undefined result is a `miss` (`ok=true`, data absent),
-  matching the "no per-path variant" contract.
+- `"provider.field"` — the cached value, or, where a template is in effect
+  at that address, the rendered template. Refs of the form `comb.P.F` /
+  `comb.P` inside it are fetched from the daemon; a plain `P.F` ref is
+  resolved the same way recursively, so a template may reference another
+  provider's templated field. `env.X` comes from the fixture's `env` map,
+  never the ambient process environment.
+- `"provider"` (no `.`) — the whole merged namespace: every string leaf of
+  the provider's template tree rendered, shape kept, merged over the cached
+  data (rendered wins).
 
-A `resolve` fixture typically seeds cache values via `setup` `put` ops,
-declares `virtual`, supplies `env`/`cwd` as needed, and asserts the resolved
-value and its `data_type`.
+A miss — nothing stored or templated at the address — is `ok=true`, data
+absent. An all-empty cascade is `""`, a hit.
 
-Resolution is client-side (see `docs/canon/` for the field-resolution model),
-so this is deliberately **not** wired through a daemon config file — the
-fixture's `virtual`/`env`/`cwd` feed the resolver call directly (for the C
-ABI this is `overrides_json` / `env_json` / `cwd`).
+The unrendered halves are facets, read like any key: `p:template.x` is the
+template as stored, `p:put.x` and `p:source.x` those layers' values. No SDK
+exposes the raw wire read.
 
-Daemon queries a `resolve` makes are scoped to the fixture's `cwd`. A
-pathless (global) `setup` `put` is still visible to them: a virtual provider
-declares no path expression, so a path-scoped `get` falls back to the global
-slot (canon `field_resolution.md` §"Path resolution" — the prose on virtual
-providers, not invariant 2, which is only about an empty/falsy path
-expression). Seed with `args.path` only when the fixture is about
-path-keyed data.
+A `get` fixture typically seeds cache values and templates via `setup`
+`put` ops, supplies `env`/`cwd` as needed, and asserts the value and its
+`data_type`.
+
+Daemon queries a `get` makes are scoped to the fixture's `cwd`. A
+pathless (global) `setup` `put` is still visible to them: a read at a path
+resolves static records up the directory chain, and the global entry is the
+last link of every chain (canon `field_resolution.md` §"Path resolution").
+Seed with `args.path` only when the fixture is about path-keyed data.
 
 ### The `eval` op
 
-`eval` is not a wire op either. It evaluates one **value expression** in any
-of the three forms canon `field_resolution.md` (invariant 14) defines, against
-the same client-side context `resolve` uses. `args.template` is the only
-argument:
+`eval` is not a wire op either. It renders one **value expression** that is
+stored nowhere, every ref resolved as it would be inside a stored template —
+so `{ "op": "eval", "args": { "template": "{{ p.f }}" } }` and
+`{ "op": "get", "args": { "key": "p.f" } }` agree by construction.
+`args.template` is the only argument:
 
 ```json
-{ "op": "eval", "args": { "template": "{{ env.A or cache.p.f }}" } }
+{ "op": "eval", "args": { "template": "{{ env.A or comb.p.f }}" } }
 ```
 
 The type rule the fixtures pin down:
 
-- **bare expression** (no tag markers) — evaluated as an expression, keeping
-  its natural type. `env.A != ""` yields a bool.
-- **exactly one `{{ expr }}`** spanning the whole source — identical to the
-  bare form, natural type preserved. Surrounding whitespace is not literal
-  text.
-- **anything else** — literal text, more than one tag, a `{% %}` statement
-  tag, an unterminated marker, or an empty source — is a template and yields
-  a **string**. `{{ 1 + 1 }} apples` is `"2 apples"`, not a number.
+- **exactly one `{{ expr }}`** spanning the whole source — evaluated as an
+  expression, keeping its natural type. `{{ env.A | bool }}` yields a bool.
+  Surrounding whitespace is not literal text.
+- **anything else** — literal text, no tags at all, more than one tag, a
+  `{% %}` statement tag, an unterminated marker, or an empty source — is a
+  template and yields a **string**. `{{ 1 + 1 }} apples` is `"2 apples"`, not
+  a number, and a source with no tags at all is its own literal text.
 
 A missing or unknown ref is falsy at any depth, never an error: an absent
-`env.*`, a cache miss, and a daemon-rejected key (an unregistered provider)
+`env.*`, a cache miss, and a daemon-rejected key (invalid facet syntax)
 all evaluate falsy, so `{{ nope.field or "x" }}` is `"x"`.
 
-`virtual`, `env` and `cwd` apply exactly as they do for `resolve`: `virtual`
-entries keyed `"provider.field"` define the field expressions a `provider.field`
-reference resolves through (transitively — a virtual field may reference
-another), `env` supplies `env.*`, and `cwd` scopes the daemon queries — with
-the same global-slot fallback `resolve` gets.
+`env` and `cwd` apply exactly as they do for `get`, with the same chain
+resolution. `exec()` is disabled: the runners build their client without the
+`exec` option, as an SDK user does by default.
 
-**Not every runner supports `resolve`/`eval`.** A runner whose binding
-doesn't implement them must **skip** those fixtures and report them as
-skipped, never as passed — a silent skip that reads as a pass is worse than
-no fixture. The Lua runner skips both when it falls back to its subprocess
-transport, which has no client-side resolver.
+**Not every runner supports `eval`.** A runner whose binding doesn't
+implement it must **skip** those fixtures and report them as skipped, never
+as passed — a silent skip that reads as a pass is worse than no fixture.
 
 ### Expectation kinds
 
@@ -144,11 +149,12 @@ uptime — those vary per run.
 | `data_as_text` | data interpreted as text (scalar stringification, or field-less object with a single value) equals this |
 | `data_contains_field` | data is an object containing this field |
 | `data_field_equals` | `{ "field": "<name>", "value": <json> }` — data.field deep-equals |
-| `age_ms_present` | boolean — age_ms is (not) null |
-| `stale` | boolean — stale equals this |
 | `error_contains` | ok=false and response.error contains this substring |
 
-Multiple expectations in the same `expect` block are AND-combined.
+Multiple expectations in the same `expect` block are AND-combined. A
+fixture using a key outside this table must **fail** in every runner, never
+be ignored — otherwise it can pass vacuously; the same goes for a `status`
+value outside the four above.
 
 ## Isolation
 
@@ -182,8 +188,6 @@ tests/conformance/
 │   └── *.json
 ├── mapping/
 │   └── *.json
-├── resolve/
-│   └── *.json
 └── eval/
     └── *.json
 ```
@@ -203,5 +207,5 @@ Each SDK ships a conformance runner that:
 SDK's typed `DaemonHealth.pid` accessor, not by reparsing the raw JSON.
 This is what catches typed-shape drift.
 
-The Rust runner at `libbeachcomber/tests/conformance.rs` is the reference
+The Rust runner at `libbeachcomber/tests/suite/conformance.rs` is the reference
 implementation; other SDK runners mirror its structure.

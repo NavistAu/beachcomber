@@ -1,103 +1,111 @@
 //! Handler for the `watch` subcommand.
 //!
-//! Moved from `src/main.rs` in Task 2.5. Task 1.8 retired the daemon's
-//! server-side `text`/`sh` rendering: the daemon now streams JSON frames
-//! only, and every non-JSON output format is rendered locally from each
-//! frame's `data`, reusing `libbeachcomber::render::render_data` -- the same
-//! rendering `Client::get_formatted_with_flags` uses for `comb get`, including
-//! the shell-quoting `-f sh` requires (canon `field_resolution.md` invariant 8).
+//! `comb watch` is a client of [`libbeachcomber::watch`] the way `comb get`
+//! is a client of `libbeachcomber::resolve`: it names a key, a path and a
+//! format, makes sure the daemon is running, and hands the rest to the
+//! library. Every frame it prints is a *value* — re-resolved by the library
+//! over every key the resolution reads plus the provider's `<p>:template`,
+//! so a template edited under the watch fires it just as a changed cache
+//! record does. Under `text`/`sh`/`csv`/`tsv`/`-f fmt` a frame renders
+//! exactly as `comb get` renders that same value; under `-f json` it is the
+//! same value compacted to one line per frame, where `get` pretty-prints.
+//!
+//! This module only renders what the library emits, per output format —
+//! reusing `libbeachcomber::render::render_data` for `text`/`sh` exactly as
+//! `get` does, including the shell-quoting `-f sh` requires (canon
+//! `field_resolution.md` invariant 8). A frame is one line. A miss is what
+//! `get` prints for one: `null` under `-f json`, a template's own rendering
+//! under `-f '<template>'` (through the one `render_template` `get` uses),
+//! and no line at all under every other format.
 
-use crate::cli::format::render_fmt_template_json;
-use crate::cli::output_format::{OutputFormat, format_sv};
+use crate::cli::exit::Outcome;
+use crate::cli::output_format::{Format, render_template};
 use crate::config::Config;
-use std::process::ExitCode;
+use libbeachcomber::render::render_frame;
+use libbeachcomber::resolve::Slot;
+use libbeachcomber::watch::{ResolvedWatch, WatchOutcome};
 
-pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: OutputFormat) -> ExitCode {
-    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
+/// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
+/// `--path`, the trailing positional, or the current directory.
+pub fn run_watch(config: &Config, key: &str, path: Option<&str>, format: Format) -> Outcome {
+    let socket_path = match crate::cli::connect::connect(config) {
+        Ok(socket) => socket,
+        Err(outcome) => return outcome,
+    };
 
-    if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-        eprintln!("Failed to start daemon: {e}");
-        return ExitCode::from(2);
-    }
+    let client = crate::client::build_client(&socket_path);
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let env = crate::cli::shell_env();
+    let slot = match path {
+        Some(p) => Slot::Path(p.to_string()),
+        None => Slot::Global,
+    };
+    // A watch is a subscription, not a demand: it never forces an execution
+    // or waits on one, it reports what the value becomes.
+    let inputs = crate::cli::inputs(&cwd, &env, slot, false, libbeachcomber::Wait::Budget);
 
-    let client = crate::client::Client::new(socket_path);
-    let mut session = match client.connect() {
-        Ok(s) => s,
+    // A `-f` template renders each frame through the resolver, which reads
+    // what it names over a session of its own.
+    let mut session = match &format {
+        Format::Template(_) => match crate::client::Client::new(socket_path.clone()).connect() {
+            Ok(session) => Some(session),
+            Err(e) => {
+                crate::cli::report::daemon_unreachable(e);
+                return Outcome::Error;
+            }
+        },
+        Format::Preset(_) => None,
+    };
+
+    let mut watch = match ResolvedWatch::open(&client, key, &inputs) {
+        Ok(w) => w,
         Err(e) => {
-            eprintln!("Error: {e}");
-            return ExitCode::from(2);
+            crate::cli::report::watch_error(key, &e);
+            return Outcome::Error;
         }
     };
 
-    if let Err(e) = session.watch(key, path) {
-        eprintln!("Error: {e}");
-        return ExitCode::from(2);
-    }
-
     loop {
-        match session.read_watch_event() {
-            Ok(Some(response)) => {
-                if !response.ok {
-                    eprintln!(
-                        "Error: {}",
-                        response.error.as_deref().unwrap_or("unknown error")
-                    );
-                    continue;
-                }
-                match &format {
-                    OutputFormat::Json => {
-                        println!("{}", serde_json::to_string(&response).unwrap());
+        match watch.next(None) {
+            // A miss is a frame as `get` prints one: `null` under json, no
+            // line otherwise. The watch stays open either way: a later `put`
+            // can give the key a value.
+            Ok(WatchOutcome::Value(value)) => {
+                let frame = match (&format, session.as_mut()) {
+                    // The frame is a line: the template's text, ended.
+                    (Format::Template(template), Some(session)) => {
+                        render_template(template, &[(key, value)], &inputs, session)
+                            .map(|text| text + "\n")
                     }
-                    OutputFormat::Text | OutputFormat::Sh => {
-                        println!(
-                            "{}",
-                            libbeachcomber::render::render_data(
-                                response.data.as_ref(),
-                                format.server_format()
-                            )
-                        );
+                    (Format::Preset(preset), _) => Ok(render_frame(
+                        key,
+                        value.as_ref(),
+                        preset
+                            .value_format()
+                            .expect("watch's formats are value formats"),
+                    )),
+                    (Format::Template(_), None) => {
+                        unreachable!("a template opens its session")
                     }
-                    OutputFormat::Csv => {
-                        if let Some(data) = &response.data {
-                            println!("{}", format_sv(data, ",", false));
-                        }
-                    }
-                    OutputFormat::Tsv => {
-                        if let Some(data) = &response.data {
-                            println!("{}", format_sv(data, "\t", false));
-                        }
-                    }
-                    OutputFormat::CsvHeader => {
-                        if let Some(data) = &response.data {
-                            println!("{}", format_sv(data, ",", true));
-                        }
-                    }
-                    OutputFormat::TsvHeader => {
-                        if let Some(data) = &response.data {
-                            println!("{}", format_sv(data, "\t", true));
-                        }
-                    }
-                    OutputFormat::Fmt(template) => {
-                        if let Some(data) = &response.data {
-                            match render_fmt_template_json(template, data) {
-                                Ok(rendered) => println!("{}", rendered),
-                                Err(e) => {
-                                    eprintln!("{e}");
-                                    return ExitCode::from(2);
-                                }
-                            }
-                        }
-                    }
+                };
+                if let Err(e) = frame.map(|frame| print!("{frame}")) {
+                    crate::cli::report::error_named(e);
+                    return Outcome::Error;
                 }
             }
-            Ok(None) => break,
+            // Nothing left that could ever answer.
+            Ok(WatchOutcome::Eof) => return Outcome::Done,
+            // `next(None)` has no deadline and this watch's cancel handle is
+            // never set, so neither is reachable today — but looping here
+            // instead of returning would busy-spin forever if either ever
+            // became reachable, so treat both as the watch being over.
+            Ok(WatchOutcome::Timeout | WatchOutcome::Cancelled) => return Outcome::Done,
             Err(e) => {
-                eprintln!("Error: {e}");
-                return ExitCode::from(2);
+                crate::cli::report::watch_error(key, &e);
+                return Outcome::Error;
             }
         }
     }
-
-    ExitCode::SUCCESS
 }

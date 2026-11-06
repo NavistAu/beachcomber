@@ -9,6 +9,11 @@ the SDK falls back to shelling out to `comb` (~5ms per call, against
 ~0.3ms via FFI — a documented slow tier, not silent). Check
 `client.transport()` to see which one is active.
 
+It follows the one SDK API table every beachcomber SDK follows,
+[`docs/sdk-api.md`](../../docs/sdk-api.md): the same operations, names,
+value shapes and error kinds, in camelCase. Its test suite checks this
+surface against the table's machine-readable form, `sdks/api.json`.
+
 ## Requirements
 
 - Node.js 18+
@@ -31,12 +36,9 @@ import { Client } from 'libbeachcomber';
 const client = new Client();
 console.log(client.transport()); // "ffi" or "subprocess"
 
-const result = await client.get('git.branch', '/path/to/repo');
-if (result.isHit) {
-  console.log(result.getString());  // e.g. "main"
-  console.log(result.ageMs);        // e.g. 1234
-  console.log(result.stale);        // false
-}
+// What `comb get git.branch` prints there; null on a miss.
+const branch = await client.get('git.branch', { cwd: '/path/to/repo' });
+console.log(branch); // e.g. "main"
 ```
 
 ## API
@@ -46,66 +48,114 @@ if (result.isHit) {
 ```typescript
 const client = new Client();
 const client = new Client({ socketPath: '/custom/path' });
-const client = new Client({ socketPath: '/custom/path', timeoutMs: 2000, autostart: true });
+const client = new Client({ socketPath: '/custom/path', timeoutMs: 2000, connectTimeoutMs: 0 });
+const client = new Client({ exec: true }); // templates this client renders may call exec()
 ```
+
+Each option is passed to the library's `bc_client_new` as it is given; the
+SDK has no defaults of its own, so an option left unset is the library's
+default.
+
+| Option | Library default | Meaning |
+|---|---|---|
+| `socketPath` | `$BEACHCOMBER_SOCKET`, else `/tmp/beachcomber-<uid>/sock` | The daemon's socket. |
+| `timeoutMs` | 250 | How long one read or write on the socket may take. 0 is refused. |
+| `connectTimeoutMs` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
+| `autostart` | on | Start a daemon when none serves the auto-discovered socket. |
+| `exec` | off | Whether a template this client renders may call `exec()`; a template that calls it without the option fails with `exec() is disabled in this context`. |
+
+Over the subprocess transport `timeoutMs` bounds each spawned `comb`, and
+`connectTimeoutMs` is refused with `UnsupportedError`: `comb` has
+no flag to carry it.
 
 #### `client.transport()`
 
 Returns `"ffi"` or `"subprocess"` — which transport this client is using.
 
-#### `client.get(key, path?)`
+#### `client.get(key, opts?)`
 
-Read a cached value.
+The value `comb get` prints for this key, cwd and env: the daemon holds the
+templates (`<provider>:template`, seeded from configuration or `put`) and
+the client renders them. A plain field is its cached value, a templated one
+is rendered, and a bare provider name is the whole merged namespace; a miss
+is `null`.
 
 ```typescript
-const result = await client.get('git.branch', '/some/repo');
-const result = await client.get('hostname');          // global provider, no path needed
-const result = await client.get('git', '/some/repo'); // full provider (returns object)
+const branch = await client.get('git.branch', { cwd: '/some/repo' });
+const host   = await client.get('hostname.short');        // no cwd: the global entry
+const git    = await client.get('git', { cwd: '/some/repo' }); // full provider (an object)
+const fresh  = await client.get('git.branch', { cwd: '/some/repo', force: true, wait: 'forever' });
+const now    = await client.get('git.branch', { cwd: '/some/repo', wait: '0' }); // what is stored, at once
 ```
 
-Returns a `CombResult`.
+`opts` is `{ cwd?, env?, force?, wait? }`. `cwd` is the directory the read
+addresses (`~` is home, a relative path is against this process's working
+directory); omitted, it is the global entry. `env` is the caller's
+environment for `env.*` refs; omitted, the calling process's environment, as `comb` renders. `force`
+re-executes every Source the read demands first, as `comb get --force`.
+`wait` is how long the read waits for a run it needs before it answers what
+is stored, as `comb get --wait`: a duration (`'0'`, `'50ms'`, `'2s'`) or
+`'forever'`; anything else is a `ParseError`. Omitted, a stored record waits
+its Source's budget and a cold read waits for its run. The read may take
+`timeoutMs` plus the wait; `'forever'` has no deadline.
+
+The unrendered halves are facets, read like any key:
+
+```typescript
+await client.get('git:template.branch'); // the template, as stored
+await client.get('myapp:put.workspace'); // the value a put stored
+await client.get('git:source.branch');   // the value a Source produced
+```
 
 #### `client.refresh(key, path?)`
 
-Force the daemon to recompute a provider. **FFI transport only** — see
-"Transports and their limits" below.
+Re-execute the Sources `key` demands, each at the instance that answers for `path`. A key naming no
+Source (a static namespace, a facet, an unknown name, a field no Source
+owns) rejects with `nothing to refresh: <key> has no sources`. Works over
+both transports — see "Transports and their limits" below.
 
-#### `client.put(key, data?, opts?)` / `client.putNull(key, path?)`
+#### `client.put(key, data, opts?)`
 
-Store data in a virtual provider, or clear its cached entry (keeping the
-registry entry) with `putNull`.
+Store data as static data. `data` is required; `put(key, null)` removes the node, and the entry itself is dropped once no records, static or provider-produced, remain at it. `opts` are `ttl`, `path` and `persist` (keep the put across a daemon restart, best effort).
 
 #### `client.status()`
 
-Return cache rows from the daemon.
+Return the cache rows: `CacheRow[]`, each with `provider`, `path`,
+`source`, `field`, `value`, `ageMs`, `kind`, `pollIntervalSecs`,
+`pollCount`, `pollsElapsed`, `nextPollInSecs` and
+`failure`, as the daemon writes them (a field with no value is undefined).
+Status data that is not an array is a `ParseError`.
 
 #### `client.hello()` / `client.introspect(subject, opts?)`
 
-Daemon protocol/version info, and internal daemon introspection
-(`"daemon" | "providers" | "config" | "cache" | "lifecycle" | "watches" |
-"timers" | "demand" | "procs"`). **FFI transport only**.
-
-#### `client.resolve(key, opts)` / `client.eval(templateStr, opts)`
-
-Client-side field resolution — the same evaluator `comb get`'s resolution
-layer uses, run entirely in this process except for a daemon round-trip per
-`cache.*` / `provider.field` ref the expression names (virtual fields
-followed transitively); an expression with only `env.*` refs never
-contacts the daemon. `opts.cwd` is **required**: this library never falls
-back to the process's own working directory, and refs are fetched scoped
-to it. `opts.env` and `opts.overrides` are optional. **FFI transport
+Daemon protocol/version info (`{ protocolVersion, daemonVersion }`), and
+internal daemon introspection (`"daemon" | "providers" | "config" | "cache"
+| "lifecycle" | "watches" | "timers" | "demand" | "procs"`). An introspect
+response is `{ subject, daemon, other }`: `daemon` is the typed
+`DaemonHealth` (with its `reaper` status, `null` when the daemon has none,
+and its `verdicts`) for the `daemon` subject and `null` otherwise; `other`
+is any other subject's JSON, and `null` for `daemon`. **FFI transport
 only**.
 
-`templateStr` accepts a bare expression, a single `{{ expr }}` tag (keeps
-the expression's natural type), or literal text/several tags (always a
-string).
+#### `client.eval(templateStr, opts?)`
+
+Render a template that is stored nowhere — the same value `comb eval`
+prints. Every ref resolves exactly as it would inside a stored template, so
+`eval('{{ p.f }}')` and `get('p.f')` agree. `opts` is `{ cwd?, env? }`,
+read as `get` reads them: no `cwd` is the global entry. **FFI transport
+only**.
+
+`templateStr` accepts a single `{{ expr }}` tag (keeps the expression's
+natural type), or literal text/several tags (always a string — a source
+with no tags at all is its literal text).
 
 ```typescript
-const value = await client.resolve('myapp.workspace', {
+await client.put('myapp:template', { workspace: '{{ env.MYAPP_ENV or comb.myappcache.workspace }}' });
+const workspace = await client.get('myapp.workspace', {
   cwd: '/some/repo',
   env: { MYAPP_ENV: 'prod' },
-  overrides: { 'myapp.workspace': 'env.MYAPP_ENV or cache.myappcache.workspace' },
 });
+const same = await client.eval('{{ myapp.workspace }}', { cwd: '/some/repo', env: { MYAPP_ENV: 'prod' } });
 ```
 
 #### `client.session()`
@@ -116,104 +166,128 @@ efficient when querying multiple keys in sequence.
 
 ```typescript
 const session = await client.session();
-await session.setContext('/some/repo');   // optional — sets default path
+await session.setContext('/some/repo');   // optional — sets the session's directory
 const branch = await session.get('git.branch');
 const dirty  = await session.get('git.dirty');
 session.close();
 ```
 
-Note: the daemon's `put` op does not consult connection context (only
-`get`/`refresh` do) — pass an explicit `path` to `session.put()` regardless
-of `setContext`.
+`setContext` sets the session's directory: every later `get` that names no
+`cwd`, and `put` and `refresh` that name no `path`, address it. `session.get`
+takes the same `opts` as `client.get`. A session has `setContext`, `get`,
+`put`, `refresh` and `close`; `status`, `hello` and `introspect` address no
+directory, so they are the client's alone.
 
-#### `client.watch(key, path?)`
+#### `client.watch(key, opts?)`
 
-Open a watch stream. The stream is an `AsyncIterable<WatchEvent>`; call
-`stream.close()` to stop watching.
+Watch a key's *value* — what `get` answers for it — and receive it
+again whenever it changes, so a template edited under the watch fires it
+just as a changed cache record does. `opts` is `{ cwd?, env? }`, read as
+`get` reads them: no `cwd` watches the global entry.
 
 ```typescript
-const stream = await client.watch('git.branch', '/some/repo');
+const stream = await client.watch('git.branch', { cwd: '/some/repo' });
 for await (const event of stream) {
-  console.log(event.data);
+  console.log(event.data); // the value, null for a miss
 }
+
+const next = await stream.nextEvent(500); // a WatchEvent, or null once the stream has ended
 ```
+
+`stream.nextEvent(timeoutMs?)` resolves the next `WatchEvent`, or `null`
+once the stream has ended (the daemon closed it, or it was cancelled); an
+event whose `data` is `null` is a miss, not the end. Omitted, `timeoutMs`
+waits indefinitely; a timeout that runs out with no event rejects with
+`TimeoutError`. `stream.cancel()` ends the stream (a `nextEvent` waiting
+now answers `null`); `stream.close()` ends it and releases it. Iterating
+with `for await` ends where `nextEvent` answers `null`, and closes the
+stream.
 
 #### `client.close()`
 
 Release the underlying client handle (FFI only; a no-op under subprocess).
 
-### `CombResult`
-
-| Property / method | Type | Description |
-|---|---|---|
-| `isHit` | `boolean` | `true` when the cache had a value |
-| `isMiss` | `boolean` | `true` when the cache had no value |
-| `data` | `unknown` | Raw data (undefined on miss) |
-| `ageMs` | `number` | Cache age in milliseconds (0 on miss) |
-| `stale` | `boolean` | Whether the value is stale (false on miss) |
-| `getString(field?)` | `string \| undefined` | Data as a string; picks a named field from object results |
-| `getNumber(field?)` | `number \| undefined` | Data as a number |
-| `getBool(field?)` | `boolean \| undefined` | Data as a boolean |
-
-For full provider queries (e.g. `key = "git"`), the data is an object.
-Use the `field` argument to pick a field:
-
-```typescript
-const result = await client.get('git', '/repo');
-result.getString('branch');   // "main"
-result.getBool('dirty');      // false
-```
-
 ### Errors
 
-Every error is a `CombError` (extends `Error`) carrying a stable,
-machine-readable `kind` — check `err.kind`, not `err.message`, for
-programmatic handling.
+Every error is a `CombError` (extends `Error`), one class per kind of
+[`docs/sdk-api.md`](../../docs/sdk-api.md), carrying `kind` (a stable slug —
+check it, or the class, not the message), `message` (the library's words,
+unchanged) and `libraryVersion` (the `bc_version()` of the library that
+raised it; the subprocess tier reports `subprocess:<comb>`). An unrecognised
+kind from a newer library is a bare `CombError` with the kind kept.
 
 | Class | `kind` | When thrown |
 |---|---|---|
-| `DaemonNotRunning` | `daemon_not_running` | Socket unreachable |
-| `ServerError` | `server_error` | Daemon responded `ok: false` |
-| `ParseError` | `parse_error` | A response/envelope was not valid JSON |
-| `BadFlagsError` | `bad_flags` | A reserved `get` flag bit was set |
-| `BusyError` | `busy` | A session/watch handle is in use by another caller |
+| `DaemonNotRunningError` | `daemon_not_running` | No daemon answers, and none was started |
+| `ConnectionFailedError` | `connection_failed` | An explicit `socketPath` could not be connected to |
+| `IoError` | `io_error` | A read or write on the socket failed |
+| `ParseError` | `parse_error` | A request, a response or a template could not be read |
+| `ServerError` | `server_error` | The daemon refused the request, or a template failed to render |
+| `TimeoutError` | `timeout` | A read or write ran out `timeoutMs`, or `nextEvent` ran out its timeout |
+| `BusyError` | `busy` | A session or watch is in use by another caller |
 | `PanicError` | `panic` | The native library panicked (caught at the FFI boundary) |
-| `VersionSkewError` | `version_skew` | Daemon version doesn't match the loaded library |
-| `ConnectionFailedError` | `connection_failed` | Low-level connection failure |
-| `IoErrorError` | `io_error` | Low-level I/O failure |
-| `TimeoutError` | `timeout` | Call did not complete in time |
-| `LibraryDiscoveryError` | `library_discovery_failed` | No native library candidate could be loaded (FFI transport) |
-| `MissingSymbolError` | `missing_symbol` | A loaded library is missing a required `bc_*` symbol |
-| `UnsupportedTransportError` | `unsupported_transport` | This op has no faithful implementation over the subprocess transport |
+| `LibraryNotFoundError` | `library_not_found` | No `libbeachcomber` was found (FFI), or no `comb` to spawn (subprocess) |
+| `LibrarySymbolError` | `library_symbol` | The loaded library lacks a required `bc_*` function |
+| `UnsupportedError` | `unsupported` | The subprocess transport cannot do this operation |
 
 ## Transports and their limits
 
-**FFI (`koffi`)** implements the full ABI: `get`, `put`, `putNull`,
-`refresh`, `status`, `hello`, `introspect`, `resolve`, `eval`, sessions,
+**FFI (`koffi`)** implements the full ABI: `get`, `put`,
+`refresh`, `status`, `hello`, `introspect`, `eval`, sessions,
 and watch — all with exact envelope fidelity.
 
-**Subprocess (`comb` CLI fallback)** covers `get`, `put`, `putNull`,
-`status`, `watch`, and session context. It does **not** implement `hello`,
-`introspect`, `refresh`, `resolve`, or `eval` — `comb`'s CLI has no
-faithful JSON equivalent for them (see `src/subprocess_transport.ts` for
-why each one specifically can't be approximated safely), and those calls
-throw `UnsupportedTransportError` rather than silently returning wrong
-data. It is also asymmetric on omitted paths: `comb get` without `--path`
-defaults to the CLI process's own working directory, while `comb put`
-without `--path` means "global" — pass an explicit `path` for global
-(pathless) providers under this transport.
+**Subprocess (`comb` CLI fallback)** covers `get`, `put`,
+`refresh`, `status`, `eval`, `watch`, and session context. `timeoutMs` bounds each spawned
+`comb`, with no default of its own; `connectTimeoutMs` is refused. `get` is one `comb get -f json
+<key> [--path P | --global] [--force] [--wait=<wait>]`: the value `comb get`
+prints, the same value the FFI tier answers — the directory chain up to
+`$HOME`, `$HOME` as the global entry, `force`, the wait, the daemon's
+refusals. A wait `comb` cannot read is the same `ParseError`, in the same
+words, as over FFI. The spawned `comb` renders as the FFI tier does. A call's `env`
+map is its whole environment (with no map, this process's), so `env.*` and an
+`exec()` child see exactly the map. `--socket` carries `socketPath`, else
+`$BEACHCOMBER_SOCKET`, so the map cannot point the tier at another daemon.
+`--color never` goes when the render's environment sets a non-empty
+`NO_COLOR`, else `--color always`, so the colour filters draw the same bytes
+as under FFI. And `--no-exec` goes unless the client was made with `exec:
+true`. `refresh` is one `comb
+refresh <key> [--path P | --global]`, the daemon's op itself; its refusal
+(`nothing to refresh: <key> has no sources`) is the `ServerError`'s `message`,
+the daemon's own words — the same text the FFI transport reports. `eval` is
+one `comb eval -f json [--path P | --global] -- <template>`, spawned as `get`
+is; a template that does not compile is a `server_error` here, where the FFI
+tier reports `parse_error`. `watch` is one long-lived `comb watch -f json
+<key> [--path P | --global]`, spawned as `get` is: the fan-in the FFI tier
+drives, one value per line, a miss the event `null`. `nextEvent(timeoutMs)`
+waits for the next line against a timer; the child exiting 0 ends the stream
+(`null`), and exiting 2 is a `ServerError` in the daemon's or the resolver's
+words. `cancel()` and `close()` send the child SIGTERM. The tier does **not**
+implement `hello` or `introspect`, which `comb` has no CLI surface for: those
+calls throw `UnsupportedError` rather than silently returning wrong data. An
+omitted `cwd` or `path` means the global entry, as under FFI (the transport
+passes `--global`).
 
 ## Library discovery (FFI transport)
 
-1. `$BEACHCOMBER_LIB`, if set — an explicit absolute path.
-2. `../lib/<library name>` relative to `comb` resolved on `$PATH` — the
-   library and binary ship together, so this comes before the system path
-   deliberately.
-3. The platform default dynamic-linker search path.
+The library is `libbeachcomber.dylib` on macOS and `libbeachcomber.so` on
+every other platform. It is located by the one rule every SDK follows
+([docs/sdk-api.md](https://github.com/NavistAu/beachcomber/blob/main/docs/sdk-api.md#library-discovery),
+checked against the shared fixture `sdks/discovery.json`), trying in order:
 
-If none resolve, `LibraryDiscoveryError` names every location tried. A
-loaded library missing a required symbol raises `MissingSymbolError`
-naming the symbol and the library's own `bc_version()` — this is checked
+1. `$BEACHCOMBER_LIB`, when it is set and not empty. It is then the only
+   candidate: a path set on purpose that does not load is an error, not a
+   reason to load some other library.
+2. Beside `comb`: `<dir>/../lib/<file>`, where `<dir>` is the directory of
+   the first executable `comb` on `$PATH`, its symlinks resolved. A Homebrew
+   `comb` is a symlink into the Cellar, and the library sits in the Cellar
+   beside it; a `.deb` or `.rpm` puts them in `/usr/bin` and `/usr/lib`.
+3. The system loader, given the bare file name.
+
+If none loads, `LibraryNotFoundError` names every location tried and why
+each failed. A
+loaded library missing a required symbol raises `LibrarySymbolError`
+naming the symbol, with the library's own `bc_version()` as its
+`libraryVersion` — this is checked
 at load, not on first use, and is never a silent fallback to the
 subprocess tier: a missing/broken library is an install bug, whereas
 `koffi` being absent is a known configuration.

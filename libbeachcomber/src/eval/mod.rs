@@ -1,65 +1,73 @@
 //! One expression syntax: classification, reference discovery, evaluation.
 //!
 //! Canon `field_resolution.md` §"Value resolution" (invariant 14): `{{ }}`
-//! everywhere. A value expression written as exactly one `{{ expr }}` evaluates
-//! to the expression's natural type; one written with literal text or more than
-//! one tag evaluates to a string. A bare expression (no tags) is still accepted
-//! and is equivalent to the single-tag form.
+//! everywhere. A value expression written as exactly one `{{ expr }}`
+//! evaluates to the expression's natural type, and so does one whose
+//! statements and comments come before its only `{{ }}` with nothing but
+//! whitespace between; one written with literal text or more than one `{{ }}`
+//! evaluates to a string. A source with no tags at all is its literal text —
+//! there is no bare-expression form.
 //!
-//! This module answers the two questions a caller has before evaluating — which
-//! of the three forms is this ([`classify`]), and what does it reference
-//! ([`discover_refs`], [`daemon_refs`], [`fetch_daemon_data`]) — and then
-//! evaluates it ([`evaluate`]). [`render_template`] is the workspace's one
-//! template render, for callers that have already assembled a context.
+//! This module answers the questions a caller has before evaluating — which of
+//! the forms is this ([`classify`], [`single_tag_expression`]), what does it
+//! reference ([`discover_refs`]) and import ([`imports`]), and is it sound
+//! where it is written ([`lint`]), each read in a [`Probe`] — and owns the one
+//! evaluator, [`evaluate`],
+//! that the client's templates ([`crate::resolve`], which fetches what a
+//! source references first), a Source's lines and a provider's lines all run.
 
+mod lint;
 mod scan;
 
-pub use scan::{Tag, TagKind, scan_tags};
+pub use lint::{Finding, Known, Line, lint, refused};
+pub use scan::{Tag, TagKind, Use, scan_tags, used_names};
 
-use crate::virtual_fields::{
-    EvalContext, Ref, VirtualFields, build_context_json, build_expression_env,
-    discover_expression_refs, mj_to_json, refs_from_names,
-};
+use crate::library::memo::{MemoHit, hit_in};
+use crate::virtual_fields::{Ref, refs_from_names};
+use minijinja::Environment;
 use minijinja::value::Value as MjValue;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 // ── Forms ─────────────────────────────────────────────────────────────────────
 
 /// How a value expression is written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Form {
-    /// No tag markers at all — the whole source is the expression (backward
-    /// compatible).
-    Expression,
     /// Exactly one `{{ }}` tag spanning the whole source — keeps its natural type.
     SingleTag,
-    /// Literal text, more than one tag, any non-expression tag, an
-    /// unterminated tag marker, or an empty source — string-valued, and the
-    /// template compiler owns any syntax diagnostic.
+    /// Statements and comments, then the source's only `{{ }}` as its last
+    /// tag but for comments, with nothing outside the tags but whitespace:
+    /// `{% set x = 1 %}{{ x }}`. The statements run, print nothing, and the
+    /// expression keeps its natural type.
+    Statements,
+    /// Literal text, more than one `{{ }}`, a statement after the `{{ }}` or
+    /// none at all, an unterminated tag marker, no tags at all, or an empty
+    /// source — string-valued, and the template compiler owns any syntax
+    /// diagnostic.
     ///
-    /// An empty (or whitespace-only) source is a template of no tags: it
-    /// renders to `""`. Reading it as an expression instead would make it a
-    /// compile error, and `-f ''` is a legitimate thing to ask for.
+    /// A source with no tags at all (empty, whitespace-only, or plain text)
+    /// is a template of no tags: it renders to its own literal text (`""` for
+    /// an empty source). There is no bare-expression form — `-f ''` and
+    /// `comb eval hello` are both legitimate things to ask for.
     Template,
 }
 
 // ── Classification ────────────────────────────────────────────────────────────
 
-/// Classify a value expression into one of the three [`Form`]s.
+/// Classify a value expression into one of the [`Form`]s.
 ///
 /// Surrounding whitespace is not literal text: it is trimmed before the tag
 /// spans are compared against the source.
 ///
-/// `{{` always opens a tag, in every form — so a bare expression whose *string
-/// literal* contains `{{` (`"a {{ b"`) is read as an unterminated tag and
-/// classified [`Form::Template`], not as the expression it was before one
-/// syntax. That is the cost of one unambiguous rule for where a tag starts;
-/// write such a literal inside a tag (`{{ "a {{ b" }}`) — the scanner tracks
-/// string literals within a tag, so it stays one tag.
+/// `{{` always opens a tag, in every form — so literal text containing `{{`
+/// (`"a {{ b"`) is read as an unterminated tag and classified
+/// [`Form::Template`]. That is the cost of one unambiguous rule for where a
+/// tag starts; write such a literal inside a tag (`{{ "a {{ b" }}`) — the
+/// scanner tracks string literals within a tag, so it stays one tag.
 pub fn classify(src: &str) -> Form {
     match analyze(src) {
-        Analysis::Expression => Form::Expression,
         Analysis::SingleTag(_) => Form::SingleTag,
+        Analysis::Statements { .. } => Form::Statements,
         Analysis::Template => Form::Template,
     }
 }
@@ -71,31 +79,39 @@ pub fn classify(src: &str) -> Form {
 pub fn single_tag_expression(src: &str) -> Option<&str> {
     match analyze(src) {
         Analysis::SingleTag(expr) => Some(expr),
-        Analysis::Expression | Analysis::Template => None,
+        Analysis::Statements { .. } | Analysis::Template => None,
     }
 }
 
-/// The form of `src`, carrying the inner expression for the single-tag form.
+/// The form of `src`, carrying the inner expression for the typed forms.
 ///
 /// [`Form`] is the public shape of this; `Analysis` is the internal one, so
-/// every consumer matches exhaustively on the three cases and none has to
-/// handle a "single tag with no expression" that cannot occur.
+/// every consumer matches exhaustively on the cases and none has to handle a
+/// "typed form with no expression" that cannot occur.
 ///
-/// One scan, one place the single-tag rule is written down, so [`classify`],
+/// One scan, one place the typed rules are written down, so [`classify`],
 /// [`single_tag_expression`], [`discover_refs`] and [`evaluate`] can never
-/// disagree about what the single-tag form is.
+/// disagree about what the typed forms are.
 enum Analysis<'a> {
-    /// No tag markers at all — the whole (untrimmed) source is the expression.
-    Expression,
     /// Exactly one `{{ }}` tag spanning the whole source, with its trimmed body.
     SingleTag(&'a str),
-    /// Everything else, an empty source included.
+    /// [`Form::Statements`]: the source trimmed, the `{{ }}`'s trimmed body,
+    /// and where its tag starts and ends in the trimmed source.
+    Statements {
+        text: &'a str,
+        last: &'a str,
+        start: usize,
+        end: usize,
+    },
+    /// Everything else: no tags at all, literal text, more than one tag, an
+    /// unterminated tag marker, or an empty source.
     Template,
 }
 
 fn analyze(src: &str) -> Analysis<'_> {
     let trimmed = src.trim_ascii();
-    // Nothing to compile; a template of no tags renders to "".
+    // Nothing to compile; a template of no tags renders to its own text
+    // ("" when empty).
     if trimmed.is_empty() {
         return Analysis::Template;
     }
@@ -104,308 +120,1012 @@ fn analyze(src: &str) -> Analysis<'_> {
         return Analysis::Template;
     }
     match scan.tags.as_slice() {
-        [] => Analysis::Expression,
         [tag] if tag.kind == TagKind::Expression && tag.start == 0 && tag.end == trimmed.len() => {
             Analysis::SingleTag(tag.body)
         }
-        _ => Analysis::Template,
+        tags => statements(trimmed, tags).unwrap_or(Analysis::Template),
+    }
+}
+
+/// `text` (trimmed, every tag closed) as [`Form::Statements`]: where it
+/// stands — outside the bodies that print nothing there, a macro's, a call's
+/// and a block set's ([`scan::capture`]) — nothing but whitespace outside its
+/// tags, exactly one `{{ }}`, and no statement after it; comments anywhere. A
+/// `{% raw %}` block prints, so a text with one is not this form.
+fn statements<'a>(text: &'a str, tags: &[Tag<'a>]) -> Option<Analysis<'a>> {
+    let mut at = 0;
+    let mut depth = 0usize;
+    let mut last: Option<&Tag<'a>> = None;
+    for tag in tags {
+        if depth == 0 && !text[at..tag.start].trim().is_empty() {
+            return None;
+        }
+        at = tag.end;
+        match tag.kind {
+            TagKind::Comment => {}
+            TagKind::Statement if last.is_some() || scan::statement(tag.body).0 == "raw" => {
+                return None;
+            }
+            TagKind::Statement => depth = scan::capture(tag.body).depth(depth),
+            TagKind::Expression if depth > 0 => {}
+            TagKind::Expression if last.is_some() => return None,
+            TagKind::Expression => last = Some(tag),
+        }
+    }
+    if depth > 0 || !text[at..].trim().is_empty() {
+        return None;
+    }
+    let last = last?;
+    Some(Analysis::Statements {
+        text,
+        last: last.body,
+        start: last.start,
+        end: last.end,
+    })
+}
+
+// ── Imports ───────────────────────────────────────────────────────────────────
+
+/// What one `{% import … as … %}` or `{% from … import … %}` names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Import<'a> {
+    /// A string literal: the library's address, as the engine reads it.
+    Named(String),
+    /// Anything else: a name the text would compute when it renders. The
+    /// tag's body, as written.
+    Computed(&'a str),
+}
+
+/// Every import in `src`, in source order: the name each `{% import %}` and
+/// `{% from %}` reads its library from. A tag in a `{% raw %}` block is text,
+/// not an import.
+pub fn imports(src: &str) -> Vec<Import<'_>> {
+    scan::engine_tags(src)
+        .into_iter()
+        .filter(|tag| tag.kind == TagKind::Statement)
+        .filter_map(|tag| {
+            let (keyword, rest) = scan::statement(tag.body);
+            let follows = match keyword {
+                "import" => "as",
+                "from" => "import",
+                _ => return None,
+            };
+            Some(match string_literal(rest) {
+                Some((name, after)) if scan::statement(after).0 == follows => Import::Named(name),
+                _ => Import::Computed(tag.body),
+            })
+        })
+        .collect()
+}
+
+/// The canonical address `name` names when it is a macro library's,
+/// `<p>:macro.<name>` (a provider, its `macro` facet, and one segment that
+/// follows the name rule), so `p:macro['x']` is `p:macro.x`; `None` for any
+/// other name.
+pub(crate) fn library(name: &str) -> Option<String> {
+    let (head, address) = crate::key::split_key(name).ok()?;
+    let is_library = matches!(
+        crate::key::split_facet(head),
+        Ok((_, Some(crate::key::Facet::Macro)))
+    ) && crate::key::check_head(head).is_ok()
+        && crate::key::name_error(&address).is_none();
+    is_library.then(|| crate::key::join(head, &address))
+}
+
+/// The string literal `text` starts with, as the engine reads it, and the text
+/// after it; `None` when `text` does not start with one.
+fn string_literal(text: &str) -> Option<(String, &str)> {
+    let quote = *text
+        .as_bytes()
+        .first()
+        .filter(|q| matches!(q, b'"' | b'\''))?;
+    let bytes = text.as_bytes();
+    let mut i = 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b if b == quote => {
+                let literal = &text[..=i];
+                // The engine's own reading of the literal, escapes and all.
+                let value = Environment::empty()
+                    .compile_expression(literal)
+                    .and_then(|e| e.eval(()))
+                    .ok()?;
+                return Some((
+                    value.as_str()?.to_string(),
+                    text[i + 1..].trim_ascii_start(),
+                ));
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+// ── Reading a line without running it ─────────────────────────────────────────
+
+/// An engine to read lines in without running them: what compiles in its
+/// environment, and the names of that environment's globals, collected once.
+/// The engine's analysis of a line can report a function it calls by name
+/// (`exec(...)`, `lup(...)`) as a name it reads; that is no name a context
+/// supplies, and every reading here ([`undeclared_names`], [`discover_refs`],
+/// [`lint`]) leaves the globals out. Built once for the lines read alike (a
+/// load's, a resolution's) and handed to each reading, not once per line.
+pub struct Probe<'e> {
+    env: Environment<'e>,
+    globals: HashSet<String>,
+}
+
+impl<'e> Probe<'e> {
+    pub fn new(env: Environment<'e>) -> Self {
+        let globals = env.globals().map(|(name, _)| name.to_string()).collect();
+        Self { env, globals }
+    }
+
+    /// The environment, which a caller may render in too.
+    pub fn env(&self) -> &Environment<'e> {
+        &self.env
+    }
+
+    /// `names` without the engine's own globals.
+    pub(crate) fn not_globals(
+        &self,
+        names: impl IntoIterator<Item = String>,
+    ) -> impl Iterator<Item = String> {
+        names
+            .into_iter()
+            .filter(|name| !self.globals.contains(name))
     }
 }
 
 // ── Reference discovery ───────────────────────────────────────────────────────
 
-/// Every reference in `src`, for all three forms, deduplicated and sorted.
+/// Every reference in `src`, for both forms, deduplicated and sorted: the
+/// [`refs_in`] its nested names ([`undeclared_names`]) make.
 ///
-/// `Expression` and `SingleTag` sources go through MiniJinja's expression
-/// meta-analysis; `Template` sources through the template's. Both run on the
-/// same environment and classify the dotted names they find identically. A
-/// source that fails to compile yields no refs — the compile error surfaces at
-/// evaluation time.
-///
-/// Both analyses hand back a `HashSet`, whose iteration order varies run to
-/// run, so **every discovery path in this crate returns its refs sorted** —
-/// this function and the `discover_expression_refs` it delegates to. That is
-/// for reproducibility alone: nothing downstream depends on the order.
-/// `build_context_json` in particular resolves a `cache.P` / `cache.P.F`
-/// collision the same way whichever it binds first.
-pub fn discover_refs(src: &str) -> Vec<Ref> {
-    match analyze(src) {
-        // Already sorted by `discover_expression_refs`.
-        Analysis::Expression => discover_expression_refs(src),
-        Analysis::SingleTag(expr) => discover_expression_refs(expr),
-        Analysis::Template => {
-            // Ref discovery never evaluates anything, so `allow_exec`
-            // doesn't matter here — `false` is an arbitrary, harmless
-            // choice. (This has nothing to do with `exec` showing up as an
-            // "undeclared variable": minijinja's meta-analysis never
-            // reports a call's callee name at all, registered or not.)
-            let env = build_expression_env(false);
-            let Ok(template) = env.template_from_str(src) else {
-                return Vec::new();
-            };
-            let mut refs = refs_from_names(template.undeclared_variables(true));
-            refs.sort();
-            refs
-        }
-    }
+/// A `SingleTag` source goes through MiniJinja's expression meta-analysis; a
+/// `Template` source through the template's. Both run in `probe`'s engine,
+/// which is never run here. A source that fails to compile yields no refs —
+/// the compile error surfaces at evaluation time. A tagless source is literal
+/// text, so it references nothing.
+pub fn discover_refs(probe: &Probe<'_>, src: &str) -> Vec<Ref> {
+    refs_in(undeclared_names(probe, src, true).unwrap_or_default())
 }
 
-/// How deeply one virtual field may reference another before evaluation gives
-/// up. Both recursions over the virtual-field graph — the ref closure
-/// ([`close_over_virtuals`]) and the evaluation itself
-/// ([`crate::virtual_fields::build_context_json`] ↔
-/// [`crate::virtual_fields::VirtualFields::evaluate`]) — are cycle-guarded, but
-/// a cycle guard only stops a *repeat*: a chain of N distinct fields, each
-/// referencing the next, visits every one exactly once and recurses N frames
-/// deep. Nothing bounds N — a `put`, an `overrides_json` or a config file can
+/// The references a line whose nested names ([`undeclared_names`] with
+/// `nested`) are `names` makes, deduplicated and sorted: what a caller that
+/// has the names already reads without reading the line again. Every dotted
+/// name is classified one way (`crate::virtual_fields::classify_dotted`): a
+/// `P.rest…` name is `Resolved(P, "rest…")` with every segment kept, so
+/// `scanline.widgets.b` names that leaf and never the group above it.
+///
+/// The engine's analyses hand back a `HashSet`, whose iteration order varies
+/// run to run, so **every discovery path in this crate returns its refs
+/// sorted**. That is for reproducibility alone: nothing downstream depends on
+/// the order. [`crate::resolve`] in particular binds a `comb.P` / `comb.P.F`
+/// collision the same way whichever it binds first.
+pub fn refs_in(names: impl IntoIterator<Item = String>) -> Vec<Ref> {
+    let mut refs = refs_from_names(names);
+    refs.sort();
+    refs
+}
+
+/// How deeply one template may reference another before resolution gives up.
+///
+/// The resolver's frame stack (`Resolver::push` in [`crate::resolve`]) is
+/// cycle-guarded, but a cycle guard only stops a *repeat*: a chain of N
+/// distinct nodes, each referencing the next, visits every one exactly once
+/// and recurses N frames deep. Nothing bounds N — a `put` or a config file can
 /// declare thousands — and blowing the native stack in a cdylib is not a
 /// recoverable error for the host process, it is a SIGSEGV in someone else's
-/// program.
+/// program. So `push` refuses a frame past this depth instead.
 ///
 /// 128 is far past any legible cascade and far short of the stack.
 pub(crate) const MAX_VIRTUAL_DEPTH: usize = 128;
 
-/// The message both recursions return at [`MAX_VIRTUAL_DEPTH`].
+/// The message the resolver returns at [`MAX_VIRTUAL_DEPTH`].
 pub(crate) fn too_deep() -> String {
     format!("virtual field nesting too deep (limit {MAX_VIRTUAL_DEPTH})")
 }
 
-/// The refs a caller must fetch from the daemon before evaluating `src`.
-///
-/// The transitive closure of [`discover_refs`] over virtual fields: every
-/// `Resolved(p, f)` that is itself virtual is replaced by the refs of its own
-/// expression, recursively. The result holds only `CacheField`, `CacheProvider`
-/// and non-virtual `Resolved` refs — deduplicated and sorted. `Env` refs come
-/// from the caller's shell, never the daemon, and are dropped.
-///
-/// A reference cycle terminates: each virtual field is expanded at most once.
-/// A chain longer than [`MAX_VIRTUAL_DEPTH`] is an `Err` rather than a deeper
-/// recursion.
-pub fn daemon_refs(src: &str, vf: &VirtualFields) -> Result<Vec<Ref>, String> {
-    let mut out = Vec::new();
-    let mut seen: HashSet<Ref> = HashSet::new();
-    let mut expanded: HashSet<(String, String)> = HashSet::new();
-    close_over_virtuals(
-        &discover_refs(src),
-        vf,
-        &mut out,
-        &mut seen,
-        &mut expanded,
-        0,
-    )?;
-    // Expansion interleaves each virtual field's own refs into the walk, so a
-    // sorted input does not stay sorted through the closure.
-    out.sort();
-    Ok(out)
-}
-
-fn close_over_virtuals(
-    refs: &[Ref],
-    vf: &VirtualFields,
-    out: &mut Vec<Ref>,
-    seen: &mut HashSet<Ref>,
-    expanded: &mut HashSet<(String, String)>,
-    depth: usize,
-) -> Result<(), String> {
-    if depth >= MAX_VIRTUAL_DEPTH {
-        return Err(too_deep());
-    }
-    for r in refs {
-        match r {
-            // env.* is read from the calling shell, not fetched.
-            Ref::Env(_) => {}
-            Ref::Resolved(p, f) if vf.is_virtual(p, f) => {
-                // `expanded` doubles as the cycle guard: a field already
-                // expanded (on this path or another) is never expanded again.
-                if expanded.insert((p.clone(), f.clone()))
-                    && let Some(expr) = vf.expression(p, f)
-                {
-                    close_over_virtuals(&discover_refs(expr), vf, out, seen, expanded, depth + 1)?;
-                }
-            }
-            other => {
-                if seen.insert(other.clone()) {
-                    out.push(other.clone());
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Fetch each ref's value through `fetch`, keyed the way
-/// [`EvalContext::daemon_data`](crate::virtual_fields::EvalContext) expects.
-///
-/// `CacheField(p, f)` and `Resolved(p, f)` are asked for as `"p.f"`;
-/// `CacheProvider(p)` as `"p"`. `Env` refs are skipped. A `Ok(None)` is a miss
-/// and is simply absent from the map.
-///
-/// `fetch` is called at most once per distinct key: `cache.p.f` and a resolved
-/// `p.f` are different refs but the same daemon query, and a miss is not worth
-/// a second round trip either.
-///
-/// The first `Err` short-circuits, so the caller decides what a transport
-/// failure means — abort the render, or fall back to what did arrive. The
-/// closure shape lets a `Client`, a `Session`, or a foreign source supply the
-/// values.
-pub fn fetch_daemon_data<E>(
-    refs: &[Ref],
-    mut fetch: impl FnMut(&str) -> Result<Option<serde_json::Value>, E>,
-) -> Result<HashMap<String, serde_json::Value>, E> {
-    let mut data = HashMap::new();
-    let mut asked: HashSet<String> = HashSet::new();
-    for r in refs {
-        let key = match r {
-            Ref::Env(_) => continue,
-            Ref::CacheField(p, f) | Ref::Resolved(p, f) => format!("{p}.{f}"),
-            Ref::CacheProvider(p) => p.clone(),
-        };
-        if !asked.insert(key.clone()) {
-            continue;
-        }
-        if let Some(v) = fetch(&key)? {
-            data.insert(key, v);
-        }
-    }
-    Ok(data)
-}
-
 // ── Evaluation ────────────────────────────────────────────────────────────────
-//
-// ERROR-MESSAGE ABI CONTRACT. The two compile failures below are prefixed
-// `"expression compile error: "` (the typed path, `evaluate_expression`) and
-// `"template compile error: "` (the render path, `render_template`). Those
-// prefixes are not cosmetic: `libbeachcomber-ffi::eval_error_kind` matches the
-// substring `"compile error"` in them to report `parse_error` — the caller's
-// own source being malformed — and everything else as `server_error`. The
-// runtime failures deliberately do NOT carry it (`"expression eval error: "`,
-// `"template render error: "`), and neither does `VirtualFields::evaluate`'s
-// cycle error. Reword either prefix and every SDK silently reclassifies its
-// syntax errors as server faults, so change the two together with
-// `eval_error_kind` and the FFI tests that pin both halves
-// (`bc_eval_compile_error_is_parse_error_kind`,
-// `bc_eval_runtime_error_is_server_error_kind`). `docs/roadmap.md` carries the
-// proper fix: a typed `EvalError` the FFI can match on instead.
 
-/// Evaluate a value expression in any of the three [`Form`]s.
-///
-/// `Expression` and `SingleTag` take the typed path — the expression is
-/// compiled and evaluated, and the result keeps its natural type. `Template`
-/// renders and yields a `Value::String`.
-///
-/// `ctx` must already hold every value [`daemon_refs`] asked for; a ref with no
-/// value is falsy rather than an error.
-pub fn evaluate(
-    src: &str,
-    vf: &VirtualFields,
-    ctx: &EvalContext<'_>,
-) -> Result<serde_json::Value, String> {
-    evaluate_with_stack(src, vf, ctx, &mut HashSet::new())
+/// Why a text failed to evaluate, by phase, and in which [`Form`] it is
+/// written: it does not compile, or holds a statement no text may
+/// ([`refused`]), and someone has to go and edit it; or it compiled and
+/// failed while it ran, which is the moment's. The message is the error's own,
+/// without the engine's frame ([`without_engine_frame`]) and never with the
+/// context. `Display` prefixes it with its form and phase
+/// (`template compile error: …`), as the client reports it; a daemon line
+/// reports the [`message`](EvalError::message) alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EvalError {
+    Compile { form: Form, message: String },
+    Runtime { form: Form, message: String },
 }
 
-/// [`evaluate`], threading the caller's virtual-field evaluation stack.
-///
-/// Cycle detection lives in [`VirtualFields::evaluate`], which owns the stack;
-/// this is the entry point it and [`evaluate`] share, so a virtual field
-/// written with tags is cycle-checked exactly like a bare one.
-pub(crate) fn evaluate_with_stack(
-    src: &str,
-    vf: &VirtualFields,
-    ctx: &EvalContext<'_>,
-    stack: &mut HashSet<(String, String)>,
-) -> Result<serde_json::Value, String> {
-    match analyze(src) {
-        Analysis::Expression => evaluate_expression(src, vf, ctx, stack),
-        Analysis::SingleTag(expr) => evaluate_expression(expr, vf, ctx, stack),
-        Analysis::Template => {
-            let context = build_context_json(&discover_refs(src), ctx, vf, stack)?;
-            let rendered = if ctx.allow_exec() {
-                render_template_exec(src, &context)
-            } else {
-                render_template(src, &context)
-            };
-            rendered.map(serde_json::Value::String)
+impl EvalError {
+    fn compile(form: Form, e: &minijinja::Error) -> Self {
+        EvalError::Compile {
+            form,
+            message: engine_message(e),
+        }
+    }
+
+    fn runtime(form: Form, e: &minijinja::Error) -> Self {
+        EvalError::Runtime {
+            form,
+            message: engine_message(e),
+        }
+    }
+
+    /// What went wrong, without the form and phase.
+    pub fn message(&self) -> &str {
+        match self {
+            EvalError::Compile { message, .. } | EvalError::Runtime { message, .. } => message,
         }
     }
 }
 
-/// The typed path: compile `expr` as an expression and keep its natural type.
-fn evaluate_expression(
-    expr: &str,
-    vf: &VirtualFields,
-    ctx: &EvalContext<'_>,
-    stack: &mut HashSet<(String, String)>,
-) -> Result<serde_json::Value, String> {
-    let refs = discover_expression_refs(expr);
-    let ctx_json = build_context_json(&refs, ctx, vf, stack)?;
-    let top = MjValue::from_serialize(&ctx_json);
-
-    let env = build_expression_env(ctx.allow_exec());
-    let compiled = env
-        .compile_expression(expr)
-        .map_err(|e| format!("expression compile error: {e}"))?;
-    let mj_result = compiled
-        .eval(top)
-        .map_err(|e| format!("expression eval error: {e}"))?;
-
-    Ok(mj_to_json(mj_result))
+impl std::fmt::Display for EvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let what = match self {
+            EvalError::Compile {
+                form: Form::SingleTag,
+                ..
+            } => "expression compile error",
+            EvalError::Runtime {
+                form: Form::SingleTag,
+                ..
+            } => "expression eval error",
+            EvalError::Compile {
+                form: Form::Statements | Form::Template,
+                ..
+            } => "template compile error",
+            EvalError::Runtime {
+                form: Form::Statements | Form::Template,
+                ..
+            } => "template render error",
+        };
+        write!(f, "{what}: {}", self.message())
+    }
 }
 
-/// Render `src` as a template against an already-assembled `context`.
+/// Evaluate `src` in `env` against `context`, the one evaluator every line
+/// runs through: exactly one `{{ }}` keeps its expression's type, and so does
+/// one after statements ([`Form::Statements`]); anything else, literal text
+/// included, renders to a string, a `none` printed in it as nothing. A `none`
+/// or undefined value is `Ok(None)`: absent.
 ///
-/// The workspace's only template render: `comb eval`'s template form, `-f fmt`,
-/// `watch -f fmt` and the status formatter's custom templates all land here.
-/// `exec()` is unavailable — see `render_template_exec` for the sibling
-/// that enables it. Keeping this signature and exec-off behaviour unchanged
-/// means `src/cli/format.rs` and every other formatting surface calling this
-/// function is untouched by exec()'s addition.
+/// A statements line runs as one template whose `{{ }}` is rewritten in place
+/// to `{% set value__ = (<expr>) %}`, so what its statements set and import is
+/// in scope; the value is read back from the render's state. Its statements
+/// print nothing: any output but whitespace (a `{% call %}`) is an error.
 ///
-/// `context` is a JSON object whose keys are the template's top-level names:
-/// the shape the [`Form::Template`] path resolves an [`EvalContext`] to, and
-/// the shape a caller rendering pre-fetched provider data builds directly.
+/// A text a load checked (a seeded template, a Source's or provider's line)
+/// passed [`lint`] there; one nothing checked (`comb eval`, `-f`) is refused
+/// here the same way, structurally, as a compile error ([`refused`]).
 ///
-/// The environment is the typed path's — the same filters, the same lenient
-/// undefined behaviour — so a cascade over a missing ref reads the same in both
-/// forms. On top of that, a `none` (a JSON `null`: a ref that resolved to
-/// nothing) renders as the empty string rather than the literal word `none`,
-/// matching how a missing `env.*` and [`crate::render::render_data`] already
-/// render nothing.
-pub fn render_template(src: &str, context: &serde_json::Value) -> Result<String, String> {
-    render_template_with(src, context, false)
-}
-
-/// [`render_template`], with the `exec()` jinja function available.
-///
-/// Used by [`evaluate_with_stack`]'s template arm when `ctx.allow_exec()` —
-/// a template evaluated through an exec-enabled [`EvalContext`] can call
-/// `exec()` the same as the typed expression path can. Kept as a sibling
-/// rather than a parameter on `render_template` so every other formatting
-/// call site (`comb eval`'s template form, `-f fmt`, `watch -f fmt`, the
-/// status formatter) stays exec-off without having to say so at each call.
-pub(crate) fn render_template_exec(
+/// A render `cache()` ended with its leaf's memo ([`MemoHit`]) is that memo,
+/// in every form and from inside an imported macro alike: the hit is found
+/// down the error's sources before the error is anything else.
+pub fn evaluate(
+    env: &Environment<'_>,
     src: &str,
-    context: &serde_json::Value,
-) -> Result<String, String> {
-    render_template_with(src, context, true)
-}
-
-fn render_template_with(
-    src: &str,
-    context: &serde_json::Value,
-    allow_exec: bool,
-) -> Result<String, String> {
-    let mut env = build_expression_env(allow_exec);
-    env.set_formatter(|out, state, value| {
-        if value.is_none() {
-            Ok(())
-        } else {
-            minijinja::escape_formatter(out, state, value)
+    context: MjValue,
+) -> Result<Option<MjValue>, EvalError> {
+    let (form, ran) = match analyze(src) {
+        Analysis::SingleTag(expr) => {
+            let form = Form::SingleTag;
+            let compiled = env
+                .compile_expression(expr)
+                .map_err(|e| EvalError::compile(form, &e))?;
+            (form, compiled.eval(context))
         }
-    });
-    let template = env
-        .template_from_str(src)
-        .map_err(|e| format!("template compile error: {e}"))?;
-    template
-        .render(MjValue::from_serialize(context))
-        .map_err(|e| format!("template render error: {e}"))
+        Analysis::Statements {
+            text,
+            last,
+            start,
+            end,
+        } => {
+            let form = Form::Statements;
+            refuse(src, form)?;
+            let typed = format!(
+                "{}{{% set {TYPED} = ({last}) %}}{}",
+                &text[..start],
+                &text[end..]
+            );
+            let template = match env.template_from_str(&typed) {
+                Ok(template) => template,
+                // The rewrite compiles when the text does: say what is wrong
+                // with the text as it is written.
+                Err(e) => {
+                    let e = env.template_from_str(src).err().unwrap_or(e);
+                    return Err(EvalError::compile(form, &e));
+                }
+            };
+            let ran = template.render_captured(context).map(|captured| {
+                let printed = !captured.output().trim().is_empty();
+                (printed, captured.state().lookup(TYPED).unwrap_or_default())
+            });
+            match ran {
+                Ok((true, _)) => {
+                    return Err(EvalError::Runtime {
+                        form,
+                        message: "a typed line's statements print nothing".into(),
+                    });
+                }
+                Ok((false, value)) => (form, Ok(value)),
+                Err(e) => (form, Err(e)),
+            }
+        }
+        Analysis::Template => {
+            let form = Form::Template;
+            refuse(src, form)?;
+            let template = env
+                .template_from_str(src)
+                .map_err(|e| EvalError::compile(form, &e))?;
+            (form, template.render(context).map(MjValue::from))
+        }
+    };
+    let value = match ran {
+        Ok(value) => value,
+        Err(e) => match hit_in(&e) {
+            Some(MemoHit(memo)) => return Ok(memo.as_ref().map(MjValue::from_serialize)),
+            None => return Err(EvalError::runtime(form, &e)),
+        },
+    };
+    Ok((!(value.is_undefined() || value.is_none())).then_some(value))
+}
+
+/// What an engine error says, without the engine's own framing. An error
+/// raised inside an imported library comes back wrapped once per import
+/// (`could not render include: error in "p:macro.x"`), so the message is its
+/// innermost cause's, whose place names the library (`(in p:macro.x:3)`).
+fn engine_message(e: &minijinja::Error) -> String {
+    let mut cause = e;
+    while cause.kind() == minijinja::ErrorKind::BadInclude
+        && let Some(inner) = std::error::Error::source(cause)
+            .and_then(|source| source.downcast_ref::<minijinja::Error>())
+    {
+        cause = inner;
+    }
+    without_engine_frame(&cause.to_string())
+}
+
+/// An engine error's message without the engine's own framing: the leading
+/// `invalid operation: ` and a trailing ` (in <expression>:1)` or
+/// ` (in <string>:1)`. Only those two places, once: the text between is the
+/// error's own, a command's stderr included, and is not touched.
+pub fn without_engine_frame(message: &str) -> String {
+    let body = message
+        .strip_prefix("invalid operation: ")
+        .unwrap_or(message);
+    if let Some(open) = body.rfind(" (in <")
+        && let Some(rest) = body[open..].strip_suffix(')')
+        && let Some((place, line)) = rest[" (in <".len()..].split_once(">:")
+        && !place.is_empty()
+        && place.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+        && !line.is_empty()
+        && line.chars().all(|c| c.is_ascii_digit())
+    {
+        return body[..open].to_string();
+    }
+    body.to_string()
+}
+
+/// The name a [`Form::Statements`] line's value is set to and read back by.
+const TYPED: &str = "value__";
+
+/// A text nothing linted is refused here as a client template's lint would
+/// refuse it ([`refused`]): the first such statement, as a compile error.
+fn refuse(src: &str, form: Form) -> Result<(), EvalError> {
+    match refused(src, Line::Template).into_iter().next() {
+        Some(finding) => Err(EvalError::Compile {
+            form,
+            message: finding.to_string(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// [`evaluate`] one daemon line against `context` (a JSON object of the line's
+/// top-level names), its value converted the way the client's templates
+/// convert one. Errors are the [`EvalError::message`]; they never include the
+/// context.
+pub fn eval_line(
+    env: &Environment<'_>,
+    src: &str,
+    context: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, String> {
+    eval_line_with(env, src, MjValue::from_serialize(context))
+}
+
+/// [`eval_line`] against a context that is already an engine value, so it
+/// may hold objects — a daemon line's lazy `comb`.
+pub fn eval_line_with(
+    env: &Environment<'_>,
+    src: &str,
+    context: MjValue,
+) -> Result<Option<serde_json::Value>, String> {
+    match evaluate(env, src, context).map_err(|e| e.message().to_string())? {
+        Some(value) => crate::virtual_fields::mj_to_json(value),
+        None => Ok(None),
+    }
+}
+
+/// The variables `src` reads that nothing in it declares: the names a context
+/// must supply. Functions and filters are not variables. A source that does
+/// not compile is an `Err`.
+///
+/// Not `nested`, each is a top-level name (`comb`). `nested`, each is the
+/// path read (`comb.aws.region`), and a bare name means the variable is used
+/// other than by attribute (`comb['aws']`, `comb | length`).
+pub fn undeclared_names(
+    probe: &Probe<'_>,
+    src: &str,
+    nested: bool,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let env = probe.env();
+    let names = match single_tag_expression(src) {
+        Some(expr) => env
+            .compile_expression(expr)
+            .map_err(|e| e.to_string())?
+            .undeclared_variables(nested),
+        None => env
+            .template_from_str(src)
+            .map_err(|e| e.to_string())?
+            .undeclared_variables(nested),
+    };
+    // A registered function called in a template (`exec(...)`) is reported
+    // too: it is not a name the context supplies.
+    Ok(probe.not_globals(names).collect())
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+//
+// Tests for a template rendered over locals — what a `-f` template sees of
+// the value it formats, through `resolve::eval_with` like every template —
+// and for reference discovery.
+#[cfg(test)]
+mod tests {
+    use super::Probe;
+    use crate::virtual_fields::Ref;
+
+    /// [`super::discover_refs`] in the client's engine.
+    fn discover_refs(src: &str) -> Vec<Ref> {
+        let probe = Probe::new(crate::engine::build_engine_env(Default::default()));
+        super::discover_refs(&probe, src)
+    }
+
+    /// `src` rendered over `ctx`'s fields as locals, with no daemon behind
+    /// it and `exec()` off: what a `-f` template sees of the value it formats.
+    fn render_template(src: &str, ctx: &serde_json::Value) -> Result<String, String> {
+        use crate::resolve::{Fetch, FetchError, Got, Inputs, Slot, eval_with};
+        struct NoDaemon;
+        impl Fetch for NoDaemon {
+            fn get(
+                &mut self,
+                _: &str,
+                _: Option<&str>,
+                _: bool,
+                _: crate::Wait,
+            ) -> Result<Option<Got>, FetchError> {
+                Ok(None)
+            }
+            fn memo(&mut self, _: &crate::resolve::MemoWrite) -> Result<(), FetchError> {
+                Ok(())
+            }
+        }
+        let env = std::collections::HashMap::new();
+        let inputs = Inputs {
+            cwd: "",
+            env: &env,
+            slot: Slot::Global,
+            force: false,
+            wait: crate::Wait::Budget,
+            allow_exec: false,
+            now: std::time::SystemTime::now(),
+        };
+        let locals = ctx.as_object().cloned().unwrap_or_default();
+        eval_with(src, "<test>", &inputs, &mut NoDaemon, &locals)
+            .map(|v| crate::render::render_value("", v.as_ref(), crate::render::Format::Text))
+            .map_err(|e| e.to_string())
+    }
+
+    fn resolved(provider: &str, field: &str) -> Ref {
+        Ref::Resolved(provider.into(), field.into())
+    }
+
+    // --- eval template tests ---
+
+    #[test]
+    fn eval_template_renders_provider_field_refs() {
+        let ctx = serde_json::json!({
+            "hostname": {"value": "me-laptop"},
+            "load": {"one": 0.42, "five": 0.3, "fifteen": 0.25}
+        });
+        let out =
+            render_template("hostname: {{ hostname.value }}, load: {{ load.one }}", &ctx).unwrap();
+        assert_eq!(out, "hostname: me-laptop, load: 0.42");
+    }
+
+    #[test]
+    fn eval_template_truncate_filter_works_on_fields() {
+        let ctx = serde_json::json!({
+            "git": {"sha": "abcdef1234567890"}
+        });
+        let out = render_template("{{ git.sha | truncate(7) }}", &ctx).unwrap();
+        assert_eq!(out, "abcdef…");
+    }
+
+    #[test]
+    fn eval_template_conditional_works() {
+        let ctx = serde_json::json!({
+            "git": {"dirty": true, "branch": "main"}
+        });
+        let out = render_template("{% if git.dirty %}*{% endif %}{{ git.branch }}", &ctx).unwrap();
+        assert_eq!(out, "*main");
+    }
+
+    #[test]
+    fn eval_template_default_filter_for_missing_field() {
+        let ctx = serde_json::json!({"git": {"branch": "main"}});
+        let out = render_template("{{ git.tag | default('no-tag') }}", &ctx).unwrap();
+        assert_eq!(out, "no-tag");
+    }
+
+    #[test]
+    fn eval_template_single_brace_is_literal() {
+        let ctx = serde_json::json!({"git": {"branch": "main"}});
+        let out = render_template("{git.branch}", &ctx).unwrap();
+        assert_eq!(out, "{git.branch}");
+    }
+
+    // --- reference discovery (was the deleted `find_eval_template_pairs`) ---
+
+    #[test]
+    fn discover_refs_finds_refs_in_for_block() {
+        assert_eq!(
+            discover_refs("{% for x in items.list %}{{ x }}{% endfor %}"),
+            vec![resolved("items", "list")]
+        );
+    }
+
+    #[test]
+    fn discover_refs_skips_comment_blocks() {
+        assert_eq!(
+            discover_refs("{# git.dirty #}{{ hostname.name }}"),
+            vec![resolved("hostname", "name")]
+        );
+    }
+
+    #[test]
+    fn discover_refs_handles_whitespace_control_dashes() {
+        assert_eq!(
+            discover_refs("{%- if git.dirty -%}*{%- endif -%}"),
+            vec![resolved("git", "dirty")]
+        );
+    }
+
+    #[test]
+    fn discover_refs_combines_block_and_expression_refs() {
+        assert_eq!(
+            discover_refs(
+                "{% if git.dirty %}dirty:{{ git.branch }}{% else %}{{ git.branch }}{% endif %}"
+            ),
+            vec![resolved("git", "branch"), resolved("git", "dirty")]
+        );
+    }
+
+    #[test]
+    fn discover_refs_skips_dotted_string_literals() {
+        // A dotted string literal is not a ref.
+        assert_eq!(
+            discover_refs(r#"{{ git.branch or "foo.bar" }}"#),
+            vec![resolved("git", "branch")]
+        );
+    }
+
+    #[test]
+    fn eval_template_accepts_tab_and_newline_whitespace_inside_braces() {
+        let ctx = serde_json::json!({"git": {"branch": "main"}});
+        let out = render_template("{{\tgit.branch }}", &ctx).unwrap();
+        assert_eq!(out, "main");
+
+        assert_eq!(
+            discover_refs("{{\tgit.branch }}"),
+            vec![resolved("git", "branch")]
+        );
+    }
+
+    #[test]
+    fn render_template_fg_filter_wraps_in_truecolor_sgr() {
+        let ctx = serde_json::json!({"git": {"branch": "main"}});
+        let tpl = "{{ git.branch | fg('#00ff00') }}";
+        // With no terminal in the render's environment the colour is 16-colour.
+        let out = render_template(tpl, &ctx).unwrap();
+        assert_eq!(out, "\x1b[92mmain\x1b[0m");
+        let truecolor = crate::engine::EngineCtx {
+            env: [("COLORTERM".to_string(), "truecolor".to_string())].into(),
+            ..Default::default()
+        };
+        let env = crate::engine::build_engine_env(std::sync::Arc::new(truecolor));
+        let out = super::evaluate(&env, tpl, minijinja::Value::from_serialize(&ctx))
+            .unwrap()
+            .unwrap();
+        assert_eq!(out.as_str(), Some("\x1b[38;2;0;255;0mmain\x1b[0m"));
+    }
+}
+
+#[cfg(test)]
+mod line_tests {
+    use super::{EvalError, Form, eval_line, evaluate, undeclared_names, without_engine_frame};
+    use crate::engine::build_engine_env;
+    use minijinja::value::Value as MjValue;
+    use serde_json::json;
+
+    fn run(src: &str, context: serde_json::Value) -> Result<Option<serde_json::Value>, String> {
+        eval_line(&build_engine_env(Default::default()), src, &context)
+    }
+
+    /// `src` through the one evaluator, over `context`.
+    fn evaluated(src: &str, context: serde_json::Value) -> Result<Option<MjValue>, EvalError> {
+        evaluate(
+            &build_engine_env(Default::default()),
+            src,
+            MjValue::from_serialize(context),
+        )
+    }
+
+    /// One `{{ }}` keeps its type; anything else is text, `none` in it
+    /// nothing; `none` and undefined are absent.
+    #[test]
+    fn evaluate_keeps_one_tags_type_and_renders_the_rest_as_text() {
+        let value = |src: &str| {
+            evaluated(src, json!({"d": {"a": [1, "x"]}}))
+                .unwrap()
+                .map(|v| serde_json::to_value(v).unwrap())
+        };
+        assert_eq!(value("{{ 1 }}"), Some(json!(1)));
+        assert_eq!(value("  {{- d -}}\n"), Some(json!({"a": [1, "x"]})));
+        assert_eq!(value("x{{ 1 }}"), Some(json!("x1")));
+        assert_eq!(value("{{ 1 }}{{ 2 }}"), Some(json!("12")));
+        assert_eq!(value("a{{ none }}b"), Some(json!("ab")));
+        assert_eq!(value("lit"), Some(json!("lit")));
+        assert_eq!(value(""), Some(json!("")));
+        assert_eq!(value("{{ none }}"), None);
+        assert_eq!(value("{{ d.nope.x }}"), None);
+    }
+
+    /// Not compiling is a compile error; failing while it runs is a runtime
+    /// one: each in its form's words, the engine's frame taken off.
+    #[test]
+    fn evaluate_tells_a_compile_error_from_a_runtime_one() {
+        let cases = [
+            ("{{ 1 + }}", "expression compile error: "),
+            ("{{ 'a' + 1 }}", "expression eval error: "),
+            ("a {{ 1 + }}", "template compile error: "),
+            ("a {{ 'a' + 1 }}", "template render error: "),
+        ];
+        for (src, words) in cases {
+            let err = evaluated(src, json!({})).unwrap_err();
+            let shown = err.to_string();
+            assert!(shown.starts_with(words), "{src}: {shown}");
+            assert_eq!(shown, format!("{words}{}", err.message()), "{src}");
+            assert!(!err.message().contains("(in <"), "{src}: {shown}");
+        }
+        assert!(matches!(
+            evaluated("{{ 1 + }}", json!({})),
+            Err(EvalError::Compile {
+                form: Form::SingleTag,
+                ..
+            })
+        ));
+        assert!(matches!(
+            evaluated("a {{ 'a' + 1 }}", json!({})),
+            Err(EvalError::Runtime {
+                form: Form::Template,
+                ..
+            })
+        ));
+    }
+
+    /// Statements before one `{{ }}` run, and the expression keeps its type:
+    /// what they set and import is in scope, and a macro they define is
+    /// callable.
+    #[test]
+    fn statements_then_one_tag_is_typed() {
+        let value = |src: &str| {
+            evaluated(src, json!({"n": 2}))
+                .unwrap()
+                .map(|v| serde_json::to_value(v).unwrap())
+        };
+        assert_eq!(value("{% set x = 1 %}{{ x }}"), Some(json!(1)));
+        assert_eq!(
+            value(
+                "{%- set xs = [] -%}\n{%- for i in range(n) -%}{%- set xs = xs + [i] -%}{%- endfor -%}\n{{- xs -}}"
+            ),
+            Some(json!([])),
+            "a loop's set is the loop's"
+        );
+        assert_eq!(
+            value(
+                "{%- set ns = namespace(xs=[]) -%}{%- for i in range(n) -%}\
+                 {%- set ns.xs = ns.xs + [i] -%}{%- endfor -%}{{ ns.xs }}"
+            ),
+            Some(json!([0, 1]))
+        );
+        assert_eq!(
+            value("{% macro two() %}2{% endmacro %}\n  {{ {'n': two() | int} }}\n"),
+            Some(json!({"n": 2}))
+        );
+        assert_eq!(value("{# why #}{{ n > 1 }}{# so #}"), Some(json!(true)));
+        assert_eq!(value("{% set x = none %}{{ x }}"), None, "absent is absent");
+        assert_eq!(
+            value("{% set x = 1 %}{{ x }} and text"),
+            Some(json!("1 and text")),
+            "text makes it a template"
+        );
+        let err = evaluated("{% set x = 1 %}{{ x + }}", json!({})).unwrap_err();
+        assert!(matches!(err, EvalError::Compile { .. }), "{err}");
+        assert!(
+            !err.message().contains("value__"),
+            "the text as written: {err}"
+        );
+    }
+
+    /// A typed line's statements print nothing; a `{% call %}` that prints is
+    /// an error, and whitespace is not printing.
+    #[test]
+    fn a_preamble_that_prints_is_an_error() {
+        let err = evaluated(
+            "{% macro m() %}x{{ caller() }}{% endmacro %}{% call m() %}!{% endcall %}{{ 1 }}",
+            json!({}),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            EvalError::Runtime {
+                form: Form::Statements,
+                message: "a typed line's statements print nothing".into()
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "template render error: a typed line's statements print nothing"
+        );
+        let quiet = evaluated(
+            "{% macro m() %} {{ caller() }}{% endmacro %}{% call m() %}{% endcall %}\n{{ 1 }}",
+            json!({}),
+        );
+        assert_eq!(quiet, Ok(Some(MjValue::from(1))));
+    }
+
+    /// A text nothing linted is refused as a linted one would be, before it
+    /// renders: `include`, `extends` and `block`, and an import not named by a
+    /// string.
+    #[test]
+    fn evaluate_refuses_an_unlinted_text_structurally() {
+        for (src, why) in [
+            (
+                "{% include 'p:macro.x' %}",
+                "{% include %} is refused: text is reused with a macro",
+            ),
+            (
+                "{% block b %}x{% endblock %}",
+                "{% block %} is refused: text is reused with a macro",
+            ),
+            (
+                "{% import name as m %}{{ m.x() }}",
+                "{% import name as m %}: an import names its library as a string, \
+                 \"<p>:macro.<name>\"",
+            ),
+        ] {
+            assert_eq!(
+                evaluated(src, json!({})),
+                Err(EvalError::Compile {
+                    form: super::classify(src),
+                    message: why.into()
+                }),
+                "{src}"
+            );
+        }
+    }
+
+    /// The engine's frame is taken off once, at its two places, and the text
+    /// between is the error's own.
+    #[test]
+    fn only_the_engines_own_frame_is_taken_off_an_error() {
+        assert_eq!(
+            without_engine_frame("invalid operation: boom (in <expression>:1)"),
+            "boom"
+        );
+        assert_eq!(
+            without_engine_frame("invalid operation: boom (in <template>:12)"),
+            "boom"
+        );
+        for kept in [
+            "sh said invalid operation: nope (in the middle) and went on",
+            "a command wrote (in <expression>:1) in its stderr and then more",
+            "plain",
+        ] {
+            assert_eq!(without_engine_frame(kept), kept);
+        }
+        assert_eq!(
+            without_engine_frame("invalid operation: x: invalid operation: y (in <expression>:1)"),
+            "x: invalid operation: y",
+            "once: the text between is the error's own"
+        );
+    }
+
+    /// `src` evaluated as the leaf `p.f` whose memo, under the hash of the
+    /// piped `'cmd'`, holds `memo`; `exec` is allowed, and a macro library
+    /// `p:macro.m` defines `m()`, a cached `'cmd' | exec()`.
+    fn under_a_memo(
+        src: &str,
+        memo: Option<serde_json::Value>,
+    ) -> Result<Option<MjValue>, EvalError> {
+        use crate::library::memo::{Frame, Leaf, Memo, MemoFrames, memo_hash};
+        let frames = std::sync::Arc::<MemoFrames>::default();
+        let hash = memo_hash(&[MjValue::from("cmd")], &[]).unwrap();
+        frames.push(Frame::Leaf(Leaf::new(
+            "p.f".into(),
+            Some(Memo {
+                hash: Some(crate::validity::hex(hash)),
+                stale: false,
+                age_ms: 1,
+                data: memo,
+            }),
+            false,
+            crate::Wait::Budget,
+        )));
+        let mut env = build_engine_env(std::sync::Arc::new(crate::engine::EngineCtx {
+            allow_exec: true,
+            memo: Some(frames),
+            ..Default::default()
+        }));
+        env.set_loader(|name| {
+            Ok((name == "p:macro.m")
+                .then(|| "{% macro m() %}{{ 'cmd' | cache() | exec() }}{% endmacro %}".to_string()))
+        });
+        evaluate(&env, src, MjValue::from(()))
+    }
+
+    /// A hit ends the render with the memo, and nothing after `cache()` runs:
+    /// the `exec('false')` here would fail.
+    #[test]
+    fn a_memo_hit_aborts_a_single_tag() {
+        assert_eq!(
+            under_a_memo(
+                "{{ 'cmd' | cache() | exec() | upper }}",
+                Some(json!("prod"))
+            ),
+            Ok(Some(MjValue::from("prod")))
+        );
+        assert_eq!(
+            under_a_memo(
+                "{{ 'cmd' | cache() | exec(sh='false') }}",
+                Some(json!({"a": [1]}))
+            )
+            .map(|v| v.map(|v| serde_json::to_value(v).unwrap())),
+            Ok(Some(json!({"a": [1]}))),
+            "the memo keeps its type"
+        );
+        assert_eq!(
+            under_a_memo("{{ 'cmd' | cache() | exec() }}", None),
+            Ok(None),
+            "a memo of absence is absent"
+        );
+    }
+
+    #[test]
+    fn a_memo_hit_aborts_a_statements_leaf() {
+        assert_eq!(
+            under_a_memo(
+                "{% set c = 'cmd' %}{{ c | cache() | exec() }}",
+                Some(json!("prod"))
+            ),
+            Ok(Some(MjValue::from("prod")))
+        );
+    }
+
+    #[test]
+    fn a_memo_hit_aborts_inside_a_macro() {
+        assert_eq!(
+            under_a_memo(
+                "{% from 'p:macro.m' import m %}{{ m() }}",
+                Some(json!("prod"))
+            ),
+            Ok(Some(MjValue::from("prod")))
+        );
+        assert_eq!(
+            under_a_memo(
+                "{% import 'p:macro.m' as lib %}{{ lib.m() }}",
+                Some(json!("prod"))
+            ),
+            Ok(Some(MjValue::from("prod")))
+        );
+    }
+
+    /// A miss renders on, and an `exec` that fails then is a runtime error as
+    /// it always was.
+    #[test]
+    fn an_exec_error_is_still_a_runtime_error() {
+        let err =
+            under_a_memo("{{ 'false' | cache() | exec() }}", Some(json!("prod"))).unwrap_err();
+        assert!(
+            matches!(&err, EvalError::Runtime { form: Form::SingleTag, message } if message.contains("`sh -c 'false'`")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn one_tag_keeps_the_clients_type() {
+        assert_eq!(run("{{ 1 }}", json!({})).unwrap(), Some(json!(1)));
+        assert_eq!(run("{{ true }}", json!({})).unwrap(), Some(json!(true)));
+        assert_eq!(
+            run("{{ 4 / 2 }}", json!({})).unwrap(),
+            Some(json!(2)),
+            "the number type the client's mj_to_json produces"
+        );
+        assert_eq!(
+            run("{{ d }}", json!({"d": {"a": [1, "x"]}})).unwrap(),
+            Some(json!({"a": [1, "x"]}))
+        );
+    }
+
+    #[test]
+    fn a_number_json_cannot_hold_is_an_error() {
+        let err = run("{{ 1 / 0 }}", json!({})).unwrap_err();
+        assert!(err.contains("inf"), "unexpected message: {err}");
+    }
+
+    #[test]
+    fn a_mix_is_a_string_and_no_tags_is_literal() {
+        assert_eq!(run("x{{ 1 }}", json!({})).unwrap(), Some(json!("x1")));
+        assert_eq!(run("{{ 1 }}{{ 2 }}", json!({})).unwrap(), Some(json!("12")));
+        assert_eq!(run("lit", json!({})).unwrap(), Some(json!("lit")));
+    }
+
+    #[test]
+    fn none_and_undefined_are_absent_and_none_in_text_is_nothing() {
+        assert_eq!(run("{{ none }}", json!({})).unwrap(), None);
+        assert_eq!(run("{{ nope.x }}", json!({})).unwrap(), None);
+        assert_eq!(run("a{{ none }}b", json!({})).unwrap(), Some(json!("ab")));
+    }
+
+    #[test]
+    fn errors_are_strings() {
+        assert!(run("{{ 'a' + 1 }}", json!({})).is_err());
+        assert!(run("{{ ", json!({})).is_err());
+    }
+
+    #[test]
+    fn undeclared_names_are_the_top_level_variables() {
+        let probe = super::Probe::new(build_engine_env(Default::default()));
+        let names = |src: &str| undeclared_names(&probe, src, false).unwrap();
+        assert_eq!(
+            names("{{ comb.a.b ~ env.X }}")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["comb", "env"]
+        );
+        assert_eq!(
+            names("a {{ data | trim }} {{ exec('x') }}")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["data"]
+        );
+        assert!(undeclared_names(&probe, "{{ ", false).is_err());
+        let nested = |src: &str| undeclared_names(&probe, src, true).unwrap();
+        assert!(
+            nested("{{ comb.a.b }}")
+                .iter()
+                .all(|n| n.starts_with("comb."))
+        );
+        assert!(nested("{{ comb['a'].b }}").contains("comb"));
+        assert!(nested("{{ comb | length }}").contains("comb"));
+        assert!(!nested("{{ comb.a['b'] }}").contains("comb"));
+    }
 }

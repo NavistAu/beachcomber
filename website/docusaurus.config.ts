@@ -1,4 +1,4 @@
-import {themes as prismThemes} from 'prism-react-renderer';
+import * as prismThemes from './src/prismThemes';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
@@ -143,8 +143,9 @@ const config: Config = {
       copyright: 'beachcomber is a product of <a href="https://navist.com.au"><img src="/img/navist-logo.png" alt="Navist" style="height:20px;vertical-align:middle;position:relative;top:-2px;margin-left:4px" /></a> — a polymath technical consultancy. MIT License.',
     },
     prism: {
-      theme: prismThemes.github,
-      darkTheme: prismThemes.dracula,
+      theme: prismThemes.light,
+      darkTheme: prismThemes.dark,
+      additionalLanguages: ['bash', 'toml', 'shell-session', 'lua', 'ruby', 'ini'],
     },
   } satisfies Preset.ThemeConfig,
 };

@@ -1,0 +1,7 @@
+{
+  "name": "eval_typed_after_statements",
+  "description": "Statements before a template's only {{ }}, with nothing but whitespace between, keep the expression's type: {% set x = 1 %}{{ x }} is the number 1, not the text.",
+  "env": {},
+  "test": { "op": "eval", "args": { "template": "{%- set x = 1 -%}\n{{- x + 1 -}}" } },
+  "expect": { "status": "hit", "data_type": "number", "data_equals": 2 }
+}

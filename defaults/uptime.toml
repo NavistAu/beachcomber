@@ -1,0 +1,8 @@
+[daemon.providers.uptime.sources.time]
+# Seconds since boot, from the sys plugin (the kernel's boot time on macOS, /proc/uptime on Linux), and the same as whole days, hours and minutes. Polled every minute while read; backed off from 30 seconds after repeated failures.
+data = "{{ plugin('sys', 'uptime') }}"
+result.seconds = "{{ data.seconds }}"
+result.days = "{{ data.seconds // 86400 }}"
+result.hours = "{{ (data.seconds % 86400) // 3600 }}"
+result.minutes = "{{ (data.seconds % 3600) // 60 }}"
+return = "{{ result | poll('60s', 2) | failback('30s', 3) }}"

@@ -29,9 +29,9 @@ class TestOps < Minitest::Test
   # The shared client parses hello's response strictly: protocol_version and
   # daemon_version must both be present (libbeachcomber::parse_hello_response),
   # unlike the pre-ABI Ruby client which defaulted missing fields to "".
-  def test_hello_missing_data_fields_raises_protocol_error
+  def test_hello_missing_data_fields_raises_parse_error
     @server.enqueue('{"ok":true,"data":{}}')
-    assert_raises(Beachcomber::ProtocolError) { @client.hello }
+    assert_raises(Beachcomber::ParseError) { @client.hello }
   end
 
   # --- put ---
@@ -43,6 +43,14 @@ class TestOps < Minitest::Test
     assert_equal 'put',          req['op']
     assert_equal 'custom.value', req['key']
     assert_equal 'hello',        req['data']
+  end
+
+  def test_put_nil_sends_null_data
+    @server.enqueue('{"ok":true}')
+    @client.put('custom.value', nil)
+    req = @server.requests.last
+    assert req.key?('data')
+    assert_nil req['data']
   end
 
   def test_put_returns_nil
@@ -61,6 +69,12 @@ class TestOps < Minitest::Test
     assert_equal '60', req['ttl']
   end
 
+  def test_put_with_persist
+    @server.enqueue('{"ok":true}')
+    @client.put('custom.value', 'x', persist: true)
+    assert_equal true, @server.requests.last['persist']
+  end
+
   def test_put_with_path
     @server.enqueue('{"ok":true}')
     @client.put('custom.value', 'x', path: '/repo')
@@ -68,11 +82,8 @@ class TestOps < Minitest::Test
     assert_equal '/repo', req['path']
   end
 
-  def test_put_omits_data_when_nil
-    @server.enqueue('{"ok":true}')
-    @client.put('custom.value')
-    req = @server.requests.last
-    refute req.key?('data')
+  def test_put_requires_data
+    assert_raises(ArgumentError) { @client.put('custom.value') }
   end
 
   def test_put_omits_ttl_when_not_given
@@ -114,6 +125,7 @@ class TestOps < Minitest::Test
         in_flight: 2,
         active_watchers: 1,
         cache_entries: 42,
+        watch_backend: 'native',
         verdicts: [{ level: 'ok', message: 'all good' }],
       }
     }.to_json
@@ -165,8 +177,8 @@ class TestOps < Minitest::Test
     payload = {
       ok: true,
       data: [
-        { provider: 'git', field: 'branch', path: '/repo', value: 'main', age_ms: 100, stale: false },
-        { provider: 'git', field: 'dirty',  path: '/repo', value: true,   age_ms: 200, stale: true  },
+        { provider: 'git', field: 'branch', path: '/repo', source: 'source(head)', value: 'main', age_ms: 100 },
+        { provider: 'git', field: 'dirty',  path: '/repo', source: 'source(dirty)', value: true, age_ms: 200 },
       ]
     }.to_json
     @server.enqueue(payload)
@@ -177,76 +189,106 @@ class TestOps < Minitest::Test
     assert_equal 'branch', rows[0].field
     assert_equal 'main',  rows[0].value
     assert_equal 100,     rows[0].age_ms
-    refute rows[0].stale
-    assert rows[1].stale
   end
 
   def test_status_raises_protocol_error_when_data_not_array
     @server.enqueue('{"ok":true,"data":{"not":"an array"}}')
-    assert_raises(Beachcomber::ProtocolError) { @client.status }
+    assert_raises(Beachcomber::ParseError) { @client.status }
   end
 
-  # --- get_with_flags ---
+  # --- get options ---
 
-  def test_get_with_flags_sends_force
-    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
-    @client.get_with_flags('git.branch', force: true)
+  def test_get_sends_force
+    @server.enqueue('{"ok":true,"data":"main","age_ms":0}')
+    @client.get('git.branch', force: true)
     req = @server.requests.last
     assert_equal 'get', req['op']
     assert_equal true,  req['force']
     refute req.key?('wait')
   end
 
-  def test_get_with_flags_sends_wait
-    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
-    @client.get_with_flags('git.branch', wait: true)
+  def test_get_sends_the_wait_as_a_duration
+    @server.enqueue('{"ok":true,"data":"main","age_ms":0}')
+    @client.get('git.branch', wait: '0')
     req = @server.requests.last
-    assert_equal true, req['wait']
+    assert_equal '0s', req['wait']
     refute req.key?('force')
   end
 
-  def test_get_with_flags_omits_flags_by_default
-    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
-    @client.get_with_flags('git.branch')
+  # The library reads the wait, so a bad one is its parse_error, and nothing
+  # reaches the daemon.
+  def test_a_wait_that_is_no_duration_is_a_parse_error
+    err = assert_raises(Beachcomber::ParseError) { @client.get('git.branch', wait: 'soon') }
+    assert_includes err.message, 'invalid wait `soon`'
+    assert_raises(Beachcomber::ParseError) { @client.get('git.branch', wait: true) }
+    refute(@server.requests.any? { |r| r['op'] == 'get' })
+  end
+
+  def test_get_omits_the_options_by_default
+    @server.enqueue('{"ok":true,"data":"main","age_ms":0}')
+    @client.get('git.branch')
     req = @server.requests.last
     refute req.key?('force')
     refute req.key?('wait')
   end
 
-  def test_get_with_flags_returns_result
-    @server.enqueue('{"ok":true,"data":"main","age_ms":55,"stale":false}')
-    result = @client.get_with_flags('git.branch')
-    assert_instance_of Beachcomber::Result, result
-    assert_equal 'main', result.data
-    assert_equal 55,     result.age_ms
-  end
-
   # --- watch ---
 
-  def test_watch_sends_watch_op
-    # The watch stream stays open; we use the MockServer's streaming behaviour.
-    # Build a minimal response then close the stream immediately.
-    @server.enqueue('{"ok":true,"data":"main","age_ms":10,"stale":false}')
-    stream = @client.watch('git.branch')
-    event = stream.next_event
-    stream.close
-
-    req = @server.requests.last
-    assert_equal 'watch',      req['op']
-    assert_equal 'git.branch', req['key']
-    assert_instance_of Beachcomber::WatchEvent, event
-    assert_equal 'main', event.data
-    assert_equal 10,     event.age_ms
-    refute event.stale
+  # A watch is a *resolved* watch: it resolves the key once, subscribes to
+  # every key that resolution read plus the provider's template tree, and
+  # re-resolves on every frame. So several requests reach the server, not
+  # one — the same canned answer is queued for each of them, and what these
+  # tests pin is the ops on the wire and the value the event carries.
+  #
+  # `count` is a guess at how many requests the fan-in makes. If it grows
+  # past that guess, MockServer's own queue-empty fallback
+  # ('{"ok":true}') would otherwise answer the extra request silently, so a
+  # wrong guess surfaces as some other assertion failing for an unrelated
+  # reason instead of naming the real problem. A queued response past
+  # `count` names it instead: the request that reaches it gets a
+  # `ServerError` a test can see and understand immediately.
+  def enqueue_many(response, count = 8)
+    count.times { @server.enqueue(response) }
+    @server.enqueue(%({"ok":false,"error":"mock: enqueue_many(#{count}) exhausted — the fan-in made more requests than expected"}))
   end
 
-  def test_watch_with_path_includes_path
-    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
-    stream = @client.watch('git.branch', path: '/repo')
-    stream.next_event
+  def watch_requests
+    @server.requests.select { |r| r['op'] == 'watch' }
+  end
+
+  def test_watch_subscribes_to_the_key
+    enqueue_many('{"ok":true,"data":"main","age_ms":10}')
+    stream = @client.watch('git.branch', cwd: '/repo')
+    event = stream.next_event
+    @server.wait_for('watch')
     stream.close
-    req = @server.requests.last
-    assert_equal '/repo', req['path']
+
+    keys = watch_requests.map { |r| r['key'] }
+    assert_equal ['git.branch'], keys.uniq
+    assert_instance_of Beachcomber::WatchEvent, event
+    assert_equal 'main', event.data
+  end
+
+  def test_watch_addresses_the_given_cwd
+    enqueue_many('{"ok":true,"data":"main","age_ms":0}')
+    stream = @client.watch('git.branch', cwd: '/repo')
+    stream.next_event
+    @server.wait_for('watch')
+    stream.close
+    refute_empty watch_requests
+    assert(watch_requests.all? { |r| r['path'] == '/repo' })
+  end
+
+  # A miss is an event carrying nil, not the end of the stream: the daemon's
+  # `{"ok":true}` is nothing stored at that address, and a later put can
+  # still give the key a value.
+  def test_watch_event_on_a_miss_carries_nil_rather_than_ending_the_stream
+    enqueue_many('{"ok":true}')
+    stream = @client.watch('nothing.here', cwd: '/repo')
+    event = stream.next_event
+    stream.close
+    assert_instance_of Beachcomber::WatchEvent, event
+    assert_nil event.data
   end
 
   def test_watch_stream_is_enumerable
@@ -254,8 +296,8 @@ class TestOps < Minitest::Test
   end
 
   def test_watch_cancel_unblocks_pending_next
-    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
-    stream = @client.watch('git.branch')
+    enqueue_many('{"ok":true,"data":"main","age_ms":0}')
+    stream = @client.watch('git.branch', cwd: '/repo')
     stream.next_event
     stream.cancel
     # After cancel, next_event returns nil (outcome: cancelled) rather than
@@ -264,55 +306,72 @@ class TestOps < Minitest::Test
     stream.close
   end
 
-  # --- resolve / eval_expression ---
-  # (client-side resolution; env.* refs never touch the daemon)
-
-  def test_resolve_field_expression_with_filter
-    value = @client.resolve(
-      'filters.based', cwd: '/tmp',
-      env: { 'PYVAR' => '/foo/bar/baz' },
-      overrides: { 'filters.based' => 'env.PYVAR | basename' },
-    )
-    assert_equal 'baz', value
-  end
-
-  def test_resolve_undeclared_field_raises_protocol_error
-    assert_raises(Beachcomber::ProtocolError) do
-      @client.resolve('nope.field', cwd: '/tmp')
-    end
-  end
-
-  def test_resolve_path_expression_selects_by_cwd
-    overrides = { 'myproject' => "'a' if cwd == '/repo-a' else 'b'" }
-    assert_equal 'a', @client.resolve('myproject', cwd: '/repo-a', overrides: overrides)
-    assert_equal 'b', @client.resolve('myproject', cwd: '/repo-b', overrides: overrides)
-  end
-
-  def test_eval_expression_evaluates_raw_template
-    result = @client.eval_expression('env.X | truncate(3)', cwd: '/tmp', env: { 'X' => 'abcdefgh' })
-    assert_equal 'abc...', result
-  end
-
-  def test_watch_event_stale_flag
-    @server.enqueue('{"ok":true,"data":"old","age_ms":9000,"stale":true}')
-    stream = @client.watch('git.branch')
-    event = stream.next_event
+  # A wait that runs out with no event is the timeout error, not the end of
+  # the stream: the stream is still open, and a later change still arrives.
+  def test_next_event_that_runs_out_its_timeout_raises_timeout_error
+    enqueue_many('{"ok":true,"data":"main","age_ms":0}')
+    stream = @client.watch('git.branch', cwd: '/repo')
+    stream.next_event
+    err = assert_raises(Beachcomber::TimeoutError) { stream.next_event(0) }
+    assert_equal 'timeout', err.kind
     stream.close
-    assert event.stale
+  end
+
+  def test_watch_without_cwd_watches_the_global_entry
+    enqueue_many('{"ok":true,"data":"main","age_ms":0}')
+    stream = @client.watch('git.branch')
+    stream.next_event
+    @server.wait_for('watch')
+    stream.close
+    refute_empty watch_requests
+    assert(watch_requests.none? { |r| r.key?('path') }, watch_requests.inspect)
+  end
+
+  def test_close_is_idempotent
+    enqueue_many('{"ok":true,"data":"main","age_ms":0}')
+    stream = @client.watch('git.branch', cwd: '/repo')
+    stream.close
+    stream.close
+  end
+
+  # --- get / eval ---
+  # (the daemon holds the template, answered on the `get` for the key; the
+  # client renders it, and env.* refs never touch the daemon)
+
+  def test_get_fetches_the_key_at_cwd_and_renders_its_template
+    @server.enqueue('{"ok":true,"template":"{{ env.PYVAR | basename }}"}')
+    value = @client.get('filters.based', cwd: '/tmp', env: { 'PYVAR' => '/foo/bar/baz' })
+    assert_equal 'baz', value
+    req = @server.requests.last
+    assert_equal 'get',           req['op']
+    assert_equal 'filters.based', req['key']
+    assert_equal '/tmp',          req['path']
+  end
+
+  def test_get_miss_at_cwd_is_nil
+    @server.enqueue('{"ok":true}')
+    assert_nil @client.get('nope.field', cwd: '/tmp')
+  end
+
+  def test_get_plain_field_is_its_cached_value
+    @server.enqueue('{"ok":true,"data":"main","age_ms":10}')
+    assert_equal 'main', @client.get('git.branch', cwd: '/repo')
+  end
+
+  def test_eval_evaluates_raw_template
+    result = @client.eval('{{ env.X | truncate(3) }}', cwd: '/tmp', env: { 'X' => 'abcdefgh' })
+    assert_equal 'ab…', result
+  end
+
+  def test_eval_without_cwd_reads_the_global_entry
+    @server.enqueue('{"ok":true,"data":"x","age_ms":0}')
+    assert_equal 'x', @client.eval('{{ p.f }}')
+    req = @server.requests.last
+    assert_equal 'get', req['op']
+    refute req.key?('path'), req.inspect
   end
 
   # --- session additions ---
-
-  def test_session_hello
-    @server.enqueue('{"ok":true,"data":{"protocol_version":"2","daemon_version":"1.0.0"}}')
-    result = nil
-    @client.session do |s|
-      result = s.hello
-    end
-    assert_instance_of Beachcomber::HelloInfo, result
-    assert_equal '2',     result.protocol_version
-    assert_equal '1.0.0', result.daemon_version
-  end
 
   def test_session_put
     @server.enqueue('{"ok":true}')
@@ -326,36 +385,16 @@ class TestOps < Minitest::Test
     assert_equal 'myvalue', req['data']
   end
 
-  def test_session_introspect
-    @server.enqueue('{"ok":true,"data":{"items":[]}}')
+  def test_session_get_takes_the_options_and_env
+    @server.enqueue('{"ok":true,"template":"{{ env.WHO }}"}')
     result = nil
     @client.session do |s|
-      result = s.introspect('cache')
+      result = s.get('git.branch', env: { 'WHO' => 'me' }, force: true, wait: '50ms')
     end
-    assert_instance_of Beachcomber::IntrospectResponse, result
-    assert_equal 'cache', result.subject
-  end
-
-  def test_session_status
-    @server.enqueue('{"ok":true,"data":[{"provider":"git","field":"branch","path":null,"value":"main","age_ms":50,"stale":false}]}')
-    rows = nil
-    @client.session do |s|
-      rows = s.status
-    end
-    assert_equal 1, rows.size
-    assert_instance_of Beachcomber::CacheRow, rows.first
-  end
-
-  def test_session_get_with_flags
-    @server.enqueue('{"ok":true,"data":"main","age_ms":0,"stale":false}')
-    result = nil
-    @client.session do |s|
-      result = s.get_with_flags('git.branch', force: true)
-    end
-    assert_instance_of Beachcomber::Result, result
-    assert_equal 'main', result.data
+    assert_equal 'me', result
     req = @server.requests.last
     assert_equal true, req['force']
+    assert_equal '50ms', req['wait']
   end
 
   # --- lifecycle fields on CacheRow ---
@@ -368,13 +407,13 @@ class TestOps < Minitest::Test
           provider: 'git',
           field: 'branch',
           path: '/repo',
+          source: 'source(head)',
           value: 'main',
           age_ms: 100,
-          stale: false,
-          kind: { kind: 'lifecycle', decay: 0, watches_files: true },
+          kind: { kind: 'lifecycle', decay: 0, depth: 4, watches_files: true },
           poll_interval_secs: 30,
-          keep_alive_polls: 3,
-          fsevents_reinstate: false,
+          poll_count: 3,
+          next_poll_in_secs: 12,
         }
       ]
     }.to_json
@@ -384,8 +423,8 @@ class TestOps < Minitest::Test
     refute_nil git.kind
     assert_equal 'lifecycle', git.kind['kind']
     assert git.poll_interval_secs > 0
-    assert git.keep_alive_polls > 0
-    refute_nil git.fsevents_reinstate
+    assert git.poll_count > 0
+    assert_equal 12, git.next_poll_in_secs
   end
 
   # --- IntrospectSubject constants ---

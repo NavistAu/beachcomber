@@ -3,8 +3,7 @@
 --
 -- Every op mirrors a `bc_*` C function: encode arguments, call, decode the
 -- `char *` JSON envelope, free it via `bc_string_free` (never `bc_version`),
--- and return a canonical response table
--- `{ok, data, age_ms, stale, error={kind,message}}`.
+-- and return a canonical response table `{ok, data, error={kind,message}}`.
 --
 -- See beachcomber.ffi for library discovery/loading/symbol verification.
 
@@ -33,31 +32,12 @@ local function decode(C, ptr)
   return resp
 end
 
---- `bc_get`/`bc_session_get`-shaped result: `{data:{data,age_ms,stale}}` on
--- ok, `{error:{kind,message}}` otherwise. Flatten to the canonical shape.
---
--- The inner `data` field is where the wire encodes a cache miss as a
--- literal JSON null (`"data":null`) — indistinguishable on the wire from a
--- genuine stored null, except that the daemon has no way to store a
--- genuine null (see beachcomber.json's M.NULL doc comment), so this field
--- can only ever mean "miss" here. This is the one place that collapses
--- json.NULL back to plain Lua nil; nowhere else should.
-local function unwrap_get(env)
-  if not env.ok then
-    return { ok = false, error = env.error }
-  end
-  local d = env.data or {}
-  local data = d.data
-  if data == json.NULL then data = nil end
-  return { ok = true, data = data, age_ms = d.age_ms, stale = d.stale }
-end
-
---- put/put_null/refresh/status/introspect/hello/resolve/eval-shaped result:
--- `{data:...}` on ok. Deliberately does NOT collapse json.NULL — none of
--- these ops encode a "miss" as a literal null the way bc_get/bc_watch_next
--- do (see unwrap_get above), so their `data` stays whatever it decoded to;
--- an op that ever grows that convention should route through its own
--- unwrap function instead of this one.
+--- put/refresh/status/introspect/hello-shaped result: `{data:...}`
+-- on ok. Deliberately does NOT collapse json.NULL — none of these ops
+-- encode a "miss" as a literal null the way bc_get/bc_eval/bc_watch_next do
+-- (see unwrap_value below), so their `data` stays whatever it decoded to; an
+-- op that ever grows that convention should route through its own unwrap
+-- function instead of this one.
 local function plain(env)
   if not env.ok then
     return { ok = false, error = env.error }
@@ -65,10 +45,46 @@ local function plain(env)
   return { ok = true, data = env.data }
 end
 
+--- bc_get/bc_session_get/bc_eval-shaped result: the value itself at
+-- top-level `data`, where a miss (a `bc_get` of an address nothing is stored
+-- at) is a literal `"data":null`. The daemon has no way to store a genuine
+-- null (see beachcomber.json's M.NULL doc comment), so that null can only
+-- mean "no value": collapse it to Lua nil, the miss the Client documents.
+-- bc_eval shares the unwrap so the ops agree on a top-level null (a
+-- template rendering none is absent, the same nil); a null nested inside a
+-- rendered object stays json.NULL like any other decoded value.
+local function unwrap_value(env)
+  if not env.ok then
+    return { ok = false, error = env.error }
+  end
+  local data = env.data
+  if data == json.NULL then data = nil end
+  return { ok = true, data = data }
+end
+
 local M = {}
 
---- @param opts table?  opts.socket_path / opts.timeout_ms / opts.autostart
---                       forwarded into bc_client_new's options_json;
+--- The keys of bc_client_new's options_json: the ABI's own, passed through.
+local CLIENT_OPTIONS = { "socket_path", "timeout_ms", "connect_timeout_ms", "autostart", "exec" }
+
+--- The `options_json` bc_client_new takes for `opts`: each option the caller
+-- gave, under the ABI's spelling, and nothing else — no key for an option
+-- left out, so the library's own default applies (this SDK has none). nil
+-- (no options at all) when none was given.
+-- @param opts table
+-- @return string|nil
+function M.options_json(opts)
+  local options = {}
+  for _, key in ipairs(CLIENT_OPTIONS) do
+    if opts[key] ~= nil then options[key] = opts[key] end
+  end
+  if next(options) == nil then return nil end
+  return json.encode(options)
+end
+
+--- @param opts table?  opts.socket_path / opts.timeout_ms /
+--                       opts.connect_timeout_ms / opts.autostart / opts.exec
+--                       forwarded into bc_client_new's options_json as given;
 --                       opts.library_path overrides ffi library discovery.
 -- @return Backend, or nil, Error
 function M.new(opts)
@@ -79,13 +95,7 @@ function M.new(opts)
   end
   local C = loaded.lib
 
-  local options = {}
-  if opts.socket_path ~= nil then options.socket_path = opts.socket_path end
-  if opts.timeout_ms ~= nil then options.timeout_ms = opts.timeout_ms end
-  if opts.autostart ~= nil then options.autostart = opts.autostart end
-  local options_json = next(options) and json.encode(options) or nil
-
-  local client_ptr = C.bc_client_new(options_json)
+  local client_ptr = C.bc_client_new(M.options_json(opts))
   ffi.gc(client_ptr, C.bc_client_free)
 
   return setmetatable({
@@ -104,30 +114,35 @@ function Backend:version()
   return self._version
 end
 
-local function flag_bits(flags)
-  flags = flags or {}
-  local bits = 0
-  if flags.force then bits = bits + ffi_loader.BC_GET_FORCE end
-  if flags.wait then bits = bits + ffi_loader.BC_GET_WAIT end
-  return bits
+--- `bc_get`'s `options_json`: the options the caller gave, `force` when it
+-- is set and `wait` as given; none at all is NULL.
+local function options_json_of(options)
+  options = options or {}
+  local given = {}
+  if options.force then given.force = true end
+  if options.wait ~= nil then given.wait = options.wait end
+  if next(given) == nil then return nil end
+  return json.encode(given)
 end
 
-function Backend:get(key, path, flags)
-  local ptr = self._C.bc_get(self._client, key, path, flag_bits(flags))
-  return unwrap_get(decode(self._C, ptr))
+--- `env_vars` nil is a NULL `env_json`: the library renders with the calling
+-- process's environment, as the ABI documents.
+local function env_json_of(env_vars)
+  if env_vars == nil then return nil end
+  return json.encode(env_vars)
 end
 
-function Backend:put(key, data, ttl, path)
+function Backend:get(key, cwd, env_vars, options)
+  local ptr = self._C.bc_get(self._client, key, cwd, env_json_of(env_vars), options_json_of(options))
+  return unwrap_value(decode(self._C, ptr))
+end
+
+function Backend:put(key, data, ttl, path, persist)
   local json_data, enc_err = json.encode(data)
   if not json_data then
     return { ok = false, error = { kind = "parse_error", message = "json encode error: " .. tostring(enc_err) } }
   end
-  local ptr = self._C.bc_put(self._client, key, json_data, ttl, path)
-  return plain(decode(self._C, ptr))
-end
-
-function Backend:put_null(key, path)
-  local ptr = self._C.bc_put_null(self._client, key, path)
+  local ptr = self._C.bc_put(self._client, key, json_data, ttl, path, persist and true or false)
   return plain(decode(self._C, ptr))
 end
 
@@ -152,21 +167,13 @@ function Backend:hello()
   return plain(decode(self._C, ptr))
 end
 
-function Backend:resolve(key, cwd, env_vars, overrides)
-  local env_json = json.encode(env_vars or {})
-  local overrides_json = json.encode(overrides or {})
-  local ptr = self._C.bc_resolve(self._client, key, cwd, env_json, overrides_json)
-  return plain(decode(self._C, ptr))
+function Backend:eval(template_str, cwd, env_vars)
+  local ptr = self._C.bc_eval(self._client, template_str, cwd, env_json_of(env_vars))
+  return unwrap_value(decode(self._C, ptr))
 end
 
-function Backend:eval(template_str, cwd, env_vars, overrides)
-  local env_json = json.encode(env_vars or {})
-  local overrides_json = json.encode(overrides or {})
-  local ptr = self._C.bc_eval(self._client, template_str, cwd, env_json, overrides_json)
-  return plain(decode(self._C, ptr))
-end
-
--- ── Session (advanced: a persistent connection with server-side context) ──
+-- ── Session: a persistent connection with a directory of its own ──
+-- beachcomber.client's Session wraps this handle into the table's surface.
 
 local Session = {}
 Session.__index = Session
@@ -177,14 +184,22 @@ function Backend:session_open()
   return setmetatable({ _C = self._C, _s = sptr }, Session)
 end
 
-function Session:get(key, path, flags)
-  local ptr = self._C.bc_session_get(self._s, key, path, flag_bits(flags))
-  return unwrap_get(decode(self._C, ptr))
+--- bc_session_get: Backend:get on this session's connection. A nil `cwd`
+-- is the session's directory (set_context) when it has one, else the
+-- global entry.
+function Session:get(key, cwd, env_vars, options)
+  local ptr = self._C.bc_session_get(self._s, key, cwd, env_json_of(env_vars), options_json_of(options))
+  return unwrap_value(decode(self._C, ptr))
 end
 
-function Session:put(key, data, ttl, path)
+function Session:put(key, data, ttl, path, persist)
   local json_data = json.encode(data)
-  local ptr = self._C.bc_session_put(self._s, key, json_data, ttl, path)
+  local ptr = self._C.bc_session_put(self._s, key, json_data, ttl, path, persist and true or false)
+  return plain(decode(self._C, ptr))
+end
+
+function Session:refresh(key, path)
+  local ptr = self._C.bc_session_refresh(self._s, key, path)
   return plain(decode(self._C, ptr))
 end
 
@@ -206,29 +221,32 @@ end
 local Watch = {}
 Watch.__index = Watch
 
-function Backend:watch_open(key, path)
-  local wptr = self._C.bc_watch_open(self._client, key, path)
+--- A NULL `cwd` watches the global entry and a nil `env_vars` is no
+-- environment, as for Backend:get.
+function Backend:watch_open(key, cwd, env_vars)
+  local wptr = self._C.bc_watch_open(self._client, key, cwd, env_json_of(env_vars))
   if wptr == nil then
-    return nil, Error.new("io_error", "bc_watch_open returned NULL (allocation failure)")
+    return nil, Error.new("io_error", "bc_watch_open returned NULL (allocation failure)", self._version)
   end
   ffi.gc(wptr, self._C.bc_watch_free)
-  return setmetatable({ _C = self._C, _w = wptr }, Watch)
+  return setmetatable({ _C = self._C, _w = wptr, _version = self._version }, Watch)
 end
 
 --- @param timeout_ms number?  -1 (default) blocks indefinitely, 0 polls, >0 waits that long.
 --- @return event_table_or_nil, Error_or_nil, outcome_string ("event"|"timeout"|"eof"|"cancelled"|"error")
+-- The event's `data` is the resolved value — what `comb get` would print for
+-- the watched key — or nil when nothing is stored there.
 function Watch:next_event(timeout_ms)
   timeout_ms = timeout_ms or -1
   local ptr = self._C.bc_watch_next(self._w, timeout_ms)
   local env = decode(self._C, ptr)
   if not env.ok then
-    return nil, Error.from(env.error), "error"
+    return nil, Error.from(env.error, self._version), "error"
   end
   if env.outcome == "event" then
-    local d = env.data or {}
-    local data = d.data
-    if data == json.NULL then data = nil end -- see unwrap_get's comment above
-    return { data = data, age_ms = d.age_ms, stale = d.stale }, nil, "event"
+    local data = env.data
+    if data == json.NULL then data = nil end -- see unwrap_value's comment above
+    return { data = data }, nil, "event"
   end
   return nil, nil, env.outcome
 end

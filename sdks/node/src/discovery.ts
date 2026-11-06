@@ -1,114 +1,75 @@
 /**
- * Socket path discovery for the beachcomber daemon.
- *
- * Mirrors the daemon's bind-path resolution (Config::resolve_socket_path),
- * minus the config-file step which is daemon-only. Priority:
- *  1. $BEACHCOMBER_SOCKET  (if set and non-empty)
- *  2. /tmp/beachcomber-<uid>/sock
- *
- * There is no existence probe and no session-scoped environment (such as
- * $TMPDIR or $XDG_RUNTIME_DIR) is consulted: the result is the single stable
- * per-user path the daemon binds for the same environment, so singleton
- * enforcement works per-user rather than per-session. Non-standard setups
- * point clients at the daemon via BEACHCOMBER_SOCKET.
+ * Native library discovery for the FFI transport: the rule every SDK follows
+ * (docs/sdk-api.md, "Library discovery"; sdks/discovery.json is its fixture).
+ * The daemon's socket is resolved by libbeachcomber itself
+ * (`bc_socket_path`), never here.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 
-/**
- * Return the process UID as a string.
- * On platforms that do not expose process.getuid (Windows), returns '0'.
- */
-export function getUid(): string {
-  if (typeof process.getuid === 'function') {
-    return String(process.getuid());
-  }
-  return '0';
-}
-
-/**
- * Discover the beachcomber socket path using the standard priority order.
- *
- * Note: this function does NOT verify that the socket exists or that the
- * daemon is reachable — callers should attempt to connect and handle errors.
- */
-export function discoverSocketPath(): string {
-  const sock = process.env['BEACHCOMBER_SOCKET'];
-  if (sock) {
-    return sock;
-  }
-
-  const uid = getUid();
-  return path.join('/tmp', `beachcomber-${uid}`, 'sock');
-}
-
-/** The platform-conventional native library filename. */
+/** The library's file name: `.dylib` on macOS, `.so` on every other platform. */
 export function platformLibraryName(): string {
-  switch (process.platform) {
-    case 'darwin':
-      return 'libbeachcomber.dylib';
-    case 'win32':
-      return 'beachcomber.dll';
-    default:
-      return 'libbeachcomber.so';
-  }
+  return process.platform === 'darwin' ? 'libbeachcomber.dylib' : 'libbeachcomber.so';
 }
 
 /**
- * Resolve `comb` on `$PATH`, the way a shell would. Returns null if not found.
+ * The first executable `comb` file on `$PATH`, the way a shell finds it, or
+ * null when there is none.
  */
 export function resolveCombOnPath(): string | null {
-  const pathEnv = process.env['PATH'] ?? '';
-  const dirs = pathEnv.split(path.delimiter).filter((d) => d.length > 0);
-  const names = process.platform === 'win32' ? ['comb.exe', 'comb'] : ['comb'];
+  const dirs = (process.env['PATH'] ?? '').split(path.delimiter).filter((d) => d.length > 0);
   for (const dir of dirs) {
-    for (const name of names) {
-      const candidate = path.join(dir, name);
-      try {
-        fs.accessSync(candidate, fs.constants.X_OK);
-        return candidate;
-      } catch {
-        // not here — keep looking
-      }
+    const candidate = path.join(dir, 'comb');
+    try {
+      if (!fs.statSync(candidate).isFile()) continue;
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // not here — keep looking
     }
   }
   return null;
 }
 
-/**
- * The native library candidate paths, in the seven-point contract's fixed
- * search order:
- *
- * 1. `$BEACHCOMBER_LIB`, if set.
- * 2. `../lib/<platform library name>` relative to `comb` resolved on `$PATH`.
- * 3. The platform default dynamic-linker search path (a bare library name,
- *    left for `dlopen`/`LoadLibrary` to resolve).
- *
- * Each entry names how it was derived, for use in a loud discovery-failure
- * message naming every location tried.
- */
+/** One place the loader tries, and how it was derived (for the failure message). */
 export interface LibraryCandidate {
   path: string;
   source: string;
 }
 
+/**
+ * The library candidates, in the order the loader tries them:
+ *
+ * 1. `$BEACHCOMBER_LIB`, set and not empty, is the only candidate: a path set
+ *    on purpose that does not load is an error, not a reason to load some
+ *    other library.
+ * 2. Otherwise `<dir>/../lib/<file>`, where `<dir>` holds the first executable
+ *    `comb` on `$PATH` with its symlinks resolved (a Homebrew `comb` is a
+ *    symlink into the Cellar, where the library sits beside it),
+ * 3. then the bare file name, for the system loader to resolve.
+ */
 export function libraryCandidates(): LibraryCandidate[] {
-  const candidates: LibraryCandidate[] = [];
-  const libName = platformLibraryName();
-
   const envLib = process.env['BEACHCOMBER_LIB'];
   if (envLib) {
-    candidates.push({ path: envLib, source: '$BEACHCOMBER_LIB' });
+    return [{ path: envLib, source: '$BEACHCOMBER_LIB' }];
   }
 
+  const candidates: LibraryCandidate[] = [];
+  const libName = platformLibraryName();
   const comb = resolveCombOnPath();
   if (comb) {
-    const relative = path.join(path.dirname(comb), '..', 'lib', libName);
-    candidates.push({ path: relative, source: `../lib/ next to comb (${comb})` });
+    let resolved = comb;
+    try {
+      resolved = fs.realpathSync(comb);
+    } catch {
+      // a link that cannot be resolved is read where it stands
+    }
+    candidates.push({
+      path: path.join(path.dirname(resolved), '..', 'lib', libName),
+      source: `beside comb (${resolved})`,
+    });
   }
-
-  candidates.push({ path: libName, source: 'platform default search path' });
-
+  candidates.push({ path: libName, source: 'the system loader' });
   return candidates;
 }

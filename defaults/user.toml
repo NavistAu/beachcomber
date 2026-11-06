@@ -1,0 +1,6 @@
+[daemon.providers.user.sources.name]
+# The daemon's user: its uid and login name, from the sys plugin (getuid, getpwuid_r); name is absent for a uid with no entry. Polled every 10 minutes while read; backed off from a minute after repeated failures.
+data = "{{ plugin('sys', 'user') }}"
+result.name = "{{ data.name }}"
+result.uid = "{{ data.uid }}"
+return = "{{ result | poll('10m', 6) | failback('60s', 3) }}"

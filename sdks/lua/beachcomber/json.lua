@@ -45,10 +45,9 @@ end
 -- "no cached value" encoding is the literal shape `"data":null` in a
 -- get/watch response — identical on the wire to a genuine stored null —
 -- so a transport that decoded that field with M.decode would see M.NULL
--- for a miss too. The daemon has no representation for an actual stored
--- null (src/provider/mod.rs converts a put null to an empty string before
--- caching it — see tests/conformance/mapping/
--- null_value_becomes_empty_string.json), so that specific "data" field can
+-- for a miss too. The daemon stores no null at all (src/provider/mod.rs:
+-- a null member is absent — see tests/conformance/mapping/
+-- null_member_is_absent.json), so that specific "data" field can
 -- only ever mean "miss" and is the one place a sentinel must be collapsed
 -- back to plain Lua nil: see ffi_backend.lua's unwrap_get and
 -- Watch:next_event. Nowhere else should perform that collapse.

@@ -1,0 +1,23 @@
+[client.providers.aws]
+# The profile in effect: the shell's selector, then aws-vault's, then the default profile name.
+template.profile = '{{ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" }}'
+# The region in effect: the shell's selector, else the profile's region from ~/.aws/config.
+template.region = '{{ env.AWS_REGION or env.AWS_DEFAULT_REGION or comb.aws_profiles[ env.AWS_PROFILE or env.AWS_VAULT or env.AWS_DEFAULT_PROFILE or "default" ].region }}'
+# When the session's credentials expire, as the shell's credential helper set it.
+template.expiration = "{{ env.AWS_CREDENTIAL_EXPIRATION or env.AWS_SESSION_EXPIRATION }}"
+
+[daemon.providers.aws_profiles.sources.config_file]
+# Every profile in the AWS config file, whatever the shell selects: `$AWS_CONFIG_FILE`, else
+# `~/.aws/config` (`env` is the daemon's environment, as it started).
+data = "{{ (env.AWS_CONFIG_FILE or '~/.aws/config') | read | fromini }}"
+# `[default]` keyed `default` and `[profile <name>]` keyed `<name>`, each `{region}`; a profile with no
+# region, and any other section (`[sso-session …]`), is left out.
+result = '''{% set profiles = namespace(found={}) %}
+{% for section, keys in (data or {}) | items %}
+  {% set name = 'default' if section == 'default' else ((section[8:] | trim) if section is startingwith('profile ') else '') %}
+  {% if name and keys.region %}{% set profiles.found = merge(profiles.found, {name: {'region': keys.region}}) %}{% endif %}
+{% endfor %}
+{{ profiles.found }}'''
+# The default path is watched (a watch names a constant), and polled every minute as a backstop; a
+# read checks the file the data line read, `$AWS_CONFIG_FILE`'s too. A failure is retried every 30 s.
+return = "{{ result | watch('~/.aws/config') | poll('60s', 2) | failback('30s', 3) }}"

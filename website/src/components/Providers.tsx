@@ -6,10 +6,10 @@ const providers = [
   {name: 'user', time: '~650ns'},
   {name: 'load', time: '~550ns'},
   {name: 'uptime', time: '~660ns'},
-  {name: 'kubecontext', time: '<1µs'},
-  {name: 'gcloud', time: '<1µs'},
-  {name: 'aws', time: '<1µs'},
-  {name: 'conda', time: '<1µs'},
+  {name: 'uname', time: '<1µs'},
+  {name: 'sudo', time: '<1µs'},
+  {name: 'gcloud_configs', time: '<1µs'},
+  {name: 'aws_profiles', time: '<1µs'},
   {name: 'terraform', time: '<1µs'},
   {name: 'python', time: '<1µs'},
   {name: 'asdf', time: '<1µs'},
@@ -32,7 +32,7 @@ export default function Providers(): JSX.Element {
       >
         <div className={styles.label}>Built-in</div>
         <h2 className={styles.heading}>16 built-in providers</h2>
-        <p className={styles.subheading}>Plus a script backend for anything else</p>
+        <p className={styles.subheading}>Plus template-backed namespaces (aws, gcloud, kubecontext, talos, conda, op) and a script backend for anything else</p>
         <div className={styles.grid}>
           <div
             className={`${styles.card} ${styles.cardFeatured}`}

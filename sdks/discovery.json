@@ -1,0 +1,52 @@
+{
+  "description": "The library-discovery rule (docs/sdk-api.md, Library discovery), as the one fixture every SDK's own tests run. For each case: make a fresh temporary directory and call it {root}, with its symlinks resolved; build `tree` under it (\"exe\" is an executable file, \"file\" a file that is not executable, \"-> target\" a symlink to target); set $PATH to `path` and $BEACHCOMBER_LIB to `lib_env` (absent: unset); then the SDK's candidate list (the paths it tries to load, in order) must equal `expect`. {lib} is libbeachcomber.dylib on macOS and libbeachcomber.so on every other platform.",
+  "cases": [
+    {
+      "name": "the_env_var_is_the_only_candidate",
+      "tree": { "bin/comb": "exe", "lib/{lib}": "file" },
+      "path": ["{root}/bin"],
+      "lib_env": "{root}/elsewhere/{lib}",
+      "expect": ["{root}/elsewhere/{lib}"]
+    },
+    {
+      "name": "an_empty_env_var_is_unset",
+      "tree": { "bin/comb": "exe" },
+      "path": ["{root}/bin"],
+      "lib_env": "",
+      "expect": ["{root}/lib/{lib}", "{lib}"]
+    },
+    {
+      "name": "beside_comb_then_the_system_loader",
+      "tree": { "bin/comb": "exe", "lib/{lib}": "file" },
+      "path": ["{root}/bin"],
+      "expect": ["{root}/lib/{lib}", "{lib}"]
+    },
+    {
+      "name": "a_symlinked_comb_is_resolved",
+      "tree": {
+        "Cellar/beachcomber/1.0/bin/comb": "exe",
+        "bin/comb": "-> ../Cellar/beachcomber/1.0/bin/comb"
+      },
+      "path": ["{root}/bin"],
+      "expect": ["{root}/Cellar/beachcomber/1.0/lib/{lib}", "{lib}"]
+    },
+    {
+      "name": "a_comb_that_is_not_executable_is_passed_over",
+      "tree": { "a/bin/comb": "file", "b/bin/comb": "exe" },
+      "path": ["{root}/a/bin", "{root}/b/bin"],
+      "expect": ["{root}/b/lib/{lib}", "{lib}"]
+    },
+    {
+      "name": "the_first_comb_on_path_wins",
+      "tree": { "a/bin/comb": "exe", "b/bin/comb": "exe" },
+      "path": ["{root}/a/bin", "{root}/b/bin"],
+      "expect": ["{root}/a/lib/{lib}", "{lib}"]
+    },
+    {
+      "name": "no_comb_leaves_the_system_loader",
+      "tree": { "empty/.keep": "file" },
+      "path": ["{root}/empty"],
+      "expect": ["{lib}"]
+    }
+  ]
+}

@@ -1,5 +1,6 @@
-use beachcomber::protocol::{Request, Response, split_key};
+use beachcomber::protocol::{Request, Response};
 use criterion::{Criterion, criterion_group, criterion_main};
+use libbeachcomber::key::split_key;
 
 fn bench_parse_get_request(c: &mut Criterion) {
     let json = r#"{"op": "get", "key": "git.branch", "path": "/home/user/project"}"#;
@@ -27,7 +28,6 @@ fn bench_serialize_response_json(c: &mut Criterion) {
     let response = Response::ok(
         serde_json::json!({"branch": "main", "dirty": false, "ahead": 2}),
         150,
-        false,
     );
 
     c.bench_function("serialize_response_json", |b| {
@@ -41,14 +41,14 @@ fn bench_serialize_response_json(c: &mut Criterion) {
 fn bench_split_key(c: &mut Criterion) {
     c.bench_function("split_key_dotted", |b| {
         b.iter(|| {
-            let result = split_key(criterion::black_box("git.branch"));
+            let result = split_key(criterion::black_box("git.branch")).ok();
             criterion::black_box(result);
         })
     });
 
     c.bench_function("split_key_simple", |b| {
         b.iter(|| {
-            let result = split_key(criterion::black_box("hostname"));
+            let result = split_key(criterion::black_box("hostname")).ok();
             criterion::black_box(result);
         })
     });

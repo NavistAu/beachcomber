@@ -15,63 +15,32 @@ use std::os::raw::c_char;
 use std::panic::{self, UnwindSafe};
 
 use libbeachcomber::CombError;
+use libbeachcomber::resolve::{FetchError, ResolveError};
+use libbeachcomber::watch::WatchError;
 use serde::Serialize;
 use serde_json::json;
 
-/// Stable, machine-readable error kind. One slug per `CombError` variant
-/// plus the FFI-specific conditions the ABI itself can raise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrorKind {
-    /// A reserved flag bit was set.
-    BadFlags,
+/// The stable, machine-readable error kinds: every [`CombError::kind`] slug,
+/// plus the conditions the ABI itself raises.
+pub mod kind {
+    pub use libbeachcomber::kind::*;
+
     /// The handle's connection is in use by another caller.
-    Busy,
+    pub const BUSY: &str = "busy";
     /// The wrapped call panicked; caught at the FFI boundary.
-    Panic,
-    /// The daemon's reported version does not match this library's.
-    VersionSkew,
-    /// `CombError::DaemonNotRunning`.
-    DaemonNotRunning,
-    /// `CombError::ConnectionFailed`.
-    ConnectionFailed,
-    /// `CombError::IoError`.
-    IoError,
-    /// `CombError::ParseError`.
-    ParseError,
-    /// `CombError::ServerError`.
-    ServerError,
-    /// `CombError::Timeout`.
-    Timeout,
+    pub const PANIC: &str = "panic";
 }
 
-impl ErrorKind {
-    /// The stable slug serialised into the envelope's `error.kind` field.
-    pub fn slug(self) -> &'static str {
-        match self {
-            ErrorKind::BadFlags => "bad_flags",
-            ErrorKind::Busy => "busy",
-            ErrorKind::Panic => "panic",
-            ErrorKind::VersionSkew => "version_skew",
-            ErrorKind::DaemonNotRunning => "daemon_not_running",
-            ErrorKind::ConnectionFailed => "connection_failed",
-            ErrorKind::IoError => "io_error",
-            ErrorKind::ParseError => "parse_error",
-            ErrorKind::ServerError => "server_error",
-            ErrorKind::Timeout => "timeout",
-        }
-    }
-}
-
-/// An error to be enveloped: a stable [`ErrorKind`] plus a human-readable
+/// An error to be enveloped: a stable [`kind`] slug plus a human-readable
 /// message.
 #[derive(Debug, Clone)]
 pub struct FfiError {
-    pub kind: ErrorKind,
+    pub kind: &'static str,
     pub message: String,
 }
 
 impl FfiError {
-    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+    pub fn new(kind: &'static str, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
@@ -79,17 +48,42 @@ impl FfiError {
     }
 }
 
+/// A library failure, kind and all ([`CombError::kind`]). A server error's
+/// message is the daemon's words alone — the same text `comb` prints — since
+/// `kind` already says whose words they are. Every other variant's Display
+/// names its condition.
 impl From<CombError> for FfiError {
     fn from(e: CombError) -> Self {
-        let kind = match &e {
-            CombError::DaemonNotRunning => ErrorKind::DaemonNotRunning,
-            CombError::ConnectionFailed(_) => ErrorKind::ConnectionFailed,
-            CombError::IoError(_) => ErrorKind::IoError,
-            CombError::ParseError(_) => ErrorKind::ParseError,
-            CombError::ServerError(_) => ErrorKind::ServerError,
-            CombError::Timeout => ErrorKind::Timeout,
+        let kind = e.kind();
+        let message = match e {
+            CombError::ServerError(s) => s,
+            other => other.to_string(),
         };
-        FfiError::new(kind, e.to_string())
+        FfiError::new(kind, message)
+    }
+}
+
+/// A resolution failure, classified as every surface classifies it
+/// ([`ResolveError::kind`]); a transport failure is its `CombError`.
+impl From<ResolveError> for FfiError {
+    fn from(e: ResolveError) -> Self {
+        match e {
+            ResolveError::Fetch(FetchError::Transport(t)) => t.into(),
+            e => FfiError::new(e.kind(), e.to_string()),
+        }
+    }
+}
+
+/// A watch failure ([`WatchError::kind`]): a resolution's or a transport's
+/// as those are, and a key that cannot be watched at all in the library's
+/// own words — no daemon was involved in deciding it.
+impl From<WatchError> for FfiError {
+    fn from(e: WatchError) -> Self {
+        match e {
+            WatchError::Resolve(e) => e.into(),
+            WatchError::Transport(e) => e.into(),
+            e => FfiError::new(e.kind(), e.to_string()),
+        }
     }
 }
 
@@ -100,7 +94,7 @@ fn ok_json(data: impl Serialize) -> String {
 fn err_json(err: &FfiError) -> String {
     json!({
         "ok": false,
-        "error": { "kind": err.kind.slug(), "message": err.message },
+        "error": { "kind": err.kind, "message": err.message },
     })
     .to_string()
 }
@@ -166,7 +160,7 @@ where
     let body = match panic::catch_unwind(f) {
         Ok(Ok(data)) => ok_json(data),
         Ok(Err(err)) => err_json(&err),
-        Err(payload) => err_json(&FfiError::new(ErrorKind::Panic, panic_message(&*payload))),
+        Err(payload) => err_json(&FfiError::new(kind::PANIC, panic_message(&*payload))),
     };
     into_c_string(body)
 }
@@ -182,7 +176,7 @@ where
     let body = match panic::catch_unwind(f) {
         Ok(Ok(outcome)) => watch_outcome_json(outcome),
         Ok(Err(err)) => err_json(&err),
-        Err(payload) => err_json(&FfiError::new(ErrorKind::Panic, panic_message(&*payload))),
+        Err(payload) => err_json(&FfiError::new(kind::PANIC, panic_message(&*payload))),
     };
     into_c_string(body)
 }

@@ -1,0 +1,38 @@
+---
+sidebar_position: 4
+---
+
+# How It Works
+
+beachcomber is a single async daemon that:
+
+1. Serves queries from consumers (prompts, status bars, editors) via a Unix socket
+2. Watches filesystem directories using native FSEvents (macOS) or inotify (Linux)
+3. Executes providers when files change or poll timers fire — not on every query
+4. Caches results in a shared in-memory map (157ns reads)
+5. Returns cached data instantly to any number of concurrent readers
+
+The daemon is socket-activated: it starts automatically when any client connects, and shuts down after an idle period when all connections drop.
+
+```mermaid
+graph TB
+    FS["Filesystem changes"] -->|"FSEvents / inotify"| Sched
+
+    subgraph daemon["beachcomber daemon"]
+        Sched["Scheduler"] --> Prov["Providers<br/>git · battery · network<br/>hostname · scripts · (your own)"]
+        Prov --> Cache["Cache · 157ns reads"]
+        Cache --> USS["Unix Socket Server"]
+    end
+
+    USS --> Prompts["zsh / bash / fish prompt<br/>starship"]
+    USS --> Status["tmux status<br/>polybar/waybar · sketchybar<br/>oh-my-posh"]
+    USS --> Editors["neovim · lualine<br/>scripts · CI/automation"]
+```
+
+**Providers are never re-executed on every query.** A git status is computed once when `.git` changes, then served from cache to every reader — whether that's one prompt or a hundred tmux panes. The filesystem watcher is registered once for all concurrent readers.
+
+**The directory you stand in is the default.** `comb g git.branch` without an explicit path addresses the current working directory, and an SDK session can set its directory once and send it with every request, making prompt integration natural.
+
+**Provider/Source/Field model:** each provider (e.g., `git`) declares one or more sources (e.g., `refs`, `diff`, `status`), each with its own schedule and lifecycle. A field belongs to exactly one source. Lifecycle state is tracked per source instance at `(provider, path, source)`, so sibling sources decay independently.
+
+**Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand on the source that owns the queried field, keeping that source warm automatically. Resource usage scales with actual query patterns. When queries stop, source instances transition through an exponential-backoff decay sequence — Active → Decay (four steps by default) → Evicted — with each stage doubling the interval. A new query at any decay stage reinstates the source to Active immediately. A source watches its files only while it is Active, so an idle daemon holds no watches; a read of a decaying source checks its files by stat instead. There is no fixed grace period: a source stays Active for its poll interval times its poll count after the last read (a watch-only source uses the default 60 s × 12), and the number of decay steps is data (`comb get git:cache.branch` shows it; `comb put '*:cache._.decay' 3` changes it).

@@ -103,7 +103,7 @@ description = "Git stash count via beachcomber"
 
 The `git_dirty` module uses a small shell expression because the raw value is `true` or `false` — the test converts it to a displayable `*` character or suppresses output entirely.
 
-Path-scoped providers (git, terraform, mise, asdf) require the current directory to be passed as the second argument. The `.` shown above tells starship to pass `$PWD` at render time. Omitting it causes beachcomber to look up data with no path context, which returns empty for path-scoped providers.
+Rooted providers (git, terraform, mise, asdf) answer for a directory. The `.` shown above names the directory starship runs the command in; with no path argument `comb` addresses the same directory.
 
 ## System modules
 
@@ -181,7 +181,7 @@ description = "GCloud project via beachcomber"
 
 ## Environment and toolchain modules
 
-`terraform`, `mise`, and `asdf` are path-scoped — pass `.` so beachcomber receives the current directory. `conda` is a global provider and does not require a path argument.
+`terraform`, `mise`, and `asdf` answer for a directory, here the current one (`.`). `conda.env` is a template over the shell's `$CONDA_DEFAULT_ENV` (from the managed `defaults/conda.toml`), rendered by `comb g` itself, and does not require a path argument.
 
 ```toml
 [conda]
@@ -192,7 +192,7 @@ command = "comb g conda.env"
 when = "comb g conda.env"
 format = "[conda:$output]($style) "
 style = "bold green"
-description = "Conda environment via beachcomber (global provider)"
+description = "Conda environment via beachcomber (template over $CONDA_DEFAULT_ENV)"
 
 [terraform]
 disabled = true
@@ -281,7 +281,7 @@ command = "comb g conda.env"
 when = "comb g conda.env"
 format = "[conda:$output]($style) "
 style = "bold green"
-description = "Conda environment via beachcomber (global provider)"
+description = "Conda environment via beachcomber (template over $CONDA_DEFAULT_ENV)"
 
 [custom.load]
 command = "comb g load.one"
@@ -311,8 +311,8 @@ Modules that have no data for the current context are suppressed automatically. 
 
 ## Troubleshooting
 
-- **Modules hidden when they should show:** starship runs `command` and `when` in a non-interactive shell. If `comb` is only on your interactive shell's PATH, starship will not find it. See [comb not found in non-interactive shells](./troubleshooting.md#comb-not-found-in-non-interactive-shells).
-- **Module shows empty outside a repo:** this is correct. Path-scoped providers return empty when the directory is not a relevant context. The `when` field hides the module automatically.
+- **Modules hidden when they should show:** starship runs `command` and `when` in a non-interactive shell. If `comb` is only on your interactive shell's PATH, starship will not find it. See [comb not found in non-interactive shells](../getting-started/troubleshooting.md#comb-not-found-in-non-interactive-shells).
+- **Module shows empty outside a repo:** this is correct. A rooted provider returns nothing when the directory is not a relevant context. The `when` field hides the module automatically.
 - **Testing a module in isolation:** `starship module custom.git_branch` renders just that module using your current config and directory.
 
-See the [Troubleshooting](./troubleshooting.md) guide for general diagnostics.
+See the [Troubleshooting](../getting-started/troubleshooting.md) guide for general diagnostics.

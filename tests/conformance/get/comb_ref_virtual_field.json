@@ -1,0 +1,11 @@
+{
+  "name": "get_comb_ref_virtual_field",
+  "description": "A template referencing comb.P.F resolves to that cached value. The template and the seed are both put globally while the query runs at a cwd, so this also pins the chain resolution a static record gets: the global entry is the last link of every path's chain (canon field_resolution.md §\"Path resolution\").",
+  "cwd": "/nonexistent/proj",
+  "setup": [
+    { "op": "put", "args": { "key": "widget:template", "data": { "label": "{{ comb.widgetdata.label }}" } } },
+    { "op": "put", "args": { "key": "widgetdata", "data": { "label": "hello-value" } } }
+  ],
+  "test": { "op": "get", "args": { "key": "widget.label" } },
+  "expect": { "status": "hit", "data_type": "string", "data_equals": "hello-value" }
+}

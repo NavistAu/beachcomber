@@ -4,16 +4,32 @@ pub mod cli;
 pub mod client;
 pub mod config;
 pub mod daemon;
+pub mod engine;
+pub mod persist;
 pub mod pid_check;
+pub mod plugin;
 pub mod proc_snapshot;
 pub mod protocol;
 pub mod provider;
 pub mod query;
+pub mod run;
 pub mod scheduler;
 pub mod server;
+pub mod shape;
 pub mod singleton;
 pub mod watcher;
 pub mod watcher_registry;
+
+#[cfg(test)]
+mod cache_staleness_tests;
+#[cfg(test)]
+mod config_tests;
+#[cfg(test)]
+mod proc_snapshot_tests;
+#[cfg(test)]
+mod protocol_tests;
+#[cfg(test)]
+mod watch_registry_tests;
 
 #[cfg(test)]
 #[ctor::ctor]
@@ -38,5 +54,16 @@ fn prefer_nextest_advisory() {
             ===================================================================\n\n"
         );
         std::process::exit(2);
+    }
+}
+
+/// The root crate and `beachcomber-client` derive `BEACHCOMBER_VERSION`
+/// independently at build time (see `build-common/version.rs`), each from its
+/// own `build.rs`. This asserts the two derivations never disagree.
+#[cfg(test)]
+mod version_identity_tests {
+    #[test]
+    fn root_and_client_report_the_same_version() {
+        assert_eq!(env!("BEACHCOMBER_VERSION"), libbeachcomber::VERSION);
     }
 }

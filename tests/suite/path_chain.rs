@@ -1,0 +1,2157 @@
+//! `$HOME` is the global path, and a read resolves static records up the
+//! directory chain (canon `field_resolution.md` §"Path resolution").
+//!
+//! The chain for a path `P` is `P`, each ancestor below `$HOME` (or every one
+//! up to `/` when `P` is outside `$HOME`), then the global entry — which is
+//! `$HOME`, so `$HOME` is never a link of its own. Static records — those whose
+//! source is `put` or `config:<file>` — are collected from every entry on the
+//! chain, the nearest winning. Provider-produced records live at the instances
+//! of their Source: the one at the root its `root` names for the requested
+//! directory, and the one at `~`. A read asks the nearest instance first and
+//! walks up the instances, root by root, only while the key is missing.
+//!
+//! Each test owns its `$HOME`: nextest runs every test in its own process, so
+//! `set_var("HOME", …)` here is process-local. That assumption is nextest's,
+//! not cargo's — under `NEXTEST=1 cargo test` these share one process and one
+//! `$HOME`, and `query::home_dir`'s `OnceLock` freezes whichever won the race.
+
+use crate::common::daemon::isolate;
+use crate::common::git::GitRepoFixture;
+use beachcomber::cache::Cache;
+use beachcomber::cache::Schedule;
+use beachcomber::config::Config;
+use beachcomber::protocol::Response;
+use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::provider::{
+    FailbackConfig, FieldSchema, InvalidationStrategy, ProviderMetadata, Source, SourceMetadata,
+    SourceResult, Value,
+};
+use beachcomber::scheduler::{Scheduler, SchedulerHandle};
+use beachcomber::server::Server;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+use tempfile::TempDir;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
+
+// ── fixture ──────────────────────────────────────────────────────────────────
+
+struct Fixture {
+    _sock_dir: TempDir,
+    _root: TempDir,
+    sock: PathBuf,
+    /// The temp root; `$HOME` is it, or a directory below it.
+    root: PathBuf,
+    home: PathBuf,
+    cache: Arc<Cache>,
+    /// The scheduler the server hands demand to, when the fixture runs one.
+    scheduler: Option<SchedulerHandle>,
+}
+
+impl Fixture {
+    /// `$HOME` is a fresh temp root holding `ws/project/foo/bar/baz` and
+    /// `ws/other`. The server runs in-process on a unix socket.
+    fn start(registry: ProviderRegistry) -> Fixture {
+        Fixture::start_with_home(registry, "")
+    }
+
+    /// As [`Fixture::start`], with `$HOME` at `home_rel` below the temp root
+    /// — so a test can place something *above* `$HOME`.
+    fn start_with_home(registry: ProviderRegistry, home_rel: &str) -> Fixture {
+        Fixture::start_with(registry, home_rel, false)
+    }
+
+    /// As [`Fixture::start`], with a scheduler running beside the server: the
+    /// demand a read signals reaches it. It watches by polling, so starting it
+    /// costs no kernel registration.
+    fn start_scheduled(registry: ProviderRegistry) -> Fixture {
+        Fixture::start_with(registry, "", true)
+    }
+
+    fn start_with(registry: ProviderRegistry, home_rel: &str, scheduled: bool) -> Fixture {
+        Fixture::start_built(|| registry, home_rel, scheduled)
+    }
+
+    /// As [`Fixture::start_with`], building the registry once `$HOME` is set:
+    /// a registry loaded from configuration reads it.
+    fn start_built(
+        build: impl FnOnce() -> ProviderRegistry,
+        home_rel: &str,
+        scheduled: bool,
+    ) -> Fixture {
+        let root_dir = TempDir::new().unwrap();
+        let root = root_dir.path().canonicalize().unwrap();
+        // `root.join("")` would append a trailing separator; `$HOME` at the
+        // root itself must be the canonical path, byte for byte.
+        let home = if home_rel.is_empty() {
+            root.clone()
+        } else {
+            root.join(home_rel)
+        };
+        std::fs::create_dir_all(&home).unwrap();
+        // SAFETY: nextest gives every test its own process, so no other thread
+        // is reading the environment concurrently.
+        unsafe { std::env::set_var("HOME", &home) };
+
+        std::fs::create_dir_all(home.join("ws/project/foo/bar/baz")).unwrap();
+        std::fs::create_dir_all(home.join("ws/other")).unwrap();
+
+        let sock_dir = TempDir::new().unwrap();
+        let sock = sock_dir.path().join("test.sock");
+        let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
+        let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+        let registry = Arc::new(build());
+        let scheduler = scheduled.then(|| {
+            let (handle, mut scheduler) = Scheduler::new(
+                cache.clone(),
+                registry.clone(),
+                Config::default(),
+                watchers.clone(),
+            );
+            scheduler.use_polling_watcher(Duration::from_millis(50));
+            tokio::spawn(async move { scheduler.run().await });
+            handle
+        });
+        let server = Server::new(
+            sock.clone(),
+            cache.clone(),
+            registry,
+            scheduler.clone(),
+            watchers,
+        );
+        server.spawn().unwrap();
+
+        Fixture {
+            _sock_dir: sock_dir,
+            _root: root_dir,
+            sock,
+            root,
+            home,
+            cache,
+            scheduler,
+        }
+    }
+
+    fn defaults() -> Fixture {
+        Fixture::start_built(crate::common::registry::with_shipped_defaults, "", false)
+    }
+
+    fn path(&self, rel: &str) -> String {
+        self.home.join(rel).to_string_lossy().into_owned()
+    }
+
+    async fn connect(&self) -> UnixStream {
+        UnixStream::connect(&self.sock).await.unwrap()
+    }
+}
+
+async fn send_recv(stream: &mut UnixStream, request: serde_json::Value) -> Response {
+    let mut line = request.to_string();
+    line.push('\n');
+    stream.write_all(line.as_bytes()).await.unwrap();
+    let mut reader = BufReader::new(&mut *stream);
+    let mut resp = String::new();
+    reader.read_line(&mut resp).await.unwrap();
+    serde_json::from_str(&resp).unwrap()
+}
+
+fn data(resp: Response, what: &str) -> serde_json::Value {
+    assert!(resp.ok, "{what}: expected ok, got {:?}", resp.error);
+    resp.data
+        .unwrap_or_else(|| panic!("{what}: expected data, got a miss"))
+}
+
+fn put(key: &str, value: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"op": "put", "key": key, "data": value})
+}
+
+fn put_at(key: &str, value: serde_json::Value, path: &str) -> serde_json::Value {
+    serde_json::json!({"op": "put", "key": key, "data": value, "path": path})
+}
+
+fn get(key: &str) -> serde_json::Value {
+    serde_json::json!({"op": "get", "key": key})
+}
+
+fn get_at(key: &str, path: &str) -> serde_json::Value {
+    serde_json::json!({"op": "get", "key": key, "path": path})
+}
+
+// ── (a) nearest wins, farther layers still show through ──────────────────────
+
+#[tokio::test]
+async fn static_records_resolve_up_the_chain() {
+    let f = Fixture::defaults();
+    let mut s = f.connect().await;
+
+    let resp = send_recv(&mut s, put("my", serde_json::json!({"a": 1, "b": 1}))).await;
+    assert!(resp.ok, "global put: {:?}", resp.error);
+    let resp = send_recv(
+        &mut s,
+        put_at("my", serde_json::json!({"b": 2}), &f.path("ws/project")),
+    )
+    .await;
+    assert!(resp.ok, "project put: {:?}", resp.error);
+
+    let deep = f.path("ws/project/foo/bar/baz");
+    assert_eq!(
+        data(send_recv(&mut s, get_at("my", &deep)).await, "deep read"),
+        serde_json::json!({"a": 1, "b": 2}),
+        "the project record shadows the global one; the global `a` still shows through"
+    );
+
+    let other = f.path("ws/other");
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("my", &other)).await,
+            "sibling read"
+        ),
+        serde_json::json!({"a": 1, "b": 1}),
+        "a sibling branch of the tree sees only the global record"
+    );
+
+    assert_eq!(
+        data(send_recv(&mut s, get("my")).await, "global read"),
+        serde_json::json!({"a": 1, "b": 1}),
+        "--global reads the global entry alone"
+    );
+
+    assert_eq!(
+        data(send_recv(&mut s, get_at("my.b", &deep)).await, "deep field"),
+        serde_json::json!(2),
+        "a field read resolves through the same chain"
+    );
+}
+
+// ── (b) removing the nearer record uncovers the farther one ──────────────────
+
+#[tokio::test]
+async fn clearing_a_nearer_record_uncovers_the_global_one() {
+    let f = Fixture::defaults();
+    let mut s = f.connect().await;
+
+    send_recv(&mut s, put("my", serde_json::json!({"a": 1, "b": 1}))).await;
+    send_recv(
+        &mut s,
+        put_at("my", serde_json::json!({"b": 2}), &f.path("ws/project")),
+    )
+    .await;
+
+    let deep = f.path("ws/project/foo/bar/baz");
+    assert_eq!(
+        data(send_recv(&mut s, get_at("my.b", &deep)).await, "shadowed"),
+        serde_json::json!(2)
+    );
+
+    let clear = serde_json::json!({
+        "op": "put", "key": "my.b", "data": null, "path": f.path("ws/project"),
+    });
+    let resp = send_recv(&mut s, clear).await;
+    assert!(resp.ok, "clear: {:?}", resp.error);
+
+    assert_eq!(
+        data(send_recv(&mut s, get_at("my.b", &deep)).await, "uncovered"),
+        serde_json::json!(1),
+        "with the project record gone the global one is visible again"
+    );
+}
+
+// ── (c) $HOME is the global path ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn a_put_at_home_lands_in_the_global_entry() {
+    let f = Fixture::defaults();
+    let mut s = f.connect().await;
+
+    let home = f.home.to_string_lossy().into_owned();
+    let resp = send_recv(&mut s, put_at("my", serde_json::json!({"c": 3}), &home)).await;
+    assert!(resp.ok, "put at $HOME: {:?}", resp.error);
+
+    assert_eq!(
+        data(send_recv(&mut s, get("my.c")).await, "pathless read"),
+        serde_json::json!(3),
+        "a request with no path field reads the entry a $HOME put wrote"
+    );
+    assert_eq!(
+        data(send_recv(&mut s, get_at("my.c", &home)).await, "$HOME read"),
+        serde_json::json!(3),
+        "addressing $HOME explicitly reads the same entry"
+    );
+    let rows = data(
+        send_recv(&mut s, serde_json::json!({"op": "status"})).await,
+        "status",
+    );
+    let paths: std::collections::BTreeSet<String> = rows
+        .as_array()
+        .expect("status returns an array")
+        .iter()
+        .filter(|row| row["provider"] == "my")
+        .map(|row| row["path"].to_string())
+        .collect();
+    assert_eq!(
+        paths,
+        std::collections::BTreeSet::from(["null".to_string()]),
+        "the record is keyed pathless — no separate $HOME-keyed entry exists"
+    );
+}
+
+// ── (d) a path outside $HOME still ends at the global entry ──────────────────
+
+#[tokio::test]
+async fn a_path_outside_home_still_sees_the_global_record() {
+    let f = Fixture::defaults();
+    let outside = TempDir::new().unwrap();
+    let deep = outside.path().canonicalize().unwrap().join("x/y");
+    std::fs::create_dir_all(&deep).unwrap();
+    let deep = deep.to_string_lossy().into_owned();
+
+    let mut s = f.connect().await;
+    send_recv(&mut s, put("my", serde_json::json!({"v": "global"}))).await;
+
+    assert_eq!(
+        data(send_recv(&mut s, get_at("my.v", &deep)).await, "outside"),
+        serde_json::json!("global"),
+        "a path outside $HOME walks up to / and then the global entry"
+    );
+}
+
+// ── (e)+(g) provider records live at their Source's instances ───────────────
+
+/// A Source that never runs — every test that uses it seeds the cache
+/// directly, so what is asserted is the read's layering, not execution.
+struct InertSource {
+    meta: SourceMetadata,
+    /// Roots at whatever directory it is asked about; otherwise only the
+    /// instance at `~` exists.
+    rooted: bool,
+}
+
+impl Source for InertSource {
+    fn metadata(&self) -> &SourceMetadata {
+        &self.meta
+    }
+    fn execute(&self, _path: Option<&str>) -> Result<SourceResult, String> {
+        Ok(SourceResult::new())
+    }
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(self.rooted.then(|| dir.to_string()))
+    }
+    fn has_root(&self) -> bool {
+        self.rooted
+    }
+}
+
+fn source_meta(name: &str, field: &str) -> SourceMetadata {
+    SourceMetadata {
+        name: name.into(),
+        fields: vec![FieldSchema { name: field.into() }],
+        invalidation: InvalidationStrategy::Poll {
+            interval_secs: 60,
+            count: 2,
+        },
+        failback: FailbackConfig {
+            reattempts: 3,
+            interval_secs: 30,
+        },
+        decay: None,
+        budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
+        timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
+        nearest: false,
+    }
+}
+
+/// `p` has one source with no root and one rooted at the directory asked about.
+struct TwoScopeProvider;
+
+impl TwoScopeProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        ProviderMetadata {
+            name: "p".to_string(),
+            sources: vec![source_meta("glob", "gv"), source_meta("proj", "pv")],
+        }
+    }
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        self.metadata()
+            .sources
+            .into_iter()
+            .map(|m| {
+                let rooted = m.name == "proj";
+                Box::new(InertSource { meta: m, rooted }) as Box<dyn Source>
+            })
+            .collect()
+    }
+}
+
+fn two_scope_registry() -> ProviderRegistry {
+    let mut reg = ProviderRegistry::new();
+    reg.register_sources("p", TwoScopeProvider.sources())
+        .unwrap();
+    reg
+}
+
+fn fields(pairs: Vec<(&str, Value)>) -> HashMap<String, Value> {
+    pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
+}
+
+/// `mix` has a nearest Source and a cascading one, both rooted at the
+/// directory asked about, so the cascading one also reaches every ancestor.
+struct MixedProvider;
+
+impl MixedProvider {
+    fn metadata(&self) -> ProviderMetadata {
+        let mut near = source_meta("near", "nf");
+        near.nearest = true;
+        ProviderMetadata {
+            name: "mix".to_string(),
+            sources: vec![near, source_meta("casc", "cf")],
+        }
+    }
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        self.metadata()
+            .sources
+            .into_iter()
+            .map(|meta| Box::new(InertSource { meta, rooted: true }) as Box<dyn Source>)
+            .collect()
+    }
+}
+
+/// A nearest Source's records stored at an outer root are not part of a read
+/// from a nested root, even though a cascading sibling of the provider reaches
+/// that outer root: each Source's records are read at its own instances only.
+#[tokio::test]
+async fn a_nearest_sources_outer_records_do_not_surface_through_a_cascading_sibling() {
+    let mut reg = ProviderRegistry::new();
+    reg.register_sources("mix", MixedProvider.sources())
+        .unwrap();
+    let f = Fixture::start(reg);
+    let outer = f.path("ws/project");
+    let nested = f.path("ws/project/foo");
+
+    f.cache.put_source(
+        "mix",
+        Some(&outer),
+        "near",
+        fields(vec![("nf", Value::String("outer-near".into()))]),
+        Schedule::default(),
+    );
+    f.cache.put_source(
+        "mix",
+        Some(&outer),
+        "casc",
+        fields(vec![("cf", Value::String("outer-casc".into()))]),
+        Schedule::default(),
+    );
+
+    let mut s = f.connect().await;
+    let whole = data(send_recv(&mut s, get_at("mix", &nested)).await, "namespace");
+    assert_eq!(
+        whole,
+        serde_json::json!({"cf": "outer-casc"}),
+        "the cascading Source's outer record shows; the nearest Source's does not"
+    );
+    let resp = send_recv(&mut s, get_at("mix.nf", &nested)).await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert!(resp.data.is_none(), "{:?}", resp.data);
+}
+
+// ── coldness and `--force` are decided per source ────────────────────────────
+
+// One counter per source. Each test runs in its own process, so these start at
+// zero for every one of them.
+static GLOB_RUNS: AtomicUsize = AtomicUsize::new(0);
+static PROJ_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// The runs of each Source's instances, by field and directory.
+static INSTANCE_RUNS: std::sync::Mutex<Vec<(&str, Option<String>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// A Source that records how many times it ran, in all and at each instance,
+/// and reports the count at the instance, so a test can tell "was not
+/// re-executed" from "was re-executed to the same value". The count is the
+/// instance's own because a read starts the runs of its instances together:
+/// which of them runs first is not fixed.
+struct CountingSource {
+    meta: SourceMetadata,
+    runs: &'static AtomicUsize,
+    field: &'static str,
+    /// Roots at the nearest `.root` marker; otherwise only the instance at `~`
+    /// exists.
+    rooted: bool,
+}
+
+impl Source for CountingSource {
+    fn metadata(&self) -> &SourceMetadata {
+        &self.meta
+    }
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        let here = (self.field, path.map(str::to_string));
+        let n = {
+            let mut runs = INSTANCE_RUNS.lock().unwrap();
+            runs.push(here.clone());
+            runs.iter().filter(|run| **run == here).count()
+        };
+        let mut result = SourceResult::new();
+        result.insert(self.field, Value::Int(n as i64));
+        Ok(result)
+    }
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(if self.rooted {
+            find_root_marker(dir)
+        } else {
+            None
+        })
+    }
+    fn has_root(&self) -> bool {
+        self.rooted
+    }
+}
+
+/// `c` has the same shape as `p`, with sources that actually produce
+/// records — so they go warm, and a second execution is observable.
+struct CountingProvider;
+
+impl CountingProvider {
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![
+            Box::new(CountingSource {
+                meta: source_meta("glob", "gv"),
+                runs: &GLOB_RUNS,
+                field: "gv",
+                rooted: false,
+            }),
+            Box::new(CountingSource {
+                meta: source_meta("proj", "pv"),
+                runs: &PROJ_RUNS,
+                field: "pv",
+                rooted: true,
+            }),
+        ]
+    }
+}
+
+fn counting_registry() -> ProviderRegistry {
+    let mut reg = ProviderRegistry::new();
+    reg.register_sources("c", CountingProvider.sources())
+        .unwrap();
+    reg
+}
+
+/// A fixture for `c` with a project at `$HOME/ws/project`: the `proj` source
+/// has two instances there, the project's and the one at `~`.
+fn counting_fixture() -> Fixture {
+    let f = Fixture::start(counting_registry());
+    std::fs::write(f.home.join("ws/project/.root"), "").unwrap();
+    f
+}
+
+fn get_forced(key: &str, path: Option<&str>) -> serde_json::Value {
+    match path {
+        Some(p) => serde_json::json!({"op": "get", "key": key, "path": p, "force": true}),
+        None => serde_json::json!({"op": "get", "key": key, "force": true}),
+    }
+}
+
+fn get_waited(key: &str, path: Option<&str>) -> serde_json::Value {
+    match path {
+        Some(p) => serde_json::json!({"op": "get", "key": key, "path": p, "wait": "forever"}),
+        None => serde_json::json!({"op": "get", "key": key, "wait": "forever"}),
+    }
+}
+
+/// A warm sibling is not evidence that this Source is warm. The source with no
+/// root has records and the rooted one does not, so the read must run the one
+/// that is actually cold and return both. A whole-namespace read takes every
+/// instance of a Source, so the rooted one runs at the project and at `~`.
+#[tokio::test]
+async fn a_cold_source_runs_even_when_its_sibling_is_warm() {
+    let f = counting_fixture();
+    let project = f.path("ws/project");
+    f.cache.put_source(
+        "c",
+        None,
+        "glob",
+        fields(vec![("gv", Value::Int(0))]),
+        Schedule::default(),
+    );
+
+    let mut s = f.connect().await;
+    let whole = data(send_recv(&mut s, get_at("c", &project)).await, "cold path");
+
+    assert_eq!(
+        whole["gv"],
+        serde_json::json!(0),
+        "the warm source was left alone"
+    );
+    assert_eq!(
+        whole["pv"],
+        serde_json::json!(1),
+        "the cold rooted source ran at the project, and its record there is the nearer"
+    );
+    assert_eq!(GLOB_RUNS.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        PROJ_RUNS.load(Ordering::SeqCst),
+        2,
+        "once at the project, once at `~`"
+    );
+}
+
+/// `--force` re-runs every source the read returns, at every instance it
+/// reaches, and evicts none of them wholesale — the static records sharing the
+/// addressed entry are still there afterwards.
+#[tokio::test]
+async fn force_re_executes_every_source_and_keeps_the_static_records() {
+    let f = counting_fixture();
+    let project = f.path("ws/project");
+    let mut s = f.connect().await;
+
+    let first = data(send_recv(&mut s, get_at("c", &project)).await, "first read");
+    assert_eq!(first["gv"], serde_json::json!(1));
+    assert_eq!(first["pv"], serde_json::json!(1));
+
+    let resp = send_recv(
+        &mut s,
+        put_at("c.note", serde_json::json!("keep"), &project),
+    )
+    .await;
+    assert!(resp.ok, "put beside the provider records: {:?}", resp.error);
+
+    let forced = data(
+        send_recv(&mut s, get_forced("c", Some(&project))).await,
+        "forced read",
+    );
+    assert_eq!(
+        forced["gv"],
+        serde_json::json!(2),
+        "the source with no root re-ran at `~`, which the request did not name"
+    );
+    assert_eq!(
+        forced["pv"],
+        serde_json::json!(2),
+        "the rooted source re-ran at the project (and again at `~`, where its \
+         record is the farther one)"
+    );
+    assert_eq!(
+        forced["note"],
+        serde_json::json!("keep"),
+        "--force refreshes records, it does not evict the entry they share"
+    );
+
+    // A field read forces its owning source only, and only as far as the key
+    // is found: the project's instance has `pv`.
+    let pv = data(
+        send_recv(&mut s, get_forced("c.pv", Some(&project))).await,
+        "forced field",
+    );
+    assert_eq!(pv, serde_json::json!(3), "its third run at the project");
+    assert_eq!(
+        GLOB_RUNS.load(Ordering::SeqCst),
+        2,
+        "the other source is untouched by a forced read of a field it does not own"
+    );
+    assert_eq!(
+        PROJ_RUNS.load(Ordering::SeqCst),
+        5,
+        "the walk stopped at the project's instance, which answered"
+    );
+}
+
+/// `--force --global` reaches the instance at ~ at the entry it lives at.
+#[tokio::test]
+async fn force_at_the_global_entry_re_executes_the_global_source() {
+    let f = Fixture::start(counting_registry());
+    let mut s = f.connect().await;
+
+    let first = data(send_recv(&mut s, get("c")).await, "first --global read");
+    assert_eq!(first["gv"], serde_json::json!(1));
+
+    let forced = data(
+        send_recv(&mut s, get_forced("c", None)).await,
+        "forced --global read",
+    );
+    assert_eq!(
+        forced["gv"],
+        serde_json::json!(2),
+        "--force --global re-runs the instance at ~"
+    );
+    assert_eq!(GLOB_RUNS.load(Ordering::SeqCst), 2);
+}
+
+// ── `--wait` is decided per source too ───────────────────────────────────────
+
+/// The sources of `counting_registry` declare a 60s poll interval, so a warm
+/// map is stale once the mock clock is past it. Advancing rather than sleeping
+/// keeps the test instant.
+async fn age_past_the_poll_interval() {
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::time::resume();
+}
+
+/// `--wait` re-executes the stale source and leaves everything else at the
+/// entry alone. Canon `cache-lifecycle.md` lets only `put <node> null` and daemon
+/// exit remove a static record; `--wait` used to evict the whole entry and take
+/// them with it.
+#[tokio::test]
+async fn wait_re_executes_a_stale_source_and_keeps_the_static_records() {
+    let f = counting_fixture();
+    let project = f.path("ws/project");
+    let mut s = f.connect().await;
+
+    let first = data(send_recv(&mut s, get_at("c", &project)).await, "first read");
+    assert_eq!(first["pv"], serde_json::json!(1));
+
+    let resp = send_recv(
+        &mut s,
+        put_at("c.note", serde_json::json!("keep"), &project),
+    )
+    .await;
+    assert!(resp.ok, "put beside the provider records: {:?}", resp.error);
+
+    age_past_the_poll_interval().await;
+
+    let waited = data(
+        send_recv(&mut s, get_waited("c", Some(&project))).await,
+        "waited read",
+    );
+    assert_eq!(
+        PROJ_RUNS.load(Ordering::SeqCst),
+        4,
+        "the stale rooted source ran again at both its instances"
+    );
+    assert_eq!(waited["pv"], serde_json::json!(2));
+    assert_eq!(
+        waited["note"],
+        serde_json::json!("keep"),
+        "--wait refreshes a source's map, it does not evict the entry it shares"
+    );
+}
+
+/// A source with no root is stale at the global entry, and the request names a
+/// directory. `--wait` used to look for staleness at the addressed entry — where
+/// that source keeps nothing — and so never refreshed it.
+#[tokio::test]
+async fn wait_re_executes_a_stale_global_source_from_a_directory_read() {
+    let f = counting_fixture();
+    let project = f.path("ws/project");
+    let mut s = f.connect().await;
+
+    let first = data(send_recv(&mut s, get_at("c", &project)).await, "first read");
+    assert_eq!(first["gv"], serde_json::json!(1));
+
+    age_past_the_poll_interval().await;
+
+    let waited = data(
+        send_recv(&mut s, get_waited("c", Some(&project))).await,
+        "waited read",
+    );
+    assert_eq!(
+        GLOB_RUNS.load(Ordering::SeqCst),
+        2,
+        "the instance at ~ ran again even though the request named a directory"
+    );
+    assert_eq!(waited["gv"], serde_json::json!(2));
+    assert_eq!(
+        f.cache
+            .get_source("c", None, "glob")
+            .expect("the instance at ~ keeps its map at the global entry")
+            .fields["gv"],
+        Value::Int(2),
+        "the refreshed records landed at the global entry, not the addressed one"
+    );
+}
+
+/// Freshness is what `--wait` waits on. A source still inside its interval is
+/// read, not re-run.
+#[tokio::test]
+async fn wait_leaves_a_fresh_source_alone() {
+    let f = counting_fixture();
+    let project = f.path("ws/project");
+    let mut s = f.connect().await;
+
+    data(send_recv(&mut s, get_at("c", &project)).await, "first read");
+
+    let waited = data(
+        send_recv(&mut s, get_waited("c", Some(&project))).await,
+        "waited read",
+    );
+    assert_eq!(waited["gv"], serde_json::json!(1));
+    assert_eq!(waited["pv"], serde_json::json!(1));
+    assert_eq!(GLOB_RUNS.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        PROJ_RUNS.load(Ordering::SeqCst),
+        2,
+        "the two instances of the first read, and nothing since"
+    );
+}
+
+#[tokio::test]
+async fn a_provider_record_is_read_at_its_sources_instances() {
+    let f = Fixture::start(two_scope_registry());
+    let project = f.path("ws/project");
+    std::fs::write(f.home.join("ws/project/.root"), "").unwrap();
+
+    f.cache.put_source(
+        "p",
+        None,
+        "glob",
+        fields(vec![
+            ("v", Value::String("global-v".into())),
+            ("gv", Value::String("G".into())),
+        ]),
+        Schedule::default(),
+    );
+    f.cache.put_source(
+        "p",
+        Some(&project),
+        "proj",
+        fields(vec![
+            ("v", Value::String("project-v".into())),
+            ("pv", Value::String("P".into())),
+        ]),
+        Schedule::default(),
+    );
+    // The rooted source's instance at `~`: it has been asked once already.
+    f.cache
+        .put_source("p", None, "proj", fields(vec![]), Schedule::default());
+
+    let mut s = f.connect().await;
+
+    let at_project = data(send_recv(&mut s, get_at("p", &project)).await, "project");
+    assert_eq!(
+        at_project["v"],
+        serde_json::json!("project-v"),
+        "at a project path the project's record wins over the one at `~`"
+    );
+    assert_eq!(at_project["gv"], serde_json::json!("G"), "`~`-only field");
+    assert_eq!(
+        at_project["pv"],
+        serde_json::json!("P"),
+        "project-only field"
+    );
+
+    let global = data(send_recv(&mut s, get("p")).await, "global");
+    assert_eq!(
+        global,
+        serde_json::json!({"v": "global-v", "gv": "G"}),
+        "--global reads the instances at `~` alone"
+    );
+}
+
+/// Two Sources' maps can sit on the global entry at once — the rooted one's
+/// instance at `~` beside the other's only instance. Where both state a field
+/// the answer is the same every time: the merge order inside an entry is fixed
+/// (by Source name), not whatever a HashMap iterates.
+#[tokio::test]
+async fn sources_sharing_the_global_entry_merge_in_a_fixed_order() {
+    let f = Fixture::start(two_scope_registry());
+
+    f.cache.put_source(
+        "p",
+        None,
+        "proj",
+        fields(vec![("v", Value::String("from-proj".into()))]),
+        Schedule::default(),
+    );
+    f.cache.put_source(
+        "p",
+        None,
+        "glob",
+        fields(vec![("v", Value::String("from-glob".into()))]),
+        Schedule::default(),
+    );
+
+    let mut s = f.connect().await;
+    for attempt in 1..=3 {
+        let whole = data(send_recv(&mut s, get("p")).await, "--global");
+        assert_eq!(
+            whole["v"],
+            serde_json::json!("from-proj"),
+            "attempt {attempt}: the later Source name is merged last"
+        );
+    }
+}
+
+/// A provider record and a static record inside the same object node: the read
+/// stitches them together instead of letting one map answer alone.
+///
+/// The two halves live on different layers — the source's at the global
+/// entry, the static one at the project directory — so the stitching happens
+/// across the chain, not inside one entry.
+#[tokio::test]
+async fn a_static_record_merges_into_a_provider_produced_object() {
+    let f = Fixture::start(two_scope_registry());
+    let project = f.path("ws/project");
+
+    f.cache.put_source(
+        "p",
+        None,
+        "glob",
+        fields(vec![(
+            "gv",
+            Value::Object(fields(vec![("y", Value::Int(2))])),
+        )]),
+        Schedule::default(),
+    );
+
+    let mut s = f.connect().await;
+    let resp = send_recv(&mut s, put_at("p.gv.x", serde_json::json!(1), &project)).await;
+    assert!(resp.ok, "put beside a provider record: {:?}", resp.error);
+
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("p.gv", &project)).await,
+            "interior object"
+        ),
+        serde_json::json!({"x": 1, "y": 2}),
+        "the static and provider halves of one object node both show up"
+    );
+    assert_eq!(
+        data(send_recv(&mut s, get("p.gv")).await, "global read"),
+        serde_json::json!({"y": 2}),
+        "the static half really is a layer down — the global entry holds only \
+         the provider's half"
+    );
+}
+
+// ── a narrowing provider still reads static records below its entry ──────────
+
+/// A rooted source that walks up to the nearest ancestor holding a
+/// `.root` marker — git's shape (`walk_to_git`) without needing a repository.
+/// It reports the directory it ran in, so a read proves where the record lives,
+/// and the marker's text as `tag` when there is any, so two roots can produce
+/// different field sets.
+struct RootedSource(SourceMetadata);
+
+impl Source for RootedSource {
+    fn metadata(&self) -> &SourceMetadata {
+        &self.0
+    }
+    fn execute(&self, path: Option<&str>) -> Result<SourceResult, String> {
+        let mut result = SourceResult::new();
+        let dir = path.unwrap_or_default();
+        result.insert("field", Value::String(dir.to_string()));
+        if let Ok(tag) = std::fs::read_to_string(Path::new(dir).join(".root"))
+            && !tag.is_empty()
+        {
+            result.insert("tag", Value::String(tag));
+        }
+        Ok(result)
+    }
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(find_root_marker(dir))
+    }
+    fn has_root(&self) -> bool {
+        true
+    }
+}
+
+/// The nearest directory at or above `dir` holding a `.root` marker.
+fn find_root_marker(dir: &str) -> Option<String> {
+    let mut cur = Some(Path::new(dir));
+    while let Some(dir) = cur {
+        if dir.join(".root").exists() {
+            return Some(dir.to_string_lossy().into_owned());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// `r` narrows the requested path to the marker directory, so its records sit
+/// above where a bare `put` from a subdirectory lands.
+struct RootedProvider;
+
+impl RootedProvider {
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(RootedSource(source_meta("tree", "field")))]
+    }
+}
+
+/// `$HOME/ws/project` holds the marker; `$HOME/ws/project/foo` is a
+/// subdirectory of it, below the entry the provider narrows to.
+fn rooted_fixture() -> Fixture {
+    let mut reg = ProviderRegistry::new();
+    reg.register_sources("r", RootedProvider.sources()).unwrap();
+    let f = Fixture::start(reg);
+    std::fs::write(f.home.join("ws/project/.root"), "").unwrap();
+    f
+}
+
+/// `put` defaults to the caller's directory and `get` defaults to the same one,
+/// so a record written from a subdirectory of a narrowing provider's scope has
+/// to be readable from there. It used to be unreachable: the merged read
+/// started at the *narrowed* entry, one or more links above the record.
+#[tokio::test]
+async fn a_static_record_below_the_provider_entry_is_read_from_the_requested_path() {
+    let f = rooted_fixture();
+    let root = f.path("ws/project");
+    let sub = f.path("ws/project/foo");
+    let mut s = f.connect().await;
+
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.field", &sub)).await,
+            "provider record"
+        ),
+        serde_json::json!(root),
+        "the rooted Source runs at the marker directory, not the requested one"
+    );
+    assert!(
+        f.cache.get_entry("r", Some(&root)).is_some(),
+        "and its entry is keyed there"
+    );
+    assert!(
+        f.cache.get_entry("r", Some(&sub)).is_none(),
+        "nothing of the provider's lands at the requested directory"
+    );
+
+    let resp = send_recv(&mut s, put_at("r.note", serde_json::json!("kept"), &sub)).await;
+    assert!(resp.ok, "put below the provider entry: {:?}", resp.error);
+
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.note", &sub)).await,
+            "static record below the entry"
+        ),
+        serde_json::json!("kept"),
+        "the chain starts at the requested path, so the record put there is visible"
+    );
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r:cache.note", &sub)).await,
+            "provenance"
+        )["source"],
+        serde_json::json!("put"),
+        "it is a static record, written by `put`"
+    );
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.field", &sub)).await,
+            "provider record again"
+        ),
+        serde_json::json!(root),
+        "and the provider's own record still answers from its narrowed entry"
+    );
+
+    let above = send_recv(&mut s, get_at("r.note", &root)).await;
+    assert!(above.ok, "a miss is ok=true: {:?}", above.error);
+    assert!(
+        above.data.is_none(),
+        "a record below the requested path is never visible from above, got {:?}",
+        above.data
+    );
+}
+
+/// The chain does not stop at the provider's entry: links below it layer like
+/// any other, nearest winning.
+#[tokio::test]
+async fn the_nearest_static_record_wins_across_the_provider_entry() {
+    let f = rooted_fixture();
+    let root = f.path("ws/project");
+    let sub = f.path("ws/project/foo");
+    let other = f.path("ws/project/other");
+    std::fs::create_dir_all(&other).unwrap();
+    let mut s = f.connect().await;
+
+    send_recv(&mut s, put_at("r.note", serde_json::json!("root"), &root)).await;
+    send_recv(&mut s, put_at("r.note", serde_json::json!("sub"), &sub)).await;
+
+    assert_eq!(
+        data(send_recv(&mut s, get_at("r.note", &sub)).await, "at sub"),
+        serde_json::json!("sub"),
+        "the nearest record wins"
+    );
+    assert_eq!(
+        data(send_recv(&mut s, get_at("r.note", &root)).await, "at root"),
+        serde_json::json!("root"),
+        "the record a link down is not visible from the provider entry"
+    );
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.note", &other)).await,
+            "at other"
+        ),
+        serde_json::json!("root"),
+        "a sibling of the deeper directory resolves to the entry's record"
+    );
+}
+
+/// A watch subscribes the chain from the requested path too — otherwise a `put`
+/// below the provider's entry changes what the watch resolves to without ever
+/// waking it.
+#[tokio::test]
+async fn a_watch_fires_for_a_static_record_below_the_provider_entry() {
+    let f = rooted_fixture();
+    let sub = f.path("ws/project/foo");
+
+    let mut w = f.connect().await;
+    let mut req = serde_json::json!({"op": "watch", "key": "r.note", "path": sub}).to_string();
+    req.push('\n');
+    w.write_all(req.as_bytes()).await.unwrap();
+    let mut frames = BufReader::new(w);
+
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("the initial frame must arrive")
+        .unwrap();
+    let initial: Response = serde_json::from_str(&line).unwrap();
+    assert!(
+        initial.data.is_none(),
+        "nothing is written yet, got {:?}",
+        initial.data
+    );
+
+    let mut s = f.connect().await;
+    let resp = send_recv(&mut s, put_at("r.note", serde_json::json!("kept"), &sub)).await;
+    assert!(resp.ok, "put below the provider entry: {:?}", resp.error);
+
+    line.clear();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("a frame must arrive for a record put below the provider entry")
+        .unwrap();
+    let update: Response = serde_json::from_str(&line).unwrap();
+    assert_eq!(update.data, Some(serde_json::json!("kept")));
+}
+
+// ── a key missing at the nearest instance is found farther up ────────────────
+
+/// A rooted source whose records are the `key=value` lines of a `.values` file
+/// in the directory it runs in, so each instance can be given its own: the
+/// project's at its marker directory, the instance at `~` at `$HOME`. Any key
+/// is addressable (`<k>`), as mise's tools are.
+struct WalkSource(SourceMetadata);
+
+impl WalkSource {
+    fn meta() -> SourceMetadata {
+        SourceMetadata {
+            invalidation: InvalidationStrategy::Watch {
+                patterns: vec![".values".into()],
+                abs_paths: vec![],
+            },
+            ..source_meta("s", "<k>")
+        }
+    }
+}
+
+impl Source for WalkSource {
+    fn metadata(&self) -> &SourceMetadata {
+        &self.0
+    }
+    fn execute(&self, dir: Option<&str>) -> Result<SourceResult, String> {
+        let dir = dir.ok_or("no directory")?;
+        let mut result = SourceResult::new();
+        if let Ok(text) = std::fs::read_to_string(Path::new(dir).join(".values")) {
+            for line in text.lines() {
+                if let Some((k, v)) = line.split_once('=') {
+                    result.insert(k, Value::String(v.to_string()));
+                }
+            }
+        }
+        Ok(result)
+    }
+    fn root(&self, dir: &str) -> Result<Option<String>, String> {
+        Ok(find_root_marker(dir))
+    }
+    fn has_root(&self) -> bool {
+        true
+    }
+}
+
+struct WalkProvider;
+
+impl WalkProvider {
+    fn sources(&self) -> Vec<Box<dyn Source>> {
+        vec![Box::new(WalkSource(WalkSource::meta()))]
+    }
+}
+
+fn walk_registry() -> ProviderRegistry {
+    let mut reg = ProviderRegistry::new();
+    reg.register_sources("walk", WalkProvider.sources())
+        .unwrap();
+    reg
+}
+
+/// `$HOME/.values` sets `a` and `b`; the project at `$HOME/ws/project` sets `a`
+/// only, and a nested root `$HOME/ws/project/vendor/inner` sets `c`.
+fn walk_values(f: &Fixture) {
+    std::fs::write(f.home.join(".values"), "a=home-a\nb=home-b\n").unwrap();
+    std::fs::write(f.home.join("ws/project/.root"), "").unwrap();
+    std::fs::write(f.home.join("ws/project/.values"), "a=project-a\n").unwrap();
+    let inner = f.home.join("ws/project/vendor/inner");
+    std::fs::create_dir_all(inner.join("src")).unwrap();
+    std::fs::write(inner.join(".root"), "").unwrap();
+    std::fs::write(inner.join(".values"), "c=inner-c\n").unwrap();
+}
+
+/// The key the nearest instance has is its answer, and the instance at `~` is
+/// not even asked; a key it lacks is found at the instance at `~`.
+#[tokio::test]
+async fn a_key_missing_at_the_project_instance_is_found_at_the_home_instance() {
+    let f = Fixture::start(walk_registry());
+    walk_values(&f);
+    let sub = f.path("ws/project/foo");
+    let project = f.path("ws/project");
+    let mut s = f.connect().await;
+
+    assert_eq!(
+        data(send_recv(&mut s, get_at("walk.a", &sub)).await, "walk.a"),
+        serde_json::json!("project-a"),
+        "the project's instance has `a`, and it is nearer than `~`'s"
+    );
+    assert!(f.cache.get_entry("walk", Some(&project)).is_some());
+    assert!(
+        f.cache.get_entry("walk", None).is_none(),
+        "the walk stopped at the project's instance: `~` was never asked"
+    );
+
+    assert_eq!(
+        data(send_recv(&mut s, get_at("walk.b", &sub)).await, "walk.b"),
+        serde_json::json!("home-b"),
+        "`b` is missing at the project, so the walk goes on to `~`"
+    );
+    assert!(
+        f.cache.get_entry("walk", None).is_some(),
+        "and the instance at `~` now exists"
+    );
+
+    let whole = data(send_recv(&mut s, get_at("walk", &sub)).await, "whole");
+    assert_eq!(
+        whole,
+        serde_json::json!({"a": "project-a", "b": "home-b"}),
+        "a namespace read merges the instances up the chain, the nearer winning"
+    );
+
+    let absent = send_recv(&mut s, get_at("walk.zz", &sub)).await;
+    assert!(
+        absent.ok && absent.data.is_none(),
+        "a key nobody has is a miss"
+    );
+}
+
+/// Instances chain through every root on the way up: a nested root asks its
+/// parent's root next, then `~`. The nearer instance wins per key, and what it
+/// lacks is filled from the farther ones, never the other way round.
+#[tokio::test]
+async fn a_nested_root_wins_per_key_and_the_outer_root_fills_the_rest() {
+    let f = Fixture::start(walk_registry());
+    walk_values(&f);
+    let inner = f.path("ws/project/vendor/inner/src");
+    let mut s = f.connect().await;
+
+    assert_eq!(
+        data(send_recv(&mut s, get_at("walk", &inner)).await, "whole"),
+        serde_json::json!({"a": "project-a", "b": "home-b", "c": "inner-c"}),
+        "inner, then the project, then `~`"
+    );
+    for (key, want) in [("c", "inner-c"), ("a", "project-a"), ("b", "home-b")] {
+        assert_eq!(
+            data(
+                send_recv(&mut s, get_at(&format!("walk.{key}"), &inner)).await,
+                key
+            ),
+            serde_json::json!(want)
+        );
+    }
+}
+
+/// A read walks as far as it needs and no farther: the instances it reached are
+/// the ones that exist afterwards.
+#[tokio::test]
+async fn a_read_creates_only_the_instances_it_reached() {
+    let f = Fixture::start(walk_registry());
+    walk_values(&f);
+    let inner = f.path("ws/project/vendor/inner/src");
+    let mut s = f.connect().await;
+
+    assert_eq!(
+        data(send_recv(&mut s, get_at("walk.c", &inner)).await, "walk.c"),
+        serde_json::json!("inner-c")
+    );
+    assert!(
+        f.cache
+            .get_entry("walk", Some(&f.path("ws/project/vendor/inner")))
+            .is_some()
+    );
+    assert!(
+        f.cache
+            .get_entry("walk", Some(&f.path("ws/project")))
+            .is_none()
+    );
+    assert!(f.cache.get_entry("walk", None).is_none());
+}
+
+/// An instance's schedule registers when the instance is first requested, at
+/// the root: the lifecycle key is the root's, and the watch is on the root, not
+/// on the subdirectory the request came from. The walk's second instance, at
+/// `~`, has no directory to watch: it watches the file the pattern names in
+/// `$HOME`, on its own, and not `$HOME` itself.
+#[tokio::test]
+async fn watches_register_at_the_root_on_first_request() {
+    let f = Fixture::start_scheduled(walk_registry());
+    walk_values(&f);
+    let project = f.path("ws/project");
+    let sub = f.path("ws/project/foo/bar");
+    let sched = f.scheduler.clone().expect("the fixture runs a scheduler");
+
+    let status = sched.get_status().await.expect("scheduler runs");
+    assert!(
+        status.watches.is_empty(),
+        "nothing is watched before a first request: {:?}",
+        status.watches
+    );
+    assert!(sched.get_lifecycle_snapshots().await.is_empty());
+
+    let mut s = f.connect().await;
+    assert_eq!(
+        data(send_recv(&mut s, get_at("walk.b", &sub)).await, "walk.b"),
+        serde_json::json!("home-b"),
+        "the walk reached both the project and `~`"
+    );
+
+    let keys: std::collections::BTreeSet<Option<String>> = sched
+        .get_lifecycle_snapshots()
+        .await
+        .into_keys()
+        .filter(|k| k.provider == "walk")
+        .map(|k| k.path)
+        .collect();
+    assert_eq!(
+        keys,
+        std::collections::BTreeSet::from([Some(project.clone()), None]),
+        "one lifecycle entry per instance reached, keyed at the root and not at {sub}"
+    );
+
+    let status = sched.get_status().await.expect("scheduler runs");
+    let mut watched: Vec<String> = status
+        .watches
+        .iter()
+        .map(|w| w.path.to_string_lossy().into_owned())
+        .collect();
+    watched.sort();
+    let mut want = vec![project, f.path(".values")];
+    want.sort();
+    assert_eq!(
+        watched, want,
+        "the relative watch is on the project's root and, at `~`, on the file in \
+         `$HOME`; neither `$HOME` nor the requested subdirectory is watched"
+    );
+}
+
+// ── a provider entry above $HOME is off the chain, and still read ────────────
+
+/// The marker sits *above* `$HOME`: `$ROOT/.root` with `$HOME = $ROOT/home`.
+/// The walker does not stop at `$HOME`, so the provider's entry is keyed at
+/// `$ROOT` — a directory the chain from anywhere below `$HOME` never reaches,
+/// because the chain stops at `$HOME` and steps to the global entry.
+fn rooted_fixture_above_home() -> Fixture {
+    let mut reg = ProviderRegistry::new();
+    reg.register_sources("r", RootedProvider.sources()).unwrap();
+    let f = Fixture::start_with_home(reg, "home");
+    std::fs::write(f.root.join(".root"), "").unwrap();
+    f
+}
+
+/// Canon `field_resolution.md` reads a rooted Source's records at the
+/// addressed path, wherever the source resolved it to. An entry above `$HOME`
+/// is the one case that is not a link of the requested path's chain, so the
+/// read has to add it — and a static record put below `$HOME` still layers
+/// over it like any other.
+#[tokio::test]
+async fn a_provider_entry_above_home_is_read_from_a_path_below_home() {
+    let f = rooted_fixture_above_home();
+    let root = f.root.to_string_lossy().into_owned();
+    let sub = f.path("ws/project");
+    let mut s = f.connect().await;
+
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.field", &sub)).await,
+            "provider record"
+        ),
+        serde_json::json!(root),
+        "the source runs at the marker directory above $HOME"
+    );
+    assert!(
+        f.cache.get_entry("r", Some(&root)).is_some(),
+        "and its entry is keyed there, above $HOME"
+    );
+    assert!(
+        f.cache.get_entry("r", Some(&sub)).is_none(),
+        "nothing of the provider's lands at the requested directory"
+    );
+
+    let resp = send_recv(&mut s, put_at("r.note", serde_json::json!("kept"), &sub)).await;
+    assert!(resp.ok, "put below $HOME: {:?}", resp.error);
+    assert_eq!(
+        data(send_recv(&mut s, get_at("r", &sub)).await, "namespace"),
+        serde_json::json!({ "field": root, "note": "kept" }),
+        "the static record at the requested path layers over the entry above $HOME"
+    );
+}
+
+/// The watch subscribes the same chain the read walks, so a provider write to
+/// an entry above `$HOME` wakes a watch opened below it.
+#[tokio::test]
+async fn a_watch_below_home_receives_a_provider_write_above_home() {
+    let f = rooted_fixture_above_home();
+    let root = f.root.to_string_lossy().into_owned();
+    let sub = f.path("ws/project");
+
+    let mut w = f.connect().await;
+    let mut req = serde_json::json!({"op": "watch", "key": "r.field", "path": sub}).to_string();
+    req.push('\n');
+    w.write_all(req.as_bytes()).await.unwrap();
+    let mut frames = BufReader::new(w);
+
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("the initial frame must arrive")
+        .unwrap();
+    let initial: Response = serde_json::from_str(&line).unwrap();
+    assert!(
+        initial.data.is_none(),
+        "no scheduler and nothing executed yet, got {:?}",
+        initial.data
+    );
+
+    // A cold-miss `get` on another connection is the provider's write: it
+    // executes the source and stores its records at `$ROOT`.
+    let mut s = f.connect().await;
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("r.field", &sub)).await,
+            "cold-miss execute"
+        ),
+        serde_json::json!(root)
+    );
+
+    line.clear();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("a frame must arrive for the provider's write above $HOME")
+        .unwrap();
+    let update: Response = serde_json::from_str(&line).unwrap();
+    assert_eq!(update.data, Some(serde_json::json!(root)));
+}
+
+// ── (f) a nested repo never inherits its parent's records ────────────────────
+
+#[tokio::test]
+async fn a_nested_repo_never_reads_the_outer_repos_branch() {
+    let f = Fixture::defaults();
+    let outer = GitRepoFixture::new();
+    let inner = outer.create_subdir("inner");
+    outer.git_in(&inner, &["init", "--initial-branch=innerbr"]);
+
+    let mut s = f.connect().await;
+
+    let outer_branch = data(
+        send_recv(&mut s, get_at("git.branch", outer.path_str())).await,
+        "outer branch",
+    );
+    assert_eq!(outer_branch, serde_json::json!("main"));
+
+    let inner_branch = data(
+        send_recv(&mut s, get_at("git.branch", inner.to_str().unwrap())).await,
+        "inner branch",
+    );
+    assert_eq!(
+        inner_branch,
+        serde_json::json!("innerbr"),
+        "a rooted record is read at its own root — never inherited from an ancestor"
+    );
+}
+
+/// A repository nested in another is a different repository: git is nearest,
+/// so the inner repo's read is answered by its own instance alone and never
+/// has a field filled in from the superproject's.
+#[tokio::test]
+async fn a_nested_repo_shows_only_its_own_values() {
+    let f = Fixture::defaults();
+    // The outer repo is on a branch forked from main, so it has a
+    // `branch_parent`; the inner one is detached, so it has none.
+    let outer = GitRepoFixture::new().with_branch_from("feat", "main");
+    let inner = outer.create_subdir("inner");
+    outer.git_in(&inner, &["init", "--initial-branch=innerbr"]);
+    outer.git_in(
+        &inner,
+        &[
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "x",
+        ],
+    );
+    outer.git_in(&inner, &["checkout", "--detach"]);
+    let inner = inner.to_str().unwrap();
+
+    let mut s = f.connect().await;
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.branch_parent", outer.path_str())).await,
+            "outer parent"
+        ),
+        serde_json::json!("main"),
+        "the outer repo has a parent branch to leak"
+    );
+
+    let resp = send_recv(&mut s, get_at("git.branch_parent", inner)).await;
+    assert!(resp.ok, "a miss is ok=true: {:?}", resp.error);
+    assert!(
+        resp.data.is_none(),
+        "the detached inner repo has no parent branch, and the outer's is not its own: {:?}",
+        resp.data
+    );
+
+    let whole = data(send_recv(&mut s, get_at("git", inner)).await, "inner repo");
+    assert_eq!(whole["detached"], serde_json::json!(true), "{whole}");
+    assert!(
+        whole.get("branch").is_none(),
+        "a detached HEAD is on no branch: {whole}"
+    );
+    assert!(
+        whole.get("branch_parent").is_none(),
+        "nothing of the outer repo shows in the inner one: {whole}"
+    );
+}
+
+/// `put` records merge up the path chain whatever a Source does: they are found
+/// where the nearest Source has no instance, and where its one instance lacks
+/// the key.
+#[tokio::test]
+async fn a_put_on_a_nearest_provider_is_found_up_the_path_chain() {
+    let f = Fixture::defaults();
+    let mut s = f.connect().await;
+    let ws = f.path("ws");
+    let repo = f.path("ws/repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    crate::common::git::git(Path::new(&repo), &["init", "--initial-branch=main"]);
+
+    send_recv(
+        &mut s,
+        put_at("git.note", serde_json::json!("from-ws"), &ws),
+    )
+    .await;
+
+    // No repository at `ws/other`: git has no instance there, and the put at
+    // `ws` is still what the chain gives.
+    let other = f.path("ws/other");
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.note", &other)).await,
+            "no instance"
+        ),
+        serde_json::json!("from-ws")
+    );
+    // In the repository, git's one instance has no `note`: the put is found.
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.note", &repo)).await,
+            "key missing at R1"
+        ),
+        serde_json::json!("from-ws")
+    );
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.branch", &repo)).await,
+            "R1 answers its own"
+        ),
+        serde_json::json!("main")
+    );
+}
+
+/// With a repository at `$HOME`, a directory under it that is not a repository
+/// is served by the `$HOME` repo: the walk found `$HOME`, which is an instance.
+#[tokio::test]
+async fn a_directory_without_a_repo_reads_the_home_repo() {
+    let f = Fixture::defaults();
+    crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
+    let sub = f.path("ws/project/foo");
+
+    let mut s = f.connect().await;
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.branch", &sub)).await,
+            "field read"
+        ),
+        serde_json::json!("homebr")
+    );
+    let whole = data(
+        send_recv(&mut s, get_at("git", &sub)).await,
+        "namespace read",
+    );
+    assert_eq!(whole["branch"], serde_json::json!("homebr"), "{whole}");
+}
+
+/// A directory outside `$HOME` with no repository above it has no git values,
+/// and nothing is created for it: git does not fall back to the instance at
+/// `~`.
+#[tokio::test]
+async fn a_directory_outside_home_and_any_repo_has_no_git_values() {
+    let f = Fixture::defaults();
+    let outside_tmp = tempfile::tempdir().unwrap();
+    let outside = outside_tmp.path().canonicalize().unwrap();
+    let outside = outside.to_str().unwrap();
+
+    let mut s = f.connect().await;
+    for key in ["git.branch", "git"] {
+        let resp = send_recv(&mut s, get_at(key, outside)).await;
+        assert!(resp.ok, "{key}: a miss is ok=true: {:?}", resp.error);
+        assert!(resp.data.is_none(), "{key}: {:?}", resp.data);
+    }
+
+    let rows = data(
+        send_recv(&mut s, serde_json::json!({"op": "status"})).await,
+        "status",
+    );
+    let git_rows: Vec<&serde_json::Value> = rows
+        .as_array()
+        .expect("status returns an array")
+        .iter()
+        .filter(|row| row["provider"] == "git")
+        .collect();
+    assert!(git_rows.is_empty(), "no git instance exists: {git_rows:?}");
+    assert!(
+        f.cache.get_entry("git", None).is_none(),
+        "nothing ran for git at ~ either"
+    );
+}
+
+// ── a repository at $HOME is served from the global entry ────────────────────
+
+/// `$HOME` is the global path, so a repository rooted there is the
+/// instance at the global entry: its records key the pathless entry and
+/// the source runs at `$HOME`. Addressing `$HOME`, addressing nothing, and
+/// standing in a plain subdirectory are all the same read of the same entry —
+/// there is never a second entry keyed `Some($HOME)`.
+#[tokio::test]
+async fn a_repository_at_home_is_served_from_the_global_entry() {
+    let f = Fixture::defaults();
+    crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
+
+    let home = f.home.to_string_lossy().into_owned();
+    let mut s = f.connect().await;
+
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.branch", &home)).await,
+            "$HOME"
+        ),
+        serde_json::json!("homebr"),
+        "a rooted Source addressed at $HOME runs there"
+    );
+    assert_eq!(
+        data(send_recv(&mut s, get("git.branch")).await, "--global"),
+        serde_json::json!("homebr"),
+        "--global reads the same entry, and the same directory"
+    );
+
+    // A plain subdirectory of the repository, not a repository itself: the
+    // scope walk lands on $HOME, which is the global entry.
+    let sub = f.path("ws/other");
+    assert_eq!(
+        data(
+            send_recv(&mut s, get_at("git.branch", &sub)).await,
+            "subdirectory"
+        ),
+        serde_json::json!("homebr"),
+        "a subdirectory resolves to the repository root, which is $HOME"
+    );
+
+    let rows = data(
+        send_recv(&mut s, serde_json::json!({"op": "status"})).await,
+        "status",
+    );
+    let paths: std::collections::BTreeSet<String> = rows
+        .as_array()
+        .expect("status returns an array")
+        .iter()
+        .filter(|row| row["provider"] == "git")
+        .map(|row| row["path"].to_string())
+        .collect();
+    assert_eq!(
+        paths,
+        std::collections::BTreeSet::from(["null".to_string()]),
+        "one git entry, keyed pathless — never a second one at Some($HOME)"
+    );
+}
+
+/// The bare-namespace read follows the field read: a cold cache, a repository
+/// at `$HOME`, and `get git --global` answers with the object rather than a
+/// miss, because a rooted Source addressed at the global entry runs at
+/// `$HOME` like any other directory.
+#[tokio::test]
+async fn a_bare_global_read_of_a_home_repository_is_not_a_miss() {
+    let f = Fixture::defaults();
+    crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
+
+    let mut s = f.connect().await;
+    let whole = data(send_recv(&mut s, get("git")).await, "bare --global");
+    assert_eq!(
+        whole["branch"],
+        serde_json::json!("homebr"),
+        "the whole-namespace read carries the repository's fields"
+    );
+    assert_eq!(
+        data(send_recv(&mut s, get("git.branch")).await, "field --global"),
+        serde_json::json!("homebr"),
+        "and the field read agrees with it"
+    );
+}
+
+/// The mirror image, and the reason every git source guards on being inside a
+/// work tree: with no repository at `$HOME` the same bare read is a clean miss,
+/// not an object of zeroes from a source that reports defaults for a directory
+/// it knows nothing about.
+#[tokio::test]
+async fn a_bare_global_read_without_a_home_repository_is_a_miss() {
+    let f = Fixture::defaults();
+    let mut s = f.connect().await;
+
+    let resp = send_recv(&mut s, get("git")).await;
+    assert!(resp.ok, "a miss is ok=true: {:?}", resp.error);
+    assert!(
+        resp.data.is_none(),
+        "no repository at $HOME means nothing to report, got {:?}",
+        resp.data
+    );
+
+    let resp = send_recv(&mut s, get("git.lines_added")).await;
+    assert!(resp.ok, "a miss is ok=true: {:?}", resp.error);
+    assert!(
+        resp.data.is_none(),
+        "git.lines_added must not answer 0 outside a work tree, got {:?}",
+        resp.data
+    );
+}
+
+/// A watch from a subdirectory of a repository rooted at `$HOME` subscribes to
+/// the global entry, which is on its chain, and its initial frame is the
+/// chain-resolved value. A watch runs nothing (its frames follow writes), so a
+/// read stores the value first.
+#[tokio::test]
+async fn watch_from_a_subdirectory_of_a_home_repository_reads_the_global_entry() {
+    let f = Fixture::defaults();
+    crate::common::git::git(&f.home, &["init", "--initial-branch=homebr"]);
+
+    let sub = f.path("ws/other");
+    let mut s = f.connect().await;
+    send_recv(&mut s, get_at("git.branch", &sub)).await;
+    let mut w = f.connect().await;
+    let mut req = serde_json::json!({"op": "watch", "key": "git.branch", "path": sub}).to_string();
+    req.push('\n');
+    w.write_all(req.as_bytes()).await.unwrap();
+    let mut frames = BufReader::new(w);
+
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("the initial frame must arrive")
+        .unwrap();
+    let initial: Response = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        initial.data,
+        Some(serde_json::json!("homebr")),
+        "the initial frame resolves through the chain to the global entry"
+    );
+}
+
+// ── (h) a watch fires for every entry on the chain ───────────────────────────
+
+#[tokio::test]
+async fn watch_follows_the_whole_chain() {
+    let f = Fixture::defaults();
+    let mut s = f.connect().await;
+    send_recv(&mut s, put("my", serde_json::json!({"b": 1}))).await;
+    send_recv(
+        &mut s,
+        put_at("my", serde_json::json!({"b": 2}), &f.path("ws/project")),
+    )
+    .await;
+
+    let deep = f.path("ws/project/foo/bar/baz");
+    let mut w = f.connect().await;
+    let mut req = serde_json::json!({"op": "watch", "key": "my.b", "path": deep}).to_string();
+    req.push('\n');
+    w.write_all(req.as_bytes()).await.unwrap();
+    let mut frames = BufReader::new(w);
+
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("the initial frame must arrive")
+        .unwrap();
+    let initial: Response = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        initial.data,
+        Some(serde_json::json!(2)),
+        "the initial frame is the chain-resolved value"
+    );
+
+    // A global write the project record shadows changes nothing the watcher can
+    // see, so no frame is emitted.
+    // The cancellation here is safe where the one in the refresh test was not:
+    // `frames` is a one-way watch stream this test never writes to, so a
+    // cancelled read strands no response — only, if a frame did arrive, a
+    // partial line, which the emptiness check below turns into a legible
+    // failure rather than a parse error on the next read.
+    send_recv(&mut s, put("my", serde_json::json!({"b": 9}))).await;
+    line.clear();
+    // A real change written next as a sentinel would not do: the watch
+    // collapses its wakeups into one, so it would send only the second.
+    let shadowed = tokio::time::timeout(Duration::from_millis(50), frames.read_line(&mut line));
+    let timed_out = shadowed.await.is_err();
+    assert!(
+        timed_out && line.is_empty(),
+        "a shadowed change must not produce a frame, got {line:?}"
+    );
+
+    // Clearing the project record uncovers the global one — the watch is
+    // subscribed to that entry too, so it fires.
+    let clear = serde_json::json!({
+        "op": "put", "key": "my.b", "data": null, "path": f.path("ws/project"),
+    });
+    send_recv(&mut s, clear).await;
+    line.clear();
+    tokio::time::timeout(Duration::from_millis(2000), frames.read_line(&mut line))
+        .await
+        .expect("a frame must arrive when the nearest record is removed")
+        .unwrap();
+    let uncovered: Response = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        uncovered.data,
+        Some(serde_json::json!(9)),
+        "the uncovered global value is streamed"
+    );
+}
+
+// ── refresh reaches the scheduler's execute path ─────────────────────────────
+
+/// A real daemon — scheduler included, so `refresh` reaches
+/// `Scheduler::execute_source` rather than the server's scheduler-less no-op —
+/// with `$HOME` a fresh temp root.
+async fn daemon_at_a_temp_home() -> (TempDir, TempDir, PathBuf, PathBuf) {
+    let home_dir = TempDir::new().unwrap();
+    let home = home_dir.path().canonicalize().unwrap();
+    // SAFETY: nextest gives every test its own process.
+    unsafe { std::env::set_var("HOME", &home) };
+
+    let sock_dir = TempDir::new().unwrap();
+    let sock = sock_dir.path().join("test.sock");
+    let (_handle, ready) = beachcomber::daemon::start_in_process_polling(
+        sock.clone(),
+        crate::common::registry::config_over_shipped(vec![]),
+    );
+    ready.await.expect("daemon ready");
+    (home_dir, sock_dir, home, sock)
+}
+
+/// The cache rows `status` reports for `git`, as `(path, field)` pairs. Reads
+/// the cache without querying it, so it observes what `refresh` wrote rather
+/// than triggering an inline execute of its own.
+async fn git_rows(stream: &mut UnixStream) -> Vec<(String, String)> {
+    let rows = data(
+        send_recv(stream, serde_json::json!({"op": "status"})).await,
+        "status",
+    );
+    rows.as_array()
+        .expect("status returns an array")
+        .iter()
+        .filter(|row| row["provider"] == "git")
+        .map(|row| (row["path"].to_string(), row["field"].to_string()))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_at_the_global_entry_runs_the_home_repository() {
+    let (_home_dir, _sock_dir, home, sock) = daemon_at_a_temp_home().await;
+    crate::common::git::git(&home, &["init", "--initial-branch=homebr"]);
+
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+    let resp = send_recv(&mut s, serde_json::json!({"op": "refresh", "key": "git"})).await;
+    assert!(resp.ok, "refresh: {:?}", resp.error);
+
+    // Every source fans out from one refresh and each writes when it finishes,
+    // so wait for the last one this test names rather than the first to land.
+    crate::common::poll::poll_until_async(
+        "git rows after a global refresh",
+        "rows for both the head and the diff source",
+        Duration::from_secs(10),
+        Duration::from_millis(20),
+        async || git_rows(&mut s).await,
+        |rows| {
+            let has = |f: &str| rows.iter().any(|(_, field)| field == f);
+            has("\"branch\"") && has("\"lines_added\"")
+        },
+    )
+    .await;
+
+    let whole = data(send_recv(&mut s, get("git")).await, "--global");
+    assert_eq!(whole["branch"], serde_json::json!("homebr"));
+    assert!(
+        whole.get("lines_added").is_some(),
+        "the diff source ran too, got {whole}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_at_the_global_entry_writes_nothing_without_a_home_repository() {
+    let (_home_dir, _sock_dir, _home, sock) = daemon_at_a_temp_home().await;
+
+    // git is nearest and there is no repository at `$HOME`: no instance, so
+    // there is nothing to refresh, said so and not claimed as done.
+    let mut s = UnixStream::connect(&sock).await.unwrap();
+    let resp = send_recv(&mut s, serde_json::json!({"op": "refresh", "key": "git"})).await;
+    assert!(!resp.ok, "refresh should error");
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("nothing to refresh: git has no instance at ~")
+    );
+    assert!(
+        git_rows(&mut s).await.is_empty(),
+        "no instance was created, so no row exists"
+    );
+
+    let resp = send_recv(&mut s, get("git")).await;
+    assert!(resp.data.is_none(), "still a miss, got {:?}", resp.data);
+    let resp = send_recv(&mut s, get("git.lines_added")).await;
+    assert!(
+        resp.data.is_none(),
+        "git.lines_added must not answer 0, got {:?}",
+        resp.data
+    );
+}
+
+// ── (i)+(j) the CLI carries a path on every request ──────────────────────────
+
+fn comb(f: &Fixture, cwd: &Path, cfg: &Path) -> assert_cmd::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+    isolate(&mut cmd, &f.home, cfg, &f.sock).current_dir(cwd);
+    assert_cmd::Command::from_std(cmd)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_put_and_get_default_to_the_cwd() {
+    let f = Fixture::defaults();
+    let cwd = PathBuf::from(f.path("ws/project"));
+    let cfg = f.home.join("cfg");
+
+    let out = tokio::task::spawn_blocking(move || {
+        comb(&f, &cwd, &cfg)
+            .args(["put", "my", r#"{"a":1}"#])
+            .assert()
+            .success();
+        let got = comb(&f, &cwd, &cfg)
+            .args(["get", "my.a"])
+            .assert()
+            .success();
+        let at_cwd = String::from_utf8(got.get_output().stdout.clone()).unwrap();
+
+        let global = comb(&f, &cwd, &cfg)
+            .args(["get", "--global", "my.a"])
+            .assert()
+            .success();
+        let at_global = String::from_utf8(global.get_output().stdout.clone()).unwrap();
+        (at_cwd, at_global)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(out.0.trim(), "1", "put and get share the cwd default");
+    assert_eq!(
+        out.1.trim(),
+        "",
+        "--global reads $HOME, where nothing was written"
+    );
+}
+
+/// A relative path names a directory below the *caller's* cwd. The daemon
+/// canonicalises whatever it receives against its own working directory, so
+/// the CLI must make the path absolute before sending it — otherwise
+/// `comb g my.a .` answers for wherever the daemon was started. The in-process
+/// daemon here runs in the test's cwd, which is not `ws/project`, so the old
+/// behaviour is a miss and the fixed one a hit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_resolves_a_relative_path_against_the_callers_cwd() {
+    let f = Fixture::defaults();
+    let cwd = PathBuf::from(f.path("ws/project"));
+    let cfg = f.home.join("cfg");
+
+    let out = tokio::task::spawn_blocking(move || {
+        comb(&f, &cwd, &cfg)
+            .args(["put", "--path", "foo", "my", r#"{"a":1}"#])
+            .assert()
+            .success();
+        let dot = comb(&f, &cwd, &cfg)
+            .args(["get", "my.a", "./foo"])
+            .assert()
+            .success();
+        let at_dot = String::from_utf8(dot.get_output().stdout.clone()).unwrap();
+        let flag = comb(&f, &cwd, &cfg)
+            .args(["get", "--path", "foo/bar", "my.a"])
+            .assert()
+            .success();
+        let below = String::from_utf8(flag.get_output().stdout.clone()).unwrap();
+        let here = comb(&f, &cwd, &cfg)
+            .args(["get", "my.a", "."])
+            .assert()
+            .success();
+        let at_here = String::from_utf8(here.get_output().stdout.clone()).unwrap();
+        (at_dot, below, at_here)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        out.0.trim(),
+        "1",
+        "`./foo` is `<cwd>/foo`, where the put landed"
+    );
+    assert_eq!(
+        out.1.trim(),
+        "1",
+        "`--path foo/bar` is below it and resolves up the chain"
+    );
+    assert_eq!(
+        out.2.trim(),
+        "",
+        "`.` is the cwd itself, above the record: a miss"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cli_carries_the_cwd_for_a_templates_dependency_fetch() {
+    let f = Fixture::defaults();
+    let project = PathBuf::from(f.path("ws/project"));
+    let deep = PathBuf::from(f.path("ws/project/foo/bar/baz"));
+    let cfg = f.home.join("cfg");
+
+    let out = tokio::task::spawn_blocking(move || {
+        // Both the template and the value it reads live at the project; the
+        // read is from a directory beneath it.
+        comb(&f, &project, &cfg)
+            .args(["put", "myvirt:template.w", r#""{{ comb.seed.v }}""#])
+            .assert()
+            .success();
+        comb(&f, &project, &cfg)
+            .args(["put", "seed", r#"{"v":"chain-ok"}"#])
+            .assert()
+            .success();
+        let got = comb(&f, &deep, &cfg)
+            .args(["get", "myvirt.w"])
+            .assert()
+            .success();
+        String::from_utf8(got.get_output().stdout.clone()).unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        out.trim(),
+        "chain-ok",
+        "the template and its dependency fetch carry the cwd, so the chain finds both"
+    );
+}
+
+// ── a kept root is found again when a marker on its walk changes ─────────────
+
+/// A fixture serving `m`, one config Source rooted at the nearest `.marker`
+/// (`nearest` when asked), whose value is the directory it ran in.
+fn marker_fixture(nearest: bool) -> Fixture {
+    Fixture::start_built(
+        || {
+            let layer: toml::Value = toml::from_str(&format!(
+                "[daemon.providers.m.sources.s]\n\
+                 root = \"{{{{ lup('.marker') | dirname }}}}\"\n\
+                 data = \"{{{{ exec('pwd') | trim }}}}\"\n\
+                 result.at = \"{{{{ data }}}}\"\n{}",
+                if nearest {
+                    "return = \"{{ result | nearest }}\"\n"
+                } else {
+                    ""
+                }
+            ))
+            .unwrap();
+            let load = ProviderRegistry::load(
+                &crate::common::registry::config_over_shipped(vec![(
+                    PathBuf::from("m.toml"),
+                    layer,
+                )]),
+                &std::env::vars().collect(),
+            );
+            assert!(load.errors.is_empty(), "{:?}", load.errors);
+            load.registry
+        },
+        "",
+        false,
+    )
+}
+
+async fn at(f: &Fixture, dir: &str) -> Option<serde_json::Value> {
+    let mut s = f.connect().await;
+    send_recv(&mut s, get_at("m.at", dir)).await.data
+}
+
+/// A read from `p/sub` gives `p`'s instance; a marker created in `p/sub`
+/// makes `p/sub` the root at the next read, and removing it gives `p` back.
+#[tokio::test]
+async fn a_marker_created_below_a_kept_root_is_found_by_the_next_read() {
+    let f = marker_fixture(false);
+    let (p, sub) = (f.path("ws/project"), f.path("ws/project/foo"));
+    std::fs::write(Path::new(&p).join(".marker"), "").unwrap();
+
+    assert_eq!(at(&f, &sub).await, Some(serde_json::json!(p)));
+    std::fs::write(Path::new(&sub).join(".marker"), "").unwrap();
+    assert_eq!(
+        at(&f, &sub).await,
+        Some(serde_json::json!(sub)),
+        "the kept root was rendered again: the marker is nearer"
+    );
+    std::fs::remove_file(Path::new(&sub).join(".marker")).unwrap();
+    assert_eq!(at(&f, &sub).await, Some(serde_json::json!(p)));
+}
+
+/// Removing the marker at the root a kept answer found renders it again: the
+/// read goes on to the instance at `~`.
+#[tokio::test]
+async fn removing_the_marker_at_a_kept_root_renders_it_again() {
+    let f = marker_fixture(false);
+    let (p, sub) = (f.path("ws/project"), f.path("ws/project/foo"));
+    std::fs::write(Path::new(&p).join(".marker"), "").unwrap();
+
+    assert_eq!(at(&f, &sub).await, Some(serde_json::json!(p)));
+    std::fs::remove_file(Path::new(&p).join(".marker")).unwrap();
+    assert_eq!(
+        at(&f, &sub).await,
+        Some(serde_json::json!(f.home.to_str().unwrap())),
+        "no marker: the instance at ~ answers"
+    );
+}
+
+/// A nearest Source's nothing is rendered again when a marker is created,
+/// at the next read, not once a timer has run out.
+#[tokio::test]
+async fn a_nearest_sources_nothing_is_found_again_when_a_marker_is_created() {
+    let f = marker_fixture(true);
+    let q = f.path("ws/other");
+
+    assert_eq!(at(&f, &q).await, None, "no marker, no instance");
+    std::fs::write(Path::new(&q).join(".marker"), "").unwrap();
+    assert_eq!(
+        at(&f, &q).await,
+        Some(serde_json::json!(q)),
+        "found at the next read"
+    );
+}

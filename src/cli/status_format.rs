@@ -1,12 +1,19 @@
 use crate::cache::CacheRow;
+use crate::cli::output_format::{Format, Preset};
+use crate::cli::style::Glyphs;
+use libbeachcomber::render;
 use libbeachcomber::render::shell_quote;
+use libbeachcomber::term;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
-// ANSI colour helper (basic-16 palette, fg-only, no external crate)
+// ANSI colour helper (basic-16 palette, fg-only), on libbeachcomber::term
 // ---------------------------------------------------------------------------
 
 #[allow(dead_code)]
 mod ansi {
+    use libbeachcomber::term;
+
     #[derive(Clone, Copy, Debug)]
     pub enum Color {
         BrightGreen,
@@ -20,16 +27,23 @@ mod ansi {
     }
 
     impl Color {
-        pub const fn code(self) -> &'static str {
+        /// The SGR parameters: a colour name through [`term::Colour`], or an
+        /// attribute.
+        pub fn params(self) -> String {
+            let named = |name: &str| {
+                term::Colour::parse(name)
+                    .expect("a colour name")
+                    .params(term::Ground::Fore, term::Depth::Basic)
+            };
             match self {
-                Color::BrightGreen => "\x1b[92m",
-                Color::Yellow => "\x1b[33m",
-                Color::BrightYellow => "\x1b[93m",
-                Color::Red => "\x1b[31m",
-                Color::Cyan => "\x1b[36m",
-                Color::Magenta => "\x1b[35m",
-                Color::Dim => "\x1b[2m",
-                Color::Bold => "\x1b[1m",
+                Color::BrightGreen => named("bright_green"),
+                Color::Yellow => named("yellow"),
+                Color::BrightYellow => named("bright_yellow"),
+                Color::Red => named("red"),
+                Color::Cyan => named("cyan"),
+                Color::Magenta => named("magenta"),
+                Color::Dim => "2".to_string(),
+                Color::Bold => "1".to_string(),
             }
         }
     }
@@ -38,7 +52,7 @@ mod ansi {
         if !enabled {
             return s.to_string();
         }
-        format!("{}{}\x1b[0m", c.code(), s)
+        term::sgr(&c.params(), s)
     }
 
     pub const RESET: &str = "\x1b[0m";
@@ -79,19 +93,18 @@ pub const TTL_P_WIDTH_MAX: usize = 6;
 const TTL_P_MAX: u64 = 999_999;
 
 /// Maximum width for the humanized total-budget sub-field (`P × K`, e.g.
-/// `99h59m`). Values are clamped before humanizing so the cell can't grow
+/// `99d23h`). Values are clamped before humanizing so the cell can't grow
 /// past this.
 pub const TTL_TOTAL_WIDTH_MAX: usize = 6;
 /// Clamp applied to the total-budget seconds (`poll_interval_secs *
-/// keep_alive_polls`) before humanizing, so the formatted string can never
-/// exceed `TTL_TOTAL_WIDTH_MAX` chars (`99h59m`).
-const TTL_TOTAL_MAX_SECS: u64 = 359_999;
+/// poll_count`) before humanizing, so the formatted string can never
+/// exceed `TTL_TOTAL_WIDTH_MAX` chars (`99d23h`).
+const TTL_TOTAL_MAX_SECS: u64 = 8_639_999;
 
-/// Clamp applied to the POLL column's raw-seconds value (next-poll or
-/// next-retry) before display. 6 digits covers ~11 days. The POLL column
-/// otherwise auto-sizes like any other plain column (via `nat_poll` in
-/// `render_table`) — this only bounds the displayed number, not a padded
-/// sub-field width.
+/// Clamp applied to the POLL column's seconds (next-poll or next-retry)
+/// before display, ~11 days (`11d13h`). The POLL column otherwise auto-sizes
+/// like any other plain column (via `nat_poll` in `render_table`) — this only
+/// bounds the displayed duration, not a padded sub-field width.
 const TTL_SECONDS_MAX: u64 = 999_999;
 
 /// Per-snapshot field widths for the TTL cell's internal `{P}s×{KK} (total)`
@@ -112,7 +125,7 @@ pub struct TtlWidths {
 /// capped at `TTL_P_WIDTH_MAX` / `TTL_TOTAL_WIDTH_MAX`. No lower floor — the
 /// width auto-shrinks so narrow snapshots don't over-pad.
 ///
-/// Rows without a poll interval (Once/Virtual/Transient, or pure-Watch
+/// Rows without a poll interval (Once/Static/Transient, or pure-Watch
 /// Lifecycle rows) are ignored. Empty snapshots return 1 for both fields;
 /// the value is unused in that case (every cell renders as `---`), but avoid
 /// zero so `format!` can't panic.
@@ -124,10 +137,10 @@ pub fn compute_ttl_widths(rows: &[CacheRow]) -> TtlWidths {
         if !matches!(row.kind, Some(RowKind::Lifecycle { .. })) {
             continue;
         }
-        if let (Some(pv), Some(k)) = (row.poll_interval_secs, row.keep_alive_polls) {
+        if let (Some(pv), Some(k)) = (row.poll_interval_secs, row.poll_count) {
             p = p.max(pv.min(TTL_P_MAX).to_string().len());
             let total_secs = pv.saturating_mul(k as u64);
-            total = total.max(format_duration_compact(total_secs).chars().count());
+            total = total.max(format_duration_compact(total_secs).cols());
         }
     }
     TtlWidths {
@@ -138,9 +151,9 @@ pub fn compute_ttl_widths(rows: &[CacheRow]) -> TtlWidths {
 
 /// Humanize a seconds count for the TTL cell's total-budget field, clamping
 /// to `TTL_TOTAL_MAX_SECS` first so the result never exceeds
-/// `TTL_TOTAL_WIDTH_MAX` chars. Shares `format_age`'s unit logic (s/m/h).
+/// `TTL_TOTAL_WIDTH_MAX` chars.
 fn format_duration_compact(secs: u64) -> String {
-    format_age((secs.min(TTL_TOTAL_MAX_SECS) as u128) * 1000)
+    render::duration(Duration::from_secs(secs.min(TTL_TOTAL_MAX_SECS)))
 }
 
 /// Seconds until a failing source's next retry attempt. When suppression is
@@ -172,43 +185,34 @@ fn failure_retry_secs(
 pub fn format_ttl_cell(
     kind: Option<&crate::cache::RowKind>,
     poll_interval_secs: Option<u64>,
-    keep_alive_polls: Option<u32>,
-    fsevents_reinstate: Option<bool>,
+    poll_count: Option<u32>,
     failure: Option<&crate::cache::FailureSnapshot>,
     ascii: bool,
     widths: &TtlWidths,
 ) -> TtlCell {
     use crate::cache::RowKind;
 
-    // Glyph table.
-    let star = if ascii { "*" } else { "\u{2605}" }; // ★
-    let warn = if ascii { "!" } else { "\u{26a0}" }; // ⚠
-    let times = if ascii { "x" } else { "\u{00d7}" }; // ×
-    // Watches-files indicator progression:
-    //   watches only       → `∙` / `-`
-    //   watches + reinstate → `⊙` / `+`  (bullet with a ring around it)
-    // Both glyphs are math operator class (U+22xx / U+2299), so fonts render
-    // them at a shared baseline. Earlier pairs mixed General Punctuation and
-    // Math Symbols-B blocks and rendered vertically mis-aligned.
-    let dot = if ascii { "-" } else { "\u{2219}" }; // ∙
-    let dot_ring = if ascii { "+" } else { "\u{2299}" }; // ⊙
+    // Watches-files indicator: `dot` for an entry that watches its files
+    // while it is Active.
+    let g = Glyphs::of(ascii);
+    let (star, warn, times, dot) = (g.star, g.warn, g.times, g.dot);
 
     match kind {
-        None | Some(RowKind::Once) | Some(RowKind::Virtual) | Some(RowKind::Transient) => TtlCell {
+        None
+        | Some(RowKind::Once)
+        | Some(RowKind::Static)
+        | Some(RowKind::Transient)
+        | Some(RowKind::Rendered) => TtlCell {
             text: "---".into(),
             color: None,
         },
         Some(RowKind::Lifecycle {
             decay,
+            depth,
             watches_files,
         }) => {
-            // Indicator keyed on fs-watching capability first; reinstate-armed is
-            // the decorator. Poll-only sources render a blank cell trailer.
-            let indicator = match (*watches_files, fsevents_reinstate.unwrap_or(false)) {
-                (false, _) => " ",
-                (true, false) => dot,
-                (true, true) => dot_ring,
-            };
+            // Poll-only sources render a blank cell trailer.
+            let indicator = if *watches_files { dot } else { " " };
 
             if let Some(f) = failure {
                 let attempt = f.consecutive_failures.min(99);
@@ -219,12 +223,15 @@ pub fn format_ttl_cell(
                 };
             }
 
-            let (lead, color) = match decay {
-                0 => (star.to_string(), ansi::Color::BrightGreen),
-                1 => ("3".into(), ansi::Color::Dim),
-                2 => ("2".into(), ansi::Color::Yellow),
-                3 => ("1".into(), ansi::Color::BrightYellow),
-                _ => ("0".into(), ansi::Color::Red),
+            // The digit counts decay steps left before eviction, from the
+            // entry's own depth (`put --ttl` entries have depth 1).
+            let left = depth.saturating_sub(*decay);
+            let (lead, color) = match (decay, left) {
+                (0, _) => (star.to_string(), ansi::Color::BrightGreen),
+                (_, 0) => ("0".into(), ansi::Color::Red),
+                (_, 1) => ("1".into(), ansi::Color::BrightYellow),
+                (_, 2) => ("2".into(), ansi::Color::Yellow),
+                (_, n) => (n.to_string(), ansi::Color::Dim),
             };
 
             // `{P}s×{KK} (total)` only renders for sources with a poll path
@@ -233,7 +240,7 @@ pub fn format_ttl_cell(
             // stays in a consistent column across all rows.
             //
             // Width: p_width + "s×KK" (4) + " (" (2) + total_width + ")" (1).
-            let poll_seg = match (poll_interval_secs, keep_alive_polls) {
+            let poll_seg = match (poll_interval_secs, poll_count) {
                 (Some(p), Some(k)) => {
                     let total_secs = p.saturating_mul(k as u64);
                     let total_str = format_duration_compact(total_secs);
@@ -257,10 +264,10 @@ pub fn format_ttl_cell(
     }
 }
 
-/// Format the POLL column: seconds until this source's next scheduled poll,
-/// or — for a failing source — seconds until its next retry attempt (POLL
+/// Format the POLL column: the time until this source's next scheduled poll,
+/// or — for a failing source — until its next retry attempt (POLL
 /// literally *is* the next attempt in that case). `-` for rows with no poll
-/// path: Once/Virtual/Transient/no-kind, and pure-Watch Lifecycle rows.
+/// path: Once/Static/Transient/no-kind, and pure-Watch Lifecycle rows.
 pub fn format_poll_cell(
     kind: Option<&crate::cache::RowKind>,
     next_poll_in_secs: Option<u64>,
@@ -273,50 +280,12 @@ pub fn format_poll_cell(
     }
     if let Some(f) = failure {
         let retry = failure_retry_secs(f, next_poll_in_secs, now_unix_ms).min(TTL_SECONDS_MAX);
-        return format!("{retry}s");
+        return render::duration(Duration::from_secs(retry));
     }
     match next_poll_in_secs {
-        Some(n) => format!("{}s", n.min(TTL_SECONDS_MAX)),
+        Some(n) => render::duration(Duration::from_secs(n.min(TTL_SECONDS_MAX))),
         None => "-".to_string(),
     }
-}
-
-/// Color mode for status output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColorMode {
-    Auto,
-    Always,
-    Never,
-}
-
-/// Resolve whether to enable color output based on the mode, environment, and TTY state.
-///
-/// Rules (in priority order):
-/// 1. `Never` → always false.
-/// 2. `NO_COLOR` env var set → always false.
-/// 3. `Always` → always true.
-/// 4. `Auto` → true if is_tty.
-///
-/// `auto` deliberately has no environment-based escape hatch for pipes. An
-/// earlier revision promoted `auto` to colour when `WATCH_INTERVAL` was set,
-/// on the belief that `watch(1)` exports it. It does not — procps-ng *reads*
-/// `WATCH_INTERVAL` to pick its own default interval and never passes it to
-/// the child. The promotion therefore never fired under `watch`, and when a
-/// user did export the variable for its documented purpose it fired at the
-/// worst time: plain `watch` (no `-c`) does not interpret SGR, so the table
-/// filled with literal escape text. Live viewers should ask for colour
-/// explicitly: `watch -c 'comb status --color=always'`.
-pub fn resolve_color(mode: ColorMode, no_color_env: bool, is_tty: bool) -> bool {
-    if mode == ColorMode::Never {
-        return false;
-    }
-    if no_color_env {
-        return false;
-    }
-    if mode == ColorMode::Always {
-        return true;
-    }
-    is_tty
 }
 
 /// Resolve the maximum **total table** width.
@@ -392,9 +361,9 @@ impl Default for RenderOpts {
 /// The machine presets stay at 1 so existing consumers keep getting
 /// byte-identical output unless they ask for more. Custom minijinja templates
 /// count as machine output for the same reason.
-pub fn default_depth(preset: &str) -> usize {
-    match preset {
-        "human" | "table" => 2,
+pub fn default_depth(format: &Format) -> usize {
+    match format {
+        Format::Preset(Preset::Human | Preset::Table) => 2,
         _ => 1,
     }
 }
@@ -403,7 +372,7 @@ pub fn default_depth(preset: &str) -> usize {
 ///
 /// A row `(git, /repo, session, {"agent":"claude","color":"blue"})` becomes
 /// rows `session.agent` and `session.color`, each inheriting the parent's
-/// path, age, staleness and lifecycle metadata — they describe the same cache
+/// path, age and lifecycle metadata — they describe the same cache
 /// entry, just a deeper slice of it.
 ///
 /// `depth` counts field-name segments: 1 is the un-destructured original, 2
@@ -432,7 +401,7 @@ fn push_flattened(out: &mut Vec<CacheRow>, row: CacheRow, depth: usize, level: u
     };
     for (key, child_value) in map {
         let child = CacheRow {
-            field: format!("{}.{}", row.field, key),
+            field: libbeachcomber::key::push(&row.field, key),
             value: child_value.clone(),
             ..row.clone()
         };
@@ -446,27 +415,25 @@ fn push_flattened(out: &mut Vec<CacheRow>, row: CacheRow, depth: usize, level: u
 /// Any other value is treated as a minijinja template rendered per row.
 /// If the value starts with `table ` (with a space), the remainder is rendered
 /// as a tab-separated template with aligned columns and a derived header row.
-pub fn render_preset(preset: &str, rows: &[CacheRow], opts: &RenderOpts) -> String {
-    match preset {
-        "json" => render_json(rows),
-        "csv" => render_csv(rows),
-        "tsv" => render_tsv(rows),
-        "sh" => render_sh(rows),
-        "table" => render_table(rows, false, None, true, false, false),
-        "human" => {
+pub fn render_preset(format: &Format, rows: &[CacheRow], opts: &RenderOpts) -> String {
+    match format {
+        Format::Preset(Preset::Json) => render_json(rows),
+        Format::Preset(p @ (Preset::Csv | Preset::CsvHeader | Preset::Tsv | Preset::TsvHeader)) => {
+            render_delimited(rows, p.value_format().expect("a value format"))
+        }
+        Format::Preset(Preset::Sh) => render_sh(rows),
+        Format::Preset(Preset::Table) => render_table(rows, &[], false, None, true, false),
+        Format::Preset(Preset::Human) => {
             let trunc = if opts.no_trunc { None } else { opts.max_width };
             // `no_color` is the resolved color decision from the caller (already
             // accounts for NO_COLOR, TTY and --color). Don't re-AND with is_tty
             // here — that would override an explicit `--color=always`.
             let color = !opts.no_color;
-            render_table(rows, color, trunc, true, opts.ascii, true)
+            render_table(rows, &[], color, trunc, true, opts.ascii)
         }
-        custom => {
-            if let Some(body) = custom.strip_prefix("table ") {
-                render_minijinja_table(body, rows)
-            } else {
-                render_minijinja(custom, rows)
-            }
+        Format::Preset(other) => unreachable!("status's formats hold no {}", other.name()),
+        Format::Template(_) => {
+            unreachable!("a status template renders through render_template_format")
         }
     }
 }
@@ -475,78 +442,89 @@ pub fn render_preset(preset: &str, rows: &[CacheRow], opts: &RenderOpts) -> Stri
 // Custom minijinja template renderers
 // ---------------------------------------------------------------------------
 
-/// Render each row using a minijinja template. One output line per row.
-pub fn render_minijinja(template: &str, rows: &[CacheRow]) -> String {
-    let rendered: Vec<String> = rows
-        .iter()
-        .map(|r| {
-            let ctx = row_context(r);
-            crate::cli::format::render_fmt_template_json(template, &ctx)
-                .unwrap_or_else(|e| format!("<{e}>"))
-        })
-        .collect();
+/// How a `-f` template renders against one row: the template, and the row's
+/// fields as locals ([`row_context`]). `comb status` renders it the way
+/// `comb eval` renders any template ([`libbeachcomber::resolve::eval_with`]).
+pub type RowRender<'a> = dyn FnMut(
+        &str,
+        &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Option<serde_json::Value>, libbeachcomber::resolve::ResolveError>
+    + 'a;
+
+/// `status -f TEMPLATE`: the template rendered once per row, one row per
+/// line; `table TEMPLATE` splits each on tabs and aligns the columns under a
+/// header of the names the template reads. A template that does not compile
+/// fails the command once (`Err`); a row that fails while rendering shows its
+/// error in its place.
+pub fn render_template_format(
+    template: &str,
+    rows: &[CacheRow],
+    render: &mut RowRender<'_>,
+) -> Result<String, String> {
+    use libbeachcomber::render::{Format as ValueFormat, render_value};
+    use libbeachcomber::resolve::ResolveError;
+    let (body, table) = match template.strip_prefix("table ") {
+        Some(body) => (body, true),
+        None => (template, false),
+    };
+    let mut rendered = Vec::with_capacity(rows.len());
+    for row in rows {
+        let serde_json::Value::Object(ctx) = row_context(row) else {
+            unreachable!("a row's context is an object")
+        };
+        match render(body, &ctx) {
+            Ok(value) => rendered.push(
+                render_value("", value.as_ref(), ValueFormat::Text)
+                    .trim_end_matches('\n')
+                    .to_string(),
+            ),
+            Err(ResolveError::Config(message)) => return Err(message),
+            Err(e) => rendered.push(format!("<{e}>")),
+        }
+    }
+    if table {
+        return Ok(align_template_table(body, &rendered));
+    }
     let mut out = rendered.join("\n");
     if !out.is_empty() {
         out.push('\n');
     }
-    out
+    Ok(out)
 }
 
-/// Render rows using a tab-separated minijinja template, then align columns.
-///
-/// The template body (after stripping the `table ` prefix) is rendered per row.
-/// Column widths are computed across all rendered rows plus the derived header,
-/// and the output is printed as a left-aligned block.
-pub fn render_minijinja_table(body: &str, rows: &[CacheRow]) -> String {
-    // 1. Render each row.
-    let rendered: Vec<String> = rows
-        .iter()
-        .map(|r| {
-            let ctx = row_context(r);
-            crate::cli::format::render_fmt_template_json(body, &ctx)
-                .unwrap_or_else(|e| format!("<{e}>"))
-        })
-        .collect();
-
-    // 2. Split each rendered string on '\t' → matrix.
+/// `table` layout: each rendered row split on tabs, columns aligned across
+/// every row and the header derived from the names the template reads.
+fn align_template_table(body: &str, rendered: &[String]) -> String {
     let matrix: Vec<Vec<&str>> = rendered.iter().map(|s| s.split('\t').collect()).collect();
-
-    // 3. Derive header from variable names in `body`.
     let header: Vec<String> = extract_template_header(body);
 
-    // 4. Compute per-column widths.
     let n_cols = header
         .len()
         .max(matrix.iter().map(|r| r.len()).max().unwrap_or(0));
     let mut widths = vec![0usize; n_cols];
     for (i, h) in header.iter().enumerate() {
-        widths[i] = widths[i].max(h.len());
+        widths[i] = widths[i].max(h.cols());
     }
     for row in &matrix {
         for (i, cell) in row.iter().enumerate() {
             if i < n_cols {
-                widths[i] = widths[i].max(cell.len());
+                widths[i] = widths[i].max(cell.cols());
             }
         }
     }
 
-    // 5. Render aligned.
     let mut out = String::new();
-
-    // Header row.
     for (i, h) in header.iter().enumerate() {
         if i > 0 {
             out.push_str("  ");
         }
         if i + 1 < header.len() {
-            out.push_str(&format!("{:<width$}", h, width = widths[i]));
+            out.push_str(&pad_cols(h, widths[i]));
         } else {
             out.push_str(h);
         }
     }
     out.push('\n');
-
-    // Data rows.
     for row in &matrix {
         for (i, cell) in row.iter().enumerate() {
             if i > 0 {
@@ -554,21 +532,22 @@ pub fn render_minijinja_table(body: &str, rows: &[CacheRow]) -> String {
             }
             if i + 1 < row.len() {
                 let w = if i < n_cols { widths[i] } else { 0 };
-                out.push_str(&format!("{:<width$}", cell, width = w));
+                out.push_str(&pad_cols(cell, w));
             } else {
                 out.push_str(cell);
             }
         }
         out.push('\n');
     }
-
     out
 }
 
-/// Build the template render context for a `CacheRow`.
-///
-/// A `serde_json::Value` object — the shape
-/// [`crate::cli::format::render_fmt_template_json`] takes.
+/// `s` padded on the right with spaces to `width` columns.
+pub fn pad_cols(s: &str, width: usize) -> String {
+    format!("{s}{}", " ".repeat(width.saturating_sub(s.cols())))
+}
+
+/// A row's fields, as the locals of a `status -f` template.
 pub fn row_context(r: &CacheRow) -> serde_json::Value {
     use crate::cache::RowKind;
     let mut ctx = serde_json::Map::new();
@@ -584,21 +563,15 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
         },
     );
     ctx.insert("field".into(), serde_json::Value::String(r.field.clone()));
+    ctx.insert("source".into(), serde_json::Value::String(r.source.clone()));
     ctx.insert("value".into(), r.value.clone());
     ctx.insert("age_ms".into(), serde_json::json!(r.age_ms));
     ctx.insert(
         "age_human".into(),
-        serde_json::Value::String(format_age(r.age_ms)),
+        serde_json::Value::String(r.age_ms.map_or_else(|| "-".to_string(), format_age)),
     );
-    ctx.insert("stale".into(), serde_json::Value::Bool(r.stale));
-    // kind — snake_case discriminator, empty string when None
-    let kind_str = match &r.kind {
-        Some(RowKind::Lifecycle { .. }) => "lifecycle",
-        Some(RowKind::Once) => "once",
-        Some(RowKind::Virtual) => "virtual",
-        Some(RowKind::Transient) => "transient",
-        None => "",
-    };
+    // kind — empty string when None
+    let kind_str = r.kind.as_ref().map_or("", RowKind::name);
     ctx.insert("kind".into(), serde_json::Value::String(kind_str.into()));
     // decay — only for lifecycle
     if let Some(RowKind::Lifecycle { decay, .. }) = &r.kind {
@@ -608,11 +581,8 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
     if let Some(p) = r.poll_interval_secs {
         ctx.insert("poll_interval_secs".into(), serde_json::json!(p));
     }
-    if let Some(k) = r.keep_alive_polls {
-        ctx.insert("keep_alive_polls".into(), serde_json::json!(k));
-    }
-    if let Some(rv) = r.fsevents_reinstate {
-        ctx.insert("fsevents_reinstate".into(), serde_json::Value::Bool(rv));
+    if let Some(k) = r.poll_count {
+        ctx.insert("poll_count".into(), serde_json::json!(k));
     }
     if let Some(n) = r.polls_elapsed {
         ctx.insert("polls_elapsed".into(), serde_json::json!(n));
@@ -688,145 +658,77 @@ fn render_json(rows: &[CacheRow]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// TSV renderer
+// CSV and TSV
 // ---------------------------------------------------------------------------
 
-pub fn render_tsv(rows: &[CacheRow]) -> String {
+/// The columns `status -f csv|tsv` lays a row out in, as the uppercase
+/// formats name them in their header.
+const DELIMITED_COLUMNS: [&str; 13] = [
+    "PROVIDER",
+    "PATH",
+    "FIELD",
+    "SOURCE",
+    "VALUE",
+    "AGE_MS",
+    "KIND",
+    "DECAY",
+    "POLL_INTERVAL_SECS",
+    "POLL_COUNT",
+    "FAILURE_CONSECUTIVE_FAILURES",
+    "FAILURE_SUPPRESSED_UNTIL_UNIX_MS",
+    "FAILURE_LAST_ERROR",
+];
+
+/// One row's cells, in [`DELIMITED_COLUMNS`] order, before encoding: a
+/// VALUE is its raw text, as `comb get -f csv` prints one
+/// ([`libbeachcomber::render::csv_cell`]), and an absent field an empty cell.
+fn delimited_cells(row: &CacheRow) -> Vec<String> {
     use crate::cache::RowKind;
-    let mut out = String::new();
-    for row in rows {
-        let kind = match &row.kind {
-            Some(RowKind::Lifecycle { .. }) => "lifecycle",
-            Some(RowKind::Once) => "once",
-            Some(RowKind::Virtual) => "virtual",
-            Some(RowKind::Transient) => "transient",
-            None => "",
-        };
-        let decay = match &row.kind {
-            Some(RowKind::Lifecycle { decay, .. }) => decay.to_string(),
-            _ => String::new(),
-        };
-        let path = row.path.as_deref().unwrap_or("");
-        let value = serde_json::to_string(&row.value).unwrap_or_default();
-        let p = row
-            .poll_interval_secs
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-        let k = row
-            .keep_alive_polls
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-        let r = row
-            .fsevents_reinstate
-            .map(|b| b.to_string())
-            .unwrap_or_default();
-        let fc = row
+    use libbeachcomber::render::csv_cell;
+    let opt = |v: Option<String>| v.unwrap_or_default();
+    let kind = row.kind.as_ref().map_or("", RowKind::name);
+    let decay = match &row.kind {
+        Some(RowKind::Lifecycle { decay, .. }) => decay.to_string(),
+        _ => String::new(),
+    };
+    vec![
+        row.provider.clone(),
+        row.path.clone().unwrap_or_default(),
+        row.field.clone(),
+        row.source.clone(),
+        csv_cell(Some(&row.value)),
+        opt(row.age_ms.map(|a| a.to_string())),
+        kind.to_string(),
+        decay,
+        opt(row.poll_interval_secs.map(|n| n.to_string())),
+        opt(row.poll_count.map(|n| n.to_string())),
+        opt(row
             .failure
             .as_ref()
-            .map(|f| f.consecutive_failures.to_string())
-            .unwrap_or_default();
-        let fs = row
+            .map(|f| f.consecutive_failures.to_string())),
+        opt(row
             .failure
             .as_ref()
-            .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))
-            .unwrap_or_default();
-        out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            row.provider,
-            path,
-            row.field,
-            value,
-            row.age_ms,
-            row.stale,
-            kind,
-            decay,
-            p,
-            k,
-            r,
-            fc,
-            fs,
-        ));
-    }
-    out
+            .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))),
+        opt(row.failure.as_ref().and_then(|f| f.last_error.clone())),
+    ]
 }
 
-// ---------------------------------------------------------------------------
-// CSV renderer (RFC 4180)
-// ---------------------------------------------------------------------------
-
-pub fn render_csv(rows: &[CacheRow]) -> String {
-    use crate::cache::RowKind;
+/// `status -f csv|CSV|tsv|TSV`: one line per row through the shared cell
+/// encoders, and the uppercase formats a header row first.
+pub fn render_delimited(rows: &[CacheRow], format: libbeachcomber::render::Format) -> String {
+    let delimited = format
+        .delimited()
+        .unwrap_or_else(|| unreachable!("{} is not a delimited format", format.name()));
     let mut out = String::new();
-
-    // Header row
-    out.push_str("PROVIDER,PATH,FIELD,VALUE,AGE_MS,STALE,KIND,DECAY,POLL_INTERVAL_SECS,KEEP_ALIVE_POLLS,FSEVENTS_REINSTATE,FAILURE_CONSECUTIVE_FAILURES,FAILURE_SUPPRESSED_UNTIL_UNIX_MS\n");
-
+    if delimited.header {
+        let names: Vec<String> = DELIMITED_COLUMNS.iter().map(|c| c.to_string()).collect();
+        out.push_str(&delimited.line(&names));
+    }
     for row in rows {
-        let path = row.path.as_deref().unwrap_or("");
-        let value = serde_json::to_string(&row.value).unwrap_or_default();
-        let stale = if row.stale { "true" } else { "false" };
-        let kind = match &row.kind {
-            Some(RowKind::Lifecycle { .. }) => "lifecycle",
-            Some(RowKind::Once) => "once",
-            Some(RowKind::Virtual) => "virtual",
-            Some(RowKind::Transient) => "transient",
-            None => "",
-        };
-        let decay = match &row.kind {
-            Some(RowKind::Lifecycle { decay, .. }) => decay.to_string(),
-            _ => String::new(),
-        };
-        let p = row
-            .poll_interval_secs
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-        let k = row
-            .keep_alive_polls
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-        let r = row
-            .fsevents_reinstate
-            .map(|b| b.to_string())
-            .unwrap_or_default();
-        let fc = row
-            .failure
-            .as_ref()
-            .map(|f| f.consecutive_failures.to_string())
-            .unwrap_or_default();
-        let fs = row
-            .failure
-            .as_ref()
-            .and_then(|f| f.suppressed_until_unix_ms.map(|n| n.to_string()))
-            .unwrap_or_default();
-        out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-            csv_quote(&row.provider),
-            csv_quote(path),
-            csv_quote(&row.field),
-            csv_quote(&value),
-            row.age_ms,
-            stale,
-            csv_quote(kind),
-            csv_quote(&decay),
-            csv_quote(&p),
-            csv_quote(&k),
-            csv_quote(&r),
-            csv_quote(&fc),
-            csv_quote(&fs),
-        ));
+        out.push_str(&delimited.line(&delimited_cells(row)));
     }
     out
-}
-
-/// RFC 4180 quoting: wrap in double-quotes if value contains `,`, `"`, or newline.
-/// Internal double-quotes are doubled.
-fn csv_quote(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
-        let escaped = s.replace('"', "\"\"");
-        format!("\"{escaped}\"")
-    } else {
-        s.to_string()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -838,18 +740,14 @@ pub fn render_sh_env(rows: &[CacheRow]) -> String {
     let mut out = String::new();
     for row in rows {
         let key = sanitize_sh_key(&row.provider, row.path.as_deref(), &row.field);
-        let value = value_to_string(&row.value);
+        let value = libbeachcomber::render::csv_cell(Some(&row.value));
         let quoted = shell_quote(&value);
         out.push_str(&format!("{key}={quoted}\n"));
+        // source — which Source produced the value, `rendered` when the CLI
+        // rendered it here rather than the daemon caching it.
+        out.push_str(&format!("{key}_SOURCE={}\n", shell_quote(&row.source)));
         // kind
-        let kind_str = match &row.kind {
-            Some(RowKind::Lifecycle { .. }) => Some("lifecycle"),
-            Some(RowKind::Once) => Some("once"),
-            Some(RowKind::Virtual) => Some("virtual"),
-            Some(RowKind::Transient) => Some("transient"),
-            None => None,
-        };
-        if let Some(kind_val) = kind_str {
+        if let Some(kind_val) = row.kind.as_ref().map(RowKind::name) {
             out.push_str(&format!("{key}_KIND={}\n", shell_quote(kind_val)));
         }
         // decay (only for lifecycle)
@@ -866,18 +764,11 @@ pub fn render_sh_env(rows: &[CacheRow]) -> String {
                 shell_quote(&p.to_string())
             ));
         }
-        // keep_alive_polls
-        if let Some(k) = row.keep_alive_polls {
+        // poll_count
+        if let Some(k) = row.poll_count {
             out.push_str(&format!(
-                "{key}_KEEP_ALIVE_POLLS={}\n",
+                "{key}_POLL_COUNT={}\n",
                 shell_quote(&k.to_string())
-            ));
-        }
-        // fsevents_reinstate
-        if let Some(r) = row.fsevents_reinstate {
-            out.push_str(&format!(
-                "{key}_FSEVENTS_REINSTATE={}\n",
-                shell_quote(&r.to_string())
             ));
         }
         // failure fields
@@ -892,6 +783,9 @@ pub fn render_sh_env(rows: &[CacheRow]) -> String {
                     shell_quote(&su.to_string())
                 ));
             }
+            if let Some(e) = &f.last_error {
+                out.push_str(&format!("{key}_FAILURE_LAST_ERROR={}\n", shell_quote(e)));
+            }
         }
     }
     out
@@ -901,31 +795,24 @@ fn render_sh(rows: &[CacheRow]) -> String {
     render_sh_env(rows)
 }
 
-/// Build a shell-safe variable name: `provider_path_field`.
-/// Path segments replace `/` with `_`; leading/trailing underscores from empty parts removed.
+/// A row's shell variable name, `provider_path_field`: the provider, each
+/// component of the path and the field's segments, joined by `_` and made a
+/// name by the shared encoder ([`libbeachcomber::render::sh_ident`]), as
+/// `comb get -f sh` names its lines.
 fn sanitize_sh_key(provider: &str, path: Option<&str>, field: &str) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    parts.push(sanitize_ident(provider));
-    if let Some(p) = path {
-        // Replace slashes with underscores, then split on underscores to flatten.
-        let normalized = p.replace('/', "_");
-        // Strip leading underscores that result from leading slashes.
-        let normalized = normalized.trim_matches('_');
-        if !normalized.is_empty() {
-            for segment in normalized.split('_').filter(|s| !s.is_empty()) {
-                parts.push(sanitize_ident(segment));
-            }
-        }
-    }
-    parts.push(sanitize_ident(field));
-    parts.join("_")
-}
-
-/// Replace any non-alphanumeric character with `_`.
-fn sanitize_ident(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
+    let mut parts: Vec<String> = vec![provider.to_string()];
+    parts.extend(
+        path.unwrap_or_default()
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+    );
+    parts.extend(
+        libbeachcomber::key::segments(field)
+            .into_iter()
+            .map(|s| s.into_owned()),
+    );
+    libbeachcomber::render::sh_ident(&parts.join("_"))
 }
 
 // ---------------------------------------------------------------------------
@@ -933,32 +820,201 @@ fn sanitize_ident(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 // Column indices for the human/table preset.
-const COLS: usize = 7;
-// TTL is the last column (index 6); failure-state colouring skips only this
+const COLS: usize = 8;
+// TTL is the last column (index 7); failure-state colouring skips only this
 // one (its own warn-glyph + red already come from format_ttl_cell). POLL
-// (index 5) is a plain column and gets red-wrapped like the others.
-const TTL_COL_IDX: usize = 6;
+// (index 6) is a plain column and gets red-wrapped like the others.
+const TTL_COL_IDX: usize = 7;
 // PROVIDER and FIELD sit adjacent because together they are the cache key the
-// user typed (`git.branch`); PATH follows VALUE as the scope qualifier rather
-// than splitting the key. Human/table presets only — the machine presets
+// user typed (`git.branch`); SOURCE follows, naming what produced the VALUE
+// beside it (a Source, `put`, `config(<file>)`, or `rendered` for a row this
+// CLI rendered); PATH follows VALUE as the scope qualifier rather than
+// splitting the key. Human/table presets only — the machine presets
 // (json/tsv/csv/sh) keep their own established column order.
-const HEADERS: [&str; COLS] = ["PROVIDER", "FIELD", "VALUE", "PATH", "AGE", "POLL", "TTL"];
+const HEADERS: [&str; COLS] = [
+    "PROVIDER", "FIELD", "SOURCE", "VALUE", "PATH", "AGE", "POLL", "TTL",
+];
 const H_PROVIDER: usize = 0;
 const H_FIELD: usize = 1;
-const H_VALUE: usize = 2;
-const H_PATH: usize = 3;
-const H_AGE: usize = 4;
-const H_POLL: usize = 5;
+const H_SOURCE: usize = 2;
+const H_VALUE: usize = 3;
+const H_PATH: usize = 4;
+const H_AGE: usize = 5;
+const H_POLL: usize = 6;
+
+/// Ceiling on the SOURCE column in the human preset, lifted by
+/// `--no-trunc`.
+///
+/// SOURCE would otherwise take its natural width like PROVIDER, because a
+/// Source name is short (`refs`, `head`, `put`, `rendered`). One kind is not:
+/// a `config:<file>` label is a whole path, and uncapped it pinned VALUE and
+/// PATH at their floors across every row of the table. Its tail
+/// (`…/defaults/aws.toml`) is what tells one config file from another, so the
+/// cell truncates from the head, like PATH does.
+const MAX_SOURCE_WIDTH: usize = 24;
+
+/// What the human and table presets show for an absent value: a template leaf
+/// that rendered nothing (shown with `--all` or `--filter value=-`).
+const ABSENT_TEXT: &str = "null";
+
+/// What a row's VALUE cell says: its value, or, for a failing Source with
+/// nothing stored, the latest failure's message. `None` is absent.
+fn shown_value(row: &CacheRow) -> Option<String> {
+    if row.value.is_null() {
+        return row.failure.as_ref().and_then(|f| f.last_error.clone());
+    }
+    Some(libbeachcomber::render::csv_cell(Some(&row.value)))
+}
+
+/// The glyph that marks a rendered row's VALUE cell when colour is off.
+///
+/// A rendered row is computed here, from this shell's environment and
+/// directory — it is not what the daemon holds. Colour says so with Cyan;
+/// without colour the cell needs a mark of its own, so the two builds carry
+/// the same information.
+fn template_marker(
+    kind: Option<&crate::cache::RowKind>,
+    color_enabled: bool,
+    ascii: bool,
+) -> String {
+    if color_enabled || !matches!(kind, Some(crate::cache::RowKind::Rendered)) {
+        return String::new();
+    }
+    format!("{} ", Glyphs::of(ascii).rendered)
+}
+
+/// How a `--tree` layer row is drawn: one of the layers behind the value row
+/// above it.
+#[derive(Debug, Clone, Copy)]
+pub struct ChildMark {
+    /// The last layer under its value row.
+    pub last: bool,
+    /// The layer the read takes.
+    pub answered: bool,
+    /// A template record (`<p>:template`), not data.
+    pub template: bool,
+}
+
+/// The branch glyph of a row hanging under the one above: `├─`, or `└─` for
+/// the last, and `|-` / `` `- `` under `--ascii`. Every tree comb draws
+/// (`status --tree`, `check config --origins`) uses it.
+pub fn tree_branch(last: bool, ascii: bool) -> &'static str {
+    let g = Glyphs::of(ascii);
+    if last { g.last_branch } else { g.branch }
+}
+
+/// `s` dimmed when colour is on, as a shadowed tree row is.
+pub fn dim(s: &str, color_enabled: bool) -> String {
+    ansi::wrap(s, ansi::Color::Dim, color_enabled)
+}
+
+/// `s` in bold when colour is on, as a table's header is.
+pub fn bold(s: &str, color_enabled: bool) -> String {
+    ansi::wrap(s, ansi::Color::Bold, color_enabled)
+}
+
+impl ChildMark {
+    /// The branch glyph that leads the FIELD cell.
+    fn glyph(self, ascii: bool) -> &'static str {
+        tree_branch(self.last, ascii)
+    }
+
+    /// The FIELD cell: the branch glyph, hanging under the field name above,
+    /// then what the layer is to the value — `:template` for the template
+    /// record that defines it, `shadowed` for a layer the read did not take.
+    /// Colour dims a shadowed layer as well; the word is there either way.
+    fn field(self, ascii: bool) -> String {
+        let mut cell = vec![self.glyph(ascii)];
+        if self.template {
+            cell.push(":template");
+        }
+        if !self.answered {
+            cell.push("shadowed");
+        }
+        cell.join(" ")
+    }
+}
+
+/// Whether `layer` is `row` itself, which the row already shows: the record
+/// the read took, or under `-a` a shadowed record shown as a row of its own,
+/// whose children then show what shadows it. A rendered row is never its own
+/// layer — its template record is what defines it.
+fn is_the_row(row: &CacheRow, layer: &crate::cache::LayerRecord) -> bool {
+    layer.facet.is_none()
+        && !matches!(row.kind, Some(crate::cache::RowKind::Rendered))
+        && layer.path == row.path
+        && layer.label == row.source
+}
+
+/// `comb status --tree`: each value row followed by the layers behind it
+/// (`children[i]` for `rows[i]`), in the `human`, `table` or `json` preset.
+/// `json` gives each row its whole `layers` array; the tables draw each layer
+/// as a row of its own under its value, except the one that is the row
+/// itself, so a value with nothing behind it is drawn alone.
+pub fn render_tree(
+    format: &Format,
+    rows: &[CacheRow],
+    children: &[Vec<crate::cache::LayerRecord>],
+    opts: &RenderOpts,
+) -> String {
+    if format == &Format::Preset(Preset::Json) {
+        let mut out = String::new();
+        for (row, layers) in rows.iter().zip(children) {
+            if let Ok(mut v) = serde_json::to_value(row) {
+                v["layers"] = serde_json::to_value(layers).unwrap_or_default();
+                out.push_str(&v.to_string());
+                out.push('\n');
+            }
+        }
+        return out;
+    }
+    let mut display = Vec::new();
+    let mut marks = Vec::new();
+    for (row, layers) in rows.iter().zip(children) {
+        display.push(row.clone());
+        marks.push(None);
+        let layers: Vec<_> = layers.iter().filter(|l| !is_the_row(row, l)).collect();
+        for (i, layer) in layers.iter().enumerate() {
+            display.push(CacheRow {
+                shadowed: false,
+                provider: row.provider.clone(),
+                path: layer.path.clone(),
+                source: layer.label.clone(),
+                field: row.field.clone(),
+                value: layer.value.clone(),
+                age_ms: Some(layer.age_ms),
+                kind: None,
+                poll_interval_secs: None,
+                poll_count: None,
+                polls_elapsed: None,
+                next_poll_in_secs: None,
+                failure: None,
+            });
+            marks.push(Some(ChildMark {
+                last: i + 1 == layers.len(),
+                answered: layer.answered,
+                template: layer.facet.as_deref() == Some("template"),
+            }));
+        }
+    }
+    match format {
+        Format::Preset(Preset::Table) => render_table(&display, &marks, false, None, true, false),
+        _ => {
+            let trunc = if opts.no_trunc { None } else { opts.max_width };
+            render_table(&display, &marks, !opts.no_color, trunc, true, opts.ascii)
+        }
+    }
+}
 
 /// Render rows as aligned columns for the `human` preset.
 ///
-/// - `color_enabled`: apply per-cell ANSI colour (AGE yellow/green by stale, TTL by decay,
+/// - `color_enabled`: apply per-cell ANSI colour (AGE yellow when its last run failed, else green, TTL by decay,
 ///   failure rows red on non-TTL cells, JSON syntax highlighting in structured VALUE cells).
 /// - `trunc`: maximum width for the VALUE column (in characters). `None` = no truncation.
-/// - `header`: prepend a PROVIDER / FIELD / VALUE / PATH / AGE / POLL / TTL header row.
+/// - `header`: prepend a PROVIDER / FIELD / SOURCE / VALUE / PATH / AGE / POLL / TTL header row.
 /// - `ascii`: use ASCII-only glyphs in the TTL cell instead of Unicode.
 pub fn render_human(rows: &[CacheRow], opts: &FormatOptions) -> String {
-    render_table(rows, false, None, true, opts.ascii, true)
+    render_table(rows, &[], false, None, true, opts.ascii)
 }
 
 /// Compact a path under `$HOME` to a `~`-prefixed display form. Exact-prefix
@@ -1098,7 +1154,7 @@ fn row_is_tainted(row: &CacheRow, path: &str, value: &str) -> bool {
 /// range — to the replacement character. Every stand-in is exactly one char
 /// wide, so sanitizing never shifts a column. `--ascii` collapses the lot to
 /// `?`, the pictures being non-ASCII themselves.
-fn sanitize_cell(s: &str, ascii: bool) -> String {
+pub fn sanitize_cell(s: &str, ascii: bool) -> String {
     if !s.chars().any(char::is_control) {
         return s.to_string();
     }
@@ -1120,37 +1176,29 @@ fn sanitize_cell(s: &str, ascii: bool) -> String {
         .collect()
 }
 
-fn compact_home_path(path: &str, home: Option<&str>) -> String {
-    match home {
-        Some(h) if !h.is_empty() && path == h => "~".to_string(),
-        Some(h) if !h.is_empty() && path.starts_with(&format!("{h}/")) => {
-            format!("~{}", &path[h.len()..])
-        }
-        _ => path.to_string(),
-    }
+/// A row's PATH as the tables show it: the global entry as `~`, and a path
+/// under home written from `~` ([`libbeachcomber::path::Home::compact`]).
+fn shown_path(path: Option<&str>, home: &libbeachcomber::path::Home) -> String {
+    path.map_or_else(|| "~".to_string(), |p| home.compact(p))
 }
 
 fn render_table(
     rows: &[CacheRow],
+    marks: &[Option<ChildMark>],
     color_enabled: bool,
     trunc: Option<usize>,
     header: bool,
     ascii: bool,
-    compact_home: bool,
 ) -> String {
     // `trunc` is the **total table width cap** (all columns + padding).
     // We scan all rows first to measure natural column widths, then compute
     // how much room the VALUE column has once other columns claim their natural
     // widths and inter-column separators are accounted for.
 
-    // Display-only: `~`-compact paths under $HOME so the freed width benefits
-    // the VALUE column. Machine presets (json/csv/tsv/sh) never call through
-    // this path — they use `row.path` directly. Resolved once per render.
-    let home = if compact_home {
-        std::env::var("HOME").ok()
-    } else {
-        None
-    };
+    // Display-only: a path under $HOME is written from `~`, and the global
+    // entry is `~` itself, in both tables. Machine presets (json/csv/tsv/sh)
+    // never call through this path — they use `row.path` directly.
+    let home = libbeachcomber::path::Home::from_env();
 
     let now_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1159,10 +1207,11 @@ fn render_table(
 
     // -----------------------------------------------------------------------
     // Pass 1: measure natural widths of every column (no truncation).
-    // Columns: PROVIDER, FIELD, VALUE, PATH, AGE, POLL, TTL
+    // Columns: PROVIDER, FIELD, SOURCE, VALUE, PATH, AGE, POLL, TTL
     // -----------------------------------------------------------------------
     let mut nat_provider = HEADERS[H_PROVIDER].len();
     let mut nat_field = HEADERS[H_FIELD].len();
+    let mut nat_source = HEADERS[H_SOURCE].len();
     let mut nat_value = HEADERS[H_VALUE].len();
     let mut nat_path = HEADERS[H_PATH].len();
     let mut nat_age = HEADERS[H_AGE].len();
@@ -1173,38 +1222,55 @@ fn render_table(
     // values in this snapshot, capped at TTL_P_WIDTH_MAX / TTL_TOTAL_WIDTH_MAX.
     let ttl_widths = compute_ttl_widths(rows);
 
-    for row in rows {
-        let path = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
-        let value = value_to_string(&row.value);
+    // Budget-aware: SOURCE competes with VALUE/PATH for the same `trunc`
+    // total, so a 24-char config label alone must not starve those columns
+    // at a narrow cap.
+    let source_cap = trunc.map(|c| MAX_SOURCE_WIDTH.min(c / 5));
+
+    for (index, row) in rows.iter().enumerate() {
+        let mark = marks.get(index).copied().flatten();
+        let path = shown_path(row.path.as_deref(), &home);
+        let value = shown_value(row).unwrap_or_else(|| ABSENT_TEXT.to_string());
         // Sanitizing swaps one char for one char, so it never changes a
         // natural width. Only the taint marker does.
-        let marker_width = if row_is_tainted(row, &path, &value) {
+        let taint_width = if row_is_tainted(row, &path, &value) {
             MARKER_WIDTH
         } else {
             0
         };
-        nat_provider = nat_provider.max(row.provider.chars().count());
-        nat_path = nat_path.max(path.chars().count());
-        nat_field = nat_field.max(row.field.chars().count());
-        nat_value = nat_value.max(value.chars().count() + marker_width);
-        nat_age = nat_age.max(
-            format_age_with_polls(row.age_ms, row.polls_elapsed, ascii)
-                .chars()
-                .count(),
-        );
+        let marker_width =
+            taint_width + template_marker(row.kind.as_ref(), color_enabled, ascii).cols();
+        if let Some(mark) = mark {
+            nat_field = nat_field.max(mark.field(ascii).cols());
+            nat_path = nat_path.max(path.cols());
+            nat_source = nat_source.max(match source_cap {
+                Some(cap) => row.source.cols().min(cap),
+                None => row.source.cols(),
+            });
+            nat_value = nat_value.max(value.cols() + taint_width);
+            nat_age = nat_age.max(format_age_with_polls(row.age_ms, None, ascii).cols());
+            continue;
+        }
+        nat_provider = nat_provider.max(row.provider.cols());
+        nat_path = nat_path.max(path.cols());
+        nat_field = nat_field.max(row.field.cols());
+        nat_source = nat_source.max(match source_cap {
+            Some(cap) => row.source.cols().min(cap),
+            None => row.source.cols(),
+        });
+        nat_value = nat_value.max(value.cols() + marker_width);
+        nat_age = nat_age.max(format_age_with_polls(row.age_ms, row.polls_elapsed, ascii).cols());
         nat_ttl = nat_ttl.max(
             format_ttl_cell(
                 row.kind.as_ref(),
                 row.poll_interval_secs,
-                row.keep_alive_polls,
-                row.fsevents_reinstate,
+                row.poll_count,
                 row.failure.as_ref(),
                 ascii,
                 &ttl_widths,
             )
             .text
-            .chars()
-            .count(),
+            .cols(),
         );
         nat_poll = nat_poll.max(
             format_poll_cell(
@@ -1213,8 +1279,7 @@ fn render_table(
                 row.failure.as_ref(),
                 now_unix_ms,
             )
-            .chars()
-            .count(),
+            .cols(),
         );
     }
 
@@ -1232,8 +1297,8 @@ fn render_table(
 
     // -----------------------------------------------------------------------
     // Split the total-table-width budget across the flexible columns.
-    // Layout: MARGIN provider(2sp)field(2sp)value(2sp)path(2sp)age(2sp)poll(2sp)ttl MARGIN
-    // Separators: 6 × 2 = 12
+    // Layout: MARGIN provider(2sp)field(2sp)source(2sp)value(2sp)path(2sp)age(2sp)poll(2sp)ttl MARGIN
+    // Separators: 7 × 2 = 14
     // Margins: 2 spaces each side (breathing room so the table doesn't hug
     // the terminal edge).
     // -----------------------------------------------------------------------
@@ -1243,13 +1308,13 @@ fn render_table(
     // shows the leaf that discriminates it.
     const MIN_PATH_WIDTH: usize = 20;
     const MIN_FIELD_WIDTH: usize = 20;
-    const SEP_TOTAL: usize = 12; // 6 separators × 2 spaces
+    const SEP_TOTAL: usize = 14; // 7 separators × 2 spaces
     const MARGIN: usize = 2; // left margin, printed; right margin, reserved only
     const MARGIN_TOTAL: usize = MARGIN * 2;
 
-    // VALUE, FIELD and PATH are the three flexible columns; PROVIDER, AGE,
-    // POLL and TTL always take their natural widths. Whatever the budget
-    // leaves after those four is `flex`.
+    // VALUE, FIELD and PATH are the three flexible columns; PROVIDER, SOURCE,
+    // AGE, POLL and TTL always take their natural widths. Whatever the budget
+    // leaves after those five is `flex`.
     //
     // All three are unbounded in practice — values are arbitrary JSON, paths
     // carry `#session` suffixes, and destructuring makes field names as deep
@@ -1266,7 +1331,8 @@ fn render_table(
     let (field_cap, path_cap, value_cap) = match trunc {
         None => (None, None, None),
         Some(total_cap) => {
-            let mut fixed = nat_provider + nat_age + nat_poll + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
+            let mut fixed =
+                nat_provider + nat_source + nat_age + nat_poll + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
             let mut flex = total_cap.saturating_sub(fixed);
             // A tight cap may not afford the AGE/POLL stability floors: if
             // the flexible columns can't stand on their own floors, give the
@@ -1278,7 +1344,13 @@ fn render_table(
             if flex < flex_floors && (nat_age > nat_age_raw || nat_poll > nat_poll_raw) {
                 nat_age = nat_age_raw;
                 nat_poll = nat_poll_raw;
-                fixed = nat_provider + nat_age + nat_poll + nat_ttl + SEP_TOTAL + MARGIN_TOTAL;
+                fixed = nat_provider
+                    + nat_source
+                    + nat_age
+                    + nat_poll
+                    + nat_ttl
+                    + SEP_TOTAL
+                    + MARGIN_TOTAL;
                 flex = total_cap.saturating_sub(fixed);
             }
             if nat_value + nat_field + nat_path <= flex {
@@ -1332,6 +1404,7 @@ fn render_table(
             header_texts[4].len(),
             header_texts[5].len(),
             header_texts[6].len(),
+            header_texts[7].len(),
         ];
         let header_row: [String; COLS] =
             header_texts.map(|h| ansi::wrap(&h, ansi::Color::Bold, color_enabled));
@@ -1339,17 +1412,28 @@ fn render_table(
         visible.push(header_vis);
     }
 
-    for row in rows {
+    for (index, row) in rows.iter().enumerate() {
+        let mark = marks.get(index).copied().flatten();
         // Provider-controlled text is sanitized first, then truncated — never
         // the other way round, so a truncation can't leave half an escape
         // sequence intact.
-        let path_raw = compact_home_path(row.path.as_deref().unwrap_or("-"), home.as_deref());
-        let value_raw = value_to_string(&arrayify(&row.value));
+        let path_raw = shown_path(row.path.as_deref(), &home);
+        let value_raw = shown_value(row).unwrap_or_else(|| ABSENT_TEXT.to_string());
         let tainted = row_is_tainted(row, &path_raw, &value_raw);
 
         let ell = ellipsis(ascii);
-        let provider_text = sanitize_cell(&row.provider, ascii);
-        let mut field_text = sanitize_cell(&row.field, ascii);
+        let provider_text = match mark {
+            Some(_) => String::new(),
+            None => sanitize_cell(&row.provider, ascii),
+        };
+        let mut source_text = sanitize_cell(&row.source, ascii);
+        if let Some(cap) = source_cap {
+            source_text = truncate_path(&source_text, cap, ell);
+        }
+        let mut field_text = match mark {
+            Some(mark) => mark.field(ascii),
+            None => sanitize_cell(&row.field, ascii),
+        };
         if let Some(cap) = field_cap {
             field_text = truncate_middle(&field_text, cap, ell);
         }
@@ -1362,26 +1446,34 @@ fn render_table(
         // the rows whose text was rewritten without diffing against the
         // source. The marker is part of the cell, so it takes part in the
         // width budget and truncates with everything else.
-        let marker = match (tainted, ascii) {
-            (false, _) => "",
-            (true, true) => "! ",
-            (true, false) => "\u{203c} ", // ‼
+        let marker = if tainted {
+            format!("{} ", Glyphs::of(ascii).tainted)
+        } else {
+            String::new()
         };
-        let mut value = format!("{marker}{}", sanitize_cell(&value_raw, ascii));
+        // A rendered row is marked ahead of the taint marker: colour-off
+        // builds need to see "this was computed here" before anything else in
+        // the cell (design decision 5).
+        let tmpl_marker = template_marker(row.kind.as_ref(), color_enabled, ascii);
+        let mut value = format!("{tmpl_marker}{marker}{}", sanitize_cell(&value_raw, ascii));
         if let Some(max) = value_cap {
             value = truncate(&value, max, ell);
         }
 
         // AGE cell — right-aligned against the floored column width (see the
-        // watch-jitter note above), coloured by stale state.
+        // watch-jitter note above), yellow when its last run failed.
         let age_text = format!(
             "{:>width$}",
             format_age_with_polls(row.age_ms, row.polls_elapsed, ascii),
             width = nat_age
         );
-        let age_vis = age_text.chars().count();
+        let age_vis = age_text.cols();
         let age_cell = if color_enabled {
-            if row.stale {
+            if row
+                .failure
+                .as_ref()
+                .is_some_and(|f| f.consecutive_failures > 0)
+            {
                 ansi::wrap(&age_text, ansi::Color::Yellow, true)
             } else {
                 ansi::wrap(&age_text, ansi::Color::BrightGreen, true)
@@ -1397,13 +1489,21 @@ fn render_table(
         let ttl = format_ttl_cell(
             row.kind.as_ref(),
             row.poll_interval_secs,
-            row.keep_alive_polls,
-            row.fsevents_reinstate,
+            row.poll_count,
             row.failure.as_ref(),
             ascii,
             &ttl_widths,
         );
-        let ttl_vis = ttl.text.chars().count();
+        // A layer row has no lifecycle of its own to show.
+        let ttl = if mark.is_some() {
+            TtlCell {
+                text: String::new(),
+                color: None,
+            }
+        } else {
+            ttl
+        };
+        let ttl_vis = ttl.text.cols();
         let ttl_cell = match (color_enabled, ttl.color) {
             (true, Some(c)) => ansi::wrap(&ttl.text, c, true),
             _ => ttl.text,
@@ -1415,20 +1515,25 @@ fn render_table(
         // rather than relying on the general (left-justifying) padding loop.
         let poll_text = format!(
             "{:>width$}",
-            format_poll_cell(
-                row.kind.as_ref(),
-                row.next_poll_in_secs,
-                row.failure.as_ref(),
-                now_unix_ms,
-            ),
+            if mark.is_some() {
+                String::new()
+            } else {
+                format_poll_cell(
+                    row.kind.as_ref(),
+                    row.next_poll_in_secs,
+                    row.failure.as_ref(),
+                    now_unix_ms,
+                )
+            },
             width = nat_poll
         );
-        let poll_vis = poll_text.chars().count();
+        let poll_vis = poll_text.cols();
 
-        let provider_vis = provider_text.chars().count();
-        let path_vis = path.chars().count();
-        let field_vis = field_text.chars().count();
-        let value_vis = value.chars().count();
+        let provider_vis = provider_text.cols();
+        let path_vis = path.cols();
+        let field_vis = field_text.cols();
+        let source_vis = source_text.cols();
+        let value_vis = value.cols();
 
         // VALUE cell. Truncation has already happened above, so the colouring
         // here can only ever add escape sequences — it never slices one.
@@ -1445,7 +1550,25 @@ fn render_table(
                     value.chars().skip(MARKER_WIDTH).collect(),
                 )
             };
-            let body = if body.starts_with(['{', '[']) {
+            // Cyan is the colour build's mark for a rendered row (design
+            // decision 5). A structured body still gets its own JSON
+            // highlighting nested inside; each highlighted token carries a
+            // full reset, so on-screen only the cell's opening brace stays
+            // cyan — the row is marked by that lead-in plus its SOURCE, not
+            // by an unbroken cyan span.
+            let failed = row.failure.as_ref().is_some_and(|f| f.last_error.is_some());
+            let body = if row.value.is_null() && failed {
+                ansi::wrap(&body, ansi::Color::Red, true)
+            } else if row.value.is_null() {
+                ansi::wrap(&body, ansi::Color::Dim, true)
+            } else if matches!(row.kind, Some(crate::cache::RowKind::Rendered)) {
+                let body = if body.starts_with(['{', '[']) {
+                    highlight_json(&body)
+                } else {
+                    body
+                };
+                ansi::wrap(&body, ansi::Color::Cyan, true)
+            } else if body.starts_with(['{', '[']) {
                 highlight_json(&body)
             } else {
                 body
@@ -1463,6 +1586,7 @@ fn render_table(
         let mut row_cells: [String; COLS] = [
             provider_text,
             field_text,
+            source_text,
             value_cell,
             path,
             age_cell,
@@ -1480,10 +1604,18 @@ fn render_table(
                 }
             }
         }
+        // A layer the read did not take is dimmed, beside the `shadowed` its
+        // FIELD cell says ([`ChildMark::field`]).
+        if color_enabled && mark.is_some_and(|m| !m.answered) {
+            for cell in row_cells.iter_mut() {
+                *cell = ansi::wrap(&term::strip_escapes(cell), ansi::Color::Dim, true);
+            }
+        }
 
         let row_vis: [usize; COLS] = [
             provider_vis,
             field_vis,
+            source_vis,
             value_vis,
             path_vis,
             age_vis,
@@ -1566,84 +1698,179 @@ fn render_table(
 // Filter and sort helpers (T30 / T31)
 // ---------------------------------------------------------------------------
 
-/// Apply a list of `key=value` filter strings to `rows`, returning only the rows
-/// that match ALL predicates (AND semantics).
+/// The filters `comb status` applies on a key the user gave none on: facet
+/// rows (`aws:template`, `*:cache`), absent values and shadowed records are
+/// hidden, so the default table is the values a read would answer. `--all`
+/// drops them.
+pub const DEFAULT_FILTERS: [&str; 3] = ["facet=-", "value!=-", "shadowed=false"];
+
+/// The filters to apply: `user`'s, plus each [`DEFAULT_FILTERS`] entry whose
+/// key `user` does not name (with either operator), unless `all`.
+pub fn effective_filters(user: &[String], all: bool) -> Vec<String> {
+    let mut out = user.to_vec();
+    if all {
+        return out;
+    }
+    for default in DEFAULT_FILTERS {
+        let key = split_filter(default).map(|(k, _, _)| k);
+        let named = user
+            .iter()
+            .any(|f| split_filter(f).map(|(k, _, _)| k) == key);
+        if !named {
+            out.push(default.to_string());
+        }
+    }
+    out
+}
+
+/// A row's provider without its facet: `aws` for `aws:template`.
+pub fn row_base(provider: &str) -> &str {
+    provider.split_once(':').map_or(provider, |(base, _)| base)
+}
+
+/// A row's facet: `template` for `aws:template`, none for `aws`.
+pub fn row_facet(provider: &str) -> Option<&str> {
+    provider.split_once(':').map(|(_, facet)| facet)
+}
+
+/// The SOURCE label a row displays, which `--filter source=` matches.
+pub fn display_source(row: &CacheRow) -> String {
+    row.source.clone()
+}
+
+/// Apply a list of `key=value` / `key!=value` filter strings to `rows`,
+/// returning only the rows that match ALL of them (AND semantics).
 ///
-/// Supported keys: `provider`, `path`, `field`, `stale`.
+/// Keys: `provider` (the base name, exact or `*` glob), `facet` (a name or
+/// glob, `-` for none), `path` (glob, `-` for none), `field` (glob), `source` (glob
+/// over the displayed label), `value` (glob over the displayed value, `-` for
+/// absent), `shadowed`, `lifecycle`. `!=` negates.
 /// Returns `Err` if any filter string uses an unknown key or invalid value.
 pub fn apply_filters(rows: Vec<CacheRow>, filters: &[String]) -> Result<Vec<CacheRow>, String> {
-    let preds: Vec<Predicate> = filters
+    let filters: Vec<Filter> = filters
         .iter()
         .map(|s| parse_filter(s))
         .collect::<Result<_, _>>()?;
     Ok(rows
         .into_iter()
-        .filter(|r| preds.iter().all(|p| p.matches(r)))
+        .filter(|r| filters.iter().all(|f| f.matches(r)))
         .collect())
 }
 
+/// Whether `provider` (a base name) could survive every `provider` filter
+/// in `filters`. Used to skip resolving (and `exec()`ing) a template row's
+/// leaves before rendering, when `--filter provider` has already ruled the
+/// provider out — `apply_filters` runs the real, authoritative filter
+/// afterward, over the rendered rows, so a filter string this can't parse or
+/// a predicate it doesn't recognise is not this function's error to raise:
+/// it answers "could still pass" and lets `apply_filters` give the answer,
+/// and the syntax error, its usual way.
+pub fn provider_could_pass(filters: &[String], provider: &str) -> bool {
+    filters.iter().all(|f| match parse_filter(f) {
+        Ok(
+            filter @ Filter {
+                predicate: Predicate::Provider(_),
+                ..
+            },
+        ) => filter.matches_base(provider),
+        _ => true,
+    })
+}
+
+/// `key=value` or `key!=value`, split into its key, whether it is negated,
+/// and its value.
+fn split_filter(s: &str) -> Option<(&str, bool, &str)> {
+    let eq = s.find('=')?;
+    let (key, negate) = match s[..eq].strip_suffix('!') {
+        Some(key) => (key, true),
+        None => (&s[..eq], false),
+    };
+    Some((key, negate, &s[eq + 1..]))
+}
+
+struct Filter {
+    predicate: Predicate,
+    negate: bool,
+}
+
 enum Predicate {
-    ProviderEq(String),
-    ProviderGlob(String),
-    PathGlob(String),
-    PathDash,
-    FieldEq(String),
-    Stale(bool),
+    /// The provider's base name, exact or glob.
+    Provider(String),
+    /// The facet: a name or glob, or none (`-`).
+    Facet(Option<String>),
+    /// The path as shown or as stored: a glob, the global entry being `~`.
+    Path(String),
+    /// The field name, exact or glob.
+    Field(String),
+    /// The displayed SOURCE label, as a glob.
+    Source(String),
+    /// The displayed value as a glob, or absent (`-`): a failing Source's
+    /// row with nothing stored displays its latest error.
+    Value(Option<String>),
+    /// A record the read from the caller's directory does not take.
+    Shadowed(bool),
     /// Match Lifecycle rows with the given decay level (0=active, 1-4=decayN).
     LifecycleDecay(u8),
     /// Match Once rows.
     LifecycleOnce,
-    /// Match Virtual rows.
-    LifecycleVirtual,
-    /// Match on fsevents_reinstate flag value.
-    FseventsReinstate(bool),
+    /// Match Static rows.
+    LifecycleStatic,
+    /// Match rows rendered here.
+    LifecycleRendered,
 }
 
-fn parse_filter(s: &str) -> Result<Predicate, String> {
-    let (k, v) = s
-        .split_once('=')
-        .ok_or_else(|| format!("filter must be key=value: {s}"))?;
-    match k {
-        "provider" => {
-            if v.contains('*') {
-                Ok(Predicate::ProviderGlob(v.to_string()))
-            } else {
-                Ok(Predicate::ProviderEq(v.to_string()))
-            }
+fn parse_filter(s: &str) -> Result<Filter, String> {
+    let (k, negate, v) =
+        split_filter(s).ok_or_else(|| format!("filter must be key=value or key!=value: {s}"))?;
+    let dash = |v: &str| (v != "-").then(|| v.to_string());
+    let predicate = match k {
+        "provider" => Predicate::Provider(v.to_string()),
+        "facet" => Predicate::Facet(dash(v)),
+        "path" if v == "-" => {
+            return Err("path=-: the global entry is written ~ (path=~)".to_string());
         }
-        "path" => {
-            if v == "-" {
-                Ok(Predicate::PathDash)
-            } else {
-                Ok(Predicate::PathGlob(v.to_string()))
-            }
-        }
-        "field" => Ok(Predicate::FieldEq(v.to_string())),
-        "stale" => match v {
-            "true" => Ok(Predicate::Stale(true)),
-            "false" => Ok(Predicate::Stale(false)),
-            other => Err(format!("stale= must be true or false, got {other}")),
+        "path" => Predicate::Path(v.to_string()),
+        "field" => Predicate::Field(v.to_string()),
+        "source" => Predicate::Source(v.to_string()),
+        "value" => Predicate::Value(dash(v)),
+        "shadowed" => match v {
+            "true" => Predicate::Shadowed(true),
+            "false" => Predicate::Shadowed(false),
+            other => return Err(format!("shadowed= must be true or false, got {other}")),
         },
         "lifecycle" => match v {
-            "active" => Ok(Predicate::LifecycleDecay(0)),
-            "decay1" => Ok(Predicate::LifecycleDecay(1)),
-            "decay2" => Ok(Predicate::LifecycleDecay(2)),
-            "decay3" => Ok(Predicate::LifecycleDecay(3)),
-            "decay4" => Ok(Predicate::LifecycleDecay(4)),
-            "once" => Ok(Predicate::LifecycleOnce),
-            "virtual" => Ok(Predicate::LifecycleVirtual),
-            other => Err(format!(
-                "lifecycle= must be active|decay1|decay2|decay3|decay4|once|virtual, got {other}"
-            )),
+            "active" => Predicate::LifecycleDecay(0),
+            "once" => Predicate::LifecycleOnce,
+            "static" => Predicate::LifecycleStatic,
+            "rendered" => Predicate::LifecycleRendered,
+            other => match other
+                .strip_prefix("decay")
+                .and_then(|n| n.parse::<u8>().ok())
+            {
+                Some(n) if n >= 1 => Predicate::LifecycleDecay(n),
+                _ => {
+                    return Err(format!(
+                        "lifecycle= must be active|decay<N>|once|static|rendered, got {other}"
+                    ));
+                }
+            },
         },
-        "fsevents_reinstate" => match v {
-            "true" => Ok(Predicate::FseventsReinstate(true)),
-            "false" => Ok(Predicate::FseventsReinstate(false)),
-            other => Err(format!(
-                "fsevents_reinstate= must be true or false, got {other}"
-            )),
-        },
-        other => Err(format!("unknown filter key: {other}")),
+        other => return Err(format!("unknown filter key: {other}")),
+    };
+    Ok(Filter { predicate, negate })
+}
+
+impl Filter {
+    fn matches(&self, r: &CacheRow) -> bool {
+        self.predicate.matches(r) != self.negate
+    }
+
+    /// A `provider` filter against a bare base name.
+    fn matches_base(&self, base: &str) -> bool {
+        match &self.predicate {
+            Predicate::Provider(pat) => simple_glob_match(pat, base) != self.negate,
+            _ => true,
+        }
     }
 }
 
@@ -1651,21 +1878,33 @@ impl Predicate {
     fn matches(&self, r: &CacheRow) -> bool {
         use crate::cache::RowKind;
         match self {
-            Predicate::ProviderEq(v) => &r.provider == v,
-            Predicate::ProviderGlob(pat) => simple_glob_match(pat, &r.provider),
-            Predicate::PathGlob(pat) => {
-                r.path.as_deref().is_some_and(|p| simple_glob_match(pat, p))
+            Predicate::Provider(pat) => simple_glob_match(pat, row_base(&r.provider)),
+            Predicate::Facet(None) => row_facet(&r.provider).is_none(),
+            Predicate::Facet(Some(pat)) => {
+                row_facet(&r.provider).is_some_and(|f| simple_glob_match(pat, f))
             }
-            Predicate::PathDash => r.path.is_none(),
-            Predicate::FieldEq(v) => &r.field == v,
-            Predicate::Stale(b) => r.stale == *b,
+            Predicate::Path(pat) => {
+                let home = libbeachcomber::path::Home::from_env();
+                simple_glob_match(pat, &shown_path(r.path.as_deref(), &home))
+                    || r.path.as_deref().is_some_and(|p| simple_glob_match(pat, p))
+            }
+            Predicate::Field(pat) => simple_glob_match(pat, &r.field),
+            Predicate::Source(pat) => simple_glob_match(pat, &display_source(r)),
+            // Over the VALUE cell: a failing Source's error counts as shown,
+            // so the default `value!=-` keeps its row.
+            Predicate::Value(None) => shown_value(r).is_none(),
+            // A glob matches a present value only: `value=*` is "not absent".
+            Predicate::Value(Some(pat)) => {
+                shown_value(r).is_some_and(|v| simple_glob_match(pat, &v))
+            }
+            Predicate::Shadowed(b) => r.shadowed == *b,
             Predicate::LifecycleDecay(target) => matches!(
                 &r.kind,
                 Some(RowKind::Lifecycle { decay, .. }) if decay == target
             ),
             Predicate::LifecycleOnce => matches!(&r.kind, Some(RowKind::Once)),
-            Predicate::LifecycleVirtual => matches!(&r.kind, Some(RowKind::Virtual)),
-            Predicate::FseventsReinstate(b) => r.fsevents_reinstate.unwrap_or(false) == *b,
+            Predicate::LifecycleStatic => matches!(&r.kind, Some(RowKind::Static)),
+            Predicate::LifecycleRendered => matches!(&r.kind, Some(RowKind::Rendered)),
         }
     }
 }
@@ -1697,35 +1936,36 @@ fn simple_glob_match(pattern: &str, text: &str) -> bool {
 
 /// Sort `rows` by the given column name (ascending, stable).
 ///
-/// Valid columns: `provider`, `path`, `field`, `value`, `age`, `stale`, `lifecycle`,
+/// Valid columns: `provider`, `path`, `field`, `value`, `age`, `lifecycle`,
 /// `poll_interval`.
 /// Returns `Err` for any other column name.
 pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, String> {
     use crate::cache::RowKind;
     match col {
-        // path first so globals (path=None) bubble to the top as one group,
-        // then path-scoped rows are grouped by directory. Inside a path group,
-        // rows are ordered by provider then field.
+        // A provider's rows sit together: its plain rows, then each facet's
+        // (an absent facet sorts first), by field, then by path with the
+        // global entry (path=None) first.
         "default" => rows.sort_by(|a, b| {
-            a.path
-                .cmp(&b.path)
-                .then(a.provider.cmp(&b.provider))
+            row_base(&a.provider)
+                .cmp(row_base(&b.provider))
+                .then(row_facet(&a.provider).cmp(&row_facet(&b.provider)))
                 .then(a.field.cmp(&b.field))
+                .then(a.path.cmp(&b.path))
         }),
         "provider" => rows.sort_by(|a, b| a.provider.cmp(&b.provider)),
         "path" => rows.sort_by(|a, b| a.path.cmp(&b.path)),
         "field" => rows.sort_by(|a, b| a.field.cmp(&b.field)),
         "value" => rows.sort_by_key(|r| r.value.to_string()),
         "age" => rows.sort_by_key(|r| r.age_ms),
-        "stale" => rows.sort_by_key(|r| r.stale),
-        // Most-decayed first: Lifecycle{4} < Lifecycle{3} < ... < Lifecycle{0},
-        // then Once, Virtual, Transient, None.
+        // Closest to eviction first (fewest steps left), Active last,
+        // then Once, Static, Rendered, Transient, None.
         "lifecycle" => rows.sort_by_key(|r| match &r.kind {
-            Some(RowKind::Lifecycle { decay, .. }) => (0u8, 4u8 - *decay),
+            Some(RowKind::Lifecycle { decay, depth, .. }) => (0u8, depth.saturating_sub(*decay)),
             Some(RowKind::Once) => (1, 0),
-            Some(RowKind::Virtual) => (2, 0),
-            Some(RowKind::Transient) => (3, 0),
-            None => (4, 0),
+            Some(RowKind::Static) => (2, 0),
+            Some(RowKind::Rendered) => (3, 0),
+            Some(RowKind::Transient) => (4, 0),
+            None => (5, 0),
         }),
         // Slowest-pollers first (descending poll_interval); None last.
         "poll_interval" => {
@@ -1740,38 +1980,10 @@ pub fn apply_sort(mut rows: Vec<CacheRow>, col: &str) -> Result<Vec<CacheRow>, S
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/// Convert a `serde_json::Value` to a display string.
-/// Strings are returned unquoted; other types use their JSON representation.
-pub fn value_to_string(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Null => String::new(),
-        other => other.to_string(),
-    }
-}
-
-/// Format an age in milliseconds as a human-readable duration.
-///
-/// Examples: `0s`, `14s`, `3m`, `2h14m`.
+/// An age in milliseconds, in whole seconds: `0s`, `14s`, `3m`, `2h14m`.
 pub fn format_age(age_ms: u128) -> String {
-    let secs = age_ms / 1000;
-    if secs < 60 {
-        return format!("{secs}s");
-    }
-    let minutes = secs / 60;
-    if minutes < 60 {
-        let s = secs % 60;
-        if s == 0 {
-            return format!("{minutes}m");
-        }
-        return format!("{minutes}m{s}s");
-    }
-    let hours = minutes / 60;
-    let m = minutes % 60;
-    if m == 0 {
-        return format!("{hours}h");
-    }
-    format!("{hours}h{m}m")
+    let secs = u64::try_from(age_ms / 1000).unwrap_or(u64::MAX);
+    render::duration(Duration::from_secs(secs))
 }
 
 /// Format an age with an optional poll-iteration suffix (`×N` / `xN` in ascii mode).
@@ -1779,119 +1991,112 @@ pub fn format_age(age_ms: u128) -> String {
 /// Used for the AGE column in `comb status` table rendering. The suffix shows how
 /// many polls have fired in the current lifecycle step, giving the user a sense of
 /// where they are in the K-poll window without computing it from the TTL column.
-fn format_age_with_polls(age_ms: u128, polls_elapsed: Option<u32>, ascii: bool) -> String {
+/// A row with no age (a rendered value that read no cached input) is `-`.
+fn format_age_with_polls(age_ms: Option<u128>, polls_elapsed: Option<u32>, ascii: bool) -> String {
+    let Some(age_ms) = age_ms else {
+        return "-".to_string();
+    };
     let base = format_age(age_ms);
     match polls_elapsed {
-        Some(n) => {
-            let sep = if ascii { "x" } else { "\u{00d7}" };
-            format!("{base}{sep}{n}")
-        }
+        Some(n) => format!("{base}{}{n}", Glyphs::of(ascii).times),
         None => base,
     }
 }
 
-/// Truncate to at most `max` characters, keeping the **tail**.
+/// Display columns, as the terminal counts them ([`term::width`]).
+trait Cols {
+    fn cols(&self) -> usize;
+}
+
+impl Cols for str {
+    fn cols(&self) -> usize {
+        term::width(self)
+    }
+}
+
+/// The longest prefix of `s` that fits `cols` columns.
+fn take_head(s: &str, cols: usize) -> String {
+    term::cut(s, cols, "")
+}
+
+/// The longest suffix of `s` that fits `cols` columns.
+fn take_tail(s: &str, cols: usize) -> String {
+    let start = s
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(s.len()))
+        .find(|&i| s[i..].cols() <= cols)
+        .unwrap_or(s.len());
+    s[start..].to_string()
+}
+
+/// Truncate to at most `max` columns, keeping the **tail**.
 ///
 /// Used for the directory part of PATH, whose discriminating part is at the
 /// end — the project directory — while its head is uniform `~/ws/…` noise
 /// that is safe to drop. FIELD uses [`truncate_middle`] instead.
 fn truncate_tail(s: &str, max: usize, ell: &str) -> String {
-    let count = s.chars().count();
-    if count <= max {
+    if s.cols() <= max {
         s.to_string()
     } else {
-        let keep = max.saturating_sub(ell.chars().count());
-        let tail: String = s.chars().skip(count - keep).collect();
-        format!("{ell}{tail}")
+        let keep = max.saturating_sub(ell.cols());
+        format!("{ell}{}", take_tail(s, keep))
     }
 }
 
 /// The table's truncation mark: the one-column `…` glyph, or `...` under
 /// `--ascii` where the glyph can't be trusted.
 fn ellipsis(ascii: bool) -> &'static str {
-    if ascii { "..." } else { "\u{2026}" }
+    Glyphs::of(ascii).ellipsis
 }
 
-/// Truncate a cache path to at most `max` characters. A `#session` suffix
+/// Truncate a cache path to at most `max` columns. A `#session` suffix
 /// compresses first — the directory locates the row, the session id only
 /// discriminates it, so the id keeps its last 4 chars (`~/ws/proj#…abcd`).
 /// If the directory alone still overflows, its own tail is kept. A path
 /// with no `#` falls back to plain tail truncation.
 fn truncate_path(s: &str, max: usize, ell: &str) -> String {
-    if s.chars().count() <= max {
+    if s.cols() <= max {
         return s.to_string();
     }
     if let Some((dir, sess)) = s.rsplit_once('#') {
-        let sess_len = sess.chars().count();
-        let compressed = if sess_len > 4 {
-            let tail: String = s.chars().skip(s.chars().count() - 4).collect();
-            format!("#{ell}{tail}")
+        let compressed = if sess.cols() > 4 {
+            format!("#{ell}{}", take_tail(s, 4))
         } else {
             format!("#{sess}")
         };
-        let dir_budget = max.saturating_sub(compressed.chars().count());
+        let dir_budget = max.saturating_sub(compressed.cols());
         let out = format!("{}{compressed}", truncate_tail(dir, dir_budget, ell));
-        if out.chars().count() <= max {
+        if out.cols() <= max {
             return out;
         }
     }
     truncate_tail(s, max, ell)
 }
 
-/// Re-render index-keyed objects as JSON arrays, recursively. The daemon
-/// stores arrays as objects keyed `"0".."n-1"` (`Value::from_json` — its
-/// value model has no array type), so blobs read back as `{"0":..,"1":..}`.
-/// The human/table presets show them as the arrays they were; machine
-/// presets keep the stored form. Cosmetic and lossy in one direction: an
-/// object genuinely keyed by contiguous decimal strings displays as an
-/// array too — indistinguishable by construction.
-fn arrayify(v: &serde_json::Value) -> serde_json::Value {
-    match v {
-        serde_json::Value::Object(map) => {
-            let contiguous =
-                !map.is_empty() && (0..map.len()).all(|i| map.contains_key(&i.to_string()));
-            if contiguous {
-                serde_json::Value::Array(
-                    (0..map.len())
-                        .map(|i| arrayify(&map[&i.to_string()]))
-                        .collect(),
-                )
-            } else {
-                serde_json::Value::Object(
-                    map.iter().map(|(k, c)| (k.clone(), arrayify(c))).collect(),
-                )
-            }
-        }
-        other => other.clone(),
-    }
-}
-
-/// Truncate to at most `max` characters keeping both edges. Used for FIELD:
+/// Truncate to at most `max` columns keeping both edges. Used for FIELD:
 /// the head names the owning field (`api_status.…`), the tail is the
 /// discriminating leaf key (`….new_status`) — a destructured name needs
 /// both, unlike a path, whose head is uniform `~/ws/…` noise.
 fn truncate_middle(s: &str, max: usize, ell: &str) -> String {
-    let count = s.chars().count();
-    if count <= max {
+    if s.cols() <= max {
         s.to_string()
     } else {
-        let keep = max.saturating_sub(ell.chars().count());
-        let head_n = keep - keep / 2;
-        let head: String = s.chars().take(head_n).collect();
-        let tail: String = s.chars().skip(count - keep / 2).collect();
-        format!("{head}{ell}{tail}")
+        let keep = max.saturating_sub(ell.cols());
+        format!(
+            "{}{ell}{}",
+            take_head(s, keep - keep / 2),
+            take_tail(s, keep / 2)
+        )
     }
 }
 
-/// Truncate a string to at most `max` characters, appending `ell` if
-/// trimmed.
+/// Truncate a string to at most `max` columns, appending `ell` if trimmed.
 fn truncate(s: &str, max: usize, ell: &str) -> String {
-    if s.chars().count() <= max {
+    if s.cols() <= max {
         s.to_string()
     } else {
-        let take = max.saturating_sub(ell.chars().count());
-        let truncated: String = s.chars().take(take).collect();
-        format!("{truncated}{ell}")
+        format!("{}{ell}", take_head(s, max.saturating_sub(ell.cols())))
     }
 }
 
@@ -1927,63 +2132,6 @@ mod ansi_tests {
 }
 
 #[cfg(test)]
-mod compact_home_path_tests {
-    use super::compact_home_path;
-
-    #[test]
-    fn compacts_exact_prefix_match() {
-        assert_eq!(
-            compact_home_path("/Users/x/ws/beachcomber", Some("/Users/x")),
-            "~/ws/beachcomber"
-        );
-    }
-
-    #[test]
-    fn compacts_path_equal_to_home() {
-        assert_eq!(compact_home_path("/Users/x", Some("/Users/x")), "~");
-    }
-
-    #[test]
-    fn leaves_non_home_path_untouched() {
-        assert_eq!(
-            compact_home_path("/var/log/beachcomber", Some("/Users/x")),
-            "/var/log/beachcomber"
-        );
-    }
-
-    #[test]
-    fn does_not_compact_on_partial_segment_match() {
-        // "/Users/joe" is a string-prefix of "/Users/joel/x" but not a path
-        // component prefix — must not compact.
-        assert_eq!(
-            compact_home_path("/Users/joel/x", Some("/Users/joe")),
-            "/Users/joel/x"
-        );
-    }
-
-    #[test]
-    fn leaves_dash_marker_untouched() {
-        assert_eq!(compact_home_path("-", Some("/Users/x")), "-");
-    }
-
-    #[test]
-    fn passes_through_when_home_unknown() {
-        assert_eq!(
-            compact_home_path("/Users/x/ws/beachcomber", None),
-            "/Users/x/ws/beachcomber"
-        );
-    }
-
-    #[test]
-    fn passes_through_when_home_empty() {
-        assert_eq!(
-            compact_home_path("/Users/x/ws/beachcomber", Some("")),
-            "/Users/x/ws/beachcomber"
-        );
-    }
-}
-
-#[cfg(test)]
 mod ttl_cell_tests {
     use super::*;
     use crate::cache::{CacheRow, FailureSnapshot, RowKind};
@@ -1999,16 +2147,16 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: true,
             }),
             Some(60),
             Some(12),
-            Some(true),
             None,
             false,
             &W6,
         );
-        assert_eq!(cell.text, "\u{2605}     60s\u{00d7}12 (   12m) \u{2299}");
+        assert_eq!(cell.text, "\u{2605}     60s\u{00d7}12 (   12m) \u{2219}");
         assert!(matches!(cell.color, Some(ansi::Color::BrightGreen)));
     }
 
@@ -2018,11 +2166,11 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 4,
+                depth: 4,
                 watches_files: false,
             }),
             Some(480),
             Some(12),
-            Some(false),
             None,
             false,
             &W6,
@@ -2032,33 +2180,62 @@ mod ttl_cell_tests {
     }
 
     #[test]
+    fn lead_digit_counts_steps_to_eviction_from_the_entrys_own_depth() {
+        // A `put --ttl` entry has depth 1: Active is 1 step from eviction,
+        // Decay1 is 0 (the next tick evicts).
+        let cell = |decay, depth| {
+            format_ttl_cell(
+                Some(&RowKind::Lifecycle {
+                    decay,
+                    depth,
+                    watches_files: false,
+                }),
+                Some(60),
+                Some(1),
+                None,
+                false,
+                &W6,
+            )
+        };
+        let c = cell(1, 1);
+        assert!(c.text.starts_with("0 "), "{}", c.text);
+        assert!(matches!(c.color, Some(ansi::Color::Red)));
+        // Depth 4 is unchanged: Decay1 reads 3.
+        let c = cell(1, 4);
+        assert!(c.text.starts_with("3 "), "{}", c.text);
+        assert!(matches!(c.color, Some(ansi::Color::Dim)));
+        // A deeper entry keeps counting.
+        assert!(cell(1, 6).text.starts_with("5 "));
+    }
+
+    #[test]
     fn ascii_fallback() {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: true,
             }),
             Some(60),
             Some(12),
-            Some(true),
             None,
             true,
             &W6,
         );
-        assert_eq!(cell.text, "*     60sx12 (   12m) +");
+        assert_eq!(cell.text, "*     60sx12 (   12m) -");
     }
 
     #[test]
     fn indicator_blank_when_no_watch_capability() {
-        // Poll-only provider: blank trailer regardless of reinstate flag.
+        // Poll-only provider: blank trailer.
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: false,
             }),
             Some(60),
             Some(12),
-            Some(true),
             None,
             false,
             &W6,
@@ -2067,16 +2244,16 @@ mod ttl_cell_tests {
     }
 
     #[test]
-    fn indicator_bare_dot_when_watches_files_without_reinstate() {
-        // Watches but reinstate=false: bare dot (decorated glyph progression).
+    fn indicator_dot_when_watches_files() {
+        // Watches files while Active: the dot.
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: true,
             }),
             Some(60),
             Some(12),
-            Some(false),
             None,
             false,
             &W6,
@@ -2093,11 +2270,11 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: true,
             }),
             Some(60),
             Some(12),
-            Some(false),
             None,
             true,
             &W6,
@@ -2111,29 +2288,30 @@ mod ttl_cell_tests {
 
     #[test]
     fn once_renders_dashes() {
-        let cell = format_ttl_cell(Some(&RowKind::Once), None, None, None, None, false, &W6);
+        let cell = format_ttl_cell(Some(&RowKind::Once), None, None, None, false, &W6);
         assert_eq!(cell.text, "---");
         assert!(cell.color.is_none());
     }
 
     #[test]
-    fn virtual_renders_dashes() {
-        let cell = format_ttl_cell(Some(&RowKind::Virtual), None, None, None, None, false, &W6);
+    fn static_renders_dashes() {
+        let cell = format_ttl_cell(Some(&RowKind::Static), None, None, None, false, &W6);
         assert_eq!(cell.text, "---");
     }
 
     #[test]
     fn transient_renders_dashes() {
-        let cell = format_ttl_cell(
-            Some(&RowKind::Transient),
-            None,
-            None,
-            None,
-            None,
-            false,
-            &W6,
-        );
+        let cell = format_ttl_cell(Some(&RowKind::Transient), None, None, None, false, &W6);
         assert_eq!(cell.text, "---");
+    }
+
+    #[test]
+    fn template_renders_dashes() {
+        // A rendered row has no lifecycle of its own — it is computed at
+        // read time and never cached.
+        let cell = format_ttl_cell(Some(&RowKind::Rendered), None, None, None, false, &W6);
+        assert_eq!(cell.text, "---");
+        assert!(cell.color.is_none());
     }
 
     #[test]
@@ -2144,20 +2322,21 @@ mod ttl_cell_tests {
         let snap = FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
+            last_error: None,
         };
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 1,
+                depth: 4,
                 watches_files: true,
             }),
             Some(60),
             Some(12),
-            Some(true),
             Some(&snap),
             false,
             &W6,
         );
-        assert_eq!(cell.text, "\u{26a0} #03 \u{2299}");
+        assert_eq!(cell.text, "\u{26a0} #03 \u{2219}");
         assert!(matches!(cell.color, Some(ansi::Color::Red)));
     }
 
@@ -2166,15 +2345,16 @@ mod ttl_cell_tests {
         let snap = FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
+            last_error: None,
         };
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 1,
+                depth: 4,
                 watches_files: true,
             }),
             Some(60),
             Some(12),
-            Some(true),
             Some(&snap),
             true,
             &W6,
@@ -2184,21 +2364,21 @@ mod ttl_cell_tests {
 
     #[test]
     fn total_clamps_at_max() {
-        // P*K clamps to TTL_TOTAL_MAX_SECS (99h59m) before humanizing; the
+        // P*K clamps to TTL_TOTAL_MAX_SECS (99d23h) before humanizing; the
         // raw P itself clamps to TTL_P_MAX (999999).
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: false,
             }),
             Some(9_999_999),
             Some(99),
-            Some(false),
             None,
             false,
             &W6,
         );
-        assert!(cell.text.contains("99h59m"), "got: {:?}", cell.text);
+        assert!(cell.text.contains("99d23h"), "got: {:?}", cell.text);
         assert!(cell.text.contains("999999s"), "got: {:?}", cell.text);
     }
 
@@ -2207,11 +2387,11 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: false,
             }),
             Some(0),
             Some(0),
-            Some(false),
             None,
             false,
             &W6,
@@ -2227,34 +2407,34 @@ mod ttl_cell_tests {
         let cell = format_ttl_cell(
             Some(&RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: true,
             }),
             Some(1),
             Some(0),
-            Some(true),
             None,
             false,
             &widths,
         );
-        assert_eq!(cell.text, "\u{2605}  1s\u{00d7}00 (0s) \u{2299}");
+        assert_eq!(cell.text, "\u{2605}  1s\u{00d7}00 (0s) \u{2219}");
     }
 
     fn lifecycle_row(poll: u64, keep: u32, next: u64) -> CacheRow {
         CacheRow {
+            shadowed: false,
             provider: "load".into(),
             path: None,
             source: "loadavg".into(),
             field: "one".into(),
             value: serde_json::json!(0.5),
-            age_ms: 0,
-            stale: false,
+            age_ms: Some(0),
             kind: Some(RowKind::Lifecycle {
                 decay: 0,
+                depth: 4,
                 watches_files: false,
             }),
             poll_interval_secs: Some(poll),
-            keep_alive_polls: Some(keep),
-            fsevents_reinstate: Some(false),
+            poll_count: Some(keep),
             polls_elapsed: None,
             next_poll_in_secs: Some(next),
             failure: None,
@@ -2302,6 +2482,7 @@ mod poll_cell_tests {
             format_poll_cell(
                 Some(&RowKind::Lifecycle {
                     decay: 0,
+                    depth: 4,
                     watches_files: true,
                 }),
                 Some(37),
@@ -2313,12 +2494,30 @@ mod poll_cell_tests {
     }
 
     #[test]
+    fn a_long_wait_reads_as_every_duration_does() {
+        let lifecycle = RowKind::Lifecycle {
+            decay: 0,
+            depth: 4,
+            watches_files: true,
+        };
+        assert_eq!(
+            format_poll_cell(Some(&lifecycle), Some(3600), None, 0),
+            "1h"
+        );
+        assert_eq!(
+            format_poll_cell(Some(&lifecycle), Some(90), None, 0),
+            "1m30s"
+        );
+    }
+
+    #[test]
     fn watch_only_row_shows_dash() {
         // Lifecycle but no poll path (pure Watch): next_poll_in_secs is None.
         assert_eq!(
             format_poll_cell(
                 Some(&RowKind::Lifecycle {
                     decay: 0,
+                    depth: 4,
                     watches_files: true,
                 }),
                 None,
@@ -2330,12 +2529,13 @@ mod poll_cell_tests {
     }
 
     #[test]
-    fn once_virtual_transient_and_no_kind_show_dash() {
+    fn once_static_transient_template_and_no_kind_show_dash() {
         for kind in [
             None,
             Some(RowKind::Once),
-            Some(RowKind::Virtual),
+            Some(RowKind::Static),
             Some(RowKind::Transient),
+            Some(RowKind::Rendered),
         ] {
             assert_eq!(
                 format_poll_cell(kind.as_ref(), Some(37), None, 0),
@@ -2352,11 +2552,13 @@ mod poll_cell_tests {
         let snap = FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
+            last_error: None,
         };
         assert_eq!(
             format_poll_cell(
                 Some(&RowKind::Lifecycle {
                     decay: 1,
+                    depth: 4,
                     watches_files: true,
                 }),
                 Some(45),
@@ -2372,12 +2574,14 @@ mod poll_cell_tests {
         let snap = FailureSnapshot {
             consecutive_failures: 5,
             suppressed_until_unix_ms: Some(10_000),
+            last_error: None,
         };
         // (10_000 - 3_000) / 1000 = 7s remaining until suppression lifts.
         assert_eq!(
             format_poll_cell(
                 Some(&RowKind::Lifecycle {
                     decay: 1,
+                    depth: 4,
                     watches_files: false,
                 }),
                 Some(999),
@@ -2394,13 +2598,14 @@ mod poll_cell_tests {
             format_poll_cell(
                 Some(&RowKind::Lifecycle {
                     decay: 0,
+                    depth: 4,
                     watches_files: false,
                 }),
                 Some(9_999_999),
                 None,
                 0,
             ),
-            "999999s"
+            "11d13h"
         );
     }
 }
@@ -2411,26 +2616,26 @@ mod format_age_with_polls_tests {
 
     #[test]
     fn no_polls_no_suffix() {
-        assert_eq!(format_age_with_polls(14_000, None, false), "14s");
+        assert_eq!(format_age_with_polls(Some(14_000), None, false), "14s");
     }
 
     #[test]
     fn polls_unicode_suffix() {
         assert_eq!(
-            format_age_with_polls(14_000, Some(3), false),
+            format_age_with_polls(Some(14_000), Some(3), false),
             "14s\u{00d7}3"
         );
     }
 
     #[test]
     fn polls_ascii_suffix() {
-        assert_eq!(format_age_with_polls(14_000, Some(3), true), "14sx3");
+        assert_eq!(format_age_with_polls(Some(14_000), Some(3), true), "14sx3");
     }
 
     #[test]
     fn polls_zero() {
         assert_eq!(
-            format_age_with_polls(14_000, Some(0), false),
+            format_age_with_polls(Some(14_000), Some(0), false),
             "14s\u{00d7}0"
         );
     }
@@ -2438,7 +2643,7 @@ mod format_age_with_polls_tests {
     #[test]
     fn polls_two_digit_n() {
         assert_eq!(
-            format_age_with_polls(14_000, Some(12), false),
+            format_age_with_polls(Some(14_000), Some(12), false),
             "14s\u{00d7}12"
         );
     }
@@ -2446,7 +2651,7 @@ mod format_age_with_polls_tests {
     #[test]
     fn minutes_age_with_polls() {
         assert_eq!(
-            format_age_with_polls(185_000, Some(5), false),
+            format_age_with_polls(Some(185_000), Some(5), false),
             "3m5s\u{00d7}5"
         );
     }

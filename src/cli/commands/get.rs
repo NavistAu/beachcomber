@@ -1,423 +1,36 @@
 //! Handler for the `get` (`g`) subcommand.
 //!
-//! Moved from `src/main.rs` in Task 2.2.
+//! `comb get` is a client of [`libbeachcomber::resolve`]. It parses keys, a
+//! path and a format, makes sure the daemon is running, and hands every key to
+//! the library's one resolver with this process's environment and directory
+//! and `exec()` enabled. Nothing here decides what a key is worth: a template
+//! the daemon holds is rendered in the library, a cached value comes back as
+//! it is, `env.*` is answered from the environment. This module only renders
+//! what comes back, per output format, and then writes back the memos the
+//! keys' cached templates rendered: the output is out first.
 
-use crate::cli::format::render_fmt_template_json;
-use crate::cli::output_format::{OutputFormat, format_sv, value_to_string};
+use crate::cli::exit::Outcome;
+use crate::cli::output_format::{Format, render_template};
 use crate::config::Config;
-use libbeachcomber::eval::discover_refs;
-use libbeachcomber::render::{render_data, shell_quote};
-use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields, evaluate_namespace};
-use std::collections::HashMap;
-use std::process::ExitCode;
+use libbeachcomber::render::{render_value, render_values};
+use libbeachcomber::resolve::{Slot, resolve_traced, write_back};
+use serde_json::Value;
 
-/// Compute the cache-key path for a daemon-bound key using its provider's path
-/// expression, if one is declared (built-in or config override).
-///
-/// Returns:
-/// - `Some(Some(path))` — a computed, non-empty path.
-/// - `Some(None)` — expression evaluated to empty/falsy → global slot.
-/// - `None` — no path expression for this provider → keep existing path logic.
-fn path_for_key(key: &str, config: &Config) -> Option<Option<String>> {
-    let provider = key.split('.').next().unwrap_or("");
-    let expr =
-        libbeachcomber::path_expr::path_expression_for(provider, &config.path_expressions())?;
-    let cwd = std::env::current_dir()
-        .ok()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let env: HashMap<String, String> = std::env::vars().collect();
-    Some(libbeachcomber::path_expr::evaluate_path(&expr, &cwd, &env))
-}
-
-/// Returns true if `path` is exactly the process's current directory, i.e. the
-/// implicit default `main.rs` fills in for `get` when the user passed neither
-/// `--path` nor a trailing positional path. Used to scope a global-fallback
-/// retry to that implicit case only — an explicit `--path` pointing elsewhere
-/// is a deliberate scoping request and must not be papered over by a global
-/// (unscoped) hit.
-fn is_ambient_cwd_path(path: Option<&str>) -> bool {
-    let Some(p) = path else { return false };
-    std::env::current_dir()
-        .map(|cwd| cwd.to_string_lossy() == p)
-        .unwrap_or(false)
-}
-
-/// Fetch the daemon-backed refs a virtual field's expression needs.
-///
-/// Cascade semantics (non-strict undefined): a ref that fails to fetch or is
-/// absent is simply omitted, so the evaluator treats it as falsy and the
-/// cascade falls through to the next term. This is deliberate — a broken
-/// daemon dep must not abort an `env.X or provider.field` cascade.
-///
-/// Bug #6 fix: `force` and `wait` are threaded through so dep fetches honor
-/// the same flags as the top-level `comb get --force`/`--wait` invocation.
-fn fetch_daemon_deps(
-    key: &str,
-    vf: &VirtualFields,
-    session: Option<&mut crate::client::ClientSession>,
-    force: bool,
-    wait: bool,
-) -> HashMap<String, serde_json::Value> {
-    let Some((provider, field)) = key.split_once('.') else {
-        return HashMap::new();
-    };
-    let expr = vf.expression(provider, field).unwrap_or("");
-    let refs = discover_refs(expr);
-    let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
-    if let Some(session) = session {
-        for r in refs {
-            match r {
-                Ref::Env(_) => {
-                    // env.* — never contacts the daemon.
-                }
-                Ref::CacheField(p, f) => {
-                    // Raw cached field: fetch "P.F" and store under "P.F".
-                    let dep_key = format!("{p}.{f}");
-                    if let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait)
-                        && let Some(data) = resp.data
-                    {
-                        dd.insert(dep_key, data);
-                    }
-                }
-                Ref::CacheProvider(p) => {
-                    // Whole provider object: fetch "P" and store under "P".
-                    if let Ok(resp) = session.get_with_flags(&p, None, force, wait)
-                        && let Some(data) = resp.data
-                    {
-                        dd.insert(p, data);
-                    }
-                }
-                Ref::Resolved(p, f) => {
-                    // Resolved field: if not virtual, fetch "P.F".
-                    // Virtual resolved refs are evaluated client-side during expression eval.
-                    if !vf.is_virtual(&p, &f) {
-                        let dep_key = format!("{p}.{f}");
-                        if let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait)
-                            && let Some(data) = resp.data
-                        {
-                            dd.insert(dep_key, data);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    dd
-}
-
-/// Fetch daemon-backed refs for the union of all virtual fields in a provider namespace.
-///
-/// Used for bare-provider namespace evaluation: collects the daemon deps
-/// needed across ALL virtual fields of the provider so that `evaluate_namespace`
-/// can be called once with a fully-populated `daemon_data` map.
-///
-/// Canon invariant 12: a whole-provider query returns the whole subtree — the
-/// provider's daemon-cached fields AND its virtual fields. To guarantee this,
-/// the whole daemon provider `provider` is always fetched unconditionally and
-/// stored as `daemon_data[provider]`. Virtual expressions may also contribute
-/// additional individual field refs; these are fetched on top. The merge in
-/// `run_get` then combines daemon fields with virtual fields (virtual wins on
-/// key collision).
-fn fetch_daemon_deps_for_namespace(
-    provider: &str,
-    vf: &VirtualFields,
-    session: Option<&mut crate::client::ClientSession>,
-    force: bool,
-    wait: bool,
-) -> HashMap<String, serde_json::Value> {
-    let mut dd: HashMap<String, serde_json::Value> = HashMap::new();
-    let Some(session) = session else {
-        return dd;
-    };
-    // Always fetch the whole daemon provider object (if it exists) so that
-    // daemon-cached fields are available for the merge step. If the provider
-    // has no daemon counterpart (e.g. conda, op), this returns nothing and
-    // the merge is a no-op — no error.
-    if let Ok(resp) = session.get_with_flags(provider, None, force, wait)
-        && let Some(data) = resp.data
-    {
-        dd.insert(provider.to_string(), data);
-    }
-    // Also collect the union of individual daemon refs across all virtual fields.
-    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for field in vf.fields_for(provider) {
-        let expr = vf.expression(provider, &field).unwrap_or("");
-        let refs = discover_refs(expr);
-        for r in refs {
-            match r {
-                Ref::Env(_) => {
-                    // env.* — never contacts the daemon.
-                }
-                Ref::CacheField(p, f) => {
-                    let dep_key = format!("{p}.{f}");
-                    if seen_keys.insert(dep_key.clone())
-                        && let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait)
-                        && let Some(data) = resp.data
-                    {
-                        dd.insert(dep_key, data);
-                    }
-                }
-                Ref::CacheProvider(p) => {
-                    if seen_keys.insert(p.clone())
-                        && let Ok(resp) = session.get_with_flags(&p, None, force, wait)
-                        && let Some(data) = resp.data
-                    {
-                        dd.insert(p, data);
-                    }
-                }
-                Ref::Resolved(p, f) => {
-                    if !vf.is_virtual(&p, &f) {
-                        let dep_key = format!("{p}.{f}");
-                        if seen_keys.insert(dep_key.clone())
-                            && let Ok(resp) = session.get_with_flags(&dep_key, None, force, wait)
-                            && let Some(data) = resp.data
-                        {
-                            dd.insert(dep_key, data);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    dd
-}
-
-/// Returns true if the key is a bare provider name (no dot) whose provider
-/// has at least one virtual field defined. Such keys are resolved client-side
-/// via namespace evaluation rather than sent to the daemon as whole-provider
-/// queries.
-fn is_virtual_namespace_key(key: &str, vf: &VirtualFields) -> bool {
-    !key.contains('.') && !vf.fields_for(key).is_empty()
-}
-
-/// Format a client-side (virtual-namespace) object value as `key=value` lines,
-/// delegating to `libbeachcomber::render::render_data` — the very renderer the
-/// daemon-backed path uses — so the two `comb get` paths cannot drift on line
-/// shape, sort order, or `sh` quoting.
-///
-/// `shell_escape` selects the `sh` variant: keys stay as dotted names, values
-/// are shell-quoted so a line is safe to `eval` (canon invariant 8). `text`
-/// passes `false` and emits values raw.
-///
-/// Output is bare — no trailing newline — like every other `text`/`sh` output
-/// of `comb get`, so a value can be embedded in a prompt string verbatim.
-fn format_object_lines(data: &serde_json::Value, shell_escape: bool) -> String {
-    render_data(Some(data), if shell_escape { "sh" } else { "text" })
-}
-
-/// Returns true if a `provider.field` key should be resolved client-side
-/// (virtual field or env.* namespace) rather than forwarded to the daemon.
-fn is_client_side_key(key: &str, vf: &VirtualFields) -> bool {
-    let Some(dot) = key.find('.') else {
-        return false;
-    };
-    let provider = &key[..dot];
-    let field = &key[dot + 1..];
-    provider == "env" || vf.is_virtual(provider, field)
-}
-
-/// Built-in daemon provider names — the compiled-in set
-/// `ProviderRegistry::with_config` registers, minus config-disabled ones.
-///
-/// Duplicated here rather than derived from the registry on purpose:
-/// `ProviderRegistry::with_config` dlopen's every `backend = "library"`
-/// provider through `libloading` while constructing, which is far too much
-/// work for `comb get`'s hot path. Keep in sync with `with_config`'s
-/// `add_builtin!` list.
-const BUILTIN_DAEMON_PROVIDERS: &[&str] = &[
-    "asdf",
-    "aws_profiles",
-    "battery",
-    "direnv",
-    "gcloud_configs",
-    "git",
-    "hostname",
-    "kubecontext",
-    "load",
-    "mise",
-    "network",
-    "python",
-    "sudo",
-    "talos",
-    "terraform",
-    "uname",
-    "uptime",
-    "user",
-];
-
-/// Returns true if `provider` has a daemon provider behind it — i.e. the
-/// daemon can hold cached fields under that name.
-///
-/// Presence is derived client-side from the built-in name list plus the
-/// `[providers.<name>]` sections that declare an external backend (`backend`,
-/// legacy `type`, or the keys those shapes require). Consulting the registry
-/// itself would mean loading shared libraries on every `comb get`.
-///
-/// `put`-created virtual providers are invisible here — they exist only in a
-/// running daemon's cache and are unknowable from config alone.
-fn is_daemon_provider(provider: &str, config: &Config) -> bool {
-    if config.is_provider_disabled(provider) {
-        return false;
-    }
-    if BUILTIN_DAEMON_PROVIDERS.contains(&provider) {
-        return true;
-    }
-    config.providers.get(provider).is_some_and(|val| {
-        ["backend", "type", "command", "library_path", "url"]
-            .iter()
-            .any(|k| val.get(k).is_some())
-    })
-}
-
-/// Returns true if the key requires the daemon to be running.
-///
-/// env.* keys never need the daemon (canon invariant 6).
-/// Dotless keys for a provider that has a daemon counterpart always need the
-/// daemon: canon invariant 12 says a bare provider resolves to its whole
-/// subtree, which is its cached fields merged under its virtual fields.
-/// Dotless keys for a namespace with no daemon provider behind it (`conda`,
-/// `op`) need the daemon only if one of its virtual field expressions
-/// references daemon (non-env, non-virtual) fields; pure-env namespaces are
-/// resolved entirely client-side and must never start a daemon.
-/// Dotless keys for daemon-only providers (no virtual fields) always need the daemon.
-/// Virtual fields need the daemon only if their expression references daemon
-/// (non-env, non-virtual) fields; pure-env virtuals never need the daemon.
-/// Plain `provider.field` keys that are not virtual always need the daemon.
-///
-/// Bug #4 fix: dotless keys were returning false (no dot → early return false).
-/// They must return true: a bare provider name is a whole-provider daemon query
-/// (unless it is a virtual-namespace provider where all virtual fields are pure-env).
-pub fn key_needs_daemon(key: &str, vf: &VirtualFields, config: &Config) -> bool {
-    let Some(dot) = key.find('.') else {
-        // Dotless key: check if it's a virtual-namespace provider.
-        // If it has virtual fields, need daemon only if any field has daemon refs.
-        // If it has no virtual fields, it's a whole-provider daemon query: need daemon.
-        let virtual_fields = vf.fields_for(key);
-        if virtual_fields.is_empty() {
-            // Daemon-only provider (e.g. `git`, `hostname`): whole-provider daemon query.
-            return true;
-        }
-        // Canon invariant 12: a bare provider resolves to its whole subtree. If a
-        // daemon provider stands behind this name, its cached fields belong in the
-        // answer even when every virtual field on it is pure-env — otherwise
-        // `[providers.git.virtual] note = "{{ env.FOO }}"` would reduce
-        // `comb get git` to `{note}` and silently drop the cached git fields.
-        if is_daemon_provider(key, config) {
-            return true;
-        }
-        // No daemon provider behind the name (`conda`, `op`): need the daemon only
-        // if a virtual field reaches into the cache for something else.
-        return virtual_fields.iter().any(|field| {
-            let expr = vf.expression(key, field).unwrap_or("");
-            let refs = discover_refs(expr);
-            refs.iter().any(|r| match r {
-                Ref::Env(_) => false,
-                Ref::CacheField(_, _) => true,
-                Ref::CacheProvider(_) => true,
-                Ref::Resolved(p, f) => !vf.is_virtual(p, f),
-            })
-        });
-    };
-    let provider = &key[..dot];
-    let field = &key[dot + 1..];
-    if provider == "env" {
-        // Canon invariant 15: env.* keys never contact the daemon.
-        return false;
-    }
-    if vf.is_virtual(provider, field) {
-        let expr = vf.expression(provider, field).unwrap_or("");
-        let refs = discover_refs(expr);
-        // Needs daemon if any ref requires a daemon fetch.
-        // Note: for single-key virtual with daemon refs, run_get does an env-first
-        // pass (#7) and only calls ensure_daemon when the env terms don't win.
-        // key_needs_daemon is used for: (a) multi-key any_needs_daemon check,
-        // (b) routing within multi-key loops, and (c) single-key fetch_daemon_deps guard.
-        refs.iter().any(|r| match r {
-            Ref::Env(_) => false,
-            Ref::CacheField(_, _) => true,
-            Ref::CacheProvider(_) => true,
-            Ref::Resolved(p, f) => !vf.is_virtual(p, f),
-        })
-    } else {
-        true // plain daemon field
-    }
-}
-
-/// Format a virtual/env field value for the given output format.
-fn format_virtual_value(val: &serde_json::Value, format: &OutputFormat) -> Result<String, String> {
-    match format {
-        OutputFormat::Text => Ok(value_to_string(val)),
-        OutputFormat::Sh => Ok(shell_quote(&value_to_string(val))),
-        OutputFormat::Json => {
-            // For virtual fields, emit just the value (no age/stale wrapper).
-            serde_json::to_string_pretty(val).map_err(|e| e.to_string())
-        }
-        _ => Ok(value_to_string(val)),
-    }
-}
-
-/// Evaluate a client-side key (virtual field or env.*) and format its value.
-///
-/// `daemon_data` must contain pre-fetched values for any daemon-backed refs
-/// the expression needs (keyed as `"provider.field"`).
-///
-/// `allow_exec` gates `exec()` for this evaluation. `run_get`'s env-first
-/// lazy probe (empty `daemon_data`, trying to skip the daemon entirely)
-/// calls this once and, if the env terms don't win, calls it again with the
-/// real `daemon_data` — an exec-backed expression reachable from both calls
-/// would otherwise spawn its command twice per `comb get`. The probe call
-/// passes `false`: an exec() call inside it errors with the disabled
-/// message rather than actually running, which is falsy-equivalent for the
-/// probe's "did an env term win" check, so it correctly falls through to the
-/// one real, exec-enabled evaluation.
-///
-/// Returns `Ok(formatted_string)` or `Err(error_message)`.
-fn evaluate_client_side(
-    key: &str,
-    format: &OutputFormat,
-    daemon_data: &HashMap<String, serde_json::Value>,
-    vf: &VirtualFields,
-    allow_exec: bool,
-) -> Result<String, String> {
-    let dot = key.find('.').ok_or_else(|| format!("invalid key: {key}"))?;
-    let provider = &key[..dot];
-    let field = &key[dot + 1..];
-
-    let env_vars: HashMap<String, String> = std::env::vars().collect();
-
-    if provider == "env" {
-        let val = env_vars.get(field).cloned().unwrap_or_default();
-        let json_val = serde_json::Value::String(val);
-        return format_virtual_value(&json_val, format);
-    }
-
-    let mut ctx = EvalContext::new(&env_vars, daemon_data);
-    if allow_exec {
-        ctx = ctx.with_exec();
-    }
-    let json_val = vf.evaluate(provider, field, &ctx, &mut Default::default())?;
-    format_virtual_value(&json_val, format)
-}
-
-/// Returns true if `s` looks like a filesystem path rather than a provider key.
-///
-/// A positional is treated as a path when it:
-/// - equals `.` literally
-/// - starts with `.` (relative dot-prefix like `./subdir`)
-/// - starts with `~` (home-relative)
-/// - starts with `/` (absolute)
-/// - contains `/` anywhere (e.g., `some/dir`)
+/// Whether `s` is a directory rather than a key: it starts with `/`, `~` or
+/// `.`. No key can — a key's head is a provider name, and a provider name
+/// holds no `.` and starts with neither `/` nor `~` — so this is syntax, not
+/// a guess. A key may hold a `/` anywhere after its head
+/// (`mise.npm:@scope/pkg`).
 pub fn is_path_like(s: &str) -> bool {
-    s == "." || s.starts_with('.') || s.starts_with('~') || s.starts_with('/') || s.contains('/')
+    s.starts_with(['/', '~', '.'])
 }
 
 /// Separate keys from an optional trailing path positional.
 ///
-/// Rules:
-/// 1. If `--path` flag was already set, all positionals are keys.
-/// 2. Otherwise, if the last positional is path-like (per `is_path_like`), pop it as the path.
-/// 3. If still no path, return `None` — the caller should default to CWD.
+/// 1. With `--path`, every positional is a key.
+/// 2. Otherwise, when more than one positional is given and the last is a
+///    directory (per `is_path_like`), it is the path.
+/// 3. Otherwise there is no path, and the caller reads the current directory.
 pub fn split_keys_and_path(
     mut positionals: Vec<String>,
     explicit_path: Option<String>,
@@ -425,7 +38,8 @@ pub fn split_keys_and_path(
     if explicit_path.is_some() {
         return (positionals, explicit_path);
     }
-    if let Some(last) = positionals.last()
+    if positionals.len() > 1
+        && let Some(last) = positionals.last()
         && is_path_like(last)
     {
         let path = positionals.pop();
@@ -434,571 +48,97 @@ pub fn split_keys_and_path(
     (positionals, None)
 }
 
+/// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
+/// `--path`, the trailing positional, or the current directory.
 pub fn run_get(
     config: &Config,
     keys: &[String],
     path: Option<&str>,
-    format: OutputFormat,
+    format: Format,
     force: bool,
-    wait: bool,
-) -> ExitCode {
-    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
-
-    // Build the virtual field registry once, config overrides win over built-in defaults.
-    let vf = VirtualFields::with_config_overrides(config.virtual_fields());
-
-    // Bug #7 fix: for a single virtual key whose expression has daemon refs, we
-    // use an env-first lazy strategy — try evaluation with empty daemon_data first.
-    // If the env terms win (non-empty result), we return without ever contacting
-    // the daemon. Only if the env-only result is empty do we then ensure_daemon,
-    // fetch deps, and re-evaluate. This allows e.g. `TF_WORKSPACE=dev comb get
-    // terraform.workspace` to work even when the daemon is not running.
-    //
-    // For all other cases (multi-key, plain daemon key, dotless key) we use the
-    // original upfront any_needs_daemon → ensure_daemon logic.
-    let is_single_virtual_with_daemon_refs = keys.len() == 1 && {
-        let k = &keys[0];
-        is_client_side_key(k, &vf) && key_needs_daemon(k, &vf, config)
+    wait: libbeachcomber::Wait,
+) -> Outcome {
+    // `comb` always requires the daemon (design §2), a key whose answer needs
+    // no request (`env.HOME`) included.
+    let socket_path = match crate::cli::connect::connect(config) {
+        Ok(socket) => socket,
+        Err(outcome) => return outcome,
+    };
+    let mut session = match crate::client::Client::new(socket_path).connect() {
+        Ok(s) => s,
+        Err(e) => {
+            crate::cli::report::daemon_unreachable(e);
+            return Outcome::Error;
+        }
     };
 
-    if !is_single_virtual_with_daemon_refs {
-        // Original path: ensure_daemon upfront if any key needs it.
-        let any_needs_daemon = keys.iter().any(|k| key_needs_daemon(k, &vf, config));
-        if any_needs_daemon
-            && let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap)
-        {
-            eprintln!("Failed to start daemon: {e}");
-            return ExitCode::from(2);
-        }
-    }
-
-    // Single-key shortcut: check client-side first, then delegate to daemon.
-    if keys.len() == 1 {
-        let key = &keys[0];
-        if is_client_side_key(key, &vf) {
-            if key_needs_daemon(key, &vf, config) {
-                // Bug #7: env-first lazy evaluation.
-                // Try with empty daemon_data: only env vars + virtual refs are consulted.
-                let empty_daemon_data = HashMap::new();
-                // allow_exec=false: this probe must never spawn a process —
-                // see evaluate_client_side's doc comment for why.
-                let env_only_result =
-                    evaluate_client_side(key, &format, &empty_daemon_data, &vf, false);
-                let env_only_is_nonempty = match &env_only_result {
-                    Ok(text) => {
-                        // A non-empty string or non-null value means the env term won.
-                        // For Text/Sh this is the formatted string; for Json it's the
-                        // stringified value. An empty string or "null" means fell through.
-                        !text.is_empty() && text != "\"\"" && text != "null" && text != "''"
-                    }
-                    Err(_) => false,
-                };
-
-                if env_only_is_nonempty {
-                    // Env term won — output it and skip the daemon entirely.
-                    match env_only_result {
-                        Ok(text) => {
-                            print!("{text}");
-                            return ExitCode::SUCCESS;
-                        }
-                        Err(e) => {
-                            eprintln!("Error: {e}");
-                            return ExitCode::from(2);
-                        }
-                    }
-                }
-
-                // Env term was empty — now we need the daemon. Ensure it's running.
-                if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-                    eprintln!("Failed to start daemon: {e}");
-                    return ExitCode::from(2);
-                }
-
-                // Fetch daemon deps (honoring force/wait — bug #6 fix).
-                let client = crate::client::Client::new(socket_path.clone());
-                let mut session = match client.connect() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        return ExitCode::from(2);
-                    }
-                };
-                if let Some(p) = path
-                    && let Err(e) = session.set_context(p)
-                {
-                    eprintln!("Error: {e}");
-                    return ExitCode::from(2);
-                }
-                let daemon_data = fetch_daemon_deps(key, &vf, Some(&mut session), force, wait);
-                match evaluate_client_side(key, &format, &daemon_data, &vf, true) {
-                    Ok(text) => {
-                        print!("{text}");
-                        return ExitCode::SUCCESS;
-                    }
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        return ExitCode::from(2);
-                    }
-                }
-            } else {
-                // Pure env/virtual with no daemon refs — evaluate directly.
-                match evaluate_client_side(key, &format, &HashMap::new(), &vf, true) {
-                    Ok(text) => {
-                        print!("{text}");
-                        return ExitCode::SUCCESS;
-                    }
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        return ExitCode::from(2);
-                    }
-                }
-            }
-        }
-    }
-
-    // Step 1.4: bare-provider namespace evaluation.
-    //
-    // If the single key is a dotless provider name that has virtual fields,
-    // evaluate all virtual fields client-side, merge any daemon-provider fields
-    // on top (daemon fields lose on key collision), and emit the result.
-    // Providers without virtual fields (e.g. `git`, `hostname`) fall through
-    // to the daemon path below unchanged.
-    if keys.len() == 1 {
-        let key = &keys[0];
-        if is_virtual_namespace_key(key, &vf) {
-            // Fetch daemon deps for all virtual fields of this namespace.
-            let daemon_data = if key_needs_daemon(key, &vf, config) {
-                let client = crate::client::Client::new(socket_path.clone());
-                match client.connect() {
-                    Ok(mut session) => {
-                        if let Some(p) = path
-                            && let Err(e) = session.set_context(p)
-                        {
-                            eprintln!("Error: {e}");
-                            return ExitCode::from(2);
-                        }
-                        fetch_daemon_deps_for_namespace(key, &vf, Some(&mut session), force, wait)
-                    }
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        return ExitCode::from(2);
-                    }
-                }
-            } else {
-                HashMap::new()
-            };
-
-            // Evaluate all virtual fields as a namespace object. The CLI user
-            // already has a shell, so this user-initiated evaluation opts
-            // into exec().
-            let env_vars: HashMap<String, String> = std::env::vars().collect();
-            let ctx = EvalContext::new(&env_vars, &daemon_data).with_exec();
-            let ns_result = evaluate_namespace(key, &vf, &ctx);
-
-            // Merge daemon provider fields with virtual fields (canon invariant 12).
-            // fetch_daemon_deps_for_namespace unconditionally fetched the whole daemon
-            // provider object and stored it as daemon_data[provider]. Daemon fields go
-            // in first; virtual fields overwrite on key collision (virtual wins).
-            // Providers with no daemon counterpart (e.g. conda, op) return nothing from
-            // the whole-provider fetch, so daemon_data[provider] is absent — merge is a no-op.
-            let mut merged = serde_json::Map::new();
-            if let Some(serde_json::Value::Object(daemon_map)) = daemon_data.get(key.as_str()) {
-                for (k, v) in daemon_map {
-                    merged.insert(k.clone(), v.clone());
-                }
-            }
-            if let serde_json::Value::Object(ns_map) = ns_result {
-                for (k, v) in ns_map {
-                    merged.insert(k, v);
-                }
-            }
-            let data = serde_json::Value::Object(merged);
-
-            // Render per format, matching the existing convention for object output.
-            match &format {
-                OutputFormat::Text => {
-                    print!("{}", format_object_lines(&data, false));
-                    return ExitCode::SUCCESS;
-                }
-                OutputFormat::Sh => {
-                    print!("{}", format_object_lines(&data, true));
-                    return ExitCode::SUCCESS;
-                }
-                OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&data).unwrap());
-                    return ExitCode::SUCCESS;
-                }
-                OutputFormat::Csv => {
-                    print!("{}", format_sv(&data, ",", false));
-                    return ExitCode::SUCCESS;
-                }
-                OutputFormat::Tsv => {
-                    print!("{}", format_sv(&data, "\t", false));
-                    return ExitCode::SUCCESS;
-                }
-                OutputFormat::CsvHeader => {
-                    print!("{}", format_sv(&data, ",", true));
-                    return ExitCode::SUCCESS;
-                }
-                OutputFormat::TsvHeader => {
-                    print!("{}", format_sv(&data, "\t", true));
-                    return ExitCode::SUCCESS;
-                }
-                OutputFormat::Fmt(template) => match render_fmt_template_json(template, &data) {
-                    Ok(rendered) => {
-                        print!("{}", rendered);
-                        return ExitCode::SUCCESS;
-                    }
-                    Err(e) => {
-                        eprintln!("{e}");
-                        return ExitCode::from(2);
-                    }
-                },
-            }
-        }
-    }
-
-    // Single-key shortcut for server-side formats (text / sh): delegate directly to the
-    // client helper so the daemon renders the value consistently.
-    if keys.len() == 1 && format.is_server_side() {
-        let key = &keys[0];
-        // Use the path expression result if one is declared for this provider;
-        // otherwise fall back to the caller-supplied path.
-        let computed_path = path_for_key(key, config);
-        let effective_path: Option<&str> = match computed_path {
-            Some(ref inner) => inner.as_deref(),
-            None => path,
-        };
-        let client = crate::client::Client::new(socket_path.clone());
-        match client.get_formatted_with_flags(
-            key,
-            effective_path,
-            format.server_format(),
-            force,
-            wait,
-        ) {
-            Ok(text) => {
-                print!("{text}");
-                return ExitCode::SUCCESS;
-            }
-            Err(e) => {
-                eprintln!("Error: {e}");
-                return ExitCode::from(2);
-            }
-        }
-    }
-
-    // Multi-key (or single-key with client-side format): open one session and issue one
-    // Request::Get per key.  Results are aggregated before rendering so that formats like
-    // JSON / CSV / TSV can produce a single coherent output document.
-    // Only connect to the daemon when at least one key actually requires it.
-    // (any_needs_daemon was already satisfied by ensure_daemon above for the non-single-
-    // virtual path; we re-derive it here for the session-open decision.)
-    let any_needs_daemon_for_session = keys.iter().any(|k| key_needs_daemon(k, &vf, config));
-    let client = crate::client::Client::new(socket_path.clone());
-    let mut session_opt = if any_needs_daemon_for_session {
-        match client.connect() {
-            Ok(s) => Some(s),
-            Err(e) => {
-                eprintln!("Error: {e}");
-                return ExitCode::from(2);
-            }
-        }
-    } else {
-        None
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let env = crate::cli::shell_env();
+    let slot = match path {
+        Some(p) => Slot::Path(p.to_string()),
+        None => Slot::Global,
     };
+    let inputs = crate::cli::inputs(&cwd, &env, slot, force, wait);
 
-    if let Some(ref mut session) = session_opt
-        && let Some(p) = path
-        && let Err(e) = session.set_context(p)
-    {
-        eprintln!("Error: {e}");
-        return ExitCode::from(2);
-    }
-
-    // Server-side formats (text / sh) for multi-key: emit each key's output on its own line.
-    if format.is_server_side() {
-        let wire_fmt = format.server_format();
-        let mut any_error = false;
-        for key in keys {
-            if is_client_side_key(key, &vf) {
-                // Fetch daemon deps for this virtual key if needed (bug #6: pass force/wait).
-                let daemon_data = if key_needs_daemon(key, &vf, config) {
-                    fetch_daemon_deps(key, &vf, session_opt.as_mut(), force, wait)
-                } else {
-                    HashMap::new()
-                };
-                match evaluate_client_side(key, &format, &daemon_data, &vf, true) {
-                    Ok(text) => {
-                        if !text.is_empty() {
-                            println!("{text}");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        any_error = true;
-                    }
-                }
-                continue;
-            }
-            if let Some(ref mut session) = session_opt {
-                let key_path: Option<Option<String>> = path_for_key(key, config);
-                let effective_key_path: Option<&str> = match key_path {
-                    Some(ref computed) => computed.as_deref(),
-                    None => None,
-                };
-                match session.get_formatted_with_flags(
-                    key,
-                    effective_key_path,
-                    wire_fmt,
-                    force,
-                    wait,
-                ) {
-                    Ok(text) => {
-                        if !text.is_empty() {
-                            println!("{text}");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Error querying {key}: {e}");
-                        any_error = true;
-                    }
-                }
-            } else {
-                eprintln!("Error querying {key}: daemon not available");
-                any_error = true;
-            }
-        }
-        return if any_error {
-            ExitCode::from(2)
-        } else {
-            ExitCode::SUCCESS
-        };
-    }
-
-    // Client-side formats: collect all responses (preserving per-key association), then
-    // render.  Errors are recorded but do not prevent successful keys from being emitted.
-    // Client-side keys (env.* / virtual) are evaluated without daemon contact.
-    let mut responses: Vec<(String, crate::protocol::Response)> = Vec::new();
-    let mut any_error = false;
+    // One slot per key, `None` where it produced no value, so a multi-key
+    // document keeps its positions. What the keys came to is decided here,
+    // before any format is applied: a miss is a miss in every format.
+    let mut slots: Vec<(&str, Option<Value>)> = Vec::with_capacity(keys.len());
+    let mut memos = Vec::new();
+    let mut outcome = Outcome::Done;
     for key in keys {
-        if is_client_side_key(key, &vf) {
-            // Fetch daemon deps if expression needs them (bug #6: pass force/wait).
-            let daemon_data = if key_needs_daemon(key, &vf, config) {
-                fetch_daemon_deps(key, &vf, session_opt.as_mut(), force, wait)
-            } else {
-                HashMap::new()
-            };
-            // Evaluate and synthesize a Response-like value for the aggregation path.
-            // Multi-key --format json wraps every key (virtual and daemon) uniformly in the
-            // response shape, intentionally matching existing daemon multi-key JSON output.
-            // Single-key client-side JSON emits the bare value (see single-key path above).
-            match evaluate_client_side(key, &OutputFormat::Json, &daemon_data, &vf, true) {
-                Ok(json_str) => {
-                    let data: serde_json::Value =
-                        serde_json::from_str(&json_str).unwrap_or(serde_json::Value::Null);
-                    let response = crate::protocol::Response {
-                        ok: true,
-                        data: Some(data),
-                        error: None,
-                        age_ms: None,
-                        stale: None,
-                    };
-                    responses.push((key.clone(), response));
+        let value = match resolve_traced(key, &inputs, &mut session) {
+            Ok(traced) => {
+                memos.extend(traced.memos);
+                if traced.value.is_none() {
+                    outcome = outcome.max(Outcome::Miss);
                 }
-                Err(e) => {
-                    eprintln!("Error querying {key}: {e}");
-                    any_error = true;
-                }
+                traced.value
             }
-            continue;
-        }
-        if let Some(ref mut session) = session_opt {
-            let key_path: Option<Option<String>> = path_for_key(key, config);
-            let effective_key_path: Option<&str> = match key_path {
-                Some(ref computed) => computed.as_deref(),
-                None => None,
-            };
-            match session.get_with_flags(key, effective_key_path, force, wait) {
-                Ok(response) => {
-                    if !response.ok {
-                        eprintln!(
-                            "Error querying {key}: {}",
-                            response.error.as_deref().unwrap_or("unknown error")
-                        );
-                        any_error = true;
-                    } else if response.data.is_none() && is_ambient_cwd_path(path) {
-                        // The session's path context is the CLI's implicit CWD default
-                        // (no --path was given), which scopes the lookup even for
-                        // `put`-created virtual entries that were stored globally (no
-                        // --path). Retry once on a fresh, context-free connection so
-                        // the global entry is still reachable, matching what a raw
-                        // request with no path field would find.
-                        let fallback = crate::client::Client::new(socket_path.clone())
-                            .connect()
-                            .and_then(|mut s| s.get_with_flags(key, None, force, wait));
-                        match fallback {
-                            Ok(fb) if fb.ok && fb.data.is_some() => {
-                                responses.push((key.clone(), fb));
-                            }
-                            _ => {
-                                responses.push((key.clone(), response));
-                            }
-                        }
-                    } else {
-                        responses.push((key.clone(), response));
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error querying {key}: {e}");
-                    any_error = true;
-                }
+            Err(e) => {
+                crate::cli::report::resolve_error(key, &e);
+                outcome = Outcome::Error;
+                None
             }
-        } else {
-            eprintln!("Error querying {key}: daemon not available");
-            any_error = true;
-        }
-    }
-
-    // Single-key client-side rendering: preserve the original single-key output shape.
-    if keys.len() == 1 {
-        if let Some((key, response)) = responses.first() {
-            if let Some(data) = &response.data {
-                match &format {
-                    OutputFormat::Json => {
-                        println!("{}", serde_json::to_string_pretty(response).unwrap());
-                    }
-                    OutputFormat::Csv => {
-                        print!("{}", format_sv(data, ",", false));
-                    }
-                    OutputFormat::Tsv => {
-                        print!("{}", format_sv(data, "\t", false));
-                    }
-                    OutputFormat::CsvHeader => {
-                        print!("{}", format_sv(data, ",", true));
-                    }
-                    OutputFormat::TsvHeader => {
-                        print!("{}", format_sv(data, "\t", true));
-                    }
-                    OutputFormat::Fmt(template) => match render_fmt_template_json(template, data) {
-                        Ok(rendered) => print!("{}", rendered),
-                        Err(e) => {
-                            eprintln!("{e}");
-                            return ExitCode::from(2);
-                        }
-                    },
-                    _ => unreachable!(),
-                }
-            } else {
-                eprintln!("Error querying {key}: no data (cache miss)");
-                any_error = true;
-            }
-        }
-        return if any_error {
-            ExitCode::from(2)
-        } else {
-            ExitCode::SUCCESS
         };
+        slots.push((key, value));
     }
 
-    // Multi-key client-side aggregation.
-    match &format {
-        OutputFormat::Json => {
-            let arr: Vec<&crate::protocol::Response> = responses.iter().map(|(_, r)| r).collect();
-            println!("{}", serde_json::to_string_pretty(&arr).unwrap());
-        }
-        OutputFormat::Csv | OutputFormat::CsvHeader => {
-            let with_header = matches!(format, OutputFormat::CsvHeader);
-            let mut all_keys: Vec<String> = Vec::new();
-            let mut all_vals: Vec<String> = Vec::new();
-            for (key, resp) in &responses {
-                if let Some(data) = &resp.data {
-                    match data {
-                        serde_json::Value::Object(map) => {
-                            let mut pairs: Vec<(&String, &serde_json::Value)> =
-                                map.iter().collect();
-                            pairs.sort_by_key(|(k, _)| *k);
-                            for (k, v) in pairs {
-                                all_keys.push(k.clone());
-                                all_vals.push(value_to_string(v));
-                            }
-                        }
-                        _ => {
-                            all_keys.push(key.clone());
-                            all_vals.push(value_to_string(data));
-                        }
-                    }
+    let rendered = match &format {
+        // A template renders as `comb eval` renders one, with the values
+        // bound beside every name a template reads.
+        Format::Template(template) => render_template(template, &slots, &inputs, &mut session),
+        Format::Preset(preset) => {
+            let format = preset
+                .value_format()
+                .expect("get's formats are value formats");
+            Ok(match slots.as_slice() {
+                // A key that failed has no answer to print: its error is it.
+                [_] if outcome == Outcome::Error => String::new(),
+                [(key, value)] => render_value(key, value.as_ref(), format),
+                many => {
+                    let slots: Vec<(&str, Option<&Value>)> =
+                        many.iter().map(|(k, v)| (*k, v.as_ref())).collect();
+                    render_values(&slots, format)
                 }
-            }
-            if with_header {
-                println!("{}", all_keys.join(","));
-            }
-            println!("{}", all_vals.join(","));
+            })
         }
-        OutputFormat::Tsv | OutputFormat::TsvHeader => {
-            let with_header = matches!(format, OutputFormat::TsvHeader);
-            let mut all_keys: Vec<String> = Vec::new();
-            let mut all_vals: Vec<String> = Vec::new();
-            for (key, resp) in &responses {
-                if let Some(data) = &resp.data {
-                    match data {
-                        serde_json::Value::Object(map) => {
-                            let mut pairs: Vec<(&String, &serde_json::Value)> =
-                                map.iter().collect();
-                            pairs.sort_by_key(|(k, _)| *k);
-                            for (k, v) in pairs {
-                                all_keys.push(k.clone());
-                                all_vals.push(value_to_string(v));
-                            }
-                        }
-                        _ => {
-                            all_keys.push(key.clone());
-                            all_vals.push(value_to_string(data));
-                        }
-                    }
-                }
-            }
-            if with_header {
-                println!("{}", all_keys.join("\t"));
-            }
-            println!("{}", all_vals.join("\t"));
+    };
+    match rendered {
+        Ok(out) => {
+            print!("{out}");
+            // The caller has its answer before the memos go back.
+            let _ = std::io::Write::flush(&mut std::io::stdout());
         }
-        OutputFormat::Fmt(template) => {
-            let mut merged = serde_json::Map::new();
-            for (key, resp) in &responses {
-                if let Some(data) = &resp.data {
-                    match data {
-                        serde_json::Value::Object(map) => {
-                            let provider = key.split('.').next().unwrap_or(key);
-                            for (k, v) in map {
-                                merged.insert(format!("{provider}.{k}"), v.clone());
-                                merged.insert(k.clone(), v.clone());
-                            }
-                        }
-                        _ => {
-                            merged.insert(key.clone(), data.clone());
-                        }
-                    }
-                }
-            }
-            match render_fmt_template_json(template, &serde_json::Value::Object(merged)) {
-                Ok(rendered) => print!("{}", rendered),
-                Err(e) => {
-                    eprintln!("{e}");
-                    return ExitCode::from(2);
-                }
-            }
+        Err(e) => {
+            crate::cli::report::error_named(e);
+            outcome = Outcome::Error;
         }
-        // Text and Sh multi-key handled above via server-side path.
-        OutputFormat::Text | OutputFormat::Sh => unreachable!(),
     }
-
-    if any_error {
-        ExitCode::from(2)
-    } else {
-        ExitCode::SUCCESS
-    }
+    write_back(&memos, &mut session);
+    outcome
 }
 
 #[cfg(test)]
@@ -1031,14 +171,14 @@ mod path_disambiguation_tests {
     }
 
     #[test]
-    fn slash_containing_is_path_like() {
-        assert!(is_path_like("some/dir"));
-        assert!(is_path_like("a/b/c"));
+    fn a_key_holding_a_slash_is_not_path_like() {
+        assert!(!is_path_like("mise.npm:@scope/pkg"));
+        assert!(!is_path_like("mise['go:golang.org/x/tools/gopls']"));
+        assert!(!is_path_like("some/dir"));
     }
 
     #[test]
     fn provider_key_is_not_path_like() {
-        // Keys contain `.` but not `/` or any path prefix.
         assert!(!is_path_like("git.branch"));
         assert!(!is_path_like("hostname.name"));
         assert!(!is_path_like("git"));
@@ -1114,6 +254,23 @@ mod path_disambiguation_tests {
         // `comb get git` — bare provider name, no dot, no slash
         let (ks, path) = split_keys_and_path(keys(&["git"]), None);
         assert_eq!(ks, vec!["git"]);
+        assert!(path.is_none());
+    }
+
+    #[test]
+    fn a_lone_positional_is_a_key_whatever_it_looks_like() {
+        // `comb get mise.npm:@scope/pkg` and even `comb get .` name a key.
+        for only in ["mise.npm:@scope/pkg", "."] {
+            let (ks, path) = split_keys_and_path(keys(&[only]), None);
+            assert_eq!(ks, vec![only]);
+            assert!(path.is_none());
+        }
+    }
+
+    #[test]
+    fn a_trailing_key_holding_a_slash_stays_a_key() {
+        let (ks, path) = split_keys_and_path(keys(&["git.branch", "mise.npm:@scope/pkg"]), None);
+        assert_eq!(ks, vec!["git.branch", "mise.npm:@scope/pkg"]);
         assert!(path.is_none());
     }
 

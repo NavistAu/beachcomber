@@ -49,7 +49,7 @@ fn count_stashes(dir: &Path) -> i64 {
 
 **Problem:** Every `cache.get()` call allocated a `(String, Option<String>)` tuple — 2 heap allocations — just to look up a key in the DashMap.
 
-**Fix:** Changed cache key to a single `String` using a null-byte separator: `"provider\0path"` for path-scoped entries, `"provider"` for global entries. One allocation instead of two.
+**Fix:** Changed cache key to a single `String` using a null-byte separator: `"provider\0path"` for an entry at a directory, `"provider"` for the global entry. One allocation instead of two.
 
 ```rust
 // Before: 2 allocations per lookup
@@ -145,27 +145,7 @@ let content = std::fs::read_to_string(config_dir.join("properties")).ok()?;
 
 **Rule for future providers:** If a CLI tool stores its state in a config file, read the file. Never spawn a Python/Ruby/Node CLI when you can parse a text file.
 
-#### 2.2 Kubecontext — read kubeconfig instead of kubectl
-
-**Problem:** `kubecontext.rs` spawned `kubectl config current-context` and `kubectl config view --minify`. kubectl is a Go binary with ~30ms startup time. Two calls = ~60ms.
-
-**Fix:** Read the kubeconfig file directly. Extract `current-context:` with a line scan, then find the matching context block for its namespace. The daemon never reads `$KUBECONFIG`; the CLI resolves the path expression `env.KUBECONFIG or '~/.kube/config'` and passes the resolved path as the cache coordinate (env-cascade P2).
-
-```rust
-// Before: ~60ms (2 Go process spawns)
-Command::new("kubectl").args(["config", "current-context"]).output()
-Command::new("kubectl").args(["config", "view", "--minify", ...]).output()
-
-// After: ~749ns (file read + YAML-like parse)
-let content = std::fs::read_to_string(kubeconfig_path).ok()?;
-// find "current-context:" line, then scan context blocks for namespace
-```
-
-**Result:** ~60ms → 749ns. **~80,000x improvement.**
-
-**Caveat:** The kubeconfig parser is line-based, not a full YAML parser. It handles the standard kubeconfig format correctly but may not handle exotic formatting. If edge cases arise, consider adding `serde_yaml` as an optional dependency.
-
-#### 2.3 Network — getifaddrs() instead of process spawns
+#### 2.2 Network — getifaddrs() instead of process spawns
 
 **Problem:** `network.rs` spawned 3-4 processes per execution:
 1. `route -n get default` — find default interface
@@ -196,23 +176,99 @@ libc::getifaddrs(&mut ifaddrs);
 
 ---
 
+### Round 3: The client-side resolver
+
+Every client renders templates through `libbeachcomber::resolve`, so its cost is every status line's. Measured two ways: a status line of 12 widgets in the shape scanline's one-tree config takes (a theme group of eleven leaves read by eleven widgets, derived leaves the widgets share, the width in `env`), each widget its own `resolve`, the template data local and five reads from a daemon, minimum over 100 renders; and `cargo bench --bench resolve`. The host was at load average 100–200 throughout, so compare the figures with each other, not with the tables below.
+
+#### 3.1 Render each node once per resolution
+
+**Problem:** The resolver memoised fetches per `(key, path)`, so a ref named twice was one round trip, but not renders. A widget that reads the theme and two derived leaves that read it too rendered the theme's eleven leaves four times in one resolution.
+
+**Fix:** A second memo keeps what each node resolved to, a render failure included, for the rest of the top-level resolution. The frame stack is checked first, so a node asked for while it is being rendered is still a cycle. The dependency list and the oldest-input age belong to the resolution, so a read the memo answers leaves both as they were: its inputs were counted when it first rendered.
+
+**Result:** the status line 8.0 → 7.0 ms a render with a minimal environment, and 22 → 17 ms with 140 variables, since fewer renders also meant fewer copies of the environment (3.2). `resolve/widget/1` 0.92 → 0.61 ms, `resolve/widget/140` 4.5 → 1.4 ms.
+
+**Rule for future changes:** Both memos live for one top-level call and no longer. A memo across calls would hand one caller's `env` and directory to the next: each of scanline's widgets reads its own `env.SCANLINE_WIDTH`.
+
+#### 3.2 Share the caller's environment across renders
+
+**Problem:** So that `env[var]` and `env | items` work, every render put the caller's whole environment into its context: a fresh JSON object of every variable, converted again into an engine value. With 140 variables that was more than half of the status line's render time.
+
+**Fix:** The environment is one engine value per resolution, built once in name order in `Resolver::new`; each render's context holds that value, and minijinja values are reference-counted, so binding it copies nothing.
+
+**Result:** the status line with 140 variables 17 → 8.0 ms a render, within 1 ms of a minimal environment's 7.0 ms. `resolve/widget/140` 1.4 → 0.48 ms.
+
+**What remains:** a resolution still copies the environment twice, once into `EngineCtx` (the environment of `exec()`, `read` and `lup`) and once into the template value. That is once per resolution, not per render: `resolve/env_read/140` is about 70 µs above `resolve/env_read/1`, before and after.
+
+**Rule for future changes:** What every render of a resolution reads the same — the environment, the directory — is built once in `Resolver::new`, never in `bind` or per render.
+
+### Round 4: Loading a configuration
+
+Every daemon start, config reload and `comb check config` loads the configuration (`ProviderRegistry::load`), and so does every test that builds a registry (`ProviderRegistry::shipped`). Phase 7 moved the built-in providers into `defaults/*.toml` (3.7 KB → 17.3 KB of Sources and templates), and the load became the test suite's largest cost. A profile of a debug load found most of it in work done again: an engine environment built for every line read, the engine's global names collected for every line, the seed planned twice, the abstract provider's lines analysed once per provider table.
+
+**Fix:** what a load reads lines in is built once per load and handed down; nothing is kept across loads.
+
+| Change | `load/scanline` debug | release |
+|---|---:|---:|
+| Before (`feat/one-tree` at `72f1ff9c`, with the bench) | 21.8 ms | 11.3 ms |
+| A line is read in a `Probe`: an engine with its global names, collected once | 19.8 | 10.6 |
+| One engine per load for every config Source's lines (`config_source::load_probe`) | 17.4 | 9.7 |
+| One engine per load that every `return` render copies (`decorators::return_env`) | 16.1 | 9.1 |
+| The seed plan reads the loaded `Config` and the registry's compiled provider lines | 14.4 | 8.0 |
+| Each file's labels (a `$HOME` look-up on disk each) worked out once per plan | 14.2 | 7.8 |
+| Each file's `[client]` tree made an engine value once, not once per provider | 13.6 | 7.5 |
+| Every `return` render shares the load's variables | 13.1 | 7.3 |
+| A Source's `data` line read once for its refs and its calls (`eval::refs_in`, `calls_in`) | 12.8 | 7.1 |
+| A provider table that sets no line shares the abstract provider's chains | 11.4 | 6.1 |
+
+Two changes are outside the bench: a daemon start and a reload write the seed their load planned (it was planned a second time), and `comb check config` loads the configuration `comb` composed at start (it read and parsed every file again).
+
+**Result:** measured 2026-10-26, the base and the new build run alternately (each round runs every build once, in turn), on the 12-core Mac. Medians, the minimum in brackets. The benches and the CLI at load 7–13; the suite at load 17–137, most of it the suite's own.
+
+| What | Before | After | Change |
+|---|---:|---:|---:|
+| `load/shipped`, debug (`cargo bench --profile dev --bench load`) | 15.3 ms | 6.8 ms | −55% |
+| `load/scanline`, debug | 21.8 ms | 11.4 ms | −48% |
+| `load/shipped`, release | 8.0 ms | 3.9 ms (3.6) | −51% |
+| `load/scanline`, release | 11.3 ms | 6.1 ms (6.0) | −46% |
+| `comb daemon` start to ready (`--ready-fd`), release | 29.6 ms (28.3) | 17.3 ms (16.3) | −42% |
+| `comb check config`, release | 20.8 ms (19.7) | 13.4 ms (12.8) | −36% |
+| `cargo nextest run --workspace`, wall | 11.8 s (11.1) | 10.7 s (10.1) | −9% |
+| `cargo nextest run --workspace`, CPU-seconds | 97.0 (96.0) | 81.8 (79.7) | −16% |
+
+Three rounds for the benches, 15 for the CLI, five for the suite (2508 tests each time). The daemon and `check config` ran on an isolated `$HOME`, `$XDG_CONFIG_HOME` and socket, with an empty `config.toml` and scanline's drop-in in `conf.d`; each daemon was stopped by its pid once it signalled ready. `load/parse` (the shipped files parsed, 1.6 ms debug, 0.25 ms release) did not change.
+
+**What remains** in a release `load/scanline`, by profile:
+
+- **Linting each client template leaf, about a quarter.** Each leaf is linted once, which is the work; but its text is scanned by several passes (its refusals, its imports, its caching, its form), each scanning it again. One scan shared by the passes is the next step, and the larger one in a debug build, where the scanner is unoptimised.
+- **Rendering each provider's `template` line over each file's `[client]` tree, about a quarter.** One render per (file, provider) is the design; about a third of it is compiling the same line again for each. Compiling it once needs the evaluator to hand back a compiled line, which a statements line (rewritten to owned text) cannot borrow from: a change to `eval::evaluate`, not to the load.
+- **Linting each Source's lines (about 14%) and recording each `return` (about 6%)**: each line once.
+- **Parsing the TOML (about 8%)**: the bench's own; a daemon parses its files once.
+- **Labels (about 4%)**: two `$HOME` look-ups per file in the plan and one in the composition.
+
+**Rule for future changes:** what a load reads every line in (an engine, its global names, the configuration, the provider lines, the seed) is built once per load and handed to whatever needs it. Nothing is cached across loads, and nothing that depends on the configuration is a process-wide static.
+
+---
+
 ## Current Performance Profile
 
 ### Provider Execution Time Tiers
 
 | Tier | Time | Providers | Method |
 |---|---|---|---|
-| **Nanosecond** (< 1µs) | 395ns - 749ns | user, load, hostname, uptime, kubecontext, talos, gcloud_configs, aws_profiles | libc calls, file reads, env vars |
-| **Microsecond** (1-100µs) | ~1-50µs | terraform, python, asdf, direnv (no direnv binary) | File existence checks + reads |
-| **Millisecond** (1-10ms) | 2-6ms | network (2ms), git (5.6ms), battery (6ms) | 1 process spawn each |
-| **Slow** (10-50ms) | 10-50ms | mise, direnv (with direnv), script providers | Process spawn (user-defined) |
+| **A file's lines** | about 90-170 µs | hostname, user, load, uptime (a `sys` call), gcloud_configs (reads files); `git.head` about 0.3 ms over its read | One run of the shipped Source: the engine, the lines, no process |
+| **One process** | 3-12 ms | network 2.7 ms (`getifaddrs`, and `airport` where it exists), battery 11.8 ms (`pmset`) | One spawn, inside `sys` |
+| **Commands** | 10-50 ms | mise, direnv (with direnv), Sources that call `exec()` | Process spawn (user-defined) |
+| **A repository's worth** | `status` 13, `diff` 11, `refs` 11, `lineage` 15 ms on this repository, `lineage` about 125 on a 400-commit branch | git: 1, 2, 3 and 2 or 3 `git` processes | Through the compiled-in `git` plugin; no shell |
+
+These are one run through `ProviderRegistry::shipped` (`cargo bench --bench providers -- --quick`, load about 10), and for git the force-run times below. The sub-microsecond figures this table used to give were the libc call alone; the shipped Source's cost is the render around it, on a timer, never on a read.
 
 ### Socket and Cache Latency
 
 | Operation | Latency |
 |---|---|
 | Cache read (global key) | 157 ns |
-| Cache read (path-scoped key) | 205 ns |
+| Cache read (key with a path) | 205 ns |
 | Cache write | 182 ns |
 | Socket round-trip (cold, new connection) | 34 µs |
 | Socket round-trip (warm, ClientSession) | 15 µs |
@@ -226,6 +282,437 @@ libc::getifaddrs(&mut ifaddrs);
 | 10 | ~45,000 |
 | 50 | ~42,000 |
 | 100 | ~41,000 |
+
+### Read validity: the phase 4 baseline
+
+Measured 2026-10-26 at `d744809`, before any phase 4 change, on a 12-core Mac whose load average was between 55
+and 150 throughout. Under that load a median is several times the uncontended cost, so the minimum is given beside
+it; compare a later run with one taken at the same load, interleaved where possible.
+
+`cargo bench --bench validity -- warm_get_percentiles`: a warm `get` over the raw socket, one connection, the
+daemon's own startup path in-process (native watcher), 2000 interleaved rounds (load ~115):
+
+| Read | min | p50 | p90 | p99 |
+|---|---:|---:|---:|---:|
+| config Source, `poll` only (0 watch paths) | 32 µs | 281 µs | 5.3 ms | 28.6 ms |
+| config Source, `watch` of 1 path | 28 µs | 253 µs | 4.7 ms | 24.7 ms |
+| config Source, `watch` of 8 paths | 29 µs | 238 µs | 4.6 ms | 22.7 ms |
+| `git.branch` (git `head` ran on every read) | 66 µs | 753 µs | 13.6 ms | 48.8 ms |
+| `git`, the whole namespace | 97 µs | 798 µs | 11.9 ms | 53.1 ms |
+
+`cargo bench --bench validity -- second_get_after_cold` (audit P9: a `root = lup(…)` plus `watch(…)` Source, the
+cold `get`, then the next ones, in fresh daemons):
+
+- **P9 does not reproduce.** The second `get` took 0.06–0.69 ms in 12 of 12 fresh in-process release daemons (load
+  ~75), 0.15–0.86 ms in 6 of 6 spawned debug `comb daemon`s, and 0.1–0.5 ms in 6 runs of the test harness's
+  in-process polling daemon. A second release run at load ~150 gave 0.08–2.1 ms, 6 of 12 under 1 ms.
+- **What the first demand does cost is the scheduler loop.** It registers the instance's watches inside the loop, so
+  an `introspect watches` sent just after the cold `get` waited 5.5–56 ms (median 16 ms) for a native registration
+  to finish. A request never waits on the loop, but everything the loop answers does: `introspect`, the `status`
+  op's lifecycle and failure snapshots, file events, polls and reloads.
+
+`cargo bench --bench prompt_race -- read_after_mutation` (a change on disk, then at once a `get`, watcher on, 100
+trials each):
+
+| Change, then read | Answered the new value | read p50 | read p99 |
+|---|---:|---:|---:|
+| `.git/HEAD` written, `git.branch` | 100/100 (git `head` ran on every read) | 0.12 ms | 0.37 ms |
+| `state.json` rewritten, a config Source with `watch('state.json')` | 8/100 | 0.13 ms | 2.8 ms |
+
+`convergence_L` (`.git/HEAD` written until the cache shows the new branch, through the watcher): 7.6 ms mean.
+
+The CLI (`hyperfine -N --warmup 20 --runs 200`, release, an isolated daemon, load ~57): `comb get git.branch` has a
+median of 14.8 ms (min 7.3 ms) against 14.2 ms (min 6.4 ms) for `comb get hostname.name`, the process floor.
+
+### Read validity: a warm read checks its record's files
+
+Since `a warm read checks its record's files` a read stats a Source record's inputs before it answers from it, and
+git's `head` no longer runs on every read. Measured 2026-10-26 against the baseline binary above, interleaved run for
+run, at load 140-200 (so read the minimum beside the median):
+
+- **Warm `get`, raw socket** (`warm_get_percentiles`, two runs of each): `git.branch` p50 106-108 µs (baseline
+  266 µs), min 41 µs (77-78 µs); `git` p50 184-185 µs (329-332 µs), min 84-86 µs (110-114 µs). The config Sources
+  are unchanged within noise (p50 98-121 µs against 102-122 µs).
+- **The stat pass**: `watch8` against `watch0` adds 8-10 µs at the minimum and 18-23 µs at the median, 1.1-2.8 µs
+  per input. One `lstat(2)` per input that is not a symlink; `stat_pass/lstat` (a bare `lstat`) measured 9-12 µs
+  on this host at this load, against the ~1 µs of an idle one.
+- **Read after a change** (`read_after_mutation`, four runs): 100/100 in every run, for the `.git/HEAD` write and for
+  the `state.json` rewrite (baseline 8/100), with the watcher on and with it off. The read that finds the change
+  has a p50 of 0.21-0.97 ms for `git.branch` and 0.26-1.98 ms for the config Source (under 1 ms in 15 of the 16
+  runs and modes); its p99 is the load's (1.7-56 ms).
+- **CLI** (`hyperfine -N --warmup 20 --runs 200`, three runs of each): `comb get git.branch` minus `comb get
+  hostname.name` at the median was +0.2, +1.0 and +5.5 ms (baseline +1.2 to +2.3 ms); at the minimum 6.4-7.2 ms
+  against 6.6-6.9 ms.
+- **Size**: `Option<Validity>` is 48 bytes per record, beside its input paths.
+
+### Read validity: phase 4 measured
+
+Measured 2026-10-27 at `1f53f763` (the P4.1 baseline is `5d92ed4`; the exec-cache baseline `14bee04`), release builds, on
+the 12-core Mac once it had gone quiet: load average 5-26 (each row gives its own; the higher figures are the
+benches' own work, the load before them was 6-16). Every comparison is **alternating** (A, B, A, B), baseline then
+current, each with its own isolated daemon (`HOME`, `XDG_*` and socket in a scratch directory). The earlier tables
+above were taken at load 55-200 and are superseded where this one gives a number.
+
+| # | Target | Result | Met |
+|---|---|---|---|
+| T4.1 | warm raw-socket `get git.branch` p50 <= 0.25 ms; `get git` <= 0.4 ms; stat pass <= 2 us per input | `warm_get_percentiles`, 2000 rounds, load 26: `git.branch` p50 39 us (baseline 68 us), min 29 us (52); `git` p50 72 us (97), min 60 us (79); the config Sources unchanged (38 vs 37 us at 0 and 1 watch path); 8 watch paths add 9 us at p50 (45 vs 36 us), about 1.1 us per input. Stat pass (`stat_pass/`, criterion, load 17): 1.46 us for 1 input, 5.74 us for 4, 14.4 us for 10, so 1.4 us per input over a bare `lstat(2)` of 1.25 us | met |
+| T4.2 | `comb get git.branch` within 1 ms of `comb get hostname.name` | `hyperfine -N --warmup 20 --runs 100`, load 5.6: current 4.4 vs 4.4 ms and 4.4 vs 4.3 ms (+0.0, +0.1); baseline 3.9 vs 3.8 and 3.8 vs 3.7. The process floor itself is 0.6 ms higher now (4.4 against 3.8 ms; user time 2.6 against 2.2 ms), which is the larger binary's start-up, not validity | met |
+| T4.3 | after a change, 100/100 new values; the first read <= 1 ms | `read_after_mutation`, two runs, load 7-9: 100/100 in every mode for the `.git/HEAD` write and the `state.json` rewrite (baseline: 8/100 for the latter); read p50 0.07-0.12 ms for `git.branch`, 0.15-0.16 ms for the config Source; p99 <= 0.34 ms. Watcher on and off alike | met |
+| T4.4 | default `get` within budget + 5 ms; `--wait 0` within 1 ms; `--wait forever` about the run | `budget_accuracy`, 300 ms Source, 50 ms budget, re-measured with a read whose wait is over answered at once, alternately against `452f6c75` (A, B, A, B; 4 rounds each), load 5.7-11.4: `--wait 0` 0.1-0.5 ms in 8 of 8 (before: 1.4-1.7 ms in 8 of 8); default read 50.5-53.2 ms (51.7-53.3); `--wait forever` 311-327 ms (317-383) for a 300 ms run | met |
+| T4.5 | the second `get` after a cold run <= 1 ms in 4 of 4 fresh daemons | `second_get_after_cold`, two runs of 12 fresh daemons each, load 16: 0.047-0.114 ms, 24 of 24 (baseline 0.038-0.070 ms, 24 of 24; P9 never reproduced at this load). An `introspect watches` sent just after the cold `get` now answers in 0.03-0.04 ms (baseline: 1.8-5.2 ms, waiting on the scheduler loop); two of the 24 took 0.8 and 1.2 ms, the first daemons of one run | met |
+| T4.6 | cold `comb get git` <= 60 % of today's | `t46.py`, fresh daemons, load 6-13, medians: 37.4 vs 61.9 ms (60 %) and 32.6 vs 81.3 ms (40 %); with the logging `git` wrapper (11 `git` processes either way): 176 vs 240 ms and 105 vs 214 ms. The first pair is at the limit | met, at the limit in one of two runs |
+| T4.7 | idle: 0 kernel watches after decay; a 2 s registration leaves no heartbeat gap > 10 ms | `a_watch_goes_when_its_instance_decays_and_a_read_brings_it_back` and `a_memo_decays_lets_go_of_its_watch_and_is_evicted` pass; `heartbeat_gap_during_a_slow_registration` (ignored by default, run at load 11): latest tick 2.5 ms late, a status request sent with the demand waited 1.3 ms | met |
+| T4.8 | validity <= 64 B per record | the `size_of::<Option<Validity>>()` assertion in `src/cache.rs` passes; 48 B | met |
+| T7.8 | the stat pass <= 2 us per input (gcloud's 3 inputs, ~5 us per file at load ~110) | 1.4 us per input at 1, 4 and 10 inputs (above); 3 inputs would be about 4.3 us in all. The 5 us per file was the load, as a bare `lstat` was then 9-12 us. Not measured on `gcloud` itself | met on the stat pass; not re-measured through gcloud |
+
+**T4.4 `--wait 0` was held by tokio's timer, not by the run's process spawn.** A read whose wait is over (`--wait 0`,
+or a budget spent before the read reaches a run) waited on a timer for a deadline already past. tokio's timer turns in
+whole milliseconds and rounds a deadline up to its next turn, so the read sat about a millisecond behind it whenever
+the run outlasted that. A Source whose data is a constant finished first, and its `--wait 0` read answered in 0.3 ms;
+one running `exec('echo 1')` did not, and its read took 1.5 ms, which looked like the cost of the spawn. The spawn is on
+the run's blocking thread and was never on the read's path. `Run::outcome_by` now answers a deadline already past at
+once, with how the run stands. A budget that runs out during the wait still ends on the timer's turn, which is why the
+default read answers 0.5-3.3 ms after its 50 ms budget.
+
+### The watch fan-in: one `poll(2)` (phase 3)
+
+Measured 2026-10-26 at the commit that made a watch wait on one `poll(2)`, on the same 12-core Mac, twice: once at a
+load average of about 28, and once between 250 and 320, where every tail is that load's and the minimum is the cost
+itself. Before it, the fan-in read its streams in turn for up to 50 ms each, so a change on the last of `k` streams
+took up to `(k − 1) × 50 ms` (950 ms at `k = 20`), a cancel up to 50 ms a stream, and an idle watch woke 20 times a
+second a stream.
+
+`cargo bench --bench watch` (release, a spawned `comb daemon`, the client `ResolvedWatch`; a watch of `k` deps reads
+a template naming `k − 1` refs, and each change is a `put` to the last). At load ~28:
+
+| Measurement | min | p50 | p90 | p99 | max | Target |
+|---|---:|---:|---:|---:|---:|---|
+| `put` to `next` returning it, k = 1 | 0.059 ms | 0.085 ms | 0.117 ms | 0.265 ms | 0.505 ms | p50 ≤ 1 ms, p99 ≤ 5 ms |
+| the same, k = 5 | 0.163 ms | 0.235 ms | 0.500 ms | 1.106 ms | 1.523 ms | as above |
+| the same, k = 20 | 0.450 ms | 0.617 ms | 0.778 ms | 1.463 ms | 1.683 ms | as above |
+| a `put` alone, for scale | 0.012 ms | 0.027 ms | 0.059 ms | 0.115 ms | 0.151 ms | |
+| opening a warm 20-dep watch | 0.624 ms | 0.790 ms | 0.969 ms | 1.900 ms | 2.939 ms | ≤ 5 ms |
+| `cancel()` to a blocked `next(None)` returning | 0.010 ms | 0.019 ms | 0.028 ms | 0.080 ms | 0.417 ms | ≤ 2 ms |
+| `next(Some(10 ms))`, time past the deadline | 0.015 ms | 1.014 ms | 1.030 ms | 1.298 ms | 1.424 ms | within 2 ms |
+| `next(Some(50 ms))`, time past the deadline | 0.038 ms | 0.969 ms | 1.040 ms | 1.068 ms | 2.814 ms | within 2 ms |
+
+At load 250–320 (two runs, given as ranges):
+
+| Measurement | min | p50 | p90 | p99 |
+|---|---:|---:|---:|---:|
+| `put` to `next` returning it, k = 1 | 0.08 ms | 0.30–0.65 ms | 3.0–14 ms | 41–66 ms |
+| the same, k = 5 | 0.24 ms | 0.85–1.17 ms | 3.3–22 ms | 53–101 ms |
+| the same, k = 20 | 0.72 ms | 2.9–3.3 ms | 24–39 ms | 248–259 ms |
+| a `put` alone, for scale | 0.02 ms | 0.05–0.13 ms | 0.4–2.6 ms | 9–23 ms |
+| opening a warm 20-dep watch | 0.79 ms | 2.6–4.1 ms | 44–109 ms | 254–394 ms |
+| `cancel()` to a blocked `next(None)` returning | 0.016 ms | 0.034 ms | 0.061 ms | 0.21 ms |
+| `next(Some(10 ms))`, time past the deadline | 0.04 ms | 0.90–1.05 ms | 1.2–1.7 ms | 2.5–3.2 ms |
+| `next(Some(50 ms))`, time past the deadline | 0.07 ms | 0.99–1.09 ms | 1.4–5.7 ms | 3.2–25 ms |
+
+- **Delivery no longer depends on which stream changed;** what it costs is the re-resolve, one round trip per key the
+  value reads, over the one connection the watch holds: about 25–35 µs a key, 0.45–0.72 ms at `k = 20`. At load
+  250–320 a `put` alone has a 9–23 ms p99, so no p99 there can meet 5 ms.
+- **Idle:** a 20-dep watch's `next(Some(10 s))` with nothing happening made 2 system calls (macOS keeps no count of
+  voluntary context switches; a thread that wakes must make another call to sleep again) and used 0.3 ms of CPU.
+  A `comb watch` of a 20-dep key left idle for 60 s after its first frame used 7.94 ms of CPU and 21 voluntary
+  context switches over its whole life, against 7.82 ms and 21 for one stopped at its first frame: the minute cost
+  0.12 ms and no wake.
+- **A deadline** is never answered early; the p50 overshoot of about 1 ms is macOS's timer leeway on `poll`.
+
+### Exec caching: the phase 5 baseline
+
+Measured 2026-10-26 at `14bee04`, before any phase 5 change, on the same 12-core Mac, twice: at a load average of
+16–21, and at 41–52. The lower is given first.
+
+`cargo bench --bench resolve` (the resolver over a map `Fetch`, no daemon). `env_read` is `{{ env.X }}`, the floor a
+memo hit's frame and hash are measured against (T5.1); `exec` is `{{ 'echo x' | exec() }}`, one `sh -c` spawn, what a
+memo exists to skip. A first run at load 40–150 was 10–30 times slower in every case and is not given.
+
+| Case | 1 variable | 140 variables |
+|---|---:|---:|
+| `resolve/env_read` | 82 µs | 135 µs |
+| `resolve/exec` | 11.3 ms | 7.5 ms |
+| `resolve/widget` | 0.64 ms | 0.85 ms |
+
+The CLI: `hyperfine -N --warmup 20 --runs 100`, the release build, an isolated daemon (its `$HOME`,
+`$XDG_CONFIG_HOME`, `$XDG_STATE_HOME` and socket in a scratch directory, so it writes and seeds the managed defaults),
+and stand-ins for `kubectl` and `talosctl` first on `PATH`: the suite's `stub_bin` scripts, `#!/bin/sh` that appends
+one line to `$COMB_STUB_LOG` when it is set and exits 1, so `kubecontext.context` is absent, as on a machine with no
+context. Each command was run once before `hyperfine` started.
+
+| Command | median | min | at load 41–52: median / min |
+|---|---:|---:|---:|
+| `comb get kubecontext.context` | 100.9 ms | 51.0 ms | 266.5 / 137.7 ms |
+| `comb get hostname.name` (the process floor, T5.2) | 10.8 ms | 6.8 ms | 19.0 / 7.7 ms |
+| `comb status` | 283.1 ms | 179.6 ms | 912.7 / 448.2 ms |
+
+- **One stub spawn** is the difference between the first two rows: 90 ms at the median, 44 ms at the minimum. The stub
+  is a script run under `sh -c`, so a spawn is two shells; a real `kubectl` costs tens of milliseconds more.
+- **Processes per `comb status`** (`$COMB_STUB_LOG` over one run): 3. `kubectl config current-context` runs twice,
+  once for the `context` row and once more inside `namespace`, whose template reads `kubecontext.context` (each row is
+  a resolution of its own), and `talosctl config info -o json` once. T5.3 starts from 3, not the 2 the phase 5 plan
+  counted. `comb get kubecontext.context` runs 1.
+
+### Exec caching: phase 5 measured
+
+Measured 2026-10-26 at `f5777a89` against the baseline binary `14bee04`, on the same Mac. The machine was far more
+loaded than during the baseline: load average 105-126 on 12 cores for the CLI and daemon runs, so absolute numbers are
+2-3 times the baseline's. Every comparison below is **interleaved** (each round runs every command once, base and new in
+turn, each with its own isolated daemon and the counting stubs), so a load swing falls on both alike; read the
+differences, not the absolute times. Release builds throughout.
+
+The CLI, 120 interleaved rounds (`comb get` and `comb status`, stand-in `kubectl` and `talosctl` exiting 1):
+
+| Command | base median / min | phase 5 median / min |
+|---|---:|---:|
+| `comb get kubecontext.context` | 80.4 / 47.6 ms | 28.2 / 16.9 ms |
+| `comb get hostname.name` (the process floor) | 24.9 / 14.1 ms | 26.7 / 15.5 ms |
+| `comb status` | 223.9 / 123.5 ms | 55.7 / 24.4 ms |
+
+Processes per warm `comb status`: 3 at `14bee04`, **0** now. Per `comb get kubecontext.context`: 1, now 0.
+
+A miss costs what a spawn costs, and the write-back adds nothing visible: 80 rewrites of the kubeconfig, each followed
+by a `comb get kubecontext.context`, took a median 86.3 ms (min 54.2) against 86.5 ms (min 52.0) for the baseline's
+uncached read, which spawns every time (load 108-126).
+
+| # | Target | Result | Met |
+|---|---|---|---|
+| T5.1 | memo hit <= 20 us over `{{ env.X }}` | 62 vs 46 us (+16) at one variable; 152 vs 131 us (+21) at 140 variables; p50, alternating runs at load about 47 (`benches/resolve.rs`). A re-run at load 112 was too noisy to use (the hit read faster than the floor) | met at 1 variable; 1 us over at 140 |
+| T5.2 | `get kubecontext.context` warm within 1 ms of `get hostname.name` | median +1.5 ms (28.2 vs 26.7), min +1.4 ms at load 105-126; an earlier 40-round run gave +4.8 ms median, +1.5 ms min; the hit also runs a `stat` pass and a filter pipeline the floor does not | missed by about 0.5-4 ms at that load; met at a quiet load, see below |
+| T5.3 | warm `comb status`: 0 processes | 0 (3 at baseline); `a_warm_status_spawns_no_process` | met |
+| T5.4 | daemon memo half <= 5 us per leaf on a warm `get` | `get p.cached` (memo) vs `get p.plain` (template only), 5000 interleaved rounds, one connection, load 105: p50 +14 us, p90 +65 us, min +3.4 us. No `validity.rs` case was built; this is a Python socket client, so it includes the larger response line | not shown at that load; met once the `validity.rs` case existed, see below |
+| T5.5 | after a kubeconfig rewrite the next `get` renders afresh 100/100; first read <= 1 ms over a hit plus the spawn | 100/100 by count: `shipped::kubecontext::kubecontext_runs_again_when_kubeconfig_changes` and `exec_cache::a_change_to_a_watched_file_runs_it_again`. Latency: the rewrite-then-read median equals the baseline's uncached read within 0.2 ms, which is a hit plus a spawn; `prompt_race.rs` has no memo case | count met; latency met once the `prompt_race.rs` case existed, see below |
+| T5.6 | a miss exits <= 1 ms after its output | not measured separately: no case built. The miss above is no slower than an uncached read, so the write-back adds under the run-to-run noise (several ms at this load) | met at a quiet load, see below |
+| T5.7 | memo record <= 128 B plus value and paths | measured by allocation over 2000 memos in one provider: **635 B** for a memo of absence (hash only), **1403 B** with one watch path and a ttl, **1578 B** with a value `ctx-1` too. A memo is stored as generic `Value` maps in two facets and a stamp map, not a packed struct | **missed**, about 5-12 times the target |
+| T5.8 | suite about 10 s; each new test under 0.1 s | full workspace, 2486 tests, 25.4 s wall at load about 110 (the idle figure is not measurable now). The new `shipped::kubecontext` tests take 0.47-0.58 s each, 1.1 s for the `comb status` one, at the same load; their cost is two or three `comb` processes | not judgeable at this load |
+
+The library's `resolve` benches (`cargo bench --bench resolve`) were taken at load about 47, alternating: `env_read`
+46 us (1 variable) / 131 us (140), `memo_hit` 62 / 152 us, `exec` 5.36 / 14.0 ms. A hyperfine of the CLI at load 32-47:
+a hit 6.1 ms median against 95.5 ms for a render and 4.4 ms for `hostname.name`.
+
+Close-out: `cargo xtask gen-header --check` clean (no ABI change), `scripts/conformance-all.sh` passes every SDK runner
+(Lua 45 pass, 11 skip, as before), `cargo bench --bench resolve -- --test` runs `memo_hit`.
+
+### Exec caching: phase 5 re-measured at a quiet load
+
+Measured 2026-10-27 at `1f53f763` against `14bee04`, release builds, alternating, load 5-14 (the load is given with
+each figure). The three bench cases that were missing from the first measurement exist now: `validity.rs` has
+`tpl.plain` and `tpl.memo`, `prompt_race.rs` has `memo_after_rewrite` and `exit_after_output`. These figures
+replace the T5.1, T5.2, T5.4, T5.5 and T5.6 rows above.
+
+| # | Target | Result | Met |
+|---|---|---|---|
+| T5.1 | memo hit <= 20 us over `{{ env.X }}` | `cargo bench --bench resolve`, load 7: `memo_hit` 39.3 vs `env_read` 24.4 us (+14.9) at one variable; 107.8 vs 98.4 us (+9.4) at 140 | met |
+| T5.2 | `get kubecontext.context` warm within 1 ms of `get hostname.name` | `hyperfine -N --warmup 20 --runs 100`, stub `kubectl`, load 10-11: 4.4 vs 4.4 ms and 4.7 vs 4.5 ms (+0.0, +0.2). Baseline `14bee04`: 51.3 and 48.4 ms against 3.7 and 3.8 ms | met |
+| T5.3 | warm `comb status`: 0 processes | `a_warm_status_spawns_no_process` passes (3 at baseline) | met |
+| T5.4 | the daemon's memo half <= 5 us per template leaf on a warm `get` | `warm_get_percentiles`, `tpl.memo` against `tpl.plain`, 2000 interleaved rounds, one connection, load 26, two runs: p50 +2.6 and +2.4 us (35.5 vs 32.9; 35.1 vs 32.7), p90 +0.9 and +0.6 us, min -0.5 and +0.1 us | met |
+| T5.5 | after a kubeconfig rewrite the next `get` renders afresh 100/100; the first read <= 1 ms over a hit plus the spawn | `memo_after_rewrite`, 100 trials, load 9: 100/100; hit 0.285 ms, spawn 6.92 ms, the read after a rewrite 7.19 ms: **-0.03 ms** over a hit plus a spawn at the median (a second run: -0.25 ms) | met |
+| T5.6 | on a miss `comb get` exits <= 1 ms after its output | `exit_after_output`, 100 runs each, load 10: first byte of output to exit, miss p50 0.30 ms (p90 0.37), hit p50 0.22 ms (p90 0.35). The write-back costs 0.08 ms beyond a hit's process exit | met (reported, not asserted) |
+| T5.7 | a memo record <= 128 B plus its value and paths | not re-measured: no change to the record since the first measurement, 635 B for a memo of absence, 1403 B with a watch path and a ttl, 1578 B with a value. It is stored as generic `Value` maps in two facets and a stamp map, not a packed struct | **missed**, 5-12 times the target |
+| T5.8 | the suite about 10 s; each new test under 0.1 s | full workspace, 2508 tests, **9.2 s** wall, started at load 8 (nextest `--workspace`, unpartitioned). The 23 phase 5 tests (`exec_cache`, `shipped::kubecontext`, `cli_resolve::kubecontext*`), run together at load 25: 3 under 0.1 s, 7 between 0.1 and 0.2 s, 13 between 0.2 and 0.4 s (the slowest 0.38 s); each runs two to four `comb` processes | suite met; **the 0.1 s per test missed** by most of the phase 5 tests |
+
+### Git as a shipped file: phase 7 measured
+
+Measured 2026-11-04, the Rust provider (`bfa7ccd8`) against the shipped file over the compiled-in plugin (`350975ef`), release builds, macOS, on this repository's main checkout, 120 rounds alternating the two binaries, each its own isolated daemon, over the raw socket, load 10-19. Paired difference is the median of each round's after minus before.
+
+| | Rust p50 | file p50 | paired difference |
+|---|---:|---:|---:|
+| one full refresh, the five Sources started together | 65.96 ms | 66.73 ms | +0.78 ms |
+| the five Sources one after another (what `DEC-261104082440` measured as 149.6 ms) | 143.59 ms | 145.84 ms | +2.40 ms |
+| `head` alone | 0.13 ms | 0.42 ms | +0.30 ms |
+| `status` alone | 15.89 ms | 16.31 ms | +0.15 ms |
+| `diff` alone | 25.53 ms | 26.07 ms | +0.83 ms |
+| `lineage` alone | 37.82 ms | 38.09 ms | +0.51 ms |
+| `refs` alone | 64.35 ms | 64.17 ms | -0.21 ms |
+
+A logging `git` on `PATH` sees the same 10 commands from both, argument for argument, and nothing else runs: no `sh`, no `awk`. `shipped::git::git_a_refresh_spawns_the_same_commands` pins that, and the values of `comb get git` were identical across a plain repository, a subdirectory, a linked worktree, a detached HEAD, a stash, a merge in progress, an upstream and push remote, a relative gitfile, a broken gitfile, no commits, an empty `.git` and outside any repository.
+
+| # | Target | Result | Met |
+|---|---|---|---|
+| T7.1 | warm `get git.branch` p50 <= 0.25 ms; `get git` <= 0.4 ms | 59 and 101 µs (58 and 94 µs before), 480 alternating rounds | met |
+| T7.2 | `comb get git.branch` within 1 ms of `comb get hostname.name` | 7.44 vs 7.64 ms, 120 alternating rounds | met |
+| T7.3 | replaced by the ruling: a full refresh at the baseline plus a few ms for jinja and JSON, the same commands | +0.78 ms together, +2.40 ms one after another; the same 10 commands | met |
+| T7.9 | the suite about 10 s, under the 30 s cap | 1891 tests, 13-15 s at load about 10 | under the cap |
+| T7.10 | after a read of `git.dirty`, 2 s idle runs `status` at most once more | `git_status_does_not_trigger_itself` passes with the `cfg(linux)` lifted on macOS, and fails (1 run became 3) with `GIT_OPTIONAL_LOCKS=0` taken out; **not yet run on Linux** | pending a Linux run |
+
+**The read straight after a lock file.** One cost did move. The Rust Sources overrode `inputs` to name only git's files, to keep `.git`'s own mtime out of a read's check. A config Source has no such override: `head` and `refs` are checked for the `.git` they `watch`, and all five for the `.git` their lines find with `lup`, so whatever makes a lockfile in `.git` invalidates every record, and the next `comb get git` waits out its 50 ms budget for them. One read pays: the one after settles. A read of one field pays only for its Source. Alternating, a clone per binary, 12 rounds, load 10:
+
+| What happened, then the read | Rust p50 | file p50 |
+|---|---:|---:|
+| a lockfile came and went, `get git` | 0.14 ms | 51.66 ms |
+| another tool's plain `git status` refreshed the index, `get git` | 20.42 ms | 51.87 ms |
+| `git add`, `get git` | 20.45 ms | 51.66 ms |
+| `git commit`, `get git` | 51.84 ms | 51.95 ms |
+| a lockfile came and went, `get git.branch` | 0.14 ms | 0.63 ms |
+| `git add`, `get git.branch` | 0.30 ms | 1.01 ms |
+
+Per such event the daemon also ran `diff` and `lineage` on the next read, where they waited for their poll: 15 `git` processes against 10 for a lockfile, 16 against 12 for `git add` or `git commit` (the watch's own runs included). "The first read after git activity", below, is what became of this.
+
+The cdylib with the icon tables: `libbeachcomber.dylib` 3,455,232 bytes (release, macOS).
+
+### The first read after git activity
+
+The first read after a git command is the one a prompt makes. It has to be fast and it has to be right, and before this work the 50 ms in the table above was neither: the read had spent its budget and answered what was stored, with `stale` unset. That was so under the Rust provider too.
+
+**What the first read answered.** Each event on a clone of this repository, then at once a read over the raw socket, each field compared with what real git said. Five rounds, a daemon per build, `feat/one-tree` as a 400-commit branch with an upstream. `old` is `bfa7ccd8` (Rust) and `0599a5c8` (the file) alike unless it says; the last column is this work's.
+
+| Event | `branch` | `dirty`, `staged`, `unstaged`, `untracked` | `ahead`, `behind` | `commit`, `tag`, `commit_summary` | `stash`, `state` | `lines_*` (diff) | `lines_*_parent`, `_default` (lineage) | now |
+|---|---|---|---|---|---|---|---|---|
+| lockfile only | new | new | new | new | new | new | new | all new |
+| plain `git status` | new | new | new | new | new | new | new | all new |
+| `git add` | new | new | new | new | new | Rust **old**, file new | new | all new |
+| `git commit` | new | new | **old** up to 4/5 | **old** up to 4/5 | new | new under the file, Rust **old** | **old** | new but lineage on a long branch |
+| `git checkout` | new | new | **old** | **old** | new | new | **old** | new but lineage on a long branch |
+| `git stash` | new | new | new | new | **old** (`stash`, every time under Rust, up to 5 in 5 under the file) | Rust new, file up to 2 in 5 **old** | Rust **old** | all new |
+| `git fetch` | new | new | **old** (`behind`) | new | new | new | new | all new |
+| `git push` | new | new | **old** (`ahead`) | new | new | new | new | all new |
+| `git rebase` | new | new | **old**, or absent | **old** | **old** (`state` still `rebase`, 2 in 5 under Rust, 4 in 5 under the file) | new | **old** | new but lineage on a long branch |
+| a rebase stopping on a conflict | new | new | new | new | new | Rust **old** | Rust **old** | all new |
+| editing a tracked file, making an untracked one | new | **old** | new | new | new | **old** | new | right once the file event is in: see "A change in the working tree" |
+
+**Where the time went.** Forced runs, alternating, 20 rounds, load about 8. A `git` process costs 7.5 ms here before it does anything (`git --version`), so a Source's cost is mostly how many it starts.
+
+| Source | before, 400-commit branch | now | before, ordinary branch | now |
+|---|---:|---:|---:|---:|
+| `head` | 0.75 ms | 0.57 ms | 0.79 ms | 0.65 ms |
+| `status` | 14.8 | 15.3 | 12.5 | 13.5 |
+| `refs` | 53.7 | 13.5 | 40.5 | 10.8 |
+| `diff` | 17.8 | 11.6 | 15.9 | 10.7 |
+| `lineage` | 126.7 | 25.3 with its comparison kept; about 125 for a new one | 22.4 | 14.5 |
+| all five together | 131.2 | 31.8 | 46.8 | 21.9 |
+
+Four things spent the budget, and the first was the one written down at the end of phase 7:
+
+1. **Everything was invalidated by anything.** `.git`'s mtime was an input of all five Sources. Each now checks what it reads: the plugin notes each file as it reads it, in the run's account, and a `lup` hit is stamped for its presence, not its mtime.
+2. **The same command ran several times.** `refs` and `status` each ran `git status`, and the `git config` for a push remote ran twice. `upstream`, `ahead` and `behind` moved to `status`, which already had the answer, and one `git config --list` says both keys. `refs` and `diff` start their commands together, so they wait for the slowest and not the sum.
+3. **Runs started during the event, and the read waited for them.** A file event ran the Source mid-command, on a state about to go; the read found that run, could not use it, and queued behind it. A read now replaces a run that cannot have seen the change, and a file event waits for the files to go quiet (30 ms, at most 500) before it runs anything.
+4. **`lineage` recomputed what had not moved.** `git stash` and `git reset` rewrite a ref with the commit it held; what two commits differ by never changes, so `git diff --numstat <point>..<head>` is kept per pair. `lineage` no longer polls: nothing but a ref moves it.
+
+Processes per event, the logging `git` of `git_a_refresh_spawns_the_same_commands`, 0.8 s past the read:
+
+| Event | before | now |
+|---|---:|---:|
+| lockfile | 17 | **0** |
+| plain `git status`, `git add` | 18 | **4** |
+| `git commit` | 18 | 17 |
+| `git checkout` | 21 | 22 |
+| `git stash` | 18 | 16 |
+| `git fetch` | 10 | 8 |
+
+For the events that move a ref the count did not fall: the read runs what it needs, about 8 processes, and the file event's run, 30 ms after, runs them again. That second run no longer shares the read's budget, and costs CPU only. Skipping it needs knowing that the change the event reports is one the read's run saw, which a file's stamp cannot say inside its racy window.
+
+**Before and after.** Alternating `bfa7ccd8`, `0599a5c8` and this work, each its own isolated daemon, five rounds of each cell, p50 ms and how many of the five answered what real git says, load falling from 17 to 7. A whole read is right when every field is.
+
+On the 400-commit branch:
+
+| Event, then the read | Rust | `0599a5c8` | now |
+|---|---:|---:|---:|
+| lockfile, `git` | 0.20 ms | 51.52 ms | **0.26 ms** |
+| lockfile, `git.branch` | 0.17 | 0.97 | 0.51 |
+| lockfile, `git.dirty` | 0.20 | 15.27 | 0.48 |
+| lockfile, `git.ahead` | 0.22 | 43.45 | 0.15 |
+| `git status`, `git` | 11.54 | 51.84 | 17.02 |
+| `git status`, `git.dirty` | 11.88 | 14.57 | 12.01 |
+| `git add`, `git` | 12.36, 0/5 right | 52.25, 3/5 | 21.06, 5/5 |
+| `git add`, `git.staged` | 13.15 | 15.38, 4/5 | 14.30 |
+| `git add`, `git.branch` | 0.22 | 1.02 | 0.54 |
+| `git commit`, `git` | 52.08, 0/5 | 52.28, 0/5 | 52.77, 0/5: only `lineage` is wrong |
+| `git commit`, `git.dirty` | 18.42 | 18.43 | 16.82 |
+| `git commit`, `git.ahead` | 51.67, 4/5 | 52.08, 3/5 | 16.43, 5/5 |
+| `git checkout`, `git` | 52.47, 0/5 | 52.25, 0/5 | 51.62, 3/5 |
+| `git checkout`, `git.ahead` | 52.51, 4/5 | 52.15, 4/5 | 12.85, 4/5 |
+| `git stash`, `git` | 13.53, 0/5 | 52.30, 4/5 | 37.02, 5/5 |
+| `git fetch`, `git` | 0.26, 0/5 | 0.25, 0/5 | 15.31, 4/5 |
+| `git push`, `git.ahead` | 0.30, 0/5 | 0.51, 0/5 | 14.88, 5/5 |
+| `git rebase`, `git` | 52.03, 0/5 | 51.44, 0/5 | 52.16, 0/5: only `lineage` is wrong |
+| `git rebase`, `git.ahead` | 51.36, 0/5 | 51.49, 1/5 | 14.96, 5/5 |
+
+On an ordinary branch (four commits, 80 lines, off the default branch):
+
+| Event, then the read | Rust | `0599a5c8` | now |
+|---|---:|---:|---:|
+| lockfile, `git` | 0.19 ms | 42.51 ms | **0.29 ms** |
+| `git add`, `git` | 13.18, 0/5 right | 41.98, 5/5 | 14.40, 5/5 |
+| `git add`, `git.dirty` | 12.59 | 12.17 | 12.34 |
+| `git commit`, `git` | 52.17, 0/5 | 51.52, 5/5 | **33.45, 5/5** |
+| `git commit`, `git.dirty` | 18.57 | 18.51 | 11.89 |
+| `git commit`, `git.ahead` | 34.41 | 52.03 | 12.10 |
+| `git checkout`, `git` | 39.45, 0/5 | 47.09, 4/5 | 37.65, 4/5 |
+| `git checkout`, `git.ahead` | 41.49 | 42.74 | 12.36 |
+| `git stash`, `git` | 12.42, 0/5 | 51.65, 5/5 | 29.59, 5/5 |
+| `git fetch`, `git` | 0.24, 0/5 | 0.23, 0/5 | 12.88, 5/5 |
+| `git push`, `git.ahead` | 0.19, 0/5 | 0.42, 0/5 | 12.49, 5/5 |
+| `git rebase`, `git` | 46.51, 0/5 | 50.77, 3/5 | 30.95, 4/5 |
+| `git rebase`, `git.ahead` | 52.77, 1/5 | 50.27, 3/5 | 12.64, 5/5 |
+
+A read of a usual field costs about what `git status` does, 11 to 13 ms, plus about a millisecond. A lockfile costs what it did under Rust. In 200 further single-field reads, under load up to 40, the only wrong answers were two at 61 and 66 ms: a read past its budget, on a spike, is still a read past its budget.
+
+**What is not reached.**
+
+- **`lineage` on a long branch.** `git diff --numstat <point>..HEAD` on this branch takes 100 to 130 ms (at load 10), most of it rename detection: `--no-renames` halves it and gives other numbers. No read waits for that: `lineage` keeps a 50 ms budget where git's other Sources have 100, so after a commit, a checkout or a rebase a whole read of `git` takes those 50 ms, the line counts are as they were, and the next read has them. `branch_parent` and `branch_default` read files in their own Source, `branches`, and are right at once. Single fields do not wait for it.
+- **A late answer is not labelled.** A read past its budget answers what is stored; the run goes on and the next read has its answer.
+
+Measured with a script over the raw socket, each daemon isolated in its own `HOME`, XDG directories and socket; `first_read_after_git` in `benches/validity.rs` is the same read in-process.
+
+### A change in the working tree
+
+Saving a file or making a new one touches nothing in `.git`. The kernel watch was already over the whole repository, because a rooted Source registers its root; `status` listed only files under `.git` and `diff` listed nothing, so the event was heard and dropped, and `dirty`, `unstaged`, `untracked` and `lines_*` stayed old until a poll, up to a minute. Both now list the tree, `watch('.', '!.git')`. An event only marks the record: a read runs the Source. An event that ran it would have a build's ignored output keep the instance Active and `git status` going twice a second, a quarter of a second each on a 100,000-file repository.
+
+**How long an event takes on macOS.** From `write` returning to `notify`'s callback, 100 changes each, load about 8, nothing else writing:
+
+| Repository | min | p10 | p50 | p90 | p99 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| 608 files | 1.4 ms | 10.3 | 10.8 | 11.3 | 13.0 | 20.8 |
+| 100,000 files | 0.5 | 3.0 | 10.8 | 11.5 | 13.5 | 14.1 |
+
+The size of the repository does not enter into it. Nor does `notify`, whose latency setting is 0 with `NoDefer`, or the 30 ms quiet period, which delays a run and not the hearing. The cluster at about 11 ms is the kernel: it wakes `fseventsd` on a 10 ms timer unless more than 16 events are pending.
+
+**How long a prompt gives it.** File's mtime to `precmd` in a real `zsh` on a pty, 15 of each; `comb get` then takes about 7 ms to reach the daemon and come back.
+
+| Command | min | p50 | p90 | max |
+|---|---:|---:|---:|---:|
+| `echo x >> f` | 0.1 ms | 0.1 | 0.1 | 0.3 |
+| `perl`, write and exit | 0.3 | 0.3 | 0.8 | 2.5 |
+| `sed -i` | 0.4 | 0.6 | 1.3 | 2.1 |
+| `python3`, write and exit | 1.9 | 2.5 | 4.1 | 8.2 |
+| `vim -u NONE`, `:wq` | 6.9 | 9.2 | 15.5 | 18.7 |
+| `nvim --clean`, `:wq` | 6.4 | 8.5 | 12.6 | 14.1 |
+
+An editor mostly wins that race and a shell command mostly loses it.
+
+**The read waits for what came before it.** It touches a file of the daemon's and waits for that event at the scheduler (`Barrier`, `docs/architecture.md`): delivery is in order, so what came before has arrived. On macOS 17 more touches pass the kernel's threshold. Measured directly: an edit is heard 0.88 ms after a write followed by 16 touches, against 10.9 alone.
+
+Each option, at a real `zsh` prompt running `comb get git.dirty`, 10 rounds of each, at load 7 to 30: right, and the median whole `comb get` after the change. Option A re-runs at a read of a record over 1 s old, and trusts one younger; the prompt before had read it 0.1 s earlier. `sub`, `wait` and option A went through a wrapper script costing about 4 ms, so their times are about that much high; base and the barrier are direct, in a later run.
+
+| Command, then the prompt | base | watch the tree only | and wait for the timer (no touches) | option A | **and the barrier** |
+|---|---:|---:|---:|---:|---:|
+| `echo x >> f` | 0/10, 9.2 ms | 6/10, 22.5 | 10/10, 28.0 | 8/10, 24.6 | **9/10, 25.9** |
+| `sed -i` | 0/10, 9.4 | 7/10, 23.9 | 10/10, 35.5 | 9/10, 23.5 | **10/10, 25.9** |
+| `vim`, `:wq` | 0/10, 9.1 | 10/10, 23.0 | 10/10, 34.4 | 10/10, 24.5 | **9/10, 25.9** |
+| `nvim`, `:wq` | 0/10, 8.9 | 10/10, 23.5 | 10/10, 35.1 | 10/10, 23.8 | **10/10, 28.7** |
+| a new untracked file | 0/10, 9.0 | 6/10, 24.1 | 10/10, 29.4 | 8/10, 24.6 | **10/10, 26.7** |
+
+Straight after the write over the raw socket, the hardest case, the barrier was right in 45 of 45 edits and 43 of 45 new files at load about 10, and 54 of 60 at load 30 to 35. Every wrong answer that was timed had taken 51 to 63 ms: a read past its budget, on a spike, which is the limit that was already there.
+
+**What it costs when nothing changed.** Reads 50 ms apart; ms.
+
+| Read | base p50, p90 | tree only | wait for the timer | **barrier** |
+|---|---:|---:|---:|---:|
+| `git.dirty`, raw socket | 0.26, 0.36 | 0.25, 0.30 | 11.45, 12.18 | **1.12, 1.76** |
+| `git.lines_added`, raw socket | 0.24, 0.29 | | | **1.11, 1.56** |
+| `git`, raw socket | 0.35, 0.42 | 0.36, 0.43 | 11.46, 11.92 | **1.23, 1.52** |
+| `git.branch`, raw socket | 0.23, 0.29 | 0.22, 0.31 | 0.23, 0.28 | **0.23, 0.27** |
+| `git.dirty`, `comb get` | 7.85, 10.16 | | | **8.74, 10.53** |
+
+Option A, reads 1.2 s apart on a fresh clone: 38 ms for `git.dirty` and 49 for `git`, over its budget on a whole read. The clone's index was racily clean, so part of that is git re-hashing; at the prompt above it costs about 16 ms over base.
+
+**A large repository.** On 100,000 files `git status` takes about 250 ms, past the 50 ms a read waits for it. The read after an edit took about 58 ms and answered old, 0 right in 6; the next read after about 180 ms was right, where before it was the poll, over 5 s in every trial. The budget was not raised.
+
+**Linux, not measured.** inotify queues an event inside the `write`, before it returns, and `notify`'s thread reads it in a poll loop. So the barrier needs no extra touches there and should cost about one touch and a thread's wake-up. Nothing here has been run on Linux.
+
+**Measured and given up.** Flushing FSEvents (`FSEventStreamFlushSync`, `FSEventStreamFlushAsync`) cannot help, and `notify` does not expose its stream anyway: for the first 10 ms the event is in the kernel and the service does not know of it. `FlushAsync`, whose answer is the last event queued for the stream, said nothing was pending in 50 of 50 calls made straight after a write, and tight calls in a loop stalled for a second, two or three in 500. `lstat` of a repository's files is 0.7 ms for 608 of them and grows with the tree, past the read it would save. APFS's recursive generation count (`ATTR_CMNEXT_RECURSIVE_GENCOUNT`) is a documented read but needs a private call to switch on, which marks the user's directories for good.
+
+**After decay.** A watch exists only while an instance is Active. Its records, and those decay polls make, are not valid until it is watched again, whatever their age: the first read back runs the Source, and is right, about 14 ms.
 
 ### Real-World Impact
 
@@ -249,7 +736,7 @@ libc::getifaddrs(&mut ifaddrs);
 
 4. **Network SSID: CoreWLAN via objc.** Replace `airport -I` (2ms) with CoreWLAN framework call. Would bring network to sub-microsecond. Complexity: moderate (requires objc crate).
 
-5. **metadata() allocation.** Every `metadata()` call allocates Strings for provider name and field names. Use `Cow<'static, str>` to allow zero-allocation for built-in providers while supporting dynamic names for script providers.
+5. **metadata() allocation.** Every `metadata()` call allocates Strings for provider name and field names. Use `Cow<'static, str>` to allow zero-allocation for built-in providers while supporting dynamic names for config Sources.
 
 ### Low value / deferred
 
@@ -271,6 +758,12 @@ cargo bench --bench protocol
 cargo bench --bench providers
 cargo bench --bench socket
 cargo bench --bench throughput
+cargo bench --bench resolve       # the client-side resolver, no daemon
+cargo bench --bench validity      # warm reads (incl. a template leaf with and without a memo), the reads after a cold run (P9), the budget
+cargo bench --bench watch         # the watch fan-in: delivery, open, cancel, deadline, idle cost
+cargo bench --bench prompt_race   # needs a host whose native watcher delivers; read after a change, a memo after a rewrite, comb's exit after its output
+cargo bench --bench load          # a configuration loaded from text: the shipped files, and with scanline's drop-in
+cargo bench --profile dev --bench load   # the same in the debug build the test suite runs
 
 # Run with baseline comparison (after making changes)
 cargo bench -- --baseline main
@@ -286,7 +779,7 @@ When modifying beachcomber, verify these properties:
 
 - [ ] Cache read latency stays under 200ns (run `cargo bench --bench cache`)
 - [ ] Socket round-trip stays under 40µs cold, 20µs warm (run `cargo bench --bench socket`)
-- [ ] Git provider stays under 7ms (run `cargo bench --bench providers`)
+- [ ] A full `git` refresh runs the commands `git_a_refresh_spawns_the_same_commands` lists and no others (run `cargo bench --bench providers`)
 - [ ] No new process spawns added to providers that poll frequently (< 30s interval)
 - [ ] Provider execution does not block the scheduler loop (must use `spawn_blocking`)
 - [ ] New providers that shell out document why a file read is not feasible

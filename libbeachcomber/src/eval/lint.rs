@@ -1,0 +1,878 @@
+//! The one check of a line before anything runs it: it compiles, its
+//! statements are ones its place allows, and every name it reads is one its
+//! context supplies. What a line may do and read depends on where the line is
+//! written, and [`Line`] is the one table of that; what a finding means (a
+//! load error, a warning, a refused `put`) is the caller's to say.
+
+use super::scan::{self, TagKind, used_names};
+use super::{Analysis, Import, Probe, analyze, imports, library};
+use crate::library::{Surface, first_refused};
+
+/// Where a line is written, which decides the names its context supplies and
+/// whether it may import a macro library.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Line {
+    /// A client template: a `[client.providers.<p>] template` leaf, or what a
+    /// `put` writes to `<p>:template`. The client renders it, and it reads
+    /// every provider by name besides ([`Line::reads_providers`]).
+    Template,
+    /// A macro library: a `[client.providers.<p>] macro.<name>` text, or what
+    /// a `put` writes to `<p>:macro.<name>`. It reads what a template reads,
+    /// and prints nothing outside its macros.
+    Macro,
+    /// A Source's `root`.
+    Root,
+    /// A Source's `data`. It reads every provider by name besides, as its
+    /// `comb` does: what the daemon stores.
+    Data,
+    /// A Source's `result`, whole or one field's.
+    Result,
+    /// A Source's `return`: the decorator render that records its schedule.
+    Return,
+    /// A provider's `template` line.
+    ProviderTemplate,
+    /// A provider's `result` line.
+    ProviderResult,
+    /// A provider's `return` line.
+    ProviderReturn,
+}
+
+impl Line {
+    /// Every kind, in the order the table lists them.
+    pub const ALL: [Line; 9] = [
+        Line::Template,
+        Line::Macro,
+        Line::Root,
+        Line::Data,
+        Line::Result,
+        Line::Return,
+        Line::ProviderTemplate,
+        Line::ProviderResult,
+        Line::ProviderReturn,
+    ];
+
+    /// The names a line of this kind reads that its context supplies: the
+    /// one table of them. A line that [reads providers by
+    /// name](Line::reads_providers) also reads each provider, which is no
+    /// fixed set: its caller says which providers it knows
+    /// ([`Known::providers`]). A line's own words win over a provider of the
+    /// same name, which `comb.<name>` still reads.
+    pub fn sees(self) -> &'static [&'static str] {
+        match self {
+            Line::Template | Line::Macro => &["env", "comb"],
+            Line::Root => &["env", "_"],
+            Line::Data => &["env", "comb", "sources", "daemon", "_"],
+            Line::Result => &["data", "_"],
+            Line::Return => &["result", "_"],
+            Line::ProviderTemplate => &["client", "_"],
+            Line::ProviderResult => &["sources", "daemon", "_"],
+            Line::ProviderReturn => &["result", "template", "daemon", "_"],
+        }
+    }
+
+    /// Whether the client renders a line of this kind: only it may import a
+    /// macro library.
+    fn client(self) -> bool {
+        matches!(self, Line::Template | Line::Macro)
+    }
+
+    /// Whether a line of this kind reads each provider by name: the lines
+    /// that read `comb`. A plain name reads what `comb get` would answer as
+    /// far as the line's renderer can give it: the client renders templates,
+    /// a Source's `data` reads what the daemon stores, as its `comb.` does.
+    pub fn reads_providers(self) -> bool {
+        matches!(self, Line::Template | Line::Macro | Line::Data)
+    }
+
+    /// The surface the library table says what a line of this kind may call
+    /// on, where it is a Source's: its `return` is the decorator render.
+    fn source(self) -> bool {
+        matches!(self, Line::Root | Line::Data | Line::Result)
+    }
+
+    /// Whose line it is, as a refusal names it.
+    fn whose(self) -> &'static str {
+        match self {
+            Line::Template => "a client template",
+            Line::Macro => "a macro library",
+            Line::Root | Line::Data | Line::Result | Line::Return => "a Source's line",
+            Line::ProviderTemplate | Line::ProviderResult | Line::ProviderReturn => {
+                "a provider's line"
+            }
+        }
+    }
+}
+
+/// What a line's caller knows of the world around it, which the line may
+/// read beyond what its kind supplies.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Known<'a> {
+    /// The providers a line that [reads providers by
+    /// name](Line::reads_providers) reads.
+    pub providers: &'a [String],
+    /// The macro libraries some layer declares, by address
+    /// (`<p>:macro.<name>`): a client line importing any other is told so.
+    pub libraries: &'a [String],
+    /// The addresses only a client template gives a value (`aws.profile`):
+    /// a `data` line reading one, by name or through `comb`, is told it is
+    /// absent in the daemon.
+    pub templates: &'a [String],
+}
+
+/// What is wrong with a line, as a message that carries no value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Finding {
+    /// It does not compile, or says something its place refuses, so nothing
+    /// it says can run.
+    Compile(String),
+    /// Worth a warning, and no reason not to run it: it reads a name its
+    /// context may not supply, or caches a value already computed.
+    Unknown(String),
+}
+
+impl std::fmt::Display for Finding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Finding::Compile(message) | Finding::Unknown(message) => f.write_str(message),
+        }
+    }
+}
+
+/// What is wrong with `src` as a `line`, on `probe`'s functions and filters,
+/// with `known` the world around it: that it does not compile, alone; or each
+/// statement its place refuses ([`refused`]), then each library it imports
+/// that no layer declares, then what its caching says ([`cached`]), then each
+/// name it reads that its context does not supply, in name order. Nothing is
+/// rendered. Last, on a `data` line, each value it reads that only a client
+/// template gives ([`Known::templates`]), in name order.
+pub fn lint(probe: &Probe<'_>, src: &str, line: Line, known: &Known<'_>) -> Vec<Finding> {
+    let names = match super::undeclared_names(probe, src, false) {
+        Err(e) => return vec![Finding::Compile(e)],
+        Ok(names) => names,
+    };
+    let mut sees: Vec<&str> = line.sees().to_vec();
+    if line.reads_providers() {
+        sees.extend(known.providers.iter().map(String::as_str));
+    }
+    let mut found = refused(src, line);
+    if line.client() {
+        found.extend(imports(src).into_iter().filter_map(|import| match import {
+            Import::Named(name)
+                if library(&name).is_some_and(|address| !known.libraries.contains(&address)) =>
+            {
+                Some(Finding::Unknown(format!(
+                    "unknown macro library '{name}' (no layer declares it)"
+                )))
+            }
+            _ => None,
+        }));
+    }
+    found.extend(cached(src, line));
+    // A line that reads any namespace by name may read one a `put` makes,
+    // which the configuration never names: say so, or it reads as a typo.
+    let unless = if line.reads_providers() {
+        "no provider has it, so it is absent unless a put makes it; "
+    } else {
+        ""
+    };
+    found.extend(
+        names
+            .into_iter()
+            .filter(|name| !sees.contains(&name.as_str()))
+            .map(|name| {
+                Finding::Unknown(format!(
+                    "unknown name '{name}' ({unless}this line sees {})",
+                    sees.join(", ")
+                ))
+            }),
+    );
+    if line.reads_providers() && !line.client() {
+        found.extend(template_only(probe, src, line, known.templates));
+    }
+    found
+}
+
+/// Each value `src`, a `line` the daemon renders, reads that only a client
+/// template gives: by name or through `comb`, at a template's address or
+/// below it. The daemon stores nothing there, so the read is always absent
+/// unless a put makes it: a warning, as a name no provider has is.
+fn template_only(probe: &Probe<'_>, src: &str, line: Line, templates: &[String]) -> Vec<Finding> {
+    let Ok(reads) = super::undeclared_names(probe, src, true) else {
+        return Vec::new();
+    };
+    reads
+        .into_iter()
+        .filter(|read| {
+            let address = read.strip_prefix("comb.").unwrap_or(read);
+            let head = address.split('.').next().unwrap_or_default();
+            (read.starts_with("comb.") || !line.sees().contains(&head))
+                && templates.iter().any(|t| {
+                    address == t
+                        || address
+                            .strip_prefix(t.as_str())
+                            .is_some_and(|below| below.starts_with('.'))
+                })
+        })
+        .map(|read| {
+            Finding::Unknown(format!(
+                "{read} is only a client template's value: a Source reads what the daemon \
+                 stores, where it is absent unless a put makes it"
+            ))
+        })
+        .collect()
+}
+
+/// Each statement of `src` a `line` may not hold, whether or not it compiles:
+/// `include`, `extends` and `block` anywhere (text is reused with a macro);
+/// an import on a line the daemon renders; on a client's, an import whose
+/// name is not a macro library's address written as a string; and in a
+/// macro library, anything printed outside its macros.
+pub fn refused(src: &str, line: Line) -> Vec<Finding> {
+    let mut found: Vec<Finding> = scan::engine_tags(src)
+        .into_iter()
+        .filter(|tag| tag.kind == TagKind::Statement)
+        .filter_map(|tag| match scan::statement(tag.body).0 {
+            keyword @ ("include" | "extends" | "block") => Some(Finding::Compile(format!(
+                "{{% {keyword} %}} is refused: text is reused with a macro"
+            ))),
+            _ => None,
+        })
+        .collect();
+    if line == Line::Macro && prints(src) {
+        found.push(Finding::Compile(
+            "a macro library prints nothing: its text, {{ }} and {% call %} belong inside a \
+             {% macro %}"
+                .into(),
+        ));
+    }
+    let imports = imports(src);
+    if !line.client() {
+        if !imports.is_empty() {
+            found.push(Finding::Compile(format!(
+                "macros are client templates: {} cannot import",
+                line.whose()
+            )));
+        }
+        return found;
+    }
+    for import in imports {
+        match import {
+            Import::Computed(body) => found.push(Finding::Compile(format!(
+                "{{% {body} %}}: an import names its library as a string, \"<p>:macro.<name>\""
+            ))),
+            Import::Named(name) if library(&name).is_none() => {
+                found.push(Finding::Compile(format!(
+                    "'{name}' is not a macro library: an import names one \"<p>:macro.<name>\""
+                )))
+            }
+            Import::Named(_) => {}
+        }
+    }
+    found
+}
+
+/// What `src`'s `cache()`, `watch()` and `ttl()` say, as a `line`.
+///
+/// On a client template a cached leaf is one expression, after statements or
+/// not: a text around a cached pipeline would be rendered before it could be
+/// skipped, and served whole from a memo. A `cache()` that ends its tag
+/// stores a value already computed, which is legal and pointless. On a
+/// Source's lines the three are a client template's, and refused by name; a
+/// `return`'s `watch` and `ttl` are its decorators, and not read here.
+fn cached(src: &str, line: Line) -> Vec<Finding> {
+    let used = used_names(src);
+    if line.source() {
+        return first_refused(Surface::Source, |n| used.contains_key(n))
+            .map(|item| {
+                Finding::Compile(format!(
+                    "{}(): a client template's filter; a Source's records are the daemon's",
+                    item.name
+                ))
+            })
+            .into_iter()
+            .collect();
+    }
+    if !line.client() || !used.contains_key("cache") {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    if line == Line::Template && matches!(analyze(src), Analysis::Template) {
+        found.push(Finding::Compile(
+            "a cached leaf is one expression: {{ … | cache() | … }}".into(),
+        ));
+    }
+    if cache_ends_a_tag(src) {
+        found.push(Finding::Unknown(
+            "cache() with nothing after it stores a value already computed".into(),
+        ));
+    }
+    found
+}
+
+/// Whether a `{{ }}` of `src` ends with a `| cache(...)`, nothing after it.
+fn cache_ends_a_tag(src: &str) -> bool {
+    scan::engine_tags(src)
+        .into_iter()
+        .filter(|tag| tag.kind == TagKind::Expression)
+        .any(|tag| {
+            let body = without_call(tag.body.trim_end());
+            body.strip_suffix("cache")
+                .is_some_and(|before| before.trim_end().ends_with('|'))
+        })
+}
+
+/// `text` without the argument list it ends with, when it ends with one.
+fn without_call(text: &str) -> &str {
+    if !text.ends_with(')') {
+        return text;
+    }
+    let (mut depth, mut quote, mut open) = (0i32, None, None);
+    for (i, c) in text.char_indices() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '(') => {
+                if depth == 0 {
+                    open = Some(i);
+                }
+                depth += 1;
+            }
+            (None, ')') => depth -= 1,
+            _ => {}
+        }
+    }
+    open.map_or(text, |at| text[..at].trim_end())
+}
+
+/// Whether `src`, a macro library, prints anything outside its macros: text
+/// that is not whitespace, a `{{ }}` or a `{% call %}` where it stands, outside
+/// every body that prints nothing there ([`scan::capture`]).
+fn prints(src: &str) -> bool {
+    let mut depth = 0usize;
+    let mut at = 0;
+    for tag in scan::engine_tags(src) {
+        if depth == 0 && !src[at..tag.start].trim().is_empty() {
+            return true;
+        }
+        at = tag.end;
+        match tag.kind {
+            TagKind::Expression if depth == 0 => return true,
+            TagKind::Statement => {
+                if depth == 0 && scan::statement(tag.body).0 == "call" {
+                    return true;
+                }
+                depth = scan::capture(tag.body).depth(depth);
+            }
+            TagKind::Comment | TagKind::Expression => {}
+        }
+    }
+    depth == 0 && !src[at..].trim().is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn probe() -> Probe<'static> {
+        Probe::new(crate::engine::build_engine_env(Default::default()))
+    }
+
+    /// `src` linted as a `line` that knows of no provider.
+    fn lint_as(src: &str, line: Line) -> Vec<Finding> {
+        lint(&probe(), src, line, &Known::default())
+    }
+
+    fn compile_findings(src: &str, line: Line) -> Vec<String> {
+        lint_as(src, line)
+            .into_iter()
+            .filter_map(|f| match f {
+                Finding::Compile(m) => Some(m),
+                Finding::Unknown(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_line_that_reads_only_what_it_sees_is_clean() {
+        assert_eq!(
+            lint_as("{{ env.HOME ~ comb.git.branch | upper }}", Line::Template),
+            vec![]
+        );
+        assert_eq!(lint_as("plain text", Line::Result), vec![]);
+        assert_eq!(
+            lint_as("{% set x = 1 %}{{ x }}", Line::Result),
+            vec![],
+            "a name the line declares is not one it reads"
+        );
+    }
+
+    #[test]
+    fn each_name_a_line_does_not_see_is_a_finding_in_name_order() {
+        let found = lint_as("{{ b.x ~ a ~ env.X }}", Line::Root);
+        let shown: Vec<String> = found.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            shown,
+            [
+                "unknown name 'a' (this line sees env, _)",
+                "unknown name 'b' (this line sees env, _)"
+            ]
+        );
+        assert!(found.iter().all(|f| matches!(f, Finding::Unknown(_))));
+    }
+
+    /// A client line reading a name no provider has may be reading a
+    /// namespace a `put` makes (`comb put team.name x`), which no
+    /// configuration can see: the finding says so, so it does not read as a
+    /// plain typo. A `data` line's says so too (above); a daemon line that
+    /// reads no namespace by name does not.
+    #[test]
+    fn a_client_lines_unknown_name_says_a_put_may_make_it() {
+        for line in [Line::Template, Line::Macro] {
+            let src = if line == Line::Macro {
+                "{% macro m() %}{{ team.name }}{% endmacro %}"
+            } else {
+                "{{ team.name }}"
+            };
+            let shown: Vec<String> = lint_as(src, line).iter().map(ToString::to_string).collect();
+            assert_eq!(
+                shown,
+                [
+                    "unknown name 'team' (no provider has it, so it is absent unless a put makes \
+                  it; this line sees env, comb)"
+                ],
+                "{line:?}"
+            );
+        }
+    }
+
+    /// A client template and a Source's `data` line read the providers their
+    /// caller knows by name, the lines that read `comb`; no other line does.
+    #[test]
+    fn a_template_and_a_data_line_read_the_providers_their_caller_knows() {
+        let providers = ["git".to_string()];
+        let known = Known {
+            providers: &providers,
+            ..Known::default()
+        };
+        for line in [Line::Template, Line::Data] {
+            assert_eq!(
+                lint(&probe(), "{{ git.branch }}", line, &known),
+                vec![],
+                "{line:?}"
+            );
+        }
+        for line in [Line::Root, Line::Result, Line::Return] {
+            assert!(
+                matches!(
+                    lint(&probe(), "{{ git.branch }}", line, &known).as_slice(),
+                    [Finding::Unknown(_)]
+                ),
+                "{line:?}"
+            );
+        }
+        let shown: Vec<String> = lint_as("{{ team.name }}", Line::Data)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "unknown name 'team' (no provider has it, so it is absent unless a put makes it; \
+              this line sees env, comb, sources, daemon, _)"
+            ],
+            "a data line reads a put's namespace by name, as a template does"
+        );
+    }
+
+    /// A line's own words win over a provider of the same name, on either
+    /// side: in a `data` line `sources` and `daemon` call Sources whatever
+    /// providers there are (`comb.<name>` reads such a provider), and in a
+    /// template, whose words `env` and `comb` no provider may take, both are
+    /// providers like any other.
+    #[test]
+    fn a_lines_own_words_win_over_a_provider_of_that_name() {
+        let providers = ["sources".to_string(), "daemon".to_string()];
+        let known = Known {
+            providers: &providers,
+            ..Known::default()
+        };
+        let src = "{{ sources.x ~ daemon.y }}";
+        assert_eq!(lint(&probe(), src, Line::Template, &known), vec![]);
+        assert_eq!(
+            lint(&probe(), src, Line::Data, &known),
+            vec![],
+            "its own words: lint_data says how a Source is called"
+        );
+        for word in ["env", "comb"] {
+            assert!(crate::key::reserved(word).is_some(), "{word}");
+        }
+    }
+
+    /// A value only a client template gives is never in the daemon: a `data`
+    /// line reading one, by name or through `comb`, is told it is absent
+    /// there unless a put makes it. A template reads it rendered, and
+    /// `comb.<p>.<f>` there is the value under the template, which a put may
+    /// give: neither is a finding.
+    #[test]
+    fn a_data_line_reading_a_template_only_value_is_told_so() {
+        let providers = ["aws".to_string()];
+        let templates = ["aws.profile".to_string()];
+        let known = Known {
+            providers: &providers,
+            templates: &templates,
+            ..Known::default()
+        };
+        let src = "{{ aws.profile ~ (comb.aws.profile | upper) ~ aws.region ~ aws.profile.x }}";
+        let shown: Vec<String> = lint(&probe(), src, Line::Data, &known)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let only = |read: &str| {
+            format!(
+                "{read} is only a client template's value: a Source reads what the daemon \
+                 stores, where it is absent unless a put makes it"
+            )
+        };
+        assert_eq!(
+            shown,
+            [
+                only("aws.profile"),
+                only("aws.profile.x"),
+                only("comb.aws.profile")
+            ]
+        );
+        assert!(
+            lint(&probe(), src, Line::Data, &known)
+                .iter()
+                .all(|f| matches!(f, Finding::Unknown(_)))
+        );
+        assert_eq!(lint(&probe(), src, Line::Template, &known), vec![]);
+    }
+
+    #[test]
+    fn a_line_that_does_not_compile_is_that_alone() {
+        for src in ["{{ nope ", "a {{ nope b", "{% include 'x' %}{{ nope "] {
+            let found = lint_as(src, Line::Template);
+            assert!(
+                matches!(found.as_slice(), [Finding::Compile(_)]),
+                "{src}: {found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_function_or_filter_is_not_a_name() {
+        assert_eq!(
+            lint_as(
+                "{{ lup('.git') ~ ('{}' | fromjson | length) }}",
+                Line::Result
+            ),
+            vec![]
+        );
+        // Every item of the library is a call, whatever its tier: `stat` is no name.
+        for line in [Line::Root, Line::Data, Line::Result, Line::Template] {
+            assert_eq!(
+                lint_as("{{ ('x' | stat).size ~ ('*' | glob | length) }}", line),
+                vec![],
+                "{line:?}"
+            );
+        }
+    }
+
+    /// The one table of what each kind of line reads.
+    #[test]
+    fn what_each_line_sees() {
+        let table: Vec<(Line, &[&str])> = Line::ALL.iter().map(|l| (*l, l.sees())).collect();
+        assert_eq!(
+            table,
+            [
+                (Line::Template, &["env", "comb"][..]),
+                (Line::Macro, &["env", "comb"][..]),
+                (Line::Root, &["env", "_"][..]),
+                (Line::Data, &["env", "comb", "sources", "daemon", "_"][..]),
+                (Line::Result, &["data", "_"][..]),
+                (Line::Return, &["result", "_"][..]),
+                (Line::ProviderTemplate, &["client", "_"][..]),
+                (Line::ProviderResult, &["sources", "daemon", "_"][..]),
+                (
+                    Line::ProviderReturn,
+                    &["result", "template", "daemon", "_"][..]
+                ),
+            ]
+        );
+    }
+
+    /// There is one way to reuse text, a macro: `include`, `extends` and
+    /// `block` are compile findings on every line, though the engine parses
+    /// them.
+    #[test]
+    fn include_extends_and_block_are_refused_everywhere() {
+        for (src, keyword) in [
+            ("{% include 'p:macro.x' %}", "include"),
+            ("{% extends 'p:macro.x' %}", "extends"),
+            ("{%- block b -%}{%- endblock -%}", "block"),
+        ] {
+            assert!(probe().env().template_from_str(src).is_ok(), "{src} parses");
+            for line in Line::ALL {
+                assert_eq!(
+                    compile_findings(src, line),
+                    [format!(
+                        "{{% {keyword} %}} is refused: text is reused with a macro"
+                    )],
+                    "{src} as {line:?}"
+                );
+            }
+        }
+        for src in [
+            "{% raw %}{% include 'x' %}{% endraw %}",
+            "{# {% include 'x' %} #}",
+            "{{ 'include' }}{% set block = 1 %}{{ block }}",
+        ] {
+            assert_eq!(
+                compile_findings(src, Line::Template),
+                Vec::<String>::new(),
+                "{src}"
+            );
+        }
+    }
+
+    /// A macro defined and called within one text runs on every surface that
+    /// prints (a library prints nothing, below); importing a library is the
+    /// client's alone.
+    #[test]
+    fn an_import_is_refused_in_a_daemon_line() {
+        let inline =
+            "{% macro m(x) %}<{{ x }}>{% endmacro %}{% call m(1) %}{% endcall %}{{ m(2) }}";
+        for line in Line::ALL.into_iter().filter(|l| *l != Line::Macro) {
+            assert_eq!(
+                compile_findings(inline, line),
+                Vec::<String>::new(),
+                "{line:?}"
+            );
+        }
+        for src in [
+            "{% import 'p:macro.x' as x %}{{ x.m() }}",
+            "{% from \"p:macro.x\" import m %}{{ m() }}",
+            "{% import name as x %}",
+        ] {
+            for (line, whose) in [
+                (Line::Root, "a Source's line"),
+                (Line::Data, "a Source's line"),
+                (Line::Result, "a Source's line"),
+                (Line::Return, "a Source's line"),
+                (Line::ProviderTemplate, "a provider's line"),
+                (Line::ProviderResult, "a provider's line"),
+                (Line::ProviderReturn, "a provider's line"),
+            ] {
+                assert_eq!(
+                    compile_findings(src, line),
+                    [format!(
+                        "macros are client templates: {whose} cannot import"
+                    )],
+                    "{src} as {line:?}"
+                );
+            }
+        }
+    }
+
+    /// A client template imports a library by its address, written as a
+    /// string: never a computed name, never an address that is not one.
+    #[test]
+    fn a_template_import_names_a_macro_library_literally() {
+        for src in [
+            "{% import 'scanline:macro.rate' as rate %}{{ rate.row() }}",
+            "{% from \"scanline:macro.usage\" import usage %}{{ usage() }}",
+            "{%- from 'p:macro.x' import a as b, c with context -%}{{ b() ~ c() }}",
+            "{% import \"p:macro.x\" as x without context %}",
+            r#"{% import "p:macro\u002ex" as x %}"#,
+        ] {
+            assert_eq!(
+                compile_findings(src, Line::Template),
+                Vec::<String>::new(),
+                "{src}"
+            );
+        }
+        for (src, why) in [
+            (
+                "{% import name as x %}",
+                "{% import name as x %}: an import names its library as a string, \
+                 \"<p>:macro.<name>\"",
+            ),
+            (
+                "{% from 'p:macro.' ~ n import m %}",
+                "{% from 'p:macro.' ~ n import m %}: an import names its library as a string, \
+                 \"<p>:macro.<name>\"",
+            ),
+            (
+                "{% import 'p:template.x' as x %}",
+                "'p:template.x' is not a macro library: an import names one \"<p>:macro.<name>\"",
+            ),
+            (
+                "{% import 'p:macro' as x %}",
+                "'p:macro' is not a macro library: an import names one \"<p>:macro.<name>\"",
+            ),
+            (
+                "{% import 'p:macro.a.b' as x %}",
+                "'p:macro.a.b' is not a macro library: an import names one \"<p>:macro.<name>\"",
+            ),
+            (
+                "{% import 'env:macro.a' as x %}",
+                "'env:macro.a' is not a macro library: an import names one \"<p>:macro.<name>\"",
+            ),
+        ] {
+            assert_eq!(compile_findings(src, Line::Template), [why], "{src}");
+        }
+    }
+
+    /// A macro library defines macros: whitespace, statements and what a
+    /// macro or a block `{% set %}` holds print nothing; text, a `{{ }}` or a
+    /// `{% call %}` outside them would.
+    #[test]
+    fn a_macro_library_prints_nothing() {
+        for src in [
+            "",
+            "\n{%- macro a(x) -%}\n  <{{ x }}>{{ caller() if caller }}\n{%- endmacro -%}\n",
+            "{% set w = env.W | int %}{% set ns = namespace(d={}) %}\
+             {% for n in ['a', 'b'] %}{% set ns.d = ns.d | merge({n: w}) %}{% endfor %}\
+             {% macro m() %}{% macro inner() %}i{% endmacro %}{{ inner() }}{% endmacro %}",
+            "{% set block %}captured {{ 1 }}{% endset %}{% set x | upper %}y{% endset %}",
+            "{% set eq = (1 == 1) %}{% set ne = 1 != 2 %}{% set s = 'a=b' %}",
+            "{% from 'p:macro.x' import a %}{% import 'p:macro.y' as y %}{# note #}",
+        ] {
+            assert_eq!(
+                compile_findings(src, Line::Macro),
+                Vec::<String>::new(),
+                "{src}"
+            );
+        }
+        let prints = "a macro library prints nothing: its text, {{ }} and {% call %} belong \
+                      inside a {% macro %}";
+        for src in [
+            "text",
+            "{% macro m() %}{% endmacro %} trailing",
+            "{{ 1 }}",
+            "{% macro m() %}{% endmacro %}{% call m() %}{% endcall %}",
+            "{% if true %}x{% endif %}",
+            "{% raw %}{{ x }}{% endraw %}",
+        ] {
+            assert_eq!(compile_findings(src, Line::Macro), [prints], "{src}");
+            assert_eq!(
+                compile_findings(src, Line::Template),
+                Vec::<String>::new(),
+                "a template prints: {src}"
+            );
+        }
+    }
+
+    /// A cached leaf is one expression, after statements or not; text around
+    /// it is a compile finding, on a template and not in a library.
+    #[test]
+    fn a_cached_leaf_must_be_one_expression() {
+        for src in [
+            "{{ 'k' | cache() | exec() }}",
+            "{% set c = 'k' %}{{ c | watch('~/f') | cache(env.K) | exec() }}",
+            "{{ 'cache(' ~ 'x' }} text",
+        ] {
+            assert_eq!(
+                compile_findings(src, Line::Template),
+                Vec::<String>::new(),
+                "{src}"
+            );
+        }
+        for src in [
+            "ctx: {{ 'k' | cache() | exec() }}",
+            "{{ 'k' | cache() | exec() }}{{ 1 }}",
+        ] {
+            assert_eq!(
+                compile_findings(src, Line::Template),
+                ["a cached leaf is one expression: {{ … | cache() | … }}"],
+                "{src}"
+            );
+        }
+        assert_eq!(
+            compile_findings(
+                "{% macro m() %}{{ 'k' | cache() | exec() }}{% endmacro %}",
+                Line::Macro
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    /// A `cache()` with nothing lazy after it is a warning.
+    #[test]
+    fn cache_with_nothing_after_it_warns() {
+        let warned = Finding::Unknown(
+            "cache() with nothing after it stores a value already computed".into(),
+        );
+        for src in [
+            "{{ env.V | ttl('1h') | cache() }}",
+            "{{- env.V | cache -}}",
+            "{{ env.V | cache(env.X, ')') }}",
+            "{% macro m() %}{{ env.X | cache() }}{% endmacro %}",
+        ] {
+            let line = if src.starts_with("{% macro") {
+                Line::Macro
+            } else {
+                Line::Template
+            };
+            assert_eq!(lint_as(src, line), std::slice::from_ref(&warned), "{src}");
+        }
+        for src in [
+            "{{ 'k' | cache() | exec() }}",
+            "{{ exec('k' | cache()) }}",
+            "{{ ('k' | cache() | exec()) or none }}",
+        ] {
+            assert_eq!(lint_as(src, Line::Template), [], "{src}");
+        }
+    }
+
+    /// `cache()`, and `watch()` and `ttl()` as filters, are a client
+    /// template's: on a Source's lines they are a load error by name. A
+    /// `return` line's `watch` and `ttl` are its decorators.
+    #[test]
+    fn a_source_line_cannot_cache() {
+        for (src, name) in [
+            ("{{ 'k' | cache() | exec() }}", "cache"),
+            ("{{ 'k' | watch('/f') | exec() }}", "watch"),
+            ("{{ data | ttl('1m') }}", "ttl"),
+        ] {
+            for line in [Line::Root, Line::Data, Line::Result] {
+                assert_eq!(
+                    compile_findings(src, line),
+                    [format!(
+                        "{name}(): a client template's filter; a Source's records are the daemon's"
+                    )],
+                    "{src} as {line:?}"
+                );
+            }
+        }
+        assert_eq!(
+            compile_findings("{{ result | watch('/f') | ttl('1m') }}", Line::Return),
+            Vec::<String>::new()
+        );
+    }
+
+    /// A client line importing a library no layer declares is told so, as
+    /// an unknown finding: a later `put` may declare it.
+    #[test]
+    fn an_import_of_a_library_no_layer_declares_is_unknown() {
+        let libraries = ["p:macro.x".to_string()];
+        let known = Known {
+            libraries: &libraries,
+            ..Known::default()
+        };
+        let src = "{% from \"p:macro['x']\" import a %}{% from 'p:macro.y' import b %}\
+                   {% macro c() %}{{ a() ~ b() }}{% endmacro %}";
+        for line in [Line::Template, Line::Macro] {
+            let found = lint(&probe(), src, line, &known);
+            assert_eq!(
+                found,
+                [Finding::Unknown(
+                    "unknown macro library 'p:macro.y' (no layer declares it)".into()
+                )],
+                "{line:?}"
+            );
+        }
+    }
+}

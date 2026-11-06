@@ -88,4 +88,4 @@ comb s
 - **Theme not found:** ensure the file is at exactly `~/.oh-my-zsh/custom/themes/beachcomber.zsh-theme` (not inside a subdirectory).
 - **Plugin not loading:** `plugins=(beachcomber)` must appear in `~/.zshrc` before the `source $ZSH/oh-my-zsh.sh` line.
 
-See the [Troubleshooting](./troubleshooting.md) guide for general diagnostics.
+See the [Troubleshooting](../getting-started/troubleshooting.md) guide for general diagnostics.

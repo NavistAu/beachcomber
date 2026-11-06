@@ -8,7 +8,7 @@ sidebar_position: 10
 
 Neovim statuslines re-evaluate on every redraw. Traditional approaches — running `git branch`, parsing `kubectl config current-context`, or reading battery files — add latency on each redraw cycle. beachcomber eliminates that cost: cached data is returned in microseconds over a persistent Unix socket connection.
 
-The Lua SDK auto-detects neovim and uses `vim.uv` (neovim's built-in libuv bindings) for non-blocking socket access. No external dependencies are required inside neovim. Outside neovim, the SDK falls back to luasocket if available, or shells out to `comb` as a last resort.
+The Lua SDK has two transports. Under LuaJIT — which neovim always ships — it uses `ffi` to call straight into the shared `libbeachcomber` C library (~0.3 ms per call), so no external dependencies are required inside neovim. Under PUC Lua 5.1–5.4, which has no `ffi`, it falls back to shelling out to the `comb` binary (~5 ms per call). `client:transport()` reports which one is active.
 
 ## Prerequisites
 
@@ -58,49 +58,41 @@ This module has the same interface as the SDK-based version below, so lualine an
 
 ## With the Lua SDK
 
-The SDK uses `vim.uv` for non-blocking socket access — no process forking. This is the recommended approach if you can install the SDK.
+Inside neovim the SDK binds `libbeachcomber` through LuaJIT's `ffi` — no process forking, sub-millisecond calls. This is the recommended approach if you can install the SDK.
 
-The SDK exposes a single `connect()` call that returns a persistent client. Call `client:get(key, path)` to retrieve a value. The second argument is the working directory path and is required for providers like `git` that are path-scoped.
+The SDK exposes a single `connect()` call that returns a persistent client. Call `client:get(key, { cwd = ... })` to read a value: it returns what `comb get` prints in that directory, or `nil` on a miss. `cwd` is the working directory, and rooted providers like `git` need it; without one the read addresses the global entry. A template-backed key such as `kubecontext.context` is rendered the way `comb get` renders it; `kubecontext` calls `kubectl` through `exec()`, so connect with `exec = true`.
 
 Create a helper module so the same client is reused across your config:
 
 ```lua
 -- lua/beachcomber-status.lua
 local comb = require('beachcomber')
-local client = comb.connect()
+local client = comb.connect({ exec = true })
 
 local M = {}
 
 function M.git_branch()
-    local result = client:get('git.branch', vim.fn.getcwd())
-    if result and result:is_hit() then
-        return result.data
-    end
-    return ''
+    return client:get('git.branch', { cwd = vim.fn.getcwd() }) or ''
 end
 
 function M.git_dirty()
-    local result = client:get('git.dirty', vim.fn.getcwd())
-    if result and result:is_hit() and result.data == true then
+    if client:get('git.dirty', { cwd = vim.fn.getcwd() }) == true then
         return '*'
     end
     return ''
 end
 
 function M.battery()
-    local result = client:get('battery.percent')
-    if result and result:is_hit() then
-        return result.data .. '%'
+    local percent = client:get('battery.percent')
+    if percent then
+        return percent .. '%'
     end
     return ''
 end
 
 function M.kube()
-    local result = client:get('kubecontext.context')
-    if result and result:is_hit() then
-        return result.data
-    end
-    return ''
+    -- a template, not a cached field: get renders it (kubectl via exec())
+    return client:get('kubecontext.context', { cwd = vim.fn.getcwd() }) or ''
 end
 
 return M
@@ -221,7 +213,7 @@ local GitBranch = {
 ## Troubleshooting
 
 - **SDK not found:** if `require('beachcomber')` fails, the SDK is not on neovim's `package.path`. Check `:lua print(package.path)` and ensure the SDK's location is included.
-- **Verify from neovim command line:** `:lua print(require('beachcomber').connect():get('git.branch', vim.fn.getcwd()).data)` should print the branch name. If it prints `nil`, the daemon is not running or the socket cannot be found.
+- **Verify from neovim command line:** `:lua print(require('beachcomber').connect():get('git.branch', { cwd = vim.fn.getcwd() }))` should print the branch name. If it prints `nil`, the daemon is not running or the socket cannot be found.
 - **Without the SDK:** the `vim.fn.system()` approach has no dependency to troubleshoot — if `comb g git.branch .` works in your terminal, it works in neovim.
 
-See the [Troubleshooting](./troubleshooting.md) guide for general diagnostics.
+See the [Troubleshooting](../getting-started/troubleshooting.md) guide for general diagnostics.

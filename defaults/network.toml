@@ -1,0 +1,11 @@
+[daemon.providers.network.sources.interfaces]
+# The network, from the sys plugin (getifaddrs): the IPv4 address of the preferred interface (an en* one on macOS, the default route's in /proc/net/route on Linux) or else of the first with a routable one, the first routable IPv6 address, the first VPN interface, the Wi-Fi SSID, and whether there is an address at all. Polled every 10 seconds while read; backed off from 30 seconds after repeated failures.
+data = "{{ plugin('sys', 'network') }}"
+result.interface = "{{ data.interface }}"
+result.ip = "{{ data.ip }}"
+result.ipv6 = "{{ data.ipv6 }}"
+result.vpn_active = "{{ data.vpn_active }}"
+result.vpn_name = "{{ data.vpn_name }}"
+result.ssid = "{{ data.ssid }}"
+result.online = "{{ data.online }}"
+return = "{{ result | poll('10s', 6) | failback('30s', 3) }}"

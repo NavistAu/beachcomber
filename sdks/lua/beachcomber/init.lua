@@ -21,10 +21,8 @@
 --   local comb = require('beachcomber')
 --   local client, err = comb.connect()
 --   if not client then error(tostring(err)) end
---   local result = client:get('git.branch', '/my/repo')
---   if result:is_hit() then
---       print(result.data)
---   end
+--   local branch = client:get('git.branch', { cwd = '/my/repo' }) -- nil on a miss
+--   if branch then print(branch) end
 --   client:close()
 --
 -- Requires LuaJIT (ffi transport) or a `comb` binary on $PATH (subprocess
@@ -41,10 +39,22 @@ local M = {}
 --   opts.backend       table   Override transport selection entirely (advanced/tests) —
 --                               must satisfy the backend interface documented in
 --                               beachcomber.client.
---   opts.socket_path   string  ffi transport: override daemon socket discovery.
---   opts.timeout_ms    number  ffi transport: per-call timeout.
+--   opts.socket_path   string  override daemon socket discovery.
+--   opts.timeout_ms    number  ffi transport: how long one read or write on the
+--                               socket may take, in ms. Left out, the library's
+--                               default (250); this SDK has none. 0 is refused.
+--   opts.connect_timeout_ms number  ffi transport: how long connecting keeps
+--                               retrying, in ms; 0 is one attempt. Left out, the
+--                               library's default (1500).
+--                               The subprocess transport refuses both timeouts
+--                               (connect returns nil, an "unsupported" Error):
+--                               io.popen cannot bound a spawned comb.
 --   opts.autostart     boolean ffi transport: auto-spawn the daemon on demand.
---   opts.library_path  string  ffi transport: override library discovery entirely.
+--   opts.exec          boolean whether a template this client renders (get/eval)
+--                               may call exec(). Off by
+--                               default: a template that calls it then fails with
+--                               "exec() is disabled in this context".
+--   opts.library_path  string  ffi transport: as $BEACHCOMBER_LIB, the only candidate.
 --   opts.comb_bin      string  subprocess transport: override `comb` discovery.
 --
 -- @return Client, or nil, Error
@@ -74,7 +84,7 @@ M.discovery   = require("beachcomber.discovery")
 M.json        = require("beachcomber.json")
 M.Error       = require("beachcomber.error")
 M.Client      = client_mod.Client
-M.Result      = client_mod.Result
+M.Session     = client_mod.Session
 M.WatchStream = require("beachcomber.watch_stream")
 
 --- Sentinel for a JSON null value nested inside put()'d data or a value
@@ -82,10 +92,10 @@ M.WatchStream = require("beachcomber.watch_stream")
 -- Lua cannot store a plain nil as a table value (the key would just be
 -- absent), so this stands in for it: `data = {v = comb.null}` puts a real
 -- null under "v", and a decoded field can be tested with
--- `value == comb.null` / `comb.json.is_null(value)`. A `Result.data` that
--- is Lua `nil` still means "cache miss" as always — the daemon has no way
--- to store an actual null value (see beachcomber.json's M.NULL doc
--- comment), so this sentinel never appears there.
+-- `value == comb.null` / `comb.json.is_null(value)`. A `get` that answers
+-- Lua `nil` still means "a miss" as always — the daemon has no way to
+-- store an actual null value (see beachcomber.json's M.NULL doc comment),
+-- so this sentinel is never a get's whole answer.
 M.null = M.json.NULL
 
 return M

@@ -1,4 +1,5 @@
 use beachcomber::cache::Cache;
+use beachcomber::cache::Schedule;
 use beachcomber::provider::Value;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::collections::HashMap;
@@ -34,7 +35,7 @@ fn git_status_fields() -> HashMap<String, Value> {
 
 fn bench_cache_read_global(c: &mut Criterion) {
     let cache = Cache::new();
-    cache.put_source("hostname", None, "host", host_fields(), None);
+    cache.put_source("hostname", None, "host", host_fields(), Schedule::default());
 
     c.bench_function("cache_read_global", |b| {
         b.iter(|| {
@@ -51,7 +52,7 @@ fn bench_cache_read_path_scoped(c: &mut Criterion) {
         Some("/home/user/project"),
         "refs",
         git_refs_fields(),
-        Some(120),
+        Schedule::poll(120, 1),
     );
 
     c.bench_function("cache_read_path_scoped", |b| {
@@ -67,14 +68,14 @@ fn bench_cache_write(c: &mut Criterion) {
 
     c.bench_function("cache_write", |b| {
         b.iter(|| {
-            cache.put_source("hostname", None, "host", host_fields(), None);
+            cache.put_source("hostname", None, "host", host_fields(), Schedule::default());
         })
     });
 }
 
 fn bench_cache_read_contention(c: &mut Criterion) {
     let cache = Arc::new(Cache::new());
-    cache.put_source("hostname", None, "host", host_fields(), None);
+    cache.put_source("hostname", None, "host", host_fields(), Schedule::default());
 
     let mut group = c.benchmark_group("cache_read_contention");
     for num_threads in [1, 4, 8, 16] {
@@ -113,14 +114,14 @@ fn bench_cache_field_extraction(c: &mut Criterion) {
         Some("/project"),
         "refs",
         git_refs_fields(),
-        Some(120),
+        Schedule::poll(120, 1),
     );
     cache.put_source(
         "git",
         Some("/project"),
         "status",
         git_status_fields(),
-        Some(60),
+        Schedule::poll(60, 1),
     );
 
     let mut group = c.benchmark_group("cache_field_extraction");

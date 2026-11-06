@@ -65,7 +65,7 @@ format = <label>
 label = up %output%
 ```
 
-Global providers (battery, load, network, kubecontext, uptime) do not take a path argument. Path-scoped providers (git, terraform, etc.) take the target directory as a second argument — `.` means the current working directory, but since polybar runs scripts without a meaningful working directory you should pass an explicit path:
+Providers with no root (battery, load, network, uptime) need no path argument, nor does the `kubecontext` template (it asks `kubectl` for the current context, which is not directory-scoped). Rooted providers (git, terraform, etc.) take the target directory as a second argument — `.` means the current working directory, but since polybar runs scripts without a meaningful working directory you should pass an explicit path:
 
 ```ini
 [module/git-branch]
@@ -91,7 +91,7 @@ polybar's `interval` is in seconds. With beachcomber, setting `interval = 1` is 
 
 ## Troubleshooting
 
-- **Path-scoped providers return wrong data:** bar programs often run scripts without a defined working directory. `.` resolves to wherever the bar process started. Always pass an absolute path for path-scoped providers like `git` and `terraform`.
+- **Rooted providers return wrong data:** bar programs often run scripts without a defined working directory. `.` resolves to wherever the bar process started. Always pass an absolute path for rooted providers like `git` and `terraform`.
 - **Distinguishing "no data" from "daemon down":** add a fallback to your exec: `comb g git.branch /path || echo '--'`. If you see `--`, the daemon is not running or the key does not exist.
 
-See the [built-in providers reference](../reference/built-in-providers.md) for the full list of providers and fields, and the [general troubleshooting guide](./troubleshooting.md).
+See the [built-in providers reference](../providers/built-in-providers.md) for the full list of providers and fields, and the [general troubleshooting guide](../getting-started/troubleshooting.md).

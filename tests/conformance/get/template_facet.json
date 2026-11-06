@@ -1,0 +1,26 @@
+{
+  "name": "get_the_template_facet_reads_the_template_as_stored",
+  "description": "The unrendered half is a facet, read like any key: fx4:template.t is the template text as put.",
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "fx4:template",
+        "data": {
+          "t": "{{ env.A }}"
+        }
+      }
+    }
+  ],
+  "test": {
+    "op": "get",
+    "args": {
+      "key": "fx4:template.t"
+    }
+  },
+  "expect": {
+    "status": "hit",
+    "data_type": "string",
+    "data_equals": "{{ env.A }}"
+  }
+}

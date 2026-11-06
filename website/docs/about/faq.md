@@ -35,7 +35,7 @@ You can verify the daemon is responsive at any time with `comb s`. If the daemon
 
 Yes. macOS and Linux are both first-class supported platforms. The filesystem watcher uses FSEvents on macOS and inotify on Linux; the battery and network providers have native implementations for both.
 
-A few fields are macOS-specific or depend on optional Linux components — for example, `battery.time_remaining` needs UPower on Linux and reads `"unknown"` if it isn't installed. See the [built-in providers reference](../reference/built-in-providers.md) for per-field platform notes.
+A few fields are platform-specific — for example, `battery.status_raw` (the kernel's own word) is Linux-only, and `network.ssid` is absent on macOS 14.4 and later, which dropped the `airport` tool. See the [built-in providers reference](../providers/built-in-providers.md) for per-field platform notes.
 
 Pre-built Linux binaries (glibc, musl, arm64) and packages (`.deb`, `.rpm`, AUR) are published on every release — see [Installation](../getting-started/installation.md).
 
@@ -47,7 +47,7 @@ If you need per-project isolation (e.g., different config for work vs personal p
 
 ### How do I add a provider for a tool beachcomber doesn't know about?
 
-Write a script provider. See the Custom Providers Guide. If the provider would be useful to everyone (not just your specific setup), consider contributing it as a built-in — see [Contributing](./contributing).
+Write a Source. See the Custom Providers Guide. If the provider would be useful to everyone (not just your specific setup), consider contributing it as a built-in — see [Contributing](./contributing).
 
 ### How do I check what version is running?
 
@@ -64,8 +64,3 @@ comb kill                # stop the running daemon
 comb s                   # triggers socket activation of the new binary
 ```
 
-### What is the `stale` flag in responses?
-
-Each provider has an expected refresh interval. If the cached value is older than that interval plus some tolerance, `stale: true` is set in the response. The value is still returned — beachcomber never blocks a read waiting for fresh data.
-
-Consumers can use `stale` to decide whether to show a loading indicator or use a different visual style. For prompt use, ignoring `stale` is usually the right choice — showing a slightly old branch name is better than blocking the prompt.

@@ -1,0 +1,29 @@
+{
+  "name": "get_a_template_only_node_renders",
+  "description": "A node holding only a template reads as what it renders, with the caller's environment.",
+  "env": {
+    "A": "rendered"
+  },
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "fx:template",
+        "data": {
+          "t": "{{ env.A }}"
+        }
+      }
+    }
+  ],
+  "test": {
+    "op": "get",
+    "args": {
+      "key": "fx.t"
+    }
+  },
+  "expect": {
+    "status": "hit",
+    "data_type": "string",
+    "data_equals": "rendered"
+  }
+}

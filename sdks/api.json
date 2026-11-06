@@ -1,0 +1,41 @@
+{
+  "description": "The SDK API table (docs/sdk-api.md), machine-readable. Every SDK in sdks/ except c (which is the C ABI itself) checks its public surface against this file in its own test suite. Names are snake_case here; each SDK spells them in its language's casing.",
+  "client": {
+    "options": ["socket_path", "timeout_ms", "connect_timeout_ms", "autostart", "exec"],
+    "methods": ["get", "eval", "watch", "put", "refresh", "status", "hello", "introspect", "session", "close"]
+  },
+  "session": {
+    "methods": ["set_context", "get", "put", "refresh", "close"]
+  },
+  "watch_stream": {
+    "methods": ["next_event", "cancel", "close"]
+  },
+  "tiered_client": {
+    "description": "Only an SDK with a subprocess tier (node, lua) has these.",
+    "methods": ["transport"]
+  },
+  "types": {
+    "description": "The typed shapes, field by field: libbeachcomber::protocol's, as bc_status, bc_hello and bc_introspect hand them on (CacheRow's CLI-only `shadowed` never comes over the ABI).",
+    "cache_row": ["provider", "path", "source", "field", "value", "age_ms", "kind", "poll_interval_secs", "poll_count", "polls_elapsed", "next_poll_in_secs", "failure"],
+    "hello_info": ["protocol_version", "daemon_version"],
+    "daemon_health": ["pid", "version", "uptime_secs", "socket_path", "config_path", "requests_total", "in_flight", "active_watchers", "cache_entries", "watch_backend", "reaper", "verdicts"],
+    "reaper_status": ["armed", "visibility", "sweeps", "reaped", "kill_denied"],
+    "verdict": ["level", "message"],
+    "introspect_response": ["subject", "daemon", "other"],
+    "watch_event": ["data"]
+  },
+  "error_fields": ["kind", "message", "library_version"],
+  "error_kinds": [
+    "daemon_not_running",
+    "connection_failed",
+    "io_error",
+    "parse_error",
+    "server_error",
+    "timeout",
+    "busy",
+    "panic",
+    "library_not_found",
+    "library_symbol",
+    "unsupported"
+  ]
+}

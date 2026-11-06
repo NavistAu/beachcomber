@@ -3,26 +3,38 @@
 //! A lightweight, synchronous client for the beachcomber (`comb`) shell state daemon.
 //!
 //! ```rust,no_run
-//! use libbeachcomber::{Client, CombResult};
+//! use libbeachcomber::Client;
 //!
 //! let client = Client::new();
+//! // What `comb get git.branch` prints in that directory; `Ok(None)` is a miss.
 //! match client.get("git.branch", Some("/path/to/repo")) {
-//!     Ok(CombResult::Hit { data, age_ms, stale }) => {
-//!         println!("branch: {}", data.get_str("git.branch").unwrap_or("?"));
-//!     }
-//!     Ok(CombResult::Miss) => println!("not cached yet"),
+//!     Ok(Some(branch)) => println!("branch: {branch}"),
+//!     Ok(None) => println!("nothing there"),
 //!     Err(e) => println!("error: {}", e),
 //! }
 //! ```
 
+pub mod duration;
+pub mod engine;
+pub mod env;
 pub mod eval;
+pub mod fs;
 // `exec()` spawn engine, backing the `exec()` jinja function registered in
-// `virtual_fields::build_expression_env`.
+// `engine::build_engine_env`.
 mod exec;
-pub mod filters;
-pub mod path_expr;
+pub mod key;
+mod lazy;
+pub mod library;
+pub mod path;
+pub mod protocol;
 pub mod render;
+pub mod resolve;
+pub mod socket;
+pub mod spawn;
+pub mod term;
+pub mod validity;
 pub mod virtual_fields;
+pub mod watch;
 
 /// This crate's build identity, derived by `build.rs` from `CARGO_PKG_VERSION`
 /// plus git sha/dirty state. Shares its derivation with the root crate's
@@ -30,13 +42,21 @@ pub mod virtual_fields;
 /// report the same string.
 pub const VERSION: &str = env!("BEACHCOMBER_VERSION");
 
-use std::io::{BufRead, BufReader, Write};
+pub use protocol::{
+    CacheRow, DaemonHealth, FailureSnapshot, HelloInfo, IntrospectSubject, ReaperStatus, RowKind,
+    Verdict, Wait,
+};
+use protocol::{Request, Response};
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-/// Connect to a Unix socket with 3 retries (250ms / 500ms / 1s exponential backoff).
+/// Connect to a Unix socket, retrying for up to [`DEFAULT_CONNECT_TIMEOUT`]
+/// on the schedule [`connect_with_retry_for`] describes.
 ///
 /// Retries on `ConnectionRefused` and `NotFound` only — other errors surface
 /// immediately. Intended to cover the brief restart window when the old daemon
@@ -77,22 +97,8 @@ pub fn connect_with_retry_for(path: &Path, budget: Duration) -> std::io::Result<
     }
 }
 
-/// Result of a cache query.
-#[derive(Debug)]
-pub enum CombResult {
-    /// Cache hit — data is available.
-    Hit {
-        data: CombData,
-        age_ms: u128,
-        stale: bool,
-    },
-    /// Cache miss — provider hasn't computed this yet.
-    /// The daemon will compute it in the background; retry shortly.
-    Miss,
-}
-
 /// Parsed response data from a provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CombData {
     value: serde_json::Value,
 }
@@ -155,232 +161,34 @@ impl CombData {
     }
 }
 
-/// Protocol and build version information returned by the daemon on `hello`.
-#[derive(Debug, Clone)]
-pub struct HelloInfo {
-    pub protocol_version: String,
-    pub daemon_version: String,
-}
-
 /// Reported when this client's build identity differs from the daemon's,
 /// discovered via `hello` on the connection's first use. Not fatal — a
 /// running older daemon is a normal state mid-upgrade — but callers can
 /// check for it, and it is named in any op error on that connection
 /// afterward (see `CombError::ServerError`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VersionSkew {
+pub struct VersionMismatch {
     /// This client's build identity (`VERSION`).
     pub ours: String,
     /// The daemon's reported `daemon_version`.
     pub theirs: String,
 }
 
-impl std::fmt::Display for VersionSkew {
+impl std::fmt::Display for VersionMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "client is {}, daemon is {}", self.ours, self.theirs)
     }
 }
 
 /// Compare a `hello` response against this build's identity.
-fn detect_skew(hello: &HelloInfo) -> Option<VersionSkew> {
+fn detect_skew(hello: &HelloInfo) -> Option<VersionMismatch> {
     if hello.daemon_version == VERSION {
         None
     } else {
-        Some(VersionSkew {
+        Some(VersionMismatch {
             ours: VERSION.to_string(),
             theirs: hello.daemon_version.clone(),
         })
-    }
-}
-
-/// Send a `hello` request on `stream` and compare the daemon's reported
-/// version against this build's. Used once per connection, at the point
-/// each connection is established, so the check costs one extra
-/// request/response round trip rather than one per op.
-fn probe_version_skew(stream: &mut UnixStream) -> Result<Option<VersionSkew>, CombError> {
-    let request = serde_json::json!({ "op": "hello" });
-    let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-    stream.write_all(msg.as_bytes())?;
-
-    let mut line = String::new();
-    BufReader::new(&mut *stream).read_line(&mut line)?;
-    let hello = parse_hello_response(&line)?;
-    Ok(detect_skew(&hello))
-}
-
-/// Discriminator used by the status formatter to choose rendering strategy.
-/// Mirrors `beachcomber::cache::RowKind` for the wire format.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RowKind {
-    Lifecycle { decay: u8, watches_files: bool },
-    Once,
-    Virtual,
-    Transient,
-}
-
-/// Failure state for a cache entry embedded in status rows.
-/// Mirrors `beachcomber::cache::FailureSnapshot` for the wire format.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct FailureSnapshot {
-    pub consecutive_failures: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suppressed_until_unix_ms: Option<u64>,
-}
-
-/// One row of the daemon's cache as returned by the `status` op.
-#[derive(Debug, Clone)]
-pub struct CacheRow {
-    pub provider: String,
-    pub field: Option<String>,
-    pub path: Option<String>,
-    pub value: serde_json::Value,
-    pub age_ms: u64,
-    pub stale: bool,
-    /// Phase 2.7: lifecycle classification of this cache entry.
-    pub kind: Option<RowKind>,
-    /// Phase 2.7: how often the provider is polled, in seconds.
-    pub poll_interval_secs: Option<u64>,
-    /// Phase 2.7: number of polls before a demanded key decays.
-    pub keep_alive_polls: Option<u32>,
-    /// Phase 2.7: whether FSEvents will reinstate watching after a miss.
-    pub fsevents_reinstate: Option<bool>,
-    /// Number of polls that have fired in the current lifecycle step.
-    pub polls_elapsed: Option<u32>,
-    /// Seconds until this source's next scheduled poll.
-    pub next_poll_in_secs: Option<u64>,
-    /// Phase 2.7: failure state if the provider has been failing.
-    pub failure: Option<FailureSnapshot>,
-    /// Phase 5: source name within the provider that owns this field.
-    pub source: Option<String>,
-}
-
-impl CacheRow {
-    /// Parse a `CacheRow` from the daemon's wire-format JSON object.
-    /// Unknown fields are silently ignored.
-    pub fn from_wire(v: &serde_json::Value) -> Result<Self, CombError> {
-        let provider = v
-            .get("provider")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| CombError::ParseError("cache row missing provider".into()))?
-            .to_string();
-        let field = v
-            .get("field")
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string());
-        let path = v
-            .get("path")
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string());
-        let value = v.get("value").cloned().unwrap_or(serde_json::Value::Null);
-        let age_ms = v.get("age_ms").and_then(|x| x.as_u64()).unwrap_or(0);
-        let stale = v.get("stale").and_then(|x| x.as_bool()).unwrap_or(false);
-        let kind = v
-            .get("kind")
-            .and_then(|x| serde_json::from_value(x.clone()).ok());
-        let poll_interval_secs = v.get("poll_interval_secs").and_then(|x| x.as_u64());
-        let keep_alive_polls = v
-            .get("keep_alive_polls")
-            .and_then(|x| x.as_u64().map(|n| n as u32));
-        let fsevents_reinstate = v.get("fsevents_reinstate").and_then(|x| x.as_bool());
-        let polls_elapsed = v
-            .get("polls_elapsed")
-            .and_then(|x| x.as_u64().map(|n| n as u32));
-        let next_poll_in_secs = v.get("next_poll_in_secs").and_then(|x| x.as_u64());
-        let failure = v
-            .get("failure")
-            .and_then(|x| serde_json::from_value(x.clone()).ok());
-        let source = v
-            .get("source")
-            .and_then(|x| x.as_str())
-            .map(|s| s.to_string());
-        Ok(CacheRow {
-            provider,
-            field,
-            path,
-            value,
-            age_ms,
-            stale,
-            kind,
-            poll_interval_secs,
-            keep_alive_polls,
-            fsevents_reinstate,
-            polls_elapsed,
-            next_poll_in_secs,
-            failure,
-            source,
-        })
-    }
-
-    fn from_json(v: &serde_json::Value) -> Result<Self, CombError> {
-        Self::from_wire(v)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Verdict {
-    pub level: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct DaemonHealth {
-    pub pid: i64,
-    pub version: String,
-    pub uptime_secs: u64,
-    pub socket_path: String,
-    pub config_path: Option<String>,
-    pub requests_total: u64,
-    pub in_flight: u64,
-    pub active_watchers: u64,
-    pub cache_entries: u64,
-    /// "native", "polling", "disabled", or "unknown"; absent from pre-0.8 daemons.
-    pub watch_backend: Option<String>,
-    /// Reaper capability snapshot (canon `singleton.md` invariant 13).
-    /// `None` when reaper health isn't attached (embedded/test servers).
-    pub reaper: Option<ReaperStatus>,
-    pub verdicts: Vec<Verdict>,
-}
-
-/// Reaper capability snapshot embedded in `introspect{daemon}`.
-/// Mirrors the `reaper_json` shape built by `server.rs`.
-#[derive(Debug, Clone)]
-pub struct ReaperStatus {
-    pub armed: bool,
-    /// "system-wide" or "confined".
-    pub visibility: String,
-    pub sweeps: u64,
-    pub reaped: u64,
-    pub kill_denied: u64,
-}
-
-/// Introspect subjects. See `docs/protocol-spec.md` for shape details.
-#[derive(Debug, Clone, Copy)]
-pub enum IntrospectSubject {
-    Daemon,
-    Providers,
-    Config,
-    Cache,
-    Lifecycle,
-    Watches,
-    Timers,
-    Demand,
-    Procs,
-}
-
-impl IntrospectSubject {
-    fn wire_name(&self) -> &'static str {
-        match self {
-            Self::Daemon => "daemon",
-            Self::Providers => "providers",
-            Self::Config => "config",
-            Self::Cache => "cache",
-            Self::Lifecycle => "lifecycle",
-            Self::Watches => "watches",
-            Self::Timers => "timers",
-            Self::Demand => "demand",
-            Self::Procs => "procs",
-        }
     }
 }
 
@@ -398,75 +206,147 @@ pub enum IntrospectResponse {
 pub struct WatchEvent {
     pub data: Option<CombData>,
     pub age_ms: u64,
-    pub stale: bool,
 }
 
 /// Streaming iterator over watch events. Each `next_event` call blocks
 /// until the daemon emits the next change (or the connection closes).
 ///
 /// The underlying connection is held open for the lifetime of this
-/// stream; drop it to disconnect.
+/// stream; drop it to disconnect. The socket is non-blocking: a read is
+/// [`read_ready`](Self::read_ready)'s, made after a `poll(2)` said there is
+/// something to read, and frames are taken from what it buffered.
 pub struct WatchStream {
-    reader: BufReader<UnixStream>,
+    socket: UnixStream,
+    /// Bytes read and not yet taken as frames. A frame that arrived split
+    /// across two reads waits here for its newline — bytes, not a `String`,
+    /// since a split can fall mid-UTF-8-codepoint and only a whole line is
+    /// ever decoded — and several frames read at once are taken one by one.
+    buffer: Vec<u8>,
+    /// The daemon closed the connection, or a read failed: nothing more will
+    /// be read. Frames already buffered are still taken first.
+    closed: bool,
+    /// Where to ask the daemon its version when it refuses a frame, so the
+    /// refusal can name the skew as an op's does. `None` for a stream no
+    /// client opened.
+    skew_probe: Option<SkewProbe>,
+}
+
+/// What a [`WatchStream`] needs to ask the daemon for its version after the
+/// fact: the stream is its connection's only user, so the probe takes a
+/// connection of its own, on the failure path only.
+struct SkewProbe {
+    socket: PathBuf,
+    connect_timeout: Duration,
+    timeout: Duration,
+}
+
+impl SkewProbe {
+    /// The skew a `hello` shows; unknown (`None`) when the probe fails.
+    fn skew(&self) -> Option<VersionMismatch> {
+        let stream = connect_with_retry_for(&self.socket, self.connect_timeout).ok()?;
+        stream.set_read_timeout(Some(self.timeout)).ok()?;
+        stream.set_write_timeout(Some(self.timeout)).ok()?;
+        Conn {
+            reader: BufReader::new(stream),
+            timeout: self.timeout,
+        }
+        .skew()
+    }
 }
 
 impl WatchStream {
-    /// Read the next watch event. Returns Ok(None) on connection close.
-    pub fn next_event(&mut self) -> Result<Option<WatchEvent>, CombError> {
-        let mut line = String::new();
-        let n = self.reader.read_line(&mut line)?;
-        if n == 0 {
-            return Ok(None);
-        }
-        Self::parse_line(&line).map(Some)
-    }
-
-    /// Parse one NDJSON watch-event line into a [`WatchEvent`]. Factored out
-    /// of [`Self::next_event`] so a caller driving its own read loop (e.g.
-    /// a cancellable/timeout-aware poll loop, which cannot use
-    /// `next_event` directly — see [`Self::read_line_buffered`]) can reuse
-    /// the same parsing rather than duplicating it.
-    pub fn parse_line(line: &str) -> Result<WatchEvent, CombError> {
-        let resp: serde_json::Value =
-            serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-        let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !ok {
-            let error = resp
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown error")
-                .to_string();
-            return Err(CombError::ServerError(error));
-        }
-        let data = match resp.get("data") {
-            Some(serde_json::Value::Null) | None => None,
-            Some(d) => Some(CombData::from_json(d.clone())),
-        };
-        let age_ms = resp.get("age_ms").and_then(|v| v.as_u64()).unwrap_or(0);
-        let stale = resp.get("stale").and_then(|v| v.as_bool()).unwrap_or(false);
-        Ok(WatchEvent {
-            data,
-            age_ms,
-            stale,
+    /// A stream over `socket`, made non-blocking. Nothing may touch the
+    /// socket's options once the daemon can have answered and closed it
+    /// (macOS refuses a socket option on a unix socket whose peer has gone),
+    /// so this comes before the request is sent.
+    fn new(socket: UnixStream, skew_probe: Option<SkewProbe>) -> std::io::Result<Self> {
+        socket.set_nonblocking(true)?;
+        Ok(Self {
+            socket,
+            buffer: Vec::new(),
+            closed: false,
+            skew_probe,
         })
     }
 
-    /// Sets the underlying socket's read timeout. `None` blocks
-    /// indefinitely. Lets a caller drive its own bounded-wait / cancellable
-    /// read loop on top of this stream (see [`Self::read_line_buffered`]).
-    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
-        self.reader.get_ref().set_read_timeout(timeout)
+    /// Read the next watch event, blocking until one arrives. Returns
+    /// `Ok(None)` once the daemon has closed the connection and every frame
+    /// it sent before closing has been read.
+    pub fn next_event(&mut self) -> Result<Option<WatchEvent>, CombError> {
+        loop {
+            if let Some(frame) = self.take_frame() {
+                return Self::parse_line(&frame?).map(Some).map_err(|e| match e {
+                    // A refusal names the skew as every op's does.
+                    CombError::ServerError(refusal) => CombError::ServerError(with_skew(
+                        refusal,
+                        self.skew_probe.as_ref().and_then(SkewProbe::skew).as_ref(),
+                    )),
+                    other => other,
+                });
+            }
+            if self.closed {
+                return Ok(None);
+            }
+            watch::wait_readable(&[self.socket.as_raw_fd()], None, None)?;
+            self.read_ready();
+        }
     }
 
-    /// Reads one line into `buf`, appending to whatever's already there.
-    /// Unlike [`Self::next_event`], which discards its buffer on error, a
-    /// timeout here (an `Err` whose `kind()` is `WouldBlock` or `TimedOut`)
-    /// leaves any bytes already read from a partially-arrived line in
-    /// `buf`: the caller can retry with the same `buf` to resume mid-line
-    /// on the next call rather than losing them. Returns `Ok(0)` on
-    /// connection close with no partial line pending.
-    pub fn read_line_buffered(&mut self, buf: &mut String) -> std::io::Result<usize> {
-        self.reader.read_line(buf)
+    /// Parse one NDJSON watch-event line into a [`WatchEvent`]: what
+    /// [`Self::next_event`] answers, and what the fan-in
+    /// ([`crate::watch::ResolvedWatch`]) reads a frame it took with.
+    pub fn parse_line(line: &str) -> Result<WatchEvent, CombError> {
+        let resp = envelope(line, None)?;
+        Ok(WatchEvent {
+            data: resp.data.map(CombData::from_json),
+            age_ms: resp.age_ms.unwrap_or(0) as u64,
+        })
+    }
+
+    /// Send the one request the connection carries.
+    fn send(&self, request: &Request) -> Result<(), CombError> {
+        (&self.socket).write_all(&request_line(request))?;
+        Ok(())
+    }
+
+    /// The next whole frame already read, if there is one. `poll` cannot see
+    /// these, so a caller takes them before it waits. A frame that is not
+    /// UTF-8 is an error of kind `InvalidData`.
+    pub(crate) fn take_frame(&mut self) -> Option<std::io::Result<String>> {
+        let end = self.buffer.iter().position(|&b| b == b'\n')?;
+        let frame: Vec<u8> = self.buffer.drain(..=end).collect();
+        Some(
+            String::from_utf8(frame)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        )
+    }
+
+    /// Read everything the socket holds now, without blocking. The daemon
+    /// closing the connection, or any read failing, marks the stream closed;
+    /// a partial frame left at the end is no frame at all.
+    pub(crate) fn read_ready(&mut self) {
+        let mut chunk = [0u8; 8192];
+        while !self.closed {
+            match (&self.socket).read(&mut chunk) {
+                Ok(0) => self.closed = true,
+                Ok(n) => self.buffer.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return,
+                Err(_) => self.closed = true,
+            }
+        }
+    }
+
+    /// Whether nothing more will be read: the daemon has closed the
+    /// connection, or a read failed.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed
+    }
+}
+
+impl std::os::fd::AsRawFd for WatchStream {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        self.socket.as_raw_fd()
     }
 }
 
@@ -502,9 +382,52 @@ impl std::fmt::Display for CombError {
 
 impl std::error::Error for CombError {}
 
+/// Two failures are the same when they are the same kind and say the same
+/// thing; an I/O error has no equality of its own.
+impl PartialEq for CombError {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind() == other.kind() && self.to_string() == other.to_string()
+    }
+}
+
+impl Eq for CombError {}
+
+impl CombError {
+    /// The stable slug naming this failure ([`kind`]): what the C ABI's
+    /// `error.kind` carries, and what an SDK's error classes are named for.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            CombError::DaemonNotRunning => kind::DAEMON_NOT_RUNNING,
+            CombError::ConnectionFailed(_) => kind::CONNECTION_FAILED,
+            CombError::IoError(_) => kind::IO_ERROR,
+            CombError::ParseError(_) => kind::PARSE_ERROR,
+            CombError::ServerError(_) => kind::SERVER_ERROR,
+            CombError::Timeout => kind::TIMEOUT,
+        }
+    }
+}
+
+/// The stable failure slugs: [`CombError::kind`],
+/// [`resolve::ResolveError::kind`] and [`watch::WatchError::kind`] answer with
+/// these.
+pub mod kind {
+    pub const DAEMON_NOT_RUNNING: &str = "daemon_not_running";
+    pub const CONNECTION_FAILED: &str = "connection_failed";
+    pub const IO_ERROR: &str = "io_error";
+    pub const PARSE_ERROR: &str = "parse_error";
+    pub const SERVER_ERROR: &str = "server_error";
+    pub const TIMEOUT: &str = "timeout";
+}
+
+/// An I/O failure on a request. A read or write that ran out the client's
+/// timeout is [`CombError::Timeout`], whichever op it was and on whichever
+/// connection; anything else is [`CombError::IoError`].
 impl From<std::io::Error> for CombError {
     fn from(e: std::io::Error) -> Self {
-        CombError::IoError(e)
+        match e.kind() {
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => CombError::Timeout,
+            _ => CombError::IoError(e),
+        }
     }
 }
 
@@ -515,13 +438,19 @@ pub struct ClientConfig {
     pub timeout: Duration,
     /// Whether to attempt starting the daemon if it's not running.
     pub auto_start: bool,
+    /// Whether templates this client resolves may call `exec()`. Off by
+    /// default: an embedding caller does not spawn processes on the user's
+    /// behalf unless it says so (canon `field_resolution.md` invariant 15).
+    pub exec: bool,
 }
 
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
-            timeout: Duration::from_millis(100),
+            // Past git's 100 ms read budget: a reader gets the stored answer, not a timeout.
+            timeout: Duration::from_millis(250),
             auto_start: true,
+            exec: false,
         }
     }
 }
@@ -538,17 +467,17 @@ pub struct Client {
     /// Version skew, if any, discovered via `hello` on this client's first
     /// connection. Checked once — later connections reuse this rather than
     /// probing again, so it is never a per-op cost.
-    version_skew: OnceLock<Option<VersionSkew>>,
+    version_mismatch: OnceLock<Option<VersionMismatch>>,
 }
 
 impl Client {
-    /// Create a client with default configuration (100ms timeout, auto-start enabled).
+    /// Create a client with default configuration (250ms timeout, auto-start enabled).
     pub fn new() -> Self {
         Self {
             config: ClientConfig::default(),
             socket_path_override: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
-            version_skew: OnceLock::new(),
+            version_mismatch: OnceLock::new(),
         }
     }
 
@@ -558,31 +487,38 @@ impl Client {
             config,
             socket_path_override: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
-            version_skew: OnceLock::new(),
+            version_mismatch: OnceLock::new(),
         }
     }
 
     /// Version skew detected against the daemon, if any. `None` before the
     /// first connection is made, or once made, if the versions matched.
-    pub fn version_skew(&self) -> Option<VersionSkew> {
-        self.version_skew.get().cloned().flatten()
+    pub fn version_mismatch(&self) -> Option<VersionMismatch> {
+        self.version_mismatch.get().cloned().flatten()
     }
 
-    fn skew_ref(&self) -> Option<&VersionSkew> {
-        self.version_skew.get().and_then(|s| s.as_ref())
+    /// Whether templates this client resolves may call `exec()`
+    /// ([`ClientConfig::exec`]).
+    pub fn allow_exec(&self) -> bool {
+        self.config.exec
     }
 
-    /// Probe `stream` for version skew if not already known, via a
-    /// trailing `hello` exchange *after* the caller's own request/response
-    /// on the connection — never before it. Checked once per `Client`, not
-    /// per op. Probe failures are swallowed (skew stays unknown) so a
-    /// connection that only ever answers the caller's own request is
-    /// unaffected.
-    fn probe_skew_after(&self, stream: &mut UnixStream) {
-        if self.version_skew.get().is_none() {
-            let skew = probe_version_skew(stream).unwrap_or(None);
-            let _ = self.version_skew.set(skew);
+    fn skew_ref(&self) -> Option<&VersionMismatch> {
+        self.version_mismatch.get().and_then(|s| s.as_ref())
+    }
+
+    /// One request on a fresh connection, answered: the reply's envelope.
+    /// The first call also probes for version skew, with a trailing `hello`
+    /// *after* the caller's own exchange — never before it — so it is checked
+    /// once per `Client`, not per op, and a probe failure leaves the skew
+    /// unknown rather than failing the op.
+    fn call(&self, request: &Request) -> Result<Response, CombError> {
+        let mut conn = self.open()?;
+        let line = conn.exchange(request)?;
+        if self.version_mismatch.get().is_none() {
+            let _ = self.version_mismatch.set(conn.skew());
         }
+        envelope(&line, self.skew_ref())
     }
 
     /// Override the socket path (bypassing auto-discovery). Primarily
@@ -599,171 +535,68 @@ impl Client {
         self
     }
 
-    /// Query a single key. Returns Hit with data, Miss, or an error.
+    /// The value `comb get key` prints, read from `path` (`None` is the global
+    /// entry) through [`resolve::resolve`], the one function every surface
+    /// shares: a template the daemon holds is rendered here, against this
+    /// process's environment, and `Ok(None)` is a miss. `path` is read as every
+    /// request path is ([`path::normalise_here`]).
     ///
-    /// Examples:
-    /// - `client.get("git.branch", Some("/path/to/repo"))` — single field
-    /// - `client.get("git", Some("/path/to/repo"))` — all fields
+    /// The unrendered stored value is a facet address, read through this same
+    /// `get`: `client.get("git:cache.branch", path)`, `"aws:template.profile"`,
+    /// `"p:put.x"`, `"p:source.x"`. For a caller's own `env`, `force` or
+    /// `wait`, call [`resolve::resolve`] with an [`resolve::Inputs`] and
+    /// `&mut &client` as the [`resolve::Fetch`]. For text, hand the value to
+    /// [`render::render_value`].
+    ///
+    /// - `client.get("git.branch", Some("/path/to/repo"))` — one field
+    /// - `client.get("git", Some("/path/to/repo"))` — all fields, as an object
     /// - `client.get("hostname.short", None)` — global provider
-    pub fn get(&self, key: &str, path: Option<&str>) -> Result<CombResult, CombError> {
-        self.get_with_flags(key, path, false, false)
+    pub fn get(
+        &self,
+        key: &str,
+        path: Option<&str>,
+    ) -> Result<Option<serde_json::Value>, resolve::ResolveError> {
+        get_here(key, path, self.allow_exec(), &mut { self })
     }
 
-    /// Query a key with optional flags.
-    ///
-    /// `force = true`: evict the cache entry and re-execute the provider before returning.
-    /// `wait = true`: reserved for T14; currently a no-op.
-    pub fn get_with_flags(
+    /// One node's two halves, as the resolver's [`Fetch`](resolve::Fetch)
+    /// needs them: the cached `data` and the `template` in effect there. A
+    /// miss is `Got::default()`, a rejected key `CombError::ServerError`.
+    fn fetch_node(
         &self,
         key: &str,
         path: Option<&str>,
         force: bool,
-        wait: bool,
-    ) -> Result<CombResult, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-
-        let mut request = serde_json::json!({ "op": "get", "key": key });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-        if force {
-            request["force"] = serde_json::json!(true);
-        }
-        if wait {
-            request["wait"] = serde_json::json!(true);
-        }
-
-        self.send_recv(&mut stream, &request)
+        wait: Wait,
+    ) -> Result<resolve::Got, CombError> {
+        self.call(&get_request(key, path, force, wait)?)
+            .map(parse_node)
     }
 
-    /// Query a single key, rendered by the daemon as plain text.
-    /// Shorthand for `get_formatted(key, path, "text")`.
-    pub fn get_text(&self, key: &str, path: Option<&str>) -> Result<String, CombError> {
-        self.get_formatted(key, path, "text")
-    }
-
-    /// Query a single key, rendered server-side into `format` (e.g. `"text"`, `"sh"`).
-    pub fn get_formatted(
-        &self,
-        key: &str,
-        path: Option<&str>,
-        format: &str,
-    ) -> Result<String, CombError> {
-        self.get_formatted_with_flags(key, path, format, false, false)
-    }
-
-    /// Query a single key with optional flags, rendered into `format`
-    /// (`"text"` or `"sh"`) on the client side.
-    ///
-    /// `sh` shell-quotes every rendered value; `text` leaves them raw (see
-    /// [`render::render_data`]). This performs a plain JSON `get` and renders
-    /// the result locally (Task 1.8 retired the server-rendered wire
-    /// sub-protocol this used to speak); a failed request surfaces as
-    /// `CombError::ServerError`, never as a rendered `error:` line.
-    pub fn get_formatted_with_flags(
-        &self,
-        key: &str,
-        path: Option<&str>,
-        format: &str,
-        force: bool,
-        wait: bool,
-    ) -> Result<String, CombError> {
-        match self.get_with_flags(key, path, force, wait)? {
-            CombResult::Hit { data, .. } => Ok(render::render_data(Some(data.as_value()), format)),
-            CombResult::Miss => Ok(render::render_data(None, format)),
-        }
-    }
-
-    /// Clear the cached entry for a virtual provider key without dropping the registry entry.
-    /// A subsequent `put` under the same key still works.
-    pub fn put_null(&self, key: &str, path: Option<&str>) -> Result<(), CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-
-        let mut request = serde_json::json!({ "op": "put", "key": key });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        self.probe_skew_after(reader.get_mut());
-        check_ok(&line, self.skew_ref())?;
-        Ok(())
-    }
-
-    /// Store data into a virtual provider. `data` must be a JSON object;
-    /// its top-level keys become provider fields.
+    /// Store data at a key, replacing whatever is stored at that address.
+    /// `key` addresses any node: `namespace` or `namespace.node…`. At the root
+    /// `data` must be a JSON object; below it, any JSON. `persist` asks the
+    /// daemon to keep the put across a restart, best effort.
     pub fn put(
         &self,
         key: &str,
         data: serde_json::Value,
         ttl: Option<&str>,
         path: Option<&str>,
+        persist: bool,
     ) -> Result<(), CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-
-        let mut request = serde_json::json!({
-            "op": "put",
-            "key": key,
-            "data": data,
-        });
-        if let Some(t) = ttl {
-            request["ttl"] = serde_json::json!(t);
-        }
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        self.probe_skew_after(reader.get_mut());
-        check_ok(&line, self.skew_ref())?;
-        Ok(())
+        self.call(&put_request(key, data, ttl, path, persist)?)
+            .map(|_| ())
     }
 
     /// Trigger recomputation of a provider. Fire-and-forget.
     pub fn refresh(&self, key: &str, path: Option<&str>) -> Result<(), CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-
-        let mut request = serde_json::json!({ "op": "refresh", "key": key });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        self.probe_skew_after(reader.get_mut());
-        check_ok(&line, self.skew_ref())?;
-        Ok(())
+        self.call(&refresh_request(key, path)?).map(|_| ())
     }
 
     /// List all cache entries currently held by the daemon.
     pub fn status(&self) -> Result<Vec<CacheRow>, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-        let request = serde_json::json!({ "op": "status" });
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        self.probe_skew_after(reader.get_mut());
-        parse_cache_rows(&line, self.skew_ref())
+        parse_cache_rows(self.call(&Request::Status {})?)
     }
 
     /// Run an introspect query. `duration_secs` is only consulted by the
@@ -773,22 +606,10 @@ impl Client {
         subject: IntrospectSubject,
         duration_secs: Option<u64>,
     ) -> Result<IntrospectResponse, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-        let mut request = serde_json::json!({
-            "op": "introspect",
-            "subject": subject.wire_name(),
-        });
-        if let Some(d) = duration_secs {
-            request["duration_secs"] = serde_json::json!(d);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        self.probe_skew_after(reader.get_mut());
-        parse_introspect(subject, &line, self.skew_ref())
+        parse_introspect(
+            subject,
+            self.call(&introspect_request(subject, duration_secs))?,
+        )
     }
 
     /// Subscribe to changes on a key. Returns a stream that blocks on
@@ -799,43 +620,40 @@ impl Client {
     /// connection into streaming mode once a watch is issued — no other
     /// ops can share that connection afterward.
     pub fn watch(&self, key: &str, path: Option<&str>) -> Result<WatchStream, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-        let mut request = serde_json::json!({ "op": "watch", "key": key });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-        Ok(WatchStream {
-            reader: BufReader::new(stream),
-        })
+        let socket = self.find_or_start_socket()?;
+        let probe = SkewProbe {
+            socket,
+            connect_timeout: self.connect_timeout,
+            timeout: self.config.timeout,
+        };
+        let stream = WatchStream::new(self.open()?.reader.into_inner(), Some(probe))?;
+        stream.send(&watch_request(key, path)?)?;
+        Ok(stream)
+    }
+
+    /// Subscribe to changes in the *value* of `key` — what [`resolve`] makes
+    /// of it, not one address's raw contents. See [`watch::ResolvedWatch`],
+    /// which this opens.
+    pub fn watch_resolved<'a>(
+        &'a self,
+        key: &str,
+        inputs: &resolve::Inputs<'_>,
+    ) -> Result<watch::ResolvedWatch<'a>, watch::WatchError> {
+        watch::ResolvedWatch::open(self, key, inputs)
     }
 
     /// Ask the daemon for its protocol and build versions.
     pub fn hello(&self) -> Result<HelloInfo, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let mut stream = self.connect(&socket_path)?;
-
-        let request = serde_json::json!({ "op": "hello" });
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        let info = parse_hello_response(&line)?;
-        if self.version_skew.get().is_none() {
-            let _ = self.version_skew.set(detect_skew(&info));
+        let info = self.open()?.hello()?;
+        if self.version_mismatch.get().is_none() {
+            let _ = self.version_mismatch.set(detect_skew(&info));
         }
         Ok(info)
     }
 
     /// Open a persistent session for multiple queries on one connection.
     pub fn session(&self) -> Result<Session, CombError> {
-        let socket_path = self.find_or_start_socket()?;
-        let stream = self.connect(&socket_path)?;
-        Ok(Session::new(stream))
+        Ok(Session::new(self.open()?, self.allow_exec()))
     }
 
     fn find_or_start_socket(&self) -> Result<PathBuf, CombError> {
@@ -843,63 +661,48 @@ impl Client {
             return Ok(p.clone());
         }
 
-        let path = socket_path();
-
-        // Check if daemon is listening
-        if UnixStream::connect(&path).is_ok() {
+        let (path, source) = socket::resolve(None, None);
+        if spawn::is_serving(&path) {
             return Ok(path);
         }
-
         if !self.config.auto_start {
             return Err(CombError::DaemonNotRunning);
         }
-
-        // Try to start the daemon
-        start_daemon(&path)?;
-
-        // Wait for it to be ready
-        let mut delay = Duration::from_millis(10);
-        for _ in 0..8 {
-            std::thread::sleep(delay);
-            if UnixStream::connect(&path).is_ok() {
-                return Ok(path);
+        // The same spawn the CLI makes: the first `comb` on PATH, its stderr
+        // in the daemon's log, waited for until it says it serves.
+        let comb = spawn::find_comb().ok_or(CombError::DaemonNotRunning)?;
+        let log = spawn::log_path();
+        let how = spawn::Spawn {
+            binary: &comb,
+            no_reap: source.no_reap(),
+            log: &log,
+        };
+        match spawn::ensure(&path, &how) {
+            Ok(()) => Ok(path),
+            // A daemon that exited first or never came up is not running;
+            // what it said is in its log.
+            Err(spawn::Error::Exited { .. } | spawn::Error::TimedOut(_)) => {
+                Err(CombError::DaemonNotRunning)
             }
-            delay = (delay * 2).min(Duration::from_millis(500));
+            Err(spawn::Error::Socket(why)) => Err(CombError::ConnectionFailed(
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, why),
+            )),
+            Err(spawn::Error::Io(e)) => Err(CombError::ConnectionFailed(e)),
         }
-
-        Err(CombError::DaemonNotRunning)
     }
 
-    fn connect(&self, path: &Path) -> Result<UnixStream, CombError> {
-        let stream = connect_with_retry_for(path, self.connect_timeout)
+    /// A connection to the daemon, with this client's timeout on every read
+    /// and write.
+    fn open(&self) -> Result<Conn, CombError> {
+        let socket = self.find_or_start_socket()?;
+        let stream = connect_with_retry_for(&socket, self.connect_timeout)
             .map_err(CombError::ConnectionFailed)?;
         stream.set_read_timeout(Some(self.config.timeout))?;
         stream.set_write_timeout(Some(self.config.timeout))?;
-        Ok(stream)
-    }
-
-    fn send_recv(
-        &self,
-        stream: &mut UnixStream,
-        request: &serde_json::Value,
-    ) -> Result<CombResult, CombError> {
-        let msg = format!("{}\n", serde_json::to_string(request).unwrap());
-        stream.write_all(msg.as_bytes())?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut
-            {
-                CombError::Timeout
-            } else {
-                CombError::IoError(e)
-            }
-        })?;
-        self.probe_skew_after(reader.get_mut());
-
-        parse_response(&line, self.skew_ref())
+        Ok(Conn {
+            reader: BufReader::new(stream),
+            timeout: self.config.timeout,
+        })
     }
 }
 
@@ -909,240 +712,275 @@ impl Default for Client {
     }
 }
 
+/// [`resolve::Fetch`] over a [`Client`]: one daemon `get` per node, each on
+/// its own connection.
+impl resolve::Fetch for &Client {
+    fn get(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        force: bool,
+        wait: Wait,
+    ) -> Result<Option<resolve::Got>, resolve::FetchError> {
+        fetched(self.fetch_node(key, path, force, wait))
+    }
+
+    fn memo(&mut self, write: &resolve::MemoWrite) -> Result<(), resolve::FetchError> {
+        stored(memo_request(write).and_then(|request| self.call(&request)))
+    }
+}
+
+/// [`resolve::Fetch`] over a [`Session`]: one daemon `get` per node on its
+/// connection. The path is the resolver's — `None` is the global entry — and
+/// never the session's own directory.
+impl resolve::Fetch for Session {
+    fn get(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+        force: bool,
+        wait: Wait,
+    ) -> Result<Option<resolve::Got>, resolve::FetchError> {
+        fetched(
+            get_request(key, path, force, wait)
+                .and_then(|request| self.call(&request))
+                .map(parse_node),
+        )
+    }
+
+    fn memo(&mut self, write: &resolve::MemoWrite) -> Result<(), resolve::FetchError> {
+        stored(memo_request(write).and_then(|request| self.call(&request)))
+    }
+}
+
+/// A node as [`resolve`] reads it. Nothing in it — no `data`, no `template` —
+/// is a miss. A key the daemon rejected (`ok: false`: an invalid facet) is
+/// [`Rejected`](resolve::FetchError::Rejected) in the daemon's own words; any
+/// other failure is the transport's, the [`CombError`] kept as it was.
+fn fetched(
+    node: Result<resolve::Got, CombError>,
+) -> Result<Option<resolve::Got>, resolve::FetchError> {
+    match node {
+        Ok(got) => Ok((got != resolve::Got::default()).then_some(got)),
+        Err(CombError::ServerError(msg)) => Err(resolve::FetchError::Rejected(msg)),
+        Err(e) => Err(resolve::FetchError::Transport(e)),
+    }
+}
+
+/// A write's answer as [`resolve`] reads it: a refusal in the daemon's own
+/// words, or the transport's failure, as [`fetched`] reads a node's.
+fn stored(answer: Result<Response, CombError>) -> Result<(), resolve::FetchError> {
+    match answer {
+        Ok(_) => Ok(()),
+        Err(CombError::ServerError(msg)) => Err(resolve::FetchError::Rejected(msg)),
+        Err(e) => Err(resolve::FetchError::Transport(e)),
+    }
+}
+
+/// One connection to the daemon: a request line out, its response line back.
+/// Every op on a [`Client`] or a [`Session`] is one [`Conn::exchange`].
+struct Conn {
+    reader: BufReader<UnixStream>,
+    /// The client's timeout, on every read and write unless a request's own
+    /// wait lengthens its read ([`Request::beyond_timeout`]).
+    timeout: Duration,
+}
+
+/// A request as it goes on the wire: one JSON line.
+fn request_line(request: &Request) -> Vec<u8> {
+    let mut line = serde_json::to_vec(request).expect("a request serialises");
+    line.push(b'\n');
+    line
+}
+
+impl Conn {
+    /// Write one request line.
+    fn send(&mut self, request: &Request) -> Result<(), CombError> {
+        self.reader.get_mut().write_all(&request_line(request))?;
+        Ok(())
+    }
+
+    /// Send one request and read its one response line. The read may take
+    /// the client's timeout plus whatever the request waits for (a `get`'s
+    /// wait; `forever` has no deadline), and the connection's reads go back
+    /// to the timeout after it.
+    fn exchange(&mut self, request: &Request) -> Result<String, CombError> {
+        let read_timeout = request
+            .beyond_timeout()
+            .map(|beyond| self.timeout.saturating_add(beyond));
+        let lengthened = read_timeout != Some(self.timeout);
+        if lengthened {
+            self.reader.get_ref().set_read_timeout(read_timeout)?;
+        }
+        let answered = self.send(request).and_then(|()| {
+            let mut line = String::new();
+            if self.reader.read_line(&mut line)? == 0 {
+                return Err(CombError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "the daemon closed the connection before answering",
+                )));
+            }
+            Ok(line)
+        });
+        if lengthened {
+            // A connection that cannot take the option back has failed, and
+            // its next exchange says so: this one's answer stands.
+            let _ = self.reader.get_ref().set_read_timeout(Some(self.timeout));
+        }
+        answered
+    }
+
+    /// The daemon's `hello`.
+    fn hello(&mut self) -> Result<HelloInfo, CombError> {
+        parse_hello(envelope(&self.exchange(&Request::Hello {})?, None)?)
+    }
+
+    /// The version skew a `hello` on this connection shows, if any; unknown
+    /// (`None`) when the probe itself fails.
+    fn skew(&mut self) -> Option<VersionMismatch> {
+        self.hello().ok().and_then(|info| detect_skew(&info))
+    }
+}
+
 /// A persistent connection for multiple queries.
 ///
 /// More efficient than individual `Client::get` calls when querying
 /// multiple values in sequence (one connection vs. N connections).
 pub struct Session {
-    reader: BufReader<UnixStream>,
+    conn: Conn,
     /// Whether a version-skew probe has run yet on this connection.
     skew_checked: bool,
     /// Version skew, if any, discovered via a trailing `hello` exchange
     /// after this session's first op. Checked once per connection, not
     /// per op.
-    version_skew: Option<VersionSkew>,
+    version_mismatch: Option<VersionMismatch>,
+    /// The directory [`Session::set_context`] set, sent with every request
+    /// that names no path.
+    context: Option<String>,
+    /// Whether templates this session resolves may call `exec()`.
+    allow_exec: bool,
 }
 
 impl Session {
-    fn new(stream: UnixStream) -> Self {
+    fn new(conn: Conn, allow_exec: bool) -> Self {
         Self {
-            reader: BufReader::new(stream),
+            conn,
+            allow_exec,
             skew_checked: false,
-            version_skew: None,
+            version_mismatch: None,
+            context: None,
         }
     }
 
     /// Version skew detected against the daemon on this session's
     /// connection, if any. `None` before the first op, or once probed, if
     /// the versions matched.
-    pub fn version_skew(&self) -> Option<&VersionSkew> {
-        self.version_skew.as_ref()
+    pub fn version_mismatch(&self) -> Option<&VersionMismatch> {
+        self.version_mismatch.as_ref()
     }
 
-    /// Probe for version skew after the caller's own request/response, if
-    /// not already known this connection. Never sent before the caller's
-    /// own request — see `Client::probe_skew_after` for why.
-    fn probe_skew_after(&mut self) {
-        if self.skew_checked {
-            return;
+    /// One request on this connection, answered: the reply's envelope. The
+    /// first call probes for version skew after the caller's own exchange,
+    /// as [`Client`]'s does, once per connection.
+    fn call(&mut self, request: &Request) -> Result<Response, CombError> {
+        let line = self.conn.exchange(request)?;
+        if !self.skew_checked {
+            self.skew_checked = true;
+            self.version_mismatch = self.conn.skew();
         }
-        self.skew_checked = true;
-        self.version_skew = probe_version_skew(self.reader.get_mut()).unwrap_or(None);
+        envelope(&line, self.version_mismatch.as_ref())
     }
 
-    /// Query a single key on this persistent connection.
-    pub fn get(&mut self, key: &str, path: Option<&str>) -> Result<CombResult, CombError> {
-        self.get_with_flags(key, path, false, false)
-    }
-
-    /// Query a key with optional flags on this persistent connection.
-    ///
-    /// `force = true`: evict the cache entry and re-execute the provider before returning.
-    /// `wait = true`: reserved for T14; currently a no-op.
-    pub fn get_with_flags(
+    /// [`Client::get`] on this persistent connection: the value `comb get key`
+    /// prints, `Ok(None)` a miss. A `path` of `None` addresses the session's
+    /// directory ([`set_context`](Self::set_context)), else the global entry.
+    pub fn get(
         &mut self,
         key: &str,
         path: Option<&str>,
-        force: bool,
-        wait: bool,
-    ) -> Result<CombResult, CombError> {
-        let mut request = serde_json::json!({ "op": "get", "key": key });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-        if force {
-            request["force"] = serde_json::json!(true);
-        }
-        if wait {
-            request["wait"] = serde_json::json!(true);
-        }
-
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-
-        parse_response(&line, self.version_skew.as_ref())
+    ) -> Result<Option<serde_json::Value>, resolve::ResolveError> {
+        let path = self.path_or_context(path).map(str::to_string);
+        let allow_exec = self.allow_exec;
+        get_here(key, path.as_deref(), allow_exec, self)
     }
 
-    /// Query a single key on this persistent connection, rendered by the
-    /// daemon as plain text. Shorthand for `get_formatted(key, path, "text")`.
-    pub fn get_text(&mut self, key: &str, path: Option<&str>) -> Result<String, CombError> {
-        self.get_formatted(key, path, "text")
-    }
-
-    /// Query a single key on this persistent connection, rendered
-    /// server-side into `format` (e.g. `"text"`, `"sh"`).
-    pub fn get_formatted(
-        &mut self,
-        key: &str,
-        path: Option<&str>,
-        format: &str,
-    ) -> Result<String, CombError> {
-        self.get_formatted_with_flags(key, path, format, false, false)
-    }
-
-    /// Query a key with optional flags on this persistent connection,
-    /// rendered into `format` (`"text"` or `"sh"`) on the client side.
-    ///
-    /// `sh` shell-quotes every rendered value; `text` leaves them raw (see
-    /// [`render::render_data`]). This performs a plain JSON `get` and renders
-    /// the result locally (Task 1.8 retired the server-rendered wire
-    /// sub-protocol this used to speak); a failed request surfaces as
-    /// `CombError::ServerError`, never as a rendered `error:` line.
-    pub fn get_formatted_with_flags(
-        &mut self,
-        key: &str,
-        path: Option<&str>,
-        format: &str,
-        force: bool,
-        wait: bool,
-    ) -> Result<String, CombError> {
-        match self.get_with_flags(key, path, force, wait)? {
-            CombResult::Hit { data, .. } => Ok(render::render_data(Some(data.as_value()), format)),
-            CombResult::Miss => Ok(render::render_data(None, format)),
-        }
-    }
-
-    /// Set connection context so subsequent queries don't need explicit paths.
+    /// Set this session's directory: every later request that names no path
+    /// — `get`, `put`, `refresh`, `layers` alike — addresses it. Read as
+    /// every path is ([`path::normalise_here`]); kept by the session and sent
+    /// with each request, never set on the daemon's side of the connection.
     pub fn set_context(&mut self, path: &str) -> Result<(), CombError> {
-        let request = serde_json::json!({ "op": "context", "path": path });
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        check_ok(&line, self.version_skew.as_ref())?;
+        self.context = wire_path(Some(path))?;
         Ok(())
     }
 
-    /// Clear the cached entry for a virtual provider key without dropping the registry entry.
-    pub fn put_null(&mut self, key: &str, path: Option<&str>) -> Result<(), CombError> {
-        let mut request = serde_json::json!({ "op": "put", "key": key });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        check_ok(&line, self.version_skew.as_ref())?;
-        Ok(())
+    /// The directory [`set_context`](Self::set_context) set, if any.
+    pub fn context(&self) -> Option<&str> {
+        self.context.as_deref()
     }
 
-    /// Store data into a virtual provider.
+    /// The path a request on this session carries: its own, else the
+    /// session's directory, else none (the global entry).
+    fn path_or_context<'a>(&'a self, path: Option<&'a str>) -> Option<&'a str> {
+        path.or(self.context.as_deref())
+    }
+
+    /// Store data at a key, replacing whatever is stored at that address,
+    /// as [`Client::put`].
     pub fn put(
         &mut self,
         key: &str,
         data: serde_json::Value,
         ttl: Option<&str>,
         path: Option<&str>,
+        persist: bool,
     ) -> Result<(), CombError> {
-        let mut request = serde_json::json!({
-            "op": "put",
-            "key": key,
-            "data": data,
-        });
-        if let Some(t) = ttl {
-            request["ttl"] = serde_json::json!(t);
-        }
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        check_ok(&line, self.version_skew.as_ref())?;
-        Ok(())
+        let request = put_request(key, data, ttl, self.path_or_context(path), persist)?;
+        self.call(&request).map(|_| ())
     }
 
     /// Trigger recomputation.
     pub fn refresh(&mut self, key: &str, path: Option<&str>) -> Result<(), CombError> {
-        let mut request = serde_json::json!({ "op": "refresh", "key": key });
-        if let Some(p) = path {
-            request["path"] = serde_json::json!(p);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        check_ok(&line, self.version_skew.as_ref())?;
-        Ok(())
+        let request = refresh_request(key, self.path_or_context(path))?;
+        self.call(&request).map(|_| ())
     }
 
     /// List all cache entries currently held by the daemon.
     pub fn status(&mut self) -> Result<Vec<CacheRow>, CombError> {
-        let request = serde_json::json!({ "op": "status" });
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        parse_cache_rows(&line, self.version_skew.as_ref())
+        parse_cache_rows(self.call(&Request::Status {})?)
     }
 
+    /// The layers a read of `key` from `path` consults, per leaf: a tree
+    /// shaped like the value with an ordered array of
+    /// `{label, facet?, path, value, age_ms, answered?}` at each leaf
+    /// (a leaf key answers with its array). `None` is a miss. Warms nothing.
+    /// A diagnostic for `comb status --tree`; no SDK binds it.
+    pub fn layers(
+        &mut self,
+        key: &str,
+        path: Option<&str>,
+    ) -> Result<Option<serde_json::Value>, CombError> {
+        let request = layers_request(key, self.path_or_context(path))?;
+        self.call(&request).map(parse_layers)
+    }
+
+    /// [`Client::introspect`] on this session's connection.
     pub fn introspect(
         &mut self,
         subject: IntrospectSubject,
         duration_secs: Option<u64>,
     ) -> Result<IntrospectResponse, CombError> {
-        let mut request = serde_json::json!({
-            "op": "introspect",
-            "subject": subject.wire_name(),
-        });
-        if let Some(d) = duration_secs {
-            request["duration_secs"] = serde_json::json!(d);
-        }
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        self.probe_skew_after();
-        parse_introspect(subject, &line, self.version_skew.as_ref())
+        parse_introspect(
+            subject,
+            self.call(&introspect_request(subject, duration_secs))?,
+        )
     }
 
     /// Ask the daemon for its protocol and build versions.
     pub fn hello(&mut self) -> Result<HelloInfo, CombError> {
-        let request = serde_json::json!({ "op": "hello" });
-        let msg = format!("{}\n", serde_json::to_string(&request).unwrap());
-        self.reader.get_mut().write_all(msg.as_bytes())?;
-
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        let info = parse_hello_response(&line)?;
+        let info = self.conn.hello()?;
         if !self.skew_checked {
             self.skew_checked = true;
-            self.version_skew = detect_skew(&info);
+            self.version_mismatch = detect_skew(&info);
         }
         Ok(info)
     }
@@ -1150,276 +988,385 @@ impl Session {
 
 // --- Internal helpers ---
 
-/// Parse a response line's `{"ok": ...}` envelope, returning the raw JSON
-/// value on success. On `ok:false`, returns `ServerError` with the
+/// The `get` request every query sends, whichever [`resolve::Fetch`] builds
+/// it, on either transport.
+fn get_request(
+    key: &str,
+    path: Option<&str>,
+    force: bool,
+    wait: Wait,
+) -> Result<Request, CombError> {
+    Ok(Request::Get {
+        key: key.to_string(),
+        path: wire_path(path)?,
+        force,
+        wait,
+    })
+}
+
+fn put_request(
+    key: &str,
+    data: serde_json::Value,
+    ttl: Option<&str>,
+    path: Option<&str>,
+    persist: bool,
+) -> Result<Request, CombError> {
+    Ok(Request::Put {
+        key: key.to_string(),
+        data,
+        ttl: ttl.map(str::to_string),
+        path: wire_path(path)?,
+        persist,
+    })
+}
+
+/// The `memo` op a cached leaf's write-back sends: its path read as every
+/// request's is, its hash as sixteen hex digits, its ttl in whole seconds.
+fn memo_request(write: &resolve::MemoWrite) -> Result<Request, CombError> {
+    Ok(Request::Memo {
+        key: write.key.clone(),
+        path: wire_path(write.path.as_deref())?,
+        hash: validity::hex(write.hash),
+        data: write.data.clone(),
+        watch: write
+            .watch
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+        ttl: write.ttl.map(|d| format!("{}s", d.as_secs())),
+    })
+}
+
+fn refresh_request(key: &str, path: Option<&str>) -> Result<Request, CombError> {
+    Ok(Request::Refresh {
+        key: key.to_string(),
+        path: wire_path(path)?,
+    })
+}
+
+fn watch_request(key: &str, path: Option<&str>) -> Result<Request, CombError> {
+    Ok(Request::Watch {
+        key: key.to_string(),
+        path: wire_path(path)?,
+    })
+}
+
+fn layers_request(key: &str, path: Option<&str>) -> Result<Request, CombError> {
+    Ok(Request::Layers {
+        key: key.to_string(),
+        path: wire_path(path)?,
+    })
+}
+
+fn introspect_request(subject: IntrospectSubject, duration_secs: Option<u64>) -> Request {
+    Request::Introspect {
+        subject,
+        duration_secs,
+    }
+}
+
+/// The value `comb get key` prints at `path` (`None` is the global entry),
+/// read from this process: its environment and directory conventions.
+fn get_here(
+    key: &str,
+    path: Option<&str>,
+    allow_exec: bool,
+    fetch: &mut dyn resolve::Fetch,
+) -> Result<Option<serde_json::Value>, resolve::ResolveError> {
+    let transport = |e| resolve::ResolveError::Fetch(resolve::FetchError::Transport(e));
+    let dir = wire_path(path).map_err(transport)?;
+    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let inputs = resolve::Inputs {
+        cwd: dir.as_deref().unwrap_or(""),
+        env: &env,
+        slot: dir
+            .clone()
+            .map_or(resolve::Slot::Global, resolve::Slot::Path),
+        force: false,
+        wait: Wait::Budget,
+        allow_exec,
+        now: std::time::SystemTime::now(),
+    };
+    resolve::resolve(key, &inputs, fetch)
+}
+
+/// The `path` a request carries: [`path::normalise_here`], so `~` and a
+/// relative directory mean what they mean to this process, and the daemon
+/// only ever receives an absolute path. `None` is the global entry.
+fn wire_path(path: Option<&str>) -> Result<Option<String>, CombError> {
+    path.map(|p| path::normalise_here(Some(p)).map_err(|e| CombError::ParseError(e.to_string())))
+        .transpose()
+}
+
+/// The one reading of a response line, for every op and every watch frame:
+/// the [`Response`] on success. On `ok:false`, `ServerError` with the
 /// daemon's message — appended with `skew`, if known, so a failure on a
 /// connection with detected version skew names both versions.
-fn check_ok(line: &str, skew: Option<&VersionSkew>) -> Result<serde_json::Value, CombError> {
-    let resp: serde_json::Value =
+fn envelope(line: &str, skew: Option<&VersionMismatch>) -> Result<Response, CombError> {
+    let resp: Response =
         serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-    let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-    if !ok {
-        let mut error = resp
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error")
-            .to_string();
-        if let Some(s) = skew {
-            error = format!("{error} ({s})");
-        }
-        return Err(CombError::ServerError(error));
+    if !resp.ok {
+        let error = resp.error.unwrap_or_else(|| "unknown error".to_string());
+        return Err(CombError::ServerError(with_skew(error, skew)));
     }
     Ok(resp)
 }
 
-fn parse_response(line: &str, skew: Option<&VersionSkew>) -> Result<CombResult, CombError> {
-    let resp = check_ok(line, skew)?;
-
-    match resp.get("data") {
-        Some(serde_json::Value::Null) | None => Ok(CombResult::Miss),
-        Some(data) => {
-            let age_ms = resp
-                .get("age_ms")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u128)
-                .unwrap_or(0);
-            let stale = resp.get("stale").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(CombResult::Hit {
-                data: CombData {
-                    value: data.clone(),
-                },
-                age_ms,
-                stale,
-            })
-        }
+/// A daemon's `error`, with the version skew named after it when there is
+/// one: the one place that note is written, for every op and every watch
+/// frame.
+pub(crate) fn with_skew(error: String, skew: Option<&VersionMismatch>) -> String {
+    match skew {
+        Some(s) => format!("{error} ({s})"),
+        None => error,
     }
 }
 
-fn parse_cache_rows(line: &str, skew: Option<&VersionSkew>) -> Result<Vec<CacheRow>, CombError> {
-    let resp = check_ok(line, skew)?;
-    let arr = resp
-        .get("data")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| CombError::ParseError("status response data is not an array".into()))?;
-    arr.iter().map(CacheRow::from_json).collect()
+/// A `get` response's halves, each `None` when absent, so a miss is
+/// `Got::default()`.
+fn parse_node(resp: Response) -> resolve::Got {
+    resolve::Got {
+        data: resp.data,
+        template: resp.template,
+        rest: resp.rest,
+        memo: resp.memo,
+        age_ms: resp.age_ms,
+    }
 }
 
-fn parse_hello_response(line: &str) -> Result<HelloInfo, CombError> {
-    let resp: serde_json::Value =
-        serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
-    let ok = resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-    if !ok {
-        let error = resp
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown error")
-            .to_string();
-        return Err(CombError::ServerError(error));
-    }
+fn parse_layers(resp: Response) -> Option<serde_json::Value> {
+    resp.data
+}
+
+/// A response's `data` as the payload type its op answers with.
+fn payload<T: serde::de::DeserializeOwned>(resp: Response, op: &str) -> Result<T, CombError> {
     let data = resp
-        .get("data")
-        .ok_or_else(|| CombError::ParseError("hello response missing data field".into()))?;
-    let protocol_version = data
-        .get("protocol_version")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| CombError::ParseError("hello response missing protocol_version".into()))?
-        .to_string();
-    let daemon_version = data
-        .get("daemon_version")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| CombError::ParseError("hello response missing daemon_version".into()))?
-        .to_string();
-    Ok(HelloInfo {
-        protocol_version,
-        daemon_version,
-    })
+        .data
+        .ok_or_else(|| CombError::ParseError(format!("{op} response has no data")))?;
+    serde_json::from_value(data).map_err(|e| CombError::ParseError(format!("{op} response: {e}")))
 }
 
-fn parse_daemon_health(data: &serde_json::Value) -> Result<DaemonHealth, CombError> {
-    let pid = data
-        .get("pid")
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| CombError::ParseError("daemon health missing pid".into()))?;
-    let version = data
-        .get("version")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| CombError::ParseError("daemon health missing version".into()))?
-        .to_string();
-    let uptime_secs = data
-        .get("uptime_secs")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let socket_path = data
-        .get("socket_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let config_path = data
-        .get("config_path")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let requests_total = data
-        .get("requests_total")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let in_flight = data.get("in_flight").and_then(|v| v.as_u64()).unwrap_or(0);
-    let active_watchers = data
-        .get("active_watchers")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let cache_entries = data
-        .get("cache_entries")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let watch_backend = data
-        .get("watch_backend")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let reaper = data
-        .get("reaper")
-        .filter(|r| !r.is_null())
-        .map(|r| ReaperStatus {
-            armed: r.get("armed").and_then(|v| v.as_bool()).unwrap_or(false),
-            visibility: r
-                .get("visibility")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            sweeps: r.get("sweeps").and_then(|v| v.as_u64()).unwrap_or(0),
-            reaped: r.get("reaped").and_then(|v| v.as_u64()).unwrap_or(0),
-            kill_denied: r.get("kill_denied").and_then(|v| v.as_u64()).unwrap_or(0),
-        });
-    let verdicts = data
-        .get("verdicts")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| {
-                    let level = v.get("level")?.as_str()?.to_string();
-                    let message = v.get("message")?.as_str()?.to_string();
-                    Some(Verdict { level, message })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(DaemonHealth {
-        pid,
-        version,
-        uptime_secs,
-        socket_path,
-        config_path,
-        requests_total,
-        in_flight,
-        active_watchers,
-        cache_entries,
-        watch_backend,
-        reaper,
-        verdicts,
-    })
+fn parse_cache_rows(resp: Response) -> Result<Vec<CacheRow>, CombError> {
+    payload(resp, "status")
+}
+
+fn parse_hello(resp: Response) -> Result<HelloInfo, CombError> {
+    payload(resp, "hello")
 }
 
 fn parse_introspect(
     subject: IntrospectSubject,
-    line: &str,
-    skew: Option<&VersionSkew>,
+    resp: Response,
 ) -> Result<IntrospectResponse, CombError> {
-    let resp = check_ok(line, skew)?;
-    let data = resp.get("data").cloned().unwrap_or(serde_json::Value::Null);
     match subject {
-        IntrospectSubject::Daemon => Ok(IntrospectResponse::Daemon(parse_daemon_health(&data)?)),
-        _ => Ok(IntrospectResponse::Other(data)),
+        IntrospectSubject::Daemon => Ok(IntrospectResponse::Daemon(payload(resp, "introspect")?)),
+        _ => Ok(IntrospectResponse::Other(
+            resp.data.unwrap_or(serde_json::Value::Null),
+        )),
     }
 }
 
-/// Find the beachcomber socket path.
-///
-/// Mirrors the daemon's bind-path resolution (`Config::resolve_socket_path`),
-/// minus the config-file step which is daemon-only:
-///   1. `$BEACHCOMBER_SOCKET` (if set and non-empty)
-///   2. `/tmp/beachcomber-<uid>/sock`
-///
-/// There is no existence probe, and no session-scoped environment is
-/// consulted (`$TMPDIR`, `$XDG_RUNTIME_DIR`): the result is the single stable
-/// per-user path the daemon binds. Non-standard setups point clients at the
-/// daemon via `BEACHCOMBER_SOCKET`.
-pub fn socket_path() -> PathBuf {
-    if let Some(env_path) = std::env::var_os("BEACHCOMBER_SOCKET")
-        && !env_path.is_empty()
-    {
-        return PathBuf::from(env_path);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `get` response line read as a client reads it.
+    fn node_of(line: &str) -> Result<resolve::Got, CombError> {
+        envelope(line, None).map(parse_node)
     }
 
-    let uid = unsafe { libc::getuid() };
-    PathBuf::from("/tmp")
-        .join(format!("beachcomber-{}", uid))
-        .join("sock")
-}
-
-/// Maximum usable unix socket path length in bytes, exclusive (`sun_path` is
-/// 104 bytes on macOS, 108 on Linux; conservative bound used on both).
-const MAX_SOCKET_PATH_BYTES: usize = 104;
-
-/// Attempt to start the comb daemon via socket activation.
-fn start_daemon(socket_path: &Path) -> Result<(), CombError> {
-    use std::process::Command;
-
-    // Pre-flight: a path the kernel cannot bind (SUN_LEN) would fork a daemon
-    // doomed to fail; surface the real cause instead of a spawn timeout.
-    if socket_path.as_os_str().len() >= MAX_SOCKET_PATH_BYTES {
-        return Err(CombError::ConnectionFailed(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "socket path is {} bytes; unix sockets are limited to {} (SUN_LEN)",
-                socket_path.as_os_str().len(),
-                MAX_SOCKET_PATH_BYTES
+    /// Every failure has its slug, and a read or write that ran out its
+    /// timeout is a timeout, not an I/O error.
+    #[test]
+    fn every_failure_has_its_kind() {
+        let io = |k| std::io::Error::new(k, "x");
+        for (e, slug) in [
+            (CombError::DaemonNotRunning, "daemon_not_running"),
+            (
+                CombError::ConnectionFailed(io(std::io::ErrorKind::ConnectionRefused)),
+                "connection_failed",
             ),
-        )));
-    }
-
-    // Find comb binary
-    let comb = which_comb().ok_or(CombError::DaemonNotRunning)?;
-
-    if let Some(parent) = socket_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    let mut cmd = Command::new(&comb);
-    cmd.arg("daemon")
-        .arg("--socket")
-        .arg(socket_path.as_os_str());
-    // A spawn whose path came from $BEACHCOMBER_SOCKET is a deliberate
-    // override daemon: flag it --no-reap so the reaping daemon spares it
-    // (canon singleton.md §"Env-override spawns are flagged").
-    if socket_path_is_env_override(socket_path) {
-        cmd.arg("--no-reap");
-    }
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(CombError::ConnectionFailed)?;
-
-    Ok(())
-}
-
-/// True when `socket_path` matches the value of `$BEACHCOMBER_SOCKET` — i.e.
-/// the path being spawned at was supplied by the env override rather than the
-/// per-user default.
-fn socket_path_is_env_override(socket_path: &Path) -> bool {
-    std::env::var_os("BEACHCOMBER_SOCKET")
-        .filter(|v| !v.is_empty())
-        .is_some_and(|v| Path::new(&v) == socket_path)
-}
-
-fn which_comb() -> Option<PathBuf> {
-    // Check PATH for comb binary
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in path.split(':') {
-            let candidate = PathBuf::from(dir).join("comb");
-            if candidate.exists() {
-                return Some(candidate);
-            }
+            (
+                CombError::IoError(io(std::io::ErrorKind::BrokenPipe)),
+                "io_error",
+            ),
+            (CombError::ParseError("x".into()), "parse_error"),
+            (CombError::ServerError("x".into()), "server_error"),
+            (CombError::Timeout, "timeout"),
+            (
+                CombError::from(io(std::io::ErrorKind::WouldBlock)),
+                "timeout",
+            ),
+            (CombError::from(io(std::io::ErrorKind::TimedOut)), "timeout"),
+            (
+                CombError::from(io(std::io::ErrorKind::BrokenPipe)),
+                "io_error",
+            ),
+        ] {
+            assert_eq!(e.kind(), slug, "{e:?}");
         }
     }
-    None
+
+    /// A `get` response read as a `Got` keeps every half: the eight response shapes of the
+    /// one-tree design §3.4 — a template leaf, a template group, data plus a
+    /// tree, data plus a template, data alone, a template plus `rest`, a
+    /// miss, and a rejected key — and a template with its memo half.
+    #[test]
+    fn parse_node_reads_every_response_shape() {
+        use resolve::Got;
+        use serde_json::json;
+
+        let node = |line: &str| node_of(line).expect("an ok response parses");
+
+        assert_eq!(
+            node(r#"{"ok":true,"template":"{{ env.SCANLINE_FOO }}"}"#),
+            Got {
+                template: Some(json!("{{ env.SCANLINE_FOO }}")),
+                ..Got::default()
+            }
+        );
+        assert_eq!(
+            node(r#"{"ok":true,"template":{"foo":"{{ a }}","bar":"{{ b }}"}}"#),
+            Got {
+                template: Some(json!({"foo": "{{ a }}", "bar": "{{ b }}"})),
+                ..Got::default()
+            }
+        );
+        assert_eq!(
+            node(
+                r#"{"ok":true,"data":{"lit":1},"age_ms":30,"template":{"theme":"t","widgets":{"foo":"f"}}}"#
+            ),
+            Got {
+                data: Some(json!({"lit": 1})),
+                template: Some(json!({"theme": "t", "widgets": {"foo": "f"}})),
+                rest: None,
+                memo: None,
+                age_ms: Some(30),
+            }
+        );
+        assert_eq!(
+            node(
+                r#"{"ok":true,"data":"default","age_ms":812,"template":"{{ env.TF_WORKSPACE or comb.terraform.workspace }}"}"#
+            ),
+            Got {
+                data: Some(json!("default")),
+                template: Some(json!("{{ env.TF_WORKSPACE or comb.terraform.workspace }}")),
+                rest: None,
+                memo: None,
+                age_ms: Some(812),
+            }
+        );
+        assert_eq!(
+            node(r#"{"ok":true,"data":"feature/x","age_ms":812}"#),
+            Got {
+                data: Some(json!("feature/x")),
+                template: None,
+                rest: None,
+                memo: None,
+                age_ms: Some(812),
+            }
+        );
+        assert_eq!(
+            node(r#"{"ok":true,"template":"{{ {'cpu': 40, 'mem': 12} }}","rest":"cpu"}"#),
+            Got {
+                template: Some(json!("{{ {'cpu': 40, 'mem': 12} }}")),
+                rest: Some("cpu".to_string()),
+                ..Got::default()
+            }
+        );
+        assert_eq!(
+            node(
+                r#"{"ok":true,"template":{"a":"{{ x }}","b":"{{ y }}"},"memo":{"a":{"hash":"9c6001d328a94690","stale":false,"age_ms":4,"data":"prod"}}}"#
+            ),
+            Got {
+                template: Some(json!({"a": "{{ x }}", "b": "{{ y }}"})),
+                memo: Some(
+                    json!({"a": {"hash": "9c6001d328a94690", "stale": false, "age_ms": 4, "data": "prod"}})
+                ),
+                ..Got::default()
+            }
+        );
+        assert_eq!(node(r#"{"ok":true}"#), Got::default());
+        match node_of(r#"{"ok":false,"error":"invalid key"}"#) {
+            Err(CombError::ServerError(m)) => assert_eq!(m, "invalid key"),
+            other => panic!("a rejected key must be a server error, got {other:?}"),
+        }
+    }
+
+    /// A watch stream over one end of a pair; the other end is the daemon's.
+    fn watch_pair() -> (WatchStream, UnixStream) {
+        let (ours, daemon) = UnixStream::pair().expect("a pair");
+        (
+            WatchStream::new(ours, None).expect("a watch stream"),
+            daemon,
+        )
+    }
+
+    /// Wait for `stream` to be readable, then read it, as the fan-in does.
+    fn read_when_ready(stream: &mut WatchStream) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        watch::wait_readable(&[stream.as_raw_fd()], None, Some(deadline)).expect("wait");
+        stream.read_ready();
+    }
+
+    fn frame(stream: &mut WatchStream) -> String {
+        stream
+            .take_frame()
+            .expect("a whole frame")
+            .expect("a UTF-8 frame")
+    }
+
+    /// Two frames in one write are two frames from one read: the second is
+    /// already buffered, so it needs no second wait.
+    #[test]
+    fn two_frames_in_one_write_are_two_frames_from_one_read() {
+        let (mut stream, daemon) = watch_pair();
+        (&daemon)
+            .write_all(b"{\"ok\":true,\"data\":1}\n{\"ok\":true,\"data\":2}\n")
+            .expect("write");
+
+        read_when_ready(&mut stream);
+        assert_eq!(frame(&mut stream), "{\"ok\":true,\"data\":1}\n");
+        assert_eq!(frame(&mut stream), "{\"ok\":true,\"data\":2}\n");
+        assert!(stream.take_frame().is_none());
+        assert!(!stream.is_closed());
+    }
+
+    /// A frame split mid-codepoint across two writes is no frame until its
+    /// second half lands, and then it is whole.
+    #[test]
+    fn a_frame_split_mid_codepoint_resumes() {
+        let (mut stream, daemon) = watch_pair();
+        let whole = "{\"ok\":true,\"data\":\"é\"}\n".as_bytes();
+        let split = whole.iter().position(|&b| b == 0xC3).expect("é") + 1;
+
+        (&daemon).write_all(&whole[..split]).expect("write");
+        read_when_ready(&mut stream);
+        assert!(stream.take_frame().is_none(), "half a frame is no frame");
+
+        (&daemon).write_all(&whole[split..]).expect("write");
+        read_when_ready(&mut stream);
+        let event = WatchStream::parse_line(&frame(&mut stream)).expect("an event");
+        assert_eq!(
+            event.data.expect("data").as_value(),
+            &serde_json::json!("é")
+        );
+    }
+
+    /// A frame the daemon sent before it closed the connection is read before
+    /// the end of the stream: the refusal is the answer, not end-of-stream.
+    #[test]
+    fn a_frame_sent_before_the_daemon_closed_comes_before_the_end() {
+        let (mut stream, daemon) = watch_pair();
+        (&daemon)
+            .write_all(b"{\"ok\":false,\"error\":\"invalid facet key: a:b:c\"}\n")
+            .expect("write");
+        drop(daemon);
+
+        match stream.next_event() {
+            Err(CombError::ServerError(m)) => assert!(m.contains("invalid facet key"), "{m}"),
+            other => panic!("the refusal comes first, got {other:?}"),
+        }
+        assert!(matches!(stream.next_event(), Ok(None)), "then the end");
+    }
 }
