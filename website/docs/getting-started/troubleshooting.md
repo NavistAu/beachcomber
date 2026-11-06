@@ -79,13 +79,13 @@ If this returns nothing, either:
 
 If a key always returns empty, the provider may be switched off (`enabled = false` under `[daemon.providers.<name>]`) or not supported on your platform:
 
-Check your `~/.config/beachcomber/config.toml` if a provider you expect is missing. See the [built-in providers reference](../reference/built-in-providers.md) for every provider and its fields, and [platform notes](../reference/built-in-providers.md) for fields a platform may not give (e.g. `network.ssid` on macOS 14.4 and later).
+Check your `~/.config/beachcomber/config.toml` if a provider you expect is missing. See the [built-in providers reference](../providers/built-in-providers.md) for every provider and its fields, and [platform notes](../providers/built-in-providers.md) for fields a platform may not give (e.g. `network.ssid` on macOS 14.4 and later).
 
 ## First query is slow
 
 On the first query for a provider, the daemon may not have a cached value yet and executes the provider inline. Subsequent queries return the cached value immediately.
 
-To eliminate this delay after a `cd`, install the [chpwd hook](./shell-helpers.md) — it pokes relevant providers in the background whenever you change directory, so the cache is warm by the time your prompt renders.
+To eliminate this delay after a `cd`, install the [chpwd hook](../integrations/shell-helpers.md) — it pokes relevant providers in the background whenever you change directory, so the cache is warm by the time your prompt renders.
 
 ## Socket discovery
 

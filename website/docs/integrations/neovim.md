@@ -216,4 +216,4 @@ local GitBranch = {
 - **Verify from neovim command line:** `:lua print(require('beachcomber').connect():get('git.branch', { cwd = vim.fn.getcwd() }))` should print the branch name. If it prints `nil`, the daemon is not running or the socket cannot be found.
 - **Without the SDK:** the `vim.fn.system()` approach has no dependency to troubleshoot — if `comb g git.branch .` works in your terminal, it works in neovim.
 
-See the [Troubleshooting](./troubleshooting.md) guide for general diagnostics.
+See the [Troubleshooting](../getting-started/troubleshooting.md) guide for general diagnostics.

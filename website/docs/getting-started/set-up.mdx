@@ -1,0 +1,89 @@
+---
+sidebar_position: 2
+title: Add it to your prompt
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# Add it to your prompt
+
+Your prompt runs a little program every time you press Enter. If that program asks git for the branch, every prompt
+in every terminal pays for it. With comb, you ask comb instead: it works the answer out once and hands it to
+everyone.
+
+Pick your setup and paste the snippet in. Each one shows the git branch, with a `*` when there are uncommitted
+changes, and shows nothing outside a repository.
+
+<Tabs groupId="shell">
+<TabItem value="zsh" label="zsh" default>
+
+```zsh title="~/.zshrc"
+precmd() {
+  local git=$(comb g git -f '{{ branch }}{{ "*" if dirty }}')
+  PS1="%F{blue}${git:+$git }%f%~ %# "
+}
+```
+
+</TabItem>
+<TabItem value="bash" label="bash">
+
+```bash title="~/.bashrc"
+__comb_ps1() {
+  local git=$(comb g git -f '{{ branch }}{{ "*" if dirty }}')
+  PS1="${git:+$git }\w \$ "
+}
+PROMPT_COMMAND=__comb_ps1
+```
+
+</TabItem>
+<TabItem value="fish" label="fish">
+
+```fish title="~/.config/fish/functions/fish_prompt.fish"
+function fish_prompt
+  set -l git (comb g git -f '{{ branch }}{{ "*" if dirty }}')
+  test -n "$git"; and echo -n "$git "
+  echo -n (prompt_pwd) '> '
+end
+```
+
+</TabItem>
+<TabItem value="starship" label="starship">
+
+```toml title="~/.config/starship.toml"
+[git_branch]
+disabled = true
+
+[git_status]
+disabled = true
+
+[custom.git]
+command = '''comb g git -f '{{ branch }}{{ "*" if dirty }}' '''
+when = '[ -n "$(comb g git.branch)" ]'
+format = "[$output]($style) "
+style = "bold blue"
+```
+
+</TabItem>
+<TabItem value="tmux" label="tmux">
+
+```tmux title="~/.tmux.conf"
+set -g status-interval 5
+set -g status-right '#(comb g git.branch "#{pane_current_path}")  #(comb g battery.percent)%% '
+```
+
+tmux runs these for each pane's directory every five seconds, which is cheap because comb answers from memory.
+
+</TabItem>
+</Tabs>
+
+Open a new terminal in a git repository, and the branch is there.
+
+`comb g` is short for `comb get`. `git` is a group of values comb knows about a repository; the `-f` part is a
+small template that picks out `branch` and `dirty` and arranges them. You'll learn to write these in
+[How comb works](../concepts/values-and-names.md).
+
+More tools, and fuller setups for each of these, are in [Integrations](../integrations/shell.md): neovim, oh-my-zsh,
+powerlevel10k, oh-my-posh, waybar, polybar and sketchybar.
+
+**Next:** [See it working](./see-it-working.md)

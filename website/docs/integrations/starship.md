@@ -311,8 +311,8 @@ Modules that have no data for the current context are suppressed automatically. 
 
 ## Troubleshooting
 
-- **Modules hidden when they should show:** starship runs `command` and `when` in a non-interactive shell. If `comb` is only on your interactive shell's PATH, starship will not find it. See [comb not found in non-interactive shells](./troubleshooting.md#comb-not-found-in-non-interactive-shells).
+- **Modules hidden when they should show:** starship runs `command` and `when` in a non-interactive shell. If `comb` is only on your interactive shell's PATH, starship will not find it. See [comb not found in non-interactive shells](../getting-started/troubleshooting.md#comb-not-found-in-non-interactive-shells).
 - **Module shows empty outside a repo:** this is correct. A rooted provider returns nothing when the directory is not a relevant context. The `when` field hides the module automatically.
 - **Testing a module in isolation:** `starship module custom.git_branch` renders just that module using your current config and directory.
 
-See the [Troubleshooting](./troubleshooting.md) guide for general diagnostics.
+See the [Troubleshooting](../getting-started/troubleshooting.md) guide for general diagnostics.

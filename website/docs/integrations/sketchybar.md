@@ -97,4 +97,4 @@ sketchybar --add item git_branch left \
 - **Rooted providers return wrong data:** sketchybar runs scripts without a defined working directory. Always pass an absolute path for rooted providers like `git` and `terraform` — use `$HOME/myproject` rather than a relative path.
 - **Distinguishing "no data" from "daemon down":** add a fallback in your script: `comb g git.branch "$HOME/myproject" || echo '--'`. If you see `--`, the daemon is not running or the key does not exist.
 
-See the [built-in providers reference](../reference/built-in-providers.md) for the full list of providers and fields, and the [general troubleshooting guide](./troubleshooting.md).
+See the [built-in providers reference](../providers/built-in-providers.md) for the full list of providers and fields, and the [general troubleshooting guide](../getting-started/troubleshooting.md).

@@ -104,4 +104,4 @@ waybar's `interval` is in seconds. Setting it to `1` or `2` is safe with beachco
 - **Distinguishing "no data" from "daemon down":** add a fallback to your exec: `comb g git.branch /path || echo '--'`. If you see `--`, the daemon is not running or the key does not exist.
 - **CSS not applying:** waybar maps `custom/name` to CSS selector `#custom-name` (slash becomes hyphen).
 
-See the [built-in providers reference](../reference/built-in-providers.md) for the full list of providers and fields, and the [general troubleshooting guide](./troubleshooting.md).
+See the [built-in providers reference](../providers/built-in-providers.md) for the full list of providers and fields, and the [general troubleshooting guide](../getting-started/troubleshooting.md).

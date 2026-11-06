@@ -20,7 +20,7 @@ The filters and functions a template can call. Templates are jinja (minijinja), 
   `'' | dirname` are undefined.
 - **Text filters take a string.** A number or a bool is its text; a list or a map is an error.
 - **Bad input is an error the user sees**, written `name(): why`, for example
-  `fg(): invalid colour "nope": expected #rrggbb hex`.
+  `fg(): unknown colour "nope": use a name (red, bright_red), 0-255 or #rrggbb`.
 
 ## Where each item runs
 
@@ -170,7 +170,11 @@ answers with it, so whatever follows `cache()` in the leaf, an `exec()` above al
 
 ```toml
 [client.providers.kubecontext]
-template.context = "{{ 'kubectl config current-context 2>/dev/null || true' | watch((env.KUBECONFIG or '~/.kube/config') | split(':')) | ttl('10m') | cache(env.KUBECONFIG) | exec() or none }}"
+template.context = '''{{ 'kubectl config current-context 2>/dev/null || true'
+  | watch((env.KUBECONFIG or '~/.kube/config') | split(':'))
+  | ttl('10m')
+  | cache(env.KUBECONFIG)
+  | exec() or none }}'''
 ```
 
 | item | meaning |

@@ -99,3 +99,5 @@ Pre-built binaries are available on the [GitHub Releases](https://github.com/Nav
 - `x86_64-unknown-linux-gnu` (Linux, glibc)
 - `x86_64-unknown-linux-musl` (Linux, musl/static)
 - `aarch64-unknown-linux-gnu` (Linux ARM64, glibc)
+
+**Next:** [Add it to your prompt](./set-up.mdx)

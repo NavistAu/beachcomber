@@ -42,7 +42,7 @@ local M = {}
 --   opts.socket_path   string  override daemon socket discovery.
 --   opts.timeout_ms    number  ffi transport: how long one read or write on the
 --                               socket may take, in ms. Left out, the library's
---                               default (100); this SDK has none. 0 is refused.
+--                               default (250); this SDK has none. 0 is refused.
 --   opts.connect_timeout_ms number  ffi transport: how long connecting keeps
 --                               retrying, in ms; 0 is one attempt. Left out, the
 --                               library's default (1500).

@@ -94,4 +94,4 @@ polybar's `interval` is in seconds. With beachcomber, setting `interval = 1` is 
 - **Rooted providers return wrong data:** bar programs often run scripts without a defined working directory. `.` resolves to wherever the bar process started. Always pass an absolute path for rooted providers like `git` and `terraform`.
 - **Distinguishing "no data" from "daemon down":** add a fallback to your exec: `comb g git.branch /path || echo '--'`. If you see `--`, the daemon is not running or the key does not exist.
 
-See the [built-in providers reference](../reference/built-in-providers.md) for the full list of providers and fields, and the [general troubleshooting guide](./troubleshooting.md).
+See the [built-in providers reference](../providers/built-in-providers.md) for the full list of providers and fields, and the [general troubleshooting guide](../getting-started/troubleshooting.md).

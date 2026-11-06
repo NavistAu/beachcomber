@@ -35,7 +35,7 @@ You can verify the daemon is responsive at any time with `comb s`. If the daemon
 
 Yes. macOS and Linux are both first-class supported platforms. The filesystem watcher uses FSEvents on macOS and inotify on Linux; the battery and network providers have native implementations for both.
 
-A few fields are platform-specific — for example, `battery.status_raw` (the kernel's own word) is Linux-only, and `network.ssid` is absent on macOS 14.4 and later, which dropped the `airport` tool. See the [built-in providers reference](../reference/built-in-providers.md) for per-field platform notes.
+A few fields are platform-specific — for example, `battery.status_raw` (the kernel's own word) is Linux-only, and `network.ssid` is absent on macOS 14.4 and later, which dropped the `airport` tool. See the [built-in providers reference](../providers/built-in-providers.md) for per-field platform notes.
 
 Pre-built Linux binaries (glibc, musl, arm64) and packages (`.deb`, `.rpm`, AUR) are published on every release — see [Installation](../getting-started/installation.md).
 

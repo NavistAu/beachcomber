@@ -83,7 +83,7 @@ Connect to the daemon and return a `Client`.
 | Option | Type | Description |
 |---|---|---|
 | `socket_path` | string | Override automatic socket discovery |
-| `timeout_ms` | number | `ffi` transport: how long one read or write on the socket may take. Left out, the library's default (100); the SDK has none of its own. 0 is refused |
+| `timeout_ms` | number | `ffi` transport: how long one read or write on the socket may take. Left out, the library's default (250); the SDK has none of its own. 0 is refused |
 | `connect_timeout_ms` | number | `ffi` transport: how long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. Left out, the library's default (1500) |
 | `exec` | boolean | `ffi` transport: let templates this client renders call `exec()`. Off by default — a template that calls it then fails with `exec() is disabled in this context` |
 | `backend` | module | Override the socket backend (advanced) |
@@ -96,7 +96,7 @@ Returns `nil, err` on failure.
 
 The value `comb get` prints for this key, cwd and env: the daemon holds the templates (`<provider>:template`, seeded from configuration or `put`) and the client renders them. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace; a miss is `nil` with no error. The unrendered halves are facets, read like any key: `p:template.x` is the template as stored, `p:put.x` and `p:source.x` those layers' values. `key` is `"provider"` or `"provider.field"`.
 
-`opts.cwd` is the directory the read addresses (default: the global entry); `opts.env` is the caller's environment for `env.*` refs (default: the calling process's environment, as `comb` renders); `opts.force` re-executes every Source the read demands first, as `comb get --force`; `opts.wait` is how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`, anything else a `"parse_error"` on both transports. A template that calls `exec()` needs `exec = true` on the connect. Over `subprocess` a spawned `comb` renders with its own environment: `opts.env` is an `"unsupported"` error there, and a `get` without it sees this process's environment.
+`opts.cwd` is the directory the read addresses (default: the global entry); `opts.env` is the caller's environment for `env.*` refs (default: the calling process's environment, as `comb` renders); `opts.force` re-executes every Source the read demands first, as `comb get --force`; `opts.wait` is how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`, anything else a `"parse_error"` on both transports. A template that calls `exec()` needs `exec = true` on the connect. Over `subprocess` the spawned `comb` runs with exactly `opts.env` as its environment, so `env.*` and an `exec()` child see that map; a `get` without it sees this process's environment.
 
 ### `Client:refresh(key [, opts])` → `true | nil, error`
 

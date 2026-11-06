@@ -166,9 +166,11 @@ A record's inputs are the paths its `watch(...)` declares (each relative one joi
 ```toml
 [daemon.providers.flag.sources.s]
 root   = "{{ lup('.flagroot') | dirname }}"
-data   = "{{ lup('state.json') | read }}"     # checked: every state.json probe, and the one read
+# checked: every state.json probe, and the one read
+data   = "{{ lup('state.json') | read }}"
 result.v = "{{ data }}"
-return = "{{ result | poll('10m') }}"           # no watch() needed for a read to see a rewrite
+# no watch() needed for a read to see a rewrite
+return = "{{ result | poll('10m') }}"
 ```
 
 - The first 64 files a run reads are checked; a run that reads more logs once per Source (`flag.s: 150 files read; the first 64 are checked on read`), and a change to a later file waits for the watch or the poll.
@@ -222,13 +224,18 @@ return = "{{ result | poll('30s', 4) }}"      # battery level: no file to watch 
 **`watch(paths...)`** runs the Source when a path changes. A relative path is under the instance's root (Sources with a root only). An absolute or `~` one is watched directly, whatever the root. Its arguments are constants: a path a line computes is checked on a read (§4), not watched. A `.` covers the tree below the instance's root (Sources with a root only), and each `!name` leaves out every path with that component, so `watch('.', '!.git')` is a repository's working tree. A change there runs nothing: it makes the record invalid for the next read, which runs the Source, so a build's output no read asks about costs nothing, and the Source does not have to read anything a stat could see. While the instance is not Active nothing watches its tree, and a read of it always runs the Source.
 
 ```toml
-return = "{{ result | watch('.git/HEAD', '.git/refs') | nearest }}"    # those paths and anything below them, per repository
+# those paths and anything below them, per repository
+return = "{{ result | watch('.git/HEAD', '.git/refs') | nearest }}"
 ```
 
 There is no automatic poll fallback for a `watch`. If a watch cannot register at runtime, the scheduler logs a warning and the Source serves its last cached value. If a backstop is needed, add a `poll`, as `git.status` does for what does not touch a watchable file:
 
 ```toml
-return = "{{ result | watch('.git/index', '.git/refs') | poll('60s', 2) | failback('30s', 3) | nearest }}"
+return = '''{{ result
+  | watch('.git/index', '.git/refs')
+  | poll('60s', 2)
+  | failback('30s', 3)
+  | nearest }}'''
 ```
 
 A `return` names what it wants, and the line is whole: `nearest` too, so a retune of a nearest Source says `| nearest` again or the Source cascades. A failback, budget or timeout it does not name is the engine's (`failback('1s', 3)`, `[daemon] budget`, `[daemon] timeout`), and a Source with no `return` takes the nearest `_`'s (the abstract Source's `poll('60s', 12) | failback('1s', 3)` ships in `defaults/00-comb.toml`). `| super` extends the `_` line instead of replacing it.
@@ -237,7 +244,11 @@ A shipped Source is retuned by setting that line in a later layer, and any other
 
 ```toml
 [daemon.providers.git.sources.status]
-return = "{{ result | watch('.git/index') | poll('120s', 6) | failback('2s', 5) | nearest }}"
+return = '''{{ result
+  | watch('.git/index')
+  | poll('120s', 6)
+  | failback('2s', 5)
+  | nearest }}'''
 ```
 
 Three things a Source relies on beyond its own table:
