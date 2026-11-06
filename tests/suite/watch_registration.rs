@@ -1,6 +1,6 @@
 //! A Source's watches are registered off the scheduler loop: each is Pending,
 //! then Active or Failed, as `introspect watches` shows; a failed one is tried
-//! again on the next demand; an absent path is watched through the nearest
+//! again by a demand once `WATCH_RETRY_INTERVAL` has passed; an absent path is watched through the nearest
 //! directory above it that exists.
 
 use crate::common::daemon::TestDaemon;
@@ -11,7 +11,7 @@ use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
-use beachcomber::watcher::FsWatcher;
+use beachcomber::watcher::{FsWatcher, WATCH_RETRY_INTERVAL};
 use beachcomber::watcher_registry::WatcherRegistry;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -128,10 +128,11 @@ fn daemon(source: &str) -> TestDaemon {
 }
 
 /// A path in a directory the daemon may not read cannot be watched: it is
-/// Failed, `comb check daemon` warns of it, and the next read of the Source
-/// asks for it again, which succeeds once the directory can be read.
+/// Failed, `comb check daemon` warns of it, and a read of the Source once the
+/// retry interval has passed asks for it again, which succeeds once the
+/// directory can be read.
 #[test]
-fn a_watch_that_fails_is_shown_and_tried_again_on_the_next_read() {
+fn a_watch_that_fails_is_shown_and_tried_again_on_a_later_read() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
     let locked = tmp.path().canonicalize().unwrap().join("locked");
@@ -178,13 +179,16 @@ fn a_watch_that_fails_is_shown_and_tried_again_on_the_next_read() {
     );
 
     unlock();
-    ask(&sock, get);
+    // A read asks again once the failure is `WATCH_RETRY_INTERVAL` old.
     poll_until(
         "introspect watches",
-        "the watch Active after the next read",
-        Duration::from_secs(10),
-        Duration::from_millis(5),
-        || watches(&sock),
+        "the watch Active after a later read",
+        WATCH_RETRY_INTERVAL + Duration::from_secs(10),
+        Duration::from_millis(100),
+        || {
+            ask(&sock, get.clone());
+            watches(&sock)
+        },
         |w| *w == [(path.clone(), json!({"state": "active"}))],
     );
 }

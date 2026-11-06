@@ -227,7 +227,7 @@ one decorator in a line replaces an earlier one.
 | Decorator | Arguments | Default | Meaning |
 |---|---|---|---|
 | `poll(interval, count)` | interval: whole seconds, 1s to 1 year; count: 1 to 10000 | count 12 | Re-run every `interval` while read; after `count` runs unread, start decaying |
-| `watch(path, …)` | one or more non-empty paths | | Re-run when a path changes. Relative to the root; `/`, `~` or `$` start an absolute path; `'.'` is the whole root; `'!dir'` leaves `dir` out of `'.'` (needs `'.'`) |
+| `watch(path, …)` | one or more non-empty paths | | Re-run when a path changes. Relative to the root; `/`, `~` or `$` start an absolute path; `'.'` is the whole root; `'!dir'` leaves `dir` out of `'.'` (needs `'.'`); `~` and `/` are watched on their entries only, not their trees |
 | `ttl(interval)` | as `poll`'s interval | | `poll(interval, 1)` with a decay of 1: the value expires. Not with `poll` |
 | `failback(interval, count)` | interval first, as a string (`'1s'`); count 1 to 10000 | `'1s', 3` | After `count` failures in a row, retry from `interval`, doubling |
 | `budget(d)` | duration ≥ 1ms; a number is whole seconds | `[daemon] budget` | How long a read waits for this Source's run |

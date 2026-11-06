@@ -58,10 +58,16 @@ impl FsWatcher {
         Self { watcher }
     }
 
-    /// Watch `path` and everything below it.
+    /// Watch `path` and everything below it. One that fails is taken down:
+    /// inotify stops its walk at the first directory it may not read, and
+    /// keeps the directories it had already added.
     pub fn watch(&mut self, path: &Path) -> notify::Result<()> {
         debug!("Watching: {:?}", path);
-        self.watcher.watch(path, RecursiveMode::Recursive)
+        let watched = self.watcher.watch(path, RecursiveMode::Recursive);
+        if watched.is_err() {
+            let _ = self.watcher.unwatch(path);
+        }
+        watched
     }
 
     /// Watch the entries of the directory `path`, and nothing below them.
@@ -100,6 +106,10 @@ impl WatchBackend {
 /// misclassify a loaded-but-healthy backend as dead. Concurrent with the
 /// scheduler loop, so it costs no startup latency.
 pub const WATCH_SELF_TEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long a failed watch waits before a read asks for it again: a
+/// registration can walk a whole tree, and a prompt reads many times a second.
+pub const WATCH_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Scan interval for the production polling fallback.
 pub const POLLING_FALLBACK_INTERVAL: Duration = Duration::from_secs(1);
@@ -310,6 +320,7 @@ pub struct Registrar {
     commands: std::sync::mpsc::Sender<Command>,
     table: Arc<Mutex<Table>>,
     settled: Option<mpsc::UnboundedReceiver<PathBuf>>,
+    retry_after: Duration,
 }
 
 #[derive(Default)]
@@ -333,9 +344,11 @@ fn lock(table: &Mutex<Table>) -> MutexGuard<'_, Table> {
 }
 
 impl Registrar {
-    /// Start the worker over `watcher`. It ends when the registrar is
-    /// dropped, after the registration under way, if any.
-    pub fn start(watcher: FsWatcher) -> Self {
+    /// Start the worker over `watcher`; a failed path is asked for again no
+    /// sooner than `retry_after` after its last ask ([`WATCH_RETRY_INTERVAL`]).
+    /// The worker ends when the registrar is dropped, after the registration
+    /// under way, if any.
+    pub fn start(watcher: FsWatcher, retry_after: Duration) -> Self {
         let (commands, rx) = std::sync::mpsc::channel();
         let table = Arc::new(Mutex::new(Table::default()));
         let (settled_tx, settled) = mpsc::unbounded_channel();
@@ -354,6 +367,7 @@ impl Registrar {
             commands,
             table,
             settled: Some(settled),
+            retry_after,
         }
     }
 
@@ -393,13 +407,17 @@ impl Registrar {
         let _ = self.commands.send(Command::Unwatch(path.to_path_buf()));
     }
 
-    /// Ask again for each of `paths` whose registration failed.
+    /// Ask again for each of `paths` whose registration failed, once its
+    /// last ask is `retry_after` old.
     pub fn retry<'a>(&self, paths: impl IntoIterator<Item = &'a Path>) {
         let failed: Vec<PathBuf> = {
             let table = lock(&self.table);
             paths
                 .into_iter()
-                .filter(|p| matches!(table.paths.get(*p), Some((_, WatchState::Failed { .. }, _))))
+                .filter(|p| {
+                    matches!(table.paths.get(*p), Some((_, WatchState::Failed { .. }, asked))
+                        if asked.elapsed() >= self.retry_after)
+                })
                 .map(Path::to_path_buf)
                 .collect()
         };
@@ -580,10 +598,16 @@ impl Worker {
 
 /// Where a watch of `path` is registered, and whether over its whole tree:
 /// on the path itself when it exists; while it does not, on the entries of
-/// the nearest directory above it that does.
+/// the nearest directory above it that does. `/` and `$HOME` are watched on
+/// their entries only, whatever asked for them: their trees are everything.
 fn where_to_watch(path: &Path) -> Result<(PathBuf, bool), String> {
     match std::fs::metadata(path) {
-        Ok(_) => Ok((path.to_path_buf(), true)),
+        Ok(_) => {
+            let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            let everything =
+                real == Path::new("/") || crate::query::home_dir().is_some_and(|h| h == real);
+            Ok((path.to_path_buf(), !everything))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut up = path.parent();
             while let Some(dir) = up {
@@ -799,6 +823,8 @@ pub(crate) mod test_backend {
     pub struct Held {
         pub gate: Arc<Gate>,
         pub calls: Arc<Mutex<Vec<Call>>>,
+        /// Fail every recursive watch, after recording it.
+        pub refuse_trees: bool,
     }
 
     impl Held {
@@ -807,6 +833,7 @@ pub(crate) mod test_backend {
             let held = Self {
                 gate: Arc::clone(gate),
                 calls: Arc::clone(&calls),
+                refuse_trees: false,
             };
             (held, calls)
         }
@@ -825,6 +852,9 @@ pub(crate) mod test_backend {
                 .lock()
                 .unwrap()
                 .push(Call::Watch(path.to_path_buf(), mode));
+            if self.refuse_trees && mode == RecursiveMode::Recursive {
+                return Err(notify::Error::generic("refused"));
+            }
             Ok(())
         }
 
@@ -851,9 +881,88 @@ mod registrar_tests {
     fn registrar(gate: &Arc<Gate>) -> (Registrar, Arc<Mutex<Vec<Call>>>) {
         let (held, calls) = Held::new(gate);
         (
-            Registrar::start(FsWatcher::with_backend(Box::new(held))),
+            Registrar::start(FsWatcher::with_backend(Box::new(held)), Duration::ZERO),
             calls,
         )
+    }
+
+    /// A registrar whose backend fails every recursive watch.
+    fn refusing(retry_after: Duration) -> (Registrar, Arc<Mutex<Vec<Call>>>) {
+        let (mut held, calls) = Held::new(&Gate::opened());
+        held.refuse_trees = true;
+        (
+            Registrar::start(FsWatcher::with_backend(Box::new(held)), retry_after),
+            calls,
+        )
+    }
+
+    fn until_failed(r: &Registrar) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !r.has_failed() {
+            assert!(std::time::Instant::now() < deadline, "never failed");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn root_and_home_are_watched_on_their_entries_only() {
+        let (r, calls) = registrar(&Gate::opened());
+        let home = crate::query::home_dir().filter(|h| h.is_dir());
+        let wide: Vec<PathBuf> = std::iter::once(PathBuf::from("/")).chain(home).collect();
+        for path in &wide {
+            r.watch(path.clone());
+            until(&r, path, WatchState::Active { via: None });
+        }
+        let want: Vec<Call> = wide
+            .iter()
+            .map(|p| Call::Watch(p.clone(), RecursiveMode::NonRecursive))
+            .collect();
+        assert_eq!(*calls.lock().unwrap(), want);
+    }
+
+    /// A recursive watch that fails partway leaves directories registered;
+    /// the failure takes them down.
+    #[test]
+    fn a_failed_tree_watch_is_taken_down() {
+        let (_tmp, dir) = tempdir();
+        let (r, calls) = refusing(Duration::ZERO);
+        r.watch(dir.clone());
+        until_failed(&r);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [
+                Call::Watch(dir.clone(), RecursiveMode::Recursive),
+                Call::Unwatch(dir.clone()),
+            ]
+        );
+    }
+
+    /// A failed path is asked for again only once its last ask is old enough.
+    #[test]
+    fn a_failed_path_is_retried_only_after_the_interval() {
+        let attempts = |calls: &Mutex<Vec<Call>>| {
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| matches!(c, Call::Watch(..)))
+                .count()
+        };
+        let (_tmp, dir) = tempdir();
+        let (r, calls) = refusing(Duration::from_secs(3600));
+        r.watch(dir.clone());
+        until_failed(&r);
+        r.retry([dir.as_path()]);
+        r.retry([dir.as_path()]);
+        assert!(r.has_failed(), "neither retry asked again");
+        assert_eq!(attempts(&calls), 1);
+
+        let (r, calls) = refusing(Duration::ZERO);
+        r.watch(dir.clone());
+        until_failed(&r);
+        r.retry([dir.as_path()]);
+        until_failed(&r);
+        assert_eq!(attempts(&calls), 2);
     }
 
     fn state(r: &Registrar, path: &Path) -> Option<WatchState> {

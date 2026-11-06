@@ -897,7 +897,14 @@ impl Scheduler {
         // still serves demand, polls and reloads; nothing is watched, and
         // `_idle_events` keeps the event channel open and silent.
         let (mut registrar, mut fs_rx, _idle_events) = match watcher {
-            Ok((watcher, rx)) => (Some(Registrar::start(watcher)), rx, None),
+            Ok((watcher, rx)) => (
+                Some(Registrar::start(
+                    watcher,
+                    crate::watcher::WATCH_RETRY_INTERVAL,
+                )),
+                rx,
+                None,
+            ),
             Err(e) => {
                 warn!(
                     "Failed to create filesystem watcher: {}. Watch triggers disabled.",
@@ -2038,7 +2045,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().canonicalize().unwrap();
         let (held, calls) = Held::new(&Gate::opened());
-        let registrar = Registrar::start(FsWatcher::with_backend(Box::new(held)));
+        let registrar = Registrar::start(
+            FsWatcher::with_backend(Box::new(held)),
+            crate::watcher::WATCH_RETRY_INTERVAL,
+        );
         let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
         let key = |source: &str| lifecycle::Key {
             provider: "git".into(),
@@ -2828,7 +2838,10 @@ mod tests {
     fn a_memo_key_routes_by_node() {
         use crate::watcher::test_backend::{Gate, Held};
         let (held, _) = Held::new(&Gate::opened());
-        let registrar = Registrar::start(FsWatcher::with_backend(Box::new(held)));
+        let registrar = Registrar::start(
+            FsWatcher::with_backend(Box::new(held)),
+            crate::watcher::WATCH_RETRY_INTERVAL,
+        );
         let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
         let config = PathBuf::from("/h/.kube/config");
         let (f, g) = (memo_key("k", None, "f"), memo_key("k", None, "g"));
@@ -2863,7 +2876,10 @@ mod tests {
             path
         });
         let (held, calls) = Held::new(&Gate::opened());
-        let registrar = Registrar::start(FsWatcher::with_backend(Box::new(held)));
+        let registrar = Registrar::start(
+            FsWatcher::with_backend(Box::new(held)),
+            crate::watcher::WATCH_RETRY_INTERVAL,
+        );
         let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
         let key = memo_key("k", None, "f");
         let paths = |ps: &[&PathBuf]| -> Vec<String> {

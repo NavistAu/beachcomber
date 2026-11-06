@@ -77,7 +77,8 @@ $ comb get clock.on_touch
 ```
 
 A relative path is relative to the source's `root`, so `watch('.git/HEAD')` watches the repository the source belongs
-to. That's how `git.branch` changes the moment you switch branch.
+to. That's how `git.branch` changes the moment you switch branch. `watch('~')` and `watch('/')` see only the entries
+directly in that directory, not everything below it.
 
 ## Expire instead: `ttl()`
 
