@@ -1141,10 +1141,14 @@ impl FirstRead {
 
     /// What has happened so far, long ago: the next change is a change.
     fn settle(&self) {
+        self.age_git();
+        self.s.get("git", Some(&self.dir)).expect("git answers");
+    }
+
+    fn age_git(&self) {
         for entry in walk(&self.dir.join(".git")) {
             age(&entry);
         }
-        self.s.get("git", Some(&self.dir)).expect("git answers");
     }
 
     fn git(&self, args: &[&str]) {
@@ -1206,7 +1210,13 @@ fn first_read_watching() -> Option<FirstRead> {
         dir,
         s: served_watching(),
     };
-    f.settle();
+    // FSEvents can hand over a change well after it was made: the making of the
+    // repository, heard before anything watches it, wakes no Source later.
+    f.age_git();
+    if f.s.file_events_delivered(Duration::from_secs(2)) {
+        f.s.hear_file_events();
+    }
+    f.s.get("git", Some(&f.dir)).expect("git answers");
     let until = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < until {
         f.write("probe.txt", "");

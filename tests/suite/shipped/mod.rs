@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 mod asdf;
 mod aws;
@@ -222,8 +223,29 @@ impl Served {
         answer.get("data").filter(|d| !d.is_null()).cloned()
     }
 
+    /// Whether the scheduler's watcher delivers its own events within
+    /// `within`, knocking until it does: `false` on a host whose watcher
+    /// delivers nothing (a sandbox).
+    pub fn file_events_delivered(&self, within: Duration) -> bool {
+        let until = tokio::time::Instant::now() + within;
+        self.runtime.block_on(async {
+            while tokio::time::Instant::now() < until {
+                if let Some(barrier) = self.cache.barrier() {
+                    if barrier.delivering() {
+                        return true;
+                    }
+                    barrier.pass(tokio::time::Instant::now()).await;
+                }
+                tokio::task::yield_now().await;
+            }
+            false
+        })
+    }
+
     /// Until the file events of everything done so far have been heard. The
     /// watch's first event is awaited first: until then a barrier only knocks.
+    /// A pass gives up after a moment on a machine badly behind; this waits
+    /// for one that was heard.
     pub fn hear_file_events(&self) {
         let barrier = self.cache.barrier().expect("a watching scheduler");
         self.runtime.block_on(async {
@@ -231,7 +253,14 @@ impl Served {
                 barrier.pass(tokio::time::Instant::now()).await;
                 tokio::task::yield_now().await;
             }
-            barrier.pass(tokio::time::Instant::now()).await;
+            loop {
+                let heard = barrier.heard();
+                barrier.pass(tokio::time::Instant::now()).await;
+                if barrier.heard() > heard {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
         });
     }
 

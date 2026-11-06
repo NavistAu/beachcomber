@@ -219,7 +219,13 @@ impl Barrier {
 
     /// Whether its own watch has delivered: until it has, a read does not wait.
     pub fn delivering(&self) -> bool {
-        *self.heard.borrow() > 0
+        self.heard() > 0
+    }
+
+    /// How many of its own events have been heard: one more after a
+    /// [`Self::pass`] is every event from before that pass heard.
+    pub fn heard(&self) -> u64 {
+        *self.heard.borrow()
     }
 
     /// The scheduler has been through `paths`, an event of its watcher.
