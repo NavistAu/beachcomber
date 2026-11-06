@@ -69,6 +69,12 @@ class TestOps < Minitest::Test
     assert_equal '60', req['ttl']
   end
 
+  def test_put_with_persist
+    @server.enqueue('{"ok":true}')
+    @client.put('custom.value', 'x', persist: true)
+    assert_equal true, @server.requests.last['persist']
+  end
+
   def test_put_with_path
     @server.enqueue('{"ok":true}')
     @client.put('custom.value', 'x', path: '/repo')

@@ -82,8 +82,8 @@ func (s *Session) SetContext(path string) error {
 // Put stores data into the cache as static data on this session's persistent
 // connection. data should be a JSON object. ttl and path are optional; pass
 // "" to omit them (path "" is the session's directory, else the global
-// entry).
-func (s *Session) Put(key string, data interface{}, ttl, path string) error {
+// entry). persist keeps the put across a daemon restart, best effort.
+func (s *Session) Put(key string, data interface{}, ttl, path string, persist bool) error {
 	if err := s.open(); err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func (s *Session) Put(key string, data interface{}, ttl, path string) error {
 		return s.lib.stamp(parseError("beachcomber: marshal put data: " + err.Error()))
 	}
 	keyBuf, dataBuf, ttlBuf, pathBuf := cBytes(key), cBytes(string(dataJSON)), optBytes(ttl), optBytes(path)
-	_, err = s.lib.call(s.lib.bcSessionPut, s.handle, ptrOf(keyBuf), ptrOf(dataBuf), ptrOf(ttlBuf), ptrOf(pathBuf))
+	_, err = s.lib.call(s.lib.bcSessionPut, s.handle, ptrOf(keyBuf), ptrOf(dataBuf), ptrOf(ttlBuf), ptrOf(pathBuf), boolArg(persist))
 	runtime.KeepAlive(keyBuf)
 	runtime.KeepAlive(dataBuf)
 	runtime.KeepAlive(ttlBuf)

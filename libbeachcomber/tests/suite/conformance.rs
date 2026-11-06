@@ -222,7 +222,7 @@ fn run_op(client: &Client, descriptor: &OpDescriptor, resolve: &ResolveCtx) -> C
             let data = descriptor.args["data"].clone();
             let ttl = descriptor.args["ttl"].as_str();
             let path = descriptor.args["path"].as_str();
-            match client.put(key, data, ttl, path) {
+            match client.put(key, data, ttl, path, false) {
                 Ok(()) => CanonicalResponse {
                     ok: true,
                     data: None,

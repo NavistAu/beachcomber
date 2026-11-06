@@ -209,6 +209,9 @@ enum Commands {
         /// Expire the node: kept for this long (e.g., "30s", "5m") and one decay step more (twice as long), then removed; the next put renews it. Whole seconds, at least 1s; not with null data
         #[arg(long, value_name = "DURATION", value_parser = beachcomber::config::duration_arg)]
         ttl: Option<std::time::Duration>,
+        /// Keep the put across a daemon restart, best effort: in the cache directory, which may be cleared
+        #[arg(long)]
+        persist: bool,
         #[command(flatten)]
         path: PathArgs,
     },
@@ -455,13 +458,21 @@ fn run(cli: Cli) -> Outcome {
             data,
             at,
             ttl,
+            persist,
             path: PathArgs { path, global },
         } => {
             let effective_path = match cli_path(global, path.or(at)) {
                 Ok(p) => p,
                 Err(code) => return code,
             };
-            run_put(&config, &key, &data, ttl, effective_path.as_deref())
+            run_put(
+                &config,
+                &key,
+                &data,
+                ttl,
+                persist,
+                effective_path.as_deref(),
+            )
         }
         Commands::Refresh {
             key,

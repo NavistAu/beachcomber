@@ -112,7 +112,7 @@ Handshake — returns a table with `daemon_version` and `protocol_version` field
 
 ### `Client:put(key, data [, opts])` → `true | nil, error`
 
-Write a value into the cache as static data. Pass `nil` (or `beachcomber.null`) for `data` to remove the node. `opts.ttl` (e.g. `"30s"`), `opts.path` (default: the global entry).
+Write a value into the cache as static data. Pass `nil` (or `beachcomber.null`) for `data` to remove the node. `opts.ttl` (e.g. `"30s"`), `opts.path` (default: the global entry), `opts.persist` (keep the put across a daemon restart, best effort).
 
 ### `Client:introspect(subject [, opts])` → `table | nil, error`
 

@@ -116,7 +116,7 @@ both transports — see "Transports and their limits" below.
 
 #### `client.put(key, data, opts?)`
 
-Store data as static data. `data` is required; `put(key, null)` removes the node, and the entry itself is dropped once no records, static or provider-produced, remain at it.
+Store data as static data. `data` is required; `put(key, null)` removes the node, and the entry itself is dropped once no records, static or provider-produced, remain at it. `opts` are `ttl`, `path` and `persist` (keep the put across a daemon restart, best effort).
 
 #### `client.status()`
 

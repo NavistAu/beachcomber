@@ -75,6 +75,7 @@ mod path_chain;
 mod plugin_real_ffi;
 mod provider_conformance;
 mod put_node;
+mod put_persist;
 mod put_remove;
 mod put_ttl;
 mod refresh;

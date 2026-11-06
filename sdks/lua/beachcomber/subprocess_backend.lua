@@ -307,13 +307,14 @@ function Backend:eval(template, cwd, env)
   return { ok = true, data = value }
 end
 
-function Backend:put(key, data, ttl, path)
+function Backend:put(key, data, ttl, path, persist)
   local encoded, enc_err = json.encode(data)
   if not encoded then
     return { ok = false, error = { kind = "parse_error", message = "json encode error: " .. tostring(enc_err) } }
   end
   local cmd = command(self, " put " .. shell_escape(key) .. " " .. shell_escape(encoded) .. path_arg(path))
   if ttl then cmd = cmd .. " --ttl " .. shell_escape(ttl) end
+  if persist then cmd = cmd .. " --persist" end
   local _, ok, err = run(cmd)
   if not ok then
     return { ok = false, error = { kind = "server_error", message = (err or ""):gsub("%s+$", "") } }
@@ -365,9 +366,9 @@ function Session:get(key, cwd, env, options)
   return self._backend:get(key, cwd, env, options)
 end
 
-function Session:put(key, data, ttl, path)
+function Session:put(key, data, ttl, path, persist)
   if path == nil then path = self._path end
-  return self._backend:put(key, data, ttl, path)
+  return self._backend:put(key, data, ttl, path, persist)
 end
 
 function Session:refresh(key, path)

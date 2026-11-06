@@ -84,21 +84,22 @@ fn parse_put_request() {
             data,
             ttl,
             path,
+            persist,
         } => {
             assert_eq!(key, "myapp");
             assert_eq!(data["status"], "healthy");
             assert_eq!(data["version"], "1.2.3");
             assert!(ttl.is_none());
             assert!(path.is_none());
+            assert!(!persist);
         }
         _ => panic!("Expected Put request"),
     }
 }
 
 #[test]
-fn parse_put_request_with_ttl_and_path() {
-    let json =
-        r#"{"op":"put","key":"myapp","data":{"count":42},"ttl":"30s","path":"/home/user/project"}"#;
+fn parse_put_request_with_ttl_path_and_persist() {
+    let json = r#"{"op":"put","key":"myapp","data":{"count":42},"ttl":"30s","path":"/home/user/project","persist":true}"#;
     let req: Request = serde_json::from_str(json).unwrap();
     match req {
         Request::Put {
@@ -106,8 +107,9 @@ fn parse_put_request_with_ttl_and_path() {
             data,
             ttl,
             path,
-            ..
+            persist,
         } => {
+            assert!(persist);
             assert_eq!(key, "myapp");
             assert_eq!(data["count"], 42);
             assert_eq!(ttl.as_deref(), Some("30s"));

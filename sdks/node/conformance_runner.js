@@ -226,7 +226,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
           const data = args.data;
           const ttl = args.ttl;
           const pathArg = args.path;
-          await client.put(key, data, { ttl, path: pathArg });
+          await client.put(key, data, { ttl, path: pathArg, persist: args.persist === true });
           return makeOk();
         }
 

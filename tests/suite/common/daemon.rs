@@ -32,7 +32,8 @@ pub fn stop(process: &mut Child) {
 }
 
 /// Point `cmd` at a throwaway `$HOME`, `$XDG_CONFIG_HOME`, `$XDG_STATE_HOME`
-/// (= `<home>/.local/state`) and `$BEACHCOMBER_SOCKET` (= `sock`), with
+/// (= `<home>/.local/state`), `$XDG_CACHE_HOME` (= `<home>/.cache`, where
+/// persisted puts live) and `$BEACHCOMBER_SOCKET` (= `sock`), with
 /// `RUST_LOG=error`, and `$KUBECONFIG` and `$TALOSCONFIG` removed, so nothing it runs can read or write the developer's real
 /// config, defaults, log or daemon; and put [`stub_bin`] first on its `PATH`,
 /// so no template it renders runs the developer's own tools.
@@ -44,6 +45,7 @@ pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path, sock: &Path) -
     cmd.env("HOME", home)
         .env("XDG_CONFIG_HOME", xdg)
         .env("XDG_STATE_HOME", home.join(".local/state"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
         .env("BEACHCOMBER_SOCKET", sock)
         .env("RUST_LOG", "error")
         .env("PATH", path)
@@ -208,6 +210,7 @@ impl TestDaemon {
             std::env::set_var("HOME", &home);
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
             std::env::set_var("XDG_STATE_HOME", home.join(".local/state"));
+            std::env::set_var("XDG_CACHE_HOME", home.join(".cache"));
         }
         let config_file = xdg.join("beachcomber").join("config.toml");
         beachcomber::daemon::defaults::write_managed_defaults(
@@ -215,7 +218,9 @@ impl TestDaemon {
             env!("BEACHCOMBER_VERSION"),
         )
         .expect("write managed defaults");
-        let config = beachcomber::config::Config::load();
+        let mut config = beachcomber::config::Config::load();
+        // Persisted puts, in `<home>/.cache`, as `comb daemon` keeps them.
+        config.persist_puts();
         // SAFETY: as above; the runtime that starts threads is built next.
         unsafe { config.load_env_file() };
 

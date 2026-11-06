@@ -157,7 +157,7 @@ local function run_op(client, descriptor, resolve_ctx)
     return { ok = true }
 
   elseif op == "put" then
-    local ok, err = client:put(args.key, args.data, { ttl = args.ttl, path = args.path })
+    local ok, err = client:put(args.key, args.data, { ttl = args.ttl, path = args.path, persist = args.persist })
     if not ok then return fail(err) end
     return { ok = true }
 

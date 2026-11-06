@@ -60,9 +60,16 @@ func TestClient_Get_ErrorHasKindAndVersionApartFromItsMessage(t *testing.T) {
 // Client.Put / Refresh / Status
 // ---------------------------------------------------------------------------
 
+func TestClient_PutPersist(t *testing.T) {
+	c := requireClient(t)
+	if err := c.Put("gopersist", map[string]interface{}{"v": float64(1)}, "", "", true); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+}
+
 func TestClient_PutThenGet(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("mykey", map[string]interface{}{"val": float64(42)}, "", ""); err != nil {
+	if err := c.Put("mykey", map[string]interface{}{"val": float64(42)}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	v, err := c.Get("mykey", "", nil)
@@ -76,10 +83,10 @@ func TestClient_PutThenGet(t *testing.T) {
 
 func TestClient_PutNilRemovesTheNode(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("gonilrm", map[string]interface{}{"val": float64(1)}, "", ""); err != nil {
+	if err := c.Put("gonilrm", map[string]interface{}{"val": float64(1)}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := c.Put("gonilrm", nil, "", ""); err != nil {
+	if err := c.Put("gonilrm", nil, "", "", false); err != nil {
 		t.Fatalf("Put nil: %v", err)
 	}
 	v, err := c.Get("gonilrm.val", "", nil)
@@ -95,7 +102,7 @@ func TestClient_PutNilRemovesTheNode(t *testing.T) {
 // caller's environment.
 func TestClient_Get_RendersAPutTemplateWithTheCallersEnv(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("filters:template", map[string]interface{}{"based": "{{ env.PYVAR | basename }}"}, "", ""); err != nil {
+	if err := c.Put("filters:template", map[string]interface{}{"based": "{{ env.PYVAR | basename }}"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	v, err := c.Get("filters.based", "", map[string]string{"PYVAR": "/foo/bar/baz"})
@@ -111,10 +118,10 @@ func TestClient_Get_RendersAPutTemplateWithTheCallersEnv(t *testing.T) {
 // unrendered halves are facets, read like any key.
 func TestClient_Get_FacetsReadTheUnrenderedHalves(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("tpl2", map[string]interface{}{"v": float64(1)}, "", ""); err != nil {
+	if err := c.Put("tpl2", map[string]interface{}{"v": float64(1)}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := c.Put("tpl2:template", map[string]interface{}{"v": "{{ 2 }}"}, "", ""); err != nil {
+	if err := c.Put("tpl2:template", map[string]interface{}{"v": "{{ 2 }}"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	for key, want := range map[string]interface{}{
@@ -135,7 +142,7 @@ func TestClient_Get_FacetsReadTheUnrenderedHalves(t *testing.T) {
 // An address past a template string walks into what the string renders to.
 func TestClient_Get_PastATemplateStringWalksIntoItsValue(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("tpl3:template", map[string]interface{}{"t": "{{ {'x': 5} }}"}, "", ""); err != nil {
+	if err := c.Put("tpl3:template", map[string]interface{}{"t": "{{ {'x': 5} }}"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	v, err := c.Get("tpl3.t.x", "", nil)
@@ -150,10 +157,10 @@ func TestClient_Get_PastATemplateStringWalksIntoItsValue(t *testing.T) {
 // cwd is the directory the read addresses; "" is the global entry.
 func TestClient_Get_ReadsAtCwd(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("gocwd", map[string]interface{}{"v": "global"}, "", ""); err != nil {
+	if err := c.Put("gocwd", map[string]interface{}{"v": "global"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := c.Put("gocwd", map[string]interface{}{"v": "tmp"}, "", "/tmp"); err != nil {
+	if err := c.Put("gocwd", map[string]interface{}{"v": "tmp"}, "", "/tmp", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	for cwd, want := range map[string]string{"": "global", "/tmp": "tmp"} {
@@ -179,7 +186,7 @@ func TestClient_Refresh(t *testing.T) {
 // refresh` prints — with no `server error: ` prefix from the envelope.
 func TestClient_Refresh_RefusalIsTheDaemonsWords(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("sourceless", map[string]interface{}{"v": float64(1)}, "", ""); err != nil {
+	if err := c.Put("sourceless", map[string]interface{}{"v": float64(1)}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	err := c.Refresh("sourceless", "")
@@ -197,7 +204,7 @@ func TestClient_Refresh_RefusalIsTheDaemonsWords(t *testing.T) {
 
 func TestClient_StatusRowSaysWhenItPollsNext(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("statusttl", map[string]interface{}{"x": float64(1)}, "1m", ""); err != nil {
+	if err := c.Put("statusttl", map[string]interface{}{"x": float64(1)}, "1m", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	rows, err := c.Status()
@@ -217,7 +224,7 @@ func TestClient_StatusRowSaysWhenItPollsNext(t *testing.T) {
 
 func TestClient_Status(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("statusprobe", map[string]interface{}{"x": float64(1)}, "", ""); err != nil {
+	if err := c.Put("statusprobe", map[string]interface{}{"x": float64(1)}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	if _, err := c.Get("statusprobe", "", nil); err != nil {
@@ -325,7 +332,7 @@ func TestClient_Watch_NextEvent(t *testing.T) {
 func TestClient_Watch_ResolvedValueAndTemplateRefire(t *testing.T) {
 	c := requireClient(t)
 	env := map[string]string{"GO_WATCH_TPL": "v1"}
-	if err := c.Put("gowatchtpl:template", map[string]interface{}{"f": "{{ env.GO_WATCH_TPL }}"}, "", ""); err != nil {
+	if err := c.Put("gowatchtpl:template", map[string]interface{}{"f": "{{ env.GO_WATCH_TPL }}"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 
@@ -348,7 +355,7 @@ func TestClient_Watch_ResolvedValueAndTemplateRefire(t *testing.T) {
 		t.Fatalf("first event %v must equal Get's %v", ev, got)
 	}
 
-	if err := c.Put("gowatchtpl:template", map[string]interface{}{"f": "{{ env.GO_WATCH_TPL }}!"}, "", ""); err != nil {
+	if err := c.Put("gowatchtpl:template", map[string]interface{}{"f": "{{ env.GO_WATCH_TPL }}!"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	ev, err = ws.NextEvent()
@@ -391,10 +398,10 @@ func TestWatchStream_TimeoutIsAnErrorAndCancelEndsTheStream(t *testing.T) {
 // process's working directory.
 func TestClient_EvalAndWatch_NoCwdIsTheGlobalEntry(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("gonocwd", map[string]interface{}{"v": "global"}, "", ""); err != nil {
+	if err := c.Put("gonocwd", map[string]interface{}{"v": "global"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := c.Put("gonocwd", map[string]interface{}{"v": "tmp"}, "", "/tmp"); err != nil {
+	if err := c.Put("gonocwd", map[string]interface{}{"v": "tmp"}, "", "/tmp", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	// This process's working directory is where cwd "" would read if it were
@@ -434,7 +441,7 @@ func TestSession_GetAndSetContext(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if err := c.Put("sessionprobe", map[string]interface{}{"v": float64(7)}, "", ""); err != nil {
+	if err := c.Put("sessionprobe", map[string]interface{}{"v": float64(7)}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	v, err := sess.Get("sessionprobe", "", nil)
@@ -461,13 +468,13 @@ func TestSession_Get_RendersAtTheSessionsDirectory(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if err := sess.Put("gors:template", map[string]interface{}{"t": "{{ env.WHO }}@{{ gors.where }}"}, "", ""); err != nil {
+	if err := sess.Put("gors:template", map[string]interface{}{"t": "{{ env.WHO }}@{{ gors.where }}"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := sess.Put("gors", map[string]interface{}{"where": "global"}, "", ""); err != nil {
+	if err := sess.Put("gors", map[string]interface{}{"where": "global"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := sess.Put("gors", map[string]interface{}{"where": "tmp"}, "", "/tmp"); err != nil {
+	if err := sess.Put("gors", map[string]interface{}{"where": "tmp"}, "", "/tmp", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	env := map[string]string{"WHO": "me"}
@@ -500,7 +507,7 @@ func TestSession_Put(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if err := sess.Put("sessionenv", map[string]interface{}{"color": "red"}, "", ""); err != nil {
+	if err := sess.Put("sessionenv", map[string]interface{}{"color": "red"}, "", "", false); err != nil {
 		t.Fatalf("Session.Put: %v", err)
 	}
 	v, err := sess.Get("sessionenv.color", "", nil)
@@ -608,10 +615,10 @@ func TestNewClient_AutoDiscovery(t *testing.T) {
 
 func TestClient_Get_BareProviderIsTheMergedNamespace(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("ns", map[string]interface{}{"lit": float64(1)}, "", ""); err != nil {
+	if err := c.Put("ns", map[string]interface{}{"lit": float64(1)}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if err := c.Put("ns:template", map[string]interface{}{"t": "{{ env.NS }}"}, "", ""); err != nil {
+	if err := c.Put("ns:template", map[string]interface{}{"t": "{{ env.NS }}"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	v, err := c.Get("ns", "/", map[string]string{"NS": "hi"})
@@ -625,7 +632,7 @@ func TestClient_Get_BareProviderIsTheMergedNamespace(t *testing.T) {
 
 func TestClient_Get_MissIsNilData(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("ns2", map[string]interface{}{"v": float64(1)}, "", ""); err != nil {
+	if err := c.Put("ns2", map[string]interface{}{"v": float64(1)}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	v, err := c.Get("ns2.nope", "/", nil)
@@ -664,7 +671,7 @@ func TestWithExec_ReachesTheOptionsJSON(t *testing.T) {
 
 func TestClient_Get_ExecIsDisabledWithoutTheOption(t *testing.T) {
 	c := requireClient(t)
-	if err := c.Put("execns:template", map[string]interface{}{"out": "{{ exec(['printf', 'x']) }}"}, "", ""); err != nil {
+	if err := c.Put("execns:template", map[string]interface{}{"out": "{{ exec(['printf', 'x']) }}"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	_, err := c.Get("execns.out", "/", nil)
@@ -683,7 +690,7 @@ func TestClient_Get_ExecRunsWithTheOption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if err := c.Put("execns2:template", map[string]interface{}{"out": "{{ exec(['printf', 'x']) }}"}, "", ""); err != nil {
+	if err := c.Put("execns2:template", map[string]interface{}{"out": "{{ exec(['printf', 'x']) }}"}, "", "", false); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
 	v, err := c.Get("execns2.out", "/", nil)

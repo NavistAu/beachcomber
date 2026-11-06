@@ -65,7 +65,7 @@ fn every_client_op_that_waits_too_long_is_a_timeout() {
     );
     assert_timeout(
         "put",
-        client.put("p", serde_json::json!({"x": 1}), None, None),
+        client.put("p", serde_json::json!({"x": 1}), None, None, false),
     );
     assert_timeout("refresh", client.refresh("p", None));
     assert_timeout("status", client.status());
@@ -85,7 +85,7 @@ fn every_session_op_that_waits_too_long_is_a_timeout() {
     assert_timeout("get", read(session.get("p.x", None)));
     assert_timeout(
         "put",
-        session.put("p", serde_json::json!({"x": 1}), None, None),
+        session.put("p", serde_json::json!({"x": 1}), None, None, false),
     );
     assert_timeout("refresh", session.refresh("p", None));
     assert_timeout("status", session.status());

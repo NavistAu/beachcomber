@@ -10,7 +10,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 pub fn run_daemon(
     socket_path: PathBuf,
-    config: Config,
+    mut config: Config,
     exit_with_parent: bool,
     ready_fd: Option<RawFd>,
 ) -> Outcome {
@@ -32,6 +32,7 @@ pub fn run_daemon(
         }
     };
     let log_path = Config::log_path();
+    config.persist_puts();
 
     // A configuration with errors is refused before anything is set up: the
     // log level it names is not trusted to build the logger.

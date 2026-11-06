@@ -133,7 +133,7 @@ function bindSymbols(lib: import('koffi').LibraryHandle, koffi: typeof import('k
     bc_client_new: [BcClient, ['str']],
     bc_client_free: ['void', [BcClient]],
     bc_get: [BcString, [BcClient, 'str', 'str', 'str', 'str']],
-    bc_put: [BcString, [BcClient, 'str', 'str', 'str', 'str']],
+    bc_put: [BcString, [BcClient, 'str', 'str', 'str', 'str', 'bool']],
     bc_refresh: [BcString, [BcClient, 'str', 'str']],
     bc_status: [BcString, [BcClient]],
     bc_introspect: [BcString, [BcClient, 'str', 'str']],
@@ -142,7 +142,7 @@ function bindSymbols(lib: import('koffi').LibraryHandle, koffi: typeof import('k
     bc_session_open: [BcSession, [BcClient]],
     bc_session_close: ['void', [BcSession]],
     bc_session_get: [BcString, [BcSession, 'str', 'str', 'str', 'str']],
-    bc_session_put: [BcString, [BcSession, 'str', 'str', 'str', 'str']],
+    bc_session_put: [BcString, [BcSession, 'str', 'str', 'str', 'str', 'bool']],
     bc_session_refresh: [BcString, [BcSession, 'str', 'str']],
     bc_session_set_context: [BcString, [BcSession, 'str']],
     bc_watch_open: [BcWatch, [BcClient, 'str', 'str', 'str']],
@@ -238,9 +238,9 @@ export function createFfiTransport(): Transport {
         ),
       );
     },
-    async put(handle, key, jsonData, ttl, path) {
+    async put(handle, key, jsonData, ttl, path, persist) {
       return parseEnvelope(
-        await callAsync(fns.bc_put, handle, key, jsonData, nullIfUndefined(ttl), nullIfUndefined(path)),
+        await callAsync(fns.bc_put, handle, key, jsonData, nullIfUndefined(ttl), nullIfUndefined(path), persist),
       );
     },
     async refresh(handle, key, path) {
@@ -279,7 +279,7 @@ export function createFfiTransport(): Transport {
         ),
       );
     },
-    async sessionPut(session, key, jsonData, ttl, path) {
+    async sessionPut(session, key, jsonData, ttl, path, persist) {
       return parseEnvelope(
         await callAsync(
           fns.bc_session_put,
@@ -288,6 +288,7 @@ export function createFfiTransport(): Transport {
           jsonData,
           nullIfUndefined(ttl),
           nullIfUndefined(path),
+          persist,
         ),
       );
     },

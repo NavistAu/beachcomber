@@ -482,6 +482,17 @@ fn poll_key(interval_secs: u64, count: u32) -> Value {
     ]))
 }
 
+/// Where a put at `node` keeps its stored keys in `<namespace>:cache`: the
+/// node's own address, or for a root put (which has none) each top-level key;
+/// never a `_` prototype.
+fn schedule_addresses(node: &str, value: &Value) -> Vec<String> {
+    let addresses: Vec<String> = match (node, value) {
+        ("", Value::Object(top)) => top.keys().cloned().collect(),
+        _ => vec![node.to_string()],
+    };
+    addresses.into_iter().filter(|a| !is_prototype(a)).collect()
+}
+
 /// The namespace holding the `:cache` facet of `namespace`.
 fn cache_facet_of(namespace: &str) -> String {
     format!("{namespace}:cache")
@@ -1267,6 +1278,8 @@ pub struct Cache {
     /// How a read knows the file events of before it have arrived; set by a
     /// scheduler whose watcher delivers in order.
     barrier: std::sync::OnceLock<Arc<crate::watcher::Barrier>>,
+    /// Where persisted puts are kept; set by a daemon that keeps them.
+    put_store: std::sync::OnceLock<crate::persist::PutStore>,
 }
 
 impl Cache {
@@ -1278,6 +1291,7 @@ impl Cache {
             trees: DashMap::new(),
             trees_watchable: Default::default(),
             barrier: std::sync::OnceLock::new(),
+            put_store: std::sync::OnceLock::new(),
         }
     }
 
@@ -1289,6 +1303,7 @@ impl Cache {
             trees: DashMap::new(),
             trees_watchable: Default::default(),
             barrier: std::sync::OnceLock::new(),
+            put_store: std::sync::OnceLock::new(),
         }
     }
 
@@ -1372,6 +1387,16 @@ impl Cache {
 
     pub fn barrier(&self) -> Option<&Arc<crate::watcher::Barrier>> {
         self.barrier.get()
+    }
+
+    /// Keep persisted puts in `store` from now on.
+    pub fn set_put_store(&self, store: crate::persist::PutStore) {
+        let _ = self.put_store.set(store);
+    }
+
+    /// The persisted puts, when this cache's daemon keeps them.
+    pub fn put_store(&self) -> Option<&crate::persist::PutStore> {
+        self.put_store.get()
     }
 
     /// Write a single source's result into the cache entry for (provider, path).
@@ -1572,18 +1597,50 @@ impl Cache {
         let Some(ttl_secs) = ttl_secs else {
             return;
         };
-        let addresses: Vec<String> = match (node, value) {
-            ("", Value::Object(top)) => top.keys().cloned().collect(),
-            _ => vec![node.to_string()],
-        };
         let facet = cache_facet_of(namespace);
-        for address in addresses.into_iter().filter(|a| !is_prototype(a)) {
+        for address in schedule_addresses(node, value) {
             let stored = Value::Object(HashMap::from([
                 ("poll".to_string(), poll_key(ttl_secs, 1)),
                 ("decay".to_string(), Value::Int(1)),
             ]));
             self.write_static(&facet, path, PUT_SOURCE, &address, stored, None)
                 .expect("a stored schedule is a well-formed put");
+        }
+    }
+
+    /// Mark the put just written at `node` (`value`, as written) persisted:
+    /// `persist: true` beside its schedule in `<namespace>:cache`, where the
+    /// next put to the address, its removal or its expiry drops it with the
+    /// schedule.
+    pub fn mark_persisted(&self, namespace: &str, path: Option<&str>, node: &str, value: &Value) {
+        if namespace.contains(':') {
+            return;
+        }
+        let facet = cache_facet_of(namespace);
+        for address in schedule_addresses(node, value) {
+            let mut keys = self
+                .entries
+                .get(&make_cache_key(&facet, path))
+                .and_then(|entry| {
+                    match crate::provider::lookup_path(
+                        &entry.sources.get(PUT_SOURCE)?.fields,
+                        &address,
+                    )? {
+                        Value::Object(keys) => Some(keys.clone()),
+                        _ => None,
+                    }
+                })
+                .unwrap_or_default();
+            keys.insert("persist".to_string(), Value::Bool(true));
+            self.write_static(
+                &facet,
+                path,
+                PUT_SOURCE,
+                &address,
+                Value::Object(keys),
+                None,
+            )
+            .expect("a stored schedule is a well-formed put");
         }
     }
 

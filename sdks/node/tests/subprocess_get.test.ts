@@ -24,7 +24,7 @@ describe('subprocess transport get against a real daemon', { skip }, () => {
   const savedEnv: Record<string, string | undefined> = {};
 
   async function put(key: string, data: unknown, path_?: string): Promise<void> {
-    unwrap(await tp.put(handle, key, JSON.stringify(data), undefined, path_));
+    unwrap(await tp.put(handle, key, JSON.stringify(data), undefined, path_, false));
   }
 
   async function get(key: string, path_?: string, force = false, wait?: string): Promise<unknown> {

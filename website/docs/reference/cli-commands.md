@@ -179,6 +179,7 @@ comb g.j git:source .            # → what the Source computed, even where a pu
 | `poll` | object | `{interval, count}` — present for polled Sources, `--ttl` puts and memos with a `ttl()` |
 | `watch` | array | Watched paths — present for watching Sources and memos with a `watch()` |
 | `decay` | int | Decay steps before eviction (default 4) |
+| `persist` | bool | `true` for a put made with `--persist`; absent otherwise |
 
 Only a colon in the provider's own segment names a facet (`git:cache`), and the facets are `template`, `macro`, `memo`, `put`, `source` and `cache` alone: any other (`git:notes`) is `invalid facet key: git:notes (a facet is template, macro, memo, put, source or cache)`, exit `2`, on `get`, `put`, `refresh` and `watch` alike. Below the provider's segment a colon is an ordinary character, so `git.branch:age` is a miss like any unknown field. A key the grammar cannot read — `p..a`, `p['a`, `p[01]`, a provider starting with `/` or `~` — is `invalid key: <key>`, exit `2`.
 
@@ -334,7 +335,7 @@ The default output preset is `human` (coloured table) regardless of whether stdo
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts, watch backend). The watch backend line reports `native fs events` when the startup self-test confirmed kernel event delivery, or a WARN with `polling` when it didn't — provider file-watching still works, invalidating on a 1s scan instead of kernel events.
 
-## `comb p` (put) `<key> <json-data> [path] [--ttl <duration>] [-p <path>] [--global]`
+## `comb p` (put) `<key> <json-data> [path] [--ttl <duration>] [--persist] [-p <path>] [--global]`
 
 Write static data into the cache. External processes use this to expose state to prompt/statusline consumers without writing a Source.
 
@@ -344,6 +345,9 @@ comb p myapp '{"status":"healthy","version":"1.2.3"}'
 
 # Put with TTL — kept 30s and one decay step more (60s), then removed; the next put renews it
 comb p myapp '{"status":"healthy"}' --ttl 30s
+
+# Keep the put across a daemon restart (best effort)
+comb p myapp '{"status":"healthy"}' --persist
 
 # Put with path scope
 comb p myapp '{"status":"building"}' --path /home/user/project
@@ -365,6 +369,8 @@ A template is checked as the configuration's are: one that does not compile is r
 `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root any JSON is legal, so `comb p myapp.deploy.count 3` and `comb p myapp.status '"healthy"'` are both fine. `data` is required: `comb p myapp` is a usage error, and removal is the JSON value `null`. A nested `null` inside `data` is an absent leaf, not `""`. Arrays are stored and returned as objects keyed by index.
 
 **TTL:** `--ttl` (at least `1s`; not with `null`) makes the put a lifecycle entry of its own, one per put address: `comb p --ttl 300 build.status '"passing"'` and `comb p --ttl 60 build.eta '"4m"'` expire independently, and a re-put without `--ttl` drops the expiry. `comb g build:cache.status` shows its `poll` and `decay`.
+
+**Persist:** `--persist` keeps the put across a daemon restart, best effort. The daemon writes each persisted put (its key, directory, value and, with `--ttl`, the wall-clock time it expires) to `$XDG_CACHE_HOME/beachcomber/puts.json` (default `~/.cache/beachcomber/puts.json`), replacing the file through a rename after each change, and puts them again before it serves, each with the ttl it has left; one whose ttl ran out while the daemon was down is dropped. A missing file is nothing to put; an unreadable or invalid one is logged as a warning, ignored, and replaced on the next persisted put. The latest put to an address decides: a put there without `--persist`, `null`, or its ttl running out drops the kept entry, and a put above it replaces it as it replaces the node. `comb g myapp:cache.status.persist` is `true` for a persisted put (written by the daemon; a put to it is refused). It is not a guarantee: the cache directory may be cleared by the system or by you, and a value may be lost, so use it for convenience, never for data you cannot recreate.
 
 **Decay depth:** the one `:cache` key a put may write is a decay prototype — `comb p '*:cache._.decay' 3` for every provider, `comb p 'git:cache._.decay' 6` for one, `--path` to scope either to a directory and below. The nearest prototype wins.
 

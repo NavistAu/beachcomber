@@ -100,7 +100,8 @@ void bc_client_free(BcClient *client);
 
 /**
  * Store data into the cache as static data. `json_data` must parse as JSON.
- * `ttl` and `path` are nullable.
+ * `ttl` and `path` are nullable. `persist` keeps the put across a daemon
+ * restart, best effort (`comb put --persist`).
  *
  * # Safety
  * `client` must be a valid pointer from [`bc_client_new`]; `key` and
@@ -111,7 +112,8 @@ char *bc_put(BcClient *client,
              const char *key,
              const char *json_data,
              const char *ttl,
-             const char *path);
+             const char *path,
+             bool persist);
 
 /**
  * Re-execute the Sources `key` demands — every Source of the namespace for
@@ -260,7 +262,7 @@ char *bc_session_get(BcSession *session,
 /**
  * Store data into the cache as static data on this session's persistent
  * connection. `json_data` must parse as JSON; `ttl` and `path` are
- * nullable.
+ * nullable; `persist` as for [`bc_put`].
  *
  * # Safety
  * `session` must be a valid pointer from [`bc_session_open`]; `key` and
@@ -271,7 +273,8 @@ char *bc_session_put(BcSession *session,
                      const char *key,
                      const char *json_data,
                      const char *ttl,
-                     const char *path);
+                     const char *path,
+                     bool persist);
 
 /**
  * Re-execute the Sources `key` demands, as [`bc_refresh`], at `path` — or,

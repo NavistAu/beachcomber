@@ -194,6 +194,7 @@ fn a_sessions_directory_is_sent_with_put_get_and_refresh() {
             data.as_ptr(),
             ptr::null(),
             ptr::null(),
+            false,
         )
     });
     assert_eq!(v["ok"], serde_json::json!(true), "{v}");
@@ -275,6 +276,7 @@ fn a_slow_session_get_and_a_slow_put_report_timeout() {
             cs(r#"{"x":1}"#).as_ptr(),
             ptr::null(),
             ptr::null(),
+            false,
         )
     });
     assert_eq!(put["error"]["kind"], "timeout", "{put}");
@@ -299,6 +301,7 @@ fn a_session_get_renders_at_the_sessions_directory() {
                 data.as_ptr(),
                 ptr::null(),
                 path.as_ref().map_or(ptr::null(), |p| p.as_ptr()),
+                false,
             )
         });
         assert_eq!(v["ok"], serde_json::json!(true), "{v}");

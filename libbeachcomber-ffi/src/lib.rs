@@ -234,7 +234,8 @@ struct IntrospectOptions {
 }
 
 /// Store data into the cache as static data. `json_data` must parse as JSON.
-/// `ttl` and `path` are nullable.
+/// `ttl` and `path` are nullable. `persist` keeps the put across a daemon
+/// restart, best effort (`comb put --persist`).
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `key` and
@@ -247,6 +248,7 @@ pub unsafe extern "C" fn bc_put(
     json_data: *const c_char,
     ttl: *const c_char,
     path: *const c_char,
+    persist: bool,
 ) -> *mut c_char {
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
@@ -256,7 +258,7 @@ pub unsafe extern "C" fn bc_put(
             .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed json_data: {e}")))?;
         let ttl = unsafe { optional_str(ttl) }?;
         let path = unsafe { optional_str(path) }?;
-        c.put(key, data, ttl, path)?;
+        c.put(key, data, ttl, path, persist)?;
         Ok(serde_json::Value::Null)
     })
 }
@@ -620,7 +622,7 @@ pub unsafe extern "C" fn bc_session_get(
 
 /// Store data into the cache as static data on this session's persistent
 /// connection. `json_data` must parse as JSON; `ttl` and `path` are
-/// nullable.
+/// nullable; `persist` as for [`bc_put`].
 ///
 /// # Safety
 /// `session` must be a valid pointer from [`bc_session_open`]; `key` and
@@ -633,6 +635,7 @@ pub unsafe extern "C" fn bc_session_put(
     json_data: *const c_char,
     ttl: *const c_char,
     path: *const c_char,
+    persist: bool,
 ) -> *mut c_char {
     call_ffi(move || {
         let key = unsafe { required_str(key, "key") }?;
@@ -643,7 +646,7 @@ pub unsafe extern "C" fn bc_session_put(
         let path = unsafe { optional_str(path) }?;
         let mut guard = unsafe { session_lock(session) }?;
         let sess = guard.as_mut().map_err(|e| e.clone())?;
-        sess.put(key, data, ttl, path)?;
+        sess.put(key, data, ttl, path, persist)?;
         Ok(serde_json::Value::Null)
     })
 }

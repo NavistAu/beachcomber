@@ -30,6 +30,11 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
     assert.equal(await client.get('itest_v.greeting', { cwd: '/tmp' }), 'hi');
   });
 
+  it('put with persist succeeds', async () => {
+    await client.put('itest_persist', { v: 1 }, { persist: true });
+    assert.equal(await client.get('itest_persist.v'), 1);
+  });
+
   it('get without a cwd reads the global entry', async () => {
     await client.put('itest_where', { v: 'global' });
     await client.put('itest_where', { v: 'tmp' }, { path: '/tmp' });

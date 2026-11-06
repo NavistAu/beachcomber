@@ -18,7 +18,7 @@ fn client_get_answers_a_stored_value_and_none_on_a_miss() {
     let client = client_for(&guard.path);
 
     client
-        .put("get_scalar", json!({"x": 1}), None, None)
+        .put("get_scalar", json!({"x": 1}), None, None, false)
         .expect("put");
 
     assert_eq!(client.get("get_scalar.x", None).unwrap(), Some(json!(1)));
@@ -37,7 +37,13 @@ fn client_get_of_a_template_only_node_is_the_rendered_value() {
     let client = client_for(&guard.path);
 
     client
-        .put("get_tmpl:template", json!({"t": "{{ 1 + 1 }}"}), None, None)
+        .put(
+            "get_tmpl:template",
+            json!({"t": "{{ 1 + 1 }}"}),
+            None,
+            None,
+            false,
+        )
         .expect("put");
 
     assert_eq!(client.get("get_tmpl.t", None).unwrap(), Some(json!(2)));
@@ -55,9 +61,11 @@ fn client_get_of_a_facet_is_the_stored_value() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
 
-    client.put("p", json!({"v": 1}), None, None).expect("put");
     client
-        .put("p:template.v", json!("{{ 2 }}"), None, None)
+        .put("p", json!({"v": 1}), None, None, false)
+        .expect("put");
+    client
+        .put("p:template.v", json!("{{ 2 }}"), None, None, false)
         .expect("put template over data");
 
     assert_eq!(client.get("p.v", None).unwrap(), Some(json!(2)));
@@ -75,6 +83,7 @@ fn text_is_render_value_of_get() {
             json!({"z": "last", "a": "it's $HOME"}),
             None,
             None,
+            false,
         )
         .expect("put");
 
@@ -97,10 +106,16 @@ fn session_get_answers_the_value() {
     let mut session = client.session().expect("session");
 
     session
-        .put("get_session", json!({"x": "two words"}), None, None)
+        .put("get_session", json!({"x": "two words"}), None, None, false)
         .expect("put");
     session
-        .put("get_stmpl:template", json!({"t": "{{ 3 }}"}), None, None)
+        .put(
+            "get_stmpl:template",
+            json!({"t": "{{ 3 }}"}),
+            None,
+            None,
+            false,
+        )
         .expect("put");
 
     assert_eq!(
@@ -131,7 +146,7 @@ fn session_error_leaves_connection_usable_for_the_next_request() {
     let mut session = client.session().expect("session");
 
     session
-        .put("get_after_error", json!({"x": 42}), None, None)
+        .put("get_after_error", json!({"x": 42}), None, None, false)
         .expect("put");
 
     let err = session.get("a:b:c.x", None);

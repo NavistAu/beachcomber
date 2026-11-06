@@ -108,9 +108,9 @@ Return cache rows as typed structs (one per warm cache entry).
 
 Handshake — returns daemon version, protocol version, and build info.
 
-#### `c.Put(key string, data interface{}, ttl, path string) error`
+#### `c.Put(key string, data interface{}, ttl, path string, persist bool) error`
 
-Write a value into the cache as static data.
+Write a value into the cache as static data. `persist`: keep the put across a daemon restart, best effort.
 
 #### `c.Introspect(subject IntrospectSubject, durationSecs ...uint64) (*IntrospectResponse, error)`
 

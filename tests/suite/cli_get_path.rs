@@ -105,7 +105,13 @@ async fn a_sessions_directory_reaches_put_as_well_as_get() {
     session.set_context(&repo_path).unwrap();
 
     session
-        .put("sessdir", serde_json::json!({"v": "here"}), None, None)
+        .put(
+            "sessdir",
+            serde_json::json!({"v": "here"}),
+            None,
+            None,
+            false,
+        )
         .unwrap();
     assert_eq!(
         hit(session.get("sessdir.v", None).unwrap(), "sessdir.v"),

@@ -94,7 +94,7 @@ Handshake — returns a `HelloInfo` with daemon and protocol version strings.
 
 #### `client.put(key, data?, opts?)`
 
-Write a value into the cache as static data. Omit `data` or pass `null` to clear the entry.
+Write a value into the cache as static data. Omit `data` or pass `null` to clear the entry. `opts` are `ttl`, `path` and `persist` (keep the put across a daemon restart, best effort).
 
 #### `client.introspect(subject, opts?)`
 

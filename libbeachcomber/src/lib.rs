@@ -575,15 +575,18 @@ impl Client {
 
     /// Store data at a key, replacing whatever is stored at that address.
     /// `key` addresses any node: `namespace` or `namespace.node…`. At the root
-    /// `data` must be a JSON object; below it, any JSON.
+    /// `data` must be a JSON object; below it, any JSON. `persist` asks the
+    /// daemon to keep the put across a restart, best effort.
     pub fn put(
         &self,
         key: &str,
         data: serde_json::Value,
         ttl: Option<&str>,
         path: Option<&str>,
+        persist: bool,
     ) -> Result<(), CombError> {
-        self.call(&put_request(key, data, ttl, path)?).map(|_| ())
+        self.call(&put_request(key, data, ttl, path, persist)?)
+            .map(|_| ())
     }
 
     /// Trigger recomputation of a provider. Fire-and-forget.
@@ -921,15 +924,17 @@ impl Session {
         path.or(self.context.as_deref())
     }
 
-    /// Store data at a key, replacing whatever is stored at that address.
+    /// Store data at a key, replacing whatever is stored at that address,
+    /// as [`Client::put`].
     pub fn put(
         &mut self,
         key: &str,
         data: serde_json::Value,
         ttl: Option<&str>,
         path: Option<&str>,
+        persist: bool,
     ) -> Result<(), CombError> {
-        let request = put_request(key, data, ttl, self.path_or_context(path))?;
+        let request = put_request(key, data, ttl, self.path_or_context(path), persist)?;
         self.call(&request).map(|_| ())
     }
 
@@ -1004,12 +1009,14 @@ fn put_request(
     data: serde_json::Value,
     ttl: Option<&str>,
     path: Option<&str>,
+    persist: bool,
 ) -> Result<Request, CombError> {
     Ok(Request::Put {
         key: key.to_string(),
         data,
         ttl: ttl.map(str::to_string),
         path: wire_path(path)?,
+        persist,
     })
 }
 

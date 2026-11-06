@@ -121,9 +121,10 @@ module Beachcomber
     # @param data [Object, nil]
     # @param ttl [Numeric, String, nil] time-to-live
     # @param path [String, nil]
+    # @param persist [Boolean] keep the put across a daemon restart, best effort
     # @return [nil]
-    def put(key, data, ttl: nil, path: nil)
-      Beachcomber::FFI.call!(:bc_session_put, handle!, key, JSON.generate(data), ttl&.to_s, path)
+    def put(key, data, ttl: nil, path: nil, persist: false)
+      Beachcomber::FFI.call!(:bc_session_put, handle!, key, JSON.generate(data), ttl&.to_s, path, persist ? 1 : 0)
       nil
     end
 
@@ -269,9 +270,10 @@ module Beachcomber
     # @param data [Object, nil]
     # @param ttl [Numeric, String, nil] time-to-live (e.g. "60s")
     # @param path [String, nil]
+    # @param persist [Boolean] keep the put across a daemon restart, best effort
     # @return [nil]
-    def put(key, data, ttl: nil, path: nil)
-      Beachcomber::FFI.call!(:bc_put, handle!, key, JSON.generate(data), ttl&.to_s, path)
+    def put(key, data, ttl: nil, path: nil, persist: false)
+      Beachcomber::FFI.call!(:bc_put, handle!, key, JSON.generate(data), ttl&.to_s, path, persist ? 1 : 0)
       nil
     end
 

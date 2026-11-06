@@ -1361,7 +1361,13 @@ async fn status_response_put_row_has_kind_static() {
 
     // Store a static entry via put.
     let _ = client
-        .put("custom", serde_json::json!({"color": "blue"}), None, None)
+        .put(
+            "custom",
+            serde_json::json!({"color": "blue"}),
+            None,
+            None,
+            false,
+        )
         .expect("put custom");
 
     // `put` writes the cache entry and registers the static namespace before it
@@ -1397,7 +1403,7 @@ async fn status_lists_one_put_row_per_address() {
 
     for (key, v) in [("fleet.a", 1), ("fleet.b", 2), ("fleet.c.d", 3)] {
         client
-            .put(key, serde_json::json!(v), None, None)
+            .put(key, serde_json::json!(v), None, None, false)
             .expect("put");
     }
 

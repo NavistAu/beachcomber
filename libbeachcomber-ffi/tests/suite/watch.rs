@@ -59,6 +59,7 @@ fn put_static(client: *mut BcClient, key: &str, data: &str) {
             cs(data).as_ptr(),
             ptr::null(),
             ptr::null(),
+            false,
         )
     });
     assert_eq!(v["ok"], serde_json::json!(true), "put must succeed: {v}");
@@ -312,7 +313,16 @@ fn watch_open_with_null_cwd_watches_the_global_entry() {
     let key = cs("watch_null_cwd_test.field");
     let data = cs(r#"{"field":"global"}"#);
     let ns = cs("watch_null_cwd_test");
-    let v = read(unsafe { bc_put(client, ns.as_ptr(), data.as_ptr(), ptr::null(), ptr::null()) });
+    let v = read(unsafe {
+        bc_put(
+            client,
+            ns.as_ptr(),
+            data.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            false,
+        )
+    });
     assert_eq!(v["ok"], serde_json::json!(true), "{v}");
     let watch = unsafe { bc_watch_open(client, key.as_ptr(), ptr::null(), ptr::null()) };
     assert!(!watch.is_null());

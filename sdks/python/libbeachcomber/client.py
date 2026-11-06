@@ -365,8 +365,11 @@ class Client:
         data: Any,
         ttl: Optional[str] = None,
         path: Optional[str] = None,
+        persist: bool = False,
     ) -> None:
         """Store data into the cache as static data. ``data=None`` clears the entry.
+
+        ``persist`` keeps the put across a daemon restart, best effort.
 
         Raises:
             CombError: subclass matching the failure kind.
@@ -378,6 +381,7 @@ class Client:
             json.dumps(data).encode(),
             ttl.encode() if ttl is not None else None,
             path.encode() if path is not None else None,
+            persist,
         )
 
     def introspect(
@@ -568,8 +572,11 @@ class Session:
         data: Any,
         ttl: Optional[str] = None,
         path: Optional[str] = None,
+        persist: bool = False,
     ) -> None:
         """Store data into the cache as static data via the persistent connection.
+
+        ``persist`` keeps the put across a daemon restart, best effort.
 
         Raises:
             CombError: subclass matching the failure kind.
@@ -581,6 +588,7 @@ class Session:
             json.dumps(data).encode(),
             ttl.encode() if ttl is not None else None,
             path.encode() if path is not None else None,
+            persist,
         )
 
     def refresh(self, key: str, path: Optional[str] = None) -> None:

@@ -287,7 +287,8 @@ func runOp(c *beachcomber.Client, op opDescriptor, f fixture, tmpDir string) err
 		data := op.Args["data"]
 		ttl, _ := op.Args["ttl"].(string)
 		path, _ := op.Args["path"].(string)
-		return c.Put(key, data, ttl, path)
+		persist, _ := op.Args["persist"].(bool)
+		return c.Put(key, data, ttl, path, persist)
 	case "get":
 		key, _ := op.Args["key"].(string)
 		_, err := c.Get(key, readCwd(f, tmpDir), f.Env, getOptions(op.Args)...)
@@ -360,7 +361,8 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 		data := op.Args["data"]
 		ttl, _ := op.Args["ttl"].(string)
 		path, _ := op.Args["path"].(string)
-		err := c.Put(key, data, ttl, path)
+		persist, _ := op.Args["persist"].(bool)
+		err := c.Put(key, data, ttl, path, persist)
 		if err != nil {
 			return nil, nil, err
 		}

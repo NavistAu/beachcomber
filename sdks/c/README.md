@@ -56,9 +56,9 @@ int main(void) {
     bc_string_free(r);
 
     /* Put / remove a static-data entry ("null" removes) */
-    r = bc_put(c, "myapp", "{\"theme\":\"dark\",\"version\":3}", NULL, NULL);
+    r = bc_put(c, "myapp", "{\"theme\":\"dark\",\"version\":3}", NULL, NULL, false);
     bc_string_free(r);
-    r = bc_put(c, "myapp", "null", NULL, NULL);
+    r = bc_put(c, "myapp", "null", NULL, NULL, false);
     bc_string_free(r);
 
     /* A persistent connection, for a context set once and reused */
@@ -106,6 +106,8 @@ for the full bc_* contract (ownership, NULL-safety, options JSON). In short:
   `bc_session_get`/`put`/`refresh`/`set_context`) holds one persistent
   connection, and a directory of its own that a NULL `cwd` or `path` sends —
   use it when a `set_context` needs to be visible to later calls.
+- `bc_put(client, key, json_data, ttl, path, persist)` / `bc_session_put`: `persist` keeps the put across a daemon
+  restart, best effort.
 - `bc_get(client, key, cwd, env_json, options_json)` / `bc_session_get(session, …)`
   return the same value `comb get` prints for this key, cwd and env: the
   daemon holds the templates (`<provider>:template`, seeded from

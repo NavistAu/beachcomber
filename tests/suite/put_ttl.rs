@@ -46,10 +46,17 @@ async fn each_put_address_gets_its_own_lifecycle() {
             serde_json::json!("passing"),
             Some("300s"),
             None,
+            false,
         )
         .unwrap();
     client
-        .put("build.eta", serde_json::json!("4m"), Some("60s"), None)
+        .put(
+            "build.eta",
+            serde_json::json!("4m"),
+            Some("60s"),
+            None,
+            false,
+        )
         .unwrap();
 
     let rows = put_rows(&client, "build");
@@ -72,7 +79,13 @@ async fn each_put_address_gets_its_own_lifecycle() {
 async fn a_nested_row_takes_the_lifecycle_of_the_put_address_above_it() {
     let (_tmp, _sock, client, handle) = setup_daemon().await;
     client
-        .put("ci", serde_json::json!({"x": {"y": 1}}), Some("60s"), None)
+        .put(
+            "ci",
+            serde_json::json!({"x": {"y": 1}}),
+            Some("60s"),
+            None,
+            false,
+        )
         .unwrap();
     let rows = put_rows(&client, "ci");
     assert!(!rows.is_empty());
@@ -90,7 +103,13 @@ async fn a_nested_row_takes_the_lifecycle_of_the_put_address_above_it() {
 async fn a_put_without_ttl_is_static() {
     let (_tmp, _sock, client, handle) = setup_daemon().await;
     client
-        .put("build.status", serde_json::json!("passing"), None, None)
+        .put(
+            "build.status",
+            serde_json::json!("passing"),
+            None,
+            None,
+            false,
+        )
         .unwrap();
     let rows = put_rows(&client, "build");
     assert_eq!(rows.len(), 1);
@@ -102,10 +121,22 @@ async fn a_put_without_ttl_is_static() {
 async fn a_put_without_ttl_nested_under_a_ttld_one_is_static() {
     let (_tmp, _sock, client, handle) = setup_daemon().await;
     client
-        .put("build", serde_json::json!({"a": 1}), Some("60s"), None)
+        .put(
+            "build",
+            serde_json::json!({"a": 1}),
+            Some("60s"),
+            None,
+            false,
+        )
         .unwrap();
     client
-        .put("build.status", serde_json::json!("passing"), None, None)
+        .put(
+            "build.status",
+            serde_json::json!("passing"),
+            None,
+            None,
+            false,
+        )
         .unwrap();
     let rows = put_rows(&client, "build");
     assert_eq!(rows.len(), 2, "{rows:?}");
@@ -129,6 +160,7 @@ async fn a_reput_without_ttl_drops_the_lifecycle() {
             serde_json::json!("passing"),
             Some("300s"),
             None,
+            false,
         )
         .unwrap();
     assert!(matches!(
@@ -136,7 +168,13 @@ async fn a_reput_without_ttl_drops_the_lifecycle() {
         Some(RowKind::Lifecycle { .. })
     ));
     client
-        .put("build.status", serde_json::json!("failing"), None, None)
+        .put(
+            "build.status",
+            serde_json::json!("failing"),
+            None,
+            None,
+            false,
+        )
         .unwrap();
     let rows = put_rows(&client, "build");
     assert_eq!(rows[0].kind, Some(RowKind::Static), "{rows:?}");
@@ -147,12 +185,24 @@ async fn a_reput_without_ttl_drops_the_lifecycle() {
 async fn put_with_an_invalid_ttl_is_refused() {
     let (_tmp, _sock, client, handle) = setup_daemon().await;
     let r = client
-        .put("build.status", serde_json::json!("x"), Some("soon"), None)
+        .put(
+            "build.status",
+            serde_json::json!("x"),
+            Some("soon"),
+            None,
+            false,
+        )
         .unwrap();
     assert!(!r.ok);
     assert_eq!(r.error.as_deref(), Some("invalid ttl: soon"));
     let r = client
-        .put("build.status", serde_json::json!("x"), Some("0s"), None)
+        .put(
+            "build.status",
+            serde_json::json!("x"),
+            Some("0s"),
+            None,
+            false,
+        )
         .unwrap();
     assert!(!r.ok);
     assert_eq!(r.error.as_deref(), Some("ttl must be at least 1s"));
@@ -164,7 +214,13 @@ async fn put_with_an_invalid_ttl_is_refused() {
 async fn a_sub_second_put_ttl_is_still_refused() {
     let (_tmp, _sock, client, handle) = setup_daemon().await;
     let r = client
-        .put("build.status", serde_json::json!("x"), Some("500ms"), None)
+        .put(
+            "build.status",
+            serde_json::json!("x"),
+            Some("500ms"),
+            None,
+            false,
+        )
         .unwrap();
     assert!(!r.ok);
     assert_eq!(r.error.as_deref(), Some("invalid ttl: 500ms"));
@@ -176,7 +232,13 @@ async fn a_sub_second_put_ttl_is_still_refused() {
 async fn a_null_put_with_a_ttl_is_refused() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
     client
-        .put("build.status", serde_json::json!("passing"), None, None)
+        .put(
+            "build.status",
+            serde_json::json!("passing"),
+            None,
+            None,
+            false,
+        )
         .unwrap();
     let r = raw(
         &sock,

@@ -583,7 +583,8 @@ static char *run_op(BcClient *client, BcSession *session,
     if (strcmp(op_str, "put") == 0) {
         json_node_t *data_node = args ? json_get(args, "data") : NULL;
         char *data_json = data_node ? serialise_node(data_node) : strdup("null");
-        char *result = bc_session_put(session, key ? key : "", data_json, NULL, path);
+        bool persist = args && json_as_bool(json_get(args, "persist"), NULL);
+        char *result = bc_session_put(session, key ? key : "", data_json, NULL, path, persist);
         free(data_json);
         return result;
     }

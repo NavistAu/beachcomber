@@ -205,6 +205,7 @@ fn bc_put_with_null_data_removes() {
             data.as_ptr(),
             ptr::null(),
             ptr::null(),
+            false,
         )
     });
     assert_eq!(v["ok"], serde_json::json!(true));
@@ -216,6 +217,7 @@ fn bc_put_with_null_data_removes() {
             null.as_ptr(),
             ptr::null(),
             ptr::null(),
+            false,
         )
     });
     assert_eq!(v["ok"], serde_json::json!(true));
@@ -253,6 +255,7 @@ fn get_renders_and_the_facets_read_what_is_stored() {
                 body.as_ptr(),
                 ptr::null(),
                 ptr::null(),
+                false,
             )
         });
         assert_eq!(put_v["ok"], serde_json::json!(true), "{put_v}");
@@ -308,6 +311,7 @@ fn refresh_refusal_envelope_carries_the_daemons_words_alone() {
             data.as_ptr(),
             ptr::null(),
             ptr::null(),
+            false,
         )
     });
     assert_eq!(put_v["ok"], serde_json::json!(true));
@@ -350,6 +354,7 @@ fn status_rows_are_the_daemons_rows() {
             cs(r#"{"x":1}"#).as_ptr(),
             cs("1m").as_ptr(),
             ptr::null(),
+            false,
         )
     });
     assert_eq!(put["ok"], true, "{put}");

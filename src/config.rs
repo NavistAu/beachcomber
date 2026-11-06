@@ -141,6 +141,10 @@ pub struct Config {
     /// The CLI's `--socket`: not configuration, but the one setting that beats
     /// it ([`Config::resolve_socket_path_with_source`]).
     socket_flag: Option<PathBuf>,
+    /// Where this daemon keeps persisted puts ([`Config::persist_puts`]):
+    /// `None`, keeping none, unless the daemon process asked for its file, so
+    /// an embedded or test daemon never reads or writes the ambient one.
+    puts_file: Option<PathBuf>,
 }
 
 /// What the composed layers deserialize to: the two roots. Private, so the
@@ -237,6 +241,7 @@ impl Default for Config {
             composed: empty_table(),
             errors: Vec::new(),
             socket_flag: None,
+            puts_file: None,
         }
     }
 }
@@ -433,6 +438,7 @@ impl Config {
             composed: merged,
             errors: Vec::new(),
             socket_flag: None,
+            puts_file: None,
         };
         errors.extend(config.watchdog_errors());
         config.errors = errors;
@@ -957,6 +963,29 @@ impl Config {
     /// finding it loads nothing.
     pub fn log_path() -> PathBuf {
         libbeachcomber::spawn::log_path()
+    }
+
+    /// The persisted puts file: `$XDG_CACHE_HOME/beachcomber/puts.json`,
+    /// else `~/.cache/beachcomber/puts.json`. In the cache directory, which
+    /// may be cleared at any time: persistence is best effort.
+    pub fn puts_path() -> PathBuf {
+        let xdg = xdg::BaseDirectories::with_prefix("beachcomber");
+        xdg.get_cache_home()
+            .unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_default();
+                PathBuf::from(format!("{home}/.cache/beachcomber"))
+            })
+            .join("puts.json")
+    }
+
+    /// Keep persisted puts in [`Config::puts_path`], as `comb daemon` does.
+    pub fn persist_puts(&mut self) {
+        self.puts_file = Some(Self::puts_path());
+    }
+
+    /// The file this daemon keeps persisted puts in, if any.
+    pub fn puts_file(&self) -> Option<&Path> {
+        self.puts_file.as_deref()
     }
 }
 

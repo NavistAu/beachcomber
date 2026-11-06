@@ -179,6 +179,11 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
     assert_eq(last_argv(guard), "get -f json spg.g --global")
   end)
 
+  test("put with persist passes --persist", function()
+    assert_true(c:put("sppersist", { p = 1 }, { persist = true }))
+    assert_true(last_argv(guard):find(" --persist", 1, true) ~= nil, last_argv(guard))
+  end)
+
   test(names[9], function()
     assert_true(c:put("chain", { a = 1 }))
     assert_eq(c:get("chain.a", { cwd = proj }), 1)

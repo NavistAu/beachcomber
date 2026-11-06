@@ -455,8 +455,9 @@ func (c *Client) Hello() (*HelloInfo, error) {
 
 // Put stores data into the cache as static data: a JSON object at a namespace
 // root, any JSON below it. nil removes the node. ttl and path are optional;
-// pass "" to omit them ("" path is the global entry).
-func (c *Client) Put(key string, data interface{}, ttl, path string) error {
+// pass "" to omit them ("" path is the global entry). persist keeps the put
+// across a daemon restart, best effort.
+func (c *Client) Put(key string, data interface{}, ttl, path string, persist bool) error {
 	if err := c.open(); err != nil {
 		return err
 	}
@@ -465,7 +466,7 @@ func (c *Client) Put(key string, data interface{}, ttl, path string) error {
 		return c.lib.stamp(parseError("beachcomber: marshal put data: " + err.Error()))
 	}
 	keyBuf, dataBuf, ttlBuf, pathBuf := cBytes(key), cBytes(string(dataJSON)), optBytes(ttl), optBytes(path)
-	_, err = c.lib.call(c.lib.bcPut, c.handle, ptrOf(keyBuf), ptrOf(dataBuf), ptrOf(ttlBuf), ptrOf(pathBuf))
+	_, err = c.lib.call(c.lib.bcPut, c.handle, ptrOf(keyBuf), ptrOf(dataBuf), ptrOf(ttlBuf), ptrOf(pathBuf), boolArg(persist))
 	runtime.KeepAlive(keyBuf)
 	runtime.KeepAlive(dataBuf)
 	runtime.KeepAlive(ttlBuf)

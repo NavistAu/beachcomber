@@ -1663,6 +1663,9 @@ fn evict(cache: &Cache, key: &lifecycle::Key) {
     match key.source.as_str() {
         crate::cache::PUT_SOURCE => {
             cache.evict_put(&key.provider, path, &key.node);
+            if let Some(store) = cache.put_store() {
+                store.expire(&libbeachcomber::key::join(&key.provider, &key.node), path);
+            }
         }
         crate::cache::MEMO_SOURCE => {
             cache.evict_memo(&key.provider, path, &key.node);

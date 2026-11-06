@@ -77,6 +77,7 @@ async fn client_get_carries_the_template_half() {
             serde_json::json!({"t": "{{ 1 }}"}),
             None,
             None,
+            false,
         )
         .unwrap();
     assert!(resp.ok, "{:?}", resp.error);
@@ -105,7 +106,13 @@ async fn client_put_and_get() {
     let client = beachcomber::client::Client::new(sock.clone());
 
     let resp = client
-        .put("testapp", serde_json::json!({"status": "ok"}), None, None)
+        .put(
+            "testapp",
+            serde_json::json!({"status": "ok"}),
+            None,
+            None,
+            false,
+        )
         .unwrap();
     assert!(resp.ok);
 

@@ -1863,6 +1863,205 @@ async fn write_watch_line(
     writer.write_all(line.as_bytes()).await
 }
 
+/// A `put`: the request's handling, and a persisted put's replay at start
+/// ([`crate::daemon`]), which goes the same way.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn put(
+    cache: &Arc<Cache>,
+    registry: &Arc<ProviderRegistry>,
+    scheduler: Option<&SchedulerHandle>,
+    key: &str,
+    data: &serde_json::Value,
+    ttl: Option<&str>,
+    path: Option<&str>,
+    persist: bool,
+) -> Response {
+    // A put key addresses a node: `namespace` or `namespace.node…`,
+    // the node in canonical form.
+    let (namespace, node) = match libbeachcomber::key::split_key(key) {
+        Ok(split) => split,
+        Err(msg) => return Response::error(msg),
+    };
+    if let Err(msg) = libbeachcomber::key::check_head(namespace) {
+        return Response::error(msg);
+    }
+    let node = node.as_str();
+
+    // The facet a put names is one of the six, and only three of them
+    // are written to.
+    use libbeachcomber::key::Facet;
+    let facet = match libbeachcomber::key::split_facet(namespace) {
+        Ok((base, Some(Facet::Put | Facet::Source))) => {
+            return Response::error(format!(
+                "{base}:put and {base}:source are read-only; write {base}.<node>"
+            ));
+        }
+        Ok((base, Some(Facet::Memo))) => {
+            return Response::error(format!(
+                "{base}:memo is written by cache(); edit {base}:template.<f>, or refresh \
+                 {base}"
+            ));
+        }
+        Ok((_, facet)) => facet,
+        Err(msg) => return Response::error(msg),
+    };
+
+    // The one `:cache` key a put may write is a decay prototype. The
+    // rest is derived at a read or stored by the daemon.
+    if facet == Some(Facet::Cache) {
+        let derived = ["age_ms", "source", "executing"]
+            .iter()
+            .any(|k| libbeachcomber::key::last(node).as_deref() == Some(k));
+        if derived {
+            return Response::error(format!("{key} is derived and cannot be written"));
+        }
+        if node != "_.decay" {
+            return Response::error(format!("{key} is written by the daemon"));
+        }
+        if !data.is_null()
+            && !data
+                .as_i64()
+                .is_some_and(|n| (1..=crate::scheduler::lifecycle::MAX_DECAY).contains(&n))
+        {
+            return Response::error(crate::scheduler::lifecycle::decay_error(
+                key,
+                &data.to_string(),
+            ));
+        }
+    }
+
+    // A template is linted as a configured one is: one that does not
+    // compile is refused. A name no provider has is not, since a later
+    // put may make that provider.
+    if facet == Some(Facet::Template) {
+        let engine = libbeachcomber::eval::Probe::new(libbeachcomber::engine::build_engine_env(
+            Default::default(),
+        ));
+        let at = libbeachcomber::key::join(namespace, node);
+        let known = libbeachcomber::eval::Known::default();
+        let refused = crate::daemon::seed::lint_template_tree(&engine, data, &at, &known)
+            .into_iter()
+            .find(|(_, f)| matches!(f, libbeachcomber::eval::Finding::Compile(_)));
+        if let Some((leaf, finding)) = refused {
+            return Response::error(format!("{leaf}: {finding}"));
+        }
+    }
+    // A macro library is checked as a configured one is: a string,
+    // under a name, that compiles and prints nothing.
+    if facet == Some(Facet::Macro)
+        && let Err(msg) = crate::daemon::seed::check_macro_put(namespace, node, data)
+    {
+        return Response::error(msg);
+    }
+
+    // A key arrives off the socket with no length bound of its own, and
+    // every segment of the node is one step of a tree walk. Cap the
+    // node at the depth JSON conversion is already capped at, so a
+    // pathological key cannot drive the daemon into a stack overflow
+    // here or on the next read of what it wrote.
+    if libbeachcomber::key::segments(node).len() > crate::provider::MAX_JSON_DEPTH {
+        return Response::error(format!(
+            "put key is nested too deeply (limit {} segments)",
+            crate::provider::MAX_JSON_DEPTH
+        ));
+    }
+
+    // Resolve optional path — canonicalize if provided. `$HOME`, like a
+    // request carrying no path at all, is the global entry.
+    let effective_path: Option<String> = match crate::query::normalise_path(path) {
+        Ok(p) => p,
+        Err(e) => return Response::error(e),
+    };
+
+    // A ttl is the put's lifecycle: valid for N, stale for one decay
+    // step, then gone. It needs a value to expire.
+    if ttl.is_some() && data.is_null() {
+        return Response::error("a ttl on an absent value has no meaning");
+    }
+    let ttl_secs = match parse_ttl(ttl) {
+        Ok(secs) => secs,
+        Err(msg) => return Response::error(msg),
+    };
+    let put_written = || crate::scheduler::SchedulerMessage::PutWritten {
+        provider: namespace.to_string(),
+        path: effective_path.clone(),
+        node: node.to_string(),
+        ttl_secs,
+    };
+
+    // `data: null` means "clear the addressed node" — the row goes, the
+    // registry entry stays.
+    // The latest put to an address decides whether it is persisted: whatever
+    // was persisted at or below it goes, and a persisted put takes its place.
+    let address = libbeachcomber::key::join(namespace, node);
+    let store = cache.put_store();
+    if data.is_null() {
+        cache.remove_put(namespace, effective_path.as_deref(), node);
+        if let Some(store) = store {
+            store.record(&address, effective_path.as_deref(), None);
+        }
+        if let Some(sched) = scheduler {
+            sched.send(put_written()).await;
+        }
+        return Response::miss();
+    }
+
+    // `MAX_JSON_DEPTH` is counted from the record, not from the
+    // namespace: at the root each top-level value is converted on its
+    // own (as every other provider ingestion path does), and below the
+    // root from the addressed node. A deep node's total tree depth can
+    // therefore reach twice the bound — the node is capped at
+    // MAX_JSON_DEPTH segments above, the value at MAX_JSON_DEPTH below
+    // — which is what keeps the recursion bounded either way.
+    //
+    // The root's object check runs on the wire JSON, before conversion:
+    // `Value::from_json` turns an array into an index-keyed object, so
+    // checking afterwards would let `put ns [1,2]` through.
+    let value = match data.as_object() {
+        Some(obj) if node.is_empty() => crate::provider::Value::Object(
+            crate::provider::SourceResult::from_json_object(obj).fields,
+        ),
+        None if node.is_empty() => {
+            return Response::error(crate::cache::PutError::RootNotObject.to_string());
+        }
+        _ => crate::provider::Value::from_json(data).expect("null data handled above"),
+    };
+
+    let persisted = (persist && store.is_some()).then(|| value.clone());
+    if let Err(e) = cache.write_static(
+        namespace,
+        effective_path.as_deref(),
+        crate::cache::PUT_SOURCE,
+        node,
+        value,
+        ttl_secs,
+    ) {
+        return Response::error(e.to_string());
+    }
+    if let Some(store) = store {
+        let kept = persist.then(|| crate::persist::Persisted {
+            key: address.clone(),
+            path: effective_path.clone(),
+            data: data.clone(),
+            expires: ttl_secs.map(|secs| crate::persist::now_ms() + secs * 1000),
+        });
+        store.record(&address, effective_path.as_deref(), kept);
+    }
+    if let Some(value) = persisted {
+        cache.mark_persisted(namespace, effective_path.as_deref(), node, &value);
+    }
+    if let Some(sched) = scheduler {
+        sched.send(put_written()).await;
+    }
+
+    // A namespace no provider declares becomes a static one; a provider
+    // namespace that merely gained a static record does not
+    // (`register_static` refuses a registered name).
+    registry.register_static(namespace);
+
+    Response::miss()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_request(
     request: &Request,
@@ -2171,172 +2370,19 @@ async fn handle_request(
             data,
             ttl,
             path,
+            persist,
         } => {
-            // A put key addresses a node: `namespace` or `namespace.node…`,
-            // the node in canonical form.
-            let (namespace, node) = match libbeachcomber::key::split_key(key) {
-                Ok(split) => split,
-                Err(msg) => return Response::error(msg),
-            };
-            if let Err(msg) = libbeachcomber::key::check_head(namespace) {
-                return Response::error(msg);
-            }
-            let node = node.as_str();
-
-            // The facet a put names is one of the six, and only three of them
-            // are written to.
-            use libbeachcomber::key::Facet;
-            let facet = match libbeachcomber::key::split_facet(namespace) {
-                Ok((base, Some(Facet::Put | Facet::Source))) => {
-                    return Response::error(format!(
-                        "{base}:put and {base}:source are read-only; write {base}.<node>"
-                    ));
-                }
-                Ok((base, Some(Facet::Memo))) => {
-                    return Response::error(format!(
-                        "{base}:memo is written by cache(); edit {base}:template.<f>, or refresh \
-                         {base}"
-                    ));
-                }
-                Ok((_, facet)) => facet,
-                Err(msg) => return Response::error(msg),
-            };
-
-            // The one `:cache` key a put may write is a decay prototype. The
-            // rest is derived at a read or stored by the daemon.
-            if facet == Some(Facet::Cache) {
-                let derived = ["age_ms", "source", "executing"]
-                    .iter()
-                    .any(|k| libbeachcomber::key::last(node).as_deref() == Some(k));
-                if derived {
-                    return Response::error(format!("{key} is derived and cannot be written"));
-                }
-                if node != "_.decay" {
-                    return Response::error(format!("{key} is written by the daemon"));
-                }
-                if !data.is_null()
-                    && !data
-                        .as_i64()
-                        .is_some_and(|n| (1..=crate::scheduler::lifecycle::MAX_DECAY).contains(&n))
-                {
-                    return Response::error(crate::scheduler::lifecycle::decay_error(
-                        key,
-                        &data.to_string(),
-                    ));
-                }
-            }
-
-            // A template is linted as a configured one is: one that does not
-            // compile is refused. A name no provider has is not, since a later
-            // put may make that provider.
-            if facet == Some(Facet::Template) {
-                let engine = libbeachcomber::eval::Probe::new(
-                    libbeachcomber::engine::build_engine_env(Default::default()),
-                );
-                let at = libbeachcomber::key::join(namespace, node);
-                let known = libbeachcomber::eval::Known::default();
-                let refused = crate::daemon::seed::lint_template_tree(&engine, data, &at, &known)
-                    .into_iter()
-                    .find(|(_, f)| matches!(f, libbeachcomber::eval::Finding::Compile(_)));
-                if let Some((leaf, finding)) = refused {
-                    return Response::error(format!("{leaf}: {finding}"));
-                }
-            }
-            // A macro library is checked as a configured one is: a string,
-            // under a name, that compiles and prints nothing.
-            if facet == Some(Facet::Macro)
-                && let Err(msg) = crate::daemon::seed::check_macro_put(namespace, node, data)
-            {
-                return Response::error(msg);
-            }
-
-            // A key arrives off the socket with no length bound of its own, and
-            // every segment of the node is one step of a tree walk. Cap the
-            // node at the depth JSON conversion is already capped at, so a
-            // pathological key cannot drive the daemon into a stack overflow
-            // here or on the next read of what it wrote.
-            if libbeachcomber::key::segments(node).len() > crate::provider::MAX_JSON_DEPTH {
-                return Response::error(format!(
-                    "put key is nested too deeply (limit {} segments)",
-                    crate::provider::MAX_JSON_DEPTH
-                ));
-            }
-
-            // Resolve optional path — canonicalize if provided. `$HOME`, like a
-            // request carrying no path at all, is the global entry.
-            let effective_path: Option<String> = match crate::query::normalise_path(path.as_deref())
-            {
-                Ok(p) => p,
-                Err(e) => return Response::error(e),
-            };
-
-            // A ttl is the put's lifecycle: valid for N, stale for one decay
-            // step, then gone. It needs a value to expire.
-            if ttl.is_some() && data.is_null() {
-                return Response::error("a ttl on an absent value has no meaning");
-            }
-            let ttl_secs = match parse_ttl(ttl.as_deref()) {
-                Ok(secs) => secs,
-                Err(msg) => return Response::error(msg),
-            };
-            let put_written = || crate::scheduler::SchedulerMessage::PutWritten {
-                provider: namespace.to_string(),
-                path: effective_path.clone(),
-                node: node.to_string(),
-                ttl_secs,
-            };
-
-            // `data: null` means "clear the addressed node" — the row goes, the
-            // registry entry stays.
-            if data.is_null() {
-                cache.remove_put(namespace, effective_path.as_deref(), node);
-                if let Some(sched) = scheduler {
-                    sched.send(put_written()).await;
-                }
-                return Response::miss();
-            }
-
-            // `MAX_JSON_DEPTH` is counted from the record, not from the
-            // namespace: at the root each top-level value is converted on its
-            // own (as every other provider ingestion path does), and below the
-            // root from the addressed node. A deep node's total tree depth can
-            // therefore reach twice the bound — the node is capped at
-            // MAX_JSON_DEPTH segments above, the value at MAX_JSON_DEPTH below
-            // — which is what keeps the recursion bounded either way.
-            //
-            // The root's object check runs on the wire JSON, before conversion:
-            // `Value::from_json` turns an array into an index-keyed object, so
-            // checking afterwards would let `put ns [1,2]` through.
-            let value = match data.as_object() {
-                Some(obj) if node.is_empty() => crate::provider::Value::Object(
-                    crate::provider::SourceResult::from_json_object(obj).fields,
-                ),
-                None if node.is_empty() => {
-                    return Response::error(crate::cache::PutError::RootNotObject.to_string());
-                }
-                _ => crate::provider::Value::from_json(data).expect("null data handled above"),
-            };
-
-            if let Err(e) = cache.write_static(
-                namespace,
-                effective_path.as_deref(),
-                crate::cache::PUT_SOURCE,
-                node,
-                value,
-                ttl_secs,
-            ) {
-                return Response::error(e.to_string());
-            }
-            if let Some(sched) = scheduler {
-                sched.send(put_written()).await;
-            }
-
-            // A namespace no provider declares becomes a static one; a provider
-            // namespace that merely gained a static record does not
-            // (`register_static` refuses a registered name).
-            registry.register_static(namespace);
-
-            Response::miss()
+            put(
+                cache,
+                registry,
+                scheduler,
+                key,
+                data,
+                ttl.as_deref(),
+                path.as_deref(),
+                *persist,
+            )
+            .await
         }
         Request::Memo {
             key,

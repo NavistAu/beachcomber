@@ -311,9 +311,11 @@ function cliPut(
   jsonData: string,
   ttl: string | undefined,
   path_: string | undefined,
+  persist: boolean,
 ): Envelope {
   const args = ['put', key, jsonData];
   if (ttl !== undefined) args.push('--ttl', ttl);
+  if (persist) args.push('--persist');
   args.push(...pathArgs(path_));
   const { code, stderr } = runComb(handle, args);
   if (code !== 0) return envelopeFromFailure(stderr);
@@ -517,8 +519,8 @@ export function createSubprocessTransport(): Transport {
     async get(handle, key, cwd, envJson, force, wait) {
       return cliGet(handle as SubprocessClientHandle, key, cwd, envJson, force, wait);
     },
-    async put(handle, key, jsonData, ttl, path_) {
-      return cliPut(handle as SubprocessClientHandle, key, jsonData, ttl, path_);
+    async put(handle, key, jsonData, ttl, path_, persist) {
+      return cliPut(handle as SubprocessClientHandle, key, jsonData, ttl, path_, persist);
     },
     async refresh(handle, key, path_) {
       return cliRefresh(handle as SubprocessClientHandle, key, path_);
@@ -546,9 +548,9 @@ export function createSubprocessTransport(): Transport {
       const s = session as SubprocessSessionHandle;
       return cliGet(s.client, key, cwd ?? s.contextPath, envJson, force, wait);
     },
-    async sessionPut(session, key, jsonData, ttl, path_) {
+    async sessionPut(session, key, jsonData, ttl, path_, persist) {
       const s = session as SubprocessSessionHandle;
-      return cliPut(s.client, key, jsonData, ttl, path_ ?? s.contextPath);
+      return cliPut(s.client, key, jsonData, ttl, path_ ?? s.contextPath, persist);
     },
     async sessionRefresh(session, key, path_) {
       const s = session as SubprocessSessionHandle;

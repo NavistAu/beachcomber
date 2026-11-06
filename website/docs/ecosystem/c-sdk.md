@@ -153,7 +153,7 @@ so a binding can tell the cases apart without string matching:
 
 | Function | Description |
 |---|---|
-| `char *bc_put(BcClient *c, const char *key, const char *json_data, const char *ttl, const char *path)` | Write a value into the cache as static data. `json_data` must parse as JSON; the JSON value `"null"` removes the node. `ttl` and `path` are nullable. |
+| `char *bc_put(BcClient *c, const char *key, const char *json_data, const char *ttl, const char *path, bool persist)` | Write a value into the cache as static data. `json_data` must parse as JSON; the JSON value `"null"` removes the node. `ttl` and `path` are nullable. `persist`: keep the put across a daemon restart, best effort. |
 | `char *bc_refresh(BcClient *c, const char *key, const char *path)` | Re-execute the Sources `key` demands, each at the instance that answers for `path`. `path` is nullable. A key naming no Source (a static namespace, a facet, an unknown name, a field no Source owns) errors: `nothing to refresh: <key> has no sources`. |
 | `char *bc_status(BcClient *c)` | List all cache entries currently held by the daemon. |
 | `char *bc_introspect(BcClient *c, const char *subject, const char *options_json)` | Inspect a daemon subsystem. `options_json`'s only recognised key, `duration_secs`, is consulted by the `procs` subject only. |
@@ -192,7 +192,7 @@ internal mutex: a concurrent caller gets `kind: "busy"` rather than blocking.
 | `BcSession *bc_session_open(BcClient *client)` | Open a persistent session on `client`'s connection. Never returns NULL. |
 | `void bc_session_close(BcSession *session)` | Close and free a session handle. Null-safe. |
 | `char *bc_session_get(BcSession *s, const char *key, const char *cwd, const char *env_json, const char *options_json)` | Same as `bc_get`, on the session's persistent connection; a NULL `cwd` is the session's directory when it has one. |
-| `char *bc_session_put(BcSession *s, const char *key, const char *json_data, const char *ttl, const char *path)` | Same as `bc_put`, on the session's persistent connection. |
+| `char *bc_session_put(BcSession *s, const char *key, const char *json_data, const char *ttl, const char *path, bool persist)` | Same as `bc_put`, on the session's persistent connection. |
 | `char *bc_session_set_context(BcSession *s, const char *path)` | Set a default path so subsequent queries on this session don't need an explicit `path`. |
 
 ```c

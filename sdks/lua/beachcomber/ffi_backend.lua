@@ -137,12 +137,12 @@ function Backend:get(key, cwd, env_vars, options)
   return unwrap_value(decode(self._C, ptr))
 end
 
-function Backend:put(key, data, ttl, path)
+function Backend:put(key, data, ttl, path, persist)
   local json_data, enc_err = json.encode(data)
   if not json_data then
     return { ok = false, error = { kind = "parse_error", message = "json encode error: " .. tostring(enc_err) } }
   end
-  local ptr = self._C.bc_put(self._client, key, json_data, ttl, path)
+  local ptr = self._C.bc_put(self._client, key, json_data, ttl, path, persist and true or false)
   return plain(decode(self._C, ptr))
 end
 
@@ -192,9 +192,9 @@ function Session:get(key, cwd, env_vars, options)
   return unwrap_value(decode(self._C, ptr))
 end
 
-function Session:put(key, data, ttl, path)
+function Session:put(key, data, ttl, path, persist)
   local json_data = json.encode(data)
-  local ptr = self._C.bc_session_put(self._s, key, json_data, ttl, path)
+  local ptr = self._C.bc_session_put(self._s, key, json_data, ttl, path, persist and true or false)
   return plain(decode(self._C, ptr))
 end
 

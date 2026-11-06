@@ -25,6 +25,7 @@ fn put(client: *mut BcClient, key: &str, data: &str, path: Option<&str>) {
             data.as_ptr(),
             ptr::null(),
             path.as_ref().map_or(ptr::null(), |p| p.as_ptr()),
+            false,
         )
     });
     assert_eq!(v["ok"], serde_json::json!(true), "{v}");

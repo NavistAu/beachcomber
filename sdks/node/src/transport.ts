@@ -51,6 +51,7 @@ export interface Transport {
     jsonData: string,
     ttl: string | undefined,
     path: string | undefined,
+    persist: boolean,
   ): Promise<Envelope>;
   refresh(handle: ClientHandle, key: string, path: string | undefined): Promise<Envelope>;
   status(handle: ClientHandle): Promise<Envelope>;
@@ -79,6 +80,7 @@ export interface Transport {
     jsonData: string,
     ttl: string | undefined,
     path: string | undefined,
+    persist: boolean,
   ): Promise<Envelope>;
   sessionRefresh(session: SessionHandle, key: string, path: string | undefined): Promise<Envelope>;
   sessionSetContext(session: SessionHandle, path: string): Promise<Envelope>;

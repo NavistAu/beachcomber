@@ -191,7 +191,7 @@ class ConformanceRunner
       @client.refresh(args['key'], path: args['path'])
       [nil, nil]
     when 'put'
-      @client.put(args['key'], args['data'], ttl: args['ttl'], path: args['path'])
+      @client.put(args['key'], args['data'], ttl: args['ttl'], path: args['path'], persist: args['persist'] == true)
       [nil, nil]
     when 'hello'
       result = @client.hello

@@ -10,6 +10,7 @@ pub fn run_put(
     key: &str,
     data_str: &str,
     ttl: Option<std::time::Duration>,
+    persist: bool,
     path: Option<&str>,
 ) -> Outcome {
     // A ttl is whole seconds of at least one; refused here, before a daemon
@@ -40,7 +41,7 @@ pub fn run_put(
     // Whether this JSON is legal here depends on the node the key
     // addresses — an object at the root, anything below it — which only the
     // daemon knows. It reports the mismatch.
-    match client.put(key, data, ttl.as_deref(), path) {
+    match client.put(key, data, ttl.as_deref(), path, persist) {
         Ok(response) => {
             if response.ok {
                 Outcome::Done

@@ -212,7 +212,7 @@ plus lifecycle fields. A status that cannot be read is
 
 Write a static-data entry's value. `data = nil` (or `beachcomber.null`)
 removes the node. `opts.ttl` (e.g. `"30s"`), `opts.path` (`nil`: the
-global entry).
+global entry), `opts.persist` (keep the put across a daemon restart, best effort).
 
 ### `Client:hello()` → `table {protocol_version, daemon_version} | nil, Error`
 ### `Client:introspect(subject [, opts])` → `table {subject, daemon} or {subject, other} | nil, Error`

@@ -95,9 +95,9 @@ Return daemon scheduler and cache status.
 
 Handshake — returns a `HelloInfo` with daemon and protocol version strings.
 
-#### `client.put(key, data, ttl, path)`
+#### `client.put(key, data, ttl, path, persist)`
 
-Write a JSON value into the cache as static data. `ttl` and `path` are `Option<&str>`. Pass `serde_json::Value::Null` as `data` to remove the node.
+Write a JSON value into the cache as static data. `ttl` and `path` are `Option<&str>`. Pass `serde_json::Value::Null` as `data` to remove the node. `persist: true` keeps the put across a daemon restart, best effort.
 
 #### `client.introspect(subject, duration_secs)`
 

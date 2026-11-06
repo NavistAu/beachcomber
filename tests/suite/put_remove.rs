@@ -26,7 +26,7 @@ async fn put_of_null_clears_entry_but_keeps_provider() {
 
     // 1. Store a value.
     let resp = client
-        .put("nulltest", serde_json::json!({"v": 42}), None, None)
+        .put("nulltest", serde_json::json!({"v": 42}), None, None, false)
         .unwrap();
     assert!(resp.ok, "initial put failed: {:?}", resp.error);
 
@@ -40,7 +40,7 @@ async fn put_of_null_clears_entry_but_keeps_provider() {
 
     // 3. Put null: a Put request with data=null clears the cache entry.
     let resp = client
-        .put("nulltest", serde_json::Value::Null, None, None)
+        .put("nulltest", serde_json::Value::Null, None, None, false)
         .unwrap();
     assert!(resp.ok, "put of null failed: {:?}", resp.error);
 
@@ -55,7 +55,7 @@ async fn put_of_null_clears_entry_but_keeps_provider() {
 
     // 5. A subsequent put under the same key still works (registry survives).
     let resp = client
-        .put("nulltest", serde_json::json!({"v": 99}), None, None)
+        .put("nulltest", serde_json::json!({"v": 99}), None, None, false)
         .unwrap();
     assert!(resp.ok, "second put failed: {:?}", resp.error);
 
@@ -81,12 +81,13 @@ async fn put_of_null_at_a_node_clears_only_that_subtree() {
             serde_json::json!({"keep": 1, "drop": {"x": 2}}),
             None,
             None,
+            false,
         )
         .unwrap();
     assert!(resp.ok, "initial put failed: {:?}", resp.error);
 
     let resp = client
-        .put("nulltree.drop", serde_json::Value::Null, None, None)
+        .put("nulltree.drop", serde_json::Value::Null, None, None, false)
         .unwrap();
     assert!(resp.ok, "node null put failed: {:?}", resp.error);
 
@@ -118,7 +119,7 @@ fn got(sock: &std::path::Path, key: &str) -> Option<serde_json::Value> {
 async fn put_data_null_removes_the_node() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
     let r = client
-        .put("ns", serde_json::json!({"a": 1}), None, None)
+        .put("ns", serde_json::json!({"a": 1}), None, None, false)
         .unwrap();
     assert!(r.ok);
     assert_eq!(got(&sock, "ns.a"), Some(serde_json::json!(1)));
@@ -151,10 +152,16 @@ async fn put_without_data_is_an_invalid_request() {
 async fn a_nested_null_is_absent_from_the_replacing_put() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
     client
-        .put("ns", serde_json::json!({"a": 1, "b": 2}), None, None)
+        .put("ns", serde_json::json!({"a": 1, "b": 2}), None, None, false)
         .unwrap();
     let r = client
-        .put("ns", serde_json::json!({"a": null, "c": 3}), None, None)
+        .put(
+            "ns",
+            serde_json::json!({"a": null, "c": 3}),
+            None,
+            None,
+            false,
+        )
         .unwrap();
     assert!(r.ok, "{:?}", r.error);
     assert_eq!(got(&sock, "ns"), Some(serde_json::json!({"c": 3})));
@@ -165,6 +172,7 @@ async fn a_nested_null_is_absent_from_the_replacing_put() {
             serde_json::json!({"arr": [1, 2, 3], "objs": [{"x": 1}]}),
             None,
             None,
+            false,
         )
         .unwrap();
     let r = client
@@ -173,6 +181,7 @@ async fn a_nested_null_is_absent_from_the_replacing_put() {
             serde_json::json!({"arr": [1, null, 3], "objs": [{"x": null}]}),
             None,
             None,
+            false,
         )
         .unwrap();
     assert!(r.ok, "{:?}", r.error);
@@ -192,7 +201,7 @@ async fn a_nested_null_is_absent_from_the_replacing_put() {
 async fn an_empty_string_is_a_value() {
     let (_tmp, sock, client, handle) = setup_daemon().await;
     let r = client
-        .put("ns.a", serde_json::json!(""), None, None)
+        .put("ns.a", serde_json::json!(""), None, None, false)
         .unwrap();
     assert!(r.ok, "{:?}", r.error);
     assert_eq!(got(&sock, "ns.a"), Some(serde_json::json!("")));

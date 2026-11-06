@@ -170,9 +170,9 @@ export class Session {
   }
 
   /** Store data in the cache under the given key, at `path` or the session's directory. */
-  async put(key: string, data: unknown, opts?: { ttl?: string; path?: string }): Promise<void> {
+  async put(key: string, data: unknown, opts?: { ttl?: string; path?: string; persist?: boolean }): Promise<void> {
     const jsonData = JSON.stringify(data);
-    unwrap(await this.tp.sessionPut(this.#open(), key, jsonData, opts?.ttl, opts?.path), this.tp.libraryVersion);
+    unwrap(await this.tp.sessionPut(this.#open(), key, jsonData, opts?.ttl, opts?.path, opts?.persist ?? false), this.tp.libraryVersion);
   }
 
   /** Close the session handle. */
@@ -312,9 +312,9 @@ export class Client {
    * @param data  JSON payload to store; `null` removes the node.
    * @param opts  Optional ttl string and path.
    */
-  async put(key: string, data: unknown, opts?: { ttl?: string; path?: string }): Promise<void> {
+  async put(key: string, data: unknown, opts?: { ttl?: string; path?: string; persist?: boolean }): Promise<void> {
     const jsonData = JSON.stringify(data);
-    unwrap(await this.tp.put(this.#open(), key, jsonData, opts?.ttl, opts?.path), this.tp.libraryVersion);
+    unwrap(await this.tp.put(this.#open(), key, jsonData, opts?.ttl, opts?.path, opts?.persist ?? false), this.tp.libraryVersion);
   }
 
   /** Query daemon protocol and version information. */

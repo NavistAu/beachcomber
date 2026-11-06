@@ -25,7 +25,7 @@ BcClient *bc_client_new(const char *options_json);
 void bc_client_free(BcClient *client);
 
 char *bc_get(BcClient *client, const char *key, const char *cwd, const char *env_json, const char *options_json);
-char *bc_put(BcClient *client, const char *key, const char *json_data, const char *ttl, const char *path);
+char *bc_put(BcClient *client, const char *key, const char *json_data, const char *ttl, const char *path, bool persist);
 char *bc_refresh(BcClient *client, const char *key, const char *path);
 char *bc_status(BcClient *client);
 char *bc_introspect(BcClient *client, const char *subject, const char *options_json);
@@ -36,7 +36,7 @@ char *bc_eval(BcClient *client, const char *template_str, const char *cwd, const
 BcSession *bc_session_open(BcClient *client);
 void bc_session_close(BcSession *session);
 char *bc_session_get(BcSession *session, const char *key, const char *cwd, const char *env_json, const char *options_json);
-char *bc_session_put(BcSession *session, const char *key, const char *json_data, const char *ttl, const char *path);
+char *bc_session_put(BcSession *session, const char *key, const char *json_data, const char *ttl, const char *path, bool persist);
 char *bc_session_refresh(BcSession *session, const char *key, const char *path);
 char *bc_session_set_context(BcSession *session, const char *path);
 

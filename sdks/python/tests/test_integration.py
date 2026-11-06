@@ -28,6 +28,11 @@ def test_put_then_get_is_the_value(client: Client) -> None:
     assert client.get("widget.label") == "hello"
 
 
+def test_put_with_persist_succeeds(client: Client) -> None:
+    client.put("widget1p", {"v": 1}, persist=True)
+    assert client.get("widget1p.v") == 1
+
+
 def test_get_miss_after_put_none(client: Client) -> None:
     client.put("widget1b", {"v": 1})
     client.put("widget1b", None)  # clears via put(data=None)

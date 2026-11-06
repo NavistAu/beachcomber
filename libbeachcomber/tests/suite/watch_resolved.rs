@@ -102,7 +102,7 @@ fn a_facet_key_is_a_raw_watch() {
     let env = shell_env();
 
     writer
-        .put("p:template", json!({"x": "{{ 1 }}"}), None, None)
+        .put("p:template", json!({"x": "{{ 1 }}"}), None, None, false)
         .expect("put template");
 
     let mut w = ResolvedWatch::open(&client, "p:template", &inputs(&env)).expect("open");
@@ -113,7 +113,7 @@ fn a_facet_key_is_a_raw_watch() {
     );
 
     writer
-        .put("p:template.x", json!("{{ 2 }}"), None, None)
+        .put("p:template.x", json!("{{ 2 }}"), None, None, false)
         .expect("put leaf");
     wait_for(&mut w, json!({"x": "{{ 2 }}"}));
 }
@@ -129,7 +129,7 @@ fn a_provider_key_emits_the_resolved_value_and_follows_its_template() {
     let env = shell_env();
 
     writer
-        .put("scanline:template", scanline_tree(), None, None)
+        .put("scanline:template", scanline_tree(), None, None, false)
         .expect("put template");
 
     let mut w = ResolvedWatch::open(&client, "scanline.widgets.foo", &inputs(&env)).expect("open");
@@ -146,6 +146,7 @@ fn a_provider_key_emits_the_resolved_value_and_follows_its_template() {
             json!("{{ env.SCANLINE_FOO ~ \"!\" }}"),
             None,
             None,
+            false,
         )
         .expect("put leaf");
     wait_for(&mut w, json!("hi!"));
@@ -158,10 +159,11 @@ fn a_provider_key_emits_the_resolved_value_and_follows_its_template() {
             json!("{{ \"hi\" ~ \"!\" }}"),
             None,
             None,
+            false,
         )
         .expect("put another spelling");
     writer
-        .put("unrelated", json!({"k": 1}), None, None)
+        .put("unrelated", json!({"k": 1}), None, None, false)
         .expect("put unrelated");
     // Neither is an emission, so the next one is the next change of value.
     writer
@@ -170,6 +172,7 @@ fn a_provider_key_emits_the_resolved_value_and_follows_its_template() {
             json!("{{ 'bye' }}"),
             None,
             None,
+            false,
         )
         .expect("put a change");
     assert_eq!(
@@ -194,9 +197,12 @@ fn subscriptions_follow_the_deps() {
             json!({"widgets": {"foo": "{{ comb.q.v }}"}}),
             None,
             None,
+            false,
         )
         .expect("put template");
-    writer.put("q.v", json!("1"), None, None).expect("put q.v");
+    writer
+        .put("q.v", json!("1"), None, None, false)
+        .expect("put q.v");
 
     let mut w = ResolvedWatch::open(&client, "scanline.widgets.foo", &inputs(&env)).expect("open");
     assert_eq!(
@@ -209,7 +215,9 @@ fn subscriptions_follow_the_deps() {
     );
     assert_eq!(value(w.next(Some(SOON))), Some(json!("1")));
 
-    writer.put("q.v", json!("2"), None, None).expect("put q.v");
+    writer
+        .put("q.v", json!("2"), None, None, false)
+        .expect("put q.v");
     wait_for(&mut w, json!("2"));
 
     writer
@@ -218,6 +226,7 @@ fn subscriptions_follow_the_deps() {
             json!("{{ comb.r.v }}"),
             None,
             None,
+            false,
         )
         .expect("repoint the template");
     wait_for(&mut w, None);
@@ -230,7 +239,9 @@ fn subscriptions_follow_the_deps() {
         "the ref the template stopped naming is gone from the deps"
     );
 
-    writer.put("r.v", json!("3"), None, None).expect("put r.v");
+    writer
+        .put("r.v", json!("3"), None, None, false)
+        .expect("put r.v");
     wait_for(&mut w, json!("3"));
 }
 
@@ -251,16 +262,17 @@ fn a_computed_comb_name_is_a_dependency_and_moves_with_the_name() {
             json!({"pick": "{{ comb[comb.sel.which].v }}"}),
             None,
             None,
+            false,
         )
         .expect("put template");
     writer
-        .put("sel", json!({"which": "qa"}), None, None)
+        .put("sel", json!({"which": "qa"}), None, None, false)
         .expect("put sel");
     writer
-        .put("qa", json!({"v": "a1"}), None, None)
+        .put("qa", json!({"v": "a1"}), None, None, false)
         .expect("put qa");
     writer
-        .put("qb", json!({"v": "b1"}), None, None)
+        .put("qb", json!({"v": "b1"}), None, None, false)
         .expect("put qb");
 
     let mut w = ResolvedWatch::open(&client, "scanline.pick", &inputs(&env)).expect("open");
@@ -272,12 +284,12 @@ fn a_computed_comb_name_is_a_dependency_and_moves_with_the_name() {
     );
 
     writer
-        .put("qa", json!({"v": "a2"}), None, None)
+        .put("qa", json!({"v": "a2"}), None, None, false)
         .expect("put qa");
     wait_for(&mut w, json!("a2"));
 
     writer
-        .put("sel", json!({"which": "qb"}), None, None)
+        .put("sel", json!({"which": "qb"}), None, None, false)
         .expect("repoint sel");
     wait_for(&mut w, json!("b1"));
     assert!(
@@ -288,7 +300,7 @@ fn a_computed_comb_name_is_a_dependency_and_moves_with_the_name() {
     );
 
     writer
-        .put("qb", json!({"v": "b2"}), None, None)
+        .put("qb", json!({"v": "b2"}), None, None, false)
         .expect("put qb");
     wait_for(&mut w, json!("b2"));
 }
@@ -306,7 +318,7 @@ fn a_watch_on_an_unknown_key_follows_a_later_template() {
     assert_eq!(value(w.next(Some(SOON))), None);
 
     writer
-        .put("scanline:template", scanline_tree(), None, None)
+        .put("scanline:template", scanline_tree(), None, None, false)
         .expect("put template");
     wait_for(&mut w, json!("hi"));
 }
@@ -320,13 +332,15 @@ fn a_miss_is_an_empty_value() {
     let env = shell_env();
 
     writer
-        .put("my", json!({"a": 1}), None, None)
+        .put("my", json!({"a": 1}), None, None, false)
         .expect("put namespace");
 
     let mut w = ResolvedWatch::open(&client, "my.b", &inputs(&env)).expect("open");
     assert_eq!(value(w.next(Some(SOON))), None);
 
-    writer.put("my.b", json!(7), None, None).expect("put my.b");
+    writer
+        .put("my.b", json!(7), None, None, false)
+        .expect("put my.b");
     wait_for(&mut w, json!(7));
 }
 
@@ -343,13 +357,15 @@ fn zero_timeout_polls_a_frame_already_queued() {
     let env = shell_env();
 
     writer
-        .put("my", json!({"a": 1}), None, None)
+        .put("my", json!({"a": 1}), None, None, false)
         .expect("put namespace");
 
     let mut w = ResolvedWatch::open(&client, "my.a", &inputs(&env)).expect("open");
     assert_eq!(value(w.next(Some(SOON))), Some(json!(1)));
 
-    writer.put("my.a", json!(2), None, None).expect("put my.a");
+    writer
+        .put("my.a", json!(2), None, None, false)
+        .expect("put my.a");
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -374,7 +390,7 @@ fn the_cancel_handle_ends_a_blocking_next() {
     let env = shell_env();
 
     writer
-        .put("my", json!({"a": 1}), None, None)
+        .put("my", json!({"a": 1}), None, None, false)
         .expect("put namespace");
 
     let mut w = ResolvedWatch::open(&client, "my.a", &inputs(&env)).expect("open");
@@ -414,7 +430,7 @@ fn opening_frames_that_match_the_resolve_cost_no_request() {
 
     for dep in ["o1", "o2"] {
         writer
-            .put(dep, json!({"x": "a"}), None, None)
+            .put(dep, json!({"x": "a"}), None, None, false)
             .expect("put a dep");
     }
     writer
@@ -423,6 +439,7 @@ fn opening_frames_that_match_the_resolve_cost_no_request() {
             json!({"v": "{{ comb.o1.x ~ comb.o2.x }}"}),
             None,
             None,
+            false,
         )
         .expect("put template");
 
@@ -465,7 +482,7 @@ fn a_change_on_the_last_of_five_deps_is_emitted_at_once() {
 
     for dep in ["d1", "d2", "d3", "d4"] {
         writer
-            .put(dep, json!({"x": "a"}), None, None)
+            .put(dep, json!({"x": "a"}), None, None, false)
             .expect("put a dep");
     }
     writer
@@ -474,6 +491,7 @@ fn a_change_on_the_last_of_five_deps_is_emitted_at_once() {
             json!({"v": "{{ comb.d1.x ~ comb.d2.x ~ comb.d3.x ~ comb.d4.x }}"}),
             None,
             None,
+            false,
         )
         .expect("put template");
 
@@ -484,7 +502,7 @@ fn a_change_on_the_last_of_five_deps_is_emitted_at_once() {
 
     let start = Instant::now();
     writer
-        .put("d4.x", json!("b"), None, None)
+        .put("d4.x", json!("b"), None, None, false)
         .expect("put the last dep");
     assert_eq!(value(w.next(Some(SOON))), Some(json!("aaab")));
     let took = start.elapsed();
@@ -500,7 +518,7 @@ fn the_daemon_closing_ends_the_watch() {
     let env = shell_env();
 
     writer
-        .put("my", json!({"a": 1}), None, None)
+        .put("my", json!({"a": 1}), None, None, false)
         .expect("put namespace");
 
     let mut w = ResolvedWatch::open(&client, "my.a", &inputs(&env)).expect("open");
@@ -524,7 +542,7 @@ fn a_template_that_cannot_resolve_ends_the_watch() {
     let env = shell_env();
 
     writer
-        .put("scanline:template", scanline_tree(), None, None)
+        .put("scanline:template", scanline_tree(), None, None, false)
         .expect("put template");
 
     let mut w = ResolvedWatch::open(&client, "scanline.widgets.foo", &inputs(&env)).expect("open");
@@ -536,6 +554,7 @@ fn a_template_that_cannot_resolve_ends_the_watch() {
             json!("{{ scanline.widgets.foo }}"),
             None,
             None,
+            false,
         )
         .expect("put a leaf that reads itself");
     match w.next(Some(SOON)) {

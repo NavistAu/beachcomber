@@ -37,7 +37,8 @@ your other tools to read: a deploy status, a timer, the result of a slow check. 
 own.
 
 A put lives in the daemon's memory, so if the daemon restarts, it's gone. A script that publishes a value should
-put it each time it runs.
+put it each time it runs. `--persist` asks the daemon to keep one across a restart, as a convenience, not a
+guarantee: [Keeping a value across a restart](../custom-providers/data-you-push.md#keeping-a-value-across-a-restart).
 
 ## Templates: worked out when read
 

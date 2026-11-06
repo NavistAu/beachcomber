@@ -15,6 +15,48 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+/// Load the persisted puts in `file` and put each again, before the socket is
+/// served, with the ttl it has left; one that has expired is gone. A put the
+/// daemon now refuses is logged and dropped. Best effort: a missing file is
+/// nothing to replay, an unreadable or invalid one a warning
+/// ([`crate::persist::PutStore::open`]).
+async fn replay_persisted_puts(
+    cache: &Arc<Cache>,
+    registry: &RegistryHandle,
+    scheduler: &crate::scheduler::SchedulerHandle,
+    file: PathBuf,
+) {
+    let (store, entries) = crate::persist::PutStore::open(file);
+    cache.set_put_store(store);
+    let registry = registry.current();
+    let now = crate::persist::now_ms();
+    for entry in entries {
+        let ttl = match entry.remaining_secs(now) {
+            None => None,
+            Some(Some(left)) => Some(format!("{left}s")),
+            Some(None) => continue,
+        };
+        let replayed = crate::server::put(
+            cache,
+            &registry,
+            Some(scheduler),
+            &entry.key,
+            &entry.data,
+            ttl.as_deref(),
+            entry.path.as_deref(),
+            true,
+        )
+        .await;
+        if !replayed.ok {
+            warn!(
+                "persisted put {} dropped: {}",
+                entry.key,
+                replayed.error.unwrap_or_default()
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // OS-bound: in-process daemon startup (used by tests and embedded mode)
 // ---------------------------------------------------------------------------
@@ -196,6 +238,10 @@ async fn run_daemon_with_cancel(
 
     let scheduler_handle = handle.clone();
     let scheduler_task = tokio::spawn(async move { scheduler.run().await });
+
+    if let Some(file) = config.puts_file() {
+        replay_persisted_puts(&cache, &registry, &handle, file.to_path_buf()).await;
+    }
 
     // Start watchdog if configured.
     let watchdog_task = spawn_watchdog(&config, heartbeat, cancel.clone());

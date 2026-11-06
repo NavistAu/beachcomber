@@ -92,10 +92,28 @@ comb put --global kv.version null
 comb get kv.version                          # 1.2.3
 ```
 
+## Keeping a value across a restart
+
+`--persist` asks the daemon to keep a put when it restarts. It writes the put to
+`$XDG_CACHE_HOME/beachcomber/puts.json` (`~/.cache/beachcomber/puts.json` by default) and puts it again when it starts.
+A put with a ttl comes back with the time it has left, and not at all once that has run out:
+
+```sh
+comb put --global --persist editor '{"theme":"dark"}'
+comb kill && comb get editor.theme      # dark: the daemon that started put it again
+```
+
+The latest put to an address decides: a put there without `--persist`, `null`, or the ttl running out drops the kept
+copy. `comb get editor:cache.theme.persist` is `true` while it is kept.
+
+This is best effort, not a guarantee. The file is in the cache directory, which the system or you may clear at any time,
+and a value can be lost. Use it for convenience, not for data you cannot recreate.
+
 ## Lifetime
 
-Puts live in the daemon's memory. They last until they expire or are removed, or the daemon stops. Write them from the
-program that owns the value each time it changes, not once at login.
+Puts live in the daemon's memory. They last until they expire or are removed, or the daemon stops; one made with
+`--persist` is put again when the daemon starts. Write them from the program that owns the value each time it changes,
+not once at login.
 
 From code, the SDKs have the same operation (`put`); see [Libraries and SDKs](../ecosystem/overview.md). Every flag is
 under `comb p` in [CLI Commands](../reference/cli-commands.md).

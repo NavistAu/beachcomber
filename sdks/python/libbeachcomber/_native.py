@@ -38,7 +38,7 @@ _SYMBOLS: dict = {
         ctypes.c_void_p,
     ),
     "bc_put": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_bool],
         ctypes.c_void_p,
     ),
     "bc_refresh": ([ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p], ctypes.c_void_p),
@@ -59,7 +59,7 @@ _SYMBOLS: dict = {
         ctypes.c_void_p,
     ),
     "bc_session_put": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_bool],
         ctypes.c_void_p,
     ),
     "bc_session_refresh": (

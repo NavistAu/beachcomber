@@ -85,7 +85,7 @@ Opens a fresh socket connection for each call. Simple and stateless.
 | `get(key, cwd: nil, env: nil, force: false, wait: nil)` | The value `comb get` prints for this key, cwd and env; `nil` on a miss. `wait:` is how long to wait for a run the read needs before answering what is stored, as `comb get --wait`: a duration (`'0'`, `'50ms'`, `'2s'`) or `'forever'`, anything else a `ParseError`. |
 | `eval(template, cwd: nil, env: nil)` | Render a template stored nowhere — the same value `comb eval` prints. |
 | `watch(key, cwd: nil, env: nil)` | Subscribe to a key's value — what `get` answers for it — and receive it again whenever it changes. Returns a `WatchStream` (Enumerable). |
-| `put(key, data, ttl: nil, path: nil)` | Write a value into the cache; `nil` removes the node. Returns `nil`. |
+| `put(key, data, ttl: nil, path: nil, persist: false)` | Write a value into the cache; `nil` removes the node. `persist`: keep the put across a daemon restart, best effort. Returns `nil`. |
 | `refresh(key, path: nil)` | Force recomputation. Returns `nil`. |
 | `status` | Daemon cache status as typed rows. Returns `Array<CacheRow>`. |
 | `hello` | Handshake. Returns a `HelloInfo`. |
@@ -129,7 +129,7 @@ end
 |--------|-------------|
 | `set_context(path)` | Set this session's directory: a `get` with no `cwd`, and a `put` or `refresh` with no `path`, address it. |
 | `get(key, cwd: nil, env: nil, force: false, wait: nil)` | `Client#get` on this connection; `cwd: nil` is the session's directory, else the global entry. |
-| `put(key, data, ttl: nil, path: nil)` | `Client#put` on this connection; `path: nil` is the session's directory. |
+| `put(key, data, ttl: nil, path: nil, persist: false)` | `Client#put` on this connection; `path: nil` is the session's directory. |
 | `refresh(key, path: nil)` | `Client#refresh` on this connection; `path: nil` is the session's directory. |
 | `close` | Close the connection (called automatically by `Client#session`). |
 

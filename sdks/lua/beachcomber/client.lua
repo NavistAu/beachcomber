@@ -15,7 +15,7 @@
 -- 5ms-per-call transport in a profile.
 --
 -- A backend implements: name(), get(key,cwd,env,options),
--- put(key,data,ttl,path), status(), close(), and optionally version(),
+-- put(key,data,ttl,path,persist), status(), close(), and optionally version(),
 -- refresh(key,path), introspect(subject,duration_secs), hello(),
 -- eval(template,cwd,env), watch_open(key,cwd,env) and session_open() (a
 -- handle with get/put/refresh/set_context/close taking the same arguments)
@@ -88,7 +88,7 @@ end
 function Session:put(key, data, opts)
   if self._closed then return closed("session", self._version) end
   opts = opts or {}
-  return done(self._handle:put(key, data, opts.ttl, opts.path), self._version)
+  return done(self._handle:put(key, data, opts.ttl, opts.path, opts.persist), self._version)
 end
 
 --- Client:refresh on this session; no `opts.path` is the session's directory.
@@ -200,7 +200,7 @@ end
 function Client:put(key, data, opts)
   if self._closed then return closed("client", self._version) end
   opts = opts or {}
-  return done(self._backend:put(key, data, opts.ttl, opts.path), self._version)
+  return done(self._backend:put(key, data, opts.ttl, opts.path, opts.persist), self._version)
 end
 
 --- Re-execute the Sources a key demands.

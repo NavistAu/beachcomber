@@ -30,7 +30,7 @@ out is the ABI's default.
 | `get(key, cwd?, env?, force?, wait?)` | `bc_get` | The value `comb get` prints; absent on a miss. |
 | `eval(template, cwd?, env?)` | `bc_eval` | The value `comb eval` prints; absent when it renders nothing. |
 | `watch(key, cwd?, env?)` | `bc_watch_open` | A watch stream of `get`'s value. |
-| `put(key, data, ttl?, path?)` | `bc_put` | Nothing. `data` absent removes the node. |
+| `put(key, data, ttl?, path?, persist?)` | `bc_put` | Nothing. `data` absent removes the node; `persist` keeps the put across a daemon restart, best effort. |
 | `refresh(key, path?)` | `bc_refresh` | Nothing. |
 | `status()` | `bc_status` | A list of cache rows. |
 | `hello()` | `bc_hello` | The protocol and daemon versions. |
@@ -76,7 +76,7 @@ A session holds one connection and a directory of its own.
 |---|---|---|
 | `set_context(path)` | `bc_session_set_context` | Nothing. |
 | `get(key, cwd?, env?, force?, wait?)` | `bc_session_get` | As the client's `get`; no `cwd` is the session's directory, else the global entry. |
-| `put(key, data, ttl?, path?)` | `bc_session_put` | As the client's `put`; no `path` is the session's directory. |
+| `put(key, data, ttl?, path?, persist?)` | `bc_session_put` | As the client's `put`; no `path` is the session's directory. |
 | `refresh(key, path?)` | `bc_session_refresh` | As the client's `refresh`; no `path` is the session's directory. |
 | `close()` | `bc_session_close` | Nothing. |
 

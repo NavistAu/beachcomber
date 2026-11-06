@@ -24,7 +24,7 @@ describe('subprocess transport watch against a real daemon', { skip }, () => {
   const savedEnv: Record<string, string | undefined> = {};
 
   async function put(key: string, data: unknown): Promise<void> {
-    unwrap(await tp.put(handle, key, JSON.stringify(data), undefined, undefined));
+    unwrap(await tp.put(handle, key, JSON.stringify(data), undefined, undefined, false));
   }
 
   function watch(key: string, env?: Record<string, string>): { stream: WatchStream; raw: WatchHandle } {

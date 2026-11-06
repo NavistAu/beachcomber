@@ -25,7 +25,7 @@ describe('subprocess transport eval against a real daemon', { skip }, () => {
     daemon = await spawnDaemon();
     tp = createSubprocessTransport();
     handle = tp.newClient({ socketPath: daemon.sockPath, timeoutMs: 5000 });
-    unwrap(await tp.put(handle, 'ev', JSON.stringify({ n: 7, s: 'str' }), undefined, undefined));
+    unwrap(await tp.put(handle, 'ev', JSON.stringify({ n: 7, s: 'str' }), undefined, undefined, false));
   });
 
   after(() => {

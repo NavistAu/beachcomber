@@ -14,6 +14,7 @@ fn put_with_data_then_get_round_trips() {
             serde_json::json!({"color": "purple", "count": 3}),
             None,
             None,
+            false,
         )
         .expect("put");
 
@@ -30,7 +31,13 @@ fn watch_receives_initial_event() {
     let client = client_for(&guard.path);
 
     client
-        .put("phase3_watch", serde_json::json!({"x": 1}), None, None)
+        .put(
+            "phase3_watch",
+            serde_json::json!({"x": 1}),
+            None,
+            None,
+            false,
+        )
         .expect("put");
 
     let mut stream = client.watch("phase3_watch.x", None).expect("watch");

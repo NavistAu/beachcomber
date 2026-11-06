@@ -121,8 +121,9 @@ impl Client {
         data: serde_json::Value,
         ttl: Option<&str>,
         path: Option<&str>,
+        persist: bool,
     ) -> std::io::Result<Response> {
-        unit_to_response(self.inner().put(key, data, ttl, path))
+        unit_to_response(self.inner().put(key, data, ttl, path, persist))
     }
 
     pub fn refresh(&self, key: &str, path: Option<&str>) -> std::io::Result<Response> {

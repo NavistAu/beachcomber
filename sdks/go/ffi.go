@@ -256,6 +256,14 @@ func (l *nativeLib) takeString(ptr uintptr) string {
 	return s
 }
 
+// boolArg is a C bool argument.
+func boolArg(b bool) uintptr {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // call invokes the bc_* function at fnAddr, frees its returned string, and
 // decodes the ordinary {"ok":...} envelope. ok:false becomes an *Error
 // carrying the envelope's kind and message as they are, and this library's

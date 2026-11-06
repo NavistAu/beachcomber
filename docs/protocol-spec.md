@@ -395,6 +395,8 @@ tree of its leaves' answers.
 - `poll` (`{interval, count}`), `watch` and `decay` are stored: written when a
   Source registers or a `put` carries a `ttl`, and read back here. `watch` is an
   array of patterns.
+- `persist` is stored, `true`, for a put made with `persist` (on a root put,
+  at each top-level key) while the daemon keeps it; absent otherwise.
 - `hash` is stored, for a Source's record with stat inputs: the validity hash
   of those inputs as its run stamped them (FNV-1a 64 over each input's path and
   stamp, `libbeachcomber::validity`), 16 lowercase hex digits. A read checks
@@ -486,6 +488,24 @@ build.status '"passing"'` and `comb put --ttl 60 build.eta '"4m"'` expire indepe
 a re-put without a `ttl` drops the expiry. `status` shows such a row as any
 lifecycle entry, source `put`; `<p>:cache.<node>` reports its `poll` and `decay`.
 
+`persist: true` keeps the put across a daemon restart, best effort. The daemon
+keeps one entry per put address (key and directory) in
+`$XDG_CACHE_HOME/beachcomber/puts.json` (default `~/.cache/beachcomber/puts.json`):
+the key, the directory, the `data`, and for a put with a `ttl` the wall-clock
+expiry (`expires`, milliseconds since the Unix epoch). The file is written
+whole, through a temporary file and a rename, after each change. Before it
+serves, the daemon puts each entry again, with the ttl it has left; an entry
+whose expiry has passed is dropped. A missing file is nothing to replay; an
+unreadable or invalid one is a logged warning, ignored, and replaced on the
+next persisted write; an entry the daemon now refuses is logged and dropped.
+The latest put to an address decides: a put without `persist` there, a `null`
+put, or the ttl's eviction drops its entry, and a put at an address above it
+drops it as the put replaces the node. A daemon with no file (an embedded or
+test one) takes `persist` and keeps nothing. Persistence is not a guarantee:
+the file lives in the cache directory, which the system or the user may clear,
+and a value may be lost; it is for convenience, not for data that cannot be
+recreated.
+
 An object key in `data` may hold a `.`: it is one name, read back as the
 quoted segment `['a.b']`, and a node segment of `key` may be that quoted
 segment too. The node part of `key` is capped at ten segments.
@@ -497,7 +517,8 @@ segment too. The node part of `key` is capped at ten segments.
   "key": "myapp",
   "data": {"status": "healthy", "last_deploy": "2026-04-22T10:00:00Z"},
   "ttl": "30s",
-  "path": "/optional/scope"
+  "path": "/optional/scope",
+  "persist": true
 }
 ```
 

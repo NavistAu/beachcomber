@@ -136,6 +136,9 @@ pub enum Request {
         ttl: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
+        /// Keep the put across a daemon restart, best effort.
+        #[serde(default, skip_serializing_if = "is_false")]
+        persist: bool,
     },
     Watch {
         key: String,
@@ -554,6 +557,7 @@ mod tests {
                 data: serde_json::json!({"x": 1}),
                 ttl: Some("1m".into()),
                 path: Some("/r".into()),
+                persist: true,
             },
             Request::Memo {
                 key: "kubecontext.context".into(),

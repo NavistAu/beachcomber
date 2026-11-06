@@ -141,9 +141,9 @@ Return typed cache rows as a list of `CacheRow` dataclasses (one per warm cache 
 
 Handshake — returns a `HelloInfo` with daemon and protocol version strings.
 
-#### `client.put(key, data=None, ttl=None, path=None)`
+#### `client.put(key, data=None, ttl=None, path=None, persist=False)`
 
-Write a value into the cache as static data. `data=None` clears the entry.
+Write a value into the cache as static data. `data=None` clears the entry. `persist`: keep the put across a daemon restart, best effort.
 
 #### `client.introspect(subject, duration_secs=None)`
 

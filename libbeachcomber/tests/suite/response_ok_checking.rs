@@ -45,7 +45,7 @@ fn client_put_of_null_on_an_over_deep_key_returns_err() {
     let guard = DaemonGuard::spawn();
     let client = client_for(&guard.path);
 
-    let result = client.put(TOO_DEEP, serde_json::Value::Null, None, None);
+    let result = client.put(TOO_DEEP, serde_json::Value::Null, None, None, false);
 
     assert!(
         result.is_err(),
@@ -63,7 +63,7 @@ fn session_put_of_null_on_an_over_deep_key_returns_err() {
     let client = client_for(&guard.path);
     let mut session = client.session().expect("session");
 
-    let result = session.put(TOO_DEEP, serde_json::Value::Null, None, None);
+    let result = session.put(TOO_DEEP, serde_json::Value::Null, None, None, false);
 
     assert!(
         result.is_err(),
