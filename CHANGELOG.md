@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-06
+
 The configuration is a new shape, and the cache a new model. Config has two roots, `[daemon]` and `[client]`; a provider is a namespace of Sources, each a jinja function with `root`, `data`, `result` and `return`, written on an engine (`exec`, `url`, `plugin`, `read`, `lup`, `fromjson`, `fromini`, `merge`, `map`, `pluck`, `dirname`, `tojson`); `_` tables and `| super` give prototypes; instances are found by `root` and cascade or answer `| nearest`; Sources can call Sources; a provider can be disabled; an edit under `providers` reloads in place. The cache is one tree read at any depth, with layers (`put`, `config:`, Source) and the `:template`, `:macro`, `:memo`, `:put`, `:source` and `:cache` facets, and `null` means absent. The BREAKING entries under Changed and Removed list what 0.9.1 files and clients must change.
 
 ### Added

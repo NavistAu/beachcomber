@@ -1,9 +1,9 @@
 package = "libbeachcomber"
-version = "0.9.1-1"
+version = "0.10.0-1"
 
 source = {
   url = "git+https://github.com/NavistAu/beachcomber.git",
-  tag = "v0.9.1",
+  tag = "v0.10.0",
   dir = "sdks/lua",
 }
 
