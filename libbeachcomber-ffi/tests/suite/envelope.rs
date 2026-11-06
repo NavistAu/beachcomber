@@ -34,7 +34,6 @@ fn every_error_kind_serialises_its_slug() {
     let cases = [
         (kind::BUSY, "busy"),
         (kind::PANIC, "panic"),
-        (kind::VERSION_SKEW, "version_skew"),
         (
             FfiError::from(CombError::DaemonNotRunning).kind,
             "daemon_not_running",

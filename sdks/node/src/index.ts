@@ -55,7 +55,6 @@ export {
   TimeoutError,
   BusyError,
   PanicError,
-  VersionSkewError,
   LibraryNotFoundError,
   LibrarySymbolError,
   UnsupportedError,

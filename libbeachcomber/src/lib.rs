@@ -167,25 +167,25 @@ impl CombData {
 /// check for it, and it is named in any op error on that connection
 /// afterward (see `CombError::ServerError`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VersionSkew {
+pub struct VersionMismatch {
     /// This client's build identity (`VERSION`).
     pub ours: String,
     /// The daemon's reported `daemon_version`.
     pub theirs: String,
 }
 
-impl std::fmt::Display for VersionSkew {
+impl std::fmt::Display for VersionMismatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "client is {}, daemon is {}", self.ours, self.theirs)
     }
 }
 
 /// Compare a `hello` response against this build's identity.
-fn detect_skew(hello: &HelloInfo) -> Option<VersionSkew> {
+fn detect_skew(hello: &HelloInfo) -> Option<VersionMismatch> {
     if hello.daemon_version == VERSION {
         None
     } else {
-        Some(VersionSkew {
+        Some(VersionMismatch {
             ours: VERSION.to_string(),
             theirs: hello.daemon_version.clone(),
         })
@@ -242,7 +242,7 @@ struct SkewProbe {
 
 impl SkewProbe {
     /// The skew a `hello` shows; unknown (`None`) when the probe fails.
-    fn skew(&self) -> Option<VersionSkew> {
+    fn skew(&self) -> Option<VersionMismatch> {
         let stream = connect_with_retry_for(&self.socket, self.connect_timeout).ok()?;
         stream.set_read_timeout(Some(self.timeout)).ok()?;
         stream.set_write_timeout(Some(self.timeout)).ok()?;
@@ -467,7 +467,7 @@ pub struct Client {
     /// Version skew, if any, discovered via `hello` on this client's first
     /// connection. Checked once — later connections reuse this rather than
     /// probing again, so it is never a per-op cost.
-    version_skew: OnceLock<Option<VersionSkew>>,
+    version_mismatch: OnceLock<Option<VersionMismatch>>,
 }
 
 impl Client {
@@ -477,7 +477,7 @@ impl Client {
             config: ClientConfig::default(),
             socket_path_override: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
-            version_skew: OnceLock::new(),
+            version_mismatch: OnceLock::new(),
         }
     }
 
@@ -487,14 +487,14 @@ impl Client {
             config,
             socket_path_override: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
-            version_skew: OnceLock::new(),
+            version_mismatch: OnceLock::new(),
         }
     }
 
     /// Version skew detected against the daemon, if any. `None` before the
     /// first connection is made, or once made, if the versions matched.
-    pub fn version_skew(&self) -> Option<VersionSkew> {
-        self.version_skew.get().cloned().flatten()
+    pub fn version_mismatch(&self) -> Option<VersionMismatch> {
+        self.version_mismatch.get().cloned().flatten()
     }
 
     /// Whether templates this client resolves may call `exec()`
@@ -503,8 +503,8 @@ impl Client {
         self.config.exec
     }
 
-    fn skew_ref(&self) -> Option<&VersionSkew> {
-        self.version_skew.get().and_then(|s| s.as_ref())
+    fn skew_ref(&self) -> Option<&VersionMismatch> {
+        self.version_mismatch.get().and_then(|s| s.as_ref())
     }
 
     /// One request on a fresh connection, answered: the reply's envelope.
@@ -515,8 +515,8 @@ impl Client {
     fn call(&self, request: &Request) -> Result<Response, CombError> {
         let mut conn = self.open()?;
         let line = conn.exchange(request)?;
-        if self.version_skew.get().is_none() {
-            let _ = self.version_skew.set(conn.skew());
+        if self.version_mismatch.get().is_none() {
+            let _ = self.version_mismatch.set(conn.skew());
         }
         envelope(&line, self.skew_ref())
     }
@@ -642,8 +642,8 @@ impl Client {
     /// Ask the daemon for its protocol and build versions.
     pub fn hello(&self) -> Result<HelloInfo, CombError> {
         let info = self.open()?.hello()?;
-        if self.version_skew.get().is_none() {
-            let _ = self.version_skew.set(detect_skew(&info));
+        if self.version_mismatch.get().is_none() {
+            let _ = self.version_mismatch.set(detect_skew(&info));
         }
         Ok(info)
     }
@@ -834,7 +834,7 @@ impl Conn {
 
     /// The version skew a `hello` on this connection shows, if any; unknown
     /// (`None`) when the probe itself fails.
-    fn skew(&mut self) -> Option<VersionSkew> {
+    fn skew(&mut self) -> Option<VersionMismatch> {
         self.hello().ok().and_then(|info| detect_skew(&info))
     }
 }
@@ -850,7 +850,7 @@ pub struct Session {
     /// Version skew, if any, discovered via a trailing `hello` exchange
     /// after this session's first op. Checked once per connection, not
     /// per op.
-    version_skew: Option<VersionSkew>,
+    version_mismatch: Option<VersionMismatch>,
     /// The directory [`Session::set_context`] set, sent with every request
     /// that names no path.
     context: Option<String>,
@@ -864,7 +864,7 @@ impl Session {
             conn,
             allow_exec,
             skew_checked: false,
-            version_skew: None,
+            version_mismatch: None,
             context: None,
         }
     }
@@ -872,8 +872,8 @@ impl Session {
     /// Version skew detected against the daemon on this session's
     /// connection, if any. `None` before the first op, or once probed, if
     /// the versions matched.
-    pub fn version_skew(&self) -> Option<&VersionSkew> {
-        self.version_skew.as_ref()
+    pub fn version_mismatch(&self) -> Option<&VersionMismatch> {
+        self.version_mismatch.as_ref()
     }
 
     /// One request on this connection, answered: the reply's envelope. The
@@ -883,9 +883,9 @@ impl Session {
         let line = self.conn.exchange(request)?;
         if !self.skew_checked {
             self.skew_checked = true;
-            self.version_skew = self.conn.skew();
+            self.version_mismatch = self.conn.skew();
         }
-        envelope(&line, self.version_skew.as_ref())
+        envelope(&line, self.version_mismatch.as_ref())
     }
 
     /// [`Client::get`] on this persistent connection: the value `comb get key`
@@ -975,7 +975,7 @@ impl Session {
         let info = self.conn.hello()?;
         if !self.skew_checked {
             self.skew_checked = true;
-            self.version_skew = detect_skew(&info);
+            self.version_mismatch = detect_skew(&info);
         }
         Ok(info)
     }
@@ -1095,7 +1095,7 @@ fn wire_path(path: Option<&str>) -> Result<Option<String>, CombError> {
 /// the [`Response`] on success. On `ok:false`, `ServerError` with the
 /// daemon's message — appended with `skew`, if known, so a failure on a
 /// connection with detected version skew names both versions.
-fn envelope(line: &str, skew: Option<&VersionSkew>) -> Result<Response, CombError> {
+fn envelope(line: &str, skew: Option<&VersionMismatch>) -> Result<Response, CombError> {
     let resp: Response =
         serde_json::from_str(line.trim()).map_err(|e| CombError::ParseError(e.to_string()))?;
     if !resp.ok {
@@ -1108,7 +1108,7 @@ fn envelope(line: &str, skew: Option<&VersionSkew>) -> Result<Response, CombErro
 /// A daemon's `error`, with the version skew named after it when there is
 /// one: the one place that note is written, for every op and every watch
 /// frame.
-pub(crate) fn with_skew(error: String, skew: Option<&VersionSkew>) -> String {
+pub(crate) fn with_skew(error: String, skew: Option<&VersionMismatch>) -> String {
     match skew {
         Some(s) => format!("{error} ({s})"),
         None => error,

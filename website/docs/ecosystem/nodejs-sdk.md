@@ -144,7 +144,6 @@ One class per error kind, each extending `CombError` (which extends `Error`) and
 | `TimeoutError` | `timeout` | A read or write ran out `timeoutMs`, or `nextEvent` ran out its timeout |
 | `BusyError` | `busy` | A session or watch is in use by another caller |
 | `PanicError` | `panic` | The native library panicked (caught at the FFI boundary) |
-| `VersionSkewError` | `version_skew` | The daemon is a different version from the library |
 | `LibraryNotFoundError` | `library_not_found` | No `libbeachcomber` was found (FFI), or no `comb` to spawn (subprocess) |
 | `LibrarySymbolError` | `library_symbol` | The loaded library lacks a required `bc_*` function |
 | `UnsupportedError` | `unsupported` | The subprocess transport cannot do this operation |

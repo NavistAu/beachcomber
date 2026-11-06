@@ -196,7 +196,6 @@ func TestAPI_ErrorKindsAreTheTables(t *testing.T) {
 		"timeout":            beachcomber.ErrTimeout,
 		"busy":               beachcomber.ErrBusy,
 		"panic":              beachcomber.ErrPanic,
-		"version_skew":       beachcomber.ErrVersionSkew,
 		"library_not_found":  beachcomber.ErrLibraryNotFound,
 		"library_symbol":     beachcomber.ErrLibrarySymbol,
 		"unsupported":        beachcomber.ErrUnsupported,

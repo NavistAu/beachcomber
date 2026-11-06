@@ -733,7 +733,7 @@ fn frame_value(frame: &str, client: &Client) -> Result<Option<JsonValue>, WatchE
                 let _ = client.hello();
                 WatchError::Transport(CombError::ServerError(crate::with_skew(
                     refusal,
-                    client.version_skew().as_ref(),
+                    client.version_mismatch().as_ref(),
                 )))
             }
             other => WatchError::Transport(other),

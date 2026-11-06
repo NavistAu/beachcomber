@@ -43,8 +43,6 @@ var (
 	ErrBusy = &Error{Kind: "busy", Message: "the handle is in use by another caller"}
 	// ErrPanic: the library panicked; the panic was caught at the boundary.
 	ErrPanic = &Error{Kind: "panic", Message: "the library panicked"}
-	// ErrVersionSkew: the daemon is a different version from the library.
-	ErrVersionSkew = &Error{Kind: "version_skew", Message: "the daemon is a different version from the library"}
 	// ErrLibraryNotFound: no libbeachcomber was found where discovery looks.
 	ErrLibraryNotFound = &Error{Kind: "library_not_found", Message: "libbeachcomber was not found"}
 	// ErrLibrarySymbol: the library found lacks a function this SDK calls.

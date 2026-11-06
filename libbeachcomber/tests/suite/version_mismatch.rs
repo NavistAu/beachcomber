@@ -1,9 +1,9 @@
-// Task 3.8 — version-skew detection.
+// Task 3.8 — version-mismatch detection.
 //
 // The shared client compares the daemon's `hello`-reported version against
 // its own build identity (`libbeachcomber::VERSION`) once per connection.
 // A mismatch is not fatal — ops still succeed — but it must be surfaced via
-// a caller-readable `version_skew()` and named in any subsequent op error.
+// a caller-readable `version_mismatch()` and named in any subsequent op error.
 //
 // A fake daemon (the same raw-`UnixListener` double pattern used in
 // connect_retry.rs and response_ok_checking.rs) answers `hello` with a
@@ -71,7 +71,7 @@ fn client_detects_mismatched_daemon_version_after_op_succeeds() {
     let client = client_for(&sock);
 
     assert!(
-        client.version_skew().is_none(),
+        client.version_mismatch().is_none(),
         "skew must be unknown before any connection is made"
     );
 
@@ -82,7 +82,7 @@ fn client_detects_mismatched_daemon_version_after_op_succeeds() {
     );
 
     let skew = client
-        .version_skew()
+        .version_mismatch()
         .expect("skew must be detectable after the first connection");
     assert_eq!(skew.ours, libbeachcomber::VERSION);
     assert_eq!(skew.theirs, "9.9.9-totally-different");
@@ -96,7 +96,7 @@ fn client_reports_no_skew_when_versions_match() {
     let result = client.get("hostname", None);
     assert!(result.is_ok(), "op must succeed: {result:?}");
     assert!(
-        client.version_skew().is_none(),
+        client.version_mismatch().is_none(),
         "matching versions must not report skew"
     );
 }
@@ -126,7 +126,7 @@ fn session_detects_mismatched_daemon_version_after_op_succeeds() {
     let mut session = client.session().expect("session");
 
     assert!(
-        session.version_skew().is_none(),
+        session.version_mismatch().is_none(),
         "skew must be unknown before the first op"
     );
 
@@ -137,7 +137,7 @@ fn session_detects_mismatched_daemon_version_after_op_succeeds() {
     );
 
     let skew = session
-        .version_skew()
+        .version_mismatch()
         .expect("skew must be detectable after the first op")
         .clone();
     assert_eq!(skew.ours, libbeachcomber::VERSION);
@@ -147,7 +147,7 @@ fn session_detects_mismatched_daemon_version_after_op_succeeds() {
     // change in the reported skew) — the check is once per connection.
     let result2 = session.get("hostname", None);
     assert!(result2.is_ok());
-    assert_eq!(session.version_skew(), Some(&skew));
+    assert_eq!(session.version_mismatch(), Some(&skew));
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn session_reports_no_skew_when_versions_match() {
     let result = session.get("hostname", None);
     assert!(result.is_ok(), "op must succeed: {result:?}");
     assert!(
-        session.version_skew().is_none(),
+        session.version_mismatch().is_none(),
         "matching versions must not report skew"
     );
 }

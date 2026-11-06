@@ -29,8 +29,6 @@ pub mod kind {
     pub const BUSY: &str = "busy";
     /// The wrapped call panicked; caught at the FFI boundary.
     pub const PANIC: &str = "panic";
-    /// The daemon's reported version does not match this library's.
-    pub const VERSION_SKEW: &str = "version_skew";
 }
 
 /// An error to be enveloped: a stable [`kind`] slug plus a human-readable

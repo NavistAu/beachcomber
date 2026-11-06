@@ -175,7 +175,6 @@ One `CombError` subclass per error kind of the [SDK API table](https://github.co
 | `TimeoutError` | `timeout` | A read or write ran out `timeout_ms`, or `next_event` ran out its `timeout_ms` |
 | `BusyError` | `busy` | A session or watch is in use by another caller |
 | `PanicError` | `panic` | The library panicked |
-| `VersionSkewError` | `version_skew` | The daemon is a different version from the library |
 | `LibraryNotFoundError` | `library_not_found` | No `libbeachcomber` was found where discovery looks |
 | `LibrarySymbolError` | `library_symbol` | The library found lacks a function this SDK calls |
 | `UnsupportedError` | `unsupported` | A transport cannot do this operation (never raised here) |

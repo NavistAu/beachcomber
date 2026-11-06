@@ -82,12 +82,6 @@ class PanicError(CombError):
     kind = "panic"
 
 
-class VersionSkewError(CombError):
-    """The daemon is a different version from the library."""
-
-    kind = "version_skew"
-
-
 class LibraryNotFoundError(CombError):
     """No ``libbeachcomber`` was found where discovery looks."""
 
@@ -119,7 +113,6 @@ _KIND_TO_EXCEPTION = {
         TimeoutError,
         BusyError,
         PanicError,
-        VersionSkewError,
         LibraryNotFoundError,
         LibrarySymbolError,
         UnsupportedError,

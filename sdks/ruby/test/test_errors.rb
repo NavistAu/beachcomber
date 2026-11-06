@@ -4,7 +4,6 @@ class TestErrors < Minitest::Test
   KIND_MAP = {
     'busy' => Beachcomber::BusyError,
     'panic' => Beachcomber::PanicError,
-    'version_skew' => Beachcomber::VersionSkewError,
     'daemon_not_running' => Beachcomber::DaemonNotRunningError,
     'connection_failed' => Beachcomber::ConnectionFailedError,
     'io_error' => Beachcomber::IoError,

@@ -158,7 +158,6 @@ passes on what its caller gave and adds no defaults of its own.
 | `timeout` | library | A read or write ran out `timeout_ms`. |
 | `busy` | ABI | A session or watch is in use by another caller. |
 | `panic` | ABI | The library panicked; caught at the boundary. |
-| `version_skew` | ABI | Reserved; not raised in this release (see [Versions](#versions)). |
 | `library_not_found` | SDK | No `libbeachcomber` loaded from any candidate. |
 | `library_symbol` | SDK | The library that loaded lacks a function the SDK calls. |
 | `unsupported` | SDK | A subprocess tier cannot do this operation. |

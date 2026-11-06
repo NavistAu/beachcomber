@@ -18,7 +18,6 @@ from libbeachcomber.exceptions import (
     ParseError,
     ServerError,
     TimeoutError,
-    VersionSkewError,
     exception_for_envelope_error,
 )
 
@@ -34,7 +33,6 @@ from libbeachcomber.exceptions import (
         ("timeout", TimeoutError),
         ("busy", BusyError),
         ("panic", PanicError),
-        ("version_skew", VersionSkewError),
     ],
 )
 def test_known_kind_maps_to_expected_subclass(kind: str, expected_cls: type) -> None:

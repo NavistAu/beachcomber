@@ -21,7 +21,6 @@ Error.KINDS = {
   "timeout",
   "busy",
   "panic",
-  "version_skew",
   "library_not_found",
   "library_symbol",
   "unsupported",

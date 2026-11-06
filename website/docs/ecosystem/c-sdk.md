@@ -130,7 +130,6 @@ so a binding can tell the cases apart without string matching:
 | `server_error` | Daemon returned `ok: false` |
 | `timeout` | The call exceeded its timeout — any op, on a client or a session |
 | `busy` | The handle's connection is already in use by another caller |
-| `version_skew` | The daemon's reported version doesn't match this library's |
 | `panic` | The call panicked internally; caught at the FFI boundary |
 
 ## API reference

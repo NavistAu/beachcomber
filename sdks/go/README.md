@@ -257,7 +257,6 @@ One sentinel per kind matches an `*Error` of that kind with `errors.Is`:
 | `ErrTimeout` | `timeout` | A read or write ran out `timeout_ms`, or `NextEvent(ms)` ran out. |
 | `ErrBusy` | `busy` | A session or watch is in use by another caller. |
 | `ErrPanic` | `panic` | The library panicked; the panic was caught at the boundary. |
-| `ErrVersionSkew` | `version_skew` | The daemon is a different version from the library. |
 | `ErrLibraryNotFound` | `library_not_found` | No `libbeachcomber` was found where discovery looks. |
 | `ErrLibrarySymbol` | `library_symbol` | The library found lacks a function this SDK calls. |
 | `ErrUnsupported` | `unsupported` | A transport cannot do this operation. This SDK has one transport, which can do every operation. |

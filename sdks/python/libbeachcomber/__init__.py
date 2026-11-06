@@ -42,7 +42,6 @@ from .exceptions import (
     ServerError,
     TimeoutError,
     UnsupportedError,
-    VersionSkewError,
 )
 from .types import (
     CacheRow,
@@ -68,7 +67,6 @@ __all__ = [
     "TimeoutError",
     "BusyError",
     "PanicError",
-    "VersionSkewError",
     "LibraryNotFoundError",
     "LibrarySymbolError",
     "UnsupportedError",

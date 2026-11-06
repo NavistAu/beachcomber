@@ -133,7 +133,6 @@ the ABI's, unchanged; the library's version is a field of its own,
 | `timeout` | ABI | A read or write ran out `timeout_ms`, or `next_event` ran out its `timeout_ms`. |
 | `busy` | ABI | A session or watch is in use by another caller. |
 | `panic` | ABI | The library panicked; the panic was caught at the boundary. |
-| `version_skew` | ABI | The daemon is a different version from the library. |
 | `library_not_found` | SDK | No `libbeachcomber` was found where discovery looks. |
 | `library_symbol` | SDK | The library found lacks a function this SDK calls. |
 | `unsupported` | SDK | A subprocess tier cannot do this operation. |
@@ -149,7 +148,6 @@ the ABI's, unchanged; the library's version is a field of its own,
 | `timeout` | `TimeoutError` | `ErrTimeout` | `kind == "timeout"` |
 | `busy` | `BusyError` | `ErrBusy` | `kind == "busy"` |
 | `panic` | `PanicError` | `ErrPanic` | `kind == "panic"` |
-| `version_skew` | `VersionSkewError` | `ErrVersionSkew` | `kind == "version_skew"` |
 | `library_not_found` | `LibraryNotFoundError` | `ErrLibraryNotFound` | `kind == "library_not_found"` |
 | `library_symbol` | `LibrarySymbolError` | `ErrLibrarySymbol` | `kind == "library_symbol"` |
 | `unsupported` | `UnsupportedError` | `ErrUnsupported` | `kind == "unsupported"` |

@@ -136,7 +136,7 @@ Release the client.
 
 ### Errors
 
-An `err` carries `kind`, one of `Error.KINDS` — the ABI's `daemon_not_running`, `connection_failed`, `io_error`, `parse_error`, `server_error`, `timeout`, `busy`, `panic` and `version_skew`, and this SDK's own `library_not_found`, `library_symbol` and `unsupported`; `message`, the ABI's message as it came; and `library_version`, the loaded library's version (`nil` over `subprocess`). Branch on `kind`.
+An `err` carries `kind`, one of `Error.KINDS` — the ABI's `daemon_not_running`, `connection_failed`, `io_error`, `parse_error`, `server_error`, `timeout`, `busy` and `panic`, and this SDK's own `library_not_found`, `library_symbol` and `unsupported`; `message`, the ABI's message as it came; and `library_version`, the loaded library's version (`nil` over `subprocess`). Branch on `kind`.
 
 ## Wire protocol reference
 

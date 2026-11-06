@@ -38,7 +38,6 @@ module Beachcomber
   define_error :TimeoutError, 'timeout'
   define_error :BusyError, 'busy'
   define_error :PanicError, 'panic'
-  define_error :VersionSkewError, 'version_skew'
   define_error :LibraryNotFoundError, 'library_not_found'
   define_error :LibrarySymbolError, 'library_symbol'
   define_error :UnsupportedError, 'unsupported'

@@ -19,7 +19,6 @@ export type CombErrorKind =
   | 'timeout'
   | 'busy'
   | 'panic'
-  | 'version_skew'
   | 'library_not_found'
   | 'library_symbol'
   | 'unsupported';
@@ -68,8 +67,6 @@ export class TimeoutError extends kindError('timeout') {}
 export class BusyError extends kindError('busy') {}
 /** The library panicked; the panic was caught at the boundary. */
 export class PanicError extends kindError('panic') {}
-/** The daemon is a different version from the library. */
-export class VersionSkewError extends kindError('version_skew') {}
 /** No `libbeachcomber` was found where discovery looks. Every candidate tried is named. */
 export class LibraryNotFoundError extends kindError('library_not_found') {}
 /** The library found lacks a `bc_*` function this SDK calls. */
@@ -86,7 +83,6 @@ const BY_KIND: Record<CombErrorKind, new (message: string, libraryVersion?: stri
   timeout: TimeoutError,
   busy: BusyError,
   panic: PanicError,
-  version_skew: VersionSkewError,
   library_not_found: LibraryNotFoundError,
   library_symbol: LibrarySymbolError,
   unsupported: UnsupportedError,

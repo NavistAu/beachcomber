@@ -272,7 +272,7 @@ Error, and a method that answers nothing (`put`, `refresh`,
 `set_context`, `close`) returns `true`. An Error carries `kind`, a slug
 from `Error.KINDS` (the table's: the ABI's `daemon_not_running`,
 `connection_failed`, `io_error`, `parse_error`, `server_error`, `timeout`,
-`busy`, `panic`, `version_skew`, and this SDK's own
+`busy`, `panic`, and this SDK's own
 `library_not_found`, `library_symbol` and `unsupported`); `message`, the
 ABI's message as it came; and `library_version`, the loaded library's
 `bc_version()` (`nil` over `subprocess`, which loads none).
