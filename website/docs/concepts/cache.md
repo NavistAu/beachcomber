@@ -120,6 +120,10 @@ $ comb get time.for_5s          # 6 seconds later
 05:26:50
 ```
 
+There's no `poll()` here, as there is for a source. Only the daemon runs things on a timer, and a template is worked
+out by `comb` in your shell, with your environment and directory, so it can only be worked out again when something
+reads it.
+
 **When a file changes: `watch()`.** The kept answer is dropped as soon as the file changes:
 
 ```toml
