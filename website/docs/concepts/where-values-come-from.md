@@ -47,4 +47,26 @@ the right tool for anything that depends on your current shell, like `$AWS_PROFI
 
 The next page shows how to write one.
 
+## When more than one gives the same name
+
+A name can get a value from more than one of these at once. git's source gives `git.branch`, and you could also put
+a `git.branch` of your own, or write a template for it. Here's how comb picks, for a read of `git.branch` in
+`~/code/shop`, where git says `main`:
+
+| what's set | answer |
+|---|---|
+| only git's source | `main` |
+| also a global put of `from-a-put` | `main` |
+| also a put of `put-here` in `~/code/shop` | `put-here` |
+| also a global template `{{ comb.git.branch \| upper }}` | `PUT-HERE` |
+
+**Stored values follow the cascade.** Sources and puts are both stored answers, so comb goes up from your directory
+and takes the nearest one. The repository's own `main` beats a global put, because the global put is only a default.
+Where a source and a put are at the same directory, the put wins.
+
+**A template beats any stored value, wherever it was set.** A template isn't an answer kept somewhere; it's a recipe,
+worked out as you read, in your directory. So even a global one is worked out in `~/code/shop`, and the stored values
+it reads are the ones that apply there. Read the stored value with `comb.` to build on it instead of replacing it,
+as this one does: `comb.git.branch` is the put, `put-here`, which the template turns to upper case.
+
 **Next:** [Templates](./templates.md)
