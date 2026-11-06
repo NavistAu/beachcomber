@@ -1427,7 +1427,9 @@ fn read_watch_value(
 /// `age_ms`: the client renders it, so it is as old as the inputs the render
 /// reads, which the daemon never sees. A template leaf with a memo answers for
 /// the memo instead ([`crate::cache::MemoRecord::cache_answer`]): `source`
-/// `memo`, its age, and its stored keys. `p:cache._` is the prototype node,
+/// `memo`, its age, and its stored keys. A Source's record or a memo with no
+/// `decay` stored answers the depth its lifecycle runs at
+/// ([`Cache::resolve_decay`]). `p:cache._` is the prototype node,
 /// which is not part of the value: it reads back as written.
 fn cache_facet_response(
     cache: &Cache,
@@ -1498,6 +1500,14 @@ fn cache_facet_tree(
     if half.rest.is_some() || (value.is_none() && half.template.is_none()) {
         return None;
     }
+    // A lifecycle entry without a decay of its own decays at the prototype's
+    // depth, as `source_lifecycle_config` and `static_lifecycle_config` resolve it.
+    let inherit_decay = |answer: &mut serde_json::Map<String, serde_json::Value>,
+                         entry: Option<&str>| {
+        answer
+            .entry("decay")
+            .or_insert_with(|| cache.resolve_decay(provider, entry).into());
+    };
     let leaf = |tail: &str| -> Option<serde_json::Value> {
         let record = merged.as_ref()?.records.get(tail)?;
         let mut answer = serde_json::Map::new();
@@ -1519,21 +1529,20 @@ fn cache_facet_tree(
                 answer.insert(key.clone(), v);
             }
         }
-        // A Source's field without a decay of its own takes the prototype's.
-        if !crate::cache::is_static_label(label) && !answer.contains_key("decay") {
-            answer.insert(
-                "decay".into(),
-                cache
-                    .resolve_decay(provider, record.entry.as_deref())
-                    .into(),
-            );
+        if !crate::cache::is_static_label(label) {
+            inherit_decay(&mut answer, record.entry.as_deref());
         }
         Some(answer.into())
     };
 
     let template_leaf = |tail: &str| -> serde_json::Value {
         match cache.memo_record(provider, requested, tail) {
-            Some(memo) => memo.cache_answer(),
+            // Every memo is a lifecycle entry (`apply_memo_written`).
+            Some(memo) => {
+                let mut answer = memo.cache_answer();
+                inherit_decay(&mut answer, memo.entry.as_deref());
+                answer.into()
+            }
             None => serde_json::json!({"source": "template"}),
         }
     };

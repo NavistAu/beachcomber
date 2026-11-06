@@ -561,7 +561,7 @@ impl MemoRecord {
 
     /// The memo as `<p>:cache.<field>` answers for it: `source` `memo`, its
     /// `age_ms`, and its stored keys.
-    pub fn cache_answer(&self) -> serde_json::Value {
+    pub fn cache_answer(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut answer = serde_json::Map::new();
         answer.insert("age_ms".into(), (self.age_ms as u64).into());
         answer.insert("source".into(), presented_label(MEMO_SOURCE).into());
@@ -570,7 +570,7 @@ impl MemoRecord {
                 answer.insert(key.clone(), v);
             }
         }
-        answer.into()
+        answer
     }
 }
 

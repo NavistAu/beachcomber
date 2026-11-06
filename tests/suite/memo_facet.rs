@@ -183,15 +183,28 @@ async fn a_memo_of_absence_has_keys_and_no_value() {
     let leaf = d.cache_of("demo.f", None).await;
     assert_eq!(leaf["source"], json!("memo"), "{leaf}");
     assert_eq!(leaf["hash"], json!(H1), "{leaf}");
-    for key in ["poll", "decay", "watch"] {
+    for key in ["poll", "watch"] {
         assert!(
             leaf.get(key).is_none(),
             "{key} without a ttl or a path: {leaf}"
         );
     }
+    assert_eq!(leaf["decay"], json!(4), "the shipped prototype's: {leaf}");
     let half = d.get("demo.f", None).await.memo.unwrap();
     assert_eq!(half["hash"], json!(H1));
     assert!(half.get("data").is_none(), "absent, never null: {half}");
+}
+
+/// A memo with no ttl sets no decay of its own; `:cache` reports the depth its
+/// lifecycle runs at, the provider's `_.decay` prototype's.
+#[tokio::test]
+async fn a_memo_without_a_ttl_reports_the_prototype_decay() {
+    let mut d = serve();
+    assert!(d.put("demo:template.f", json!("{{ 'x' }}")).await.ok);
+    assert!(d.put("demo:cache._.decay", json!(3)).await.ok);
+    d.memo("demo.f", None, H1, Some(json!("v")), &[], None)
+        .await;
+    assert_eq!(d.cache_of("demo.f", None).await["decay"], json!(3));
 }
 
 #[tokio::test]
@@ -271,9 +284,14 @@ async fn a_memo_write_replaces_the_one_at_its_address() {
     d.memo("demo.f", None, H2, None, &[], None).await;
     let leaf = d.cache_of("demo.f", None).await;
     assert_eq!(leaf["hash"], json!(H2), "{leaf}");
-    for key in ["poll", "decay", "watch"] {
+    for key in ["poll", "watch"] {
         assert!(leaf.get(key).is_none(), "{key} is the old memo's: {leaf}");
     }
+    assert_eq!(
+        leaf["decay"],
+        json!(4),
+        "the prototype's, not the old 1: {leaf}"
+    );
     assert!(d.get("demo:memo.f", None).await.data.is_none());
 }
 

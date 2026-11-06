@@ -405,7 +405,8 @@ tree of its leaves' answers.
 - `decay` is the number of decay steps before eviction. It is data: a Source
   takes the nearest `_` prototype, looking at each directory from the requested
   one up to `$HOME` for `<p>:cache._.decay` and then `*:cache._.decay` (every
-  provider), and 4 when there is none. A `put` with a `ttl` stores 1. A
+  provider), and 4 when there is none; so does a memo without a `ttl`, and
+  `:cache` reports that inherited depth for each. A `put` with a `ttl` stores 1. A
   prototype is put like any value (`put git:cache._.decay 6`, `put
   '*:cache._.decay' 3`, with `--path` for a directory) and read back with `get
   git:cache._.decay`; a lifecycle fixes its depth when it registers.
