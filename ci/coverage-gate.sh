@@ -4,6 +4,7 @@ set -euo pipefail
 BASELINE=${COVERAGE_BASELINE:-70}
 echo "Running coverage gate (baseline: ${BASELINE}%)"
 cargo llvm-cov nextest \
+    --profile ci \
     -E 'not test(uptime_provider_executes)' \
     --fail-under-lines "${BASELINE}" \
     --summary-only

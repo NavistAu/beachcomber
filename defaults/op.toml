@@ -1,0 +1,4 @@
+[client.providers.op]
+# Whether a 1Password service account token ($OP_SERVICE_ACCOUNT_TOKEN) is in the shell: a bool,
+# never the token itself. It says nothing about whether the token is valid or `op` is signed in.
+template.service_account = '{{ env.OP_SERVICE_ACCOUNT_TOKEN | bool }}'

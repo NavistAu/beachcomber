@@ -1,0 +1,11 @@
+{
+  "name": "mapping_null_member_is_absent",
+  "description": "put stores an object with a null member. JSON null means absent end to end: src/provider/mod.rs Value::from_json omits null members and elements, so the null member is never stored and a get of it is a miss. Its sibling survives. An empty string, by contrast, is a value.",
+  "setup": [
+    { "op": "put", "args": { "key": "mapfix_null", "data": { "v": null, "w": 1 } } }
+  ],
+  "test": { "op": "get", "args": { "key": "mapfix_null.v" } },
+  "expect": {
+    "status": "miss"
+  }
+}

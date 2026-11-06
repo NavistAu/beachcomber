@@ -61,7 +61,7 @@ export default function SDKs(): JSX.Element {
         </div>
 
         <div className={styles.links}>
-          <a className={styles.link} href="/docs/getting-started/quick-start">
+          <a className={styles.link} href="/docs/getting-started/set-up">
             Quick Start
           </a>
           <a className={styles.link} href="/docs/getting-started/installation">
@@ -94,7 +94,7 @@ export default function SDKs(): JSX.Element {
           <div className={styles.footerColTitle}>Docs</div>
           <a className={styles.footerColLink} href="/docs/getting-started/installation">Getting Started</a>
           <a className={styles.footerColLink} href="/docs/reference/cli-commands">CLI Reference</a>
-          <a className={styles.footerColLink} href="/docs/reference/built-in-providers">Providers</a>
+          <a className={styles.footerColLink} href="/docs/providers/built-in-providers">Providers</a>
         </div>
         <div className={styles.footerCol}>
           <div className={styles.footerColTitle}>Ecosystem</div>

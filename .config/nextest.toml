@@ -4,16 +4,13 @@
 [profile.default]
 # Hard cap on total suite wall-clock. If the run exceeds this, nextest sends
 # SIGTERM to the test process group, waits 10s for shutdown, then SIGKILLs.
-# The whole run fails spectacularly — which is what we want if something hangs.
+# The whole run fails spectacularly — which is what we want.
 #
-# 30s → 90s (2026-08-29): at 1081 tests the suite already overran 30s on
-# `develop`, so CLAUDE.md's own documented `cargo nextest run` was a coin flip
-# between a green run and a suite-wide SIGKILL that looks nothing like a test
-# failure. This is a hang detector, not a performance budget — the per-test
-# slow-timeout below is what polices individual tests, and the "everything
-# under 30s" guidance in CLAUDE.md is a target for a single suite's runtime,
-# not a wall the runner should hit on a busy laptop.
-global-timeout = "90s"
+# 30s is the ENFORCED performance budget, per CLAUDE.md: a suite that cannot
+# finish in 30s is a failure that must be investigated, not accommodated.
+# Raising this value is not a fix and needs explicit owner sign-off (the
+# 2026-08-29 bump to 90s was unauthorised and was reverted 2026-09-22).
+global-timeout = "30s"
 
 # Per-test slow detection and termination. Any single test exceeding the period
 # is reported as SLOW; after terminate-after periods it's hard-killed.
@@ -33,18 +30,10 @@ slow-timeout = { period = "15s", terminate-after = 2 }
 # flake. If it recurs at 1s, investigate what is actually outliving the test.
 leak-timeout = { period = "1s", result = "fail" }
 
-# --- Test groups ---
-# Daemon-spawning tests share per-process state (socket paths, filesystem
-# watchers). Cap their parallelism so they do not collide.
-#
-# Matched by binary, not by test() name substring: test() only sees the test
-# function name, not the binary it lives in, so a filter like test(check_subjects)
-# never matches anything unless a test function is literally named that — it
-# does not mean "tests in check_subjects.rs". That previously let tests in
-# check_subjects.rs, status_shape.rs and e2e_git.rs escape the cap entirely.
-[[profile.default.overrides]]
-filter = 'binary(~e2e) + binary(~scheduler) + binary(=check_subjects) + binary(=status_shape) + binary(=get_force) + binary(=get_wait) + binary(=put_null) + binary(=metadata_suffixes) + binary(=client) + binary(=client_hello) + binary(=daemon_exit_with_parent)'
-test-group = "daemon"
+# --- No test groups ---
+# No group caps the suite's parallelism: every test has its own socket,
+# `$HOME` and config directory (`IsolatedSocket`, `common::daemon::isolate`),
+# so the tests that start daemons share nothing to collide on.
 
 # --- Retries for environment-sensitive tests ---
 # watcher_*, uptime_*, and battery_* depend on OS-level subsystems that can
@@ -53,10 +42,6 @@ test-group = "daemon"
 [[profile.default.overrides]]
 filter = 'test(watcher_) + test(uptime_) + test(battery_)'
 retries = { backoff = "exponential", count = 2, delay = "1s", jitter = true }
-
-[test-groups.daemon]
-# At most 2 daemon-spawning tests run concurrently.
-max-threads = 2
 
 # ---------------------------------------------------------------------------
 # CI profile — inherits everything from default, overrides what differs.

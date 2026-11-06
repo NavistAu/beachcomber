@@ -1,0 +1,19 @@
+{
+  "name": "get_bracketed_segments_quote_keys_and_index_arrays",
+  "description": "A key takes jinja's subscripts: ['…'] quotes a segment and [n] indexes an array, mixed freely with dotted segments.",
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "fixture_brackets",
+        "data": { "x:y": { "a b": ["first", "second"] } }
+      }
+    }
+  ],
+  "test": { "op": "get", "args": { "key": "fixture_brackets['x:y'][\"a b\"][1]" } },
+  "expect": {
+    "status": "hit",
+    "data_type": "string",
+    "data_equals": "second"
+  }
+}

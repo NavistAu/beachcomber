@@ -1,0 +1,8 @@
+[daemon.providers.uname.sources.system]
+# The kernel's name, release, version and machine, from the sys plugin (uname). They change only on a reboot, so polled once an hour while read; backed off from a minute after repeated failures.
+data = "{{ plugin('sys', 'uname') }}"
+result.sysname = "{{ data.sysname }}"
+result.release = "{{ data.release }}"
+result.version = "{{ data.version }}"
+result.machine = "{{ data.machine }}"
+return = "{{ result | poll('1h', 1) | failback('60s', 3) }}"

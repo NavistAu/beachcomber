@@ -1,21 +1,42 @@
 .hero {
   position: relative;
-  min-height: 100vh;
-  max-height: 100vh;
-  display: flex;
-  flex-direction: column;
+  height: calc(100vh - var(--ifm-navbar-height));
+  min-height: 780px;
   overflow: hidden;
   background: var(--ifm-background-color);
 }
 
-/* Header area: title, tagline, badges — ~1/3 of hero */
+/* The space above the scene's cloud. The title centres in it; once it is shorter than the title, the title
+   keeps its own height and overlaps the cloud. --cloud-top is set by the animation. */
+.titleSpace {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: max(var(--cloud-top, 400px), 400px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 6;
+  pointer-events: none;
+}
+
+.titleSpace > * {
+  pointer-events: auto;
+}
+
+/* Header area: title, tagline, badges */
 .header {
   position: relative;
-  z-index: 2;
+  z-index: 6;
   text-align: center;
-  padding: 2rem;
-  flex: 0 0 auto;
-  min-height: 33vh;
+  width: fit-content;
+  max-width: calc(100% - 2rem);
+  margin: 0 auto;
+  padding: 1.75rem 3rem 1.5rem;
+  background: var(--ifm-background-color);
+  border-radius: 48px;
+  box-shadow: 0 0 60px 48px var(--ifm-background-color);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -34,10 +55,7 @@
 .headerFade {
   position: relative;
   z-index: 1;
-  height: 60px;
-  background: linear-gradient(to bottom, var(--ifm-background-color), transparent);
-  margin-top: -20px;
-  pointer-events: none;
+  display: none;
 }
 
 .title {
@@ -47,18 +65,20 @@
   letter-spacing: -0.04em;
   margin-bottom: 0.75rem;
   line-height: 1;
-
-  background: linear-gradient(120deg, #2C2416 0%, #0891B2 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: #2c2416;
 }
 
 [data-theme='dark'] .title {
-  background: linear-gradient(120deg, #e8dfc8 0%, #06d6f0 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: #e8dfc8;
+}
+
+/* the binary's name: same letters, in the accent colour */
+.bin {
+  color: #04505f;
+}
+
+[data-theme='dark'] .bin {
+  color: #06d6f0;
 }
 
 .tagline {

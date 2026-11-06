@@ -125,4 +125,4 @@ oh-my-posh init fish --config ~/.config/oh-my-posh/beachcomber.toml | source
 - **Segment not rendering:** oh-my-posh hides command segments with empty output. Verify `comb g <key>` returns data in your terminal before concluding the theme is misconfigured.
 - **Wrong directory for git:** oh-my-posh runs command segments in the shell's working directory, so `.` resolves correctly without any extra configuration.
 
-See the [Troubleshooting](./troubleshooting.md) guide for general beachcomber diagnostics.
+See the [Troubleshooting](../getting-started/troubleshooting.md) guide for general beachcomber diagnostics.

@@ -1,0 +1,21 @@
+[daemon.providers.sudo.sources.state]
+# Whether sudo would run without a password: the mtime of the user's timestamp file, a regular file
+# sudo writes on each use, `/var/run/sudo/ts/$USER`, else `/run/sudo/ts/$USER` (`env` is the daemon's
+# environment, as it started). `glob` passes over a directory it cannot search, so where the
+# timestamp directory is root's alone (mode 0700 on most Linux systems), and on macOS, where sudo keeps
+# its records under `/var/db/sudo`, unreadable to a user's daemon, there is nothing to say: absent, not
+# an error.
+data = '''{% set found = namespace(ts=none) %}
+{% for dir in ['/var/run/sudo/ts', '/run/sudo/ts'] %}
+  {% set path = dir ~ '/' ~ env.USER %}
+  {% if found.ts is none and env.USER and path | glob %}
+    {% set ts = path | stat %}
+    {% if ts.kind == 'file' %}{% set found.ts = ts %}{% endif %}
+  {% endif %}
+{% endfor %}
+{{ found.ts.mtime }}'''
+# Active while the timestamp is under five minutes old, sudo's default `timestamp_timeout`; a
+# timestamp ahead of the clock is not.
+result.active = "{{ ((now() - (data | int)) >= 0 and (now() - (data | int)) < 300) if data is not none }}"
+# Polled every 30 s; a failure is retried every 30 s, three times.
+return = "{{ result | poll('30s', 2) | failback('30s', 3) }}"

@@ -9,22 +9,17 @@
 #include <stdint.h>
 
 /**
- * `bc_get` flag: evict the cache entry and re-execute the provider before
- * returning.
- */
-#define BC_GET_FORCE (1 << 0)
-
-/**
- * `bc_get` flag: if the entry is stale, wait for inline re-execution.
- */
-#define BC_GET_WAIT (1 << 1)
-
-/**
  * Opaque client handle returned by [`bc_client_new`].
  *
  * Construction never fails from the caller's point of view: a malformed
  * `options_json` is recorded here and surfaced on the handle's first
  * operation instead of failing the constructor.
+ *
+ * The client sits behind an [`Arc`] because a watch outlives the call that
+ * opened it: [`bc_watch_open`] hands a share to the
+ * [`ResolvedWatch`](libbeachcomber::watch::ResolvedWatch) it returns, so a
+ * `BcWatch` keeps its client alive rather than resting on a
+ * "free the client last" contract no other handle has.
  */
 typedef struct BcClient BcClient;
 
@@ -41,15 +36,18 @@ typedef struct BcClient BcClient;
 typedef struct BcSession BcSession;
 
 /**
- * Opaque handle to a watch stream.
+ * Opaque handle to a watch.
  *
  * Guarded the same way [`BcSession`] is: an internal mutex that
  * [`bc_watch_next`] takes with `try_lock`, yielding `kind: "busy"` for a
- * concurrent caller rather than blocking. `cancelled` is deliberately
+ * concurrent caller rather than blocking. `cancel` is deliberately
  * **outside** that mutex — [`bc_watch_cancel`] is the one call in this
  * crate documented as safe to invoke from another thread while an op is in
  * flight, and it must not itself block on the lock a pending
- * [`bc_watch_next`] is holding.
+ * [`bc_watch_next`] is holding. It is the watch's own
+ * [`cancel_handle`](ResolvedWatch::cancel_handle), not a second one beside
+ * it: cancelling it is what ends a wait already inside
+ * [`ResolvedWatch::next`], which is where a blocked call actually sits.
  */
 typedef struct BcWatch BcWatch;
 
@@ -60,10 +58,31 @@ typedef struct BcWatch BcWatch;
 const char *bc_version(void);
 
 /**
- * Creates a new client handle. `options_json` is nullable; recognised keys
- * are `socket_path`, `timeout_ms` and `autostart`. Never returns NULL — a
- * malformed `options_json` still yields a handle, with the parse error
- * deferred to the handle's first operation rather than failing here.
+ * The socket a client created with no `socket_path` option connects to —
+ * `$BEACHCOMBER_SOCKET` if set and non-empty, else `/tmp/beachcomber-<uid>/sock`
+ * — as `{"ok": true, "data": "<path>"}`. The one resolution comb itself uses
+ * (`libbeachcomber::socket::resolve`), less the config file's
+ * `socket_path`, which only the CLI and daemon read.
+ */
+char *bc_socket_path(void);
+
+/**
+ * Creates a new client handle. `options_json` is nullable; its keys, each
+ * optional, are:
+ *
+ * | key                  | default                     | meaning |
+ * |----------------------|-----------------------------|---------|
+ * | `socket_path`        | `bc_socket_path`'s answer   | the daemon's socket |
+ * | `timeout_ms`         | 250                         | how long one read or write may take; at least 1 |
+ * | `connect_timeout_ms` | 1500                        | how long connecting keeps retrying; 0 is one attempt |
+ * | `autostart`          | `true`                      | start a daemon when none answers an auto-discovered socket |
+ * | `exec`               | `false`                     | whether a template this client renders (`bc_get`, `bc_eval`) may call `exec()` |
+ *
+ * These defaults are the only ones: an SDK passes on what its caller gave
+ * and adds none of its own. A key not in this table is refused. Never
+ * returns NULL — a malformed `options_json` still yields a handle, with the
+ * `parse_error` deferred to the handle's first operation rather than
+ * failing here.
  *
  * # Safety
  * `options_json` must be NULL or a valid pointer to a NUL-terminated string.
@@ -80,19 +99,9 @@ BcClient *bc_client_new(const char *options_json);
 void bc_client_free(BcClient *client);
 
 /**
- * Query a single key. `path` is nullable (global providers). `flags` is a
- * bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit set yields a
- * `bad_flags` envelope.
- *
- * # Safety
- * `client` must be a valid pointer from [`bc_client_new`]; `key` must be
- * non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
- */
-char *bc_get(BcClient *client, const char *key, const char *path, uint32_t flags);
-
-/**
- * Store data into a virtual provider. `json_data` must parse as JSON.
- * `ttl` and `path` are nullable.
+ * Store data into the cache as static data. `json_data` must parse as JSON.
+ * `ttl` and `path` are nullable. `persist` keeps the put across a daemon
+ * restart, best effort (`comb put --persist`).
  *
  * # Safety
  * `client` must be a valid pointer from [`bc_client_new`]; `key` and
@@ -103,20 +112,16 @@ char *bc_put(BcClient *client,
              const char *key,
              const char *json_data,
              const char *ttl,
-             const char *path);
+             const char *path,
+             bool persist);
 
 /**
- * Clear the cached entry for a virtual provider key without dropping the
- * registry entry. `path` is nullable.
- *
- * # Safety
- * `client` must be a valid pointer from [`bc_client_new`]; `key` must be
- * non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
- */
-char *bc_put_null(BcClient *client, const char *key, const char *path);
-
-/**
- * Trigger recomputation of a provider. `path` is nullable.
+ * Re-execute the Sources `key` demands — every Source of the namespace for
+ * a bare `provider`, only the one owning the field for `provider.field` —
+ * each at the instance that answers for `path`. `path` is nullable. A key
+ * naming no Source (a static namespace, a facet, an unknown name, or a
+ * field no Source owns) is an error: `nothing to refresh: <key> has no
+ * sources`.
  *
  * # Safety
  * `client` must be a valid pointer from [`bc_client_new`]; `key` must be
@@ -152,57 +157,70 @@ char *bc_introspect(BcClient *client, const char *subject, const char *options_j
 char *bc_hello(BcClient *client);
 
 /**
- * Resolve a virtual field (`key` = `"provider.field"`) or a path
- * expression (`key` = a bare provider name) — client-side, exactly as
- * `comb get`'s resolution layer does.
+ * The value `comb get key` prints at `cwd`, through
+ * [`libbeachcomber::resolve`]: the daemon holds the templates
+ * (`<provider>:template`, seeded from configuration or `put`), and this
+ * client renders them with `env_json` as the caller's environment. A plain
+ * field is its cached value; a templated one is rendered; a bare provider
+ * is the whole merged namespace, as `comb get provider -f json`. A miss is
+ * `data: null`. The unrendered halves are facets, read like any key:
+ * `p:template.x` is the template as stored, `p:put.x` and `p:source.x`
+ * those layers' values.
  *
- * `cwd` is required: NULL returns an error envelope rather than falling
- * back to the process's own working directory — this library must never
- * read ambient state on the caller's behalf. Every daemon-backed ref the
- * field's expression makes (`cache.*` and plain `provider.field`,
- * virtual fields followed transitively) is fetched scoped to `cwd`, the
- * same convention `comb get`'s `--path` follows. `env_json` and
- * `overrides_json` are nullable, meaning "none supplied".
+ * `cwd` is the directory the read addresses, read as `comb get --path`
+ * reads one: `~` is the home directory and a relative path is against the
+ * caller's working directory. NULL addresses the global entry, as
+ * `comb get --global` does. Every fetch the read makes addresses that
+ * directory, and a template's `exec`, `lup` and `read` run in it (in
+ * `$HOME` from `env_json` for the global entry).
+ * `env_json` is nullable: NULL renders with the calling process's environment, as `comb` does.
+ * `options_json` is nullable; its keys, each optional, are:
+ *
+ * | key     | default | meaning |
+ * |---------|---------|---------|
+ * | `force` | `false` | re-execute every Source the read demands, as `comb get --force` |
+ * | `wait`  | the budget | how long to wait for a run the read needs, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"` |
+ *
+ * Left out, `wait` is the read's budget: a stored record waits its Source's
+ * `budget`, a cold read and a forced one wait for their run. A read that
+ * stops waiting answers what is stored, and the run goes on. The read's
+ * deadline is the client's `timeout_ms` plus the `wait`; `"forever"` has
+ * none. A key not in this table, or a `wait` that is neither, is a
+ * `parse_error`.
+ * `exec()` inside a template runs only on a client created with
+ * `{"exec":true}`; otherwise it fails with `exec() is disabled in this
+ * context`.
  *
  * # Safety
- * `client` must be a valid pointer from [`bc_client_new`]; `key` and `cwd`
- * must be non-null and NUL-terminated; `env_json` and `overrides_json` must
- * be NULL or NUL-terminated.
+ * `client` must be a valid pointer from [`bc_client_new`]; `key` must be
+ * non-null and NUL-terminated; `cwd`, `env_json` and `options_json` must be
+ * NULL or NUL-terminated.
  */
-char *bc_resolve(BcClient *client,
-                 const char *key,
-                 const char *cwd,
-                 const char *env_json,
-                 const char *overrides_json);
+char *bc_get(BcClient *client,
+             const char *key,
+             const char *cwd,
+             const char *env_json,
+             const char *options_json);
 
 /**
- * Evaluate a value expression in any of the three forms canon
- * `field_resolution.md` (invariant 14) defines: a bare expression, exactly
- * one `{{ expr }}` tag (keeps the expression's natural type), or literal
- * text and/or several tags (string-valued) — the same evaluator
- * `bc_resolve` uses for a declared virtual field, but for a raw expression
- * that need not be registered anywhere. Every reference the source makes
- * is threaded in: `env.*` from `env_json`, and `cache.*` / plain
- * `provider.field` refs fetched from the daemon scoped to `cwd`, following
- * virtual fields transitively — the same closure `bc_resolve` uses. A
- * missing or unknown ref (an absent `env.*`, a daemon miss, or a
- * daemon-rejected key such as an unregistered provider) is falsy at any
- * depth, not an error.
+ * Render a source that is stored nowhere, every ref resolved exactly as it
+ * would be inside a stored template — so `bc_eval("{{ p.f }}")` and
+ * `bc_get("p.f")` agree by construction. A source that is exactly one
+ * `{{ expr }}` tag keeps the expression's natural type; anything else
+ * (literal text, several tags, a source with no tags at all) is a string.
+ * A missing ref — an absent `env.*`, a daemon miss, a key the daemon
+ * rejects — is falsy at any depth, not an error. A one-tag source whose
+ * value is `none` or undefined is absent: `data: null`, as a miss is for
+ * [`bc_get`].
  *
- * `cwd` is required, matching `bc_resolve`'s signature (see there for
- * why) — a bare `cwd` reference in a field expression is reserved for a
- * later task and not evaluated by `bc_eval` today.
+ * `cwd`, `env_json` and `exec()` behave as for [`bc_get`].
  *
  * # Safety
  * `client` must be a valid pointer from [`bc_client_new`]; `template_str`
- * and `cwd` must be non-null and NUL-terminated; `env_json` and
- * `overrides_json` must be NULL or NUL-terminated.
+ * must be non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
+ * NUL-terminated.
  */
-char *bc_eval(BcClient *client,
-              const char *template_str,
-              const char *cwd,
-              const char *env_json,
-              const char *overrides_json);
+char *bc_eval(BcClient *client, const char *template_str, const char *cwd, const char *env_json);
 
 /**
  * Opens a persistent session on `client`'s connection. Never returns NULL:
@@ -226,19 +244,25 @@ BcSession *bc_session_open(BcClient *client);
 void bc_session_close(BcSession *session);
 
 /**
- * Query a single key on this session's persistent connection. `flags` is
- * the same [`BC_GET_FORCE`] / [`BC_GET_WAIT`] bitmask [`bc_get`] takes.
+ * [`bc_get`] on this session's persistent connection: the same rendered
+ * value, the same options. A NULL `cwd` is this session's directory
+ * ([`bc_session_set_context`]) when it has one, else the global entry.
  *
  * # Safety
  * `session` must be a valid pointer from [`bc_session_open`]; `key` must
- * be non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
+ * be non-null and NUL-terminated; `cwd`, `env_json` and `options_json` must
+ * be NULL or NUL-terminated.
  */
-char *bc_session_get(BcSession *session, const char *key, const char *path, uint32_t flags);
+char *bc_session_get(BcSession *session,
+                     const char *key,
+                     const char *cwd,
+                     const char *env_json,
+                     const char *options_json);
 
 /**
- * Store data into a virtual provider on this session's persistent
+ * Store data into the cache as static data on this session's persistent
  * connection. `json_data` must parse as JSON; `ttl` and `path` are
- * nullable.
+ * nullable; `persist` as for [`bc_put`].
  *
  * # Safety
  * `session` must be a valid pointer from [`bc_session_open`]; `key` and
@@ -249,11 +273,25 @@ char *bc_session_put(BcSession *session,
                      const char *key,
                      const char *json_data,
                      const char *ttl,
-                     const char *path);
+                     const char *path,
+                     bool persist);
 
 /**
- * Sets connection context on this session so subsequent queries don't need
- * an explicit `path`.
+ * Re-execute the Sources `key` demands, as [`bc_refresh`], at `path` — or,
+ * when `path` is NULL, at this session's directory ([`bc_session_set_context`]).
+ *
+ * # Safety
+ * `session` must be a valid pointer from [`bc_session_open`]; `key` must be
+ * non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
+ */
+char *bc_session_refresh(BcSession *session, const char *key, const char *path);
+
+/**
+ * Set this session's directory: every later `bc_session_get` that passes a
+ * NULL `cwd`, and `bc_session_put` and `bc_session_refresh` that pass a NULL
+ * `path`, address it. The session keeps it and sends it with each request; it is
+ * read as every path is (`~` is home, a relative path is against the
+ * process's working directory).
  *
  * # Safety
  * `session` must be a valid pointer from [`bc_session_open`]; `path` must
@@ -262,45 +300,62 @@ char *bc_session_put(BcSession *session,
 char *bc_session_set_context(BcSession *session, const char *path);
 
 /**
- * Opens a watch on `key`. Returns NULL only on allocation failure — any
- * other failure (a `client` whose own construction failed, or the watch
- * request itself failing) is recorded on the handle and surfaced on the
- * first [`bc_watch_next`] call instead.
+ * Opens a watch on the *value* of `key` — what `bc_get(key, cwd,
+ * env_json, NULL)` answers — and emits it again whenever it changes. The fan-in
+ * underneath subscribes to every key the resolution read, and a write to a
+ * namespace's template notifies that namespace, so a template edited under
+ * the watch fires it exactly as a changed cache record does.
+ *
+ * `cwd` and `env_json` mean what they mean for [`bc_get`]: `cwd` is
+ * both the directory every subscription is opened at and the one every
+ * re-resolution runs in, and NULL watches the global entry. `env_json` is
+ * nullable: NULL renders with the calling process's environment, as `comb` does.
+ * `exec()` inside a template runs only on a client created with
+ * `{"exec":true}`.
+ *
+ * Returns NULL only when the process is out of memory or of file
+ * descriptors — any other failure (a `client` whose own construction failed,
+ * a key that cannot be watched, or the opening resolution failing) is
+ * recorded on the handle and surfaced on the first [`bc_watch_next`] call
+ * instead.
  *
  * # Safety
  * `client` must be a valid, non-null pointer from [`bc_client_new`]; `key`
- * must be non-null and NUL-terminated; `path` must be NULL or
+ * must be non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
  * NUL-terminated.
  */
-BcWatch *bc_watch_open(BcClient *client, const char *key, const char *path);
+BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const char *env_json);
 
 /**
- * Waits for the next event on `w`. `timeout_ms`: `-1` blocks indefinitely,
- * `0` polls (returns immediately if nothing is ready), `>0` waits that
- * long. Distinguishes five outcomes, all machine-readable without string
- * matching (see [`WatchOutcome`]): `event`, `timeout`, `eof`, `cancelled`
- * (via `ok:true` plus an `outcome` field), and `error` (the ordinary
- * `ok:false` envelope, already machine-readable via `error.kind`).
- * `error` is reserved for the daemon actively rejecting the watched key
- * (a malformed response line, or the `ServerError`/`ParseError` a bad
- * nested field path produces) — any lower-level socket failure (a reset
- * connection, or even a failing `set_read_timeout`, observed on macOS as
- * `EINVAL` from `setsockopt` on an already-reset unix socket rather than
- * the loss surfacing on the next read) is treated as `eof`: from a
- * caller's point of view the stream is over either way, and a binding
- * should not have to special-case platform-specific socket-teardown
- * quirks as a distinct failure mode.
+ * Waits for the next value on `w`. `timeout_ms`: `-1` blocks indefinitely,
+ * `0` polls (what the open subscriptions already hold, then `timeout` if
+ * none of them had anything), `>0` waits that long and not less. Distinguishes five outcomes,
+ * all machine-readable without string matching (see [`WatchOutcome`]):
+ * `event` — whose `data` is the resolved value, `null` for a miss —
+ * `timeout`, `eof`, `cancelled` (via `ok:true` plus an `outcome` field),
+ * and `error` (the ordinary `ok:false` envelope, already machine-readable
+ * via `error.kind`).
  *
- * Internally this holds the socket's read timeout to at most
- * [`WATCH_POLL_TICK`] per attempt and loops, re-checking the cancellation
- * flag and (for `timeout_ms > 0`) the deadline between attempts, rather
- * than issuing one read for the full requested wait — that is what lets
- * [`bc_watch_cancel`], called from another thread mid-wait, unblock a
- * pending call within about one tick instead of only at the next natural
- * wakeup. A timed-out attempt's partially-read bytes (if a line arrived
- * split across attempts) are preserved across retries by
- * [`libbeachcomber::WatchStream::read_line_buffered`] rather than
- * discarded, so this cannot silently drop half of an event.
+ * Only a change is an event: a frame whose re-resolution comes out the same
+ * value keeps the wait going. The first call on a provider key answers with
+ * the value as it was when the watch opened, without waiting for a change —
+ * but do not assume it: on a facet key the first value comes over the wire,
+ * so the first call can just as well be `timeout`, `eof`, or the daemon's
+ * refusal of the key.
+ *
+ * `error` is the daemon actively rejecting the watched key, or a template
+ * the resolution cannot render; any lower-level socket failure (a reset
+ * connection) is `eof`: from a caller's point of view the stream is over
+ * either way. A frame the daemon sent before it closed the connection — its
+ * refusal of the key, say — is still read and answered before the `eof`.
+ *
+ * Both terminal outcomes latch: after `eof`, or after an `error`, every
+ * later call reports the same thing rather than resuming the poll.
+ *
+ * The wait itself is [`ResolvedWatch::next`]'s: one `poll(2)` over every
+ * open subscription and the watch's cancel pipe. A frame on any
+ * subscription ends it at once, [`bc_watch_cancel`] from another thread
+ * ends it at once, and a watch with nothing happening does not wake.
  *
  * # Safety
  * `w` must be a valid, non-null pointer previously returned by
@@ -312,10 +367,10 @@ char *bc_watch_next(BcWatch *w, int32_t timeout_ms);
  * Cancels a pending or future [`bc_watch_next`] call on `w`. Null-safe.
  * The sole function in this crate documented as safe to call from a
  * different thread than the one driving `w`'s other operations — it never
- * takes `w`'s internal lock, only sets an atomic flag a pending
- * `bc_watch_next` polls for. A `bc_watch_next` call already in flight
- * observes it within about [`WATCH_POLL_TICK`]; every call after this one
- * observes it immediately.
+ * takes `w`'s internal lock: it sets a flag and writes one byte to the pipe
+ * a pending `bc_watch_next` polls beside its subscriptions. A
+ * `bc_watch_next` call already in flight returns `cancelled` at once, and
+ * so does every call after this one.
  *
  * # Safety
  * `w` must be either NULL or a pointer previously returned by

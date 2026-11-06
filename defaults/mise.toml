@@ -1,0 +1,6 @@
+[daemon.providers.mise.sources.tools]
+# The tools mise has in effect: each tool's version, the first of its entries in `mise ls --current --json`, run at the nearest directory holding a mise.toml or .mise.toml (walking to /), else at ~. mise's answer there already takes in the configs above it and the global one; a directory reads each tool from its nearest instance that has it. Runs again when either file, or mise's global config directory, changes; backed off from a minute after repeated failures.
+root = "{% set a = lup('mise.toml', root=true) %}{% set b = lup('.mise.toml', root=true) %}{{ (a if a and (not b or a | length >= b | length) else b) | dirname }}"
+data = "{{ exec(['mise', 'ls', '--current', '--json']) | fromjson }}"
+result = "{{ data | map('first') | map('pluck', 'version') }}"
+return = "{{ result | watch('mise.toml', '.mise.toml', '$XDG_CONFIG_HOME/mise') | failback('60s', 3) }}"

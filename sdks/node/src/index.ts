@@ -1,8 +1,9 @@
 /**
  * beachcomber Node.js client SDK
  *
- * A binding over the beachcomber C ABI (`libbeachcomber.{so,dylib}`), using
- * `koffi` (an optional peer dependency) for direct FFI when available, and
+ * A binding over the beachcomber C ABI (`libbeachcomber.{so,dylib}`) that
+ * follows the one SDK API table (docs/sdk-api.md), using `koffi` (an
+ * optional peer dependency) for direct FFI when available, and
  * falling back to shelling out to `comb` otherwise. Check
  * `client.transport()` to see which one is active.
  *
@@ -12,10 +13,11 @@
  *
  * const client = new Client();
  *
- * const result = await client.get('git.branch', '/path/to/repo');
- * if (result.isHit) {
- *   console.log(result.getString()); // e.g. "main"
- * }
+ * // What `comb get git.branch` prints there; null on a miss.
+ * const branch = await client.get('git.branch', { cwd: '/path/to/repo' });
+ *
+ * // The template itself, unrendered: a facet, read like any key.
+ * const template = await client.get('git:template.branch');
  *
  * const session = await client.session();
  * await session.setContext('/path/to/repo');
@@ -30,8 +32,8 @@ export {
   Session,
   WatchStream,
   type ClientOptions,
-  type ResolveOptions,
-  type CombResult,
+  type GetOptions,
+  type ReadOptions,
   type HelloInfo,
   type CacheRow,
   type DaemonHealth,
@@ -41,22 +43,20 @@ export {
   type Verdict,
   type WatchEvent,
 } from './client.js';
-export { discoverSocketPath, getUid, libraryCandidates, platformLibraryName, resolveCombOnPath } from './discovery.js';
+export { libraryCandidates, platformLibraryName, resolveCombOnPath } from './discovery.js';
 export {
   CombError,
   type CombErrorKind,
-  DaemonNotRunning,
-  ServerError,
+  DaemonNotRunningError,
+  ConnectionFailedError,
+  IoError,
   ParseError,
-  BadFlagsError,
+  ServerError,
+  TimeoutError,
   BusyError,
   PanicError,
-  VersionSkewError,
-  ConnectionFailedError,
-  IoErrorError,
-  TimeoutError,
-  LibraryDiscoveryError,
-  MissingSymbolError,
-  UnsupportedTransportError,
+  LibraryNotFoundError,
+  LibrarySymbolError,
+  UnsupportedError,
 } from './errors.js';
 export type { Envelope, WatchNextResult, WatchOutcome } from './envelope.js';

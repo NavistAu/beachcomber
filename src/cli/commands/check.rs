@@ -10,10 +10,22 @@
 //! variant in `main.rs` can reference it.  This keeps all check-related code in
 //! one module and avoids a cross-binary-to-library dependency inversion.
 
-use crate::cli::introspect_types::{DaemonIntrospect, Verdict};
+use crate::cli::exit::Outcome;
+use crate::cli::style::Style;
 use crate::config::Config;
 use clap::Subcommand;
-use std::process::ExitCode;
+use libbeachcomber::protocol::{DaemonHealth, Verdict};
+use std::time::Duration;
+
+/// `check procs --duration`: the one duration grammar, in whole seconds of at
+/// least one, which is what the sampler counts in.
+fn procs_duration(s: &str) -> Result<u64, String> {
+    let d = crate::config::duration_arg(s)?;
+    if d.subsec_nanos() != 0 || d.is_zero() {
+        return Err("procs --duration must be a whole number of seconds, at least 1s".into());
+    }
+    Ok(d.as_secs())
+}
 
 /// Subcommands for `comb check`.
 #[derive(Subcommand)]
@@ -23,10 +35,27 @@ pub enum CheckCommands {
     /// Check daemon connectivity and stats
     Daemon,
     /// Show config path and parse status
-    Config,
+    Config {
+        /// Show how the composed configuration came together instead: every
+        /// key, the file that set it, and the earlier files it overrode
+        /// (marked shadowed). With KEY, only that key and what is below it.
+        /// Read from the files; needs no daemon
+        #[arg(long, value_name = "KEY", num_args = 0..=1, default_missing_value = "")]
+        origins: Option<String>,
+        #[arg(
+            short,
+            long,
+            value_name = "FORMAT",
+            default_value = "human",
+            value_parser = crate::cli::output_format::origins_format,
+            help = crate::cli::output_format::ORIGINS.help(),
+            requires = "origins"
+        )]
+        format: crate::cli::output_format::Format,
+    },
     /// Check provider health and lifecycle state
     Providers,
-    /// Check cache entry counts and staleness
+    /// Check cache entry counts
     Cache,
     /// Show providers currently in a decay lifecycle state
     Lifecycle,
@@ -38,13 +67,24 @@ pub enum CheckCommands {
     Demand,
     /// Snapshot process spawns to measure beachcomber impact
     Procs {
-        /// Sample duration in seconds
-        #[arg(short, long, default_value = "60")]
+        /// How long to sample: whole seconds, at least 1s, e.g. `60s` or `2m`
+        #[arg(
+            short,
+            long,
+            value_name = "DURATION",
+            default_value = "60s",
+            value_parser = procs_duration
+        )]
         duration: u64,
     },
 }
 
-pub fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode {
+pub fn run_check(
+    config: &Config,
+    check_cmd: Option<CheckCommands>,
+    connect_timeout: Duration,
+    style: Style,
+) -> Outcome {
     const ALL_SUBJECTS: &[&str] = &[
         "daemon",
         "config",
@@ -57,10 +97,18 @@ pub fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode 
         "procs",
     ];
 
+    if let Some(CheckCommands::Config {
+        origins: Some(key),
+        format,
+    }) = &check_cmd
+    {
+        return run_origins(config, key, format, style);
+    }
+
     let (subjects, procs_duration): (Vec<&str>, Option<u64>) = match &check_cmd {
         None | Some(CheckCommands::All) => (ALL_SUBJECTS.to_vec(), None),
         Some(CheckCommands::Daemon) => (vec!["daemon"], None),
-        Some(CheckCommands::Config) => (vec!["config"], None),
+        Some(CheckCommands::Config { .. }) => (vec!["config"], None),
         Some(CheckCommands::Providers) => (vec!["providers"], None),
         Some(CheckCommands::Cache) => (vec!["cache"], None),
         Some(CheckCommands::Lifecycle) => (vec!["lifecycle"], None),
@@ -70,14 +118,69 @@ pub fn run_check(config: &Config, check_cmd: Option<CheckCommands>) -> ExitCode 
         Some(CheckCommands::Procs { duration }) => (vec!["procs"], Some(*duration)),
     };
 
-    let worst = run_check_subjects(config, &subjects, procs_duration);
-    ExitCode::from(worst)
+    run_check_subjects(config, &subjects, procs_duration, connect_timeout, style)
 }
 
-pub fn run_check_subjects(config: &Config, subjects: &[&str], procs_duration: Option<u64>) -> u8 {
+/// `comb check config --origins [KEY]`: how the composed configuration came
+/// together, read from the files with no daemon. A file that could not be
+/// read or parsed, or breaks a rule, is reported as `check config` reports it
+/// — in the human table's place beneath it, or on stderr beside JSON — and
+/// fails the check; the files that did load are still shown.
+fn run_origins(
+    config: &Config,
+    key: &str,
+    format: &crate::cli::output_format::Format,
+    style: Style,
+) -> Outcome {
+    use crate::cli::config_origins;
+    use crate::cli::output_format::{Format, Preset};
+
+    let origins = match config_origins::select(config_origins::origins(config), key) {
+        Ok(origins) => origins,
+        Err(e) => {
+            crate::cli::report::error_named(e);
+            return Outcome::Error;
+        }
+    };
+    let errors: Vec<serde_json::Value> = config
+        .errors()
+        .into_iter()
+        .map(|e| serde_json::json!({"level": "FAIL", "message": e}))
+        .collect();
+    let (error_lines, worst) = render_verdicts(&errors, Some(LOCAL_VIEW));
+
+    if format == &Format::Preset(Preset::Json) {
+        print!("{}", config_origins::render_json(&origins));
+        eprint!("{error_lines}");
+    } else {
+        if origins.is_empty() {
+            println!("  (nothing in the configuration is at or below {key})");
+        } else {
+            print!(
+                "{}",
+                config_origins::render_human(&origins, style.color, style.ascii)
+            );
+        }
+        if !error_lines.is_empty() {
+            print!("\nConfig\n{error_lines}");
+        }
+    }
+    worst
+}
+
+/// `connect_timeout` bounds the whole search for a daemon: a check exists to
+/// report reachability, so it should not inherit the client's full restart-
+/// window retry budget unless asked to.
+pub fn run_check_subjects(
+    config: &Config,
+    subjects: &[&str],
+    procs_duration: Option<u64>,
+    connect_timeout: Duration,
+    style: Style,
+) -> Outcome {
     let socket_path = config.resolve_socket_path();
-    let client = crate::client::Client::new(socket_path);
-    let mut worst = 0u8;
+    let client = crate::client::Client::with_connect_timeout(socket_path, connect_timeout);
+    let mut worst = Outcome::Done;
 
     for &subject in subjects {
         let duration = if subject == "procs" {
@@ -86,6 +189,19 @@ pub fn run_check_subjects(config: &Config, subjects: &[&str], procs_duration: Op
             None
         };
 
+        // The config file is validated here as well as by the daemon: a config
+        // the daemon refuses to start on is exactly the one there is no daemon
+        // left to ask about. The two views join one verdict list, under one
+        // count, so a disagreement reads as information rather than as two
+        // unrelated blocks.
+        let local = if subject == "config" {
+            local_config_verdicts(config)
+        } else {
+            Vec::new()
+        };
+        let (local_lines, local_worst) = render_verdicts(&local, Some(LOCAL_VIEW));
+        worst = worst.max(local_worst);
+
         match client.introspect(subject, duration) {
             Ok(resp) if resp.ok => {
                 let payload = resp
@@ -93,20 +209,32 @@ pub fn run_check_subjects(config: &Config, subjects: &[&str], procs_duration: Op
                     .as_ref()
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
-                let (text, code) = render_subject(subject, &payload);
-                print!("{text}");
+                let (text, code) = render_subject(subject, &payload, &local);
+                print!("{}", style.dashes(&text));
                 worst = worst.max(code);
             }
             Ok(resp) => {
                 let title = subject_title(subject);
                 let err = resp.error.as_deref().unwrap_or("unknown error");
-                println!("\n{title}\n  [FAIL] {err}");
-                worst = worst.max(2);
+                let line = verdict_line("FAIL", daemon_view(&local), err);
+                print!(
+                    "{}",
+                    style.dashes(&format!("\n{title}\n{local_lines}{line}"))
+                );
+                worst = worst.max(Outcome::Error);
             }
             Err(e) => {
                 let title = subject_title(subject);
-                println!("\n{title}\n  [FAIL] daemon not responding: {e}");
-                worst = worst.max(2);
+                let line = verdict_line(
+                    "FAIL",
+                    daemon_view(&local),
+                    &format!("daemon not responding: {e}"),
+                );
+                print!(
+                    "{}",
+                    style.dashes(&format!("\n{title}\n{local_lines}{line}"))
+                );
+                worst = worst.max(Outcome::Error);
                 // No point continuing if daemon is unreachable.
                 break;
             }
@@ -114,6 +242,98 @@ pub fn run_check_subjects(config: &Config, subjects: &[&str], procs_duration: Op
     }
 
     worst
+}
+
+/// Validate the config file, as
+/// `run_daemon_with_cancel` does at startup.
+///
+/// The provider set is `ProviderRegistry::load`'s. A Source's `plugin()` calls
+/// are linted, not run, so nothing is `dlopen`ed in the checking process.
+fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
+    // The composition and loader the daemon uses, with the variables a daemon
+    // started on this configuration would have. `config` is the one `comb`
+    // composed at start (`Config::load`), which plans the `defaults/`
+    // directory as a daemon start would (`defaults::plan`): the files it would
+    // write stand in for the ones on disk.
+    let load = crate::provider::registry::ProviderRegistry::load(config, &config.vars());
+    let mut out: Vec<serde_json::Value> = load
+        .errors
+        .into_iter()
+        .map(|e| serde_json::json!({"level": "FAIL", "message": e}))
+        .collect();
+    // Silence would be ambiguous — a reader could not tell a clean config from
+    // a check that never ran.
+    if out.is_empty() {
+        out.push(serde_json::json!({"level": "PASS", "message": "config file valid"}));
+    }
+    out.extend(
+        load.warnings
+            .into_iter()
+            .map(|w| serde_json::json!({"level": "WARN", "message": w})),
+    );
+    out.extend(defaults_verdicts(config));
+    out
+}
+
+/// The managed-defaults directory (spec §3.3), read without writing anything:
+/// whether every shipped file is present at this binary's version, whether
+/// the directory holds files comb did not write, and whether the daemon could
+/// write it — the one thing that stops it starting.
+fn defaults_verdicts(config: &Config) -> Vec<serde_json::Value> {
+    use crate::daemon::defaults::{SHIPPED, VERSION as version, plan};
+    let dir = Config::defaults_dir_for(config.config_file().unwrap_or(&Config::config_path()));
+    let shown = libbeachcomber::path::Home::from_env().compact_path(&dir);
+    let found = plan(&dir, version);
+    let (stale, unmanaged) = (found.stale(), found.unmanaged());
+
+    let mut out = Vec::new();
+    if stale.is_empty() {
+        out.push(serde_json::json!({
+            "level": "PASS",
+            "message": format!("defaults {shown} ({} files, comb {version})", SHIPPED.len()),
+        }));
+    } else {
+        out.push(serde_json::json!({
+            "level": "WARN",
+            "message": format!(
+                "defaults {shown}: {} shipped file(s) missing or stale — the daemon writes \
+                 them on its next start",
+                stale.len()
+            ),
+        }));
+    }
+    if !unmanaged.is_empty() {
+        out.push(serde_json::json!({
+            "level": "WARN",
+            "message": format!(
+                "defaults {shown} holds {} file(s) comb did not write",
+                unmanaged.len()
+            ),
+        }));
+    }
+    // A dry probe of whether the daemon could write here: open one file for
+    // writing and remove it, in the directory if it exists, else in the nearest
+    // ancestor that does — the one `create_dir_all` would have to write into.
+    // A check leaves nothing behind, so it never creates the directory itself.
+    let mut target = dir.as_path();
+    while !target.exists() {
+        match target.parent() {
+            Some(parent) => target = parent,
+            None => break,
+        }
+    }
+    // Named per process so two concurrent checks never remove each other's probe.
+    let probe = target.join(format!(".comb-probe.{}", std::process::id()));
+    let writable = std::fs::File::create(&probe).and_then(|_| std::fs::remove_file(&probe));
+    if let Err(e) = writable {
+        out.push(serde_json::json!({
+            "level": "FAIL",
+            "message": format!(
+                "defaults {shown} not writable: {e} — the daemon cannot rewrite them on upgrade"
+            ),
+        }));
+    }
+    out
 }
 
 fn subject_title(subject: &str) -> &'static str {
@@ -132,27 +352,35 @@ fn subject_title(subject: &str) -> &'static str {
 }
 
 /// Render a subject's introspect payload into a formatted block.
-/// Returns (text, worst_exit_code): PASS/INFO=0, WARN=1, FAIL=2.
-fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
+/// Returns the text and the worst of its verdicts ([`Outcome::of_level`]).
+///
+/// `local` carries verdicts the client produced itself rather than reading off
+/// the daemon — only `config` has any. They join the block's own verdict list
+/// and the count beneath it, so one mistake is reported once.
+fn render_subject(
+    subject: &str,
+    payload: &serde_json::Value,
+    local: &[serde_json::Value],
+) -> (String, Outcome) {
     let verdicts = payload
         .get("verdicts")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
 
-    let mut worst: u8 = 0;
+    let mut worst = Outcome::Done;
     let mut lines = String::new();
 
     // Build per-subject header and detail lines before verdict lines.
     match subject {
         "daemon" => {
-            // Parse into DaemonIntrospect once so all field accesses are typed.
+            // Parse into DaemonHealth once so all field accesses are typed.
             // This prevents the class of bug (e.g. `comb kill` reading a pid
             // out of a Status response that changed shape) by failing loudly at
             // the serde boundary rather than silently returning a wrong default.
-            match serde_json::from_value::<DaemonIntrospect>(payload.clone()) {
+            match serde_json::from_value::<DaemonHealth>(payload.clone()) {
                 Ok(d) => {
-                    let uptime_fmt = format_uptime(d.uptime_secs);
+                    let uptime_fmt = secs(d.uptime_secs);
                     let (vlines, vworst) = render_typed_verdicts(&d.verdicts);
                     worst = worst.max(vworst);
 
@@ -165,7 +393,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                     if let Some(cp) = &d.config_path {
                         lines.push_str(&format!("  [PASS] config   {cp}\n"));
                     } else {
-                        lines.push_str("  [INFO] config   (none — using defaults)\n");
+                        lines.push_str("  [INFO] config   no config.toml\n");
                     }
                     lines.push_str(&format!(
                         "  [PASS] requests_total={}  in_flight={}  active_watchers={}  cache_entries={}\n",
@@ -181,7 +409,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                     lines.push_str(&format!(
                         "  [FAIL] could not parse introspect{{daemon}} response: {e}\n"
                     ));
-                    worst = worst.max(2);
+                    worst = worst.max(Outcome::Error);
                 }
             }
         }
@@ -193,14 +421,13 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .unwrap_or_default();
             let count = providers.len();
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             lines.push_str(&format!("Providers ({count} registered)\n"));
             for p in &providers {
                 let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                 let source = p.get("source").and_then(|v| v.as_str()).unwrap_or("?");
-                let scope = p.get("scope").and_then(|v| v.as_str()).unwrap_or("?");
                 let fields: Vec<&str> = p
                     .get("fields")
                     .and_then(|v| v.as_array())
@@ -221,7 +448,22 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                     .unwrap_or("?");
                 let in_backoff = !p.get("in_backoff").map(|v| v.is_null()).unwrap_or(true);
 
-                if in_backoff {
+                if let Some(f) = p.get("failing").filter(|f| !f.is_null()) {
+                    let n = f
+                        .get("consecutive_failures")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let sources: Vec<&str> = f
+                        .get("sources")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|s| s.as_str()).collect())
+                        .unwrap_or_default();
+                    lines.push_str(&format!(
+                        "  [WARN] {source:<8} {name:<12} fields={fields_str:<30} {invalidation} — failing {n} in a row ({})\n",
+                        sources.join(",")
+                    ));
+                    worst = worst.max(Outcome::Warning);
+                } else if in_backoff {
                     let stage = p
                         .get("in_backoff")
                         .and_then(|b| b.get("stage"))
@@ -233,12 +475,12 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
                     lines.push_str(&format!(
-                        "  [WARN] {source:<8} {name:<12} {scope:<7} fields={fields_str:<30} {invalidation} — in backoff {elapsed}s (stage={stage})\n"
+                        "  [WARN] {source:<8} {name:<12} fields={fields_str:<30} {invalidation} — in backoff {} (stage={stage})\n", secs(elapsed)
                     ));
-                    worst = worst.max(1);
+                    worst = worst.max(Outcome::Warning);
                 } else {
                     lines.push_str(&format!(
-                        "  [PASS] {source:<8} {name:<12} {scope:<7} fields={fields_str:<30} {invalidation}\n"
+                        "  [PASS] {source:<8} {name:<12} fields={fields_str:<30} {invalidation}\n"
                     ));
                 }
             }
@@ -255,55 +497,57 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .and_then(|v| v.as_array())
                 .map(|arr| arr.iter().filter_map(|e| e.as_str()).collect())
                 .unwrap_or_default();
-            let provider_count = payload
-                .get("provider_count_from_config")
+            let source_count = payload
+                .get("config_source_count")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, Some(DAEMON_VIEW));
             worst = worst.max(vworst);
+            let (local_lines, local_worst) = render_verdicts(local, Some(LOCAL_VIEW));
+            worst = worst.max(local_worst);
 
+            // Two views in one block: the config the *daemon* loaded at startup,
+            // which may predate the file on disk, and the client's own reading
+            // of that file. Tagged so a disagreement reads as information.
             lines.push_str("Config\n");
-            if let Some(p) = path {
-                lines.push_str(&format!("  [PASS] path   {p}\n"));
-            } else {
-                lines.push_str("  [INFO] path   (none — using defaults)\n");
+            let daemon = Some(DAEMON_VIEW);
+            match path {
+                Some(p) => lines.push_str(&verdict_line(
+                    "PASS",
+                    daemon,
+                    &format!("path {}", libbeachcomber::path::Home::from_env().compact(p)),
+                )),
+                None => lines.push_str(&verdict_line("INFO", daemon, "no config.toml")),
             }
             if parsed {
-                lines.push_str(&format!(
-                    "  [PASS] parsed   ok — {provider_count} provider definitions\n"
+                lines.push_str(&verdict_line(
+                    "PASS",
+                    daemon,
+                    &format!("parsed ok — {source_count} config Sources"),
                 ));
             } else {
-                lines.push_str("  [FAIL] parsed   FAILED\n");
-                worst = worst.max(2);
+                lines.push_str(&verdict_line("FAIL", daemon, "parsed FAILED"));
+                worst = worst.max(Outcome::Error);
             }
             for err in &errors {
-                lines.push_str(&format!("  [FAIL] error   {err}\n"));
-                worst = worst.max(2);
+                lines.push_str(&verdict_line("FAIL", daemon, err));
+                worst = worst.max(Outcome::Error);
             }
             lines.push_str(&vlines);
+            lines.push_str(&local_lines);
         }
         "cache" => {
             let total = payload
                 .get("total_entries")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let stale = payload
-                .get("stale_entries")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             lines.push_str("Cache\n");
             lines.push_str(&format!("  [PASS] entries   {total} total\n"));
-            if stale > 0 {
-                lines.push_str(&format!("  [WARN] stale     {stale} stale entries\n"));
-                worst = worst.max(1);
-            } else {
-                lines.push_str("  [PASS] stale     none\n");
-            }
             lines.push_str(&vlines);
         }
         "lifecycle" => {
@@ -313,7 +557,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .cloned()
                 .unwrap_or_default();
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             lines.push_str("Lifecycle\n");
@@ -331,36 +575,62 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
                     let path = entry.get("path").and_then(|v| v.as_str());
-                    let label = match path {
-                        Some(p) => format!("{provider} ({p})"),
+                    // A static address (a memo, a put) is named by its node.
+                    let name = match entry.get("node").and_then(|v| v.as_str()) {
+                        Some(node) => format!("{provider}.{node}"),
                         None => provider.to_string(),
                     };
+                    let label = match path {
+                        Some(p) => {
+                            format!(
+                                "{name} ({})",
+                                libbeachcomber::path::Home::from_env().compact(p)
+                            )
+                        }
+                        None => name,
+                    };
                     lines.push_str(&format!(
-                        "  [WARN] {label}   stage={stage} elapsed={elapsed}s\n"
+                        "  [WARN] {label}   stage={stage} elapsed={}\n",
+                        secs(elapsed)
                     ));
-                    worst = worst.max(1);
+                    worst = worst.max(Outcome::Warning);
                 }
             }
             lines.push_str(&vlines);
         }
         "watches" => {
-            let paths = payload
-                .get("paths")
+            let watches = payload
+                .get("watches")
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
-            lines.push_str(&format!("Watches ({} paths)\n", paths.len()));
-            if paths.is_empty() {
-                lines.push_str("  [WARN] not watching any paths\n");
-                worst = worst.max(1);
-            } else {
-                for path in &paths {
-                    let p = path.as_str().unwrap_or("?");
-                    lines.push_str(&format!("  [PASS] {p}\n"));
+            lines.push_str(&format!("Watches ({} paths)\n", watches.len()));
+            if !watches.is_empty() {
+                let home = libbeachcomber::path::Home::from_env();
+                let text = |key: &str, w: &serde_json::Value| {
+                    w.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+                };
+                for w in &watches {
+                    let p = home.compact(&text("path", w).unwrap_or_else(|| "?".into()));
+                    match text("state", w).as_deref() {
+                        Some("active") => match text("via", w) {
+                            Some(via) => lines.push_str(&format!(
+                                "  [PASS] {p} (through {} until it exists)\n",
+                                home.compact(&via)
+                            )),
+                            None => lines.push_str(&format!("  [PASS] {p}\n")),
+                        },
+                        Some("pending") => lines.push_str(&format!("  [INFO] {p} (registering)\n")),
+                        _ => {
+                            let error = text("error", w).unwrap_or_else(|| "failed".into());
+                            lines.push_str(&format!("  [WARN] {p} — {error}\n"));
+                            worst = worst.max(Outcome::Warning);
+                        }
+                    }
                 }
             }
             lines.push_str(&vlines);
@@ -372,7 +642,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .cloned()
                 .unwrap_or_default();
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             lines.push_str(&format!("Timers ({} poll timers)\n", timers.len()));
@@ -391,18 +661,25 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                     .unwrap_or(0);
                 let path = timer.get("path").and_then(|v| v.as_str());
                 let label = match path {
-                    Some(p) => format!("{provider} ({p})"),
+                    Some(p) => format!(
+                        "{provider} ({})",
+                        libbeachcomber::path::Home::from_env().compact(p)
+                    ),
                     None => provider.to_string(),
                 };
                 let overdue = interval > 0 && last > interval * 2;
                 if overdue {
                     lines.push_str(&format!(
-                        "  [WARN] {label}   interval={interval}s  last={last}s ago  OVERDUE\n"
+                        "  [WARN] {label}   interval={}  last={} ago  OVERDUE\n",
+                        secs(interval),
+                        secs(last)
                     ));
-                    worst = worst.max(1);
+                    worst = worst.max(Outcome::Warning);
                 } else {
                     lines.push_str(&format!(
-                        "  [PASS] {label}   interval={interval}s  last={last}s ago\n"
+                        "  [PASS] {label}   interval={}  last={} ago\n",
+                        secs(interval),
+                        secs(last)
                     ));
                 }
             }
@@ -418,7 +695,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .cloned()
                 .unwrap_or_default();
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             lines.push_str(&format!("Demand ({} active keys)\n", keys.len()));
@@ -451,7 +728,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .cloned()
                 .unwrap_or_default();
 
-            let (vlines, vworst) = render_verdicts(&verdicts);
+            let (vlines, vworst) = render_verdicts(&verdicts, None);
             worst = worst.max(vworst);
 
             let total: u64 = samples
@@ -459,7 +736,8 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                 .map(|s| s.get("count").and_then(|v| v.as_u64()).unwrap_or(0))
                 .sum();
             lines.push_str(&format!(
-                "Procs ({duration}s sample — {total} exec events)\n"
+                "Procs ({} sample — {total} exec events)\n",
+                secs(duration)
             ));
 
             for s in &samples {
@@ -479,7 +757,7 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                         lines.push_str(&format!(
                             "  [WARN] {cmd:<20} {count:>8}  beachcomber can replace\n"
                         ));
-                        worst = worst.max(1);
+                        worst = worst.max(Outcome::Warning);
                     }
                     Some(false) => {
                         lines.push_str(&format!("  [INFO] {cmd:<20} {count:>8}\n"));
@@ -494,27 +772,28 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
                     "  [WARN] {} command(s) could be replaced by `comb get`\n",
                     suggestions.len()
                 ));
-                worst = worst.max(1);
+                worst = worst.max(Outcome::Warning);
             }
             lines.push_str(&vlines);
         }
         other => {
             lines.push_str(&format!("Unknown subject: {other}\n"));
             lines.push_str("  [FAIL] no renderer for this subject\n");
-            worst = 2;
+            worst = Outcome::Error;
         }
     }
 
-    // Append aggregate summary if there are warnings or failures.
-    let warn_count = verdicts
-        .iter()
+    // Append aggregate summary if there are warnings or failures. `local` is
+    // empty for every subject but `config`, where its verdicts are part of the
+    // same list and so of the same count.
+    let counted = || verdicts.iter().chain(local.iter());
+    let warn_count = counted()
         .filter(|v| v.get("level").and_then(|l| l.as_str()) == Some("WARN"))
         .count();
-    let fail_count = verdicts
-        .iter()
+    let fail_count = counted()
         .filter(|v| v.get("level").and_then(|l| l.as_str()) == Some("FAIL"))
         .count();
-    if worst >= 1 {
+    if worst >= Outcome::Warning {
         lines.push('\n');
         match (fail_count, warn_count) {
             (f, _) if f > 0 => lines.push_str(&format!("({f} failure(s))\n")),
@@ -527,51 +806,98 @@ fn render_subject(subject: &str, payload: &serde_json::Value) -> (String, u8) {
     (lines, worst)
 }
 
-/// Render verdicts array into formatted lines and the worst exit code.
-/// PASS/INFO = 0, WARN = 1, FAIL = 2.
-fn render_verdicts(verdicts: &[serde_json::Value]) -> (String, u8) {
+/// Render verdicts array into formatted lines and the worst of them
+/// ([`Outcome::of_level`]). `tag` names the view that produced them,
+/// for a subject whose block carries more than one.
+fn render_verdicts(verdicts: &[serde_json::Value], tag: Option<&str>) -> (String, Outcome) {
     let mut out = String::new();
-    let mut worst: u8 = 0;
+    let mut worst = Outcome::Done;
     for v in verdicts {
         let level = v.get("level").and_then(|l| l.as_str()).unwrap_or("INFO");
         let msg = v.get("message").and_then(|m| m.as_str()).unwrap_or("");
-        let code = match level {
-            "FAIL" => 2,
-            "WARN" => 1,
-            _ => 0,
-        };
-        worst = worst.max(code);
+        worst = worst.max(Outcome::of_level(level));
         // Only emit verdicts that aren't already captured by the per-subject rendering above.
         // We include them for completeness but callers may suppress if they prefer.
-        out.push_str(&format!("  [{level}] {msg}\n"));
+        out.push_str(&verdict_line(level, tag, msg));
     }
     (out, worst)
+}
+
+/// Tag a daemon-sourced line only when the block also carries client-sourced
+/// ones — a subject with a single view needs no column telling the reader which
+/// one it is.
+fn daemon_view(local: &[serde_json::Value]) -> Option<&'static str> {
+    (!local.is_empty()).then_some(DAEMON_VIEW)
+}
+
+/// Which view of a subject produced a line. Padded to one width so the message
+/// column lines up whichever view it was.
+const DAEMON_VIEW: &str = "daemon";
+const LOCAL_VIEW: &str = "local";
+const VIEW_WIDTH: usize = 6;
+
+/// One `  [LEVEL] <view>   message` line, or `  [LEVEL] message` when the
+/// subject has only one view.
+fn verdict_line(level: &str, tag: Option<&str>, msg: &str) -> String {
+    match tag {
+        Some(t) => format!("  [{level}] {t:<VIEW_WIDTH$}   {msg}\n"),
+        None => format!("  [{level}] {msg}\n"),
+    }
 }
 
 /// Typed variant of render_verdicts for subjects parsed into structured types.
 /// Accepts `&[Verdict]` directly so the caller never needs to touch raw JSON.
-fn render_typed_verdicts(verdicts: &[Verdict]) -> (String, u8) {
+fn render_typed_verdicts(verdicts: &[Verdict]) -> (String, Outcome) {
     let mut out = String::new();
-    let mut worst: u8 = 0;
+    let mut worst = Outcome::Done;
     for v in verdicts {
         let level = &v.level;
         let msg = &v.message;
-        worst = worst.max(v.severity());
+        worst = worst.max(Outcome::of_level(&v.level));
         out.push_str(&format!("  [{level}] {msg}\n"));
     }
     (out, worst)
 }
 
-fn format_uptime(secs: u64) -> String {
-    if secs < 60 {
-        return format!("{secs}s");
+/// A count of seconds, as every duration comb shows reads.
+fn secs(n: u64) -> String {
+    libbeachcomber::render::duration(Duration::from_secs(n))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `check`'s own durations read as `status`'s do: `1h`, `1m30s`.
+    #[test]
+    fn a_duration_reads_as_status_writes_one() {
+        let payload = serde_json::json!({
+            "timers": [{"provider": "p", "interval_secs": 3600, "last_run_secs_ago": 90}],
+            "verdicts": [],
+        });
+        let (text, _) = render_subject("timers", &payload, &[]);
+        assert!(text.contains("interval=1h  last=1m30s ago"), "{text}");
+
+        let payload = serde_json::json!({
+            "lifecycle": [{"provider": "p", "stage": "decay", "elapsed_secs": 3720}],
+            "verdicts": [],
+        });
+        let (text, _) = render_subject("lifecycle", &payload, &[]);
+        assert!(text.contains("elapsed=1h2m"), "{text}");
     }
-    let minutes = secs / 60;
-    if minutes < 60 {
-        let s = secs % 60;
-        return format!("{minutes}m {s}s");
+
+    /// A decaying memo is named by its leaf.
+    #[test]
+    fn a_decaying_memo_is_named_by_its_node() {
+        let payload = serde_json::json!({
+            "lifecycle": [{"provider": "kubecontext", "path": "/w", "source": "memo",
+                           "node": "context", "stage": "Decay1", "elapsed_secs": 60}],
+            "verdicts": [],
+        });
+        let (text, _) = render_subject("lifecycle", &payload, &[]);
+        assert!(
+            text.contains("[WARN] kubecontext.context (/w)   stage=Decay1"),
+            "{text}"
+        );
     }
-    let hours = minutes / 60;
-    let m = minutes % 60;
-    format!("{hours}h {m}m")
 }

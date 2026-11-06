@@ -22,26 +22,23 @@ cargo add libbeachcomber
 ## Quick start
 
 ```rust
-use libbeachcomber::{Client, CombResult};
+use libbeachcomber::Client;
 
 let client = Client::new(); // auto-discovers socket, starts daemon if needed
 
-// Single field query
+// What `comb get git.branch` prints in that directory; `None` is a miss
 match client.get("git.branch", Some("/path/to/repo"))? {
-    CombResult::Hit { data, .. } => println!("branch: {}", data.as_text().unwrap()),
-    CombResult::Miss => println!("not cached yet — will be ready on next query"),
+    Some(branch) => println!("branch: {branch}"),
+    None => println!("nothing there"),
 }
 
-// Full provider query with typed field access
-match client.get("git", Some("/path/to/repo"))? {
-    CombResult::Hit { data, age_ms, stale } => {
-        println!("branch: {}", data.get_str("branch").unwrap_or("?"));
-        println!("dirty: {}", data.get_bool("dirty").unwrap_or(false));
-        println!("ahead: {}", data.get_i64("ahead").unwrap_or(0));
-        println!("age: {}ms, stale: {}", age_ms, stale);
-    }
-    CombResult::Miss => {}
+// A provider is its whole object
+if let Some(git) = client.get("git", Some("/path/to/repo"))? {
+    println!("dirty: {}", git["dirty"]);
 }
+
+// The unrendered stored value is a facet address
+let stored = client.get("git:cache.branch", Some("/path/to/repo"))?;
 
 // Persistent session for multiple queries (one connection, multiple requests)
 let mut session = client.session()?;
@@ -54,9 +51,9 @@ let battery = session.get("battery.percent", None)?;
 
 - **Synchronous** — no async runtime needed
 - **Socket activation** — starts the daemon automatically if not running
-- **Typed access** — `get_str()`, `get_bool()`, `get_i64()`, `get_f64()`
+- **The value `comb get` prints** — templates rendered, `serde_json::Value` out
 - **Persistent sessions** — reuse one connection for multiple queries (15µs/query vs 34µs)
-- **Configurable timeouts** — default 100ms, adjustable via `ClientConfig`
+- **Configurable timeouts** — default 250ms, adjustable via `ClientConfig`
 
 ## API reference
 
@@ -65,17 +62,22 @@ let battery = session.get("battery.percent", None)?;
 ```rust
 let client = Client::new();                          // auto-discover socket
 let client = Client::with_config(ClientConfig { .. }); // explicit config
+let client = Client::with_config(ClientConfig { exec: true, ..Default::default() }); // templates may call exec()
 ```
+
+`ClientConfig.exec` is off by default: a template that calls `exec()` on a client without it fails with `exec() is disabled in this context`.
 
 #### `client.get(key, path)`
 
-Read a cached value. Returns `CombResult::Hit { data, age_ms, stale }` or `CombResult::Miss`.
+The value `comb get` prints, through `libbeachcomber::resolve`: `Result<Option<serde_json::Value>, ResolveError>`, `Ok(None)` a miss. A template the daemon holds is rendered with this process's environment; `path` of `None` is the global entry. The unrendered stored value is a facet address: `git:cache.branch`, `aws:template.profile`, `p:put.x`, `p:source.x`. For text, pass the value to `render::render_value(key, value.as_ref(), Format::Text)`.
 
 ```rust
 client.get("git.branch", Some("/path/to/repo"))?;
-client.get("hostname", None)?;  // global provider, no path needed
+client.get("hostname", None)?;  // no root: one instance, no path needed
 client.get("git", Some("/path/to/repo"))?;  // full provider object
 ```
+
+A caller's own `env`, `force` or `wait` call `resolve::resolve` directly (below).
 
 #### `client.refresh(key, path)`
 
@@ -93,9 +95,9 @@ Return daemon scheduler and cache status.
 
 Handshake — returns a `HelloInfo` with daemon and protocol version strings.
 
-#### `client.put(key, data, ttl, path)`
+#### `client.put(key, data, ttl, path, persist)`
 
-Write a JSON value into the cache as a virtual provider. `ttl` and `path` are `Option<&str>`. Pass `None` for `data` (via `put_null`) to clear the entry.
+Write a JSON value into the cache as static data. `ttl` and `path` are `Option<&str>`. Pass `serde_json::Value::Null` as `data` to remove the node. `persist: true` keeps the put across a daemon restart, best effort.
 
 #### `client.introspect(subject, duration_secs)`
 
@@ -123,20 +125,32 @@ let branch = session.get("git.branch", None)?;
 let dirty = session.get("git.dirty", None)?;
 ```
 
-### `CombResult`
+### `libbeachcomber::resolve`
+
+The one client-side resolver — the function `comb get`, `comb eval`, `bc_get`/`bc_eval` and every SDK's `get` and `eval` answer from. `Client::get` and `Session::get` are this function with the process's environment; the daemon holds templates as data (`<provider>:template`, seeded from configuration or `put`) and never evaluates one, so the client renders them with the caller's environment and directory. A plain field is its cached value, a templated one (`kubecontext.context`, `python.version`) is rendered, and a bare provider name is the whole merged namespace. `Ok(None)` is a miss; `Err(ResolveError::Config)` is a template that does not compile or cycles, `Runtime` a failed or disabled `exec()`, `Fetch` a daemon the library could not ask or a key it refused.
 
 ```rust
-match result {
-    CombResult::Hit { data, age_ms, stale } => { /* cache hit */ }
-    CombResult::Miss => { /* not yet cached */ }
-}
+use libbeachcomber::{Client, Wait};
+use libbeachcomber::resolve::{resolve, Inputs, Slot};
+use std::collections::HashMap;
+use std::time::Duration;
+
+let client = Client::new();
+let env: HashMap<String, String> = std::env::vars().collect();
+let inputs = Inputs {
+    cwd: "/path/to/repo",
+    env: &env,
+    slot: Slot::Cwd,               // or Slot::Path(..) / Slot::Global
+    force: false,
+    wait: Wait::Budget,            // or Wait::For(Duration::ZERO) / Wait::Forever
+    allow_exec: client.allow_exec(),
+    now: std::time::SystemTime::now(),
+};
+let value = resolve("python.version", &inputs, &mut &client)?;
+// Option<serde_json::Value> — the same value `comb get python.version` prints here
 ```
 
-`data` provides typed accessors: `as_text()`, `get_str(field)`, `get_bool(field)`, `get_i64(field)`, `get_f64(field)`.
-
-#### `client.put_null(key, path)`
-
-Clear a virtual provider entry (equivalent to `put` with no data).
+`resolve::eval(template_str, &inputs, &mut fetch)` renders a template that is stored nowhere, the same way `comb eval` does. The library reads no ambient state: every input is in `Inputs`. The `Fetch` is a `&Client` (one connection per node) or a `Session` (one connection for the whole resolution). A failure classifies with `kind()` — `CombError`, `ResolveError` and `WatchError` alike — into the slugs the C ABI's `error.kind` carries; a read or write that runs out the client's timeout is `CombError::Timeout` on every op, on a client and a session alike.
 
 ## Socket discovery
 

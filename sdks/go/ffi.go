@@ -31,9 +31,10 @@ import (
 // even when a later symbol is missing).
 var requiredSymbolNames = []string{
 	"bc_client_new", "bc_client_free",
-	"bc_get", "bc_put", "bc_put_null", "bc_refresh", "bc_status", "bc_introspect", "bc_hello",
-	"bc_resolve", "bc_eval",
-	"bc_session_open", "bc_session_close", "bc_session_get", "bc_session_put", "bc_session_set_context",
+	"bc_get", "bc_put", "bc_refresh", "bc_status", "bc_introspect", "bc_hello",
+	"bc_eval",
+	"bc_session_open", "bc_session_close", "bc_session_get", "bc_session_put", "bc_session_refresh",
+	"bc_session_set_context",
 	"bc_watch_open", "bc_watch_next", "bc_watch_cancel", "bc_watch_free",
 	"bc_string_free",
 }
@@ -46,13 +47,13 @@ type nativeLib struct {
 	path    string
 	version string
 
-	bcClientNew, bcClientFree                                  uintptr
-	bcGet, bcPut, bcPutNull, bcRefresh, bcStatus, bcIntrospect uintptr
-	bcHello, bcResolve, bcEval                                 uintptr
-	bcSessionOpen, bcSessionClose, bcSessionGet                uintptr
-	bcSessionPut, bcSessionSetContext                          uintptr
-	bcWatchOpen, bcWatchNext, bcWatchCancel, bcWatchFree       uintptr
-	bcStringFree                                               uintptr
+	bcClientNew, bcClientFree                            uintptr
+	bcGet, bcPut, bcRefresh, bcStatus, bcIntrospect      uintptr
+	bcHello, bcEval                                      uintptr
+	bcSessionOpen, bcSessionClose, bcSessionGet          uintptr
+	bcSessionPut, bcSessionRefresh, bcSessionSetContext  uintptr
+	bcWatchOpen, bcWatchNext, bcWatchCancel, bcWatchFree uintptr
+	bcStringFree                                         uintptr
 }
 
 var (
@@ -79,18 +80,22 @@ func libraryFileName() string {
 	return "libbeachcomber.so"
 }
 
-// candidateLibraryPaths returns the ordered discovery candidates: (1)
-// $BEACHCOMBER_LIB, (2) ../lib/ relative to the resolved `comb` on $PATH,
-// (3) the platform default dynamic-linker search path (a bare filename, left
-// for dlopen itself to resolve). The comb-relative location deliberately
-// comes before the system path: library and binary ship together, so the
-// one beside the comb you would actually run should win over a stale
-// /usr/lib copy.
+// candidateLibraryPaths returns the library-discovery candidates, in the
+// order the loader tries them — the rule every SDK follows (docs/sdk-api.md,
+// "Library discovery"; sdks/discovery.json is its fixture):
+//
+//  1. $BEACHCOMBER_LIB, set and not empty, is the only candidate: a path set
+//     on purpose that does not load is an error, not a reason to load some
+//     other library.
+//  2. Otherwise <dir>/../lib/<file>, where <dir> holds the first executable
+//     `comb` on $PATH with its symlinks resolved (a Homebrew comb is a
+//     symlink into the Cellar, where the library sits beside it),
+//  3. then the bare file name, for the system loader to resolve.
 func candidateLibraryPaths() []string {
-	var candidates []string
 	if v := os.Getenv("BEACHCOMBER_LIB"); v != "" {
-		candidates = append(candidates, v)
+		return []string{v}
 	}
+	var candidates []string
 	if combPath, err := exec.LookPath("comb"); err == nil {
 		if resolved, err := filepath.EvalSymlinks(combPath); err == nil {
 			combPath = resolved
@@ -118,7 +123,7 @@ func loadNativeLib() (*nativeLib, error) {
 		break
 	}
 	if handle == 0 {
-		return nil, &LibraryError{Message: fmt.Sprintf(
+		return nil, &Error{Kind: "library_not_found", Message: fmt.Sprintf(
 			"beachcomber: could not locate libbeachcomber; tried, in order: %s",
 			strings.Join(attempts, "; "),
 		)}
@@ -135,13 +140,13 @@ func loadNativeLib() (*nativeLib, error) {
 
 	dst := map[string]*uintptr{
 		"bc_client_new": &l.bcClientNew, "bc_client_free": &l.bcClientFree,
-		"bc_get": &l.bcGet, "bc_put": &l.bcPut, "bc_put_null": &l.bcPutNull,
+		"bc_get": &l.bcGet, "bc_put": &l.bcPut,
 		"bc_refresh": &l.bcRefresh, "bc_status": &l.bcStatus, "bc_introspect": &l.bcIntrospect,
-		"bc_hello": &l.bcHello, "bc_resolve": &l.bcResolve, "bc_eval": &l.bcEval,
+		"bc_hello": &l.bcHello, "bc_eval": &l.bcEval,
 		"bc_session_open": &l.bcSessionOpen, "bc_session_close": &l.bcSessionClose,
 		"bc_session_get": &l.bcSessionGet, "bc_session_put": &l.bcSessionPut,
-		"bc_session_set_context": &l.bcSessionSetContext,
-		"bc_watch_open":          &l.bcWatchOpen, "bc_watch_next": &l.bcWatchNext,
+		"bc_session_refresh": &l.bcSessionRefresh, "bc_session_set_context": &l.bcSessionSetContext,
+		"bc_watch_open": &l.bcWatchOpen, "bc_watch_next": &l.bcWatchNext,
 		"bc_watch_cancel": &l.bcWatchCancel, "bc_watch_free": &l.bcWatchFree,
 		"bc_string_free": &l.bcStringFree,
 	}
@@ -155,9 +160,10 @@ func loadNativeLib() (*nativeLib, error) {
 		*dst[name] = addr
 	}
 	if len(missing) > 0 {
-		return nil, &LibraryError{
-			Message:    fmt.Sprintf("beachcomber: %s is missing required symbol(s): %s", loadedPath, strings.Join(missing, ", ")),
-			LibVersion: l.version,
+		return nil, &Error{
+			Kind:           "library_symbol",
+			Message:        fmt.Sprintf("beachcomber: %s is missing required symbol(s): %s", loadedPath, strings.Join(missing, ", ")),
+			LibraryVersion: l.version,
 		}
 	}
 	return l, nil
@@ -215,7 +221,7 @@ func cStringToGo(ptr uintptr) string {
 }
 
 // jsonMapBytes marshals m to a JSON object, or returns nil (NULL) when m is
-// nil — the ABI's "not supplied" sentinel for env_json/overrides_json.
+// nil — the ABI's "not supplied" sentinel for env_json.
 func jsonMapBytes(m map[string]string) []byte {
 	if m == nil {
 		return nil
@@ -250,24 +256,47 @@ func (l *nativeLib) takeString(ptr uintptr) string {
 	return s
 }
 
+// boolArg is a C bool argument.
+func boolArg(b bool) uintptr {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // call invokes the bc_* function at fnAddr, frees its returned string, and
-// decodes the ordinary {"ok":...} envelope. ok:false becomes a *ServerError
-// carrying the envelope's machine-readable Kind and this library's version.
+// decodes the ordinary {"ok":...} envelope. ok:false becomes an *Error
+// carrying the envelope's kind and message as they are, and this library's
+// version.
 func (l *nativeLib) call(fnAddr uintptr, args ...uintptr) (json.RawMessage, error) {
 	r1, _, _ := purego.SyscallN(fnAddr, args...)
 	s := l.takeString(r1)
 	var env wireEnvelope
 	if err := json.Unmarshal([]byte(s), &env); err != nil {
-		return nil, &ProtocolError{msg: "malformed envelope: " + err.Error()}
+		return nil, l.stamp(parseError("malformed envelope: " + err.Error()))
 	}
 	if !env.OK {
-		kind, msg := "", s
-		if env.Error != nil {
-			kind, msg = env.Error.Kind, env.Error.Message
-		}
-		return nil, &ServerError{Kind: kind, Message: msg, LibVersion: l.version}
+		return nil, l.envelopeError(env.Error, s)
 	}
 	return env.Data, nil
+}
+
+// envelopeError is an ok:false envelope's error, as an *Error. An envelope
+// with no error object is one this SDK cannot read.
+func (l *nativeLib) envelopeError(e *wireError, body string) error {
+	if e == nil {
+		return l.stamp(parseError("an ok:false envelope with no error: " + body))
+	}
+	return &Error{Kind: e.Kind, Message: e.Message, LibraryVersion: l.version}
+}
+
+// stamp sets this library's version on an *Error that carries none, and
+// passes any other error through.
+func (l *nativeLib) stamp(err error) error {
+	if e, ok := err.(*Error); ok && e.LibraryVersion == "" {
+		e.LibraryVersion = l.version
+	}
+	return err
 }
 
 // watchEnvelope is bc_watch_next's five-outcome envelope shape (see
@@ -285,7 +314,7 @@ func (l *nativeLib) callWatch(fnAddr uintptr, args ...uintptr) (watchEnvelope, e
 	s := l.takeString(r1)
 	var env watchEnvelope
 	if err := json.Unmarshal([]byte(s), &env); err != nil {
-		return watchEnvelope{}, &ProtocolError{msg: "malformed watch envelope: " + err.Error()}
+		return watchEnvelope{}, l.stamp(parseError("malformed watch envelope: " + err.Error()))
 	}
 	return env, nil
 }

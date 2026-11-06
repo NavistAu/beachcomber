@@ -4,27 +4,30 @@
 
 use std::ffi::{CStr, CString, c_char};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 pub mod envelope;
 
-use envelope::{ErrorKind, FfiError, WatchOutcome, call_ffi, call_watch_next};
-use libbeachcomber::eval;
-use libbeachcomber::path_expr::{evaluate_path, path_expression_for};
-use libbeachcomber::virtual_fields::{EvalContext, Ref, VirtualFields};
-use libbeachcomber::{
-    CacheRow, CombError, CombResult, DaemonHealth, IntrospectResponse, IntrospectSubject,
-};
-use std::collections::{HashMap, HashSet};
+use envelope::{FfiError, WatchOutcome, call_ffi, call_watch_next, kind};
+use libbeachcomber::resolve::{self, Inputs, Slot};
+use libbeachcomber::watch::{CancelHandle, ResolvedWatch, WatchOutcome as LibWatchOutcome};
+use libbeachcomber::{IntrospectResponse, IntrospectSubject, Wait};
+use std::collections::HashMap;
 
 /// Opaque client handle returned by [`bc_client_new`].
 ///
 /// Construction never fails from the caller's point of view: a malformed
 /// `options_json` is recorded here and surfaced on the handle's first
 /// operation instead of failing the constructor.
+///
+/// The client sits behind an [`Arc`] because a watch outlives the call that
+/// opened it: [`bc_watch_open`] hands a share to the
+/// [`ResolvedWatch`](libbeachcomber::watch::ResolvedWatch) it returns, so a
+/// `BcWatch` keeps its client alive rather than resting on a
+/// "free the client last" contract no other handle has.
 pub struct BcClient {
-    state: Result<libbeachcomber::Client, FfiError>,
+    state: Result<Arc<libbeachcomber::Client>, FfiError>,
 }
 
 static VERSION_CSTRING: OnceLock<CString> = OnceLock::new();
@@ -41,28 +44,58 @@ pub extern "C" fn bc_version() -> *const c_char {
         .as_ptr()
 }
 
-/// Recognised keys of `bc_client_new`'s `options_json` argument.
+/// The socket a client created with no `socket_path` option connects to —
+/// `$BEACHCOMBER_SOCKET` if set and non-empty, else `/tmp/beachcomber-<uid>/sock`
+/// — as `{"ok": true, "data": "<path>"}`. The one resolution comb itself uses
+/// (`libbeachcomber::socket::resolve`), less the config file's
+/// `socket_path`, which only the CLI and daemon read.
+#[unsafe(no_mangle)]
+pub extern "C" fn bc_socket_path() -> *mut c_char {
+    call_ffi(|| {
+        let (path, _) = libbeachcomber::socket::resolve(None, None);
+        Ok(serde_json::Value::String(
+            path.to_string_lossy().into_owned(),
+        ))
+    })
+}
+
+/// The keys of `bc_client_new`'s `options_json` argument, and no others: a
+/// key it does not take is refused, so each option has one spelling.
 #[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct ClientOptions {
     socket_path: Option<String>,
     timeout_ms: Option<u64>,
+    connect_timeout_ms: Option<u64>,
     autostart: Option<bool>,
+    exec: Option<bool>,
+}
+
+/// An `options_json` argument as the options it holds: NULL is every option
+/// left out, and anything that does not parse as them is `parse_error`.
+fn parse_options<T: serde::de::DeserializeOwned + Default>(
+    json: Option<&str>,
+) -> Result<T, FfiError> {
+    match json {
+        None => Ok(T::default()),
+        Some(s) => serde_json::from_str(s)
+            .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed options_json: {e}"))),
+    }
 }
 
 /// # Safety
 /// `options_json` must be NULL or a valid pointer to a NUL-terminated string.
 unsafe fn build_client(options_json: *const c_char) -> Result<libbeachcomber::Client, FfiError> {
-    let options = if options_json.is_null() {
-        ClientOptions::default()
-    } else {
-        let raw = unsafe { CStr::from_ptr(options_json) }.to_string_lossy();
-        serde_json::from_str::<ClientOptions>(&raw).map_err(|e| {
-            FfiError::new(
-                ErrorKind::ParseError,
-                format!("malformed options_json: {e}"),
-            )
-        })?
-    };
+    let raw = (!options_json.is_null())
+        .then(|| unsafe { CStr::from_ptr(options_json) }.to_string_lossy());
+    let options: ClientOptions = parse_options(raw.as_deref())?;
+
+    if options.timeout_ms == Some(0) {
+        return Err(FfiError::new(
+            kind::PARSE_ERROR,
+            "malformed options_json: timeout_ms must be at least 1",
+        ));
+    }
 
     let default_config = libbeachcomber::ClientConfig::default();
     let config = libbeachcomber::ClientConfig {
@@ -71,25 +104,41 @@ unsafe fn build_client(options_json: *const c_char) -> Result<libbeachcomber::Cl
             .map(Duration::from_millis)
             .unwrap_or(default_config.timeout),
         auto_start: options.autostart.unwrap_or(default_config.auto_start),
+        exec: options.exec.unwrap_or(default_config.exec),
     };
 
     let mut client = libbeachcomber::Client::with_config(config);
     if let Some(socket_path) = options.socket_path {
         client = client.with_socket_path(std::path::PathBuf::from(socket_path));
     }
+    if let Some(ms) = options.connect_timeout_ms {
+        client = client.with_connect_timeout(Duration::from_millis(ms));
+    }
     Ok(client)
 }
 
-/// Creates a new client handle. `options_json` is nullable; recognised keys
-/// are `socket_path`, `timeout_ms` and `autostart`. Never returns NULL — a
-/// malformed `options_json` still yields a handle, with the parse error
-/// deferred to the handle's first operation rather than failing here.
+/// Creates a new client handle. `options_json` is nullable; its keys, each
+/// optional, are:
+///
+/// | key                  | default                     | meaning |
+/// |----------------------|-----------------------------|---------|
+/// | `socket_path`        | `bc_socket_path`'s answer   | the daemon's socket |
+/// | `timeout_ms`         | 250                         | how long one read or write may take; at least 1 |
+/// | `connect_timeout_ms` | 1500                        | how long connecting keeps retrying; 0 is one attempt |
+/// | `autostart`          | `true`                      | start a daemon when none answers an auto-discovered socket |
+/// | `exec`               | `false`                     | whether a template this client renders (`bc_get`, `bc_eval`) may call `exec()` |
+///
+/// These defaults are the only ones: an SDK passes on what its caller gave
+/// and adds none of its own. A key not in this table is refused. Never
+/// returns NULL — a malformed `options_json` still yields a handle, with the
+/// `parse_error` deferred to the handle's first operation rather than
+/// failing here.
 ///
 /// # Safety
 /// `options_json` must be NULL or a valid pointer to a NUL-terminated string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_client_new(options_json: *const c_char) -> *mut BcClient {
-    let state = unsafe { build_client(options_json) };
+    let state = unsafe { build_client(options_json) }.map(Arc::new);
     Box::into_raw(Box::new(BcClient { state }))
 }
 
@@ -108,23 +157,16 @@ pub unsafe extern "C" fn bc_client_free(client: *mut BcClient) {
 
 // ── Operations (Task 3.4) ──────────────────────────────────────────────
 
-/// `bc_get` flag: evict the cache entry and re-execute the provider before
-/// returning.
-pub const BC_GET_FORCE: u32 = 1 << 0;
-/// `bc_get` flag: if the entry is stale, wait for inline re-execution.
-pub const BC_GET_WAIT: u32 = 1 << 1;
-const BC_GET_KNOWN_FLAGS: u32 = BC_GET_FORCE | BC_GET_WAIT;
-
-/// Rejects (rather than silently ignoring) any bit outside 0..=1.
-fn check_get_flags(flags: u32) -> Result<(), FfiError> {
-    let unknown = flags & !BC_GET_KNOWN_FLAGS;
-    if unknown != 0 {
-        return Err(FfiError::new(
-            ErrorKind::BadFlags,
-            format!("unknown flag bits set: {unknown:#x}"),
-        ));
-    }
-    Ok(())
+/// The keys of `bc_get`'s and `bc_session_get`'s `options_json` argument, and
+/// no others: a key it does not take is refused, so each option has one
+/// spelling. `null` is a key left out.
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct GetOptions {
+    /// `comb get --force`.
+    force: Option<bool>,
+    /// `comb get --wait`: a duration or `"forever"`.
+    wait: Option<Wait>,
 }
 
 /// Borrows the handle's underlying client, or its deferred construction
@@ -135,7 +177,22 @@ fn check_get_flags(flags: u32) -> Result<(), FfiError> {
 /// [`bc_client_new`], not yet freed.
 unsafe fn client_ref<'a>(client: *mut BcClient) -> Result<&'a libbeachcomber::Client, FfiError> {
     let handle = unsafe { &*client };
-    handle.state.as_ref().map_err(|e| e.clone())
+    handle
+        .state
+        .as_ref()
+        .map(|client| &**client)
+        .map_err(|e| e.clone())
+}
+
+/// A share of the handle's underlying client, for an operation whose result
+/// outlives the call ([`bc_watch_open`]), or its deferred construction error.
+///
+/// # Safety
+/// `client` must be a valid, non-null pointer previously returned by
+/// [`bc_client_new`], not yet freed.
+unsafe fn client_arc(client: *mut BcClient) -> Result<Arc<libbeachcomber::Client>, FfiError> {
+    let handle = unsafe { &*client };
+    handle.state.as_ref().map(Arc::clone).map_err(|e| e.clone())
 }
 
 /// # Safety
@@ -143,16 +200,13 @@ unsafe fn client_ref<'a>(client: *mut BcClient) -> Result<&'a libbeachcomber::Cl
 unsafe fn required_str<'a>(ptr: *const c_char, name: &str) -> Result<&'a str, FfiError> {
     if ptr.is_null() {
         return Err(FfiError::new(
-            ErrorKind::ParseError,
+            kind::PARSE_ERROR,
             format!("{name} must not be NULL"),
         ));
     }
-    unsafe { CStr::from_ptr(ptr) }.to_str().map_err(|e| {
-        FfiError::new(
-            ErrorKind::ParseError,
-            format!("{name} is not valid UTF-8: {e}"),
-        )
-    })
+    unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("{name} is not valid UTF-8: {e}")))
 }
 
 /// # Safety
@@ -167,73 +221,10 @@ unsafe fn optional_str<'a>(ptr: *const c_char) -> Result<Option<&'a str>, FfiErr
         .map(Some)
         .map_err(|e| {
             FfiError::new(
-                ErrorKind::ParseError,
+                kind::PARSE_ERROR,
                 format!("argument is not valid UTF-8: {e}"),
             )
         })
-}
-
-fn combresult_to_json(result: CombResult) -> serde_json::Value {
-    match result {
-        CombResult::Hit {
-            data,
-            age_ms,
-            stale,
-        } => serde_json::json!({
-            "data": data.as_value(),
-            "age_ms": age_ms as u64,
-            "stale": stale,
-        }),
-        CombResult::Miss => serde_json::json!({
-            "data": null,
-            "age_ms": null,
-            "stale": null,
-        }),
-    }
-}
-
-fn cache_row_to_json(r: &CacheRow) -> serde_json::Value {
-    serde_json::json!({
-        "provider": r.provider,
-        "field": r.field,
-        "path": r.path,
-        "value": r.value,
-        "age_ms": r.age_ms,
-        "stale": r.stale,
-        "kind": r.kind,
-        "poll_interval_secs": r.poll_interval_secs,
-        "keep_alive_polls": r.keep_alive_polls,
-        "fsevents_reinstate": r.fsevents_reinstate,
-        "polls_elapsed": r.polls_elapsed,
-        "failure": r.failure,
-        "source": r.source,
-    })
-}
-
-fn daemon_health_to_json(h: &DaemonHealth) -> serde_json::Value {
-    serde_json::json!({
-        "pid": h.pid,
-        "version": h.version,
-        "uptime_secs": h.uptime_secs,
-        "socket_path": h.socket_path,
-        "config_path": h.config_path,
-        "requests_total": h.requests_total,
-        "in_flight": h.in_flight,
-        "active_watchers": h.active_watchers,
-        "cache_entries": h.cache_entries,
-        "watch_backend": h.watch_backend,
-        "reaper": h.reaper.as_ref().map(|r| serde_json::json!({
-            "armed": r.armed,
-            "visibility": r.visibility,
-            "sweeps": r.sweeps,
-            "reaped": r.reaped,
-            "kill_denied": r.kill_denied,
-        })),
-        "verdicts": h.verdicts.iter().map(|v| serde_json::json!({
-            "level": v.level,
-            "message": v.message,
-        })).collect::<Vec<_>>(),
-    })
 }
 
 /// Recognised keys of `bc_introspect`'s `options_json` argument.
@@ -242,52 +233,9 @@ struct IntrospectOptions {
     duration_secs: Option<u64>,
 }
 
-fn introspect_subject_from_str(name: &str) -> Result<IntrospectSubject, FfiError> {
-    match name {
-        "daemon" => Ok(IntrospectSubject::Daemon),
-        "providers" => Ok(IntrospectSubject::Providers),
-        "config" => Ok(IntrospectSubject::Config),
-        "cache" => Ok(IntrospectSubject::Cache),
-        "lifecycle" => Ok(IntrospectSubject::Lifecycle),
-        "watches" => Ok(IntrospectSubject::Watches),
-        "timers" => Ok(IntrospectSubject::Timers),
-        "demand" => Ok(IntrospectSubject::Demand),
-        "procs" => Ok(IntrospectSubject::Procs),
-        other => Err(FfiError::new(
-            ErrorKind::ParseError,
-            format!("unknown introspect subject: {other}"),
-        )),
-    }
-}
-
-/// Query a single key. `path` is nullable (global providers). `flags` is a
-/// bitmask of [`BC_GET_FORCE`] / [`BC_GET_WAIT`]; any other bit set yields a
-/// `bad_flags` envelope.
-///
-/// # Safety
-/// `client` must be a valid pointer from [`bc_client_new`]; `key` must be
-/// non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn bc_get(
-    client: *mut BcClient,
-    key: *const c_char,
-    path: *const c_char,
-    flags: u32,
-) -> *mut c_char {
-    call_ffi(move || {
-        let c = unsafe { client_ref(client) }?;
-        check_get_flags(flags)?;
-        let key = unsafe { required_str(key, "key") }?;
-        let path = unsafe { optional_str(path) }?;
-        let force = flags & BC_GET_FORCE != 0;
-        let wait = flags & BC_GET_WAIT != 0;
-        let result = c.get_with_flags(key, path, force, wait)?;
-        Ok(combresult_to_json(result))
-    })
-}
-
-/// Store data into a virtual provider. `json_data` must parse as JSON.
-/// `ttl` and `path` are nullable.
+/// Store data into the cache as static data. `json_data` must parse as JSON.
+/// `ttl` and `path` are nullable. `persist` keeps the put across a daemon
+/// restart, best effort (`comb put --persist`).
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `key` and
@@ -300,43 +248,27 @@ pub unsafe extern "C" fn bc_put(
     json_data: *const c_char,
     ttl: *const c_char,
     path: *const c_char,
+    persist: bool,
 ) -> *mut c_char {
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let key = unsafe { required_str(key, "key") }?;
         let json_data = unsafe { required_str(json_data, "json_data") }?;
-        let data: serde_json::Value = serde_json::from_str(json_data).map_err(|e| {
-            FfiError::new(ErrorKind::ParseError, format!("malformed json_data: {e}"))
-        })?;
+        let data: serde_json::Value = serde_json::from_str(json_data)
+            .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed json_data: {e}")))?;
         let ttl = unsafe { optional_str(ttl) }?;
         let path = unsafe { optional_str(path) }?;
-        c.put(key, data, ttl, path)?;
+        c.put(key, data, ttl, path, persist)?;
         Ok(serde_json::Value::Null)
     })
 }
 
-/// Clear the cached entry for a virtual provider key without dropping the
-/// registry entry. `path` is nullable.
-///
-/// # Safety
-/// `client` must be a valid pointer from [`bc_client_new`]; `key` must be
-/// non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn bc_put_null(
-    client: *mut BcClient,
-    key: *const c_char,
-    path: *const c_char,
-) -> *mut c_char {
-    call_ffi(move || {
-        let c = unsafe { client_ref(client) }?;
-        let key = unsafe { required_str(key, "key") }?;
-        let path = unsafe { optional_str(path) }?;
-        c.put_null(key, path)?;
-        Ok(serde_json::Value::Null)
-    })
-}
-
-/// Trigger recomputation of a provider. `path` is nullable.
+/// Re-execute the Sources `key` demands — every Source of the namespace for
+/// a bare `provider`, only the one owning the field for `provider.field` —
+/// each at the instance that answers for `path`. `path` is nullable. A key
+/// naming no Source (a static namespace, a facet, an unknown name, or a
+/// field no Source owns) is an error: `nothing to refresh: <key> has no
+/// sources`.
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `key` must be
@@ -364,9 +296,7 @@ pub unsafe extern "C" fn bc_refresh(
 pub unsafe extern "C" fn bc_status(client: *mut BcClient) -> *mut c_char {
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
-        let rows = c.status()?;
-        let arr: Vec<serde_json::Value> = rows.iter().map(cache_row_to_json).collect();
-        Ok(serde_json::Value::Array(arr))
+        Ok(serde_json::to_value(c.status()?).expect("status rows serialise"))
     })
 }
 
@@ -386,19 +316,14 @@ pub unsafe extern "C" fn bc_introspect(
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let subject = unsafe { required_str(subject, "subject") }?;
-        let subject = introspect_subject_from_str(subject)?;
-        let options_json = unsafe { optional_str(options_json) }?;
-        let options: IntrospectOptions = match options_json {
-            Some(s) => serde_json::from_str(s).map_err(|e| {
-                FfiError::new(
-                    ErrorKind::ParseError,
-                    format!("malformed options_json: {e}"),
-                )
-            })?,
-            None => IntrospectOptions::default(),
-        };
+        let subject: IntrospectSubject = subject
+            .parse()
+            .map_err(|e: String| FfiError::new(kind::PARSE_ERROR, e))?;
+        let options: IntrospectOptions = parse_options(unsafe { optional_str(options_json) }?)?;
         match c.introspect(subject, options.duration_secs)? {
-            IntrospectResponse::Daemon(health) => Ok(daemon_health_to_json(&health)),
+            IntrospectResponse::Daemon(health) => {
+                Ok(serde_json::to_value(health).expect("daemon health serialises"))
+            }
             IntrospectResponse::Other(v) => Ok(v),
         }
     })
@@ -423,244 +348,172 @@ pub unsafe extern "C" fn bc_hello(client: *mut BcClient) -> *mut c_char {
 // ── Resolution (Task 3.5) ──────────────────────────────────────────────
 
 /// Parses a nullable `env_json` argument. `None` (NULL) means "no env
-/// supplied" — every `env.*` reference then resolves to `""`, matching the
-/// evaluator's own miss semantics on an empty map. Values must be strings.
+/// supplied": the call renders with the calling process's environment, as
+/// `comb` does ([`libbeachcomber::env::process`]). Values must be strings.
 fn parse_env_json(json: Option<&str>) -> Result<HashMap<String, String>, FfiError> {
     match json {
-        None => Ok(HashMap::new()),
+        None => Ok(libbeachcomber::env::process()),
         Some(s) => serde_json::from_str(s)
-            .map_err(|e| FfiError::new(ErrorKind::ParseError, format!("malformed env_json: {e}"))),
+            .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed env_json: {e}"))),
     }
 }
 
-/// Field-expression overrides, keyed `(provider, field)`.
-type FieldOverrides = Vec<((String, String), String)>;
-
-/// Parses a nullable `overrides_json` argument into field-expression
-/// overrides (keyed `"provider.field"`) and path-expression overrides
-/// (keyed by a bare provider name) — the same split the conformance
-/// runner's fixture `virtual` block uses. `None` (NULL) means "no
-/// overrides" — [`VirtualFields::with_config_overrides`] still applies the
-/// built-in defaults underneath an empty override list.
-fn parse_overrides_json(
-    json: Option<&str>,
-) -> Result<(FieldOverrides, HashMap<String, String>), FfiError> {
-    let Some(s) = json else {
-        return Ok((Vec::new(), HashMap::new()));
-    };
-    let v: serde_json::Value = serde_json::from_str(s).map_err(|e| {
-        FfiError::new(
-            ErrorKind::ParseError,
-            format!("malformed overrides_json: {e}"),
-        )
-    })?;
-    let obj = v.as_object().ok_or_else(|| {
-        FfiError::new(
-            ErrorKind::ParseError,
-            "overrides_json must be a JSON object",
-        )
-    })?;
-    let mut field_overrides = Vec::new();
-    let mut path_overrides = HashMap::new();
-    for (key, expr) in obj {
-        let expr = expr.as_str().ok_or_else(|| {
-            FfiError::new(
-                ErrorKind::ParseError,
-                format!("overrides_json[{key}] must be a string expression"),
-            )
-        })?;
-        match key.split_once('.') {
-            Some((provider, field)) => {
-                field_overrides.push(((provider.to_string(), field.to_string()), expr.to_string()));
-            }
-            None => {
-                path_overrides.insert(key.clone(), expr.to_string());
-            }
-        }
-    }
-    Ok((field_overrides, path_overrides))
-}
-
-/// Fetches every ref in `refs` from the daemon via `client.get(key,
-/// Some(cwd))`, into a daemon-data map an [`EvalContext`] can borrow. `cwd`
-/// is threaded through so path-scoped providers (`git`, `terraform`,
-/// `python`, `kubecontext`, …) resolve at the caller's supplied directory —
-/// the same convention `comb get`'s `--path` and `comb eval`'s
-/// `set_context` follow. Keying and dedup are [`eval::fetch_daemon_data`]'s;
-/// this closure only translates one `client.get` call into the
-/// `Result<Option<Value>, FfiError>` shape it wants. A cache miss is simply
-/// absent from the map and evaluates falsy.
-///
-/// So is `CombError::ServerError` — the daemon answered, but rejected the
-/// key (e.g. "unknown provider: c" for a `cache.*` ref that names nothing
-/// registered). Canon: a missing ref is falsy at any depth, and a rejected
-/// key is exactly that, not a transport failure. This mirrors
-/// `src/client.rs`'s `to_response`, which turns the very same
-/// `CombError::ServerError` into a response with `data: None` for the CLI
-/// (`comb eval '{{ c.z or "x" }}'` prints `x`) — so the FFI and the CLI
-/// agree on what a rejected key means. Every other `CombError` variant
-/// (connection/IO/parse/timeout/daemon-not-running) is a genuine transport
-/// failure and aborts the whole fetch: the [`CombError`]-derived envelope
-/// error every other `bc_*` op already produces via `?`, with the failing
-/// key named in the message the way `run_eval`'s own fetch closure names it.
-fn fetch_via_client(
-    client: &libbeachcomber::Client,
-    cwd: &str,
-    refs: &[Ref],
-) -> Result<HashMap<String, serde_json::Value>, FfiError> {
-    eval::fetch_daemon_data(refs, |key| match client.get(key, Some(cwd)) {
-        Ok(CombResult::Hit { data, .. }) => Ok(Some(data.as_value().clone())),
-        Ok(CombResult::Miss) => Ok(None),
-        Err(CombError::ServerError(_)) => Ok(None),
-        Err(e) => {
-            let mapped = FfiError::from(e);
-            Err(FfiError::new(
-                mapped.kind,
-                format!("querying {key}: {}", mapped.message),
-            ))
-        }
-    })
-}
-
-/// Maps an evaluation error message from [`eval::evaluate`] /
-/// [`VirtualFields::evaluate`] to an [`ErrorKind`]. Both
-/// `eval::evaluate`'s typed path and `eval::render_template` prefix a
-/// compile failure with `"expression compile error: "` / `"template compile
-/// error: "` (optionally itself wrapped by `VirtualFields::evaluate`'s
-/// `"provider.field: "`) — that is the caller's own expression being
-/// malformed, a `parse_error`. Everything else (a runtime eval/render
-/// failure, an evaluation cycle) is a `server_error`. There is no typed
-/// error to match on here — both functions return a plain `String` — so
-/// this is deliberately a substring check on the one phrase both compile
-/// paths share.
-fn eval_error_kind(message: &str) -> ErrorKind {
-    if message.contains("compile error") {
-        ErrorKind::ParseError
-    } else {
-        ErrorKind::ServerError
-    }
-}
-
-/// Resolve a virtual field (`key` = `"provider.field"`) or a path
-/// expression (`key` = a bare provider name) — client-side, exactly as
-/// `comb get`'s resolution layer does.
-///
-/// `cwd` is required: NULL returns an error envelope rather than falling
-/// back to the process's own working directory — this library must never
-/// read ambient state on the caller's behalf. Every daemon-backed ref the
-/// field's expression makes (`cache.*` and plain `provider.field`,
-/// virtual fields followed transitively) is fetched scoped to `cwd`, the
-/// same convention `comb get`'s `--path` follows. `env_json` and
-/// `overrides_json` are nullable, meaning "none supplied".
+/// The directory a resolution addresses: NULL is the global entry, as
+/// `comb get --global` is; anything else is normalised as every request path
+/// is ([`libbeachcomber::path::normalise_here`]): `~` is the caller's home and
+/// a relative path is against the caller's working directory.
 ///
 /// # Safety
-/// `client` must be a valid pointer from [`bc_client_new`]; `key` and `cwd`
-/// must be non-null and NUL-terminated; `env_json` and `overrides_json` must
-/// be NULL or NUL-terminated.
+/// `cwd` must be NULL or NUL-terminated.
+unsafe fn resolution_dir(cwd: *const c_char) -> Result<(String, Slot), FfiError> {
+    if cwd.is_null() {
+        return Ok((String::new(), Slot::Global));
+    }
+    let dir = unsafe { required_str(cwd, "cwd") }?;
+    let dir = libbeachcomber::path::normalise_here(Some(dir))
+        .map_err(|e| FfiError::new(kind::PARSE_ERROR, e.to_string()))?;
+    Ok((dir.clone(), Slot::Path(dir)))
+}
+
+/// The resolution inputs every `bc_get` and `bc_eval` builds: the directory,
+/// the caller's environment and the read's options.
+struct ReadInputs {
+    cwd: String,
+    slot: Slot,
+    env: HashMap<String, String>,
+    options: GetOptions,
+}
+
+impl ReadInputs {
+    /// # Safety
+    /// `env_json` must be NULL or NUL-terminated.
+    unsafe fn new(
+        dir: (String, Slot),
+        env_json: *const c_char,
+        options: GetOptions,
+    ) -> Result<Self, FfiError> {
+        let (cwd, slot) = dir;
+        Ok(Self {
+            cwd,
+            slot,
+            env: parse_env_json(unsafe { optional_str(env_json) }?)?,
+            options,
+        })
+    }
+
+    fn inputs(&self, allow_exec: bool) -> Inputs<'_> {
+        Inputs {
+            cwd: &self.cwd,
+            env: &self.env,
+            slot: self.slot.clone(),
+            force: self.options.force.unwrap_or_default(),
+            wait: self.options.wait.unwrap_or_default(),
+            allow_exec,
+            now: std::time::SystemTime::now(),
+        }
+    }
+}
+
+/// The read every `bc_get` makes: [`libbeachcomber::resolve`] over `fetch`,
+/// a miss `null`.
+fn get_value(
+    key: &str,
+    inputs: &Inputs<'_>,
+    fetch: &mut dyn resolve::Fetch,
+) -> Result<serde_json::Value, FfiError> {
+    match resolve::resolve(key, inputs, fetch) {
+        Ok(value) => Ok(value.unwrap_or(serde_json::Value::Null)),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The value `comb get key` prints at `cwd`, through
+/// [`libbeachcomber::resolve`]: the daemon holds the templates
+/// (`<provider>:template`, seeded from configuration or `put`), and this
+/// client renders them with `env_json` as the caller's environment. A plain
+/// field is its cached value; a templated one is rendered; a bare provider
+/// is the whole merged namespace, as `comb get provider -f json`. A miss is
+/// `data: null`. The unrendered halves are facets, read like any key:
+/// `p:template.x` is the template as stored, `p:put.x` and `p:source.x`
+/// those layers' values.
+///
+/// `cwd` is the directory the read addresses, read as `comb get --path`
+/// reads one: `~` is the home directory and a relative path is against the
+/// caller's working directory. NULL addresses the global entry, as
+/// `comb get --global` does. Every fetch the read makes addresses that
+/// directory, and a template's `exec`, `lup` and `read` run in it (in
+/// `$HOME` from `env_json` for the global entry).
+/// `env_json` is nullable: NULL renders with the calling process's environment, as `comb` does.
+/// `options_json` is nullable; its keys, each optional, are:
+///
+/// | key     | default | meaning |
+/// |---------|---------|---------|
+/// | `force` | `false` | re-execute every Source the read demands, as `comb get --force` |
+/// | `wait`  | the budget | how long to wait for a run the read needs, as `comb get --wait`: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"` |
+///
+/// Left out, `wait` is the read's budget: a stored record waits its Source's
+/// `budget`, a cold read and a forced one wait for their run. A read that
+/// stops waiting answers what is stored, and the run goes on. The read's
+/// deadline is the client's `timeout_ms` plus the `wait`; `"forever"` has
+/// none. A key not in this table, or a `wait` that is neither, is a
+/// `parse_error`.
+/// `exec()` inside a template runs only on a client created with
+/// `{"exec":true}`; otherwise it fails with `exec() is disabled in this
+/// context`.
+///
+/// # Safety
+/// `client` must be a valid pointer from [`bc_client_new`]; `key` must be
+/// non-null and NUL-terminated; `cwd`, `env_json` and `options_json` must be
+/// NULL or NUL-terminated.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn bc_resolve(
+pub unsafe extern "C" fn bc_get(
     client: *mut BcClient,
     key: *const c_char,
     cwd: *const c_char,
     env_json: *const c_char,
-    overrides_json: *const c_char,
+    options_json: *const c_char,
 ) -> *mut c_char {
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let key = unsafe { required_str(key, "key") }?;
-        let cwd = unsafe { required_str(cwd, "cwd") }?;
-        let env_json = unsafe { optional_str(env_json) }?;
-        let overrides_json = unsafe { optional_str(overrides_json) }?;
-        let env_vars = parse_env_json(env_json)?;
-        let (field_overrides, path_overrides) = parse_overrides_json(overrides_json)?;
-        let vf = VirtualFields::with_config_overrides(field_overrides);
-
-        match key.split_once('.') {
-            Some((provider, field)) => {
-                let expr = vf
-                    .expression(provider, field)
-                    .ok_or_else(|| {
-                        FfiError::new(
-                            ErrorKind::ParseError,
-                            format!("{provider}.{field} is not a virtual field"),
-                        )
-                    })?
-                    .to_string();
-                let refs = eval::daemon_refs(&expr, &vf)
-                    .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
-                let daemon_data = fetch_via_client(c, cwd, &refs)?;
-                let ctx = EvalContext {
-                    env_vars: &env_vars,
-                    daemon_data: &daemon_data,
-                };
-                let v = vf
-                    .evaluate(provider, field, &ctx, &mut HashSet::new())
-                    .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
-                Ok(v)
-            }
-            None => match path_expression_for(key, &path_overrides) {
-                Some(expr) => match evaluate_path(&expr, cwd, &env_vars) {
-                    Some(s) => Ok(serde_json::Value::String(s)),
-                    None => Ok(serde_json::Value::Null),
-                },
-                None => Err(FfiError::new(
-                    ErrorKind::ParseError,
-                    format!("{key} has no declared path expression"),
-                )),
-            },
-        }
+        let options = parse_options(unsafe { optional_str(options_json) }?)?;
+        let read = unsafe { ReadInputs::new(resolution_dir(cwd)?, env_json, options) }?;
+        get_value(key, &read.inputs(c.allow_exec()), &mut { c })
     })
 }
 
-/// Evaluate a value expression in any of the three forms canon
-/// `field_resolution.md` (invariant 14) defines: a bare expression, exactly
-/// one `{{ expr }}` tag (keeps the expression's natural type), or literal
-/// text and/or several tags (string-valued) — the same evaluator
-/// `bc_resolve` uses for a declared virtual field, but for a raw expression
-/// that need not be registered anywhere. Every reference the source makes
-/// is threaded in: `env.*` from `env_json`, and `cache.*` / plain
-/// `provider.field` refs fetched from the daemon scoped to `cwd`, following
-/// virtual fields transitively — the same closure `bc_resolve` uses. A
-/// missing or unknown ref (an absent `env.*`, a daemon miss, or a
-/// daemon-rejected key such as an unregistered provider) is falsy at any
-/// depth, not an error.
+/// Render a source that is stored nowhere, every ref resolved exactly as it
+/// would be inside a stored template — so `bc_eval("{{ p.f }}")` and
+/// `bc_get("p.f")` agree by construction. A source that is exactly one
+/// `{{ expr }}` tag keeps the expression's natural type; anything else
+/// (literal text, several tags, a source with no tags at all) is a string.
+/// A missing ref — an absent `env.*`, a daemon miss, a key the daemon
+/// rejects — is falsy at any depth, not an error. A one-tag source whose
+/// value is `none` or undefined is absent: `data: null`, as a miss is for
+/// [`bc_get`].
 ///
-/// `cwd` is required, matching `bc_resolve`'s signature (see there for
-/// why) — a bare `cwd` reference in a field expression is reserved for a
-/// later task and not evaluated by `bc_eval` today.
+/// `cwd`, `env_json` and `exec()` behave as for [`bc_get`].
 ///
 /// # Safety
 /// `client` must be a valid pointer from [`bc_client_new`]; `template_str`
-/// and `cwd` must be non-null and NUL-terminated; `env_json` and
-/// `overrides_json` must be NULL or NUL-terminated.
+/// must be non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
+/// NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_eval(
     client: *mut BcClient,
     template_str: *const c_char,
     cwd: *const c_char,
     env_json: *const c_char,
-    overrides_json: *const c_char,
 ) -> *mut c_char {
     call_ffi(move || {
         let c = unsafe { client_ref(client) }?;
         let template_str = unsafe { required_str(template_str, "template_str") }?;
-        let cwd = unsafe { required_str(cwd, "cwd") }?;
-        let env_json = unsafe { optional_str(env_json) }?;
-        let overrides_json = unsafe { optional_str(overrides_json) }?;
-        let env_vars = parse_env_json(env_json)?;
-        let (field_overrides, _path_overrides) = parse_overrides_json(overrides_json)?;
-        let vf = VirtualFields::with_config_overrides(field_overrides);
-
-        // Every daemon key this source needs, virtual-field dependencies
-        // included — mirrors the CLI's `run_eval`.
-        let refs = eval::daemon_refs(template_str, &vf)
-            .map_err(|e| FfiError::new(eval_error_kind(&e), e))?;
-        let daemon_data = fetch_via_client(c, cwd, &refs)?;
-        let ctx = EvalContext {
-            env_vars: &env_vars,
-            daemon_data: &daemon_data,
-        };
-        eval::evaluate(template_str, &vf, &ctx).map_err(|e| FfiError::new(eval_error_kind(&e), e))
+        let read =
+            unsafe { ReadInputs::new(resolution_dir(cwd)?, env_json, GetOptions::default()) }?;
+        match resolve::eval(template_str, &read.inputs(c.allow_exec()), &mut { c }) {
+            Ok(value) => Ok(value.unwrap_or(serde_json::Value::Null)),
+            Err(e) => Err(e.into()),
+        }
     })
 }
 
@@ -676,6 +529,8 @@ pub unsafe extern "C" fn bc_eval(
 /// reason short of allocation failure.
 pub struct BcSession {
     state: Mutex<Result<libbeachcomber::Session, FfiError>>,
+    /// Whether the client it was opened on allows `exec()` ([`bc_get`]).
+    allow_exec: bool,
 }
 
 /// Locks `session`'s mutex, translating an already-held lock into a `busy`
@@ -695,7 +550,7 @@ unsafe fn session_lock<'a>(
     match handle.state.try_lock() {
         Ok(guard) => Ok(guard),
         Err(std::sync::TryLockError::WouldBlock) => Err(FfiError::new(
-            ErrorKind::Busy,
+            kind::BUSY,
             "session handle is in use by another caller",
         )),
         Err(std::sync::TryLockError::Poisoned(poisoned)) => Ok(poisoned.into_inner()),
@@ -712,12 +567,12 @@ unsafe fn session_lock<'a>(
 /// [`bc_client_new`], not yet freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_session_open(client: *mut BcClient) -> *mut BcSession {
-    let state = (|| {
-        let c = unsafe { client_ref(client) }?;
-        c.session().map_err(FfiError::from)
-    })();
+    let client = unsafe { client_ref(client) };
+    let allow_exec = client.as_ref().is_ok_and(|c| c.allow_exec());
+    let state = client.and_then(|c| c.session().map_err(FfiError::from));
     Box::into_raw(Box::new(BcSession {
         state: Mutex::new(state),
+        allow_exec,
     }))
 }
 
@@ -734,35 +589,40 @@ pub unsafe extern "C" fn bc_session_close(session: *mut BcSession) {
     drop(unsafe { Box::from_raw(session) });
 }
 
-/// Query a single key on this session's persistent connection. `flags` is
-/// the same [`BC_GET_FORCE`] / [`BC_GET_WAIT`] bitmask [`bc_get`] takes.
+/// [`bc_get`] on this session's persistent connection: the same rendered
+/// value, the same options. A NULL `cwd` is this session's directory
+/// ([`bc_session_set_context`]) when it has one, else the global entry.
 ///
 /// # Safety
 /// `session` must be a valid pointer from [`bc_session_open`]; `key` must
-/// be non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
+/// be non-null and NUL-terminated; `cwd`, `env_json` and `options_json` must
+/// be NULL or NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_session_get(
     session: *mut BcSession,
     key: *const c_char,
-    path: *const c_char,
-    flags: u32,
+    cwd: *const c_char,
+    env_json: *const c_char,
+    options_json: *const c_char,
 ) -> *mut c_char {
     call_ffi(move || {
-        check_get_flags(flags)?;
         let key = unsafe { required_str(key, "key") }?;
-        let path = unsafe { optional_str(path) }?;
+        let options = parse_options(unsafe { optional_str(options_json) }?)?;
+        let allow_exec = unsafe { &*session }.allow_exec;
         let mut guard = unsafe { session_lock(session) }?;
         let sess = guard.as_mut().map_err(|e| e.clone())?;
-        let force = flags & BC_GET_FORCE != 0;
-        let wait = flags & BC_GET_WAIT != 0;
-        let result = sess.get_with_flags(key, path, force, wait)?;
-        Ok(combresult_to_json(result))
+        let dir = match (cwd.is_null(), sess.context()) {
+            (true, Some(dir)) => (dir.to_string(), Slot::Path(dir.to_string())),
+            _ => unsafe { resolution_dir(cwd) }?,
+        };
+        let read = unsafe { ReadInputs::new(dir, env_json, options) }?;
+        get_value(key, &read.inputs(allow_exec), sess)
     })
 }
 
-/// Store data into a virtual provider on this session's persistent
+/// Store data into the cache as static data on this session's persistent
 /// connection. `json_data` must parse as JSON; `ttl` and `path` are
-/// nullable.
+/// nullable; `persist` as for [`bc_put`].
 ///
 /// # Safety
 /// `session` must be a valid pointer from [`bc_session_open`]; `key` and
@@ -775,24 +635,49 @@ pub unsafe extern "C" fn bc_session_put(
     json_data: *const c_char,
     ttl: *const c_char,
     path: *const c_char,
+    persist: bool,
 ) -> *mut c_char {
     call_ffi(move || {
         let key = unsafe { required_str(key, "key") }?;
         let json_data = unsafe { required_str(json_data, "json_data") }?;
-        let data: serde_json::Value = serde_json::from_str(json_data).map_err(|e| {
-            FfiError::new(ErrorKind::ParseError, format!("malformed json_data: {e}"))
-        })?;
+        let data: serde_json::Value = serde_json::from_str(json_data)
+            .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed json_data: {e}")))?;
         let ttl = unsafe { optional_str(ttl) }?;
         let path = unsafe { optional_str(path) }?;
         let mut guard = unsafe { session_lock(session) }?;
         let sess = guard.as_mut().map_err(|e| e.clone())?;
-        sess.put(key, data, ttl, path)?;
+        sess.put(key, data, ttl, path, persist)?;
         Ok(serde_json::Value::Null)
     })
 }
 
-/// Sets connection context on this session so subsequent queries don't need
-/// an explicit `path`.
+/// Re-execute the Sources `key` demands, as [`bc_refresh`], at `path` — or,
+/// when `path` is NULL, at this session's directory ([`bc_session_set_context`]).
+///
+/// # Safety
+/// `session` must be a valid pointer from [`bc_session_open`]; `key` must be
+/// non-null and NUL-terminated; `path` must be NULL or NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bc_session_refresh(
+    session: *mut BcSession,
+    key: *const c_char,
+    path: *const c_char,
+) -> *mut c_char {
+    call_ffi(move || {
+        let key = unsafe { required_str(key, "key") }?;
+        let path = unsafe { optional_str(path) }?;
+        let mut guard = unsafe { session_lock(session) }?;
+        let sess = guard.as_mut().map_err(|e| e.clone())?;
+        sess.refresh(key, path)?;
+        Ok(serde_json::Value::Null)
+    })
+}
+
+/// Set this session's directory: every later `bc_session_get` that passes a
+/// NULL `cwd`, and `bc_session_put` and `bc_session_refresh` that pass a NULL
+/// `path`, address it. The session keeps it and sends it with each request; it is
+/// read as every path is (`~` is home, a relative path is against the
+/// process's working directory).
 ///
 /// # Safety
 /// `session` must be a valid pointer from [`bc_session_open`]; `path` must
@@ -813,96 +698,123 @@ pub unsafe extern "C" fn bc_session_set_context(
 
 // ── Watch (Task 3.7) ────────────────────────────────────────────────────
 
-/// How often [`bc_watch_next`]'s poll loop re-checks the cancellation flag
-/// (and, for `timeout_ms > 0`, re-checks the deadline) between read
-/// attempts. Bounds how long a call may block past [`bc_watch_cancel`]
-/// being invoked on another thread: the underlying blocking read is never
-/// asked to wait longer than this in one attempt, so cancellation is
-/// noticed within roughly one tick even under `timeout_ms = -1`.
-const WATCH_POLL_TICK: Duration = Duration::from_millis(50);
-
-/// Opaque handle to a watch stream.
+/// Opaque handle to a watch.
 ///
 /// Guarded the same way [`BcSession`] is: an internal mutex that
 /// [`bc_watch_next`] takes with `try_lock`, yielding `kind: "busy"` for a
-/// concurrent caller rather than blocking. `cancelled` is deliberately
+/// concurrent caller rather than blocking. `cancel` is deliberately
 /// **outside** that mutex — [`bc_watch_cancel`] is the one call in this
 /// crate documented as safe to invoke from another thread while an op is in
 /// flight, and it must not itself block on the lock a pending
-/// [`bc_watch_next`] is holding.
+/// [`bc_watch_next`] is holding. It is the watch's own
+/// [`cancel_handle`](ResolvedWatch::cancel_handle), not a second one beside
+/// it: cancelling it is what ends a wait already inside
+/// [`ResolvedWatch::next`], which is where a blocked call actually sits.
+// `ended` latches the terminal state. A watch that has reported `eof` has
+// nothing left that could ever answer, and one that failed ended on that
+// failure — so neither resumes polling on the next call: the `eof` comes
+// back from `ended`, and the failure comes back because it replaced the
+// `ResolvedWatch` in `watch`.
 pub struct BcWatch {
-    stream: Mutex<Result<libbeachcomber::WatchStream, FfiError>>,
-    cancelled: AtomicBool,
+    watch: Mutex<Result<ResolvedWatch<'static>, FfiError>>,
+    cancel: CancelHandle,
+    ended: AtomicBool,
 }
 
-/// Opens a watch on `key`. Returns NULL only on allocation failure — any
-/// other failure (a `client` whose own construction failed, or the watch
-/// request itself failing) is recorded on the handle and surfaced on the
-/// first [`bc_watch_next`] call instead.
+/// Opens a watch on the *value* of `key` — what `bc_get(key, cwd,
+/// env_json, NULL)` answers — and emits it again whenever it changes. The fan-in
+/// underneath subscribes to every key the resolution read, and a write to a
+/// namespace's template notifies that namespace, so a template edited under
+/// the watch fires it exactly as a changed cache record does.
+///
+/// `cwd` and `env_json` mean what they mean for [`bc_get`]: `cwd` is
+/// both the directory every subscription is opened at and the one every
+/// re-resolution runs in, and NULL watches the global entry. `env_json` is
+/// nullable: NULL renders with the calling process's environment, as `comb` does.
+/// `exec()` inside a template runs only on a client created with
+/// `{"exec":true}`.
+///
+/// Returns NULL only when the process is out of memory or of file
+/// descriptors — any other failure (a `client` whose own construction failed,
+/// a key that cannot be watched, or the opening resolution failing) is
+/// recorded on the handle and surfaced on the first [`bc_watch_next`] call
+/// instead.
 ///
 /// # Safety
 /// `client` must be a valid, non-null pointer from [`bc_client_new`]; `key`
-/// must be non-null and NUL-terminated; `path` must be NULL or
+/// must be non-null and NUL-terminated; `cwd` and `env_json` must be NULL or
 /// NUL-terminated.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn bc_watch_open(
     client: *mut BcClient,
     key: *const c_char,
-    path: *const c_char,
+    cwd: *const c_char,
+    env_json: *const c_char,
 ) -> *mut BcWatch {
     let state = (|| {
-        let c = unsafe { client_ref(client) }?;
+        let c = unsafe { client_arc(client) }?;
         let key = unsafe { required_str(key, "key") }?;
-        let path = unsafe { optional_str(path) }?;
-        c.watch(key, path).map_err(FfiError::from)
+        let (cwd, slot) = unsafe { resolution_dir(cwd) }?;
+        let env_vars = parse_env_json(unsafe { optional_str(env_json) }?)?;
+        let inputs = Inputs {
+            cwd: &cwd,
+            env: &env_vars,
+            slot,
+            // A watch is a subscription, not a demand: it never forces an
+            // execution, and it waits as a read with no `wait` does.
+            force: false,
+            wait: Wait::Budget,
+            allow_exec: c.allow_exec(),
+            now: std::time::SystemTime::now(),
+        };
+        ResolvedWatch::open_owned(c, key, &inputs).map_err(FfiError::from)
     })();
+    // A watch that never opened has no wait to end, but a cancel still
+    // changes what every later `bc_watch_next` answers, so it has a handle of
+    // its own.
+    let cancel = match &state {
+        Ok(watch) => watch.cancel_handle(),
+        Err(_) => match CancelHandle::new() {
+            Ok(cancel) => cancel,
+            Err(_) => return std::ptr::null_mut(),
+        },
+    };
     Box::into_raw(Box::new(BcWatch {
-        stream: Mutex::new(state),
-        cancelled: AtomicBool::new(false),
+        watch: Mutex::new(state),
+        cancel,
+        ended: AtomicBool::new(false),
     }))
 }
 
-fn is_timeout_like(e: &std::io::Error) -> bool {
-    matches!(
-        e.kind(),
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-    )
-}
-
-fn watch_event_to_json(e: &libbeachcomber::WatchEvent) -> serde_json::Value {
-    serde_json::json!({
-        "data": e.data.as_ref().map(|d| d.as_value().clone()),
-        "age_ms": e.age_ms,
-        "stale": e.stale,
-    })
-}
-
-/// Waits for the next event on `w`. `timeout_ms`: `-1` blocks indefinitely,
-/// `0` polls (returns immediately if nothing is ready), `>0` waits that
-/// long. Distinguishes five outcomes, all machine-readable without string
-/// matching (see [`WatchOutcome`]): `event`, `timeout`, `eof`, `cancelled`
-/// (via `ok:true` plus an `outcome` field), and `error` (the ordinary
-/// `ok:false` envelope, already machine-readable via `error.kind`).
-/// `error` is reserved for the daemon actively rejecting the watched key
-/// (a malformed response line, or the `ServerError`/`ParseError` a bad
-/// nested field path produces) — any lower-level socket failure (a reset
-/// connection, or even a failing `set_read_timeout`, observed on macOS as
-/// `EINVAL` from `setsockopt` on an already-reset unix socket rather than
-/// the loss surfacing on the next read) is treated as `eof`: from a
-/// caller's point of view the stream is over either way, and a binding
-/// should not have to special-case platform-specific socket-teardown
-/// quirks as a distinct failure mode.
+/// Waits for the next value on `w`. `timeout_ms`: `-1` blocks indefinitely,
+/// `0` polls (what the open subscriptions already hold, then `timeout` if
+/// none of them had anything), `>0` waits that long and not less. Distinguishes five outcomes,
+/// all machine-readable without string matching (see [`WatchOutcome`]):
+/// `event` — whose `data` is the resolved value, `null` for a miss —
+/// `timeout`, `eof`, `cancelled` (via `ok:true` plus an `outcome` field),
+/// and `error` (the ordinary `ok:false` envelope, already machine-readable
+/// via `error.kind`).
 ///
-/// Internally this holds the socket's read timeout to at most
-/// [`WATCH_POLL_TICK`] per attempt and loops, re-checking the cancellation
-/// flag and (for `timeout_ms > 0`) the deadline between attempts, rather
-/// than issuing one read for the full requested wait — that is what lets
-/// [`bc_watch_cancel`], called from another thread mid-wait, unblock a
-/// pending call within about one tick instead of only at the next natural
-/// wakeup. A timed-out attempt's partially-read bytes (if a line arrived
-/// split across attempts) are preserved across retries by
-/// [`libbeachcomber::WatchStream::read_line_buffered`] rather than
-/// discarded, so this cannot silently drop half of an event.
+/// Only a change is an event: a frame whose re-resolution comes out the same
+/// value keeps the wait going. The first call on a provider key answers with
+/// the value as it was when the watch opened, without waiting for a change —
+/// but do not assume it: on a facet key the first value comes over the wire,
+/// so the first call can just as well be `timeout`, `eof`, or the daemon's
+/// refusal of the key.
+///
+/// `error` is the daemon actively rejecting the watched key, or a template
+/// the resolution cannot render; any lower-level socket failure (a reset
+/// connection) is `eof`: from a caller's point of view the stream is over
+/// either way. A frame the daemon sent before it closed the connection — its
+/// refusal of the key, say — is still read and answered before the `eof`.
+///
+/// Both terminal outcomes latch: after `eof`, or after an `error`, every
+/// later call reports the same thing rather than resuming the poll.
+///
+/// The wait itself is [`ResolvedWatch::next`]'s: one `poll(2)` over every
+/// open subscription and the watch's cancel pipe. A frame on any
+/// subscription ends it at once, [`bc_watch_cancel`] from another thread
+/// ends it at once, and a watch with nothing happening does not wake.
 ///
 /// # Safety
 /// `w` must be a valid, non-null pointer previously returned by
@@ -911,72 +823,46 @@ fn watch_event_to_json(e: &libbeachcomber::WatchEvent) -> serde_json::Value {
 pub unsafe extern "C" fn bc_watch_next(w: *mut BcWatch, timeout_ms: i32) -> *mut c_char {
     call_watch_next(move || {
         let handle = unsafe { &*w };
-        if handle.cancelled.load(Ordering::SeqCst) {
+        if handle.cancel.is_cancelled() {
             return Ok(WatchOutcome::Cancelled);
         }
-        let mut guard = match handle.stream.try_lock() {
+        if handle.ended.load(Ordering::SeqCst) {
+            return Ok(WatchOutcome::Eof);
+        }
+        let mut guard = match handle.watch.try_lock() {
             Ok(guard) => guard,
             Err(std::sync::TryLockError::WouldBlock) => {
                 return Err(FfiError::new(
-                    ErrorKind::Busy,
+                    kind::BUSY,
                     "watch handle is in use by another caller",
                 ));
             }
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
-        let stream = guard.as_mut().map_err(|e| e.clone())?;
 
-        // `timeout_ms < 0` (canonically -1) blocks indefinitely: no deadline.
-        let deadline =
-            (timeout_ms > 0).then(|| Instant::now() + Duration::from_millis(timeout_ms as u64));
-
-        let mut line = String::new();
-        loop {
-            if handle.cancelled.load(Ordering::SeqCst) {
-                return Ok(WatchOutcome::Cancelled);
+        // `timeout_ms < 0` (canonically -1) blocks indefinitely.
+        let timeout = (timeout_ms >= 0).then(|| Duration::from_millis(timeout_ms as u64));
+        let outcome = {
+            let watch = guard.as_mut().map_err(|e| e.clone())?;
+            watch.next(timeout)
+        };
+        match outcome {
+            Ok(LibWatchOutcome::Value(value)) => Ok(WatchOutcome::Event(
+                value.unwrap_or(serde_json::Value::Null),
+            )),
+            Ok(LibWatchOutcome::Timeout) => Ok(WatchOutcome::Timeout),
+            Ok(LibWatchOutcome::Eof) => {
+                handle.ended.store(true, Ordering::SeqCst);
+                Ok(WatchOutcome::Eof)
             }
-            let attempt = if timeout_ms == 0 {
-                // A single minimal-wait attempt: "ready right now, or not".
-                Duration::from_millis(1)
-            } else if let Some(deadline) = deadline {
-                let now = Instant::now();
-                if now >= deadline {
-                    return Ok(WatchOutcome::Timeout);
-                }
-                (deadline - now).min(WATCH_POLL_TICK)
-            } else {
-                WATCH_POLL_TICK
-            };
-            // A socket that just lost its peer can fail to set a timeout at
-            // all (observed on macOS as `EINVAL` from `setsockopt` on an
-            // abruptly-reset unix socket) rather than surfacing the loss on
-            // the next read. Either way there is no connection left to wait
-            // on, so this is the same outcome a clean `read() == 0` would
-            // report: `eof`, not a distinct application-level `error`.
-            if stream.set_read_timeout(Some(attempt)).is_err() {
-                return Ok(WatchOutcome::Eof);
-            }
-
-            match stream.read_line_buffered(&mut line) {
-                Ok(0) => return Ok(WatchOutcome::Eof),
-                Ok(_) if line.ends_with('\n') => {
-                    let event =
-                        libbeachcomber::WatchStream::parse_line(&line).map_err(FfiError::from)?;
-                    return Ok(WatchOutcome::Event(watch_event_to_json(&event)));
-                }
-                // A partial final line with no trailing newline before EOF:
-                // there is no complete event to report.
-                Ok(_) => return Ok(WatchOutcome::Eof),
-                Err(e) if is_timeout_like(&e) => {
-                    if timeout_ms == 0 {
-                        return Ok(WatchOutcome::Timeout);
-                    }
-                    continue;
-                }
-                // Any other read failure (e.g. a reset connection) likewise
-                // means the stream is over, not that this particular call
-                // was rejected.
-                Err(_) => return Ok(WatchOutcome::Eof),
+            Ok(LibWatchOutcome::Cancelled) => Ok(WatchOutcome::Cancelled),
+            Err(e) => {
+                // The failure ended the watch: replacing the handle's
+                // `ResolvedWatch` with it is what makes every later call
+                // report it again instead of polling on.
+                let err = FfiError::from(e);
+                *guard = Err(err.clone());
+                Err(err)
             }
         }
     })
@@ -985,10 +871,10 @@ pub unsafe extern "C" fn bc_watch_next(w: *mut BcWatch, timeout_ms: i32) -> *mut
 /// Cancels a pending or future [`bc_watch_next`] call on `w`. Null-safe.
 /// The sole function in this crate documented as safe to call from a
 /// different thread than the one driving `w`'s other operations — it never
-/// takes `w`'s internal lock, only sets an atomic flag a pending
-/// `bc_watch_next` polls for. A `bc_watch_next` call already in flight
-/// observes it within about [`WATCH_POLL_TICK`]; every call after this one
-/// observes it immediately.
+/// takes `w`'s internal lock: it sets a flag and writes one byte to the pipe
+/// a pending `bc_watch_next` polls beside its subscriptions. A
+/// `bc_watch_next` call already in flight returns `cancelled` at once, and
+/// so does every call after this one.
 ///
 /// # Safety
 /// `w` must be either NULL or a pointer previously returned by
@@ -999,7 +885,7 @@ pub unsafe extern "C" fn bc_watch_cancel(w: *mut BcWatch) {
         return;
     }
     let handle = unsafe { &*w };
-    handle.cancelled.store(true, Ordering::SeqCst);
+    handle.cancel.cancel();
 }
 
 /// Frees a watch handle. Null-safe.

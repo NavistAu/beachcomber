@@ -40,15 +40,25 @@ class DaemonHandle
   end
 
   def start
+    # The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
+    # (falling back to $HOME/.config) and its log under $XDG_STATE_HOME: all
+    # three point into the run's tempdir.
     env = {
       'BEACHCOMBER_SOCKET' => @socket_path,
       'HOME'               => @tmpdir,
+      'XDG_CONFIG_HOME'    => @tmpdir,
+      'XDG_STATE_HOME'     => File.join(@tmpdir, '.local', 'state'),
     }
+    # The daemon says on `--ready-fd` when it serves its socket.
+    ready, signal = IO.pipe
     @pid = spawn(env, @comb_bin, 'daemon',
                  '--socket', @socket_path,
+                 '--ready-fd', signal.fileno.to_s,
+                 signal => signal,
                  out: File::NULL,
                  err: File::NULL)
-    wait_for_socket
+    signal.close
+    wait_for_ready(ready)
     self
   end
 
@@ -67,13 +77,13 @@ class DaemonHandle
 
   private
 
-  def wait_for_socket(timeout: 5)
-    deadline = Time.now + timeout
-    loop do
-      break if File.socket?(@socket_path)
-      raise "daemon socket never appeared at #{@socket_path}" if Time.now > deadline
-      sleep 0.05
-    end
+  # The daemon writes a newline on `ready` once it serves its socket, and
+  # closes it unwritten if it exits first.
+  def wait_for_ready(ready, timeout: 5)
+    served = IO.select([ready], nil, nil, timeout) && ready.gets == "\n"
+    raise "daemon did not serve #{@socket_path}" unless served
+  ensure
+    ready.close
   end
 end
 
@@ -84,12 +94,12 @@ end
 class ConformanceRunner
   # Ops this runner's binding can execute. A fixture using any op outside
   # this set must be skipped, not failed — the binding doesn't implement it.
-  SUPPORTED_OPS = %w[hello get refresh put status context watch introspect resolve eval].freeze
+  SUPPORTED_OPS = %w[hello get refresh put status context watch introspect eval].freeze
 
-  # Ops that are not wire ops: their "result" is the resolved/evaluated value
-  # itself (a String/Hash/Array/true/nil), not a typed Result/HelloInfo/etc.
-  # wrapper, so status and data extraction special-case them.
-  RAW_VALUE_OPS = %w[resolve eval].freeze
+  # Ops whose "result" is the value itself (a String/Hash/Array/true/nil),
+  # not a typed HelloInfo/etc. wrapper, so status and data extraction
+  # special-case them.
+  RAW_VALUE_OPS = %w[get eval].freeze
 
   # Every expectation kind documented in tests/conformance/README.md. A
   # fixture using a key outside this set fails loudly rather than being
@@ -97,7 +107,7 @@ class ConformanceRunner
   # asserting something the harness doesn't actually check.
   KNOWN_EXPECT_KEYS = %w[
     status data_type data_equals data_as_text data_contains_field
-    data_field_equals age_ms_present stale error_contains
+    data_field_equals error_contains
   ].freeze
 
   def initialize(comb_bin)
@@ -123,7 +133,7 @@ class ConformanceRunner
   end
 
   # Each fixture runs against a fresh daemon instance (tests/conformance/
-  # README.md's isolation contract) — resolve fixtures in particular reuse
+  # README.md's isolation contract) — get fixtures in particular reuse
   # provider keys (e.g. "myappcache") across files, so a shared daemon would
   # leak cache state between them.
   def run_fixture(fixture)
@@ -143,7 +153,7 @@ class ConformanceRunner
     daemon = DaemonHandle.new(@comb_bin)
     daemon.start
     begin
-      @client = Beachcomber::Client.new(socket_path: daemon.socket_path)
+      @client = Beachcomber::Client.new(socket_path: daemon.socket_path, timeout_ms: 5000)
       @default_cwd = File.dirname(daemon.socket_path)
 
       run_setup(fixture['setup'] || [])
@@ -157,6 +167,7 @@ class ConformanceRunner
       @errors << "#{name}: unexpected exception: #{e.class}: #{e.message}"
       puts "FAIL  #{name}"
     ensure
+      @client&.close
       daemon.stop
     end
   end
@@ -172,13 +183,15 @@ class ConformanceRunner
     args = step['args'] || {}
     case op
     when 'get'
-      result = @client.get(args['key'], path: args['path'])
-      [result, nil]
+      cwd = fixture['cwd'] || @default_cwd
+      value = @client.get(args['key'], cwd: cwd, env: fixture['env'],
+                                       force: args['force'] || false, wait: args['wait'])
+      [value, nil]
     when 'refresh'
       @client.refresh(args['key'], path: args['path'])
       [nil, nil]
     when 'put'
-      @client.put(args['key'], args['data'], ttl: args['ttl'], path: args['path'])
+      @client.put(args['key'], args['data'], ttl: args['ttl'], path: args['path'], persist: args['persist'] == true)
       [nil, nil]
     when 'hello'
       result = @client.hello
@@ -193,17 +206,14 @@ class ConformanceRunner
       # context is session-scoped; not testable here without a session — skip
       [nil, nil]
     when 'watch'
-      stream = @client.watch(args['key'], path: args['path'])
+      cwd    = fixture['cwd'] || @default_cwd
+      stream = @client.watch(args['key'], cwd: cwd, env: fixture['env'])
       event  = stream.next_event
       stream.close
       [event, nil]
-    when 'resolve'
-      cwd = fixture['cwd'] || @default_cwd
-      value = @client.resolve(args['key'], cwd: cwd, env: fixture['env'], overrides: fixture['virtual'])
-      [value, nil]
     when 'eval'
       cwd = fixture['cwd'] || @default_cwd
-      value = @client.eval_expression(args['template'], cwd: cwd, env: fixture['env'], overrides: fixture['virtual'])
+      value = @client.eval(args['template'], cwd: cwd, env: fixture['env'])
       [value, nil]
     else
       raise "unknown op in fixture: #{op.inspect}"
@@ -211,8 +221,12 @@ class ConformanceRunner
   end
 
   def check(name, expect, result, _raw, op)
-    status_ok = check_status(expect, result, op)
-    return unless status_ok
+    if (status_failure = check_status(expect, result, op))
+      @failed += 1
+      @errors << "#{name}: #{status_failure}"
+      puts "FAIL  #{name}"
+      return
+    end
 
     if (dt = expect['data_type'])
       check_data_type(name, dt, result, op)
@@ -228,12 +242,6 @@ class ConformanceRunner
     end
     if expect.key?('data_as_text')
       check_data_as_text(name, expect['data_as_text'], result, op)
-    end
-    if expect.key?('age_ms_present')
-      check_age_ms_present(name, expect['age_ms_present'], result, op)
-    end
-    if expect.key?('stale')
-      check_stale(name, expect['stale'], result, op)
     end
 
     if @errors.any? { |e| e.start_with?(name) }
@@ -264,35 +272,37 @@ class ConformanceRunner
     end
   end
 
-  # See RAW_VALUE_OPS: `resolve` and `eval` hand back a raw JSON scalar, so
+  # See RAW_VALUE_OPS: `get` and `eval` hand back the value itself, so
   # status/data extraction special-case them rather than trying to duck-type
   # that scalar against the wrapper types below.
+  #
+  # @return [String, nil] a failure reason, or nil when the status holds
   def check_status(expect, result, op)
     expected = expect['status']
     case expected
-    when 'ok'
-      true # result returned without raising
+    when 'ok', nil
+      nil # result returned without raising
     when 'hit'
-      if RAW_VALUE_OPS.include?(op)
-        !result.nil?
-      elsif result.respond_to?(:data) && !result.data.nil?
-        true
-      elsif result.is_a?(Beachcomber::WatchEvent) && !result.data.nil?
-        true
-      else
-        false
-      end
+      hit =
+        if RAW_VALUE_OPS.include?(op)
+          !result.nil?
+        else
+          result.respond_to?(:data) && !result.data.nil?
+        end
+      hit ? nil : "expected status hit but data was absent (#{result.inspect})"
     when 'miss'
-      if RAW_VALUE_OPS.include?(op)
-        result.nil?
-      else
-        result.respond_to?(:miss?) ? result.miss? : false
-      end
+      miss =
+        if RAW_VALUE_OPS.include?(op)
+          result.nil?
+        else
+          result.respond_to?(:data) && result.data.nil?
+        end
+      miss ? nil : "expected status miss but got #{result.inspect}"
     when 'error'
       # If we got here without raising, that's a failure — caller handles raises separately
-      false
+      "expected status error but op succeeded with #{result.inspect}"
     else
-      true
+      "unknown expect status: #{expected.inspect}"
     end
   end
 
@@ -300,8 +310,6 @@ class ConformanceRunner
     return result if RAW_VALUE_OPS.include?(op)
 
     case result
-    when Beachcomber::Result
-      result.data
     when Beachcomber::HelloInfo
       { 'protocol_version' => result.protocol_version, 'daemon_version' => result.daemon_version }
     when Beachcomber::IntrospectResponse
@@ -387,44 +395,6 @@ class ConformanceRunner
     actual = as_text(data) || ''
     unless actual == expected
       @errors << "#{name}: data_as_text expected #{expected.inspect}, got #{actual.inspect}"
-    end
-  end
-
-  # age_ms is present exactly when the response is a cache hit (get) or a
-  # delivered watch event — mirroring the reference runner's
-  # CanonicalResponse, where every other op leaves age_ms as None. Ruby's
-  # Result#age_ms is never nil (it defaults a missing wire value to 0), so
-  # presence can't be read off the accessor directly — it has to be derived
-  # from the op/result shape the same way the reference does.
-  def check_age_ms_present(name, expected, result, op)
-    actual =
-      case op
-      when 'get'
-        result.respond_to?(:hit?) ? result.hit? : false
-      when 'watch'
-        result.is_a?(Beachcomber::WatchEvent)
-      else
-        false
-      end
-    unless actual == expected
-      @errors << "#{name}: age_ms_present expected #{expected.inspect}, got #{actual.inspect}"
-    end
-  end
-
-  # stale is only meaningful alongside a get hit or a delivered watch event —
-  # same reasoning as check_age_ms_present.
-  def check_stale(name, expected, result, op)
-    actual =
-      case op
-      when 'get'
-        result.respond_to?(:hit?) && result.hit? ? result.stale? : nil
-      when 'watch'
-        result.is_a?(Beachcomber::WatchEvent) ? result.stale : nil
-      else
-        nil
-      end
-    unless actual == expected
-      @errors << "#{name}: stale expected #{expected.inspect}, got #{actual.inspect}"
     end
   end
 

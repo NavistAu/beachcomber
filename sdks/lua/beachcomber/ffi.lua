@@ -24,24 +24,23 @@ const char *bc_version(void);
 BcClient *bc_client_new(const char *options_json);
 void bc_client_free(BcClient *client);
 
-char *bc_get(BcClient *client, const char *key, const char *path, uint32_t flags);
-char *bc_put(BcClient *client, const char *key, const char *json_data, const char *ttl, const char *path);
-char *bc_put_null(BcClient *client, const char *key, const char *path);
+char *bc_get(BcClient *client, const char *key, const char *cwd, const char *env_json, const char *options_json);
+char *bc_put(BcClient *client, const char *key, const char *json_data, const char *ttl, const char *path, bool persist);
 char *bc_refresh(BcClient *client, const char *key, const char *path);
 char *bc_status(BcClient *client);
 char *bc_introspect(BcClient *client, const char *subject, const char *options_json);
 char *bc_hello(BcClient *client);
 
-char *bc_resolve(BcClient *client, const char *key, const char *cwd, const char *env_json, const char *overrides_json);
-char *bc_eval(BcClient *client, const char *template_str, const char *cwd, const char *env_json, const char *overrides_json);
+char *bc_eval(BcClient *client, const char *template_str, const char *cwd, const char *env_json);
 
 BcSession *bc_session_open(BcClient *client);
 void bc_session_close(BcSession *session);
-char *bc_session_get(BcSession *session, const char *key, const char *path, uint32_t flags);
-char *bc_session_put(BcSession *session, const char *key, const char *json_data, const char *ttl, const char *path);
+char *bc_session_get(BcSession *session, const char *key, const char *cwd, const char *env_json, const char *options_json);
+char *bc_session_put(BcSession *session, const char *key, const char *json_data, const char *ttl, const char *path, bool persist);
+char *bc_session_refresh(BcSession *session, const char *key, const char *path);
 char *bc_session_set_context(BcSession *session, const char *path);
 
-BcWatch *bc_watch_open(BcClient *client, const char *key, const char *path);
+BcWatch *bc_watch_open(BcClient *client, const char *key, const char *cwd, const char *env_json);
 char *bc_watch_next(BcWatch *w, int32_t timeout_ms);
 void bc_watch_cancel(BcWatch *w);
 void bc_watch_free(BcWatch *w);
@@ -49,25 +48,23 @@ void bc_watch_free(BcWatch *w);
 void bc_string_free(char *ptr);
 ]]
 
---- `bc_get` / `bc_session_get` flag bits (mirrors BC_GET_FORCE / BC_GET_WAIT
--- in libbeachcomber-ffi/include/beachcomber.h).
-M.BC_GET_FORCE = 1
-M.BC_GET_WAIT = 2
-
 -- Every symbol the ABI declares. Verified at load time (common-contract
 -- point 3: "required symbols are checked at load, not on first use").
 local REQUIRED_SYMBOLS = {
   "bc_version", "bc_client_new", "bc_client_free", "bc_string_free",
-  "bc_get", "bc_put", "bc_put_null", "bc_refresh", "bc_status", "bc_introspect", "bc_hello",
-  "bc_resolve", "bc_eval",
-  "bc_session_open", "bc_session_close", "bc_session_get", "bc_session_put", "bc_session_set_context",
+  "bc_get", "bc_put", "bc_refresh", "bc_status", "bc_introspect", "bc_hello",
+  "bc_eval",
+  "bc_session_open", "bc_session_close", "bc_session_get", "bc_session_put", "bc_session_refresh",
+  "bc_session_set_context",
   "bc_watch_open", "bc_watch_next", "bc_watch_cancel", "bc_watch_free",
 }
 
 --- Load the cdylib per the discovery contract, verify every required
 -- symbol resolves, and return the loaded namespace plus its version.
 --
--- @param opts table?  opts.library_path overrides discovery entirely (advanced/tests).
+-- @param opts table?  opts.library_path is `$BEACHCOMBER_LIB` for a caller that
+--                     cannot set the environment (standard Lua has no setenv):
+--                     when given, it is the only candidate.
 -- @return {lib=cdata, version=string}, or nil, Error
 function M.load(opts)
   opts = opts or {}
@@ -77,7 +74,7 @@ function M.load(opts)
   if opts.library_path then
     candidates = { opts.library_path }
   else
-    candidates = discovery.library_candidates(ffi.os)
+    candidates = discovery.library_candidates()
   end
 
   local lib, tried = nil, {}
@@ -101,14 +98,15 @@ function M.load(opts)
   for _, name in ipairs(REQUIRED_SYMBOLS) do
     local ok = pcall(function() return lib[name] end)
     if not ok then
-      local version = "unknown"
+      local version
       local vok, vptr = pcall(function() return lib.bc_version() end)
       if vok and vptr ~= nil then
         version = ffi.string(vptr)
       end
       return nil, Error.new(
-        "missing_symbol",
-        string.format("library is missing required symbol %q (loaded library reports bc_version()=%q)", name, version)
+        "library_symbol",
+        string.format("library is missing required symbol %q", name),
+        version
       )
     end
   end

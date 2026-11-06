@@ -180,8 +180,9 @@ pub fn decide_supersession(
 ///
 /// Probes immediately (fast path: a serving owner returns `true` at once,
 /// preserving the common idempotent-contention case). If the first probe fails,
-/// retries every 50ms until the owner starts serving or the grace window
-/// expires. A grace of `Duration::ZERO` probes exactly once.
+/// retries every `step` ([`PROBE_STEP`] for a daemon) until the owner starts
+/// serving or the grace window expires. A grace of `Duration::ZERO` probes
+/// exactly once.
 ///
 /// The grace window preserves the concurrent-start race (singleton.md Example 2):
 /// the losing process waits for the winner to bind rather than killing a daemon
@@ -190,6 +191,7 @@ pub fn probe_until_serving(
     probe: &dyn crate::boundaries::socket::SocketProbe,
     socket: &Path,
     grace: Duration,
+    step: Duration,
 ) -> bool {
     let deadline = Instant::now() + grace;
     loop {
@@ -199,9 +201,13 @@ pub fn probe_until_serving(
         if Instant::now() >= deadline {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(step);
     }
 }
+
+/// How often a starting daemon probes a same-build owner's socket through
+/// the grace window ([`probe_until_serving`]).
+pub const PROBE_STEP: Duration = Duration::from_millis(50);
 
 /// High-level: acquire the singleton lock, superseding an existing daemon if its
 /// version differs from ours.
@@ -247,7 +253,7 @@ pub fn acquire_or_supersede_with(
             // is fine. A different-build owner is superseded regardless, so skip
             // the (up-to-`probe_grace`) probe in that case.
             let owner_serving = if rec.binary_hash == our_binary_hash {
-                probe_until_serving(probe, socket_path, probe_grace)
+                probe_until_serving(probe, socket_path, probe_grace, PROBE_STEP)
             } else {
                 false
             };
@@ -427,7 +433,7 @@ pub fn reap_sweep_with(
 }
 
 /// Remove a reaped orphan's corpse files: the socket itself and the sibling
-/// `pid` / `daemon.pid` files. Probes first and NEVER unlinks a serving
+/// `pid` file. Probes first and NEVER unlinks a serving
 /// socket — a racing respawn that re-bound the path between kill and cleanup
 /// keeps its socket (canon §"Corpse cleanup", invariant 14). Returns true if
 /// anything was removed.
@@ -440,11 +446,7 @@ pub fn cleanup_orphan_corpse(
         return false;
     }
     let mut removed = false;
-    for path in [
-        socket.to_path_buf(),
-        socket.with_file_name("pid"),
-        socket.with_file_name("daemon.pid"),
-    ] {
+    for path in [socket.to_path_buf(), socket.with_file_name("pid")] {
         match std::fs::remove_file(&path) {
             Ok(()) => removed = true,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

@@ -19,7 +19,6 @@
 'use strict';
 
 import fs from 'fs';
-import net from 'net';
 import path from 'path';
 import os from 'os';
 import { spawnSync, spawn } from 'child_process';
@@ -42,7 +41,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
 // Dynamic import is async; use top-level async IIFE.
 (async () => {
   const { Client, WatchStream } = await import(DIST_CLIENT);
-  const { ServerError } = await import(DIST_ERRORS);
+  const { UnsupportedError } = await import(DIST_ERRORS);
 
   // ---------------------------------------------------------------------------
   // Fixture discovery
@@ -68,10 +67,9 @@ if (!fs.existsSync(DIST_CLIENT)) {
           setup: Array.isArray(v.setup) ? v.setup : [],
           test: v.test,
           expect: v.expect,
-          // `resolve`-op context: field/path expression overrides, env vars,
-          // and cwd, all client-side (see tests/conformance/README.md).
-          virtual: v.virtual && typeof v.virtual === 'object' ? v.virtual : {},
-          env: v.env && typeof v.env === 'object' ? v.env : {},
+          // `get`/`eval`/`watch`-op context: the caller's env vars and cwd
+          // (see tests/conformance/README.md).
+          env: v.env && typeof v.env === 'object' ? v.env : undefined,
           cwd: typeof v.cwd === 'string' ? v.cwd : null,
           sourcePath: filePath,
         });
@@ -86,29 +84,20 @@ if (!fs.existsSync(DIST_CLIENT)) {
 
   const COMB_BIN = process.env['COMB_BIN'] || 'comb';
 
-  function waitForSocket(sockPath, timeoutMs = 5000) {
-    const deadline = Date.now() + timeoutMs;
+  // The daemon writes a newline on its `--ready-fd` pipe once it serves its
+  // socket, and closes it unwritten if it exits first.
+  function waitForReady(ready, timeoutMs = 5000) {
     return new Promise((resolve) => {
-      function attempt() {
-        if (Date.now() > deadline) {
-          resolve(false);
-          return;
-        }
-        const s = new net.Socket();
-        s.setTimeout(100);
-        s.connect(sockPath, () => {
-          s.destroy();
-          resolve(true);
-        });
-        s.on('error', () => {
-          setTimeout(attempt, 50);
-        });
-        s.on('timeout', () => {
-          s.destroy();
-          setTimeout(attempt, 50);
-        });
+      const timer = setTimeout(() => done(false), timeoutMs);
+      function done(served) {
+        clearTimeout(timer);
+        ready.removeAllListeners();
+        ready.destroy();
+        resolve(served);
       }
-      attempt();
+      ready.on('data', (chunk) => done(chunk.includes(10)));
+      ready.on('end', () => done(false));
+      ready.on('error', () => done(false));
     });
   }
 
@@ -116,15 +105,25 @@ if (!fs.existsSync(DIST_CLIENT)) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'beachcomber-conform-'));
     const sockPath = path.join(tmpDir, 'comb.sock');
 
-    const proc = spawn(COMB_BIN, ['daemon', '--socket', sockPath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, COMB_SOCKET: sockPath },
+    // The daemon writes its managed defaults under $XDG_CONFIG_HOME on start
+    // (falling back to $HOME/.config) and its log under $XDG_STATE_HOME: all
+    // three point into the fixture's tempdir.
+    // Its fd 3 is a pipe to this process: `--ready-fd 3`.
+    const proc = spawn(COMB_BIN, ['daemon', '--socket', sockPath, '--ready-fd', '3'], {
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        COMB_SOCKET: sockPath,
+        XDG_CONFIG_HOME: tmpDir,
+        HOME: tmpDir,
+        XDG_STATE_HOME: path.join(tmpDir, '.local', 'state'),
+      },
     });
 
     proc.stdout.on('data', () => {});
     proc.stderr.on('data', () => {});
 
-    const ready = await waitForSocket(sockPath, 5000);
+    const ready = await waitForReady(proc.stdio[3], 5000);
     if (!ready) {
       proc.kill('SIGKILL');
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -150,12 +149,12 @@ if (!fs.existsSync(DIST_CLIENT)) {
    * Canonical response shape used by expectation checking.
    * Mirrors the Rust conformance runner's CanonicalResponse.
    */
-  function makeOk({ data = null, dataAsText = null, ageMs = null, stale = null } = {}) {
-    return { ok: true, data, dataAsText, ageMs, stale, error: null };
+  function makeOk({ data = null, dataAsText = null } = {}) {
+    return { ok: true, data, dataAsText, error: null };
   }
 
   function makeError(message) {
-    return { ok: false, data: null, dataAsText: null, ageMs: null, stale: null, error: message };
+    return { ok: false, data: null, dataAsText: null, error: message };
   }
 
   function valueAsText(v) {
@@ -171,12 +170,13 @@ if (!fs.existsSync(DIST_CLIENT)) {
 
     try {
       switch (op) {
-        case 'resolve': {
+        case 'get': {
           const key = args.key || '';
-          const data = await client.resolve(key, {
+          const data = await client.get(key, {
             cwd: resolveCtx.cwd,
             env: resolveCtx.env,
-            overrides: resolveCtx.virtual,
+            force: args.force === true,
+            wait: args.wait,
           });
           if (data === null || data === undefined) {
             return makeOk();
@@ -188,7 +188,6 @@ if (!fs.existsSync(DIST_CLIENT)) {
           const data = await client.eval(template, {
             cwd: resolveCtx.cwd,
             env: resolveCtx.env,
-            overrides: resolveCtx.virtual,
           });
           if (data === null || data === undefined) {
             return makeOk();
@@ -202,22 +201,6 @@ if (!fs.existsSync(DIST_CLIENT)) {
             daemon_version: info.daemonVersion,
           };
           return makeOk({ data });
-        }
-
-        case 'get': {
-          const key = args.key || '';
-          const pathArg = args.path;
-          const result = await client.get(key, pathArg);
-          if (result.isHit) {
-            return makeOk({
-              data: result.data,
-              dataAsText: result.getString(),
-              ageMs: result.ageMs,
-              stale: result.stale,
-            });
-          } else {
-            return makeOk();
-          }
         }
 
         case 'refresh': {
@@ -243,7 +226,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
           const data = args.data;
           const ttl = args.ttl;
           const pathArg = args.path;
-          await client.put(key, data, { ttl, path: pathArg });
+          await client.put(key, data, { ttl, path: pathArg, persist: args.persist === true });
           return makeOk();
         }
 
@@ -255,34 +238,28 @@ if (!fs.existsSync(DIST_CLIENT)) {
             path: r.path,
             value: r.value,
             age_ms: r.ageMs,
-            stale: r.stale,
           }));
           return makeOk({ data: arr });
         }
 
         case 'watch': {
           const key = args.key || '';
-          const pathArg = args.path;
-          const stream = await client.watch(key, pathArg);
+          const stream = await client.watch(key, {
+            cwd: resolveCtx.cwd,
+            env: resolveCtx.env,
+          });
           let event = null;
           try {
-            for await (const ev of stream) {
-              event = ev;
-              stream.close();
-              break;
-            }
+            event = await stream.nextEvent(5000);
           } catch (err) {
-            if (!event) {
-              return makeError(err instanceof Error ? err.message : String(err));
-            }
-            // Had an event before close threw — treat as success.
+            return makeError(err instanceof Error ? err.message : String(err));
+          } finally {
+            stream.close();
           }
           if (event) {
             return makeOk({
               data: event.data,
               dataAsText: valueAsText(event.data),
-              ageMs: event.ageMs,
-              stale: event.stale,
             });
           }
           return makeOk();
@@ -315,6 +292,10 @@ if (!fs.existsSync(DIST_CLIENT)) {
           throw new Error(`unknown op in fixture: ${op}`);
       }
     } catch (err) {
+      // The active transport lacks this op (the subprocess tier's hello
+      // and introspect): the fixture is skipped by the
+      // main loop, never failed on a documented gap or passed vacuously.
+      if (err instanceof UnsupportedError) throw err;
       return makeError(err instanceof Error ? err.message : String(err));
     }
   }
@@ -322,7 +303,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
   // Ops this runner's binding can execute. A fixture using any op outside
   // this set must be skipped, not failed — the binding doesn't implement it.
   const SUPPORTED_OPS = new Set([
-    'hello', 'get', 'refresh', 'put', 'status', 'context', 'watch', 'introspect', 'resolve', 'eval',
+    'hello', 'get', 'refresh', 'put', 'status', 'context', 'watch', 'introspect', 'eval',
   ]);
 
   function unsupportedOp(fixture) {
@@ -357,7 +338,7 @@ if (!fs.existsSync(DIST_CLIENT)) {
   // fixture asserting something the harness doesn't actually check.
   const KNOWN_EXPECT_KEYS = new Set([
     'status', 'data_type', 'data_equals', 'data_as_text', 'data_contains_field',
-    'data_field_equals', 'age_ms_present', 'stale', 'error_contains',
+    'data_field_equals', 'error_contains',
   ]);
 
   function checkExpect(fixture, resp) {
@@ -441,21 +422,6 @@ if (!fs.existsSync(DIST_CLIENT)) {
       }
     }
 
-    // age_ms_present
-    if (expect.age_ms_present !== undefined) {
-      const actual = resp.ageMs !== null;
-      if (actual !== expect.age_ms_present) {
-        failures.push(`age_ms_present=${expect.age_ms_present} expected but got ${actual}`);
-      }
-    }
-
-    // stale
-    if (expect.stale !== undefined) {
-      if (resp.stale !== expect.stale) {
-        failures.push(`stale=${expect.stale} expected but got ${resp.stale}`);
-      }
-    }
-
     // error_contains
     if (expect.error_contains !== undefined) {
       const actual = resp.error ?? '';
@@ -500,10 +466,10 @@ if (!fs.existsSync(DIST_CLIENT)) {
         if (transportUsed === null) {
           transportUsed = client.transport();
         }
-        // `resolve` is client-side: cwd defaults to this fixture's private
-        // temp dir (matching the Rust reference runner) when not declared.
+        // `get`, `eval` and `watch` read at a directory: cwd defaults to
+        // this fixture's private temp dir (matching the Rust reference
+        // runner) when not declared.
         const resolveCtx = {
-          virtual: fixture.virtual,
           env: fixture.env,
           cwd: fixture.cwd ?? daemon.tmpDir,
         };
@@ -533,6 +499,11 @@ if (!fs.existsSync(DIST_CLIENT)) {
           console.log(`  pass [${fixture.name}]`);
         }
       } catch (err) {
+        if (err instanceof UnsupportedError) {
+          console.log(`  SKIP [${fixture.name}]: ${err.message}`);
+          skipped++;
+          continue;
+        }
         failures.push({
           name: fixture.name,
           description: fixture.description,

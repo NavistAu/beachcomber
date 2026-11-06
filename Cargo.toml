@@ -2,14 +2,14 @@
 members = [".", "libbeachcomber", "libbeachcomber-ffi", "tests/fixtures/test_provider_lib", "xtask"]
 
 [workspace.package]
-version = "0.9.1"
+version = "0.10.0"
 
 [workspace.dependencies]
-minijinja = { version = "2", default-features = false, features = ["builtins", "serde"] }
+minijinja = { version = "2", default-features = false, features = ["builtins", "json", "macros", "multi_template", "serde", "urlencode"] }
 
 [package]
 name = "beachcomber"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2024"
 description = "A centralized daemon that caches shell state (git, battery, hostname, etc.) so every consumer reads from one fast cache instead of independently forking shells"
 license = "MIT"
@@ -29,7 +29,7 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -46,13 +46,18 @@ minijinja = { workspace = true }
 terminal_size = "0.3"
 thiserror = "2.0.18"
 sha2 = "0.11.0"
-libbeachcomber = { path = "libbeachcomber", version = "0.9.1" }
+libbeachcomber = { path = "libbeachcomber", version = "0.10.0" }
 
 [features]
 test-helpers = []
 
 [dev-dependencies]
 beachcomber = { path = ".", features = ["test-helpers"] }
+# The C ABI, for `tests/suite/cli_ffi_equivalence.rs`. Keyed by package name rather
+# than the default: its `[lib] name` is *also* `beachcomber` (it must match the
+# shipped dylib name), so the default key would collide with this crate's own
+# lib name inside its integration-test binaries.
+libbeachcomber_ffi = { package = "libbeachcomber-ffi", path = "libbeachcomber-ffi" }
 tempfile = "3"
 tokio-test = "0.4"
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
@@ -93,12 +98,41 @@ harness = false
 name = "cli"
 harness = false
 
+[[bench]]
+name = "resolve"
+harness = false
+
+[[bench]]
+name = "validity"
+harness = false
+
+[[bench]]
+name = "watch"
+harness = false
+
+[[bench]]
+name = "load"
+harness = false
+
 [profile.dev]
-# macOS: skip dsymutil during link (keep debug info in .o files). Faster link.
-split-debuginfo = "unpacked"
+# Packed, not unpacked: "unpacked" keeps every codegen-unit .o in target/deps,
+# and incremental rebuilds rename them, so old ones pile up forever (16 GB+).
+split-debuginfo = "packed"
 # Keep backtraces with file:line, drop variable inspection info. Much smaller
 # debug data, faster link. Trade-off: less info in `lldb` step-through sessions.
 debug = "line-tables-only"
+
+# The daemon hashes its own executable at startup (singleton identity). An
+# unoptimised SHA-256 over a debug-sized binary costs most of a test daemon's
+# startup; optimised, it is a few milliseconds.
+[profile.dev.package.sha2]
+opt-level = 3
+
+# Every daemon start, registry load and `comb` render compiles the shipped
+# templates, and in a debug build minijinja's own lexer and parser are most of
+# that: optimised, the test suite spends a quarter less CPU.
+[profile.dev.package.minijinja]
+opt-level = 3
 
 [profile.release]
 opt-level = "z"

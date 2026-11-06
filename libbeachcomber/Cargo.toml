@@ -1,6 +1,6 @@
 [package]
 name = "libbeachcomber"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2024"
 description = "Client library for querying the beachcomber (comb) shell state daemon"
 license = "MIT"
@@ -14,9 +14,22 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
 minijinja = { workspace = true }
+rust-ini = "0.21.3"
+liblup = "0.3"
+unicode-width = "0.2"
+md-5 = "0.11.0"
+sha1 = "0.11.0"
+sha2 = "0.11"
+crc32fast = "1.5"
+base64 = "0.22"
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
+yaml-rust2 = { version = "0.13", default-features = false }
+regex = { version = "1", default-features = false, features = ["std", "unicode-perl", "unicode-case", "unicode-gencat"] }
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+glob = "0.3.4"
 
 [dev-dependencies]
 beachcomber = { path = "..", features = ["test-helpers"] }
 tempfile = "3"
-toml = "0.8"
+temp-env = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }

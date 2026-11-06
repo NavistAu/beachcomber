@@ -1,0 +1,18 @@
+[daemon.providers.asdf.sources.tools]
+# A project's tool versions: the nearest directory holding a `.tool-versions`, walking up to `/`.
+# A directory with none reads the instance at `~`.
+root = "{{ lup('.tool-versions', root=true) | dirname }}"
+# The file in effect: the nearest `.tool-versions` from the instance's directory, else the global
+# `~/.tool-versions`, else asdf's XDG one, `~/.config/asdf/tool-versions`.
+data = '''{% set text = (lup('.tool-versions', root=true) or '~/.tool-versions') | read %}
+{{ text if text is defined else '~/.config/asdf/tool-versions' | read }}'''
+# One field per `<tool> <version> [<fallback>…]` line, the first version; blank lines and `#` comments skipped.
+result = '''{% set tools = namespace(found={}) %}
+{% for line in (data or '') | lines %}
+  {% set words = line | split | list %}
+  {% if words | length >= 2 and words[0] is not startingwith('#') %}{% set tools.found = merge(tools.found, {words[0]: words[1]}) %}{% endif %}
+{% endfor %}
+{{ tools.found }}'''
+# Run again when a `.tool-versions` changes; a failure is retried every minute, three times. The
+# instances cascade: a tool the project does not set is the one set further up, then the global one.
+return = "{{ result | watch('.tool-versions') | failback('60s', 3) }}"

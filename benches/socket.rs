@@ -6,9 +6,22 @@ use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
 use criterion::{Criterion, criterion_group, criterion_main};
+use libbeachcomber::resolve::{Inputs, Slot, resolve};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
+
+/// A `libbeachcomber` client on `sock`, with no daemon auto-start — for the
+/// benches that measure its own API (`get`, a `Session`).
+fn lib_client(sock: std::path::PathBuf) -> libbeachcomber::Client {
+    libbeachcomber::Client::with_config(libbeachcomber::ClientConfig {
+        timeout: std::time::Duration::from_secs(2),
+        auto_start: false,
+        exec: false,
+    })
+    .with_socket_path(sock)
+}
 
 struct TestServer {
     _tmp: TempDir,
@@ -23,7 +36,7 @@ impl TestServer {
         let sock = tmp.path().join("bench.sock");
 
         let cache = Arc::new(Cache::new());
-        let registry = Arc::new(ProviderRegistry::with_defaults());
+        let registry = Arc::new(ProviderRegistry::shipped(&std::env::vars().collect()));
         let config = Config::default();
 
         let (handle, scheduler) = Scheduler::new(
@@ -66,9 +79,19 @@ fn bench_socket_roundtrip_cold(c: &mut Criterion) {
         b.to_async(&server.rt).iter(|| {
             let sock = server.sock.clone();
             async move {
-                let client = Client::new(sock);
-                let resp = client.get("hostname.name", None).unwrap();
-                criterion::black_box(resp);
+                // The path `comb get` takes: a session, then the resolver.
+                let mut session = Client::new(sock).connect().unwrap();
+                let inputs = Inputs {
+                    cwd: "/",
+                    env: &HashMap::new(),
+                    slot: Slot::Global,
+                    force: false,
+                    wait: libbeachcomber::Wait::Budget,
+                    allow_exec: true,
+                    now: std::time::SystemTime::now(),
+                };
+                let value = resolve("hostname.name", &inputs, &mut session).unwrap();
+                criterion::black_box(value);
             }
         })
     });
@@ -82,8 +105,12 @@ fn bench_socket_roundtrip_text(c: &mut Criterion) {
         b.to_async(&server.rt).iter(|| {
             let sock = server.sock.clone();
             async move {
-                let client = Client::new(sock);
-                let text = client.get_text("hostname.name", None).unwrap();
+                let value = lib_client(sock).get("hostname.name", None).unwrap();
+                let text = libbeachcomber::render::render_value(
+                    "hostname.name",
+                    value.as_ref(),
+                    libbeachcomber::render::Format::Text,
+                );
                 criterion::black_box(text);
             }
         })
@@ -134,7 +161,7 @@ fn bench_sequential_gets(c: &mut Criterion) {
     });
 }
 
-/// Persistent session: one connection, 10 sequential gets via ClientSession.
+/// Persistent session: one connection, 10 sequential gets via `Session`.
 fn bench_socket_session_gets(c: &mut Criterion) {
     let server = TestServer::new();
 
@@ -142,8 +169,7 @@ fn bench_socket_session_gets(c: &mut Criterion) {
         b.to_async(&server.rt).iter(|| {
             let sock = server.sock.clone();
             async move {
-                let client = Client::new(sock);
-                let mut session = client.connect().unwrap();
+                let mut session = lib_client(sock).session().unwrap();
                 for _ in 0..10 {
                     let resp = session.get("hostname.name", None).unwrap();
                     criterion::black_box(resp);

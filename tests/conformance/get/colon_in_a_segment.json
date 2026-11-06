@@ -1,0 +1,19 @@
+{
+  "name": "get_a_colon_below_the_head_is_part_of_the_segment",
+  "description": "Only a colon in the head names a facet; below it a colon is an ordinary character, as in a mise tool named cargo:x.",
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "fixture_colon",
+        "data": { "cargo:x": "1.0" }
+      }
+    }
+  ],
+  "test": { "op": "get", "args": { "key": "fixture_colon.cargo:x" } },
+  "expect": {
+    "status": "hit",
+    "data_type": "string",
+    "data_equals": "1.0"
+  }
+}

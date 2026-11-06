@@ -27,7 +27,7 @@ Every shell, every editor plugin, every status bar, every prompt framework is in
 | Cache read (global key) | **157 ns** |
 | Socket query (warm, persistent connection) | **15 µs** |
 | Socket query (cold, new connection) | 34 µs |
-| Git status (at parity with raw `git status`) | **5.6 ms** |
+| A full `git` refresh on this repository: 10 `git` processes, nothing else | **about 150 ms** |
 | Throughput (10 concurrent clients) | **45,000 req/sec** |
 
 **Real-world impact:**
@@ -52,53 +52,56 @@ Project2501
 $ comb g battery.percent
 85
 
-$ comb g.s git .                # .s = shell format (key=value, sourceable)
-branch=main
-dirty=true
-staged=2
+$ comb g.s git .                # .s = shell format: key='value' lines, quoted for eval
+ahead='0'
+behind='0'
+branch='main'
+branch_default='main'
+branch_parent='main'
+commit='36b2704'
+commit_summary='init'
+conflicted='0'
+detached='false'
+dirty='true'
+…                               # one line per field, sorted — 30 in all
+
+$ comb g git .                   # default: text — the same key=value lines, unquoted
 ahead=0
 behind=0
-stash=1
+branch=main
+branch_default=main
+branch_parent=main
+commit=36b2704
+commit_summary=init
+conflicted=0
+detached=false
+dirty=true
+…
 
-$ comb g git .                   # default: text (one value per line)
-a1b2c3d
-0
-0
-main
-true
-2
-clean
-1
-1
-
-$ comb g.j git .                 # .j = JSON format
+$ comb g.j git .                 # .j = JSON: the bare value, no envelope (age is in git:cache.branch)
 {
-  "ok": true,
-  "data": {
-    "branch": "main",
-    "commit": "a1b2c3d",
-    "dirty": true,
-    "staged": 2,
-    "unstaged": 1,
-    "untracked": 4,
-    "ahead": 0,
-    "behind": 0,
-    "stash": 1,
-    "state": "clean"
-  },
-  "age_ms": 120,
-  "stale": false
+  "ahead": 0,
+  "behind": 0,
+  "branch": "main",
+  "branch_default": "main",
+  "branch_parent": "main",
+  "commit": "36b2704",
+  "commit_summary": "init",
+  "conflicted": 0,
+  "detached": false,
+  "dirty": true,
+  …
 }
 
 $ comb s                         # status: one row per warm cache entry
-PROVIDER  PATH    FIELD    VALUE    AGE   TTL
-git       /repo   branch   main     14s   ★     60s×12 ◉
-git       /repo   dirty    true     14s   ★     60s×12 ◉
-battery   -       percent  87       8s    ★     30s×04
-hostname  -       short    artemis  3h    ---
+  PROVIDER  FIELD    SOURCE          VALUE    PATH     AGE   POLL  TTL
+  battery   percent  source(state)   87       ~       2s×0    27s  ★  30s×04 (2m)
+  git       branch   source(head)    main     ~/repo    2s      -  ★               ∙
+  git       dirty    source(status)  true     ~/repo  2s×0    57s  ★  60s×02 (2m)  ∙
+  hostname  short    source(host)    artemis  ~       2s×0  9m57s  ★ 600s×06 (1h)
 ```
 
-All commands use single-letter shorthands (`g` get, `s` status, `w` watch, `p` put, `e` eval, `i` init, `c` check, `d` daemon). Format suffixes (`.s` shell, `.t` tsv, `.T` TSV+header, `.f` template, `.c` csv, `.C` CSV+header, `.j` json) replace the `-f` flag. Text is the default — `comb g` and `comb g git.branch .` both return plain text. Long forms always work too: `comb get git.branch . -f text` is the same as `comb g git.branch .`
+All commands use single-letter shorthands (`g` get, `s` status, `w` watch, `p` put, `r` refresh, `e` eval, `i` init, `c` check, `d` daemon, `k` kill). Format suffixes (`.s` shell, `.t` tsv, `.T` TSV+header, `.f` template, `.c` csv, `.C` CSV+header, `.j` json) replace the `-f` flag. Text is the default — `comb g` and `comb g git.branch .` both return plain text. Long forms always work too: `comb get git.branch . -f text` is the same as `comb g git.branch .`
 
 ---
 
@@ -108,7 +111,7 @@ All commands use single-letter shorthands (`g` get, `s` status, `w` watch, `p` p
 - [How It Works](#how-it-works)
 - [CLI Reference](#cli-reference)
 - [Configuration Reference](#configuration-reference)
-- [Built-in Providers Reference](#built-in-providers-reference)
+- [Shipped Providers Reference](#shipped-providers-reference)
 - [Consumer Integration](#consumer-integration)
 - [Shell Fallback & Integration Scripts](#shell-fallback--integration-scripts)
 - [Client SDKs](#client-sdks)
@@ -146,14 +149,14 @@ The npm and pip packages download the correct pre-built binary for your platform
 Download the `.deb` from the [latest release](https://github.com/NavistAu/beachcomber/releases/latest):
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.9.1-1_amd64.deb
-sudo dpkg -i beachcomber_0.9.1-1_amd64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.10.0-1_amd64.deb
+sudo dpkg -i beachcomber_0.10.0-1_amd64.deb
 ```
 
 ```sh
 # ARM64
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.9.1-1_arm64.deb
-sudo dpkg -i beachcomber_0.9.1-1_arm64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.10.0-1_arm64.deb
+sudo dpkg -i beachcomber_0.10.0-1_arm64.deb
 ```
 
 #### Fedora/RHEL
@@ -161,14 +164,14 @@ sudo dpkg -i beachcomber_0.9.1-1_arm64.deb
 Download the `.rpm` from the [latest release](https://github.com/NavistAu/beachcomber/releases/latest):
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.9.1-1.x86_64.rpm
-sudo rpm -i beachcomber-0.9.1-1.x86_64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.10.0-1.x86_64.rpm
+sudo rpm -i beachcomber-0.10.0-1.x86_64.rpm
 ```
 
 ```sh
 # ARM64
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.9.1-1.aarch64.rpm
-sudo rpm -i beachcomber-0.9.1-1.aarch64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.10.0-1.aarch64.rpm
+sudo rpm -i beachcomber-0.10.0-1.aarch64.rpm
 ```
 
 #### Arch Linux (AUR)
@@ -258,11 +261,11 @@ graph TB
 
 **Providers are never re-executed on every query.** A git status is computed once when `.git` changes, then served from cache to every reader — whether that's one prompt or a hundred tmux panes. The filesystem watcher is registered once for all concurrent readers.
 
-**Connection context** means consumers can set a working directory once on connect. `comb g git.branch` without an explicit path uses the connection's context directory, making prompt integration natural.
+**The directory you are standing in is the default.** `comb g git.branch` with no path addresses the current working directory; `comb g --global git.branch` addresses the global entry, which is `$HOME`. An SDK session can set its directory once (`set_context`) and leave the path off every request after that; the session sends it with each request.
 
 **Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand, keeping the provider warm automatically. Resource usage scales with actual query patterns. Entries enter a decay sequence after queries stop — staying warm for a grace period (30s default) in case a new shell opens, then progressively slowing and eventually evicting.
 
-**Virtual providers and streaming:** external processes can also write data into the cache via `comb p`, exposing arbitrary state to prompt and statusline consumers without writing a script provider. Long-lived connections can stream changes via `comb w`, receiving an NDJSON line each time a cache value is updated.
+**Put and streaming:** external processes can also write data into the cache via `comb p`, exposing arbitrary state to prompt and statusline consumers without writing a Source. Long-lived connections can stream changes via `comb w`, receiving an NDJSON line each time a cache value is updated.
 
 ---
 
@@ -272,13 +275,13 @@ All commands are subcommands of `comb`. The daemon is socket-activated — you n
 
 ### `comb g` (get) `<key> [path]`
 
-Query a cached value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay.
+Query a value. Returns cached data immediately. On a cold cache (first query for a key), executes the provider inline and blocks briefly while it runs — subsequent queries return the cached value with no delay. Any node of the tree is addressable at any depth, and a key backed by a template (the managed `defaults/`, a `[client.providers.<p>] template.*` table, or a `comb p <p>:template.<f>`) is rendered here with this shell's environment — `comb g` resolves through `libbeachcomber::resolve`, the same function every SDK's `get` calls, and always needs the daemon.
 
 ```sh
 # Format suffixes on the command control output format
 comb g git.branch .            # text: raw value → main (default)
-comb g.s git .                  # shell: key=value pairs → branch=main\ndirty=false\n...
-comb g.j git .                   # json: full response with metadata
+comb g.s git .                  # shell: key=value lines, every value quoted → branch='main'\ndirty='false'\n...
+comb g.j git .                   # json: the bare value, nested (metadata is in the :cache facet)
 comb g.c git .                   # csv: comma-separated values
 comb g.C git .                   # CSV: with header row
 comb g.t git .                   # tsv: tab-separated values
@@ -294,41 +297,50 @@ comb g git.branch git.dirty battery.percent .
 # Force immediate recomputation before returning
 comb g --force git .
 
-# Block until a fresh value arrives (useful after a trigger)
-comb g --wait git.branch .
+# Wait for the fresh value however long its run takes (useful after a trigger)
+comb g --wait forever git.branch .
 
-# Global providers (no path needed)
+# Answer at once with what is stored, however stale; the run goes on
+comb g --wait 0 git.branch .
+
+# Providers with no root (no path needed)
 comb g battery.percent
 comb g hostname.short
 
-# Field metadata — append :age, :stale, or :source to any key
-comb g git.branch:age          # cache age in milliseconds
-comb g git.branch:stale        # whether value is past refresh time
+# Template-backed keys render here, with this shell's environment (exec() enabled)
+comb g python.version .        # defaults/python.toml's cascade over $PYENV_VERSION, mise, asdf, the venv
+comb g kubecontext.context     # kubectl config current-context, through exec()
+comb g python:template.version # the raw template text, unrendered
+
+# The global entry ($HOME) alone, ignoring the current directory
+comb g --global myapp.status
+
+# Field metadata — the :cache facet mirrors the tree
+comb g.j git:cache.branch .    # → {"age_ms": 1240, "source": "source(head)", ...}
 ```
 
 **Exit codes:**
-- `0` — success, data returned
-- `1` — cache miss (provider has no data yet)
-- `2` — error (daemon unreachable, unknown provider, invalid key)
+- `0` — success, a miss included in every format: `text` prints nothing, `json` prints `null`, and a miss among several keys holds its place
+- `1` — a miss under `--strict` (or `BEACHCOMBER_STRICT=1`)
+- `2` — error (daemon unreachable, invalid key, a template that does not compile or cycles — named in the message)
 
 ### `comb s` (status)
 
-Show all warm cache entries as a table — one row per provider field. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, keep-alive count, and whether filesystem events will reinstate the entry (`◉`).
+Show all warm cache entries as a table — one row per provider field, with SOURCE naming what produced each value: a Source of the provider (`source(head)`), `put`, `config(<file>)`, `computed(return)`, or `rendered` for a row rendered here. The `TTL` column shows each entry's lifecycle position (`★` active, `3`/`2`/`1`/`0` decay countdown), effective poll interval, Active-window poll count, and whether the entry watches its files while it is Active (`∙`).
 
-`watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time.
+`watch -c comb status` is the recommended live view — it keeps colour and the human preset active even when stdout is a pipe, so you can watch entries pulse through their lifecycle in real time. Each refresh re-renders the caller's template leaves, `exec()` included, so a tight interval multiplies whatever the templates spawn.
 
 ```sh
 $ comb s
-PROVIDER  PATH    FIELD    VALUE    AGE   TTL
-git       /repo   branch   main     14s   ★     60s×12 ◉
-git       /repo   dirty    true     14s   ★     60s×12 ◉
-battery   -       percent  87       8s    ★     30s×04
-hostname  -       short    artemis  3h    ---
+  PROVIDER  FIELD    SOURCE          VALUE    PATH     AGE   POLL  TTL
+  battery   percent  source(state)   87       ~       2s×0    27s  ★  30s×04 (2m)
+  git       branch   source(head)    main     ~/repo    2s      -  ★               ∙
+  git       dirty    source(status)  true     ~/repo  2s×0    57s  ★  60s×02 (2m)  ∙
+  hostname  short    source(host)    artemis  ~       2s×0  9m57s  ★ 600s×06 (1h)
 
 # Filter to entries in a specific lifecycle state
 comb s --filter=lifecycle=active
 comb s --filter=lifecycle=decay1
-comb s --filter=fsevents_reinstate=true
 
 # Sort options
 comb s --sort age             # oldest first
@@ -339,7 +351,9 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay1..4|once|virtual`, `--filter=fsevents_reinstate=true|false`, `--sort <default|provider|path|field|value|age|stale|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), `--color=auto|always|never`, `--ascii`.
+**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay<N>|once|static|rendered`, `--sort <default|provider|path|field|value|age|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), and the global `--color=auto|always|never` (wins over `NO_COLOR`) and `--ascii`.
+
+A namespace holding a `[client.providers.<p>]` template renders one extra row per leaf visible from the caller's directory — resolved with this shell's environment and `exec()` enabled, exactly as `comb get` would render it — beside the raw template row and any cached value at that address; a field that's both cached and templated shows both rows. A rendered row's SOURCE is `rendered`, its VALUE is marked (cyan, or a `▸ `/`> ` lead-in without colour), and `--filter=lifecycle=rendered` selects just those rows.
 
 Use `comb check daemon` for daemon health (pid, uptime, version, active watchers, request counts).
 
@@ -348,7 +362,7 @@ Use `comb check daemon` for daemon health (pid, uptime, version, active watchers
 Run the daemon in the foreground. You almost never need this — the daemon is socket-activated automatically. Use it for debugging or for running under a process supervisor.
 
 ```sh
-BEACHCOMBER_LOG=debug comb d                          # debug logging
+RUST_LOG=beachcomber=debug comb d                     # debug logging (or log_level = "debug")
 comb d --socket /tmp/beachcomber-debug.sock            # override socket path
 ```
 
@@ -359,18 +373,23 @@ The daemon exits on SIGINT (Ctrl+C) with a graceful shutdown sequence.
 2. `BEACHCOMBER_SOCKET` environment variable, if set
 3. `/tmp/beachcomber-<uid>/sock` — stable per-user default; no session-scoped environment (`$TMPDIR`, `$XDG_RUNTIME_DIR`) is consulted, so every shell, sandbox, and container of one user reaches the same single daemon
 
-### `comb p` (put) `<key> [<json-data>] [--ttl <duration>] [--path <path>] [--null]`
+### `comb p` (put) `<key> <json-data> [--ttl <duration>] [--path <path>] [--global]`
 
-Write data into the cache as a virtual provider. External processes can use this to expose state to prompt/statusline consumers without writing a script provider.
+Write static data at any node of the tree. The key is `namespace` or `namespace.node…`, the same dotted address `comb g` takes. External processes can use this to expose state to prompt/statusline consumers without writing a Source.
 
 ```sh
 comb p myapp '{"status":"healthy","version":"1.2.3"}'
-comb p myapp '{"status":"healthy"}' --ttl 30s             # with TTL
-comb p myapp '{"status":"building"}' --path ~/project     # path-scoped
-comb p myapp --null                                        # clear the entry
+comb p myapp.deploy.count 3                                # any node, any JSON below the root
+comb p myapp '{"status":"healthy"}' --ttl 30s             # kept 30s and one decay step more (60s), then gone
+comb p myapp '{"status":"building"}' --path ~/project     # a directory instead of the cwd
+comb p myapp '{"status":"ok"}' --global                    # the global entry ($HOME)
+comb p myapp null                                          # remove the node (null means absent)
+comb p myapp:template.greeting '"hello {{ env.USER }}"'    # a template — comb g myapp.greeting renders it
 ```
 
-`--null` clears a previously written virtual provider entry. Omitting `--null` requires a JSON object argument.
+A write **replaces** whatever a put left at that node: `comb p myapp '{"b":2}'` states all of `myapp`, and `comb p myapp.b 2` replaces only `myapp.b`. `comb p myapp null` removes the node and writes nothing; `data` is required, so a put without it is a usage error. A `put` never removes a record a provider's Source produces; it layers over it and hides it at that directory until the put is removed. `data` at a namespace root must be a JSON object; below the root, any JSON.
+
+Like `comb g`, a `put` defaults to the current working directory; `--global` addresses `$HOME` instead and cannot be combined with `--path`.
 
 Read back with `comb g`:
 
@@ -379,32 +398,46 @@ comb g myapp.status        # → healthy
 comb g myapp                 # → full JSON
 ```
 
-Namespace hierarchy prevents shadowing built-in or script providers — `comb p git '...'` is rejected.
+A put sits above the Source in the layer order, so it hides Source and seed values at that directory — `comb p git '{"note":1}'` makes `comb g git` answer just `note` there, until the put is removed. The Source keeps refreshing its own layer beneath it (`comb g git:source`).
 
-### `comb w` (watch) `<key> [--path <path>]`
+`--ttl` (at least `1s`, not with `null`) makes the put a lifecycle entry of its own. Each put address has its own lifecycle, so `comb p --ttl 300 build.status '"passing"'` and `comb p --ttl 60 build.eta '"4m"'` expire independently, and a re-put without `--ttl` drops the expiry.
 
-Stream cache changes to stdout. Opens a long-lived connection and emits an NDJSON line each time the watched key is updated.
+### `comb r` (refresh) `<key> [path] [--path <path>] [--global]`
+
+Re-execute the Sources a key demands, each at the instance that answers for the directory, reading nothing back. A bare `provider` re-runs every Source of the namespace; `provider.field` re-runs only the Source that owns the field.
+
+```sh
+comb r git                  # every git Source, for the current directory
+comb r git.commit .         # the one Source owning `commit` — `diff` is left alone
+comb r hostname --global    # at the global entry ($HOME)
+```
+
+Prints nothing on success; exits 2 with `nothing to refresh: <key> has no sources` for a key with no Source behind it (a `put`-created namespace, an unknown name, an unowned field). `comb g --force` is the read-and-refresh form — the same Sources, then the value; `comb r` is the re-execution alone.
+
+### `comb w` (watch) `<key> [path] [--path <path>] [--global] [-f format]`
+
+Stream a key's *resolved* value — the value `comb get` would print — printing a new line each time it changes. A change is detected by re-resolving the key over every reference the resolution reads; a write to a namespace or any of its facets wakes its watchers, so an edited template fires the watch just as a changed cache record does.
 
 ```sh
 comb w git.branch --path ~/project        # stream plain text values (default)
-comb w.j git.branch --path ~/project     # stream JSON updates
-comb w.s git --path ~/project            # stream key=value pairs
+comb w.j git.branch --path ~/project      # bare JSON value per line, one per frame
+comb w.s git --path ~/project             # stream key=value pairs
 ```
 
-The first line is emitted immediately with the current value (or a cache miss if no data exists). Subsequent lines appear as the cache updates. Press Ctrl-C to stop.
+The path defaults to the current working directory, as `get`/`put`/`refresh` do, and a relative path is the caller's. `--global` cannot be combined with a path.
 
-Field-level filtering: watching `git.branch` only emits when the branch value changes, not on every git provider update.
+The first line is the value as it is when the watch opens; each later line is one resolved change. A miss prints nothing at all — there's no value to print — and the watch stays open for a later `put` to answer. `comb watch env.X` is an error, `env keys cannot be watched`, since an environment value never changes for the life of the process. A facet key (`p:template`) streams the daemon's raw entry, unrendered, as before. Press Ctrl-C to stop.
 
 ### `comb e` (eval) `<template> [path]`
 
-Evaluate a value expression against cached provider data, resolving all referenced keys in a single connection. Three forms: **bare** (`git.branch`, backward compatible), a **single `{{ expr }}` tag** (keeps the expression's natural type), or **literal text and/or several tags** (always string-valued). Plain text with no tags at all is a bare expression, not literal text — write `{{ }}` for text.
+Evaluate a value expression against cached provider data, resolving all referenced keys in a single connection. Two forms: a **single `{{ expr }}` tag**, which keeps the expression's natural type, as does one after statements (`{% set x = 1 %}{{ x }}` is the number 1); or **literal text and/or several tags**, always string-valued. A source with no tags at all is its own literal text — `comb e hello` prints `hello`; write `{{ }}` to evaluate an expression.
 
 ```sh
 comb e "{{ git.branch }} | {{ battery.percent }}%" .     # → main | 82%
 PS1="$(comb e '{{ git.branch }} \$ ' . 2>/dev/null)"
 
-# Bare expression — equivalent to {{ git.dirty }}, keeps its bool type
-comb e 'git.dirty' .
+# Single tag — keeps its bool type
+comb e '{{ git.dirty }}' .
 
 # Conditionals and filters
 comb e '{% if git.dirty %}*{{ git.branch }}{% else %}{{ git.branch }}{% endif %}' .
@@ -428,7 +461,7 @@ Stop the running daemon. The daemon will socket-activate again on the next clien
 ```sh
 comb k                           # stop the daemon (waits up to 5s for exit)
 comb kill --timeout 10           # wait up to 10s for exit
-comb kill --socket /tmp/other.sock  # target a specific socket
+comb kill --socket /tmp/other.sock  # target a specific socket (--socket is global)
 ```
 
 ### `comb c` (check) `[subcommand]`
@@ -440,7 +473,7 @@ comb c                   # aggregate across all subjects
 comb c daemon            # daemon health: pid, version, uptime, request counts, watchers
 comb c providers         # provider health and backoff state
 comb c config            # validate config file syntax
-comb c cache             # cache entries, staleness, hit/miss summary
+comb c cache             # cache entries, hit/miss summary
 comb c lifecycle         # keys in the decay sequence
 comb c watches           # active filesystem watch registrations
 comb c timers            # poll timers and last-run times
@@ -448,7 +481,7 @@ comb c demand            # demand-tracked keys and last-query times
 comb c procs             # 1-minute process snapshot, categorize against providers
 ```
 
-Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
+Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation. `comb c config` validates the composed configuration locally as well as relaying the daemon's view, and reports the managed `defaults/` directory (file count, version, anything in it `comb` did not write, whether the daemon can write it) without writing any defaults — only a `.comb-probe.<pid>` write probe is created and removed.
 
 > Use `comb check daemon` to see what `comb s` used to show (pid, uptime, request counts, watcher count).
 
@@ -456,56 +489,70 @@ Each check prints `[PASS]`, `[WARN]`, or `[FAIL]` with a short explanation.
 
 ## Format Suffix Syntax
 
-The `get` and `watch` commands support a shorthand suffix on the subcommand itself, saving characters in prompts and scripts. **Plain text is the default** — no suffix needed.
+`get`, `watch` and `status` take a suffix on the command as the short spelling of `-f`, saving characters in prompts and scripts. **Plain text is the default** — no suffix needed.
 
 | Suffix | Equivalent | Format |
 |---|---|---|
 | _(none)_ | `get -f text` | Raw value — the default |
-| `g.p` | `get -f text` | Raw value, explicit |
-| `g.j` | `get -f json` | Full JSON response with `age_ms`, `stale`, etc. |
-| `g.s` | `get -f sh` | `key=value` lines (shell-parseable) |
+| `g.j` | `get -f json` | The bare value as JSON, nested at any depth (no envelope — metadata is in the `:cache` facet) |
+| `g.s` | `get -f sh` | a shell assignment per leaf, `name='value'`, safe to `eval` |
 | `g.c` | `get -f csv` | Comma-separated values |
 | `g.C` | `get -f CSV` | CSV with header row |
 | `g.t` | `get -f tsv` | Tab-separated values |
 | `g.T` | `get -f TSV` | TSV with header row |
-| `g.f` | `get -f fmt` | minijinja template — `{{ field }}` placeholders |
+| `g.f TEMPLATE` | `get -f TEMPLATE` | a template — any `-f` value holding `{{` or `{%` |
 
 ```sh
 # These are all equivalent:
 comb g git.branch .              # default text
-comb g.p git.branch .            # explicit plain text
 comb get git.branch . -f text    # long form with flag
 ```
 
-The suffix is appended to the command (`g`, `w`) with a dot separator.
+The suffix is appended to the command (`g`, `w`, `s`) with a dot separator. It applies only to a command that has `-f` and that format, and a `-f` value is a template only when it holds `{{` or `{%`: anything else must name a format the command has.
 
 ---
 
-## Field Metadata Access
+## Layers and Field Metadata
 
-Append a colon suffix to any key to retrieve metadata about the cached value rather than the value itself:
+A field's value is the first layer that has it, in this order: the effective **template** (rendered in your shell), then **`put`** (what `comb put` and the `config:` seeds stored), then the **Source** (what the provider computed). Nothing merges implicitly: a layer's value replaces the one below it at its node, and `null` means absent, never `""`. Removing a layer shows the one below at once. Each layer is a facet of the provider with the provider's own shape, readable at any depth:
 
-| Suffix | Type | Description |
-|---|---|---|
-| `:age` | int | Milliseconds since the value was last computed |
-| `:stale` | bool | Whether the value is past its expected refresh time |
-| `:fresh` | bool | Inverse of `:stale` — true when the value is within its refresh window |
-| `:cache` | bool | Whether the value was served from cache (`true`) or freshly computed (`false`) |
-| `:source` | string | Provider kind: `builtin`, `script`, or `virtual` |
+| Key | Reads |
+|---|---|
+| `git.branch` | the first layer that has it |
+| `git:template.branch` | the template text, unrendered |
+| `scanline:macro.rate` | a macro library's text, which a client template imports (`[client.providers.<p>] macro.<name>`) |
+| `kubecontext:memo.context` | the value a template leaf's `\| cache()` stored, served in place of rendering it while it is valid (read-only) |
+| `git:put.branch` | what `put` and `config:` seeds stored (read-only) |
+| `git:source.branch` | what the Source computed, even where a `put` hides it (read-only) |
+| `git:cache.branch` | the daemon's metadata about `git.branch` |
+
+`git:cache` mirrors `git`: a leaf answers with an object, a whole node answers with the tree of its leaves' answers.
+
+| `:cache` key | Meaning |
+|---|---|
+| `age_ms` | Milliseconds since the value was last computed (0 for a rendered template) |
+| `source` | What answered: `put`, `template`, `memo` (a template leaf's stored value), `config(<file>)`, `computed(<line>)`, or `source(<name>)`, e.g. `source(head)` |
+| `poll`, `watch`, `decay` | The lifecycle the entry registered with: poll `{interval, count}`, watched paths, decay steps before eviction |
+| `hash` | What the record's validity is checked against: a Source's inputs as its run stamped them, or the hash a memo was stored under, until an invalidation drops it |
 
 ```sh
-comb g git.branch:age .       # → 1240 (ms since last computed)
-comb g battery.percent:stale  # → false
-comb g git.branch:fresh .     # → true
-comb g git.branch:cache .     # → true
-comb g git:source .           # → builtin
+comb g.j git:cache.branch .   # → {"age_ms": 1240, "source": "source(head)", ...}
+comb g.j git:source .         # the Source's whole answer, ignoring any put over it
 ```
+
+`age_ms` and `source` are derived at the read, as is `executing` on a Source's record (`true` while a run of its instance is in flight), and none of them can be written. The one `:cache` key you can put is a decay prototype: `comb put '*:cache._.decay' 3` sets the decay depth (default 4) for every provider, `comb put 'git:cache._.decay' 6` for one, and `--path` scopes either to a directory and below.
+
+Only a colon in the provider's own segment names a facet (`git:cache.branch`), and the six above are the only facets: `git:notes` or `git:memos` is `invalid facet key` on every command, `comb put` included. Below the provider's segment a colon is an ordinary character (`mise.cargo:cargo-nextest`), so `git.branch:age` is a miss. Keys take jinja's subscripts too: `p.list[0]`, and `'mise["go:golang.org/x/tools/gopls"]'` for a name holding a `.`.
 
 ---
 
 ## Configuration Reference
 
 beachcomber runs with sensible defaults and requires no configuration. The optional config file lives at `~/.config/beachcomber/config.toml`.
+
+The file has two roots. `[daemon]` is the daemon's: its settings (`socket_path`, `log_level`, `plugin.path`, `timeout`, `budget`, ...) and `providers`, where a provider's Sources, its `template`/`result`/`return` lines, its `cache` (decay) and `enabled` live. `[client]` is what clients render: `providers.<p>.template`, and `providers.<p>.macro`, its macro libraries, which a template imports (`{% from "p:macro.name" import m %}`). A provider exists if either root names it. Configuration is read only from `$XDG_CONFIG_HOME/beachcomber` (`defaults/`, `config.toml`, `conf.d/`, `env`); `$XDG_CONFIG_DIRS` is not consulted.
+
+A provider is a namespace made of **Sources**, and a Source is a jinja function: `root` says which directory an instance answers for (empty is the one instance at `~`), `data` is the body, `result` shapes it into fields, and `return` says when it runs again (`poll`, `watch`, `ttl`, `failback`, `budget`, `nearest`). A table named `_` is a prototype: a Source's own line wins whole, an absent line takes the nearest `_`'s, and `| super` extends it. The abstract provider and Source ship in `defaults/00-comb.toml`.
 
 ```toml
 # ~/.config/beachcomber/config.toml
@@ -516,7 +563,7 @@ beachcomber runs with sensible defaults and requires no configuration. The optio
 
 # Override the Unix socket path.
 # Default: /tmp/beachcomber-<uid>/sock
-socket_path = ""
+# socket_path = "/path/to/socket.sock"
 
 # Log level for daemon output.
 # Options: "error", "warn", "info", "debug", "trace"
@@ -524,14 +571,16 @@ socket_path = ""
 # Logs go to: $XDG_STATE_HOME/beachcomber/daemon.log
 log_level = "info"
 
-# Maximum time (in seconds) to wait for any provider to complete.
-# Providers that exceed this are cancelled; the last good cached value is retained.
-# Default: 10
-provider_timeout_secs = 10
+# How long one run of a Source may take before it is cut off, for every
+# Source whose `return` does not say `timeout(...)`. The run fails and the last
+# good cached value is retained. Any duration of at least 1ms.
+# Default: "10s"
+timeout = "10s"
 
 # Path to an environment file loaded at daemon startup.
 # Each line is KEY=VALUE (or KEY="VALUE"). Blank lines and #comments are ignored.
-# These vars are available to ${VAR} expansion in HTTP headers, script commands, etc.
+# These vars reach a Source's lines as `env.VAR` (an unset one renders empty) and
+# the commands its exec() runs.
 # Default: ~/.config/beachcomber/env (loaded automatically if present)
 # env_file = "~/.config/beachcomber/env"
 
@@ -545,136 +594,78 @@ provider_timeout_secs = 10
 # Default: 3x watchdog_interval
 # watchdog_threshold = "90s"
 
+# How long the daemon waits with no active connections before shutting
+# itself down. The next client connection will socket-activate a fresh
+# instance. Whole seconds, at least 1s.
+# Default: unset (daemon stays resident)
+# idle_shutdown = "5m"
 
-# ─── Lifecycle ─────────────────────────────────────────────────────────────────
-
-[lifecycle]
-
-# How long (in seconds) the daemon waits with no active connections before
-# shutting itself down. The next client connection will socket-activate a
-# fresh instance.
-# Set to null to disable idle shutdown (daemon stays resident permanently).
-# Default: null (disabled — daemon stays resident)
-# idle_shutdown_secs = 300
-
-# Global default poll interval. Per-source [providers.<name>.<source>] blocks override this.
-# Default: "60s"
-poll_interval = "60s"
-
-# Global default poll keep-alive count.
-# Default: 12
-poll_live_count = 12
-
-# Global default for fsevents_reinstate. Overrides per-source defaults when set.
-# Default: unset (each source uses its own declared default)
-# fsevents_reinstate = true
+# How long a read waits for a Source before answering with what it has, for
+# every Source whose own `return` does not say `budget(...)`. Any duration of
+# at least 1ms. A read of a record past its lifetime, or one whose watched
+# files changed, runs its Source and waits this long for the run, then answers
+# with what is stored.
+# Default: "50ms"
+# budget = "50ms"
 
 
-# ─── Failback (global retry defaults) ──────────────────────────────────────────
+# ─── Retuning a shipped Source ─────────────────────────────────────────────────
+# A shipped Source is a config Source: any line of it can be set in a later
+# layer, and the rest keep theirs. `return` replaces its schedule whole: here
+# git's diff polls every 15 seconds, eight times, then decays. The line replaces
+# everything it declares, `nearest` included: git, direnv, python and terraform
+# Sources are nearest, so a retune of one says `| nearest` again.
 
-[failback]
-
-# Consecutive failures before suppression. Default: 3
-# count = 3
-
-# Suppression duration (doubles each level). Default: "1s"
-# interval = "1s"
-
-
-# ─── Built-in Provider Overrides ───────────────────────────────────────────────
-# Use [providers.<name>] to set provider-level knobs (only `enabled` is valid here).
-# Source-level knobs (poll_interval, poll_count, fsevent_*, failback_*) go in
-# [providers.<name>.<source>] sub-tables.
-
-# Disable a provider entirely (it will never execute or appear in results)
-[providers.conda]
-enabled = false
-
-# Override polling interval for battery (source name: "level")
-[providers.battery.level]
-poll_interval = "60s"   # default: 30s
-poll_count = 10         # keep-alive poll count; default: 12
-
-# Add a safety-net poll to git's refs source (filesystem-triggered by default)
-[providers.git.refs]
-poll_interval = "30s"   # default: no poll (filesystem-triggered only)
-
-# Override network polling interval
-[providers.network.state]
-poll_interval = "30s"   # default: 10s
+[daemon.providers.git.sources.diff]
+return = "{{ result | poll('15s', 8) | failback('2s', 5) | nearest }}"
 
 
-# ─── Custom Script Providers ───────────────────────────────────────────────────
-# Define your own providers backed by any executable.
+# ─── Config Sources ────────────────────────────────────────────────────────────
+# Define your own providers as Sources: `data` runs a command, `result` shapes
+# its output into fields, `return` says when it runs again.
 
-# Minimal: a global provider that polls every 30 seconds
-[providers.docker_context]
-command = "docker context show"
-output = "text"         # single-line output becomes { "value": "<output>" }
-# or use output = "json" for structured output: { "key": value, ... }
-# or use output = "kv" for key=value line format
+# Minimal: a provider with no root that polls every 30 seconds
+[daemon.providers.docker_context.sources.main]
+data = "{{ exec('docker context show') | trim }}"
+result.value = "{{ data }}"            # one field, `docker_context.value`
+return = "{{ result | poll('30s') }}"
 
-[providers.docker_context.invalidation]
-poll = "30s"
+# A rooted provider that watches files and has a poll fallback
+[daemon.providers.node_version.sources.main]
+root = "{{ lup('package.json') | dirname }}"   # the directory an instance answers for
+data = "{{ exec('node --version') | trim }}"
+result.value = "{{ data }}"
+return = "{{ result | watch('.node-version', '.nvmrc', 'package.json') | poll('60s') }}"
 
-# A path-scoped provider that watches a file and has a poll fallback
-[providers.node_version]
-command = "node --version"
-output = "text"
-scope = "path"          # scoped to a directory; path argument required
-
-[providers.node_version.invalidation]
-watch = [".node-version", ".nvmrc", "package.json"]
-poll = "60s"            # safety-net poll in case filesystem events are missed
-
-# A provider with structured JSON output
-[providers.cargo_meta]
-command = "cargo metadata --format-version=1 --no-deps --quiet"
-output = "json"         # parse stdout as JSON object; top-level keys become fields
-scope = "path"
-
-[providers.cargo_meta.invalidation]
-watch = ["Cargo.toml", "Cargo.lock"]
-poll = "120s"
-
-# Explicitly disable a custom provider without removing its config
-[providers.my_slow_thing]
-command = "my-slow-script"
-enabled = false
+# A Source with structured JSON output: `result = "{{ data }}"` owns the whole node
+[daemon.providers.cargo_meta.sources.main]
+root = "{{ lup('Cargo.toml') | dirname }}"
+data = "{{ exec('cargo metadata --format-version=1 --no-deps --quiet') | fromjson }}"
+result = "{{ data }}"
+return = "{{ result | watch('Cargo.toml', 'Cargo.lock') | poll('120s') }}"
 
 
-# ─── HTTP Providers ──────────────────────────────────────────────────────────
-# Fetch data directly from REST APIs — no curl fork, no shell spawning.
-# Uses in-process HTTP client with connection reuse.
+# ─── HTTP ─────────────────────────────────────────────────────────────────────
+# Fetch data from REST APIs with url() in a Source's data line — no curl fork,
+# no shell spawning. A non-2xx response fails the Source (its failback applies).
 
 # Basic: poll a status API
-[providers.service_status]
-type = "http"
-url = "https://status.anthropic.com/api/v2/summary.json"
-extract = "status"              # dot-path into the JSON response
-                                # e.g., response.status.indicator → provider field "indicator"
+[daemon.providers.service_status.sources.main]
+data = "{{ url('https://status.anthropic.com/api/v2/summary.json') | fromjson }}"
+result.indicator = "{{ data.status.indicator }}"   # response.status.indicator → field "indicator"
+return = "{{ result | poll('60s') }}"
 
-[providers.service_status.invalidation]
-poll = "60s"
-
-# With auth headers (env vars expanded at runtime)
-[providers.github_rate]
-type = "http"
-url = "https://api.github.com/rate_limit"
-headers = { Authorization = "Bearer ${GITHUB_TOKEN}" }
-extract = "rate"                # extracts { "limit": 5000, "remaining": 4999, ... }
-
-[providers.github_rate.invalidation]
-poll = "30s"
+# With auth headers (the daemon's environment is `env`)
+[daemon.providers.github_rate.sources.main]
+data = "{{ url('https://api.github.com/rate_limit', headers={'Authorization': 'Bearer ' ~ env.GITHUB_TOKEN}) | fromjson }}"
+result = "{{ data.rate }}"                          # { "limit": 5000, "remaining": 4999, ... }
+return = "{{ result | poll('30s') }}"
 
 # Infrequent poll (daily)
-[providers.exchange_rate]
-type = "http"
-url = "https://api.exchangerate-api.com/v4/latest/USD"
-extract = "rates.AUD"           # extracts a single nested value
-
-[providers.exchange_rate.invalidation]
-poll = "86400s"
+[daemon.providers.exchange_rate.sources.main]
+data = "{{ url('https://api.exchangerate-api.com/v4/latest/USD') | fromjson }}"
+result.value = "{{ data.rates.AUD }}"               # a single nested value
+return = "{{ result | poll('86400s') }}"
 ```
 
 ### Config field summary
@@ -685,213 +676,159 @@ poll = "86400s"
 |---|---|---|---|
 | `socket_path` | string | `/tmp/beachcomber-<uid>/sock` | Unix socket path |
 | `log_level` | string | `"info"` | Tracing log level |
-| `provider_timeout_secs` | int | `10` | Max seconds for any provider to run |
+| `timeout` | duration, at least `1ms` | `"10s"` | How long one run of a Source may take before it is cut off, for every Source whose `return` does not name `timeout(...)` |
 | `env_file` | string | `~/.config/beachcomber/env` | Path to env file loaded at startup |
 | `watchdog_interval` | duration or null | `null` (disabled) | How often the watchdog checks scheduler liveness |
 | `watchdog_threshold` | duration or null | 3x `watchdog_interval` | Stale heartbeat duration before triggering shutdown |
+| `idle_shutdown` | duration (whole seconds) or null | `null` (disabled) | How long with no client before the daemon shuts down; unset keeps it resident |
+| `budget` | duration, at least `1ms` | `"50ms"` | How long a read waits for a Source before answering with what it has, for every Source whose `return` does not name `budget(...)`. A read of a record past its lifetime, or one whose watched files changed, runs the Source and waits this long for the run before answering with what is stored. |
 
-**`[lifecycle]` section:**
+> Values are checked when the configuration loads, and an error names the file: `log_level` is one of `off`, `error`, `warn`, `info`, `debug`, `trace`; `timeout` and `budget` are durations of at least `1ms`, and `idle_shutdown` whole seconds of at least `1s`; `socket_path` and `env_file` are not empty; `watchdog_interval` and `watchdog_threshold` are whole seconds of at least `1s` (`"30s"`, `"5m"`, `"1h"`), a threshold needs an interval, and a threshold below the interval is an error. `[daemon]` takes no other keys. A file that is not valid TOML is an error too: it is never skipped.
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `idle_shutdown_secs` | int or null | `null` (disabled) | Seconds until idle daemon shuts down; `null` keeps daemon resident |
-| `poll_interval` | duration | `"60s"` | Global default poll interval (overridden by per-source blocks) |
-| `poll_live_count` | int | `12` | Global default poll keep-alive count |
-| `fsevents_reinstate` | bool or null | `null` (unset) | Global override for fsevents_reinstate; unset means each source uses its declared default |
+> A Source's schedule is its `return` line (`poll`, `watch`, `ttl`). The `[providers]` root, `[lifecycle]`, `[failback]` and `[tree]` tables, and the `scope`, `marker`, `poll_*`, `fsevent_*`, `failback_*`, `budget_*` keys are config errors, and so is `enabled` anywhere but `[daemon.providers.<name>]`.
 
-**`[failback]` section:**
+**`[daemon.providers.<name>] enabled = false`** switches a provider off, shipped or the user's, Sources or templates alone. It sets the provider's `result` to `"{{ {} }}"` and its `return` to `"{{ result }}"`, and none of its Sources is selected, called or run: a `get` of it is a miss (no data, no template half), and its Sources are not run, polled, watched or refreshed (`comb refresh <name>` is `nothing to refresh: <name> is disabled`, `get --force` is an error). A call to one of its Sources from another line is a miss. The `<name>:template` facet is still seeded and readable, and a `put` under the name is still read. `enabled = false` wins over a `result` or `return` set on the same provider. A later layer may set `enabled = true`; it must be a boolean, it is an error on `[daemon.providers._]`, and on a name nothing gives a provider.
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `count` | int | `3` | Consecutive failures before suppression |
-| `interval` | duration | `"1s"` | Initial suppression duration (doubles each level) |
-
-> Duration fields accept whole-second strings: `"30s"`, `"5m"`, `"1h"`, `"2h30m"`. Sub-second values (e.g. `"500ms"`) are not accepted.
-
-**`[providers.<name>]` section (built-in overrides):**
-
-Only `enabled` is valid at the provider level. All source-level knobs go in `[providers.<name>.<source>]` sub-tables.
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | bool | `true` | Set `false` to disable provider entirely |
-
-**`[providers.<name>.<source>]` section (per-source overrides for built-ins and script providers):**
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `poll_interval` | duration | source-specific | Poll interval for this source |
-| `poll_count` | int | `12` | Keep-alive poll count — how many polls before demand must be re-signalled |
-| `fsevent_patterns` | array of strings | source-specific | Relative path patterns to watch |
-| `fsevent_abs_paths` | array of strings | source-specific | Absolute paths to watch |
-| `fsevent_lifespan` | duration | source-specific | How long filesystem watches stay registered |
-| `fsevent_reinstates` | bool | source-specific | Whether watches survive decay back to active |
-| `failback_count` | int | `3` | Consecutive failures before suppression |
-| `failback_interval` | duration | `"1s"` | Initial suppression duration |
-
-**`[providers.<name>]` section (custom script providers):**
+**`[daemon.providers.<name>.sources.<source>]` section (config Sources):**
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `command` | string | yes | Shell command to execute |
-| `output` | string | no | `"json"` (default), `"kv"`, or `"text"` |
-| `scope` | string | no | `"global"` (default) or `"path"` |
-| `enabled` | bool | no | `false` to disable |
-| `invalidation.poll` | string | no | Poll interval as duration string (`"30s"`, `"2m"`) |
-| `invalidation.watch` | array of strings | no | File/directory patterns to watch |
+| `data` | string | yes | The body: a jinja line that runs on the daemon, usually `exec('command')`. Sees `env` (the daemon's own), `comb.<provider>`, `sources.<source>()` (a sibling Source), `daemon.providers.<provider>.sources.<source>()` (any provider's Source) and `_`. |
+| `result` | string, or table of strings | yes | `result = "{{ data }}"` owns the whole provider node; `result.<field> = "{{ … }}"` lines declare fields, each over `data`. |
+| `root` | string | no | The directory an instance answers for, e.g. `{{ lup('.git') \| dirname }}`. Empty (the default) is the one instance at `~`; on a `\| nearest` Source, a `root` that renders none means no instance. |
+| `return` | string | no | What the Source hands out, decorated: `poll(interval, count)`, `watch(path, …)`, `ttl(interval)`, `failback(interval, count)`, `budget(interval)`, `nearest` (the nearest instance answers alone instead of cascading up to `~`; see Rooted Sources). Absent, it takes the nearest `_` Source's (`defaults/00-comb.toml` ships `poll('60s', 12) \| failback('1s', 3)`). `\| super` extends that line instead of replacing it. |
 
-Source-level knobs (`poll_interval`, `poll_count`, `fsevent_*`, `failback_*`) go in `[providers.<name>.<source>]` — see the per-source table above.
+A `data` line, and a provider's `result` and `return` lines, may call a Source (`daemon.providers.<provider>.sources.<source>()`; a Source also calls a sibling, `sources.<source>()`), as in `return = "{{ result | merge(daemon.providers.gitstats.sources.repo()) | facet('template', template) }}"`. A call gives the called Source's stored record as a read from the same directory would find it. A Source with nothing stored is run inline, once, by the read or refresh that needs it, and is kept warm while it is called; its own failure is the caller's miss. Sources that call each other in a ring are a load error; were one run anyway, it fails the read with `sources: <p>.<s> calls itself`.
 
-**`[providers.<name>]` section (HTTP providers):**
+**The engine.** A Source's lines can call `exec` (a string under `sh -c`, or a list as argv), `url`, `plugin` (on `[daemon.plugin] path`), `read`, `stat`, `lup`, `fromjson`, `fromini`, `merge`, `map` over objects, `pluck`, `dirname` and `tojson`; the full table is in the [configuration reference](https://beachcomber.sh/docs/reference/configuration-reference#the-engine--what-a-sources-lines-can-call). **Decay is data**: `[daemon.providers._.cache._] decay = 4` ships in `defaults/00-comb.toml`, and `[daemon.providers.<p>.cache._] decay = N` or `comb put '<p>:cache._.decay' N` sets it for one provider (1 to 16). **An edit under `providers` reloads in place**; only the bare `[daemon]`/`[client]` keys restart the daemon.
 
-| Field | Type | Required | Description |
+A table named `_` (`[daemon.providers.<name>.sources._]`, `[daemon.providers._.sources._]`) is a prototype: the defaults for every Source below it, never a Source itself. Prototypes apply to config Sources, and to a built-in Source's `return` only through `| super`: a built-in with no `return` of its own keeps its Rust schedule.
+
+**`[daemon.plugin]` section:**
+
+| Field | Type | Default | Description |
 |---|---|---|---|
-| `type` | string | yes | Must be `"http"` |
-| `url` | string | yes | URL to fetch. Supports `${ENV_VAR}` expansion. |
-| `method` | string | no | HTTP method: `"GET"` (default), `"POST"`, `"PUT"` |
-| `headers` | table | no | HTTP headers. Values support `${ENV_VAR}` expansion. |
-| `body` | string | no | Request body (for POST/PUT) |
-| `extract` | string | no | Dot-separated path into the JSON response (e.g., `"status.indicator"`, `"rates.AUD"`) |
-| `enabled` | bool | no | `false` to disable |
-| `invalidation.poll` | string | no | Poll interval (default `"60s"`, floor `5s`) |
-
-**`[providers.<name>]` section (shared library providers):**
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `type` | string | yes | Must be `"library"` |
-| `library_path` | string | yes | Path to `.so`/`.dylib` file. Supports `~/` expansion. |
-| `scope` | string | no | `"global"` (default) or `"path"` — overrides library metadata |
-| `fields` | table | no | Field name to type mapping — overrides library metadata |
-| `enabled` | bool | no | `false` to disable |
-| `invalidation.poll` | string | no | Poll interval — overrides library metadata |
-| `invalidation.watch` | array of strings | no | Watch patterns — overrides library metadata |
+| `path` | array of strings | `["<config dir>/plugins"]` | Directories `plugin(name, symbol, args...)` searches, in order, for `lib<name>.dylib` (macOS) or `lib<name>.so` (Linux). Each is absolute or starts `~/`. A later file's list replaces an earlier one's. |
 
 ---
 
-## Built-in Providers Reference
+## Shipped Providers Reference
 
-beachcomber ships 19 built-in providers organized by category.
+beachcomber ships 16 providers organized by category, plus template-backed namespaces. Each is a file in the managed `defaults/` directory, written the way a user writes a Source; override any line of one in `config.toml` or `conf.d/`.
 
 ### System
 
-| Provider | Scope | Fields | Invalidation | Typical Latency |
+| Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `hostname` | global | `name` (string), `short` (string) | once at startup | 400 ns |
-| `user` | global | `name` (string), `uid` (int) | once at startup | 395 ns |
-| `load` | global | `one` (float), `five` (float), `fifteen` (float) | poll 10s / floor 5s | 550 ns |
-| `uptime` | global | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
-| `battery` | global | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string) | poll 30s / floor 5s | 6 ms |
-| `network` | global | `interface` (string), `ip` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s / floor 5s | 2 ms |
-| `sudo` | global | `active` (bool) | poll 30s | < 1 µs |
-| `op` | global | `signed_in` (bool), `account` (string) | poll 60s | varies |
+| `hostname` | none | `name` (string), `short` (string) | poll 10m | 400 ns |
+| `user` | none | `name` (string), `uid` (int) | poll 10m | 395 ns |
+| `load` | none | `one` (float), `five` (float), `fifteen` (float) | poll 10s / floor 5s | 550 ns |
+| `uptime` | none | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
+| `battery` | none | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string), `status_raw` (string, Linux) | poll 30s / floor 5s | 6 ms |
+| `network` | none | `interface` (string), `ip` (string), `ipv6` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s / floor 5s | 2 ms |
+| `sudo` | none | `active` (bool) | poll 30s | < 1 µs |
+| `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | poll 1h | < 1 µs |
+
+`hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files (`defaults/<name>.toml`), each one Source whose `data` line calls the compiled-in `sys` plugin, `git` is `defaults/git.toml`, whose Sources call the compiled-in `git` plugin, and `terraform`, `python`, `direnv`, `asdf`, `aws_profiles`, `gcloud_configs` and `sudo` are shipped files whose Sources read their files; any of their lines can be overridden in `config.toml` or `conf.d/`.
+
+`sudo.active` is whether the user's sudo timestamp (`/var/run/sudo/ts/$USER`, else `/run/sudo/ts/$USER`) is under five minutes old. It is absent, not `false`, where a daemon running as the user cannot read that timestamp: on macOS, where sudo keeps it under `/var/db/sudo`, root's alone, and on Linux wherever `/run/sudo/ts` is root's alone (sudo makes it mode 0700).
 
 **Example output:**
 
 ```json
-// comb g battery
+// comb g.j battery      (-f json prints the bare value; ask for age with battery:cache.percent)
 {
-  "ok": true,
-  "data": {
-    "percent": 78,
-    "charging": false,
-    "time_remaining_secs": 7200,
-    "status": "discharging"
-  },
-  "age_ms": 4200
+  "percent": 78,
+  "charging": false,
+  "time_remaining_secs": 7200,
+  "status": "discharging"
 }
 ```
 
-> **Platform note:** On macOS, `time_remaining_secs` is always available. On Linux, it requires UPower (`upower` command) — if unavailable, the field reads `0`. The `status` field reports the battery state: `"charging"`, `"discharging"`, `"full"`, or `"unknown"`.
+> **Platform note:** `time_remaining_secs` is absent when there is no estimate — a full battery, or the platform giving none (macOS `pmset`; on Linux the driver's own estimate, else the energy or charge over the rate in sysfs). The `status` field reports the battery state: `"charging"`, `"discharging"`, `"charged"`, `"calculating"` or `"unknown"`; on Linux `status_raw` is the kernel's own word. A machine with no battery has no `battery` fields.
 
 ```json
-// comb g network
+// comb g.j network
 {
-  "ok": true,
-  "data": {
-    "interface": "en0",
-    "ip": "192.168.1.42",
-    "vpn_active": true,
-    "vpn_name": "utun2",
-    "ssid": "OfficeNet",
-    "online": true
-  },
-  "age_ms": 3100
+  "interface": "en0",
+  "ip": "192.168.1.42",
+  "vpn_active": true,
+  "vpn_name": "utun2",
+  "ssid": "OfficeNet",
+  "online": true
 }
 
-// comb g load
-{
-  "ok": true,
-  "data": { "one": 2.34, "five": 1.87, "fifteen": 1.42 },
-  "age_ms": 8900
-}
+// comb g.j load
+{ "one": 2.34, "five": 1.87, "fifteen": 1.42 }
 ```
 
 ### Git
 
-| Provider | Scope | Fields | Invalidation | Typical Latency |
+| Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `git` | path | 24 fields (see table below) | watch `.git` + fallback poll | 5.6 ms |
+| `git` | project | 30 fields (see table below) | watch `.git` and the working tree + fallback poll | `head` no process; the rest about 150 ms, 10 `git` processes, on this repository |
 
 **Fields:**
 
 | Field | Type | Description |
 |---|---|---|
-| `branch` | string | Current branch name |
-| `commit` | string | Short SHA of HEAD |
+| `branch` | string | Current branch name; absent on a detached HEAD |
+| `commit` | string | Short SHA of HEAD; absent before the first commit |
 | `detached` | bool | Whether HEAD is detached |
-| `upstream` | string | Upstream tracking branch (e.g., "origin/main") |
-| `tag` | string | Nearest tag (empty if none) |
+| `upstream` | string | Upstream tracking branch (e.g., "origin/main"); absent when none |
+| `tag` | string | Nearest tag; absent when none |
 | `dirty` | bool | Whether working tree has changes |
 | `staged` | int | Number of staged files |
 | `unstaged` | int | Number of unstaged modified files |
 | `untracked` | int | Number of untracked files |
 | `conflicted` | int | Number of conflicted files |
-| `ahead` | int | Commits ahead of upstream |
-| `behind` | int | Commits behind upstream |
+| `ahead` | int | Commits ahead of upstream; absent without one |
+| `behind` | int | Commits behind upstream; absent without one |
 | `stash` | int | Number of stash entries |
 | `lines_added` | int | Lines added in working tree (unstaged) |
 | `lines_removed` | int | Lines removed in working tree (unstaged) |
 | `lines_staged_added` | int | Lines added in index (staged) |
 | `lines_staged_removed` | int | Lines removed in index (staged) |
 | `state` | string | Repo state: "clean", "merge", "rebase", "cherry-pick", "bisect", "revert" |
-| `state_step` | int | Current step in rebase/cherry-pick (0 if not in progress) |
-| `state_total` | int | Total steps in rebase/cherry-pick (0 if not in progress) |
+| `state_step` | int | Current step of a rebase in progress; absent otherwise |
+| `state_total` | int | Total steps of a rebase in progress; absent otherwise |
 | `last_commit_age_secs` | int | Seconds since last commit |
 | `commit_summary` | string | First line of HEAD commit message |
 | `push_ahead` | int | Commits ahead of the push remote |
 | `push_behind` | int | Commits behind the push remote |
+| `branch_parent` | string | Branch this branch was forked from, per its reflog; the default branch when the reflog names none |
+| `lines_added_parent` | int | Lines added on this branch since it forked from `branch_parent` |
+| `lines_removed_parent` | int | Lines removed on this branch since it forked from `branch_parent` |
+| `branch_default` | string | Default branch, from `origin/HEAD` or a local `main`/`master` |
+| `lines_added_default` | int | Lines added on this branch since it diverged from `branch_default` |
+| `lines_removed_default` | int | Lines removed on this branch since it diverged from `branch_default` |
 
 **Example output:**
 
 ```json
-// comb g git .
+// comb g.j git .
 {
-  "ok": true,
-  "data": {
-    "branch": "feature/fast-cache",
-    "commit": "a1b2c3d",
-    "detached": false,
-    "upstream": "origin/main",
-    "tag": "v0.4.0",
-    "dirty": true,
-    "staged": 3,
-    "unstaged": 1,
-    "untracked": 0,
-    "conflicted": 0,
-    "ahead": 2,
-    "behind": 0,
-    "stash": 1,
-    "lines_added": 47,
-    "lines_removed": 12,
-    "lines_staged_added": 23,
-    "lines_staged_removed": 5,
-    "state": "clean",
-    "state_step": 0,
-    "state_total": 0,
-    "last_commit_age_secs": 3420
-  },
-  "age_ms": 234
+  "branch": "feature/fast-cache",
+  "commit": "a1b2c3d",
+  "detached": false,
+  "upstream": "origin/main",
+  "tag": "v0.4.0",
+  "dirty": true,
+  "staged": 3,
+  "unstaged": 1,
+  "untracked": 0,
+  "conflicted": 0,
+  "ahead": 2,
+  "behind": 0,
+  "stash": 1,
+  "lines_added": 47,
+  "lines_removed": 12,
+  "lines_staged_added": 23,
+  "lines_staged_removed": 5,
+  "state": "clean",
+  "state_step": 0,
+  "state_total": 0,
+  "last_commit_age_secs": 3420
 }
 
 // comb g git.branch .
@@ -900,62 +837,61 @@ feature/fast-cache
 
 ### Cloud and DevOps
 
-| Provider | Scope | Fields | Invalidation | Typical Latency |
+| Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `kubecontext` | global | `context` (string), `namespace` (string) | poll 30s | 749 ns |
-| `gcloud` | global | `project` (string), `account` (string) | poll 60s | 1.08 µs |
-| `aws` | global | `profile` (string), `region` (string) | poll 60s | < 1 µs |
-| `terraform` | path | `workspace` (string) | watch `.terraform/` | < 1 µs |
+| `gcloud_configs` | none | `active_config` (string), plus one object per gcloud configuration: `{ project, account }` | poll 60s | 1.08 µs |
+| `aws_profiles` | none | one object per profile in `~/.aws/config`: `{ region }` | watch `~/.aws/config` + poll 60s | < 1 µs |
+| `terraform` | project | `workspace` (string) | watch `.terraform/environment` | < 1 µs |
 
-`kubecontext` reads `~/.kube/config` directly (respecting `$KUBECONFIG`) — no `kubectl` subprocess. `gcloud` reads `~/.config/gcloud/properties` directly — no Python CLI subprocess.
+`gcloud_configs` reads `~/.config/gcloud/configurations/` directly — no Python CLI subprocess. Both are **data providers**: they cache every profile or configuration, blind to the shell's selector, and the user-facing `aws.*` and `gcloud.*` fields are templates (below) that index them by `$AWS_PROFILE` / `$CLOUDSDK_ACTIVE_CONFIG_NAME`.
 
 **Example output:**
 
 ```json
-// comb g kubecontext
-{
-  "ok": true,
-  "data": { "context": "prod-cluster", "namespace": "default" },
-  "age_ms": 15200
-}
+// comb g.j aws_profiles
+{ "default": { "region": "us-east-1" }, "work-prod": { "region": "eu-west-1" } }
 
-// comb g aws
-{
-  "ok": true,
-  "data": { "profile": "work-prod", "region": "us-east-1" },
-  "age_ms": 42100
-}
+// AWS_PROFILE=work-prod comb g aws.region      (a template over aws_profiles)
+eu-west-1
 ```
+
+### Template-backed namespaces
+
+A `comb g` namespace need not have a Source behind it: a provider named only in `[client.providers]` has templates and no Sources. The managed `defaults/` files the daemon writes to `~/.config/beachcomber/defaults/` declare templates under `[client.providers.<namespace>] template.*`; the daemon serves them as data and the client renders them with the caller's environment. Override one field by setting the same key in `config.toml` or `conf.d/`.
+
+| Namespace | Default file | Fields | Renders from |
+|---|---|---|---|
+| `aws` | `defaults/aws.toml` | `profile`, `region`, `expiration` | `$AWS_PROFILE`/`$AWS_VAULT`/`$AWS_DEFAULT_PROFILE`, `$AWS_REGION`, `$AWS_CREDENTIAL_EXPIRATION`, falling back to `comb.aws_profiles[<profile>].region` |
+| `gcloud` | `defaults/gcloud.toml` | `project`, `account` | `$CLOUDSDK_CORE_PROJECT`, `$CLOUDSDK_ACTIVE_CONFIG_NAME`, falling back to `comb.gcloud_configs[<active>]` |
+| `python` | `defaults/python.toml` | `version`, `venv_name` | `$PYENV_VERSION`/`$MISE_PYTHON_VERSION`, `comb.mise.python`, `comb.asdf.python`, `comb.python.venv_version`; `comb.python.local_venv_name`, `$VIRTUAL_ENV` |
+| `terraform` | `defaults/terraform.toml` | `workspace` | `$TF_WORKSPACE`, falling back to the cached `comb.terraform.workspace` — a template at a cached field's path wins on read |
+| `conda` | `defaults/conda.toml` | `env` | `$CONDA_DEFAULT_ENV` |
+| `op` | `defaults/op.toml` | `service_account` (bool) | whether `$OP_SERVICE_ACCOUNT_TOKEN` is set — never the token itself |
+| `kubecontext` | `defaults/kubecontext.toml` | `context`, `namespace` | `exec('kubectl config …')` |
+| `talos` | `defaults/talos.toml` | `context` | `exec(['talosctl', 'config', 'info', …])` |
+
+Only `python` and `terraform` have a daemon provider of the same name, so only there does `comb g <namespace>` return cached fields deep-merged with rendered ones. `aws` and `gcloud` are templates only: their data lives in the differently named `aws_profiles` and `gcloud_configs` namespaces, which the templates reach through `comb.*` refs, and `comb g aws` is just the rendered template tree. `conda`, `op`, `kubecontext` and `talos` are templates only too, over the environment or a command. `kubecontext` and `talos` call the tool the shell would run — `kubectl config current-context`, `talosctl config info` — so they honour the shell's own `$KUBECONFIG`/`$TALOSCONFIG`, and the field names are unchanged: `comb g kubecontext.context` still prints the active context. Because they spawn a process, they render only where `exec()` is enabled — `comb get`/`eval`, or an SDK client constructed with `exec` on; anywhere else the field is the error `exec() is disabled in this context`.
 
 ### Development Tools
 
-| Provider | Scope | Fields | Invalidation | Typical Latency |
+| Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `python` | path | `venv` (bool), `venv_name` (string), `version` (string) | watch `.venv/`, `pyproject.toml` | < 1 µs |
-| `conda` | global | `env` (string) | poll 30s | < 1 µs |
-| `mise` | path | `project` (object: tool-name → version), `global` (object: tool-name → version) | watch `.mise.toml`, `mise.toml` | varies |
-| `asdf` | path | `tools` (object: tool-name → version) | watch `.tool-versions` | < 1 µs |
-| `direnv` | path | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
+| `python` | project | `venv` (bool), `local_venv_name` (string), `venv_version` (string) — plus the `venv_name` and `version` templates above | watch `.venv/`, `pyproject.toml` | < 1 µs |
+| `mise` | project | one string field per tool name (e.g. `node`, `rust`) — one `tools` source (`defaults/mise.toml`): what mise resolves at the project, global tools included; outside a project, at `~` | watch `.mise.toml`, `mise.toml` | varies |
+| `asdf` | project | one string field per tool name (e.g. `nodejs`, `ruby`) — the project's `.tool-versions`, then the global one's at `~` | watch `.tool-versions` | < 1 µs |
+| `direnv` | project | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
 
 **Example output:**
 
 ```json
-// comb g mise .
-{
-  "ok": true,
-  "data": {
-    "project": {"node": "20.11.0", "python": "3.12.1"},
-    "global": {"rust": "1.75.0"}
-  },
-  "age_ms": 890
-}
+// comb g.j mise .           (project tools for the current directory, merged over the global set)
+{ "node": "20.11.0", "python": "3.12.1", "rust": "1.75.0" }
 
-// comb g python .
-{
-  "ok": true,
-  "data": { "venv": true, "venv_name": ".venv", "version": "3.12.1" },
-  "age_ms": 120
-}
+// comb g.j --global mise    (global tools only)
+{ "rust": "1.75.0" }
+
+// comb g.j python .         (cached fields plus the two rendered templates)
+{ "venv": true, "local_venv_name": ".venv", "venv_version": "3.12.1", "venv_name": ".venv", "version": "3.12.1" }
 ```
 
 ---
@@ -1009,25 +945,22 @@ The simple `#()` approach shown above is already a major improvement over shelli
 
 ### bash prompt (PROMPT_COMMAND)
 
-bash runs `PROMPT_COMMAND` before each prompt. Parse the `key=value` sh output from a whole-provider query to minimize subprocess calls.
+bash runs `PROMPT_COMMAND` before each prompt. `eval` the `key='value'` sh output from a whole-provider query into prefixed locals to minimize subprocess calls.
 
 ```bash
 # ~/.bashrc
 __beachcomber_prompt() {
-    # Fetch entire git state in one query, parse key=value output
-    local git_state
-    git_state=$(comb g.s git . 2>/dev/null)
-
-    local branch dirty
-    while IFS='=' read -r key value; do
-        case "$key" in
-            branch) branch="$value" ;;
-            dirty)  dirty="$value" ;;
-        esac
-    done <<< "$git_state"
+    # One query for the whole git namespace. `.s` output is key='value' lines,
+    # shell-quoted, so eval it into prefixed locals rather than parsing by hand.
+    local git_branch="" git_dirty=""
+    eval "$(comb g.s git . 2>/dev/null | sed 's/^/local git_/')"
 
     local git_part=""
-    [[ -n "$branch" ]] && git_part="(${branch}${dirty:+*}) "
+    if [[ -n "$git_branch" ]]; then
+        git_part="(${git_branch}"
+        [[ "$git_dirty" == true ]] && git_part+="*"
+        git_part+=") "
+    fi
 
     local kube
     kube=$(comb g kubecontext.context 2>/dev/null)
@@ -1076,10 +1009,9 @@ local comb = require('beachcomber')
 local client = comb.connect()
 
 local function git_branch()
-    local cwd = vim.fn.getcwd()
-    local result = client:get('git.branch', cwd)
-    if result and result:is_hit() then
-        return ' ' .. result.data
+    local branch = client:get('git.branch', { cwd = vim.fn.getcwd() })
+    if branch then
+        return ' ' .. branch
     end
     return ''
 end
@@ -1170,22 +1102,22 @@ sketchybar --add item git_branch right \
 
 ### Python script
 
-The `beachcomber` Python SDK is stdlib-only (no pip dependencies required):
+The `libbeachcomber` Python SDK is stdlib-only (no pip dependencies required):
 
 ```python
-from beachcomber import Client
+from libbeachcomber import Client
 
 client = Client()
 
-# Single field
-result = client.get("git.branch", path="/path/to/repo")
-if result.is_hit:
-    print(f"Branch: {result.data}")
+# Single field: what `comb get git.branch` prints there, None on a miss
+branch = client.get("git.branch", cwd="/path/to/repo")
+if branch is not None:
+    print(f"Branch: {branch}")
 
-# Full provider with field access
-result = client.get("git", path="/path/to/repo")
-if result.is_hit:
-    print(f"Branch: {result['branch']}, dirty: {result['dirty']}")
+# Full provider: a dict
+git = client.get("git", cwd="/path/to/repo")
+if git is not None:
+    print(f"Branch: {git['branch']}, dirty: {git['dirty']}")
 
 # Persistent session for multiple queries
 with client.session() as s:
@@ -1223,26 +1155,23 @@ libbeachcomber = "0.8"
 ```
 
 ```rust
-use libbeachcomber::{Client, CombResult};
+use libbeachcomber::Client;
 
 let client = Client::new(); // auto-discovers socket, starts daemon if needed
 
-// Single field query
+// What `comb get git.branch` prints in that directory; `None` is a miss
 match client.get("git.branch", Some("/path/to/repo"))? {
-    CombResult::Hit { data, .. } => println!("branch: {}", data.as_text().unwrap()),
-    CombResult::Miss => println!("not cached yet — will be ready on next query"),
+    Some(branch) => println!("branch: {branch}"),
+    None => println!("nothing there"),
 }
 
-// Full provider query with typed field access
-match client.get("git", Some("/path/to/repo"))? {
-    CombResult::Hit { data, age_ms, stale } => {
-        println!("branch: {}", data.get_str("branch").unwrap_or("?"));
-        println!("dirty: {}", data.get_bool("dirty").unwrap_or(false));
-        println!("ahead: {}", data.get_i64("ahead").unwrap_or(0));
-        println!("age: {}ms, stale: {}", age_ms, stale);
-    }
-    CombResult::Miss => {}
+// A provider is its whole object
+if let Some(git) = client.get("git", Some("/path/to/repo"))? {
+    println!("dirty: {}", git["dirty"]);
 }
+
+// The unrendered stored value is a facet address
+let stored = client.get("git:cache.branch", Some("/path/to/repo"))?;
 
 // Persistent session for multiple queries (one connection, multiple requests)
 let mut session = client.session()?;
@@ -1254,9 +1183,9 @@ let battery = session.get("battery.percent", None)?;
 Features:
 - **Synchronous** — no async runtime needed
 - **Socket activation** — starts the daemon automatically if not running
-- **Typed access** — `get_str()`, `get_bool()`, `get_i64()`, `get_f64()`
+- **The value `comb get` prints** — templates rendered, `serde_json::Value` out
 - **Persistent sessions** — reuse one connection for multiple queries (15µs/query vs 34µs)
-- **Configurable timeouts** — default 100ms, adjustable via `ClientConfig`
+- **Configurable timeouts** — default 250ms, adjustable via `ClientConfig`
 
 ---
 
@@ -1277,7 +1206,7 @@ Covered keys: `git.branch`, `git.dirty`, `git.ahead`, `git.behind`, `git.stash`,
 
 ### The chpwd hook
 
-`scripts/chpwd.sh` warms path-scoped provider caches on directory change. When you `cd`, it refreshes `git`, `mise`, `terraform`, `python`, `direnv`, and `asdf` in the background so the cache is warm before your first prompt renders.
+`scripts/chpwd.sh` warms the caches of rooted providers on directory change. When you `cd`, it refreshes `git`, `mise`, `terraform`, `python`, `direnv`, and `asdf` in the background so the cache is warm before your first prompt renders.
 
 ```sh
 # Install — add to your shell rc (zsh, bash; fish requires a separate config file)
@@ -1306,11 +1235,11 @@ Every SDK provides typed APIs, socket discovery, timeouts, and error handling by
 |---|---|---|
 | **Rust** (`libbeachcomber`) | `libbeachcomber/` | Sync, no tokio dependency |
 | **C** (`libbeachcomber`) | `sdks/c/` | Shared + static lib, generated header, no embedded JSON parser |
-| **Python** (`beachcomber`) | `sdks/python/` | Dataclasses, sync client + session, ctypes over the C ABI |
-| **Node.js** (`beachcomber`) | `sdks/node/` | TypeScript, async API, koffi (optional peer dep) with subprocess fallback |
+| **Python** (`libbeachcomber`) | `sdks/python/` | Dataclasses, sync client + session, ctypes over the C ABI |
+| **Node.js** (`libbeachcomber`) | `sdks/node/` | TypeScript, async API, koffi (optional peer dep) with subprocess fallback |
 | **Go** (`beachcomber`) | `sdks/go/` | Idiomatic error returns, vendored purego over the C ABI |
 | **Lua** (`beachcomber`) | `sdks/lua/` | LuaJIT ffi, with PUC Lua subprocess fallback |
-| **Ruby** (`beachcomber`) | `sdks/ruby/` | Block-based sessions, fiddle over the C ABI |
+| **Ruby** (`libbeachcomber`) | `sdks/ruby/` | Block-based sessions, fiddle over the C ABI |
 | **Shell** (POSIX function) | In README | Copy-paste fallback pattern |
 
 You don't need an SDK to talk to beachcomber — the protocol is newline-delimited JSON over a Unix socket. See [Protocol Reference](#protocol-reference).
@@ -1319,90 +1248,77 @@ You don't need an SDK to talk to beachcomber — the protocol is newline-delimit
 
 ## Custom Providers Guide
 
-Custom providers let you add any data source to beachcomber using any language. Your script runs on the configured schedule, and the results are cached and served to all consumers.
+A custom provider is a **Source**: a function with a body (`data`), the fields it returns (`result`), and a schedule (`return`). `data` runs on the daemon, on the Source's schedule; the results are cached and served to all consumers.
+
+```toml
+[daemon.providers.demo.sources.s]
+data = "{{ exec('cat ' ~ env.HOME ~ '/demo.json') | fromjson }}"
+result = "{{ data }}"
+```
+
+`exec('…')` runs a string under `sh -c` with the daemon's environment; `exec(['cmd', 'arg'])` runs one argument per element, with no shell. `$BAR` inside the string is expanded by the shell, which the engine cannot see (a future `cache()` hash would miss it): prefer `exec('cmd ' ~ env.bar)`. Without a `return` line, the Source takes the abstract Source's schedule: polled every 60 seconds while queried, backed off after repeated failures.
 
 ### Output Formats
 
-**JSON (default):** Stdout must be a JSON object. Top-level keys become provider fields.
+The shape of the output is the filter after `exec`.
 
-```sh
-# A provider that outputs JSON
-#!/bin/sh
-docker context show --format '{"context":"{{.Name}}","driver":"{{.Driver}}"}'
-```
+**JSON:** Stdout is a JSON object; `| fromjson` parses it. `result = "{{ data }}"` makes its top-level keys the provider's fields, or `result.<field>` lines pick them.
 
 ```toml
-[providers.docker_ctx]
-command = "~/.config/beachcomber/providers/docker-context.sh"
-output = "json"
+[daemon.providers.docker_ctx.sources.main]
+data = "{{ exec('~/.config/beachcomber/providers/docker-context.sh') | fromjson }}"
+result = "{{ data }}"
 ```
 
-**Key-value:** Stdout is `key=value` lines, one per field. Simpler for shell scripts.
-
-```sh
-# A provider using kv output
-#!/bin/sh
-context=$(docker context show 2>/dev/null || echo "default")
-echo "context=${context}"
-```
+**Key-value:** Stdout is `key=value` lines. `| fromini` reads them (keys before any `[section]` land under `''`).
 
 ```toml
-[providers.docker_ctx]
-command = "~/.config/beachcomber/providers/docker-context.sh"
-output = "kv"
+[daemon.providers.docker_ctx.sources.main]
+data = "{{ exec('~/.config/beachcomber/providers/docker-context.sh') | fromini }}"
+result.context = "{{ data[''].context }}"
 ```
 
-**Text:** Stdout is a single value, exposed as the `value` field. For commands that print one thing.
-
-```sh
-# Single-value output
-node --version 2>/dev/null | tr -d 'v'
-```
+**Text:** Stdout is a single value. `| trim` drops the trailing newline.
 
 ```toml
-[providers.node_version]
-command = "node --version | tr -d v"
-output = "text"
+[daemon.providers.node_version.sources.main]
+data = "{{ exec('node --version | tr -d v') | trim }}"
+result.value = "{{ data }}"
 ```
 
 Then query with `comb g node_version.value`.
 
-### Invalidation Strategies
+### Schedules
+
+The decorators on `return` say when `data` runs again.
 
 **Poll only:** Re-run every N seconds. Use for data that changes independently of filesystem events.
 
 ```toml
-[providers.vpn_status]
-command = "~/.config/beachcomber/providers/vpn-check.sh"
-output = "kv"
-
-[providers.vpn_status.invalidation]
-poll = "10s"
+[daemon.providers.vpn_status.sources.main]
+data = "{{ exec('~/.config/beachcomber/providers/vpn-check.sh') | fromini }}"
+result.active = "{{ data[''].active }}"
+return = "{{ result | poll('10s') }}"
 ```
 
-**Watch only:** Re-run when specific files change. Use for data that's determined entirely by file content.
+**Watch only:** Re-run when specific files change. Use for data that's determined entirely by file content. Relative paths are relative to `root`; a path starting with `/` or `~` is absolute.
 
 ```toml
-[providers.ruby_version]
-command = "rbenv version-name"
-output = "text"
-scope = "path"
-
-[providers.ruby_version.invalidation]
-watch = [".ruby-version", "Gemfile", ".tool-versions"]
+[daemon.providers.ruby_version.sources.main]
+root = "{{ lup('.ruby-version') | dirname }}"
+data = "{{ exec('rbenv version-name') | trim }}"
+result.value = "{{ data }}"
+return = "{{ result | watch('.ruby-version', 'Gemfile', '.tool-versions') }}"
 ```
 
 **Watch with poll fallback (recommended):** FSEvents and inotify can occasionally drop events under heavy load. A poll fallback ensures eventual consistency even if an event is missed.
 
 ```toml
-[providers.cargo_meta]
-command = "cargo metadata --format-version=1 --no-deps --quiet"
-output = "json"
-scope = "path"
-
-[providers.cargo_meta.invalidation]
-watch = ["Cargo.toml", "Cargo.lock"]
-poll = "120s"
+[daemon.providers.cargo_meta.sources.main]
+root = "{{ lup('Cargo.toml') | dirname }}"
+data = "{{ exec('cargo metadata --format-version=1 --no-deps --quiet') | fromjson }}"
+result = "{{ data }}"
+return = "{{ result | watch('Cargo.toml', 'Cargo.lock') | poll('120s') }}"
 ```
 
 ### Real-World Examples
@@ -1425,17 +1341,15 @@ printf '{"context":"%s","remote":%s}\n' "$context" "$is_remote"
 ```
 
 ```toml
-[providers.docker_context]
-command = "~/.config/beachcomber/providers/docker-context.sh"
-output = "json"
-
-[providers.docker_context.invalidation]
-poll = "30s"
+[daemon.providers.docker_context.sources.main]
+data = "{{ exec('~/.config/beachcomber/providers/docker-context.sh') | fromjson }}"
+result = "{{ data }}"
+return = "{{ result | poll('30s') }}"
 ```
 
 Query: `comb g docker_context.context`
 
-**Node.js version provider (path-scoped):**
+**Node.js version provider (rooted):**
 ```sh
 #!/bin/sh
 # ~/.config/beachcomber/providers/node-version.sh
@@ -1452,26 +1366,22 @@ echo "version=${version:-unknown}"
 ```
 
 ```toml
-[providers.node_version]
-command = "~/.config/beachcomber/providers/node-version.sh"
-output = "kv"
-scope = "path"
-
-[providers.node_version.invalidation]
-watch = [".node-version", ".nvmrc", "package.json", ".mise.toml"]
-poll = "60s"
+[daemon.providers.node_version.sources.main]
+root = "{{ lup('package.json') | dirname }}"
+data = "{{ exec('~/.config/beachcomber/providers/node-version.sh') | fromini }}"
+result.version = "{{ data[''].version }}"
+return = "{{ result | watch('.node-version', '.nvmrc', 'package.json', '.mise.toml') | poll('60s') }}"
 ```
+
+`data` runs with the instance's `root` as its working directory.
 
 **Ruby version via rbenv:**
 ```toml
-[providers.ruby_version]
-command = "rbenv version-name 2>/dev/null || ruby --version | cut -d' ' -f2"
-output = "text"
-scope = "path"
-
-[providers.ruby_version.invalidation]
-watch = [".ruby-version", "Gemfile", ".tool-versions"]
-poll = "120s"
+[daemon.providers.ruby_version.sources.main]
+root = "{{ lup('.ruby-version') | dirname }}"
+data = '''{{ exec("rbenv version-name 2>/dev/null || ruby --version | cut -d' ' -f2") | trim }}'''
+result.value = "{{ data }}"
+return = "{{ result | watch('.ruby-version', 'Gemfile', '.tool-versions') | poll('120s') }}"
 ```
 
 Query: `comb g ruby_version.value`
@@ -1499,97 +1409,81 @@ echo "name="
 ```
 
 ```toml
-[providers.vpn]
-command = "~/.config/beachcomber/providers/vpn-status.sh"
-output = "kv"
-
-[providers.vpn.invalidation]
-poll = "10s"
+[daemon.providers.vpn.sources.main]
+data = "{{ exec('~/.config/beachcomber/providers/vpn-status.sh') | fromini }}"
+result.active = "{{ data[''].active }}"
+result.name = "{{ data[''].name }}"
+return = "{{ result | poll('10s') }}"
 ```
 
 Query: `comb g vpn.active`
 
-### HTTP Providers
+### HTTP
 
-For providers that fetch data from REST APIs, beachcomber has a built-in HTTP provider type. This makes HTTP requests directly in the daemon process — no `curl` fork, no shell spawning, with connection reuse and proper timeout handling.
+A Source fetches over HTTP by calling `url()` in its `data` line. The request is made in the daemon process — no `curl` fork, no shell spawning, with proper timeout handling. `url(address, method='GET', headers={}, body=none, timeout='10s')` returns the response body as text; pipe it through `fromjson` to get a value `result` can read. `method` is `GET`, `POST`, `PUT` or `PATCH`. A non-2xx status fails the render, so the Source's execute fails and its `failback` applies.
 
-> **Note:** You can also use script providers with `curl` for quick-and-dirty HTTP queries. But for anything polling regularly, the `http` type is significantly more efficient — it avoids 2-6ms of process spawn overhead per request.
+> **Note:** `exec('curl …')` also works for a quick query, but for anything polling regularly `url()` avoids the 2-6ms process spawn per request.
 
 **Basic API status check:**
 
 ```toml
-[providers.claude_status]
-type = "http"
-url = "https://status.anthropic.com/api/v2/summary.json"
-extract = "status"
-invalidation = { poll = "60s" }
+[daemon.providers.claude_status.sources.summary]
+data = "{{ url('https://status.anthropic.com/api/v2/summary.json') | fromjson }}"
+result.indicator = "{{ data.status.indicator }}"
+return = "{{ result | poll('60s') }}"
 ```
 
 Query: `comb g claude_status.indicator` returns `"none"`, `"minor"`, `"major"`, etc.
 
-The `extract` field navigates into the JSON response using dot-separated paths. Without it, the entire response object becomes the provider's fields.
+`result.<field>` lines pick fields out of the parsed response; `result = "{{ data.status }}"` instead makes the whole `status` object the provider's node.
 
 **Authenticated API with headers:**
 
 ```toml
-[providers.github_rate]
-type = "http"
-url = "https://api.github.com/rate_limit"
-headers = { Authorization = "Bearer ${GITHUB_TOKEN}", Accept = "application/json" }
-extract = "rate"
-invalidation = { poll = "30s" }
+[daemon.providers.github_rate.sources.main]
+data = "{{ url('https://api.github.com/rate_limit', headers={'Authorization': 'Bearer ' ~ env.GITHUB_TOKEN, 'Accept': 'application/json'}) | fromjson }}"
+result = "{{ data.rate }}"
+return = "{{ result | poll('30s') }}"
 ```
 
 Query: `comb g github_rate.remaining`
 
-Header values support `${ENV_VAR}` expansion — secrets stay in your environment, not in config files.
+Secrets stay in the daemon's environment (`env.GITHUB_TOKEN`), not in config files.
 
 **Service health endpoint:**
 
 ```toml
-[providers.api_health]
-type = "http"
-url = "https://internal.example.com/health"
-invalidation = { poll = "10s" }
+[daemon.providers.api_health.sources.main]
+data = "{{ url('https://internal.example.com/health') | fromjson }}"
+result = "{{ data }}"
+return = "{{ result | poll('10s') }}"
 ```
 
-If the endpoint returns JSON, top-level keys become fields. If it returns non-JSON, the raw body is available as the `body` field.
+If the endpoint returns JSON, its top-level keys become fields. For a non-JSON body, leave out `fromjson` and set `result.body = "{{ data }}"`.
 
 **Exchange rate (infrequent poll):**
 
 ```toml
-[providers.exchange]
-type = "http"
-url = "https://api.exchangerate-api.com/v4/latest/USD"
-extract = "rates.AUD"
-invalidation = { poll = "86400s" }
+[daemon.providers.exchange.sources.main]
+data = "{{ url('https://api.exchangerate-api.com/v4/latest/USD') | fromjson }}"
+result.value = "{{ data.rates.AUD }}"
+return = "{{ result | poll('86400s') }}"
 ```
 
 Query: `comb g exchange.value` — returns the AUD rate, refreshed daily.
 
-**Comparison — script vs HTTP for the same task:**
+### Failure handling and timeouts
 
-Using a script provider (forks `sh` + `curl` every poll):
-```toml
-[providers.api_status_script]
-type = "script"
-command = "curl -s https://status.anthropic.com/api/v2/summary.json"
-invalidation = { poll = "60s" }
-```
+A Source that calls `url()` has the same lifecycle as any config Source:
 
-Using the HTTP provider (in-process, no fork):
-```toml
-[providers.api_status_http]
-type = "http"
-url = "https://status.anthropic.com/api/v2/summary.json"
-invalidation = { poll = "60s" }
-```
+- **`timeout`** (default `"10s"`, set under `[daemon]`, or per Source with `| timeout('30s')` on its `return`) — the maximum time a single execute may take; `url()` also takes its own `timeout=` (default `'10s'`). A request that exceeds the limit fails and the last good cached value is retained.
+- **`failback(interval, count)`** on the `return` line (the shipped default is `failback('1s', 3)`) — after `count` consecutive failures the Source backs off exponentially, the first step being `interval` and the cap 8× `interval` (8 s with the shipped default). Attempts before the count are not delayed. The interval comes first, as in `poll`, and is a duration string: a number there (`failback(3, '1s')`, the count-first order) is a load error that says the order. A non-2xx response, a connection error and a timeout all count.
 
-Both produce the same result. The HTTP version skips the ~5ms process spawn overhead and handles connection failures more gracefully.
+A transient 5xx or network error will not remove the last cached value — consumers keep the last value, and `comb status` shows the failure on its row.
 
 ### Secrets and Environment Variables
 
-HTTP headers and script commands support `${VAR}` expansion, pulling values from the daemon's environment. But the daemon's environment depends on how it starts — socket activation inherits the env of whatever triggered it, which is unpredictable.
+A Source's `data` line sees the daemon's environment as `env` (and a shell command run by `exec` inherits it), pulling values from the daemon's environment. But the daemon's environment depends on how it starts — socket activation inherits the env of whatever triggered it, which is unpredictable.
 
 The solution: **env files.** The daemon loads `~/.config/beachcomber/env` at startup before any providers execute, guaranteeing a consistent environment regardless of how the daemon was started.
 
@@ -1610,17 +1504,16 @@ EXCHANGE_API_KEY=abc123
 chmod 600 ~/.config/beachcomber/env
 ```
 
-Then reference these in provider configs:
+Then reference these in a Source's `data` line:
 
 ```toml
-[providers.github_rate]
-type = "http"
-url = "https://api.github.com/rate_limit"
-headers = { Authorization = "Bearer ${GITHUB_TOKEN}" }
-invalidation = { poll = "30s" }
+[daemon.providers.github_rate.sources.main]
+data = "{{ url('https://api.github.com/rate_limit', headers={'Authorization': 'Bearer ' ~ env.GITHUB_TOKEN}) | fromjson }}"
+result = "{{ data.rate }}"
+return = "{{ result | poll('30s') }}"
 ```
 
-The `${GITHUB_TOKEN}` is expanded at request time from the daemon's environment (which includes the env file values).
+`env.GITHUB_TOKEN` comes from the daemon's environment as it stood when the daemon started, after the env file loaded. An unset variable renders empty, so `'Bearer ' ~ env.GITHUB_TOKEN` sends `Bearer ` and the API refuses it.
 
 **Custom env file path:** If you keep secrets elsewhere:
 
@@ -1647,14 +1540,14 @@ vault kv get -field=env secret/beachcomber > ~/.config/beachcomber/env
 
 Then `chmod 600` and restart the daemon (`pkill -f 'comb daemon'` — it socket-activates on next query).
 
-### Script Provider Tips
+### Source Tips
 
-- **Exit codes:** A non-zero exit is treated as a failure. The last cached value is retained. After repeated failures (configurable via `failback_count` in `[failback]` globally or `[providers.<name>.<source>]` per-source, default 3), the provider enters exponential backoff from `failback_interval` (default 1s, 4 doubling levels).
-- **Stderr:** Stderr output from script providers is captured and logged at `debug` level. It does not affect the result.
-- **Timeouts:** Script providers are subject to `provider_timeout_secs` (default 10s). Long-running scripts are cancelled and retried on the next trigger.
-- **Shell:** Commands are executed via `sh -c`. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
-- **Path-scoped providers:** If `scope = "path"`, the script is called with the directory path as its working directory. Use `$PWD` inside the script to reference it.
-- **Performance:** Every process spawn costs 2-6ms minimum. For providers that poll frequently (< 30s), prefer reading config files over spawning CLI tools. See the design principles in `docs/performance.md`.
+- **Exit codes:** A non-zero exit from `exec` fails the refresh. The last cached value is retained. After repeated failures (the `failback(interval, count)` decorator; the abstract Source ships `failback('1s', 3)`), the Source enters exponential backoff from the interval (default 1s, 4 doubling levels).
+- **Stderr:** A command that succeeds has its stderr dropped. One that fails (a non-zero exit, a timeout) has the tail of its stderr in the error message the daemon logs for the refresh.
+- **Timeouts:** `exec` kills a command after `timeout` (default `'10s'`): `exec('slow-tool', timeout='30s')`. A timeout fails the refresh, and the next trigger retries it.
+- **Shell:** A string is executed via `sh -c`; a list (`exec(['cmd', 'arg'])`) is one argument per element with no shell. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
+- **Rooted Sources:** `data` runs with the instance's `root` as its working directory. A Source with no `root` is the one instance at `~`. A read from a directory takes each value from the instance at its nearest root, then the next root up, ending at `~`: a **cascade**, the default, which suits layered settings (mise, asdf's `.tool-versions`) where a project sets some keys and `~` the rest. Add `| nearest` to `return` and the nearest instance answers alone: a key it lacks is absent, and a directory whose `root` renders none has no instance and no value (it does not fall back to `~`). That suits "the one you are in" (git, direnv, a Python venv, a terraform root): `return = "{{ result | watch('.git/HEAD') | nearest }}"`. Put `nearest` on a `_` prototype and reach it with `| super` to make a provider's Sources nearest together.
+- **Performance:** Every process spawn costs 2-6ms minimum. For Sources that poll frequently (< 30s), prefer `read` and `lup` over spawning CLI tools. See the design principles in `docs/performance.md`.
 
 ---
 
@@ -1706,11 +1599,11 @@ Logs print directly to your terminal. Press Ctrl+C to shut down.
 
 ```sh
 $ comb s
-PROVIDER  PATH    FIELD    VALUE    AGE   TTL
-git       /repo   branch   main     14s   ★     60s×12 ◉
-git       /repo   dirty    true     14s   ★     60s×12 ◉
-battery   -       percent  87       8s    ★     30s×04
-hostname  -       short    artemis  3h    ---
+  PROVIDER  FIELD    SOURCE          VALUE    PATH     AGE   POLL  TTL
+  battery   percent  source(state)   87       ~       2s×0    27s  ★  30s×04 (2m)
+  git       branch   source(head)    main     ~/repo    2s      -  ★               ∙
+  git       dirty    source(status)  true     ~/repo  2s×0    57s  ★  60s×02 (2m)  ∙
+  hostname  short    source(host)    artemis  ~       2s×0  9m57s  ★ 600s×06 (1h)
 
 # Filter to a specific provider
 comb s --filter provider=git
@@ -1823,7 +1716,6 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "put", "key": "myapp", "data": {"status": "ok"}, "ttl": "30s", "path": "/project"}
 {"op": "put", "key": "myapp", "data": null}
 {"op": "watch", "key": "git.branch", "path": "/home/user/project"}
-{"op": "context", "path": "/home/user/project"}
 {"op": "status"}
 {"op": "introspect", "subject": "daemon"}
 {"op": "introspect", "subject": "providers"}
@@ -1840,19 +1732,19 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 | Field | Type | Description |
 |---|---|---|
-| `op` | string | Operation: `hello`, `get`, `refresh`, `put`, `watch`, `context`, `status`, `introspect` |
+| `op` | string | Operation: `hello`, `get`, `refresh`, `put`, `memo`, `watch`, `status`, `introspect`, `layers` |
 | `key` | string | Provider name (`git`) or field path (`git.branch`) |
-| `path` | string | Absolute path for path-scoped providers. Optional if connection context is set. |
+| `path` | string | Absolute directory the request addresses; omitted, the global entry. A path that is not absolute is refused. |
 | `force` | bool | (`get` only) Trigger immediate recomputation before returning. |
-| `wait` | bool | (`get` only) Block until a fresh value is available. |
+| `wait` | string | (`get` only) How long to wait for a run the read needs before answering what is stored: a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`. Omitted, a stored record waits its Source's budget and a cold read waits for its run. |
 
 ### Response Format
 
 ```json
-{"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240, "stale": false}
-{"ok": true, "data": "main", "age_ms": 1240, "stale": false}
-{"ok": true, "data": null, "age_ms": null, "stale": false}
-{"ok": false, "error": "unknown provider: git2"}
+{"ok": true, "data": {"branch": "main", "dirty": true}, "age_ms": 1240}
+{"ok": true, "data": "main", "age_ms": 1240}
+{"ok": true}
+{"ok": false, "error": "invalid facet key: a:b:c (a facet is template, macro, memo, put, source or cache)"}
 ```
 
 **Fields:**
@@ -1860,24 +1752,30 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 | Field | Type | Description |
 |---|---|---|
 | `ok` | bool | Whether the operation succeeded |
-| `data` | any | Result: object (full provider), scalar (single field), or null (cache miss) |
+| `data` | any | Result: object (full provider) or scalar (single field); omitted on a miss |
 | `age_ms` | int | Milliseconds since the cached value was last computed |
-| `stale` | bool | Whether the value is past its expected refresh time |
 | `error` | string | Error message when `ok` is false |
 
 ### Operations
 
 **`hello`:** Version negotiation. Clients should send this as the first op on any new connection. Returns `{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.6.0"}}`. `protocol_version` follows semver (major.minor) and is independent of the daemon binary version.
 
-**`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a path-scoped provider queried outside a matching directory).
+**`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a git provider queried outside a repository).
 
-**`refresh`:** Trigger immediate provider recomputation. Returns `{"ok": true}` after acknowledging. The recomputation happens asynchronously — subsequent `get` calls will return the refreshed value once it completes.
+**`refresh`:** Re-execute Sources out-of-band; does not return the new value. The key selects which Sources run, exactly as it selects which a `get` warms: `refresh git` re-executes every Source of `git`, `refresh git.branch` only the Source that owns `branch`. Each runs at the instance that answers for the requested directory — the root its `root` names for it, or the one instance at `~` for a Source with no root — so `path` is optional and is only consulted by Sources that have a root. A key that names no Source has nothing to re-execute and is an error — a static namespace, an unknown name, or a field no Source owns (a layer facet or `:cache` key is `cannot refresh <key>: a layer facet is read-only`): `{"ok": false, "error": "nothing to refresh: <key> has no sources"}`. Reading configuration afresh is not a refresh; the config watcher does that.
 
-**`put`:** Write data into the cache as a virtual provider. The `data` field must be a JSON object. An optional `ttl` duration (e.g., `"30s"`) marks entries stale if not refreshed within that window. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success; rejected if the key conflicts with a built-in or script provider.
+**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write replaces whatever a put left at that node; `"data": null` removes it. A put replaces the node at that directory, hiding Source and seed values; removing it shows them again. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`, at least `1s`) makes the put its own lifecycle entry: kept for that long and one decay step more (twice as long), then evicted. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success.
 
 ```json
 {"op":"put","key":"myapp","data":{"status":"healthy"}}
+{"op":"put","key":"myapp.deploy.count","data":3}
 {"op":"put","key":"myapp","data":{"status":"ok"},"ttl":"30s","path":"/project"}
+```
+
+**`memo`:** Store what a template leaf's `| cache()` computed — the client's resolver sends it after a render that missed, and no SDK binds it. `key` is the leaf (`provider.field`, never a facet), `path` the reader's directory, `hash` the client's sixteen lowercase hex digits over the leaf's inputs, `data` the leaf's value (absent for a leaf that rendered nothing), `watch` the absolute paths whose change invalidates it, `ttl` its lifetime. A `get` that attaches a template half then carries the memo beside it as `memo` (`{hash, stale, age_ms, data}`, a tree of them for a group), found up the chain from the requested directory; `<p>:cache.<field>` answers `source: memo` with its stored keys. A template or data write at the leaf, a `refresh` of the key, the `ttl` running out and a change to a `watch` path drop the memo's `hash`. The write starts the memo's lifecycle and nothing else renews it: its watch paths are watched while it is Active, and it is evicted one decay step after its `ttl` (twice the ttl), or with no `ttl` at the end of its provider's decay ladder. Returns `{"ok": true}`.
+
+```json
+{"op":"memo","key":"kubecontext.context","path":"/project","hash":"9c6001d328a94690","data":"prod","watch":["/home/me/.kube/config"],"ttl":"10m"}
 ```
 
 **`watch`:** Open a long-lived subscription. The server emits one NDJSON response immediately with the current value, then emits additional lines each time the watched key changes. The connection stays open until the client closes it.
@@ -1889,49 +1787,33 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 Server streams responses:
 
 ```json
-{"ok":true,"data":"main","age_ms":0,"stale":false}
-{"ok":true,"data":"feature/foo","age_ms":0,"stale":false}
+{"ok":true,"data":"main","age_ms":0}
+{"ok":true,"data":"feature/foo","age_ms":0}
 ```
 
 Field-level filtering applies: watching `git.branch` only emits when the branch value changes, not on every git provider update.
 
-**`context`:** Set the working directory for this connection. Subsequent path-scoped `get` requests without an explicit `path` will resolve relative to this directory. Useful for clients that query multiple values for the same path.
-
-**`status`:** Returns cache rows — one entry per warm cache key. Each row includes provider, field, value, age, and stale flag. For daemon health information (uptime, scheduler state, active watchers), use `{"op":"introspect","subject":"daemon"}` instead. See [docs/protocol-spec.md](docs/protocol-spec.md) for the full wire contract.
+**`status`:** Returns cache rows — one entry per warm cache key. Each row includes provider, field, value and age. For daemon health information (uptime, scheduler state, active watchers), use `{"op":"introspect","subject":"daemon"}` instead. See [docs/protocol-spec.md](docs/protocol-spec.md) for the full wire contract.
 
 ### Wire Format
 
-The wire protocol is JSON-only: every response is the JSON envelope with `ok`, `data`, `age_ms`, `stale` shown above. There is no request-level `format` field — rendering into other output shapes happens client-side.
+The wire protocol is JSON-only: every response is the JSON envelope with `ok`, `data`, `age_ms` shown above. There is no request-level `format` field — rendering into other output shapes happens client-side.
 
 ### CLI-only Output Formats
 
 The `comb` CLI renders the JSON response into additional output formats on the client side (these are not part of the wire protocol):
 
-**`text`:** Raw value only, followed by `\n`. For full-provider queries, returns one raw value per field, one per line, sorted alphabetically.
+**`text`:** The bare value, no trailing newline, so it embeds in a prompt string verbatim. For a whole namespace or any object value: one `key=value` line per leaf at any depth (`a.b.c=value`, arrays by index), sorted alphabetically.
 
-**`sh`:** `key=value` lines sorted alphabetically, one per line. Suitable for `eval` or `while IFS='=' read -r key value` parsing.
+**`sh`:** The same lines as `text` with every value POSIX-single-quoted (`branch='main'`), so the output is safe to `eval`; keys stay bare dotted names.
 
 **`csv` / `tsv`:** Comma- or tab-separated values. For single-field queries: one value per line. For full-provider queries: field values in alphabetical key order, one row.
 
 **`CSV` / `TSV`:** Same as `csv`/`tsv` but prefixed with a header row of field names.
 
-**`fmt`:** Compact human-readable format, suitable for terminal display.
+**`fmt`:** A minijinja template rendered over the value — `comb g.f '{{ branch }} ({{ dirty }})' git .` → `main (true)`.
 
 Use format suffixes on the CLI (`.s` sh, `.c` csv, `.C` CSV, `.t` tsv, `.T` TSV, `.f` fmt) or the `-f` flag.
-
-### Connection Context Example
-
-```python
-# Set context once, then query multiple values without repeating the path
-sock.send(b'{"op":"context","path":"/home/user/myproject"}\n')
-response = read_line(sock)  # {"ok": true}
-
-sock.send(b'{"op":"get","key":"git.branch"}\n')
-branch = read_line(sock)    # {"ok": true, "data": "main", ...}
-
-sock.send(b'{"op":"get","key":"git.dirty"}\n')
-dirty = read_line(sock)     # {"ok": true, "data": false, ...}
-```
 
 ---
 
@@ -1947,7 +1829,7 @@ gitstatusd's key insight was correct: a persistent daemon that maintains an in-m
 
 The limitation is architectural: gitstatusd spawns one daemon per interactive shell. On a machine with 20 shells open, that's 20 daemons, up to 640 threads, 20 independent FSEvents registrations all watching the same directories. The maintainer declined a shared-daemon proposal on security grounds, and powerlevel10k is now on maintenance-only status ("NO NEW FEATURES ARE IN THE WORKS. MOST BUGS WILL GO UNFIXED").
 
-**beachcomber vs gitstatusd:** beachcomber is what gitstatusd would be if the daemon were shared across all consumers. One daemon, one cache, one watcher — for git and everything else. gitstatusd handles only git; beachcomber handles 19 providers plus extensibility. If you are a powerlevel10k user looking for a maintained, general-purpose replacement, beachcomber is the intended answer.
+**beachcomber vs gitstatusd:** beachcomber is what gitstatusd would be if the daemon were shared across all consumers. One daemon, one cache, one watcher — for git and everything else. gitstatusd handles only git; beachcomber handles 16 providers plus extensibility. If you are a powerlevel10k user looking for a maintained, general-purpose replacement, beachcomber is the intended answer.
 
 See `docs/competitive-landscape.md` for detailed numbers.
 
@@ -1993,7 +1875,7 @@ The differences: disk-based (not memory), no daemon, no multi-consumer sharing, 
 
 direnv hooks into the shell's pre-prompt to manage directory-scoped environment variables. It uses mtime-based change detection on `.envrc` files and re-evaluates them when they change.
 
-beachcomber's `direnv` provider wraps `direnv export json` and caches the result. Multiple consumers (different shell sessions, tmux panes) can see the direnv state through beachcomber without each running their own evaluation. This is the integration, not the replacement — direnv's evaluation semantics are preserved.
+beachcomber's `direnv` provider (`defaults/direnv.toml`) reads direnv's allow database to say whether the nearest `.envrc` is allowed, and caches that; it does not evaluate the `.envrc`. Multiple consumers (different shell sessions, tmux panes) can see the direnv state through beachcomber without each asking direnv. This is the integration, not the replacement — direnv's evaluation semantics are its own.
 
 ### The Gap
 
@@ -2006,7 +1888,7 @@ No single tool does all of this together:
 | Multiple data types | No | No | Yes (recalc) | Yes (recalc) | Yes (recalc) | **Yes (cached)** |
 | Multiple consumers | No | Yes | Yes | No | No | **Yes** |
 | Event-driven invalidation | No | Yes | No | No | No | **Yes** |
-| Extensible providers | No | N/A | Python only | TOML only | Go only | **Script + config** |
+| Extensible providers | No | N/A | Python only | TOML only | Go only | **Config + plugins** |
 
 ---
 
@@ -2050,15 +1932,8 @@ If you need per-project isolation (e.g., different config for work vs personal p
 
 ### How do I add a provider for a tool beachcomber doesn't know about?
 
-Write a script provider. See the [Custom Providers Guide](#custom-providers-guide). If the provider would be useful to everyone (not just your specific setup), consider contributing it as a built-in — see [Contributing](#contributing).
+Write a Source. See the [Custom Providers Guide](#custom-providers-guide). If the provider would be useful to everyone (not just your specific setup), consider contributing it as a built-in — see [Contributing](#contributing).
 
-### What is the `stale` flag in responses?
-
-Each provider has an expected refresh interval. If the cached value is older than that interval plus some tolerance, `stale: true` is set in the response. The value is still returned — beachcomber never blocks a read waiting for fresh data.
-
-Consumers can use `stale` to decide whether to show a loading indicator or use a different visual style. For prompt use, ignoring `stale` is usually the right choice — showing a slightly old branch name is better than blocking the prompt.
-
----
 
 ## Contributing
 

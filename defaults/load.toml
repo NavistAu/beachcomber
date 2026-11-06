@@ -1,0 +1,7 @@
+[daemon.providers.load.sources.loadavg]
+# The 1, 5 and 15 minute load averages, from the sys plugin (getloadavg). Polled every 10 seconds while read; backed off from 30 seconds after repeated failures.
+data = "{{ plugin('sys', 'loadavg') }}"
+result.one = "{{ data.one }}"
+result.five = "{{ data.five }}"
+result.fifteen = "{{ data.fifteen }}"
+return = "{{ result | poll('10s', 6) | failback('30s', 3) }}"

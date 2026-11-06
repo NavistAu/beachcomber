@@ -1,0 +1,8 @@
+{
+  "name": "watch_reports_a_miss_as_an_event",
+  "description": "The first event on a key nothing answers is an event with no data, not the end of the stream and not a wait.",
+  "test": { "op": "watch", "args": { "key": "fixture_unknown.x" } },
+  "expect": {
+    "status": "miss"
+  }
+}

@@ -1,0 +1,55 @@
+# beachcomber
+
+> One daemon. One cache. Every consumer reads from it.
+
+beachcomber is a Rust daemon that computes shell-environment facts once — git
+status, Kubernetes context, battery, and more — and caches them. Prompts,
+status bars, and editors read the cache instead of forking a process per
+keystroke. It replaces the per-shell daemon model, where 30 open terminals mean
+30 gitstatusd instances all computing the same answer.
+
+MIT licensed. Source: https://github.com/NavistAu/beachcomber
+
+## Getting started
+
+- [Installation](https://beachcomber.sh/docs/getting-started/installation)
+- [Quick start](https://beachcomber.sh/docs/getting-started/quick-start)
+- [How it works](https://beachcomber.sh/docs/getting-started/how-it-works)
+- [What's available](https://beachcomber.sh/docs/getting-started/whats-available): the facts the daemon exposes
+
+## Reference
+
+- [CLI commands](https://beachcomber.sh/docs/reference/cli-commands)
+- [Configuration reference](https://beachcomber.sh/docs/reference/configuration-reference)
+- [Built-in providers](https://beachcomber.sh/docs/reference/built-in-providers)
+- [Custom providers](https://beachcomber.sh/docs/reference/custom-providers)
+- [Protocol reference](https://beachcomber.sh/docs/reference/protocol-reference)
+
+## Integrations
+
+- [Shell](https://beachcomber.sh/docs/integrations/shell) and [shell helpers](https://beachcomber.sh/docs/integrations/shell-helpers)
+- Prompts: [starship](https://beachcomber.sh/docs/integrations/starship), [powerlevel10k](https://beachcomber.sh/docs/integrations/powerlevel10k), [oh-my-posh](https://beachcomber.sh/docs/integrations/oh-my-posh), [oh-my-zsh](https://beachcomber.sh/docs/integrations/oh-my-zsh)
+- Status bars: [tmux](https://beachcomber.sh/docs/integrations/tmux), [sketchybar](https://beachcomber.sh/docs/integrations/sketchybar), [waybar](https://beachcomber.sh/docs/integrations/waybar), [polybar](https://beachcomber.sh/docs/integrations/polybar)
+- Editors: [neovim](https://beachcomber.sh/docs/integrations/neovim)
+- [Troubleshooting](https://beachcomber.sh/docs/integrations/troubleshooting)
+
+## SDKs
+
+- [Overview](https://beachcomber.sh/docs/ecosystem/overview)
+- [Rust](https://beachcomber.sh/docs/ecosystem/rust-sdk), [Go](https://beachcomber.sh/docs/ecosystem/go-sdk), [Python](https://beachcomber.sh/docs/ecosystem/python-sdk), [Node.js](https://beachcomber.sh/docs/ecosystem/nodejs-sdk), [Ruby](https://beachcomber.sh/docs/ecosystem/ruby-sdk), [Lua](https://beachcomber.sh/docs/ecosystem/lua-sdk), [C](https://beachcomber.sh/docs/ecosystem/c-sdk)
+- [Integrating a new consumer](https://beachcomber.sh/docs/integrating/overview) and the [polyfill path](https://beachcomber.sh/docs/integrating/polyfill)
+
+## Internals
+
+- [Architecture](https://beachcomber.sh/docs/internals/architecture)
+- [Performance](https://beachcomber.sh/docs/internals/performance)
+- [Provider development](https://beachcomber.sh/docs/internals/provider-development)
+
+## Optional
+
+- [Alternatives](https://beachcomber.sh/docs/about/alternatives)
+- [FAQ](https://beachcomber.sh/docs/about/faq)
+- [Debugging](https://beachcomber.sh/docs/about/debugging)
+- [Versioning policy](https://beachcomber.sh/docs/about/versioning-policy)
+- [Contributing](https://beachcomber.sh/docs/about/contributing)
+- [Privacy](https://beachcomber.sh/privacy)

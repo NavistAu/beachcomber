@@ -16,15 +16,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
 	beachcomber "github.com/NavistAu/beachcomber/sdks/go"
+	"github.com/NavistAu/beachcomber/sdks/go/internal/testdaemon"
 )
 
 // ---------------------------------------------------------------------------
@@ -46,8 +45,6 @@ type expectBlock struct {
 		Field string      `json:"field"`
 		Value interface{} `json:"value"`
 	} `json:"data_field_equals"`
-	AgeMsPresent  *bool  `json:"age_ms_present"`
-	Stale         *bool  `json:"stale"`
 	ErrorContains string `json:"error_contains"`
 }
 
@@ -57,9 +54,8 @@ type fixture struct {
 	Setup       []opDescriptor    `json:"setup"`
 	Test        opDescriptor      `json:"test"`
 	Expect      expectBlock       `json:"expect"`
-	Virtual     map[string]string `json:"virtual"` // resolve/eval fixtures: field/provider key -> expression override
-	Env         map[string]string `json:"env"`     // resolve/eval fixtures: env.* refs
-	Cwd         string            `json:"cwd"`     // resolve/eval fixtures: cwd for path expressions and daemon query scope; defaults to the per-fixture temp dir
+	Env         map[string]string `json:"env"` // get/eval/watch fixtures: env.* refs
+	Cwd         string            `json:"cwd"` // get/eval/watch fixtures: the cwd every fetch addresses; defaults to the per-fixture temp dir
 	path        string            // source file path (not in JSON)
 }
 
@@ -123,7 +119,20 @@ func main() {
 var supportedOps = map[string]bool{
 	"hello": true, "get": true, "refresh": true, "put": true,
 	"status": true, "context": true, "watch": true, "introspect": true,
-	"resolve": true, "eval": true,
+	"eval": true,
+}
+
+// getOptions is a get op's force and wait as Get takes them: the wait as
+// given, for the library to read.
+func getOptions(args map[string]interface{}) []beachcomber.GetOption {
+	var options []beachcomber.GetOption
+	if force, _ := args["force"].(bool); force {
+		options = append(options, beachcomber.Force)
+	}
+	if wait, ok := args["wait"].(string); ok {
+		options = append(options, beachcomber.Wait(wait))
+	}
+	return options
 }
 
 // unsupportedOp returns the first op in f (setup or test) this runner can't
@@ -217,35 +226,6 @@ func walkDir(dir string, fn func(string) error) error {
 // Daemon lifecycle
 // ---------------------------------------------------------------------------
 
-func startDaemon(combBin, socketPath string) (*exec.Cmd, error) {
-	cmd := exec.Command(combBin, "daemon", "--socket", socketPath)
-	cmd.Stdout = os.Stderr // daemon logs to stderr for visibility
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start daemon: %w", err)
-	}
-
-	// Wait until the socket appears (up to 5s).
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if conn, err := net.DialTimeout("unix", socketPath, 100*time.Millisecond); err == nil {
-			conn.Close()
-			return cmd, nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	cmd.Process.Kill()
-	return nil, fmt.Errorf("daemon did not start within 5s on %s", socketPath)
-}
-
-func stopDaemon(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-	cmd.Process.Kill()
-	cmd.Wait()
-}
-
 // ---------------------------------------------------------------------------
 // Fixture execution
 // ---------------------------------------------------------------------------
@@ -259,17 +239,21 @@ func runFixture(f fixture, combBin string) (bool, string) {
 	defer os.RemoveAll(tmpDir)
 	sockPath := filepath.Join(tmpDir, "sock")
 
-	cmd, err := startDaemon(combBin, sockPath)
+	cmd, err := testdaemon.Start(combBin, sockPath, 5*time.Second)
 	if err != nil {
 		return false, "daemon: " + err.Error()
 	}
-	defer stopDaemon(cmd)
+	defer testdaemon.Stop(cmd)
 
-	client := beachcomber.NewClientWithPath(sockPath)
+	client, err := beachcomber.NewClient(beachcomber.WithSocketPath(sockPath), beachcomber.WithTimeoutMs(5000))
+	if err != nil {
+		return false, "client: " + err.Error()
+	}
+	defer client.Close()
 
 	// Run setup ops (no expectations checked).
 	for _, op := range f.Setup {
-		if err := runOp(client, op, nil, &f.Expect); err != nil {
+		if err := runOp(client, op, f, tmpDir); err != nil {
 			// Setup errors are non-fatal only if the test op will reveal them.
 			_ = err
 		}
@@ -282,26 +266,32 @@ func runFixture(f fixture, combBin string) (bool, string) {
 
 // opResult holds the SDK result for a non-watch op.
 type opResult struct {
-	data     interface{}
-	ageMs    uint64
-	ageMsSet bool // true when the daemon response contained an age_ms key (checked in the raw JSON; the value 0 is a real age)
-	stale    bool
+	data interface{}
 }
 
-// runOp executes a setup op. If expect is non-nil (for error ops in setup) it
-// is ignored here. Returns error only for fatal dial/write problems.
-func runOp(c *beachcomber.Client, op opDescriptor, _ *opResult, _ *expectBlock) error {
+// readCwd is the directory a get, eval or watch fixture reads at: its own
+// cwd, else the fixture's per-run temp directory.
+func readCwd(f fixture, tmpDir string) string {
+	if f.Cwd != "" {
+		return f.Cwd
+	}
+	return tmpDir
+}
+
+// runOp executes a setup op; its result is not checked. Returns error only
+// for fatal dial/write problems.
+func runOp(c *beachcomber.Client, op opDescriptor, f fixture, tmpDir string) error {
 	switch op.Op {
 	case "put":
 		key, _ := op.Args["key"].(string)
 		data := op.Args["data"]
 		ttl, _ := op.Args["ttl"].(string)
 		path, _ := op.Args["path"].(string)
-		return c.Put(key, data, ttl, path)
+		persist, _ := op.Args["persist"].(bool)
+		return c.Put(key, data, ttl, path, persist)
 	case "get":
 		key, _ := op.Args["key"].(string)
-		path, _ := op.Args["path"].(string)
-		_, err := c.Get(key, path)
+		_, err := c.Get(key, readCwd(f, tmpDir), f.Env, getOptions(op.Args)...)
 		return err
 	case "refresh":
 		key, _ := op.Args["key"].(string)
@@ -326,33 +316,25 @@ func runOp(c *beachcomber.Client, op opDescriptor, _ *opResult, _ *expectBlock) 
 //   - serverErr (error) when the daemon returns an error
 //
 // tmpDir is the fixture's per-run temp directory, used as the default cwd
-// for resolve fixtures that don't declare their own.
+// for get, eval and watch fixtures that don't declare their own.
 func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *beachcomber.WatchEvent, error) {
 	op := f.Test
 	switch op.Op {
-	case "resolve":
+	case "get":
 		key, _ := op.Args["key"].(string)
-		cwd := f.Cwd
-		if cwd == "" {
-			cwd = tmpDir
-		}
-		r, err := c.Resolve(key, cwd, f.Env, f.Virtual)
+		v, err := c.Get(key, readCwd(f, tmpDir), f.Env, getOptions(op.Args)...)
 		if err != nil {
 			return nil, nil, err
 		}
-		return &opResult{data: r.Data}, nil, nil
+		return &opResult{data: v}, nil, nil
 
 	case "eval":
 		template, _ := op.Args["template"].(string)
-		cwd := f.Cwd
-		if cwd == "" {
-			cwd = tmpDir
-		}
-		r, err := c.Eval(template, cwd, f.Env, f.Virtual)
+		v, err := c.Eval(template, readCwd(f, tmpDir), f.Env)
 		if err != nil {
 			return nil, nil, err
 		}
-		return &opResult{data: r.Data}, nil, nil
+		return &opResult{data: v}, nil, nil
 
 	case "hello":
 		info, err := c.Hello()
@@ -364,15 +346,6 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 			"daemon_version":   info.DaemonVersion,
 		}
 		return &opResult{data: m}, nil, nil
-
-	case "get":
-		key, _ := op.Args["key"].(string)
-		path, _ := op.Args["path"].(string)
-		r, err := c.Get(key, path)
-		if err != nil {
-			return nil, nil, err
-		}
-		return resultFromSDK(r), nil, nil
 
 	case "refresh":
 		key, _ := op.Args["key"].(string)
@@ -388,7 +361,8 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 		data := op.Args["data"]
 		ttl, _ := op.Args["ttl"].(string)
 		path, _ := op.Args["path"].(string)
-		err := c.Put(key, data, ttl, path)
+		persist, _ := op.Args["persist"].(bool)
+		err := c.Put(key, data, ttl, path, persist)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -420,11 +394,11 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 	case "introspect":
 		subjectStr, _ := op.Args["subject"].(string)
 		subject := beachcomber.IntrospectSubject(subjectStr)
-		var durSecs uint64
+		var durSecs []uint64
 		if d, ok := op.Args["duration_secs"].(float64); ok {
-			durSecs = uint64(d)
+			durSecs = append(durSecs, uint64(d))
 		}
-		resp, err := c.Introspect(subject, durSecs)
+		resp, err := c.Introspect(subject, durSecs...)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -439,8 +413,7 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 
 	case "watch":
 		key, _ := op.Args["key"].(string)
-		path, _ := op.Args["path"].(string)
-		ws, err := c.Watch(key, path)
+		ws, err := c.Watch(key, readCwd(f, tmpDir), f.Env)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -453,24 +426,6 @@ func runTestOp(c *beachcomber.Client, f fixture, tmpDir string) (*opResult, *bea
 	}
 
 	return nil, nil, fmt.Errorf("unknown op: %s", op.Op)
-}
-
-func resultFromSDK(r *beachcomber.Result) *opResult {
-	or := &opResult{
-		data:  r.Data,
-		stale: r.Stale,
-	}
-	// Presence must come from the wire, not the value: age_ms=0 is a real
-	// age (put-then-get within the same millisecond), so AgeMs > 0 misreads
-	// it as absent. Probe the raw JSON for the key instead.
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(r.RawJSON(), &probe); err == nil {
-		if _, ok := probe["age_ms"]; ok {
-			or.ageMs = r.AgeMs
-			or.ageMsSet = true
-		}
-	}
-	return or
 }
 
 func daemonHealthToMap(d *beachcomber.DaemonHealth) map[string]interface{} {
@@ -502,21 +457,12 @@ func daemonHealthToMap(d *beachcomber.DaemonHealth) map[string]interface{} {
 func checkExpect(exp expectBlock, r *opResult, we *beachcomber.WatchEvent, serverErr error) (bool, string) {
 	// Unify the two result forms into one common shape for assertion.
 	var data interface{}
-	var ageMs uint64
-	var ageMsSet bool
-	var stale bool
 	isError := serverErr != nil
 
 	if we != nil {
 		data = we.Data
-		ageMs = we.AgeMs
-		ageMsSet = we.AgeMs > 0
-		stale = we.Stale
 	} else if r != nil {
 		data = r.data
-		ageMs = r.ageMs
-		ageMsSet = r.ageMsSet
-		stale = r.stale
 	}
 
 	// status assertion
@@ -551,6 +497,8 @@ func checkExpect(exp expectBlock, r *opResult, we *beachcomber.WatchEvent, serve
 		return true, ""
 	case "":
 		// no status assertion
+	default:
+		return false, fmt.Sprintf("unknown expect status: %q", exp.Status)
 	}
 
 	if isError {
@@ -603,23 +551,6 @@ func checkExpect(exp expectBlock, r *opResult, we *beachcomber.WatchEvent, serve
 		}
 		if !deepEqual(val, exp.DataFieldEquals.Value) {
 			return false, fmt.Sprintf("data_field_equals: field %q = %v, want %v", exp.DataFieldEquals.Field, val, exp.DataFieldEquals.Value)
-		}
-	}
-
-	// age_ms_present assertion
-	if exp.AgeMsPresent != nil {
-		if *exp.AgeMsPresent && !ageMsSet {
-			return false, fmt.Sprintf("age_ms_present=true but age_ms=%d", ageMs)
-		}
-		if !*exp.AgeMsPresent && ageMsSet {
-			return false, fmt.Sprintf("age_ms_present=false but age_ms=%d", ageMs)
-		}
-	}
-
-	// stale assertion
-	if exp.Stale != nil {
-		if stale != *exp.Stale {
-			return false, fmt.Sprintf("stale: got %v, want %v", stale, *exp.Stale)
 		}
 	}
 

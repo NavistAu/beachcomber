@@ -8,12 +8,10 @@ lifetimes.
 
 Typical usage::
 
-    from beachcomber import Client
+    from libbeachcomber import Client
 
     client = Client()
-    result = client.get("git.branch", path="/path/to/repo")
-    if result.is_hit:
-        print(result.data)
+    branch = client.get("git.branch", cwd="/path/to/repo")  # None on a miss
 
 For multiple queries on one connection use a session::
 
@@ -30,20 +28,17 @@ from contextlib import contextmanager
 from typing import Any, Generator, Optional
 
 from . import _native
-from .exceptions import CombError
-from .result import CombResult
+from .exceptions import IoError, ParseError, TimeoutError
 from .types import (
     CacheRow,
     DaemonHealth,
     HelloInfo,
     IntrospectResponse,
     IntrospectSubject,
+    ReaperStatus,
     Verdict,
     WatchEvent,
 )
-
-# Default socket timeout in seconds (matches the native client's own default).
-_DEFAULT_TIMEOUT: float = 0.1
 
 
 def _opt_json(value: Optional[Any]) -> Optional[str]:
@@ -53,15 +48,24 @@ def _opt_json(value: Optional[Any]) -> Optional[str]:
     return json.dumps(value)
 
 
-def _result_from_get_payload(payload: Optional[dict]) -> CombResult:
-    """Build a :class:`CombResult` from a decoded ``bc_get``/``bc_session_get`` payload."""
-    if not isinstance(payload, dict):
-        return CombResult(ok=True, data=None, age_ms=0, stale=False)
-    return CombResult(
-        ok=True,
-        data=payload.get("data"),
-        age_ms=int(payload.get("age_ms") or 0),
-        stale=bool(payload.get("stale") or False),
+def _read_args(
+    cwd: Optional[str], env: Optional[dict], force: bool, wait: Optional[str]
+) -> tuple[Optional[bytes], Optional[bytes], Optional[bytes]]:
+    """The ``cwd``, ``env_json`` and ``options_json`` arguments ``bc_get`` and
+    ``bc_session_get`` take. The options are the ones the caller gave:
+    ``force`` when it is set, ``wait`` as it was given; none at all is
+    NULL."""
+    options: dict = {}
+    if force:
+        options["force"] = True
+    if wait is not None:
+        options["wait"] = wait
+    env_json = _opt_json(env)
+    options_json = _opt_json(options or None)
+    return (
+        cwd.encode() if cwd is not None else None,
+        env_json.encode() if env_json is not None else None,
+        options_json.encode() if options_json is not None else None,
     )
 
 
@@ -75,29 +79,25 @@ def _parse_hello(data: Optional[dict]) -> HelloInfo:
 
 
 def _parse_cache_rows(data: Any) -> list[CacheRow]:
-    if not isinstance(data, list):
-        return []
-    out = []
-    for row in data:
-        if not isinstance(row, dict):
-            continue
-        out.append(
-            CacheRow(
-                provider=str(row.get("provider", "")),
-                field=row.get("field"),
-                path=row.get("path"),
-                value=row.get("value"),
-                age_ms=int(row.get("age_ms", 0) or 0),
-                stale=bool(row.get("stale", False)),
-                kind=row.get("kind"),
-                poll_interval_secs=row.get("poll_interval_secs"),
-                keep_alive_polls=row.get("keep_alive_polls"),
-                fsevents_reinstate=row.get("fsevents_reinstate"),
-                failure=row.get("failure"),
-                source=row.get("source"),
-            )
+    if not isinstance(data, list) or not all(isinstance(row, dict) for row in data):
+        raise ParseError(f"status payload is not an array of rows: {data!r}")
+    return [
+        CacheRow(
+            provider=str(row.get("provider", "")),
+            path=row.get("path"),
+            source=str(row.get("source", "")),
+            field=str(row.get("field", "")),
+            value=row.get("value"),
+            age_ms=row.get("age_ms"),
+            kind=row.get("kind"),
+            poll_interval_secs=row.get("poll_interval_secs"),
+            poll_count=row.get("poll_count"),
+            polls_elapsed=row.get("polls_elapsed"),
+            next_poll_in_secs=row.get("next_poll_in_secs"),
+            failure=row.get("failure"),
         )
-    return out
+        for row in data
+    ]
 
 
 def _parse_daemon_health(data: dict) -> DaemonHealth:
@@ -105,6 +105,7 @@ def _parse_daemon_health(data: dict) -> DaemonHealth:
     for v in data.get("verdicts", []) or []:
         if isinstance(v, dict):
             verdicts.append(Verdict(level=str(v.get("level", "")), message=str(v.get("message", ""))))
+    reaper = data.get("reaper")
     return DaemonHealth(
         pid=int(data.get("pid", 0) or 0),
         version=str(data.get("version", "")),
@@ -115,6 +116,16 @@ def _parse_daemon_health(data: dict) -> DaemonHealth:
         in_flight=int(data.get("in_flight", 0) or 0),
         active_watchers=int(data.get("active_watchers", 0) or 0),
         cache_entries=int(data.get("cache_entries", 0) or 0),
+        watch_backend=str(data.get("watch_backend", "")),
+        reaper=ReaperStatus(
+            armed=bool(reaper.get("armed", False)),
+            visibility=str(reaper.get("visibility", "")),
+            sweeps=int(reaper.get("sweeps", 0) or 0),
+            reaped=int(reaper.get("reaped", 0) or 0),
+            kill_denied=int(reaper.get("kill_denied", 0) or 0),
+        )
+        if isinstance(reaper, dict)
+        else None,
         verdicts=verdicts,
     )
 
@@ -125,20 +136,19 @@ def _parse_introspect(subject: IntrospectSubject, data: Any) -> IntrospectRespon
     return IntrospectResponse(subject=subject, daemon=None, other=data)
 
 
-def _build_options_json(
-    socket_path: Optional[str], timeout: float, autostart: Optional[bool]
-) -> Optional[str]:
-    options: dict = {}
-    if socket_path is not None:
-        options["socket_path"] = socket_path
-    options["timeout_ms"] = int(round(timeout * 1000))
-    if autostart is not None:
-        options["autostart"] = autostart
-    return json.dumps(options)
+def _build_options_json(**options: Any) -> str:
+    """The ``options_json`` ``bc_client_new`` takes: exactly the options the
+    caller gave (``None`` is not given), under the ABI's own names. The SDK
+    adds no defaults; an option left out is the library's."""
+    return json.dumps({name: value for name, value in options.items() if value is not None})
 
 
 class WatchStream:
     """Iterator over watch events. Yields :class:`~beachcomber.types.WatchEvent` instances.
+
+    Each event is the *resolved value* of the watched key — what
+    ``comb get`` would print for it — re-resolved whenever any key the
+    resolution reads changes, including the provider's template tree.
 
     Create via :meth:`Client.watch` rather than directly. Wraps a native
     ``BcWatch`` handle; release it via :meth:`close` or by using the stream
@@ -159,38 +169,45 @@ class WatchStream:
             raise StopIteration
         return event
 
-    def next_event(self, timeout_ms: int = -1) -> Optional[WatchEvent]:
+    def next_event(self, timeout_ms: Optional[int] = None) -> Optional[WatchEvent]:
         """Read the next event from the stream.
 
         Args:
-            timeout_ms: ``-1`` blocks indefinitely (the default, matching
-                this method's historical no-argument behaviour), ``0``
-                polls without blocking, ``>0`` waits that long.
+            timeout_ms: How long to wait for one, in milliseconds; ``0``
+                polls. ``None`` waits indefinitely.
 
         Returns:
-            :class:`~beachcomber.types.WatchEvent` on the ``event``
-            outcome; ``None`` on ``timeout``, ``eof``, or ``cancelled``.
+            The next :class:`~beachcomber.types.WatchEvent`, or ``None``
+            once the stream has ended (the daemon closed it, or it was
+            cancelled or closed). An event whose ``data`` is ``None`` is a
+            miss, not the end of the stream.
+
+        Raises:
+            TimeoutError: ``timeout_ms`` ran out with no event (kind
+                ``timeout``); the stream is still open.
+            CombError: subclass matching any other failure kind.
         """
         if self._ptr is None:
             return None
-        env = self._lib.call_watch_next(self._ptr, timeout_ms)
-        if env.get("outcome") != "event":
-            return None
-        data = env.get("data") or {}
-        return WatchEvent(
-            data=data.get("data"),
-            age_ms=int(data.get("age_ms") or 0),
-            stale=bool(data.get("stale") or False),
-        )
+        wait = -1 if timeout_ms is None else timeout_ms
+        env = self._lib.call_watch_next(self._ptr, wait)
+        outcome = env.get("outcome")
+        if outcome == "event":
+            return WatchEvent(data=env.get("data"))
+        if outcome == "timeout":
+            raise TimeoutError(f"no watch event within {wait}ms", self._lib.version)
+        return None
 
     def cancel(self) -> None:
-        """Unblock a pending or future :meth:`next_event` call from another thread."""
+        """End the stream: a :meth:`next_event` waiting on another thread,
+        and every later one, answers ``None``."""
         if self._ptr is not None:
             self._lib.call_void("bc_watch_cancel", self._ptr)
 
     def close(self) -> None:
-        """Free the underlying native watch handle."""
+        """End the stream and free the underlying native watch handle."""
         if self._ptr is not None:
+            self._lib.call_void("bc_watch_cancel", self._ptr)
             self._lib.call_void("bc_watch_free", self._ptr)
             self._ptr = None
 
@@ -211,24 +228,56 @@ class Client:
         socket_path: Explicit path to the daemon socket. If ``None`` the
             native library auto-discovers it (``$BEACHCOMBER_SOCKET``, then
             its per-user default).
-        timeout: Socket read/write timeout in seconds. Default ``0.1``.
+        timeout_ms: How long one read or write on the socket may take, in
+            milliseconds; at least 1. ``None`` is the library's default
+            (100).
+        connect_timeout_ms: How long connecting keeps retrying before it
+            gives up, in milliseconds; ``0`` is one attempt. ``None`` is the
+            library's default (1500).
         autostart: Whether to attempt starting the daemon if it isn't
-            running. ``None`` leaves the native library's own default.
+            running. ``None`` is the library's default (on).
+        exec: Whether a template this client renders (:meth:`get`,
+            :meth:`eval`) may call ``exec()``. ``None`` is the library's
+            default, off: a template that calls it then fails with
+            ``exec() is disabled in this context``.
+
+    Each option given is passed to ``bc_client_new`` as it is; this SDK has
+    no defaults of its own.
     """
+
+    # Set before ``__init__`` runs, so ``__del__`` is safe on a client whose
+    # construction was refused.
+    _ptr: Optional[int] = None
 
     def __init__(
         self,
         socket_path: Optional[str] = None,
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout_ms: Optional[int] = None,
+        connect_timeout_ms: Optional[int] = None,
         autostart: Optional[bool] = None,
+        exec: Optional[bool] = None,
     ) -> None:
         self._ptr = None
         self._lib = _native.get_lib()
-        options_json = _build_options_json(socket_path, timeout, autostart)
+        options_json = _build_options_json(
+            socket_path=socket_path,
+            timeout_ms=timeout_ms,
+            connect_timeout_ms=connect_timeout_ms,
+            autostart=autostart,
+            exec=exec,
+        )
         ptr = self._lib.call_ptr("bc_client_new", options_json.encode())
         if not ptr:
-            raise CombError("bc_client_new returned NULL")
+            raise IoError("bc_client_new returned NULL (allocation failure)", self._lib.version)
         self._ptr = ptr
+
+    def _handle(self) -> int:
+        """The native handle every call passes on. A closed client has none,
+        and handing the library a freed or NULL handle would crash the
+        process, so the call fails here instead."""
+        if self._ptr is None:
+            raise IoError("the client is closed")
+        return self._ptr
 
     def close(self) -> None:
         """Free the underlying native client handle."""
@@ -239,43 +288,50 @@ class Client:
     def __del__(self) -> None:
         self.close()
 
-    def get(self, key: str, path: Optional[str] = None) -> CombResult:
-        """Read a cached value from the daemon.
+    def get(
+        self,
+        key: str,
+        cwd: Optional[str] = None,
+        env: Optional[dict] = None,
+        force: bool = False,
+        wait: Optional[str] = None,
+    ) -> Any:
+        """The value ``comb get`` prints for this key, cwd and env.
+
+        The daemon holds the templates (``<provider>:template``, seeded from
+        configuration or :meth:`put`); this client renders them. A plain
+        field is its cached value, a templated one is rendered, and a bare
+        provider name is the whole merged namespace. The unrendered halves
+        are facets, read like any key: ``"p:template.x"`` is the template as
+        stored, ``"p:put.x"`` and ``"p:source.x"`` those layers' values.
 
         Args:
-            key: Provider key. Use ``"provider.field"`` for a single
-                scalar (e.g. ``"git.branch"``) or ``"provider"`` for the
-                full provider object (e.g. ``"git"``).
-            path: Working-directory path for per-directory providers.
-                Global providers (e.g. ``"hostname"``) ignore this.
+            key: ``"provider.field"``, or a bare provider name.
+            cwd: The directory the read addresses (``~`` is home, a relative
+                path is against this process's working directory). ``None``
+                is the global entry.
+            env: The caller's environment for ``env.*`` refs. ``None`` means
+                the calling process's environment, as ``comb`` renders.
+            force: Re-execute every Source the read demands first.
+            wait: How long to wait for a run the read needs before
+                answering what is stored, as ``comb get --wait``: a duration
+                (``"0"``, ``"50ms"``, ``"2s"``) or ``"forever"``. ``None`` is
+                the read's budget. The read may take ``timeout_ms`` plus the
+                wait; ``"forever"`` has no deadline.
 
         Returns:
-            :class:`~beachcomber.result.CombResult` with ``is_hit``
-            ``True`` when a cached value exists.
+            The value, or ``None`` on a miss.
 
         Raises:
             CombError: subclass matching the failure kind (see
                 :mod:`beachcomber.exceptions`).
         """
-        return self.get_with_flags(key, path)
-
-    def get_with_flags(
-        self,
-        key: str,
-        path: Optional[str] = None,
-        force: bool = False,
-        wait: bool = False,
-    ) -> CombResult:
-        """Read a cached value with optional force/wait flags.
-
-        Raises:
-            CombError: subclass matching the failure kind.
-        """
-        flags = (_native.BC_GET_FORCE if force else 0) | (_native.BC_GET_WAIT if wait else 0)
-        payload = self._lib.call(
-            "bc_get", self._ptr, key.encode(), path.encode() if path is not None else None, flags
+        return self._lib.call(
+            "bc_get",
+            self._handle(),
+            key.encode(),
+            *_read_args(cwd, env, force, wait),
         )
-        return _result_from_get_payload(payload)
 
     def refresh(self, key: str, path: Optional[str] = None) -> None:
         """Trigger recomputation of a provider.
@@ -283,7 +339,7 @@ class Client:
         Raises:
             CombError: subclass matching the failure kind.
         """
-        self._lib.call("bc_refresh", self._ptr, key.encode(), path.encode() if path is not None else None)
+        self._lib.call("bc_refresh", self._handle(), key.encode(), path.encode() if path is not None else None)
 
     def status(self) -> list[CacheRow]:
         """Return cache rows from the daemon.
@@ -291,7 +347,7 @@ class Client:
         Raises:
             CombError: subclass matching the failure kind.
         """
-        data = self._lib.call("bc_status", self._ptr)
+        data = self._lib.call("bc_status", self._handle())
         return _parse_cache_rows(data)
 
     def hello(self) -> HelloInfo:
@@ -300,28 +356,32 @@ class Client:
         Raises:
             CombError: subclass matching the failure kind.
         """
-        data = self._lib.call("bc_hello", self._ptr)
+        data = self._lib.call("bc_hello", self._handle())
         return _parse_hello(data)
 
     def put(
         self,
         key: str,
-        data: Optional[Any] = None,
+        data: Any,
         ttl: Optional[str] = None,
         path: Optional[str] = None,
+        persist: bool = False,
     ) -> None:
-        """Store data into a virtual provider. ``data=None`` clears the entry.
+        """Store data into the cache as static data. ``data=None`` clears the entry.
+
+        ``persist`` keeps the put across a daemon restart, best effort.
 
         Raises:
             CombError: subclass matching the failure kind.
         """
         self._lib.call(
             "bc_put",
-            self._ptr,
+            self._handle(),
             key.encode(),
             json.dumps(data).encode(),
             ttl.encode() if ttl is not None else None,
             path.encode() if path is not None else None,
+            persist,
         )
 
     def introspect(
@@ -339,106 +399,80 @@ class Client:
         )
         data = self._lib.call(
             "bc_introspect",
-            self._ptr,
+            self._handle(),
             subject.value.encode(),
             options_json.encode() if options_json else None,
         )
         return _parse_introspect(subject, data)
 
-    def resolve(
-        self,
-        key: str,
-        cwd: str,
-        env: Optional[dict] = None,
-        overrides: Optional[dict] = None,
-    ) -> CombResult:
-        """Resolve a virtual field (``"provider.field"``) or a path expression
-        (a bare provider name) client-side, exactly as ``comb get``'s
-        resolution layer does.
-
-        Args:
-            key: ``"provider.field"`` for a field expression, or a bare
-                provider name for a path expression.
-            cwd: Working directory the resolver evaluates against. Required
-                — this library never reads the process's own working
-                directory on the caller's behalf.
-            env: Overrides for ``env.*`` refs in the expression. ``None``
-                means none supplied (every ``env.*`` ref misses).
-            overrides: Maps a field key (``"provider.field"``) or bare
-                provider name to an expression string, overriding the
-                built-in default for that key.
-
-        Returns:
-            :class:`~beachcomber.result.CombResult` — ``age_ms``/``stale``
-            are not meaningful for resolution and are always ``0``/``False``.
-
-        Raises:
-            CombError: subclass matching the failure kind.
-        """
-        env_json = _opt_json(env)
-        overrides_json = _opt_json(overrides)
-        value = self._lib.call(
-            "bc_resolve",
-            self._ptr,
-            key.encode(),
-            cwd.encode(),
-            env_json.encode() if env_json is not None else None,
-            overrides_json.encode() if overrides_json is not None else None,
-        )
-        return CombResult(ok=True, data=value, age_ms=0, stale=False)
-
     def eval(
         self,
         template_str: str,
-        cwd: str,
+        cwd: Optional[str] = None,
         env: Optional[dict] = None,
-        overrides: Optional[dict] = None,
     ) -> Any:
-        """Evaluate a value expression — the same evaluator :meth:`resolve`
-        uses for a declared virtual field, but for a raw expression that
-        need not be registered anywhere.
+        """Render a template that is stored nowhere — the same value
+        ``comb eval`` prints. Every ref resolves exactly as it would inside
+        a stored template, so ``eval("{{ p.f }}")`` and ``get("p.f")``
+        agree.
 
-        ``template_str`` accepts a bare expression, a single ``{{ expr }}``
-        tag, or literal text/several tags — the first two keep the
-        expression's natural type, the third is always a string.
+        ``template_str`` accepts a single ``{{ expr }}`` tag, or literal
+        text/several tags — the former keeps the expression's natural
+        type, the latter is always a string (a source with no tags at all
+        is its literal text).
 
         Args:
-            template_str: The expression to evaluate.
-            cwd: Required, matching :meth:`resolve`'s ``cwd`` semantics.
-            env: Overrides for ``env.*`` refs.
-            overrides: Field-expression overrides, same shape as
-                :meth:`resolve`'s.
+            template_str: The template to render.
+            cwd: Read as :meth:`get` reads it; ``None`` is the global entry.
+            env: The caller's environment for ``env.*`` refs.
+
+        Returns:
+            The value, or ``None`` when the template renders nothing.
 
         Raises:
             CombError: subclass matching the failure kind.
         """
         env_json = _opt_json(env)
-        overrides_json = _opt_json(overrides)
         return self._lib.call(
             "bc_eval",
-            self._ptr,
+            self._handle(),
             template_str.encode(),
-            cwd.encode(),
+            cwd.encode() if cwd is not None else None,
             env_json.encode() if env_json is not None else None,
-            overrides_json.encode() if overrides_json is not None else None,
         )
 
-    def watch(self, key: str, path: Optional[str] = None) -> WatchStream:
-        """Subscribe to a key and receive live updates.
+    def watch(self, key: str, cwd: Optional[str] = None, env: Optional[dict] = None) -> WatchStream:
+        """Subscribe to a key's *value* and receive it again whenever it changes.
+
+        Each event is the resolved value — what ``comb get`` would print for
+        this key, ``cwd`` and ``env`` — so a template edited under the watch
+        fires it just as a changed cache record does.
 
         Returns a :class:`WatchStream` iterator that yields
         :class:`~beachcomber.types.WatchEvent` instances. Release it via
         :meth:`WatchStream.close` or by using the stream as a context
         manager.
 
+        Args:
+            key: ``"provider.field"`` or a bare provider name.
+            cwd: Read as :meth:`get` reads it — the directory every
+                subscription addresses and every re-resolution runs at;
+                ``None`` is the global entry.
+            env: The caller's environment for ``env.*`` refs.
+
         Raises:
             CombError: subclass matching the failure kind.
         """
+        env_json = _opt_json(env)
         ptr = self._lib.call_ptr(
-            "bc_watch_open", self._ptr, key.encode(), path.encode() if path is not None else None
+            "bc_watch_open",
+            self._handle(),
+            key.encode(),
+            cwd.encode() if cwd is not None else None,
+            env_json.encode() if env_json is not None else None,
         )
         if not ptr:
-            raise CombError("bc_watch_open returned NULL")
+            raise IoError("bc_watch_open returned NULL (allocation failure)", self._lib.version)
         return WatchStream(ptr)
 
     @contextmanager
@@ -449,7 +483,7 @@ class Client:
 
             with client.session() as session:
                 session.set_context("/my/repo")
-                result = session.get("git.branch")
+                branch = session.get("git.branch")
 
         Raises:
             CombError: subclass matching the failure kind.
@@ -464,24 +498,31 @@ class Client:
 class Session:
     """Persistent connection to the beachcomber daemon.
 
-    Wraps a native ``BcSession`` handle for ``get``/``put``/``set_context``
-    — the only ops the ABI exposes at session granularity. ``refresh``,
-    ``status``, ``hello`` and ``introspect`` have no session-level ABI
-    equivalent, so they delegate to the owning :class:`Client` on a fresh
-    one-shot native connection; they are kept here for API compatibility,
-    not because they reuse this session's socket.
+    Wraps a native ``BcSession`` handle for ``get``/``put``/``refresh``
+    and ``set_context``, which reuse its socket and its directory.
+    ``status``, ``hello`` and ``introspect`` address no directory and need
+    no connection of their own, so they are the :class:`Client`'s alone.
 
     Create via :meth:`Client.session` rather than directly.
     """
 
     def __init__(self, client: Client) -> None:
         self._ptr = None
+        # Held so the client is not freed while its session is open.
         self._client = client
         self._lib = client._lib
         ptr = self._lib.call_ptr("bc_session_open", client._ptr)
         if not ptr:
-            raise CombError("bc_session_open returned NULL")
+            raise IoError("bc_session_open returned NULL (allocation failure)", self._lib.version)
         self._ptr = ptr
+
+    def _handle(self) -> int:
+        """The native handle every call passes on. A closed session has none,
+        and handing the library a freed or NULL handle would crash the
+        process, so the call fails here instead."""
+        if self._ptr is None:
+            raise IoError("the session is closed")
+        return self._ptr
 
     def close(self) -> None:
         """Close and free the underlying native session handle."""
@@ -493,91 +534,72 @@ class Session:
         self.close()
 
     def set_context(self, path: str) -> None:
-        """Set the default working-directory path for this connection.
+        """Set this session's directory: every later ``get`` that names no
+        ``cwd``, and ``put`` and ``refresh`` that name no path, address it. The session keeps it
+        and sends it with each request.
 
         Raises:
             CombError: subclass matching the failure kind (e.g.
                 :class:`~beachcomber.exceptions.BusyError` on concurrent use).
         """
-        self._lib.call("bc_session_set_context", self._ptr, path.encode())
+        self._lib.call("bc_session_set_context", self._handle(), path.encode())
 
-    def get(self, key: str, path: Optional[str] = None) -> CombResult:
-        """Read a cached value using the persistent connection.
-
-        Raises:
-            CombError: subclass matching the failure kind.
-        """
-        return self.get_with_flags(key, path)
-
-    def get_with_flags(
+    def get(
         self,
         key: str,
-        path: Optional[str] = None,
+        cwd: Optional[str] = None,
+        env: Optional[dict] = None,
         force: bool = False,
-        wait: bool = False,
-    ) -> CombResult:
-        """Read a cached value with optional force/wait flags via the persistent connection.
+        wait: Optional[str] = None,
+    ) -> Any:
+        """:meth:`Client.get` on the persistent connection. ``cwd=None`` is
+        this session's directory (:meth:`set_context`) when it has one, else
+        the global entry.
 
         Raises:
             CombError: subclass matching the failure kind.
         """
-        flags = (_native.BC_GET_FORCE if force else 0) | (_native.BC_GET_WAIT if wait else 0)
-        payload = self._lib.call(
+        return self._lib.call(
             "bc_session_get",
-            self._ptr,
+            self._handle(),
             key.encode(),
-            path.encode() if path is not None else None,
-            flags,
+            *_read_args(cwd, env, force, wait),
         )
-        return _result_from_get_payload(payload)
 
     def put(
         self,
         key: str,
-        data: Optional[Any] = None,
+        data: Any,
         ttl: Optional[str] = None,
         path: Optional[str] = None,
+        persist: bool = False,
     ) -> None:
-        """Store data into a virtual provider via the persistent connection.
+        """Store data into the cache as static data via the persistent connection.
+
+        ``persist`` keeps the put across a daemon restart, best effort.
 
         Raises:
             CombError: subclass matching the failure kind.
         """
         self._lib.call(
             "bc_session_put",
-            self._ptr,
+            self._handle(),
             key.encode(),
             json.dumps(data).encode(),
             ttl.encode() if ttl is not None else None,
             path.encode() if path is not None else None,
+            persist,
         )
 
     def refresh(self, key: str, path: Optional[str] = None) -> None:
-        """Trigger recomputation. No session-level ABI equivalent exists;
-        runs on a fresh one-shot native connection via the owning client.
-        """
-        self._client.refresh(key, path)
+        """Trigger recomputation at ``path``, else at this session's directory.
 
-    def status(self) -> list[CacheRow]:
-        """Return cache rows. No session-level ABI equivalent exists; runs
-        on a fresh one-shot native connection via the owning client.
+        Raises:
+            CombError: subclass matching the failure kind.
         """
-        return self._client.status()
-
-    def hello(self) -> HelloInfo:
-        """Ask the daemon for versions. No session-level ABI equivalent
-        exists; runs on a fresh one-shot native connection via the owning
-        client.
-        """
-        return self._client.hello()
-
-    def introspect(
-        self,
-        subject: IntrospectSubject,
-        duration_secs: Optional[int] = None,
-    ) -> IntrospectResponse:
-        """Run a diagnostic introspect query. No session-level ABI
-        equivalent exists; runs on a fresh one-shot native connection via
-        the owning client.
-        """
-        return self._client.introspect(subject, duration_secs=duration_secs)
+        self._lib.call(
+            "bc_session_refresh",
+            self._handle(),
+            key.encode(),
+            path.encode() if path is not None else None,
+        )

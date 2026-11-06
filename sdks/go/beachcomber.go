@@ -7,13 +7,19 @@
 // SDK's behalf. Discovery, socket retries, and the wire protocol all live in
 // one place: libbeachcomber.
 //
+// The package follows the SDK API table every beachcomber SDK follows
+// (docs/sdk-api.md): the same operations, arguments, value shapes and error
+// kinds, in Go's casing.
+//
 // Quick start — one-shot queries:
 //
 //	c, err := beachcomber.NewClient()
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
-//	result, err := c.Get("git.branch", "/path/to/repo")
+//	defer c.Close()
+//	branch, err := c.Get("git.branch", "/path/to/repo", nil) // what comb get prints there; nil on a miss
+//	tmpl, err := c.Get("git:template.branch", "", nil)      // the template, unrendered
 //
 // For prompts and tools that make many queries per invocation, open a
 // persistent [Session] instead:
@@ -22,7 +28,7 @@
 //	if err != nil { … }
 //	defer sess.Close()
 //	sess.SetContext("/path/to/repo")
-//	result, err := sess.Get("git.branch", "")
+//	branch, err := sess.Get("git.branch", "", nil)
 package beachcomber
 
 import (
@@ -45,19 +51,18 @@ type HelloInfo struct {
 
 // CacheRow is one row of Status response.
 type CacheRow struct {
-	Provider          string
-	Field             string // empty when not set
-	Path              string // empty when not set
-	Value             interface{}
-	AgeMs             uint64
-	Stale             bool
-	Kind              map[string]interface{} // e.g. {"kind":"lifecycle","decay":0,"watches_files":true}
-	PollIntervalSecs  *uint64
-	KeepAlivePolls    *uint32
-	FseventsReinstate *bool
-	PollsElapsed      *uint64
-	Failure           map[string]interface{} // e.g. {"consecutive_failures":3}
-	Source            string                 // owning source name within the provider; empty when not set
+	Provider         string
+	Field            string // empty when not set
+	Path             string // empty when not set
+	Value            interface{}
+	AgeMs            uint64
+	Kind             map[string]interface{} // e.g. {"kind":"lifecycle","decay":0,"depth":4,"watches_files":true}
+	PollIntervalSecs *uint64
+	PollCount        *uint32
+	PollsElapsed     *uint64
+	NextPollInSecs   *uint64                // seconds until the next scheduled poll; nil when it has none
+	Failure          map[string]interface{} // e.g. {"consecutive_failures":3}
+	Source           string                 // owning source name within the provider; empty when not set
 }
 
 // Verdict is one daemon-health assertion.
@@ -66,10 +71,10 @@ type Verdict struct {
 	Message string
 }
 
-// ReaperInfo is the daemon's reaper capability snapshot, embedded in
-// DaemonHealth when the daemon attaches one (canon singleton.md invariant
-// 13). Absent (nil) for embedded/test servers.
-type ReaperInfo struct {
+// ReaperStatus is the daemon's reaper capability snapshot, embedded in
+// DaemonHealth when the daemon attaches one. Absent (nil) for
+// embedded/test servers.
+type ReaperStatus struct {
 	Armed      bool
 	Visibility string // "system-wide" or "confined"
 	Sweeps     uint64
@@ -89,7 +94,7 @@ type DaemonHealth struct {
 	ActiveWatchers uint64
 	CacheEntries   uint64
 	WatchBackend   string // "native", "polling", "disabled", "unknown", or "" if absent
-	Reaper         *ReaperInfo
+	Reaper         *ReaperStatus
 	Verdicts       []Verdict
 }
 
@@ -116,49 +121,73 @@ type IntrospectResponse struct {
 	Other   interface{}
 }
 
-// WatchEvent is one event from a watch stream.
+// WatchEvent is one emitted change on a watch. Data is the value Get answers
+// for the watched key at that moment, or nil when nothing answers there — a
+// miss, not the end of the stream. A value resolved from several cache
+// records has no single age, so a watch reports none.
 type WatchEvent struct {
-	Data  interface{}
-	AgeMs uint64
-	Stale bool
+	Data interface{}
 }
 
 // WatchStream holds a handle to a watch subscription opened via bc_watch_open.
-// Call Close to cancel and free it.
+// Each event is the value Get answers for the watched key, re-resolved
+// whenever any key the resolution reads changes, including the provider's
+// template tree. Call Close to cancel and free it.
 type WatchStream struct {
 	lib    *nativeLib
 	handle uintptr
 }
 
-// NextEvent blocks until the daemon emits the next change. Returns nil, nil
-// when the stream ends (daemon closed the connection, or the watch was
-// cancelled).
-func (w *WatchStream) NextEvent() (*WatchEvent, error) {
-	env, err := w.lib.callWatch(w.lib.bcWatchNext, w.handle, i32arg(-1))
+// NextEvent waits for the watched value to change and returns the event.
+// With no argument it waits indefinitely; NextEvent(ms) waits at most ms
+// milliseconds (0 polls) and, if no event arrives, returns an *Error of
+// kind timeout (errors.Is(err, ErrTimeout)). It returns nil, nil once the
+// stream has ended — the daemon closed it, or Cancel or Close was called.
+func (w *WatchStream) NextEvent(timeoutMs ...int32) (*WatchEvent, error) {
+	if w.handle == 0 {
+		return nil, nil
+	}
+	wait := int32(-1)
+	if len(timeoutMs) > 0 {
+		wait = timeoutMs[0]
+	}
+	env, err := w.lib.callWatch(w.lib.bcWatchNext, w.handle, i32arg(wait))
 	if err != nil {
 		return nil, err
 	}
 	if !env.OK {
-		kind, msg := "", ""
-		if env.Error != nil {
-			kind, msg = env.Error.Kind, env.Error.Message
-		}
-		return nil, &ServerError{Kind: kind, Message: msg, LibVersion: w.lib.version}
+		return nil, w.lib.envelopeError(env.Error, "bc_watch_next")
 	}
 	switch env.Outcome {
 	case "event":
-		return watchEventFromData(env.Data)
-	case "eof", "cancelled", "timeout":
+		ev, err := watchEventFromData(env.Data)
+		return ev, w.lib.stamp(err)
+	case "eof", "cancelled":
 		return nil, nil
+	case "timeout":
+		return nil, &Error{
+			Kind:           "timeout",
+			Message:        fmt.Sprintf("no event within %dms", wait),
+			LibraryVersion: w.lib.version,
+		}
 	default:
-		return nil, &ProtocolError{msg: "unknown watch outcome: " + env.Outcome}
+		return nil, w.lib.stamp(parseError("unknown watch outcome: " + env.Outcome))
 	}
 }
 
-// Close cancels and frees the watch handle, ending the stream. A NextEvent
-// call already in flight on another goroutine observes the cancellation
-// within one poll tick (see bc_watch_cancel's documentation); Close itself
-// must not race a NextEvent call still in flight on the same handle.
+// Cancel ends the stream: a NextEvent waiting on another goroutine returns
+// nil, nil at once (see bc_watch_cancel's documentation), as does every
+// later one. The handle stays allocated until Close.
+func (w *WatchStream) Cancel() error {
+	if w.handle != 0 {
+		purego.SyscallN(w.lib.bcWatchCancel, w.handle)
+	}
+	return nil
+}
+
+// Close cancels and frees the watch handle, ending the stream. Close itself
+// must not race a NextEvent call still in flight on the same handle; Cancel
+// first, from the other goroutine, to end one.
 func (w *WatchStream) Close() error {
 	if w.handle != 0 {
 		purego.SyscallN(w.lib.bcWatchCancel, w.handle)
@@ -183,61 +212,65 @@ func (w *WatchStream) finalize() {
 // Client sends individual requests; each call to the underlying library
 // opens a fresh daemon connection (libbeachcomber's own behaviour — this
 // SDK does not hold a socket open on the Client's behalf). For
-// latency-sensitive use cases prefer [Session].
+// latency-sensitive use cases prefer [Session]. Call Close when done.
 type Client struct {
-	lib     *nativeLib
-	handle  uintptr // BcClient*
-	loadErr error   // set when the library failed to load; deferred to the first op
+	lib    *nativeLib
+	handle uintptr // BcClient*; 0 once closed
 }
 
-// Option customises client construction.
+// Option customises client construction: each writes one key of the
+// options_json bc_client_new takes. An option left out is the library's
+// default; this SDK has none of its own.
 type Option func(opts map[string]interface{})
 
+// WithSocketPath sets the daemon's socket (bc_client_new's socket_path).
+// Left out, the library discovers it: $BEACHCOMBER_SOCKET, else
+// /tmp/beachcomber-<uid>/sock.
+func WithSocketPath(path string) Option {
+	return func(opts map[string]interface{}) { opts["socket_path"] = path }
+}
+
 // WithAutostart sets whether the client forks a daemon when none is serving
-// the socket. When the option is omitted the shared library's default
-// applies (autostart on). Autostart only fires when the socket path is
-// auto-discovered ([NewClient]): the shared library never autostarts for an
-// explicit socket path, so this option is a no-op under [NewClientWithPath].
+// the socket. Left out, the library's default applies (autostart on).
+// Autostart only fires when the socket path is auto-discovered: the shared
+// library never autostarts for an explicit [WithSocketPath].
 func WithAutostart(enabled bool) Option {
 	return func(opts map[string]interface{}) { opts["autostart"] = enabled }
 }
 
-// NewClient returns a Client that auto-discovers the daemon socket path (the
-// resolution libbeachcomber itself performs — see docs/canon/singleton.md).
-// Unlike [NewClientWithPath] this may fail immediately: locating and
-// validating libbeachcomber happens here, and a broken install (missing
-// library, missing symbol) is reported now rather than deferred.
+// WithTimeoutMs sets how long one read or write on the daemon's socket may
+// take, in milliseconds (bc_client_new's timeout_ms). Left out, the
+// library's default applies (100ms); this SDK has none of its own. 0 is
+// refused: the client's first operation fails with kind parse_error.
+func WithTimeoutMs(ms uint64) Option {
+	return func(opts map[string]interface{}) { opts["timeout_ms"] = ms }
+}
+
+// WithConnectTimeoutMs sets how long connecting keeps retrying a socket
+// nobody answers yet, in milliseconds (bc_client_new's connect_timeout_ms);
+// 0 is a single attempt. Left out, the library's default applies (1500ms);
+// this SDK has none of its own.
+func WithConnectTimeoutMs(ms uint64) Option {
+	return func(opts map[string]interface{}) { opts["connect_timeout_ms"] = ms }
+}
+
+// WithExec sets whether a template this client renders ([Client.Get],
+// [Client.Eval]) may call exec(). Off by default: a template that calls it
+// then fails with "exec() is disabled in this context".
+func WithExec(enabled bool) Option {
+	return func(opts map[string]interface{}) { opts["exec"] = enabled }
+}
+
+// NewClient returns a Client made with options. Locating and validating
+// libbeachcomber happens here, so a broken install (kind library_not_found
+// or library_symbol) is reported now. A malformed option is the library's
+// to refuse, on the client's first operation (kind parse_error).
 func NewClient(options ...Option) (*Client, error) {
 	l, err := getLib()
 	if err != nil {
 		return nil, err
 	}
-	return newClientWithLib(l, "", options...)
-}
-
-// NewClientWithPath returns a Client that uses an explicit socket path.
-// Mirrors libbeachcomber's own BcClient construction contract: this never
-// fails from the caller's point of view. A library discovery/validation
-// failure is recorded and surfaced on the Client's first operation instead.
-func NewClientWithPath(socketPath string, options ...Option) *Client {
-	l, err := getLib()
-	if err != nil {
-		return &Client{loadErr: err}
-	}
-	c, _ := newClientWithLib(l, socketPath, options...)
-	return c
-}
-
-func newClientWithLib(l *nativeLib, socketPath string, options ...Option) (*Client, error) {
-	opts := map[string]interface{}{}
-	if socketPath != "" {
-		opts["socket_path"] = socketPath
-	}
-	for _, o := range options {
-		o(opts)
-	}
-	optsJSON, _ := json.Marshal(opts)
-	optsBuf := cBytes(string(optsJSON))
+	optsBuf := cBytes(optionsJSON(options...))
 	r1, _, _ := purego.SyscallN(l.bcClientNew, ptrOf(optsBuf))
 	runtime.KeepAlive(optsBuf)
 
@@ -246,50 +279,135 @@ func newClientWithLib(l *nativeLib, socketPath string, options ...Option) (*Clie
 	return c, nil
 }
 
+// optionsJSON builds the options_json bc_client_new takes: the keys the
+// options write, and no others.
+func optionsJSON(options ...Option) string {
+	opts := map[string]interface{}{}
+	for _, o := range options {
+		o(opts)
+	}
+	b, _ := json.Marshal(opts)
+	return string(b)
+}
+
+// Close frees the client's handle. Every later operation on it fails with
+// kind io_error; Close itself is idempotent.
+func (c *Client) Close() error {
+	c.finalize()
+	c.handle = 0
+	runtime.SetFinalizer(c, nil)
+	return nil
+}
+
 func (c *Client) finalize() {
-	if c.lib != nil && c.handle != 0 {
+	if c.handle != 0 {
 		purego.SyscallN(c.lib.bcClientFree, c.handle)
 	}
 }
 
-// Get reads a cached value from the daemon.
-//
-// key follows the "provider" or "provider.field" format (e.g. "git" or
-// "git.branch"). path is the working directory context; pass "" to omit it.
-func (c *Client) Get(key string, path string) (*Result, error) {
-	return c.GetWithFlags(key, path, false, false)
+// open is the error every operation on a closed client returns.
+func (c *Client) open() error {
+	if c.handle == 0 {
+		return &Error{Kind: "io_error", Message: "the client is closed", LibraryVersion: c.lib.version}
+	}
+	return nil
 }
 
-// GetWithFlags is like Get but supports force and wait flags.
-func (c *Client) GetWithFlags(key, path string, force, wait bool) (*Result, error) {
-	if c.loadErr != nil {
-		return nil, c.loadErr
+// GetOption is one of the options a Get takes: each writes one key of the
+// options_json bc_get and bc_session_get take. An option left out is the
+// library's default; this SDK has none of its own.
+type GetOption func(opts map[string]interface{})
+
+// Force re-executes every Source the read demands before answering, as comb
+// get --force.
+var Force GetOption = func(opts map[string]interface{}) { opts["force"] = true }
+
+// Wait is how long the read waits for a run it needs before it answers what
+// is stored, as comb get --wait: a duration ("0", "50ms", "2s") or
+// "forever". Anything else fails the Get with kind parse_error. Left out, a
+// stored record waits its Source's budget and a cold read waits for its run.
+// The read may take the client's timeout_ms plus the wait; "forever" has no
+// deadline.
+func Wait(d string) GetOption {
+	return func(opts map[string]interface{}) { opts["wait"] = d }
+}
+
+// getOptionsBytes is the options_json options write, or nil (NULL) when
+// there are none.
+func getOptionsBytes(options []GetOption) []byte {
+	if len(options) == 0 {
+		return nil
 	}
-	keyBuf, pathBuf := cBytes(key), optBytes(path)
-	data, err := c.lib.call(c.lib.bcGet, c.handle, ptrOf(keyBuf), ptrOf(pathBuf), uintptr(getFlags(force, wait)))
+	opts := map[string]interface{}{}
+	for _, o := range options {
+		o(opts)
+	}
+	b, _ := json.Marshal(opts) // a map of bools and strings always marshals
+	return cBytes(string(b))
+}
+
+// Get returns the value comb get prints for key at cwd, with env as the
+// caller's environment: a string, float64, bool, map[string]interface{} or
+// []interface{}, as encoding/json decodes it, and nil on a miss. The daemon
+// holds the templates ("<provider>:template", seeded from configuration or
+// Put); this client renders them. A plain field is its cached value, a
+// templated one is rendered, and a bare provider name is the whole merged
+// namespace. The unrendered halves are facets, read like any key:
+// "p:template.x" is the template as stored, "p:put.x" and "p:source.x"
+// those layers' values.
+//
+// cwd is the directory the read addresses: "~" is the home directory and a
+// relative path is against this process's working directory; "" is the
+// global entry. env is the caller's environment for env.* references; nil
+// means the calling process's environment, as comb has. options are [Force]
+// and [Wait].
+func (c *Client) Get(key, cwd string, env map[string]string, options ...GetOption) (interface{}, error) {
+	if err := c.open(); err != nil {
+		return nil, err
+	}
+	keyBuf, cwdBuf, envBuf, optBuf := cBytes(key), optBytes(cwd), jsonMapBytes(env), getOptionsBytes(options)
+	data, err := c.lib.call(c.lib.bcGet, c.handle, ptrOf(keyBuf), ptrOf(cwdBuf), ptrOf(envBuf), ptrOf(optBuf))
 	runtime.KeepAlive(keyBuf)
-	runtime.KeepAlive(pathBuf)
+	runtime.KeepAlive(cwdBuf)
+	runtime.KeepAlive(envBuf)
+	runtime.KeepAlive(optBuf)
 	if err != nil {
 		return nil, err
 	}
-	return resultFromGetData(data)
+	v, err := decodeValue(data)
+	return v, c.lib.stamp(err)
 }
 
-func getFlags(force, wait bool) uint32 {
-	var f uint32
-	if force {
-		f |= 1 << 0 // BC_GET_FORCE
+// Eval renders a template that is stored nowhere — the same value comb eval
+// prints, decoded as Get's is, nil when it renders nothing. Every ref
+// resolves exactly as it would inside a stored template, so
+// Eval("{{ p.f }}") and Get("p.f") agree. cwd and env mean what they mean
+// for Get: "" is the global entry.
+//
+// templateStr accepts a single "{{ expr }}" tag, or literal text/several
+// tags — the former keeps the expression's natural type, the latter is
+// always a string (a source with no tags at all is its literal text).
+func (c *Client) Eval(templateStr, cwd string, env map[string]string) (interface{}, error) {
+	if err := c.open(); err != nil {
+		return nil, err
 	}
-	if wait {
-		f |= 1 << 1 // BC_GET_WAIT
+	tplBuf, cwdBuf, envBuf := cBytes(templateStr), optBytes(cwd), jsonMapBytes(env)
+	data, err := c.lib.call(c.lib.bcEval, c.handle, ptrOf(tplBuf), ptrOf(cwdBuf), ptrOf(envBuf))
+	runtime.KeepAlive(tplBuf)
+	runtime.KeepAlive(cwdBuf)
+	runtime.KeepAlive(envBuf)
+	if err != nil {
+		return nil, err
 	}
-	return f
+	v, err := decodeValue(data)
+	return v, c.lib.stamp(err)
 }
 
-// Refresh forces the daemon to recompute the given provider/key.
+// Refresh forces the daemon to recompute the given provider/key at path;
+// "" is the global entry.
 func (c *Client) Refresh(key string, path string) error {
-	if c.loadErr != nil {
-		return c.loadErr
+	if err := c.open(); err != nil {
+		return err
 	}
 	keyBuf, pathBuf := cBytes(key), optBytes(path)
 	_, err := c.lib.call(c.lib.bcRefresh, c.handle, ptrOf(keyBuf), ptrOf(pathBuf))
@@ -300,51 +418,55 @@ func (c *Client) Refresh(key string, path string) error {
 
 // Status returns cache rows from the daemon.
 func (c *Client) Status() ([]CacheRow, error) {
-	if c.loadErr != nil {
-		return nil, c.loadErr
+	if err := c.open(); err != nil {
+		return nil, err
 	}
 	data, err := c.lib.call(c.lib.bcStatus, c.handle)
 	if err != nil {
 		return nil, err
 	}
-	return parseCacheRowsFromData(data)
+	rows, err := parseCacheRowsFromData(data)
+	return rows, c.lib.stamp(err)
 }
 
 // Session opens a persistent connection and returns a [Session].
 func (c *Client) Session() (*Session, error) {
-	if c.loadErr != nil {
-		return nil, c.loadErr
+	if err := c.open(); err != nil {
+		return nil, err
 	}
 	r1, _, _ := purego.SyscallN(c.lib.bcSessionOpen, c.handle)
-	s := &Session{client: c, lib: c.lib, handle: r1}
+	s := &Session{lib: c.lib, handle: r1}
 	runtime.SetFinalizer(s, func(s *Session) { s.finalize() })
 	return s, nil
 }
 
 // Hello returns the daemon's protocol and build versions.
 func (c *Client) Hello() (*HelloInfo, error) {
-	if c.loadErr != nil {
-		return nil, c.loadErr
+	if err := c.open(); err != nil {
+		return nil, err
 	}
 	data, err := c.lib.call(c.lib.bcHello, c.handle)
 	if err != nil {
 		return nil, err
 	}
-	return parseHelloFromData(data)
+	info, err := parseHelloFromData(data)
+	return info, c.lib.stamp(err)
 }
 
-// Put stores data into a virtual provider. data should be a JSON object.
-// ttl and path are optional; pass "" to omit them.
-func (c *Client) Put(key string, data interface{}, ttl, path string) error {
-	if c.loadErr != nil {
-		return c.loadErr
+// Put stores data into the cache as static data: a JSON object at a namespace
+// root, any JSON below it. nil removes the node. ttl and path are optional;
+// pass "" to omit them ("" path is the global entry). persist keeps the put
+// across a daemon restart, best effort.
+func (c *Client) Put(key string, data interface{}, ttl, path string, persist bool) error {
+	if err := c.open(); err != nil {
+		return err
 	}
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
-		return fmt.Errorf("beachcomber: marshal put data: %w", err)
+		return c.lib.stamp(parseError("beachcomber: marshal put data: " + err.Error()))
 	}
 	keyBuf, dataBuf, ttlBuf, pathBuf := cBytes(key), cBytes(string(dataJSON)), optBytes(ttl), optBytes(path)
-	_, err = c.lib.call(c.lib.bcPut, c.handle, ptrOf(keyBuf), ptrOf(dataBuf), ptrOf(ttlBuf), ptrOf(pathBuf))
+	_, err = c.lib.call(c.lib.bcPut, c.handle, ptrOf(keyBuf), ptrOf(dataBuf), ptrOf(ttlBuf), ptrOf(pathBuf), boolArg(persist))
 	runtime.KeepAlive(keyBuf)
 	runtime.KeepAlive(dataBuf)
 	runtime.KeepAlive(ttlBuf)
@@ -352,16 +474,17 @@ func (c *Client) Put(key string, data interface{}, ttl, path string) error {
 	return err
 }
 
-// Introspect runs a diagnostic query. durationSecs is only consulted for
-// SubjectProcs; pass 0 otherwise.
-func (c *Client) Introspect(subject IntrospectSubject, durationSecs uint64) (*IntrospectResponse, error) {
-	if c.loadErr != nil {
-		return nil, c.loadErr
+// Introspect runs a diagnostic query. A durationSecs, consulted by
+// SubjectProcs only, is sent as given — 0 included; left out, the daemon's
+// own default applies. Only the first is read.
+func (c *Client) Introspect(subject IntrospectSubject, durationSecs ...uint64) (*IntrospectResponse, error) {
+	if err := c.open(); err != nil {
+		return nil, err
 	}
 	subjectBuf := cBytes(string(subject))
 	var optsBuf []byte
-	if durationSecs > 0 {
-		optsJSON, _ := json.Marshal(map[string]uint64{"duration_secs": durationSecs})
+	if len(durationSecs) > 0 {
+		optsJSON, _ := json.Marshal(map[string]uint64{"duration_secs": durationSecs[0]})
 		optsBuf = cBytes(string(optsJSON))
 	}
 	data, err := c.lib.call(c.lib.bcIntrospect, c.handle, ptrOf(subjectBuf), ptrOf(optsBuf))
@@ -370,21 +493,26 @@ func (c *Client) Introspect(subject IntrospectSubject, durationSecs uint64) (*In
 	if err != nil {
 		return nil, err
 	}
-	return parseIntrospectFromData(subject, data)
+	resp, err := parseIntrospectFromData(subject, data)
+	return resp, c.lib.stamp(err)
 }
 
-// Watch subscribes to changes on a key. The returned stream holds a watch
+// Watch subscribes to the value of key — what Get answers for it — and
+// emits it again whenever it changes, so a template edited under the watch
+// fires it just as a changed cache record does. cwd and env mean what they
+// mean for Get: "" is the global entry. The returned stream holds a watch
 // handle; call Close on it to cancel and free it.
-func (c *Client) Watch(key, path string) (*WatchStream, error) {
-	if c.loadErr != nil {
-		return nil, c.loadErr
+func (c *Client) Watch(key, cwd string, env map[string]string) (*WatchStream, error) {
+	if err := c.open(); err != nil {
+		return nil, err
 	}
-	keyBuf, pathBuf := cBytes(key), optBytes(path)
-	r1, _, _ := purego.SyscallN(c.lib.bcWatchOpen, c.handle, ptrOf(keyBuf), ptrOf(pathBuf))
+	keyBuf, cwdBuf, envBuf := cBytes(key), optBytes(cwd), jsonMapBytes(env)
+	r1, _, _ := purego.SyscallN(c.lib.bcWatchOpen, c.handle, ptrOf(keyBuf), ptrOf(cwdBuf), ptrOf(envBuf))
 	runtime.KeepAlive(keyBuf)
-	runtime.KeepAlive(pathBuf)
+	runtime.KeepAlive(cwdBuf)
+	runtime.KeepAlive(envBuf)
 	if r1 == 0 {
-		return nil, &LibraryError{Message: "beachcomber: bc_watch_open: allocation failure", LibVersion: c.lib.version}
+		return nil, &Error{Kind: "io_error", Message: "beachcomber: bc_watch_open: allocation failure", LibraryVersion: c.lib.version}
 	}
 	w := &WatchStream{lib: c.lib, handle: r1}
 	runtime.SetFinalizer(w, func(w *WatchStream) { w.finalize() })

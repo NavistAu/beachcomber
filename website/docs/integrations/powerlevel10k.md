@@ -146,7 +146,7 @@ gitstatus is already fast. The motivation is architectural, not performance:
 
 ### Current limitations
 
-beachcomber's git provider now exposes `commit_summary` (the first line of the HEAD commit message) and `push_ahead`/`push_behind` (commits ahead of or behind the push remote). The `comb_git` segment above can be extended to use these fields. WIP detection and push indicator rendering require wiring them into the segment function — see the field table in [Built-in Providers](../reference/built-in-providers.md) for the field names.
+beachcomber's git provider now exposes `commit_summary` (the first line of the HEAD commit message) and `push_ahead`/`push_behind` (commits ahead of or behind the push remote). The `comb_git` segment above can be extended to use these fields. WIP detection and push indicator rendering require wiring them into the segment function — see the field table in [Built-in Providers](../providers/built-in-providers.md) for the field names.
 
 ### The comb_git segment
 
@@ -292,4 +292,4 @@ To revert just the git replacement while keeping other segments, remove the `POW
 - **Icons not rendering:** the Nerd Font glyphs require a patched font. p10k's recommended fonts include all required glyphs. Replace icons with text labels if your font lacks them.
 - **Changes lost after `p10k configure`:** this is expected — `p10k configure` regenerates `~/.p10k.zsh`. The overlay re-applies changes on next shell startup. Just open a new shell.
 
-See the [Troubleshooting](./troubleshooting.md) guide for general diagnostics.
+See the [Troubleshooting](../getting-started/troubleshooting.md) guide for general diagnostics.

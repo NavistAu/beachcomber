@@ -1,0 +1,19 @@
+[daemon.providers.direnv.sources.state]
+# A direnv root: the nearest directory holding an `.envrc`, walking up to `/`.
+root = "{{ lup('.envrc', root=true) | dirname }}"
+# Whether direnv allows that `.envrc`, from its databases under `$XDG_DATA_HOME/direnv` (by default
+# `~/.local/share/direnv`). `allow/` holds a file named by the sha256 of the `.envrc`'s absolute path, a
+# newline and its contents, so an edit to the `.envrc` is a different name and it is blocked until
+# allowed again. `deny/` holds one named by the sha256 of the path and a newline, whatever the contents,
+# and wins over `allow/`. The path is as `lup` finds it: a symlinked `.envrc` is named by the link, not
+# its target (the contents are the target's). `env` is the daemon's environment, as it started. The
+# `.envrc` is read and both files are looked for, so an edit, `direnv allow` or `direnv deny` is seen
+# by the next read, though only the `.envrc` is watched.
+data = '''{% set envrc = lup('.envrc', root=true) %}
+{% set body = envrc | read %}
+{% set db = (env.XDG_DATA_HOME or '~/.local/share') ~ '/direnv/' %}
+{{ ('denied' if (db ~ 'deny/' ~ ((envrc ~ '\n') | hash('sha256'))) | stat is defined else ('allowed' if (db ~ 'allow/' ~ ((envrc ~ '\n' ~ body) | hash('sha256'))) | stat is defined else 'blocked')) if body is defined }}'''
+result.status = "{{ data }}"
+result.allowed = "{{ (data == 'allowed') if data is not none }}"
+# Run again when the `.envrc` changes; a failure is retried every minute, three times. The nearest root answers alone.
+return = "{{ result | watch('.envrc') | failback('60s', 3) | nearest }}"

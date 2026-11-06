@@ -49,14 +49,14 @@ cargo install beachcomber
 Download the `.deb` from the latest release:
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.9.1-1_amd64.deb
-sudo dpkg -i beachcomber_0.9.1-1_amd64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.10.0-1_amd64.deb
+sudo dpkg -i beachcomber_0.10.0-1_amd64.deb
 ```
 
 ```sh
 # ARM64
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.9.1-1_arm64.deb
-sudo dpkg -i beachcomber_0.9.1-1_arm64.deb
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber_0.10.0-1_arm64.deb
+sudo dpkg -i beachcomber_0.10.0-1_arm64.deb
 ```
 
 ## Fedora/RHEL
@@ -64,14 +64,14 @@ sudo dpkg -i beachcomber_0.9.1-1_arm64.deb
 Download the `.rpm` from the latest release:
 
 ```sh
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.9.1-1.x86_64.rpm
-sudo rpm -i beachcomber-0.9.1-1.x86_64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.10.0-1.x86_64.rpm
+sudo rpm -i beachcomber-0.10.0-1.x86_64.rpm
 ```
 
 ```sh
 # ARM64
-curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.9.1-1.aarch64.rpm
-sudo rpm -i beachcomber-0.9.1-1.aarch64.rpm
+curl -LO https://github.com/NavistAu/beachcomber/releases/latest/download/beachcomber-0.10.0-1.aarch64.rpm
+sudo rpm -i beachcomber-0.10.0-1.aarch64.rpm
 ```
 
 ## Arch Linux (AUR)
@@ -99,3 +99,5 @@ Pre-built binaries are available on the [GitHub Releases](https://github.com/Nav
 - `x86_64-unknown-linux-gnu` (Linux, glibc)
 - `x86_64-unknown-linux-musl` (Linux, musl/static)
 - `aarch64-unknown-linux-gnu` (Linux ARM64, glibc)
+
+**Next:** [Add it to your prompt](./set-up.mdx)

@@ -161,7 +161,7 @@ No existing tool does all of these together:
 | Multiple data types | No | No | Yes (but recalculates) | Yes (but recalculates) | Yes (but recalculates) | **Yes (cached)** |
 | Multiple consumers | No | Yes | Yes (shell+tmux+vim) | No | No | **Yes** |
 | Event-driven invalidation | No (on-demand scan) | Yes | No | No | No (TTL) | **Yes** |
-| Extensible providers | No | N/A | Python segments | TOML modules | Go segments | **Script + config** |
+| Extensible providers | No | N/A | Python segments | TOML modules | Go segments | **Config + plugins** |
 | Cross-shell | Zsh/Bash | N/A | Yes | Yes | Yes | **Yes (any socket client)** |
 
 beachcomber is the centralized state cache that every prompt tool independently reinvents a piece of. gitstatusd reinvents it for git. powerline reinvented it for rendering. oh-my-posh reinvents it with disk-based TTL caching. Starship hasn't reinvented it yet (the daemon proposal is unimplemented). beachcomber is the shared infrastructure that makes all of these unnecessary.

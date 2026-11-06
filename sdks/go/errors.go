@@ -1,71 +1,59 @@
 package beachcomber
 
-import (
-	"errors"
-	"fmt"
+// Error is every failure this SDK returns: an ok:false envelope from the
+// library, and the three kinds the SDK raises itself (library_not_found,
+// library_symbol, unsupported). Kind is the stable slug the SDK API table
+// (docs/sdk-api.md) names; Message is the library's words unchanged, or the
+// SDK's own for its three; LibraryVersion is the loaded library's
+// bc_version(), when one was loaded.
+type Error struct {
+	Kind           string
+	Message        string
+	LibraryVersion string
+}
+
+// Error is the message alone: the kind and the library version are fields
+// of their own.
+func (e *Error) Error() string {
+	return e.Message
+}
+
+// Is reports whether target is an *Error of the same Kind, so
+// errors.Is(err, ErrTimeout) asks whether err is a timeout.
+func (e *Error) Is(target error) bool {
+	t, ok := target.(*Error)
+	return ok && t.Kind == e.Kind
+}
+
+// One sentinel per kind, matched by errors.Is on an *Error of that kind.
+var (
+	// ErrDaemonNotRunning: no daemon answers, and none was started.
+	ErrDaemonNotRunning = &Error{Kind: "daemon_not_running", Message: "no daemon answers, and none was started"}
+	// ErrConnectionFailed: an explicit socket path could not be connected to.
+	ErrConnectionFailed = &Error{Kind: "connection_failed", Message: "the socket could not be connected to"}
+	// ErrIo: a read or write on the socket failed.
+	ErrIo = &Error{Kind: "io_error", Message: "a read or write on the socket failed"}
+	// ErrParse: a request, a response or a template could not be read.
+	ErrParse = &Error{Kind: "parse_error", Message: "a request, a response or a template could not be read"}
+	// ErrServer: the daemon refused the request, or a template failed to render.
+	ErrServer = &Error{Kind: "server_error", Message: "the daemon refused the request"}
+	// ErrTimeout: a read or write ran out timeout_ms, or NextEvent ran out its timeout.
+	ErrTimeout = &Error{Kind: "timeout", Message: "timed out"}
+	// ErrBusy: a session or watch is in use by another caller.
+	ErrBusy = &Error{Kind: "busy", Message: "the handle is in use by another caller"}
+	// ErrPanic: the library panicked; the panic was caught at the boundary.
+	ErrPanic = &Error{Kind: "panic", Message: "the library panicked"}
+	// ErrLibraryNotFound: no libbeachcomber was found where discovery looks.
+	ErrLibraryNotFound = &Error{Kind: "library_not_found", Message: "libbeachcomber was not found"}
+	// ErrLibrarySymbol: the library found lacks a function this SDK calls.
+	ErrLibrarySymbol = &Error{Kind: "library_symbol", Message: "libbeachcomber lacks a function this SDK calls"}
+	// ErrUnsupported: a transport cannot do this operation. This SDK has one
+	// transport, the library, which can do every operation; the kind is here
+	// so every SDK carries the same error kinds.
+	ErrUnsupported = &Error{Kind: "unsupported", Message: "the transport cannot do this operation"}
 )
 
-// ErrDaemonNotRunning is returned when the Unix socket cannot be reached.
-// A *ServerError whose Kind is "daemon_not_running" reports true from
-// errors.Is(err, ErrDaemonNotRunning).
-var ErrDaemonNotRunning = errors.New("beachcomber daemon is not running")
-
-// ServerError is returned when the library reports an ok:false envelope —
-// either the daemon rejected the request, or the ABI itself did (bad flags,
-// a busy handle, a caught panic, version skew). Kind is the envelope's
-// stable, machine-readable slug (see libbeachcomber-ffi/src/envelope.rs);
-// LibVersion is the loaded library's bc_version(), included per this SDK's
-// binding contract so every error names the library that produced it.
-type ServerError struct {
-	Kind       string
-	Message    string
-	LibVersion string
-}
-
-func (e *ServerError) Error() string {
-	if e.Kind == "" {
-		return fmt.Sprintf("beachcomber: daemon error: %s (library %s)", e.Message, e.LibVersion)
-	}
-	return fmt.Sprintf("beachcomber: %s: %s (library %s)", e.Kind, e.Message, e.LibVersion)
-}
-
-// Is reports whether target is ErrDaemonNotRunning and this error's Kind
-// means the daemon could not be reached — "daemon_not_running" (no override
-// socket path, none found by auto-discovery) or "connection_failed" (an
-// explicit socket path, e.g. via NewClientWithPath, that nothing is
-// listening on). Both were a single case in this SDK before the ABI made
-// the distinction; folding them back together here keeps existing
-// errors.Is(err, beachcomber.ErrDaemonNotRunning) checks working regardless
-// of which construction path produced the Client.
-func (e *ServerError) Is(target error) bool {
-	return target == ErrDaemonNotRunning && (e.Kind == "daemon_not_running" || e.Kind == "connection_failed")
-}
-
-// ProtocolError is returned when a response cannot be parsed — malformed
-// JSON returned by the library, or a response missing fields this SDK
-// requires. Unlike ServerError this never comes from an ok:false envelope.
-type ProtocolError struct {
-	msg string
-}
-
-func (e *ProtocolError) Error() string {
-	return fmt.Sprintf("beachcomber: protocol error: %s", e.msg)
-}
-
-// LibraryError reports a failure to locate, load, or validate
-// libbeachcomber itself — discovery exhausted every candidate location, or
-// the library that did load is missing a required symbol. Message already
-// names every location tried (discovery failures) or the missing symbol
-// (validation failures); LibVersion is populated when bc_version() could
-// still be read despite the failure.
-type LibraryError struct {
-	Message    string
-	LibVersion string
-}
-
-func (e *LibraryError) Error() string {
-	if e.LibVersion != "" {
-		return fmt.Sprintf("%s (loaded library version: %s)", e.Message, e.LibVersion)
-	}
-	return e.Message
+// parseError is a response this SDK could not read.
+func parseError(message string) *Error {
+	return &Error{Kind: "parse_error", Message: message}
 }

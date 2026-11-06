@@ -8,3 +8,6 @@ description = "Repository automation tasks for beachcomber (release version bump
 [[bin]]
 name = "xtask"
 path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"

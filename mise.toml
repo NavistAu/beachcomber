@@ -2,3 +2,7 @@
 rust = "1.95"
 "cargo:cargo-nextest" = "latest"
 "cargo:cargo-llvm-cov" = "latest"
+
+# Copies the release binary into ~/.local/bin; cargo clean / cargo-sweep can't break it
+[tasks.install]
+run = "cargo install --path . --root ~/.local --locked"

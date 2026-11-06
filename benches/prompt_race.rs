@@ -10,6 +10,24 @@
 //!     watcher callback fires (steady-state, after the stream has started).
 //!   * `convergence_L`     - end-to-end: `.git/HEAD` written -> cache reflects the
 //!     new branch (FSEvents delivery + scheduler dispatch + refs execute + write).
+//!   * `read_after_mutation` (printed, not criterion) - correctness: a change on
+//!     disk, then at once a `get` over the raw socket, counted right when it
+//!     answers the new value, with the read's own latency. Two changes: a
+//!     `.git/HEAD` write read as `git.branch`, and a `state.json` rewrite read
+//!     through a config Source that declares `watch('state.json')`. Run with
+//!     the watcher on (each trial starts once it has caught up with the last
+//!     one) and with it off (a server with no scheduler: the read's own check
+//!     of the record's files is all there is).
+//!
+//!   * `memo_after_rewrite` (printed, not criterion) - T5.5: a memoised template
+//!     leaf (`cat <file>`, watching the file) read by the library client, a hit,
+//!     then the same command uncached (the spawn), then the file rewritten and
+//!     the leaf read at once. The first read after the rewrite is counted right
+//!     when it answers the new content, and costs what a hit and a spawn cost
+//!     plus the difference reported.
+//!   * `exit_after_output` (printed, not criterion) - T5.6: `comb get` of that
+//!     leaf as a child process, on a miss and on a hit: the time from the first
+//!     byte of its output to its exit.
 //!
 //! Budget B is NOT benched here - it is the prompt's read round-trip: ~5 ms via
 //! the `comb` CLI (process spawn + socket), ~0.3 ms via an in-process SDK client
@@ -34,11 +52,14 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::query::SourceDemand;
+use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
+use beachcomber::server::Server;
 use beachcomber::watcher::FsWatcher;
 use beachcomber::watcher_registry::WatcherRegistry;
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group};
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -228,7 +249,7 @@ fn bench_convergence_l(c: &mut Criterion) {
     let (_repo, path) = make_repo_with_branches();
 
     let cache = Arc::new(Cache::new());
-    let registry = Arc::new(ProviderRegistry::with_defaults());
+    let registry = Arc::new(ProviderRegistry::shipped(&std::env::vars().collect()));
     let (handle, scheduler) = Scheduler::new(
         cache.clone(),
         registry,
@@ -243,8 +264,32 @@ fn bench_convergence_l(c: &mut Criterion) {
         handle
             .send(SchedulerMessage::QueryActivity {
                 provider: "git".to_string(),
-                path: Some(path.clone()),
-                demand: SourceDemand::All,
+                instances: vec![
+                    Instance {
+                        source: "head".to_string(),
+                        root: Some(path.clone()),
+                    },
+                    Instance {
+                        source: "refs".to_string(),
+                        root: Some(path.clone()),
+                    },
+                    Instance {
+                        source: "diff".to_string(),
+                        root: Some(path.clone()),
+                    },
+                    Instance {
+                        source: "branches".to_string(),
+                        root: Some(path.clone()),
+                    },
+                    Instance {
+                        source: "lineage".to_string(),
+                        root: Some(path.clone()),
+                    },
+                    Instance {
+                        source: "status".to_string(),
+                        root: Some(path.clone()),
+                    },
+                ],
             })
             .await;
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -292,5 +337,418 @@ fn bench_convergence_l(c: &mut Criterion) {
     group.finish();
 }
 
+/// Trials per change in `read_after_mutation`.
+const READ_TRIALS: usize = 100;
+
+/// One request on a raw connection, its answer and how long it took.
+fn timed_get(stream: &mut UnixStream, key: &str, path: &str) -> (serde_json::Value, Duration) {
+    let mut line =
+        serde_json::to_string(&serde_json::json!({"op": "get", "key": key, "path": path})).unwrap();
+    line.push('\n');
+    let t0 = Instant::now();
+    stream.write_all(line.as_bytes()).unwrap();
+    let mut answer = String::new();
+    BufReader::new(&mut *stream).read_line(&mut answer).unwrap();
+    let took = t0.elapsed();
+    (serde_json::from_str(&answer).expect("a JSON answer"), took)
+}
+
+/// Poll the cache until `field` of `provider` at `path` reads `want`.
+async fn wait_for_field(
+    cache: &Cache,
+    provider: &str,
+    path: &str,
+    field: &str,
+    want: &Value,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cache
+            .get_field(provider, Some(path), field)
+            .is_some_and(|(v, _)| v == *want)
+        {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_micros(200)).await;
+    }
+}
+
+/// The count a read after a change gets right, and the read's latency, with
+/// the watcher on and with it off.
+fn read_after_mutation() {
+    if !has_git() {
+        eprintln!("prompt_race: git not found; skipping read_after_mutation");
+        return;
+    }
+    let rt = Runtime::new().unwrap();
+    let (_repo, repo) = make_repo_with_branches();
+    let state_dir = fsevents_tempdir();
+    let state = state_dir
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    std::fs::write(Path::new(&state).join(".rstate"), "").unwrap();
+    std::fs::write(Path::new(&state).join("state.json"), "start").unwrap();
+
+    let layer: toml::Value = toml::from_str(
+        "[daemon.providers.rstate.sources.s]\n\
+         root = \"{{ lup('.rstate') | dirname }}\"\n\
+         data = \"{{ 'state.json' | read | trim }}\"\n\
+         result.v = \"{{ data }}\"\n\
+         return = \"{{ result | watch('state.json') }}\"\n",
+    )
+    .unwrap();
+    let mut layers = beachcomber::daemon::defaults::shipped_layers();
+    layers.push((PathBuf::from("<bench>"), layer));
+    let config = Config::from_layers(layers);
+    let serve = |watched: bool| {
+        let watchers = Arc::new(WatcherRegistry::new());
+        let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+        let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
+            .expect("the bench lines load")
+            .share(&cache);
+        let handle = watched.then(|| {
+            let (handle, scheduler) = Scheduler::new(
+                cache.clone(),
+                registry.clone(),
+                config.clone(),
+                watchers.clone(),
+            );
+            rt.spawn(async move { scheduler.run().await });
+            handle
+        });
+        let sock_dir = TempDir::new().unwrap();
+        let sock = sock_dir.path().join("s");
+        let server = Server::new(sock.clone(), cache.clone(), registry, handle, watchers);
+        {
+            let _enter = rt.enter();
+            server.spawn().expect("bind the bench socket");
+        }
+        let stream = UnixStream::connect(&sock).unwrap();
+        (sock_dir, cache, stream)
+    };
+
+    // With the watcher off first: nothing runs but what a read starts.
+    {
+        let (_sock, _cache, mut stream) = serve(false);
+        for (key, path) in [("git.branch", &repo), ("rstate.v", &state)] {
+            let (answer, _) = timed_get(&mut stream, key, path);
+            assert!(answer.get("data").is_some(), "{key} answers: {answer}");
+        }
+        println!("read_after_mutation: {READ_TRIALS} trials each, watcher off");
+        trials(&mut stream, &repo, &state, |_| {});
+    }
+
+    let (_sock, cache, mut stream) = serve(true);
+    // The cold reads demand both instances, which registers their watches. A
+    // change made before a registration is in place is never reported, so the
+    // probe changes the file until the watcher carries one into the cache.
+    for (key, path) in [("git.branch", &repo), ("rstate.v", &state)] {
+        let (answer, _) = timed_get(&mut stream, key, path);
+        assert!(answer.get("data").is_some(), "{key} answers: {answer}");
+    }
+    let delivering = rt.block_on(async {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut n = 0u32;
+        while Instant::now() < deadline {
+            let probe = format!("probe{n}");
+            n += 1;
+            std::fs::write(Path::new(&state).join("state.json"), &probe).unwrap();
+            let seen = Value::String(probe);
+            let wait = Duration::from_millis(500);
+            if wait_for_field(&cache, "rstate", &state, "v", &seen, wait).await {
+                return true;
+            }
+        }
+        false
+    });
+    if !delivering {
+        eprintln!(
+            "prompt_race: the watcher delivered nothing in 20s (sandbox, or a non-FSEvents path); skipping read_after_mutation with the watcher on"
+        );
+        return;
+    }
+    println!("read_after_mutation: {READ_TRIALS} trials each, watcher on");
+    // Each trial starts once the watcher has caught up with the last one.
+    trials(&mut stream, &repo, &state, |trial| {
+        rt.block_on(async {
+            match trial {
+                Trial::Branch(target) => {
+                    wait_for_branch(&cache, &repo, target, Duration::from_secs(10)).await;
+                }
+                Trial::State(want) => {
+                    let want = Value::String(want.to_string());
+                    wait_for_field(
+                        &cache,
+                        "rstate",
+                        &state,
+                        "v",
+                        &want,
+                        Duration::from_secs(10),
+                    )
+                    .await;
+                }
+            }
+        })
+    });
+}
+
+/// How many reads each memo measurement takes.
+const MEMO_TRIALS: usize = 100;
+
+/// A daemon in this process serving the memoised leaf `p.cached`, the same
+/// command uncached as `p.spawn`, and the file both read.
+struct MemoFixture {
+    rt: Option<Runtime>,
+    cancel: tokio_util::sync::CancellationToken,
+    task: Option<tokio::task::JoinHandle<()>>,
+    sock: PathBuf,
+    /// The `comb` child's `HOME`, `XDG_CONFIG_HOME` and the socket live here.
+    conf: TempDir,
+    /// The file the leaves `cat`, and the memo watches.
+    file: PathBuf,
+    _kube: TempDir,
+}
+
+impl MemoFixture {
+    fn start() -> Self {
+        let rt = Runtime::new().unwrap();
+        let conf = TempDir::new().unwrap();
+        let kube = fsevents_tempdir();
+        let file = kube.path().canonicalize().unwrap().join("kubeconfig");
+        std::fs::write(&file, "start").unwrap();
+        let file_str = file.to_string_lossy().into_owned();
+        let xdg = conf.path().join("xdg");
+        let config_file = xdg.join("beachcomber").join("config.toml");
+        let defaults = xdg.join("beachcomber").join("defaults");
+        std::fs::create_dir_all(&defaults).unwrap();
+        beachcomber::daemon::defaults::write_managed_defaults(&defaults, env!("CARGO_PKG_VERSION"))
+            .expect("write the defaults");
+        std::fs::write(
+            &config_file,
+            format!(
+                "[client.providers.p]\n\
+                 template.cached = \"{{{{ 'cat {file_str}' | watch('{file_str}') | ttl('1h') | cache() | exec() }}}}\"\n\
+                 template.spawn = \"{{{{ 'cat {file_str}' | exec() }}}}\"\n"
+            ),
+        )
+        .unwrap();
+        let config = Config::load_from(&config_file);
+        assert!(config.errors().is_empty(), "{:?}", config.errors());
+        let sock = conf.path().join("s");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (task, ready) = {
+            let _enter = rt.enter();
+            beachcomber::daemon::start_in_process_with_cancel(sock.clone(), config, cancel.clone())
+        };
+        rt.block_on(ready).expect("the bench daemon starts");
+        Self {
+            rt: Some(rt),
+            cancel,
+            task: Some(task),
+            sock,
+            conf,
+            file,
+            _kube: kube,
+        }
+    }
+
+    fn client(&self) -> libbeachcomber::Client {
+        libbeachcomber::Client::with_config(libbeachcomber::ClientConfig {
+            auto_start: false,
+            exec: true,
+            timeout: Duration::from_secs(5),
+        })
+        .with_socket_path(self.sock.clone())
+    }
+
+    fn rewrite(&self, content: &str) {
+        std::fs::write(&self.file, content).unwrap();
+    }
+
+    /// `comb get <key>` as a child with nothing of the owner's: its own `HOME`,
+    /// `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and socket.
+    fn comb(&self, key: &str) -> std::process::Child {
+        let root = self.conf.path();
+        Command::new(env!("CARGO_BIN_EXE_comb"))
+            .args(["get", key])
+            .env_clear()
+            .env("HOME", root)
+            .env("XDG_CONFIG_HOME", root.join("xdg"))
+            .env("XDG_STATE_HOME", root.join("state"))
+            .env("BEACHCOMBER_SOCKET", &self.sock)
+            .env("PATH", "/usr/bin:/bin")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("run comb")
+    }
+}
+
+impl Drop for MemoFixture {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let (Some(rt), Some(task)) = (self.rt.take(), self.task.take()) {
+            let _ = rt.block_on(task);
+            rt.shutdown_background();
+        }
+    }
+}
+
+fn median(mut v: Vec<f64>) -> f64 {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v[(v.len() - 1) / 2]
+}
+
+/// T5.5: the first read of a memoised leaf after its watched file was
+/// rewritten, against a hit and a spawn, over the library client.
+fn memo_after_rewrite() {
+    let fx = MemoFixture::start();
+    let client = fx.client();
+    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+    let read = |key: &str| {
+        let t0 = Instant::now();
+        let got = client.get(key, None);
+        (got, t0.elapsed())
+    };
+    for key in ["p.cached", "p.cached", "p.spawn"] {
+        let (got, _) = read(key);
+        assert!(matches!(got, Ok(Some(_))), "{key} answers: {got:?}");
+    }
+    let (mut right, mut hits, mut spawns, mut misses) = (0, vec![], vec![], vec![]);
+    for i in 0..MEMO_TRIALS {
+        let want = format!("v{i}");
+        let (_, hit) = read("p.cached");
+        let (_, spawn) = read("p.spawn");
+        fx.rewrite(&want);
+        let (got, miss) = read("p.cached");
+        right += usize::from(matches!(&got, Ok(Some(v)) if *v == serde_json::json!(want)));
+        hits.push(ms(hit));
+        spawns.push(ms(spawn));
+        misses.push(ms(miss));
+    }
+    let over: Vec<f64> = (0..MEMO_TRIALS)
+        .map(|i| misses[i] - hits[i] - spawns[i])
+        .collect();
+    println!("memo_after_rewrite: {MEMO_TRIALS} trials, watcher on");
+    println!(
+        "  {right}/{MEMO_TRIALS} answered the new content; p50 hit {:.3}ms, spawn {:.3}ms, read after rewrite {:.3}ms; miss - hit - spawn: p50 {:.3}ms",
+        median(hits),
+        median(spawns),
+        median(misses),
+        median(over)
+    );
+}
+
+/// T5.6: `comb get` as a process, from the first byte of its output to its
+/// exit, on a miss (the file rewritten first) and on a hit.
+fn exit_after_output() {
+    let fx = MemoFixture::start();
+    let client = fx.client();
+    client.get("p.cached", None).expect("the leaf renders");
+    let gap = |miss: bool, i: usize| -> f64 {
+        if miss {
+            fx.rewrite(&format!("c{i}"));
+        }
+        let mut child = fx.comb("p.cached");
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        // The output has no newline: the first read returns with its bytes.
+        let first = out.fill_buf().unwrap().len();
+        assert!(first > 0, "comb printed nothing");
+        let wrote = Instant::now();
+        child.wait().unwrap();
+        wrote.elapsed().as_secs_f64() * 1000.0
+    };
+    // One of each first, for the process cache and the daemon's memo.
+    gap(true, 0);
+    gap(false, 0);
+    let (mut misses, mut hits) = (vec![], vec![]);
+    for i in 1..=MEMO_TRIALS {
+        misses.push(gap(true, i));
+        hits.push(gap(false, i));
+    }
+    let p90 = |v: &[f64]| {
+        let mut v = v.to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[((v.len() - 1) as f64 * 0.9).round() as usize]
+    };
+    println!("exit_after_output: `comb get` first byte of output to exit, {MEMO_TRIALS} runs each");
+    println!(
+        "  miss: p50 {:.3}ms p90 {:.3}ms; hit: p50 {:.3}ms p90 {:.3}ms",
+        median(misses.clone()),
+        p90(&misses),
+        median(hits.clone()),
+        p90(&hits)
+    );
+}
+
+/// The change one trial made, for the wait after it.
+enum Trial<'a> {
+    Branch(&'a str),
+    State(&'a str),
+}
+
+/// `READ_TRIALS` of each change, each read at once, then `after` the trial.
+fn trials(stream: &mut UnixStream, repo: &str, state: &str, after: impl Fn(Trial)) {
+    let report = |what: &str, right: usize, mut reads: Vec<Duration>| {
+        reads.sort();
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        let at = |q: f64| reads[((reads.len() - 1) as f64 * q).round() as usize];
+        println!(
+            "  {what}: {right}/{READ_TRIALS} answered the new value; read p50 {:.3}ms p99 {:.3}ms max {:.3}ms",
+            ms(at(0.5)),
+            ms(at(0.99)),
+            ms(reads[reads.len() - 1])
+        );
+    };
+
+    let (mut right, mut reads) = (0, Vec::new());
+    for i in 0..READ_TRIALS {
+        let target = if i % 2 == 0 { "a" } else { "b" };
+        set_head(repo, target);
+        let (answer, took) = timed_get(stream, "git.branch", repo);
+        right += usize::from(answer["data"] == serde_json::json!(target));
+        reads.push(took);
+        after(Trial::Branch(target));
+    }
+    report("git.branch after a .git/HEAD write", right, reads);
+
+    let (mut right, mut reads) = (0, Vec::new());
+    for i in 0..READ_TRIALS {
+        let want = format!("v{i}");
+        std::fs::write(Path::new(state).join("state.json"), &want).unwrap();
+        let (answer, took) = timed_get(stream, "rstate.v", state);
+        right += usize::from(answer["data"] == serde_json::json!(want));
+        reads.push(took);
+        after(Trial::State(&want));
+    }
+    report("rstate.v after a state.json rewrite", right, reads);
+}
+
 criterion_group!(benches, bench_fsevents_delivery, bench_convergence_l);
-criterion_main!(benches);
+
+fn main() {
+    // A filter is the first argument that is not a flag (`cargo bench` passes
+    // `--bench`); with none, every part runs.
+    let filter = std::env::args().skip(1).find(|a| !a.starts_with('-'));
+    let runs = |name: &str| filter.as_deref().is_none_or(|f| name.contains(f));
+    if runs("fsevents_delivery") || runs("convergence_L") {
+        benches();
+        Criterion::default().configure_from_args().final_summary();
+    }
+    if runs("read_after_mutation") {
+        read_after_mutation();
+    }
+    if runs("memo_after_rewrite") {
+        memo_after_rewrite();
+    }
+    if runs("exit_after_output") {
+        exit_after_output();
+    }
+}

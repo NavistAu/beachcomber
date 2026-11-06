@@ -2,91 +2,21 @@ require 'json'
 
 require_relative 'ffi'
 require_relative 'errors'
-require_relative 'result'
 require_relative 'types'
 require_relative 'watch_stream'
 
 module Beachcomber
-  DEFAULT_TIMEOUT = 0.1 # seconds (100 ms) — matches libbeachcomber's own default.
-
-  # Response-shaping helpers shared by Client and Session: the ABI's JSON
-  # payload shapes are identical regardless of which handle made the call.
-  module ResponseParsing
+  # Request-building helpers shared by Client and Session.
+  module Requests
     private
 
-    def build_result(payload)
-      Result.new(
-        ok: true,
-        data: payload['data'],
-        age_ms: (payload['age_ms'] || 0).to_i,
-        stale: payload['stale'] == true,
-        error: nil,
-      )
-    end
-
-    def parse_hello(data)
-      HelloInfo.new(
-        protocol_version: data['protocol_version'].to_s,
-        daemon_version: data['daemon_version'].to_s,
-      )
-    end
-
-    def parse_cache_rows(data)
-      raise ProtocolError, 'status data is not an array' unless data.is_a?(Array)
-
-      data.map { |row| build_cache_row(row) }
-    end
-
-    def build_cache_row(row)
-      CacheRow.new(
-        provider: row['provider'].to_s,
-        field: row['field'],
-        path: row['path'],
-        value: row['value'],
-        age_ms: Integer(row['age_ms'] || 0),
-        stale: row['stale'] == true,
-        kind: row['kind'],
-        poll_interval_secs: row['poll_interval_secs'],
-        keep_alive_polls: row['keep_alive_polls'],
-        fsevents_reinstate: row['fsevents_reinstate'],
-        polls_elapsed: row['polls_elapsed'],
-        failure: row['failure'],
-        source: row['source'],
-      )
-    end
-
-    def parse_daemon_health(data)
-      reaper = data['reaper']
-      DaemonHealth.new(
-        pid: Integer(data['pid'] || 0),
-        version: data['version'].to_s,
-        uptime_secs: Integer(data['uptime_secs'] || 0),
-        socket_path: data['socket_path'].to_s,
-        config_path: data['config_path'],
-        requests_total: Integer(data['requests_total'] || 0),
-        in_flight: Integer(data['in_flight'] || 0),
-        active_watchers: Integer(data['active_watchers'] || 0),
-        cache_entries: Integer(data['cache_entries'] || 0),
-        watch_backend: data['watch_backend'],
-        reaper: reaper && Reaper.new(
-          armed: reaper['armed'],
-          visibility: reaper['visibility'],
-          sweeps: reaper['sweeps'],
-          reaped: reaper['reaped'],
-          kill_denied: reaper['kill_denied'],
-        ),
-        verdicts: (data['verdicts'] || []).map do |v|
-          Verdict.new(level: v['level'].to_s, message: v['message'].to_s)
-        end,
-      )
-    end
-
-    def parse_introspect(subject, data)
-      if subject == IntrospectSubject::DAEMON && data.is_a?(Hash)
-        IntrospectResponse.new(subject: subject, daemon: parse_daemon_health(data), other: nil)
-      else
-        IntrospectResponse.new(subject: subject, daemon: nil, other: data)
-      end
+    # The +options_json+ +bc_get+ and +bc_session_get+ take: the options the
+    # caller gave, +force+ when it is set and +wait+ as given; none is nil.
+    def get_options(force, wait)
+      options = {}
+      options['force'] = true if force
+      options['wait'] = wait unless wait.nil?
+      json_or_nil(options.empty? ? nil : options)
     end
 
     def json_or_nil(value)
@@ -94,109 +24,108 @@ module Beachcomber
     end
   end
 
+  # The typed shapes, built from the JSON the ABI hands on: each Struct's
+  # members, a member the ABI left out nil.
+  module Typed
+    module_function
+
+    def of(struct, json)
+      struct.new(**struct.members.to_h { |m| [m, json[m.to_s]] })
+    end
+
+    def cache_rows(data)
+      raise ParseError, 'status data is not an array' unless data.is_a?(Array)
+
+      data.map { |row| of(CacheRow, row) }
+    end
+
+    def daemon_health(data)
+      health = of(DaemonHealth, data)
+      health.reaper = data['reaper'] && of(ReaperStatus, data['reaper'])
+      health.verdicts = (data['verdicts'] || []).map { |v| of(Verdict, v) }
+      health
+    end
+
+    def introspect(subject, data)
+      if subject == IntrospectSubject::DAEMON && data.is_a?(Hash)
+        IntrospectResponse.new(subject: subject, daemon: daemon_health(data), other: nil)
+      else
+        IntrospectResponse.new(subject: subject, daemon: nil, other: data)
+      end
+    end
+  end
+
   # Session holds a persistent connection to the daemon, held open by the
-  # shared library, for {#get}/{#get_with_flags}/{#put}/{#set_context}.
+  # shared library, and a directory of its own ({#set_context}) that {#get},
+  # {#put} and {#refresh} read or write at when given no directory.
   #
   # Obtain a Session via {Client#session}:
   #
   #   client.session do |s|
   #     s.set_context('/repo')
-  #     r = s.get('git.branch')
+  #     branch = s.get('git.branch')
   #   end
   #
-  # {#refresh}, {#status}, {#hello} and {#introspect} are also available for
-  # API-compatibility with the pre-ABI client, but the C ABI provides no
-  # session-scoped equivalents for them (only get/put/set_context reuse the
-  # persistent connection — see Task 3.6 of the client-ABI plan); they route
-  # through the parent Client's connection instead, one-shot per call.
+  # #status, #hello and #introspect address no directory and need no
+  # connection of their own, so they are the Client's alone.
   #
   # The underlying handle is guarded by the library's own mutex: a
   # concurrent caller on the same session gets {Beachcomber::BusyError}
   # rather than blocking or interleaving requests.
   class Session
-    include ResponseParsing
+    include Requests
 
-    def initialize(handle, client_handle)
+    def initialize(handle)
       @handle = handle
-      @client_handle = client_handle
       @closed = false
     end
 
-    # Sets the default path for subsequent {#get}/{#get_with_flags} queries
-    # on this connection.
+    # Sets this session's directory: every later {#get} that names no +cwd+,
+    # and {#put} and {#refresh} that name no path, address it. The session
+    # keeps it and sends it with each request.
     #
     # @param path [String]
     def set_context(path)
-      Beachcomber::FFI.call!(:bc_session_set_context, @handle, path)
+      Beachcomber::FFI.call!(:bc_session_set_context, handle!, path)
       nil
     end
 
-    # Reads a cached value.
+    # {Client#get} on this session's persistent connection. +cwd: nil+ is
+    # this session's directory ({#set_context}) when it has one, else the
+    # global entry.
     #
     # @param key [String] e.g. "git.branch" or "git"
-    # @param path [String, nil] optional working-directory override
-    # @return [Result]
-    def get(key, path: nil)
-      build_result(Beachcomber::FFI.call!(:bc_session_get, @handle, key, path, 0))
+    # @param cwd [String, nil]
+    # @param env [Hash, nil] the caller's environment for `env.*` refs
+    # @param force [Boolean]
+    # @param wait [String, nil] a duration or "forever", as {Client#get}
+    # @return [Object, nil] the value, or nil on a miss
+    def get(key, cwd: nil, env: nil, force: false, wait: nil)
+      Beachcomber::FFI.call!(:bc_session_get, handle!, key, cwd, json_or_nil(env), get_options(force, wait))
     end
 
-    # Reads a cached value with protocol flags.
-    #
-    # @param key [String]
-    # @param path [String, nil]
-    # @param force [Boolean] bypass cache and recompute
-    # @param wait [Boolean] block until a fresh value is available
-    # @return [Result]
-    def get_with_flags(key, path: nil, force: false, wait: false)
-      flags = (force ? Beachcomber::FFI::GET_FORCE : 0) | (wait ? Beachcomber::FFI::GET_WAIT : 0)
-      build_result(Beachcomber::FFI.call!(:bc_session_get, @handle, key, path, flags))
-    end
-
-    # Forces the daemon to recompute a provider/key.
+    # {Client#refresh} on this session's connection; +path: nil+ is this
+    # session's directory.
     #
     # @param key [String]
     # @param path [String, nil]
     def refresh(key, path: nil)
-      Beachcomber::FFI.call!(:bc_refresh, @client_handle, key, path)
+      Beachcomber::FFI.call!(:bc_session_refresh, handle!, key, path)
       nil
     end
 
-    # Returns cache rows from the daemon.
-    #
-    # @return [Array<CacheRow>]
-    def status
-      parse_cache_rows(Beachcomber::FFI.call!(:bc_status, @client_handle))
-    end
-
-    # Sends a hello handshake and returns server info.
-    #
-    # @return [HelloInfo]
-    def hello
-      parse_hello(Beachcomber::FFI.call!(:bc_hello, @client_handle))
-    end
-
-    # Writes a value into the daemon cache on this session's connection.
-    # +data = nil+ clears the entry.
+    # {Client#put} on this session's connection; +path: nil+ is this
+    # session's directory.
     #
     # @param key [String]
     # @param data [Object, nil]
     # @param ttl [Numeric, String, nil] time-to-live
     # @param path [String, nil]
+    # @param persist [Boolean] keep the put across a daemon restart, best effort
     # @return [nil]
-    def put(key, data = nil, ttl: nil, path: nil)
-      Beachcomber::FFI.call!(:bc_session_put, @handle, key, JSON.generate(data), ttl&.to_s, path)
+    def put(key, data, ttl: nil, path: nil, persist: false)
+      Beachcomber::FFI.call!(:bc_session_put, handle!, key, JSON.generate(data), ttl&.to_s, path, persist ? 1 : 0)
       nil
-    end
-
-    # Introspects a daemon subsystem.
-    #
-    # @param subject [String] one of the IntrospectSubject constants
-    # @param duration_secs [Numeric, nil]
-    # @return [IntrospectResponse]
-    def introspect(subject, duration_secs: nil)
-      options_json = duration_secs ? JSON.generate(duration_secs: duration_secs) : nil
-      data = Beachcomber::FFI.call!(:bc_introspect, @client_handle, subject.to_s, options_json)
-      parse_introspect(subject.to_s, data)
     end
 
     # Closes the underlying connection. Idempotent.
@@ -205,65 +134,147 @@ module Beachcomber
 
       @closed = true
       Beachcomber::FFI.close_session(@handle)
+      @handle = nil
+    end
+
+    private
+
+    # The handle every operation passes on. A closed session has none, and
+    # the library must never see a freed handle, so the call fails here.
+    def handle!
+      @handle or raise IoError, 'the session is closed'
     end
   end
 
   # Client sends individual requests through the shared library, which owns
   # socket handling, framing and JSON mapping. For workloads that issue many
   # queries per invocation, use {#session} to reuse a persistent connection.
+  # It follows the SDK API table, docs/sdk-api.md.
   #
   # Examples:
   #
   #   client = Beachcomber::Client.new
-  #   result = client.get('git.branch', path: '/repo')
-  #   puts result.data if result.hit?
+  #   branch = client.get('git.branch', cwd: '/repo') # nil on a miss
+  #   client.get('git:template.branch')               # the template, unrendered
+  #   client.close
   class Client
-    include ResponseParsing
+    include Requests
 
-    # @param socket_path [String, nil] explicit socket path; library default
-    #   discovery applies when nil.
-    # @param timeout [Numeric, nil] socket read/write timeout in seconds
-    #   (default 0.1 / 100ms, matching the library's own default).
+    # Each option given is passed to +bc_client_new+ as it is; nil is not
+    # given, and the library's default applies. This SDK has no defaults of
+    # its own.
+    #
+    # @param socket_path [String, nil] explicit socket path; nil is the
+    #   library's discovery.
+    # @param timeout_ms [Integer, nil] how long one read or write on the
+    #   socket may take, in milliseconds; at least 1. nil is the library's
+    #   default (100).
+    # @param connect_timeout_ms [Integer, nil] how long connecting keeps
+    #   retrying before it gives up, in milliseconds; 0 is one attempt. nil
+    #   is the library's default (1500).
     # @param autostart [Boolean, nil] attempt to start the daemon if it isn't
-    #   running. When nil (the default) the shared library's default applies
-    #   (autostart on); pass false to disable. The library only autostarts
-    #   when the socket path is auto-discovered — never for an explicit
-    #   socket_path.
-    def initialize(socket_path: nil, timeout: DEFAULT_TIMEOUT, autostart: nil)
-      options = {}
-      options[:autostart] = autostart unless autostart.nil?
-      options[:socket_path] = socket_path if socket_path
-      options[:timeout_ms] = (timeout * 1000).round if timeout
-
-      @handle = Beachcomber::FFI.new_client(JSON.generate(options))
+    #   running; nil is the library's default (on). The library only
+    #   autostarts when the socket path is auto-discovered — never for an
+    #   explicit socket_path.
+    # @param exec [Boolean, nil] whether a template this client renders
+    #   ({#get}, {#eval}) may call +exec()+; nil is the library's default
+    #   (off), and a template that calls it then fails with
+    #   "exec() is disabled in this context".
+    def initialize(socket_path: nil, timeout_ms: nil, connect_timeout_ms: nil, autostart: nil, exec: nil)
+      options = self.class.options_json(
+        socket_path: socket_path, timeout_ms: timeout_ms, connect_timeout_ms: connect_timeout_ms,
+        autostart: autostart, exec: exec,
+      )
+      @handle = Beachcomber::FFI.new_client(options)
       ObjectSpace.define_finalizer(self, self.class.finalizer(@handle))
+    end
+
+    # The +options_json+ +bc_client_new+ takes: exactly the options given
+    # (nil is not given), under the ABI's own names.
+    #
+    # @return [String]
+    def self.options_json(**options)
+      JSON.generate(options.compact)
     end
 
     def self.finalizer(handle)
       proc { Beachcomber::FFI.free_client(handle) }
     end
 
-    # Reads a cached value.
+    # The value `comb get` prints for this key, cwd and env. The daemon holds
+    # the templates (`<provider>:template`, seeded from configuration or
+    # {#put}); this client renders them. A plain field is its cached value,
+    # a templated one is rendered, and a bare provider name is the whole
+    # merged namespace. The unrendered halves are facets, read like any key:
+    # <tt>"p:template.x"</tt> is the template as stored, <tt>"p:put.x"</tt>
+    # and <tt>"p:source.x"</tt> those layers' values.
     #
-    # @param key [String] e.g. "git.branch" or "git"
-    # @param path [String, nil] optional working-directory context
-    # @return [Result]
-    # @raise [Beachcomber::DaemonNotRunning] when the socket cannot be reached
-    # @raise [Beachcomber::ServerError] when the daemon returns ok: false
-    def get(key, path: nil)
-      build_result(Beachcomber::FFI.call!(:bc_get, @handle, key, path, 0))
+    # @param key [String] "provider.field" or a bare provider name
+    # @param cwd [String, nil] the directory the read addresses (`~` is home,
+    #   a relative path is against this process's working directory); nil is
+    #   the global entry
+    # @param env [Hash, nil] the caller's environment for `env.*` refs; nil
+    #   is the calling process's environment, as `comb` renders
+    # @param force [Boolean] re-execute every Source the read demands first
+    # @param wait [String, nil] how long to wait for a run the read needs
+    #   before answering what is stored, as `comb get --wait`: a duration
+    #   ("0", "50ms", "2s") or "forever"; nil is the read's budget. The read
+    #   may take +timeout_ms+ plus the wait; "forever" has no deadline
+    # @return [Object, nil] the value, or nil on a miss
+    # @raise [Beachcomber::DaemonNotRunningError] when no daemon answers
+    # @raise [Beachcomber::ServerError] when the daemon refuses the read
+    # @raise [Beachcomber::ParseError] when +wait+ is no duration
+    def get(key, cwd: nil, env: nil, force: false, wait: nil)
+      Beachcomber::FFI.call!(:bc_get, handle!, key, cwd, json_or_nil(env), get_options(force, wait))
     end
 
-    # Reads a cached value with protocol flags.
+    # Renders a template that is stored nowhere — the same value `comb eval`
+    # prints. Every ref resolves exactly as it would inside a stored
+    # template, so <tt>eval('{{ p.f }}')</tt> and <tt>get('p.f')</tt> agree.
+    #
+    # +template+ accepts a single <tt>{{ expr }}</tt> tag, or literal
+    # text/several tags — the former keeps the expression's natural type,
+    # the latter is always a string (a source with no tags at all is its
+    # literal text).
+    #
+    # @param template [String]
+    # @param cwd [String, nil] read as {#get} reads it; nil is the global entry
+    # @param env [Hash, nil] the caller's environment for `env.*` refs
+    # @return [Object, nil] the value, or nil when it renders nothing
+    def eval(template, cwd: nil, env: nil)
+      Beachcomber::FFI.call!(:bc_eval, handle!, template, cwd, json_or_nil(env))
+    end
+
+    # Opens a persistent watch on the *value* of +key+ — what {#get}
+    # answers for it — and emits it again whenever it changes. A template
+    # edited under the watch fires it just as a changed cache record does.
+    # Returns a WatchStream (Enumerable). The caller is responsible for
+    # closing the stream.
+    #
+    # @param key [String] "provider.field" or a bare provider name
+    # @param cwd [String, nil] read as {#get} reads it — the directory every
+    #   subscription addresses and every re-resolution runs at; nil is the
+    #   global entry
+    # @param env [Hash, nil] the caller's environment for `env.*` refs
+    # @return [WatchStream]
+    def watch(key, cwd: nil, env: nil)
+      handle = Beachcomber::FFI.new_watch(handle!, key, cwd, json_or_nil(env))
+      raise Beachcomber::IoError, 'NULL returned from bc_watch_open (allocation failure)' if handle.nil? || handle.null?
+
+      WatchStream.new(handle)
+    end
+
+    # Writes a value into the daemon cache. +data = nil+ removes the node.
     #
     # @param key [String]
+    # @param data [Object, nil]
+    # @param ttl [Numeric, String, nil] time-to-live (e.g. "60s")
     # @param path [String, nil]
-    # @param force [Boolean] bypass cache and recompute
-    # @param wait [Boolean] block until a fresh value is available
-    # @return [Result]
-    def get_with_flags(key, path: nil, force: false, wait: false)
-      flags = (force ? Beachcomber::FFI::GET_FORCE : 0) | (wait ? Beachcomber::FFI::GET_WAIT : 0)
-      build_result(Beachcomber::FFI.call!(:bc_get, @handle, key, path, flags))
+    # @param persist [Boolean] keep the put across a daemon restart, best effort
+    # @return [nil]
+    def put(key, data, ttl: nil, path: nil, persist: false)
+      Beachcomber::FFI.call!(:bc_put, handle!, key, JSON.generate(data), ttl&.to_s, path, persist ? 1 : 0)
+      nil
     end
 
     # Forces the daemon to recompute a provider/key.
@@ -271,39 +282,23 @@ module Beachcomber
     # @param key [String]
     # @param path [String, nil]
     def refresh(key, path: nil)
-      Beachcomber::FFI.call!(:bc_refresh, @handle, key, path)
+      Beachcomber::FFI.call!(:bc_refresh, handle!, key, path)
       nil
     end
 
     # Returns cache rows from the daemon.
     #
     # @return [Array<CacheRow>]
+    # @raise [Beachcomber::ParseError] when the answer is not a list of rows
     def status
-      parse_cache_rows(Beachcomber::FFI.call!(:bc_status, @handle))
+      Typed.cache_rows(Beachcomber::FFI.call!(:bc_status, handle!))
     end
 
     # Sends a hello handshake and returns server info.
     #
     # @return [HelloInfo]
     def hello
-      parse_hello(Beachcomber::FFI.call!(:bc_hello, @handle))
-    end
-
-    # Writes a value into the daemon cache. +data = nil+ clears the entry
-    # without dropping the registry entry.
-    #
-    # @param key [String]
-    # @param data [Object, nil]
-    # @param ttl [Numeric, String, nil] time-to-live (e.g. "60s")
-    # @param path [String, nil]
-    # @return [nil]
-    def put(key, data = nil, ttl: nil, path: nil)
-      if data.nil?
-        Beachcomber::FFI.call!(:bc_put_null, @handle, key, path)
-      else
-        Beachcomber::FFI.call!(:bc_put, @handle, key, JSON.generate(data), ttl&.to_s, path)
-      end
-      nil
+      Typed.of(HelloInfo, Beachcomber::FFI.call!(:bc_hello, handle!))
     end
 
     # Introspects a daemon subsystem.
@@ -313,53 +308,8 @@ module Beachcomber
     # @return [IntrospectResponse]
     def introspect(subject, duration_secs: nil)
       options_json = duration_secs ? JSON.generate(duration_secs: duration_secs) : nil
-      data = Beachcomber::FFI.call!(:bc_introspect, @handle, subject.to_s, options_json)
-      parse_introspect(subject.to_s, data)
-    end
-
-    # Resolves a virtual field ("provider.field") or a provider's path
-    # expression ("provider") client-side, exactly as `comb get`'s
-    # resolution layer does. `cache.*` refs the expression makes are fetched
-    # live through this client.
-    #
-    # @param key [String] "provider.field" or a bare provider name
-    # @param cwd [String] required — path-expression evaluation has no
-    #   ambient fallback; the library never reads the process's own cwd.
-    # @param env [Hash, nil] env var values `env.*` refs resolve against
-    # @param overrides [Hash, nil] expression overrides, keyed
-    #   "provider.field" or a bare provider name
-    # @return [Object, nil] the resolved value, or nil on a path-expression miss
-    def resolve(key, cwd:, env: nil, overrides: nil)
-      Beachcomber::FFI.call!(:bc_resolve, @handle, key, cwd, json_or_nil(env), json_or_nil(overrides))
-    end
-
-    # Evaluates a value expression against `env.*`/`cache.*` refs, using the
-    # same evaluator {#resolve} uses for a declared field.
-    #
-    # +template+ accepts a bare expression, a single <tt>{{ expr }}</tt>
-    # tag, or literal text/several tags — the first two keep the
-    # expression's natural type, the third is always a string.
-    #
-    # @param template [String]
-    # @param cwd [String] required, matching {#resolve}
-    # @param env [Hash, nil]
-    # @param overrides [Hash, nil]
-    # @return [Object]
-    def eval_expression(template, cwd:, env: nil, overrides: nil)
-      Beachcomber::FFI.call!(:bc_eval, @handle, template, cwd, json_or_nil(env), json_or_nil(overrides))
-    end
-
-    # Opens a persistent watch subscription. Returns a WatchStream
-    # (Enumerable). The caller is responsible for closing the stream.
-    #
-    # @param key [String]
-    # @param path [String, nil]
-    # @return [WatchStream]
-    def watch(key, path: nil)
-      handle = Beachcomber::FFI.new_watch(@handle, key, path)
-      raise Beachcomber::Error, 'bc_watch_open returned NULL (allocation failure)' if handle.nil? || handle.null?
-
-      WatchStream.new(handle)
+      data = Beachcomber::FFI.call!(:bc_introspect, handle!, subject.to_s, options_json)
+      Typed.introspect(subject.to_s, data)
     end
 
     # Opens a persistent session and yields it to the block. The connection
@@ -368,11 +318,29 @@ module Beachcomber
     # @yield [Session]
     # @return the block's return value
     def session
-      handle = Beachcomber::FFI.new_session(@handle)
-      sess = Session.new(handle, @handle)
+      sess = Session.new(Beachcomber::FFI.new_session(handle!))
       yield sess
     ensure
       sess&.close
+    end
+
+    # Frees the client's handle. Idempotent; a later operation fails. The
+    # finalizer frees it when a client is never closed.
+    def close
+      return if @handle.nil?
+
+      ObjectSpace.undefine_finalizer(self)
+      Beachcomber::FFI.free_client(@handle)
+      @handle = nil
+    end
+
+    private
+
+    # The handle every operation passes on. A closed client has none, and
+    # the library must never see a NULL or freed handle, so the call fails
+    # here, as an io_error.
+    def handle!
+      @handle or raise IoError, 'the client is closed'
     end
   end
 end

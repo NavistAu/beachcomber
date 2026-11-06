@@ -19,12 +19,11 @@ import json
 import os
 import pathlib
 import shutil
+import select
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
-import time
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
@@ -37,6 +36,14 @@ sys.path.insert(0, str(_SDK_DIR))
 from libbeachcomber.client import Client  # noqa: E402
 from libbeachcomber.exceptions import CombError, ServerError  # noqa: E402
 from libbeachcomber.types import IntrospectSubject  # noqa: E402
+
+
+class _Value:
+    """A `get` or `eval` answer: the bare value an SDK returns, boxed so the
+    checks below can tell it from the typed results of other ops."""
+
+    def __init__(self, data: Any) -> None:
+        self.data = data
 
 # ---------------------------------------------------------------------------
 # Fixture discovery
@@ -60,21 +67,13 @@ def discover_fixtures() -> list[pathlib.Path]:
 # ---------------------------------------------------------------------------
 
 
-def _wait_for_socket(sock_path: str, timeout: float = 5.0) -> bool:
-    """Poll until the Unix socket exists and accepts connections."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if os.path.exists(sock_path):
-            try:
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                s.settimeout(0.1)
-                s.connect(sock_path)
-                s.close()
-                return True
-            except OSError:
-                pass
-        time.sleep(0.05)
-    return False
+def _wait_for_ready(ready_fd: int, timeout: float) -> bool:
+    """Wait on the daemon's `--ready-fd` pipe: True once it writes its
+    newline (its socket is served), False if it closes the pipe unwritten
+    (it exited) or says nothing within `timeout` seconds."""
+    with os.fdopen(ready_fd, "rb") as ready:
+        readable, _, _ = select.select([ready], [], [], timeout)
+        return bool(readable) and ready.readline() == b"\n"
 
 
 class DaemonProcess:
@@ -84,28 +83,41 @@ class DaemonProcess:
         self._comb_bin = comb_bin
         self._tmpdir = tempfile.mkdtemp(prefix="bcconf_")
         self.socket_path = os.path.join(self._tmpdir, "comb.sock")
-        self._config_path = os.path.join(self._tmpdir, "config.toml")
         self._proc: Optional[subprocess.Popen[bytes]] = None
         self._log_path = os.path.join(self._tmpdir, "daemon.log")
-
-        # Write a minimal config pointing at our temp socket.
-        with open(self._config_path, "w") as f:
-            f.write(f'[daemon]\nsocket_path = "{self.socket_path}"\n')
 
     def start(self) -> None:
         """Start the daemon process."""
         env = os.environ.copy()
-        env["XDG_CONFIG_HOME"] = self._tmpdir  # isolate from user config
+        # Isolate from user config: the daemon writes its managed defaults
+        # under $XDG_CONFIG_HOME on start (falling back to $HOME/.config) and
+        # its log under $XDG_STATE_HOME.
+        env["XDG_CONFIG_HOME"] = self._tmpdir
+        env["HOME"] = self._tmpdir
+        env["XDG_STATE_HOME"] = os.path.join(self._tmpdir, ".local", "state")
 
-        with open(self._log_path, "wb") as log:
-            self._proc = subprocess.Popen(
-                [self._comb_bin, "daemon", "--socket", self.socket_path],
-                stdout=log,
-                stderr=log,
-                env=env,
-            )
+        # The daemon says on `--ready-fd` when it serves its socket.
+        ready_fd, signal_fd = os.pipe()
+        try:
+            with open(self._log_path, "wb") as log:
+                self._proc = subprocess.Popen(
+                    [
+                        self._comb_bin,
+                        "daemon",
+                        "--socket",
+                        self.socket_path,
+                        "--ready-fd",
+                        str(signal_fd),
+                    ],
+                    stdout=log,
+                    stderr=log,
+                    env=env,
+                    pass_fds=(signal_fd,),
+                )
+        finally:
+            os.close(signal_fd)
 
-        if not _wait_for_socket(self.socket_path, timeout=8.0):
+        if not _wait_for_ready(ready_fd, timeout=8.0):
             self.stop()
             log_tail = ""
             try:
@@ -114,7 +126,7 @@ class DaemonProcess:
             except OSError:
                 pass
             raise RuntimeError(
-                f"daemon did not start within 8s (socket: {self.socket_path})\n"
+                f"daemon did not serve within 8s (socket: {self.socket_path})\n"
                 f"Log tail:\n{log_tail}"
             )
 
@@ -134,7 +146,7 @@ class DaemonProcess:
 
     def make_client(self) -> Client:
         """Return a Client connected to this daemon's socket."""
-        return Client(socket_path=self.socket_path, timeout=5.0)
+        return Client(socket_path=self.socket_path, timeout_ms=5000)
 
 
 # ---------------------------------------------------------------------------
@@ -153,34 +165,29 @@ def _run_op(
     Returns the raw response data (or None for ops that return nothing),
     or raises CombError / ServerError on failure.
 
-    `resolve_ctx` (only consulted for the `resolve` and `eval` ops) carries
-    the fixture's `virtual`/`env`/`cwd` blocks — see
-    tests/conformance/README.md.
+    `resolve_ctx` (consulted for the `get`, `eval` and `watch` ops) carries
+    the fixture's `env`/`cwd` blocks — see tests/conformance/README.md.
     """
-    if op == "resolve":
+    if op == "get":
         assert resolve_ctx is not None
-        key = args.get("key", "")
-        return client.resolve(
-            key,
-            cwd=resolve_ctx["cwd"],
-            env=resolve_ctx["env"] or None,
-            overrides=resolve_ctx["virtual"] or None,
+        return _Value(
+            client.get(
+                args.get("key", ""),
+                cwd=resolve_ctx["cwd"],
+                env=resolve_ctx["env"] or None,
+                force=bool(args.get("force", False)),
+                wait=args.get("wait"),
+            )
         )
     if op == "eval":
         assert resolve_ctx is not None
-        from libbeachcomber.result import CombResult
-
-        value = client.eval(
-            args.get("template", ""),
-            cwd=resolve_ctx["cwd"],
-            env=resolve_ctx["env"] or None,
-            overrides=resolve_ctx["virtual"] or None,
+        return _Value(
+            client.eval(
+                args.get("template", ""),
+                cwd=resolve_ctx["cwd"],
+                env=resolve_ctx["env"] or None,
+            )
         )
-        # Client.eval returns the bare value; wrap it the way Client.resolve
-        # already does so the shared expectation checks see one shape.
-        return CombResult(ok=True, data=value, age_ms=0, stale=False)
-    if op == "get":
-        return client.get(**args)
     if op == "refresh":
         client.refresh(**args)
         return None
@@ -197,9 +204,11 @@ def _run_op(
             session.set_context(args.get("path", ""))
         return None
     if op == "watch":
+        assert resolve_ctx is not None
         key = args.get("key", "")
-        path = args.get("path")
-        with client.watch(key, path=path) as stream:
+        with client.watch(
+            key, cwd=resolve_ctx["cwd"], env=resolve_ctx["env"] or None
+        ) as stream:
             event = stream.next_event()
         return event
     if op == "introspect":
@@ -219,7 +228,7 @@ def _run_op(
 # asserting something the harness doesn't actually check.
 _KNOWN_EXPECT_KEYS = {
     "status", "data_type", "data_equals", "data_as_text", "data_contains_field",
-    "data_field_equals", "age_ms_present", "stale", "error_contains",
+    "data_field_equals", "error_contains",
 }
 
 # Ops this runner's binding can execute. A fixture using any op outside this
@@ -233,7 +242,6 @@ _SUPPORTED_OPS = {
     "context",
     "watch",
     "introspect",
-    "resolve",
     "eval",
 }
 
@@ -271,19 +279,14 @@ def _check_expect(
             failures.append(f"expected ok/hit but got error: {error!r}")
             return failures
 
-        # For get results (CombResult).
-        from libbeachcomber.result import CombResult
-        from libbeachcomber.types import HelloInfo, IntrospectResponse, WatchEvent
+        from libbeachcomber.types import WatchEvent
 
         if status == "hit":
-            if isinstance(result, CombResult):
-                if not result.is_hit:
-                    failures.append("expected cache hit but got miss (data is None)")
-            elif isinstance(result, WatchEvent):
+            if isinstance(result, (_Value, WatchEvent)):
                 if result.data is None:
-                    failures.append("expected watch hit but data is None")
+                    failures.append("expected a hit but the value is None")
             else:
-                failures.append(f"expected CombResult or WatchEvent for hit, got {type(result).__name__}")
+                failures.append(f"expected a value or WatchEvent for hit, got {type(result).__name__}")
 
         # data_type check.
         data_type = expect.get("data_type")
@@ -334,20 +337,6 @@ def _check_expect(
                     f"data_field_equals failed for {field!r}: expected {expected_val!r}, got {actual_val!r}"
                 )
 
-        # age_ms_present check.
-        if expect.get("age_ms_present"):
-            age = _extract_age_ms(result)
-            if age is None:
-                failures.append("expected age_ms to be present but it was None/missing")
-
-        # stale check.
-        if "stale" in expect:
-            actual_stale = _extract_stale(result)
-            if actual_stale != expect["stale"]:
-                failures.append(
-                    f"expected stale={expect['stale']!r} but got {actual_stale!r}"
-                )
-
     elif status == "error":
         if error is None:
             failures.append(f"expected an error but op succeeded with result: {result!r}")
@@ -361,10 +350,8 @@ def _check_expect(
     elif status == "miss":
         if error is not None:
             failures.append(f"expected miss but got error: {error!r}")
-        else:
-            from libbeachcomber.result import CombResult
-            if isinstance(result, CombResult) and result.is_hit:
-                failures.append(f"expected cache miss but got hit with data: {result.data!r}")
+        elif isinstance(result, _Value) and result.data is not None:
+            failures.append(f"expected a miss but got {result.data!r}")
 
     else:
         failures.append(f"unknown expect status: {status!r}")
@@ -374,10 +361,9 @@ def _check_expect(
 
 def _extract_data(result: Any) -> Any:
     """Pull the data value out of typed result objects."""
-    from libbeachcomber.result import CombResult
     from libbeachcomber.types import HelloInfo, IntrospectResponse, WatchEvent
 
-    if isinstance(result, CombResult):
+    if isinstance(result, _Value):
         return result.data
     if isinstance(result, WatchEvent):
         return result.data
@@ -389,28 +375,6 @@ def _extract_data(result: Any) -> Any:
             return dataclasses.asdict(result.daemon)
         return result.other
     return result
-
-
-def _extract_age_ms(result: Any) -> Optional[int]:
-    from libbeachcomber.result import CombResult
-    from libbeachcomber.types import WatchEvent
-
-    if isinstance(result, CombResult):
-        return result.age_ms
-    if isinstance(result, WatchEvent):
-        return result.age_ms
-    return None
-
-
-def _extract_stale(result: Any) -> Optional[bool]:
-    from libbeachcomber.result import CombResult
-    from libbeachcomber.types import WatchEvent
-
-    if isinstance(result, CombResult):
-        return result.stale
-    if isinstance(result, WatchEvent):
-        return result.stale
-    return None
 
 
 def _check_data_type(data: Any, expected_type: str) -> bool:
@@ -454,7 +418,6 @@ def run_fixture(fixture_path: pathlib.Path, client: Client) -> tuple[str, str]:
 
     with tempfile.TemporaryDirectory(prefix="bcconf_cwd_") as default_cwd:
         resolve_ctx = {
-            "virtual": fixture.get("virtual", {}),
             "env": fixture.get("env", {}),
             "cwd": fixture.get("cwd", default_cwd),
         }
@@ -529,7 +492,7 @@ def main() -> int:
     # A fresh daemon per fixture, per tests/conformance/README.md's
     # isolation guarantee ("Each fixture runs against a fresh daemon
     # instance") — a shared daemon would leak cache state (e.g. `put`s from
-    # one fixture's `setup` visible to the next fixture's `resolve` cache
+    # one fixture's `setup` visible to the next fixture's `get` cache
     # refs) across fixtures that happen to reuse a key.
     for fixture_path in fixtures:
         rel = fixture_path.relative_to(_CONFORMANCE_DIR)

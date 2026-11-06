@@ -1,0 +1,634 @@
+//! Keys and addresses: the one grammar `comb get`, the wire, the daemon and
+//! the templates share.
+//!
+//! A key is a **head** and an **address** below it. The head is a provider
+//! name, optionally `name:facet` with one of the six [`Facet`]s; it runs to
+//! the first `.` or `[`. The address
+//! is a run of segments, each written one of three ways:
+//!
+//! - `.seg` — any characters but `.`, `[` and `]`: `git.branch`,
+//!   `mise.cargo:cargo-nextest`, `mise.npm:@scope/pkg`;
+//! - `[n]` — an array index, the same segment as `.n`: `p.list[0]` is
+//!   `p.list.0`, and a negative one counts from the end (`p.list[-1]`, as in
+//!   jinja);
+//! - `['…']` or `["…"]` — a quoted key, where a backslash escapes only the
+//!   quote and the backslash: `mise['go:golang.org/x/tools/gopls']`.
+//!
+//! Those are jinja's own spellings, so an address written in a template
+//! (`comb.mise['cargo:x']`) is written the same way to `comb get`. Brackets
+//! are the one quoting form.
+//!
+//! Inside the daemon and the client an address is carried as a string in
+//! **canonical form** ([`format_address`]): bare segments joined by `.`, and a
+//! segment that needs quoting — empty, or holding `.`, `[` or `]` — as
+//! `['…']`. A plain dotted address is its own canonical form, so everything
+//! that never meets such a segment reads exactly as before, and every address
+//! comb prints can be typed back as a key.
+
+use std::borrow::Cow;
+
+/// The characters a bare segment cannot hold.
+fn ends_bare(c: char) -> bool {
+    matches!(c, '.' | '[' | ']')
+}
+
+/// The head of `key`: everything before the first `.` or `[`.
+pub fn head_of(key: &str) -> &str {
+    key.find(['.', '[']).map_or(key, |i| &key[..i])
+}
+
+/// Split a key into its head and the canonical address below it (`""` for a
+/// bare head).
+///
+/// Refused, as `invalid key: <key>`: an empty head, a head starting with `/`
+/// or `~` (a directory, never a key), a head holding `]`, an empty segment
+/// (`a..b`, a trailing `.`), a stray `]`, an unterminated bracket or quote,
+/// and an index that is not a canonical decimal. The facet syntax of the head
+/// is [`parse_facet`]'s to judge.
+pub fn split_key(key: &str) -> Result<(&str, String), String> {
+    let invalid = || format!("invalid key: {key}");
+    let head = head_of(key);
+    if head.is_empty() || head.starts_with(['/', '~']) || head.contains(']') {
+        return Err(invalid());
+    }
+    let segments = parse_segments(&key[head.len()..], true).ok_or_else(invalid)?;
+    Ok((head, format_address(&segments)))
+}
+
+/// The segments of a canonical address (or of one a caller wrote below a
+/// head with its leading `.` dropped): `a.b['c.d'][0]` is `a`, `b`, `c.d`,
+/// `0`. `None` for text that is not an address.
+pub fn parse_address(address: &str) -> Option<Vec<String>> {
+    parse_segments(address, false)
+}
+
+/// The segments of a canonical `address`, or the empty list for `""`. An
+/// address comb built itself is canonical by construction, so a parse failure
+/// is the empty list rather than a panic. A plain dotted address borrows its
+/// segments; only a quoted one is parsed.
+pub fn segments(address: &str) -> Vec<Cow<'_, str>> {
+    if address.is_empty() {
+        return Vec::new();
+    }
+    if !address.contains(['[', ']']) {
+        return address.split('.').map(Cow::Borrowed).collect();
+    }
+    parse_address(address)
+        .unwrap_or_default()
+        .into_iter()
+        .map(Cow::Owned)
+        .collect()
+}
+
+/// `after_head` is what follows a head: there, a bare segment must be
+/// introduced by `.`. In a bare address the first bare segment is not.
+fn parse_segments(text: &str, after_head: bool) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut chars = text.char_indices().peekable();
+    let mut first = true;
+    while let Some(&(_, c)) = chars.peek() {
+        match c {
+            '[' => {
+                chars.next();
+                out.push(parse_bracket(text, &mut chars)?);
+            }
+            '.' => {
+                chars.next();
+                out.push(parse_bare(text, &mut chars)?);
+            }
+            ']' => return None,
+            _ if first && !after_head => out.push(parse_bare(text, &mut chars)?),
+            _ => return None,
+        }
+        first = false;
+    }
+    Some(out)
+}
+
+type Chars<'a> = std::iter::Peekable<std::str::CharIndices<'a>>;
+
+/// A bare segment, up to the next `.`, `[`, `]` or the end. Never empty.
+fn parse_bare(text: &str, chars: &mut Chars<'_>) -> Option<String> {
+    let start = chars.peek().map_or(text.len(), |&(i, _)| i);
+    let mut end = text.len();
+    while let Some(&(i, c)) = chars.peek() {
+        if ends_bare(c) {
+            end = i;
+            break;
+        }
+        chars.next();
+    }
+    let segment = &text[start..end];
+    (!segment.is_empty()).then(|| segment.to_string())
+}
+
+/// What follows a `[`: a quoted key or a decimal index, then `]`.
+fn parse_bracket(text: &str, chars: &mut Chars<'_>) -> Option<String> {
+    let (_, open) = *chars.peek()?;
+    let segment = if open == '\'' || open == '"' {
+        chars.next();
+        let mut s = String::new();
+        loop {
+            let (_, c) = chars.next()?;
+            match c {
+                '\\' => {
+                    let (_, escaped) = chars.next()?;
+                    if escaped != open && escaped != '\\' {
+                        return None;
+                    }
+                    s.push(escaped);
+                }
+                c if c == open => break,
+                c => s.push(c),
+            }
+        }
+        s
+    } else {
+        let start = chars.peek().map(|&(i, _)| i)?;
+        let mut end = start;
+        while let Some(&(i, c)) = chars.peek() {
+            if !(c.is_ascii_digit() || (c == '-' && i == start)) {
+                break;
+            }
+            end = i + c.len_utf8();
+            chars.next();
+        }
+        let index = &text[start..end];
+        canonical_index(index)?;
+        index.to_string()
+    };
+    match chars.next()? {
+        (_, ']') => Some(segment),
+        _ => None,
+    }
+}
+
+/// The signed value of an index segment written canonically: decimal digits
+/// with no leading zero (`0`, `12`), or a `-` before such digits other than
+/// `0` (`-1`). Anything else (`01`, `-0`, `+1`) is no index.
+fn canonical_index(segment: &str) -> Option<i64> {
+    let digits = segment.strip_prefix('-').unwrap_or(segment);
+    let canonical = !digits.is_empty()
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && (digits == "0" || !digits.starts_with('0'))
+        && !(segment.starts_with('-') && digits == "0");
+    canonical.then(|| segment.parse().ok()).flatten()
+}
+
+/// `segment` as a position in an array of `len` elements: a canonical
+/// decimal counts from the front, and is returned whatever `len` (the bound,
+/// and whether one past the end appends, is the caller's); a negative one
+/// counts from the back, and is `None` past the front. Any segment that is
+/// not a canonical index is `None`. The one reading of an array index every
+/// walk shares — keys, `pluck`, a rendered value, a write.
+pub fn array_index(segment: &str, len: usize) -> Option<usize> {
+    let n = canonical_index(segment)?;
+    if n >= 0 {
+        usize::try_from(n).ok()
+    } else {
+        len.checked_sub(usize::try_from(n.unsigned_abs()).ok()?)
+    }
+}
+
+/// Why `name` cannot name a provider or a Source, or `None` when it can. A
+/// provider name is a key's head, so it ends at no `.` or `[`, holds a `:`
+/// only before a facet, and is never a directory; `*` and a leading `<` are
+/// the abstract provider's and a sentinel field's. One rule for a config
+/// table, a `put` and a Source. The [`reserved`] words are refused apart.
+pub fn name_error(name: &str) -> Option<&'static str> {
+    let bad = name.is_empty()
+        || name.contains([':', '.', '[', ']', '*'])
+        || name.starts_with(['/', '~', '<']);
+    bad.then_some(
+        "a name is non-empty, holds no ':', '.', '[', ']' or '*', and does not start with \
+         '/', '~' or '<'",
+    )
+}
+
+/// Whether `segment` must be written `['…']`.
+fn needs_quote(segment: &str) -> bool {
+    segment.is_empty() || segment.contains(ends_bare)
+}
+
+/// One segment as it is written after a `.`, or as `['…']` when it must be
+/// quoted.
+pub fn quote(segment: &str) -> Cow<'_, str> {
+    if !needs_quote(segment) {
+        return Cow::Borrowed(segment);
+    }
+    let escaped = segment.replace('\\', r"\\").replace('\'', r"\'");
+    Cow::Owned(format!("['{escaped}']"))
+}
+
+/// Append `segment` to the canonical `address`.
+pub fn push(address: &str, segment: &str) -> String {
+    let quoted = quote(segment);
+    if address.is_empty() || quoted.starts_with('[') {
+        format!("{address}{quoted}")
+    } else {
+        format!("{address}.{quoted}")
+    }
+}
+
+/// The canonical form of `segments`.
+pub fn format_address<S: AsRef<str>>(segments: &[S]) -> String {
+    let mut out = String::new();
+    for segment in segments {
+        out = push(&out, segment.as_ref());
+    }
+    out
+}
+
+/// The whole key for `address` under `head`: `git` and `branch` are
+/// `git.branch`, `mise` and `['a.b']` are `mise['a.b']`, and an empty address
+/// is the head alone.
+pub fn join(head: &str, address: &str) -> String {
+    if address.is_empty() {
+        head.to_string()
+    } else if address.starts_with('[') {
+        format!("{head}{address}")
+    } else {
+        format!("{head}.{address}")
+    }
+}
+
+/// The canonical address one segment up from `address`, or `None` for the
+/// root (`""`).
+pub fn parent(address: &str) -> Option<String> {
+    let mut segments = segments(address);
+    segments.pop()?;
+    Some(format_address(&segments))
+}
+
+/// The last segment of a canonical address, or `None` for the root.
+pub fn last(address: &str) -> Option<String> {
+    segments(address).pop().map(Cow::into_owned)
+}
+
+/// Whether `address` is `ancestor` or lies below it. Everything lies below
+/// the root `""`.
+pub fn within(address: &str, ancestor: &str) -> bool {
+    ancestor.is_empty()
+        || address == ancestor
+        || address
+            .strip_prefix(ancestor)
+            .is_some_and(|tail| tail.starts_with(['.', '[']))
+}
+
+/// The first segment of a canonical address and the canonical address below
+/// it (`None` when nothing follows), or `None` for the root.
+pub fn split_first(address: &str) -> Option<(String, Option<String>)> {
+    let mut segments = parse_address(address)?.into_iter();
+    let first = segments.next()?;
+    let rest: Vec<String> = segments.collect();
+    Some((first, (!rest.is_empty()).then(|| format_address(&rest))))
+}
+
+/// Why `name` is reserved, or `None`. Each of these means something of its
+/// own in every key and template, so no provider may take one as its name:
+/// one rule for a `put`, a config table and a key the daemon is asked about.
+pub fn reserved(name: &str) -> Option<String> {
+    let meaning = match name {
+        "env" => "env.X is the caller's environment",
+        "comb" => {
+            "in a template comb.<p>.<f> reads the stored value of <p>.<f>; \
+             comb status --tree shows a value's layers"
+        }
+        "_" => "it names a prototype table",
+        "*" => "*:cache._.decay is the decay of every provider",
+        _ => return None,
+    };
+    Some(format!("'{name}' is reserved: {meaning}"))
+}
+
+/// Refuse a head whose base no provider could have: a [`reserved`] word, or a
+/// name [`name_error`] refuses. `*:cache` is the one such head a key names: the
+/// abstract provider's decay prototype. The same rule decides a config table's
+/// provider name, so a key names exactly the providers that can exist.
+pub fn check_head(head: &str) -> Result<(), String> {
+    if head == "*:cache" {
+        return Ok(());
+    }
+    let base = head.split_once(':').map_or(head, |(base, _)| base);
+    match reserved(base).or_else(|| name_error(base).map(str::to_string)) {
+        Some(reason) => Err(format!("invalid provider name '{base}': {reason}")),
+        None => Ok(()),
+    }
+}
+
+/// A facet: what a colon in a key's head names (`git:cache`), a part of the
+/// tree that is about the provider rather than its data. The set is closed.
+/// Every facet has the provider's shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Facet {
+    /// `<p>:template`: the templates the client renders.
+    Template,
+    /// `<p>:macro`: the macro libraries a client template imports, each a
+    /// text of `{% macro %}` definitions at `<p>:macro.<name>`.
+    Macro,
+    /// `<p>:memo`: the values `| cache()` stored for the template leaves,
+    /// each at its leaf's address. Written only by the `memo` op; read only
+    /// through its template.
+    Memo,
+    /// `<p>:put`: what `put` and the `config:` seeds stored. Read-only.
+    Put,
+    /// `<p>:source`: what the provider's Sources produced. Read-only.
+    Source,
+    /// `<p>:cache`: the daemon's metadata. Only a `_.decay` is written.
+    Cache,
+}
+
+impl Facet {
+    /// Every facet, in the order the docs list them.
+    pub const ALL: [Facet; 6] = [
+        Facet::Template,
+        Facet::Macro,
+        Facet::Memo,
+        Facet::Put,
+        Facet::Source,
+        Facet::Cache,
+    ];
+
+    /// What every refusal of a facet name says the facets are.
+    pub const LIST: &'static str = "a facet is template, macro, memo, put, source or cache";
+
+    /// The name a key writes after the colon.
+    pub fn name(self) -> &'static str {
+        match self {
+            Facet::Template => "template",
+            Facet::Macro => "macro",
+            Facet::Memo => "memo",
+            Facet::Put => "put",
+            Facet::Source => "source",
+            Facet::Cache => "cache",
+        }
+    }
+
+    /// The facet `name` names, or `None` for a name outside the set.
+    pub fn from_name(name: &str) -> Option<Facet> {
+        Self::ALL.into_iter().find(|facet| facet.name() == name)
+    }
+}
+
+/// Split a head into its base and the [`Facet`] after its colon: `git` is
+/// `("git", None)`, `git:cache` is `("git", Some(Cache))`. Refused, as
+/// `invalid facet key: <head> (`[`Facet::LIST`]`)`: more than one colon, an
+/// empty base, and a facet name outside the closed set. The one rule for a
+/// facet, on every op and in config.
+pub fn split_facet(head: &str) -> Result<(&str, Option<Facet>), String> {
+    let Some((base, name)) = head.split_once(':') else {
+        return Ok((head, None));
+    };
+    match Facet::from_name(name) {
+        Some(facet) if !base.is_empty() => Ok((base, Some(facet))),
+        _ => Err(format!("invalid facet key: {head} ({})", Facet::LIST)),
+    }
+}
+
+/// The facet a head names, if any, by [`split_facet`]'s rule.
+pub fn parse_facet(head: &str) -> Result<Option<Facet>, String> {
+    split_facet(head).map(|(_, facet)| facet)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn split(key: &str) -> (String, Vec<String>) {
+        let (head, address) = split_key(key).unwrap_or_else(|e| panic!("{key}: {e}"));
+        (head.to_string(), owned(&address))
+    }
+
+    fn owned(address: &str) -> Vec<String> {
+        segments(address).into_iter().map(String::from).collect()
+    }
+
+    fn segs(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_dotted_key_is_a_head_and_its_segments() {
+        assert_eq!(split("git"), ("git".into(), vec![]));
+        assert_eq!(split("git.branch"), ("git".into(), segs(&["branch"])));
+        assert_eq!(split("p.a.b.c"), ("p".into(), segs(&["a", "b", "c"])));
+        assert_eq!(
+            split("git:cache.branch"),
+            ("git:cache".into(), segs(&["branch"]))
+        );
+    }
+
+    #[test]
+    fn a_bare_segment_holds_colons_slashes_at_and_dashes() {
+        assert_eq!(
+            split("mise.cargo:cargo-nextest"),
+            ("mise".into(), segs(&["cargo:cargo-nextest"]))
+        );
+        assert_eq!(
+            split("mise.npm:@scope/pkg"),
+            ("mise".into(), segs(&["npm:@scope/pkg"]))
+        );
+        assert_eq!(
+            split("git.branch:age"),
+            ("git".into(), segs(&["branch:age"]))
+        );
+    }
+
+    #[test]
+    fn brackets_quote_a_key_and_index_an_array() {
+        assert_eq!(
+            split("mise['go:golang.org/x/tools/gopls']"),
+            ("mise".into(), segs(&["go:golang.org/x/tools/gopls"]))
+        );
+        assert_eq!(split(r#"p["a.b"].c"#), ("p".into(), segs(&["a.b", "c"])));
+        assert_eq!(split("p.list[0]"), ("p".into(), segs(&["list", "0"])));
+        assert_eq!(split("p.list.0"), ("p".into(), segs(&["list", "0"])));
+        assert_eq!(
+            split("p['x'][2]['y.z']"),
+            ("p".into(), segs(&["x", "2", "y.z"]))
+        );
+    }
+
+    #[test]
+    fn a_backslash_escapes_only_the_quote_and_itself() {
+        assert_eq!(split(r"p['it\'s']"), ("p".into(), segs(&["it's"])));
+        assert_eq!(
+            split(r#"p["say \"hi\""]"#),
+            ("p".into(), segs(&[r#"say "hi""#]))
+        );
+        assert_eq!(split(r"p['a\\b']"), ("p".into(), segs(&[r"a\b"])));
+        // The other quote needs no escape inside a quoted key.
+        assert_eq!(split(r#"p["it's"]"#), ("p".into(), segs(&["it's"])));
+        assert!(split_key(r"p['a\nb']").is_err(), "\\n is not an escape");
+    }
+
+    #[test]
+    fn malformed_keys_are_invalid() {
+        for key in [
+            "", ".x", "[0]", "p..a", "p.", "p.a.", "p]", "p.a]b", "p[", "p['a", "p['a'", "p['a']x",
+            "p[01]", "p[-0]", "p[-01]", "p[-]", "p[x]", "/tmp/x", "~/ws", "~",
+        ] {
+            assert_eq!(
+                split_key(key),
+                Err(format!("invalid key: {key}")),
+                "{key:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_form_quotes_only_what_must_be() {
+        assert_eq!(format_address(&["branch"]), "branch");
+        assert_eq!(format_address(&["a", "b"]), "a.b");
+        assert_eq!(format_address(&["cargo:x"]), "cargo:x");
+        assert_eq!(
+            format_address(&["go:golang.org/x", "v"]),
+            "['go:golang.org/x'].v"
+        );
+        assert_eq!(format_address(&["a", "b.c"]), "a['b.c']");
+        assert_eq!(format_address(&["a[0]"]), r"['a[0]']");
+        assert_eq!(format_address(&["it's.x"]), r"['it\'s.x']");
+        assert_eq!(format_address(&[""]), "['']");
+        assert_eq!(format_address::<&str>(&[]), "");
+    }
+
+    #[test]
+    fn canonical_form_reads_back_to_the_same_segments() {
+        for list in [
+            vec!["a"],
+            vec!["a", "b"],
+            vec!["go:golang.org/x/tools/gopls"],
+            vec!["x", "a.b", "0", r"q'\u"],
+            vec!["[", "]", ""],
+        ] {
+            let address = format_address(&list);
+            assert_eq!(owned(&address), segs(&list), "{address}");
+            let key = join("p", &address);
+            assert_eq!(split(&key), ("p".into(), segs(&list)), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_key_is_canonicalised() {
+        assert_eq!(split_key("p.list[0]").unwrap().1, "list.0");
+        assert_eq!(split_key(r#"p["a"].b"#).unwrap().1, "a.b");
+        assert_eq!(split_key("p['a.b']").unwrap().1, "['a.b']");
+    }
+
+    #[test]
+    fn join_parent_within_and_split_first_respect_quoted_segments() {
+        assert_eq!(join("p", ""), "p");
+        assert_eq!(join("p", "a.b"), "p.a.b");
+        assert_eq!(join("p", "['a.b']"), "p['a.b']");
+        assert_eq!(parent("a['b.c']").as_deref(), Some("a"));
+        assert_eq!(parent("['b.c'].d").as_deref(), Some("['b.c']"));
+        assert_eq!(parent("a").as_deref(), Some(""));
+        assert_eq!(parent(""), None);
+        assert!(within("a.b", "a"));
+        assert!(within("a['b.c']", "a"));
+        assert!(within("a", "a"));
+        assert!(within("anything", ""));
+        assert!(!within("ab", "a"));
+        assert_eq!(
+            split_first("['a.b'].c.d"),
+            Some(("a.b".to_string(), Some("c.d".to_string())))
+        );
+        assert_eq!(split_first("a"), Some(("a".to_string(), None)));
+        assert_eq!(split_first(""), None);
+    }
+
+    #[test]
+    fn head_of_stops_at_a_dot_or_a_bracket() {
+        assert_eq!(head_of("git.branch"), "git");
+        assert_eq!(head_of("mise['x']"), "mise");
+        assert_eq!(head_of("git:cache"), "git:cache");
+    }
+
+    #[test]
+    fn a_reserved_word_is_no_head_but_the_abstract_providers_decay_is() {
+        for head in [
+            "env",
+            "comb",
+            "_",
+            "*",
+            "env:template",
+            "comb:cache",
+            "*:put",
+        ] {
+            let err = check_head(head).unwrap_err();
+            assert!(err.contains("is reserved"), "{head}: {err}");
+        }
+        assert_eq!(check_head("*:cache"), Ok(()));
+        for head in ["git", "git:cache", "environment", "combo", "my_env"] {
+            assert_eq!(check_head(head), Ok(()), "{head}");
+        }
+    }
+
+    #[test]
+    fn a_negative_index_counts_from_the_end() {
+        assert_eq!(split("p.l[-1]"), ("p".into(), segs(&["l", "-1"])));
+        assert_eq!(split("p.l.-1"), ("p".into(), segs(&["l", "-1"])));
+        assert_eq!(array_index("-1", 3), Some(2));
+        assert_eq!(array_index("-3", 3), Some(0));
+        assert_eq!(array_index("-4", 3), None);
+        assert_eq!(array_index("0", 3), Some(0));
+        assert_eq!(array_index("5", 3), Some(5), "the bound is the caller's");
+        for not_an_index in ["01", "-0", "-01", "+1", "x", "", " 1"] {
+            assert_eq!(array_index(not_an_index, 3), None, "{not_an_index:?}");
+        }
+    }
+
+    #[test]
+    fn one_name_rule() {
+        for ok in ["git", "a-b", "9x", "bad key", "Hostname", "x/y", "my_env"] {
+            assert_eq!(name_error(ok), None, "{ok}");
+        }
+        for bad in [
+            "", "a:b", "a.b", "a[b", "a]b", "a*b", "*", "/x", "~x", "<x>",
+        ] {
+            assert!(name_error(bad).is_some(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn parse_facet_keeps_its_rules() {
+        assert_eq!(parse_facet("myapp"), Ok(None));
+        assert_eq!(split_facet("myapp"), Ok(("myapp", None)));
+        for (head, facet) in [
+            ("scanline:template", Facet::Template),
+            ("scanline:macro", Facet::Macro),
+            ("kubecontext:memo", Facet::Memo),
+            ("a:put", Facet::Put),
+            ("a:source", Facet::Source),
+            ("a:cache", Facet::Cache),
+        ] {
+            assert_eq!(parse_facet(head), Ok(Some(facet)), "{head}");
+            assert_eq!(Facet::from_name(facet.name()), Some(facet));
+        }
+        assert_eq!(split_facet("*:cache"), Ok(("*", Some(Facet::Cache))));
+    }
+
+    #[test]
+    fn the_facets_are_a_closed_set() {
+        for bad in [
+            "a:my_facet-2",
+            "a:memos",
+            "a:notes",
+            "a:Template",
+            "a:templates",
+            "a:b:c",
+            "a:put:x",
+            ":template",
+            "base:",
+            "a:b!",
+        ] {
+            assert_eq!(
+                parse_facet(bad),
+                Err(format!(
+                    "invalid facet key: {bad} (a facet is template, macro, memo, put, source or cache)"
+                )),
+                "{bad}"
+            );
+        }
+    }
+}

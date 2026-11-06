@@ -1,118 +1,148 @@
---- Tests for beachcomber.discovery: `comb`-on-PATH lookup and the ffi
---- transport's library-candidate ordering (the seven-point common
---- contract's discovery order: $BEACHCOMBER_LIB, then ../lib/ relative to
---- the resolved comb, then the platform default search path).
+--- Library discovery (docs/sdk-api.md, "Library discovery"): the shared
+--- fixture sdks/discovery.json, run case by case against this SDK's
+--- candidate list, plus the `comb`-on-PATH lookup the subprocess tier uses.
+---
+--- Each fixture case builds a real directory tree under /tmp. Resolving
+--- `comb`'s symlinks needs realpath(3), which this SDK reaches through
+--- LuaJIT's ffi — only the ffi tier ever loads a library — so the fixture
+--- cases skip under PUC Lua.
 
 return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_not_nil)
   local discovery = require("beachcomber.discovery")
+  local json = require("beachcomber.json")
+  local has_ffi, ffi = pcall(require, "ffi")
 
-  -- Run `fn` with os.getenv stubbed so that `name` appears set to `value`
-  -- while every other variable falls through to the real environment.
-  local function with_env(name, value, fn)
-    local saved = os.getenv
-    os.getenv = function(key)
-      if key == name then return value end
-      return saved(key)
-    end
-    local ok, err = pcall(fn)
-    os.getenv = saved
-    if not ok then error(err, 0) end
+  local script_dir = (arg and arg[0]) and arg[0]:match("(.*/)") or "./"
+  local sdk_dir = script_dir .. "../"
+
+  local function read_file(path)
+    local f = assert(io.open(path, "r"), "cannot read " .. path)
+    local body = f:read("*a")
+    f:close()
+    return body
   end
 
-  -- Stub io.open so find_comb_on_path() succeeds for a specific PATH.
-  local function with_comb_on_path(dir, fn)
-    with_env("PATH", dir, function()
-      local saved = io.open
-      io.open = function(path, mode)
-        if path == dir .. "/comb" then
-          return { close = function() end }
-        end
-        return saved(path, mode)
+  local function shq(s)
+    return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+  end
+
+  local function sh(cmd)
+    local ok = os.execute(cmd)
+    return ok == true or ok == 0
+  end
+
+  --- A fresh directory under /tmp, as mktemp names it (symlinks unresolved).
+  local function mktemp()
+    local p = assert(io.popen("mktemp -d /tmp/bcdisc.XXXXXX"))
+    local dir = p:read("*l")
+    p:close()
+    return dir
+  end
+
+  --- Build `tree` under `root`: "exe" an executable file, "file" one that
+  --- is not, "-> target" a symlink to target.
+  local function build(root, tree, subst)
+    for rel, kind in pairs(tree) do
+      local path = root .. "/" .. subst(rel)
+      assert(sh("mkdir -p " .. shq(path:match("^(.*)/[^/]+$"))))
+      local target = kind:match("^%-> (.+)$")
+      if target then
+        assert(sh("ln -s " .. shq(subst(target)) .. " " .. shq(path)))
+      elseif kind == "exe" then
+        assert(sh(": > " .. shq(path) .. " && chmod 755 " .. shq(path)))
+      else
+        assert(sh(": > " .. shq(path) .. " && chmod 644 " .. shq(path)))
       end
-      local ok, err = pcall(fn)
-      io.open = saved
-      if not ok then error(err, 0) end
+    end
+  end
+
+  suite("discovery: sdks/discovery.json")
+
+  local fixture = json.decode(read_file(sdk_dir .. "../discovery.json"))
+  for _, case in ipairs(fixture.cases) do
+    if not has_ffi then
+      skip(case.name, "resolving comb's symlinks needs LuaJIT's ffi realpath(3)")
+    else
+      test(case.name, function()
+        local made = mktemp()
+        local lib = ffi.os == "OSX" and "libbeachcomber.dylib" or "libbeachcomber.so"
+        local ok, err = pcall(function()
+          local root = discovery.realpath(made)
+          local function subst(s)
+            return (s:gsub("{root}", root):gsub("{lib}", lib))
+          end
+          build(root, case.tree, subst)
+          local path = {}
+          for i, dir in ipairs(case.path) do path[i] = subst(dir) end
+          local env = {
+            PATH = table.concat(path, ":"),
+            BEACHCOMBER_LIB = case.lib_env and subst(case.lib_env) or nil,
+            os = ffi.os,
+          }
+          local expect = {}
+          for i, p in ipairs(case.expect) do expect[i] = subst(p) end
+          assert_eq(table.concat(discovery.library_candidates(env), "\n"), table.concat(expect, "\n"))
+        end)
+        sh("rm -rf " .. shq(made))
+        if not ok then error(err, 0) end
+      end)
+    end
+  end
+
+  suite("discovery: the real environment")
+
+  -- The runner sets $BEACHCOMBER_LIB to the build under test (README,
+  -- "Running tests"), so with no environment given it is the one candidate,
+  -- and the loader finds the library through it.
+  local real_lib = os.getenv("BEACHCOMBER_LIB")
+  if not has_ffi then
+    skip("the loader reads the real environment", "the loader needs LuaJIT's ffi")
+  elseif not real_lib or real_lib == "" then
+    skip("the loader reads the real environment", "$BEACHCOMBER_LIB is not set")
+  else
+    test("the loader reads the real environment", function()
+      assert_eq(table.concat(discovery.library_candidates(), "\n"), real_lib)
+      local loaded, err = require("beachcomber.ffi").load()
+      assert_not_nil(loaded, err and err.message)
     end)
   end
 
   suite("discovery.find_comb_on_path")
 
-  test("returns nil when PATH has no comb", function()
-    with_env("PATH", "/definitely/not/here:/also/not/here", function()
-      local found = discovery.find_comb_on_path()
-      assert_nil(found)
+  test("the first executable comb on PATH, passing over one that is not", function()
+    local root = mktemp()
+    local ok, err = pcall(function()
+      build(root, { ["a/comb"] = "file", ["b/comb"] = "exe", ["c/comb"] = "exe" }, function(s) return s end)
+      local found = discovery.find_comb_on_path(root .. "/a:" .. root .. "/b:" .. root .. "/c")
+      assert_eq(found, root .. "/b/comb")
     end)
+    sh("rm -rf " .. shq(root))
+    if not ok then error(err, 0) end
   end)
 
-  test("finds comb on PATH", function()
-    with_comb_on_path("/fake/bin", function()
-      local found = discovery.find_comb_on_path()
-      assert_eq(found, "/fake/bin/comb")
+  test("a directory named comb is not a comb", function()
+    local root = mktemp()
+    local ok, err = pcall(function()
+      assert(sh("mkdir -p " .. shq(root .. "/a/comb")))
+      assert_nil(discovery.find_comb_on_path(root .. "/a"))
     end)
+    sh("rm -rf " .. shq(root))
+    if not ok then error(err, 0) end
+  end)
+
+  test("no comb on PATH is nil", function()
+    assert_nil(discovery.find_comb_on_path("/definitely/not/here:/also/not/here"))
   end)
 
   suite("discovery.platform_lib_filename")
 
-  test("OSX maps to .dylib", function()
+  test("OSX is .dylib", function()
     assert_eq(discovery.platform_lib_filename("OSX"), "libbeachcomber.dylib")
   end)
 
-  test("Linux maps to .so", function()
+  test("every other platform is .so", function()
     assert_eq(discovery.platform_lib_filename("Linux"), "libbeachcomber.so")
-  end)
-
-  test("Windows maps to .dll", function()
-    assert_eq(discovery.platform_lib_filename("Windows"), "beachcomber.dll")
-  end)
-
-  suite("discovery.library_candidates")
-
-  test("BEACHCOMBER_LIB is tried first when set", function()
-    with_env("BEACHCOMBER_LIB", "/custom/libbeachcomber.dylib", function()
-      with_env("PATH", "/nowhere", function()
-        local candidates = discovery.library_candidates("OSX")
-        assert_eq(candidates[1], "/custom/libbeachcomber.dylib")
-      end)
-    end)
-  end)
-
-  test("BEACHCOMBER_LIB is skipped (not tried) when unset", function()
-    with_env("BEACHCOMBER_LIB", nil, function()
-      with_comb_on_path("/fake/bin", function()
-        local candidates = discovery.library_candidates("OSX")
-        assert_eq(candidates[1], "/fake/bin/../lib/libbeachcomber.dylib")
-      end)
-    end)
-  end)
-
-  test("../lib/ relative to resolved comb comes before the platform default", function()
-    with_env("BEACHCOMBER_LIB", nil, function()
-      with_comb_on_path("/opt/homebrew/bin", function()
-        local candidates = discovery.library_candidates("OSX")
-        assert_eq(candidates[1], "/opt/homebrew/bin/../lib/libbeachcomber.dylib")
-        assert_eq(candidates[2], "libbeachcomber.dylib")
-      end)
-    end)
-  end)
-
-  test("platform default (bare library name) is always the last candidate", function()
-    with_env("BEACHCOMBER_LIB", "/x/libbeachcomber.dylib", function()
-      with_comb_on_path("/fake/bin", function()
-        local candidates = discovery.library_candidates("OSX")
-        assert_eq(candidates[#candidates], "libbeachcomber.dylib")
-        assert_eq(#candidates, 3)
-      end)
-    end)
-  end)
-
-  test("full order: env, then ../lib/, then platform default", function()
-    with_env("BEACHCOMBER_LIB", "/x/libbeachcomber.dylib", function()
-      with_comb_on_path("/opt/homebrew/bin", function()
-        local candidates = discovery.library_candidates("OSX")
-        assert_eq(candidates[1], "/x/libbeachcomber.dylib")
-        assert_eq(candidates[2], "/opt/homebrew/bin/../lib/libbeachcomber.dylib")
-        assert_eq(candidates[3], "libbeachcomber.dylib")
-      end)
-    end)
+    assert_eq(discovery.platform_lib_filename("BSD"), "libbeachcomber.so")
+    assert_eq(discovery.platform_lib_filename("Windows"), "libbeachcomber.so")
   end)
 end

@@ -1,0 +1,26 @@
+{
+  "name": "get_past_a_template_string_walks_into_what_it_renders",
+  "description": "An address that runs past a template string addresses a key inside what the string renders to: fx3.t.a is the a of fx3.t's value.",
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "fx3:template",
+        "data": {
+          "t": "{{ {'a': 1} }}"
+        }
+      }
+    }
+  ],
+  "test": {
+    "op": "get",
+    "args": {
+      "key": "fx3.t.a"
+    }
+  },
+  "expect": {
+    "status": "hit",
+    "data_type": "number",
+    "data_equals": 1
+  }
+}

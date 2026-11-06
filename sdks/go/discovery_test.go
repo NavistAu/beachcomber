@@ -1,86 +1,99 @@
 package beachcomber_test
 
 import (
-	"fmt"
+	"encoding/json"
 	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
 	beachcomber "github.com/NavistAu/beachcomber/sdks/go"
 )
 
-func TestDiscoverSocketPath_BeachcomberSocket(t *testing.T) {
-	// BEACHCOMBER_SOCKET takes precedence over everything else.
-	t.Setenv("BEACHCOMBER_SOCKET", "/custom/path/comb.sock")
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
-	t.Setenv("TMPDIR", "/should-not-be-used")
-
-	got := beachcomber.DiscoverSocketPath()
-	if got != "/custom/path/comb.sock" {
-		t.Errorf("expected %q, got %q", "/custom/path/comb.sock", got)
-	}
+// discoveryFixture is sdks/discovery.json: the library-discovery rule
+// (docs/sdk-api.md, "Library discovery") as cases every SDK runs.
+type discoveryFixture struct {
+	Cases []struct {
+		Name   string            `json:"name"`
+		Tree   map[string]string `json:"tree"`
+		Path   []string          `json:"path"`
+		LibEnv *string           `json:"lib_env"`
+		Expect []string          `json:"expect"`
+	} `json:"cases"`
 }
 
-func TestDiscoverSocketPath_XDGIgnored(t *testing.T) {
-	// XDG_RUNTIME_DIR is session-scoped and is never consulted: resolution
-	// falls straight through to the stable per-user /tmp path.
-	t.Setenv("BEACHCOMBER_SOCKET", "")
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
-	t.Setenv("TMPDIR", "/should-not-be-used")
-
-	got := beachcomber.DiscoverSocketPath()
-	uid := os.Getuid()
-	want := fmt.Sprintf("/tmp/beachcomber-%d/sock", uid)
-	if got != want {
-		t.Errorf("expected %q, got %q", want, got)
+func TestLibraryDiscovery_FollowsTheSharedFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "discovery.json"))
+	if err != nil {
+		t.Fatalf("read the shared fixture: %v", err)
 	}
-}
-
-func TestDiscoverSocketPath_XDGUnset(t *testing.T) {
-	// XDG unset: fall through to /tmp. TMPDIR is NOT consulted.
-	t.Setenv("BEACHCOMBER_SOCKET", "")
-	t.Setenv("XDG_RUNTIME_DIR", "")
-	t.Setenv("TMPDIR", "/should-not-be-used")
-
-	got := beachcomber.DiscoverSocketPath()
-	uid := os.Getuid()
-	want := fmt.Sprintf("/tmp/beachcomber-%d/sock", uid)
-	if got != want {
-		t.Errorf("expected %q, got %q", want, got)
+	var fixture discoveryFixture
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("parse the shared fixture: %v", err)
 	}
-}
-
-func TestDiscoverSocketPath_TMPDIRIgnored(t *testing.T) {
-	// TMPDIR must never influence resolution.
-	t.Setenv("BEACHCOMBER_SOCKET", "")
-	t.Setenv("XDG_RUNTIME_DIR", "")
-	t.Setenv("TMPDIR", "/var/folders/xyz")
-
-	got := beachcomber.DiscoverSocketPath()
-	uid := os.Getuid()
-	want := fmt.Sprintf("/tmp/beachcomber-%d/sock", uid)
-	if got != want {
-		t.Errorf("expected %q, got %q", want, got)
+	if len(fixture.Cases) == 0 {
+		t.Fatal("the shared fixture has no cases")
 	}
-}
-
-func TestDiscoverSocketPath_ContainsUID(t *testing.T) {
-	t.Setenv("BEACHCOMBER_SOCKET", "")
-	t.Setenv("XDG_RUNTIME_DIR", "")
-
-	got := beachcomber.DiscoverSocketPath()
-	uid := fmt.Sprintf("%d", os.Getuid())
-	if !strings.Contains(got, uid) {
-		t.Errorf("expected path to contain uid %s, got %q", uid, got)
+	lib := "libbeachcomber.so"
+	if runtime.GOOS == "darwin" {
+		lib = "libbeachcomber.dylib"
 	}
-}
 
-func TestDiscoverSocketPath_EndsSock(t *testing.T) {
-	t.Setenv("BEACHCOMBER_SOCKET", "")
-	t.Setenv("XDG_RUNTIME_DIR", "")
+	for _, c := range fixture.Cases {
+		t.Run(c.Name, func(t *testing.T) {
+			dir, err := os.MkdirTemp("/tmp", "bcdisc")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(dir) })
+			root, err := filepath.EvalSymlinks(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sub := strings.NewReplacer("{root}", root, "{lib}", lib).Replace
 
-	got := beachcomber.DiscoverSocketPath()
-	if !strings.HasSuffix(got, "/sock") {
-		t.Errorf("expected path to end with /sock, got %q", got)
+			for rel, kind := range c.Tree {
+				p := filepath.Join(root, sub(rel))
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				switch {
+				case kind == "exe":
+					err = os.WriteFile(p, []byte("#!/bin/sh\n"), 0o755)
+				case kind == "file":
+					err = os.WriteFile(p, nil, 0o644)
+				case strings.HasPrefix(kind, "-> "):
+					err = os.Symlink(strings.TrimPrefix(kind, "-> "), p)
+				default:
+					t.Fatalf("unknown tree entry %q: %q", rel, kind)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			dirs := make([]string, len(c.Path))
+			for i, d := range c.Path {
+				dirs[i] = sub(d)
+			}
+			// For this call only: t.Setenv restores both when the case ends.
+			t.Setenv("PATH", strings.Join(dirs, string(os.PathListSeparator)))
+			t.Setenv("BEACHCOMBER_LIB", "")
+			if c.LibEnv != nil {
+				os.Setenv("BEACHCOMBER_LIB", sub(*c.LibEnv))
+			} else {
+				os.Unsetenv("BEACHCOMBER_LIB")
+			}
+
+			want := make([]string, len(c.Expect))
+			for i, e := range c.Expect {
+				want[i] = sub(e)
+			}
+			if got := beachcomber.CandidateLibraryPathsForTest(); !reflect.DeepEqual(got, want) {
+				t.Errorf("candidates = %q, want %q", got, want)
+			}
+		})
 	}
 }

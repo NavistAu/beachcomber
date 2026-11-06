@@ -1,0 +1,29 @@
+{
+  "name": "get_a_cached_leaf_renders",
+  "description": "A template leaf piped through ttl() and cache() reads as what it renders, on every SDK: the memo filters run over the C ABI.",
+  "env": {
+    "V": "cached"
+  },
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "fx:template",
+        "data": {
+          "t": "{{ env.V | ttl('1h') | cache() }}"
+        }
+      }
+    }
+  ],
+  "test": {
+    "op": "get",
+    "args": {
+      "key": "fx.t"
+    }
+  },
+  "expect": {
+    "status": "hit",
+    "data_type": "string",
+    "data_equals": "cached"
+  }
+}

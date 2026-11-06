@@ -1,0 +1,27 @@
+[client.providers.gcloud]
+# The project in effect: the shell's override, else the active gcloud configuration's project.
+template.project = "{{ env.CLOUDSDK_CORE_PROJECT or comb.gcloud_configs[ env.CLOUDSDK_ACTIVE_CONFIG_NAME or comb.gcloud_configs.active_config ].project }}"
+# The account of the active gcloud configuration, honouring the shell's configuration selector.
+template.account = "{{ comb.gcloud_configs[ env.CLOUDSDK_ACTIVE_CONFIG_NAME or comb.gcloud_configs.active_config ].account }}"
+
+[daemon.providers.gcloud_configs.sources.config_dir]
+# Every gcloud configuration, whatever the shell selects, from gcloud's config directory,
+# `$CLOUDSDK_CONFIG`, else `~/.config/gcloud` (`env` is the daemon's environment, as it started): the
+# name in its `active_config` file, and the `[core]` section of each
+# `configurations/config_<name>/properties`.
+data = '''{% set dir = env.CLOUDSDK_CONFIG or '~/.config/gcloud' %}
+{% set configs = namespace(found={}) %}
+{% for properties in (dir ~ '/configurations/config_*/properties') | glob %}
+  {% set core = ((properties | read | fromini) or {}).core or {} %}
+  {% set configs.found = merge(configs.found, {(properties | dirname | basename)[7:]: {'project': core.project or none, 'account': core.account or none}}) %}
+{% endfor %}
+{{ {'active_config': (dir ~ '/active_config') | read, 'configs': configs.found} }}'''
+# `active_config`, and one `{project, account}` per configuration keyed by its name; a configuration
+# with neither is left out.
+result = '''{% set out = namespace(found={'active_config': ((data.active_config | trim) if data.active_config) or none}) %}
+{% for name, config in data.configs | items %}
+  {% if name and config %}{% set out.found = merge(out.found, {name: config}) %}{% endif %}
+{% endfor %}
+{{ out.found }}'''
+# Polled every minute; a read checks the files the data line read. A failure is retried every 30 s.
+return = "{{ result | poll('60s', 2) | failback('30s', 3) }}"

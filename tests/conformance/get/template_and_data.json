@@ -1,0 +1,35 @@
+{
+  "name": "get_a_template_wins_over_the_value_it_shares_an_address_with",
+  "description": "A node with a cached value and a template in effect reads as the rendered template, as comb get prints it.",
+  "setup": [
+    {
+      "op": "put",
+      "args": {
+        "key": "fx2",
+        "data": {
+          "v": 1
+        }
+      }
+    },
+    {
+      "op": "put",
+      "args": {
+        "key": "fx2:template",
+        "data": {
+          "v": "{{ 2 }}"
+        }
+      }
+    }
+  ],
+  "test": {
+    "op": "get",
+    "args": {
+      "key": "fx2.v"
+    }
+  },
+  "expect": {
+    "status": "hit",
+    "data_type": "number",
+    "data_equals": 2
+  }
+}

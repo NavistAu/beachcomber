@@ -5,7 +5,8 @@ Implements the Phase-4 binding contract:
 1. Library discovery (see :mod:`.discovery`).
 2. Loud discovery failure naming every location tried.
 3. Required symbols checked at load, not on first use.
-4. ``bc_version()`` read on load and included in every error raised.
+4. ``bc_version()`` read on load and carried by every error raised, as its
+   ``library_version``.
 5. ``ok: false`` envelopes become idiomatic exceptions with ``kind``
    preserved (see :mod:`.exceptions`).
 6. Memory discipline: every ``char *`` this module returns to a caller is
@@ -23,7 +24,7 @@ import threading
 from typing import Any, Optional
 
 from . import discovery
-from .exceptions import LibraryDiscoveryError, LibrarySymbolError, ProtocolError, exception_for_envelope_error
+from .exceptions import LibraryNotFoundError, LibrarySymbolError, ParseError, exception_for_envelope_error
 
 # name -> (argtypes, restype). Pointer-returning functions use c_void_p
 # (not c_char_p) so the raw address survives for bc_string_free — ctypes'
@@ -33,14 +34,13 @@ _SYMBOLS: dict = {
     "bc_client_new": ([ctypes.c_char_p], ctypes.c_void_p),
     "bc_client_free": ([ctypes.c_void_p], None),
     "bc_get": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32],
-        ctypes.c_void_p,
-    ),
-    "bc_put": (
         [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
         ctypes.c_void_p,
     ),
-    "bc_put_null": ([ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p], ctypes.c_void_p),
+    "bc_put": (
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_bool],
+        ctypes.c_void_p,
+    ),
     "bc_refresh": ([ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p], ctypes.c_void_p),
     "bc_status": ([ctypes.c_void_p], ctypes.c_void_p),
     "bc_introspect": (
@@ -48,27 +48,27 @@ _SYMBOLS: dict = {
         ctypes.c_void_p,
     ),
     "bc_hello": ([ctypes.c_void_p], ctypes.c_void_p),
-    "bc_resolve": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
-        ctypes.c_void_p,
-    ),
     "bc_eval": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
         ctypes.c_void_p,
     ),
     "bc_session_open": ([ctypes.c_void_p], ctypes.c_void_p),
     "bc_session_close": ([ctypes.c_void_p], None),
     "bc_session_get": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32],
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
         ctypes.c_void_p,
     ),
     "bc_session_put": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_bool],
+        ctypes.c_void_p,
+    ),
+    "bc_session_refresh": (
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p],
         ctypes.c_void_p,
     ),
     "bc_session_set_context": ([ctypes.c_void_p, ctypes.c_char_p], ctypes.c_void_p),
     "bc_watch_open": (
-        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p],
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p],
         ctypes.c_void_p,
     ),
     "bc_watch_next": ([ctypes.c_void_p, ctypes.c_int32], ctypes.c_void_p),
@@ -76,12 +76,6 @@ _SYMBOLS: dict = {
     "bc_watch_free": ([ctypes.c_void_p], None),
     "bc_string_free": ([ctypes.c_void_p], None),
 }
-
-# bc_get / bc_session_get flags (mirrors BC_GET_FORCE / BC_GET_WAIT in
-# libbeachcomber-ffi/include/beachcomber.h).
-BC_GET_FORCE = 1 << 0
-BC_GET_WAIT = 1 << 1
-
 
 class NativeLib:
     """A loaded ``libbeachcomber`` with verified symbols and cached version.
@@ -114,8 +108,7 @@ class NativeLib:
                     except Exception:
                         version = None
                 raise LibrarySymbolError(
-                    f"{self.path} is missing required symbol {name!r} "
-                    f"(loaded library version: {version if version is not None else 'unknown'})"
+                    f"{self.path} is missing required symbol {name!r}", version
                 )
         for name, (argtypes, restype) in _SYMBOLS.items():
             fn = getattr(self._cdll, name)
@@ -138,27 +131,19 @@ class NativeLib:
 
     def _decode_envelope(self, ptr: Optional[int]) -> dict:
         if not ptr:
-            raise ProtocolError(
-                f"native call returned NULL (beachcomber lib version: {self.version})"
-            )
+            raise ParseError("native call returned NULL", self.version)
         raw = ctypes.cast(ptr, ctypes.c_char_p).value
         self._cdll.bc_string_free(ptr)
         if raw is None:
-            raise ProtocolError(
-                f"native call returned an empty envelope (beachcomber lib version: {self.version})"
-            )
+            raise ParseError("native call returned an empty envelope", self.version)
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise ProtocolError(
-                f"envelope is not valid UTF-8: {exc} (beachcomber lib version: {self.version})"
-            ) from exc
+            raise ParseError(f"envelope is not valid UTF-8: {exc}", self.version) from exc
         try:
             return json.loads(text)
         except json.JSONDecodeError as exc:
-            raise ProtocolError(
-                f"malformed envelope JSON: {exc} (beachcomber lib version: {self.version})"
-            ) from exc
+            raise ParseError(f"malformed envelope JSON: {exc}", self.version) from exc
 
     def call(self, name: str, *args: Any) -> Any:
         """Call an ordinary ``{"ok":..., "data"/"error":...}`` envelope
@@ -206,9 +191,6 @@ def get_lib() -> NativeLib:
 def _load() -> NativeLib:
     tried: list = []
     for candidate in discovery.candidates():
-        if candidate.path is None:
-            tried.append(f"  - {candidate.description}: skipped ({candidate.reason})")
-            continue
         try:
             cdll = ctypes.CDLL(candidate.path)
         except OSError as exc:
@@ -216,6 +198,6 @@ def _load() -> NativeLib:
             continue
         return NativeLib(cdll, candidate.path)
 
-    raise LibraryDiscoveryError(
+    raise LibraryNotFoundError(
         "could not load libbeachcomber; tried, in order:\n" + "\n".join(tried)
     )

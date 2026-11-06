@@ -1,0 +1,10 @@
+{
+  "name": "get_truncate_filter",
+  "description": "The truncate filter shortens an env-sourced value and appends the ellipsis marker. The template is put to filters:template, as any caller declares one.",
+  "setup": [
+    { "op": "put", "args": { "key": "filters:template", "data": { "truncated": "{{ env.LONGVAR | truncate(5) }}" } } }
+  ],
+  "env": { "LONGVAR": "abcdefghij" },
+  "test": { "op": "get", "args": { "key": "filters.truncated" } },
+  "expect": { "status": "hit", "data_type": "string", "data_equals": "abcd…" }
+}

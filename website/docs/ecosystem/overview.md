@@ -1,47 +1,64 @@
 ---
 sidebar_position: 1
+title: Ecosystem Overview
 ---
 
 # Ecosystem Overview
 
-beachcomber has client SDKs for seven languages plus a POSIX shell polyfill. Each SDK is a binding over the shared `libbeachcomber` C ABI rather than a hand-rolled wire-protocol client: Go uses `purego` (vendored), Python uses stdlib `ctypes`, Ruby uses stdlib `fiddle`, Lua uses LuaJIT `ffi` (with a subprocess fallback for PUC Lua), and Node.js uses `koffi` as an optional peer dependency (falling back to a `comb` subprocess when it isn't installed). All are published to their native package registries.
+beachcomber has client libraries for seven languages. All of them answer from the same Rust library,
+`libbeachcomber`: Rust links it directly, and the others load its C build (`libbeachcomber.dylib` / `.so`) through
+their language's foreign-function interface. A value is therefore the same in every language as it is from
+`comb get`. [How the Libraries Work](./how-the-libraries-work.md) explains the layers, how each SDK finds the shared
+library, and what the fallbacks give up.
 
-## Install
+## Choose a library
 
-| SDK | Registry | Install |
-|---|---|---|
-| [Rust](./rust-sdk.md) | [crates.io](https://crates.io/crates/libbeachcomber) | `cargo add libbeachcomber` |
-| [Python](./python-sdk.md) | [PyPI](https://pypi.org/project/libbeachcomber/) | `pip install libbeachcomber` |
-| [Node.js](./nodejs-sdk.md) | [npm](https://www.npmjs.com/package/libbeachcomber) | `npm install libbeachcomber` |
-| [Go](./go-sdk.md) | [Go module](https://github.com/NavistAu/beachcomber/tree/main/sdks/go) | `go get github.com/NavistAu/beachcomber/sdks/go` |
-| [Lua](./lua-sdk.md) | [LuaRocks](https://luarocks.org/modules/navist/libbeachcomber) | `luarocks install libbeachcomber` |
-| [Ruby](./ruby-sdk.md) | [RubyGems](https://rubygems.org/gems/libbeachcomber) | `gem install libbeachcomber` |
-| [C](./c-sdk.md) | [GitHub Release](https://github.com/NavistAu/beachcomber/releases) | Source tarball, `.deb`, `.rpm`, or [AUR](https://aur.archlinux.org/packages/libbeachcomber) |
-| Shell / POSIX | — | See the [Polyfill](/docs/integrating/polyfill) |
+| Language | Package | Binding | Fallback | Install |
+|---|---|---|---|---|
+| [Rust](./rust-sdk.md) | [`libbeachcomber`](https://crates.io/crates/libbeachcomber) on crates.io | the crate itself | none needed | `cargo add libbeachcomber` |
+| [Python](./python-sdk.md) | [`libbeachcomber`](https://pypi.org/project/libbeachcomber/) on PyPI | stdlib `ctypes` | none | `pip install libbeachcomber` |
+| [Ruby](./ruby-sdk.md) | [`libbeachcomber`](https://rubygems.org/gems/libbeachcomber) on RubyGems | stdlib `fiddle` | none | `gem install libbeachcomber` |
+| [Go](./go-sdk.md) | [`github.com/NavistAu/beachcomber/sdks/go`](https://github.com/NavistAu/beachcomber/tree/main/sdks/go) | `purego` (vendored, no cgo) | none | `go get github.com/NavistAu/beachcomber/sdks/go` |
+| [Node.js](./nodejs-sdk.md) | [`libbeachcomber`](https://www.npmjs.com/package/libbeachcomber) on npm | `koffi` (optional peer) | spawns `comb` when `koffi` is not installed | `npm install libbeachcomber koffi` |
+| [Lua](./lua-sdk.md) | [`libbeachcomber`](https://luarocks.org/modules/navist/libbeachcomber) on LuaRocks | LuaJIT `ffi` | spawns `comb` under PUC Lua | `luarocks install libbeachcomber` |
+| [C](./c-sdk.md) | [GitHub Release](https://github.com/NavistAu/beachcomber/releases): tarball, `.deb`, `.rpm`, [AUR](https://aur.archlinux.org/packages/libbeachcomber) | the C ABI itself (`-lbeachcomber`) | none | from your package manager |
+| Shell | none | `comb` | none | see the [Polyfill](/docs/integrating/polyfill) |
 
-The Rust SDK ships as `libbeachcomber` on crates.io, matching the other language SDKs' `libbeachcomber` naming on their native registries.
+Every SDK except Rust and C needs `libbeachcomber.{dylib,so}` at run time, found beside `comb` on `$PATH` or through
+`$BEACHCOMBER_LIB` ([discovery](./how-the-libraries-work.md#the-discovery-rule)). Node without `koffi` and PUC Lua
+instead run `comb` once per call, which is slower and lacks `hello`, `introspect` and some options
+([subprocess tiers](./how-the-libraries-work.md#subprocess-tiers)).
 
-## When to use an SDK vs the CLI
+## When to use an SDK instead of the CLI
 
-Shelling out to `comb g.` is fine for one-off queries from shell scripts, prompts, and status bars. For anything that queries more than a handful of keys per second, or needs to stream updates, use a language SDK:
+Running `comb get` is fine for shell scripts, prompts and status bars that read a few keys. Use an SDK when you read
+many keys, read often, or need to follow changes:
 
-- **Persistent connections** — open a Unix socket once, reuse it for every query (avoids per-call socket setup).
-- **Connection context** — set a working directory once with `set_context`; subsequent path-scoped `get` calls don't need to repeat the path.
-- **Typed results** — scalar/object dispatch in idiomatic types for each language.
-- **Lower latency** — skip `exec`/`fork` overhead; SDK `get` is ~15 µs vs ~34 µs for the CLI.
+- **No process per read.** An SDK call is a library call; a CLI read starts a process.
+- **Sessions.** Keep one connection open, and set a working directory once with `set_context`; later `get`, `put` and
+  `refresh` calls that name no path use it.
+- **Watches.** Receive a key's value again each time it changes.
+- **Typed results.** Values arrive as the language's own strings, numbers, maps and lists; a miss is its null.
 
-## Feature matrix
+## One API
 
-All SDKs cover the common read path as well as `put` and `watch`.
+Every SDK has the same operations under the same names, with the same arguments, value shapes and error kinds,
+written out in [`docs/sdk-api.md`](https://github.com/NavistAu/beachcomber/blob/main/docs/sdk-api.md) and checked by
+each SDK's tests against [`sdks/api.json`](https://github.com/NavistAu/beachcomber/blob/main/sdks/api.json). Names
+follow the language's casing (`set_context`, `setContext`, `SetContext`).
 
-| SDK | `get` | `refresh` | `context` / session | `status` | `put` | `watch` |
-|---|---|---|---|---|---|---|
-| Rust | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Python | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Node.js | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Go | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Lua | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Ruby | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| C | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Object | Methods |
+|---|---|
+| Client | `get`, `eval`, `watch`, `put`, `refresh`, `status`, `hello`, `introspect`, `session`, `close` |
+| Session | `set_context`, `get`, `put`, `refresh`, `close` |
+| Watch stream | `next_event`, `cancel`, `close` |
 
-Need a language that isn't listed? The [protocol](../reference/protocol-reference.md) is newline-delimited JSON over a Unix socket — any language that can open a socket can be a client in a few dozen lines.
+A client takes `socket_path`, `timeout_ms`, `connect_timeout_ms`, `autostart` and `exec`; any left out takes the
+library's default. `exec` is off by default, so a template that calls `exec()` fails on a client unless you turn it
+on ([why](./how-the-libraries-work.md#exec-is-off-on-a-client)). `get` answers the value `comb get` prints, and null
+on a miss. Each failure is one error type per kind (`daemon_not_running`, `timeout`, `server_error`, …), carrying the
+kind, the library's message and the library's version.
+
+Need a language that isn't listed? The [protocol](../reference/protocol-reference.md) is newline-delimited JSON over a
+Unix socket, so any language that can open one can be a client. A hand-written client gets cached values and
+templates from the daemon, but must render templates itself; binding the C ABI gets you the same renderer as `comb`.

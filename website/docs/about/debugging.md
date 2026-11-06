@@ -51,11 +51,11 @@ Logs print directly to your terminal. Press Ctrl+C to shut down.
 
 ```sh
 $ comb s
-PROVIDER  PATH    FIELD    VALUE    AGE   TTL
-git       /repo   branch   main     14s   ★     60s×12 ◉
-git       /repo   dirty    true     14s   ★     60s×12 ◉
-battery   -       percent  87       8s    ★     30s×04
-hostname  -       short    artemis  3h    ---
+  PROVIDER  FIELD    SOURCE          VALUE    PATH     AGE   POLL  TTL
+  battery   percent  source(state)   87       ~       2s×0    27s  ★  30s×04 (2m)
+  git       branch   source(head)    main     ~/repo    2s      -  ★               ∙
+  git       dirty    source(status)  true     ~/repo  2s×0    57s  ★  60s×02 (2m)  ∙
+  hostname  short    source(host)    artemis  ~       2s×0  9m57s  ★ 600s×06 (1h)
 
 # Filter to entries currently in decay
 comb s --filter=lifecycle=decay1
@@ -65,13 +65,13 @@ comb s --filter=lifecycle=decay2
 watch -c comb status
 ```
 
-`★` means Active (healthy, polling at base rate). `3`/`2`/`1`/`0` are the decay countdown — `0` means the entry evicts on the next scheduler tick. `◉` means filesystem events will reinstate the entry. `⚠` replaces `★` when the provider is in failure-suppress.
+`★` means Active (healthy, polling at base rate). `3`/`2`/`1`/`0` are the decay countdown — `0` means the entry evicts on the next scheduler tick. `∙` means the entry watches its files while it is Active (a decaying one has dropped its watches, and a read checks its files instead). `⚠` replaces `★` when the provider is in failure-suppress.
 
 For daemon internals, use `comb check` subjects:
 
 ```sh
 comb check daemon     # pid, version, uptime, request counts, active watchers
-comb check watches    # filesystem paths currently being watched for changes
+comb check watches    # paths watched for changes: registering, active (or through a parent until the path exists), or failed
 comb check lifecycle  # keys in the decay/eviction sequence
 comb check timers     # active poll timers and when they last ran
 comb check demand     # demand-tracked keys and last-query times

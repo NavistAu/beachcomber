@@ -1,0 +1,6 @@
+[daemon.providers.hostname.sources.host]
+# The machine's name and its first label, from the compiled-in sys plugin (gethostname). Polled every 10 minutes while read, so a renamed machine is seen; backed off from a minute after repeated failures.
+data = "{{ plugin('sys', 'hostname') }}"
+result.name = "{{ data.name }}"
+result.short = "{{ data.short }}"
+return = "{{ result | poll('10m', 6) | failback('60s', 3) }}"

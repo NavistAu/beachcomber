@@ -1,102 +1,74 @@
 //! Handler for the `eval` subcommand.
 //!
-//! `eval` evaluates a value expression in any of the three forms canon
-//! `field_resolution.md` (invariant 14) defines: a bare expression, exactly one
-//! `{{ expr }}` (which keeps the expression's natural type), or literal text
-//! and/or several tags (which is string-valued). `libbeachcomber::eval` owns
-//! all three; this handler only supplies what the library cannot reach on its
-//! own — the calling shell's environment and the daemon.
+//! `eval` evaluates a value expression in either of the two forms canon
+//! `field_resolution.md` (invariant 14) defines: exactly one `{{ expr }}`
+//! (which keeps the expression's natural type), or literal text and/or
+//! several tags (which is string-valued — a source with no tags at all is
+//! its literal text).
 //!
-//! Resolution mirrors `comb get`'s layering:
+//! `eval` is a client of [`libbeachcomber::resolve`], exactly as `comb get`
+//! is: every ref inside the template resolves through the one resolver, with
+//! this process's environment and directory and `exec()` enabled, so
+//! `comb eval '{{ p.f }}'` and `comb get p.f` agree by construction. `comb`
+//! always requires the daemon (design §2) — there is no daemon-skip path.
 //!
-//! - `env.*` refs come from the calling shell's environment.
-//! - virtual fields (e.g. `terraform.workspace`) are evaluated client-side.
-//! - plain `provider.field` refs are fetched from the daemon.
-//!
-//! A source that needs no daemon-backed data never starts/contacts the daemon:
-//! `eval::daemon_refs` returns the transitive closure of the daemon keys the
-//! source needs (following virtual fields into their own dependencies), and an
-//! empty closure means `ensure_daemon` is never called.
-//!
-//! The result prints through `libbeachcomber::render::render_data` — the same
-//! renderer `comb get -f text` uses — so `comb eval '{{ p.f }}'` and
-//! `comb get p.f` agree on how a value looks.
+//! The result prints through `libbeachcomber::render::render_value` — the
+//! same renderer `comb get` uses, in the value format `-f` names (text,
+//! json or sh).
 
+use crate::cli::exit::Outcome;
+use crate::cli::output_format::Format;
 use crate::config::Config;
-use libbeachcomber::eval;
-use libbeachcomber::virtual_fields::{EvalContext, VirtualFields};
-use std::collections::HashMap;
-use std::process::ExitCode;
+use libbeachcomber::resolve::{Slot, eval};
 
-pub fn run_eval(config: &Config, template: &str, path: Option<&str>) -> ExitCode {
-    let (socket_path, socket_source) = config.resolve_socket_path_with_source();
-    let spawn_no_reap = matches!(socket_source, crate::config::SocketPathSource::EnvVar);
-    let vf = VirtualFields::with_config_overrides(config.virtual_fields());
-
-    // Every daemon key this source needs, virtual-field dependencies included.
-    // Errs only when the virtual-field chain is deeper than the recursion limit.
-    let refs = match eval::daemon_refs(template, &vf) {
-        Ok(refs) => refs,
+/// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
+/// `--path`, the trailing positional, or the current directory. A render's
+/// `exec()`, `lup()` and `read` run in the directory it addresses, `$HOME` for
+/// the global entry — the resolver's rule, the same for every surface.
+pub fn run_eval(config: &Config, template: &str, path: Option<&str>, format: Format) -> Outcome {
+    // `comb` always requires the daemon (design §2, outcome 22).
+    let socket_path = match crate::cli::connect::connect(config) {
+        Ok(socket) => socket,
+        Err(outcome) => return outcome,
+    };
+    let mut session = match crate::client::Client::new(socket_path).connect() {
+        Ok(s) => s,
         Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::from(2);
+            crate::cli::report::daemon_unreachable(e);
+            return Outcome::Error;
         }
     };
 
-    let daemon_data = if refs.is_empty() {
-        // Nothing daemon-backed (env.* only, or pure-env virtual fields): never
-        // start or contact a daemon.
-        HashMap::new()
-    } else {
-        if let Err(e) = crate::daemon::ensure_daemon(&socket_path, spawn_no_reap) {
-            eprintln!("Failed to start daemon: {e}");
-            return ExitCode::from(2);
-        }
-        let client = crate::client::Client::new(socket_path);
-        let mut session = match client.connect() {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Error: {e}");
-                return ExitCode::from(2);
-            }
-        };
-        if let Some(p) = path
-            && let Err(e) = session.set_context(p)
-        {
-            eprintln!("Error: {e}");
-            return ExitCode::from(2);
-        }
-        // A transport failure aborts the whole command; a cache miss is simply
-        // absent from the map and evaluates falsy.
-        let fetched = eval::fetch_daemon_data(&refs, |key| {
-            session
-                .get(key, None)
-                .map(|resp| resp.data)
-                .map_err(|e| format!("Error querying {key}: {e}"))
-        });
-        match fetched {
-            Ok(d) => d,
-            Err(msg) => {
-                eprintln!("{msg}");
-                return ExitCode::from(2);
-            }
-        }
-    };
+    let env = crate::cli::shell_env();
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let slot = path.map_or(Slot::Global, |p| Slot::Path(p.to_string()));
+    let inputs = crate::cli::inputs(&cwd, &env, slot, false, libbeachcomber::Wait::Budget);
 
-    let shell_env: HashMap<String, String> = std::env::vars().collect();
-    let ctx = EvalContext {
-        env_vars: &shell_env,
-        daemon_data: &daemon_data,
-    };
-
-    match eval::evaluate(template, &vf, &ctx) {
+    match eval(template, &inputs, &mut session) {
+        // An absent value prints nothing, and is a miss, as for `comb get`.
         Ok(value) => {
-            print!("{}", libbeachcomber::render::render_data(Some(&value)));
-            ExitCode::SUCCESS
+            print!(
+                "{}",
+                libbeachcomber::render::render_value(
+                    "",
+                    value.as_ref(),
+                    format
+                        .preset()
+                        .and_then(|p| p.value_format())
+                        .expect("eval's formats are value formats")
+                )
+            );
+            if value.is_some() {
+                Outcome::Done
+            } else {
+                Outcome::Miss
+            }
         }
         Err(e) => {
-            eprintln!("{e}");
-            ExitCode::from(2)
+            crate::cli::report::resolve_error("<eval>", &e);
+            Outcome::Error
         }
     }
 }

@@ -22,10 +22,13 @@ export interface ErrEnvelope {
 
 export type Envelope = OkEnvelope | ErrEnvelope;
 
-/** Unwrap an envelope's `data`, throwing the idiomatic `CombError` on `ok: false`. */
-export function unwrap(env: Envelope): unknown {
+/**
+ * Unwrap an envelope's `data`, throwing the kind's `CombError` on `ok: false`,
+ * carrying `libraryVersion` (the library that answered).
+ */
+export function unwrap(env: Envelope, libraryVersion?: string): unknown {
   if (!env.ok) {
-    throw errorFromEnvelope(env.error);
+    throw errorFromEnvelope(env.error, libraryVersion);
   }
   return env.data;
 }
@@ -35,7 +38,6 @@ export type WatchOutcome = 'event' | 'timeout' | 'eof' | 'cancelled';
 
 export interface WatchNextResult {
   outcome: WatchOutcome;
+  /** On `event`: the resolved value, `null` for a miss. */
   data?: unknown;
-  ageMs?: number | null;
-  stale?: boolean | null;
 }

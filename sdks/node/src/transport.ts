@@ -19,7 +19,9 @@ export type WatchHandle = unknown;
 export interface NewClientOptions {
   socketPath?: string;
   timeoutMs?: number;
+  connectTimeoutMs?: number;
   autostart?: boolean;
+  exec?: boolean;
 }
 
 export interface Transport {
@@ -31,32 +33,35 @@ export interface Transport {
   newClient(options: NewClientOptions): ClientHandle;
   freeClient(handle: ClientHandle): void;
 
-  get(handle: ClientHandle, key: string, path: string | undefined, flags: number): Promise<Envelope>;
+  /**
+   * `bc_get`: `force` and `wait` are its `options_json` keys, `wait` handed
+   * on as the caller gave it, for the library to read.
+   */
+  get(
+    handle: ClientHandle,
+    key: string,
+    cwd: string | undefined,
+    envJson: string | undefined,
+    force: boolean,
+    wait: string | undefined,
+  ): Promise<Envelope>;
   put(
     handle: ClientHandle,
     key: string,
     jsonData: string,
     ttl: string | undefined,
     path: string | undefined,
+    persist: boolean,
   ): Promise<Envelope>;
-  putNull(handle: ClientHandle, key: string, path: string | undefined): Promise<Envelope>;
   refresh(handle: ClientHandle, key: string, path: string | undefined): Promise<Envelope>;
   status(handle: ClientHandle): Promise<Envelope>;
   introspect(handle: ClientHandle, subject: string, optionsJson: string | undefined): Promise<Envelope>;
   hello(handle: ClientHandle): Promise<Envelope>;
-  resolve(
-    handle: ClientHandle,
-    key: string,
-    cwd: string,
-    envJson: string | undefined,
-    overridesJson: string | undefined,
-  ): Promise<Envelope>;
   evaluate(
     handle: ClientHandle,
     templateStr: string,
-    cwd: string,
+    cwd: string | undefined,
     envJson: string | undefined,
-    overridesJson: string | undefined,
   ): Promise<Envelope>;
 
   openSession(handle: ClientHandle): SessionHandle;
@@ -64,8 +69,10 @@ export interface Transport {
   sessionGet(
     session: SessionHandle,
     key: string,
-    path: string | undefined,
-    flags: number,
+    cwd: string | undefined,
+    envJson: string | undefined,
+    force: boolean,
+    wait: string | undefined,
   ): Promise<Envelope>;
   sessionPut(
     session: SessionHandle,
@@ -73,10 +80,17 @@ export interface Transport {
     jsonData: string,
     ttl: string | undefined,
     path: string | undefined,
+    persist: boolean,
   ): Promise<Envelope>;
+  sessionRefresh(session: SessionHandle, key: string, path: string | undefined): Promise<Envelope>;
   sessionSetContext(session: SessionHandle, path: string): Promise<Envelope>;
 
-  openWatch(handle: ClientHandle, key: string, path: string | undefined): WatchHandle;
+  openWatch(
+    handle: ClientHandle,
+    key: string,
+    cwd: string | undefined,
+    envJson: string | undefined,
+  ): WatchHandle;
   watchNext(watch: WatchHandle, timeoutMs: number): Promise<WatchNextResult>;
   watchCancel(watch: WatchHandle): void;
   freeWatch(watch: WatchHandle): void;

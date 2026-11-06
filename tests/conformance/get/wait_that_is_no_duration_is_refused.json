@@ -1,0 +1,9 @@
+{
+  "name": "get_wait_that_is_no_duration_is_refused",
+  "description": "A wait that is neither a duration nor \"forever\" is refused in the library's words, the same on every SDK and tier: no SDK reads the wait itself.",
+  "setup": [
+    { "op": "put", "args": { "key": "waited", "data": { "v": 1 } } }
+  ],
+  "test": { "op": "get", "args": { "key": "waited.v", "wait": "soon" } },
+  "expect": { "status": "error", "error_contains": "invalid wait `soon`" }
+}

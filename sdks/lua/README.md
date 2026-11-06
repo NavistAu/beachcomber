@@ -3,7 +3,10 @@
 Lua client for the [beachcomber](https://github.com/NavistAu/beachcomber)
 daemon. A binding over `libbeachcomber`'s C ABI
 (`libbeachcomber-ffi/include/beachcomber.h`), not a hand-rolled socket
-protocol.
+protocol. It follows the SDK API table in
+[`docs/sdk-api.md`](../../docs/sdk-api.md) — the same operations, names,
+value shapes and error kinds as every other SDK — and its test suite checks
+its surface against the table's machine-readable form, `sdks/api.json`.
 
 ---
 
@@ -33,13 +36,29 @@ mysterious 5ms-per-call slowdown. Call `client:transport()` any time you
 need to know which one you got.
 
 **Capability ceiling of the subprocess transport.** `comb` has no CLI
-surface for `hello`, `introspect`, `resolve`, `eval`, or `watch` (the last
-was tried and rejected — see `beachcomber/subprocess_backend.lua`'s header
-comment: piped through `io.popen`, the CLI's stdout buffering means a
-`read("*l")` blocks forever even though the daemon already sent the event).
-Those `Client` methods return `nil, err` with `err.kind == "unsupported"`
-over `subprocess`; get/put/put_null/refresh/status/context all work fully
-over either transport.
+surface for `hello` or `introspect`, and `watch` is refused: `io.popen` has no
+timed read and no cancel, so `next_event(timeout_ms)` and `cancel` could not
+be honoured. Those `Client` methods return `nil, err` with `err.kind ==
+"unsupported"` over `subprocess`; get/put/refresh/status/eval and a session
+all work over either transport. A session over `subprocess` keeps its
+directory between spawns and passes it as `--path`, as the Node SDK's
+subprocess session does. `refresh` over `subprocess` is one `comb refresh
+<key>`, the daemon's op itself, and its refusal (`nothing to refresh: <key>
+has no sources`) is the error message. `get` over `subprocess` is one `comb
+get -f json <key>`, so its answer is the resolver's: the rendered value, the
+directory chain up to `$HOME`, `$HOME` as the global entry, force, the wait, the
+daemon's refusals. `eval` is one `comb eval -f json -- <template>`; a
+template that does not compile is `err.kind == "server_error"` there, where
+the ffi tier reports `parse_error`.
+
+The spawned `comb` renders as the ffi tier does. A call's `opts.env` is its
+whole environment (the command runs as `env -i K=V …`, with the absolute path
+to `comb`; with no `env` it is this process's), so `env.*` and an `exec()`
+child see exactly the map. `--socket` carries `socket_path`, else
+`$BEACHCOMBER_SOCKET`, so the map cannot point the tier at another daemon.
+`--color never` goes when the render's environment sets a non-empty
+`NO_COLOR`, else `--color always`. And `--no-exec` goes unless the client was
+connected with `exec = true`.
 
 ---
 
@@ -81,31 +100,30 @@ end
 
 print(client:transport())  -- "ffi" or "subprocess"
 
--- get a single field
-local result = client:get('git.branch', '/my/repo')
-if result:is_hit() then
-  print(result.data)    -- "main"
-  print(result.age_ms)  -- 1234
-  print(result.stale)   -- false
-end
+-- get a single field: what `comb get git.branch` prints there, nil on a miss
+local branch, err = client:get('git.branch', { cwd = '/my/repo' })
+if branch then print(branch) end  -- "main"
 
--- get a full provider (returns object)
-local r = client:get('git', '/my/repo')
-if r:is_hit() then
-  print(r:get_str('branch'))  -- "main"
-end
+-- get a full provider (returns a table)
+local git = client:get('git', { cwd = '/my/repo' })
+if git then print(git.branch) end  -- "main"
+
+-- the template itself, unrendered: a facet, read like any key
+local tpl = client:get('git:template.branch')
 
 -- refresh (force recompute)
-client:refresh('git', '/my/repo')
+client:refresh('git', { path = '/my/repo' })
 
--- default path — applies to subsequent queries made without an explicit path
-client:set_context('/my/repo')
-local r2 = client:get('git.branch')
+-- a session keeps a directory of its own for the calls that name none
+local s = client:session()
+s:set_context('/my/repo')
+local branch2 = s:get('git.branch')
+s:close()
 
 -- daemon cache status rows
 local rows = client:status()
 for _, row in ipairs(rows or {}) do
-  print(row.provider, row.field, row.age_ms, row.stale)
+  print(row.provider, row.field, row.age_ms)
 end
 
 client:close()
@@ -115,13 +133,32 @@ client:close()
 
 ```lua
 local client = comb.connect({
-  socket_path = '/run/user/1000/beachcomber/sock',  -- ffi transport
+  socket_path = '/run/user/1000/beachcomber/sock',
   timeout_ms  = 2000,                                -- ffi transport
+  connect_timeout_ms = 0,                            -- ffi transport
   autostart   = true,                                -- ffi transport
-  library_path = '/opt/beachcomber/lib/libbeachcomber.dylib', -- ffi: override discovery
+  exec        = true,                                -- templates may call exec()
+  library_path = '/opt/beachcomber/lib/libbeachcomber.dylib', -- ffi: as $BEACHCOMBER_LIB, the only candidate
   comb_bin     = '/opt/beachcomber/bin/comb',                 -- subprocess: override discovery
 })
 ```
+
+The client options are passed to the library's `bc_client_new` as they are
+given; the SDK has no defaults of its own, so an option left out is the
+library's default.
+
+| Option | Library default | Meaning |
+|---|---|---|
+| `socket_path` | `$BEACHCOMBER_SOCKET`, else `/tmp/beachcomber-<uid>/sock` | The daemon's socket. |
+| `timeout_ms` | 250 | How long one read or write on the socket may take. 0 is refused. |
+| `connect_timeout_ms` | 1500 | How long connecting keeps retrying a socket nobody answers yet; 0 is a single attempt. |
+| `autostart` | on | Start a daemon when none serves the auto-discovered socket. |
+| `exec` | off | Whether a template this client renders may call `exec()`; a template that calls it without the option fails with `exec() is disabled in this context`. |
+
+The subprocess transport cannot bound a spawned `comb` (`io.popen` has no
+timeout, and `comb` no connect-budget flag), so `comb.connect` refuses
+`timeout_ms` and `connect_timeout_ms` there: it returns `nil` and an
+`unsupported` Error naming the ffi transport.
 
 ---
 
@@ -136,90 +173,110 @@ documented at the top of `beachcomber/client.lua`.
 
 ### `Client:transport()` → `"ffi" | "subprocess"`
 
-### `Client:get(key [, path])` → `Result | nil, Error`
+### `Client:get(key [, opts])` → `value | nil, Error`
 
-Read a cached value. `key` is `"provider"` or `"provider.field"`. `path`
-overrides `set_context()`'s default, if any.
+The value `comb get` prints for this key, cwd and env (`bc_get`): the
+daemon holds the templates (`<provider>:template`, seeded from
+configuration or `put`) and the client renders them. A plain field is its
+cached value, a templated one is rendered, and a bare provider name is the
+whole merged namespace; a miss is `nil` with no `Error`. The unrendered
+halves are facets, read like any key: `p:template.x` is the template as
+stored, `p:put.x` and `p:source.x` those layers' values. `key` is
+`"provider"` or `"provider.field"`.
 
-### `Client:get_with_flags(key, path, force, wait)` → `Result | nil, Error`
+| `opts` field | Meaning |
+|---|---|
+| `cwd` | The directory the read addresses (`~` is home, a relative path is against this process's working directory). Default: the global entry. |
+| `env` | The caller's environment for `env.*` refs. `nil` (the default) is the calling process's environment, as `comb` renders. |
+| `force` | Re-execute every Source the read demands first (`comb get --force`). |
+| `wait` | How long to wait for a run the read needs before answering what is stored (`comb get --wait`): a duration (`"0"`, `"50ms"`, `"2s"`) or `"forever"`; anything else is `"parse_error"`, on both transports. `nil` (the default): a stored record waits its Source's budget, a cold read waits for its run. |
 
-Like `get`, with `bc_get`'s `BC_GET_FORCE` / `BC_GET_WAIT` flags.
+### `Client:refresh(key [, opts])` → `true | nil, Error`
 
-### `Client:refresh(key [, path])` → `true | nil, Error`
-
-Force the daemon to recompute `key`.
-
-### `Client:set_context(path)` → `true`
-
-Set the default path used by later calls that don't pass one explicitly.
-Client-side (works identically over both transports).
+Re-execute the Sources `key` demands — every Source of the namespace for a
+bare `provider`, the one Source owning the field for `provider.field`. A key
+that names no Source (a `put`-created namespace, a facet key, an unknown
+name, a field no Source owns) is an error. Over `ffi` this is `bc_refresh`;
+over `subprocess` it is one `comb refresh <key>`. `opts.path` is the
+directory; `nil` is the global entry.
 
 ### `Client:status()` → `table[] | nil, Error`
 
-Cache rows (one per warm cache entry): `provider`, `field`, `path`,
-`value`, `age_ms`, `stale`, plus lifecycle fields.
+Cache rows (one per warm cache entry), with the fields
+`libbeachcomber::protocol::CacheRow` defines: `provider`, `path`
+(`nil` for the global entry), `source`, `field`, `value`, `age_ms`,
+plus lifecycle fields. A status that cannot be read is
+`nil, Error` on either transport, never an empty list.
 
-### `Client:put(key, data [, ttl [, path]])` → `true | false, Error`
-### `Client:put_null(key [, path])` → `true | false, Error`
+### `Client:put(key, data [, opts])` → `true | nil, Error`
 
-Write to / clear a virtual provider's cached value.
+Write a static-data entry's value. `data = nil` (or `beachcomber.null`)
+removes the node. `opts.ttl` (e.g. `"30s"`), `opts.path` (`nil`: the
+global entry), `opts.persist` (keep the put across a daemon restart, best effort).
 
 ### `Client:hello()` → `table {protocol_version, daemon_version} | nil, Error`
-### `Client:introspect(subject [, duration_secs])` → `table {subject, daemon, other} | nil, Error`
+### `Client:introspect(subject [, opts])` → `table {subject, daemon} or {subject, other} | nil, Error`
 
-ffi transport only — `Error{kind="unsupported"}` over subprocess.
+`opts.duration_secs` is the `procs` subject's only option. ffi transport
+only — `Error{kind="unsupported"}` over subprocess.
 
-### `Client:resolve(key [, opts])` → `value | nil, Error`
 ### `Client:eval(template_str [, opts])` → `value | nil, Error`
 
-Client-side field/path-expression resolution (`bc_resolve`/`bc_eval`) —
-the same evaluator `comb get`'s resolution layer uses, exposed so a caller
-never has to reimplement it. `opts.cwd` (default: the context path, then
-`"."`), `opts.env`, `opts.virtual` (expression overrides, keyed
-`"provider.field"` or a bare provider name — see
-`tests/conformance/README.md`'s `resolve` fixture shape). ffi transport
-only.
-
-`template_str` accepts a bare expression, a single `{{ expr }}` tag, or
-literal text/several tags — the first two keep the expression's natural
-type, the third is always a string.
-
-### `Client:watch(key [, path])` → `WatchStream | nil, Error`
-
-ffi transport only. `stream:next_event([timeout_ms])` → event table
-`{data, age_ms, stale}`, or `nil` on eof/cancelled, or `nil, Error` on a
-real error; `-1` (default) blocks indefinitely, `0` polls, `>0` waits that
-long. `stream:cancel()`, `stream:close()`, `stream:each()` for a for-loop.
-
-### `Client:session()` → session object | nil, Error
-
-Advanced: a persistent connection with true server-side context
-(`bc_session_*`). Most callers want `set_context()` instead — it works
-over either transport by keeping the default path client-side. ffi
+Renders a template that is stored nowhere — the same value `comb eval`
+prints (`bc_eval`), every ref resolved as it would be inside a stored
+template, so `eval("{{ p.f }}")` and `get("p.f")` agree. `opts.cwd` and
+`opts.env` as `Client:get` takes them (no `cwd` is the global entry). ffi
 transport only.
 
-### `Client:close()`
+`template_str` accepts a single `{{ expr }}` tag, or literal text/several
+tags — the former keeps the expression's natural type, the latter is
+always a string (a source with no tags at all is its literal text).
 
-### `Result`
+### `Client:watch(key [, opts])` → `WatchStream | nil, Error`
 
-| Field | Type | Description |
-|---|---|---|
-| `data` | any | Cached value; `nil` on a miss |
-| `age_ms` | number | Age of the cached value in milliseconds |
-| `stale` | boolean | True when past TTL but no fresh value yet |
+ffi transport only. Watches the key's *value* — what `Client:get`
+answers for it — so a template edited under the watch fires it just as a
+changed cache record does. `opts.cwd` and `opts.env` as `Client:get`
+takes them.
 
-| Method | Returns | Description |
-|---|---|---|
-| `result:is_hit()` | boolean | True when `data ~= nil` |
-| `result:get_str(field)` | string\|nil, error | Get a string field from object data |
+`stream:next_event([timeout_ms])` → the event table `{data}` carrying the
+value (`nil` data is a miss, not the end); `nil` with no Error once the
+stream has ended (the daemon closed it, or it was cancelled); `nil, Error`
+of kind `"timeout"` when `timeout_ms` ran out with no event; `nil, Error`
+when the stream failed. No `timeout_ms` waits indefinitely, `0` polls.
+`stream:cancel()` ends the stream (safe while another thread waits in
+`next_event`); `stream:close()` cancels it and releases the handle; both
+return `true`. `for event in stream:each() do … end` iterates it, and
+raises the Error if the stream fails.
+
+### `Client:session()` → `Session | nil, Error`
+
+A session: one connection (`bc_session_*`) and a directory of its own.
+Over `subprocess` there is no connection to keep, and the session remembers
+its directory between spawns.
+
+| Method | Answers |
+|---|---|
+| `s:set_context(path)` | `true`. Later calls that name no directory address `path`. |
+| `s:get(key [, opts])` | As `Client:get`; no `opts.cwd` is the session's directory, else the global entry. |
+| `s:put(key, data [, opts])` | As `Client:put`; no `opts.path` is the session's directory. |
+| `s:refresh(key [, opts])` | As `Client:refresh`; no `opts.path` is the session's directory. |
+| `s:close()` | `true`. |
+
+### `Client:close()` → `true`
 
 ### `Error`
 
-Every failing call returns `nil, Error` (or `false, Error` for
-put/put_null). `Error.kind` is a machine-readable slug mirroring the ABI
-envelope's `error.kind` (`"server_error"`, `"daemon_not_running"`,
-`"unsupported"` for a capability the active transport lacks, ...);
-`Error.message` is human-readable; `tostring(err)` gives both.
+Every method returns its value or `nil, Error`; a miss is `nil` with no
+Error, and a method that answers nothing (`put`, `refresh`,
+`set_context`, `close`) returns `true`. An Error carries `kind`, a slug
+from `Error.KINDS` (the table's: the ABI's `daemon_not_running`,
+`connection_failed`, `io_error`, `parse_error`, `server_error`, `timeout`,
+`busy`, `panic`, and this SDK's own
+`library_not_found`, `library_symbol` and `unsupported`); `message`, the
+ABI's message as it came; and `library_version`, the loaded library's
+`bc_version()` (`nil` over `subprocess`, which loads none).
+`tostring(err)` gives kind and message. Branch on `kind`.
 
 ---
 
@@ -227,23 +284,36 @@ envelope's `error.kind` (`"server_error"`, `"daemon_not_running"`,
 
 ### ffi transport: library discovery
 
-1. `$BEACHCOMBER_LIB`
-2. `../lib/<platform name>` relative to the `comb` resolved on `$PATH`
-   (the Homebrew-style `bin/` + `lib/` layout — `comb` and the library
-   ship together, so the one beside the `comb` you'd actually run is the
-   matching one)
-3. the platform default dynamic-linker search path
+The ffi transport finds `libbeachcomber` by the rule every SDK follows
+([`docs/sdk-api.md`](https://github.com/NavistAu/beachcomber/blob/main/docs/sdk-api.md#library-discovery),
+"Library discovery"). The file is `libbeachcomber.dylib` on macOS and
+`libbeachcomber.so` on every other platform, and the candidates are, in
+order:
 
-Every candidate tried is remembered: if none load, the error names all of
-them, in order — a missing library is a broken install, not a silent
-downgrade to `subprocess` (see "Transport" above). Every symbol the ABI
-declares is verified at load time, not on first use; a missing symbol's
-error names the symbol and the loaded library's `bc_version()`, so a
-version-skew install error is diagnosable at a glance.
+1. `$BEACHCOMBER_LIB`, when it is set and not empty. It is then the only
+   candidate: a path set on purpose that does not load is an error, not a
+   reason to load some other library. `opts.library_path` is the same thing
+   for a caller that cannot set the environment (standard Lua has no
+   `setenv`).
+2. Beside `comb`: `<dir>/../lib/<file>`, where `<dir>` is the directory of
+   the first executable `comb` on `$PATH`, its symlinks resolved. A Homebrew
+   `comb` is a symlink into the Cellar, and the library sits in the Cellar
+   beside it; a `.deb` or `.rpm` puts them in `/usr/bin` and `/usr/lib`.
+3. The system loader, given the bare file name.
+
+The first candidate that loads is used. When none does, the error is
+`library_not_found`, naming every candidate tried and why each failed — a
+missing library is a broken install, not a silent downgrade to `subprocess`.
+Every symbol the ABI
+declares is verified at load time, not on first use; a missing symbol is a
+`library_symbol` Error naming the symbol, with the loaded library's
+`bc_version()` as its `library_version`, so a version-skew install error is
+diagnosable at a glance.
 
 ### subprocess transport: `comb` discovery
 
-The `comb` binary is found on `$PATH` (or via `opts.comb_bin`). Standard
+The `comb` binary is the first executable `comb` on `$PATH` (or
+`opts.comb_bin`), the same one library discovery starts from. Standard
 Lua has no `setenv`, so `opts.socket_path` (or the daemon's own discovery,
 if unset) is threaded into each spawned `comb` invocation's command line
 rather than the process environment.
@@ -255,8 +325,8 @@ rather than the process environment.
 ```
 beachcomber/
   init.lua               -- entry point, transport selection, comb.connect()
-  client.lua              -- transport-agnostic Client and Result
-  error.lua                -- idiomatic Error (kind + message)
+  client.lua              -- transport-agnostic Client and Session
+  error.lua                -- Error (kind, message, library_version) and Error.KINDS
   watch_stream.lua         -- WatchStream wrapping a backend watch handle
   ffi.lua                  -- LuaJIT ffi: cdef, library discovery/load/symbol check
   ffi_backend.lua           -- backend implementation over ffi.lua
@@ -272,11 +342,13 @@ beachcomber/
 ```sh
 cd sdks/lua
 luajit test/test_runner.lua   # exercises the ffi transport's supporting code
-lua test/test_runner.lua      # PUC Lua — same suite, mock-backend tests only
+lua test/test_runner.lua      # PUC Lua — same suite; the ffi-only tests skip
 ```
 
-Unit tests run against a mock backend (no live daemon required). For the
-full protocol conformance suite against a real daemon:
+Unit tests run against a mock backend (no live daemon required); the
+subprocess backend's `get` tests spawn a `comb daemon` from `$COMB_BIN` or
+the workspace's debug build, under both interpreters. For the full
+protocol conformance suite against a real daemon:
 
 ```sh
 TMPDIR=/tmp COMB_BIN=/path/to/comb luajit sdks/lua/conformance_runner.lua   # ffi
@@ -300,9 +372,9 @@ vim.api.nvim_create_autocmd('VimLeavePre', {
 })
 
 local function git_branch()
-  local result, err = client:get('git.branch', vim.fn.getcwd())
-  if not result or not result:is_hit() then return '' end
-  return ' ' .. result.data
+  local branch = client:get('git.branch', { cwd = vim.fn.getcwd() })
+  if not branch then return '' end
+  return ' ' .. branch
 end
 ```
 

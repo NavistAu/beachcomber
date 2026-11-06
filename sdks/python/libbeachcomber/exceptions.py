@@ -1,10 +1,11 @@
-"""Exceptions raised by the beachcomber client.
+"""Exceptions raised by the beachcomber client: one per error kind of the SDK
+API table (``docs/sdk-api.md``).
 
 Every envelope the C ABI returns with ``ok: false`` carries a stable
-``error.kind`` slug (see ``libbeachcomber-ffi/src/envelope.rs``). This module
-maps each slug to an idiomatic Python exception subclass with that slug
-preserved as a machine-readable ``.kind`` attribute — callers should not
-need to string-match ``str(exc)``.
+``error.kind`` slug. Each slug is one :class:`CombError` subclass here, named
+for it, with the slug as its ``.kind`` — callers should not need to
+string-match ``str(exc)``. Three kinds are this SDK's own:
+``library_not_found``, ``library_symbol`` and ``unsupported``.
 """
 
 from __future__ import annotations
@@ -16,116 +17,113 @@ class CombError(Exception):
     """Base exception for all beachcomber client errors.
 
     Attributes:
-        kind: Machine-readable error kind slug. Matches the C ABI envelope's
-            ``error.kind`` field for errors raised by the daemon or the
-            native library; ``"library_discovery"`` / ``"library_symbol"``
-            for binding-side failures that never reach the ABI.
+        kind: The error kind slug: the C ABI envelope's ``error.kind`` for a
+            failure the library reports, or one of this SDK's own.
+        message: The ABI's message, unchanged (``str(exc)`` is the same), or
+            this SDK's own for a failure it raises itself.
+        library_version: The loaded library's ``bc_version()``, when one is
+            loaded; ``None`` otherwise.
     """
 
     kind: Optional[str] = None
 
-
-class LibraryDiscoveryError(CombError):
-    """No candidate location yielded a loadable ``libbeachcomber``."""
-
-    kind = "library_discovery"
-
-
-class LibrarySymbolError(CombError):
-    """The loaded library is missing a required ``bc_*`` symbol."""
-
-    kind = "library_symbol"
+    def __init__(self, message: str, library_version: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.library_version = library_version
 
 
-class DaemonNotRunning(CombError):
-    """The daemon socket could not be reached (and autostart failed/disabled)."""
+class DaemonNotRunningError(CombError):
+    """No daemon answers, and none was started."""
 
     kind = "daemon_not_running"
 
 
 class ConnectionFailedError(CombError):
-    """The connection to the daemon failed for a reason short of "not running"."""
+    """An explicit ``socket_path`` could not be connected to."""
 
     kind = "connection_failed"
 
 
-class ProtocolError(CombError):
-    """I/O failure, or a response that could not be parsed / was malformed.
+class IoError(CombError):
+    """A read or write on the socket failed."""
 
-    Covers both the ABI's ``io_error`` and ``parse_error`` kinds, plus
-    binding-side envelope decoding failures (``kind`` left ``None`` for the
-    latter).
-    """
+    kind = "io_error"
 
-    def __init__(self, message: str, kind: Optional[str] = None) -> None:
-        self.kind = kind
-        super().__init__(message)
+
+class ParseError(CombError):
+    """A request, a response or a template could not be read."""
+
+    kind = "parse_error"
 
 
 class ServerError(CombError):
-    """The daemon returned ``ok: false`` for reasons of its own (bad request, etc.).
-
-    Attributes:
-        message: The error string from the daemon.
-    """
+    """The daemon refused the request, or a template failed to render."""
 
     kind = "server_error"
 
-    def __init__(self, message: str) -> None:
-        self.message = message
-        super().__init__(message)
-
 
 class TimeoutError(CombError):  # noqa: A001 - deliberately mirrors the ABI's "timeout" kind
-    """The operation timed out."""
+    """A read or write ran out ``timeout_ms``, or ``next_event`` ran out its
+    ``timeout_ms``."""
 
     kind = "timeout"
 
 
 class BusyError(CombError):
-    """A session/watch handle is already in use by another caller."""
+    """A session or watch is in use by another caller."""
 
     kind = "busy"
 
 
-class BadFlagsError(CombError):
-    """An unrecognised bit was set in a ``get`` flags argument."""
-
-    kind = "bad_flags"
-
-
 class PanicError(CombError):
-    """The native library panicked; caught at the FFI boundary."""
+    """The library panicked; the panic was caught at the boundary."""
 
     kind = "panic"
 
 
-class VersionSkewError(CombError):
-    """The daemon's reported version does not match the loaded library's."""
+class LibraryNotFoundError(CombError):
+    """No ``libbeachcomber`` was found where discovery looks."""
 
-    kind = "version_skew"
+    kind = "library_not_found"
+
+
+class LibrarySymbolError(CombError):
+    """The library found lacks a function this SDK calls."""
+
+    kind = "library_symbol"
+
+
+class UnsupportedError(CombError):
+    """A transport cannot do this operation. This SDK has only the one
+    (native) transport, so it never raises this; it exists so every SDK has
+    the same error kinds."""
+
+    kind = "unsupported"
 
 
 _KIND_TO_EXCEPTION = {
-    "daemon_not_running": DaemonNotRunning,
-    "connection_failed": ConnectionFailedError,
-    "server_error": ServerError,
-    "timeout": TimeoutError,
-    "busy": BusyError,
-    "bad_flags": BadFlagsError,
-    "panic": PanicError,
-    "version_skew": VersionSkewError,
+    cls.kind: cls
+    for cls in (
+        DaemonNotRunningError,
+        ConnectionFailedError,
+        IoError,
+        ParseError,
+        ServerError,
+        TimeoutError,
+        BusyError,
+        PanicError,
+        LibraryNotFoundError,
+        LibrarySymbolError,
+        UnsupportedError,
+    )
 }
 
 
 def exception_for_envelope_error(
     kind: Optional[str], message: str, lib_version: str
 ) -> CombError:
-    """Build the idiomatic exception for an ``ok: false`` envelope.
-
-    Every raised error includes the loaded library's ``bc_version()`` so a
-    version-skew diagnosis is possible from the message alone, per the
-    Phase-4 binding contract.
+    """Build the exception for an ``ok: false`` envelope.
 
     Args:
         kind: The envelope's ``error.kind`` slug (may be unrecognised, e.g.
@@ -134,16 +132,12 @@ def exception_for_envelope_error(
         lib_version: The loaded library's ``bc_version()`` string.
 
     Returns:
-        A :class:`CombError` subclass instance with ``.kind`` set.
+        The kind's :class:`CombError` subclass, or :class:`CombError` itself
+        with ``.kind`` set for a kind this SDK does not know.
     """
-    full_message = f"{message} (beachcomber lib version: {lib_version})"
-    if kind in ("io_error", "parse_error"):
-        return ProtocolError(full_message, kind=kind)
     cls = _KIND_TO_EXCEPTION.get(kind)  # type: ignore[arg-type]
     if cls is not None:
-        if cls is ServerError:
-            return ServerError(full_message)
-        return cls(full_message)
-    err = CombError(full_message)
+        return cls(message, lib_version)
+    err = CombError(message, lib_version)
     err.kind = kind
     return err

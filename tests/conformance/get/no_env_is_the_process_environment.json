@@ -1,0 +1,10 @@
+{
+  "name": "get_no_env_is_the_process_environment",
+  "description": "A get that passes no env renders env.* from the calling process, as comb get does: HOME is set in any runner's process.",
+  "cwd": "/nonexistent/proj",
+  "setup": [
+    { "op": "put", "args": { "key": "noenvhome:template", "data": { "home": "{{ env.HOME }}" } } }
+  ],
+  "test": { "op": "get", "args": { "key": "noenvhome.home" } },
+  "expect": { "status": "hit", "data_type": "string" }
+}

@@ -1,43 +1,80 @@
 pub mod config_watch;
+pub mod defaults;
 pub mod lifecycle;
+pub mod seed;
 
-use crate::boundaries::spawn::{DaemonSpawner, RealDaemonSpawner};
 use crate::cache::Cache;
 use crate::config::Config;
-use crate::provider::registry::ProviderRegistry;
+use crate::provider::registry::{ProviderRegistry, RegistryHandle};
 use crate::scheduler::{Scheduler, SchedulerMessage};
 use crate::server::Server;
 use crate::watcher_registry::WatcherRegistry;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-// ---------------------------------------------------------------------------
-// Pure-logic re-exports for callers that import directly from `crate::daemon`.
-// ---------------------------------------------------------------------------
-
-/// Derive the PID-file path for a given socket path.
-///
-/// Delegates to the pure implementation in `lifecycle`.
-pub fn pid_path_for_socket(socket_path: &Path) -> PathBuf {
-    lifecycle::pid_path_for_socket(socket_path)
-}
-
-// ---------------------------------------------------------------------------
-// OS-bound: socket connectivity check
-// ---------------------------------------------------------------------------
-
-pub fn is_daemon_running(socket_path: &Path) -> bool {
-    std::os::unix::net::UnixStream::connect(socket_path).is_ok()
+/// Load the persisted puts in `file` and put each again, before the socket is
+/// served, with the ttl it has left; one that has expired is gone. A put the
+/// daemon now refuses is logged and dropped. Best effort: a missing file is
+/// nothing to replay, an unreadable or invalid one a warning
+/// ([`crate::persist::PutStore::open`]).
+async fn replay_persisted_puts(
+    cache: &Arc<Cache>,
+    registry: &RegistryHandle,
+    scheduler: &crate::scheduler::SchedulerHandle,
+    file: PathBuf,
+) {
+    let (store, entries) = crate::persist::PutStore::open(file);
+    cache.set_put_store(store);
+    let registry = registry.current();
+    let now = crate::persist::now_ms();
+    for entry in entries {
+        let ttl = match entry.remaining_secs(now) {
+            None => None,
+            Some(Some(left)) => Some(format!("{left}s")),
+            Some(None) => continue,
+        };
+        let replayed = crate::server::put(
+            cache,
+            &registry,
+            Some(scheduler),
+            &entry.key,
+            &entry.data,
+            ttl.as_deref(),
+            entry.path.as_deref(),
+            true,
+        )
+        .await;
+        if !replayed.ok {
+            warn!(
+                "persisted put {} dropped: {}",
+                entry.key,
+                replayed.error.unwrap_or_default()
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // OS-bound: in-process daemon startup (used by tests and embedded mode)
 // ---------------------------------------------------------------------------
 
-pub fn start_in_process(socket_path: PathBuf, config: Config) -> tokio::task::JoinHandle<()> {
+/// Resolves once the daemon's socket is bound and connectable. If the daemon
+/// refuses to start (config validation, bind failure) the sender is dropped and
+/// awaiting this yields `Err`, so a caller never waits on a daemon that is not
+/// coming.
+pub type DaemonReady = tokio::sync::oneshot::Receiver<()>;
+
+/// Start a daemon on the running runtime. Its environment is the process's
+/// as it stands: the env file is not loaded here, since nothing may set the
+/// environment once threads run. A caller that wants it calls
+/// [`Config::load_env_file`] before starting its runtime, as `comb daemon` does.
+pub fn start_in_process(
+    socket_path: PathBuf,
+    config: Config,
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
     let cancel = CancellationToken::new();
     start_in_process_with_cancel(socket_path, config, cancel)
 }
@@ -46,7 +83,7 @@ pub fn start_in_process_with_cancel(
     socket_path: PathBuf,
     config: Config,
     cancel: CancellationToken,
-) -> tokio::task::JoinHandle<()> {
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
     start_in_process_with_reaper(socket_path, config, cancel, None)
 }
 
@@ -57,10 +94,88 @@ pub fn start_in_process_with_reaper(
     config: Config,
     cancel: CancellationToken,
     reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        run_daemon_with_cancel(socket_path, config, cancel, reaper).await;
-    })
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
+    start_in_process_inner(socket_path, config, cancel, reaper, None, None)
+}
+
+/// How often a test daemon's file watching polls (the polling seam below):
+/// a stat of each watched path, so a test sees a write within milliseconds.
+#[cfg(any(test, feature = "test-helpers"))]
+pub const TEST_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Test seam: an in-process daemon whose file watching — its providers' and
+/// its own configuration's — polls every [`TEST_POLL_INTERVAL`] instead of
+/// registering kernel watches, with the watch self-test skipped. Kernel
+/// FSEvents registration costs ~1.2s per `watch()` call on macOS — paid once
+/// by the self-test and again per watched path — so a test that is not about
+/// the native backend should not start one.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn start_in_process_polling(
+    socket_path: PathBuf,
+    config: Config,
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
+    start_in_process_polling_with(socket_path, config, CancellationToken::new(), None)
+}
+
+/// [`start_in_process_polling`] with a cancellation token and reaper health.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn start_in_process_polling_with(
+    socket_path: PathBuf,
+    config: Config,
+    cancel: CancellationToken,
+    reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
+    start_in_process_inner(
+        socket_path,
+        config,
+        cancel,
+        reaper,
+        Some(TEST_POLL_INTERVAL),
+        None,
+    )
+}
+
+/// Test seam: [`start_in_process_polling`] whose `introspect procs` samples
+/// process starts through `procs` instead of the system's tracer, which
+/// takes the whole sampling window and, unprivileged, sees nothing.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn start_in_process_polling_sampling(
+    socket_path: PathBuf,
+    config: Config,
+    procs: Arc<dyn crate::boundaries::proc_snap::ProcessSnapshotter>,
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
+    start_in_process_inner(
+        socket_path,
+        config,
+        CancellationToken::new(),
+        None,
+        Some(TEST_POLL_INTERVAL),
+        Some(procs),
+    )
+}
+
+fn start_in_process_inner(
+    socket_path: PathBuf,
+    config: Config,
+    cancel: CancellationToken,
+    reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
+    polling_watch: Option<std::time::Duration>,
+    procs: Option<Arc<dyn crate::boundaries::proc_snap::ProcessSnapshotter>>,
+) -> (tokio::task::JoinHandle<()>, DaemonReady) {
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        run_daemon_with_cancel(
+            socket_path,
+            config,
+            cancel,
+            reaper,
+            ready_tx,
+            polling_watch,
+            procs,
+        )
+        .await;
+    });
+    (task, ready_rx)
 }
 
 async fn run_daemon_with_cancel(
@@ -68,44 +183,27 @@ async fn run_daemon_with_cancel(
     config: Config,
     cancel: CancellationToken,
     reaper: Option<std::sync::Arc<crate::singleton::ReaperHealth>>,
+    ready: tokio::sync::oneshot::Sender<()>,
+    polling_watch: Option<std::time::Duration>,
+    procs: Option<Arc<dyn crate::boundaries::proc_snap::ProcessSnapshotter>>,
 ) {
-    // Load env file before anything else — providers need these vars
-    let env_count = config.load_env_file();
-    if env_count > 0 {
-        info!("Loaded {} environment variables from env file", env_count);
-    }
-
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let registry = Arc::new(ProviderRegistry::with_config(&config));
-
-    // Validate provider config blocks against registered sources.
-    // Errors → refuse to start. Warnings → log and continue.
-    {
-        let known_providers = registry.provider_names();
-        let known_sources: std::collections::HashMap<String, Vec<String>> = known_providers
-            .iter()
-            .filter_map(|p| {
-                registry
-                    .provider_sources(p)
-                    .map(|sources| (p.clone(), sources.iter().map(|s| s.name.clone()).collect()))
-            })
-            .collect();
-        let (warnings, errors) = config.validate_providers(&known_providers, &known_sources);
-        for w in &warnings {
-            tracing::warn!("{}", w);
-        }
-        if !errors.is_empty() {
-            for e in &errors {
-                tracing::error!("{}", e);
-            }
-            tracing::error!(
-                "Config validation failed with {} error(s). Daemon refusing to start.",
-                errors.len()
-            );
-            return;
-        }
+    // The daemon's own environment: what every config Source's lines see as
+    // `env`, and what its commands inherit. Inside a running runtime nothing
+    // may set it, so the env file is already in it: `comb daemon` loaded it
+    // before its runtime started (an embedder does the same, or goes without).
+    let vars: std::collections::HashMap<String, String> = std::env::vars().collect();
+    let load = ProviderRegistry::load(&config, &vars);
+    // Every error the configuration has, at once.
+    if !load.errors.is_empty() {
+        refuse_to_start(&load.errors);
+        return;
     }
+    for w in &load.warnings {
+        warn!("{w}");
+    }
+    let registry = load.registry.share(&cache);
 
     let (handle, mut scheduler) = Scheduler::new(
         cache.clone(),
@@ -113,13 +211,37 @@ async fn run_daemon_with_cancel(
         config.clone(),
         watchers.clone(),
     );
-    // Daemon path: probe fs-event delivery before trusting the native backend
-    // (canon provider_source.md §"Watch backend health").
-    scheduler.self_test_watch_backend();
+
+    // Facet tables seed their namespaces before the socket is served, so the
+    // first `get` already sees them, and the same files are watched for changes:
+    // an edit under `providers` reloads in place, a bare `[daemon]` or
+    // `[client]` key cancels `cancel` and the daemon restarts. The seed is
+    // the one the load planned.
+    let registry = RegistryHandle::new(registry);
+    seed::spawn_config_seeding(
+        &cache,
+        &registry,
+        &config,
+        load.seed,
+        &cancel,
+        polling_watch,
+        &handle,
+    );
+
+    match polling_watch {
+        // Daemon path: probe fs-event delivery before trusting the native
+        // backend (canon provider_source.md §"Watch backend health").
+        None => scheduler.self_test_watch_backend(),
+        Some(interval) => scheduler.use_polling_watcher(interval),
+    }
     let heartbeat = scheduler.heartbeat();
 
     let scheduler_handle = handle.clone();
     let scheduler_task = tokio::spawn(async move { scheduler.run().await });
+
+    if let Some(file) = config.puts_file() {
+        replay_persisted_puts(&cache, &registry, &handle, file.to_path_buf()).await;
+    }
 
     // Start watchdog if configured.
     let watchdog_task = spawn_watchdog(&config, heartbeat, cancel.clone());
@@ -135,29 +257,111 @@ async fn run_daemon_with_cancel(
     if let Some(health) = reaper {
         server = server.with_reaper_health(health);
     }
+    if let Some(procs) = procs {
+        server = server.with_process_snapshotter(procs);
+    }
+
+    // Bind before serving so readiness can be signalled: whoever holds the
+    // `DaemonReady` connects the moment the socket is live instead of guessing.
+    let bound = server.bind();
+    if bound.is_ok() {
+        let _ = ready.send(());
+    }
 
     tokio::select! {
-        result = server.run() => {
+        result = async { server.serve(bound?).await } => {
             if let Err(e) = result {
                 tracing::error!("Server error: {}", e);
             }
-            // Server returned (bind failure or accept-loop error): shut the
-            // scheduler down too, or `scheduler_task.await` below blocks
-            // forever and the process lingers, unkillable by SIGTERM (the
-            // cancel token has no remaining observer once this select ends).
-            scheduler_handle.send(SchedulerMessage::Shutdown).await;
+            // Server returned (bind failure or accept-loop error): the
+            // scheduler goes too (the cancel token has no remaining observer
+            // once this select ends).
         }
         _ = cancel.cancelled() => {
             info!("Shutdown signal received");
-            scheduler_handle.send(SchedulerMessage::Shutdown).await;
         }
     }
 
     if let Some(task) = watchdog_task {
         task.abort();
     }
-    let _ = scheduler_task.await;
-    info!("Daemon shut down cleanly");
+    if stop_scheduler(&scheduler_handle, scheduler_task).await {
+        info!("Daemon shut down cleanly");
+    } else {
+        warn!("the scheduler did not stop within {SCHEDULER_STOP:?}; leaving it");
+    }
+}
+
+/// How long a stopping daemon waits for its scheduler, which ends the moment
+/// it reads its message. Past this it is wedged, and the process goes without
+/// it: a daemon that cannot be stopped is one its supervisor must kill.
+const SCHEDULER_STOP: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Ask the scheduler to stop and wait for it, for [`SCHEDULER_STOP`] at most:
+/// whether it did.
+async fn stop_scheduler(
+    handle: &crate::scheduler::SchedulerHandle,
+    task: tokio::task::JoinHandle<()>,
+) -> bool {
+    handle.send(SchedulerMessage::Shutdown).await;
+    tokio::time::timeout(SCHEDULER_STOP, task).await.is_ok()
+}
+
+/// How long a daemon told to stop has to do so. Past [`SCHEDULER_STOP`], so a
+/// stop that is only slow finishes on its own.
+pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Turn SIGINT and SIGTERM into `cancel`, on a thread and a runtime of their
+/// own, so a daemon whose workers are all stuck still hears them. A daemon
+/// still running `grace` later gets `overrun`.
+pub fn spawn_signal_thread(
+    cancel: CancellationToken,
+    grace: std::time::Duration,
+    overrun: impl FnOnce() + Send + 'static,
+) -> std::io::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let (mut sigint, mut sigterm) = {
+        let _entered = rt.enter();
+        (
+            signal(SignalKind::interrupt())?,
+            signal(SignalKind::terminate())?,
+        )
+    };
+    std::thread::Builder::new()
+        .name("comb-signal".into())
+        .spawn(move || {
+            rt.block_on(async {
+                tokio::select! {
+                    _ = sigint.recv() => info!("Received SIGINT, shutting down..."),
+                    _ = sigterm.recv() => info!("Received SIGTERM, shutting down..."),
+                }
+            });
+            cancel.cancel();
+            std::thread::sleep(grace);
+            overrun();
+        })?;
+    Ok(())
+}
+
+/// What a daemon refusing its configuration says: one line per error, then
+/// the verdict. The same lines whether it refuses before its logger is built
+/// (`comb daemon`, on stderr) or after it (in the log).
+pub fn refusal(errors: &[String]) -> Vec<String> {
+    let mut lines: Vec<String> = errors.iter().map(|e| format!("error: {e}")).collect();
+    lines.push(format!(
+        "error: daemon: refusing to start: the configuration has {} error(s)",
+        errors.len()
+    ));
+    lines
+}
+
+fn refuse_to_start(errors: &[String]) {
+    for line in refusal(errors) {
+        tracing::error!("{line}");
+    }
 }
 
 /// Spawn a watchdog task that monitors the scheduler heartbeat.
@@ -169,15 +373,15 @@ fn spawn_watchdog(
     heartbeat: Arc<AtomicU64>,
     cancel: CancellationToken,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    let check_interval = config.daemon.watchdog_interval_duration()?;
-    let threshold = config
-        .daemon
-        .watchdog_threshold_duration()
-        .unwrap_or(check_interval * 3);
+    let check_interval = config.daemon().watchdog_interval_duration()?;
+    // An interval has a threshold (its own, or 3x); `Config` refuses a
+    // threshold without one.
+    let threshold = config.daemon().watchdog_threshold_duration()?;
 
     info!(
-        "Watchdog enabled: checking every {:?}, threshold {:?}",
-        check_interval, threshold
+        "Watchdog enabled: checking every {}, threshold {}",
+        libbeachcomber::render::duration(check_interval),
+        libbeachcomber::render::duration(threshold)
     );
 
     Some(tokio::spawn(async move {
@@ -209,134 +413,45 @@ fn spawn_watchdog(
     }))
 }
 
-// ---------------------------------------------------------------------------
-// OS-bound: fork + wait
-// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Fork a daemon process. Called by `RealDaemonSpawner::fork_daemon`.
-/// `no_reap` appends `--no-reap` for `$BEACHCOMBER_SOCKET`-derived spawns
-/// (canon singleton.md §"Env-override spawns are flagged").
-pub fn fork_daemon(binary_path: &str, socket_path: &Path, no_reap: bool) -> std::io::Result<()> {
-    use std::process::Command;
-
-    let pid_path = pid_path_for_socket(socket_path);
-
-    if let Some(parent) = socket_path.parent() {
-        std::fs::create_dir_all(parent)?;
+    /// No runtime but the signal thread's own exists here, as none is left
+    /// for it in a daemon whose workers are stuck. nextest gives each test its
+    /// own process, so the signal reaches only this one.
+    #[test]
+    fn a_stop_signal_is_heard_with_no_worker_running_and_then_overruns() {
+        let cancel = CancellationToken::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn_signal_thread(
+            cancel.clone(),
+            std::time::Duration::from_millis(10),
+            move || tx.send(()).unwrap(),
+        )
+        .unwrap();
+        // SAFETY: raise has no preconditions; the signal thread handles it.
+        assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the overrun runs");
+        assert!(cancel.is_cancelled());
     }
 
-    // Open log file for the forked daemon's stderr.
-    let config = crate::config::Config::load();
-    let log_path = config.resolve_log_path();
-    if let Some(parent) = log_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .unwrap_or_else(|_| {
-            // Fall back to /dev/null if log file can't be opened.
-            std::fs::File::open("/dev/null").unwrap()
-        });
-
-    let mut cmd = Command::new(binary_path);
-    cmd.arg("daemon")
-        .arg("--socket")
-        .arg(socket_path.as_os_str());
-    if no_reap {
-        cmd.arg("--no-reap");
-    }
-    let child = cmd
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::from(log_file))
-        .spawn()?;
-
-    std::fs::write(&pid_path, child.id().to_string())?;
-
-    Ok(())
-}
-
-/// Poll the socket until the daemon accepts connections or the attempt budget is exhausted.
-/// Called by `RealDaemonSpawner::wait_for_socket`.
-pub fn wait_for_daemon(socket_path: &Path, max_attempts: u32) -> bool {
-    use lifecycle::{WaitDecision, next_wait_decision};
-
-    let mut delay_ms = 10u64;
-    for attempt in 0..=max_attempts {
-        if is_daemon_running(socket_path) {
-            return true;
-        }
-        match next_wait_decision(attempt, max_attempts, delay_ms) {
-            WaitDecision::Ready => return true,
-            WaitDecision::Timeout => return false,
-            WaitDecision::Sleep(ms) => {
-                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                delay_ms = ms;
-            }
-        }
-    }
-    false
-}
-
-// ---------------------------------------------------------------------------
-// ensure_daemon — public API with injection-point variant
-// ---------------------------------------------------------------------------
-
-/// Ensure the daemon is running at `socket_path`.
-///
-/// If not running, forks it and waits up to 8 attempts for the socket to
-/// appear. `no_reap` must be true when `socket_path` was resolved from
-/// `$BEACHCOMBER_SOCKET` (`SocketPathSource::EnvVar`) so the forked daemon is
-/// flagged exempt from reaping (canon singleton.md §"Env-override spawns are
-/// flagged").
-pub fn ensure_daemon(socket_path: &Path, no_reap: bool) -> std::io::Result<()> {
-    ensure_daemon_with(&RealDaemonSpawner, socket_path, no_reap)
-}
-
-/// Maximum usable unix socket path length in bytes, exclusive. `sun_path` is
-/// 104 bytes on macOS (108 on Linux); use the conservative bound on both so
-/// behavior is uniform.
-pub const MAX_SOCKET_PATH_BYTES: usize = 104;
-
-/// Injection-point variant of `ensure_daemon` — accepts any `DaemonSpawner`.
-///
-/// Useful for tests: pass a `MockDaemonSpawner` to assert fork/wait behaviour
-/// without touching the filesystem.
-pub fn ensure_daemon_with(
-    spawner: &dyn DaemonSpawner,
-    socket_path: &Path,
-    no_reap: bool,
-) -> std::io::Result<()> {
-    // Pre-flight: a path the kernel cannot bind (SUN_LEN) would fork a daemon
-    // doomed to fail; surface the real cause here instead of a spawn timeout.
-    if socket_path.as_os_str().len() >= MAX_SOCKET_PATH_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "socket path is {} bytes; unix sockets are limited to {} (SUN_LEN): {}",
-                socket_path.as_os_str().len(),
-                MAX_SOCKET_PATH_BYTES,
-                socket_path.display()
-            ),
-        ));
+    /// A scheduler that takes nothing and never ends does not keep the daemon
+    /// from stopping: this wait, unbounded, is what SIGTERM got stuck on.
+    #[tokio::test(start_paused = true)]
+    async fn a_wedged_scheduler_does_not_hold_the_daemons_stop() {
+        let (tx, _never_drained) = tokio::sync::mpsc::channel(1);
+        let handle = crate::scheduler::SchedulerHandle::new(tx);
+        handle.send(SchedulerMessage::Shutdown).await;
+        let wedged = tokio::spawn(std::future::pending());
+        assert!(!stop_scheduler(&handle, wedged).await);
     }
 
-    if !lifecycle::needs_fork(is_daemon_running(socket_path)) {
-        return Ok(());
+    #[tokio::test]
+    async fn a_scheduler_that_ends_stops_the_daemon_at_once() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = crate::scheduler::SchedulerHandle::new(tx);
+        assert!(stop_scheduler(&handle, tokio::spawn(async {})).await);
     }
-
-    let binary = std::env::current_exe()?.to_string_lossy().to_string();
-
-    spawner.fork_daemon(&binary, socket_path, no_reap)?;
-
-    if !spawner.wait_for_socket(socket_path, 8) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "Daemon failed to start within timeout",
-        ));
-    }
-
-    Ok(())
 }

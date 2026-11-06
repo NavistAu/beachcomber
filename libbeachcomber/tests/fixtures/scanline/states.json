@@ -1,0 +1,122 @@
+{
+ "widths": {
+  "N": [["context_bar", 12], ["cache_hit", 4], ["rate_5h", 20], ["cwd", 12], ["claude_changes", 12], ["api_sparkline", 7], ["model", 14], ["cache_churn", 5], ["rate_7d", 20], ["git_branch", 12], ["git_changes", 12], ["api_status", 7]],
+  "W": [["context_bar", 20], ["cache_hit", 5], ["rate_5h", 26], ["cwd", 40], ["claude_changes", 16], ["api_sparkline", 24], ["model", 22], ["cache_churn", 7], ["rate_7d", 26], ["git_branch", 40], ["git_changes", 16], ["api_status", 24]],
+  "X": [["context_bar", 7], ["cache_hit", 1], ["rate_5h", 7], ["cwd", 25], ["claude_changes", 3], ["api_sparkline", 40], ["model", 9], ["cache_churn", 2], ["rate_7d", 9], ["git_branch", 25], ["git_changes", 3], ["api_status", 23]]
+ },
+ "states": {
+  "A": {
+   "now": 1793000000,
+   "put": {"context": {"used_pct": 42.0, "remaining_pct": 58.0, "size": 200000, "exceeds_200k": false}, "model": {"id": "claude-fable-5", "display_name": "Fable", "short": "Fable5-200K", "quota": {"pct": 37.0, "resets_at": 1793259200}, "fast": true, "thinking": true, "effort": "high"}, "session": {"id": "sess-a", "name": "docs", "agent": null, "color": "#cc66ff", "color_name": null, "color_source": "hash"}, "rate": {"five_hour": {"used_pct": 30.0, "resets_at": 1793015120}, "seven_day": {"used_pct": 55.0, "resets_at": 1793176400}, "overage": false, "overage_amount": null}, "workspace": {"project_root": "/private/tmp/claude-501/sl/home/ws/proj", "path": "~/ws/proj", "path_full": "~/ws/proj", "subdir": "src/deep/er", "in_worktree": true, "lines_added": 12, "lines_removed": 3, "active_tool": "Edit", "running_agents": 2}, "vim_mode": null, "messages": [], "cache": {"hit_pct": 93.4, "churn": 12345}, "pr": null, "remote_session_id": null, "stdin": "{}", "theme": {"session_color": "#cc66ff", "session_color_dim": "#663380"}},
+   "git": {"ahead": 1, "behind": 0, "branch": "feat/one-tree", "branch_default": "main", "branch_parent": "main", "commit": "0aec9c9", "commit_summary": "feat: one more", "conflicted": 0, "detached": false, "dirty": true, "last_commit_age_secs": 432, "lines_added": 1, "lines_added_default": 4, "lines_added_parent": 4, "lines_removed": 0, "lines_removed_default": 0, "lines_removed_parent": 0, "lines_staged_added": 0, "lines_staged_removed": 0, "staged": 0, "stash": 0, "state": "clean", "unstaged": 1, "untracked": 0, "upstream": "origin/feat/one-tree"},
+   "git_file": "gitdir: /private/tmp/claude-501/sl/home/ws/proj/.git/worktrees/one-tree\n",
+   "gitstats": {"worktree": "one-tree"},
+   "summary": {"components": [{"id": "yyzkbfz2thpt", "name": "CC", "status": "partial_outage"}, {"id": "zzother00000", "name": "Docs", "status": "major_outage"}, {"id": "rwppv331jlwc", "name": "claude.ai", "status": "operational"}, {"id": "k8w3r06qmzrp", "name": "API", "status": "degraded_performance"}]},
+   "incidents": {"incidents": [
+    {"impact": "minor", "created_at": "2026-10-26T02:33:20.000Z", "resolved_at": "2026-10-26T04:33:20.000Z"},
+    {"impact": "major", "created_at": "2026-10-26T05:33:20.000Z", "resolved_at": null},
+    {"impact": "none", "created_at": "2026-10-26T06:33:20.000Z", "resolved_at": null}
+   ]}
+  },
+  "B": {
+   "now": 1793000000,
+   "put": {"context": {"used_pct": 71.0, "remaining_pct": 29.0, "size": 200000, "exceeds_200k": false}, "model": {"id": "claude-fable-5", "display_name": "Fable", "short": "Fable5-200K", "quota": null, "fast": false, "thinking": false, "effort": "low"}, "session": {"id": "sess-a", "name": null, "agent": "reviewer-agent-long", "color": "#cc66ff", "color_name": null, "color_source": "hash"}, "rate": {"five_hour": {"used_pct": 100.0, "resets_at": 1793007000}, "seven_day": {"used_pct": 8.0, "resets_at": 1793518400}, "overage": true, "overage_amount": {"kind": "balance", "value": 12.5, "currency": "AUD"}}, "workspace": {"project_root": "/private/tmp/claude-501/sl/home/ws/proj", "path": "~/ws/proj", "path_full": "~/ws/proj", "subdir": "", "in_worktree": false, "lines_added": 0, "lines_removed": 0, "active_tool": null, "running_agents": 0}, "vim_mode": null, "messages": [], "cache": {"hit_pct": null, "churn": null}, "pr": null, "remote_session_id": null, "stdin": "{}", "theme": {"session_color": "#cc66ff", "session_color_dim": "#663380"}},
+   "git": {"branch": "feat/clean", "branch_default": "main", "branch_parent": "main", "commit": "7ab480b", "commit_summary": "clean: three lines", "conflicted": 0, "detached": false, "dirty": false, "last_commit_age_secs": 392, "lines_added": 0, "lines_added_default": 3, "lines_added_parent": 3, "lines_removed": 0, "lines_removed_default": 0, "lines_removed_parent": 0, "lines_staged_added": 0, "lines_staged_removed": 0, "staged": 0, "stash": 0, "state": "clean", "unstaged": 0, "untracked": 0},
+   "git_file": "gitdir: /private/tmp/claude-501/sl/home/ws/proj/.git/worktrees/clean\n",
+   "gitstats": {"worktree": "clean"},
+   "summary": {"components": []},
+   "incidents": {"incidents": []}
+  },
+  "C": {
+   "now": 1793000000,
+   "put": {"context": {"used_pct": 85.5, "remaining_pct": 14.5, "size": 200000, "exceeds_200k": false}, "model": {"id": "claude-fable-5", "display_name": "Fable", "short": "Fable5-200K", "quota": {"pct": 64.0, "resets_at": null}, "fast": true, "thinking": false, "effort": "medium"}, "session": {"id": "sess-a", "name": null, "agent": "rev", "color": "#cc66ff", "color_name": null, "color_source": "hash"}, "rate": {"five_hour": null, "seven_day": null, "overage": false, "overage_amount": null}, "workspace": {"project_root": "/private/tmp/claude-501/sl/home/ws/proj", "path": "~/ws/proj", "path_full": "~/ws/proj", "subdir": "a/b", "in_worktree": true, "lines_added": 0, "lines_removed": 7, "active_tool": null, "running_agents": 0}, "vim_mode": null, "messages": [], "cache": {"hit_pct": 45.0, "churn": 1500000}, "pr": null, "remote_session_id": null, "stdin": "{}", "theme": {"session_color": "#cc66ff", "session_color_dim": "#663380"}},
+   "git": {"ahead": 1, "behind": 0, "branch": "feat/one-tree", "branch_default": "main", "branch_parent": "main", "commit": "0aec9c9", "commit_summary": "feat: one more", "conflicted": 0, "detached": false, "dirty": true, "last_commit_age_secs": 432, "lines_added": 1, "lines_added_default": 4, "lines_added_parent": 4, "lines_removed": 0, "lines_removed_default": 0, "lines_removed_parent": 0, "lines_staged_added": 0, "lines_staged_removed": 0, "staged": 0, "stash": 0, "state": "clean", "unstaged": 1, "untracked": 0, "upstream": "origin/feat/one-tree"},
+   "git_file": "gitdir: /private/tmp/claude-501/sl/home/ws/proj/.git/worktrees/one-tree\n",
+   "gitstats": {"worktree": "one-tree"},
+   "summary": {"components": [{"id": "rwppv331jlwc", "name": "claude.ai", "status": "major_outage"}, {"id": "k8w3r06qmzrp", "name": "API", "status": "under_maintenance"}]},
+   "incidents": {"incidents": [
+    {"impact": "critical", "created_at": "2026-10-22T13:33:20.000Z", "resolved_at": "2026-10-22T23:33:20.000Z"},
+    {"impact": "critical", "created_at": null, "resolved_at": null},
+    {"impact": "minor", "created_at": "2026-10-25T01:33:20.000Z", "resolved_at": "2026-10-26T01:33:20.000Z"}
+   ]}
+  },
+  "D": {
+   "now": 1793000000,
+   "put": {"context": {"used_pct": 71.0, "remaining_pct": 29.0, "size": 200000, "exceeds_200k": false}, "model": {"id": "claude-fable-5", "display_name": "Fable", "short": "Fable5-200K", "quota": {"pct": 2.0, "resets_at": 1793604000}, "fast": false, "thinking": false, "effort": "low"}, "session": {"id": "sess-a", "name": null, "agent": "reviewer-agent-long", "color": "#cc66ff", "color_name": null, "color_source": "hash"}, "rate": {"five_hour": {"used_pct": 103.0, "resets_at": 1793000600}, "seven_day": {"used_pct": 99.0, "resets_at": 1793000030}, "overage": true, "overage_amount": {"kind": "spent", "value": 3.0, "currency": "USD"}}, "workspace": {"project_root": "/private/tmp/claude-501/sl/home/ws/proj", "path": "~/ws/proj", "path_full": "~/ws/proj", "subdir": "", "in_worktree": false, "lines_added": 0, "lines_removed": 0, "active_tool": null, "running_agents": 0}, "vim_mode": null, "messages": [], "cache": {"hit_pct": 100.0, "churn": 999}, "pr": null, "remote_session_id": null, "stdin": "{}", "theme": {"session_color": "#cc66ff", "session_color_dim": "#663380"}},
+   "git": {"branch": "feat/clean", "branch_default": "main", "branch_parent": "main", "commit": "7ab480b", "commit_summary": "clean: three lines", "conflicted": 0, "detached": false, "dirty": false, "last_commit_age_secs": 392, "lines_added": 0, "lines_added_default": 3, "lines_added_parent": 3, "lines_removed": 0, "lines_removed_default": 0, "lines_removed_parent": 0, "lines_staged_added": 0, "lines_staged_removed": 0, "staged": 0, "stash": 0, "state": "clean", "unstaged": 0, "untracked": 0},
+   "git_file": "gitdir: /private/tmp/claude-501/sl/home/ws/proj/.git/worktrees/clean\n",
+   "gitstats": {"worktree": "clean"},
+   "summary": {"components": []},
+   "incidents": {"incidents": []}
+  },
+  "E": {
+   "now": 1793000000,
+   "put": {"context": {"used_pct": 0.0, "remaining_pct": 100.0, "size": 200000, "exceeds_200k": false}, "model": {"id": "claude-fable-5", "display_name": "Fable", "short": "Fable5-200K", "quota": {"pct": 150.0, "resets_at": 1792999900}, "fast": false, "thinking": false, "effort": "low"}, "session": {"id": "sess-a", "name": null, "agent": "reviewer-agent-long", "color": "#cc66ff", "color_name": null, "color_source": "hash"}, "rate": {"five_hour": null, "seven_day": {"used_pct": 99.0, "resets_at": 1793000030}, "overage": true, "overage_amount": null}, "workspace": {"project_root": "/private/tmp/claude-501/sl/home/ws/proj", "path": "~/ws/proj", "path_full": "~/ws/proj", "subdir": "", "in_worktree": false, "lines_added": 0, "lines_removed": 0, "active_tool": null, "running_agents": 0}, "vim_mode": null, "messages": [], "cache": {"hit_pct": 100.0, "churn": 999}, "pr": null, "remote_session_id": null, "stdin": "{}", "theme": {"session_color": "#cc66ff", "session_color_dim": "#663380"}},
+   "git": {"branch": "feat/clean", "branch_default": "main", "branch_parent": "main", "commit": "7ab480b", "commit_summary": "clean: three lines", "conflicted": 0, "detached": false, "dirty": false, "last_commit_age_secs": 392, "lines_added": 0, "lines_added_default": 3, "lines_added_parent": 3, "lines_removed": 0, "lines_removed_default": 0, "lines_removed_parent": 0, "lines_staged_added": 0, "lines_staged_removed": 0, "staged": 0, "stash": 0, "state": "clean", "unstaged": 0, "untracked": 0},
+   "git_file": "gitdir: /private/tmp/claude-501/sl/home/ws/proj/.git/worktrees/clean\n",
+   "gitstats": {"worktree": "clean"},
+   "summary": {"components": []},
+   "incidents": {"incidents": []}
+  },
+  "R": {
+   "now": 1792964607,
+   "put": {"context": {"used_pct": 42.0, "remaining_pct": 58.0, "size": 200000, "exceeds_200k": false}, "model": {"id": "claude-fable-5", "display_name": "Fable", "short": "Fable5-200K", "quota": {"pct": 37.0, "resets_at": 1793259200}, "fast": true, "thinking": true, "effort": "high"}, "session": {"id": "sess-a", "name": "docs", "agent": null, "color": "#cc66ff", "color_name": null, "color_source": "hash"}, "rate": {"five_hour": {"used_pct": 30.0, "resets_at": 1793015120}, "seven_day": {"used_pct": 55.0, "resets_at": 1793176400}, "overage": false, "overage_amount": null}, "workspace": {"project_root": "/private/tmp/claude-501/sl/home/ws/proj", "path": "~/ws/proj", "path_full": "~/ws/proj", "subdir": "src/deep/er", "in_worktree": true, "lines_added": 12, "lines_removed": 3, "active_tool": "Edit", "running_agents": 2}, "vim_mode": null, "messages": [], "cache": {"hit_pct": 93.4, "churn": 12345}, "pr": null, "remote_session_id": null, "stdin": "{}", "theme": {"session_color": "#cc66ff", "session_color_dim": "#663380"}},
+   "git": {"ahead": 1, "behind": 0, "branch": "feat/one-tree", "branch_default": "main", "branch_parent": "main", "commit": "0aec9c9", "commit_summary": "feat: one more", "conflicted": 0, "detached": false, "dirty": true, "last_commit_age_secs": 432, "lines_added": 1, "lines_added_default": 4, "lines_added_parent": 4, "lines_removed": 0, "lines_removed_default": 0, "lines_removed_parent": 0, "lines_staged_added": 0, "lines_staged_removed": 0, "staged": 0, "stash": 0, "state": "clean", "unstaged": 1, "untracked": 0, "upstream": "origin/feat/one-tree"},
+   "git_file": "gitdir: /private/tmp/claude-501/sl/home/ws/proj/.git/worktrees/one-tree\n",
+   "gitstats": {"worktree": "one-tree"},
+   "summary": {"components": [{"id": "rwppv331jlwc", "name": "claude.ai", "status": "operational"}, {"id": "0qbwn08sd68x", "name": "Claude Console (platform.claude.com)", "status": "operational"}, {"id": "k8w3r06qmzrp", "name": "Claude API (api.anthropic.com)", "status": "operational"}, {"id": "yyzkbfz2thpt", "name": "Claude Code", "status": "operational"}, {"id": "bpp5gb3hpjcl", "name": "Claude Cowork", "status": "operational"}, {"id": "0scnb50nvy53", "name": "Claude for Government", "status": "operational"}]},
+   "incidents": {"incidents": [
+    {"impact": "major", "created_at": "2026-10-25T08:17:08.285Z", "resolved_at": "2026-10-25T08:49:29.501Z"},
+    {"impact": "major", "created_at": "2026-10-25T06:14:18.095Z", "resolved_at": "2026-10-25T07:53:39.004Z"},
+    {"impact": "major", "created_at": "2026-10-24T05:16:50.587Z", "resolved_at": "2026-10-24T05:53:30.600Z"},
+    {"impact": "major", "created_at": "2026-10-24T00:31:37.604Z", "resolved_at": "2026-10-24T00:37:17.808Z"},
+    {"impact": "critical", "created_at": "2026-10-23T23:37:42.667Z", "resolved_at": "2026-10-24T00:11:20.874Z"},
+    {"impact": "minor", "created_at": "2026-10-22T03:50:12.630Z", "resolved_at": "2026-10-22T08:07:03.869Z"},
+    {"impact": "minor", "created_at": "2026-10-21T19:49:06.495Z", "resolved_at": "2026-10-21T20:29:17.844Z"},
+    {"impact": "major", "created_at": "2026-10-07T13:25:04.163Z", "resolved_at": "2026-10-13T18:00:04.363Z"},
+    {"impact": "none", "created_at": "2026-10-07T21:23:29.603Z", "resolved_at": "2026-10-07T21:23:29.656Z"},
+    {"impact": "major", "created_at": "2026-10-07T01:20:26.681Z", "resolved_at": "2026-10-07T02:33:38.815Z"},
+    {"impact": "major", "created_at": "2026-10-06T12:24:32.630Z", "resolved_at": "2026-10-06T12:43:02.988Z"},
+    {"impact": "major", "created_at": "2026-10-05T13:05:44.488Z", "resolved_at": "2026-10-05T13:21:37.611Z"},
+    {"impact": "minor", "created_at": "2026-10-01T16:20:40.775Z", "resolved_at": "2026-10-01T22:36:22.210Z"},
+    {"impact": "major", "created_at": "2026-09-29T14:21:37.188Z", "resolved_at": "2026-09-29T16:27:21.369Z"},
+    {"impact": "major", "created_at": "2026-09-22T00:57:26.126Z", "resolved_at": "2026-09-22T02:35:23.836Z"},
+    {"impact": "none", "created_at": "2026-09-16T16:18:10.735Z", "resolved_at": "2026-09-16T16:51:09.019Z"},
+    {"impact": "major", "created_at": "2026-09-15T09:48:23.076Z", "resolved_at": "2026-09-15T11:14:44.380Z"},
+    {"impact": "major", "created_at": "2026-09-10T15:54:10.000Z", "resolved_at": "2026-09-14T19:14:45.969Z"},
+    {"impact": "major", "created_at": "2026-09-11T14:19:51.478Z", "resolved_at": "2026-09-11T14:37:11.146Z"},
+    {"impact": "minor", "created_at": "2026-09-10T21:43:40.215Z", "resolved_at": "2026-09-10T23:24:22.978Z"},
+    {"impact": "major", "created_at": "2026-09-03T13:26:04.201Z", "resolved_at": "2026-09-03T16:23:12.052Z"},
+    {"impact": "major", "created_at": "2026-09-03T12:37:31.766Z", "resolved_at": "2026-09-03T12:56:26.632Z"},
+    {"impact": "major", "created_at": "2026-09-02T21:17:58.704Z", "resolved_at": "2026-09-02T21:44:28.095Z"},
+    {"impact": "minor", "created_at": "2026-09-01T23:26:48.992Z", "resolved_at": "2026-09-02T01:24:22.251Z"},
+    {"impact": "minor", "created_at": "2026-09-01T17:05:11.462Z", "resolved_at": "2026-09-01T18:07:03.372Z"},
+    {"impact": "minor", "created_at": "2026-09-01T16:02:48.681Z", "resolved_at": "2026-09-01T16:22:19.479Z"},
+    {"impact": "minor", "created_at": "2026-08-31T19:21:32.139Z", "resolved_at": "2026-08-31T20:36:00.297Z"},
+    {"impact": "minor", "created_at": "2026-08-31T17:23:06.241Z", "resolved_at": "2026-08-31T17:52:26.026Z"},
+    {"impact": "major", "created_at": "2026-08-28T17:22:02.377Z", "resolved_at": "2026-08-28T20:21:18.448Z"},
+    {"impact": "minor", "created_at": "2026-08-24T20:11:23.934Z", "resolved_at": "2026-08-24T20:26:21.577Z"},
+    {"impact": "minor", "created_at": "2026-08-24T17:12:42.200Z", "resolved_at": "2026-08-24T17:16:02.904Z"},
+    {"impact": "major", "created_at": "2026-08-24T05:06:39.493Z", "resolved_at": "2026-08-24T08:30:47.615Z"},
+    {"impact": "major", "created_at": "2026-08-20T19:16:24.932Z", "resolved_at": "2026-08-20T19:42:38.692Z"},
+    {"impact": "minor", "created_at": "2026-08-20T18:32:13.296Z", "resolved_at": "2026-08-20T19:01:03.844Z"},
+    {"impact": "minor", "created_at": "2026-08-19T09:42:37.414Z", "resolved_at": "2026-08-19T11:02:18.264Z"},
+    {"impact": "minor", "created_at": "2026-08-18T16:20:22.240Z", "resolved_at": "2026-08-18T19:01:45.447Z"},
+    {"impact": "minor", "created_at": "2026-08-17T13:56:41.055Z", "resolved_at": "2026-08-17T15:29:25.545Z"},
+    {"impact": "critical", "created_at": "2026-08-16T21:58:56.949Z", "resolved_at": "2026-08-16T22:34:39.037Z"},
+    {"impact": "major", "created_at": "2026-08-14T23:57:16.567Z", "resolved_at": "2026-08-15T00:27:36.893Z"},
+    {"impact": "major", "created_at": "2026-08-14T20:30:36.289Z", "resolved_at": "2026-08-14T21:58:12.691Z"},
+    {"impact": "none", "created_at": "2026-08-14T07:58:11.620Z", "resolved_at": "2026-08-14T10:53:22.898Z"},
+    {"impact": "minor", "created_at": "2026-08-14T00:36:42.423Z", "resolved_at": "2026-08-14T00:51:24.100Z"},
+    {"impact": "major", "created_at": "2026-08-13T14:33:45.159Z", "resolved_at": "2026-08-13T16:08:35.730Z"},
+    {"impact": "minor", "created_at": "2026-08-12T13:50:28.458Z", "resolved_at": "2026-08-12T18:07:11.547Z"},
+    {"impact": "minor", "created_at": "2026-08-05T13:51:30.287Z", "resolved_at": "2026-08-05T14:34:15.264Z"},
+    {"impact": "minor", "created_at": "2026-08-05T07:05:54.000Z", "resolved_at": "2026-08-05T14:14:36.006Z"},
+    {"impact": "major", "created_at": "2026-08-04T20:48:20.773Z", "resolved_at": "2026-08-04T21:59:29.385Z"},
+    {"impact": "minor", "created_at": "2026-08-04T11:27:20.691Z", "resolved_at": "2026-08-04T11:52:10.820Z"},
+    {"impact": "minor", "created_at": "2026-08-04T06:16:33.847Z", "resolved_at": "2026-08-04T06:55:43.194Z"},
+    {"impact": "minor", "created_at": "2026-08-03T15:13:45.862Z", "resolved_at": "2026-08-03T15:29:01.564Z"}
+   ]}
+  }
+ }
+}

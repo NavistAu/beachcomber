@@ -1,16 +1,20 @@
 """Library discovery for the beachcomber C ABI (``libbeachcomber.{so,dylib}``).
 
-Discovery order, per the Phase-4 binding contract:
+The one rule every SDK follows (docs/sdk-api.md, "Library discovery"; the
+shared fixture is ``sdks/discovery.json``):
 
-1. ``$BEACHCOMBER_LIB`` — exact path to the shared library.
-2. ``../lib/<libname>`` relative to the ``comb`` binary resolved on ``$PATH``
-   — library and binary ship together, so the one beside the ``comb`` you
-   would actually run is the matching one.
-3. The platform default dynamic-linker search path.
+1. ``$BEACHCOMBER_LIB``, when it is set and not empty. It is then the only
+   candidate: a path set on purpose that does not load is an error, not a
+   reason to load some other library.
+2. Beside ``comb``: ``<dir>/../lib/<file>``, where ``<dir>`` is the
+   directory of the first executable ``comb`` on ``$PATH``, its symlinks
+   resolved (a Homebrew ``comb`` is a symlink into its Cellar, and the
+   library sits there beside it).
+3. The system loader, given the bare file name.
 
-Failure is loud: if no candidate loads, the caller raises naming every
-location tried, in order. There is no silent fallback to a subprocess
-transport — a missing library is a broken install.
+The loader tries them in order and stops at the first that loads; when none
+does it raises naming every candidate and why each failed. There is no
+fallback to a subprocess transport: a missing library is a broken install.
 """
 
 from __future__ import annotations
@@ -23,60 +27,47 @@ from typing import List, Optional
 
 
 def library_basename() -> str:
-    """Return the platform-appropriate shared library filename."""
-    if sys.platform == "darwin":
-        return "libbeachcomber.dylib"
-    if sys.platform.startswith("linux"):
-        return "libbeachcomber.so"
-    raise RuntimeError(f"unsupported platform for libbeachcomber: {sys.platform!r}")
+    """The library's file name: ``libbeachcomber.dylib`` on macOS and
+    ``libbeachcomber.so`` on every other platform."""
+    return "libbeachcomber.dylib" if sys.platform == "darwin" else "libbeachcomber.so"
 
 
 @dataclass
 class Candidate:
-    """One location the discovery order tries, in order.
+    """One location the loader tries.
 
     Attributes:
-        description: Human-readable label for error messages (e.g.
-            ``"$BEACHCOMBER_LIB"``).
-        path: The concrete path/spec to attempt loading, or ``None`` if this
-            candidate could not even be constructed (e.g. ``comb`` not on
-            ``$PATH``) — still reported, with ``reason`` explaining why.
-        reason: Set when ``path`` is ``None``, explaining why this candidate
-            was skipped.
+        description: Where the path came from, for the error naming every
+            candidate (``"$BEACHCOMBER_LIB"``, ``"beside comb (...)"``,
+            ``"the system loader"``).
+        path: What is handed to the loader: a path, or the bare file name
+            for the system loader.
     """
 
     description: str
-    path: Optional[str]
-    reason: Optional[str] = None
+    path: str
+
+
+def find_comb() -> Optional[str]:
+    """The first executable ``comb`` on ``$PATH``, its symlinks resolved;
+    ``None`` when there is none."""
+    found = shutil.which("comb")
+    return os.path.realpath(found) if found else None
 
 
 def candidates() -> List[Candidate]:
-    """Build the ordered list of library locations to try.
-
-    Pure and side-effect free (aside from reading the environment and
-    ``$PATH``) — does not touch the filesystem or attempt to load anything.
-    """
+    """The locations to try, in order. Reads the environment and ``$PATH``;
+    loads nothing."""
     basename = library_basename()
+
+    explicit = os.environ.get("BEACHCOMBER_LIB")
+    if explicit:
+        return [Candidate("$BEACHCOMBER_LIB", explicit)]
+
     out: List[Candidate] = []
-
-    env_path = os.environ.get("BEACHCOMBER_LIB")
-    if env_path:
-        out.append(Candidate("$BEACHCOMBER_LIB", env_path))
-    else:
-        out.append(Candidate("$BEACHCOMBER_LIB", None, "not set"))
-
-    comb_path = shutil.which("comb")
-    if comb_path:
-        comb_dir = os.path.dirname(os.path.abspath(comb_path))
-        lib_dir = os.path.normpath(os.path.join(comb_dir, "..", "lib"))
-        out.append(
-            Candidate(f"../lib/ relative to comb ({comb_path})", os.path.join(lib_dir, basename))
-        )
-    else:
-        out.append(
-            Candidate("../lib/ relative to comb on $PATH", None, "comb not found on $PATH")
-        )
-
-    out.append(Candidate("platform default search path", basename))
-
+    comb = find_comb()
+    if comb:
+        beside = os.path.normpath(os.path.join(os.path.dirname(comb), "..", "lib", basename))
+        out.append(Candidate(f"beside comb ({comb})", beside))
+    out.append(Candidate("the system loader", basename))
     return out

@@ -178,13 +178,12 @@ return function(suite, test, skip, assert_eq, assert_true, assert_nil, assert_no
   suite("json round-trip")
 
   test("object round-trip", function()
-    local orig = {ok = true, data = "main", age_ms = 1234, stale = false}
+    local orig = {ok = true, data = "main", age_ms = 1234}
     local encoded = json.encode(orig)
     local decoded = json.decode(encoded)
     assert_eq(decoded.ok, true)
     assert_eq(decoded.data, "main")
     assert_eq(decoded.age_ms, 1234)
-    assert_eq(decoded.stale, false)
   end)
 
   test("nested null in object round-trip", function()

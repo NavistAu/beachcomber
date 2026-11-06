@@ -1,0 +1,4 @@
+Contact: mailto:__security@navist.com.au
+Expires: 2027-06-30T00:00:00Z
+Preferred-Languages: en
+Canonical: https://beachcomber.sh/.well-known/security.txt

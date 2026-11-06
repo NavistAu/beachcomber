@@ -22,7 +22,7 @@ graph TB
     Scheduler --> FSW["FsWatcher<br/>(notify crate)"]
     Scheduler --> Watchdog["Watchdog<br/>(heartbeat monitor)"]
 
-    SB --> Provider["Arc‹dyn Source›<br/>Source::execute() → SourceResult"]
+    SB --> Provider["Arc‹dyn Source›<br/>Source::execute() → Result‹SourceResult›"]
     Provider --> Put["Cache.put_source()"]
 ```
 
@@ -45,39 +45,91 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/singleton/` | Singleton enforcement: pid-file flock, build-identity supersession, serving probe, binary self-watch (fs-event + mtime poll), orphan reaping |
 | `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
 | `src/scheduler/mod.rs` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; dispatches lifecycle events into `LifecycleRegistry` and applies `TickActions`; heartbeat counter for watchdog liveness detection |
-| `src/scheduler/lifecycle.rs` | `LifecycleRegistry` state machine: Active → Decay1..4 → Evicted. Per-entry poll and decay timers. Canonical behaviour in `docs/cache-lifecycle.md` |
+| `src/scheduler/lifecycle.rs` | `LifecycleRegistry` state machine: Active → Decay (default 4 steps, depth is data) → Evicted. Per-entry poll and decay timers. See §5. |
 | `src/cache.rs` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; generation counter |
 | `src/watcher.rs` | Thin wrapper around the `notify` crate; exposes `watch(path)` / `unwatch(path)` and an mpsc receiver of path events |
-| `src/protocol.rs` | Serde types for the wire protocol: `Request`, `Response`; `split_key()` — first-dot-only `provider.field` split. Source-aware parsing lives in `src/query.rs` |
-| `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` / `provider.source` / `provider.source.field`), `resolve_path`, `split_metadata_suffix`, and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
-| `src/config.rs` | TOML config loading from XDG directories; `Config`, `DaemonConfig`, `LifecycleConfig`, `ScriptProviderConfig`, `SourceOverrideConfig` |
-| `src/provider/mod.rs` | `Provider` and `Source` traits; `ProviderMetadata`, `SourceMetadata`, `SourceScope`, `FieldSchema`, `InvalidationStrategy`, `KeepAlive`, `FailbackConfig`, `SourceResult`; `expand_abs_path()` helper |
-| `src/provider/registry.rs` | `ProviderRegistry`: `sources: HashMap<(String, String), Arc<dyn Source>>` keyed by `(provider_name, source_name)` and `providers: HashMap<String, ProviderMetadata>` (metadata snapshot); `Box<dyn Provider>` objects are consumed at `register()` and not retained; `field → source` reverse map (`HashMap<(provider, field), source_name>`); built-in registration; validation at registration |
+| `src/protocol.rs` | Re-exports `libbeachcomber::protocol`, the one definition of the wire: `Request`, `Response` and the `status`, `introspect` and `hello` payloads, which the daemon, the CLI, the C ABI and the SDKs share. Key parsing into a `KeyParse` lives in `src/query.rs` (`parse_key`) |
+| `src/query.rs` | Source-aware request planning: `parse_key` (`provider` / `provider.field` — a source name is never a key segment), `resolve_path`, `validate_key` (one colon form, the facet), `split_layer_facet` (`:put` / `:source` / `:cache`), and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
+| `src/config.rs` | TOML config loading from XDG directories; `Config` (composed from its layers), `DaemonConfig` |
+| `src/provider/mod.rs` | The `Source` trait (`ConfigSource` its one implementation in production); `ProviderMetadata`, `SourceMetadata`, `FieldSchema`, `InvalidationStrategy`, `FailbackConfig`, `SourceResult`; `expand_abs_path()` helper |
+| `src/provider/registry.rs` | `ProviderRegistry`: `sources: HashMap<(String, String), Arc<dyn Source>>` keyed by `(provider_name, source_name)` and `providers: HashMap<String, ProviderMetadata>` (metadata snapshot); `declared_sources` map (`HashMap<(provider, field), source_name>`) walked by `sources_for_key` (nearest declared ancestor of a key, then sentinel fields); validation at load |
 | `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
-| `src/provider/hostname.rs` | `HostnameProvider`: libc `gethostname`, pure-watch global (`KeepAlive::Never`), `Watch { patterns: [], abs_paths: [...] }` — no `Once` strategy |
-| `src/provider/git.rs` | `GitProvider`: three sources — `refs` (Watch, `.git/`), `diff` (Poll, 30s), `status` (WatchAndPoll, `.git/index`, 60s) |
-| `src/provider/script.rs` | `ScriptProvider`: runs arbitrary shell commands; parses JSON or KV output; strategy built from config |
-| `src/provider/library.rs` | `LibraryProvider`: loads shared libraries (`.so`/`.dylib`) via `libloading`; detects ABI at load time — multi-source (`bc_source_count` / `bc_source_metadata` / `bc_source_execute`) or legacy (`beachcomber_provider_metadata` / `beachcomber_provider_execute` / `beachcomber_provider_free`) |
-| `src/provider/http.rs` | `HttpProvider`: in-process HTTP client for REST API providers; `extract` for JSON path navigation |
+| `src/plugin/` | The plugins compiled in: `StaticLibrary` over a table of `extern "C"` symbols, answered by name before any search path, each call through the one path a library's takes. `sys/` for what only the OS can say, `git/` for what a repository says through git's commands (the symbols `refs`, `diff`, `lineage`, `status`; `src/boundaries/git.rs` is the one place git's environment is set) |
+| `src/provider/config_source.rs` | `ConfigSource`: a Source whose `root`, `data` and `result` are jinja lines on the daemon's engine (`exec`, `url`, `plugin`); built from `[daemon.providers.<p>.sources.<s>]` by `src/shape/build.rs` |
 | `src/client.rs` | `Client` (one-shot) and `ClientSession` (persistent) for consumer-side socket communication |
 
-The remaining provider files (`battery`, `load`, `uptime`, `network`, `kubecontext`, `aws`, `gcloud`, `terraform`, `direnv`, `python`, `conda`, `mise`, `asdf`, `sudo`, `op`) follow the same pattern — each implements `Provider` (namespace) declaring one or more `Source` objects.
+Every provider is a shipped file. `git` is `defaults/git.toml`: six config Sources, each calling the compiled-in `git` plugin (`src/plugin/git/`). `terraform`, `python`, `direnv`, `asdf`, `aws_profiles`, `gcloud_configs` and `sudo` are config Sources in their `defaults/` files that read the files themselves. `hostname`, `user`, `uname`, `load`, `uptime`, `battery` and `network` are shipped files, `defaults/<name>.toml`, each one config Source whose `data` line calls the compiled-in `sys` plugin (`src/plugin/sys/`); so is `mise`, whose `data` line runs `mise ls --current --json`. `aws_profiles` and `gcloud_configs` are **data providers** whose cached fields are indexed by the templates in the managed `defaults/aws.toml` and `defaults/gcloud.toml`, which the client renders as the `aws` and `gcloud` namespaces. `conda`, `op`, `kubecontext` and `talos` are not providers at all: their fields are templates in `defaults/`, the last two rendered by calling `kubectl`/`talosctl` through `exec()`.
 
 ### Provider→Source layering
 
 The Provider/Source/Field model has three layers:
 
 - **Provider** — a named namespace (e.g., `git`). Declares 1+ Sources. The cache key `provider\0path` is still at this level.
-- **Source** — one invalidation strategy, one set of fields, one lifecycle entry. Key for lifecycle, watches, and failure backoff is `(provider, path, source)`. Examples: git's `refs`, `diff`, `status` sources.
+- **Source** — one schedule (its `return` line), one set of fields, one lifecycle entry. Key for lifecycle, watches, and failure backoff is `(provider, path, source)`. Examples: git's `head`, `refs`, `diff`, `branches`, `lineage`, `status` sources.
 - **Field** — a typed value. Belongs to exactly one Source within a Provider.
 
-The registry builds a `field → source` reverse map at registration so that a `get(provider.field)` query can be routed to the owning source without scanning.
+The registry maps a key to its Source by walking the key: the Source of the nearest ancestor node that declares one wins, so `mise.node.version` finds the Source that declares `node`, and a Source that cannot list its field names declares a sentinel (`<tool>`) that answers for the provider node itself.
 
 **Lifecycle keying** uses `(provider, path, source)` — each source instance has its own Active/Decay/Evicted state, independent of sibling sources at the same `(provider, path)`.
 
 **Cache layout** — `CacheEntry.sources: HashMap<source_name, SourceResult>`. Each `SourceResult` holds `fields`, `last_refreshed_ms`, and `expected_interval_secs`. Reads flatten across sources; writes are per-source (`cache.put_source(provider, path, source_name, result)`).
 
-**Watch registration** — per `(provider, path, source)`. Each source declares relative `patterns` (matched within the scope path) and/or absolute `abs_paths` (e.g., `$XDG_CONFIG_HOME/mise`). The `expand_abs_path()` helper expands `~`, `$HOME`, and XDG env vars at registration time.
+**Watch registration** — per `(provider, path, source)`. Each source declares relative `patterns` (matched within the instance's root) and/or absolute `abs_paths` (e.g., `$XDG_CONFIG_HOME/mise`). The `expand_abs_path()` helper expands `~`, `$HOME`, and XDG env vars at registration time.
+
+### Provider execution
+
+Sources implement `Source::execute(dir) -> Result<SourceResult, String>`. The scheduler calls
+each source independently via `tokio::task::spawn_blocking`. Source results are
+written to `CacheEntry.sources[source_name]`; sibling sources in the same
+cache entry are untouched.
+
+A Source has one *instance* per root. `Source::root(dir)` names the instance that
+answers for a directory — `Some(root)`, or `None` for the one instance at `~` (an
+empty `root` line on a config Source) — and a Source that does not override it has
+only the instance at `~`. Each instance is its own lifecycle key and cache
+sub-entry, `(provider, root, source)`.
+
+A read walks a Source's instances: the nearest first (`root(dir)`), then, if the key
+is missing there, the parent of that root (`root(parent(root))`), ending at the
+instance at `~`. `asdf` is one Source (`tools`) this way: inside a project
+`asdf.node` is the project's `.tool-versions`, and `asdf.go`, set only in
+`~/.tool-versions`, is found at `~`. A namespace read merges every instance on the way, the nearer winning.
+That is a *cascade*, the default. A `nearest` Source (git, direnv, python,
+terraform) is answered by the instance `root(dir)` finds alone: a missing key is
+absent, the walk does not move up, and finding no root means no instance, with no
+fallback to `~`.
+
+Cache keys use `provider\0root` for a rooted instance and bare `provider` for the
+instance at `~`. A single provider can own both kinds of entries simultaneously.
+
+### Config shape and reload
+
+Configuration has two roots. `[daemon]` holds settings and `providers`; `[client]`
+holds `providers.<p>.template`. A provider exists if either root names it. The
+shape layer (`src/shape/`) builds providers from the composed files
+(`defaults/*.toml`, `config.toml`, `conf.d/*.toml`): a config Source is a jinja
+function (`root`, `data`, `result`, `return`) whose `_` prototypes and `| super`
+chains are resolved at load, its decorators (`poll`, `watch`, `ttl`, `failback`,
+`budget`, `nearest`) become the Source's `InvalidationStrategy` and failback, and
+a provider's own `template`/`result`/`return` lines are checked at load too (they
+do no IO).
+`enabled = false` makes the registry treat the provider as having no Sources.
+
+A Source's lines may call other Sources (`sources.<s>()`,
+`daemon.providers.<p>.sources.<s>()`). Calls are found at load, so an unknown
+callee or a ring is a load error. At run time a call answers with the callee's
+stored record, and a callee with nothing stored runs inline once for the read or
+refresh that needs it; the scheduler demands what a Source's last run called, so
+callees stay warm and decay with their callers. Decay depth is data: the
+`<p>:cache._.decay` prototype is read when a lifecycle registers.
+
+The config self-watch classifies each change. An edit confined to
+`[daemon.providers]` or `[client.providers]` reloads in place: the new providers
+are built once, the facet reseed is planned, and only if both succeed are they
+swapped in and the scheduler's lifecycle entries brought to match (Sources whose
+body changed or that are gone are evicted; Sources whose schedule changed are
+retuned in place; the rest are untouched). A change to a bare `[daemon]` or
+`[client]` key restarts the daemon.
 
 ---
 
@@ -87,7 +139,7 @@ This traces the full path from CLI invocation to output on stdout.
 
 **Step 1: CLI entry point**
 
-The `comb get` subcommand resolves the socket path (config override → `BEACHCOMBER_SOCKET` env → `/tmp/beachcomber-<uid>/sock`). If no socket exists, it calls `daemon::ensure_daemon()` which forks `comb daemon --socket <path>` as a detached child and waits up to ~1.5s for the socket to appear.
+The `comb get` subcommand resolves the socket path (config override → `BEACHCOMBER_SOCKET` env → `/tmp/beachcomber-<uid>/sock`). If no daemon serves it, `cli::connect` checks the configuration — a configuration the daemon would refuse is reported before anything is spawned — then `libbeachcomber::spawn::ensure` starts `comb daemon --socket <path>` as a detached child, its stderr appended to the daemon's log, and waits up to ~1.6s for the socket to appear. Every SDK spawns through the same function.
 
 **Step 2: Socket connection**
 
@@ -111,7 +163,7 @@ and writes it as a single newline-terminated line.
 
 **Step 6: Path resolution**
 
-`resolve_path(Some("."), &context_path, "git", &registry)` checks whether the `git` provider has any `PathScoped` sources (it does). The explicit path `"."` is used. (If the CLI had omitted the path argument, the session's context path would be used instead.) Global-only providers return `None` here regardless of any explicit or context path.
+`QueryPlan::build` canonicalises the explicit path `"."` (if the CLI had omitted the path argument, the session's context path would be used instead). Which instance of each demanded Source answers for it is found next, by `Source::root`, nearest first: a Source with no root has one instance, at `~`, whatever the path.
 
 **Step 7: Cache lookup**
 
@@ -119,7 +171,7 @@ and writes it as a single newline-terminated line.
 
 **Step 8: Field extraction**
 
-The handler looks up the `refs` source (via the `field → source` reverse map for `git.branch`) and accesses `entry.sources["refs"].fields.get("branch")`. It converts the `Value::String` to a `serde_json::Value` and packages it into `Response::ok(data, age_ms, stale)`.
+The handler looks up the `head` source (via `sources_for_key` for `git.branch`) and accesses `entry.sources["head"].fields.get("branch")`. It converts the `Value::String` to a `serde_json::Value` and packages it into `Response::ok(data, age_ms)`.
 
 **Step 9: Response formatting**
 
@@ -149,7 +201,7 @@ The scheduler's `tokio::select!` loop picks up `Some(paths) = fs_rx.recv()`. It 
 
 **Step 3: Path matching**
 
-`handle_fs_event` iterates over the changed paths. For each changed path, it scans `watch_paths` (a `HashMap<PathBuf, Vec<(String, Option<String>)>>`) looking for any registered watch path that is a prefix of (or equal to) the changed path. For a `.git/index` change, the watch path `".git"` matches.
+`handle_fs_event` iterates over the changed paths. For each changed path, it scans `watch_paths` (a `HashMap<PathBuf, Vec<(String, Option<String>)>>`) looking for any registered watch path that is a prefix of (or equal to) the changed path. A pattern with a `/` matches by whole components, so `.git/index` matches `.git/index` and `.git/refs` matches `.git/refs/heads/main`; `.git/index.lock` matches neither.
 
 **Step 4: execute_provider is called**
 
@@ -161,7 +213,7 @@ The scheduler checks `in_flight` (a `Mutex<HashSet>`). If an execution for `("gi
 
 **Step 6: Failure backoff check**
 
-Before launching, the scheduler checks `failure_counts`. If the provider has exceeded its failure threshold (`failure_reattempts`, default 3) and is within its exponential backoff window (starting at `failure_backoff_interval`, doubling for 4 levels), execution is skipped. Both values are configurable globally in `[lifecycle]` and per-provider in `[providers.<name>]`.
+Before launching, the scheduler checks `failure_counts`. If the Source has exceeded its failure threshold (default 3) and is within its exponential backoff window (starting at the failback interval, default `1s`, doubling for 4 levels), execution is skipped. A config Source sets both on its `return` line (`| failback(interval, count)`; the shipped abstract Source has `failback('1s', 3)`). A built-in Source has its own, until `[daemon.providers.<p>.sources.<s>] return` names them: a `return` on a built-in replaces its failback with the line's, or with the engine's `failback('1s', 3)` where the line is silent. The scheduler reads the Source's metadata only; no config table is consulted when scheduling.
 
 **Step 7: spawn_blocking**
 
@@ -196,7 +248,7 @@ After clearing `in_flight`, the scheduler checks `pending_rerun`. If a rerun was
 
 **Demand signal**
 
-Every `get` request sends `SchedulerMessage::QueryActivity { provider, path }` to the scheduler. This records the current time in the `demand` HashMap for that key. If the key is new to demand, the scheduler immediately sets up polling (based on provider metadata) and filesystem watching (for path-scoped providers), and fires `execute_provider` if the cache is cold.
+Every `get` request sends `SchedulerMessage::QueryActivity { provider, instances }` to the scheduler, one `(source, root)` for every instance the read reached. This records the current time in the `demand` HashMap for each. If an instance is new to demand, the scheduler immediately sets up polling (based on provider metadata) and filesystem watching (relative `watch` paths under the instance's root; none for the relative paths of the instance at `~`), and fires `execute_provider` if the cache is cold.
 
 **Demand window**
 
@@ -213,7 +265,7 @@ Lifecycle state is tracked **per source instance** at `(provider, path, source)`
 ```mermaid
 stateDiagram-v2
     [*] --> Active : demand present
-    Active --> Decay1 : demand expires
+    Active --> Decay1 : demand expires  (default depth 4)
     Decay1 --> Decay2
     Decay2 --> Decay3
     Decay3 --> Decay4
@@ -224,15 +276,17 @@ stateDiagram-v2
     Decay4 --> Active : QueryActivity
 ```
 
-Each decay step doubles the poll interval and the step duration relative to the previous step. At `Evicted`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any decay stage, the key is reinstated to `Active` immediately. If `fsevents_reinstate` is true for the source, a matching filesystem event also reinstates it.
+Each decay step doubles the poll interval and the step duration relative to the previous step. The number of steps is the entry's `decay`, which is data (default 4; see `<p>:cache._.decay`), and the diagram shows the default. At `Evicted`, `cache.remove()` is called. If `QueryActivity` arrives for a key during any decay stage, the key is reinstated to `Active` immediately. An instance watches its files only while it is `Active`: entering `Decay1` drops its watches, so an idle daemon holds none, and a file event never reinstates it. The read that reinstates it registers its watches again; until then a read checks the record's files by stat, so a decaying record is never answered past a change to them.
 
-There are no `Grace`, `BackoffState`, `SlowPoll`, or `Frozen` states. The only states are Active, Decay1..4, and Evicted.
+There are no `Grace`, `BackoffState`, `SlowPoll`, or `Frozen` states. The only states are Active, Decay (1 to `decay`), and Evicted.
 
-See `docs/cache-lifecycle.md` for the canonical spec: state machine, sequence diagrams, BDD assertions, and config knobs (`poll_interval`, `poll_live_count`, `fsevents_reinstate`).
+**Static addresses: puts and memos**
+
+A put with a `ttl` and every memo are lifecycle entries of their own, keyed by their address (`Key.node`), and no read demands them: their write starts the entry afresh (`PutWritten`, `MemoWritten`, each replacing the entries the write displaced) and nothing else renews it. A `ttl` is `poll(ttl, 1)` with decay 1: the poll is the expiry clock (for a put nothing runs; for a memo its hash is dropped) and the entry is evicted one doubled step later, a put's address or a memo's value and record (`Cache::evict_put`, `Cache::evict_memo`). A memo's `watch` paths register through the `Registrar` when it is written and, as every entry's watches, exist only while it is Active: they go when it decays. A write-back that names a path the memo already watches keeps its registration. A memo with no `ttl` is watch-only: Active for the default window (12 minutes), then down its provider's `_.decay` ladder and evicted, about six hours after its write at the default depth. A decayed memo whose file has changed since is the client's to catch: it folds the files' stamps into the memo's hash, so the stored hash no longer matches. A reload leaves both alone; a memo takes a new `_.decay` with its next write.
 
 **Idle shutdown**
 
-When `cache.is_empty()` and `demand.is_empty()` both hold true and no activity has been seen for `lifecycle.idle_shutdown_secs`, the daemon exits.
+When `cache.is_empty()` and `demand.is_empty()` both hold true and no activity has been seen for `[daemon] idle_shutdown`, the daemon exits.
 
 ---
 
@@ -252,7 +306,7 @@ All provider `execute()` calls happen in `tokio::task::spawn_blocking`. This mov
 
 **`Arc<dyn Source>` for registry**
 
-Sources are stored as `Arc<dyn Source>` in the registry (keyed by `(provider_name, source_name)`). `Box<dyn Provider>` objects are consumed at `register()` and not retained. When the scheduler needs to execute a source, it calls `registry.source(provider, source)` which returns `Option<Arc<dyn Source>>`. The cloned Arc is moved into `spawn_blocking`. The registry itself is never mutated after startup; reads from multiple tasks are contention-free.
+Sources are stored as `Arc<dyn Source>` in the registry (keyed by `(provider_name, source_name)`). When the scheduler needs to execute a source, it calls `registry.source(provider, source)` which returns `Option<Arc<dyn Source>>`. The cloned Arc is moved into `spawn_blocking`. A registry is not mutated once built (a reload swaps in a new one); reads from multiple tasks are contention-free.
 
 **Scheduler-owned mutable state**
 
@@ -284,7 +338,7 @@ Naively, a burst of filesystem events (e.g., a `git commit` touching many `.git`
 
 **Two independent backoff mechanisms**
 
-Failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly. Cache-entry lifecycle (in `LifecycleRegistry`, Active → Decay1..4 → Evicted) handles resource cleanup when a key drops out of the demand window — see `docs/cache-lifecycle.md`. They serve different purposes and are deliberately kept separate.
+Failure backoff (in `FailureState`, exponential 1s-60s, per key) suppresses execution when a provider fails repeatedly. Cache-entry lifecycle (in `LifecycleRegistry`, Active → Decay → Evicted) handles resource cleanup when a key drops out of the demand window — see §5. They serve different purposes and are deliberately kept separate.
 
 **Watch connections are long-lived**
 
@@ -302,6 +356,6 @@ At most one daemon runs per user. Enforcement is a pid file held under exclusive
 
 `src/watcher_registry.rs` maintains a `tokio::sync::broadcast` channel per (provider, path) key. `Cache::put()` notifies the registry after every write. Watch connections subscribe to the relevant channel. Using broadcast rather than mpsc allows multiple simultaneous watchers on the same key without coordination between them.
 
-**Virtual providers via put**
+**Static records via put**
 
-External processes can write arbitrary data into the cache via the `put` protocol op. The server creates a virtual provider entry — a `CacheEntry` with no associated `Arc<dyn Source>` — and inserts it directly. Virtual providers have no `execute()` method and are never polled or evicted by the scheduler. Namespace hierarchy (builtin > script > virtual) prevents a `put` call from shadowing a real provider: if a built-in or script provider already owns the namespace, the put op is rejected.
+External processes can write arbitrary data into the cache via the `put` protocol op. A namespace no code or config registers is entirely static — a `CacheEntry` holding only `put`/`config:<file>` records, with no associated `Arc<dyn Source>` — and such records are never polled. A `put --ttl` is the exception: it is a lifecycle entry of its own, one per put address, kept for the ttl and one decay step more (twice the ttl), then evicted. There is no ownership: a `put` can write into any namespace and over any record, and every supplier keeps a layer of its own in the same cache entry. A read stacks them at each directory (source, then `config:` seeds, then `put`, with a template above all of them); a `put` replaces the node it addresses, and removing it (`put <node> null`) shows the layer below at once.

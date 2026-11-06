@@ -10,10 +10,11 @@
 |---|---|
 | **Provider** | The public namespace for a related set of Fields (e.g., `git`, `mise`). A Provider declares 1+ Sources and emits no Fields directly outside of Sources. Identified by name. |
 | **Source** | The unit of refresh inside a Provider. Has its own invalidation strategy, scope, lifecycle, and computes a declared subset of the Provider's Fields. Identified by `(provider_name, source_name)`. |
-| **Field** | A named scalar value produced by exactly one Source. Identified by `provider.field` (e.g., `git.branch`). |
-| **Cache entry** | The `(provider, path)` slot. Holds the union of all Sources' Field outputs for that key. Sources writing to the same cache entry contribute disjoint Field subsets; Field-name conflicts are not allowed. |
+| **Field** | A named leaf, scalar or nested, produced by exactly one Source or carrying a static label (`put`, or `config:<file>` for a leaf seeded from that configuration file). Identified by its key, `namespace.field…` (e.g., `git.branch`, `scanline:template.widgets.foo`). |
+| **Record** | One stored value at a key and a path. It carries exactly one source: a Source of its Provider, `put`, or `config:<file>`. The source is metadata on the record, never a level in the tree and never part of an address. |
+| **Cache entry** | The records at one `(namespace, path)`. Holds the union of all Sources' Field outputs for that key. Sources writing to the same cache entry contribute disjoint Field subsets; Field-name conflicts are not allowed. A static entry, one whose leaves all carry static labels, has no Source instances; `provider:facet` keys (see `field_resolution.md`) are always static. |
 | **Source instance** | The runtime per-Source state at `(provider_name, path, source_name)`. Owns the Source's lifecycle state, watch registrations, poll timer, keep-alive timer, and failure-backoff state. Instances at the same `(provider, path)` share a cache entry but have independent runtime state. |
-| **Source scope** | `Global` or `PathScoped`. Determines whether the Source's results live in the pathless cache slot or path-keyed slots. A single Provider may have Sources of either scope. |
+| **Source scope** | `Global` or `PathScoped`. Determines whether the Source's results live at the global path, `$HOME`, or at per-directory paths. A single Provider may have Sources of either scope. |
 | **Pure-watch Source** | A Source whose invalidation strategy is `Watch`. Refreshes only on filesystem events; never polls. |
 | **Failback** | Per-Source failure-backoff state. Distinct from cache lifecycle keep-alive; governs retries after refresh failures, not decay-on-idle. |
 
@@ -23,15 +24,15 @@
 
 ```mermaid
 graph TD
-    P[Provider: git] --> S1[Source: refs<br/>Watch .git]
-    P --> S2[Source: diff<br/>Poll 30s]
-    P --> S3[Source: status<br/>WatchAndPoll .git/index, 60s]
-    S1 --> F1[branch, commit, tag, ahead, ...]
-    S2 --> F2[lines_added, lines_removed, ...]
-    S3 --> F3[staged, unstaged, untracked, ...]
+    P[Provider: git] --> S1[Source A: Watch]
+    P --> S2[Source B: Poll]
+    P --> S3[Source C: WatchAndPoll]
+    S1 --> F1[its fields]
+    S2 --> F2[its fields]
+    S3 --> F3[its fields]
 ```
 
-Each Field belongs to exactly one Source. Field names are unique within a Provider. The Provider name plus the Field name resolves uniquely to a single Source.
+Every record has exactly one source: a Source of its Provider, or a static label. Field names are unique within a Provider. A key plus a path resolves to exactly one record.
 
 ### Source structure
 
@@ -80,8 +81,8 @@ There is no general "fallback poll on watch failure" mechanism. The strategy is 
 
 A Source declares one of:
 
-- **`Global`** — the Source's output lives in the pathless cache slot `(provider_name, None)`. The Source instance is keyed `(provider_name, None, source_name)`. Examples: `mise.global`, `battery.level`, `hostname.name`.
-- **`PathScoped`** — the Source's output lives in path-keyed cache slots. Source instances are created on demand per path: `(provider_name, Some(path), source_name)`. Examples: `mise.project`, `git.refs`, `python.venv`.
+- **`Global`** — the Source's output lives in the global path, `(provider_name, $HOME)`. The Source instance is keyed `(provider_name, None, source_name)`. Examples: `mise.global`, `battery.level`, `hostname.name`.
+- **`PathScoped`** — the Source's output lives in per-directory paths. Source instances are created on demand per path: `(provider_name, Some(path), source_name)`. Examples: `mise.project`, `git.refs`, `python.venv`.
 
 A Provider may declare Sources of either scope. The scope is per-Source, not per-Provider.
 
@@ -94,22 +95,13 @@ For `Watch` and `WatchAndPoll` Sources, when the Source instance enters Active s
 
 A filesystem event whose path is under any registered watch root and matches any registered pattern (or hits any watched abs_path) triggers refresh of the corresponding Source instance.
 
-### File-path scope and per-instance watched files
-
-A `PathScoped` Source's scope path is usually a directory (e.g. a project root), within which `Watch` patterns are matched. A Source may instead be scoped by a **file path** — or a separator-joined list of file paths — when its value lives in a file the *consumer* selects (the path-phase of env-driven selection; see [`field_resolution.md`](./field_resolution.md)). Such a Source:
-
-- reads (and, for a list, merges) the file(s) named by its scope path in `execute(path)`;
-- declares the absolute files to watch for that instance via `watched_files(path)` (default: none). For a `Watch`/`WatchAndPoll` Source the scheduler registers a watch on each returned file, so the instance is invalidated by changes to its component files even though the scope path is not a single watchable directory.
-
-The cache coordinate is the file-path scope; distinct selections are distinct Source instances sharing the normal `PathScoped` lifecycle and decay. The Source never reads the selector env var — consumer-side resolution supplies the concrete path.
-
 ### Cache entry composition
 
 A cache entry at `(provider, path)` holds the union of all Source instances' Field outputs at that key:
 
 ```mermaid
 graph LR
-    SI1[Source instance: git.refs at /repo] -->|writes branch, commit, ...| CE[Cache entry: git, /repo]
+    SI1[Source instance: git.<source> at /repo] -->|writes its fields| CE[Cache entry: git, /repo]
     SI2[Source instance: git.diff at /repo] -->|writes lines_added, ...| CE
     SI3[Source instance: git.status at /repo] -->|writes staged, ...| CE
 ```
@@ -228,28 +220,25 @@ The `project` Source has one instance per visited project root. Each instance de
 ```
 Provider: git
 
-Source: refs
+Source: watched
   scope: PathScoped
   invalidation: Watch { patterns: [".git"], abs_paths: [] }
   keep_alive: Duration(120s)
-  fields: branch, commit, tag, ahead, behind, upstream, detached, state, state_step, state_total, stash
 
-Source: diff
+Source: polled
   scope: PathScoped
   invalidation: Poll { interval_secs: 30 }
   keep_alive: Polls(4)  (= 120s)
-  fields: lines_added, lines_removed, lines_staged_added, lines_staged_removed
 
-Source: status
+Source: watched-and-polled
   scope: PathScoped
   invalidation: WatchAndPoll { patterns: [".git/index"], abs_paths: [], interval_secs: 60 }
   keep_alive: Polls(2)  (= 120s)
-  fields: staged, unstaged, untracked, conflicted, dirty
 ```
 
-`git.branch` (in `refs`) refreshes only on `.git` fs events — no polling overhead. `git.lines_added` (in `diff`) refreshes every 30s while the Source is Active — file-watching cannot cheaply observe working-tree edits. `git.staged` (in `status`) refreshes both on `.git/index` events and as a 60s backstop.
+A field in the watched Source refreshes only on `.git` fs events — no polling overhead. A field in the polled Source refreshes every 30s while the Source is Active — file-watching cannot cheaply observe working-tree edits. A field in the watched-and-polled Source refreshes both on `.git/index` events and as a 60s backstop.
 
-A consumer who queries `git.branch` repeatedly but never queries `git.lines_added` keeps `refs` Active while `diff` decays and eventually evicts. Each Source's lifecycle is independent.
+A consumer who queries a field of the watched Source repeatedly but never a field of the polled one keeps the first Active while the second decays and eventually evicts. Each Source's lifecycle is independent.
 
 ### Example 3: Battery on Linux (two Sources, mixed-cost mechanisms)
 
@@ -281,7 +270,7 @@ The cache entry for a read-always Source is still written on every re-execution 
 
 ## Invariants
 
-1. Every Field belongs to exactly one Source. Field names are unique within a Provider.
+1. Every record has exactly one source: a Source of its Provider, or a static label. Field names are unique within a Provider.
 2. A Source's invalidation strategy is exactly one of `Poll`, `Watch`, or `WatchAndPoll`.
 3. `Watch` Sources never poll. The poll timer for a `Watch` Source instance never fires; no execute occurs from the timer path.
 4. `Poll` Sources never register filesystem watches.
@@ -295,7 +284,7 @@ The cache entry for a read-always Source is still written on every re-execution 
 12. Sources writing to the same cache entry produce disjoint Field sets. A Field-name overlap between Sources of the same Provider is a configuration error.
 13. A consumer query for `provider.field` is demand for the Source that owns `field`. It is not demand for sibling Sources of the same Provider.
 14. A read-always Source is re-executed on every request-path read; its value is never served from cache. Read-always is reserved for Sources whose `execute` is a cheap file/syscall read.
-15. A `PathScoped` Source may be scoped by a file path or separator-joined file list; it reads/merges those file(s) in `execute` and declares the files to watch via `watched_files`. For `Watch`/`WatchAndPoll` Sources the scheduler registers a watch on each declared file. The Source never reads the selector env var.
+15. A `PathScoped` Source is scoped by the directory a query addresses. It may declare absolute files to watch for that instance via `watched_files(path)`; for `Watch`/`WatchAndPoll` Sources the scheduler registers a watch on each.
 16. Provider file-watching is never silently dead: the watch self-test either confirms event delivery or flips to the polling backend, and the degradation is observable via `comb check daemon` and `comb status`.
 
 ## Behaviour assertions
@@ -415,11 +404,11 @@ Feature: Source-level invalidation
 - **Status TTL column rendering.** The visual representation of pure-watch sources (e.g., the F-only glyph render with no `D PxK` element) is governed by `docs/status_ttl.md`.
 - **Migration / phasing.** How the codebase moves from monolithic `Provider::execute()` to the per-Source dispatch model is implementation planning, not part of the canonical model.
 - **Failure backoff on watch-registration failure.** This canonical model does not specify automatic retry of failed watch registrations; whether and how the scheduler retries is an implementation concern bounded by the FailbackConfig contract.
-- **Field resolution.** How a consumer query is resolved into a value — the field-type taxonomy, `cache.*`/`env.*`, path expressions, virtual fields, and env-driven selection — is governed by [`field_resolution.md`](./field_resolution.md), not this model.
+- **Field resolution.** How a consumer query is resolved into a value — the field-type taxonomy, `cache.*`/`env.*`, the directory chain, virtual fields, and env-driven selection — is governed by [`field_resolution.md`](./field_resolution.md), not this model.
 
 ## See also
 
-- [`field_resolution.md`](./field_resolution.md) — how cached values, `env.*`, and path expressions resolve into the values consumers query
+- [`field_resolution.md`](./field_resolution.md) — how cached values, `env.*`, and the directory chain resolve into the values consumers query
 - [`cache-lifecycle.md`](./cache-lifecycle.md) — the universal Active/Decay/Evicted state machine that Source instances follow
 - [`singleton.md`](./singleton.md) — daemon-singleton invariants (orthogonal; included here as the third canonical doc for cross-reference)
 - `docs/status_ttl.md` — TTL column rendering, including pure-watch source render
