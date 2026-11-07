@@ -64,7 +64,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 Response:
 
 ```json
-{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.10.0"}}
+{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.10.1"}}
 ```
 
 `protocol_version` follows semver (major.minor) and is independent of the daemon binary version.

@@ -44,3 +44,6 @@ sdks/c/conformance_runner
 
 # Nix
 flake.lock
+
+# hush secret-set refs (local to this machine)
+.hush.sh

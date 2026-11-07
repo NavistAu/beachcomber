@@ -82,8 +82,9 @@ impl FsWatcher {
     }
 }
 
-/// Which backend serves provider file-watching, decided once at daemon startup
-/// by the watch self-test (canon `provider_source.md` §"Watch backend health").
+/// Which backend serves provider file-watching, decided at daemon startup by
+/// the watch self-test (canon `provider_source.md` §"Watch backend health"),
+/// and re-tested while on polling ([`until_native_delivers`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchBackend {
     /// Kernel-native (FSEvents / inotify) — the self-test confirmed delivery.
@@ -111,8 +112,31 @@ pub const WATCH_SELF_TEST_TIMEOUT: Duration = Duration::from_secs(2);
 /// registration can walk a whole tree, and a prompt reads many times a second.
 pub const WATCH_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Scan interval for the production polling fallback.
-pub const POLLING_FALLBACK_INTERVAL: Duration = Duration::from_secs(1);
+/// Scan interval for the production polling fallback. Every scan walks each
+/// watched tree in full, so 1s burned a core on big trees; 5s is a degraded mode's
+/// latency, not a prompt's.
+pub const POLLING_FALLBACK_INTERVAL: Duration = Duration::from_secs(5);
+
+/// On the polling fallback, the native self-test runs again after the first
+/// wait, doubling up to the second: a jammed `fseventsd` recovers in minutes,
+/// and a dead backend then costs one 2s probe every 5 minutes.
+pub const NATIVE_REPROBE_BACKOFF: (Duration, Duration) =
+    (Duration::from_secs(30), Duration::from_secs(300));
+
+/// Run `probe` (the native self-test) with [`NATIVE_REPROBE_BACKOFF`]
+/// between tries, until it passes.
+pub async fn until_native_delivers<F: std::future::Future<Output = bool>>(
+    mut probe: impl FnMut() -> F,
+) {
+    let (mut wait, most) = NATIVE_REPROBE_BACKOFF;
+    loop {
+        tokio::time::sleep(wait).await;
+        if probe().await {
+            return;
+        }
+        wait = (wait * 2).min(most);
+    }
+}
 
 impl FsWatcher {
     /// Production polling fallback: mtime scan every `interval`, no content
@@ -225,6 +249,11 @@ impl Barrier {
     /// The watcher turned out not to deliver: no read waits on it again.
     pub fn off(&self) {
         self.on.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The native watcher is back: reads wait on it again.
+    pub fn on(&self) {
+        self.on.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Whether its own watch has delivered: until it has, a read does not wait.
@@ -457,7 +486,8 @@ impl Registrar {
     }
 
     /// Serve every watch from `watcher` from now on: the self-test's fallback
-    /// to polling. The worker registers each one on it again.
+    /// to polling, and the way back to native once a re-run of it passes.
+    /// The worker registers each one on it again.
     pub fn replace_backend(&self, watcher: FsWatcher) {
         let _ = self.commands.send(Command::Backend(watcher));
     }
@@ -679,9 +709,17 @@ fn event_handler(
                 let _ = tx.blocking_send(event.paths);
             }
         }
-        Err(e) => {
-            warn!("Filesystem watch error: {}", e);
-        }
+        Err(e) if is_vanished(&e) => debug!("Filesystem watch error: {}", e),
+        Err(e) => warn!("Filesystem watch error: {}", e),
+    }
+}
+
+/// A path that vanished mid-scan (a build deleting files) is normal, not a fault.
+fn is_vanished(e: &notify::Error) -> bool {
+    match &e.kind {
+        notify::ErrorKind::Io(io) => io.kind() == std::io::ErrorKind::NotFound,
+        notify::ErrorKind::PathNotFound => true,
+        _ => false,
     }
 }
 
@@ -1150,10 +1188,59 @@ mod registrar_tests {
             "the one registration both rest on, made again on the new backend"
         );
     }
+
+    /// On the polling fallback, a self-test that fails and then passes hands
+    /// every watch back to a native backend, after the backoff.
+    #[tokio::test(start_paused = true)]
+    async fn a_self_test_that_passes_again_goes_back_to_native() {
+        let (_tmp, dir) = tempdir();
+        let (r, _) = registrar(&Gate::opened());
+        r.watch(dir.clone());
+        until(&r, &dir, WatchState::Active { via: None });
+        let (polling, _) = Held::new(&Gate::opened());
+        r.replace_backend(FsWatcher::with_backend(Box::new(polling)));
+
+        let tries = std::sync::atomic::AtomicUsize::new(0);
+        let started = tokio::time::Instant::now();
+        until_native_delivers(|| async {
+            tries.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0
+        })
+        .await;
+        let (first, _) = NATIVE_REPROBE_BACKOFF;
+        assert_eq!(tries.into_inner(), 2, "fails once, then passes");
+        assert_eq!(started.elapsed(), first * 3, "30s, then 60s");
+
+        let (native, calls) = Held::new(&Gate::opened());
+        r.replace_backend(FsWatcher::with_backend(Box::new(native)));
+        let fence = dir.join("fence");
+        r.watch(fence.clone());
+        until(
+            &r,
+            &fence,
+            WatchState::Active {
+                via: Some(dir.clone()),
+            },
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [Call::Watch(dir.clone(), RecursiveMode::Recursive)],
+            "the watch is registered again on the native backend"
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vanished_path_is_not_a_fault() {
+        let nf = notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let denied = notify::Error::io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(super::is_vanished(&nf));
+        assert!(super::is_vanished(&notify::Error::path_not_found()));
+        assert!(!super::is_vanished(&denied));
+        assert!(!super::is_vanished(&notify::Error::generic("x")));
+    }
+
     use super::FsWatcher;
     use std::fs;
     use tempfile::TempDir;
