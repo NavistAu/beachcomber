@@ -947,6 +947,21 @@ impl Scheduler {
             } else {
                 None
             };
+        // Set while on the polling fallback: fires once a re-run self-test passes.
+        let mut reprobe_rx: Option<tokio::sync::oneshot::Receiver<()>> = None;
+        let reprobe = || {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                crate::watcher::until_native_delivers(|| {
+                    crate::watcher::self_test_native_backend(
+                        crate::watcher::WATCH_SELF_TEST_TIMEOUT,
+                    )
+                })
+                .await;
+                let _ = tx.send(());
+            });
+            Some(rx)
+        };
 
         // Lifecycle registry: replaces the three old maps (demand, backoff, poll_states).
         let mut lifecycle = LifecycleRegistry::new();
@@ -1200,11 +1215,39 @@ impl Scheduler {
                                     barrier.off();
                                 }
                                 watch_backend = Some(crate::watcher::WatchBackend::Polling);
+                                reprobe_rx = reprobe();
                             }
                             Err(e) => {
                                 warn!(
                                     "failed to create polling fallback watcher: {e}; staying on native (events may not deliver)"
                                 );
+                            }
+                        }
+                    }
+                }
+
+                // A re-run self-test passed: the registrar takes the native
+                // backend back, as it took the polling one.
+                res = async { reprobe_rx.as_mut().expect("guarded by is_some").await },
+                    if reprobe_rx.is_some() =>
+                {
+                    reprobe_rx = None;
+                    if res.is_ok() {
+                        match FsWatcher::new() {
+                            Ok((native, native_rx)) => {
+                                if let Some(registrar) = &registrar {
+                                    registrar.replace_backend(native);
+                                }
+                                fs_rx = native_rx;
+                                if let Some(barrier) = &barrier {
+                                    barrier.on();
+                                }
+                                watch_backend = Some(crate::watcher::WatchBackend::Native);
+                                info!("watch self-test: fs events delivered again; provider watching back on native");
+                            }
+                            Err(e) => {
+                                warn!("failed to create native watcher: {e}; staying on polling");
+                                reprobe_rx = reprobe();
                             }
                         }
                     }
