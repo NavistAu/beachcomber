@@ -325,7 +325,7 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    needs: release
+    needs: [gate, release]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -336,11 +336,11 @@ jobs:
       - uses: rust-lang/crates-io-auth-action@v1
         id: crates-auth
       - name: Publish libbeachcomber
-        run: cargo publish -p libbeachcomber || echo "Already published, skipping"
+        run: ${{ github.workspace }}/ci/publish-once.sh https://crates.io/api/v1/crates/libbeachcomber/${{ needs.gate.outputs.version }} cargo publish -p libbeachcomber
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
       - name: Publish beachcomber
-        run: cargo publish -p beachcomber || echo "Already published, skipping"
+        run: ${{ github.workspace }}/ci/publish-once.sh https://crates.io/api/v1/crates/beachcomber/${{ needs.gate.outputs.version }} cargo publish -p beachcomber
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
 
@@ -369,7 +369,7 @@ jobs:
 
   publish-npm:
     name: Publish to npm
-    needs: release
+    needs: [gate, release]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -390,11 +390,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Publish
-        run: unset NODE_AUTH_TOKEN && npm publish --access public --provenance || echo "Already published, skipping"
+        run: unset NODE_AUTH_TOKEN && ${{ github.workspace }}/ci/publish-once.sh https://registry.npmjs.org/libbeachcomber/${{ needs.gate.outputs.version }} npm publish --access public --provenance
 
   publish-rubygems:
     name: Publish to RubyGems
-    needs: release
+    needs: [gate, release]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -411,11 +411,11 @@ jobs:
         run: gem build libbeachcomber.gemspec
       - uses: rubygems/configure-rubygems-credentials@main
       - name: Publish
-        run: gem push libbeachcomber-*.gem || echo "Already published, skipping"
+        run: ${{ github.workspace }}/ci/publish-once.sh https://rubygems.org/api/v2/rubygems/libbeachcomber/versions/${{ needs.gate.outputs.version }}.json gem push libbeachcomber-*.gem
 
   publish-luarocks:
     name: Publish to LuaRocks
-    needs: release
+    needs: [gate, release]
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -429,7 +429,7 @@ jobs:
       - name: Install JSON library
         run: luarocks install dkjson
       - name: Publish
-        run: luarocks upload --skip-pack rockspec/libbeachcomber-0.10.0-1.rockspec --api-key=${{ secrets.LUAROCKS_API_KEY }} || echo "Already published, skipping"
+        run: ${{ github.workspace }}/ci/publish-once.sh https://luarocks.org/manifests/jhogendorn/libbeachcomber-${{ needs.gate.outputs.version }}-1.rockspec luarocks upload --skip-pack rockspec/libbeachcomber-0.10.0-1.rockspec --api-key=${{ secrets.LUAROCKS_API_KEY }}
 
   publish-go:
     name: Tag Go module
@@ -440,7 +440,7 @@ jobs:
       - name: Create Go module tag
         run: |
           git tag sdks/go/${{ needs.gate.outputs.tag }} || echo "Tag already exists, skipping"
-          git push origin sdks/go/${{ needs.gate.outputs.tag }} || echo "Tag already pushed, skipping"
+          git push origin sdks/go/${{ needs.gate.outputs.tag }} || git ls-remote --exit-code origin refs/tags/sdks/go/${{ needs.gate.outputs.tag }}
 
   publish-homebrew:
     name: Update Homebrew tap
@@ -524,7 +524,7 @@ jobs:
       - name: Set version
         run: npm version --no-git-tag-version --allow-same-version "${{ needs.gate.outputs.version }}"
       - name: Publish
-        run: unset NODE_AUTH_TOKEN && npm publish --access public --provenance || echo "Already published, skipping"
+        run: unset NODE_AUTH_TOKEN && ${{ github.workspace }}/ci/publish-once.sh https://registry.npmjs.org/beachcomber/${{ needs.gate.outputs.version }} npm publish --access public --provenance
 
   publish-pypi-binary:
     name: Publish beachcomber binary installer to PyPI
