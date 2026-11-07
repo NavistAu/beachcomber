@@ -56,7 +56,10 @@ pub fn run_daemon(
         .open(&log_path);
 
     let filter = config.daemon().log_level;
-    let env_filter = EnvFilter::from_default_env().add_directive(filter.into());
+    let env_filter = EnvFilter::from_default_env()
+        .add_directive(filter.into())
+        // PollWatcher warns on every file that vanishes mid-walk.
+        .add_directive("notify::poll=error".parse().expect("static directive"));
 
     match log_file {
         Ok(file) => {

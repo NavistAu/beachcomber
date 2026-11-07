@@ -112,8 +112,10 @@ pub const WATCH_SELF_TEST_TIMEOUT: Duration = Duration::from_secs(2);
 /// registration can walk a whole tree, and a prompt reads many times a second.
 pub const WATCH_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Scan interval for the production polling fallback.
-pub const POLLING_FALLBACK_INTERVAL: Duration = Duration::from_secs(1);
+/// Scan interval for the production polling fallback. Every scan walks each
+/// watched tree in full, so 1s burned a core on big trees; 5s is a degraded mode's
+/// latency, not a prompt's.
+pub const POLLING_FALLBACK_INTERVAL: Duration = Duration::from_secs(5);
 
 /// On the polling fallback, the native self-test runs again after the first
 /// wait, doubling up to the second: a jammed `fseventsd` recovers in minutes,
@@ -707,9 +709,17 @@ fn event_handler(
                 let _ = tx.blocking_send(event.paths);
             }
         }
-        Err(e) => {
-            warn!("Filesystem watch error: {}", e);
-        }
+        Err(e) if is_vanished(&e) => debug!("Filesystem watch error: {}", e),
+        Err(e) => warn!("Filesystem watch error: {}", e),
+    }
+}
+
+/// A path that vanished mid-scan (a build deleting files) is normal, not a fault.
+fn is_vanished(e: &notify::Error) -> bool {
+    match &e.kind {
+        notify::ErrorKind::Io(io) => io.kind() == std::io::ErrorKind::NotFound,
+        notify::ErrorKind::PathNotFound => true,
+        _ => false,
     }
 }
 
@@ -1221,6 +1231,16 @@ mod registrar_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vanished_path_is_not_a_fault() {
+        let nf = notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let denied = notify::Error::io(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(super::is_vanished(&nf));
+        assert!(super::is_vanished(&notify::Error::path_not_found()));
+        assert!(!super::is_vanished(&denied));
+        assert!(!super::is_vanished(&notify::Error::generic("x")));
+    }
+
     use super::FsWatcher;
     use std::fs;
     use tempfile::TempDir;

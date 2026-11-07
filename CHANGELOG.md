@@ -8,7 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- **The polling fallback is no longer for the daemon's whole life.** A daemon whose startup watch self-test saw no events (a jammed `fseventsd`, say) stayed on the 1s polling watcher until it stopped, even once native events flowed again. On the fallback it now re-runs the self-test after 30s, doubling to every 5 minutes, and when one passes the registrar re-registers every watch on a native backend, reads wait on the barrier again, `status` reports `watch_backend: native`, and the switch is logged at info.
+- **The polling fallback is no longer for the daemon's whole life.** A daemon whose startup watch self-test saw no events (a jammed `fseventsd`, say) stayed on the polling watcher until it stopped, even once native events flowed again. On the fallback it now re-runs the self-test after 30s, doubling to every 5 minutes, and when one passes the registrar re-registers every watch on a native backend, reads wait on the barrier again, `status` reports `watch_backend: native`, and the switch is logged at info.
+- **The polling fallback costs less and logs less.** When the daemon falls back to polling, it walks every watched tree on each scan; the scan interval is now 5 seconds (was 1), and a path that vanished mid-scan (`NotFound`, normal during a build) is logged at debug, not warn, as is `notify::poll`'s own walk warning. Other watch errors still warn.
 
 ## [0.10.0] - 2026-11-06
 
