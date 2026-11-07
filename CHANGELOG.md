@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **The polling fallback is no longer for the daemon's whole life.** A daemon whose startup watch self-test saw no events (a jammed `fseventsd`, say) stayed on the polling watcher until it stopped, even once native events flowed again. On the fallback it now re-runs the self-test after 30s, doubling to every 5 minutes, and when one passes the registrar re-registers every watch on a native backend, reads wait on the barrier again, `status` reports `watch_backend: native`, and the switch is logged at info.
 - **The polling fallback costs less and logs less.** When the daemon falls back to polling, it walks every watched tree on each scan; the scan interval is now 5 seconds (was 1), and a path that vanished mid-scan (`NotFound`, normal during a build) is logged at debug, not warn, as is `notify::poll`'s own walk warning. Other watch errors still warn.
+- **Every line of `daemon.log` was written twice.** A spawned daemon's stderr is `daemon.log`, and its logger also wrote a file layer to it; the daemon now leaves out the stderr layer when stderr is the log file (same device and inode). A foreground `comb daemon` in a terminal still prints there, and what a daemon prints before its logger starts still lands in the log.
 
 ## [0.10.0] - 2026-11-06
 

@@ -8,6 +8,22 @@ use std::os::fd::{FromRawFd, RawFd};
 use std::path::PathBuf;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+/// Whether this process's stderr is the very file `file` (same device and inode).
+fn stderr_is(file: &fs::File) -> bool {
+    same_file(2, file)
+}
+
+fn same_file(fd: RawFd, file: &fs::File) -> bool {
+    use std::mem::ManuallyDrop;
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: `fd` is only borrowed for one `fstat`; ManuallyDrop never closes it.
+    let err = ManuallyDrop::new(unsafe { fs::File::from_raw_fd(fd) });
+    match (err.metadata(), file.metadata()) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
 pub fn run_daemon(
     socket_path: PathBuf,
     mut config: Config,
@@ -63,13 +79,14 @@ pub fn run_daemon(
 
     match log_file {
         Ok(file) => {
-            // Log to both stderr and file.
-            // A spawned daemon's stderr is `daemon.log`: escapes only for a
-            // terminal.
-            let stderr_layer = fmt::layer()
-                .with_target(true)
-                .with_ansi(std::io::stderr().is_terminal())
-                .with_writer(std::io::stderr);
+            // A spawned daemon's stderr is `daemon.log` itself (the spawner keeps it for
+            // pre-logger errors), so a stderr layer would write every event twice.
+            let stderr_layer = (!stderr_is(&file)).then(|| {
+                fmt::layer()
+                    .with_target(true)
+                    .with_ansi(std::io::stderr().is_terminal())
+                    .with_writer(std::io::stderr)
+            });
             let file_layer = fmt::layer()
                 .with_target(true)
                 .with_ansi(false)
@@ -343,4 +360,23 @@ fn spawn_parent_death_watch(cancel: tokio_util::sync::CancellationToken, initial
             std::thread::sleep(PARENT_CHECK);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::AsRawFd;
+
+    #[test]
+    fn same_file_compares_inodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = fs::File::create(dir.path().join("a")).unwrap();
+        let b = fs::File::create(dir.path().join("b")).unwrap();
+        let a_again = fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("a"))
+            .unwrap();
+        assert!(same_file(a_again.as_raw_fd(), &a));
+        assert!(!same_file(b.as_raw_fd(), &a));
+    }
 }
