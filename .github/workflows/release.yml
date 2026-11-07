@@ -429,7 +429,7 @@ jobs:
       - name: Install JSON library
         run: luarocks install dkjson
       - name: Publish
-        run: ${{ github.workspace }}/ci/publish-once.sh https://luarocks.org/manifests/jhogendorn/libbeachcomber-${{ needs.gate.outputs.version }}-1.rockspec luarocks upload --skip-pack rockspec/libbeachcomber-0.10.0-1.rockspec --api-key=${{ secrets.LUAROCKS_API_KEY }}
+        run: ${{ github.workspace }}/ci/publish-once.sh https://luarocks.org/manifests/jhogendorn/libbeachcomber-${{ needs.gate.outputs.version }}-1.rockspec luarocks upload --skip-pack rockspec/libbeachcomber-0.10.1-1.rockspec --api-key=${{ secrets.LUAROCKS_API_KEY }}
 
   publish-go:
     name: Tag Go module

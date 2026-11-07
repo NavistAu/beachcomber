@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-08
+
 ### Fixed
 
 - **The polling fallback is no longer for the daemon's whole life.** A daemon whose startup watch self-test saw no events (a jammed `fseventsd`, say) stayed on the polling watcher until it stopped, even once native events flowed again. On the fallback it now re-runs the self-test after 30s, doubling to every 5 minutes, and when one passes the registrar re-registers every watch on a native backend, reads wait on the barrier again, `status` reports `watch_backend: native`, and the switch is logged at info.
