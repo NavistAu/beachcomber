@@ -207,10 +207,8 @@ fn exec(ctx: &EngineCtx, command: &MjValue, kwargs: Kwargs) -> Result<MjValue, E
     let shell = kwargs.get::<Option<String>>("sh")?;
     kwargs.assert_all_used()?;
 
-    let mut label = None;
     let (program, args) = if let Some(script) = command.as_str() {
         let shell = shell.unwrap_or_else(|| "sh".to_string());
-        label = Some(format!("{shell} -c '{script}'"));
         (shell, vec!["-c".to_string(), script.to_string()])
     } else if command.kind() == ValueKind::Seq {
         if shell.is_some() {
@@ -232,7 +230,6 @@ fn exec(ctx: &EngineCtx, command: &MjValue, kwargs: Kwargs) -> Result<MjValue, E
 
     let req = crate::exec::ExecRequest {
         cmd: &program,
-        label: label.as_deref(),
         args: &args,
         stdin: stdin.as_deref(),
         timeout,

@@ -1059,7 +1059,7 @@ mod line_tests {
         let err =
             under_a_memo("{{ 'false' | cache() | exec() }}", Some(json!("prod"))).unwrap_err();
         assert!(
-            matches!(&err, EvalError::Runtime { form: Form::SingleTag, message } if message.contains("`sh -c 'false'`")),
+            matches!(&err, EvalError::Runtime { form: Form::SingleTag, message } if message.contains("`sh -c false`")),
             "{err:?}"
         );
     }

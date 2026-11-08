@@ -82,9 +82,6 @@ const READER_JOIN_GRACE: Duration = Duration::from_millis(300);
 /// directory is `cwd` when set.
 pub(crate) struct ExecRequest<'a> {
     pub cmd: &'a str,
-    /// What failure messages call the command when `cmd` alone would
-    /// mislead (a script run as `sh -c`); `cmd` when `None`.
-    pub label: Option<&'a str>,
     pub args: &'a [String],
     pub stdin: Option<&'a str>,
     pub timeout: Duration,
@@ -109,10 +106,11 @@ enum Outcome {
 ///
 /// On success, stdout is decoded lossy-UTF-8 with at most one trailing `\n`
 /// (and a preceding `\r`, if present) stripped. On failure, the error names
-/// the command (`req.label`, else `req.cmd`), what happened (a non-zero exit status, a timeout, an oversized
-/// stdout, or the spawn `io::Error`), and [`STDERR_ERROR_BYTES`] of stderr.
+/// the whole argv as run ([`argv_text`]), what happened (a non-zero exit
+/// status, a timeout, an oversized stdout, or the spawn `io::Error`), and
+/// [`STDERR_ERROR_BYTES`] of stderr.
 pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
-    let name = req.label.unwrap_or(req.cmd);
+    let name = &argv_text(req.cmd, req.args);
     let mut command = Command::new(req.cmd);
     command
         .args(req.args)
@@ -355,6 +353,28 @@ fn clean_stdout(buf: &[u8]) -> String {
     s
 }
 
+/// `cmd` and `args` as one line a shell would split back into the same argv:
+/// a word that is empty or holds anything outside a safe set is
+/// single-quoted ([`crate::render::shell_quote`]).
+fn argv_text(cmd: &str, args: &[String]) -> String {
+    let safe = |w: &str| {
+        !w.is_empty()
+            && w.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_-./:=@%+,".contains(c))
+    };
+    std::iter::once(cmd)
+        .chain(args.iter().map(String::as_str))
+        .map(|w| {
+            if safe(w) {
+                w.to_string()
+            } else {
+                crate::render::shell_quote(w)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn failure_message(cmd: &str, reason: String, stderr: &[u8]) -> String {
     let stderr_trunc = truncate_lossy(stderr, STDERR_ERROR_BYTES);
     if stderr_trunc.is_empty() {
@@ -386,7 +406,6 @@ mod tests {
     fn echo_roundtrip_strips_trailing_newline() {
         let req = ExecRequest {
             cmd: "/bin/echo",
-            label: None,
             args: &["hello".to_string()],
             stdin: None,
             timeout: Duration::from_millis(1000),
@@ -400,7 +419,6 @@ mod tests {
     fn stdin_roundtrip_via_cat() {
         let req = ExecRequest {
             cmd: "cat",
-            label: None,
             args: &[],
             stdin: Some("round trip"),
             timeout: Duration::from_millis(1000),
@@ -417,7 +435,6 @@ mod tests {
         // `stdin` is `None`, not left open until the child times out.
         let req = ExecRequest {
             cmd: "cat",
-            label: None,
             args: &[],
             stdin: None,
             timeout: Duration::from_millis(1000),
@@ -443,7 +460,6 @@ mod tests {
         let payload = "x".repeat(256 * 1024);
         let req = ExecRequest {
             cmd: "cat",
-            label: None,
             args: &[],
             stdin: Some(&payload),
             timeout: Duration::from_millis(3000),
@@ -469,7 +485,6 @@ mod tests {
         let payload = "x".repeat(256 * 1024);
         let req = ExecRequest {
             cmd: "sh",
-            label: None,
             args: &["-c".to_string(), "sleep 3".to_string()],
             stdin: Some(&payload),
             timeout: Duration::from_millis(50),
@@ -495,7 +510,6 @@ mod tests {
         // even though the command we asked for already finished.
         let req = ExecRequest {
             cmd: "sh",
-            label: None,
             args: &["-c".to_string(), "sleep 3 & echo started".to_string()],
             stdin: None,
             timeout: Duration::from_millis(200),
@@ -516,7 +530,6 @@ mod tests {
     fn nonzero_exit_error_carries_stderr() {
         let req = ExecRequest {
             cmd: "sh",
-            label: None,
             args: &["-c".to_string(), "echo boom >&2; exit 3".to_string()],
             stdin: None,
             timeout: Duration::from_millis(1000),
@@ -533,10 +546,48 @@ mod tests {
     }
 
     #[test]
+    fn failure_names_the_whole_argv_quoted() {
+        let req = ExecRequest {
+            cmd: "sh",
+            args: &[
+                "-c".to_string(),
+                "exit 4".to_string(),
+                "it's".to_string(),
+                String::new(),
+                "plain".to_string(),
+            ],
+            stdin: None,
+            timeout: Duration::from_millis(1000),
+            env: &test_env(),
+            cwd: None,
+        };
+        let err = run(&req).unwrap_err();
+        assert_eq!(err, r"`sh -c 'exit 4' 'it'\''s' '' plain`: exit status: 4");
+    }
+
+    #[test]
+    fn spawn_failure_names_the_whole_argv() {
+        let req = ExecRequest {
+            cmd: "definitely-not-a-real-command-xyz",
+            args: &["--flag".to_string(), "two words".to_string()],
+            stdin: None,
+            timeout: Duration::from_millis(1000),
+            env: &test_env(),
+            cwd: None,
+        };
+        let err = run(&req).unwrap_err();
+        assert!(
+            err.starts_with(
+                "`definitely-not-a-real-command-xyz --flag 'two words'`: failed to spawn: "
+            ),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn long_stderr_error_keeps_the_tail() {
         let req = ExecRequest {
             cmd: "sh",
-            label: None,
             args: &[
                 "-c".to_string(),
                 "head -c 3000 /dev/zero | tr '\\0' x >&2; echo; echo FINAL-MARKER >&2; exit 1"
@@ -549,14 +600,18 @@ mod tests {
         };
         let err = run(&req).unwrap_err();
         assert!(err.contains("FINAL-MARKER"), "tail must survive: {err}");
-        assert!(err.len() < STDERR_ERROR_BYTES + 100, "bounded: {err}");
+        // The stderr part is bounded; the command before it is named whole.
+        let stderr_part = err
+            .rsplit_once("exit status: 1: ")
+            .expect("stderr follows")
+            .1;
+        assert!(stderr_part.len() <= STDERR_ERROR_BYTES, "bounded: {err}");
     }
 
     #[test]
     fn spawn_failure_for_nonexistent_command() {
         let req = ExecRequest {
             cmd: "definitely-not-a-real-command-xyz",
-            label: None,
             args: &[],
             stdin: None,
             timeout: Duration::from_millis(1000),
@@ -571,7 +626,6 @@ mod tests {
     fn timeout_kills_child() {
         let req = ExecRequest {
             cmd: "sh",
-            label: None,
             args: &["-c".to_string(), "sleep 5".to_string()],
             stdin: None,
             timeout: Duration::from_millis(20),
@@ -596,7 +650,6 @@ mod tests {
         // proves stdout and stderr are drained concurrently.
         let req = ExecRequest {
             cmd: "sh",
-            label: None,
             args: &["-c".to_string(), "head -c 2000000 /dev/zero".to_string()],
             stdin: None,
             timeout: Duration::from_millis(5000),
@@ -622,7 +675,6 @@ mod tests {
         // bring the deadline forward of the cap.
         let req = ExecRequest {
             cmd: "sh",
-            label: None,
             args: &[
                 "-c".to_string(),
                 "head -c 2000000 /dev/zero; sleep 30".to_string(),
