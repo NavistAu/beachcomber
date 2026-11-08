@@ -35,8 +35,8 @@ cargo fmt -- --check
   tests run, not `libbeachcomber`'s.
 - Watcher tests use `FsWatcher::new_polling` (works under sandboxes without FSEvents/inotify); production uses
   `FsWatcher::new`.
-- Unit tests are `#[cfg(test)]` modules in `src/`. Integration tests live in `tests/`; each top-level file is a separate
-  binary that relinks the crate (`feat/one-tree` consolidates them into `tests/suite.rs` + `tests/suite/`).
+- Unit tests are `#[cfg(test)]` modules in `src/`. Integration tests are one binary per crate,
+  `tests/suite/main.rs`, with a module per file.
 
 ## Architecture
 
@@ -45,20 +45,24 @@ Async tokio daemon on a Unix socket, one task per connection.
 - `src/scheduler/` — poll timers, filesystem watching (notify), demand tracking, cache lifecycle (Active / Decay1-4 /
   Evicted; `src/scheduler/lifecycle.rs`), provider execution via `spawn_blocking` (providers are synchronous).
 - `src/server.rs` — accept loop. `src/cache/` — DashMap keyed `"provider\0path"`.
-- `src/protocol.rs` — NDJSON `Request`/`Response`. `src/config.rs` — TOML, XDG paths, env files (`#[serde(default)]`
-  throughout).
-- `src/provider/` — `Provider` trait implementations; `registry.rs` registers built-in + config-defined;
-  `library.rs` loads `.so`/`.dylib` C-ABI providers via `libloading`. Provider fields are `serde_json::Value`.
+- `src/protocol.rs` re-exports `libbeachcomber::protocol` (NDJSON `Request`/`Response`, shared with the C ABI and
+  SDKs). `src/config.rs` — TOML, XDG paths, env files (`#[serde(default)]` throughout).
+- `src/provider/` — the `Source` trait and `ConfigSource`, its one implementation: every provider is config
+  (`defaults/<name>.toml` plus the user's), registered by `registry.rs`. Field values are `provider::Value`.
+- `src/plugin/` — the compiled-in `sys` and `git` plugins; `src/boundaries/library.rs` loads `.so`/`.dylib` C-ABI
+  plugins via `libloading`.
 - `src/daemon/` — process lifecycle, watchdog on the scheduler heartbeat.
 - Only actively queried keys poll at the base rate; idle keys decay with exponential backoff and are evicted.
 - Adding a provider: `website/docs/internals/provider-development.md`.
 
 ## Protocol and config
 
-- NDJSON over the socket, `{"op":"..."}` dispatch: `get`, `refresh`, `put`, `watch`, `context`, `status`. Keys are
-  `provider.field` (`split_key()` splits on the first `.`). Responses `{"ok":true,"data":...,"age_ms":...,"stale":...}`,
-  null fields omitted. `put` creates data-only virtual providers; namespace precedence builtin > script > virtual.
-- Config `~/.config/beachcomber/config.toml`: `[daemon]`, `[lifecycle]`, `[providers.<name>]`.
+- NDJSON over the socket, `{"op":"..."}` dispatch: `get`, `refresh`, `put`, `memo`, `watch`, `status`, `layers`,
+  `introspect`, `hello`. Keys are `provider.field` or `provider:facet.field`. Responses
+  `{"ok":true,"data":...,"age_ms":...}`, absent fields omitted. Wire contract:
+  `website/docs/reference/protocol-reference.md`. A `put` writes the `:put` layer, which hides what it covers.
+- Config `~/.config/beachcomber/config.toml` (+ `conf.d/`): `[daemon]` and `[client]`; Sources at
+  `[daemon.providers.<p>.sources.<s>]`.
 - Socket path: config override → `$BEACHCOMBER_SOCKET` → `/tmp/beachcomber-<uid>/sock` (SDKs skip the config step).
   `$TMPDIR` and `$XDG_RUNTIME_DIR` are not consulted.
 - SDKs in `sdks/` (c, go, lua, node, python, ruby), each self-contained with its own tests, binding the
