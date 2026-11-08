@@ -44,7 +44,8 @@ Async tokio daemon on a Unix socket, one task per connection.
 
 - `src/scheduler/` — poll timers, filesystem watching (notify), demand tracking, cache lifecycle (Active / Decay1-4 /
   Evicted; `src/scheduler/lifecycle.rs`), provider execution via `spawn_blocking` (providers are synchronous).
-- `src/server.rs` — accept loop. `src/cache/` — DashMap keyed `"provider\0path"`.
+- `src/server.rs` — accept loop; `src/server/` has a module per op (`read`, `put`, `refresh`, `status`,
+  `introspect`, `watch`) and `connection.rs` dispatches to them. `src/cache/` — DashMap keyed `"provider\0path"`.
 - `src/protocol.rs` re-exports `libbeachcomber::protocol` (NDJSON `Request`/`Response`, shared with the C ABI and
   SDKs). `src/config.rs` — TOML, XDG paths, env files (`#[serde(default)]` throughout).
 - `src/provider/` — the `Source` trait and `ConfigSource`, its one implementation: every provider is config

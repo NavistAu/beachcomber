@@ -55,7 +55,7 @@ See [Performance](../internals/performance.md#performance-regression-checklist) 
 See [Architecture](../internals/architecture.md) for a full overview. Key files:
 
 - `src/scheduler/` — the core: trigger management, provider execution, subscriptions
-- `src/server.rs` — Unix socket server, protocol handling
+- `src/server.rs`, `src/server/` — Unix socket server; a module per op
 - `src/cache/` — concurrent cache (DashMap)
 - `defaults/` — the shipped providers, one file each
 - `src/provider/` — the registry and `ConfigSource`; `src/plugin/` — the compiled-in plugins

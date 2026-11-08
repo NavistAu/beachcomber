@@ -382,7 +382,7 @@ Watches exist only while an instance is Active, so a daemon with no Active insta
 
 **`demand`, `lifecycle`, `timers`:** the scheduler's entries (Active ones, decaying ones, and those with a poll) by `provider`, `path` and `source`, the Source's name or `put` or `memo` for a static address, which also has its `node`: `{"provider":"kubecontext","path":"/project","source":"memo","node":"context",...}`.
 
-The shapes of `cache` and `procs` are diagnostic and not yet part of this contract; `src/server.rs` builds them.
+The shapes of `cache` and `procs` are diagnostic and not yet part of this contract; `src/server/introspect.rs` builds them.
 
 ### `layers`
 

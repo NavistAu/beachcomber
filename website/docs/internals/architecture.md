@@ -43,7 +43,8 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/lib.rs` | Module declarations; no logic |
 | `src/daemon/` | Process lifecycle: fork, pid file, wait-for-socket, `run_daemon_with_cancel`; watchdog task monitors scheduler heartbeat |
 | `src/singleton/` | Singleton enforcement: pid-file flock, build-identity supersession, serving probe, binary self-watch (fs-event + mtime poll), orphan reaping |
-| `src/server.rs` | Unix socket accept loop; one task per connection; request dispatch; response formatting |
+| `src/server.rs` | Unix socket accept loop; one task per connection |
+| `src/server/` | `connection.rs` request dispatch; a module per op (`read` for `get`, `put`, `refresh`, `status`, `introspect`, `watch`), with `answer.rs` assembling a read's response and `cache_facet.rs` the `:cache` facet and `layers` |
 | `src/scheduler/mod.rs` | Single event loop: handles Refresh/FsEvent/QueryActivity/poll tick; dispatches lifecycle events into `LifecycleRegistry` and applies `TickActions`; heartbeat counter for watchdog liveness detection |
 | `src/scheduler/lifecycle.rs` | `LifecycleRegistry` — per-key cache lifecycle state machine: Active → Decay (1 to `decay` steps, default 4; the depth is data in `<p>:cache`) → Evicted. Exponential decay of poll interval and step duration each stage. See §5. |
 | `src/cache/` | Lock-free DashMap store mapping `"provider\0path"` keys to `CacheEntry`; per-source `SourceResult` sub-entries within each `CacheEntry` |
