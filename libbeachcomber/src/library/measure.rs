@@ -149,6 +149,15 @@ mod tests {
     }
 
     #[test]
+    fn a_bool_reads_as_text_the_way_tilde_prints_it() {
+        assert_eq!(eval("true | pad(5)").unwrap(), "True ");
+        assert_eq!(
+            eval("(false | width) == (false ~ '') | length").unwrap(),
+            "True"
+        );
+    }
+
+    #[test]
     fn pad_checks_its_arguments_first() {
         for bad in [
             "'x' | pad(2.5)",

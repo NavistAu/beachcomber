@@ -279,8 +279,8 @@ pub(crate) fn text(name: &str, v: &MjValue) -> Result<String, Error> {
     use minijinja::value::ValueKind;
     match v.kind() {
         ValueKind::String => Ok(v.as_str().unwrap_or_default().to_string()),
-        ValueKind::Number => Ok(v.to_string()),
-        ValueKind::Bool => Ok(if v.is_true() { "true" } else { "false" }.to_string()),
+        // A bool reads `True`/`False`, as minijinja's own `~` and `string` print it.
+        ValueKind::Number | ValueKind::Bool => Ok(v.to_string()),
         ValueKind::Seq | ValueKind::Iterable => {
             Err(op_error(format!("{name}(): expected text, not a list")))
         }
