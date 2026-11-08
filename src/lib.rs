@@ -32,7 +32,7 @@ mod protocol_tests;
 mod watch_registry_tests;
 
 #[cfg(test)]
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn prefer_nextest_advisory() {
     if std::env::var("NEXTEST").is_err() {
         eprintln!(

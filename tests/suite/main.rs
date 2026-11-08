@@ -4,7 +4,7 @@ mod common;
 /// `RealGitExecutor` — reads no host configuration, as the fixtures' git
 /// (`common::git::git_cmd`) does not: what a test sees must not depend on the
 /// developer's `~/.gitconfig` or the system's.
-#[ctor::ctor]
+#[ctor::ctor(unsafe)]
 fn isolate_git_config() {
     // SAFETY: a constructor runs before `main`, while the process has one
     // thread.
