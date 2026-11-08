@@ -292,7 +292,6 @@ mod tests {
     use super::*;
     use crate::boundaries::library::MockLibraryLoader;
     use crate::engine::{PluginSet, daemon_engine_env};
-    use libbeachcomber::engine::EngineCtx;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -300,7 +299,7 @@ mod tests {
     /// `data` line calls it, as JSON.
     fn call(symbol: &str) -> Json {
         let plugins = PluginSet::new(vec![], Arc::new(MockLibraryLoader::new()));
-        let env = daemon_engine_env(Arc::new(EngineCtx::default()), Arc::new(plugins));
+        let env = daemon_engine_env(Arc::new(plugins));
         let out = env
             .render_str(&format!("{{{{ plugin('sys', '{symbol}') | tojson }}}}"), ())
             .unwrap_or_else(|e| panic!("{symbol}: {e:#}"));
@@ -451,7 +450,7 @@ mod tests {
     #[test]
     fn a_symbol_given_arguments_fails() {
         let plugins = PluginSet::new(vec![], Arc::new(MockLibraryLoader::new()));
-        let env = daemon_engine_env(Arc::new(EngineCtx::default()), Arc::new(plugins));
+        let env = daemon_engine_env(Arc::new(plugins));
         let err = env
             .render_str("{{ plugin('sys', 'hostname', 1) }}", ())
             .unwrap_err()

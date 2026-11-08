@@ -6,13 +6,12 @@
 //! sequences (colours, OSC 8 links) 0. There is no character-count variant.
 
 use super::{UNDEFINED, arguments, is_absent, text, whole};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::op_error;
 use crate::term;
 use minijinja::value::{Kwargs, Rest, Value as MjValue};
 use minijinja::{Environment, Error};
-use std::sync::Arc;
 
-pub(super) fn add_width(jinja: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_width(jinja: &mut Environment<'_>) {
     jinja.add_filter("width", |value: MjValue| -> Result<MjValue, Error> {
         if is_absent(&value) {
             return Ok(UNDEFINED);
@@ -21,7 +20,7 @@ pub(super) fn add_width(jinja: &mut Environment<'_>, _: &Arc<EngineCtx>) {
     });
 }
 
-pub(super) fn add_pad(jinja: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_pad(jinja: &mut Environment<'_>) {
     jinja.add_filter(
         "pad",
         |value: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
@@ -34,7 +33,7 @@ pub(super) fn add_pad(jinja: &mut Environment<'_>, _: &Arc<EngineCtx>) {
     );
 }
 
-pub(super) fn add_truncate(jinja: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_truncate(jinja: &mut Environment<'_>) {
     jinja.add_filter(
         "truncate",
         |value: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {

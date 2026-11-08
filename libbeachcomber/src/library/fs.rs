@@ -6,38 +6,32 @@
 //! those files by a later read. A client's render keeps no account.
 
 use super::{UNDEFINED, is_absent};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::{EngineCtx, ctx, op_error};
 use crate::fs::{Touch, Touched};
 use minijinja::value::{Kwargs, Serde, Value as MjValue};
 use minijinja::{Environment, Error};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-pub(super) fn add_read(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
-    env.add_filter("read", move |path: MjValue| read(&ctx, &path));
+pub(super) fn add_read(env: &mut Environment<'_>) {
+    env.add_filter("read", |path: MjValue| read(&ctx(), &path));
 }
 
-pub(super) fn add_stat(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
-    env.add_filter("stat", move |path: MjValue| stat(&ctx, &path));
+pub(super) fn add_stat(env: &mut Environment<'_>) {
+    env.add_filter("stat", |path: MjValue| stat(&ctx(), &path));
 }
 
-pub(super) fn add_realpath(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
-    env.add_filter("realpath", move |path: MjValue| realpath(&ctx, &path));
+pub(super) fn add_realpath(env: &mut Environment<'_>) {
+    env.add_filter("realpath", |path: MjValue| realpath(&ctx(), &path));
 }
 
-pub(super) fn add_glob(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
-    env.add_filter("glob", move |pattern: MjValue| glob(&ctx, &pattern));
+pub(super) fn add_glob(env: &mut Environment<'_>) {
+    env.add_filter("glob", |pattern: MjValue| glob(&ctx(), &pattern));
 }
 
-pub(super) fn add_lup(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
-    env.add_function("lup", move |name: String, kwargs: Kwargs| {
-        lup(&ctx, &name, kwargs)
+pub(super) fn add_lup(env: &mut Environment<'_>) {
+    env.add_function("lup", |name: String, kwargs: Kwargs| {
+        lup(&ctx(), &name, kwargs)
     });
 }
 

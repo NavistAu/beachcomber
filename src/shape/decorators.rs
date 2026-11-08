@@ -12,8 +12,8 @@
 
 use crate::provider::{FailbackConfig, InvalidationStrategy, expand_abs_path};
 use crate::scheduler::lifecycle::DEFAULT_POLL_COUNT;
-use libbeachcomber::engine::build_pure_engine_env;
 use libbeachcomber::engine::op_error;
+use libbeachcomber::engine::pure_engine_env;
 use minijinja::value::{Kwargs, Object, ObjectRepr, Rest, Serde, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error, ErrorKind, UndefinedBehavior};
 use std::collections::HashMap;
@@ -288,7 +288,7 @@ fn merge(levels: &[Line], defaults: &EngineDefaults) -> Result<Recorded, ReturnE
 /// decorators to the copy; copying shares what it holds, so one is built per
 /// load ([`crate::shape::build`]) and handed to every [`record_return`].
 pub fn return_env() -> Environment<'static> {
-    let mut jinja = build_pure_engine_env(Default::default());
+    let mut jinja = pure_engine_env();
     jinja.set_undefined_behavior(UndefinedBehavior::Strict);
     jinja
 }

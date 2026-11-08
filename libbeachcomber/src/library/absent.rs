@@ -99,7 +99,7 @@ pub(crate) fn guard_builtins(jinja: &mut Environment<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::build_pure_engine_env;
+    use crate::engine::pure_engine_env;
 
     /// Every filter the environment has, from its own debug listing, so a
     /// builtin a minijinja upgrade adds cannot slip past.
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn every_filter_returns_undefined_for_an_absent_subject() {
-        let jinja = build_pure_engine_env(Default::default());
+        let jinja = pure_engine_env();
         let mut state = jinja.empty_state();
         let names = filter_names(&jinja);
         assert!(names.len() > 40, "the listing was not read: {names:?}");
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn the_exempt_filters_handle_an_absent_subject_themselves() {
-        let jinja = build_pure_engine_env(Default::default());
+        let jinja = pure_engine_env();
         let r = |t: &str| jinja.render_str(t, ()).unwrap();
         assert_eq!(r("{{ none | default('x', true) }}"), "x");
         assert_eq!(r("{{ missing | default('x') }}"), "x");
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn a_present_subject_reaches_the_builtin() {
-        let jinja = build_pure_engine_env(Default::default());
+        let jinja = pure_engine_env();
         let r = |t: &str| jinja.render_str(t, ()).unwrap();
         assert_eq!(r("{{ 'ab' | upper }}"), "AB");
         assert_eq!(r("{{ [1, 2] | sum }}"), "3");
@@ -182,7 +182,7 @@ mod tests {
     /// `replace(count=)`, `length`, `items`, `dictsort`, `reverse`.
     #[test]
     fn a_guarded_builtin_is_the_registered_one() {
-        let ours = build_pure_engine_env(Default::default());
+        let ours = pure_engine_env();
         let theirs = Environment::new();
         for t in [
             "{{ 'aaa' | replace('a', 'b', count=1) }}",
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn parsers_and_paths_read_empty_as_absent() {
-        let jinja = build_pure_engine_env(Default::default());
+        let jinja = pure_engine_env();
         let mut state = jinja.empty_state();
         for name in [
             "fromjson",

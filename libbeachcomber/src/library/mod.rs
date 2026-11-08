@@ -29,10 +29,9 @@ pub mod spark;
 pub mod style;
 pub mod time;
 
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::op_error;
 use minijinja::value::{Kwargs, Rest, Value as MjValue};
 use minijinja::{Environment, Error};
-use std::sync::Arc;
 
 /// What an item reads, and so where it may run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,8 +98,9 @@ pub struct Item {
     pub name: &'static str,
     pub form: Form,
     pub tier: Tier,
-    /// Installs the item into an environment, bound to the render's `ctx`.
-    add: fn(&mut Environment<'_>, &Arc<EngineCtx>),
+    /// Installs the item into an environment. What it reads of the render is
+    /// the render's context at the call ([`crate::engine::ctx`]).
+    add: fn(&mut Environment<'_>),
 }
 
 macro_rules! item {
@@ -183,9 +183,9 @@ pub fn item(name: &str) -> Option<&'static Item> {
 }
 
 /// Install every item of `tier` into `env`.
-pub(crate) fn install(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>, tier: Tier) {
+pub(crate) fn install(env: &mut Environment<'_>, tier: Tier) {
     for item in ITEMS.iter().filter(|i| i.tier == tier) {
-        (item.add)(env, ctx);
+        (item.add)(env);
     }
 }
 
@@ -198,7 +198,7 @@ pub fn first_refused(surface: Surface, used: impl Fn(&str) -> bool) -> Option<&'
 
 /// A client has no `url` or `plugin`: it says why, rather than "unknown
 /// function". The daemon's environment replaces both.
-fn add_url_refusal(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+fn add_url_refusal(env: &mut Environment<'_>) {
     env.add_function(
         "url",
         |_: Rest<MjValue>, _: Kwargs| -> Result<MjValue, Error> {
@@ -207,7 +207,7 @@ fn add_url_refusal(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
     );
 }
 
-fn add_plugin_refusal(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+fn add_plugin_refusal(env: &mut Environment<'_>) {
     env.add_function(
         "plugin",
         |_: Rest<MjValue>, _: Kwargs| -> Result<MjValue, Error> {
@@ -301,7 +301,7 @@ pub(crate) fn number(name: &str, what: &str, v: &MjValue) -> Result<f64, Error> 
 
 #[cfg(test)]
 pub(crate) mod testing {
-    use crate::engine::{EngineCtx, build_engine_env};
+    use crate::engine::{EngineCtx, engine_env, with_ctx};
     use minijinja::value::{Serde, Value as MjValue};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -318,22 +318,24 @@ pub(crate) mod testing {
     }
 
     pub fn eval_in(ctx: Arc<EngineCtx>, expr: &str) -> Result<String, String> {
-        let env = build_engine_env(ctx);
+        let env = engine_env();
         let compiled = env.compile_expression(expr).map_err(|e| e.to_string())?;
-        let value = compiled
-            .eval(MjValue::from(Serde(serde_json::json!({}))))
-            .map_err(|e| e.to_string())?;
+        let value = with_ctx(ctx, || {
+            compiled.eval(MjValue::from(Serde(serde_json::json!({}))))
+        })
+        .map_err(|e| e.to_string())?;
         Ok(value.to_string())
     }
 
     /// The expression's value as compact JSON (keys sorted).
     pub fn eval_json(expr: &str) -> String {
-        let env = build_engine_env(ctx_with(&[], None));
-        let value = env
-            .compile_expression(expr)
-            .unwrap()
-            .eval(MjValue::from(Serde(serde_json::json!({}))))
-            .unwrap();
+        let value = with_ctx(ctx_with(&[], None), || {
+            engine_env()
+                .compile_expression(expr)
+                .unwrap()
+                .eval(MjValue::from(Serde(serde_json::json!({}))))
+                .unwrap()
+        });
         serde_json::to_string(&value).unwrap()
     }
 
@@ -354,7 +356,7 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{build_engine_env, build_pure_engine_env};
+    use crate::engine::{engine_env, pure_engine_env};
     use minijinja::ErrorKind;
 
     fn has_filter(env: &Environment<'_>, name: &str) -> bool {
@@ -385,8 +387,8 @@ mod tests {
 
     #[test]
     fn every_item_is_on_its_surfaces_and_refused_elsewhere() {
-        let pure = build_pure_engine_env(Default::default());
-        let client = build_engine_env(Default::default());
+        let pure = pure_engine_env();
+        let client = engine_env();
         for item in ITEMS {
             // The pure builder is the provider and decorator surfaces.
             for surface in [Surface::Provider, Surface::Decorator] {
@@ -524,7 +526,7 @@ mod tests {
 
     #[test]
     fn minijinja_builtins_still_work_on_the_pure_env() {
-        let env = build_pure_engine_env(Default::default());
+        let env = pure_engine_env();
         let out = env
             .render_str(
                 "{{ missing | default('fallback') }} {{ s | upper }}",

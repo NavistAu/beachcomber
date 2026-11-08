@@ -9,14 +9,13 @@ mod files;
 mod nerd;
 
 use super::{UNDEFINED, arguments, is_absent, is_absent_text};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::op_error;
 use minijinja::value::{Kwargs, Rest, Value as MjValue};
 use minijinja::{Environment, Error};
-use std::sync::Arc;
 
 pub use nerd::VERSION;
 
-pub(super) fn add_icon(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_icon(env: &mut Environment<'_>) {
     env.add_function(
         "icon",
         |args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
@@ -38,7 +37,7 @@ pub(super) fn add_icon(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
     );
 }
 
-pub(super) fn add_file_icon(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_file_icon(env: &mut Environment<'_>) {
     env.add_function(
         "file_icon",
         |args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {

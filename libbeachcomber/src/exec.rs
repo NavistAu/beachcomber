@@ -1,5 +1,5 @@
 //! Spawn engine backing the `exec()` jinja function, registered in
-//! `engine::build_engine_env`.
+//! `engine::engine_env`.
 //!
 //! [`run`] spawns one argv command in its own process group, writes+closes
 //! stdin, and drains stdout/stderr concurrently — each on its own thread —

@@ -8,7 +8,7 @@
 
 use crate::boundaries::http;
 use crate::boundaries::library::{LibraryLoader, LoadedLibrary};
-use libbeachcomber::engine::{EngineCtx, build_engine_env, build_pure_engine_env, op_error};
+use libbeachcomber::engine::{ctx, engine_env, op_error, pure_engine_env};
 use libbeachcomber::library::data::merge_values;
 use libbeachcomber::path::expand_tilde;
 use minijinja::value::{
@@ -176,9 +176,9 @@ const LIBRARY_EXT: &str = if cfg!(target_os = "macos") {
 ///
 /// Both block: `url` until the response or `timeout`, `plugin` for as long
 /// as the library takes. A render through this environment must run on a
-/// blocking thread.
-pub fn daemon_engine_env<'a>(ctx: Arc<EngineCtx>, plugins: Arc<PluginSet>) -> Environment<'a> {
-    let mut jinja = build_engine_env(ctx.clone());
+/// blocking thread. `plugin` expands a `~` by the render's `HOME`.
+pub fn daemon_engine_env(plugins: Arc<PluginSet>) -> Environment<'static> {
+    let mut jinja = engine_env();
     jinja.add_function("url", url);
     jinja.add_function(
         "plugin",
@@ -190,6 +190,7 @@ pub fn daemon_engine_env<'a>(ctx: Arc<EngineCtx>, plugins: Arc<PluginSet>) -> En
             let (Some(name), Some(symbol)) = (name.as_str(), symbol.as_str()) else {
                 return Err(op_error("plugin(): the name and symbol must be strings"));
             };
+            let ctx = ctx();
             let name = expand_tilde(name, ctx.env.get("HOME").map(String::as_str))
                 .map_err(|e| op_error(format!("plugin(): {e}")))?
                 .to_string_lossy()
@@ -208,8 +209,8 @@ pub fn daemon_engine_env<'a>(ctx: Arc<EngineCtx>, plugins: Arc<PluginSet>) -> En
 /// [`facet`] and a `merge` that reads a provider's [`Sources`]. There is no
 /// `exec`, `read`, `lup`, `url` or `plugin`: these lines run on a read, which
 /// must not wait on a process, a file, the network or a library.
-pub fn provider_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
-    let mut jinja = build_pure_engine_env(ctx);
+pub fn provider_engine_env() -> Environment<'static> {
+    let mut jinja = pure_engine_env();
     jinja.add_filter("facet", facet);
     jinja.add_function(
         "merge",
@@ -584,6 +585,7 @@ fn url(address: MjValue, kwargs: Kwargs) -> Result<MjValue, Error> {
 mod tests {
     use super::*;
     use crate::boundaries::library::{MockLibraryLoader, MockLoadedLibrary};
+    use libbeachcomber::engine::EngineCtx;
     use mockito::Matcher;
 
     const EXT: &str = LIBRARY_EXT;
@@ -593,8 +595,8 @@ mod tests {
         plugins: PluginSet,
         template: &str,
     ) -> Result<String, minijinja::Error> {
-        let env = daemon_engine_env(Arc::new(ctx), Arc::new(plugins));
-        env.render_str(template, ())
+        let env = daemon_engine_env(Arc::new(plugins));
+        libbeachcomber::engine::with_ctx(Arc::new(ctx), || env.render_str(template, ()))
     }
 
     fn render(plugins: PluginSet, template: &str) -> Result<String, minijinja::Error> {

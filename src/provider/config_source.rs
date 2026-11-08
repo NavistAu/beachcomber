@@ -38,13 +38,12 @@ use crate::engine::{CallFn, Calls, PluginSet, daemon_engine_env};
 use crate::provider::source_call::{Called, Running, calls_in};
 use crate::provider::{FieldSchema, Source, SourceMetadata, SourceResult, Value};
 use crate::shape::decorators::Recorded;
-use libbeachcomber::engine::EngineCtx;
+use libbeachcomber::engine::{EngineCtx, with_ctx};
 use libbeachcomber::eval::{
     Finding, Known, Line, Probe, eval_line, eval_line_with, lint, refs_in, undeclared_names,
 };
 use libbeachcomber::fs::{MOST_TOUCHED, Touched};
 use libbeachcomber::virtual_fields::Ref;
-use minijinja::Environment;
 use minijinja::value::{Serde, Value as MjValue};
 use serde_json::{Value as Json, json};
 use std::collections::{BTreeSet, HashMap};
@@ -216,10 +215,10 @@ fn stage_error(spec: &ConfigSourceSpec, stage: &str, message: impl std::fmt::Dis
 }
 
 /// What a load reads every Source's lines in: the daemon's engine for them,
-/// `env` its environment and `plugins` its libraries, which is never run.
-/// Built once per load, for every Source and `_` table it checks.
-pub fn load_probe(env: &HashMap<String, String>, plugins: &Arc<PluginSet>) -> Probe<'static> {
-    Probe::new(engine(env, plugins, None, None))
+/// `plugins` its libraries, which is never run. Made once per load, for every
+/// Source and `_` table it checks.
+pub fn load_probe(plugins: &Arc<PluginSet>) -> Probe<'static> {
+    Probe::new(daemon_engine_env(plugins.clone()))
 }
 
 /// The load check of a Source's lines ([`lint`]), read in `probe`
@@ -561,12 +560,13 @@ impl ConfigSource {
         };
         // What the lines read is the run's to check its record by: noted in
         // the account the run keeps on this thread.
-        let mut jinja = engine(
-            &self.env,
-            &self.plugins,
-            Some(cwd),
-            crate::run::reads_here(),
-        );
+        let ctx = source_ctx(&self.env, Some(cwd), crate::run::reads_here());
+        with_ctx(ctx, || self.render_lines(path))
+    }
+
+    /// The `data` and `result` lines, rendered in the run's context.
+    fn render_lines(&self, path: Option<&str>) -> Result<SourceResult, String> {
+        let mut jinja = daemon_engine_env(self.plugins.clone());
         if !self.calls.is_empty() {
             let (reader, dir) = (self.reader.clone(), path.map(str::to_string));
             let call: CallFn =
@@ -649,10 +649,12 @@ impl Source for ConfigSource {
         };
         // A root is no run's input: what the walk finds is kept per directory
         // (`ProviderRegistry`'s kept roots), not checked as a record's files.
-        let jinja = engine(&self.env, &self.plugins, Some(dir.into()), None);
+        let jinja = daemon_engine_env(self.plugins.clone());
         let context = json!({"env": &*self.env, "_": self.underscore()});
-        let rendered =
-            eval_line(&jinja, line, &context).map_err(|e| stage_error(&self.spec, "root", e))?;
+        let rendered = with_ctx(source_ctx(&self.env, Some(dir.into()), None), || {
+            eval_line(&jinja, line, &context)
+        })
+        .map_err(|e| stage_error(&self.spec, "root", e))?;
         match rendered {
             None => Ok(None),
             Some(Json::String(s)) if s.is_empty() => Ok(None),
@@ -685,14 +687,13 @@ impl Source for ConfigSource {
     }
 }
 
-/// The daemon's engine for a Source's lines, `exec` on, `cwd` its directory,
-/// noting what its file items read in `touched` (a run's account).
-fn engine<'a>(
+/// What a Source's lines render with: its environment, `exec` on, `cwd` its
+/// directory, noting what its file items read in `touched` (a run's account).
+fn source_ctx(
     env: &HashMap<String, String>,
-    plugins: &Arc<PluginSet>,
     cwd: Option<PathBuf>,
     touched: Option<Arc<Touched>>,
-) -> Environment<'a> {
+) -> Arc<EngineCtx> {
     let ctx = EngineCtx {
         env: env.clone(),
         cwd,
@@ -704,7 +705,7 @@ fn engine<'a>(
         // `cache()`, `watch()` and `ttl()` refuse (and its load does first).
         memo: None,
     };
-    daemon_engine_env(Arc::new(ctx), plugins.clone())
+    Arc::new(ctx)
 }
 
 #[cfg(test)]
@@ -813,7 +814,7 @@ mod tests {
         reader: Arc<dyn DaemonRead>,
     ) -> Result<ConfigSource, Vec<String>> {
         let plugins = Arc::new(PluginSet::new(vec![], Arc::new(MockLibraryLoader::new())));
-        let probe = load_probe(&snapshot, &plugins);
+        let probe = load_probe(&plugins);
         ConfigSource::new(spec, snapshot, plugins, reader, &probe)
     }
 

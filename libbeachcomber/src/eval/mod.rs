@@ -594,7 +594,7 @@ mod tests {
 
     /// [`super::discover_refs`] in the client's engine.
     fn discover_refs(src: &str) -> Vec<Ref> {
-        let probe = Probe::new(crate::engine::build_engine_env(Default::default()));
+        let probe = Probe::new(crate::engine::engine_env());
         super::discover_refs(&probe, src)
     }
 
@@ -750,12 +750,14 @@ mod tests {
             env: [("COLORTERM".to_string(), "truecolor".to_string())].into(),
             ..Default::default()
         };
-        let env = crate::engine::build_engine_env(std::sync::Arc::new(truecolor));
-        let out = super::evaluate(
-            &env,
-            tpl,
-            minijinja::Value::from(minijinja::value::Serde(&ctx)),
-        )
+        let env = crate::engine::engine_env();
+        let out = crate::engine::with_ctx(std::sync::Arc::new(truecolor), || {
+            super::evaluate(
+                &env,
+                tpl,
+                minijinja::Value::from(minijinja::value::Serde(&ctx)),
+            )
+        })
         .unwrap()
         .unwrap();
         assert_eq!(out.as_str(), Some("\x1b[38;2;0;255;0mmain\x1b[0m"));
@@ -765,21 +767,17 @@ mod tests {
 #[cfg(test)]
 mod line_tests {
     use super::{EvalError, Form, eval_line, evaluate, undeclared_names, without_engine_frame};
-    use crate::engine::build_engine_env;
+    use crate::engine::engine_env;
     use minijinja::value::{Serde, Value as MjValue};
     use serde_json::json;
 
     fn run(src: &str, context: serde_json::Value) -> Result<Option<serde_json::Value>, String> {
-        eval_line(&build_engine_env(Default::default()), src, &context)
+        eval_line(&engine_env(), src, &context)
     }
 
     /// `src` through the one evaluator, over `context`.
     fn evaluated(src: &str, context: serde_json::Value) -> Result<Option<MjValue>, EvalError> {
-        evaluate(
-            &build_engine_env(Default::default()),
-            src,
-            MjValue::from(Serde(context)),
-        )
+        evaluate(&engine_env(), src, MjValue::from(Serde(context)))
     }
 
     /// One `{{ }}` keeps its type; anything else is text, `none` in it
@@ -984,16 +982,17 @@ mod line_tests {
             false,
             crate::Wait::Budget,
         )));
-        let mut env = build_engine_env(std::sync::Arc::new(crate::engine::EngineCtx {
+        let ctx = std::sync::Arc::new(crate::engine::EngineCtx {
             allow_exec: true,
             memo: Some(frames),
             ..Default::default()
-        }));
+        });
+        let mut env = engine_env();
         env.set_loader(|name| {
             Ok((name == "p:macro.m")
                 .then(|| "{% macro m() %}{{ 'cmd' | cache() | exec() }}{% endmacro %}".to_string()))
         });
-        evaluate(&env, src, MjValue::from(()))
+        crate::engine::with_ctx(ctx, || evaluate(&env, src, MjValue::from(())))
     }
 
     /// A hit ends the render with the memo, and nothing after `cache()` runs:
@@ -1107,7 +1106,7 @@ mod line_tests {
 
     #[test]
     fn undeclared_names_are_the_top_level_variables() {
-        let probe = super::Probe::new(build_engine_env(Default::default()));
+        let probe = super::Probe::new(engine_env());
         let names = |src: &str| undeclared_names(&probe, src, false).unwrap();
         assert_eq!(
             names("{{ comb.a.b ~ env.X }}")

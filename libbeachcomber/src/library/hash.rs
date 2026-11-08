@@ -2,23 +2,22 @@
 //! minijinja's own.)
 
 use super::{UNDEFINED, is_absent, text};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::op_error;
 use base64::Engine as _;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig, general_purpose};
 use minijinja::value::{Value as MjValue, ValueKind};
 use minijinja::{Environment, Error};
 use std::fmt::Write as _;
-use std::sync::Arc;
 
-pub(super) fn add_hash(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_hash(env: &mut Environment<'_>) {
     env.add_filter("hash", hash);
 }
 
-pub(super) fn add_b64encode(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_b64encode(env: &mut Environment<'_>) {
     env.add_filter("b64encode", b64encode);
 }
 
-pub(super) fn add_b64decode(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_b64decode(env: &mut Environment<'_>) {
     env.add_filter("b64decode", b64decode);
 }
 

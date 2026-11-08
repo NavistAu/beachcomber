@@ -2,12 +2,11 @@
 //! `clamp`; and `truthy`, bool-like text read as a bool.
 
 use super::{UNDEFINED, is_absent, number};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::op_error;
 use minijinja::value::{Kwargs, Rest, Serde, Value as MjValue, ValueKind, ValueOrKwargs};
 use minijinja::{Environment, Error, State};
-use std::sync::Arc;
 
-pub(super) fn add_truthy(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_truthy(env: &mut Environment<'_>) {
     env.add_filter("truthy", truthy);
 }
 
@@ -41,11 +40,11 @@ fn truthy(v: MjValue) -> Result<MjValue, Error> {
     }))
 }
 
-pub(super) fn add_pluck(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_pluck(env: &mut Environment<'_>) {
     env.add_filter("pluck", pluck);
 }
 
-pub(super) fn add_merge(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_merge(env: &mut Environment<'_>) {
     env.add_filter("merge", |first: MjValue, rest: Rest<MjValue>| {
         merge_values(std::iter::once(first).chain(rest.iter().cloned()))
     });
@@ -55,23 +54,23 @@ pub(super) fn add_merge(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
     });
 }
 
-pub(super) fn add_map(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_map(env: &mut Environment<'_>) {
     env.add_filter("map", map);
 }
 
-pub(super) fn add_pick(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_pick(env: &mut Environment<'_>) {
     env.add_filter("pick", |obj: MjValue, keys: Rest<MjValue>| {
         select_keys("pick", &obj, &keys, true)
     });
 }
 
-pub(super) fn add_omit(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_omit(env: &mut Environment<'_>) {
     env.add_filter("omit", |obj: MjValue, keys: Rest<MjValue>| {
         select_keys("omit", &obj, &keys, false)
     });
 }
 
-pub(super) fn add_clamp(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_clamp(env: &mut Environment<'_>) {
     env.add_filter("clamp", clamp);
 }
 

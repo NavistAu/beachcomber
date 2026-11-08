@@ -1,24 +1,29 @@
 //! The minijinja environment every template and expression renders in.
 //!
-//! Two builders, both installing from the library table
-//! ([`crate::library::ITEMS`]) by tier:
+//! Two environments, each built once per process from the library table
+//! ([`crate::library::ITEMS`]) by tier and handed out as a copy (a copy shares
+//! what it holds, so it costs a few reference counts):
 //!
-//! - [`build_pure_engine_env`]: the pure items, with undefined values
-//!   chainable. A surface that must do no IO (a provider's lines, a decorator
-//!   render, run on every read) stops here.
-//! - [`build_engine_env`]: the pure environment plus the items that read files
-//!   and run processes (`read`, `lup`, `exec`) and memoise a leaf (`cache`,
-//!   `watch`, `ttl`), bound to the render's [`EngineCtx`], and a clear refusal
-//!   for the daemon's `url` and `plugin`.
-//!   The daemon extends the returned environment with those two, so a Source's
-//!   lines and a client template share one engine.
+//! - [`pure_engine_env`]: the pure items, with undefined values chainable. A
+//!   surface that must do no IO (a provider's lines, a decorator render, run
+//!   on every read) stops here.
+//! - [`engine_env`]: the pure environment plus the items that read files and
+//!   run processes (`read`, `lup`, `exec`) and memoise a leaf (`cache`,
+//!   `watch`, `ttl`), and a clear refusal for the daemon's `url` and `plugin`.
+//!   The daemon extends a copy with those two, so a Source's lines and a
+//!   client template share one engine.
+//!
+//! Neither is bound to a render: an item reads the [`EngineCtx`] of the render
+//! in progress on its thread ([`ctx`]), which the surface installs around its
+//! render ([`with_ctx`]).
 
 use crate::library::{self, Tier};
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
 use minijinja::{AutoEscape, Environment, Error, ErrorKind, UndefinedBehavior};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 /// What a render knows about where it runs.
 pub struct EngineCtx {
@@ -83,19 +88,35 @@ impl EngineCtx {
     }
 }
 
-/// The pure library, with undefined values chainable, bound to `ctx`.
-///
-/// `Chainable` because a missing ref is falsy at any depth: `Lenient` renders
-/// an undefined value as empty but *errors* on attribute access into one, so
-/// `{{ p.f.sub }}` would blow up whenever `p.f` missed while `{{ p.f }}`
-/// quietly rendered nothing.
-///
-/// No template's name turns on escaping: the engine would escape a template
-/// named like a file (`*.html`, `*.json`), and a macro library's name is an
-/// address (`p:macro.json`), not a file. A `none` printed inside text is
-/// nothing, never the word `none`: every environment comes from here, so
-/// this is the one place that rule is installed.
-pub fn build_pure_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
+thread_local! {
+    /// The contexts of the renders in progress on this thread, innermost last:
+    /// a Source's line can call a Source, whose run renders its own.
+    static CURRENT: RefCell<Vec<Arc<EngineCtx>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Run `f` with `ctx` as the context every engine item called on this thread
+/// reads, until it returns (or unwinds).
+pub fn with_ctx<R>(ctx: Arc<EngineCtx>, f: impl FnOnce() -> R) -> R {
+    CURRENT.with(|c| c.borrow_mut().push(ctx));
+    struct Pop;
+    impl Drop for Pop {
+        fn drop(&mut self) {
+            CURRENT.with(|c| c.borrow_mut().pop());
+        }
+    }
+    let _pop = Pop;
+    f()
+}
+
+/// The context of the render in progress on this thread ([`with_ctx`]), or a
+/// render with nothing ([`EngineCtx::default`]) where none is.
+pub fn ctx() -> Arc<EngineCtx> {
+    CURRENT
+        .with(|c| c.borrow().last().cloned())
+        .unwrap_or_default()
+}
+
+static PURE: LazyLock<Environment<'static>> = LazyLock::new(|| {
     let mut jinja = Environment::new();
     jinja.set_undefined_behavior(UndefinedBehavior::Chainable);
     jinja.set_auto_escape_callback(|_| AutoEscape::None);
@@ -107,48 +128,65 @@ pub fn build_pure_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
         }
     });
     library::absent::guard_builtins(&mut jinja);
-    library::install(&mut jinja, &ctx, Tier::Pure);
+    library::install(&mut jinja, Tier::Pure);
     jinja
+});
+
+static FULL: LazyLock<Environment<'static>> = LazyLock::new(|| {
+    let mut jinja = PURE.clone();
+    for tier in [Tier::Clock, Tier::Io, Tier::Exec, Tier::Memo, Tier::Daemon] {
+        library::install(&mut jinja, tier);
+    }
+    jinja
+});
+
+/// The pure library, with undefined values chainable.
+///
+/// `Chainable` because a missing ref is falsy at any depth: `Lenient` renders
+/// an undefined value as empty but *errors* on attribute access into one, so
+/// `{{ p.f.sub }}` would blow up whenever `p.f` missed while `{{ p.f }}`
+/// quietly rendered nothing.
+///
+/// No template's name turns on escaping: the engine would escape a template
+/// named like a file (`*.html`, `*.json`), and a macro library's name is an
+/// address (`p:macro.json`), not a file. A `none` printed inside text is
+/// nothing, never the word `none`: every environment comes from here, so
+/// this is the one place that rule is installed.
+pub fn pure_engine_env() -> Environment<'static> {
+    PURE.clone()
 }
 
 /// The pure environment plus every item that reads files, runs processes or
-/// memoises a leaf, bound to `ctx`, and the client's refusal of `url` and
-/// `plugin`. A daemon's render has no memo frames, so its `cache`, `watch` and
-/// `ttl` refuse with their reason.
+/// memoises a leaf, and the client's refusal of `url` and `plugin`. A
+/// daemon's render has no memo frames, so its `cache`, `watch` and `ttl`
+/// refuse with their reason.
 ///
 /// `exec` is registered whether or not it is allowed, so a disabled call fails
 /// with the on-topic "exec() is disabled in this context" rather than a
 /// generic "unknown function".
-pub fn build_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
-    let mut jinja = build_pure_engine_env(ctx.clone());
-    for tier in [Tier::Clock, Tier::Io, Tier::Exec, Tier::Memo, Tier::Daemon] {
-        library::install(&mut jinja, &ctx, tier);
-    }
-    jinja
+pub fn engine_env() -> Environment<'static> {
+    FULL.clone()
 }
 
-/// Install `exec`, as a function and a filter, bound to `ctx`.
-pub(crate) fn add_exec(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let for_fn = ctx.clone();
-    let for_filter = ctx.clone();
-    jinja.add_function(
-        "exec",
-        move |args: Rest<MjValue>, kwargs: Kwargs| match args.as_slice() {
-            [command] => exec(&for_fn, command, kwargs),
+/// Install `exec`, as a function and a filter.
+pub(crate) fn add_exec(jinja: &mut Environment<'_>) {
+    jinja.add_function("exec", |args: Rest<MjValue>, kwargs: Kwargs| {
+        match args.as_slice() {
+            [command] => exec(&ctx(), command, kwargs),
             _ => Err(op_error(
                 "exec(): one command — a string for sh -c, or a list for argv",
             )),
-        },
-    );
+        }
+    });
     jinja.add_filter(
         "exec",
-        move |piped: MjValue, args: Rest<MjValue>, kwargs: Kwargs| {
+        |piped: MjValue, args: Rest<MjValue>, kwargs: Kwargs| {
             if !args.is_empty() {
                 return Err(op_error(
                     "exec(): a command from both the pipe and an argument",
                 ));
             }
-            exec(&for_filter, &piped, kwargs)
+            exec(&ctx(), &piped, kwargs)
         },
     );
 }
@@ -271,11 +309,10 @@ mod tests {
     /// its address, and `p:macro.html` or `p:macro.json` is no file.
     #[test]
     fn a_template_name_never_turns_on_escaping() {
-        let builders: [fn(Arc<EngineCtx>) -> Environment<'static>; 2] =
-            [build_pure_engine_env, build_engine_env];
+        let builders: [fn() -> Environment<'static>; 2] = [pure_engine_env, engine_env];
         let text = r#"<a href="x">&'</a>"#;
         for build in builders {
-            let mut env = build(Default::default());
+            let mut env = build();
             for name in [
                 "p:macro.html",
                 "p:macro.json",

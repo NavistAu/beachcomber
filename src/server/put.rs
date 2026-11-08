@@ -144,9 +144,7 @@ pub(crate) async fn put(
     // compile is refused. A name no provider has is not, since a later
     // put may make that provider.
     if facet == Some(Facet::Template) {
-        let engine = libbeachcomber::eval::Probe::new(libbeachcomber::engine::build_engine_env(
-            Default::default(),
-        ));
+        let engine = libbeachcomber::eval::Probe::new(libbeachcomber::engine::engine_env());
         let at = libbeachcomber::key::join(namespace, node);
         if let Some(leaf) = crate::daemon::seed::non_string_template_leaf(data, &at) {
             // The CLI already prefixes the key it put to; name a leaf only

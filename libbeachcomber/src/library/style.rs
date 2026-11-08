@@ -10,11 +10,10 @@
 //! escape sequence.
 
 use super::{UNDEFINED, is_absent, text};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::{ctx, op_error};
 use crate::term::{Colour, Depth, Ground, sgr};
 use minijinja::value::{Value as MjValue, ValueKind};
 use minijinja::{Environment, Error};
-use std::sync::Arc;
 
 /// Run `style` over the text of `value`; absent is undefined.
 fn styled(
@@ -28,60 +27,55 @@ fn styled(
     style(text(name, value)?).map(MjValue::from)
 }
 
-pub(super) fn add_fg(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    add_ground(jinja, ctx, "fg", Ground::Fore);
+pub(super) fn add_fg(jinja: &mut Environment<'_>) {
+    add_ground(jinja, "fg", Ground::Fore);
 }
 
-pub(super) fn add_bg(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    add_ground(jinja, ctx, "bg", Ground::Back);
+pub(super) fn add_bg(jinja: &mut Environment<'_>) {
+    add_ground(jinja, "bg", Ground::Back);
 }
 
-fn add_ground(
-    jinja: &mut Environment<'_>,
-    ctx: &Arc<EngineCtx>,
-    name: &'static str,
-    ground: Ground,
-) {
-    let (on, depth) = (ctx.colour(), ctx.depth());
+fn add_ground(jinja: &mut Environment<'_>, name: &'static str, ground: Ground) {
     jinja.add_filter(name, move |value: MjValue, colour: MjValue| {
         // The colour is checked first, so an empty or absent subject does not
         // hide a typo.
         let colour = colour_arg(name, &colour)?;
+        let ctx = ctx();
+        let (on, depth) = (ctx.colour(), ctx.depth());
         styled(name, &value, |s| Ok(paint(&s, colour, ground, depth, on)))
     });
 }
 
-pub(super) fn add_bold(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    add_attribute(jinja, ctx, "bold", 1);
+pub(super) fn add_bold(jinja: &mut Environment<'_>) {
+    add_attribute(jinja, "bold", 1);
 }
 
-pub(super) fn add_dim(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    add_attribute(jinja, ctx, "dim", 2);
+pub(super) fn add_dim(jinja: &mut Environment<'_>) {
+    add_attribute(jinja, "dim", 2);
 }
 
-pub(super) fn add_italic(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    add_attribute(jinja, ctx, "italic", 3);
+pub(super) fn add_italic(jinja: &mut Environment<'_>) {
+    add_attribute(jinja, "italic", 3);
 }
 
-pub(super) fn add_underline(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    add_attribute(jinja, ctx, "underline", 4);
+pub(super) fn add_underline(jinja: &mut Environment<'_>) {
+    add_attribute(jinja, "underline", 4);
 }
 
-pub(super) fn add_invert(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    add_attribute(jinja, ctx, "invert", 7);
+pub(super) fn add_invert(jinja: &mut Environment<'_>) {
+    add_attribute(jinja, "invert", 7);
 }
 
-fn add_attribute(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>, name: &'static str, code: u8) {
-    let on = ctx.colour();
+fn add_attribute(jinja: &mut Environment<'_>, name: &'static str, code: u8) {
     jinja.add_filter(name, move |value: MjValue| {
+        let on = ctx().colour();
         styled(name, &value, |s| Ok(attribute(s, code, on)))
     });
 }
 
-pub(super) fn add_hyperlink(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let on = ctx.colour();
-    jinja.add_function("hyperlink", move |url: MjValue, label: MjValue| {
-        hyperlink(&url, &label, on)
+pub(super) fn add_hyperlink(jinja: &mut Environment<'_>) {
+    jinja.add_function("hyperlink", |url: MjValue, label: MjValue| {
+        hyperlink(&url, &label, ctx().colour())
     });
 }
 
@@ -163,7 +157,8 @@ fn hyperlink(url: &MjValue, label: &MjValue, on: bool) -> Result<MjValue, Error>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::build_pure_engine_env;
+    use crate::engine::{EngineCtx, pure_engine_env, with_ctx};
+    use std::sync::Arc;
 
     /// `expr` rendered with `vars` as the render's environment.
     fn eval(vars: &[(&str, &str)], expr: &str) -> Result<String, String> {
@@ -174,12 +169,13 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        let jinja = build_pure_engine_env(Arc::new(ctx));
-        jinja
-            .compile_expression(expr)
-            .and_then(|e| e.eval(MjValue::UNDEFINED))
-            .map(|v| v.to_string())
-            .map_err(|e| e.to_string())
+        with_ctx(Arc::new(ctx), || {
+            pure_engine_env()
+                .compile_expression(expr)
+                .and_then(|e| e.eval(MjValue::UNDEFINED))
+                .map(|v| v.to_string())
+                .map_err(|e| e.to_string())
+        })
     }
 
     const TRUE: &[(&str, &str)] = &[("COLORTERM", "truecolor")];

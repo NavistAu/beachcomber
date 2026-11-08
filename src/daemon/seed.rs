@@ -331,9 +331,7 @@ impl ClientWorld {
         libraries.sort();
         libraries.dedup();
         Self {
-            engine: libbeachcomber::eval::Probe::new(libbeachcomber::engine::build_engine_env(
-                Default::default(),
-            )),
+            engine: libbeachcomber::eval::Probe::new(libbeachcomber::engine::engine_env()),
             providers: providers.into_iter().collect(),
             libraries,
         }
@@ -502,9 +500,7 @@ pub fn check_macro_put(
             return Err(format!("a macro library is {namespace}.<name>"));
         }
     };
-    let engine = libbeachcomber::eval::Probe::new(libbeachcomber::engine::build_engine_env(
-        Default::default(),
-    ));
+    let engine = libbeachcomber::eval::Probe::new(libbeachcomber::engine::engine_env());
     for (name, text) in libraries.into_iter().filter(|(_, text)| !text.is_null()) {
         let at = libbeachcomber::key::join(namespace, &libbeachcomber::key::quote(&name));
         if let Some(e) = crate::shape::seeded::library_error(&name, text.as_str()) {

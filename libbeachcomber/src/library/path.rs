@@ -3,35 +3,31 @@
 //! directory) and touch no file; `realpath` is in [`super::fs`].
 
 use super::{UNDEFINED, arguments, is_absent, is_absent_text, text};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::{EngineCtx, ctx, op_error};
 use minijinja::value::{Kwargs, Rest, Value as MjValue};
 use minijinja::{Environment, Error};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 
-pub(super) fn add_expanduser(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
-    env.add_filter("expanduser", move |path: MjValue| expanduser(&ctx, &path));
+pub(super) fn add_expanduser(env: &mut Environment<'_>) {
+    env.add_filter("expanduser", |path: MjValue| expanduser(&ctx(), &path));
 }
 
-pub(super) fn add_ext(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_ext(env: &mut Environment<'_>) {
     env.add_filter("ext", ext);
 }
 
-pub(super) fn add_relpath(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
-    env.add_filter("relpath", move |path: MjValue, base: Option<MjValue>| {
-        relpath(&ctx, &path, base)
+pub(super) fn add_relpath(env: &mut Environment<'_>) {
+    env.add_filter("relpath", |path: MjValue, base: Option<MjValue>| {
+        relpath(&ctx(), &path, base)
     });
 }
 
-pub(super) fn add_shorten_path(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
+pub(super) fn add_shorten_path(env: &mut Environment<'_>) {
     env.add_filter(
         "shorten_path",
-        move |path: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
+        |path: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
             let [n] = arguments("shorten_path", &args, &kwargs, ["n"])?;
-            shorten_path(&ctx, &path, n)
+            shorten_path(&ctx(), &path, n)
         },
     );
 }
@@ -40,11 +36,11 @@ fn home(ctx: &EngineCtx) -> Option<&str> {
     ctx.env.get("HOME").map(String::as_str)
 }
 
-pub(super) fn add_basename(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_basename(env: &mut Environment<'_>) {
     env.add_filter("basename", basename);
 }
 
-pub(super) fn add_dirname(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_dirname(env: &mut Environment<'_>) {
     env.add_filter("dirname", dirname);
 }
 

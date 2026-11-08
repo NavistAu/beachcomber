@@ -1,16 +1,15 @@
 //! Numbers shown: `ramp`, `pct`, `compact` and `bytes`.
 
 use super::{UNDEFINED, arguments, is_absent, number};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::op_error;
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error};
-use std::sync::Arc;
 
-pub(super) fn add_ramp(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_ramp(env: &mut Environment<'_>) {
     env.add_filter("ramp", ramp);
 }
 
-pub(super) fn add_pct(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_pct(env: &mut Environment<'_>) {
     env.add_filter(
         "pct",
         |r: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
@@ -20,11 +19,11 @@ pub(super) fn add_pct(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
     );
 }
 
-pub(super) fn add_compact(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_compact(env: &mut Environment<'_>) {
     env.add_filter("compact", compact);
 }
 
-pub(super) fn add_bytes(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_bytes(env: &mut Environment<'_>) {
     env.add_filter("bytes", bytes);
 }
 

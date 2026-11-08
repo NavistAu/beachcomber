@@ -17,7 +17,7 @@
 //! shape the status page and the worktree name from the bodies and the `.git`
 //! file the harness served, through the one line evaluator a daemon uses.
 
-use libbeachcomber::engine::{EngineCtx, build_engine_env};
+use libbeachcomber::engine::{EngineCtx, engine_env, with_ctx};
 use libbeachcomber::eval::eval_line;
 use libbeachcomber::key;
 use libbeachcomber::resolve::{Fetch, FetchError, Got, Inputs, Slot, resolve};
@@ -89,8 +89,10 @@ fn source_line(src: &str, data: &Value, now: SystemTime) -> Option<Value> {
         now,
         ..EngineCtx::default()
     };
-    let env = build_engine_env(Arc::new(ctx));
-    eval_line(&env, src, &json!({ "data": data })).unwrap_or_else(|e| panic!("{src}: {e}"))
+    with_ctx(Arc::new(ctx), || {
+        eval_line(&engine_env(), src, &json!({ "data": data }))
+    })
+    .unwrap_or_else(|e| panic!("{src}: {e}"))
 }
 
 // ── The fetch ─────────────────────────────────────────────────────────────────

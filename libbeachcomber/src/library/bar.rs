@@ -19,20 +19,20 @@
 
 use super::style::{attribute, colour_arg, paint};
 use super::{UNDEFINED, is_absent, text, whole};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::{ctx, op_error};
 use crate::term::{self, Colour, Depth, Ground};
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error};
-use std::sync::Arc;
 
-pub(super) fn add_bar(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let paint = Paint {
-        on: ctx.colour(),
-        depth: ctx.depth(),
-    };
+pub(super) fn add_bar(jinja: &mut Environment<'_>) {
     jinja.add_function(
         "bar",
-        move |args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
+        |args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
+            let ctx = ctx();
+            let paint = Paint {
+                on: ctx.colour(),
+                depth: ctx.depth(),
+            };
             bar(&args, &kwargs, paint)
         },
     );
@@ -478,7 +478,7 @@ fn place_marker(cells: &mut Vec<Cell>, w: usize, col: usize, glyph: &str) {
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::{EngineCtx, build_pure_engine_env};
+    use crate::engine::{EngineCtx, pure_engine_env, with_ctx};
     use crate::term::strip_escapes;
     use minijinja::value::{Serde, Value as MjValue};
     use serde_json::{Value, json};
@@ -488,7 +488,8 @@ mod tests {
     const DARK: &str = "#1a1a14";
     const WHITE: &str = "#ffffff";
 
-    fn jinja(vars: &[(&str, &str)]) -> minijinja::Environment<'static> {
+    /// A render whose environment is `vars`.
+    fn vars_ctx(vars: &[(&str, &str)]) -> Arc<EngineCtx> {
         let ctx = EngineCtx {
             env: vars
                 .iter()
@@ -496,7 +497,7 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        build_pure_engine_env(Arc::new(ctx))
+        Arc::new(ctx)
     }
 
     /// `bar(width, parts..., <styles>)` over `parts`, at 24-bit colour.
@@ -521,11 +522,13 @@ mod tests {
             "bar({names}{}{styles})",
             if styles.is_empty() { "" } else { ", " }
         );
-        jinja(vars)
-            .compile_expression(&expr)
-            .and_then(|e| e.eval(MjValue::from(Serde(Value::Object(context)))))
-            .map(|v| v.to_string())
-            .map_err(|e| e.to_string())
+        with_ctx(vars_ctx(vars), || {
+            pure_engine_env()
+                .compile_expression(&expr)
+                .and_then(|e| e.eval(MjValue::from(Serde(Value::Object(context)))))
+                .map(|v| v.to_string())
+                .map_err(|e| e.to_string())
+        })
     }
 
     const STYLES: &str =
@@ -888,20 +891,24 @@ mod tests {
 
     #[test]
     fn a_style_mapping_splats() {
-        let jinja = jinja(&[("COLORTERM", "truecolor")]);
-        let value = jinja
-            .compile_expression(
-                "bar(4, {'value': 0.5, 'colour': 'red'}, **{'empty': 'blue', 'bold': true})",
-            )
-            .unwrap()
-            .eval(())
-            .unwrap();
-        let direct = jinja
-            .compile_expression("bar(4, {'value': 0.5, 'colour': 'red'}, empty='blue', bold=true)")
-            .unwrap()
-            .eval(())
-            .unwrap();
-        assert_eq!(value.to_string(), direct.to_string());
+        let jinja = pure_engine_env();
+        with_ctx(vars_ctx(&[("COLORTERM", "truecolor")]), || {
+            let value = jinja
+                .compile_expression(
+                    "bar(4, {'value': 0.5, 'colour': 'red'}, **{'empty': 'blue', 'bold': true})",
+                )
+                .unwrap()
+                .eval(())
+                .unwrap();
+            let direct = jinja
+                .compile_expression(
+                    "bar(4, {'value': 0.5, 'colour': 'red'}, empty='blue', bold=true)",
+                )
+                .unwrap()
+                .eval(())
+                .unwrap();
+            assert_eq!(value.to_string(), direct.to_string());
+        });
     }
 
     #[test]
@@ -973,7 +980,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{width} {parts:?} {styles} should fail"));
             assert!(err.contains("bar():"), "{width} {parts:?} {styles}: {err}");
         }
-        let err = jinja(&[])
+        let err = pure_engine_env()
             .compile_expression("bar()")
             .unwrap()
             .eval(())

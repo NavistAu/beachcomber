@@ -21,37 +21,32 @@
 //! `exec()` above all — never runs on a hit.
 
 use super::{is_absent, is_absent_text};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::{EngineCtx, ctx, op_error};
 use crate::protocol::Wait;
 use crate::validity::{Hasher, hex};
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error};
 use serde_json::Value as JsonValue;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-pub(super) fn add_cache(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
+pub(super) fn add_cache(env: &mut Environment<'_>) {
     env.add_filter(
         "cache",
-        move |piped: MjValue, args: Rest<MjValue>, kwargs: Kwargs| {
-            cache(&ctx, piped, &args, &kwargs)
-        },
+        |piped: MjValue, args: Rest<MjValue>, kwargs: Kwargs| cache(&ctx(), piped, &args, &kwargs),
     );
 }
 
-pub(super) fn add_watch(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
-    env.add_filter("watch", move |piped: MjValue, args: Rest<MjValue>| {
-        watch(&ctx, piped, &args)
+pub(super) fn add_watch(env: &mut Environment<'_>) {
+    env.add_filter("watch", |piped: MjValue, args: Rest<MjValue>| {
+        watch(&ctx(), piped, &args)
     });
 }
 
-pub(super) fn add_ttl(env: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
-    env.add_filter("ttl", move |piped: MjValue, args: Rest<MjValue>| {
-        ttl(&ctx, piped, &args)
+pub(super) fn add_ttl(env: &mut Environment<'_>) {
+    env.add_filter("ttl", |piped: MjValue, args: Rest<MjValue>| {
+        ttl(&ctx(), piped, &args)
     });
 }
 
@@ -394,9 +389,10 @@ fn ttl(ctx: &EngineCtx, piped: MjValue, args: &[MjValue]) -> Result<MjValue, Err
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::build_engine_env;
+    use crate::engine::{engine_env, with_ctx};
     use crate::library::testing::ctx_with;
     use serde_json::json;
+    use std::sync::Arc;
 
     /// A render of `expr` as the leaf `p.f`, with `memo` the daemon's: the
     /// expression's value, or its error's text, and the frame it left.
@@ -413,11 +409,12 @@ mod tests {
             force,
             Wait::Budget,
         )));
-        let env = build_engine_env(ctx);
-        let out = env
-            .compile_expression(expr)
-            .and_then(|e| e.eval(()))
-            .map(|v| v.to_string());
+        let out = with_ctx(ctx, || {
+            engine_env()
+                .compile_expression(expr)
+                .and_then(|e| e.eval(()))
+                .map(|v| v.to_string())
+        });
         let out = match out {
             Ok(v) => Ok(v),
             Err(e) => match hit_in(&e) {
@@ -588,14 +585,15 @@ mod tests {
     /// The daemon renders with no frames: the three are refused, by name.
     #[test]
     fn with_no_frame_the_filters_are_refused() {
-        let env = build_engine_env(ctx_with(&[], None));
+        let env = engine_env();
         for name in ["cache", "watch", "ttl"] {
-            let err = env
-                .compile_expression(&format!("'v' | {name}('1s')"))
-                .unwrap()
-                .eval(())
-                .unwrap_err()
-                .to_string();
+            let err = with_ctx(ctx_with(&[], None), || {
+                env.compile_expression(&format!("'v' | {name}('1s')"))
+                    .unwrap()
+                    .eval(())
+                    .unwrap_err()
+            })
+            .to_string();
             assert!(
                 err.contains(&format!(
                     "{name}(): a client template's filter; a Source's records are the daemon's"
@@ -612,12 +610,13 @@ mod tests {
         let ctx = client(&[], None);
         let frames = ctx.memo.clone().unwrap();
         frames.push(Frame::Format);
-        let env = build_engine_env(ctx);
-        let out = env
-            .compile_expression("'v' | watch('/a') | ttl('500ms') | cache() | upper")
-            .unwrap()
-            .eval(())
-            .unwrap();
+        let out = with_ctx(ctx, || {
+            engine_env()
+                .compile_expression("'v' | watch('/a') | ttl('500ms') | cache() | upper")
+                .unwrap()
+                .eval(())
+                .unwrap()
+        });
         assert_eq!(out.as_str(), Some("V"));
         assert!(matches!(frames.pop(), Some(Frame::Format)));
     }

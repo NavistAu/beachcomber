@@ -32,13 +32,12 @@ fn load_nonexistent_path() {
 #[test]
 fn plugin_calls_a_real_cdylib() {
     use beachcomber::engine::{PluginSet, daemon_engine_env};
-    use libbeachcomber::engine::EngineCtx;
     use std::sync::Arc;
 
     // A `/` in the name is the library path, which must be absolute.
     let path = ensure_fixture_built();
     let plugins = Arc::new(PluginSet::new(vec![], Arc::new(LibloadingLoader)));
-    let env = daemon_engine_env(Arc::new(EngineCtx::default()), plugins);
+    let env = daemon_engine_env(plugins);
     let p = path.to_string_lossy();
     let sum = env
         .render_str(&format!("{{{{ plugin('{p}', 'bc_sum', 1, 2, 3.5) }}}}"), ())
@@ -58,12 +57,11 @@ fn plugin_calls_a_real_cdylib() {
 #[test]
 fn plugin_failures_are_distinct_through_a_real_cdylib() {
     use beachcomber::engine::{PluginSet, daemon_engine_env};
-    use libbeachcomber::engine::EngineCtx;
     use std::sync::Arc;
 
     let path = ensure_fixture_built();
     let plugins = Arc::new(PluginSet::new(vec![], Arc::new(LibloadingLoader)));
-    let env = daemon_engine_env(Arc::new(EngineCtx::default()), plugins);
+    let env = daemon_engine_env(plugins);
     let p = path.to_string_lossy();
     let fails = |symbol: &str| {
         env.render_str(&format!("{{{{ plugin('{p}', '{symbol}') }}}}"), ())
@@ -116,12 +114,11 @@ fn one_file_is_one_image_whatever_the_name() {
 #[test]
 fn sys_and_a_cdylib_share_one_call_path() {
     use beachcomber::engine::{PluginSet, daemon_engine_env};
-    use libbeachcomber::engine::EngineCtx;
     use std::sync::Arc;
 
     let path = ensure_fixture_built();
     let plugins = Arc::new(PluginSet::new(vec![], Arc::new(LibloadingLoader)));
-    let env = daemon_engine_env(Arc::new(EngineCtx::default()), plugins);
+    let env = daemon_engine_env(plugins);
     let p = path.to_string_lossy();
     let render = |t: &str| env.render_str(t, ()).map_err(|e| e.to_string());
     assert_eq!(

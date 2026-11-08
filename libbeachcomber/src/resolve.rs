@@ -18,7 +18,7 @@
 //!
 //! See `docs/decisionlog/261007074623-field-value-by-coalescing-facets.md`.
 
-use crate::engine::{EngineCtx, build_engine_env};
+use crate::engine::{EngineCtx, engine_env, with_ctx};
 use crate::eval::{
     EvalError, Import, MAX_VIRTUAL_DEPTH, Probe, discover_refs, evaluate, imports, library,
     too_deep,
@@ -366,12 +366,15 @@ pub fn eval_with(
 struct Resolver<'a> {
     inputs: &'a Inputs<'a>,
     /// The one engine every render of this resolution runs in, and every
-    /// text's refs are read in, built once: its library bound to the caller's
-    /// `env` and directory, the only ones an `exec()` child sees, and its
-    /// loader the [`Libraries`] read so far. Shared, so a render on another
-    /// thread (a lazy `comb`) runs in it too. Built on the first render, so
-    /// a read that renders nothing never pays for it ([`Self::jinja`]).
+    /// text's refs are read in: the client's engine with its loader the
+    /// [`Libraries`] read so far. Shared, so a render on another thread (a
+    /// lazy `comb`) runs in it too. Made on the first render, so a read that
+    /// renders nothing never pays for it ([`Self::jinja`]).
     jinja: OnceCell<Arc<Probe<'static>>>,
+    /// What every render of this resolution runs with ([`with_ctx`]): the
+    /// caller's `env` and directory, the only ones an `exec()` child sees,
+    /// and the memo frames. Made on the first render too ([`Self::ctx`]).
+    ctx: OnceCell<Arc<EngineCtx>>,
     /// The macro libraries read so far ([`Self::closure`]).
     libraries: Libraries,
     /// The caller's environment as a template reads it, `env`: built once,
@@ -405,6 +408,7 @@ impl<'a> Resolver<'a> {
         Self {
             inputs,
             jinja: OnceCell::new(),
+            ctx: OnceCell::new(),
             libraries: Libraries::default(),
             env: OnceCell::new(),
             fetch,
@@ -420,12 +424,12 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// The engine, built on first use: a plain cached value never renders,
-    /// and building it (and binding the caller's whole environment) is most
+    /// The render context, made on first use: a plain cached value never
+    /// renders, and copying the caller's whole environment into it is most
     /// of a read's client-side cost.
-    fn jinja(&self) -> &Arc<Probe<'static>> {
-        self.jinja.get_or_init(|| {
-            let mut jinja = build_engine_env(Arc::new(EngineCtx {
+    fn ctx(&self) -> &Arc<EngineCtx> {
+        self.ctx.get_or_init(|| {
+            Arc::new(EngineCtx {
                 env: self.inputs.env.vars().clone(),
                 cwd: self.inputs.dir().map(Into::into),
                 allow_exec: self.inputs.allow_exec,
@@ -433,7 +437,14 @@ impl<'a> Resolver<'a> {
                 // A client's render: nothing checks what it read.
                 touched: None,
                 memo: Some(self.frames.clone()),
-            }));
+            })
+        })
+    }
+
+    /// The engine, made on first use.
+    fn jinja(&self) -> &Arc<Probe<'static>> {
+        self.jinja.get_or_init(|| {
+            let mut jinja = engine_env();
             // An import loads a library this resolution has read. A name it
             // has not is the engine's "template not found": only a computed
             // name could reach that, and the structural scan refuses those
@@ -670,7 +681,10 @@ impl<'a> Resolver<'a> {
         let rendered = if refs.contains(&Ref::Dynamic("comb".to_string())) {
             self.render_with_lazy_comb(src, key, bound, &refs)
         } else {
-            evaluate_node(self.jinja().env(), src, key, self.context(None, bound))
+            let context = self.context(None, bound);
+            with_ctx(self.ctx().clone(), || {
+                evaluate_node(self.jinja().env(), src, key, context)
+            })
         };
         if let Some(Frame::Leaf(leaf)) = self.frames.pop() {
             self.settle(leaf, &rendered);
@@ -796,10 +810,11 @@ impl<'a> Resolver<'a> {
         let comb = LazyNode::comb(bridge.clone(), prefetched, Arc::new(Prefetch::of(refs)));
         let context = self.context(Some(comb), bound);
         let jinja = self.jinja().clone();
+        let ctx = self.ctx().clone();
 
         std::thread::scope(|scope| {
             let render = scope.spawn(move || {
-                let out = evaluate_node(jinja.env(), src, key, context);
+                let out = with_ctx(ctx, || evaluate_node(jinja.env(), src, key, context));
                 (out, bridge.take_error())
             });
             for (asked, reply) in questions {

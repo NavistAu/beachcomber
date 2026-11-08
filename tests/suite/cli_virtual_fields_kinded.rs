@@ -9,9 +9,7 @@ use std::path::{Path, PathBuf};
 
 /// `src`'s refs, read in the client's engine.
 fn discover_refs(src: &str) -> Vec<Ref> {
-    let probe = libbeachcomber::eval::Probe::new(libbeachcomber::engine::build_engine_env(
-        Default::default(),
-    ));
+    let probe = libbeachcomber::eval::Probe::new(libbeachcomber::engine::engine_env());
     libbeachcomber::eval::discover_refs(&probe, src)
 }
 

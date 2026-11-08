@@ -2,28 +2,27 @@
 //! `fromyaml`, `regex_search` and `regex_replace`.
 
 use super::{UNDEFINED, arguments, is_absent, is_absent_text, text, whole};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::op_error;
 use minijinja::value::{Kwargs, Rest, Serde, Value as MjValue};
 use minijinja::{Environment, Error, ErrorKind};
-use std::sync::Arc;
 
-pub(super) fn add_fromjson(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_fromjson(env: &mut Environment<'_>) {
     env.add_filter("fromjson", fromjson_filter);
 }
 
-pub(super) fn add_fromtoml(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_fromtoml(env: &mut Environment<'_>) {
     env.add_filter("fromtoml", fromtoml);
 }
 
-pub(super) fn add_fromyaml(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_fromyaml(env: &mut Environment<'_>) {
     env.add_filter("fromyaml", fromyaml);
 }
 
-pub(super) fn add_regex_search(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_regex_search(env: &mut Environment<'_>) {
     env.add_filter("regex_search", regex_search);
 }
 
-pub(super) fn add_regex_replace(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_regex_replace(env: &mut Environment<'_>) {
     env.add_filter(
         "regex_replace",
         |value: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
@@ -38,7 +37,7 @@ pub(super) fn add_regex_replace(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
     );
 }
 
-pub(super) fn add_fromini(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_fromini(env: &mut Environment<'_>) {
     env.add_filter("fromini", fromini);
 }
 
@@ -225,7 +224,7 @@ fn regex_replace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::build_engine_env;
+    use crate::engine::engine_env;
     use crate::library::testing::eval_json;
 
     #[test]
@@ -243,7 +242,7 @@ mod tests {
     #[test]
     fn fromjson_result_is_navigable_in_an_expression() {
         // The shipped `talos.toml` shape: parse a tool's JSON, then read one key.
-        let env = build_engine_env(Default::default());
+        let env = engine_env();
         let expr = env.compile_expression("(s | fromjson).context").unwrap();
         let out = expr
             .eval(minijinja::context! { s => r#"{"context": "mycluster", "roles": null}"# })

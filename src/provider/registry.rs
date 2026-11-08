@@ -916,7 +916,7 @@ impl ProviderRegistry {
         let plugins = Arc::new(PluginSet::new(search, Arc::new(LibloadingLoader)));
         let env = Arc::new(env.clone());
         // Every line below is read in the one engine.
-        let probe = load_probe(&env, &plugins);
+        let probe = load_probe(&plugins);
 
         // A `_` table's lines apply to Sources below it; they are compiled
         // here as a Source's own are, so a broken prototype does not load.
@@ -1216,7 +1216,7 @@ impl ProviderRegistry {
         warnings.extend(std::mem::take(&mut seed.warnings));
         warnings.extend(
             registry
-                .data_line_warnings(config, &seed, vars, &data_lines)
+                .data_line_warnings(config, &seed, &data_lines)
                 .into_iter()
                 .map(|w| config.locate(w)),
         );
@@ -1258,7 +1258,6 @@ impl ProviderRegistry {
         &self,
         config: &Config,
         seed: &crate::daemon::seed::Seed,
-        vars: &HashMap<String, String>,
         data_lines: &[(String, String)],
     ) -> Vec<String> {
         let Some(plugins) = &self.plugins else {
@@ -1279,7 +1278,7 @@ impl ProviderRegistry {
             templates: &templates,
             ..Default::default()
         };
-        let probe = load_probe(vars, plugins);
+        let probe = load_probe(plugins);
         data_lines
             .iter()
             .flat_map(|(who, data)| data_warnings(&probe, who, data, &known))

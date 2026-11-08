@@ -10,15 +10,13 @@
 
 use crate::common::daemon::TestDaemon;
 use crate::common::socket::IsolatedSocket;
-use libbeachcomber::engine::build_pure_engine_env;
+use libbeachcomber::engine::pure_engine_env;
 use libbeachcomber::virtual_fields::Ref;
 use std::path::{Path, PathBuf};
 
 /// `src`'s refs, read in the client's engine.
 fn discover_refs(src: &str) -> Vec<Ref> {
-    let probe = libbeachcomber::eval::Probe::new(libbeachcomber::engine::build_engine_env(
-        Default::default(),
-    ));
+    let probe = libbeachcomber::eval::Probe::new(libbeachcomber::engine::engine_env());
     libbeachcomber::eval::discover_refs(&probe, src)
 }
 
@@ -26,7 +24,7 @@ fn discover_refs(src: &str) -> Vec<Ref> {
 
 #[test]
 fn basename_filter_extracts_last_component() {
-    let env = build_pure_engine_env(Default::default());
+    let env = pure_engine_env();
     let result = env
         .render_str(r#"{{ "/home/user/.venv" | basename }}"#, ())
         .unwrap();
@@ -35,14 +33,14 @@ fn basename_filter_extracts_last_component() {
 
 #[test]
 fn basename_filter_on_plain_name() {
-    let env = build_pure_engine_env(Default::default());
+    let env = pure_engine_env();
     let result = env.render_str(r#"{{ "myenv" | basename }}"#, ()).unwrap();
     assert_eq!(result, "myenv");
 }
 
 #[test]
 fn basename_filter_trailing_slash() {
-    let env = build_pure_engine_env(Default::default());
+    let env = pure_engine_env();
     let result = env
         .render_str(r#"{{ "/some/path/" | basename }}"#, ())
         .unwrap();
@@ -52,14 +50,14 @@ fn basename_filter_trailing_slash() {
 
 #[test]
 fn basename_filter_empty_string() {
-    let env = build_pure_engine_env(Default::default());
+    let env = pure_engine_env();
     let result = env.render_str(r#"{{ "" | basename }}"#, ()).unwrap();
     assert_eq!(result, "");
 }
 
 #[test]
 fn basename_filter_follows_posix() {
-    let jinja = build_pure_engine_env(Default::default());
+    let jinja = pure_engine_env();
     let result = jinja.render_str(r#"{{ "/" | basename }}"#, ()).unwrap();
     assert_eq!(result, "/");
     // Absent in, absent out: nothing to name.

@@ -52,7 +52,7 @@ use crate::provider::source_call::{CallOutcome, Called, CalledRecord, called_in}
 use crate::shape::decorators::named_decorators;
 use crate::shape::prototype::{Kind, Link, chain, super_chain};
 use dashmap::DashSet;
-use libbeachcomber::engine::op_error;
+use libbeachcomber::engine::{op_error, with_ctx};
 use libbeachcomber::eval::{
     Known, Line, Probe, Use, evaluate, lint, single_tag_expression, undeclared_names, used_names,
 };
@@ -434,7 +434,7 @@ impl ProviderLines {
     /// a call that does IO, a `| super` where it means nothing, a name the line
     /// may not read, or text that does not compile is a load error.
     pub fn new(providers: &toml::Table) -> Result<Self, Vec<String>> {
-        let mut env = provider_engine_env(Default::default());
+        let mut env = provider_engine_env();
         env.add_filter("super", step_up);
         let probe = Probe::new(env);
         let own: HashMap<String, Arc<Chains>> = providers
@@ -1083,7 +1083,12 @@ fn render_level(
             }),
         ));
     }
-    evaluate(env, &lines[level], MjValue::from_pairs(context)).map_err(|e| e.message().to_string())
+    // A provider's line knows nothing of where it runs: not the context of a
+    // Source run whose `comb` read reached it.
+    with_ctx(Arc::default(), || {
+        evaluate(env, &lines[level], MjValue::from_pairs(context))
+    })
+    .map_err(|e| e.message().to_string())
 }
 
 #[cfg(test)]
@@ -1354,6 +1359,22 @@ mod tests {
             ),
             "{err}"
         );
+    }
+
+    /// A line read inside a Source's run renders as it does anywhere: the
+    /// run's environment (here `NO_COLOR`) is not the line's.
+    #[test]
+    fn a_line_renders_without_the_context_it_is_read_in() {
+        let lines = lines("[_]\nreturn = \"{{ result | bold }}\"");
+        let run = libbeachcomber::engine::EngineCtx {
+            env: HashMap::from([("NO_COLOR".to_string(), "1".to_string())]),
+            ..Default::default()
+        };
+        let got = with_ctx(Arc::new(run), || {
+            lines.eval("demo", Key::Return, vec![("result", MjValue::from("x"))])
+        })
+        .unwrap();
+        assert_eq!(got.value.unwrap().to_string(), "\x1b[1mx\x1b[0m");
     }
 
     #[test]

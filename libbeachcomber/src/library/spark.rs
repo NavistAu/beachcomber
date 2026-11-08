@@ -1,12 +1,11 @@
 //! `spark`: a row of block glyphs for a list of numbers.
 
 use super::{UNDEFINED, arguments, is_absent, number};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::op_error;
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error};
-use std::sync::Arc;
 
-pub(super) fn add_spark(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_spark(env: &mut Environment<'_>) {
     env.add_function(
         "spark",
         |args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {

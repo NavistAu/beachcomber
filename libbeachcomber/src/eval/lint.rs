@@ -375,7 +375,7 @@ mod tests {
     use super::*;
 
     fn probe() -> Probe<'static> {
-        Probe::new(crate::engine::build_engine_env(Default::default()))
+        Probe::new(crate::engine::engine_env())
     }
 
     /// `src` linted as a `line` that knows of no provider.

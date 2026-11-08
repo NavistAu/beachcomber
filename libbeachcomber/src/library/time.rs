@@ -7,20 +7,19 @@
 
 use super::{UNDEFINED, arguments, is_absent, is_absent_text, text, whole};
 use crate::duration::{self, Unit};
-use crate::engine::{EngineCtx, op_error};
+use crate::engine::{EngineCtx, ctx, op_error};
 use crate::render;
 use jiff::tz::TimeZone;
 use jiff::{Timestamp, civil};
 use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error};
-use std::sync::Arc;
 use std::time::Duration;
 
-pub(super) fn add_seconds(jinja: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_seconds(jinja: &mut Environment<'_>) {
     jinja.add_filter("seconds", seconds);
 }
 
-pub(super) fn add_duration(jinja: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+pub(super) fn add_duration(jinja: &mut Environment<'_>) {
     jinja.add_filter(
         "duration",
         |value: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
@@ -91,28 +90,26 @@ fn number(name: &str, value: &MjValue, signed: bool) -> Result<f64, Error> {
     Ok(secs)
 }
 
-pub(super) fn add_now(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
-    jinja.add_function("now", move |args: Rest<MjValue>, kwargs: Kwargs| {
+pub(super) fn add_now(jinja: &mut Environment<'_>) {
+    jinja.add_function("now", |args: Rest<MjValue>, kwargs: Kwargs| {
         if !args.is_empty() || kwargs.args().next().is_some() {
             return Err(op_error("now(): takes no arguments"));
         }
-        Ok(MjValue::from((ctx.now_millis() / 1000) as i64))
+        Ok(MjValue::from((ctx().now_millis() / 1000) as i64))
     });
 }
 
-pub(super) fn add_strftime(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
+pub(super) fn add_strftime(jinja: &mut Environment<'_>) {
     jinja.add_filter(
         "strftime",
-        move |value: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
+        |value: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
             let [fmt, tz] = arguments("strftime", &args, &kwargs, ["fmt", "tz"])?;
             let fmt = fmt.ok_or_else(|| op_error("strftime(): takes a format"))?;
             let fmt = match fmt.as_str() {
                 Some(f) => f.to_string(),
                 None => return Err(op_error("strftime(): the format must be a string")),
             };
-            let zone = zone("strftime", &ctx, tz.as_ref())?;
+            let zone = zone("strftime", &ctx(), tz.as_ref())?;
             if is_absent(&value) {
                 return Ok(UNDEFINED);
             }
@@ -124,9 +121,8 @@ pub(super) fn add_strftime(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
     );
 }
 
-pub(super) fn add_fromiso(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
-    jinja.add_filter("fromiso", move |value: MjValue| -> Result<MjValue, Error> {
+pub(super) fn add_fromiso(jinja: &mut Environment<'_>) {
+    jinja.add_filter("fromiso", |value: MjValue| -> Result<MjValue, Error> {
         if is_absent_text(&value) {
             return Ok(UNDEFINED);
         }
@@ -146,7 +142,7 @@ pub(super) fn add_fromiso(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
                             .map(|d| d.to_datetime(civil::Time::midnight()))
                     })
                     .map_err(|_| bad())?;
-                let zone = zone("fromiso", &ctx, None)?;
+                let zone = zone("fromiso", &ctx(), None)?;
                 civil.to_zoned(zone).map_err(|_| bad())?.timestamp()
             }
         };
@@ -159,11 +155,10 @@ pub(super) fn add_fromiso(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
     });
 }
 
-pub(super) fn add_ago(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
+pub(super) fn add_ago(jinja: &mut Environment<'_>) {
     jinja.add_filter(
         "ago",
-        move |value: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
+        |value: MjValue, args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
             let [parts, floor] = arguments("ago", &args, &kwargs, ["parts", "floor"])?;
             let parts = parts_arg("ago", parts)?;
             let floor = floor_arg("ago", floor, Unit::Second)?;
@@ -171,7 +166,7 @@ pub(super) fn add_ago(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
                 return Ok(UNDEFINED);
             }
             let at = number("ago", &value, true)?;
-            let apart_ms = (ctx.now_millis() as f64 - at * 1000.0).round();
+            let apart_ms = (ctx().now_millis() as f64 - at * 1000.0).round();
             let span = Duration::from_millis(apart_ms.abs() as u64);
             if span.as_millis() < u128::from(floor.millis()) {
                 return Ok(MjValue::from("now"));
@@ -186,11 +181,10 @@ pub(super) fn add_ago(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
     );
 }
 
-pub(super) fn add_spinner(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
-    let ctx = ctx.clone();
+pub(super) fn add_spinner(jinja: &mut Environment<'_>) {
     jinja.add_function(
         "spinner",
-        move |args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
+        |args: Rest<MjValue>, kwargs: Kwargs| -> Result<MjValue, Error> {
             let [frames, step] = arguments("spinner", &args, &kwargs, ["frames", "step"])?;
             let frames = frames.ok_or_else(|| op_error("spinner(): takes frames"))?;
             let step = match step.as_ref().filter(|s| !is_absent(s)) {
@@ -220,7 +214,7 @@ pub(super) fn add_spinner(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
             if frames.is_empty() {
                 return Err(op_error("spinner(): frames is empty"));
             }
-            let tick = ctx.now_millis() / step.as_millis();
+            let tick = ctx().now_millis() / step.as_millis();
             Ok(frames[(tick % frames.len() as u128) as usize].clone())
         },
     );
