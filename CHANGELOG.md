@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **A config edit the poll saw half-written is still reloaded.** The config watch's poll compared each file's mtime to the millisecond, and nothing else. A poll landing while an editor was writing a file (truncated, say) applied what it found, and if the write finished within that millisecond, or within the second on a filesystem that keeps mtimes to the second, the rest of the edit was never seen: the daemon ran on the half-written file until the next edit. The poll now compares each file's full mtime and its length.
 - **`Client::get` and `Session::get` no longer panic on an environment variable that is not UTF-8.** They read the environment lossily, as `comb` and the C ABI already did.
 - **Three kinds of env-file line no longer crash the daemon.** An empty key (`=v`) or a NUL byte panicked `set_var` at start, and a lone quote (`X="`) panicked quote stripping, in `comb check config` too. Such lines are skipped with a warning in the daemon log; a lone quote is a one-character value.
 - **`idle_shutdown` fires.** The daemon seeds config records at start, and shutdown waited for an empty cache, so it never came. The records the daemon seeds from its own config no longer keep it up; puts and memos still do.

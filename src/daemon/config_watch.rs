@@ -47,7 +47,7 @@
 //! fs-event registration (the parent-dir watch is `NonRecursive` and doesn't
 //! see inside them) — registered separately, best-effort, when the directory
 //! exists at watch-registration time or once it appears. The mtime-poll backstop holds a
-//! snapshot of the whole composed set — one mtime per file — and calls any
+//! snapshot of the whole composed set — each file's mtime and length — and calls any
 //! difference a change, so an edit, an addition and a deletion are all noticed
 //! (a deletion bumps no remaining file's mtime) and an edit to one file is
 //! seen even while another carries a far-future mtime from clock skew.
@@ -62,7 +62,7 @@
 use crate::config::Config;
 use crate::provider::registry::{ConfigLoad, ProviderRegistry};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime};
 use tokio_util::sync::CancellationToken;
 
 /// Config self-watch poll interval — same 5s guarantee as the binary watch.
@@ -82,8 +82,12 @@ pub enum ChangeKind {
     Settings,
 }
 
-/// The mtime of every file in the composed set that exists, keyed by path:
-/// every `defaults/*.toml`, the main config file, and every `conf.d/*.toml`.
+/// The mtime and length of every file in the composed set that exists, keyed by
+/// path: every `defaults/*.toml`, the main config file, and every `conf.d/*.toml`.
+/// The length catches an edit that leaves the mtime where it was: a write that
+/// lands within the filesystem's mtime granularity of the moment a poll saw it
+/// half-written (truncated, say), or any two edits within a second on a
+/// filesystem that keeps mtimes to the second.
 ///
 /// Per file rather than "newest mtime plus a count", which two things defeat.
 /// A file carrying a far-future mtime — clock skew across a network mount, an
@@ -91,20 +95,19 @@ pub enum ChangeKind {
 /// stays newer than every later reference point, so with one timestamp an edit
 /// to any *other* file is invisible behind it and the watch either misses the
 /// change or fires on every tick forever. A map has neither failure: a change
-/// is any path whose mtime moved (in either direction) plus any path added or
+/// is any path whose mtime or length moved (in either direction) plus any path added or
 /// removed, and after each one the snapshot becomes the state just observed,
 /// so an unchanged set compares equal whatever the timestamps say.
-type Snapshot = std::collections::BTreeMap<PathBuf, u64>;
+type Snapshot = std::collections::BTreeMap<PathBuf, (Option<SystemTime>, u64)>;
 
 /// Read the composed set's current [`Snapshot`]. A file whose mtime cannot be
-/// read is recorded as 0 rather than left out, so it does not read as a
+/// read is recorded with none rather than left out, so it does not read as a
 /// deletion on every tick.
 fn composed_snapshot(config_path: &Path, defaults_dir: &Path, conf_d_dir: &Path) -> Snapshot {
     let mut out = Snapshot::new();
     let mut note = |p: PathBuf| {
         if let Ok(meta) = std::fs::metadata(&p) {
-            let ms = meta.modified().map(mtime_to_unix_ms).unwrap_or(0);
-            out.insert(p, ms);
+            out.insert(p, (meta.modified().ok(), meta.len()));
         }
     };
     for f in Config::conf_d_files(defaults_dir) {
@@ -433,13 +436,6 @@ fn try_fire<F: FnMut(ChangeKind, ConfigLoad)>(
     on_change(kind, loaded);
 }
 
-fn mtime_to_unix_ms(mtime: SystemTime) -> u64 {
-    mtime
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,6 +618,41 @@ mod tests {
             "[daemon.plugin]\npath = [\"/opt/plugins\"]\n",
         );
         assert_eq!(dir.fire(), vec![ChangeKind::Settings]);
+    }
+
+    /// A poll can land mid-write and see the file truncated; when the writer
+    /// finishes within the filesystem's mtime granularity (a millisecond, or a
+    /// second on HFS+ and some network mounts) the mtime has not moved, but the
+    /// content has: that edit is still a change, or the daemon keeps running on
+    /// the half-written file until the next one.
+    #[test]
+    fn an_edit_that_leaves_the_mtime_where_it_was_is_still_a_change() {
+        let dir = Dir::new("[daemon]\n");
+        let conf_d = dir.config.parent().unwrap().join("conf.d");
+        let drop_in = conf_d.join("10-mine.toml");
+        dir.write("conf.d/10-mine.toml", "");
+        let mtime = std::fs::metadata(&drop_in).unwrap().modified().unwrap();
+        let defaults = Config::defaults_dir_for(&dir.config);
+        let mut snapshot = composed_snapshot(&dir.config, &defaults, &conf_d);
+
+        dir.write("conf.d/10-mine.toml", SOURCE);
+        std::fs::File::options()
+            .write(true)
+            .open(&drop_in)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let mut settings = dir.settings.clone();
+        let mut got = Vec::new();
+        check_snapshot(
+            &dir.config,
+            &defaults,
+            &conf_d,
+            &mut snapshot,
+            &mut settings,
+            &mut |kind, _| got.push(kind),
+        );
+        assert_eq!(got, vec![ChangeKind::Providers]);
     }
 
     #[test]
