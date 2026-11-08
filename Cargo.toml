@@ -133,6 +133,12 @@ opt-level = 1
 [profile.dev.package.minijinja]
 opt-level = 3
 
+# What the suite builds (`cargo nextest run`, and the `comb` it spawns) runs the
+# crates' own code at opt-level 1 too: a fifth less CPU over the suite, for
+# ~3s more on an incremental test build. `cargo build` stays at opt-level 0.
+[profile.test]
+opt-level = 1
+
 [profile.release]
 # Speed over size: a read is the product, and "z" cost a Session read ~50 µs.
 opt-level = 3
