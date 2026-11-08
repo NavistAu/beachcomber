@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Wire protocol version. Semver: minor = additive, major = breaking.
-/// See `docs/protocol-spec.md` for what counts as additive vs breaking.
+/// See `website/docs/reference/protocol-reference.md` for what counts as additive vs breaking.
 pub const PROTOCOL_VERSION: &str = "1.0";
 
 fn is_false(b: &bool) -> bool {
@@ -199,8 +199,8 @@ impl Request {
     }
 }
 
-/// What an `introspect` request asks about. See `docs/protocol-spec.md` for
-/// each subject's shape.
+/// What an `introspect` request asks about. See
+/// `website/docs/reference/protocol-reference.md` for each subject's shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IntrospectSubject {

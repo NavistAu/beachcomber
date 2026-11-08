@@ -62,7 +62,7 @@ daemon is the only source of templates; the resolver takes no overrides.
 ```
 
 `args` matches the wire request body for that op (minus `op` itself). See
-`docs/protocol-spec.md` for each op's request schema.
+`website/docs/reference/protocol-reference.md` for each op's request schema.
 
 ### The `get` op
 

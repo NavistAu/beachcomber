@@ -9,7 +9,7 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 - [ ] **Code ↔ docs reconciliation (correctness pass).** The 0.6.1 socket-resolution and Node-dist bugs were
       both docs-said-X / code-did-Y divergences, caught only by a partial README+website audit — which itself
       shipped errors needing a corrective second pass (`02115b2f`). Do a systematic walk of the project's line of truth
-      (test suite → code → `docs/protocol-spec.md` / `docs/architecture.md` / `docs/performance.md` /
+      (test suite → code → `website/docs/reference/protocol-reference.md` / `docs/architecture.md` / `docs/performance.md` /
       `docs/status_ttl.md` / `docs/versioning.md` → README → website).
       For each documented claim verify: (a) a test asserts it, (b) code matches the test, (c) docs/website describe the
       actual behavior. Settle every divergence with either a fix or an explicit, reasoned

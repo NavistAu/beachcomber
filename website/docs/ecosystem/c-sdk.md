@@ -246,7 +246,7 @@ bc_watch_free(w);
 
 ## Wire protocol reference
 
-All operations follow the wire contract defined in [docs/protocol-spec.md](https://github.com/NavistAu/beachcomber/blob/main/docs/protocol-spec.md).
+All operations follow the wire contract defined in the [Protocol Reference](../reference/protocol-reference.md).
 
 ## Socket discovery
 

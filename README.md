@@ -1691,7 +1691,7 @@ Logs are appended indefinitely. Rotate manually or add a logrotate rule:
 
 ## Protocol Reference
 
-beachcomber uses a simple newline-delimited JSON protocol over a Unix socket. Any language that can open a Unix socket and read/write JSON can be a client — no client library required. The authoritative wire contract is in [docs/protocol-spec.md](docs/protocol-spec.md).
+beachcomber uses a simple newline-delimited JSON protocol over a Unix socket. Any language that can open a Unix socket and read/write JSON can be a client — no client library required. The full wire contract is the [Protocol Reference](https://beachcomber.sh/docs/reference/protocol-reference).
 
 ### Connection
 
@@ -1793,7 +1793,7 @@ Server streams responses:
 
 Field-level filtering applies: watching `git.branch` only emits when the branch value changes, not on every git provider update.
 
-**`status`:** Returns cache rows — one entry per warm cache key. Each row includes provider, field, value and age. For daemon health information (uptime, scheduler state, active watchers), use `{"op":"introspect","subject":"daemon"}` instead. See [docs/protocol-spec.md](docs/protocol-spec.md) for the full wire contract.
+**`status`:** Returns cache rows — one entry per warm cache key. Each row includes provider, field, value and age. For daemon health information (uptime, scheduler state, active watchers), use `{"op":"introspect","subject":"daemon"}` instead. See the [Protocol Reference](https://beachcomber.sh/docs/reference/protocol-reference) for the full wire contract.
 
 ### Wire Format
 
