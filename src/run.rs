@@ -8,7 +8,8 @@
 //! itself in a task of its own, so a caller that stops waiting (its
 //! connection gone, its budget spent) takes nothing with it. A caller waits on
 //! the [`Run`] it was handed: from a task ([`Run::outcome`]) or from a
-//! blocking thread ([`Run::wait`]).
+//! blocking thread ([`Run::wait`]), which drives the same wait by parking the
+//! thread between wakes.
 //!
 //! A run waits for another only from its blocking thread, when a line of its
 //! Source reads one that is cold. It waits from the moment it asks for that
@@ -32,7 +33,7 @@ use crate::scheduler::lifecycle::Key;
 use libbeachcomber::fs::Touched;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tracing::{debug, warn};
 
 /// What a run's execution gave: the Source's result with the validity of its
@@ -200,7 +201,8 @@ struct State {
     /// read: shared with its blocking thread as `stamped` is.
     reads: Arc<Touched>,
     end: Mutex<Option<End>>,
-    ended: Condvar,
+    /// Wakes everyone waiting on `end`, in a task or ([`block_on`]) on a
+    /// blocking thread.
     notify: tokio::sync::Notify,
 }
 
@@ -212,7 +214,6 @@ impl Default for State {
             stamped: Arc::default(),
             reads: Arc::default(),
             end: Mutex::default(),
-            ended: Condvar::default(),
             notify: tokio::sync::Notify::default(),
         }
     }
@@ -249,7 +250,6 @@ impl State {
     /// its waiters where to go before its own task comes back.
     fn finish(&self, end: End) {
         lock(&self.end).get_or_insert(end);
-        self.ended.notify_all();
         self.notify.notify_waiters();
     }
 
@@ -264,15 +264,27 @@ impl State {
             notified.await;
         }
     }
+}
 
-    fn ended_blocking(&self) -> End {
-        let mut end = lock(&self.end);
-        loop {
-            if let Some(end) = end.clone() {
-                return end;
-            }
-            end = self.ended.wait(end).unwrap_or_else(|e| e.into_inner());
+/// `future` to its end on this thread, parked between wakes: how a blocking
+/// thread waits on a run. Needs no runtime: the run's [`State::notify`] wakes
+/// it as it wakes a task.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
         }
+    }
+    let waker = Arc::new(Unpark(std::thread::current())).into();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        // A spurious unpark only polls once more.
+        if let std::task::Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+            return output;
+        }
+        std::thread::park();
     }
 }
 
@@ -376,14 +388,7 @@ impl Run {
         if let Asked::Ring = self.asked {
             return Err(Cycle);
         }
-        let mut moved: Option<Arc<State>> = None;
-        let outcome = loop {
-            let state = moved.as_ref().unwrap_or(&self.state);
-            match state.ended_blocking() {
-                End::Done(outcome) => break outcome,
-                End::Moved(next) => moved = Some(next),
-            }
-        };
+        let outcome = block_on(self.outcome());
         if let Asked::By(me) = self.asked {
             lock(&self.runs.table).waits.remove(&me);
         }
@@ -398,7 +403,7 @@ impl Runs {
     /// [`Want::Forced`] runs past it), or ([`Want::Cold`]) it has a record.
     ///
     /// Must be called within the daemon's runtime (from a task, or from a
-    /// blocking thread of it). Called from a run's thread, that run waits on
+    /// blocking thread of it): the run is spawned on it. Called from a run's thread, that run waits on
     /// the one handed back from now on, so it must [`Run::wait`] on it.
     pub fn start(
         self: &Arc<Self>,
@@ -428,15 +433,11 @@ impl Runs {
                     let found = registry.source(&key.provider, &key.source)?;
                     slot.queue(registry, cache, false);
                     let queued = slot.queued.take().expect("queued just now");
-                    let runtime = tokio::runtime::Handle::try_current().expect(
-                        "a run needs the daemon's runtime: start it from a task or a blocking thread",
-                    );
                     let replaced = std::mem::replace(&mut slot.running, Arc::clone(&queued.state));
                     let asked = table.ask(key);
                     drop(table);
                     replaced.finish(End::Moved(Arc::clone(&queued.state)));
                     self.launch(
-                        &runtime,
                         key,
                         Arc::clone(&queued.state),
                         found,
@@ -461,8 +462,6 @@ impl Runs {
             return None;
         }
         let found = registry.source(provider, source)?;
-        let runtime = tokio::runtime::Handle::try_current()
-            .expect("a run needs the daemon's runtime: start it from a task or a blocking thread");
         let state = Arc::new(State::default());
         table.slots.insert(
             key.clone(),
@@ -476,7 +475,7 @@ impl Runs {
         // waiting on it.
         let asked = table.ask(key);
         drop(table);
-        self.launch(&runtime, key, Arc::clone(&state), found, registry, cache);
+        self.launch(key, Arc::clone(&state), found, registry, cache);
         Some(self.run(key, state, asked))
     }
 
@@ -544,7 +543,6 @@ impl Runs {
     /// waits on it for ever.
     fn launch(
         self: &Arc<Self>,
-        runtime: &tokio::runtime::Handle,
         key: &Key,
         state: Arc<State>,
         source: Arc<dyn Source>,
@@ -561,7 +559,7 @@ impl Runs {
             state,
             done: false,
         };
-        runtime.spawn(async move {
+        tokio::spawn(async move {
             let timeout = source.metadata().timeout;
             let dir = crate::query::instance_dir(settle.key.path.as_deref());
             // The run reads through the registry it began under, which its
@@ -669,14 +667,13 @@ impl Runs {
             (None, None) => End::Done(Outcome::Dropped),
             (None, Some(result)) => End::Done(record(registry, cache, key, result)),
         };
-        // What runs next: nothing once the daemon is stopping (or off its
-        // runtime), nothing the failback holds back unless it was forced,
+        // What runs next: nothing once the daemon is stopping (the run's task
+        // dropped unfinished; a finished one settles on the runtime), nothing
+        // the failback holds back unless it was forced,
         // nothing whose Source the registry it runs under does not have.
-        let runtime = tokio::runtime::Handle::try_current().ok();
         let next = slot.queued.take().and_then(|queued| {
             let (provider, source, root) = (&key.provider, &key.source, key.path.as_deref());
             let runs = !stopping
-                && runtime.is_some()
                 && (queued.forced
                     || !in_failback_backoff(&queued.registry, provider, source, root));
             match queued.registry.source(provider, source).filter(|_| runs) {
@@ -698,15 +695,8 @@ impl Runs {
         for dropped in ended {
             dropped.finish(End::Done(Outcome::Dropped));
         }
-        if let (Some((queued, found)), Some(runtime)) = (next, runtime) {
-            self.launch(
-                &runtime,
-                key,
-                queued.state,
-                found,
-                &queued.registry,
-                &queued.cache,
-            );
+        if let Some((queued, found)) = next {
+            self.launch(key, queued.state, found, &queued.registry, &queued.cache);
         }
     }
 }
@@ -833,6 +823,7 @@ mod tests {
     use crate::provider::{
         FailbackConfig, FieldSchema, InvalidationStrategy, SourceMetadata, Value,
     };
+    use std::sync::Condvar;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
@@ -1458,5 +1449,58 @@ mod tests {
         assert_eq!(waiter.join().unwrap(), Ok(Outcome::Dropped));
         assert!(f.registry.runs().in_flight().is_empty());
         f.gate.open();
+    }
+
+    /// `run.wait()` on a blocking thread of the runtime, as a Source's line
+    /// waits.
+    fn wait_blocking(run: &Run) -> tokio::task::JoinHandle<Result<Outcome, Cycle>> {
+        let run = run.clone();
+        tokio::task::spawn_blocking(move || run.wait())
+    }
+
+    /// A blocking waiter (a Source's line) and a task (the server) on the
+    /// same run are both let go when it ends, with the same outcome.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_blocking_and_an_async_waiter_on_one_run_both_end() {
+        let f = fixture(3, Duration::from_secs(60));
+        let run = f.start(Want::Cold).unwrap();
+        f.until_runs(1).await;
+        let blocking = wait_blocking(&run);
+        let task = tokio::spawn({
+            let run = run.clone();
+            async move { run.outcome().await }
+        });
+        f.gate.open();
+        assert_eq!(blocking.await.unwrap(), Ok(Outcome::Stored));
+        assert_eq!(task.await.unwrap(), Outcome::Stored);
+        assert_eq!(f.runs.load(Ordering::SeqCst), 1);
+    }
+
+    /// A blocking waiter whose run a reload overtakes follows it as a task
+    /// does: to the run that replaces it (rescheduled), or to Dropped (gone).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_blocking_waiter_follows_its_run_through_a_reload() {
+        let f = fixture(3, Duration::from_secs(60));
+        let run = f.start(Want::Cold).unwrap();
+        f.until_runs(1).await;
+        let waiter = wait_blocking(&run);
+        f.registry
+            .runs()
+            .supersede(&f.key, Overtake::Again, &f.registry, &f.cache);
+        f.gate.open();
+        assert_eq!(waiter.await.unwrap(), Ok(Outcome::Stored));
+        assert_eq!(f.stored(), Some(Value::Int(2)), "the run that replaced it");
+
+        let f = fixture(3, Duration::from_secs(60));
+        let run = f.start(Want::Cold).unwrap();
+        f.until_runs(1).await;
+        let waiter = wait_blocking(&run);
+        let after = f.reloaded();
+        f.registry
+            .runs()
+            .supersede(&f.key, Overtake::Gone, &after, &f.cache);
+        f.gate.open();
+        assert_eq!(waiter.await.unwrap(), Ok(Outcome::Dropped));
+        assert_eq!(f.stored(), None);
     }
 }
