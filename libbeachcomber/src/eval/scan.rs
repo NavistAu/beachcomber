@@ -349,3 +349,24 @@ pub fn used_names(line: &str) -> HashMap<String, Use> {
     }
     found
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_set_assigns_only_with_a_lone_equals_outside_strings_and_brackets() {
+        assert!(assigns("x = 1"));
+        assert!(assigns("x=1"));
+        assert!(assigns("x = a == b"));
+        // A block set, and the comparisons that are not assignments.
+        assert!(!assigns("x"));
+        assert!(!assigns("x | upper"));
+        assert!(!assigns("x | f(a=1)"));
+        assert!(!assigns("x == 1"));
+        assert!(!assigns("x != 1 and y <= 2 and z >= 3"));
+        // An equals inside a string, escapes included.
+        assert!(!assigns(r#"x | f("a=b")"#));
+        assert!(!assigns(r#"x | f("a\"=b")"#));
+    }
+}

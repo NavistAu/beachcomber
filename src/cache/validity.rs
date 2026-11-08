@@ -343,6 +343,19 @@ mod tests {
     }
 
     #[test]
+    fn tree_stamps_are_equal_only_when_the_events_and_the_count_both_match() {
+        let events = Arc::new(TreeEvents::default());
+        let stamp = |events: &Arc<TreeEvents>, changes| TreeStamp {
+            events: events.clone(),
+            changes,
+        };
+        assert_eq!(stamp(&events, 1), stamp(&events, 1));
+        assert_ne!(stamp(&events, 1), stamp(&events, 2));
+        let other = Arc::new(TreeEvents::default());
+        assert_ne!(stamp(&events, 1), stamp(&other, 1));
+    }
+
+    #[test]
     fn with_no_scheduler_there_is_nothing_to_stamp() {
         let cache = Cache::new();
         cache.tree_watched("g", Some("/r"), "s");

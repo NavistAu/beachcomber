@@ -483,6 +483,25 @@ mod tests {
         assert!(called("{{ sources.b.x }}").is_err());
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_merged_record_is_as_old_as_the_oldest_it_took_from() {
+        let cache = Cache::new();
+        let put = |path: Option<&str>, x: i64| {
+            let fields = std::collections::HashMap::from([(
+                "x".to_string(),
+                crate::provider::Value::Int(x),
+            )]);
+            cache.put_source("p", path, "s", fields, crate::cache::Schedule::default());
+        };
+        put(Some("/near"), 1);
+        tokio::time::advance(std::time::Duration::from_secs(5)).await;
+        put(None, 2);
+        let chain = [Some("/near".to_string()), None];
+        let record = stored(&cache, "p", "s", &chain).expect("both are stored");
+        assert_eq!(record.value, serde_json::json!({"x": 1}));
+        assert_eq!(record.fresh.entry.as_deref(), Some("/near"));
+    }
+
     #[test]
     fn deeper_records_win_and_objects_merge() {
         let mut base = serde_json::json!({"a": 1, "o": {"x": 1, "y": 1}});

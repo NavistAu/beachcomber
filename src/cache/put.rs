@@ -924,6 +924,18 @@ mod tests {
         assert_eq!(read.fields["o"], tools(&[]));
     }
 
+    /// An empty object put is a value of its own: it is a record, not a
+    /// subtree to walk.
+    #[test]
+    fn a_put_of_an_empty_object_is_recorded_as_a_leaf() {
+        let cache = Cache::new();
+        cache
+            .write_static("git", Some("/repo"), PUT_SOURCE, "o", tools(&[]), Some(30))
+            .unwrap();
+        let read = read_tools(&cache);
+        assert_eq!(read.records["o"].expected_interval_secs, Some(30));
+    }
+
     /// Removing a leaf below an address keeps the address while it holds
     /// anything, and drops it once nothing is left.
     #[test]

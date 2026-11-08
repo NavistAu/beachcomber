@@ -331,3 +331,31 @@ fn a_daemon_out_of_descriptors_logs_once_and_recovers() {
     crate::common::daemon::stop(&mut child);
     assert!(recovered, "it serves again once descriptors are free");
 }
+
+/// A daemon with no env file loads no variables and says nothing of it.
+#[test]
+fn a_daemon_without_an_env_file_does_not_log_loading_one() {
+    let socket = IsolatedSocket::new();
+    let home = socket.dir.path().join("home");
+    let xdg = socket.dir.path().join("xdg");
+    std::fs::create_dir_all(&home).unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_comb"));
+    isolate(&mut cmd, &home, &xdg, &socket.path)
+        .env("RUST_LOG", "info")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .args(["daemon", "--exit-with-parent", "--socket"])
+        .arg(&socket.path);
+    let mut child = launch(&mut cmd, None, spawn::READY_TIMEOUT).expect("the daemon serves");
+
+    let log = home.join(".local/state/beachcomber/daemon.log");
+    let text = || std::fs::read_to_string(&log).unwrap_or_default();
+    // The line the env file's would precede.
+    let listening =
+        crate::common::poll::poll_for(Duration::from_secs(5), Duration::from_millis(5), || {
+            text().contains("Listening on")
+        });
+    crate::common::daemon::stop(&mut child);
+    assert!(listening, "the daemon logged: {}", text());
+    assert!(!text().contains("environment variables"), "{}", text());
+}

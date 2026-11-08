@@ -1442,6 +1442,19 @@ fn the_watchdog_keys_are_whole_seconds_of_at_least_one() {
 }
 
 #[test]
+fn an_unreadable_watchdog_interval_is_not_also_reported_as_missing() {
+    let errors =
+        in_memory("[daemon]\nwatchdog_interval = \"soon\"\nwatchdog_threshold = \"90s\"\n")
+            .errors();
+    assert!(
+        errors
+            .iter()
+            .all(|e| !e.contains("is set without watchdog_interval")),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn a_bad_plugin_path_does_not_hide_the_sources_errors() {
     let config = Config::from_toml(
         "[daemon.plugin]\npath = [\"~/p\"]\n\

@@ -244,6 +244,24 @@ fn human_preset_truncates_value_to_meet_total_cap() {
 }
 
 #[test]
+fn a_long_value_takes_the_whole_cap_the_other_columns_leave() {
+    let mut rows = sample_rows();
+    rows[0].value = serde_json::json!("a".repeat(300));
+    let opts = RenderOpts {
+        is_tty: true,
+        no_color: true,
+        max_width: Some(120),
+        no_trunc: false,
+        ascii: true,
+        depth: None,
+    };
+    let out = render_preset(&status_preset("human"), &rows, &opts);
+    let widest = out.lines().map(libbeachcomber::term::width).max().unwrap();
+    // The cap, less the two columns PATH's floor leaves over.
+    assert_eq!(widest, 118, "{out}");
+}
+
+#[test]
 fn human_preset_colours_the_age_of_a_failing_row() {
     use beachcomber::cache::FailureSnapshot;
     let rows = vec![CacheRow {

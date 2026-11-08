@@ -298,6 +298,21 @@ fn a_watch_goes_when_its_instance_decays_and_a_read_brings_it_back() {
         || watches(&sock),
         Vec::is_empty,
     );
+    // The providers listing puts the decay on that provider alone.
+    let listing = ask(&sock, json!({"op": "introspect", "subject": "providers"}));
+    let in_backoff: Vec<(&str, &str)> = listing["data"]["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| !p["in_backoff"].is_null())
+        .map(|p| {
+            (
+                p["name"].as_str().unwrap(),
+                p["in_backoff"]["stage"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(in_backoff, [("w", "Decay1")], "{listing}");
 
     std::fs::write(&file, "2").unwrap();
     assert_eq!(

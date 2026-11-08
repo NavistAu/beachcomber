@@ -1835,6 +1835,31 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[test]
+    fn a_snapshot_counts_the_polls_that_fit_in_the_time_spent_in_the_step() {
+        use lifecycle::*;
+        let key = Key {
+            provider: "git".into(),
+            path: Some("/r".into()),
+            source: "main".into(),
+            node: String::new(),
+        };
+        let config = SourceLifecycleConfig {
+            strategy_kind: StrategyKind::Poll,
+            poll_interval: Some(Duration::from_secs(60)),
+            poll_count: 12,
+            decay: 1,
+            ttl: None,
+        };
+        let t0 = Instant::now();
+        let mut registry = LifecycleRegistry::new();
+        registry.on_demand(key.clone(), config, t0);
+        let entry = registry.iter().next().unwrap().1;
+        let at = |secs| snapshot_entry(&key, entry, t0 + Duration::from_secs(secs));
+        assert_eq!(at(0).polls_elapsed, 0);
+        assert_eq!(at(150).polls_elapsed, 2);
+    }
+
+    #[test]
     fn a_failure_keeps_the_first_line_of_its_message_cut_to_length() {
         let mut state = FailureState::new(3, Duration::from_secs(60));
         state.record_failure("p.s: data: `false`: exit status: 1\nCaused by: more");

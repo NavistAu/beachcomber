@@ -1806,6 +1806,31 @@ result.x = "{{ data }}"
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_root_error_that_has_not_lapsed_survives_the_sweep() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let reg = registry_from(
+            "[daemon.providers.demo.sources.s]\nroot = \"{{ exec('false') }}\"\ndata = \"{{ 1 }}\"\nresult.x = \"{{ data }}\"\n",
+        );
+        let ask = |name: &str| {
+            let d = base.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            reg.instance_root("demo", "s", d.to_str().unwrap())
+        };
+
+        assert!(ask("a").is_err());
+        tokio::time::advance(ROOT_RETRY_TTL / 2).await;
+        assert!(ask("b").is_err());
+        tokio::time::advance(ROOT_RETRY_TTL / 2).await;
+        assert!(ask("c").is_err());
+        assert_eq!(
+            reg.root_errors.len(),
+            2,
+            "a's lapsed and went; b's has half its time left and stays, with c's"
+        );
+    }
+
     #[test]
     fn the_runs_survive_a_reload() {
         let src =

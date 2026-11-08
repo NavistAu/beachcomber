@@ -589,6 +589,17 @@ mod tests {
         assert_eq!(reg.poll_interval(&key), Some(Duration::from_secs(60)));
     }
 
+    #[test]
+    fn remove_forgets_the_key_and_only_that_key() {
+        let mut reg = LifecycleRegistry::new();
+        let (gone, kept) = (test_key("git", "/a"), test_key("git", "/b"));
+        reg.on_demand(gone.clone(), test_config(), Instant::now());
+        reg.on_demand(kept.clone(), test_config(), Instant::now());
+        reg.remove(&gone);
+        assert_eq!(reg.state(&gone), None);
+        assert_eq!(reg.state(&kept), Some(&LifecycleState::Active));
+    }
+
     /// Scenario: Warm read resets Active window.
     #[test]
     fn on_demand_on_active_resets_the_window() {

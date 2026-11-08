@@ -330,6 +330,13 @@ mod tests {
             .find(|p| p.pid == me)
             .expect("own process appears in uid-owned listing");
         assert!(!this.argv.is_empty(), "argv readable for own process");
+        // Split at the NULs and nothing else (a split on every other byte
+        // leaves NUL-only "arguments").
+        assert!(
+            this.argv.iter().all(|a| !a.is_empty() && !a.contains('\0')),
+            "argv is the process's arguments, got {:?}",
+            this.argv
+        );
         assert!(this.ppid > 0, "ppid populated");
         // Started moments ago as part of this test run.
         assert!(this.age_secs < 3600, "age plausible, got {}", this.age_secs);
