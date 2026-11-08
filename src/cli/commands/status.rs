@@ -266,6 +266,14 @@ pub fn run_status(
         crate::cli::report::error("--sort", e);
         return Outcome::Error;
     }
+    let cols = terminal_size::terminal_size().map(|(w, _)| w.0 as usize);
+    let resolved_max_width = match resolve_max_width(max_width_arg, cols) {
+        Ok(width) => width,
+        Err(e) => {
+            crate::cli::report::error("--max-width", e);
+            return Outcome::Error;
+        }
+    };
     let socket_path = match crate::cli::connect::connect_as_is(config) {
         Ok(socket) => socket,
         Err(outcome) => return outcome,
@@ -283,9 +291,6 @@ pub fn run_status(
 
     let is_tty = std::io::stdout().is_terminal();
     let Style { color, ascii } = style;
-
-    let cols = terminal_size::terminal_size().map(|(w, _)| w.0 as usize);
-    let resolved_max_width = resolve_max_width(max_width_arg, cols);
 
     let opts = RenderOpts {
         is_tty,

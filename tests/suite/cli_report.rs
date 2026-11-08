@@ -37,6 +37,10 @@ fn every_failure_is_an_error_line_naming_its_subject() {
         ),
         (&["status", "--sort", "nosuchcolumn"], "error: --sort: "),
         (
+            &["status", "--max-width", "bogus"],
+            "error: --max-width: \"bogus\" is not a width: use a whole number or 'auto'\n",
+        ),
+        (
             &["status", "--tree", "-f", "csv"],
             "error: --tree: works with the human, table and json formats, not csv\n",
         ),

@@ -896,12 +896,13 @@ fn resolve_max_width_cases() {
 
     for case in cases {
         assert_eq!(
-            resolve_max_width(case.arg, case.terminal),
+            resolve_max_width(case.arg, case.terminal).unwrap(),
             case.expected,
             "case: {}",
             case.name
         );
     }
+    assert!(resolve_max_width(Some("bogus"), Some(200)).is_err());
 }
 
 // ---------------------------------------------------------------------------

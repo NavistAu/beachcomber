@@ -292,18 +292,19 @@ pub fn format_poll_cell(
 ///
 /// - `None` arg → use `terminal_cols` if available, else the default (120).
 /// - `Some("auto")` → use `terminal_cols` if available, else the default.
-/// - `Some(n)` → parse `n` as a `usize`, falling back to the default on error.
+/// - `Some(n)` → parse `n` as a `usize`; anything else is an error.
 ///
 /// The returned value is the cap for the **entire rendered row** (all columns +
 /// padding). The renderer shrinks the VALUE and PATH columns as needed to stay
 /// within this budget — VALUE first in line, PATH taking what is left — and
 /// keeps the other five columns at their natural widths.
-pub fn resolve_max_width(arg: Option<&str>, terminal_cols: Option<usize>) -> usize {
+pub fn resolve_max_width(arg: Option<&str>, terminal_cols: Option<usize>) -> Result<usize, String> {
     const DEFAULT: usize = 120;
     match arg {
-        None => terminal_cols.unwrap_or(DEFAULT),
-        Some("auto") => terminal_cols.unwrap_or(DEFAULT),
-        Some(s) => s.parse().unwrap_or(DEFAULT),
+        None | Some("auto") => Ok(terminal_cols.unwrap_or(DEFAULT)),
+        Some(s) => s
+            .parse()
+            .map_err(|_| format!("{s:?} is not a width: use a whole number or 'auto'")),
     }
 }
 

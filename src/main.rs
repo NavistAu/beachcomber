@@ -179,7 +179,7 @@ enum Commands {
         /// Disable value truncation
         #[arg(long)]
         no_trunc: bool,
-        /// Maximum width for VALUE in human format: integer or 'auto' (terminal width). Default 120.
+        /// Maximum width for VALUE in human format: integer or 'auto' (the default): the terminal width, or 120 when stdout is not a terminal.
         #[arg(long)]
         max_width: Option<String>,
         /// Object destructuring depth: 0 unlimited, 1 top-level fields only, 2 one level down.
