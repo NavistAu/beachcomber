@@ -327,6 +327,16 @@ fn conda_env_is_absent_when_unset() {
     assert_absent(&d, &cwd, "conda.env");
 }
 
+#[test]
+fn conda_env_is_absent_when_set_but_empty() {
+    let (d, cwd) = daemon();
+    comb(&d, &cwd, &[("CONDA_DEFAULT_ENV", "")])
+        .args(["get", "-f", "json", "conda.env"])
+        .assert()
+        .success()
+        .stdout("null\n");
+}
+
 // ── aws.profile ───────────────────────────────────────────────────────────────
 
 #[test]
