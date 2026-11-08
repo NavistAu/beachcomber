@@ -57,16 +57,18 @@ pub(crate) const MAX_EXEC_STDOUT: usize = 1 << 20;
 const POLL_INTERVAL_MIN: Duration = Duration::from_millis(1);
 const POLL_INTERVAL_MAX: Duration = Duration::from_millis(10);
 
-/// How much of stderr a failure message keeps, in bytes (may split a
-/// multi-byte UTF-8 sequence at the boundary; decoded lossily).
+/// How much of stderr a failure message keeps, in bytes: the *tail*, since a
+/// command's error is usually its last line. The cut moves forward to a UTF-8
+/// character boundary, so the message may keep slightly fewer bytes.
 const STDERR_ERROR_BYTES: usize = 512;
 
-/// How much of stderr the reader thread *retains* while draining — a small
-/// multiple of [`STDERR_ERROR_BYTES`], generous enough that the final
-/// truncation in [`failure_message`] is never starved of material, but
-/// bounded so a chatty child's stderr can't grow this buffer unboundedly.
-/// The reader keeps reading past this limit (a child that fills its stderr
-/// pipe and blocks on it would never finish), it just stops appending.
+/// How much of stderr the reader thread *retains* while draining — the last
+/// this-many bytes, a small multiple of [`STDERR_ERROR_BYTES`], generous
+/// enough that the final truncation in [`failure_message`] is never starved
+/// of material, but bounded so a chatty child's stderr can't grow this buffer
+/// unboundedly. The reader keeps reading past this limit (a child that fills
+/// its stderr pipe and blocks on it would never finish), discarding the
+/// oldest bytes as new ones arrive.
 const STDERR_RETENTION_BYTES: usize = STDERR_ERROR_BYTES * 4;
 
 /// Bound on the final stdout/stderr handoff after the process group has
@@ -108,8 +110,7 @@ enum Outcome {
 /// On success, stdout is decoded lossy-UTF-8 with at most one trailing `\n`
 /// (and a preceding `\r`, if present) stripped. On failure, the error names
 /// the command (`req.label`, else `req.cmd`), what happened (a non-zero exit status, a timeout, an oversized
-/// stdout, or the spawn `io::Error`), and stderr truncated to
-/// [`STDERR_ERROR_BYTES`].
+/// stdout, or the spawn `io::Error`), and [`STDERR_ERROR_BYTES`] of stderr.
 pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
     let name = req.label.unwrap_or(req.cmd);
     let mut command = Command::new(req.cmd);
@@ -319,9 +320,9 @@ where
                 Ok(0) => break,
                 Ok(n) => {
                     total += n;
-                    if buf.len() < retain_limit {
-                        let keep = (retain_limit - buf.len()).min(n);
-                        buf.extend_from_slice(&chunk[..keep]);
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.len() > retain_limit {
+                        buf.drain(..buf.len() - retain_limit);
                     }
                     if let Some(capped) = &hard_cap
                         && total > retain_limit
@@ -364,11 +365,11 @@ fn failure_message(cmd: &str, reason: String, stderr: &[u8]) -> String {
 }
 
 fn truncate_lossy(bytes: &[u8], limit: usize) -> String {
-    let slice = if bytes.len() > limit {
-        &bytes[..limit]
-    } else {
-        bytes
-    };
+    let mut slice = &bytes[bytes.len().saturating_sub(limit)..];
+    // Don't start mid-character: skip UTF-8 continuation bytes.
+    while slice.len() < bytes.len() && slice.first().is_some_and(|b| b & 0xC0 == 0x80) {
+        slice = &slice[1..];
+    }
     String::from_utf8_lossy(slice).into_owned()
 }
 
@@ -529,6 +530,26 @@ mod tests {
             "should carry the exit status, without doubled wording: {err}"
         );
         assert!(err.contains("boom"), "should carry stderr: {err}");
+    }
+
+    #[test]
+    fn long_stderr_error_keeps_the_tail() {
+        let req = ExecRequest {
+            cmd: "sh",
+            label: None,
+            args: &[
+                "-c".to_string(),
+                "head -c 3000 /dev/zero | tr '\\0' x >&2; echo; echo FINAL-MARKER >&2; exit 1"
+                    .to_string(),
+            ],
+            stdin: None,
+            timeout: Duration::from_millis(5000),
+            env: &test_env(),
+            cwd: None,
+        };
+        let err = run(&req).unwrap_err();
+        assert!(err.contains("FINAL-MARKER"), "tail must survive: {err}");
+        assert!(err.len() < STDERR_ERROR_BYTES + 100, "bounded: {err}");
     }
 
     #[test]
