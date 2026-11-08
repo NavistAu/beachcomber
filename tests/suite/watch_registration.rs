@@ -179,12 +179,14 @@ fn a_watch_that_fails_is_shown_and_tried_again_on_a_later_read() {
     );
 
     unlock();
-    // A read asks again once the failure is `WATCH_RETRY_INTERVAL` old.
+    // A read asks again once the failure is `WATCH_RETRY_INTERVAL` old: the
+    // daemon's clock is moved on by that much rather than waited out.
+    d.advance(WATCH_RETRY_INTERVAL);
     poll_until(
         "introspect watches",
         "the watch Active after a later read",
-        WATCH_RETRY_INTERVAL + Duration::from_secs(10),
-        Duration::from_millis(100),
+        Duration::from_secs(10),
+        Duration::from_millis(5),
         || {
             ask(&sock, get.clone());
             watches(&sock)

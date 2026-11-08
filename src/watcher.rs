@@ -3,8 +3,9 @@ use notify::{Config, Event, EventKind, PollWatcher, RecommendedWatcher, Recursiv
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tracing::{debug, warn};
 
 /// The kernel's file watches, behind [`notify`]. Registering one can take
@@ -356,7 +357,8 @@ struct Table {
     /// Every path asked for: the ask that last asked for it, and where it
     /// stands. An ask the worker settles is written only while it is still
     /// the path's latest.
-    /// When it was asked for rides along, for `introspect watches`.
+    /// When it was asked for rides along, for `introspect watches`, on the
+    /// runtime's clock, which a test can move on.
     paths: BTreeMap<PathBuf, (u64, WatchState, Instant)>,
     asks: u64,
 }
