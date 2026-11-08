@@ -102,10 +102,6 @@ pub fn build_pure_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
     jinja.set_formatter(|out, state, value| {
         if value.is_none() {
             Ok(())
-        } else if value.kind() == minijinja::value::ValueKind::Bool {
-            // minijinja 2.24 prints `True`/`False`; a rendered bool stays JSON's `true`/`false`.
-            out.write_str(if value.is_true() { "true" } else { "false" })?;
-            Ok(())
         } else {
             minijinja::escape_formatter(out, state, value)
         }
