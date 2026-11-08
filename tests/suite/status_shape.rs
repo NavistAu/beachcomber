@@ -3346,6 +3346,20 @@ fn memo_rows_are_facet_rows() {
     assert!(row["age_ms"].is_u64(), "{row}");
 }
 
+/// `failure.last_error` is in a `-f` template's context, as in csv and sh.
+#[test]
+fn a_template_reads_the_failures_last_error() {
+    use beachcomber::cache::FailureSnapshot;
+    let mut row = sample_lifecycle_row();
+    row.failure = Some(FailureSnapshot {
+        consecutive_failures: 2,
+        suppressed_until_unix_ms: None,
+        last_error: Some("exit status: 128".into()),
+    });
+    let out = render_status_template("{{ failure.last_error }}", &[row]);
+    assert_eq!(out.trim_end(), "exit status: 128");
+}
+
 /// A failing Source's row with nothing stored says why where its value
 /// would be, in the tables, and in its own column and variable elsewhere.
 #[test]

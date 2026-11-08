@@ -597,6 +597,9 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
             "consecutive_failures".into(),
             serde_json::json!(f.consecutive_failures),
         );
+        if let Some(e) = &f.last_error {
+            fobj.insert("last_error".into(), serde_json::json!(e));
+        }
         if let Some(su) = f.suppressed_until_unix_ms {
             fobj.insert("suppressed_until_unix_ms".into(), serde_json::json!(su));
         }
