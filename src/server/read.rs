@@ -3,7 +3,7 @@
 use super::Ctx;
 use super::answer::{Answered, TemplateHalf, answer, resolve_halves};
 use super::cache_facet::cache_facet_response;
-use crate::cache::{Cache, Layers, MergedRead, RecordState};
+use crate::cache::{Cache, Layers, MergedRead};
 use crate::protocol::{Response, Wait};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::source_call::instance_key;
@@ -197,19 +197,17 @@ pub(super) fn start_for_read(
     read: Read,
 ) -> Option<Pending> {
     let source = registry.source(provider, source_name)?;
-    let budget = Some(source.metadata().budget);
-    let (want, until) = if read.force {
-        (Want::Forced, read.until(None))
+    let want = if read.force {
+        Want::Forced
     } else {
         // A valid instance is the common read: answered before anything
         // shared is locked.
-        match cache.record_state(provider, root, source_name) {
-            RecordState::Valid => return None,
-            RecordState::Cold => (Want::Cold, read.until(None)),
-            RecordState::Invalid => (Want::Changed, read.until(budget)),
-            RecordState::Stale => (Want::Any, read.until(budget)),
-        }
+        Want::for_read(cache.record_state(provider, root, source_name))?
     };
+    // A record it has is waited for up to the Source's budget; a cold one,
+    // or a forced run, to the run's end.
+    let until =
+        read.until(matches!(want, Want::Changed | Want::Any).then(|| source.metadata().budget));
     let key = instance_key(provider, source_name, root);
     let run = registry.runs().start(want, registry, cache, &key)?;
     Some(Pending { run, until })

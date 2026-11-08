@@ -18,7 +18,7 @@
 //! A Source reached again while it is running, through however many others, is
 //! a cycle: the error `sources: <p>.<s> calls itself`.
 
-use crate::cache::{Cache, RecordFreshness, RecordState};
+use crate::cache::{Cache, RecordFreshness};
 use crate::provider::Value;
 use crate::provider::registry::{CalleeMap, ProviderRegistry};
 use crate::run::{Cycle, Outcome, Want};
@@ -250,11 +250,8 @@ fn warm_called(
         let root = root.as_deref();
         // A valid instance is the common call: answered before anything
         // shared is locked.
-        let want = match cache.record_state(provider, root, source) {
-            RecordState::Valid => continue,
-            RecordState::Cold => Want::Cold,
-            RecordState::Invalid => Want::Changed,
-            RecordState::Stale => Want::Any,
+        let Some(want) = Want::for_read(cache.record_state(provider, root, source)) else {
+            continue;
         };
         let key = instance_key(provider, source, root);
         let Some(run) = registry.runs().start(want, registry, cache, &key) else {

@@ -25,7 +25,7 @@
 //! before it is read: the run keeps that account ([`reads_here`]) for the
 //! lines of its Source to fill.
 
-use crate::cache::{Cache, Stamped, Validity};
+use crate::cache::{Cache, RecordState, Stamped, Validity};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::source_call::{in_failback_backoff, ran};
 use crate::provider::{Source, SourceResult};
@@ -65,6 +65,20 @@ pub enum Want {
     Fresh,
     /// [`Self::Fresh`], past the failback backoff: `--force`.
     Forced,
+}
+
+impl Want {
+    /// What a read that finds an instance's record in `state` needs of a run:
+    /// `None` for a valid record. The one table every read uses, a `get`'s and
+    /// a Source's call alike.
+    pub fn for_read(state: RecordState) -> Option<Self> {
+        match state {
+            RecordState::Valid => None,
+            RecordState::Cold => Some(Self::Cold),
+            RecordState::Invalid => Some(Self::Changed),
+            RecordState::Stale => Some(Self::Any),
+        }
+    }
 }
 
 /// How a run ended.
