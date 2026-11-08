@@ -31,7 +31,10 @@ impl Cache {
             // A `:cache` entry holds, beside the `_` prototypes a user wrote,
             // the keys the daemon stored for rows already listed under their
             // own namespace: only the prototypes are rows of their own.
-            let is_cache_facet = provider.ends_with(":cache");
+            let is_cache_facet = matches!(
+                libbeachcomber::key::split_facet(&provider),
+                Ok((_, Some(Facet::Cache)))
+            );
             for (source_name, src) in &ce.sources {
                 if is_cache_facet && !is_static_label(source_name) {
                     continue;

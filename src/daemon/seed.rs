@@ -76,7 +76,9 @@ impl Seed {
         }
         let mut found = std::collections::BTreeSet::new();
         for (namespace, writes) in &self.writes {
-            let Some(provider) = namespace.strip_suffix(":template") else {
+            let Ok((provider, Some(libbeachcomber::key::Facet::Template))) =
+                libbeachcomber::key::split_facet(namespace)
+            else {
                 continue;
             };
             for (_, tree) in writes {
@@ -349,7 +351,7 @@ impl ClientWorld {
 /// The address of `provider`'s macro library `name`: `<p>:macro.<name>`.
 fn library_address(provider: &str, name: &str) -> String {
     libbeachcomber::key::join(
-        &format!("{provider}:macro"),
+        &crate::cache::facet_of(provider, libbeachcomber::key::Facet::Macro),
         &libbeachcomber::key::quote(name),
     )
 }
@@ -391,7 +393,10 @@ fn plan_macros(layers: &[Layer<'_>], world: &ClientWorld, plan: &mut Seed) {
                 let value = Value::from_json(&serde_json::Value::Object(written))
                     .expect("a library is a string");
                 plan.writes
-                    .entry(format!("{provider}:macro"))
+                    .entry(crate::cache::facet_of(
+                        provider,
+                        libbeachcomber::key::Facet::Macro,
+                    ))
                     .or_default()
                     .push((label.clone(), value));
             }
@@ -453,7 +458,10 @@ fn plan_templates(
                     }
                     let value = Value::from_json(&tree).expect("a template tree has no null");
                     plan.writes
-                        .entry(format!("{name}:template"))
+                        .entry(crate::cache::facet_of(
+                            name,
+                            libbeachcomber::key::Facet::Template,
+                        ))
                         .or_default()
                         .push((label.clone(), value));
                 }
@@ -597,7 +605,10 @@ mod tests {
     /// The libraries each layer declares, as its writes to `<p>:macro`.
     fn macro_writes(plan: &Seed, provider: &str) -> Vec<(String, serde_json::Value)> {
         plan.writes
-            .get(&format!("{provider}:macro"))
+            .get(&crate::cache::facet_of(
+                provider,
+                libbeachcomber::key::Facet::Macro,
+            ))
             .into_iter()
             .flatten()
             .map(|(label, value)| (label.clone(), serde_json::to_value(value).unwrap()))

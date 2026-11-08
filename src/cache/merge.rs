@@ -544,7 +544,7 @@ impl Cache {
         visited: &[Instance],
     ) -> Vec<(String, LayerRecord)> {
         let mut out = Vec::new();
-        let memo = memo_facet_of(namespace);
+        let memo = facet_of(namespace, Facet::Memo);
         for link in crate::query::read_chain(requested, &[]) {
             if let Some(entry) = self.entries.get(&make_cache_key(&memo, link.as_deref())) {
                 let values = entry.sources.get(MEMO_SOURCE).map(|src| &src.fields);
@@ -567,7 +567,7 @@ impl Cache {
                 }
             }
         }
-        let template = format!("{namespace}:template");
+        let template = facet_of(namespace, Facet::Template);
         for link in crate::query::read_chain(requested, &[]) {
             if let Some(entry) = self
                 .entries

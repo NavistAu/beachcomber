@@ -116,7 +116,7 @@ impl Cache {
         {
             let mut entry = self
                 .entries
-                .entry(make_cache_key(&memo_facet_of(provider), path))
+                .entry(make_cache_key(&facet_of(provider, Facet::Memo), path))
                 .or_insert_with(|| CacheEntry::empty(now));
             entry.memos.insert(
                 field.to_string(),
@@ -137,7 +137,7 @@ impl Cache {
         {
             let mut entry = self
                 .entries
-                .entry(make_cache_key(&cache_facet_of(provider), path))
+                .entry(make_cache_key(&facet_of(provider, Facet::Cache), path))
                 .or_insert_with(|| CacheEntry::empty(now));
             let src = entry
                 .sources
@@ -167,7 +167,7 @@ impl Cache {
             if let dashmap::Entry::Occupied(mut listed) = listed
                 && !self
                     .entries
-                    .contains_key(&make_cache_key(&memo_facet_of(provider), path))
+                    .contains_key(&make_cache_key(&facet_of(provider, Facet::Memo), path))
             {
                 listed.get_mut().remove(&path.map(str::to_string));
                 if listed.get().is_empty() {
@@ -195,7 +195,7 @@ impl Cache {
         let mut gone: Vec<String> = Vec::new();
         if let dashmap::Entry::Occupied(mut occupied) = self
             .entries
-            .entry(make_cache_key(&memo_facet_of(provider), path))
+            .entry(make_cache_key(&facet_of(provider, Facet::Memo), path))
         {
             let entry = occupied.get_mut();
             gone = entry.memos.keys().filter(|a| which(a)).cloned().collect();
@@ -219,7 +219,7 @@ impl Cache {
         }
         if let dashmap::Entry::Occupied(mut occupied) = self
             .entries
-            .entry(make_cache_key(&cache_facet_of(provider), path))
+            .entry(make_cache_key(&facet_of(provider, Facet::Cache), path))
         {
             let entry = occupied.get_mut();
             if let Some(src) = entry.sources.get_mut(MEMO_SOURCE) {
@@ -256,7 +256,7 @@ impl Cache {
         if !self.has_memos(provider) {
             return None;
         }
-        let memo_facet = memo_facet_of(provider);
+        let memo_facet = facet_of(provider, Facet::Memo);
         for link in crate::query::path_chain(chain_from) {
             let (stamp, data) = {
                 let Some(entry) = self
@@ -277,7 +277,10 @@ impl Cache {
             };
             let keys = self
                 .entries
-                .get(&make_cache_key(&cache_facet_of(provider), link.as_deref()))
+                .get(&make_cache_key(
+                    &facet_of(provider, Facet::Cache),
+                    link.as_deref(),
+                ))
                 .and_then(|entry| {
                     match crate::provider::lookup_path(
                         &entry.sources.get(MEMO_SOURCE)?.fields,
@@ -306,7 +309,7 @@ impl Cache {
     pub fn drop_memo_hash(&self, provider: &str, path: Option<&str>, field: &str) -> bool {
         let dropped = self
             .entries
-            .get_mut(&make_cache_key(&cache_facet_of(provider), path))
+            .get_mut(&make_cache_key(&facet_of(provider, Facet::Cache), path))
             .is_some_and(|mut entry| {
                 let Some(src) = entry.sources.get_mut(MEMO_SOURCE) else {
                     return false;
@@ -334,7 +337,7 @@ impl Cache {
         else {
             return false;
         };
-        let memo_facet = memo_facet_of(provider);
+        let memo_facet = facet_of(provider, Facet::Memo);
         let mut found = false;
         for path in paths {
             let addresses: Vec<String> = match self

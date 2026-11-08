@@ -23,14 +23,10 @@ pub enum RecordState {
     Invalid,
 }
 
-/// The namespace holding the `:cache` facet of `namespace`.
-pub(super) fn cache_facet_of(namespace: &str) -> String {
-    format!("{namespace}:cache")
-}
-
-/// The namespace holding the `:memo` facet of `namespace`.
-pub(super) fn memo_facet_of(namespace: &str) -> String {
-    format!("{namespace}:memo")
+/// The namespace holding `facet` of `namespace`: `git` and [`Facet::Cache`]
+/// make `git:cache`. Every facet namespace the daemon stores or reads is built here.
+pub(crate) fn facet_of(namespace: &str, facet: Facet) -> String {
+    format!("{namespace}:{}", facet.name())
 }
 
 /// Whether two canonical addresses overlap: one is the other, or lies below it.
@@ -403,7 +399,7 @@ impl Cache {
         let now = Instant::now();
         let stored = schedule.stored_keys();
         if !stored.is_empty() {
-            let facet_key = make_cache_key(&cache_facet_of(provider), path);
+            let facet_key = make_cache_key(&facet_of(provider, Facet::Cache), path);
             // A record rewritten with the schedule it already carries only has
             // its clock moved.
             let unchanged = self
@@ -533,7 +529,7 @@ impl Cache {
         };
         let facet = self
             .entries
-            .get(&make_cache_key(&cache_facet_of(provider), at))?;
+            .get(&make_cache_key(&facet_of(provider, Facet::Cache), at))?;
         match crate::provider::lookup_path(&facet.sources.get(label)?.fields, &address)? {
             Value::Object(keys) => Some(keys.clone()),
             _ => None,
@@ -546,7 +542,10 @@ impl Cache {
     /// `<provider>:cache` beats `*:cache` — else
     /// [`DEFAULT_DECAY`](crate::scheduler::lifecycle::DEFAULT_DECAY).
     pub fn resolve_decay(&self, provider: &str, path: Option<&str>) -> u8 {
-        let namespaces = [cache_facet_of(provider), "*:cache".to_string()];
+        let namespaces = [
+            facet_of(provider, Facet::Cache),
+            facet_of("*", Facet::Cache),
+        ];
         crate::query::path_chain(path)
             .iter()
             .find_map(|layer| {
@@ -625,7 +624,7 @@ impl Cache {
     pub fn remove_source(&self, provider: &str, path: Option<&str>, source: &str) {
         // Its stored `:cache` keys go with it; they describe nothing else.
         if !is_static_label(source) {
-            let facet_key = make_cache_key(&cache_facet_of(provider), path);
+            let facet_key = make_cache_key(&facet_of(provider, Facet::Cache), path);
             if let Some(mut entry) = self.entries.get_mut(&facet_key) {
                 entry.sources.remove(source);
             }

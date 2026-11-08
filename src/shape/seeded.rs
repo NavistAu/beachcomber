@@ -363,9 +363,9 @@ impl Reader {
             return self.err(format!("[daemon.providers.{name}] must be a table"));
         };
         let namespace = if name == "_" {
-            "*:cache".to_string()
+            crate::cache::facet_of("*", libbeachcomber::key::Facet::Cache)
         } else {
-            format!("{name}:cache")
+            crate::cache::facet_of(name, libbeachcomber::key::Facet::Cache)
         };
         for (key, sub) in table {
             if key == "sources" {

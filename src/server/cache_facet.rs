@@ -39,7 +39,7 @@ pub(super) fn cache_facet_response(
 
     if rest == "_" || rest.starts_with("_.") {
         let prototypes = cache.read_merged(
-            &format!("{provider}:cache"),
+            &crate::cache::facet_of(provider, libbeachcomber::key::Facet::Cache),
             requested,
             &[],
             registry,

@@ -2,6 +2,8 @@
 //! responsibility. The submodules' public items are re-exported here, so
 //! callers name `crate::cache::X`.
 
+use libbeachcomber::key::Facet;
+
 mod labels;
 mod memo;
 mod merge;

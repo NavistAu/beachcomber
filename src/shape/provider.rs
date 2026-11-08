@@ -841,7 +841,7 @@ pub fn returned_over(
         || {
             cache
                 .read_merged(
-                    &format!("{provider}:template"),
+                    &crate::cache::facet_of(provider, libbeachcomber::key::Facet::Template),
                     path,
                     &[],
                     registry,

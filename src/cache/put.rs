@@ -388,7 +388,7 @@ impl Cache {
         let Some(ttl_secs) = ttl_secs else {
             return;
         };
-        let facet = cache_facet_of(namespace);
+        let facet = facet_of(namespace, Facet::Cache);
         for address in schedule_addresses(node, value) {
             let stored = Value::Object(HashMap::from([
                 ("poll".to_string(), poll_key(ttl_secs, 0)),
@@ -407,7 +407,7 @@ impl Cache {
         if namespace.contains(':') {
             return;
         }
-        let facet = cache_facet_of(namespace);
+        let facet = facet_of(namespace, Facet::Cache);
         for address in schedule_addresses(node, value) {
             let mut keys = self
                 .entries
@@ -445,7 +445,7 @@ impl Cache {
         node: &str,
         drop: fn(&mut CacheEntry, &str) -> bool,
     ) {
-        let key = make_cache_key(&cache_facet_of(namespace), path);
+        let key = make_cache_key(&facet_of(namespace, Facet::Cache), path);
         let dashmap::Entry::Occupied(mut occupied) = self.entries.entry(key) else {
             return;
         };

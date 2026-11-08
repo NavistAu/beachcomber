@@ -16,5 +16,5 @@ pub(super) fn json(v: &Value) -> serde_json::Value {
 }
 
 pub(super) fn stored(cache: &Cache, ns: &str, path: Option<&str>) -> Option<CacheEntry> {
-    cache.get_entry(&cache_facet_of(ns), path)
+    cache.get_entry(&facet_of(ns, Facet::Cache), path)
 }

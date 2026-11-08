@@ -150,7 +150,7 @@ impl Cache {
             validity = src.validity.clone();
             src.fields.keys().cloned().collect()
         };
-        let facet_key = make_cache_key(&cache_facet_of(provider), path);
+        let facet_key = make_cache_key(&facet_of(provider, Facet::Cache), path);
         let stored = schedule.with_validity(validity).stored_keys();
         if stored.is_empty() {
             if let Some(mut entry) = self.entries.get_mut(&facet_key) {
