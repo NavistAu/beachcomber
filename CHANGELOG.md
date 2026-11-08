@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **A daemon whose binary is deleted now restarts.** The daemon shuts down gracefully when its binary changes, so the next query starts the new one; but Homebrew, Nix and mise install each version under its own directory and delete the old one, so the old path vanished rather than changed, and a `brew upgrade` left the old daemon running indefinitely. The self-watch's poll now counts a missing binary as a change.
 
+### Security
+
+- **Dependencies updated for published advisories.** `rustls` 0.23.46 (RUSTSEC-2026-0285, -0346, -0348, -0349: TLS 1.3 handshake boundaries, secrets in `Debug` output, pre-authentication allocation, key-exchange downgrade), `rustls-webpki` 0.103.16 and `webpki-roots` 1.0.11 (RUSTSEC-2026-0381, -0382: distrusted intermediates), `h2` 0.4.20 (RUSTSEC-2026-0258), `tokio` 1.54 (RUSTSEC-2026-0386), `crossbeam-epoch` 0.9.21 (RUSTSEC-2026-0204), `block-buffer` 0.12.1, and `anyhow` dropped from the tree (RUSTSEC-2026-0190). The `url` engine's HTTPS requests go through `rustls`. Every other compatible dependency is at its latest release too; `minijinja` 2.24 now prints a bool as `True`, and the engine's formatter keeps a rendered bool `true`/`false` as before.
+
 ## [0.10.1] - 2026-11-08
 
 ### Fixed
