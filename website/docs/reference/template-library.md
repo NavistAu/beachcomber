@@ -52,6 +52,7 @@ called `watch` and `ttl`, which say when the Source runs again; they are other i
 | `obj \| pick(key, ...)` | the object with only the named keys; a key it lacks is skipped; not an object, or a key that is not text, is an error |
 | `obj \| omit(key, ...)` | the object without the named keys; errors as `pick` |
 | `n \| clamp(lo, hi)` | `n` held to `lo..=hi`; a `none` bound is open (`(w - 6) \| clamp(0, none)`); a bound or subject that is not a number, or `lo` above `hi`, is an error |
+| `v \| truthy` | bool-like text or number as a bool: a bool is itself; `true`, `1`, `yes`, `on` (trimmed, any case) are true, and `false`, `0`, `no`, `off`, `''` false; a number is true unless zero. Any other text is an error naming the value and these forms. An absent subject is undefined |
 
 ### Time and durations
 

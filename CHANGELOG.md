@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **`truthy` filter.** Reads bool-like text or a number as a bool: `true`, `1`, `yes`, `on` and `false`, `0`, `no`, `off`, `''` (trimmed, any case); other text is an error; an absent subject stays absent.
 - **`comb` restarts a daemon older than itself.** After a package upgrade (Homebrew, Nix, mise install each version apart), the old daemon kept running until it was killed. Now a query command (`get`, `put`, `eval`, `refresh`, `watch`) that finds the daemon reporting an older release, by semver precedence with build metadata ignored, stops it with SIGTERM as `comb kill` does, starts its own, and prints `comb: restarted daemon <old> -> <new>` on stderr. Once per invocation; a newer daemon, an equal one or an unparseable version is left alone, as is any daemon under a configuration the new one would refuse. `comb status` warns instead of restarting, and the SDKs never restart a daemon.
 
 ### Changed

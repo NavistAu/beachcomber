@@ -106,6 +106,25 @@ $ comb eval "{{ battery.percent | ramp([20, 50], ['low', 'mid', 'high']) }}"
 high
 ```
 
+## Booleans and structured text
+
+Build JSON with `tojson`, not by joining strings: `{{ {'branch': git.branch} | tojson }}` quotes and escapes for you,
+and a hand-joined `'{"branch": "' ~ git.branch ~ '"}'` breaks on the first quote. The same goes for TOML and shell text.
+
+Test a boolean as a boolean: `{% if git.dirty %}` or `git.dirty is true`, never `git.dirty ~ '' == 'true'`. As of 0.11 a
+bool prints as `True` or `False`, and `none` as `None`, wherever it becomes text (`~`, `string`, `join`), so a
+comparison against `'true'` no longer matches.
+
+To read a bool-like string, such as an environment variable or a command's output, use `truthy`:
+
+```shell-session
+$ DEBUG=Yes comb eval "{% if env.DEBUG | truthy %}debug{% endif %}"
+debug
+```
+
+It reads `true`, `1`, `yes` and `on` as true and `false`, `0`, `no`, `off` and empty as false, in any case, and any
+other text is an error. A missing value stays missing.
+
 ## Icons and bars
 
 `icon` gives a [Nerd Fonts](https://www.nerdfonts.com/cheat-sheet) glyph by name, and `file_icon` the glyph for a
