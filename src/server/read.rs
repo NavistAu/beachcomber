@@ -1,7 +1,7 @@
 //! `get`: bringing each demanded Source up to date along its instance chain, then answering from what is stored. `watch` reads the same chains.
 
 use super::Ctx;
-use super::answer::{Answered, TemplateHalf, answer, resolve_halves};
+use super::answer::{Answered, answer_read, resolve_halves};
 use super::cache_facet::cache_facet_response;
 use crate::cache::{Cache, Layers, MergedRead};
 use crate::protocol::{Response, Wait};
@@ -556,10 +556,6 @@ pub(super) async fn handle_get(
     };
     let provider_name = plan.provider.as_str();
 
-    // The plan has refused a facet outside the closed set; what is
-    // left on the provider segment is the template facet or none.
-    let facet = crate::query::parse_facet(provider_name).ok().flatten();
-
     // `p:cache` reports on what is cached: nothing is warmed, no demand
     // is signalled, and no template is attached. It reports the records
     // a read would find, so it follows every chain in full.
@@ -655,13 +651,7 @@ pub(super) async fn handle_get(
                     // The first read of the lines found no root resolved
                     // for the called Sources, or them cold: read again.
                     if changed {
-                        merged = cache.read_merged(
-                            provider_name,
-                            plan.requested_path.as_deref(),
-                            &visited,
-                            registry,
-                            plan.layers,
-                        );
+                        merged = read_chain_merged(cache, registry, &plan, &visited);
                     }
                     called
                 }
@@ -703,21 +693,14 @@ pub(super) async fn handle_get(
     // object without a `foo` is a hit when a template answers there, a
     // miss otherwise. Both halves, assembled the one way `watch`
     // assembles them.
-    let Answered { merged, half } = if facet.is_some() || plan.layers != crate::cache::Layers::All {
-        Answered {
-            merged,
-            half: TemplateHalf::default(),
-        }
-    } else {
-        answer(
-            cache,
-            registry,
-            provider_name,
-            plan.target.rest(),
-            template_path,
-            merged,
-        )
-    };
+    let Answered { merged, half } = answer_read(
+        cache,
+        registry,
+        &plan.target,
+        template_path,
+        plan.layers,
+        merged,
+    );
     // `--force` computes the value afresh: a Source re-executes, and
     // a template renders past its memo on the client. A static
     // namespace has no Source, so only a template half gives a forced

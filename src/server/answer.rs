@@ -264,23 +264,38 @@ pub(super) fn read_watch_value(
         return cache_facet_response(cache, registry, target, requested, reached);
     }
     let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
-    // A watch frame carries the same two halves a `get` does. A facet key is
-    // already inside a facet and never gets one. The template decides whether
-    // an unresolvable sub-path is a hit or a miss.
+    // A watch frame carries the same two halves a `get` does.
     let merged = cache.read_merged(provider, requested, reached, registry, layers);
-    let Answered { merged, half } = if layers != crate::cache::Layers::All
+    let Answered { merged, half } = answer_read(cache, registry, target, requested, layers, merged);
+    resolve_halves(&merged, target, half)
+}
+
+/// What a read of `target` from `requested` answers over `merged`, the data
+/// its instances gave: the one step after warming that `get` and `watch`
+/// share. A layer facet, or a key already inside a facet, is a plain read and
+/// gets no template half; any other is answered through the provider's
+/// `return` ([`answer`]), whose template decides whether an unresolvable
+/// sub-path is a hit or a miss. Templates are static records, so the template
+/// half resolves up the chain from the directory the caller named, not from an
+/// instance's root.
+pub(super) fn answer_read(
+    cache: &Cache,
+    registry: &ProviderRegistry,
+    target: &KeyParse,
+    requested: Option<&str>,
+    layers: crate::cache::Layers,
+    merged: Option<MergedRead>,
+) -> Answered {
+    let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
+    if layers != crate::cache::Layers::All
         || crate::query::parse_facet(provider).ok().flatten().is_some()
     {
-        Answered {
+        return Answered {
             merged,
             half: TemplateHalf::default(),
-        }
-    } else {
-        // Templates are static records, so the template half resolves up the
-        // chain from the directory the caller named, not from an instance's root.
-        answer(cache, registry, provider, target.rest(), requested, merged)
-    };
-    resolve_halves(&merged, target, half)
+        };
+    }
+    answer(cache, registry, provider, target.rest(), requested, merged)
 }
 
 #[cfg(test)]
