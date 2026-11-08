@@ -5,7 +5,6 @@
 use super::{Scenario, scenario};
 use crate::common::socket::rewrite_watched;
 use serde_json::{Value, json};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// A scenario, and a `bin/` of stand-in tools beside its home: `kubectl`
@@ -23,13 +22,11 @@ fn tools() -> Tools {
     let bin = base.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let write = |name: &str, answers: &str| {
-        let path = bin.join(name);
-        std::fs::write(
-            &path,
-            format!("#!/bin/sh\necho \"{name} $*\" >> \"$COMB_STUB_LOG\"\n{answers}\n"),
-        )
-        .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::common::daemon::tool(
+            &bin,
+            name,
+            &format!("#!/bin/sh\necho \"{name} $*\" >> \"$COMB_STUB_LOG\"\n{answers}\n"),
+        );
     };
     write(
         "kubectl",
@@ -192,12 +189,11 @@ fn a_warm_status_spawns_no_process() {
 #[test]
 fn no_context_is_remembered() {
     let t = tools();
-    let kubectl = t.bin.join("kubectl");
-    std::fs::write(
-        &kubectl,
+    crate::common::daemon::tool(
+        &t.bin,
+        "kubectl",
         "#!/bin/sh\necho \"kubectl $*\" >> \"$COMB_STUB_LOG\"\nexit 1\n",
-    )
-    .unwrap();
+    );
     for _ in 0..3 {
         assert_eq!(
             t.comb(&["get", "-f", "json", "kubecontext.context"], &[]),

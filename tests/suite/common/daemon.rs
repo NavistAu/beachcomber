@@ -87,16 +87,52 @@ pub fn stub_bin() -> &'static Path {
             ("talosctl", "exit 1"),
             ("mise", "echo '{}'"),
         ] {
+            // A stub already in place is left alone: a rewritten one is a new
+            // file, which macOS scans again on its first exec (~0.5s each).
+            let script = stub_script(tool, answer);
+            if std::fs::read_to_string(dir.join(tool)).is_ok_and(|s| s == script) {
+                continue;
+            }
             // Written beside and renamed over, so a test process that looks
             // while another writes sees the whole script or none.
             let part = dir.join(format!(".{tool}.{}", std::process::id()));
-            std::fs::write(&part, stub_script(tool, answer)).expect("write a stub");
+            std::fs::write(&part, script).expect("write a stub");
             std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755))
                 .expect("make a stub executable");
             std::fs::rename(&part, dir.join(tool)).expect("put a stub in place");
         }
         dir
     })
+}
+
+/// An executable `script` at `dir/name`, in place of whatever was there: a
+/// symlink to one read-only copy of `script` kept under the target directory
+/// for every test that writes the same one. macOS scans a new executable on
+/// its first run (~0.2s); one made afresh by each test pays that each time.
+/// A script that names its own files finds them with `$(dirname "$0")`.
+#[allow(dead_code)]
+pub fn tool(dir: &Path, name: &str, script: &str) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    use std::os::unix::fs::PermissionsExt;
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    script.hash(&mut hash);
+    let kept = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("tools")
+        .join(format!("{:016x}", hash.finish()));
+    if std::fs::read_to_string(&kept).ok().as_deref() != Some(script) {
+        std::fs::create_dir_all(kept.parent().unwrap()).expect("make the tools directory");
+        // Written beside and renamed over, as `stub_bin`'s are.
+        let part = kept.with_extension(std::process::id().to_string());
+        std::fs::write(&part, script).expect("write a tool");
+        std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o555))
+            .expect("make a tool executable");
+        std::fs::rename(&part, &kept).expect("put a tool in place");
+    }
+    std::fs::create_dir_all(dir).expect("make the tool's directory");
+    let at = dir.join(name);
+    let _ = std::fs::remove_file(&at);
+    std::os::unix::fs::symlink(&kept, &at).expect("link a tool");
+    at
 }
 
 /// The text of the stub `tool`: one line to `$COMB_STUB_LOG` when it is set,

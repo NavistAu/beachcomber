@@ -1542,27 +1542,25 @@ fn a_source_over_lup_does_not_run_for_entries_coming_and_going() {
 
 // ── what it spawns ────────────────────────────────────────────────────────────
 
-/// A `git` that logs each command and its environment, then runs the real one.
-fn logging_git(dir: &Path, log: &Path) {
+/// A `git` in `dir` that logs each command and its environment to `dir/log`,
+/// then runs the real one.
+fn logging_git(dir: &Path) -> std::path::PathBuf {
     let real = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|d| d.join("git"))
         .find(|p| p.is_file())
         .expect("git on PATH");
-    let script = dir.join("git");
-    std::fs::write(
-        &script,
-        format!(
+    crate::common::daemon::tool(
+        dir,
+        "git",
+        &format!(
             "#!/bin/sh\n\
              echo \"$GIT_OPTIONAL_LOCKS $GIT_TERMINAL_PROMPT $GIT_ASKPASS $SSH_ASKPASS \
-             $GCM_INTERACTIVE $*\" >> '{}'\n\
+             $GCM_INTERACTIVE $*\" >> \"$(dirname \"$0\")/log\"\n\
              exec '{}' \"$@\"\n",
-            log.display(),
             real.display()
         ),
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
+    dir.join("log")
 }
 
 /// A refresh spawns these, in git's environment, and nothing else: `head` none,
@@ -1572,8 +1570,7 @@ fn logging_git(dir: &Path, log: &Path) {
 fn git_a_refresh_spawns_the_same_commands() {
     let repo = GitRepoFixture::new();
     let tools = TempDir::new().unwrap();
-    let log = tools.path().join("log");
-    logging_git(tools.path(), &log);
+    let log = logging_git(tools.path());
     let path = std::env::join_paths(
         std::iter::once(tools.path().to_path_buf())
             .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
@@ -1621,8 +1618,7 @@ fn git_status_does_not_trigger_itself() {
     age(&index);
     std::fs::write(repo.path().join("README.md"), "# TEST").unwrap();
     let tools = TempDir::new().unwrap();
-    let log = tools.path().join("log");
-    logging_git(tools.path(), &log);
+    let log = logging_git(tools.path());
     let socket = crate::common::socket::IsolatedSocket::new();
     let home = socket.dir.path().join("home");
     let xdg = socket.dir.path().join("xdg");

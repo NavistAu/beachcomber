@@ -34,11 +34,8 @@ fn daemon_path(bin: Option<&Path>) {
 
 /// A stand-in `mise` in a directory of its own, `body` its script.
 fn stub_mise(body: &str) -> TempDir {
-    use std::os::unix::fs::PermissionsExt;
     let bin = TempDir::new().unwrap();
-    let mise = bin.path().join("mise");
-    std::fs::write(&mise, format!("#!/bin/sh\n{body}\n")).unwrap();
-    std::fs::set_permissions(&mise, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::common::daemon::tool(bin.path(), "mise", &format!("#!/bin/sh\n{body}\n"));
     bin
 }
 

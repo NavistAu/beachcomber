@@ -395,8 +395,6 @@ fn a_managed_default_renders_through_comb_get() {
 /// A daemon started with the managed defaults written, plus a `bin/` holding
 /// each `(name, script)` as an executable for the child's `PATH`.
 fn daemon_with_defaults_and_tools(tools: &[(&str, &str)]) -> (TestDaemon, PathBuf) {
-    use std::os::unix::fs::PermissionsExt;
-
     let socket = IsolatedSocket::new();
     let home = socket.dir.path().join("home");
     let xdg = socket.dir.path().join("xdg");
@@ -408,9 +406,7 @@ fn daemon_with_defaults_and_tools(tools: &[(&str, &str)]) -> (TestDaemon, PathBu
     let bin = socket.dir.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     for (name, script) in tools {
-        let tool = bin.join(name);
-        std::fs::write(&tool, script).unwrap();
-        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::common::daemon::tool(&bin, name, script);
     }
     (TestDaemon::spawn_in(socket, home, xdg), bin)
 }

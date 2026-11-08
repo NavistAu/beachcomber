@@ -56,16 +56,11 @@ fn get_of_exec_or_cache_cascade_spawns_command_exactly_once() {
 
     let dir = tempfile::TempDir::new().unwrap();
     let counter = dir.path().join("counter.txt");
-    let script = dir.path().join("counter.sh");
-    std::fs::write(
-        &script,
-        format!("#!/bin/sh\necho x >> \"{}\"\n", counter.display()),
-    )
-    .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let script = crate::common::daemon::tool(
+        dir.path(),
+        "counter.sh",
+        "#!/bin/sh\necho x >> \"$(dirname \"$0\")/counter.txt\"\n",
+    );
 
     d.comb(Path::new("/"))
         .args([

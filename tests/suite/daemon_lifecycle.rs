@@ -8,7 +8,6 @@ use crate::common::daemon::{TestDaemon, isolate};
 use crate::common::socket::IsolatedSocket;
 use libbeachcomber::spawn::{self, Error, Spawn, ensure, launch};
 use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -16,18 +15,14 @@ use std::time::{Duration, Instant};
 /// A stand-in `comb` in `dir` running `body` after it has written its
 /// arguments to `args` and set `$fd` to the number `--ready-fd` names.
 fn stand_in(dir: &Path, body: &str) -> (PathBuf, PathBuf) {
-    let args = dir.join("args");
-    let bin = dir.join("comb");
-    std::fs::write(
-        &bin,
-        format!(
-            "#!/bin/sh\necho \"$@\" > {}\nwhile [ $# -gt 0 ]; do [ \"$1\" = --ready-fd ] && fd=$2; shift; done\n{body}\n",
-            args.display()
+    let bin = crate::common::daemon::tool(
+        dir,
+        "comb",
+        &format!(
+            "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/args\"\nwhile [ $# -gt 0 ]; do [ \"$1\" = --ready-fd ] && fd=$2; shift; done\n{body}\n"
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    (bin, args)
+    );
+    (bin, dir.join("args"))
 }
 
 /// A stand-in that prints `early-error` on stderr and exits without binding

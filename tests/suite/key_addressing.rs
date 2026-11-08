@@ -172,28 +172,22 @@ result."c.d" = "{{ data }}"
     /// A daemon whose `PATH` leads with a fake `mise` that reports two tools
     /// for `project`: one named with a colon, one with dots and slashes.
     fn mise_daemon() -> (TestDaemon, PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
-
         let socket = IsolatedSocket::new();
         let home = socket.dir.path().join("home");
         let xdg = socket.dir.path().join("xdg");
         let cwd = home.join("ws").join("project");
         std::fs::create_dir_all(&cwd).unwrap();
         std::fs::write(cwd.join("mise.toml"), "").unwrap();
-        let config = cwd.join("mise.toml");
-        let config = config.display();
         let bin = socket.dir.path().join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let mise = bin.join("mise");
-        std::fs::write(
-            &mise,
-            format!(
-                "#!/bin/sh\ncat <<'JSON'\n{{\"cargo:x\":[{{\"version\":\"1.0\",\"source\":{{\"path\":\"{config}\"}}}}],\
-                 \"go:golang.org/x/tools/gopls\":[{{\"version\":\"0.16.0\",\"source\":{{\"path\":\"{config}\"}}}}]}}\nJSON\n"
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&mise, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // `$config` is `cwd/mise.toml`, found from the script's own place,
+        // `<socket dir>/bin`, so that every test runs the one script.
+        crate::common::daemon::tool(
+            &bin,
+            "mise",
+            "#!/bin/sh\nconfig=\"$(cd \"$(dirname \"$0\")/..\" && pwd)/home/ws/project/mise.toml\"\n\
+             cat <<JSON\n{\"cargo:x\":[{\"version\":\"1.0\",\"source\":{\"path\":\"$config\"}}],\
+             \"go:golang.org/x/tools/gopls\":[{\"version\":\"0.16.0\",\"source\":{\"path\":\"$config\"}}]}\nJSON\n",
+        );
         (
             TestDaemon::spawn_with_tools(socket, home, xdg, Some(&bin)),
             cwd,
