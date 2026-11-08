@@ -172,11 +172,6 @@ pub const ORIGINS: Formats = Formats {
 };
 
 impl Formats {
-    /// The default format.
-    pub fn default_preset(&self) -> Preset {
-        self.presets[0]
-    }
-
     /// Read a `-f` value.
     pub fn parse(&self, value: &str) -> Result<Format, String> {
         if self.templates && is_template(value) {

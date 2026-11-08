@@ -110,7 +110,7 @@ impl Value {
 /// The single address walk over a provider's field map.
 ///
 /// Every caller that resolves `provider.field.sub…` against a `HashMap<String,
-/// Value>` goes through this — `ProviderResult::get_path`, the cache's
+/// Value>` goes through this — the cache's
 /// `get_field`, and the server's source-field lookup. Three copies of this walk
 /// previously existed with different depth behaviour.
 ///
@@ -364,58 +364,6 @@ pub fn deep_merge(base: &mut HashMap<String, Value>, overlay: HashMap<String, Va
                 base.insert(k, v);
             }
         }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProviderResult {
-    pub fields: HashMap<String, Value>,
-}
-
-impl ProviderResult {
-    pub fn new() -> Self {
-        Self {
-            fields: HashMap::new(),
-        }
-    }
-
-    pub fn get(&self, key: &str) -> Option<&Value> {
-        self.fields.get(key)
-    }
-
-    /// Look up a value by a canonical address, walking into nested
-    /// `Value::Object`s ([`lookup_path`]).
-    ///
-    /// Returns `None` if any step of the walk lands on a non-Object value
-    /// before the path is consumed, or if any segment is absent.
-    ///
-    /// Example: for a ProviderResult whose `project` field is
-    /// `Value::Object({"rust": "1.94.0", "cargo-nextest": "0.9.133"})`,
-    /// `get_path("project.rust")` returns `Some(Value::String("1.94.0"))`.
-    pub fn get_path(&self, path: &str) -> Option<&Value> {
-        lookup_path(&self.fields, path)
-    }
-
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::to_value(&self.fields).unwrap_or(serde_json::Value::Null)
-    }
-
-    pub fn to_kv_text(&self) -> String {
-        let mut lines: Vec<String> = self
-            .fields
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v.as_text()))
-            .collect();
-        lines.sort();
-        let mut out = lines.join("\n");
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out
-    }
-
-    pub fn insert(&mut self, key: impl Into<String>, value: Value) {
-        self.fields.insert(key.into(), value);
     }
 }
 
@@ -887,17 +835,17 @@ mod tests {
     }
 
     #[test]
-    fn get_path_returns_scalar_from_nested_object() {
+    fn lookup_path_returns_scalar_from_nested_object() {
         let mut tools = HashMap::new();
         tools.insert("rust".to_string(), Value::String("1.94.0".to_string()));
         tools.insert(
             "cargo-nextest".to_string(),
             Value::String("0.9.133".to_string()),
         );
-        let mut result = ProviderResult::new();
-        result.insert("project", Value::Object(tools));
+        let mut result: HashMap<String, Value> = HashMap::new();
+        result.insert("project".to_string(), Value::Object(tools));
 
-        match result.get_path("project.rust") {
+        match lookup_path(&result, "project.rust") {
             Some(Value::String(s)) => assert_eq!(s, "1.94.0"),
             other => panic!("expected String('1.94.0'), got {other:?}"),
         }
@@ -907,51 +855,51 @@ mod tests {
     fn a_field_whose_name_holds_a_dot_is_a_quoted_segment() {
         // `a.b` is always the walk; the field literally named `a.b` is the
         // quoted segment `['a.b']`.
-        let mut result = ProviderResult::new();
-        result.insert("a.b", Value::String("literal".into()));
+        let mut result: HashMap<String, Value> = HashMap::new();
+        result.insert("a.b".to_string(), Value::String("literal".into()));
 
         let mut inner = HashMap::new();
         inner.insert("b".to_string(), Value::String("walked".into()));
-        result.insert("a", Value::Object(inner));
+        result.insert("a".to_string(), Value::Object(inner));
 
         assert_eq!(
-            result.get_path("a.b"),
+            lookup_path(&result, "a.b"),
             Some(&Value::String("walked".into()))
         );
         assert_eq!(
-            result.get_path("['a.b']"),
+            lookup_path(&result, "['a.b']"),
             Some(&Value::String("literal".into()))
         );
     }
 
     #[test]
-    fn get_path_returns_none_for_missing_subkey() {
+    fn lookup_path_returns_none_for_missing_subkey() {
         let mut inner = HashMap::new();
         inner.insert("rust".to_string(), Value::String("1.94.0".into()));
-        let mut result = ProviderResult::new();
-        result.insert("project", Value::Object(inner));
+        let mut result: HashMap<String, Value> = HashMap::new();
+        result.insert("project".to_string(), Value::Object(inner));
 
-        assert!(result.get_path("project.nonesuch").is_none());
+        assert!(lookup_path(&result, "project.nonesuch").is_none());
     }
 
     #[test]
-    fn get_path_returns_none_when_walking_through_scalar() {
-        let mut result = ProviderResult::new();
-        result.insert("name", Value::String("host".into()));
+    fn lookup_path_returns_none_when_walking_through_scalar() {
+        let mut result: HashMap<String, Value> = HashMap::new();
+        result.insert("name".to_string(), Value::String("host".into()));
         // Can't walk `name` (scalar) into `.inner`.
-        assert!(result.get_path("name.inner").is_none());
+        assert!(lookup_path(&result, "name.inner").is_none());
     }
 
     #[test]
-    fn get_path_works_at_depth_three() {
+    fn lookup_path_works_at_depth_three() {
         let mut inner = HashMap::new();
         inner.insert("leaf".to_string(), Value::String("v".into()));
         let mut middle = HashMap::new();
         middle.insert("mid".to_string(), Value::Object(inner));
-        let mut result = ProviderResult::new();
-        result.insert("top", Value::Object(middle));
+        let mut result: HashMap<String, Value> = HashMap::new();
+        result.insert("top".to_string(), Value::Object(middle));
 
-        match result.get_path("top.mid.leaf") {
+        match lookup_path(&result, "top.mid.leaf") {
             Some(Value::String(s)) => assert_eq!(s, "v"),
             other => panic!("expected depth-3 walk to succeed, got {other:?}"),
         }

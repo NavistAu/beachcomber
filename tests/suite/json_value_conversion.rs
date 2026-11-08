@@ -72,16 +72,26 @@ fn nested_objects_survive_conversion() {
 #[test]
 fn nested_values_are_addressable_by_path() {
     let r = SourceResult::from_json_object(fixture().as_object().unwrap());
-    let pr = beachcomber::provider::ProviderResult { fields: r.fields };
+    let fields = r.fields;
 
     assert_eq!(
-        pr.get_path("widget.nested.deep"),
+        beachcomber::provider::lookup_path(&fields, "widget.nested.deep"),
         Some(&Value::String("value".into())),
         "invariant 12: a nested node must be addressable by dotted path"
     );
-    assert_eq!(pr.get_path("items.1"), Some(&Value::String("b".into())));
-    assert_eq!(pr.get_path("widget.absent"), None);
-    assert_eq!(pr.get_path("flat.deeper"), None, "scalars have no subtree");
+    assert_eq!(
+        beachcomber::provider::lookup_path(&fields, "items.1"),
+        Some(&Value::String("b".into()))
+    );
+    assert_eq!(
+        beachcomber::provider::lookup_path(&fields, "widget.absent"),
+        None
+    );
+    assert_eq!(
+        beachcomber::provider::lookup_path(&fields, "flat.deeper"),
+        None,
+        "scalars have no subtree"
+    );
 }
 
 #[test]

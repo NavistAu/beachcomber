@@ -6,7 +6,6 @@ pub mod config;
 pub mod daemon;
 pub mod engine;
 pub mod persist;
-pub mod pid_check;
 pub mod plugin;
 pub mod proc_snapshot;
 pub mod protocol;

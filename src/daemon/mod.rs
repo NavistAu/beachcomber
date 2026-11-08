@@ -71,14 +71,6 @@ pub type DaemonReady = tokio::sync::oneshot::Receiver<()>;
 /// as it stands: the env file is not loaded here, since nothing may set the
 /// environment once threads run. A caller that wants it calls
 /// [`Config::load_env_file`] before starting its runtime, as `comb daemon` does.
-pub fn start_in_process(
-    socket_path: PathBuf,
-    config: Config,
-) -> (tokio::task::JoinHandle<()>, DaemonReady) {
-    let cancel = CancellationToken::new();
-    start_in_process_with_cancel(socket_path, config, cancel)
-}
-
 pub fn start_in_process_with_cancel(
     socket_path: PathBuf,
     config: Config,
@@ -87,8 +79,7 @@ pub fn start_in_process_with_cancel(
     start_in_process_with_reaper(socket_path, config, cancel, None)
 }
 
-/// Daemon-path variant: also attaches reaper health for introspect surfacing
-/// (canon singleton.md invariant 13).
+/// Daemon-path variant: also attaches reaper health for introspect surfacing.
 pub fn start_in_process_with_reaper(
     socket_path: PathBuf,
     config: Config,
@@ -230,7 +221,7 @@ async fn run_daemon_with_cancel(
 
     match polling_watch {
         // Daemon path: probe fs-event delivery before trusting the native
-        // backend (canon provider_source.md §"Watch backend health").
+        // backend.
         None => scheduler.self_test_watch_backend(),
         Some(interval) => scheduler.use_polling_watcher(interval),
     }

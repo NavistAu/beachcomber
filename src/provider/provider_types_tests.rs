@@ -1,5 +1,4 @@
-use crate::provider::{ProviderResult, Value};
-use std::collections::HashMap;
+use crate::provider::Value;
 
 #[test]
 fn value_from_string() {
@@ -45,49 +44,6 @@ fn value_int_serializes_to_json() {
         serde_json::json!(42),
         "Int value should serialize as JSON number"
     );
-}
-
-#[test]
-fn provider_result_single_field() {
-    let mut fields = HashMap::new();
-    fields.insert("name".to_string(), Value::String("myhost".to_string()));
-    let result = ProviderResult { fields };
-    assert_eq!(
-        result.get("name").unwrap().as_text(),
-        "myhost",
-        "Should retrieve single field"
-    );
-}
-
-#[test]
-fn provider_result_missing_field() {
-    let result = ProviderResult {
-        fields: HashMap::new(),
-    };
-    assert!(
-        result.get("missing").is_none(),
-        "Missing field should return None"
-    );
-}
-
-#[test]
-fn provider_result_to_json_object() {
-    let mut fields = HashMap::new();
-    fields.insert("name".to_string(), Value::String("myhost".to_string()));
-    fields.insert("short".to_string(), Value::String("myh".to_string()));
-    let result = ProviderResult { fields };
-    let json = result.to_json();
-    assert_eq!(json["name"], serde_json::json!("myhost"));
-    assert_eq!(json["short"], serde_json::json!("myh"));
-}
-
-#[test]
-fn provider_result_to_kv_text() {
-    let mut fields = HashMap::new();
-    fields.insert("name".to_string(), Value::String("myhost".to_string()));
-    let result = ProviderResult { fields };
-    let text = result.to_kv_text();
-    assert_eq!(text, "name=myhost\n", "Should format as key=value lines");
 }
 
 #[test]
