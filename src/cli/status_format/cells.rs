@@ -9,7 +9,6 @@ use std::time::Duration;
 // TTL cell formatter
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 pub struct TtlCell {
     pub text: String,
     pub color: Option<ansi::Color>,
@@ -109,7 +108,6 @@ fn failure_retry_secs(
 /// itself is POLL's job (POLL literally *is* the next attempt when a source
 /// is failing), so TTL only needs to say "how many attempts have failed" here.
 /// The lead glyph (⚠) and the trailing watch indicator are unaffected.
-#[allow(dead_code)]
 pub fn format_ttl_cell(
     kind: Option<&crate::cache::RowKind>,
     poll_interval_secs: Option<u64>,
@@ -340,6 +338,52 @@ pub(super) fn highlight_json(s: &str) -> String {
         }
     }
     out
+}
+
+/// The VALUE cell with colour on. Truncation has already happened, so this
+/// can only add escape sequences, never slice one. A taint marker (`tainted`,
+/// the first [`MARKER_WIDTH`] chars) keeps its own yellow so a rewritten row
+/// stands out; a structured body gets JSON syntax highlighting.
+///
+/// Cyan is the colour build's mark for a rendered row (design decision 5). A
+/// structured body still gets its own JSON highlighting nested inside; each
+/// highlighted token carries a full reset, so on-screen only the cell's
+/// opening brace stays cyan — the row is marked by that lead-in plus its
+/// SOURCE, not by an unbroken cyan span.
+pub(super) fn colour_value(row: &CacheRow, value: String, tainted: bool) -> String {
+    let (marker_text, body): (String, String) = if tainted {
+        (
+            value.chars().take(MARKER_WIDTH).collect(),
+            value.chars().skip(MARKER_WIDTH).collect(),
+        )
+    } else {
+        (String::new(), value)
+    };
+    let structured = |body: String| {
+        if body.starts_with(['{', '[']) {
+            highlight_json(&body)
+        } else {
+            body
+        }
+    };
+    let failed = row.failure.as_ref().is_some_and(|f| f.last_error.is_some());
+    let body = if row.value.is_null() && failed {
+        ansi::wrap(&body, ansi::Color::Red, true)
+    } else if row.value.is_null() {
+        ansi::wrap(&body, ansi::Color::Dim, true)
+    } else if matches!(row.kind, Some(crate::cache::RowKind::Rendered)) {
+        ansi::wrap(&structured(body), ansi::Color::Cyan, true)
+    } else {
+        structured(body)
+    };
+    if marker_text.is_empty() {
+        body
+    } else {
+        format!(
+            "{}{body}",
+            ansi::wrap(&marker_text, ansi::Color::Yellow, true)
+        )
+    }
 }
 
 /// Whether any provider-controlled text in this row contains a control

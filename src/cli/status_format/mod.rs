@@ -103,14 +103,14 @@ pub fn render_preset(format: &Format, rows: &[CacheRow], opts: &RenderOpts) -> S
             render_delimited(rows, p.value_format().expect("a value format"))
         }
         Format::Preset(Preset::Sh) => render_sh_env(rows),
-        Format::Preset(Preset::Table) => render_table(rows, &[], false, None, true, false),
+        Format::Preset(Preset::Table) => render_table(rows, &[], false, None, false),
         Format::Preset(Preset::Human) => {
             let trunc = if opts.no_trunc { None } else { opts.max_width };
             // `no_color` is the resolved color decision from the caller (already
             // accounts for NO_COLOR, TTY and --color). Don't re-AND with is_tty
             // here — that would override an explicit `--color=always`.
             let color = !opts.no_color;
-            render_table(rows, &[], color, trunc, true, opts.ascii)
+            render_table(rows, &[], color, trunc, opts.ascii)
         }
         Format::Preset(other) => unreachable!("status's formats hold no {}", other.name()),
         Format::Template(_) => {

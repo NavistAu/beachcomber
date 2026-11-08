@@ -204,3 +204,43 @@ pub fn row_facet(provider: &str) -> Option<&str> {
 pub fn display_source(row: &CacheRow) -> String {
     row.source.clone()
 }
+
+/// The rows `--tree` draws: each value row followed by one row per layer
+/// behind it (`children[i]` for `rows[i]`), except the layer that is the row
+/// itself. The marks run parallel: `None` for a value row, a [`ChildMark`]
+/// for a layer.
+pub(super) fn tree_display_rows(
+    rows: &[CacheRow],
+    children: &[Vec<crate::cache::LayerRecord>],
+) -> (Vec<CacheRow>, Vec<Option<ChildMark>>) {
+    let mut display = Vec::new();
+    let mut marks = Vec::new();
+    for (row, layers) in rows.iter().zip(children) {
+        display.push(row.clone());
+        marks.push(None);
+        let layers: Vec<_> = layers.iter().filter(|l| !is_the_row(row, l)).collect();
+        for (i, layer) in layers.iter().enumerate() {
+            display.push(CacheRow {
+                shadowed: false,
+                provider: row.provider.clone(),
+                path: layer.path.clone(),
+                source: layer.label.clone(),
+                field: row.field.clone(),
+                value: layer.value.clone(),
+                age_ms: Some(layer.age_ms),
+                kind: None,
+                poll_interval_secs: None,
+                poll_count: None,
+                polls_elapsed: None,
+                next_poll_in_secs: None,
+                failure: None,
+            });
+            marks.push(Some(ChildMark {
+                last: i + 1 == layers.len(),
+                answered: layer.answered,
+                template: layer.facet.as_deref() == Some("template"),
+            }));
+        }
+    }
+    (display, marks)
+}
