@@ -426,6 +426,12 @@ impl LifecycleRegistry {
             }
         }
 
+        // An instance evicted this tick does not also run: its run would write
+        // back a record with no lifecycle left to evict it.
+        actions
+            .polls_due
+            .retain(|key| !actions.evictions.contains(key));
+
         // Remove evicted entries after iteration.
         for key in &actions.evictions {
             self.entries.remove(key);
@@ -1016,6 +1022,37 @@ mod tests {
         let actions = reg.tick(t0 + Duration::from_secs(30));
         assert_eq!(actions.evictions, vec![key.clone()]);
         assert_eq!(reg.state(&key), None);
+    }
+
+    /// A poll and the eviction falling due on one tick: the instance is
+    /// evicted and not run, so no record outlives its lifecycle. A held one
+    /// still polls.
+    #[test]
+    fn an_instance_evicted_on_the_tick_its_poll_falls_due_is_not_polled() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key_global("p");
+        let t0 = Instant::now();
+        // poll(10s, 1), decay 1: Decay(1) at 10 s, with a 20 s poll and step,
+        // so both fall due at 30 s.
+        reg.on_demand(key.clone(), ten_second_poll(1), t0);
+        assert_eq!(
+            reg.tick(t0 + Duration::from_secs(10)).polls_due,
+            vec![key.clone()]
+        );
+
+        let actions = reg.tick(t0 + Duration::from_secs(30));
+        assert_eq!(actions.evictions, vec![key.clone()]);
+        assert!(actions.polls_due.is_empty(), "{actions:?}");
+
+        let (callee, caller) = (test_key_global("callee"), test_key_global("caller"));
+        let callers_of = HashMap::from([(callee.clone(), vec![caller.clone()])]);
+        let mut reg = LifecycleRegistry::new();
+        reg.on_demand(callee.clone(), ten_second_poll(1), t0);
+        reg.on_demand(caller, test_config(), t0);
+        reg.tick_holding(t0 + Duration::from_secs(10), &callers_of);
+        let held = reg.tick_holding(t0 + Duration::from_secs(30), &callers_of);
+        assert!(held.evictions.is_empty(), "{held:?}");
+        assert_eq!(held.polls_due, vec![callee]);
     }
 
     /// A callee that would be evicted while a caller that names it still has a
