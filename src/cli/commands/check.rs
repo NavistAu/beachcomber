@@ -365,435 +365,18 @@ fn render_subject(
         .cloned()
         .unwrap_or_default();
 
-    let mut worst = Outcome::Done;
-    let mut lines = String::new();
-
-    // Build per-subject header and detail lines before verdict lines.
-    match subject {
-        "daemon" => {
-            // Parse into DaemonHealth once so all field accesses are typed.
-            // This prevents the class of bug (e.g. `comb kill` reading a pid
-            // out of a Status response that changed shape) by failing loudly at
-            // the serde boundary rather than silently returning a wrong default.
-            match serde_json::from_value::<DaemonHealth>(payload.clone()) {
-                Ok(d) => {
-                    let uptime_fmt = secs(d.uptime_secs);
-                    let (vlines, vworst) = render_typed_verdicts(&d.verdicts);
-                    worst = worst.max(vworst);
-
-                    lines.push_str("Daemon\n");
-                    lines.push_str(&format!(
-                        "  [PASS] beachcomber {} — pid {} — uptime {uptime_fmt}\n",
-                        d.version, d.pid
-                    ));
-                    lines.push_str(&format!("  [PASS] socket   {}\n", d.socket_path));
-                    if let Some(cp) = &d.config_path {
-                        lines.push_str(&format!("  [PASS] config   {cp}\n"));
-                    } else {
-                        lines.push_str("  [INFO] config   no config.toml\n");
-                    }
-                    lines.push_str(&format!(
-                        "  [PASS] requests_total={}  in_flight={}  active_watchers={}  cache_entries={}\n",
-                        d.requests_total, d.in_flight, d.active_watchers, d.cache_entries
-                    ));
-                    lines.push_str(&vlines);
-                }
-                Err(e) => {
-                    // Deserialisation failure means the protocol schema has
-                    // changed incompatibly.  Surface it as a FAIL so `comb
-                    // check daemon` exits 2 and the operator knows to upgrade.
-                    lines.push_str("Daemon\n");
-                    lines.push_str(&format!(
-                        "  [FAIL] could not parse introspect{{daemon}} response: {e}\n"
-                    ));
-                    worst = worst.max(Outcome::Error);
-                }
-            }
-        }
-        "providers" => {
-            let providers = payload
-                .get("providers")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let count = providers.len();
-
-            let (vlines, vworst) = render_verdicts(&verdicts, None);
-            worst = worst.max(vworst);
-
-            lines.push_str(&format!("Providers ({count} registered)\n"));
-            for p in &providers {
-                let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                let source = p.get("source").and_then(|v| v.as_str()).unwrap_or("?");
-                let fields: Vec<&str> = p
-                    .get("fields")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|f| f.get("name").and_then(|n| n.as_str()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let fields_str = if fields.is_empty() {
-                    "—".to_string()
-                } else {
-                    fields.join(",")
-                };
-                let invalidation = p
-                    .get("invalidation")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                let in_backoff = !p.get("in_backoff").map(|v| v.is_null()).unwrap_or(true);
-
-                if let Some(f) = p.get("failing").filter(|f| !f.is_null()) {
-                    let n = f
-                        .get("consecutive_failures")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let sources: Vec<&str> = f
-                        .get("sources")
-                        .and_then(|v| v.as_array())
-                        .map(|a| a.iter().filter_map(|s| s.as_str()).collect())
-                        .unwrap_or_default();
-                    lines.push_str(&format!(
-                        "  [WARN] {source:<8} {name:<12} fields={fields_str:<30} {invalidation} — failing {n} in a row ({})\n",
-                        sources.join(",")
-                    ));
-                    worst = worst.max(Outcome::Warning);
-                } else if in_backoff {
-                    let stage = p
-                        .get("in_backoff")
-                        .and_then(|b| b.get("stage"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let elapsed = p
-                        .get("in_backoff")
-                        .and_then(|b| b.get("elapsed_secs"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    lines.push_str(&format!(
-                        "  [WARN] {source:<8} {name:<12} fields={fields_str:<30} {invalidation} — in backoff {} (stage={stage})\n", secs(elapsed)
-                    ));
-                    worst = worst.max(Outcome::Warning);
-                } else {
-                    lines.push_str(&format!(
-                        "  [PASS] {source:<8} {name:<12} fields={fields_str:<30} {invalidation}\n"
-                    ));
-                }
-            }
-            lines.push_str(&vlines);
-        }
-        "config" => {
-            let path = payload.get("path").and_then(|v| v.as_str());
-            let parsed = payload
-                .get("parsed")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let errors: Vec<&str> = payload
-                .get("errors")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|e| e.as_str()).collect())
-                .unwrap_or_default();
-            let source_count = payload
-                .get("config_source_count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-
-            let (vlines, vworst) = render_verdicts(&verdicts, Some(DAEMON_VIEW));
-            worst = worst.max(vworst);
-            let (local_lines, local_worst) = render_verdicts(local, Some(LOCAL_VIEW));
-            worst = worst.max(local_worst);
-
-            // Two views in one block: the config the *daemon* loaded at startup,
-            // which may predate the file on disk, and the client's own reading
-            // of that file. Tagged so a disagreement reads as information.
-            lines.push_str("Config\n");
-            let daemon = Some(DAEMON_VIEW);
-            match path {
-                Some(p) => lines.push_str(&verdict_line(
-                    "PASS",
-                    daemon,
-                    &format!("path {}", libbeachcomber::path::Home::from_env().compact(p)),
-                )),
-                None => lines.push_str(&verdict_line("INFO", daemon, "no config.toml")),
-            }
-            if parsed {
-                lines.push_str(&verdict_line(
-                    "PASS",
-                    daemon,
-                    &format!("parsed ok — {source_count} config Sources"),
-                ));
-            } else {
-                lines.push_str(&verdict_line("FAIL", daemon, "parsed FAILED"));
-                worst = worst.max(Outcome::Error);
-            }
-            for err in &errors {
-                lines.push_str(&verdict_line("FAIL", daemon, err));
-                worst = worst.max(Outcome::Error);
-            }
-            lines.push_str(&vlines);
-            lines.push_str(&local_lines);
-        }
-        "cache" => {
-            let total = payload
-                .get("total_entries")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-
-            let (vlines, vworst) = render_verdicts(&verdicts, None);
-            worst = worst.max(vworst);
-
-            lines.push_str("Cache\n");
-            lines.push_str(&format!("  [PASS] entries   {total} total\n"));
-            lines.push_str(&vlines);
-        }
-        "lifecycle" => {
-            let entries = payload
-                .get("lifecycle")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-
-            let (vlines, vworst) = render_verdicts(&verdicts, None);
-            worst = worst.max(vworst);
-
-            lines.push_str("Lifecycle\n");
-            if entries.is_empty() {
-                lines.push_str("  [PASS] no providers in decay\n");
-            } else {
-                for entry in &entries {
-                    let provider = entry
-                        .get("provider")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let stage = entry.get("stage").and_then(|v| v.as_str()).unwrap_or("?");
-                    let elapsed = entry
-                        .get("elapsed_secs")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let path = entry.get("path").and_then(|v| v.as_str());
-                    // A static address (a memo, a put) is named by its node.
-                    let name = match entry.get("node").and_then(|v| v.as_str()) {
-                        Some(node) => format!("{provider}.{node}"),
-                        None => provider.to_string(),
-                    };
-                    let label = match path {
-                        Some(p) => {
-                            format!(
-                                "{name} ({})",
-                                libbeachcomber::path::Home::from_env().compact(p)
-                            )
-                        }
-                        None => name,
-                    };
-                    lines.push_str(&format!(
-                        "  [WARN] {label}   stage={stage} elapsed={}\n",
-                        secs(elapsed)
-                    ));
-                    worst = worst.max(Outcome::Warning);
-                }
-            }
-            lines.push_str(&vlines);
-        }
-        "watches" => {
-            let watches = payload
-                .get("watches")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-
-            let (vlines, vworst) = render_verdicts(&verdicts, None);
-            worst = worst.max(vworst);
-
-            lines.push_str(&format!("Watches ({} paths)\n", watches.len()));
-            if !watches.is_empty() {
-                let home = libbeachcomber::path::Home::from_env();
-                let text = |key: &str, w: &serde_json::Value| {
-                    w.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
-                };
-                for w in &watches {
-                    let p = home.compact(&text("path", w).unwrap_or_else(|| "?".into()));
-                    match text("state", w).as_deref() {
-                        Some("active") => match text("via", w) {
-                            Some(via) => lines.push_str(&format!(
-                                "  [PASS] {p} (through {} until it exists)\n",
-                                home.compact(&via)
-                            )),
-                            None => lines.push_str(&format!("  [PASS] {p}\n")),
-                        },
-                        Some("pending") => lines.push_str(&format!("  [INFO] {p} (registering)\n")),
-                        _ => {
-                            let error = text("error", w).unwrap_or_else(|| "failed".into());
-                            lines.push_str(&format!("  [WARN] {p} — {error}\n"));
-                            worst = worst.max(Outcome::Warning);
-                        }
-                    }
-                }
-            }
-            lines.push_str(&vlines);
-        }
-        "timers" => {
-            let timers = payload
-                .get("timers")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-
-            let (vlines, vworst) = render_verdicts(&verdicts, None);
-            worst = worst.max(vworst);
-
-            lines.push_str(&format!("Timers ({} poll timers)\n", timers.len()));
-            for timer in &timers {
-                let provider = timer
-                    .get("provider")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                let interval = timer
-                    .get("interval_secs")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let last = timer
-                    .get("last_run_secs_ago")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let path = timer.get("path").and_then(|v| v.as_str());
-                let label = match path {
-                    Some(p) => format!(
-                        "{provider} ({})",
-                        libbeachcomber::path::Home::from_env().compact(p)
-                    ),
-                    None => provider.to_string(),
-                };
-                let overdue = interval > 0 && last > interval * 2;
-                if overdue {
-                    lines.push_str(&format!(
-                        "  [WARN] {label}   interval={}  last={} ago  OVERDUE\n",
-                        secs(interval),
-                        secs(last)
-                    ));
-                    worst = worst.max(Outcome::Warning);
-                } else {
-                    lines.push_str(&format!(
-                        "  [PASS] {label}   interval={}  last={} ago\n",
-                        secs(interval),
-                        secs(last)
-                    ));
-                }
-            }
-            if timers.is_empty() {
-                lines.push_str("  [INFO] no active poll timers\n");
-            }
-            lines.push_str(&vlines);
-        }
-        "demand" => {
-            let keys = payload
-                .get("demand")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-
-            let (vlines, vworst) = render_verdicts(&verdicts, None);
-            worst = worst.max(vworst);
-
-            lines.push_str(&format!("Demand ({} active keys)\n", keys.len()));
-            for key in &keys {
-                let provider = key.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
-                let ago = key
-                    .get("last_query_secs_ago")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                // A static address (a memo, a put) is named by its node.
-                let name = match key.get("node").and_then(|v| v.as_str()) {
-                    Some(node) => format!("{provider}.{node}"),
-                    None => provider.to_string(),
-                };
-                let label = match key.get("path").and_then(|v| v.as_str()) {
-                    Some(p) => format!(
-                        "{name} ({})",
-                        libbeachcomber::path::Home::from_env().compact(p)
-                    ),
-                    None => name,
-                };
-                lines.push_str(&format!(
-                    "  [INFO] {label}   last_query={} ago\n",
-                    secs(ago)
-                ));
-            }
-            if keys.is_empty() {
-                lines.push_str("  [INFO] no keys currently tracked by demand\n");
-            }
-            lines.push_str(&vlines);
-        }
-        "procs" => {
-            let duration = payload
-                .get("duration_secs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let samples = payload
-                .get("samples")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let suggestions = payload
-                .get("replacement_suggestions")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-
-            let (vlines, vworst) = render_verdicts(&verdicts, None);
-            worst = worst.max(vworst);
-
-            let total: u64 = samples
-                .iter()
-                .map(|s| s.get("count").and_then(|v| v.as_u64()).unwrap_or(0))
-                .sum();
-            lines.push_str(&format!(
-                "Procs ({} sample — {total} exec events)\n",
-                secs(duration)
-            ));
-
-            for s in &samples {
-                let cmd = s.get("command").and_then(|v| v.as_str()).unwrap_or("?");
-                let count = s.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                let category = s.get("category").and_then(|v| v.as_str());
-                let covered = category.map(|cat| {
-                    suggestions.iter().any(|r| {
-                        r.get("command_pattern")
-                            .and_then(|v| v.as_str())
-                            .map(|p| p == cat)
-                            .unwrap_or(false)
-                    })
-                });
-                match covered {
-                    Some(true) => {
-                        lines.push_str(&format!(
-                            "  [WARN] {cmd:<20} {count:>8}  beachcomber can replace\n"
-                        ));
-                        worst = worst.max(Outcome::Warning);
-                    }
-                    Some(false) => {
-                        lines.push_str(&format!("  [INFO] {cmd:<20} {count:>8}\n"));
-                    }
-                    None => {
-                        lines.push_str(&format!("  [INFO] {cmd:<20} {count:>8}\n"));
-                    }
-                }
-            }
-            if !suggestions.is_empty() {
-                lines.push_str(&format!(
-                    "  [WARN] {} command(s) could be replaced by `comb get`\n",
-                    suggestions.len()
-                ));
-                worst = worst.max(Outcome::Warning);
-            }
-            lines.push_str(&vlines);
-        }
-        other => {
-            lines.push_str(&format!("Unknown subject: {other}\n"));
-            lines.push_str("  [FAIL] no renderer for this subject\n");
-            worst = Outcome::Error;
-        }
-    }
+    let (mut lines, worst) = match subject {
+        "daemon" => render_daemon(payload),
+        "providers" => render_providers(payload, &verdicts),
+        "config" => render_config(payload, &verdicts, local),
+        "cache" => render_cache(payload, &verdicts),
+        "lifecycle" => render_lifecycle(payload, &verdicts),
+        "watches" => render_watches(payload, &verdicts),
+        "timers" => render_timers(payload, &verdicts),
+        "demand" => render_demand(payload, &verdicts),
+        "procs" => render_procs(payload, &verdicts),
+        other => render_unknown(other),
+    };
 
     // Append aggregate summary if there are warnings or failures. `local` is
     // empty for every subject but `config`, where its verdicts are part of the
@@ -816,6 +399,488 @@ fn render_subject(
 
     lines.push('\n');
     (lines, worst)
+}
+
+/// The `daemon` block: its detail lines, then its daemon verdicts.
+fn render_daemon(payload: &serde_json::Value) -> (String, Outcome) {
+    let mut worst = Outcome::Done;
+    let mut lines = String::new();
+    // Parse into DaemonHealth once so all field accesses are typed.
+    // This prevents the class of bug (e.g. `comb kill` reading a pid
+    // out of a Status response that changed shape) by failing loudly at
+    // the serde boundary rather than silently returning a wrong default.
+    match serde_json::from_value::<DaemonHealth>(payload.clone()) {
+        Ok(d) => {
+            let uptime_fmt = secs(d.uptime_secs);
+            let (vlines, vworst) = render_typed_verdicts(&d.verdicts);
+            worst = worst.max(vworst);
+
+            lines.push_str("Daemon\n");
+            lines.push_str(&format!(
+                "  [PASS] beachcomber {} — pid {} — uptime {uptime_fmt}\n",
+                d.version, d.pid
+            ));
+            lines.push_str(&format!("  [PASS] socket   {}\n", d.socket_path));
+            if let Some(cp) = &d.config_path {
+                lines.push_str(&format!("  [PASS] config   {cp}\n"));
+            } else {
+                lines.push_str("  [INFO] config   no config.toml\n");
+            }
+            lines.push_str(&format!(
+                "  [PASS] requests_total={}  in_flight={}  active_watchers={}  cache_entries={}\n",
+                d.requests_total, d.in_flight, d.active_watchers, d.cache_entries
+            ));
+            lines.push_str(&vlines);
+        }
+        Err(e) => {
+            // Deserialisation failure means the protocol schema has
+            // changed incompatibly.  Surface it as a FAIL so `comb
+            // check daemon` exits 2 and the operator knows to upgrade.
+            lines.push_str("Daemon\n");
+            lines.push_str(&format!(
+                "  [FAIL] could not parse introspect{{daemon}} response: {e}\n"
+            ));
+            worst = worst.max(Outcome::Error);
+        }
+    }
+    (lines, worst)
+}
+
+/// The `providers` block: its detail lines, then its daemon verdicts.
+fn render_providers(
+    payload: &serde_json::Value,
+    verdicts: &[serde_json::Value],
+) -> (String, Outcome) {
+    let mut worst = Outcome::Done;
+    let mut lines = String::new();
+    let providers = payload
+        .get("providers")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let count = providers.len();
+
+    let (vlines, vworst) = render_verdicts(verdicts, None);
+    worst = worst.max(vworst);
+
+    lines.push_str(&format!("Providers ({count} registered)\n"));
+    for p in &providers {
+        let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let source = p.get("source").and_then(|v| v.as_str()).unwrap_or("?");
+        let fields: Vec<&str> = p
+            .get("fields")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|f| f.get("name").and_then(|n| n.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let fields_str = if fields.is_empty() {
+            "—".to_string()
+        } else {
+            fields.join(",")
+        };
+        let invalidation = p
+            .get("invalidation")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let in_backoff = !p.get("in_backoff").map(|v| v.is_null()).unwrap_or(true);
+
+        if let Some(f) = p.get("failing").filter(|f| !f.is_null()) {
+            let n = f
+                .get("consecutive_failures")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let sources: Vec<&str> = f
+                .get("sources")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|s| s.as_str()).collect())
+                .unwrap_or_default();
+            lines.push_str(&format!(
+                "  [WARN] {source:<8} {name:<12} fields={fields_str:<30} {invalidation} — failing {n} in a row ({})\n",
+                sources.join(",")
+            ));
+            worst = worst.max(Outcome::Warning);
+        } else if in_backoff {
+            let stage = p
+                .get("in_backoff")
+                .and_then(|b| b.get("stage"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let elapsed = p
+                .get("in_backoff")
+                .and_then(|b| b.get("elapsed_secs"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            lines.push_str(&format!(
+                "  [WARN] {source:<8} {name:<12} fields={fields_str:<30} {invalidation} — in backoff {} (stage={stage})\n", secs(elapsed)
+            ));
+            worst = worst.max(Outcome::Warning);
+        } else {
+            lines.push_str(&format!(
+                "  [PASS] {source:<8} {name:<12} fields={fields_str:<30} {invalidation}\n"
+            ));
+        }
+    }
+    lines.push_str(&vlines);
+    (lines, worst)
+}
+
+/// The `config` block: its detail lines, then its daemon verdicts.
+fn render_config(
+    payload: &serde_json::Value,
+    verdicts: &[serde_json::Value],
+    local: &[serde_json::Value],
+) -> (String, Outcome) {
+    let mut worst = Outcome::Done;
+    let mut lines = String::new();
+    let path = payload.get("path").and_then(|v| v.as_str());
+    let parsed = payload
+        .get("parsed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let errors: Vec<&str> = payload
+        .get("errors")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|e| e.as_str()).collect())
+        .unwrap_or_default();
+    let source_count = payload
+        .get("config_source_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    let (vlines, vworst) = render_verdicts(verdicts, Some(DAEMON_VIEW));
+    worst = worst.max(vworst);
+    let (local_lines, local_worst) = render_verdicts(local, Some(LOCAL_VIEW));
+    worst = worst.max(local_worst);
+
+    // Two views in one block: the config the *daemon* loaded at startup,
+    // which may predate the file on disk, and the client's own reading
+    // of that file. Tagged so a disagreement reads as information.
+    lines.push_str("Config\n");
+    let daemon = Some(DAEMON_VIEW);
+    match path {
+        Some(p) => lines.push_str(&verdict_line(
+            "PASS",
+            daemon,
+            &format!("path {}", libbeachcomber::path::Home::from_env().compact(p)),
+        )),
+        None => lines.push_str(&verdict_line("INFO", daemon, "no config.toml")),
+    }
+    if parsed {
+        lines.push_str(&verdict_line(
+            "PASS",
+            daemon,
+            &format!("parsed ok — {source_count} config Sources"),
+        ));
+    } else {
+        lines.push_str(&verdict_line("FAIL", daemon, "parsed FAILED"));
+        worst = worst.max(Outcome::Error);
+    }
+    for err in &errors {
+        lines.push_str(&verdict_line("FAIL", daemon, err));
+        worst = worst.max(Outcome::Error);
+    }
+    lines.push_str(&vlines);
+    lines.push_str(&local_lines);
+    (lines, worst)
+}
+
+/// The `cache` block: its detail lines, then its daemon verdicts.
+fn render_cache(payload: &serde_json::Value, verdicts: &[serde_json::Value]) -> (String, Outcome) {
+    let mut worst = Outcome::Done;
+    let mut lines = String::new();
+    let total = payload
+        .get("total_entries")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    let (vlines, vworst) = render_verdicts(verdicts, None);
+    worst = worst.max(vworst);
+
+    lines.push_str("Cache\n");
+    lines.push_str(&format!("  [PASS] entries   {total} total\n"));
+    lines.push_str(&vlines);
+    (lines, worst)
+}
+
+/// The `lifecycle` block: its detail lines, then its daemon verdicts.
+fn render_lifecycle(
+    payload: &serde_json::Value,
+    verdicts: &[serde_json::Value],
+) -> (String, Outcome) {
+    let mut worst = Outcome::Done;
+    let mut lines = String::new();
+    let entries = payload
+        .get("lifecycle")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let (vlines, vworst) = render_verdicts(verdicts, None);
+    worst = worst.max(vworst);
+
+    lines.push_str("Lifecycle\n");
+    if entries.is_empty() {
+        lines.push_str("  [PASS] no providers in decay\n");
+    } else {
+        for entry in &entries {
+            let provider = entry
+                .get("provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let stage = entry.get("stage").and_then(|v| v.as_str()).unwrap_or("?");
+            let elapsed = entry
+                .get("elapsed_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let path = entry.get("path").and_then(|v| v.as_str());
+            // A static address (a memo, a put) is named by its node.
+            let name = match entry.get("node").and_then(|v| v.as_str()) {
+                Some(node) => format!("{provider}.{node}"),
+                None => provider.to_string(),
+            };
+            let label = match path {
+                Some(p) => {
+                    format!(
+                        "{name} ({})",
+                        libbeachcomber::path::Home::from_env().compact(p)
+                    )
+                }
+                None => name,
+            };
+            lines.push_str(&format!(
+                "  [WARN] {label}   stage={stage} elapsed={}\n",
+                secs(elapsed)
+            ));
+            worst = worst.max(Outcome::Warning);
+        }
+    }
+    lines.push_str(&vlines);
+    (lines, worst)
+}
+
+/// The `watches` block: its detail lines, then its daemon verdicts.
+fn render_watches(
+    payload: &serde_json::Value,
+    verdicts: &[serde_json::Value],
+) -> (String, Outcome) {
+    let mut worst = Outcome::Done;
+    let mut lines = String::new();
+    let watches = payload
+        .get("watches")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let (vlines, vworst) = render_verdicts(verdicts, None);
+    worst = worst.max(vworst);
+
+    lines.push_str(&format!("Watches ({} paths)\n", watches.len()));
+    if !watches.is_empty() {
+        let home = libbeachcomber::path::Home::from_env();
+        let text = |key: &str, w: &serde_json::Value| {
+            w.get(key).and_then(|v| v.as_str()).map(|s| s.to_string())
+        };
+        for w in &watches {
+            let p = home.compact(&text("path", w).unwrap_or_else(|| "?".into()));
+            match text("state", w).as_deref() {
+                Some("active") => match text("via", w) {
+                    Some(via) => lines.push_str(&format!(
+                        "  [PASS] {p} (through {} until it exists)\n",
+                        home.compact(&via)
+                    )),
+                    None => lines.push_str(&format!("  [PASS] {p}\n")),
+                },
+                Some("pending") => lines.push_str(&format!("  [INFO] {p} (registering)\n")),
+                _ => {
+                    let error = text("error", w).unwrap_or_else(|| "failed".into());
+                    lines.push_str(&format!("  [WARN] {p} — {error}\n"));
+                    worst = worst.max(Outcome::Warning);
+                }
+            }
+        }
+    }
+    lines.push_str(&vlines);
+    (lines, worst)
+}
+
+/// The `timers` block: its detail lines, then its daemon verdicts.
+fn render_timers(payload: &serde_json::Value, verdicts: &[serde_json::Value]) -> (String, Outcome) {
+    let mut worst = Outcome::Done;
+    let mut lines = String::new();
+    let timers = payload
+        .get("timers")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let (vlines, vworst) = render_verdicts(verdicts, None);
+    worst = worst.max(vworst);
+
+    lines.push_str(&format!("Timers ({} poll timers)\n", timers.len()));
+    for timer in &timers {
+        let provider = timer
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+        let interval = timer
+            .get("interval_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let last = timer
+            .get("last_run_secs_ago")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let path = timer.get("path").and_then(|v| v.as_str());
+        let label = match path {
+            Some(p) => format!(
+                "{provider} ({})",
+                libbeachcomber::path::Home::from_env().compact(p)
+            ),
+            None => provider.to_string(),
+        };
+        let overdue = interval > 0 && last > interval * 2;
+        if overdue {
+            lines.push_str(&format!(
+                "  [WARN] {label}   interval={}  last={} ago  OVERDUE\n",
+                secs(interval),
+                secs(last)
+            ));
+            worst = worst.max(Outcome::Warning);
+        } else {
+            lines.push_str(&format!(
+                "  [PASS] {label}   interval={}  last={} ago\n",
+                secs(interval),
+                secs(last)
+            ));
+        }
+    }
+    if timers.is_empty() {
+        lines.push_str("  [INFO] no active poll timers\n");
+    }
+    lines.push_str(&vlines);
+    (lines, worst)
+}
+
+/// The `demand` block: its detail lines, then its daemon verdicts.
+fn render_demand(payload: &serde_json::Value, verdicts: &[serde_json::Value]) -> (String, Outcome) {
+    let mut worst = Outcome::Done;
+    let mut lines = String::new();
+    let keys = payload
+        .get("demand")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let (vlines, vworst) = render_verdicts(verdicts, None);
+    worst = worst.max(vworst);
+
+    lines.push_str(&format!("Demand ({} active keys)\n", keys.len()));
+    for key in &keys {
+        let provider = key.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
+        let ago = key
+            .get("last_query_secs_ago")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        // A static address (a memo, a put) is named by its node.
+        let name = match key.get("node").and_then(|v| v.as_str()) {
+            Some(node) => format!("{provider}.{node}"),
+            None => provider.to_string(),
+        };
+        let label = match key.get("path").and_then(|v| v.as_str()) {
+            Some(p) => format!(
+                "{name} ({})",
+                libbeachcomber::path::Home::from_env().compact(p)
+            ),
+            None => name,
+        };
+        lines.push_str(&format!(
+            "  [INFO] {label}   last_query={} ago\n",
+            secs(ago)
+        ));
+    }
+    if keys.is_empty() {
+        lines.push_str("  [INFO] no keys currently tracked by demand\n");
+    }
+    lines.push_str(&vlines);
+    (lines, worst)
+}
+
+/// The `procs` block: its detail lines, then its daemon verdicts.
+fn render_procs(payload: &serde_json::Value, verdicts: &[serde_json::Value]) -> (String, Outcome) {
+    let mut worst = Outcome::Done;
+    let mut lines = String::new();
+    let duration = payload
+        .get("duration_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let samples = payload
+        .get("samples")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let suggestions = payload
+        .get("replacement_suggestions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let (vlines, vworst) = render_verdicts(verdicts, None);
+    worst = worst.max(vworst);
+
+    let total: u64 = samples
+        .iter()
+        .map(|s| s.get("count").and_then(|v| v.as_u64()).unwrap_or(0))
+        .sum();
+    lines.push_str(&format!(
+        "Procs ({} sample — {total} exec events)\n",
+        secs(duration)
+    ));
+
+    for s in &samples {
+        let cmd = s.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+        let count = s.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let category = s.get("category").and_then(|v| v.as_str());
+        let covered = category.map(|cat| {
+            suggestions.iter().any(|r| {
+                r.get("command_pattern")
+                    .and_then(|v| v.as_str())
+                    .map(|p| p == cat)
+                    .unwrap_or(false)
+            })
+        });
+        match covered {
+            Some(true) => {
+                lines.push_str(&format!(
+                    "  [WARN] {cmd:<20} {count:>8}  beachcomber can replace\n"
+                ));
+                worst = worst.max(Outcome::Warning);
+            }
+            Some(false) => {
+                lines.push_str(&format!("  [INFO] {cmd:<20} {count:>8}\n"));
+            }
+            None => {
+                lines.push_str(&format!("  [INFO] {cmd:<20} {count:>8}\n"));
+            }
+        }
+    }
+    if !suggestions.is_empty() {
+        lines.push_str(&format!(
+            "  [WARN] {} command(s) could be replaced by `comb get`\n",
+            suggestions.len()
+        ));
+        worst = worst.max(Outcome::Warning);
+    }
+    lines.push_str(&vlines);
+    (lines, worst)
+}
+
+/// The block for a subject no renderer exists for.
+fn render_unknown(other: &str) -> (String, Outcome) {
+    let lines = format!("Unknown subject: {other}\n  [FAIL] no renderer for this subject\n");
+    (lines, Outcome::Error)
 }
 
 /// Render verdicts array into formatted lines and the worst of them
