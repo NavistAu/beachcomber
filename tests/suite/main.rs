@@ -14,6 +14,34 @@ fn isolate_git_config() {
     }
 }
 
+/// A test process closes the pipes it was born holding. macOS has no `pipe2`:
+/// nextest makes a test's output pipes and marks them close-on-exec in two
+/// steps, and a test spawned between them inherits the other's ends. That
+/// test is then reported leaky (LEAK-FAIL) until this one exits, seconds
+/// later for a long test. Nothing else hands a test process a pipe.
+#[cfg(target_os = "macos")]
+#[ctor::ctor(unsafe)]
+fn close_inherited_pipes() {
+    let fds: Vec<i32> = std::fs::read_dir("/dev/fd")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .filter(|&fd| fd > 2)
+        .collect();
+    for fd in fds {
+        // SAFETY: a constructor runs before `main`, while nothing in this
+        // process owns a descriptor above stderr but what it inherited; the
+        // listing's own is closed by now, and `fstat` fails on it.
+        unsafe {
+            let mut stat: libc::stat = std::mem::zeroed();
+            if libc::fstat(fd, &mut stat) == 0 && stat.st_mode & libc::S_IFMT == libc::S_IFIFO {
+                libc::close(fd);
+            }
+        }
+    }
+}
+
 mod absent_fields;
 mod arrays;
 mod auto_shutdown;
