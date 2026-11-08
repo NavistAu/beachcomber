@@ -120,11 +120,18 @@ impl Value {
 /// Returns `None` if a segment is absent, or if the walk lands on a scalar
 /// before the path is consumed. An array is walked by decimal index.
 pub fn lookup_path<'a>(fields: &'a HashMap<String, Value>, path: &str) -> Option<&'a Value> {
-    let segments = libbeachcomber::key::segments(path);
+    lookup_segments(fields, &libbeachcomber::key::segments(path))
+}
+
+/// [`lookup_path`] for an address already parsed into its segments.
+pub fn lookup_segments<'a, S: AsRef<str>>(
+    fields: &'a HashMap<String, Value>,
+    segments: &[S],
+) -> Option<&'a Value> {
     let (head, rest) = segments.split_first()?;
     let mut current = fields.get(head.as_ref())?;
     for segment in rest {
-        current = child(current, segment)?;
+        current = child(current, segment.as_ref())?;
     }
     Some(current)
 }

@@ -46,13 +46,21 @@ pub fn head_of(key: &str) -> &str {
 /// and an index that is not a canonical decimal. The facet syntax of the head
 /// is [`parse_facet`]'s to judge.
 pub fn split_key(key: &str) -> Result<(&str, String), String> {
+    let (head, segments) = parse_key(key)?;
+    Ok((head, format_address(&segments)))
+}
+
+/// [`split_key`], with the address as its segments rather than canonical
+/// text: `p.a['b.c'][0]` is `p` and `a`, `b.c`, `0`. Refuses what
+/// [`split_key`] refuses, with the same message.
+pub fn parse_key(key: &str) -> Result<(&str, Vec<String>), String> {
     let invalid = || format!("invalid key: {key}");
     let head = head_of(key);
     if head.is_empty() || head.starts_with(['/', '~']) || head.contains(']') {
         return Err(invalid());
     }
     let segments = parse_segments(&key[head.len()..], true).ok_or_else(invalid)?;
-    Ok((head, format_address(&segments)))
+    Ok((head, segments))
 }
 
 /// The segments of a canonical address (or of one a caller wrote below a

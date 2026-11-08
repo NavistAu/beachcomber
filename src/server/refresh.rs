@@ -4,7 +4,7 @@ use super::Ctx;
 use super::read::{Climb, climb};
 use crate::protocol::Response;
 use crate::provider::registry::ProviderRegistry;
-use crate::query::{KeyParse, QueryPlan};
+use crate::query::QueryPlan;
 use crate::scheduler::SchedulerMessage;
 use std::sync::Arc;
 use tracing::warn;
@@ -36,10 +36,7 @@ pub(super) async fn handle_refresh(
     // would claim work that never happened. Reading configuration
     // afresh is not a refresh: the config watcher does that.
     let demanded = crate::query::demanded_source_names(registry, provider_name, &plan.demand);
-    let addressed = match &plan.target {
-        KeyParse::Provider(p) => p.clone(),
-        KeyParse::Field(p, f) => libbeachcomber::key::join(p, f),
-    };
+    let addressed = libbeachcomber::key::join(&plan.target.provider, plan.target.rest());
     if registry.is_disabled(provider_name) {
         return Response::error(format!("nothing to refresh: {provider_name} is disabled"));
     }

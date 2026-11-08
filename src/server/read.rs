@@ -7,7 +7,7 @@ use crate::cache::{Cache, Layers, MergedRead};
 use crate::protocol::{Response, Wait};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::source_call::instance_key;
-use crate::query::{Ask, Found, Instance, InstanceWalk, KeyParse, QueryPlan};
+use crate::query::{Ask, Found, Instance, InstanceWalk, Key, QueryPlan};
 use crate::run::{Outcome, Want};
 use crate::scheduler::SchedulerMessage;
 use std::collections::HashMap;
@@ -395,11 +395,8 @@ pub(super) fn nearness(root: &Option<String>) -> i64 {
 /// Whether a merged read answers a field read: only a leaf does. An object is
 /// the union of what each instance says, so it is complete only at `~`, the
 /// same as a namespace read.
-pub(super) fn answers_field(merged: &Option<MergedRead>, target: &KeyParse) -> bool {
-    match target {
-        KeyParse::Field(_, field) => lookup_merged(merged, field).is_some_and(|v| !v.is_object()),
-        KeyParse::Provider(_) => false,
-    }
+pub(super) fn answers_field(merged: &Option<MergedRead>, target: &Key) -> bool {
+    target.is_field() && lookup_merged(merged, &target.path).is_some_and(|v| !v.is_object())
 }
 
 /// The instance chains of every demanded Source, climbed together nearest
@@ -447,7 +444,7 @@ pub(super) async fn climb(
         visited: Vec::new(),
         merged: None,
     };
-    let stops_early = by_default && matches!(plan.target, KeyParse::Field(..));
+    let stops_early = by_default && plan.target.is_field();
     let mut pending = Vec::new();
     loop {
         for w in walking.iter_mut() {
@@ -479,8 +476,8 @@ pub(super) async fn climb(
                 root: root.clone(),
             });
             if honor_put
-                && matches!(&plan.target, KeyParse::Field(_, field)
-                    if cache.put_answers(provider, root.as_deref(), field))
+                && plan.target.is_field()
+                && cache.put_answers(provider, root.as_deref(), plan.target.rest())
             {
                 continue;
             }
@@ -532,8 +529,11 @@ pub(super) fn read_chain_merged(
 /// conversion cannot fail; `.ok()` rather than a `Null` stand-in so that if it
 /// somehow did, the address reads as absent instead of as a stored null. Every
 /// conversion out of a merged tree takes that line.
-pub(super) fn lookup_merged(merged: &Option<MergedRead>, field: &str) -> Option<serde_json::Value> {
-    let value = crate::provider::lookup_path(&merged.as_ref()?.fields, field)?;
+pub(super) fn lookup_merged(
+    merged: &Option<MergedRead>,
+    path: &[String],
+) -> Option<serde_json::Value> {
+    let value = crate::provider::lookup_segments(&merged.as_ref()?.fields, path)?;
     serde_json::to_value(value).ok()
 }
 

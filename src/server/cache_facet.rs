@@ -7,7 +7,7 @@ use crate::cache::{Cache, Layers};
 use crate::protocol::Response;
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::source_call::instance_key;
-use crate::query::{Instance, KeyParse, QueryPlan};
+use crate::query::{Instance, Key, QueryPlan};
 use std::sync::Arc;
 use tracing::warn;
 
@@ -30,11 +30,11 @@ use tracing::warn;
 pub(super) fn cache_facet_response(
     cache: &Cache,
     registry: &ProviderRegistry,
-    target: &KeyParse,
+    target: &Key,
     requested: Option<&str>,
     reached: &[Instance],
 ) -> Response {
-    let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
+    let provider = &target.provider;
     let rest = target.rest();
 
     if rest == "_" || rest.starts_with("_.") {
@@ -56,12 +56,18 @@ pub(super) fn cache_facet_response(
     // A key below a leaf (`p:cache.f.age_ms`) reads into that leaf's answer:
     // the deepest node of the key the read reaches answers, and the rest of
     // the key walks into that answer.
-    let segments = libbeachcomber::key::segments(rest);
+    let segments = &target.path;
     let answered = (segments.len().min(1)..=segments.len())
         .rev()
         .find_map(|n| {
-            let node = libbeachcomber::key::format_address(&segments[..n]);
-            let tree = cache_facet_tree(cache, registry, provider, &node, requested, reached)?;
+            let tree = cache_facet_tree(
+                cache,
+                registry,
+                provider,
+                &segments[..n],
+                requested,
+                reached,
+            )?;
             Some((tree, libbeachcomber::key::format_address(&segments[n..])))
         });
     match answered {
@@ -72,23 +78,24 @@ pub(super) fn cache_facet_response(
     }
 }
 
-/// The `:cache` tree at `rest`, or `None` when the read does not reach a node
+/// The `:cache` tree at `path`, an address's segments, or `None` when the read does not reach a node
 /// there ([`cache_facet_response`]).
 pub(super) fn cache_facet_tree(
     cache: &Cache,
     registry: &ProviderRegistry,
     provider: &str,
-    rest: &str,
+    path: &[String],
     requested: Option<&str>,
     reached: &[Instance],
 ) -> Option<serde_json::Value> {
+    let rest = &libbeachcomber::key::format_address(path);
     let merged = cache.read_merged(provider, requested, reached, registry, Layers::All);
-    let Answered { merged, half } = answer(cache, registry, provider, rest, requested, merged);
+    let Answered { merged, half } = answer(cache, registry, provider, path, requested, merged);
     let value = merged.as_ref().and_then(|m| {
-        if rest.is_empty() {
+        if path.is_empty() {
             Some(crate::provider::Value::Object(m.fields.clone()))
         } else {
-            crate::provider::lookup_path(&m.fields, rest).cloned()
+            crate::provider::lookup_segments(&m.fields, path).cloned()
         }
     });
     // A template string reached with key left over answers at its own, shallower
@@ -230,7 +237,7 @@ pub(super) fn layers_response(
     let provider = plan.provider.as_str();
     let requested = plan.requested_path.as_deref();
     let merged = cache.read_merged(provider, requested, instances, registry, Layers::All);
-    let Answered { merged, half } = answer(cache, registry, provider, "", requested, merged);
+    let Answered { merged, half } = answer(cache, registry, provider, &[], requested, merged);
 
     // The address of the template string that answers `tail`: `tail`
     // itself, or the string above it the walk stops on.

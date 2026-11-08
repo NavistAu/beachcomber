@@ -2,65 +2,74 @@
 //! hint into a resolved `QueryPlan` (provider, effective path, parsed target,
 //! and the set of Sources the query demands).
 //!
-//! This is the single place that understands key syntax. `Get` and `Watch` both
-//! build a `QueryPlan` here so they share identical resolution semantics.
+//! The key grammar is [`libbeachcomber::key`]'s; a request key is parsed once,
+//! here, into a [`Key`]. `Get` and `Watch` both build a `QueryPlan` here so
+//! they share identical resolution semantics.
 
 use crate::provider::registry::ProviderRegistry;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Check a request key against the one key grammar
-/// ([`libbeachcomber::key`]): a head, optionally `name:facet`, then segments
-/// written `.seg`, `[n]` or `['…']`. A colon anywhere below the head is part of
-/// a segment. A malformed facet in the head is [`parse_facet`]'s error, and a
-/// head naming a reserved word is [`libbeachcomber::key::check_head`]'s. Every
-/// op that takes a key calls this first.
-pub fn validate_key(key: &str) -> Result<(), String> {
-    let (head, _) = libbeachcomber::key::split_key(key)?;
-    libbeachcomber::key::check_head(head)
-}
-
 /// The facet syntax of a head; the rules are [`libbeachcomber::key::parse_facet`]'s.
 pub use libbeachcomber::key::parse_facet;
 
-/// Parse a request key into one of two forms. A source name is metadata on a
-/// record, never a level in the key tree (`website/docs/internals/architecture.md`,
-/// "Provider→Source layering") — the second-and-later segments are always the field, however
-/// many dots it contains.
+/// A request key, parsed once: the provider it reads and the address below
+/// it, as segments and in canonical form ([`libbeachcomber::key`]). A source
+/// name is metadata on a record, never a level in the key tree
+/// (`website/docs/internals/architecture.md`, "Provider→Source layering"), so
+/// everything below the head is the address, however many segments it has.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum KeyParse {
-    /// "provider"
-    Provider(String),
-    /// "provider.field" — the address below the head, in canonical form
-    /// ([`libbeachcomber::key`]). May have any number of segments:
-    /// `provider.field.a.b.c` is a legitimate address once a field's value is
-    /// a nested Object (field_resolution.md invariant 12), and
-    /// `provider::lookup_path` walks it.
-    Field(String, String),
+pub struct Key {
+    /// The head with any layer facet split off (`git:source.branch` reads
+    /// `git`); a template, macro or memo facet stays, a namespace of its own.
+    pub provider: String,
+    /// The address's segments: empty for a whole-namespace read.
+    pub path: Vec<String>,
+    /// `path` in canonical form, which records, memos and the template
+    /// half are keyed by.
+    address: String,
 }
 
-impl KeyParse {
-    /// The address below the namespace: the field, or `""` for a
-    /// whole-namespace read. Both halves of a read — the data and the template
-    /// — are addressed by it.
-    pub fn rest(&self) -> &str {
-        match self {
-            KeyParse::Field(_, field) => field.as_str(),
-            KeyParse::Provider(_) => "",
-        }
+impl Key {
+    /// Check `key` against the one key grammar and parse it, with the layers
+    /// its facet names: a head, optionally `name:facet`, then segments
+    /// written `.seg`, `[n]` or `['…']`. A colon below the head is part of a
+    /// segment. Refused, in this order: what the grammar refuses
+    /// ([`libbeachcomber::key::split_key`]), a head naming a reserved word
+    /// ([`libbeachcomber::key::check_head`]), and a facet that is not one of
+    /// the six ([`parse_facet`], naming the head as written). `:put`,
+    /// `:source` and `:cache` name a layer; `p:cache` reads them all to
+    /// report on them.
+    pub fn parse(key: &str) -> Result<(Key, crate::cache::Layers), String> {
+        use crate::cache::Layers;
+        use libbeachcomber::key::Facet;
+        let (head, path) = libbeachcomber::key::parse_key(key)?;
+        libbeachcomber::key::check_head(head)?;
+        let (base, facet) = libbeachcomber::key::split_facet(head)?;
+        let (provider, layers) = match facet {
+            Some(Facet::Put) => (base, Layers::Put),
+            Some(Facet::Source) => (base, Layers::Source),
+            Some(Facet::Cache) => (base, Layers::Cache),
+            None | Some(Facet::Template | Facet::Macro | Facet::Memo) => (head, Layers::All),
+        };
+        let key = Key {
+            provider: provider.to_string(),
+            address: libbeachcomber::key::format_address(&path),
+            path,
+        };
+        Ok((key, layers))
     }
-}
 
-/// A key's head and its canonical address: `"provider"` -> `Provider`,
-/// anything with an address -> `Field(provider, address)`. A key the grammar
-/// refuses is [`validate_key`]'s error.
-pub fn parse_key(key: &str) -> Result<KeyParse, String> {
-    let (head, address) = libbeachcomber::key::split_key(key)?;
-    Ok(if address.is_empty() {
-        KeyParse::Provider(head.to_string())
-    } else {
-        KeyParse::Field(head.to_string(), address)
-    })
+    /// The address below the namespace in canonical form, or `""` for a
+    /// whole-namespace read.
+    pub fn rest(&self) -> &str {
+        &self.address
+    }
+
+    /// Whether the key addresses a node below the namespace.
+    pub fn is_field(&self) -> bool {
+        !self.path.is_empty()
+    }
 }
 
 /// The daemon's `$HOME`, canonicalised, read once per process.
@@ -485,73 +494,44 @@ pub struct QueryPlan {
     /// resolve up the chain from here, and it is where each demanded Source's
     /// instance chain starts ([`InstanceWalk`]).
     pub requested_path: Option<String>,
-    pub target: KeyParse,
+    pub target: Key,
     pub demand: SourceDemand,
     /// Which layers the read sees: `p:put` and `p:source` name one, anything
     /// else sees them all. `p:cache` reads them all to report on them.
     pub layers: crate::cache::Layers,
 }
 
-/// Split a `:put`, `:source` or `:cache` layer facet off the head of a key:
-/// `git:source.branch` is `("git.branch", Source)`. A plain key, or one
-/// naming the template, macro or memo facet (a namespace of its own), is
-/// returned unchanged with every layer. A head whose facet is not one of the six is
-/// [`parse_facet`]'s error, naming the head as written.
-pub fn split_layer_facet(
-    key: &str,
-) -> Result<(std::borrow::Cow<'_, str>, crate::cache::Layers), String> {
-    use crate::cache::Layers;
-    use libbeachcomber::key::Facet;
-    let head = libbeachcomber::key::head_of(key);
-    let (base, facet) = libbeachcomber::key::split_facet(head)?;
-    let layers = match facet {
-        Some(Facet::Put) => Layers::Put,
-        Some(Facet::Source) => Layers::Source,
-        Some(Facet::Cache) => Layers::Cache,
-        None | Some(Facet::Template | Facet::Macro | Facet::Memo) => {
-            return Ok((key.into(), Layers::All));
-        }
-    };
-    Ok((format!("{base}{}", &key[head.len()..]).into(), layers))
-}
-
 impl QueryPlan {
     /// Resolve a raw request key + optional path hint into a plan, or refuse
-    /// a key whose colons are invalid ([`validate_key`]).
+    /// a key the grammar refuses ([`Key::parse`]).
     pub fn build(
         raw_key: &str,
         path_hint: Option<&str>,
         registry: &ProviderRegistry,
     ) -> Result<QueryPlan, String> {
-        validate_key(raw_key)?;
-        let (key, layers) = split_layer_facet(raw_key)?;
+        let (target, layers) = Key::parse(raw_key)?;
         let requested_path = normalise_path(path_hint)?;
-        let target = parse_key(&key)?;
-
-        let provider = match &target {
-            KeyParse::Provider(p) => p.clone(),
-            KeyParse::Field(p, _) => p.clone(),
-        };
+        let provider = target.provider.clone();
 
         // The Sources the key reads. The layer facets `:put` and `:cache` warm
         // none of them; a caller that warms checks `layers`.
-        let demand = match &target {
-            KeyParse::Provider(_) => SourceDemand::All,
+        let demand = if !target.is_field() {
+            SourceDemand::All
+        } else if !registry.reads_by_default(&provider) {
             // A provider whose lines are not the shipped ones decides what
             // exists: a renamed or dropped field is no Source's, so a field
             // read demands every Source.
-            KeyParse::Field(p, _) if !registry.reads_by_default(p) => SourceDemand::All,
-            KeyParse::Field(p, f) => {
-                // A field's demand is the Source of its nearest ancestor node,
-                // else the provider's sentinel Sources, else nothing.
-                SourceDemand::Sources(
-                    registry
-                        .sources_for_key(p, f)
-                        .into_iter()
-                        .map(String::from)
-                        .collect(),
-                )
-            }
+            SourceDemand::All
+        } else {
+            // A field's demand is the Source of its nearest ancestor node,
+            // else the provider's sentinel Sources, else nothing.
+            SourceDemand::Sources(
+                registry
+                    .sources_for_path(&provider, &target.path)
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+            )
         };
 
         Ok(QueryPlan {
@@ -569,31 +549,42 @@ mod tests {
     use super::*;
     use crate::provider::registry::ProviderRegistry;
 
-    fn parse(key: &str) -> KeyParse {
-        parse_key(key).unwrap()
+    /// A key's provider and canonical address.
+    fn parse(key: &str) -> (String, String) {
+        let (key, _) = Key::parse(key).unwrap();
+        (key.provider.clone(), key.rest().to_string())
+    }
+
+    fn owned(p: &str, f: &str) -> (String, String) {
+        (p.to_string(), f.to_string())
     }
 
     #[test]
     fn parse_key_recognises_provider() {
-        assert!(matches!(parse("git"), KeyParse::Provider(p) if p == "git"));
+        let (key, _) = Key::parse("git").unwrap();
+        assert!(!key.is_field());
+        assert_eq!(parse("git"), owned("git", ""));
     }
 
     #[test]
     fn parse_key_recognises_field() {
-        assert!(
-            matches!(parse("git.branch"), KeyParse::Field(p, f) if p == "git" && f == "branch")
-        );
+        assert_eq!(parse("git.branch"), owned("git", "branch"));
     }
 
     #[test]
     fn parse_key_unknown_provider_yields_field() {
-        assert!(
-            matches!(parse("nope.field"), KeyParse::Field(p, f) if p == "nope" && f == "field")
-        );
+        assert_eq!(parse("nope.field"), owned("nope", "field"));
     }
 
     #[test]
-    fn validate_key_takes_the_key_grammar() {
+    fn parse_key_keeps_the_segments_and_their_canonical_form() {
+        let (key, _) = Key::parse("p.a['b.c'][0]").unwrap();
+        assert_eq!(key.path, vec!["a", "b.c", "0"]);
+        assert_eq!(key.rest(), "a['b.c'].0");
+    }
+
+    #[test]
+    fn key_parse_takes_the_key_grammar() {
         for key in [
             "git",
             "git.branch",
@@ -605,19 +596,17 @@ mod tests {
             "mise['go:golang.org/x/tools/gopls']",
             "p.list[0]",
         ] {
-            assert_eq!(validate_key(key), Ok(()), "{key}");
+            assert!(Key::parse(key).is_ok(), "{key}");
         }
         for key in ["p..a", "p['a", "/tmp/x", "~/ws"] {
-            assert_eq!(validate_key(key), Err(format!("invalid key: {key}")));
+            assert_eq!(Key::parse(key), Err(format!("invalid key: {key}")));
         }
     }
 
     #[test]
     fn parse_key_canonicalises_the_address() {
-        assert!(matches!(parse("p.list[0]"), KeyParse::Field(p, f) if p == "p" && f == "list.0"));
-        assert!(
-            matches!(parse("mise['go:x.y']"), KeyParse::Field(p, f) if p == "mise" && f == "['go:x.y']")
-        );
+        assert_eq!(parse("p.list[0]"), owned("p", "list.0"));
+        assert_eq!(parse("mise['go:x.y']"), owned("mise", "['go:x.y']"));
     }
 
     #[test]
@@ -681,17 +670,20 @@ mod tests {
 
     #[test]
     fn a_layer_facet_splits_off_a_bracketed_key() {
-        let (key, layers) = split_layer_facet("mise:cache['go:x.y']").unwrap();
-        assert_eq!(key, "mise['go:x.y']");
+        let (key, layers) = Key::parse("mise:cache['go:x.y']").unwrap();
+        assert_eq!((key.provider.as_str(), key.rest()), ("mise", "['go:x.y']"));
         assert_eq!(layers, crate::cache::Layers::Cache);
     }
 
     /// The template and macro facets are namespaces of their own, read whole.
     #[test]
     fn the_template_and_macro_facets_are_plain_namespaces() {
-        for key in ["scanline:template.rate", "scanline:macro.rate"] {
-            let (split, layers) = split_layer_facet(key).unwrap();
-            assert_eq!(split, key);
+        for (key, head) in [
+            ("scanline:template.rate", "scanline:template"),
+            ("scanline:macro.rate", "scanline:macro"),
+        ] {
+            let (split, layers) = Key::parse(key).unwrap();
+            assert_eq!((split.provider.as_str(), split.rest()), (head, "rate"));
             assert_eq!(layers, crate::cache::Layers::All);
         }
     }
@@ -720,7 +712,7 @@ mod tests {
     fn build_reads_a_colon_below_the_head_as_part_of_a_segment() {
         let reg = ProviderRegistry::shipped(&std::env::vars().collect());
         let plan = QueryPlan::build("git.branch:fresh", None, &reg).unwrap();
-        assert!(matches!(plan.target, KeyParse::Field(_, ref f) if f == "branch:fresh"));
+        assert_eq!(plan.target.rest(), "branch:fresh");
     }
 }
 

@@ -5,7 +5,7 @@ use super::read::lookup_merged;
 use crate::cache::{Cache, MergedRead};
 use crate::protocol::Response;
 use crate::provider::registry::ProviderRegistry;
-use crate::query::{Instance, KeyParse};
+use crate::query::{Instance, Key};
 use std::collections::HashMap;
 
 /// A data hit, carrying the freshness [`freshness`] found for it.
@@ -88,7 +88,7 @@ pub(super) struct Answered {
 }
 
 /// The provider's `return` over `result`, the data its records gave (spec
-/// §3.4): the data it answers, and the template half, the node at `rest` in
+/// §3.4): the data it answers, and the template half, the node at `path` in
 /// the tree the line attaches as the `template` facet.
 ///
 /// The line is read once per answer, over the data read (`result`) and the
@@ -107,12 +107,12 @@ pub(super) fn answer(
     cache: &Cache,
     registry: &ProviderRegistry,
     provider: &str,
-    rest: &str,
+    address: &[String],
     path: Option<&str>,
     result: Option<MergedRead>,
 ) -> Answered {
     let returned = crate::shape::provider::returned_over(cache, registry, provider, path, result);
-    let mut half = template_half(returned.template, rest);
+    let mut half = template_half(returned.template, address);
     if let Some(template) = &half.template
         && cache.has_memos(provider)
     {
@@ -153,40 +153,29 @@ pub(super) fn memo_half(
     }
 }
 
-/// The node at `rest` in the `template` facet a `return` attached.
+/// The node at `path`, an address's segments, in the `template` facet a
+/// `return` attached.
 pub(super) fn template_half(
     attached: Option<HashMap<String, crate::provider::Value>>,
-    rest: &str,
+    path: &[String],
 ) -> TemplateHalf {
     use crate::provider::Value;
+    use libbeachcomber::key::format_address;
     let Some(fields) = attached else {
         return TemplateHalf::default();
     };
-    let read = MergedRead {
-        fields,
-        records: HashMap::new(),
-    };
-
-    if rest.is_empty() {
+    let Some((head, below)) = path.split_first() else {
         return TemplateHalf {
-            template: serde_json::to_value(&read.fields).ok(),
+            template: serde_json::to_value(&fields).ok(),
             ..TemplateHalf::default()
         };
-    }
-
-    let Some((head, mut left)) = libbeachcomber::key::split_first(rest) else {
+    };
+    let Some(mut current) = fields.get(head) else {
         return TemplateHalf::default();
     };
-    let Some(mut current) = read.fields.get(&head) else {
-        return TemplateHalf::default();
-    };
-    let mut at = libbeachcomber::key::push("", &head);
-    while let Some(remainder) = left {
-        let Some((segment, below)) = libbeachcomber::key::split_first(&remainder) else {
-            return TemplateHalf::default();
-        };
+    for (i, segment) in below.iter().enumerate() {
         match current {
-            Value::Object(map) => match map.get(&segment) {
+            Value::Object(map) => match map.get(segment) {
                 Some(v) => current = v,
                 None => return TemplateHalf::default(),
             },
@@ -195,21 +184,19 @@ pub(super) fn template_half(
             Value::String(_) => {
                 return TemplateHalf {
                     template: serde_json::to_value(current).ok(),
-                    rest: Some(remainder),
-                    at,
+                    rest: Some(format_address(&below[i..])),
+                    at: format_address(&path[..=i]),
                     memo: None,
                 };
             }
             _ => return TemplateHalf::default(),
         }
-        at = libbeachcomber::key::push(&at, &segment);
-        left = below;
     }
     match current {
         Value::Object(_) | Value::String(_) => TemplateHalf {
             template: serde_json::to_value(current).ok(),
             rest: None,
-            at,
+            at: format_address(path),
             memo: None,
         },
         _ => TemplateHalf::default(),
@@ -230,21 +217,18 @@ pub(super) fn template_half(
 /// segments left is a miss), so the two halves of the tree agree.
 pub(super) fn resolve_halves(
     merged: &Option<MergedRead>,
-    target: &KeyParse,
+    target: &Key,
     half: TemplateHalf,
 ) -> Response {
-    let rest = target.rest();
-    let response = match target {
-        KeyParse::Field(..) => match (lookup_merged(merged, rest), merged) {
-            (Some(data), Some(m)) => hit_response(data, freshness(m, rest)),
-            _ => Response::miss(),
-        },
-        KeyParse::Provider(_) => match merged {
-            Some(m) => serde_json::to_value(&m.fields)
-                .ok()
-                .map_or_else(Response::miss, |data| hit_response(data, freshness(m, ""))),
-            None => Response::miss(),
-        },
+    let response = match merged {
+        Some(m) if target.is_field() => lookup_merged(merged, &target.path)
+            .map_or_else(Response::miss, |data| {
+                hit_response(data, freshness(m, target.rest()))
+            }),
+        Some(m) => serde_json::to_value(&m.fields)
+            .ok()
+            .map_or_else(Response::miss, |data| hit_response(data, freshness(m, ""))),
+        None => Response::miss(),
     };
     response.with_halves(half.template, half.rest, half.memo)
 }
@@ -255,7 +239,7 @@ pub(super) fn resolve_halves(
 pub(super) fn read_watch_value(
     cache: &Cache,
     registry: &ProviderRegistry,
-    target: &KeyParse,
+    target: &Key,
     requested: Option<&str>,
     reached: &[Instance],
     layers: crate::cache::Layers,
@@ -263,7 +247,7 @@ pub(super) fn read_watch_value(
     if layers == crate::cache::Layers::Cache {
         return cache_facet_response(cache, registry, target, requested, reached);
     }
-    let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
+    let provider = &target.provider;
     // A watch frame carries the same two halves a `get` does.
     let merged = cache.read_merged(provider, requested, reached, registry, layers);
     let Answered { merged, half } = answer_read(cache, registry, target, requested, layers, merged);
@@ -281,12 +265,12 @@ pub(super) fn read_watch_value(
 pub(super) fn answer_read(
     cache: &Cache,
     registry: &ProviderRegistry,
-    target: &KeyParse,
+    target: &Key,
     requested: Option<&str>,
     layers: crate::cache::Layers,
     merged: Option<MergedRead>,
 ) -> Answered {
-    let (KeyParse::Field(provider, _) | KeyParse::Provider(provider)) = target;
+    let provider = &target.provider;
     if layers != crate::cache::Layers::All
         || crate::query::parse_facet(provider).ok().flatten().is_some()
     {
@@ -295,7 +279,7 @@ pub(super) fn answer_read(
             half: TemplateHalf::default(),
         };
     }
-    answer(cache, registry, provider, target.rest(), requested, merged)
+    answer(cache, registry, provider, &target.path, requested, merged)
 }
 
 #[cfg(test)]
@@ -306,7 +290,6 @@ mod tests {
     fn read_watch_value_field_target_finds_field() {
         use crate::cache::Cache;
         use crate::provider::Value;
-        use crate::query::KeyParse;
         use std::collections::HashMap;
 
         let cache = Cache::new();
@@ -321,7 +304,7 @@ mod tests {
         );
 
         let registry = ProviderRegistry::shipped(&std::env::vars().collect());
-        let target = KeyParse::Field("git".to_string(), "branch".to_string());
+        let (target, _) = Key::parse("git.branch").unwrap();
         let resp = read_watch_value(
             &cache,
             &registry,

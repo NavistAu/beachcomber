@@ -1002,15 +1002,17 @@ impl ProviderRegistry {
     /// sentinel field (they answer for the provider node), in declaration
     /// order, else none.
     pub fn sources_for_key(&self, provider: &str, field: &str) -> Vec<&str> {
-        let mut node = field.to_string();
-        while !node.is_empty() {
-            if let Some(owners) = self
-                .declared_sources
-                .get(&(provider.to_string(), node.clone()))
-            {
+        self.sources_for_path(provider, &libbeachcomber::key::segments(field))
+    }
+
+    /// [`Self::sources_for_key`] for an address already parsed into its
+    /// segments.
+    pub fn sources_for_path<S: AsRef<str>>(&self, provider: &str, path: &[S]) -> Vec<&str> {
+        for len in (1..=path.len()).rev() {
+            let node = libbeachcomber::key::format_address(&path[..len]);
+            if let Some(owners) = self.declared_sources.get(&(provider.to_string(), node)) {
                 return owners.iter().map(String::as_str).collect();
             }
-            node = libbeachcomber::key::parent(&node).unwrap_or_default();
         }
         self.sentinel_sources
             .get(provider)
