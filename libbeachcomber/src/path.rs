@@ -97,11 +97,13 @@ pub fn normalise_here(requested: Option<&str>) -> Result<String, PathError> {
     )
 }
 
-/// Home, in the two forms a path under it may arrive in.
-#[derive(Clone, Debug, Default)]
+/// Home, in the two forms a path under it may arrive in, and as the
+/// directory a daemon keys the global entry by ([`Home::dir`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Home {
     raw: Option<String>,
     canonical: Option<String>,
+    dir: Option<String>,
 }
 
 impl Home {
@@ -118,14 +120,19 @@ impl Home {
                 .filter(|h| !h.is_empty())
                 .map(|h| h.trim_end_matches('/').to_string()),
             canonical: None,
+            dir: raw.filter(|h| !h.is_empty()).map(str::to_string),
         }
     }
 
     /// Home at `raw`, with its canonical form looked up on disk.
     pub fn of(raw: Option<&str>) -> Home {
-        let raw = raw
-            .filter(|h| !h.is_empty())
-            .map(|h| h.trim_end_matches('/'));
+        let written = raw.filter(|h| !h.is_empty());
+        let dir = written.map(|h| {
+            std::fs::canonicalize(h)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| h.to_string())
+        });
+        let raw = written.map(|h| h.trim_end_matches('/'));
         let canonical = raw
             .and_then(|h| std::fs::canonicalize(h).ok())
             .map(|p| p.to_string_lossy().into_owned())
@@ -133,7 +140,14 @@ impl Home {
         Home {
             raw: raw.map(str::to_string),
             canonical,
+            dir,
         }
+    }
+
+    /// Home as one directory: canonical, else as written (untrimmed, so a
+    /// `$HOME` of `/` is `/`). `None` when there is no home.
+    pub fn dir(&self) -> Option<&str> {
+        self.dir.as_deref()
     }
 
     /// `path` written from `~` when it is home or below it, else as given.
