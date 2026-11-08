@@ -176,13 +176,19 @@ const REPO_VARS: [&str; 6] = [
 /// serialised through the agent when tests run in parallel — and
 /// `init.defaultBranch` would make the initial branch name depend on the
 /// machine. The identity rides in the environment rather than a `git config`
-/// per repository, which was two more processes for every fixture.
+/// per repository, which was two more processes for every fixture. Automatic
+/// maintenance is off: every commit, fetch and push would otherwise leave a
+/// detached `git maintenance run --auto` behind, a process apiece that has
+/// nothing to do in a fixture and may touch `.git` while a test watches it.
 pub fn git_cmd(dir: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     cmd.args(args)
         .current_dir(dir)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "maintenance.auto")
+        .env("GIT_CONFIG_VALUE_0", "false")
         .env("GIT_AUTHOR_NAME", "Test")
         .env("GIT_AUTHOR_EMAIL", "test@test.com")
         .env("GIT_COMMITTER_NAME", "Test")
