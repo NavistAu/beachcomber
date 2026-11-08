@@ -61,7 +61,8 @@ fn bench_concurrent_throughput(c: &mut Criterion) {
     let server = TestServer::new();
 
     let mut group = c.benchmark_group("concurrent_throughput");
-    // Fewer samples since each iteration spawns many concurrent tasks.
+    // Fewer samples since each iteration spawns many concurrent clients. The
+    // sessions block, so they run on blocking threads, not the daemon's workers.
     group.sample_size(20);
 
     for num_clients in [1usize, 10, 50, 100] {
@@ -78,7 +79,7 @@ fn bench_concurrent_throughput(c: &mut Criterion) {
                         for _ in 0..num_clients {
                             let sock = sock.clone();
                             let counter = Arc::clone(&counter);
-                            handles.push(tokio::spawn(async move {
+                            handles.push(tokio::task::spawn_blocking(move || {
                                 let mut session = Client::new(sock).connect().unwrap();
                                 let env = HashMap::new();
                                 let inputs = Inputs {
