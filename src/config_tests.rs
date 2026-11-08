@@ -361,6 +361,35 @@ fn a_client_template_is_linted_where_it_is_loaded() {
     );
 }
 
+/// A `root` line may call `exec`, `url` or `plugin`, but every new directory
+/// read runs it, so the load warns and still loads; `lup()` does not warn.
+#[test]
+fn a_root_line_that_calls_exec_warns_and_still_loads() {
+    let source = |root: &str| {
+        let config = Config::from_layers(vec![(
+            PathBuf::from("/user.toml"),
+            toml::from_str(&format!(
+                "[daemon.providers.demo.sources.s]\nroot = \"{root}\"\ndata = \"{{{{ 1 }}}}\"\n\
+                 result.x = \"{{{{ data }}}}\"\n"
+            ))
+            .unwrap(),
+        )]);
+        ProviderRegistry::load(&config, &std::env::vars().collect())
+    };
+    let load = source("{{ exec('git', 'rev-parse') }}");
+    assert!(load.errors.is_empty(), "{:#?}", load.errors);
+    assert!(load.registry.is_registered("demo"));
+    assert_eq!(
+        load.warnings,
+        vec![
+            "config(/user.toml): [daemon.providers.demo.sources.s] root: exec() runs for every \
+             new directory read; find the root with lup() instead"
+        ]
+    );
+    let load = source("{{ lup('.git') | dirname }}");
+    assert!(load.warnings.is_empty(), "{:#?}", load.warnings);
+}
+
 /// A `data` line's own words win over a provider of the same name: there
 /// `daemon.<x>` calls a Source, so a provider called `daemon` is read as
 /// `comb.daemon`, which loads clean.

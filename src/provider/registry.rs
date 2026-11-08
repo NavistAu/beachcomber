@@ -1156,6 +1156,21 @@ impl ProviderRegistry {
                 })
             })
             .collect();
+        let mut warnings: Vec<String> = built
+            .iter()
+            .flat_map(|(provider, sources)| {
+                sources.iter().filter_map(move |s| {
+                    let who = format!(
+                        "[daemon.providers.{provider}.sources.{}]",
+                        s.metadata().name
+                    );
+                    s.root_line()
+                        .map(|root| crate::provider::config_source::root_warnings(&who, root))
+                })
+            })
+            .flatten()
+            .map(|w| config.locate(w))
+            .collect();
         for (name, sources) in built {
             if let Err(e) = registry.register_config_sources(&name, sources) {
                 errors.push(e);
@@ -1198,7 +1213,7 @@ impl ProviderRegistry {
         // it. What the load and the per-file rules already said is not said
         // twice.
         let mut seed = crate::daemon::seed::plan(config, &registry);
-        let mut warnings = std::mem::take(&mut seed.warnings);
+        warnings.extend(std::mem::take(&mut seed.warnings));
         warnings.extend(
             registry
                 .data_line_warnings(config, &seed, vars, &data_lines)

@@ -282,6 +282,29 @@ pub fn data_warnings(probe: &Probe<'_>, who: &str, data: &str, known: &Known<'_>
         .collect()
 }
 
+/// The load warning for a `root` line at `who` that calls `exec`, `url` or
+/// `plugin`: every distinct directory read runs the line, so the call forks
+/// (or fetches) once per new directory. Allowed, but `lup()` is what finds a
+/// root without leaving the process.
+pub fn root_warnings(who: &str, root: &str) -> Vec<String> {
+    let used = libbeachcomber::eval::used_names(root);
+    ["exec", "url", "plugin"]
+        .into_iter()
+        .filter(|name| {
+            matches!(
+                used.get(*name),
+                Some(libbeachcomber::eval::Use::Call | libbeachcomber::eval::Use::Both)
+            )
+        })
+        .map(|name| {
+            format!(
+                "{who} root: {name}() runs for every new directory read; find the root with \
+                 lup() instead"
+            )
+        })
+        .collect()
+}
+
 /// What only a `data` line can get wrong, once it compiles: reading
 /// `sources` other than by calling one, or calling a Source no way names.
 fn lint_data(probe: &Probe<'_>, data: &str) -> Option<String> {
@@ -444,6 +467,11 @@ impl ConfigSource {
     /// The `data` line, as resolved.
     pub fn data(&self) -> &str {
         &self.spec.data
+    }
+
+    /// The `root` line, if the Source has one.
+    pub fn root_line(&self) -> Option<&str> {
+        self.spec.root.as_deref()
     }
 
     /// The Sources the `data` line calls.
