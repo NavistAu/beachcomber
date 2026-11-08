@@ -117,10 +117,10 @@ pub fn run_daemon(
     }
 
     let pid_path = socket_path.with_file_name("pid");
-    let binary_hash = match crate::singleton::hash_current_binary() {
+    let binary_id = match crate::singleton::current_binary_id() {
         Ok(h) => h,
         Err(e) => {
-            tracing::error!("failed to hash current binary for singleton identity: {e}");
+            tracing::error!("failed to read the binary's identity for the singleton: {e}");
             return Outcome::Error;
         }
     };
@@ -128,7 +128,7 @@ pub fn run_daemon(
         &pid_path,
         &socket_path,
         env!("BEACHCOMBER_VERSION"),
-        &binary_hash,
+        &binary_id,
     ) {
         Ok(Some(lock)) => lock,
         Ok(None) => {

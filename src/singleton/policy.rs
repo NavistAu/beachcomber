@@ -11,7 +11,7 @@ use crate::singleton::PidFileRecord;
 /// See `decide_supersession` for the full decision rule.
 pub use crate::singleton::SupersessionDecision;
 
-/// Given the existing singleton's record, our own binary hash, and whether the
+/// Given the existing singleton's record, our own binary id, and whether the
 /// existing owner is serving its socket, decide whether to supersede (kill and
 /// take over) or exit silently (existing daemon is fine).
 ///
@@ -22,10 +22,10 @@ pub use crate::singleton::SupersessionDecision;
 /// want to import from the pure-policy module explicitly.
 pub fn decide_supersession(
     existing: &PidFileRecord,
-    our_binary_hash: &str,
+    our_binary_id: &str,
     owner_serving: bool,
 ) -> SupersessionDecision {
-    crate::singleton::decide_supersession(existing, our_binary_hash, owner_serving)
+    crate::singleton::decide_supersession(existing, our_binary_id, owner_serving)
 }
 
 /// Given a file's last-modified timestamp (in milliseconds since the Unix epoch) and
@@ -161,7 +161,7 @@ mod tests {
             pid,
             version: "0.5.1".into(),
             binary: "/path/to/comb".into(),
-            binary_hash: hash.into(),
+            binary_id: hash.into(),
             started_unix_ms: 0,
         }
     }
@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn same_version_different_hash_still_supersedes() {
         // Two dev builds at the same cargo version but different binaries —
-        // human version matches, but binary_hash differs, so we supersede.
+        // human version matches, but binary_id differs, so we supersede.
         let mut rec = make_record(9999, HASH_A);
         rec.version = "0.5.1".into(); // same version string
         let decision = decide_supersession(&rec, HASH_B, true);

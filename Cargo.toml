@@ -45,13 +45,13 @@ libloading = "0.9"
 minijinja = { workspace = true }
 terminal_size = "0.4"
 thiserror = "2.0.18"
-sha2 = "0.11.0"
 libbeachcomber = { path = "libbeachcomber", version = "0.10.1" }
 
 [features]
 test-helpers = []
 
 [dev-dependencies]
+sha2 = "0.11.0"
 beachcomber = { path = ".", features = ["test-helpers"] }
 # The C ABI, for `tests/suite/cli_ffi_equivalence.rs`. Keyed by package name rather
 # than the default: its `[lib] name` is *also* `beachcomber` (it must match the
@@ -121,12 +121,6 @@ split-debuginfo = "packed"
 # Keep backtraces with file:line, drop variable inspection info. Much smaller
 # debug data, faster link. Trade-off: less info in `lldb` step-through sessions.
 debug = "line-tables-only"
-
-# The daemon hashes its own executable at startup (singleton identity). An
-# unoptimised SHA-256 over a debug-sized binary costs most of a test daemon's
-# startup; optimised, it is a few milliseconds.
-[profile.dev.package.sha2]
-opt-level = 3
 
 # Every daemon start, registry load and `comb` render compiles the shipped
 # templates, and in a debug build minijinja's own lexer and parser are most of

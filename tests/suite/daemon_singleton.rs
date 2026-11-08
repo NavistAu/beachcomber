@@ -84,7 +84,7 @@ fn singleton_lock_creates_pid_file_and_holds_flock() {
     let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
     assert_eq!(parsed["pid"].as_u64().unwrap(), std::process::id() as u64);
     assert_eq!(parsed["version"].as_str().unwrap(), "0.5.1+sha.abc");
-    assert_eq!(parsed["binary_hash"].as_str().unwrap(), TEST_HASH_A);
+    assert_eq!(parsed["binary_id"].as_str().unwrap(), TEST_HASH_A);
     assert!(parsed["binary"].is_string());
     assert!(parsed["started_unix_ms"].is_number());
 
