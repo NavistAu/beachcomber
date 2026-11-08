@@ -72,15 +72,10 @@ pub enum SchedulerMessage {
         ttl_secs: Option<u64>,
         watch: Vec<String>,
     },
-    /// Request a snapshot of all (provider, path, source) entries with non-zero failure counts.
-    /// Returns an empty map when no failures are tracked.
-    GetFailureStates {
-        reply: tokio::sync::oneshot::Sender<HashMap<lifecycle::Key, FailureSnapshot>>,
-    },
-    /// Request a full per-entry snapshot of the lifecycle registry.
-    /// Used by the status response handler to annotate CacheRows with lifecycle info.
-    GetLifecycleSnapshots {
-        reply: tokio::sync::oneshot::Sender<HashMap<lifecycle::Key, LifecycleSnapshot>>,
+    /// Request every instance's state, both halves taken at one moment: see
+    /// [`snapshot_instances`].
+    GetInstances {
+        reply: tokio::sync::oneshot::Sender<HashMap<lifecycle::Key, InstanceSnapshot>>,
     },
     /// The configuration changed under `providers` and `next` is the registry
     /// built from it. The scheduler adopts it, brings its lifecycle entries to
@@ -118,6 +113,15 @@ pub struct LifecycleSnapshot {
     pub watches_files: bool,
     /// Source name for this lifecycle entry.
     pub source: String,
+}
+
+/// One instance's state at one moment: its lifecycle entry, when it has one,
+/// and its failure streak, when it is failing. A failing instance may have no
+/// lifecycle entry (it was evicted, or never demanded), and the reverse.
+#[derive(Debug, Clone, Default)]
+pub struct InstanceSnapshot {
+    pub lifecycle: Option<LifecycleSnapshot>,
+    pub failure: Option<FailureSnapshot>,
 }
 
 /// What a run cut off at its `timeout` reports, wherever it ran.
@@ -243,22 +247,33 @@ impl SchedulerHandle {
         self.ask(SchedulerMessage::GetStatus { reply }, rx).await
     }
 
-    /// Return a snapshot of all (provider, path, source) entries with non-zero consecutive failure counts.
-    /// Returns an empty map when no failures are tracked.
-    pub async fn get_failure_states(&self) -> HashMap<lifecycle::Key, FailureSnapshot> {
+    /// Every instance with a lifecycle entry or a failure streak, each with
+    /// both halves of its state taken at the same moment. Empty when the
+    /// scheduler does not answer.
+    pub async fn get_instances(&self) -> HashMap<lifecycle::Key, InstanceSnapshot> {
         let (reply, rx) = oneshot::channel();
-        self.ask(SchedulerMessage::GetFailureStates { reply }, rx)
+        self.ask(SchedulerMessage::GetInstances { reply }, rx)
             .await
             .unwrap_or_default()
     }
 
-    /// Return a full per-entry snapshot of every lifecycle-tracked key.
-    /// Missing keys are not in the lifecycle registry (e.g. static/put entries).
+    /// The failing instances: each with a non-zero streak.
+    pub async fn get_failure_states(&self) -> HashMap<lifecycle::Key, FailureSnapshot> {
+        let instances = self.get_instances().await;
+        instances
+            .into_iter()
+            .filter_map(|(key, i)| Some((key, i.failure?)))
+            .collect()
+    }
+
+    /// The instances with a lifecycle entry. A static entry (a put's, a
+    /// memo's) has one only while it has a ttl or a watch.
     pub async fn get_lifecycle_snapshots(&self) -> HashMap<lifecycle::Key, LifecycleSnapshot> {
-        let (reply, rx) = oneshot::channel();
-        self.ask(SchedulerMessage::GetLifecycleSnapshots { reply }, rx)
-            .await
-            .unwrap_or_default()
+        let instances = self.get_instances().await;
+        instances
+            .into_iter()
+            .filter_map(|(key, i)| Some((key, i.lifecycle?)))
+            .collect()
     }
 }
 
@@ -306,11 +321,48 @@ impl FailureState {
             .map(|until| Instant::now() < until)
             .unwrap_or(false)
     }
+
+    /// The streak as `status` shows it; `None` once a success ended it.
+    fn snapshot(&self) -> Option<FailureSnapshot> {
+        (self.consecutive_failures > 0).then(|| FailureSnapshot {
+            consecutive_failures: self.consecutive_failures,
+            suppressed_until_unix_ms: self.suppressed_until.map(instant_to_unix_ms),
+            last_error: self.last_error.clone(),
+        })
+    }
 }
 
-/// Build a `LifecycleSnapshot` for a given lifecycle entry at `now`. Centralised
-/// so the two snapshot-reply sites (sync and async branches in the scheduler
-/// loop) compute polls_elapsed and poll_count identically.
+/// Every instance's state at `now`: each lifecycle entry and each failure
+/// streak, joined on their key. The failure map is locked once, while the
+/// scheduler holds the lifecycle, so the two halves agree.
+fn snapshot_instances(
+    lifecycle: &LifecycleRegistry,
+    failures: &SourceFailureMap,
+    now: Instant,
+) -> HashMap<lifecycle::Key, InstanceSnapshot> {
+    let mut out: HashMap<lifecycle::Key, InstanceSnapshot> = lifecycle
+        .iter()
+        .map(|(key, entry)| {
+            let lifecycle = Some(snapshot_entry(key, entry, now));
+            (
+                key.clone(),
+                InstanceSnapshot {
+                    lifecycle,
+                    failure: None,
+                },
+            )
+        })
+        .collect();
+    let failures = failures.lock().unwrap_or_else(|e| e.into_inner());
+    for (key, state) in failures.iter() {
+        if let Some(failure) = state.snapshot() {
+            out.entry(key.clone()).or_default().failure = Some(failure);
+        }
+    }
+    out
+}
+
+/// Build a `LifecycleSnapshot` for a given lifecycle entry at `now`.
 fn snapshot_entry(
     key: &lifecycle::Key,
     entry: &lifecycle::LifecycleEntry,
@@ -1078,37 +1130,9 @@ impl Scheduler {
                             );
                             let _ = reply.send(status);
                         }
-                        Some(SchedulerMessage::GetFailureStates { reply }) => {
-                            let snap: HashMap<lifecycle::Key, FailureSnapshot> = self
-                                .failure_counts
-                                .lock()
-                                .unwrap()
-                                .iter()
-                                .filter_map(|(key, state)| {
-                                    if state.consecutive_failures == 0 {
-                                        return None;
-                                    }
-                                    Some((
-                                        key.clone(),
-                                        FailureSnapshot {
-                                            consecutive_failures: state.consecutive_failures,
-                                            suppressed_until_unix_ms: state
-                                                .suppressed_until
-                                                .map(instant_to_unix_ms),
-                                            last_error: state.last_error.clone(),
-                                        },
-                                    ))
-                                })
-                                .collect();
+                        Some(SchedulerMessage::GetInstances { reply }) => {
+                            let snap = snapshot_instances(&lifecycle, &self.failure_counts, Instant::now());
                             let _ = reply.send(snap);
-                        }
-                        Some(SchedulerMessage::GetLifecycleSnapshots { reply }) => {
-                            let now = Instant::now();
-                            let map: HashMap<lifecycle::Key, LifecycleSnapshot> = lifecycle
-                                .iter()
-                                .map(|(k, entry)| (k.clone(), snapshot_entry(k, entry, now)))
-                                .collect();
-                            let _ = reply.send(map);
                         }
                         Some(SchedulerMessage::QueryActivity { provider, instances }) => {
                             let now = Instant::now();
@@ -1853,6 +1877,44 @@ mod tests {
         let at = |secs| snapshot_entry(&key, entry, t0 + Duration::from_secs(secs));
         assert_eq!(at(0).polls_elapsed, 0);
         assert_eq!(at(150).polls_elapsed, 2);
+    }
+
+    #[test]
+    fn an_instance_snapshot_joins_its_lifecycle_and_its_failure() {
+        use lifecycle::*;
+        let key = |source: &str| Key {
+            provider: "git".into(),
+            path: Some("/r".into()),
+            source: crate::cache::Origin::source(source),
+            node: String::new(),
+        };
+        let now = Instant::now();
+        let mut registry = LifecycleRegistry::new();
+        registry.on_demand(key("live"), SourceLifecycleConfig::ttl(60), now);
+        registry.on_demand(key("both"), SourceLifecycleConfig::ttl(60), now);
+        let failures = SourceFailureMap::default();
+        {
+            let mut map = failures.lock().unwrap();
+            for (source, fails) in [("both", true), ("failing", true), ("recovered", false)] {
+                let state = map
+                    .entry(key(source))
+                    .or_insert_with(|| FailureState::new(3, Duration::from_secs(60)));
+                state.record_failure("boom");
+                if !fails {
+                    state.record_success();
+                }
+            }
+        }
+        let snap = snapshot_instances(&registry, &failures, now);
+        let has = |source: &str| {
+            snap.get(&key(source))
+                .map(|i| (i.lifecycle.is_some(), i.failure.is_some()))
+        };
+        assert_eq!(has("live"), Some((true, false)));
+        assert_eq!(has("both"), Some((true, true)));
+        assert_eq!(has("failing"), Some((false, true)));
+        // A streak a success ended is not shown, as before.
+        assert_eq!(has("recovered"), None);
     }
 
     #[test]

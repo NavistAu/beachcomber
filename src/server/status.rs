@@ -10,8 +10,8 @@ pub(super) async fn handle_status(ctx: &Ctx, registry: &Arc<ProviderRegistry>) -
     let (cache, scheduler) = (&ctx.cache, &ctx.scheduler);
     let mut rows = cache.list_rows();
 
-    let lifecycle = scheduler.get_lifecycle_snapshots().await;
-    let failures = scheduler.get_failure_states().await;
+    // Both halves of every instance's state, from one moment.
+    let instances = scheduler.get_instances().await;
 
     // A Source that has failed every run has stored nothing, so it
     // has no row: give it an absent one per field it declares, which
@@ -19,7 +19,8 @@ pub(super) async fn handle_status(ctx: &Ctx, registry: &Arc<ProviderRegistry>) -
     // whole-node Source's fields are unknown until it runs; its one
     // row names its sentinel (`<node>`), as `introspect providers`
     // lists it.
-    for key in failures.keys() {
+    let failing = instances.iter().filter(|(_, i)| i.failure.is_some());
+    for (key, _) in failing {
         let has_row = rows
             .iter()
             .any(|(o, r)| r.provider == key.provider && r.path == key.path && *o == key.source);
@@ -87,14 +88,17 @@ pub(super) async fn handle_status(ctx: &Ctx, registry: &Arc<ProviderRegistry>) -
                     String::new()
                 },
             };
-            let matching_snap = lifecycle.get(&key).or_else(|| {
-                is_put
-                    .then(|| crate::scheduler::lifecycle::Key {
-                        node: String::new(),
-                        ..key.clone()
-                    })
-                    .and_then(|root| lifecycle.get(&root))
-            });
+            let matching_snap = instances
+                .get(&key)
+                .and_then(|i| i.lifecycle.as_ref())
+                .or_else(|| {
+                    is_put
+                        .then(|| crate::scheduler::lifecycle::Key {
+                            node: String::new(),
+                            ..key.clone()
+                        })
+                        .and_then(|root| instances.get(&root)?.lifecycle.as_ref())
+                });
 
             if let Some(snap) = matching_snap {
                 row.kind = Some(RowKind::Lifecycle {
@@ -118,9 +122,7 @@ pub(super) async fn handle_status(ctx: &Ctx, registry: &Arc<ProviderRegistry>) -
             }
 
             // Failure backoff: per-source.
-            if let Some(snap) = failures.get(&key) {
-                row.failure = Some(snap.clone());
-            }
+            row.failure = instances.get(&key).and_then(|i| i.failure.clone());
         }
     }
 
