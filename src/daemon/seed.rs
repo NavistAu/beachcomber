@@ -477,6 +477,15 @@ pub fn check_macro_put(
     data: &serde_json::Value,
 ) -> Result<(), String> {
     use libbeachcomber::eval::{Finding, Known, Line, lint};
+    // The caller names the key it put to; a message names a leaf only below it.
+    let put_at = libbeachcomber::key::join(namespace, node);
+    let below = |at: &str, sep: &str| {
+        if at == put_at {
+            String::new()
+        } else {
+            format!("{at}{sep}")
+        }
+    };
     let segments = libbeachcomber::key::segments(node);
     let libraries: Vec<(String, &serde_json::Value)> = match (segments.as_slice(), data) {
         ([], serde_json::Value::Object(map)) => map
@@ -485,16 +494,12 @@ pub fn check_macro_put(
             .collect(),
         ([], _) => {
             return Err(format!(
-                "{namespace}: a put writes a macro library at {namespace}.<name>, or a table \
-                 of them"
+                "a put writes a macro library at {namespace}.<name>, or a table of them"
             ));
         }
         ([name], text) => vec![(name.to_string(), text)],
         _ => {
-            return Err(format!(
-                "{}: a macro library is {namespace}.<name>",
-                libbeachcomber::key::join(namespace, node)
-            ));
+            return Err(format!("a macro library is {namespace}.<name>"));
         }
     };
     let engine = libbeachcomber::eval::Probe::new(libbeachcomber::engine::build_engine_env(
@@ -503,14 +508,14 @@ pub fn check_macro_put(
     for (name, text) in libraries.into_iter().filter(|(_, text)| !text.is_null()) {
         let at = libbeachcomber::key::join(namespace, &libbeachcomber::key::quote(&name));
         if let Some(e) = crate::shape::seeded::library_error(&name, text.as_str()) {
-            return Err(format!("{at} {e}"));
+            return Err(format!("{}{e}", below(&at, " ")));
         }
         let src = text.as_str().unwrap_or_default();
         if let Some(finding) = lint(&engine, src, Line::Macro, &Known::default())
             .into_iter()
             .find(|f| matches!(f, Finding::Compile(_)))
         {
-            return Err(format!("{at}: {finding}"));
+            return Err(format!("{}{finding}", below(&at, ": ")));
         }
     }
     Ok(())

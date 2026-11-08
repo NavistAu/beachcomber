@@ -169,7 +169,7 @@ async fn a_put_to_macro_is_linted() {
         (
             "p:macro.text",
             serde_json::json!("hello"),
-            Some(format!("p:macro.text: {prints}")),
+            Some(prints.to_string()),
         ),
         (
             "p:macro",
@@ -179,12 +179,12 @@ async fn a_put_to_macro_is_linted() {
         (
             "p:macro.inc",
             serde_json::json!("{% include 'p:macro.x' %}"),
-            Some("p:macro.inc: {% include %} is refused: text is reused with a macro".into()),
+            Some("{% include %} is refused: text is reused with a macro".into()),
         ),
         (
             "p:macro.n",
             serde_json::json!(1),
-            Some("p:macro.n must be a string (a macro library)".into()),
+            Some("must be a string (a macro library)".into()),
         ),
         (
             "p:macro",
@@ -194,15 +194,12 @@ async fn a_put_to_macro_is_linted() {
         (
             "p:macro",
             serde_json::json!("x"),
-            Some(
-                "p:macro: a put writes a macro library at p:macro.<name>, or a table of them"
-                    .into(),
-            ),
+            Some("a put writes a macro library at p:macro.<name>, or a table of them".into()),
         ),
         (
             "p:macro.a.b",
             serde_json::json!("x"),
-            Some("p:macro.a.b: a macro library is p:macro.<name>".into()),
+            Some("a macro library is p:macro.<name>".into()),
         ),
     ] {
         let r = send_recv(
@@ -214,7 +211,7 @@ async fn a_put_to_macro_is_linted() {
         let got = r.error.unwrap_or_default();
         match error {
             Some(error) => assert_eq!(got, error, "{key} {data}"),
-            None => assert!(got.starts_with("p:macro.bad: "), "{got}"),
+            None => assert!(!got.starts_with("p:macro.bad"), "{got}"),
         }
     }
     let r = send_recv(&mut stream, r#"{"op":"get","key":"p:macro"}"#).await;
