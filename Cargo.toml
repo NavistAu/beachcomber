@@ -122,6 +122,11 @@ split-debuginfo = "packed"
 # debug data, faster link. Trade-off: less info in `lldb` step-through sessions.
 debug = "line-tables-only"
 
+# Dependencies are compiled once and run in every test: optimise them a little.
+# The crate's own code stays at opt-level 0 for fast rebuilds.
+[profile.dev.package."*"]
+opt-level = 1
+
 # Every daemon start, registry load and `comb` render compiles the shipped
 # templates, and in a debug build minijinja's own lexer and parser are most of
 # that: optimised, the test suite spends a quarter less CPU.
