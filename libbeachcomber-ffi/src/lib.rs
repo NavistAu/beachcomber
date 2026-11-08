@@ -351,11 +351,17 @@ pub unsafe extern "C" fn bc_hello(client: *mut BcClient) -> *mut c_char {
 /// supplied": the call renders with the calling process's environment, as
 /// `comb` does ([`libbeachcomber::env::process`]). Values must be strings.
 fn parse_env_json(json: Option<&str>) -> Result<HashMap<String, String>, FfiError> {
-    match json {
-        None => Ok(libbeachcomber::env::process()),
-        Some(s) => serde_json::from_str(s)
-            .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed env_json: {e}"))),
-    }
+    Ok(given_env(json)?.unwrap_or_else(libbeachcomber::env::process))
+}
+
+/// [`parse_env_json`] without reading the process environment: `None` for
+/// NULL, so a read can read it only if it renders ([`libbeachcomber::env::Lazy`]).
+fn given_env(json: Option<&str>) -> Result<Option<HashMap<String, String>>, FfiError> {
+    json.map(|s| {
+        serde_json::from_str(s)
+            .map_err(|e| FfiError::new(kind::PARSE_ERROR, format!("malformed env_json: {e}")))
+    })
+    .transpose()
 }
 
 /// The directory a resolution addresses: NULL is the global entry, as
@@ -380,7 +386,9 @@ unsafe fn resolution_dir(cwd: *const c_char) -> Result<(String, Slot), FfiError>
 struct ReadInputs {
     cwd: String,
     slot: Slot,
-    env: HashMap<String, String>,
+    /// The caller's `env_json`; `None` reads the process's, if needed.
+    env: Option<HashMap<String, String>>,
+    process_env: libbeachcomber::env::Lazy,
     options: GetOptions,
 }
 
@@ -396,7 +404,8 @@ impl ReadInputs {
         Ok(Self {
             cwd,
             slot,
-            env: parse_env_json(unsafe { optional_str(env_json) }?)?,
+            env: given_env(unsafe { optional_str(env_json) }?)?,
+            process_env: Default::default(),
             options,
         })
     }
@@ -404,7 +413,10 @@ impl ReadInputs {
     fn inputs(&self, allow_exec: bool) -> Inputs<'_> {
         Inputs {
             cwd: &self.cwd,
-            env: &self.env,
+            env: match &self.env {
+                Some(env) => env,
+                None => &self.process_env,
+            },
             slot: self.slot.clone(),
             force: self.options.force.unwrap_or_default(),
             wait: self.options.wait.unwrap_or_default(),

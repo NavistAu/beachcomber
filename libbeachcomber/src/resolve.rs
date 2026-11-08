@@ -73,8 +73,9 @@ pub enum Slot {
 pub struct Inputs<'a> {
     /// The caller's directory, addressed by [`Slot::Cwd`].
     pub cwd: &'a str,
-    /// The caller's environment, the only source of `env.*`.
-    pub env: &'a HashMap<String, String>,
+    /// The caller's environment, the only source of `env.*`: a map, or
+    /// [`crate::env::Lazy`] to read the process's only if a render needs it.
+    pub env: &'a (dyn crate::env::Vars + Sync),
     /// Which directory this resolution addresses.
     pub slot: Slot,
     /// Re-execute the source before answering.
@@ -104,7 +105,7 @@ impl Inputs<'_> {
     /// caller's). `None` when there is none to give.
     fn dir(&self) -> Option<&str> {
         let dir = match &self.slot {
-            Slot::Global => self.env.get("HOME").map(String::as_str),
+            Slot::Global => self.env.vars().get("HOME").map(String::as_str),
             _ => self.path(),
         };
         dir.filter(|d| !d.is_empty())
@@ -425,7 +426,7 @@ impl<'a> Resolver<'a> {
     fn jinja(&self) -> &Arc<Probe<'static>> {
         self.jinja.get_or_init(|| {
             let mut jinja = build_engine_env(Arc::new(EngineCtx {
-                env: self.inputs.env.clone(),
+                env: self.inputs.env.vars().clone(),
                 cwd: self.inputs.dir().map(Into::into),
                 allow_exec: self.inputs.allow_exec,
                 now: self.inputs.now,
@@ -450,7 +451,9 @@ impl<'a> Resolver<'a> {
     /// so `env | items` and a loop over `env` read the same order every run.
     fn env(&self) -> &MjValue {
         self.env.get_or_init(|| {
-            MjValue::from(Serde(self.inputs.env.iter().collect::<BTreeMap<_, _>>()))
+            MjValue::from(Serde(
+                self.inputs.env.vars().iter().collect::<BTreeMap<_, _>>(),
+            ))
         })
     }
 
@@ -962,7 +965,7 @@ impl<'a> Resolver<'a> {
 
     /// The caller's `$var`; `None` when unset.
     fn env_value(&self, var: &str) -> Option<String> {
-        self.inputs.env.get(var).cloned()
+        self.inputs.env.vars().get(var).cloned()
     }
 
     /// Enter `key`'s frame, refusing a repeat and a chain past the depth limit.

@@ -271,7 +271,7 @@ impl OwnedInputs {
     fn new(inputs: &Inputs<'_>) -> Self {
         Self {
             cwd: inputs.cwd.to_string(),
-            env: inputs.env.clone(),
+            env: inputs.env.vars().clone(),
             slot: inputs.slot.clone(),
             force: inputs.force,
             wait: inputs.wait,

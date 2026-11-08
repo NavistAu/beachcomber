@@ -1076,7 +1076,9 @@ fn get_here(
 ) -> Result<Option<serde_json::Value>, resolve::ResolveError> {
     let transport = |e| resolve::ResolveError::Fetch(resolve::FetchError::Transport(e));
     let dir = wire_path(path).map_err(transport)?;
-    let env: std::collections::HashMap<String, String> = std::env::vars().collect();
+    // Read per call, and only if a render needs it: a long-lived Session sees
+    // the environment as it is at each call, as it always has.
+    let env = crate::env::Lazy::default();
     let inputs = resolve::Inputs {
         cwd: dir.as_deref().unwrap_or(""),
         env: &env,
@@ -1170,6 +1172,32 @@ fn parse_introspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The env is read per call, never cached across calls: a long-lived
+    /// session sees a variable set after it opened.
+    #[test]
+    fn each_read_sees_the_environment_as_it_is_then() {
+        struct NoDaemon;
+        impl resolve::Fetch for NoDaemon {
+            fn get(
+                &mut self,
+                _: &str,
+                _: Option<&str>,
+                _: bool,
+                _: Wait,
+            ) -> Result<Option<resolve::Got>, resolve::FetchError> {
+                unreachable!("env.* is never fetched")
+            }
+            fn memo(&mut self, _: &resolve::MemoWrite) -> Result<(), resolve::FetchError> {
+                unreachable!()
+            }
+        }
+        let read = || get_here("env.BC_LAZY_ENV_PROBE", None, false, &mut NoDaemon).unwrap();
+        assert_eq!(read(), None);
+        // SAFETY: nextest runs each test in its own process.
+        unsafe { std::env::set_var("BC_LAZY_ENV_PROBE", "later") };
+        assert_eq!(read(), Some(serde_json::json!("later")));
+    }
 
     /// A `get` response line read as a client reads it.
     fn node_of(line: &str) -> Result<resolve::Got, CombError> {

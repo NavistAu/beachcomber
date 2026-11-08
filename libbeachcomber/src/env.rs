@@ -6,6 +6,33 @@
 //! "the calling process's environment" means this function.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+/// An environment as `resolve::Inputs` reads it: a map, read only when a
+/// resolution needs it. A plain cached value never does, so an edge that
+/// would read the process environment for every call pays nothing.
+pub trait Vars: Sync {
+    /// The variables, by name.
+    fn vars(&self) -> &HashMap<String, String>;
+}
+
+impl Vars for HashMap<String, String> {
+    fn vars(&self) -> &HashMap<String, String> {
+        self
+    }
+}
+
+/// The calling process's environment ([`process`]), read on first use and
+/// kept for the rest of the value's life: make one per call, so each call
+/// sees the environment as it is when that call runs.
+#[derive(Default)]
+pub struct Lazy(OnceLock<HashMap<String, String>>);
+
+impl Vars for Lazy {
+    fn vars(&self) -> &HashMap<String, String> {
+        self.0.get_or_init(process)
+    }
+}
 
 /// The calling process's environment, as `resolve::Inputs` takes it.
 ///
@@ -24,7 +51,7 @@ pub fn process() -> HashMap<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::process;
+    use super::{Lazy, Vars, process};
 
     #[test]
     fn the_map_holds_the_process_variables() {
@@ -33,5 +60,10 @@ mod tests {
             map.get("PATH").map(String::as_str),
             std::env::var("PATH").ok().as_deref()
         );
+    }
+
+    #[test]
+    fn a_lazy_env_reads_the_process_variables() {
+        assert_eq!(Lazy::default().vars(), &process());
     }
 }
