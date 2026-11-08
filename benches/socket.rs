@@ -179,8 +179,40 @@ fn bench_socket_session_gets(c: &mut Criterion) {
     });
 }
 
+/// The read a prompt makes: a kept-open `Session` reading a path-scoped key
+/// (`git.branch` in a repository) against a warm daemon. Client resolution,
+/// the daemon's path handling and the climb are all in it, so a slowdown in
+/// any of them shows here.
+fn bench_session_get_at_path(c: &mut Criterion) {
+    let server = TestServer::new();
+    let repo = server._tmp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let init = std::process::Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(&repo)
+        .status()
+        .unwrap();
+    assert!(init.success(), "git init");
+    let mut session = lib_client(server.sock.clone()).session().unwrap();
+    session.set_context(repo.to_str().unwrap()).unwrap();
+    // Warm: the first read runs the provider (cold miss).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while session.get("git.branch", None).unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "git.branch never warmed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    c.bench_function("session_get_git_branch_at_path", |b| {
+        b.iter(|| std::hint::black_box(session.get("git.branch", None).unwrap()))
+    });
+}
+
 criterion_group!(
     benches,
+    bench_session_get_at_path,
     bench_socket_roundtrip_cold,
     bench_socket_roundtrip_text,
     bench_socket_refresh,
