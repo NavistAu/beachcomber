@@ -1,6 +1,4 @@
 //! Handler for the `status` (`s`) subcommand.
-//!
-//! Moved from `src/main.rs` in Task 2.3.
 
 use crate::cache::{CacheRow, RowKind};
 use crate::cli::exit::Outcome;
@@ -219,9 +217,12 @@ fn mark_shadowed(
     }
 }
 
+/// A row's provider, path, field and source.
+type RowId = (String, Option<String>, String, String);
+
 /// Which record a row shows, to find its stack again after filtering and
 /// sorting.
-fn row_id(row: &CacheRow) -> (String, Option<String>, String, String) {
+fn row_id(row: &CacheRow) -> RowId {
     (
         row.provider.clone(),
         row.path.clone(),
@@ -229,6 +230,9 @@ fn row_id(row: &CacheRow) -> (String, Option<String>, String, String) {
         row.source.clone(),
     )
 }
+
+/// The layers behind each row, by [`row_id`].
+type Stacks = HashMap<RowId, Vec<crate::cache::LayerRecord>>;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_status(
@@ -243,41 +247,117 @@ pub fn run_status(
     depth: Option<usize>,
     tree: bool,
 ) -> Outcome {
+    match status(
+        config,
+        format,
+        user_filters,
+        all,
+        sort_col,
+        no_trunc,
+        max_width_arg,
+        style,
+        depth,
+        tree,
+    ) {
+        Ok(()) => Outcome::Done,
+        Err(outcome) => outcome,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn status(
+    config: &Config,
+    format: &Format,
+    user_filters: &[String],
+    all: bool,
+    sort_col: &str,
+    no_trunc: bool,
+    max_width_arg: Option<&str>,
+    style: Style,
+    depth: Option<usize>,
+    tree: bool,
+) -> Result<(), Outcome> {
+    check_tree_format(format, tree)?;
+    // A layer belongs to a leaf, so a tree destructures every value to its
+    // leaves unless --depth says otherwise.
+    let depth = depth.or(tree.then_some(0));
+    let filters = &crate::cli::status_format::effective_filters(user_filters, all);
+    // A typo costs nothing: rendering every row can run commands.
+    apply_filters(Vec::new(), filters).map_err(|e| flag_error("--filter", e))?;
+    apply_sort(Vec::new(), sort_col).map_err(|e| flag_error("--sort", e))?;
+    let cols = terminal_size::terminal_size().map(|(w, _)| w.0 as usize);
+    let max_width =
+        resolve_max_width(max_width_arg, cols).map_err(|e| flag_error("--max-width", e))?;
+    let socket_path = crate::cli::connect::connect_as_is(config)?;
+    warn_if_daemon_older(&socket_path);
+
+    let Style { color, ascii } = style;
+    let opts = RenderOpts {
+        is_tty: std::io::stdout().is_terminal(),
+        no_color: !color,
+        max_width: if no_trunc { None } else { Some(max_width) },
+        no_trunc,
+        ascii,
+        depth,
+    };
+
+    let client = crate::client::Client::new(socket_path);
+    // The memos the rendered rows' cached templates rendered, written back
+    // once the table is printed.
+    let mut memos = Vec::new();
+    let rows = client.status().map_err(daemon_down)?;
+    let rows = with_rendered_rows(&client, rows, filters, &mut memos);
+
+    // Destructure before filtering and sorting, so both operate on the
+    // field names the user can actually see in the output.
+    let mut rows = flatten_rows(rows, opts.depth.unwrap_or_else(|| default_depth(format)));
+    let stacks = mark_shadowed_rows(&client, &mut rows, tree)?;
+    let rows = apply_filters(rows, filters).map_err(|e| flag_error("--filter", e))?;
+    let rows = apply_sort(rows, sort_col).map_err(|e| flag_error("--sort", e))?;
+
+    let out = render_rows(&client, format, &rows, stacks.as_ref(), tree, &opts)?;
+    print!("{out}");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    if !memos.is_empty()
+        && let Ok(mut session) = client.connect()
+    {
+        write_back(&memos, &mut session);
+    }
+    // Human preset only, and on stderr so machine formats stay parseable.
+    if format == &Format::Preset(Preset::Human) {
+        warn_if_daemon_degraded(&client);
+    }
+    Ok(())
+}
+
+/// `--tree` draws the human, table and json formats only.
+fn check_tree_format(format: &Format, tree: bool) -> Result<(), Outcome> {
     if tree && !format.preset().is_some_and(|p| TREE_PRESETS.contains(&p)) {
         let named = format.preset().map_or("a template", Preset::name);
         crate::cli::report::error(
             "--tree",
             format_args!("works with the human, table and json formats, not {named}"),
         );
-        return Outcome::Error;
+        return Err(Outcome::Error);
     }
-    // A layer belongs to a leaf, so a tree destructures every value to its
-    // leaves unless --depth says otherwise.
-    let depth = depth.or(tree.then_some(0));
-    let filters = &crate::cli::status_format::effective_filters(user_filters, all);
-    // A typo costs nothing: rendering every row can run commands.
-    if let Err(e) = apply_filters(Vec::new(), filters) {
-        crate::cli::report::error("--filter", e);
-        return Outcome::Error;
-    }
-    if let Err(e) = apply_sort(Vec::new(), sort_col) {
-        crate::cli::report::error("--sort", e);
-        return Outcome::Error;
-    }
-    let cols = terminal_size::terminal_size().map(|(w, _)| w.0 as usize);
-    let resolved_max_width = match resolve_max_width(max_width_arg, cols) {
-        Ok(width) => width,
-        Err(e) => {
-            crate::cli::report::error("--max-width", e);
-            return Outcome::Error;
-        }
-    };
-    let socket_path = match crate::cli::connect::connect_as_is(config) {
-        Ok(socket) => socket,
-        Err(outcome) => return outcome,
-    };
-    // Shown, not fixed: `status` reports the daemon it finds.
-    if let Ok(hello) = crate::client::build_client(&socket_path).hello()
+    Ok(())
+}
+
+/// Report a bad flag value and yield the failing outcome.
+fn flag_error(flag: &str, message: String) -> Outcome {
+    crate::cli::report::error(flag, message);
+    Outcome::Error
+}
+
+/// Report an unreachable daemon and yield the failing outcome.
+fn daemon_down(e: impl std::fmt::Display) -> Outcome {
+    crate::cli::report::daemon_unreachable(e);
+    Outcome::Error
+}
+
+/// Shown, not fixed: `status` reports the daemon it finds.
+fn warn_if_daemon_older(socket_path: &std::path::Path) {
+    if let Ok(hello) = crate::client::build_client(socket_path).hello()
         && crate::cli::connect::older(&hello.daemon_version, libbeachcomber::VERSION)
     {
         crate::cli::report::warning(format_args!(
@@ -286,190 +366,147 @@ pub fn run_status(
             libbeachcomber::VERSION
         ));
     }
+}
 
-    let is_tty = std::io::stdout().is_terminal();
-    let Style { color, ascii } = style;
-
-    let opts = RenderOpts {
-        is_tty,
-        no_color: !color,
-        max_width: if no_trunc {
-            None
-        } else {
-            Some(resolved_max_width)
-        },
-        no_trunc,
-        ascii,
-        depth,
-    };
-
-    let client = crate::client::Client::new(socket_path.clone());
-    // The memos the rendered rows' cached templates rendered, written back
-    // once the table is printed.
-    let mut memos = Vec::new();
-    match client.status() {
-        Ok(mut rows) => {
-            // The daemon never evaluates a template, so the rendered rows are
-            // added here, from this shell's directory and environment. A
-            // template resolves relative to `cwd`; with
-            // no cwd to resolve against, there is no correct directory to
-            // stamp a rendered row with, so rendering is skipped rather than
-            // resolving every leaf as if the caller stood at "" — which
-            // stamped rows with `path: Some("")`, an empty PATH cell that
-            // reads as a lie. The daemon's own rows still print.
-            if let Ok(cwd) = std::env::current_dir()
-                && let Ok(mut session) = client.connect()
-            {
-                let cwd = cwd.to_string_lossy().into_owned();
-                let rendered = render_template_rows(
-                    &rows,
-                    &cwd,
-                    &crate::cli::shell_env(),
-                    &mut session,
-                    filters,
-                    &mut memos,
-                );
-                // A render reads what it needs, and a cold read runs the
-                // Source behind it: the table is read again, so what this
-                // render ran is a row of this status, not only the next.
-                if !rendered.is_empty()
-                    && let Ok(after) = client.status()
-                {
-                    rows = after;
-                }
-                rows.extend(rendered);
-            }
-
-            // Destructure before filtering and sorting, so both operate on the
-            // field names the user can actually see in the output.
-            let mut rows = flatten_rows(rows, opts.depth.unwrap_or_else(|| default_depth(format)));
-            // The layers behind each row decide which rows a read here takes;
-            // the rest are marked shadowed, which the default filters hide.
-            let stacks: Option<HashMap<_, _>> = match (std::env::current_dir(), client.connect()) {
-                (Ok(cwd), Ok(mut session)) => {
-                    let cwd = cwd.to_string_lossy().into_owned();
-                    let stacks = layer_stacks(&rows, &cwd, &mut session);
-                    mark_shadowed(&mut rows, &stacks, &cwd);
-                    Some(
-                        rows.iter()
-                            .zip(stacks)
-                            .map(|(row, stack)| (row_id(row), stack.unwrap_or_default()))
-                            .collect(),
-                    )
-                }
-                (_, Err(e)) if tree => {
-                    crate::cli::report::daemon_unreachable(e);
-                    return Outcome::Error;
-                }
-                _ => None,
-            };
-            let rows = match apply_filters(rows, filters) {
-                Ok(rows) => rows,
-                Err(e) => {
-                    crate::cli::report::error("--filter", e);
-                    return Outcome::Error;
-                }
-            };
-            let rows = match apply_sort(rows, sort_col) {
-                Ok(rows) => rows,
-                Err(e) => {
-                    crate::cli::report::error("--sort", e);
-                    return Outcome::Error;
-                }
-            };
-            let out = match (&stacks, format) {
-                (_, Format::Template(template)) if !tree => {
-                    let cwd = std::env::current_dir()
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    let env = crate::cli::shell_env();
-                    let inputs = crate::cli::inputs(
-                        &cwd,
-                        &env,
-                        Slot::Cwd,
-                        false,
-                        libbeachcomber::Wait::Budget,
-                    );
-                    let mut session = match client.connect() {
-                        Ok(session) => session,
-                        Err(e) => {
-                            crate::cli::report::daemon_unreachable(e);
-                            return Outcome::Error;
-                        }
-                    };
-                    let mut render = |src: &str, locals: &serde_json::Map<_, _>| {
-                        eval_with(src, "-f", &inputs, &mut session, locals)
-                    };
-                    match render_template_format(template, &rows, &mut render) {
-                        Ok(out) => out,
-                        Err(e) => {
-                            crate::cli::report::error_named(e);
-                            return Outcome::Error;
-                        }
-                    }
-                }
-                (Some(stacks), _) if tree => {
-                    let children: Vec<_> = rows
-                        .iter()
-                        .map(|row| stacks.get(&row_id(row)).cloned().unwrap_or_default())
-                        .collect();
-                    render_tree(format, &rows, &children, &opts)
-                }
-                _ => render_preset(format, &rows, &opts),
-            };
-            print!("{out}");
-            let _ = std::io::Write::flush(&mut std::io::stdout());
-            if !memos.is_empty()
-                && let Ok(mut session) = client.connect()
-            {
-                write_back(&memos, &mut session);
-            }
-
-            // Canon provider_source.md invariant 16 and singleton.md
-            // invariant 12: watch and reaper
-            // degradation are observable via `comb status`. Human
-            // preset only, and on stderr so machine formats stay
-            // parseable.
-            if format == &Format::Preset(Preset::Human)
-                && let Ok(resp) = client.introspect("daemon", None)
-                && resp.ok
-                && let Some(data) = resp.data.as_ref()
-            {
-                if let Some(backend) = data.get("watch_backend").and_then(|v| v.as_str())
-                    && backend != "native"
-                {
-                    crate::cli::report::warning(format_args!(
-                        "watch backend: {backend} — kernel fs events undelivered; watch invalidation degraded"
-                    ));
-                }
-                if let Some(reaper) = data.get("reaper").filter(|r| !r.is_null()) {
-                    let armed = reaper
-                        .get("armed")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let confined =
-                        reaper.get("visibility").and_then(|v| v.as_str()) == Some("confined");
-                    let denied = reaper
-                        .get("kill_denied")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    if armed && confined {
-                        crate::cli::report::warning(
-                            "reaper visibility degraded: daemon runs confined — orphan daemons outside its view are not policed",
-                        );
-                    }
-                    if armed && denied > 0 {
-                        crate::cli::report::warning(format_args!(
-                            "reaper: {denied} kill attempt(s) denied by the OS"
-                        ));
-                    }
-                }
-            }
-            Outcome::Done
+/// The daemon's rows plus the rendered rows.
+///
+/// The daemon never evaluates a template, so the rendered rows are added
+/// here, from this shell's directory and environment. A template resolves
+/// relative to `cwd`; with no cwd to resolve against,
+/// there is no correct directory to stamp a rendered row with, so rendering
+/// is skipped rather than resolving every leaf as if the caller stood at ""
+/// — which stamped rows with `path: Some("")`, an empty PATH cell that reads
+/// as a lie. The daemon's own rows still print.
+fn with_rendered_rows(
+    client: &crate::client::Client,
+    mut rows: Vec<CacheRow>,
+    filters: &[String],
+    memos: &mut Vec<MemoWrite>,
+) -> Vec<CacheRow> {
+    if let Ok(cwd) = std::env::current_dir()
+        && let Ok(mut session) = client.connect()
+    {
+        let cwd = cwd.to_string_lossy().into_owned();
+        let rendered = render_template_rows(
+            &rows,
+            &cwd,
+            &crate::cli::shell_env(),
+            &mut session,
+            filters,
+            memos,
+        );
+        // A render reads what it needs, and a cold read runs the Source
+        // behind it: the table is read again, so what this render ran is a
+        // row of this status, not only the next.
+        if !rendered.is_empty()
+            && let Ok(after) = client.status()
+        {
+            rows = after;
         }
-        Err(e) => {
-            crate::cli::report::daemon_unreachable(e);
-            Outcome::Error
+        rows.extend(rendered);
+    }
+    rows
+}
+
+/// Mark the rows a read here does not take as shadowed (the default filters
+/// hide them), and return the layers behind each row, by [`row_id`]. The
+/// layers decide which rows a read here takes. `None` when there is no cwd or
+/// no daemon session to read them with; that is an error only under `--tree`,
+/// which needs them.
+fn mark_shadowed_rows(
+    client: &crate::client::Client,
+    rows: &mut [CacheRow],
+    tree: bool,
+) -> Result<Option<Stacks>, Outcome> {
+    match (std::env::current_dir(), client.connect()) {
+        (Ok(cwd), Ok(mut session)) => {
+            let cwd = cwd.to_string_lossy().into_owned();
+            let stacks = layer_stacks(rows, &cwd, &mut session);
+            mark_shadowed(rows, &stacks, &cwd);
+            Ok(Some(
+                rows.iter()
+                    .zip(stacks)
+                    .map(|(row, stack)| (row_id(row), stack.unwrap_or_default()))
+                    .collect(),
+            ))
+        }
+        (_, Err(e)) if tree => Err(daemon_down(e)),
+        _ => Ok(None),
+    }
+}
+
+/// The output text: a `-f` template per row, a `--tree`, or a preset.
+fn render_rows(
+    client: &crate::client::Client,
+    format: &Format,
+    rows: &[CacheRow],
+    stacks: Option<&Stacks>,
+    tree: bool,
+    opts: &RenderOpts,
+) -> Result<String, Outcome> {
+    match (stacks, format) {
+        (_, Format::Template(template)) if !tree => {
+            let cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let env = crate::cli::shell_env();
+            let inputs =
+                crate::cli::inputs(&cwd, &env, Slot::Cwd, false, libbeachcomber::Wait::Budget);
+            let mut session = client.connect().map_err(daemon_down)?;
+            let mut render = |src: &str, locals: &serde_json::Map<_, _>| {
+                eval_with(src, "-f", &inputs, &mut session, locals)
+            };
+            render_template_format(template, rows, &mut render).map_err(|e| {
+                crate::cli::report::error_named(e);
+                Outcome::Error
+            })
+        }
+        (Some(stacks), _) if tree => {
+            let children: Vec<_> = rows
+                .iter()
+                .map(|row| stacks.get(&row_id(row)).cloned().unwrap_or_default())
+                .collect();
+            Ok(render_tree(format, rows, &children, opts))
+        }
+        _ => Ok(render_preset(format, rows, opts)),
+    }
+}
+
+/// Canon provider_source.md invariant 16 and singleton.md invariant 12:
+/// watch and reaper degradation are observable via `comb status`.
+fn warn_if_daemon_degraded(client: &crate::client::Client) {
+    let Ok(resp) = client.introspect("daemon", None) else {
+        return;
+    };
+    let Some(data) = resp.data.as_ref().filter(|_| resp.ok) else {
+        return;
+    };
+    if let Some(backend) = data.get("watch_backend").and_then(|v| v.as_str())
+        && backend != "native"
+    {
+        crate::cli::report::warning(format_args!(
+            "watch backend: {backend} — kernel fs events undelivered; watch invalidation degraded"
+        ));
+    }
+    if let Some(reaper) = data.get("reaper").filter(|r| !r.is_null()) {
+        let armed = reaper
+            .get("armed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let confined = reaper.get("visibility").and_then(|v| v.as_str()) == Some("confined");
+        let denied = reaper
+            .get("kill_denied")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if armed && confined {
+            crate::cli::report::warning(
+                "reaper visibility degraded: daemon runs confined — orphan daemons outside its view are not policed",
+            );
+        }
+        if armed && denied > 0 {
+            crate::cli::report::warning(format_args!(
+                "reaper: {denied} kill attempt(s) denied by the OS"
+            ));
         }
     }
 }
