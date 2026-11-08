@@ -28,3 +28,14 @@ pub fn set_mtime_ahead(path: &Path, secs: u64) {
 pub fn touch_future(path: &Path) {
     set_mtime_ahead(path, 2);
 }
+
+/// Replace `path` with `body`, stamped [`touch_future`]'s two seconds ahead, in
+/// one rename: a watch polling the file never sees it truncated or written but
+/// not yet stamped, either of which it would report as a change of its own.
+#[allow(dead_code)]
+pub fn write_ahead(path: &Path, body: &str) {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, body).unwrap();
+    touch_future(&tmp);
+    std::fs::rename(&tmp, path).unwrap();
+}

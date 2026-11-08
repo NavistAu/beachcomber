@@ -121,11 +121,10 @@ impl Env {
     }
 }
 
-/// Rewrite a config file and stamp its mtime into the future, so the watch's
-/// poll sees the change whatever the clock's granularity.
+/// Rewrite a config file in one rename, stamped into the future, so the watch's
+/// poll sees the change whatever the clock's granularity, and sees it once.
 pub(crate) fn rewrite(path: &Path, body: &str) {
-    std::fs::write(path, body).unwrap();
-    crate::common::mtime::touch_future(path);
+    crate::common::mtime::write_ahead(path, body);
 }
 
 pub(crate) async fn send_recv(
