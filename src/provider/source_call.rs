@@ -206,7 +206,7 @@ pub fn run_call(
     if is_running(provider, source) {
         return Err(itself());
     }
-    let chain = match warm_called(registry, cache, provider, source, entry) {
+    let chain = match warm_chain(registry, cache, provider, source, entry) {
         Ok(chain) => chain,
         Err(Unwarmed::Cycle) => return Err(itself()),
         Err(Unwarmed::Fault(message)) => return Err(call_error(message)),
@@ -214,7 +214,7 @@ pub fn run_call(
     Ok(stored(cache, provider, source, &chain))
 }
 
-/// Why [`warm_called`] could not bring a chain up to date.
+/// Why [`warm_chain`] could not bring a chain up to date.
 enum Unwarmed {
     /// Waiting for a run would close a ring of runs waiting on one another.
     Cycle,
@@ -232,7 +232,7 @@ enum Unwarmed {
 /// instances: nothing of it runs, and the call is noted all the same, with
 /// none, since what the caller stored depends on the answer and switching the
 /// provider on changes it.
-fn warm_called(
+fn warm_chain(
     registry: &Arc<ProviderRegistry>,
     cache: &Arc<Cache>,
     provider: &str,
@@ -312,7 +312,7 @@ fn stored(
 
 /// Bring `provider` up to date for a read from `entry`, as a `get` of it
 /// would before answering: each of its Sources, and each Source its lines
-/// call, runs a cold instance of its chain once ([`warm_called`]). What
+/// call, runs a cold instance of its chain once ([`warm_chain`]). What
 /// `comb.<p>` in a `data` line does before it reads.
 ///
 /// A run never waits on itself: a Source already running on this thread is
@@ -338,7 +338,7 @@ pub fn warm_provider(
         if is_running(&p, &s) {
             continue;
         }
-        match warm_called(registry, cache, &p, &s, entry) {
+        match warm_chain(registry, cache, &p, &s, entry) {
             Ok(_) | Err(Unwarmed::Cycle) => {}
             Err(Unwarmed::Fault(message)) => return Err(call_error(message)),
         }

@@ -113,18 +113,30 @@ pub(super) async fn all_instances(
     let mut memo = RootMemo::default();
     for source in crate::query::demanded_source_names(registry, &plan.provider, &read_demand(plan))
     {
-        let mut walk =
-            registry.instance_walk(&plan.provider, &source, plan.requested_path.as_deref());
-        while let Some(root) =
-            next_instance(&mut walk, registry, &plan.provider, &source, &mut memo).await?
-        {
-            out.push(Instance {
-                source: source.clone(),
-                root,
-            });
-        }
+        let dir = plan.requested_path.as_deref();
+        out.extend(chain(registry, &plan.provider, &source, dir, &mut memo).await?);
     }
     Ok(out)
+}
+
+/// Every instance of `provider`'s Source `source` a read from `dir` reaches,
+/// nearest first, its roots found through `memo`.
+async fn chain(
+    registry: &Arc<ProviderRegistry>,
+    provider: &str,
+    source: &str,
+    dir: Option<&str>,
+    memo: &mut RootMemo,
+) -> Result<Vec<Instance>, String> {
+    let mut walk = registry.instance_walk(provider, source, dir);
+    let mut found = Vec::new();
+    while let Some(root) = next_instance(&mut walk, registry, provider, source, memo).await? {
+        found.push(Instance {
+            source: source.to_string(),
+            root,
+        });
+    }
+    Ok(found)
 }
 
 /// What a read asks of each instance it reaches.
@@ -283,16 +295,7 @@ pub(super) async fn called_instances(
         if registry.is_disabled(called_provider) {
             continue;
         }
-        let mut walk = registry.instance_walk(called_provider, source, dir);
-        let mut found = Vec::new();
-        while let Some(root) =
-            next_instance(&mut walk, registry, called_provider, source, &mut memo).await?
-        {
-            found.push(Instance {
-                source: source.clone(),
-                root,
-            });
-        }
+        let found = chain(registry, called_provider, source, dir, &mut memo).await?;
         match out.iter_mut().find(|(p, _)| p == called_provider) {
             Some((_, instances)) => instances.extend(found),
             None => out.push((called_provider.clone(), found)),
