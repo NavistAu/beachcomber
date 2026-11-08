@@ -700,11 +700,26 @@ fn render_subject(
 
             lines.push_str(&format!("Demand ({} active keys)\n", keys.len()));
             for key in &keys {
-                let k = key.get("key").and_then(|v| v.as_str()).unwrap_or("?");
-                let state = key.get("state").and_then(|v| v.as_str()).unwrap_or("?");
-                let queries = key.get("query_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let provider = key.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
+                let ago = key
+                    .get("last_query_secs_ago")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                // A static address (a memo, a put) is named by its node.
+                let name = match key.get("node").and_then(|v| v.as_str()) {
+                    Some(node) => format!("{provider}.{node}"),
+                    None => provider.to_string(),
+                };
+                let label = match key.get("path").and_then(|v| v.as_str()) {
+                    Some(p) => format!(
+                        "{name} ({})",
+                        libbeachcomber::path::Home::from_env().compact(p)
+                    ),
+                    None => name,
+                };
                 lines.push_str(&format!(
-                    "  [INFO] {k}   state={state}  queries={queries}\n"
+                    "  [INFO] {label}   last_query={} ago\n",
+                    secs(ago)
                 ));
             }
             if keys.is_empty() {
@@ -897,6 +912,21 @@ mod tests {
         let (text, _) = render_subject("lifecycle", &payload, &[]);
         assert!(
             text.contains("[WARN] kubecontext.context (/w)   stage=Decay1"),
+            "{text}"
+        );
+    }
+
+    /// A demand entry is named as lifecycle's is and shows its last query.
+    #[test]
+    fn a_demand_entry_renders_its_real_fields() {
+        let payload = serde_json::json!({
+            "demand": [{"provider": "git", "path": "/w", "source": "git",
+                        "last_query_secs_ago": 90}],
+            "verdicts": [],
+        });
+        let (text, _) = render_subject("demand", &payload, &[]);
+        assert!(
+            text.contains("  [INFO] git (/w)   last_query=1m30s ago\n"),
             "{text}"
         );
     }
