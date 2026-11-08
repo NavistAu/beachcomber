@@ -265,7 +265,7 @@ impl CacheEntry {
     pub fn flatten_fields(&self) -> HashMap<String, Value> {
         let mut out = HashMap::new();
         for (_, src) in self.maps() {
-            crate::provider::deep_merge(&mut out, src.fields.clone());
+            libbeachcomber::merge::deep_merge(&mut out, src.fields.clone());
         }
         out
     }

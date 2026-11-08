@@ -347,22 +347,24 @@ pub fn remove_path(fields: &mut HashMap<String, Value>, tail: &str) -> Option<Va
     removed
 }
 
-/// Merge `overlay` into `base`, recursing into objects present on both sides.
-/// Anything else on either side — a scalar, or an array, which is a leaf —
-/// replaces what `base` holds.
-///
-/// This is how a cache entry's source maps combine on read: the maps hold
-/// disjoint records, so merge order never decides a value — only which
-/// intermediate objects get stitched together.
-pub fn deep_merge(base: &mut HashMap<String, Value>, overlay: HashMap<String, Value>) {
-    for (k, v) in overlay {
-        match (base.get_mut(&k), v) {
-            (Some(Value::Object(existing)), Value::Object(incoming)) => {
-                deep_merge(existing, incoming);
-            }
-            (_, v) => {
-                base.insert(k, v);
-            }
+/// A [`Value`] tree's objects, for [`libbeachcomber::merge::deep_merge`].
+impl libbeachcomber::merge::Members<Value> for HashMap<String, Value> {
+    fn member_mut(&mut self, key: &str) -> Option<&mut Value> {
+        self.get_mut(key)
+    }
+    fn set_member(&mut self, key: String, value: Value) {
+        self.insert(key, value);
+    }
+    fn as_object(value: &mut Value) -> Option<&mut Self> {
+        match value {
+            Value::Object(map) => Some(map),
+            _ => None,
+        }
+    }
+    fn into_object(value: Value) -> Result<Self, Value> {
+        match value {
+            Value::Object(map) => Ok(map),
+            other => Err(other),
         }
     }
 }
@@ -735,6 +737,7 @@ pub fn declared_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libbeachcomber::merge::deep_merge;
 
     #[test]
     fn a_tree_pattern_is_no_stat_input() {

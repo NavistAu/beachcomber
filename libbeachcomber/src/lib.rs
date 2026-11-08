@@ -25,6 +25,7 @@ mod exec;
 pub mod key;
 mod lazy;
 pub mod library;
+pub mod merge;
 pub mod path;
 pub mod protocol;
 pub mod render;

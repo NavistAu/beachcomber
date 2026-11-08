@@ -24,6 +24,7 @@ use crate::provider::registry::{CalleeMap, ProviderRegistry};
 use crate::run::{Cycle, Outcome, Want};
 use crate::scheduler::lifecycle::Key;
 use libbeachcomber::eval::{Probe, undeclared_names};
+use libbeachcomber::merge::deep_merge;
 use serde_json::Value as Json;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -282,7 +283,7 @@ fn stored(
     source: &str,
     chain: &[Option<String>],
 ) -> Option<CalledRecord> {
-    let mut merged = Json::Object(Default::default());
+    let mut merged = serde_json::Map::new();
     let mut oldest: Option<RecordFreshness> = None;
     for root in chain.iter().rev() {
         let Some(stored) = cache.get_source(provider, root.as_deref(), source) else {
@@ -291,7 +292,7 @@ fn stored(
         if stored.fields.is_empty() {
             continue;
         }
-        deep_merge(&mut merged, &to_json(&stored.fields));
+        deep_merge(&mut merged, to_json(&stored.fields));
         if oldest
             .as_ref()
             .is_none_or(|o| stored.last_refreshed < o.last_refreshed)
@@ -305,7 +306,7 @@ fn stored(
         }
     }
     oldest.map(|fresh| CalledRecord {
-        value: merged,
+        value: Json::Object(merged),
         fresh,
     })
 }
@@ -375,25 +376,13 @@ pub fn ran<T>(execute: impl FnOnce() -> Result<T, String>) -> (Result<T, String>
     (result, failed_call)
 }
 
-fn to_json(fields: &std::collections::HashMap<String, Value>) -> Json {
-    serde_json::to_value(fields).unwrap_or(Json::Null)
-}
-
-/// `over` laid on `base`: objects merge per key, anything else replaces.
-fn deep_merge(base: &mut Json, over: &Json) {
-    match (base, over) {
-        (Json::Object(base), Json::Object(over)) => {
-            for (k, v) in over {
-                match base.get_mut(k) {
-                    Some(existing) => deep_merge(existing, v),
-                    None => {
-                        base.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-        }
-        (base, over) => *base = over.clone(),
-    }
+/// `fields` as JSON members. Serializing a `Value` cannot fail (a non-finite
+/// float becomes `null`), so the `Null` fallback is never taken.
+fn to_json(fields: &std::collections::HashMap<String, Value>) -> serde_json::Map<String, Json> {
+    fields
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::to_value(v).unwrap_or(Json::Null)))
+        .collect()
 }
 
 /// A Source a line names to call.
@@ -492,12 +481,5 @@ mod tests {
         let record = stored(&cache, "p", "s", &chain).expect("both are stored");
         assert_eq!(record.value, serde_json::json!({"x": 1}));
         assert_eq!(record.fresh.entry.as_deref(), Some("/near"));
-    }
-
-    #[test]
-    fn deeper_records_win_and_objects_merge() {
-        let mut base = serde_json::json!({"a": 1, "o": {"x": 1, "y": 1}});
-        deep_merge(&mut base, &serde_json::json!({"a": 2, "o": {"y": 2}}));
-        assert_eq!(base, serde_json::json!({"a": 2, "o": {"x": 1, "y": 2}}));
     }
 }

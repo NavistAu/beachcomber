@@ -570,7 +570,7 @@ impl<'a> Resolver<'a> {
                 let merged = match data {
                     Some(JsonValue::Object(mut data)) => {
                         prune_template_owned(&mut data, &tree);
-                        deep_merge(&mut data, rendered);
+                        crate::merge::deep_merge(&mut data, rendered);
                         data
                     }
                     _ => rendered,
@@ -1141,20 +1141,4 @@ fn insert_at(map: &mut Map<String, JsonValue>, key: &str, value: JsonValue) {
         cursor = inner;
     }
     cursor.insert(last.to_string(), value);
-}
-
-/// Merge `over` into `base`, `over` winning per leaf: the rendered tree wins
-/// over the cached data at the same address.
-fn deep_merge(base: &mut Map<String, JsonValue>, over: Map<String, JsonValue>) {
-    for (key, value) in over {
-        match (base.remove(&key), value) {
-            (Some(JsonValue::Object(mut b)), JsonValue::Object(o)) => {
-                deep_merge(&mut b, o);
-                base.insert(key, JsonValue::Object(b));
-            }
-            (_, value) => {
-                base.insert(key, value);
-            }
-        }
-    }
 }

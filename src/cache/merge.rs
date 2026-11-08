@@ -109,7 +109,7 @@ pub(crate) fn walk_leaves(prefix: &str, value: Value, out: &mut Vec<(String, Val
 /// cloned before a nearer one overwrites them — what the borrow saves is
 /// cloning a whole source map to merge a few leaves out of it, which every read
 /// used to pay for every contributing map. Objects present on both sides are
-/// stitched together exactly as `provider::deep_merge` does; anything else
+/// stitched together exactly as `libbeachcomber::merge::deep_merge` does; anything else
 /// replaces what is there, taking the shadowed records' provenance with it.
 pub(crate) fn merge_layer(
     fields: &mut HashMap<String, Value>,
@@ -889,5 +889,37 @@ mod tests {
             !read.records.contains_key("tree"),
             "only leaves are records; the object they share is not one"
         );
+    }
+
+    /// `merge_layer` tracks provenance as it merges, but the tree it builds is
+    /// the shared deep merge's: objects stitch, anything else replaces.
+    #[test]
+    fn merge_layer_builds_the_tree_deep_merge_does() {
+        let tree = |json: serde_json::Value| -> HashMap<String, Value> {
+            let Some(Value::Object(map)) = Value::from_json(&json) else {
+                panic!("an object");
+            };
+            map
+        };
+        let base = tree(serde_json::json!({
+            "o": {"x": 1, "y": {"deep": 1.5}}, "s": 1, "l": [1, 2], "e": {}
+        }));
+        let over = tree(serde_json::json!({
+            "o": {"y": {"more": true}, "z": "z"}, "s": {"now": "object"},
+            "l": [3], "e": {"filled": 1}, "n": {}
+        }));
+        let fresh = RecordFreshness {
+            source: Origin::Source(Arc::from("s")),
+            entry: None,
+            last_refreshed: tokio::time::Instant::now(),
+            expected_interval_secs: None,
+        };
+
+        let mut layered = base.clone();
+        let mut records = HashMap::new();
+        merge_layer(&mut layered, &mut records, &over, &fresh, "");
+        let mut merged = base;
+        libbeachcomber::merge::deep_merge(&mut merged, over);
+        assert_eq!(layered, merged);
     }
 }
