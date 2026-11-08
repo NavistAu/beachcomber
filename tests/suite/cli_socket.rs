@@ -80,3 +80,38 @@ fn a_refused_config_is_reported_before_spawning() {
     assert!(!sock.exists(), "nothing was spawned");
     assert!(started.elapsed() < std::time::Duration::from_secs(1));
 }
+
+/// The pre-spawn check is `comb check config`'s whole check, not only the
+/// per-file rules: an error only the provider load finds is reported with the
+/// rest, all at once, rather than as a daemon that exited before serving.
+#[test]
+fn a_config_error_only_the_load_finds_is_reported_before_spawning() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let xdg = tmp.path().join("xdg");
+    std::fs::create_dir_all(xdg.join("beachcomber")).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        xdg.join("beachcomber").join("config.toml"),
+        "[daemon]\nlog_level = \"loud\"\n[daemon.providers.nosuchthing]\nenabled = false\n",
+    )
+    .unwrap();
+    let sock = tmp.path().join("sock");
+
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_comb"));
+    crate::common::daemon::isolate(&mut cmd, &home, &xdg, &sock);
+    let out = cmd.args(["get", "x.v"]).output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("log_level"), "{stderr}");
+    assert!(
+        stderr.contains("no provider is named 'nosuchthing'"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("error: daemon: refusing to start: the configuration has 2 error(s)"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("could not start"), "{stderr}");
+    assert!(!sock.exists(), "nothing was spawned");
+}

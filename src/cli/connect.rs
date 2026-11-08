@@ -24,20 +24,17 @@ pub fn connect_as_is(config: &Config) -> Result<PathBuf, Outcome> {
 
 fn connect_inner(config: &Config, restart_older: bool) -> Result<PathBuf, Outcome> {
     let (socket, source) = config.resolve_socket_path_with_source();
-    // Not under a configuration the new daemon would refuse: the old one
-    // still serves the last configuration it loaded.
-    let restarted = if restart_older
-        && libbeachcomber::spawn::is_serving(&socket)
-        && config.errors().is_empty()
-    {
-        restart_if_older(&socket)
+    let restarted = if restart_older && libbeachcomber::spawn::is_serving(&socket) {
+        restart_if_older(&socket, config)
     } else {
         None
     };
     if libbeachcomber::spawn::is_serving(&socket) {
         return Ok(socket);
     }
-    let errors = config.errors();
+    // `comb check config`'s whole check: it builds every provider, so it runs
+    // only here, where a daemon is about to be started, never on a read.
+    let errors = crate::cli::commands::check::config_failures(config);
     if !errors.is_empty() {
         for line in crate::daemon::refusal(&errors) {
             eprintln!("{line}");
@@ -74,10 +71,14 @@ fn connect_inner(config: &Config, restart_older: bool) -> Result<PathBuf, Outcom
 /// Stop the daemon serving `socket` if it reports a release older than this
 /// `comb` (a package upgrade left it running), returning the version it had.
 /// Only an older one: a newer daemon serves an old pinned `comb` as it is, or
-/// two installed versions would knock each other over in turn.
-fn restart_if_older(socket: &std::path::Path) -> Option<String> {
+/// two installed versions would knock each other over in turn. Not under a
+/// configuration the new daemon would refuse: the old one still serves the
+/// last configuration it loaded.
+fn restart_if_older(socket: &std::path::Path, config: &Config) -> Option<String> {
     let theirs = daemon_version(socket)?;
-    if !older(&theirs, libbeachcomber::VERSION) {
+    if !older(&theirs, libbeachcomber::VERSION)
+        || !crate::cli::commands::check::config_failures(config).is_empty()
+    {
         return None;
     }
     let timeout = std::time::Duration::from_secs(5);

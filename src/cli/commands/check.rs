@@ -241,6 +241,17 @@ pub fn run_check_subjects(
     worst
 }
 
+/// What `comb check config` fails on, which a daemon started on `config`
+/// would refuse to start over: its FAIL verdicts' messages, all of them.
+/// Warnings are left out; they never stop a start.
+pub(crate) fn config_failures(config: &Config) -> Vec<String> {
+    local_config_verdicts(config)
+        .into_iter()
+        .filter(|v| v["level"] == "FAIL")
+        .filter_map(|v| v["message"].as_str().map(str::to_string))
+        .collect()
+}
+
 /// Validate the config file, as
 /// `run_daemon_with_cancel` does at startup.
 ///
