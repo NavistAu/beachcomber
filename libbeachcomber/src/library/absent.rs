@@ -11,12 +11,18 @@
 use super::{UNDEFINED, is_absent};
 use minijinja::value::{Rest, Value as MjValue, ValueOrKwargs};
 use minijinja::{Environment, Error, State, filters};
+use std::sync::LazyLock;
 
 /// The builtins that take an absent subject as they are: they supply a default,
 /// test truth, or show the value.
 pub const EXEMPT: &[&str] = &[
     "default", "d", "bool", "tojson", "pprint", "safe", "escape", "e",
 ];
+
+/// An untouched environment, for the builtins minijinja registers as a
+/// crate-private variant of the public function (`replace` with `count=`,
+/// `length` and `items` checked, ...): there they are reached as registered.
+static BUILTINS: LazyLock<Environment<'static>> = LazyLock::new(Environment::new);
 
 /// Register `name` to call `inner`, the builtin, unless its subject is absent.
 fn guard(
@@ -38,22 +44,28 @@ macro_rules! guard {
         let f = MjValue::from_function($f);
         guard($jinja, $name, move |state, args| f.call(state, args));
     )+};
+    ($jinja:expr, builtin $($name:literal),+ $(,)?) => {$(
+        guard($jinja, $name, |_, args| BUILTINS.empty_state().apply_filter($name, args));
+    )+};
 }
 
 /// Re-register minijinja's builtin filters (but those in [`EXEMPT`]) so an
 /// absent subject gives undefined.
 pub(crate) fn guard_builtins(jinja: &mut Environment<'_>) {
+    // Registered as private variants. Their state is read only for fuel (not
+    // enabled) and an undefined subject (the guard's), so another
+    // environment's state gives the same answer.
+    guard!(jinja, builtin
+        "replace", "length", "count", "dictsort", "items", "reverse",
+        "first", "last", "indent", "groupby",
+    );
+    // Registered as these public functions, called with the render's state:
+    // `map` and `select` reach its filters and tests by name.
     guard!(jinja,
         "upper" => filters::upper,
         "lower" => filters::lower,
         "title" => filters::title,
         "capitalize" => filters::capitalize,
-        "replace" => filters::replace,
-        "length" => filters::length,
-        "count" => filters::length,
-        "dictsort" => filters::dictsort,
-        "items" => filters::items,
-        "reverse" => filters::reverse,
         "trim" => filters::trim,
         "join" => filters::join,
         "split" => filters::split,
@@ -64,8 +76,6 @@ pub(crate) fn guard_builtins(jinja: &mut Environment<'_>) {
         "sum" => filters::sum,
         "attr" => filters::attr,
         "round" => filters::round,
-        "first" => filters::first,
-        "last" => filters::last,
         "min" => filters::min,
         "max" => filters::max,
         "sort" => filters::sort,
@@ -73,13 +83,11 @@ pub(crate) fn guard_builtins(jinja: &mut Environment<'_>) {
         "string" => filters::string,
         "slice" => filters::slice,
         "batch" => filters::batch,
-        "indent" => filters::indent,
         "select" => filters::select,
         "selectattr" => filters::selectattr,
         "reject" => filters::reject,
         "rejectattr" => filters::rejectattr,
         "map" => filters::map,
-        "groupby" => filters::groupby,
         "unique" => filters::unique,
         "chain" => filters::chain,
         "zip" => filters::zip,
@@ -167,6 +175,57 @@ mod tests {
         assert_eq!(r("{{ [1, 2] | sum }}"), "3");
         assert_eq!(r("{{ ['a', 'b'] | join('-') }}"), "a-b");
         assert_eq!(r("{{ 3.4 | round | int }}"), "3");
+    }
+
+    /// The guarded builtins answer a present subject exactly as minijinja's
+    /// own do, the ones it registers as private variants included:
+    /// `replace(count=)`, `length`, `items`, `dictsort`, `reverse`.
+    #[test]
+    fn a_guarded_builtin_is_the_registered_one() {
+        let ours = build_pure_engine_env(Default::default());
+        let theirs = Environment::new();
+        for t in [
+            "{{ 'aaa' | replace('a', 'b', count=1) }}",
+            "{{ 'aaa' | replace('a', 'b', 2) }}",
+            "{{ [1, 2] | length }}",
+            "{{ 'abc' | count }}",
+            "{{ {'b': 1, 'a': 2} | items | list }}",
+            "{{ {'b': 1, 'A': 2} | dictsort }}",
+            "{{ {'b': 1, 'a': 2} | dictsort(by='value', reverse=true) }}",
+            "{{ [1, 2, 3] | reverse | list }}",
+            "{{ 'abc' | reverse }}",
+            "{{ [3, 1] | first }}{{ [3, 1] | last }}",
+            "{{ 'a\nb' | indent(2, true) }}",
+            "{{ [{'k': 1}, {'k': 1}] | groupby('k') | list }}",
+        ] {
+            assert_eq!(
+                ours.render_str(t, ()).unwrap(),
+                theirs.render_str(t, ()).unwrap(),
+                "{t}"
+            );
+        }
+        let r = |t: &str| ours.render_str(t, ()).unwrap();
+        assert_eq!(r("{{ 'aaa' | replace('a', 'b', count=1) }}"), "baa");
+        assert_eq!(
+            r("{{ {'b': 1, 'a': 2} | items | list }}"),
+            "[('a', 2), ('b', 1)]"
+        );
+        for f in [
+            "replace('a', 'b', count=1)",
+            "length",
+            "count",
+            "items",
+            "dictsort",
+            "reverse",
+        ] {
+            for absent in ["none", "missing"] {
+                assert_eq!(
+                    r(&format!("{{{{ ({absent} | {f}) is undefined }}}}")),
+                    "True",
+                    "{absent} | {f}"
+                );
+            }
+        }
     }
 
     #[test]
