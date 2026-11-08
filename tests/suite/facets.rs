@@ -236,6 +236,41 @@ async fn a_put_to_macro_is_linted() {
     handle.abort();
 }
 
+/// A put to `<p>:template` takes strings (value expressions) and groups of
+/// them; any other leaf is refused, writing nothing, so `get p.a` and `get p`
+/// cannot disagree about it.
+#[tokio::test]
+async fn a_put_of_a_non_string_template_leaf_is_refused() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let handle = server.spawn().unwrap();
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    for (key, data, leaf) in [
+        ("p:template.a", serde_json::json!(5), ""),
+        (
+            "p:template",
+            serde_json::json!({"ok": "x", "g": {"n": true}}),
+            "p:template.g.n ",
+        ),
+    ] {
+        let r = send_recv(
+            &mut stream,
+            &serde_json::json!({"op": "put", "key": key, "data": data}).to_string(),
+        )
+        .await;
+        assert!(!r.ok, "{key} {data} is refused");
+        assert_eq!(
+            r.error.unwrap_or_default(),
+            format!("{leaf}must be a string (a value expression)")
+        );
+    }
+    let r = send_recv(&mut stream, r#"{"op":"get","key":"p:template"}"#).await;
+    assert_eq!(r.data, None, "nothing was written");
+
+    handle.abort();
+}
+
 // The facets are a closed set: `template`, `macro`, `memo`, `put`, `source`
 // and `cache`. Any other name after the colon is refused by every op that takes a
 // key, naming the head as the caller wrote it, and nothing is stored or read.

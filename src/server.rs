@@ -1938,6 +1938,16 @@ pub(crate) async fn put(
             Default::default(),
         ));
         let at = libbeachcomber::key::join(namespace, node);
+        if let Some(leaf) = crate::daemon::seed::non_string_template_leaf(data, &at) {
+            // The CLI already prefixes the key it put to; name a leaf only
+            // when it is below that key.
+            let who = if leaf == at {
+                String::new()
+            } else {
+                format!("{leaf} ")
+            };
+            return Response::error(format!("{who}must be a string (a value expression)"));
+        }
         let known = libbeachcomber::eval::Known::default();
         let refused = crate::daemon::seed::lint_template_tree(&engine, data, &at, &known)
             .into_iter()

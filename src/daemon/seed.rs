@@ -516,6 +516,19 @@ pub fn check_macro_put(
     Ok(())
 }
 
+/// The address of the first leaf of a `:template` put that is neither a
+/// string nor `null` (which deletes), if any: a template leaf is a value
+/// expression, and the daemon would drop anything else on read.
+pub fn non_string_template_leaf(tree: &serde_json::Value, at: &str) -> Option<String> {
+    match tree {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .find_map(|(k, sub)| non_string_template_leaf(sub, &libbeachcomber::key::push(at, k))),
+        serde_json::Value::String(_) | serde_json::Value::Null => None,
+        _ => Some(at.to_string()),
+    }
+}
+
 /// Each string leaf of `tree`, a `:template` tree whose root is at `at`,
 /// linted as a client template in a world of `known`, with its address under
 /// `at` (`template.a.b` for a tree at `template`).

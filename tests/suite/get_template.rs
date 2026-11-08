@@ -320,50 +320,6 @@ async fn a_template_miss_attaches_nothing() {
     handle.abort();
 }
 
-/// Addressed directly, a non-string scalar is not a template — only a group or
-/// a value expression is. Contrast the pass-through below.
-#[tokio::test]
-async fn a_non_string_leaf_at_the_address_attaches_nothing() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-    let mut s = UnixStream::connect(&sock).await.unwrap();
-    put(&mut s, "p:template.n", serde_json::json!(7)).await;
-
-    assert_eq!(
-        without_age(get(&mut s, "p.n").await),
-        serde_json::json!({"ok": true})
-    );
-
-    handle.abort();
-}
-
-/// A non-string leaf inside a template group is passed through untouched — the
-/// client is what decides an expression is not one.
-#[tokio::test]
-async fn a_non_string_leaf_inside_a_group_is_passed_through() {
-    let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
-    let handle = server.spawn().unwrap();
-    let mut s = UnixStream::connect(&sock).await.unwrap();
-    seed_scanline(&mut s).await;
-    put(&mut s, "scanline:template.widgets.n", serde_json::json!(7)).await;
-
-    assert_eq!(
-        without_age(get(&mut s, "scanline.widgets").await),
-        serde_json::json!({
-            "ok": true,
-            "template": {
-                "foo": "{{ env.SCANLINE_FOO }}",
-                "bar": "{{ env.SCANLINE_BAR }}",
-                "n": 7
-            }
-        })
-    );
-
-    handle.abort();
-}
-
 // ── the template half decides what an unresolvable sub-path means ───────────
 
 /// `box.widgets` is an object with no `foo` in it, so the data half calls the
