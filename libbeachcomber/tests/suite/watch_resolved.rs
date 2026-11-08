@@ -473,6 +473,13 @@ fn opening_frames_that_match_the_resolve_cost_no_request() {
 
 /// A change on the last of five deps is emitted as soon as it lands: the wait
 /// is one `poll` over every stream, not a turn per stream.
+///
+/// "As soon as" is measured against a change on the first dep through the
+/// same watch, not the wall clock: both pay for the `put`, the daemon's
+/// fan-out and the re-resolve, which on a loaded machine dwarf the wait
+/// itself. The fastest of twenty rounds of each sheds scheduling spikes. A
+/// fan-in that read its streams in turn, a 50 ms tick each, puts three ticks
+/// more on the last dep every round.
 #[test]
 fn a_change_on_the_last_of_five_deps_is_emitted_at_once() {
     let guard = DaemonGuard::spawn();
@@ -500,13 +507,30 @@ fn a_change_on_the_last_of_five_deps_is_emitted_at_once() {
     assert_eq!(w.deps()[4], ("d4.x".to_string(), None));
     assert_eq!(value(w.next(Some(SOON))), Some(json!("aaaa")));
 
-    let start = Instant::now();
-    writer
-        .put("d4.x", json!("b"), None, None, false)
-        .expect("put the last dep");
-    assert_eq!(value(w.next(Some(SOON))), Some(json!("aaab")));
-    let took = start.elapsed();
-    assert!(took < Duration::from_millis(50), "{took:?}");
+    // How long a put to `dep` takes to come out of the watch as `expected`.
+    let mut emitted = |dep: &str, x: String, expected: String| {
+        let start = Instant::now();
+        writer
+            .put(dep, json!(x), None, None, false)
+            .expect("put a dep");
+        assert_eq!(value(w.next(Some(SOON))), Some(json!(expected)));
+        start.elapsed()
+    };
+    let (mut first, mut last) = (Duration::MAX, Duration::MAX);
+    let mut d4 = "a".to_string();
+    for round in 0..20 {
+        first = first.min(emitted(
+            "d1.x",
+            format!("{round}"),
+            format!("{round}aa{d4}"),
+        ));
+        d4 = round.to_string();
+        last = last.min(emitted("d4.x", d4.clone(), format!("{round}aa{d4}")));
+    }
+    assert!(
+        last < first + Duration::from_millis(25),
+        "the last dep took {last:?}, the first {first:?}"
+    );
 }
 
 /// The daemon going away ends the stream.
