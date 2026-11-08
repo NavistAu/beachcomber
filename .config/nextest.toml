@@ -58,3 +58,11 @@ fail-fast = false
 
 [profile.ci.junit]
 path = "target/nextest/junit.xml"
+
+# --- The long tests start first ---
+# The suite's wall time is its work spread over the cores; a multi-second test
+# that starts last runs on alone past the rest. These are the longest (each a
+# repository driven through many git commands).
+[[profile.default.overrides]]
+filter = 'test(/^shipped::git::/) + test(/^validity::/) + test(/^cli_ffi_equivalence::/) + test(/^provider_conformance::/)'
+priority = 100
