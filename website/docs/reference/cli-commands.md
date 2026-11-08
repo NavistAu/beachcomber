@@ -240,7 +240,7 @@ A path at or below `$HOME` is written from `~` in both tables, the global entry 
 | `path` | the row's directory, as the table shows it or as stored: `~` is the global entry and `~/ws/*` a glob under home, as `/Users/me/ws/*` is |
 | `field` | the field, exactly (destructured names included) |
 | `source` | the SOURCE label shown |
-| `value` | the value shown, which for a failing Source with nothing stored is its latest error; `-` absent. A glob matches present values only, so `value=*` is "not absent" |
+| `value` | the value shown, which for a failing Source with nothing stored is its latest error (the tables show its first line, at most 160 characters); `-` absent. A glob matches present values only, so `value=*` is "not absent" |
 | `shadowed` | `true` / `false` — a record the read from here does not take: another layer of the same leaf answers (a nearer put, a template over data), or the read answers nothing there (a put replaced the node above it) |
 | `lifecycle` | `active`, `decay<N>`, `once`, `static`, `rendered` |
 

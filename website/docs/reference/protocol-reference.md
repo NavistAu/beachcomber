@@ -308,7 +308,7 @@ Response:
 - `path` is the directory the row is stored at, `null` for the global entry.
 - `source` is always present, presented as a `:cache` answer's is: `source(<name>)` for a Source of the provider, `put`, `config(<file>)`, `computed(<line>)`, or `memo` for a `<p>:memo` row (one per memo that holds a value, aged by its memo).
 - `kind` is always present, an object tagged by its own `kind`: `{"kind": "lifecycle", "decay": N, "depth": D, "watches_files": bool}` for a lifecycle entry (`decay` 0 is Active), or `{"kind": "once"}`, `{"kind": "static"}`, `{"kind": "transient"}`.
-- Optional fields, omitted when they have no value: `age_ms`, `poll_interval_secs`, `poll_count`, `polls_elapsed`, `next_poll_in_secs`, and `failure` (`{consecutive_failures, suppressed_until_unix_ms, last_error}`), omitted when there is none.
+- Optional fields, omitted when they have no value: `age_ms`, `poll_interval_secs`, `poll_count`, `polls_elapsed`, `next_poll_in_secs`, and `failure` (`{consecutive_failures, suppressed_until_unix_ms, last_error}`, where `last_error` is the latest failure's whole message), omitted when there is none.
 
 ### `watch`
 

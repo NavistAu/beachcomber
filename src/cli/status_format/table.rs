@@ -204,11 +204,31 @@ struct Widths {
     poll_raw: usize,
 }
 
+/// How much of a failing row's error its VALUE cell shows, before the width
+/// cap: the machine formats carry the whole message.
+const LAST_ERROR_CHARS: usize = 160;
+
+/// `message`'s first line, cut to [`LAST_ERROR_CHARS`] characters with an
+/// ellipsis when longer.
+fn first_line(message: &str) -> String {
+    let line = message.lines().next().unwrap_or_default().trim_end();
+    if line.chars().count() <= LAST_ERROR_CHARS {
+        return line.to_string();
+    }
+    let mut cut: String = line.chars().take(LAST_ERROR_CHARS - 1).collect();
+    cut.push('\u{2026}');
+    cut
+}
+
 /// A row's PATH and VALUE as shown, before sanitizing, and whether any
 /// provider-controlled text in it needs sanitizing (and so gets a marker).
 fn row_texts(row: &CacheRow, env: &Env) -> (String, String, bool) {
     let path = shown_path(row.path.as_deref(), &env.home);
-    let value = shown_value(row).unwrap_or_else(|| ABSENT_TEXT.to_string());
+    let value = match shown_value(row) {
+        // Nothing stored: the VALUE cell is the latest error.
+        Some(error) if row.value.is_null() => first_line(&error),
+        shown => shown.unwrap_or_else(|| ABSENT_TEXT.to_string()),
+    };
     let tainted = row_is_tainted(row, &path, &value);
     (path, value, tainted)
 }
@@ -600,4 +620,52 @@ fn layout(lines: &[[Cell; COLS]], color: bool) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::FailureSnapshot;
+
+    fn failing_row(error: &str) -> CacheRow {
+        CacheRow {
+            shadowed: false,
+            provider: "p".into(),
+            path: None,
+            source: "s".into(),
+            field: "f".into(),
+            value: serde_json::Value::Null,
+            age_ms: None,
+            kind: None,
+            poll_interval_secs: None,
+            poll_count: None,
+            polls_elapsed: None,
+            next_poll_in_secs: None,
+            failure: Some(FailureSnapshot {
+                consecutive_failures: 1,
+                suppressed_until_unix_ms: None,
+                last_error: Some(error.into()),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_failing_rows_error_shows_its_first_line_cut_to_length() {
+        let error = format!("{}\nsecond line", "x".repeat(500));
+        let out = render_table(&[failing_row(&error)], &[], false, None, false);
+        let cut = format!("{}\u{2026}", "x".repeat(LAST_ERROR_CHARS - 1));
+        assert!(out.contains(&cut), "{out}");
+        assert!(!out.contains(&"x".repeat(LAST_ERROR_CHARS)), "{out}");
+        assert!(!out.contains("second line"), "{out}");
+    }
+
+    #[test]
+    fn a_failing_rows_error_fits_the_max_width() {
+        let error = format!("{}\nsecond line", "x".repeat(500));
+        let out = render_table(&[failing_row(&error)], &[], false, Some(80), false);
+        for line in out.lines() {
+            assert!(line.cols() <= 80, "{} cols: {line}", line.cols());
+        }
+        assert!(!out.contains("second line"), "{out}");
+    }
 }
