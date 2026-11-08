@@ -41,8 +41,8 @@
 //! and `plugin`: these lines run on a read, which does no IO.
 
 use crate::cache::{
-    COMPUTED_PREFIX, Cache, Layers, MergedRead, RecordFreshness, merge_layer, merge_read,
-    note_records, walk_leaves,
+    Cache, Layers, MergedRead, Origin, RecordFreshness, merge_layer, merge_read, note_records,
+    walk_leaves,
 };
 use crate::engine::{CallFn, Calls, FACET_SINK, FacetSink, facet_name_error, provider_engine_env};
 use crate::provider::Value;
@@ -955,7 +955,7 @@ impl Input {
 
 /// The freshness of each leaf of `fields`, a line's output over `inputs`. A
 /// leaf exactly one input holds with that very value is that input's record.
-/// Any other is computed by the line: labelled as such (a static label, with no
+/// Any other is computed by the line: labelled as such ([`Origin::Computed`], with no
 /// Source or schedule behind it) and as old as the oldest of the inputs that
 /// hold it, or of all of them when none does.
 fn attribute(
@@ -966,7 +966,7 @@ fn attribute(
 ) -> HashMap<String, RecordFreshness> {
     let mut leaves = Vec::new();
     walk_leaves("", Value::Object(fields.clone()), &mut leaves);
-    let label: Arc<str> = Arc::from(format!("{COMPUTED_PREFIX}{line}"));
+    let label = Origin::Computed(Arc::from(line));
     let entry: Option<Arc<str>> = at.map(Arc::from);
     let computed = |pool: &[&Input]| {
         let oldest = pool
@@ -1684,7 +1684,7 @@ mod tests {
 
     fn fresh(source: &str, secs_ago: u64) -> RecordFreshness {
         RecordFreshness {
-            source: Arc::from(source),
+            source: Origin::source(source),
             entry: None,
             last_refreshed: Instant::now() - std::time::Duration::from_secs(secs_ago),
             expected_interval_secs: Some(60),
@@ -1718,13 +1718,18 @@ mod tests {
         assert_eq!(read.fields["x"], Value::Int(1));
         assert_eq!(read.fields["b"], Value::Int(6));
         assert_eq!(got.template, Some(tmpl));
-        assert_eq!(&*read.records["a"].source, "one", "handed on as it was");
-        assert_eq!(&*read.records["b"].source, "one");
         assert_eq!(
-            &*read.records["x"].source, "computed:return",
+            read.records["a"].source,
+            Origin::source("one"),
+            "handed on as it was"
+        );
+        assert_eq!(read.records["b"].source, Origin::source("one"));
+        assert_eq!(
+            read.records["x"].source,
+            Origin::Computed("return".into()),
             "a leaf the line made has no Source behind it"
         );
-        assert!(crate::cache::is_static_label(&read.records["x"].source));
+        assert!(read.records["x"].source.is_static());
         assert_eq!(
             read.records["x"].last_refreshed, read.records["a"].last_refreshed,
             "as old as what it was computed from"

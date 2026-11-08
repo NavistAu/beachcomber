@@ -93,11 +93,12 @@ impl CacheSourceEntry {
 #[derive(Debug, Clone)]
 pub struct RecordFreshness {
     /// The record's one writer: a Source of the namespace's provider (`head`,
-    /// `refs`, …), or a static label (`put`, `config:<file>`). This is what
-    /// the `source` of `get <p>:cache.<key>`. Shared rather than owned: one source map
-    /// contributes many records and they all name it, so the label is
-    /// allocated once per map and refcounted per record.
-    pub source: Arc<str>,
+    /// `refs`, …), or a static writer (`put`, a configuration file). This is
+    /// the `source` of `get <p>:cache.<key>`, presented. Its names are shared
+    /// rather than owned: one source map contributes many records and they
+    /// all name it, so a name is allocated once per map and refcounted per
+    /// record.
+    pub source: Origin,
     /// The directory entry the record's map lives at (`None`: the global
     /// entry) — where the `:cache` facet reads the keys stored beside it.
     pub entry: Option<Arc<str>>,
@@ -139,27 +140,34 @@ impl PutStamp {
     }
 }
 
-/// A complete cache entry for a (provider, path) key. Holds one `CacheSourceEntry`
-/// per named source. Sources are disjoint by field name — validated at registration time.
+/// A complete cache entry for a (provider, path) key: one map per writer
+/// ([`Origin`]) that stored records here. Sources are disjoint by field name —
+/// validated at registration time.
 #[derive(Debug, Clone)]
 pub struct CacheEntry {
-    pub sources: HashMap<String, CacheSourceEntry>,
+    /// The map of each Source of the provider, by Source name.
+    pub sources: HashMap<Arc<str>, CacheSourceEntry>,
+    /// The `put` map: every value a `put` wrote here. Boxed, as `memo` is, to
+    /// keep an entry with neither small: a read clones what it finds.
+    pub put: Option<Box<CacheSourceEntry>>,
+    /// The memo map, on a `<p>:memo` entry (its values) or a `<p>:cache` entry
+    /// (their stored keys).
+    pub memo: Option<Box<CacheSourceEntry>>,
+    /// The map of each configuration file seeded here, by the file, in the
+    /// order the files compose — `defaults/`, then the main file, then
+    /// `conf.d/` — which is the order they are written in. Each file keeps its
+    /// own records, so two may hold the same one; a read takes the later file's.
+    pub configs: Vec<(Arc<str>, CacheSourceEntry)>,
     /// One stamp per address a `put` wrote at (`""` for the namespace root).
-    /// The `put` map in `sources` holds the values; this holds when each
-    /// address was written and how long it is valid for.
+    /// The `put` map holds the values; this holds when each address was
+    /// written and how long it is valid for.
     pub puts: BTreeMap<String, PutStamp>,
     /// On a `<p>:memo` entry, one stamp per template leaf with a memo here
     /// (its canonical address): the memo's record. Its value, when it has
-    /// one, is under [`MEMO_SOURCE`] in `sources`; a memo of absence has the
-    /// stamp alone. Its stored keys are in the `<p>:cache` entry at the same
-    /// path.
+    /// one, is in the `memo` map; a memo of absence has the stamp alone. Its
+    /// stored keys are in the `<p>:cache` entry at the same path.
     pub memos: BTreeMap<String, PutStamp>,
     pub created_at: Instant,
-    /// The `config:<file>` labels of this entry in the order their files
-    /// compose — `defaults/`, then the main file, then `conf.d/` — which is
-    /// the order they are written in. Each file keeps its own records, so two
-    /// may hold the same one; a read takes the later file's.
-    pub config_order: Vec<String>,
 }
 
 impl CacheEntry {
@@ -167,57 +175,114 @@ impl CacheEntry {
     pub(super) fn empty(now: Instant) -> Self {
         Self {
             sources: HashMap::new(),
+            put: None,
+            memo: None,
+            configs: Vec::new(),
             puts: BTreeMap::new(),
             memos: BTreeMap::new(),
             created_at: now,
-            config_order: Vec::new(),
         }
     }
 
-    /// Merge every source's fields into one tree, recursing into objects the
-    /// maps share. Not a read: two `config:` maps may hold the same record,
-    /// and only [`Cache::read_merged`] stacks them in composition order.
+    /// Every map this entry holds, with its writer: Sources, then the
+    /// configuration seeds in composition order, the memo map, and `put`.
+    pub fn maps(&self) -> impl Iterator<Item = (Origin, &CacheSourceEntry)> {
+        let sources = self
+            .sources
+            .iter()
+            .map(|(name, src)| (Origin::Source(name.clone()), src));
+        let configs = self
+            .configs
+            .iter()
+            .map(|(file, src)| (Origin::Config(file.clone()), src));
+        let memo = self.memo.iter().map(|src| (Origin::Memo, &**src));
+        let put = self.put.iter().map(|src| (Origin::Put, &**src));
+        sources.chain(configs).chain(memo).chain(put)
+    }
+
+    /// Whether it holds no map at all.
+    pub fn holds_no_map(&self) -> bool {
+        self.sources.is_empty()
+            && self.configs.is_empty()
+            && self.memo.is_none()
+            && self.put.is_none()
+    }
+
+    /// The map `origin` wrote here. A computed leaf is never stored.
+    pub fn map_of(&self, origin: &Origin) -> Option<&CacheSourceEntry> {
+        match origin {
+            Origin::Source(name) => self.sources.get(name),
+            Origin::Put => self.put.as_deref(),
+            Origin::Memo => self.memo.as_deref(),
+            Origin::Config(file) => self.configs.iter().find(|(f, _)| f == file).map(|(_, s)| s),
+            Origin::Computed(_) => None,
+        }
+    }
+
+    /// The map `origin` wrote here, to change.
+    pub fn map_of_mut(&mut self, origin: &Origin) -> Option<&mut CacheSourceEntry> {
+        match origin {
+            Origin::Source(name) => self.sources.get_mut(name),
+            Origin::Put => self.put.as_deref_mut(),
+            Origin::Memo => self.memo.as_deref_mut(),
+            Origin::Config(file) => self
+                .configs
+                .iter_mut()
+                .find(|(f, _)| f == file)
+                .map(|(_, s)| s),
+            Origin::Computed(_) => None,
+        }
+    }
+
+    /// The map `origin` writes here, made by `make` when it has none yet; a
+    /// new configuration file's goes after the files already here.
+    pub(super) fn map_or_insert(
+        &mut self,
+        origin: &Origin,
+        make: impl FnOnce() -> CacheSourceEntry,
+    ) -> &mut CacheSourceEntry {
+        match origin {
+            Origin::Source(name) => self.sources.entry(name.clone()).or_insert_with(make),
+            Origin::Put => self.put.get_or_insert_with(|| Box::new(make())),
+            Origin::Memo => self.memo.get_or_insert_with(|| Box::new(make())),
+            Origin::Config(file) => {
+                let at = match self.configs.iter().position(|(f, _)| f == file) {
+                    Some(at) => at,
+                    None => {
+                        self.configs.push((file.clone(), make()));
+                        self.configs.len() - 1
+                    }
+                };
+                &mut self.configs[at].1
+            }
+            Origin::Computed(_) => unreachable!("a computed leaf is never stored"),
+        }
+    }
+
+    /// Merge every map's fields into one tree, recursing into objects the
+    /// maps share. Not a read: two configuration maps may hold the same
+    /// record, and only [`Cache::read_merged`] stacks them in composition order.
     pub fn flatten_fields(&self) -> HashMap<String, Value> {
         let mut out = HashMap::new();
-        for src in self.sources.values() {
+        for (_, src) in self.maps() {
             crate::provider::deep_merge(&mut out, src.fields.clone());
         }
         out
     }
 
-    /// Name of the source map occupying the address `tail`, or `None` if no map
+    /// The writer of the map occupying the address `tail`, or `None` if no map
     /// does. A map occupies the address when it holds the node itself, or when
     /// it holds a non-object on an ancestor segment — that scalar is what
     /// stands in the way of the address below it.
     ///
     /// An empty tail names the entry root, which no single map owns: `None`.
-    pub fn owner_of(&self, tail: &str) -> Option<&str> {
+    pub fn owner_of(&self, tail: &str) -> Option<Origin> {
         if tail.is_empty() {
             return None;
         }
-        self.sources
-            .iter()
+        self.maps()
             .find(|(_, src)| occupies(&src.fields, tail))
-            .map(|(name, _)| name.as_str())
-    }
-
-    /// The `config:<file>` maps this entry holds, in composition order: the
-    /// order [`Self::config_order`] records, and any map it does not name
-    /// after those, by name.
-    pub(super) fn config_labels(&self) -> Vec<&String> {
-        let rank = |name: &String| {
-            self.config_order
-                .iter()
-                .position(|l| l == name)
-                .unwrap_or(usize::MAX)
-        };
-        let mut labels: Vec<&String> = self
-            .sources
-            .keys()
-            .filter(|name| name.starts_with(CONFIG_SOURCE_PREFIX))
-            .collect();
-        labels.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.cmp(b)));
-        labels
+            .map(|(origin, _)| origin)
     }
 
     /// The stamp governing the record at `tail`: the put address at or above
@@ -241,7 +306,7 @@ impl CacheEntry {
     /// Returns the `Instant` of the source that was refreshed least recently,
     /// or `None` if there are no sources yet.
     pub fn oldest_refreshed(&self) -> Option<Instant> {
-        self.sources.values().map(|s| s.last_refreshed).min()
+        self.maps().map(|(_, s)| s.last_refreshed).min()
     }
 
     /// Age in milliseconds from the oldest source, or from `created_at` if no sources.
@@ -254,7 +319,7 @@ impl CacheEntry {
 
     /// True if *any* source is stale.
     pub fn is_stale(&self) -> bool {
-        self.sources.values().any(|s| s.is_stale())
+        self.maps().any(|(_, s)| s.is_stale())
     }
 }
 
@@ -331,7 +396,7 @@ impl Cache {
     ) -> Option<(Value, Instant)> {
         let key = make_cache_key(provider, path);
         let entry = self.entries.get(&key)?;
-        for src in entry.sources.values() {
+        for (_, src) in entry.maps() {
             if let Some(value) = crate::provider::lookup_path(&src.fields, field) {
                 return Some((value.clone(), src.last_refreshed));
             }
@@ -468,20 +533,9 @@ impl Cache {
     ) {
         self.entries
             .entry(key)
-            .and_modify(|ce| {
-                ce.sources.insert(source_name.to_string(), src.clone());
-            })
-            .or_insert_with(|| CacheEntry {
-                sources: {
-                    let mut m = HashMap::new();
-                    m.insert(source_name.to_string(), src);
-                    m
-                },
-                puts: BTreeMap::new(),
-                memos: BTreeMap::new(),
-                created_at: Instant::now(),
-                config_order: Vec::new(),
-            });
+            .or_insert_with(|| CacheEntry::empty(Instant::now()))
+            .sources
+            .insert(Arc::from(source_name), src);
     }
 
     /// Return a clone of a specific source's entry, or `None` if the (provider, path) key
@@ -506,17 +560,17 @@ impl Cache {
         &self,
         provider: &str,
         at: Option<&str>,
-        label: &str,
+        origin: &Origin,
         tail: &str,
     ) -> Option<HashMap<String, Value>> {
-        if label.starts_with(CONFIG_SOURCE_PREFIX) {
+        if matches!(origin, Origin::Config(_)) {
             return None;
         }
         let head = libbeachcomber::key::segments(tail).first().map_or_else(
             || tail.to_string(),
             |h| libbeachcomber::key::quote(h).into_owned(),
         );
-        let address = if label == PUT_SOURCE {
+        let address = if *origin == Origin::Put {
             let entry = self.entries.get(&make_cache_key(provider, at))?;
             let address = entry.put_address_for(tail)?.to_string();
             if address.is_empty() {
@@ -530,7 +584,7 @@ impl Cache {
         let facet = self
             .entries
             .get(&make_cache_key(&facet_of(provider, Facet::Cache), at))?;
-        match crate::provider::lookup_path(&facet.sources.get(label)?.fields, &address)? {
+        match crate::provider::lookup_path(&facet.map_of(origin)?.fields, &address)? {
             Value::Object(keys) => Some(keys.clone()),
             _ => None,
         }
@@ -623,14 +677,12 @@ impl Cache {
     /// notification is emitted (nothing changed).
     pub fn remove_source(&self, provider: &str, path: Option<&str>, source: &str) {
         // Its stored `:cache` keys go with it; they describe nothing else.
-        if !is_static_label(source) {
-            let facet_key = make_cache_key(&facet_of(provider, Facet::Cache), path);
-            if let Some(mut entry) = self.entries.get_mut(&facet_key) {
-                entry.sources.remove(source);
-            }
-            self.entries
-                .remove_if(&facet_key, |_, entry| entry.sources.is_empty());
+        let facet_key = make_cache_key(&facet_of(provider, Facet::Cache), path);
+        if let Some(mut entry) = self.entries.get_mut(&facet_key) {
+            entry.sources.remove(source);
         }
+        self.entries
+            .remove_if(&facet_key, |_, entry| entry.holds_no_map());
 
         let key = make_cache_key(provider, path);
         // Drop the source under the shard lock, recording whether anything
@@ -646,7 +698,7 @@ impl Cache {
             // `put_source` repopulating it in the window after the guard above
             // was released (it won't remove a non-empty entry).
             self.entries
-                .remove_if(&key, |_, entry| entry.sources.is_empty());
+                .remove_if(&key, |_, entry| entry.holds_no_map());
             if let Some(ref watchers) = self.watchers {
                 watchers.notify(provider, path);
             }
@@ -679,16 +731,15 @@ impl Cache {
     }
 
     /// Whether the cache holds nothing but what the daemon seeded from its
-    /// own configuration (`config:<file>` maps): no Source record, put or
+    /// own configuration (configuration-seed maps): no Source record, put or
     /// memo. Idle shutdown asks this; a seed alone does not keep a daemon up.
     pub fn holds_only_config_seeds(&self) -> bool {
         self.entries.iter().all(|entry| {
             entry.puts.is_empty()
                 && entry.memos.is_empty()
-                && entry
-                    .sources
-                    .keys()
-                    .all(|label| label.starts_with(CONFIG_SOURCE_PREFIX))
+                && entry.sources.is_empty()
+                && entry.memo.is_none()
+                && entry.put.is_none()
         })
     }
 }
@@ -872,20 +923,17 @@ mod tests {
     /// sits inside an object that map holds.
     #[test]
     fn owner_of_finds_the_map_holding_a_nested_record() {
-        let mut sources = HashMap::new();
+        let mut entry = CacheEntry::empty(Instant::now());
         let mut nested = HashMap::new();
         crate::provider::insert_path(&mut nested, "some.value", Value::Int(5));
-        sources.insert(
-            PUT_SOURCE.to_string(),
-            CacheSourceEntry {
-                fields: nested,
-                last_refreshed: Instant::now(),
-                expected_interval_secs: None,
-                validity: None,
-            },
-        );
-        sources.insert(
-            "head".to_string(),
+        entry.put = Some(Box::new(CacheSourceEntry {
+            fields: nested,
+            last_refreshed: Instant::now(),
+            expected_interval_secs: None,
+            validity: None,
+        }));
+        entry.sources.insert(
+            "head".into(),
             CacheSourceEntry {
                 fields: make_fields(&[("branch", "main")]),
                 last_refreshed: Instant::now(),
@@ -893,35 +941,28 @@ mod tests {
                 validity: None,
             },
         );
-        let entry = CacheEntry {
-            sources,
-            puts: BTreeMap::new(),
-            memos: BTreeMap::new(),
-            created_at: Instant::now(),
-            config_order: Vec::new(),
-        };
 
-        assert_eq!(entry.owner_of("some.value"), Some(PUT_SOURCE));
-        assert_eq!(entry.owner_of("some"), Some(PUT_SOURCE));
-        assert_eq!(entry.owner_of("branch"), Some("head"));
+        assert_eq!(entry.owner_of("some.value"), Some(Origin::Put));
+        assert_eq!(entry.owner_of("some"), Some(Origin::Put));
+        assert_eq!(entry.owner_of("branch"), Some(Origin::source("head")));
         assert_eq!(entry.owner_of("nothing"), None);
         assert_eq!(entry.owner_of("some.nope"), None);
         // A scalar in the way owns the address below it.
-        assert_eq!(entry.owner_of("branch.sub"), Some("head"));
+        assert_eq!(entry.owner_of("branch.sub"), Some(Origin::source("head")));
     }
 
     /// `flatten_fields` deep-merges, so two maps contributing to the same
     /// object node both show up in a whole-entry read.
     #[test]
     fn flatten_fields_deep_merges_across_sources() {
-        let mut sources = HashMap::new();
+        let mut entry = CacheEntry::empty(Instant::now());
         let mut a = HashMap::new();
         crate::provider::insert_path(&mut a, "tree.left", Value::Int(1));
         let mut b = HashMap::new();
         crate::provider::insert_path(&mut b, "tree.right", Value::Int(2));
         for (name, fields) in [("one", a), ("two", b)] {
-            sources.insert(
-                name.to_string(),
+            entry.sources.insert(
+                name.into(),
                 CacheSourceEntry {
                     fields,
                     last_refreshed: Instant::now(),
@@ -930,13 +971,6 @@ mod tests {
                 },
             );
         }
-        let entry = CacheEntry {
-            sources,
-            puts: BTreeMap::new(),
-            memos: BTreeMap::new(),
-            created_at: Instant::now(),
-            config_order: Vec::new(),
-        };
 
         let mut expected = HashMap::new();
         crate::provider::insert_path(&mut expected, "tree.left", Value::Int(1));
@@ -955,7 +989,7 @@ mod tests {
             .write_static(
                 "*:cache",
                 None,
-                "config:00-comb.toml",
+                &crate::cache::Origin::Config("00-comb.toml".into()),
                 "_.decay",
                 Value::Int(6),
                 None,
@@ -966,7 +1000,7 @@ mod tests {
             .write_static(
                 "git:cache",
                 None,
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "_.decay",
                 Value::Int(2),
                 None,
@@ -981,7 +1015,14 @@ mod tests {
         let cache = Cache::new();
         let put = |ns: &str, at: Option<&str>, n: i64| {
             cache
-                .write_static(ns, at, PUT_SOURCE, "_.decay", Value::Int(n), None)
+                .write_static(
+                    ns,
+                    at,
+                    &crate::cache::Origin::Put,
+                    "_.decay",
+                    Value::Int(n),
+                    None,
+                )
                 .unwrap();
         };
         put("*:cache", None, 3);

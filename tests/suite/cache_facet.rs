@@ -440,7 +440,14 @@ async fn a_watch_on_the_cache_facet_wakes_on_a_data_write() {
     assert!(first.ok && first.data.is_none(), "{first:?}");
 
     writer
-        .write_static("nowhere", None, "put", "x", Value::String("1".into()), None)
+        .write_static(
+            "nowhere",
+            None,
+            &beachcomber::cache::Origin::Put,
+            "x",
+            Value::String("1".into()),
+            None,
+        )
         .unwrap();
     let frame = next_frame(&mut reader).await;
     assert_eq!(frame.data.unwrap()["source"], json!("put"));

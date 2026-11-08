@@ -460,6 +460,7 @@ fn the_shipped_cache_prototype_is_the_decay_default() {
     let rows: Vec<_> = cache
         .list_rows()
         .into_iter()
+        .map(|(_, r)| r)
         .filter(|r| r.provider == "*:cache" && r.field == "_")
         .collect();
     assert_eq!(
@@ -468,7 +469,7 @@ fn the_shipped_cache_prototype_is_the_decay_default() {
         "00-comb.toml seeds the *:cache `_` prototype: {rows:?}"
     );
     assert!(
-        rows[0].source.starts_with("config:") && rows[0].source.ends_with("defaults/00-comb.toml"),
+        rows[0].source.starts_with("config(") && rows[0].source.ends_with("defaults/00-comb.toml)"),
         "stored with the defaults file's label, got {}",
         rows[0].source
     );

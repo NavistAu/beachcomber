@@ -330,13 +330,16 @@ async fn nested_key_walks_into_object_field() {
     );
     let mut fields = HashMap::new();
     fields.insert("project".to_string(), Value::Object(tools_map));
-    cache.put_source(
-        "myproj",
-        None,
-        beachcomber::cache::PUT_SOURCE,
-        fields,
-        Schedule::default(),
-    );
+    cache
+        .write_static(
+            "myproj",
+            None,
+            &beachcomber::cache::Origin::Put,
+            "",
+            Value::Object(fields),
+            None,
+        )
+        .unwrap();
     registry.register_static("myproj");
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
@@ -371,13 +374,16 @@ async fn nested_key_missing_subkey_is_a_miss() {
     tools_map.insert("rust".to_string(), Value::String("1.94.0".to_string()));
     let mut fields = HashMap::new();
     fields.insert("project".to_string(), Value::Object(tools_map));
-    cache.put_source(
-        "myproj",
-        None,
-        beachcomber::cache::PUT_SOURCE,
-        fields,
-        Schedule::default(),
-    );
+    cache
+        .write_static(
+            "myproj",
+            None,
+            &beachcomber::cache::Origin::Put,
+            "",
+            Value::Object(fields),
+            None,
+        )
+        .unwrap();
     registry.register_static("myproj");
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
@@ -425,7 +431,7 @@ async fn a_put_answered_get_runs_no_source_and_sends_no_demand() {
         .write_static(
             "hostname",
             None,
-            "put",
+            &beachcomber::cache::Origin::Put,
             "name",
             Value::String("x".to_string()),
             None,
@@ -460,7 +466,7 @@ async fn a_get_of_a_field_the_put_does_not_cover_runs_and_demands_the_source() {
         .write_static(
             "hostname",
             None,
-            "put",
+            &beachcomber::cache::Origin::Put,
             "name",
             Value::String("x".to_string()),
             None,
@@ -566,10 +572,13 @@ async fn status_rows_are_sorted_by_provider_path_source_field() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     for provider in ["zz", "aa", "mm"] {
         for path in [None, Some("/b"), Some("/a")] {
-            for source in [beachcomber::cache::PUT_SOURCE, "config:/c/x.toml"] {
+            for source in [
+                beachcomber::cache::Origin::Put,
+                beachcomber::cache::Origin::Config("/c/x.toml".into()),
+            ] {
                 for field in ["y", "x"] {
                     cache
-                        .write_static(provider, path, source, field, Value::Int(1), None)
+                        .write_static(provider, path, &source, field, Value::Int(1), None)
                         .unwrap();
                 }
             }

@@ -108,24 +108,24 @@ pub(super) fn cache_facet_tree(
         let record = merged.as_ref()?.records.get(tail)?;
         let mut answer = serde_json::Map::new();
         answer.insert("age_ms".into(), (record.age_ms() as u64).into());
-        let label: &str = &record.source;
-        answer.insert("source".into(), crate::cache::presented_label(label).into());
+        let origin = &record.source;
+        answer.insert("source".into(), origin.presented_label().into());
         // A Source's record is being brought up to date while a run of its
         // instance is in flight, whoever started it.
-        if !crate::cache::is_static_label(label) {
-            let instance = instance_key(provider, label, record.entry.as_deref());
+        if let Some(name) = origin.source_name() {
+            let instance = instance_key(provider, name, record.entry.as_deref());
             answer.insert(
                 "executing".into(),
                 registry.runs().is_running(&instance).into(),
             );
         }
-        let stored = cache.stored_keys(provider, record.entry.as_deref(), label, tail);
+        let stored = cache.stored_keys(provider, record.entry.as_deref(), origin, tail);
         for (key, v) in stored.iter().flatten() {
             if let Ok(v) = serde_json::to_value(v) {
                 answer.insert(key.clone(), v);
             }
         }
-        if !crate::cache::is_static_label(label) {
+        if !origin.is_static() {
             inherit_decay(&mut answer, record.entry.as_deref());
         }
         Some(answer.into())
@@ -263,7 +263,7 @@ pub(super) fn layers_response(
         let mut computed: Vec<(&String, &crate::cache::RecordFreshness)> = m
             .records
             .iter()
-            .filter(|(_, r)| r.source.starts_with(crate::cache::COMPUTED_PREFIX))
+            .filter(|(_, r)| matches!(r.source, crate::cache::Origin::Computed(_)))
             .collect();
         computed.sort_by(|a, b| a.0.cmp(b.0));
         for (tail, record) in computed {
@@ -301,7 +301,7 @@ pub(super) fn layers_response(
         loop {
             if let Some(r) = records.get(&at) {
                 return Some((
-                    crate::cache::presented_label(&r.source),
+                    r.source.presented_label(),
                     r.entry.as_deref().map(str::to_string),
                 ));
             }

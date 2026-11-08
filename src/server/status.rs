@@ -22,45 +22,48 @@ pub(super) async fn handle_status(ctx: &Ctx, registry: &Arc<ProviderRegistry>) -
     for key in failures.keys() {
         let has_row = rows
             .iter()
-            .any(|r| r.provider == key.provider && r.path == key.path && r.source == key.source);
+            .any(|(o, r)| r.provider == key.provider && r.path == key.path && *o == key.source);
         if !key.node.is_empty() || has_row {
             continue;
         }
         let fields = registry
-            .source_metadata(&key.provider, &key.source)
+            .source_metadata(&key.provider, key.source.name())
             .map(|sm| sm.fields.iter().map(|f| f.name.clone()).collect())
             .unwrap_or_else(|| vec![String::new()]);
         for field in fields {
-            rows.push(crate::cache::CacheRow {
-                shadowed: false,
-                provider: key.provider.clone(),
-                path: key.path.clone(),
-                source: key.source.clone(),
-                field,
-                value: serde_json::Value::Null,
-                age_ms: None,
-                kind: None,
-                poll_interval_secs: None,
-                poll_count: None,
-                polls_elapsed: None,
-                next_poll_in_secs: None,
-                failure: None,
-            });
+            rows.push((
+                key.source.clone(),
+                crate::cache::CacheRow {
+                    shadowed: false,
+                    provider: key.provider.clone(),
+                    path: key.path.clone(),
+                    source: key.source.presented_label(),
+                    field,
+                    value: serde_json::Value::Null,
+                    age_ms: None,
+                    kind: None,
+                    poll_interval_secs: None,
+                    poll_count: None,
+                    polls_elapsed: None,
+                    next_poll_in_secs: None,
+                    failure: None,
+                },
+            ));
         }
     }
 
     use crate::cache::RowKind;
-    for row in rows.iter_mut() {
-        // `Cache::list_rows` already marked static rows (source ==
-        // PUT_SOURCE or "config:*") with RowKind::Static; only rows
+    for (origin, row) in rows.iter_mut() {
+        // `Cache::list_rows` already marked static rows (a put's or a
+        // configuration seed's) with RowKind::Static; only rows
         // backed by a real Source need a lifecycle/transient lookup.
         // A put row is looked up only when its address carries a ttl
         // (`Cache::list_rows` leaves its kind unset); without one it
         // stays static, whatever put sits above it.
-        let is_put = row.source == crate::cache::PUT_SOURCE;
+        let is_put = *origin == crate::cache::Origin::Put;
         // A memo row is a `<p>:memo` row; its lifecycle is `<p>`'s,
         // at its own address.
-        let is_memo = row.source == crate::cache::MEMO_SOURCE;
+        let is_memo = *origin == crate::cache::Origin::Memo;
 
         if row.kind != Some(RowKind::Static) {
             // Look up the lifecycle snapshot for THIS row's owning source
@@ -77,7 +80,7 @@ pub(super) async fn handle_status(ctx: &Ctx, registry: &Arc<ProviderRegistry>) -
                     row.provider.clone()
                 },
                 path: row.path.clone(),
-                source: row.source.clone(),
+                source: origin.clone(),
                 node: if is_put || is_memo {
                     row.field.clone()
                 } else {
@@ -121,11 +124,9 @@ pub(super) async fn handle_status(ctx: &Ctx, registry: &Arc<ProviderRegistry>) -
         }
     }
 
-    // The internal labels keyed the lookups above; a reader gets the
-    // presented form, as a `:cache` answer does.
-    for row in rows.iter_mut() {
-        row.source = crate::cache::presented_label(&row.source);
-    }
+    // Each row's origin keyed the lookups above; a reader gets the
+    // presented form `list_rows` wrote, as a `:cache` answer does.
+    let mut rows: Vec<crate::cache::CacheRow> = rows.into_iter().map(|(_, row)| row).collect();
     // One order on the wire, not the cache's hash order: a client's stable
     // sort then breaks its ties the same way every time.
     rows.sort_by(|a, b| {
@@ -136,7 +137,6 @@ pub(super) async fn handle_status(ctx: &Ctx, registry: &Arc<ProviderRegistry>) -
             &b.field,
         ))
     });
-
     match serde_json::to_value(&rows) {
         Ok(v) => Response::ok(v, 0),
         Err(e) => Response::error(format!("serialization failed: {e}")),

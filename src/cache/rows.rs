@@ -15,10 +15,11 @@ pub struct CacheEntryInfo {
 pub use libbeachcomber::protocol::{CacheRow, FailureSnapshot, RowKind};
 
 impl Cache {
-    /// List one row per (source, field) across all cache entries.
+    /// List one row per (source, field) across all cache entries, each with
+    /// its writer; a row's `source` is that writer presented.
     /// Used by `Request::Status` to return the tabular "what is warm?" payload.
     /// Each row's `age_ms` comes from that field's owning source's last-refreshed timestamp.
-    pub fn list_rows(&self) -> Vec<CacheRow> {
+    pub fn list_rows(&self) -> Vec<(Origin, CacheRow)> {
         let mut out = Vec::new();
         for entry in self.entries.iter() {
             let key = entry.key();
@@ -35,41 +36,45 @@ impl Cache {
                 libbeachcomber::key::split_facet(&provider),
                 Ok((_, Some(Facet::Cache)))
             );
-            for (source_name, src) in &ce.sources {
-                if is_cache_facet && !is_static_label(source_name) {
+            for (origin, src) in ce.maps() {
+                if is_cache_facet && !origin.is_static() {
                     continue;
                 }
+                let source = origin.presented_label();
                 // A memo's value is a row of `<p>:memo`, aged by its own
                 // stamp; the keys stored for it in `<p>:cache` are not rows.
                 // A memo of absence has no value to show.
-                if source_name == MEMO_SOURCE {
+                if origin == Origin::Memo {
                     for (address, stamp) in &ce.memos {
                         let Some(v) = crate::provider::lookup_path(&src.fields, address) else {
                             continue;
                         };
-                        out.push(CacheRow {
-                            shadowed: false,
-                            provider: provider.clone(),
-                            path: path.clone(),
-                            source: source_name.clone(),
-                            field: address.clone(),
-                            value: serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
-                            age_ms: Some(stamp.age_ms()),
-                            // The server fills in its lifecycle.
-                            kind: None,
-                            poll_interval_secs: None,
-                            poll_count: None,
-                            polls_elapsed: None,
-                            next_poll_in_secs: None,
-                            failure: None,
-                        });
+                        out.push((
+                            origin.clone(),
+                            CacheRow {
+                                shadowed: false,
+                                provider: provider.clone(),
+                                path: path.clone(),
+                                source: source.clone(),
+                                field: address.clone(),
+                                value: serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
+                                age_ms: Some(stamp.age_ms()),
+                                // The server fills in its lifecycle.
+                                kind: None,
+                                poll_interval_secs: None,
+                                poll_count: None,
+                                polls_elapsed: None,
+                                next_poll_in_secs: None,
+                                failure: None,
+                            },
+                        ));
                     }
                     continue;
                 }
                 // The `put` map has one row per address, aged by that
                 // address's own stamp. The root address lists its top-level
                 // keys, one row each, as every namespace's records are.
-                if source_name == PUT_SOURCE {
+                if origin == Origin::Put {
                     for (addr, stamp) in &ce.puts {
                         if is_cache_facet && !is_prototype(addr) {
                             continue;
@@ -89,32 +94,35 @@ impl Cache {
                                 .collect()
                         };
                         for (field, v) in rows {
-                            out.push(CacheRow {
-                                shadowed: false,
-                                provider: provider.clone(),
-                                path: path.clone(),
-                                source: source_name.clone(),
-                                field,
-                                value: serde_json::to_value(v).unwrap_or(serde_json::Value::Null),
-                                age_ms: Some(stamp.age_ms()),
-                                // Only an address written with a ttl is a lifecycle entry; the
-                                // server fills its kind in.
-                                kind: stamp.interval_secs.is_none().then_some(RowKind::Static),
-                                poll_interval_secs: None,
-                                poll_count: None,
-                                polls_elapsed: None,
-                                next_poll_in_secs: None,
-                                failure: None,
-                            });
+                            out.push((
+                                origin.clone(),
+                                CacheRow {
+                                    shadowed: false,
+                                    provider: provider.clone(),
+                                    path: path.clone(),
+                                    source: source.clone(),
+                                    field,
+                                    value: serde_json::to_value(v)
+                                        .unwrap_or(serde_json::Value::Null),
+                                    age_ms: Some(stamp.age_ms()),
+                                    // Only an address written with a ttl is a lifecycle entry; the
+                                    // server fills its kind in.
+                                    kind: stamp.interval_secs.is_none().then_some(RowKind::Static),
+                                    poll_interval_secs: None,
+                                    poll_count: None,
+                                    polls_elapsed: None,
+                                    next_poll_in_secs: None,
+                                    failure: None,
+                                },
+                            ));
                         }
                     }
                     continue;
                 }
                 let age = src.age_ms();
-                // A row whose source is the synthetic `put` label or a
-                // `config:<file>` seed carries no Source instance — it is a
-                // static entry.
-                let kind = if is_static_label(source_name) {
+                // A row of a configuration seed carries no Source instance —
+                // it is a static entry.
+                let kind = if origin.is_static() {
                     Some(RowKind::Static)
                 } else {
                     None
@@ -122,23 +130,26 @@ impl Cache {
                 for (field, v) in &src.fields {
                     // Value implements Serialize with #[serde(untagged)] — to_value is lossless.
                     let value = serde_json::to_value(v).unwrap_or(serde_json::Value::Null);
-                    out.push(CacheRow {
-                        shadowed: false,
-                        provider: provider.clone(),
-                        path: path.clone(),
-                        source: source_name.clone(),
-                        // The row's address below the namespace, canonical so it
-                        // can be typed back as a key.
-                        field: libbeachcomber::key::quote(field).into_owned(),
-                        value,
-                        age_ms: Some(age),
-                        kind: kind.clone(),
-                        poll_interval_secs: None,
-                        poll_count: None,
-                        polls_elapsed: None,
-                        next_poll_in_secs: None,
-                        failure: None,
-                    });
+                    out.push((
+                        origin.clone(),
+                        CacheRow {
+                            shadowed: false,
+                            provider: provider.clone(),
+                            path: path.clone(),
+                            source: source.clone(),
+                            // The row's address below the namespace, canonical so it
+                            // can be typed back as a key.
+                            field: libbeachcomber::key::quote(field).into_owned(),
+                            value,
+                            age_ms: Some(age),
+                            kind: kind.clone(),
+                            poll_interval_secs: None,
+                            poll_count: None,
+                            polls_elapsed: None,
+                            next_poll_in_secs: None,
+                            failure: None,
+                        },
+                    ));
                 }
             }
         }
@@ -159,7 +170,7 @@ impl Cache {
                     (key.clone(), None)
                 };
                 let ce = entry.value();
-                let field_count: usize = ce.sources.values().map(|s| s.fields.len()).sum();
+                let field_count: usize = ce.maps().map(|(_, s)| s.fields.len()).sum();
                 CacheEntryInfo {
                     provider,
                     path,
@@ -178,24 +189,26 @@ mod tests {
     use crate::cache::test_support::*;
     use std::collections::HashMap;
 
-    /// A row whose source is seeded from a config file (`config:<file>`)
-    /// carries no Source instance — `list_rows` must mark it `RowKind::Static`,
+    /// A row seeded from a config file carries no Source instance — `list_rows` must mark it `RowKind::Static`,
     /// same as a `put`-written row.
     #[test]
     fn list_rows_marks_config_seeded_source_static() {
         let cache = Cache::new();
-        cache.put_source(
-            "myapp",
-            None,
-            "config:x.toml",
-            make_fields(&[("greeting", "hello")]),
-            crate::cache::Schedule::default(),
-        );
+        cache
+            .write_static(
+                "myapp",
+                None,
+                &Origin::Config("x.toml".into()),
+                "greeting",
+                Value::String("hello".into()),
+                None,
+            )
+            .unwrap();
 
         let rows = cache.list_rows();
-        let row = rows
+        let (_, row) = rows
             .iter()
-            .find(|r| r.provider == "myapp")
+            .find(|(_, r)| r.provider == "myapp")
             .expect("row for myapp must be present");
         assert_eq!(
             row.kind,
@@ -211,23 +224,25 @@ mod tests {
     #[test]
     fn list_rows_never_emits_row_kind_rendered() {
         let cache = Cache::new();
-        cache.put_source(
-            "myapp",
-            None,
-            "put",
-            make_fields(&[("greeting", "hello")]),
-            crate::cache::Schedule::default(),
-        );
+        cache
+            .write_static(
+                "myapp",
+                None,
+                &Origin::Put,
+                "greeting",
+                Value::String("hello".into()),
+                None,
+            )
+            .unwrap();
 
         let rows = cache.list_rows();
         assert!(
-            !rows.iter().any(|r| r.kind == Some(RowKind::Rendered)),
+            !rows.iter().any(|(_, r)| r.kind == Some(RowKind::Rendered)),
             "list_rows must never emit RowKind::Rendered: {rows:?}"
         );
     }
 
-    /// A source label is just a `CacheSourceEntry` name, so a `put` record and a
-    /// Source's records share one entry. Evicting the Source's map leaves the
+    /// A `put` record and a Source's records share one entry. Evicting the Source's map leaves the
     /// static record — and only the static record — behind.
     #[test]
     fn static_record_survives_its_entry_mate_being_evicted() {
@@ -244,7 +259,7 @@ mod tests {
             .write_static(
                 "git",
                 Some("/repo"),
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "note",
                 Value::Int(1),
                 None,
@@ -275,23 +290,37 @@ mod tests {
             Schedule::poll(5, 1),
         );
         cache
-            .write_static("p", None, PUT_SOURCE, "x", Value::Int(1), Some(60))
+            .write_static(
+                "p",
+                None,
+                &crate::cache::Origin::Put,
+                "x",
+                Value::Int(1),
+                Some(60),
+            )
             .unwrap();
         cache
-            .write_static("p:cache", None, PUT_SOURCE, "_.decay", Value::Int(2), None)
+            .write_static(
+                "p:cache",
+                None,
+                &crate::cache::Origin::Put,
+                "_.decay",
+                Value::Int(2),
+                None,
+            )
             .unwrap();
 
         let mut rows: Vec<(String, String, String)> = cache
             .list_rows()
             .into_iter()
-            .map(|r| (r.provider, r.source, r.field))
+            .map(|(_, r)| (r.provider, r.source, r.field))
             .collect();
         rows.sort();
         assert_eq!(
             rows,
             vec![
                 ("p".to_string(), "put".to_string(), "x".to_string()),
-                ("p".to_string(), "s".to_string(), "a".to_string()),
+                ("p".to_string(), "source(s)".to_string(), "a".to_string()),
                 (
                     "p:cache".to_string(),
                     "put".to_string(),

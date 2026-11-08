@@ -109,7 +109,7 @@ fn pure_watch_source_never_polls() {
     let key = crate::scheduler::lifecycle::Key {
         provider: "mise".to_string(),
         path: None,
-        source: "global".to_string(),
+        source: crate::cache::Origin::source("global"),
         node: String::new(),
     };
     let t0 = Instant::now();
@@ -151,7 +151,7 @@ fn watch_source_refreshes_on_filesystem_event() {
     let key = crate::scheduler::lifecycle::Key {
         provider: "git".to_string(),
         path: Some("/repo".to_string()),
-        source: "refs".to_string(),
+        source: crate::cache::Origin::source("refs"),
         node: String::new(),
     };
     let t0 = Instant::now();
@@ -229,7 +229,7 @@ fn watch_and_poll_source_refreshes_on_both_paths() {
     let key = crate::scheduler::lifecycle::Key {
         provider: "git".to_string(),
         path: Some("/repo".to_string()),
-        source: "status".to_string(),
+        source: crate::cache::Origin::source("status"),
         node: String::new(),
     };
     let t0 = Instant::now();
@@ -271,7 +271,7 @@ fn path_scoped_watch_source_decays_per_k_duration() {
     let key = crate::scheduler::lifecycle::Key {
         provider: "git".to_string(),
         path: Some("/repo".to_string()),
-        source: "refs".to_string(),
+        source: crate::cache::Origin::source("refs"),
         node: String::new(),
     };
     let t0 = Instant::now();
@@ -338,14 +338,14 @@ fn sibling_sources_have_independent_lifecycles() {
     let key_a = crate::scheduler::lifecycle::Key {
         provider: "git".to_string(),
         path: Some("/repo".to_string()),
-        source: "refs".to_string(),
+        source: crate::cache::Origin::source("refs"),
         node: String::new(),
     };
     // Source B: never queried after initial activation.
     let key_b = crate::scheduler::lifecycle::Key {
         provider: "git".to_string(),
         path: Some("/repo".to_string()),
-        source: "diff".to_string(),
+        source: crate::cache::Origin::source("diff"),
         node: String::new(),
     };
 
@@ -599,13 +599,13 @@ fn demand_for_field_is_demand_for_owning_source_only() {
     let key_a = crate::scheduler::lifecycle::Key {
         provider: "myprovider".to_string(),
         path: Some("/path".to_string()),
-        source: "source_a".to_string(),
+        source: crate::cache::Origin::source("source_a"),
         node: String::new(),
     };
     let key_b = crate::scheduler::lifecycle::Key {
         provider: "myprovider".to_string(),
         path: Some("/path".to_string()),
-        source: "source_b".to_string(),
+        source: crate::cache::Origin::source("source_b"),
         node: String::new(),
     };
 

@@ -440,11 +440,11 @@ impl Runs {
                         && !in_failback_backoff(
                             registry,
                             &key.provider,
-                            &key.source,
+                            key.source.name(),
                             key.path.as_deref(),
                         ) =>
                 {
-                    let found = registry.source(&key.provider, &key.source)?;
+                    let found = registry.source(&key.provider, key.source.name())?;
                     slot.queue(registry, cache, false);
                     let queued = slot.queued.take().expect("queued just now");
                     let replaced = std::mem::replace(&mut slot.running, Arc::clone(&queued.state));
@@ -467,7 +467,7 @@ impl Runs {
             let asked = table.ask(key);
             return Some(self.run(key, state, asked));
         }
-        let (provider, source, root) = (&key.provider, &key.source, key.path.as_deref());
+        let (provider, source, root) = (&key.provider, key.source.name(), key.path.as_deref());
         if want == Want::Cold && cache.has_provider_records_for(provider, root, source) {
             return None;
         }
@@ -602,7 +602,7 @@ impl Runs {
                             tree_cache.tree_stamp(
                                 &tree_key.provider,
                                 root.as_deref(),
-                                &tree_key.source,
+                                tree_key.source.name(),
                             )
                         } else {
                             None
@@ -686,7 +686,7 @@ impl Runs {
         // the failback holds back unless it was forced,
         // nothing whose Source the registry it runs under does not have.
         let next = slot.queued.take().and_then(|queued| {
-            let (provider, source, root) = (&key.provider, &key.source, key.path.as_deref());
+            let (provider, source, root) = (&key.provider, key.source.name(), key.path.as_deref());
             let runs = !stopping
                 && (queued.forced
                     || !in_failback_backoff(&queued.registry, provider, source, root));
@@ -779,7 +779,7 @@ impl Drop for Settle {
 /// and writes nothing. A run whose Source a reload has retired since it began
 /// is [`Outcome::Dropped`]: neither its result nor its failure counts.
 fn record(registry: &ProviderRegistry, cache: &Cache, key: &Key, result: Ran) -> Outcome {
-    let (provider, source_name, root) = (&key.provider, &key.source, key.path.as_deref());
+    let (provider, source_name, root) = (&key.provider, key.source.name(), key.path.as_deref());
     let Some(source) = registry.source(provider, source_name) else {
         return Outcome::Dropped;
     };

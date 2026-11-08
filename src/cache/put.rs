@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::provider::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::Instant;
 
@@ -24,27 +24,25 @@ impl std::fmt::Display for PutError {
 impl std::error::Error for PutError {}
 
 /// Drop the subtree at `node` (`""` for everything) from the `put` map,
-/// pruning it if it empties, unless it is `keep` — the label a write is about
-/// to land in. Every put address at or below `node` goes with it, and so does
+/// pruning it if it empties, unless `keep` — a write is about to land in it. Every put address at or below `node` goes with it, and so does
 /// any address the removal left holding nothing. Every other layer — Source
-/// maps and `config:` seeds — is left alone, so the layer below a removed put
+/// maps and configuration seeds — is left alone, so the layer below a removed put
 /// shows through at once. Returns whether anything was removed.
-fn drop_put_subtree(entry: &mut CacheEntry, node: &str, keep: Option<&str>) -> bool {
+fn drop_put_subtree(entry: &mut CacheEntry, node: &str, keep: bool) -> bool {
     let mut removed = false;
-    entry.sources.retain(|name, src| {
-        if name != PUT_SOURCE {
-            return true;
-        }
+    if let Some(src) = entry.put.as_mut() {
         if node.is_empty() {
             removed |= !src.fields.is_empty();
             src.fields.clear();
         } else {
             removed |= crate::provider::remove_path(&mut src.fields, node).is_some();
         }
-        !src.fields.is_empty() || keep == Some(name.as_str())
-    });
+        if src.fields.is_empty() && !keep {
+            entry.put = None;
+        }
+    }
     entry.puts.retain(|addr, _| !is_at_or_below(addr, node));
-    let held = entry.sources.get(PUT_SOURCE).map(|src| &src.fields);
+    let held = entry.put.as_ref().map(|src| &src.fields);
     entry.puts.retain(|addr, _| {
         held.is_some_and(|fields| {
             if addr.is_empty() {
@@ -69,11 +67,11 @@ fn drop_put_address(entry: &mut CacheEntry, node: &str) -> bool {
         .cloned()
         .collect();
     if deeper.is_empty() {
-        return drop_put_subtree(entry, node, None);
+        return drop_put_subtree(entry, node, false);
     }
     let kept: Vec<(String, Value)> = entry
-        .sources
-        .get(PUT_SOURCE)
+        .put
+        .as_ref()
         .map(|src| {
             deeper
                 .iter()
@@ -88,13 +86,13 @@ fn drop_put_address(entry: &mut CacheEntry, node: &str) -> bool {
         .iter()
         .filter_map(|addr| entry.puts.get(addr).map(|s| (addr.clone(), s.clone())))
         .collect();
-    let removed = drop_put_subtree(entry, node, Some(PUT_SOURCE));
-    if let Some(src) = entry.sources.get_mut(PUT_SOURCE) {
+    let removed = drop_put_subtree(entry, node, true);
+    if let Some(src) = entry.put.as_mut() {
         for (addr, v) in kept {
             crate::provider::insert_path(&mut src.fields, &addr, v);
         }
         if src.fields.is_empty() {
-            entry.sources.remove(PUT_SOURCE);
+            entry.put = None;
         }
     }
     entry.puts.extend(stamps);
@@ -102,37 +100,22 @@ fn drop_put_address(entry: &mut CacheEntry, node: &str) -> bool {
 }
 
 fn drop_put_subtree_all(entry: &mut CacheEntry, node: &str) -> bool {
-    drop_put_subtree(entry, node, None)
-}
-
-/// Drop every static map whose label starts with `prefix`. The `is_static_label`
-/// half is not redundant: it makes it structurally impossible for a prefix that
-/// happens to match a Source's name to take that Source's records with it.
-/// Returns whether anything went.
-fn drop_labelled(entry: &mut CacheEntry, prefix: &str) -> bool {
-    let before = entry.sources.len();
-    entry
-        .sources
-        .retain(|name, _| !(is_static_label(name) && name.starts_with(prefix)));
-    entry
-        .config_order
-        .retain(|name| !(is_static_label(name) && name.starts_with(prefix)));
-    entry.sources.len() != before
+    drop_put_subtree(entry, node, false)
 }
 
 /// Apply one static write to an entry already under a write guard.
 fn apply_static_write(
     entry: &mut CacheEntry,
-    label: &str,
+    origin: &Origin,
     node: &str,
     leaves: Vec<(String, Value)>,
     interval_secs: Option<u64>,
     now: Instant,
 ) {
-    let is_put = label == PUT_SOURCE;
+    let is_put = *origin == Origin::Put;
     if is_put {
         // A put states the value at its own address: whatever the put map held
-        // there, and every address below it, goes first. The label's map is
+        // there, and every address below it, goes first. The put map is
         // kept only when there is something to fill it with; otherwise it
         // would survive the drop and never be written, leaving a phantom empty
         // static map (and, at the root, an entry the caller's emptiness check
@@ -143,39 +126,26 @@ fn apply_static_write(
         // into the address being written.
         let element = !leaves.is_empty()
             && entry
-                .sources
-                .get(PUT_SOURCE)
+                .put
+                .as_ref()
                 .is_some_and(|src| is_array_element(&src.fields, node));
         if element {
             entry.puts.retain(|addr, _| !is_at_or_below(addr, node));
-            if let Some(src) = entry.sources.get_mut(PUT_SOURCE) {
+            if let Some(src) = entry.put.as_mut() {
                 crate::provider::insert_path(&mut src.fields, node, Value::Object(HashMap::new()));
             }
         } else {
-            drop_put_subtree(entry, node, (!leaves.is_empty()).then_some(label));
+            drop_put_subtree(entry, node, !leaves.is_empty());
         }
     }
 
-    // Every `config:` file keeps its own records, a record two files set
+    // Every configuration file keeps its own records, a record two files set
     // included: the later file's wins at read time, and the earlier one's is
     // what it overrode. Files are written in composition order, so the order
-    // of first writes is that order.
+    // of first writes ([`CacheEntry::configs`]) is that order.
     if leaves.is_empty() {
         return;
     }
-    if label.starts_with(CONFIG_SOURCE_PREFIX) && !entry.config_order.iter().any(|l| l == label) {
-        entry.config_order.push(label.to_string());
-    }
-    let src = entry
-        .sources
-        .entry(label.to_string())
-        .or_insert_with(|| CacheSourceEntry {
-            fields: HashMap::new(),
-            last_refreshed: now,
-            // The `put` map's freshness is its address stamps' to own.
-            expected_interval_secs: (!is_put).then_some(interval_secs).flatten(),
-            validity: None,
-        });
     if is_put {
         // A value standing in the way of `node` is about to become an object
         // (`provider::insert_path`): the address that stamped it no longer
@@ -185,7 +155,10 @@ fn apply_static_write(
         while let Some(up) = libbeachcomber::key::parent(&at).filter(|up| !up.is_empty()) {
             let below = libbeachcomber::key::last(&at).unwrap_or_default();
             at = up;
-            if crate::provider::lookup_path(&src.fields, &at).is_some_and(|v| in_the_way(v, &below))
+            let held = entry.put.as_ref().map(|src| &src.fields);
+            if held
+                .and_then(|fields| crate::provider::lookup_path(fields, &at))
+                .is_some_and(|v| in_the_way(v, &below))
             {
                 entry.puts.remove(&at);
             }
@@ -198,6 +171,13 @@ fn apply_static_write(
             },
         );
     }
+    let src = entry.map_or_insert(origin, || CacheSourceEntry {
+        fields: HashMap::new(),
+        last_refreshed: now,
+        // The `put` map's freshness is its address stamps' to own.
+        expected_interval_secs: (!is_put).then_some(interval_secs).flatten(),
+        validity: None,
+    });
     for (tail, v) in leaves {
         crate::provider::insert_path(&mut src.fields, &tail, v);
     }
@@ -237,7 +217,6 @@ fn in_the_way(value: &Value, segment: &str) -> bool {
 /// address that governs it. A leaf no stamp covers keeps the map's own.
 pub(super) fn note_put_records(
     entry: &CacheEntry,
-    label: &Arc<str>,
     at: &Option<Arc<str>>,
     records: &mut HashMap<String, RecordFreshness>,
     tail: &str,
@@ -246,14 +225,7 @@ pub(super) fn note_put_records(
     match value {
         Value::Object(map) if !map.is_empty() => {
             for (k, v) in map {
-                note_put_records(
-                    entry,
-                    label,
-                    at,
-                    records,
-                    &libbeachcomber::key::push(tail, k),
-                    v,
-                );
+                note_put_records(entry, at, records, &libbeachcomber::key::push(tail, k), v);
             }
         }
         _ => {
@@ -261,7 +233,7 @@ pub(super) fn note_put_records(
                 records.insert(
                     tail.to_string(),
                     RecordFreshness {
-                        source: label.clone(),
+                        source: Origin::Put,
                         entry: at.clone(),
                         last_refreshed: stamp.written,
                         expected_interval_secs: stamp.interval_secs,
@@ -290,23 +262,23 @@ impl Cache {
     }
 
     /// Write static data at `node`, the dotted tail below `namespace` (`""` for
-    /// the namespace root), under the static source label `label`.
+    /// the namespace root), as written by the static writer `origin`.
     ///
     /// Every leaf of `value` becomes one record. A `put` states the value at
     /// `node`: the subtree there (and every put address below it) is dropped
     /// from the `put` map first, so nothing merges implicitly — nothing else
-    /// is removed. A `config:` label adds its leaves to its own map.
+    /// is removed. A configuration file adds its leaves to its own map.
     ///
     /// There is no ownership: every supplier writes a layer of its own and a
-    /// read stacks them (source, then `config:` seeds, then `put`). Each
-    /// `config:` file keeps its own map, written in composition order, and a
+    /// read stacks them (source, then configuration seeds, then `put`). Each
+    /// configuration file keeps its own map, written in composition order, and a
     /// read takes a record two files set from the later one.
     #[allow(clippy::too_many_arguments)]
     pub fn write_static(
         &self,
         namespace: &str,
         path: Option<&str>,
-        label: &str,
+        origin: &Origin,
         node: &str,
         value: Value,
         interval_secs: Option<u64>,
@@ -314,7 +286,7 @@ impl Cache {
         if node.is_empty() && !matches!(value, Value::Object(_)) {
             return Err(PutError::RootNotObject);
         }
-        if label == PUT_SOURCE && !namespace.contains(':') {
+        if *origin == Origin::Put && !namespace.contains(':') {
             self.write_put_schedule(namespace, path, node, &value, interval_secs);
         }
         let mut leaves = Vec::new();
@@ -324,8 +296,8 @@ impl Cache {
 
         match self.entries.entry(key) {
             dashmap::Entry::Occupied(mut occupied) => {
-                apply_static_write(occupied.get_mut(), label, node, leaves, interval_secs, now);
-                if occupied.get().sources.is_empty() {
+                apply_static_write(occupied.get_mut(), origin, node, leaves, interval_secs, now);
+                if occupied.get().holds_no_map() {
                     occupied.remove();
                 }
             }
@@ -336,14 +308,8 @@ impl Cache {
                 if leaves.is_empty() {
                     return Ok(());
                 }
-                let mut fresh = CacheEntry {
-                    sources: HashMap::new(),
-                    puts: BTreeMap::new(),
-                    memos: BTreeMap::new(),
-                    created_at: now,
-                    config_order: Vec::new(),
-                };
-                apply_static_write(&mut fresh, label, node, leaves, interval_secs, now);
+                let mut fresh = CacheEntry::empty(now);
+                apply_static_write(&mut fresh, origin, node, leaves, interval_secs, now);
                 vacant.insert(fresh);
             }
         }
@@ -371,8 +337,8 @@ impl Cache {
         self.remove_put_with(namespace, path, node, drop_put_address)
     }
 
-    /// Write the schedule of a put into `<namespace>:cache` under the `put`
-    /// label, ahead of the put itself: a ttl'd put is a poll of no count (live
+    /// Write the schedule of a put into `<namespace>:cache` in its `put`
+    /// map, ahead of the put itself: a ttl'd put is a poll of no count (live
     /// for its ttl, never polled) that decays in one step as long. The put replaces whatever stood at `node` and below
     /// it, so their schedules go first. A root put has no address of its own, so
     /// each top-level key carries the schedule.
@@ -394,7 +360,7 @@ impl Cache {
                 ("poll".to_string(), poll_key(ttl_secs, 0)),
                 ("decay".to_string(), Value::Int(1)),
             ]));
-            self.write_static(&facet, path, PUT_SOURCE, &address, stored, None)
+            self.write_static(&facet, path, &Origin::Put, &address, stored, None)
                 .expect("a stored schedule is a well-formed put");
         }
     }
@@ -413,10 +379,7 @@ impl Cache {
                 .entries
                 .get(&make_cache_key(&facet, path))
                 .and_then(|entry| {
-                    match crate::provider::lookup_path(
-                        &entry.sources.get(PUT_SOURCE)?.fields,
-                        &address,
-                    )? {
+                    match crate::provider::lookup_path(&entry.put.as_ref()?.fields, &address)? {
                         Value::Object(keys) => Some(keys.clone()),
                         _ => None,
                     }
@@ -426,7 +389,7 @@ impl Cache {
             self.write_static(
                 &facet,
                 path,
-                PUT_SOURCE,
+                &Origin::Put,
                 &address,
                 Value::Object(keys),
                 None,
@@ -452,8 +415,8 @@ impl Cache {
         let entry = occupied.get_mut();
         let addresses: Vec<String> = if node.is_empty() {
             entry
-                .sources
-                .get(PUT_SOURCE)
+                .put
+                .as_ref()
                 .map(|src| src.fields.keys().cloned().collect())
                 .unwrap_or_default()
         } else {
@@ -462,7 +425,7 @@ impl Cache {
         for address in addresses.iter().filter(|a| !is_prototype(a)) {
             drop(entry, address);
         }
-        if occupied.get().sources.is_empty() {
+        if occupied.get().holds_no_map() {
             occupied.remove();
         }
     }
@@ -482,7 +445,7 @@ impl Cache {
         let mut removed = false;
         if let dashmap::Entry::Occupied(mut occupied) = self.entries.entry(key) {
             removed = drop(occupied.get_mut(), node);
-            if occupied.get().sources.is_empty() {
+            if occupied.get().holds_no_map() {
                 occupied.remove();
             }
         }
@@ -496,23 +459,17 @@ impl Cache {
         removed
     }
 
-    /// The namespaces at the **global entry** holding a record whose static
-    /// source label starts with `prefix` — the namespaces a re-seed has to
-    /// visit even when nothing writes to them any more.
+    /// The namespaces at the **global entry** holding a configuration seed —
+    /// the namespaces a re-seed has to visit even when nothing writes to them
+    /// any more.
     ///
-    /// Global-only because the one writer of a `config:` label seeds at the
-    /// global path: a facet table in configuration is not addressed to a
-    /// directory. A path-scoped entry could not hold one to find.
-    pub fn global_namespaces_with_label_prefix(&self, prefix: &str) -> Vec<String> {
+    /// Global-only because configuration seeds at the global path: a facet
+    /// table in configuration is not addressed to a directory. A path-scoped
+    /// entry could not hold one to find.
+    pub fn global_namespaces_with_config_seeds(&self) -> Vec<String> {
         self.entries
             .iter()
-            .filter(|entry| {
-                entry
-                    .value()
-                    .sources
-                    .keys()
-                    .any(|name| is_static_label(name) && name.starts_with(prefix))
-            })
+            .filter(|entry| !entry.value().configs.is_empty())
             // A key with no null byte in it is the global entry
             // ([`make_cache_key`]); anything else carries a path.
             .filter(|entry| !entry.key().contains('\0'))
@@ -520,42 +477,43 @@ impl Cache {
             .collect()
     }
 
-    /// Swap one entry's `prefix`-labelled static records for `writes`, under a
-    /// single write guard: every static map whose label starts with `prefix`
-    /// goes, then each `(label, value)` is deep-merged at the namespace root in
-    /// order, exactly as [`Cache::write_static`] would write it.
+    /// Swap one entry's configuration seeds for `writes`, each a
+    /// configuration file's ([`Origin::Config`]), under a single write guard:
+    /// every configuration file's map goes, then each `(file, value)` is
+    /// deep-merged at the namespace root in order, exactly as
+    /// [`Cache::write_static`] would write it.
     ///
     /// One guard is the point. A drop followed by a separate write leaves a
     /// window in which a concurrent `get` sees neither — a re-seed would blink
     /// every template off and on again. Records a Source produces are never
-    /// touched (`prefix` only ever names static labels), and neither is the
-    /// `put` map: it sits above the seeds, so configuration seeds a default
-    /// and a `put` is the operator saying otherwise.
+    /// touched, and neither is the `put` map: it sits above the seeds, so
+    /// configuration seeds a default and a `put` is the operator saying
+    /// otherwise.
     ///
     /// An empty `writes` is a removal: the namespace's config records go and
     /// nothing replaces them.
     ///
-    /// A label whose records here come back exactly as they were keeps its
+    /// A file whose records here come back exactly as they were keeps its
     /// time: a record's age says when its file last changed it, not when the
-    /// daemon last reloaded. Ages are per label map, so an edit to one leaf
+    /// daemon last reloaded. Ages are per file map, so an edit to one leaf
     /// of a file restamps that file's other records in this namespace too.
     pub fn reseed_static(
         &self,
         namespace: &str,
         path: Option<&str>,
-        drop_label_prefix: &str,
-        writes: Vec<(String, Value)>,
+        writes: Vec<(Origin, Value)>,
     ) -> Result<(), PutError> {
         // Every write is validated and flattened before the guard is taken, so
         // a malformed one refuses without having held a lock.
-        let mut planned: Vec<(String, Vec<(String, Value)>)> = Vec::with_capacity(writes.len());
-        for (label, value) in writes {
+        let mut planned: Vec<(Origin, Vec<(String, Value)>)> = Vec::with_capacity(writes.len());
+        for (origin, value) in writes {
+            debug_assert!(matches!(origin, Origin::Config(_)), "a reseed writes seeds");
             if !matches!(value, Value::Object(_)) {
                 return Err(PutError::RootNotObject);
             }
             let mut leaves = Vec::new();
             walk_leaves("", value, &mut leaves);
-            planned.push((label, leaves));
+            planned.push((origin, leaves));
         }
         let key = make_cache_key(namespace, path);
         let now = Instant::now();
@@ -566,77 +524,61 @@ impl Cache {
         match self.entries.entry(key) {
             dashmap::Entry::Occupied(mut occupied) => {
                 let entry = occupied.get_mut();
-                let before: HashMap<String, (HashMap<String, Value>, Instant)> = entry
-                    .sources
-                    .iter()
-                    .filter(|(name, _)| {
-                        is_static_label(name) && name.starts_with(drop_label_prefix)
-                    })
-                    .map(|(name, src)| (name.clone(), (src.fields.clone(), src.last_refreshed)))
-                    .collect();
-                changed |= drop_labelled(entry, drop_label_prefix);
-                for (label, leaves) in planned {
+                let before = std::mem::take(&mut entry.configs);
+                changed |= !before.is_empty();
+                for (origin, leaves) in planned {
                     changed |= !leaves.is_empty();
-                    apply_static_write(entry, &label, "", leaves, None, now);
+                    apply_static_write(entry, &origin, "", leaves, None, now);
                 }
-                for (name, src) in entry.sources.iter_mut() {
-                    if let Some((fields, at)) = before.get(name)
-                        && *fields == src.fields
+                let was_of = |file: &Arc<str>| before.iter().find(|(f, _)| f == file);
+                for (file, src) in entry.configs.iter_mut() {
+                    if let Some((_, was)) = was_of(file)
+                        && was.fields == src.fields
                     {
-                        src.last_refreshed = *at;
+                        src.last_refreshed = was.last_refreshed;
                     }
                 }
+                fn fields_of<'a>(
+                    maps: &'a [(Arc<str>, CacheSourceEntry)],
+                    file: &Arc<str>,
+                ) -> Option<&'a HashMap<String, Value>> {
+                    maps.iter()
+                        .find(|(f, _)| f == file)
+                        .map(|(_, src)| &src.fields)
+                }
                 let empty = HashMap::new();
-                let after = |name: &str| {
-                    entry
-                        .sources
-                        .get(name)
-                        .map_or(&empty, |src: &CacheSourceEntry| &src.fields)
-                };
-                let labels: std::collections::BTreeSet<&str> = before
-                    .keys()
-                    .map(String::as_str)
-                    .chain(
-                        entry
-                            .sources
-                            .keys()
-                            .map(String::as_str)
-                            .filter(|n| is_static_label(n) && n.starts_with(drop_label_prefix)),
-                    )
+                let files: std::collections::BTreeSet<&Arc<str>> = before
+                    .iter()
+                    .chain(entry.configs.iter())
+                    .map(|(file, _)| file)
                     .collect();
-                for label in labels {
-                    let was = before.get(label).map_or(&empty, |(fields, _)| fields);
-                    let is = after(label);
+                for file in files {
+                    let was = fields_of(&before, file).unwrap_or(&empty);
+                    let is = fields_of(&entry.configs, file).unwrap_or(&empty);
                     for k in was.keys().chain(is.keys()) {
                         if was.get(k) != is.get(k) {
                             moved.push(libbeachcomber::key::quote(k).into_owned());
                         }
                     }
                 }
-                if occupied.get().sources.is_empty() {
+                if occupied.get().holds_no_map() {
                     occupied.remove();
                 }
             }
             dashmap::Entry::Vacant(vacant) => {
-                let mut fresh = CacheEntry {
-                    sources: HashMap::new(),
-                    puts: BTreeMap::new(),
-                    memos: BTreeMap::new(),
-                    created_at: now,
-                    config_order: Vec::new(),
-                };
-                for (label, leaves) in planned {
+                let mut fresh = CacheEntry::empty(now);
+                for (origin, leaves) in planned {
                     changed |= !leaves.is_empty();
-                    apply_static_write(&mut fresh, &label, "", leaves, None, now);
+                    apply_static_write(&mut fresh, &origin, "", leaves, None, now);
                 }
                 moved.extend(
                     fresh
-                        .sources
-                        .values()
-                        .flat_map(|src| src.fields.keys())
+                        .configs
+                        .iter()
+                        .flat_map(|(_, src)| src.fields.keys())
                         .map(|k| libbeachcomber::key::quote(k).into_owned()),
                 );
-                if !fresh.sources.is_empty() {
+                if !fresh.holds_no_map() {
                     vacant.insert(fresh);
                 }
             }
@@ -668,7 +610,7 @@ impl Cache {
     pub fn names_with_puts(&self) -> std::collections::HashSet<String> {
         self.entries
             .iter()
-            .filter(|entry| entry.value().sources.contains_key(PUT_SOURCE))
+            .filter(|entry| entry.value().put.is_some())
             .map(|entry| {
                 let key = entry.key();
                 key.split('\0').next().unwrap_or(key).to_string()
@@ -704,7 +646,7 @@ mod tests {
             .write_static(
                 "git",
                 Some("/repo"),
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "branch",
                 Value::String("pinned".into()),
                 None,
@@ -734,7 +676,7 @@ mod tests {
             read.fields.get("branch"),
             Some(&Value::String("pinned".into()))
         );
-        assert_eq!(&*read.records["branch"].source, PUT_SOURCE);
+        assert_eq!(read.records["branch"].source, Origin::Put);
         let head = cache
             .get_source("git", Some("/repo"), "head")
             .expect("the Source's own layer");
@@ -763,7 +705,7 @@ mod tests {
             .write_static(
                 "git",
                 Some("/repo"),
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "branch",
                 Value::String("pinned".into()),
                 None,
@@ -808,7 +750,14 @@ mod tests {
 
     fn put(cache: &Cache, node: &str, value: Value) {
         cache
-            .write_static("git", Some("/repo"), PUT_SOURCE, node, value, None)
+            .write_static(
+                "git",
+                Some("/repo"),
+                &crate::cache::Origin::Put,
+                node,
+                value,
+                None,
+            )
             .expect("put accepted");
     }
 
@@ -930,7 +879,14 @@ mod tests {
     fn a_put_of_an_empty_object_is_recorded_as_a_leaf() {
         let cache = Cache::new();
         cache
-            .write_static("git", Some("/repo"), PUT_SOURCE, "o", tools(&[]), Some(30))
+            .write_static(
+                "git",
+                Some("/repo"),
+                &crate::cache::Origin::Put,
+                "o",
+                tools(&[]),
+                Some(30),
+            )
             .unwrap();
         let read = read_tools(&cache);
         assert_eq!(read.records["o"].expected_interval_secs, Some(30));
@@ -980,13 +936,13 @@ mod tests {
     fn a_put_does_not_evict_a_config_seed() {
         let cache = Cache::new();
         let registry = crate::provider::registry::ProviderRegistry::new();
-        let write = |label: &str, v: &str| {
+        let write = |origin: Origin, v: &str| {
             cache
-                .write_static("p", None, label, "x", Value::String(v.into()), None)
+                .write_static("p", None, &origin, "x", Value::String(v.into()), None)
                 .unwrap();
         };
-        write("config:a.toml", "seed");
-        write(PUT_SOURCE, "put");
+        write(Origin::Config("a.toml".into()), "seed");
+        write(Origin::Put, "put");
         let read = cache
             .read_merged("p", None, &[], &registry, Layers::All)
             .unwrap();
@@ -1005,14 +961,14 @@ mod tests {
             .write_static(
                 "build",
                 None,
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "status",
                 Value::String("ok".into()),
                 Some(300),
             )
             .unwrap();
         let keys = cache
-            .stored_keys("build", None, PUT_SOURCE, "status")
+            .stored_keys("build", None, &crate::cache::Origin::Put, "status")
             .unwrap();
         assert_eq!(
             json(&Value::Object(keys)),
@@ -1026,7 +982,7 @@ mod tests {
             .write_static(
                 "build",
                 None,
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "info",
                 Value::Object(tree),
                 Some(60),
@@ -1034,12 +990,12 @@ mod tests {
             .unwrap();
         assert!(
             cache
-                .stored_keys("build", None, PUT_SOURCE, "info.c")
+                .stored_keys("build", None, &crate::cache::Origin::Put, "info.c")
                 .is_some()
         );
         assert!(
             cache
-                .stored_keys("build", None, PUT_SOURCE, "other")
+                .stored_keys("build", None, &crate::cache::Origin::Put, "other")
                 .is_none()
         );
 
@@ -1047,9 +1003,20 @@ mod tests {
         let mut root = HashMap::new();
         root.insert("k".to_string(), Value::String("v".into()));
         cache
-            .write_static("root", None, PUT_SOURCE, "", Value::Object(root), Some(10))
+            .write_static(
+                "root",
+                None,
+                &crate::cache::Origin::Put,
+                "",
+                Value::Object(root),
+                Some(10),
+            )
             .unwrap();
-        assert!(cache.stored_keys("root", None, PUT_SOURCE, "k").is_some());
+        assert!(
+            cache
+                .stored_keys("root", None, &crate::cache::Origin::Put, "k")
+                .is_some()
+        );
     }
 
     #[test]
@@ -1059,7 +1026,7 @@ mod tests {
             .write_static(
                 "build",
                 None,
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "status",
                 Value::String("ok".into()),
                 Some(300),
@@ -1069,7 +1036,7 @@ mod tests {
             .write_static(
                 "build:cache",
                 None,
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "_.decay",
                 Value::Int(2),
                 None,
@@ -1079,24 +1046,53 @@ mod tests {
         cache.remove_put("build", None, "status");
         assert!(
             cache
-                .stored_keys("build", None, PUT_SOURCE, "status")
+                .stored_keys("build", None, &crate::cache::Origin::Put, "status")
                 .is_none()
         );
         assert_eq!(cache.resolve_decay("build", None), 2, "the prototype stays");
 
         // Expiry and a re-put without a ttl take them too.
         cache
-            .write_static("build", None, PUT_SOURCE, "a", Value::Int(1), Some(5))
+            .write_static(
+                "build",
+                None,
+                &crate::cache::Origin::Put,
+                "a",
+                Value::Int(1),
+                Some(5),
+            )
             .unwrap();
         cache.evict_put("build", None, "a");
-        assert!(cache.stored_keys("build", None, PUT_SOURCE, "a").is_none());
+        assert!(
+            cache
+                .stored_keys("build", None, &crate::cache::Origin::Put, "a")
+                .is_none()
+        );
         cache
-            .write_static("build", None, PUT_SOURCE, "b", Value::Int(1), Some(5))
+            .write_static(
+                "build",
+                None,
+                &crate::cache::Origin::Put,
+                "b",
+                Value::Int(1),
+                Some(5),
+            )
             .unwrap();
         cache
-            .write_static("build", None, PUT_SOURCE, "b", Value::Int(2), None)
+            .write_static(
+                "build",
+                None,
+                &crate::cache::Origin::Put,
+                "b",
+                Value::Int(2),
+                None,
+            )
             .unwrap();
-        assert!(cache.stored_keys("build", None, PUT_SOURCE, "b").is_none());
+        assert!(
+            cache
+                .stored_keys("build", None, &crate::cache::Origin::Put, "b")
+                .is_none()
+        );
     }
 
     /// A `--ttl` put's interval belongs to its own address stamp: a later
@@ -1109,14 +1105,21 @@ mod tests {
             .write_static(
                 "git",
                 Some("/repo"),
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "a",
                 Value::Int(1),
                 Some(1),
             )
             .unwrap();
         cache
-            .write_static("git", Some("/repo"), PUT_SOURCE, "b", Value::Int(2), None)
+            .write_static(
+                "git",
+                Some("/repo"),
+                &crate::cache::Origin::Put,
+                "b",
+                Value::Int(2),
+                None,
+            )
             .unwrap();
         tokio::time::advance(std::time::Duration::from_secs(5)).await;
         assert!(!cache.get_entry("git", Some("/repo")).unwrap().is_stale());

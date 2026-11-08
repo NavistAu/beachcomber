@@ -87,7 +87,14 @@ async fn a_daemon_seeded_from_its_config_still_shuts_down_when_idle() {
 async fn a_put_keeps_an_idle_daemon_up() {
     let (_home, _xdg, cache, registry, config) = seeded();
     cache
-        .write_static("myapp", None, "put", "x", Value::Int(1), None)
+        .write_static(
+            "myapp",
+            None,
+            &beachcomber::cache::Origin::Put,
+            "x",
+            Value::Int(1),
+            None,
+        )
         .unwrap();
     assert!(!shuts_down_within(cache, registry, config, 5).await);
 }

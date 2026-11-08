@@ -247,7 +247,7 @@ pub(crate) async fn put(
     if let Err(e) = cache.write_static(
         namespace,
         effective_path.as_deref(),
-        crate::cache::PUT_SOURCE,
+        &crate::cache::Origin::Put,
         node,
         value,
         ttl_secs,

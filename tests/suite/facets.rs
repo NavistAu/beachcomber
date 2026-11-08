@@ -791,7 +791,7 @@ async fn a_cold_watch_on_the_put_facet_warms_nothing() {
     assert!(first.ok, "{:?}", first.error);
     assert!(first.data.is_none(), "nothing in the put layer: {first:?}");
     assert!(
-        cache.list_rows().iter().all(|r| r.provider != "git"),
+        cache.list_rows().iter().all(|(_, r)| r.provider != "git"),
         "no Source ran for the watch"
     );
 

@@ -250,7 +250,7 @@ pub(super) async fn handle_introspect_providers(
             .filter(|(k, _)| &k.provider == name)
             .map(|(k, f)| {
                 (
-                    k.source.as_str(),
+                    k.source.name(),
                     f.consecutive_failures,
                     f.last_error.as_deref(),
                 )

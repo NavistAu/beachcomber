@@ -112,7 +112,7 @@ pub fn instance_key(provider: &str, source_name: &str, root: Option<&str>) -> Ke
     Key {
         provider: provider.to_string(),
         path: root.map(str::to_string),
-        source: source_name.to_string(),
+        source: crate::cache::Origin::source(source_name),
         node: String::new(),
     }
 }
@@ -297,7 +297,7 @@ fn stored(
             .is_none_or(|o| stored.last_refreshed < o.last_refreshed)
         {
             oldest = Some(RecordFreshness {
-                source: Arc::from(source),
+                source: crate::cache::Origin::source(source),
                 entry: root.as_deref().map(Arc::from),
                 last_refreshed: stored.last_refreshed,
                 expected_interval_secs: stored.expected_interval_secs,

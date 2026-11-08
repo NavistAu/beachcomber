@@ -283,7 +283,7 @@ async fn integration_status_response_reports_decay_level() {
     let key = beachcomber::scheduler::lifecycle::Key {
         provider: "lc_counter".to_string(),
         path: None,
-        source: "main".to_string(),
+        source: beachcomber::cache::Origin::source("main"),
         node: String::new(),
     };
     let decay_level = snapshots.get(&key).map(|s| s.decay);
@@ -421,7 +421,7 @@ result.x = "{{ data }}"
     let key = |provider: &str, source: &str| Key {
         provider: provider.into(),
         path: None,
-        source: source.into(),
+        source: beachcomber::cache::Origin::source(source),
         node: String::new(),
     };
 

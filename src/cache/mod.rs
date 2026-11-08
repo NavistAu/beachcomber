@@ -4,9 +4,9 @@
 
 use libbeachcomber::key::Facet;
 
-mod labels;
 mod memo;
 mod merge;
+mod origin;
 mod put;
 mod rows;
 mod schedule;
@@ -15,9 +15,9 @@ mod storage;
 mod test_support;
 mod validity;
 
-pub use labels::*;
 pub use memo::*;
 pub use merge::*;
+pub use origin::*;
 pub use put::*;
 pub use rows::*;
 pub use schedule::*;

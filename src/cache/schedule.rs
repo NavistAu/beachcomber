@@ -157,7 +157,7 @@ impl Cache {
                 entry.sources.remove(source_name);
             }
             self.entries
-                .remove_if(&facet_key, |_, entry| entry.sources.is_empty());
+                .remove_if(&facet_key, |_, entry| entry.holds_no_map());
         } else {
             let per_field = fields
                 .into_iter()
@@ -217,7 +217,7 @@ mod tests {
         );
         assert!(stored(&cache, "git", None).is_none());
         let stored_keys = cache
-            .stored_keys("git", Some("/repo"), "status", "dirty")
+            .stored_keys("git", Some("/repo"), &Origin::source("status"), "dirty")
             .unwrap();
         assert!(stored_keys.contains_key("poll") && stored_keys.contains_key("watch"));
     }
@@ -235,7 +235,9 @@ mod tests {
                 ..Schedule::poll(30, 1)
             },
         );
-        let keys = cache.stored_keys("build", None, "status", "state").unwrap();
+        let keys = cache
+            .stored_keys("build", None, &Origin::source("status"), "state")
+            .unwrap();
         assert_eq!(
             json(&Value::Object(keys)),
             serde_json::json!({"poll": {"interval": "30s", "count": 1}, "decay": 1})
@@ -285,7 +287,14 @@ mod tests {
     fn removing_a_source_leaves_a_decay_prototype_alone() {
         let cache = Cache::new();
         cache
-            .write_static("p:cache", None, PUT_SOURCE, "_.decay", Value::Int(2), None)
+            .write_static(
+                "p:cache",
+                None,
+                &crate::cache::Origin::Put,
+                "_.decay",
+                Value::Int(2),
+                None,
+            )
             .unwrap();
         cache.put_source(
             "p",
@@ -303,7 +312,14 @@ mod tests {
         let cache = Cache::new();
         for (n, expected) in [(16, 16), (17, 4), (0, 4)] {
             cache
-                .write_static("p:cache", None, PUT_SOURCE, "_.decay", Value::Int(n), None)
+                .write_static(
+                    "p:cache",
+                    None,
+                    &crate::cache::Origin::Put,
+                    "_.decay",
+                    Value::Int(n),
+                    None,
+                )
                 .unwrap();
             assert_eq!(cache.resolve_decay("p", None), expected, "decay {n}");
         }

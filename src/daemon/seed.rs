@@ -19,7 +19,7 @@
 //!   layer declares is a warning.
 //!
 //! What the `cache` and `macro` tables hold, and what is wrong with any file, comes from
-//! one per-file parse (`crate::shape::seeded::read`). Each is written at the global path, every record labelled `config:<file>`
+//! one per-file parse (`crate::shape::seeded::read`). Each is written at the global path, every record written by its file ([`Origin::Config`])
 //! with the file that set it. Layers are written in composition order —
 //! `defaults/*.toml` lexically, then the main config file, then
 //! `conf.d/*.toml` lexically — and every file keeps its own records, a record
@@ -31,7 +31,7 @@
 //! from — the thing `comb status` shows as its source — would be gone before it
 //! reached the cache.
 
-use crate::cache::{CONFIG_SOURCE_PREFIX, Cache};
+use crate::cache::{Cache, Origin};
 use crate::config::Config;
 use crate::provider::Value;
 use crate::provider::registry::{ConfigLoad, ProviderRegistry, RegistryHandle};
@@ -42,9 +42,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
-/// One namespace's writes: the `(label, tree)` pairs to apply in composition
+/// One namespace's writes: the `(file, tree)` pairs to apply in composition
 /// order.
-type Writes = Vec<(String, Value)>;
+type Writes = Vec<(Origin, Value)>;
 
 /// The seed of a configuration's layers: the writes per facet namespace, and
 /// what is wrong with them. Planned once, by the load of the configuration
@@ -239,13 +239,13 @@ pub fn seed_facets(cache: &Cache, registry: &ProviderRegistry, seed: Seed) {
 fn apply_reseed(cache: &Cache, registry: &ProviderRegistry, mut planned: HashMap<String, Writes>) {
     // A namespace the layers no longer mention still holds the records the last
     // seed left there: visit it with an empty write list so the drop happens.
-    for namespace in cache.global_namespaces_with_label_prefix(CONFIG_SOURCE_PREFIX) {
+    for namespace in cache.global_namespaces_with_config_seeds() {
         planned.entry(namespace).or_default();
     }
 
     for (namespace, writes) in planned {
         registry.register_static(&namespace);
-        if let Err(e) = cache.reseed_static(&namespace, None, CONFIG_SOURCE_PREFIX, writes) {
+        if let Err(e) = cache.reseed_static(&namespace, None, writes) {
             tracing::warn!("could not re-seed {namespace}: {e}");
         }
     }
@@ -284,8 +284,8 @@ pub(crate) fn plan(config: &Config, registry: &ProviderRegistry) -> Seed {
 /// One layer of a configuration as the plan reads it: the labels of its file,
 /// each worked out once (a label looks `$HOME` up on disk), and what it seeds.
 struct Layer<'c> {
-    /// `config:<file>`: what its records are labelled.
-    label: String,
+    /// Its file: what wrote its records.
+    label: Origin,
     /// `config(<file>)`: what its errors and warnings are prefixed with.
     shown: String,
     value: &'c toml::Value,
@@ -603,7 +603,7 @@ mod tests {
     }
 
     /// The libraries each layer declares, as its writes to `<p>:macro`.
-    fn macro_writes(plan: &Seed, provider: &str) -> Vec<(String, serde_json::Value)> {
+    fn macro_writes(plan: &Seed, provider: &str) -> Vec<(Origin, serde_json::Value)> {
         plan.writes
             .get(&crate::cache::facet_of(
                 provider,
@@ -638,14 +638,14 @@ mod tests {
             macro_writes(&plan, "p"),
             [
                 (
-                    "config:/a.toml".to_string(),
+                    crate::cache::Origin::Config("/a.toml".into()),
                     serde_json::json!({
                         "a": "{% macro a() %}A{% endmacro %}",
                         "b": "{% macro b() %}B{% endmacro %}"
                     })
                 ),
                 (
-                    "config:/b.toml".to_string(),
+                    crate::cache::Origin::Config("/b.toml".into()),
                     serde_json::json!({"b": "{% macro b() %}B2{% endmacro %}"})
                 ),
             ]

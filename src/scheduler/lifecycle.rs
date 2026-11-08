@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::Instant;
 
+use crate::cache::Origin;
 use crate::provider::InvalidationStrategy;
 
 /// Decay steps before eviction unless a lifecycle says otherwise.
@@ -57,14 +58,13 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Lifecycle key. `path` is the instance's root: None for the instance at `~`,
 /// Some(root) for a rooted one. `node` is the address a static entry belongs
-/// to — a put's (`source` is `"put"` then) or a template leaf's memo
-/// (`source` is [`MEMO_SOURCE`](crate::cache::MEMO_SOURCE)) — and `""` for
-/// every Source instance.
+/// to — a put's (`source` is [`Origin::Put`] then) or a template leaf's memo
+/// ([`Origin::Memo`]) — and `""` for every Source instance.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Key {
     pub provider: String,
     pub path: Option<String>,
-    pub source: String,
+    pub source: Origin,
     pub node: String,
 }
 
@@ -357,7 +357,7 @@ impl LifecycleRegistry {
                 refresh: false,
             };
         };
-        if crate::cache::is_static_label(&key.source) {
+        if key.source.is_static() {
             return FseventOutcome {
                 transition: None,
                 refresh: true,
@@ -493,19 +493,19 @@ impl LifecycleRegistry {
         self.entries.remove(key);
     }
 
-    /// Remove every lifecycle key of the static `label` (a put's, a memo's)
+    /// Remove every lifecycle key of the static writer `origin` (a put's, a memo's)
     /// for `(provider, path)` whose address `displaced` names, and return
     /// them.
     pub fn remove_static_keys(
         &mut self,
-        label: &str,
+        origin: &Origin,
         provider: &str,
         path: Option<&str>,
         displaced: impl Fn(&str) -> bool,
     ) -> Vec<Key> {
         let mut removed = Vec::new();
         self.entries.retain(|key, _| {
-            let gone = key.source == label
+            let gone = key.source == *origin
                 && key.provider == provider
                 && key.path.as_deref() == path
                 && displaced(&key.node);
@@ -549,7 +549,7 @@ mod tests {
         Key {
             provider: provider.to_string(),
             path: Some(path.to_string()),
-            source: "main".to_string(),
+            source: crate::cache::Origin::source("main"),
             node: String::new(),
         }
     }
@@ -558,7 +558,7 @@ mod tests {
         Key {
             provider: provider.to_string(),
             path: None,
-            source: "main".to_string(),
+            source: crate::cache::Origin::source("main"),
             node: String::new(),
         }
     }
@@ -939,7 +939,7 @@ mod tests {
     fn a_file_event_on_a_memo_runs_it_and_renews_nothing() {
         let mut reg = LifecycleRegistry::new();
         let key = Key {
-            source: crate::cache::MEMO_SOURCE.to_string(),
+            source: Origin::Memo,
             node: "context".to_string(),
             ..test_key_global("kubecontext")
         };

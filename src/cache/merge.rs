@@ -27,14 +27,14 @@ pub struct LayerRecord {
 
 impl LayerRecord {
     pub(crate) fn new(
-        label: &str,
+        origin: &Origin,
         facet: Option<&str>,
         path: Option<&str>,
         value: &Value,
         age_ms: u128,
     ) -> Self {
         Self {
-            label: presented_label(label),
+            label: origin.presented_label(),
             facet: facet.map(str::to_string),
             path: path.map(str::to_string),
             value: serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
@@ -214,7 +214,7 @@ pub(crate) fn note_records(
 }
 
 impl Cache {
-    /// Merge the static maps of `entry` into `out`: `config:<file>` seeds in
+    /// Merge the static maps of `entry` into `out`: configuration seeds in
     /// composition order, so a later file's record lands over an earlier
     /// one's, then the `put` map on top. Returns whether anything merged.
     ///
@@ -227,13 +227,12 @@ impl Cache {
         out: &mut MergedRead,
     ) -> bool {
         let mut seeds = false;
-        for name in entry.config_labels() {
-            let src = &entry.sources[name];
+        for (file, src) in &entry.configs {
             if src.fields.is_empty() {
                 continue;
             }
             let fresh = RecordFreshness {
-                source: Arc::from(name.as_str()),
+                source: Origin::Config(file.clone()),
                 entry: at.map(Arc::from),
                 last_refreshed: src.last_refreshed,
                 expected_interval_secs: src.expected_interval_secs,
@@ -250,10 +249,9 @@ impl Cache {
     /// each at its own address with its own stamp's freshness. A memo of
     /// absence lays nothing. No other entry holds memos.
     fn merge_memos(entry: &CacheEntry, at: Option<&str>, out: &mut MergedRead) -> bool {
-        let Some(src) = entry.sources.get(MEMO_SOURCE) else {
+        let Some(src) = &entry.memo else {
             return false;
         };
-        let label: Arc<str> = Arc::from(MEMO_SOURCE);
         let at: Option<Arc<str>> = at.map(Arc::from);
         let mut merged = false;
         for (address, stamp) in &entry.memos {
@@ -270,7 +268,7 @@ impl Cache {
                 up = parent;
             }
             let fresh = RecordFreshness {
-                source: label.clone(),
+                source: Origin::Memo,
                 entry: at.clone(),
                 last_refreshed: stamp.written,
                 expected_interval_secs: stamp.interval_secs,
@@ -287,7 +285,7 @@ impl Cache {
     /// then the map lands, each record carrying the freshness of the nearest
     /// stamp at or above it.
     fn merge_puts(entry: &CacheEntry, at: Option<&str>, out: &mut MergedRead) -> bool {
-        let Some(src) = entry.sources.get(PUT_SOURCE) else {
+        let Some(src) = &entry.put else {
             return false;
         };
         for addr in entry.puts.keys() {
@@ -299,10 +297,9 @@ impl Cache {
                 forget_records(&mut out.records, addr);
             }
         }
-        let label: Arc<str> = Arc::from(PUT_SOURCE);
         let at: Option<Arc<str>> = at.map(Arc::from);
         let fallback = RecordFreshness {
-            source: label.clone(),
+            source: Origin::Put,
             entry: at.clone(),
             last_refreshed: src.last_refreshed,
             expected_interval_secs: src.expected_interval_secs,
@@ -315,7 +312,7 @@ impl Cache {
             "",
         );
         for (k, v) in &src.fields {
-            note_put_records(entry, &label, &at, &mut out.records, k, v);
+            note_put_records(entry, &at, &mut out.records, k, v);
         }
         true
     }
@@ -349,24 +346,23 @@ impl Cache {
         let mut bound = Vec::with_capacity(declared.len());
         for sm in declared {
             let name = &sm.name;
-            let held = (!is_static_label(name)
-                && visited
-                    .iter()
-                    .any(|i| i.root.as_deref() == at && i.source == *name))
-            .then(|| entry.and_then(|e| e.sources.get(name)))
-            .flatten()
-            .filter(|src| !src.fields.is_empty())
-            .map(|src| {
-                (
-                    &src.fields,
-                    RecordFreshness {
-                        source: Arc::from(name.as_str()),
-                        entry: at.map(Arc::from),
-                        last_refreshed: src.last_refreshed,
-                        expected_interval_secs: src.expected_interval_secs,
-                    },
-                )
-            });
+            let held = visited
+                .iter()
+                .any(|i| i.root.as_deref() == at && i.source == *name)
+                .then(|| entry.and_then(|e| e.sources.get_key_value(name.as_str())))
+                .flatten()
+                .filter(|(_, src)| !src.fields.is_empty())
+                .map(|(name, src)| {
+                    (
+                        &src.fields,
+                        RecordFreshness {
+                            source: Origin::Source(name.clone()),
+                            entry: at.map(Arc::from),
+                            last_refreshed: src.last_refreshed,
+                            expected_interval_secs: src.expected_interval_secs,
+                        },
+                    )
+                });
             bound.push(Bound { name, held });
         }
 
@@ -547,7 +543,7 @@ impl Cache {
         let memo = facet_of(namespace, Facet::Memo);
         for link in crate::query::read_chain(requested, &[]) {
             if let Some(entry) = self.entries.get(&make_cache_key(&memo, link.as_deref())) {
-                let values = entry.sources.get(MEMO_SOURCE).map(|src| &src.fields);
+                let values = entry.memo.as_ref().map(|src| &src.fields);
                 for (address, stamp) in &entry.memos {
                     let value = values
                         .and_then(|fields| crate::provider::lookup_path(fields, address))
@@ -556,7 +552,7 @@ impl Cache {
                     out.push((
                         address.clone(),
                         LayerRecord {
-                            label: presented_label(MEMO_SOURCE),
+                            label: Origin::Memo.presented_label(),
                             facet: Some("memo".to_string()),
                             path: link.clone(),
                             value,
@@ -585,19 +581,15 @@ impl Cache {
             };
             Self::static_layers(&entry, link.as_deref(), None, &mut out);
             for instance in visited.iter().filter(|i| i.root == link) {
-                let Some(src) = entry.sources.get(&instance.source) else {
+                let Some((name, src)) = entry.sources.get_key_value(instance.source.as_str())
+                else {
                     continue;
                 };
+                let origin = Origin::Source(name.clone());
                 for (tail, value) in leaves_of(&src.fields) {
                     out.push((
                         tail,
-                        LayerRecord::new(
-                            &instance.source,
-                            None,
-                            link.as_deref(),
-                            &value,
-                            src.age_ms(),
-                        ),
+                        LayerRecord::new(&origin, None, link.as_deref(), &value, src.age_ms()),
                     ));
                 }
             }
@@ -612,23 +604,26 @@ impl Cache {
         facet: Option<&str>,
         out: &mut Vec<(String, LayerRecord)>,
     ) {
-        if let Some(src) = entry.sources.get(PUT_SOURCE) {
+        if let Some(src) = &entry.put {
             for (tail, value) in leaves_of(&src.fields) {
                 let stamp = entry
                     .put_address_for(&tail)
                     .and_then(|address| entry.puts.get(address));
                 let age = stamp.map_or(src.age_ms(), |s| s.age_ms());
-                out.push((tail, LayerRecord::new(PUT_SOURCE, facet, link, &value, age)));
+                out.push((
+                    tail,
+                    LayerRecord::new(&Origin::Put, facet, link, &value, age),
+                ));
             }
         }
         // A later file wins a leaf two files set, so the files are listed
         // last-first: the one that answers, then each it overrode.
-        for name in entry.config_labels().into_iter().rev() {
-            let src = &entry.sources[name];
+        for (file, src) in entry.configs.iter().rev() {
+            let origin = Origin::Config(file.clone());
             for (tail, value) in leaves_of(&src.fields) {
                 out.push((
                     tail,
-                    LayerRecord::new(name, facet, link, &value, src.age_ms()),
+                    LayerRecord::new(&origin, facet, link, &value, src.age_ms()),
                 ));
             }
         }
@@ -687,8 +682,8 @@ mod tests {
                 ("y".to_string(), Value::Int(2))
             ])
         );
-        assert_eq!(&*read.records["x"].source, "a");
-        assert_eq!(&*read.records["y"].source, "b");
+        assert_eq!(read.records["x"].source, Origin::source("a"));
+        assert_eq!(read.records["y"].source, Origin::source("b"));
 
         let read = read_demo(&cache, &registry, &["a"]).expect("one Source");
         assert!(
@@ -710,7 +705,7 @@ mod tests {
         // The line names only a and b: c is never called.
         let read = read_demo(&cache, &registry, &["a", "c"]).expect("a Source");
         assert_eq!(read.fields["x"], Value::Int(1));
-        assert_eq!(&*read.records["x"].source, "a");
+        assert_eq!(read.records["x"].source, Origin::source("a"));
     }
 
     #[test]
@@ -723,12 +718,16 @@ mod tests {
         store_demo(&cache, "b", "y", 2);
         let read = read_demo(&cache, &registry, &["a", "b"]).expect("both Sources");
         assert_eq!(read.fields["z"], Value::Int(9));
-        assert_eq!(&*read.records["x"].source, "a", "a Source's leaf stays its");
-        assert_eq!(&*read.records["y"].source, "b");
+        assert_eq!(
+            read.records["x"].source,
+            Origin::source("a"),
+            "a Source's leaf stays its"
+        );
+        assert_eq!(read.records["y"].source, Origin::source("b"));
         let z = &read.records["z"];
-        assert_eq!(&*z.source, "computed:result");
+        assert_eq!(z.source, Origin::Computed("result".into()));
         assert!(
-            is_static_label(&z.source),
+            z.source.is_static(),
             "no Source or schedule behind it, so no decay is attached"
         );
         let oldest = read.records["x"]
@@ -747,7 +746,8 @@ mod tests {
         store_demo(&cache, "b", "x", 1);
         let read = read_demo(&cache, &registry, &["a", "b"]).expect("both Sources");
         assert_eq!(
-            &*read.records["x"].source, "computed:result",
+            read.records["x"].source,
+            Origin::Computed("result".into()),
             "equal values are no evidence of which Source gave it"
         );
     }
@@ -765,7 +765,7 @@ mod tests {
         let by_default = read_demo(&cache, &native, &["a", "b"]).unwrap();
         assert_eq!(by_default.fields, by_line.fields);
         for (tail, record) in &by_default.records {
-            assert_eq!(&*record.source, &*by_line.records[tail].source, "{tail}");
+            assert_eq!(record.source, by_line.records[tail].source, "{tail}");
         }
     }
 
@@ -814,7 +814,14 @@ mod tests {
         );
         // A put beside it is the layer above, and still reads.
         cache
-            .write_static("demo", None, PUT_SOURCE, "p", Value::Int(7), None)
+            .write_static(
+                "demo",
+                None,
+                &crate::cache::Origin::Put,
+                "p",
+                Value::Int(7),
+                None,
+            )
             .unwrap();
         let read = read_demo(&cache, &registry, &["a"]).expect("the put");
         assert_eq!(
@@ -855,15 +862,15 @@ mod tests {
     async fn read_merged_keeps_one_freshness_reading_per_record() {
         let cache = Cache::new();
         let registry = crate::provider::registry::ProviderRegistry::new();
-        let write = |label: &str, node: &str, value: Value| {
+        let write = |origin: Origin, node: &str, value: Value| {
             cache
-                .write_static("p", None, label, node, value, None)
+                .write_static("p", None, &origin, node, value, None)
                 .expect("put accepted");
         };
 
-        write("config:a.toml", "tree.left", Value::Int(1));
+        write(Origin::Config("a.toml".into()), "tree.left", Value::Int(1));
         tokio::time::advance(std::time::Duration::from_secs(7)).await;
-        write("put", "tree.right", Value::Int(2));
+        write(Origin::Put, "tree.right", Value::Int(2));
 
         let read = cache
             .read_merged("p", None, &[], &registry, Layers::All)

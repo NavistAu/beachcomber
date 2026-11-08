@@ -353,14 +353,21 @@ mod tests {
         let registry = ProviderRegistry::new();
         // `put` carrying `--ttl 1s`, and a config seed with a long one.
         cache
-            .write_static("p", None, "put", "x", Value::Int(1), Some(1))
+            .write_static(
+                "p",
+                None,
+                &crate::cache::Origin::Put,
+                "x",
+                Value::Int(1),
+                Some(1),
+            )
             .expect("put accepted");
         tokio::time::advance(std::time::Duration::from_secs(5)).await;
         cache
             .write_static(
                 "p",
                 None,
-                "config:t.toml",
+                &crate::cache::Origin::Config("t.toml".into()),
                 "",
                 Value::Object([("y".to_string(), Value::Int(2))].into_iter().collect()),
                 Some(100),
@@ -402,7 +409,7 @@ mod tests {
             .write_static(
                 "p",
                 None,
-                "put",
+                &crate::cache::Origin::Put,
                 "tree",
                 Value::Object(HashMap::new()),
                 None,
@@ -411,7 +418,14 @@ mod tests {
         tokio::time::advance(std::time::Duration::from_secs(9)).await;
         // The near layer: a directory below it, filling that node in.
         cache
-            .write_static("p", Some("/x/y"), "put", "tree.left", Value::Int(1), None)
+            .write_static(
+                "p",
+                Some("/x/y"),
+                &crate::cache::Origin::Put,
+                "tree.left",
+                Value::Int(1),
+                None,
+            )
             .expect("put accepted");
 
         let read = cache

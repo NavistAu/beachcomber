@@ -7,7 +7,7 @@
 //! assumption `tests/suite/path_chain.rs` makes.
 
 use crate::common::daemon::isolate;
-use beachcomber::cache::{Cache, Layers};
+use beachcomber::cache::{Cache, Layers, Origin};
 use beachcomber::config::Config;
 use beachcomber::provider::Value as CacheValue;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -683,16 +683,11 @@ fn a_reload_keeps_the_age_of_records_it_did_not_change() {
     let stamp = |namespace: &str, file: &str| {
         let entry = cache.get_entry(namespace, None).expect(namespace);
         let found = entry
-            .sources
+            .configs
             .iter()
-            .find(|(label, _)| label.ends_with(file))
+            .find(|(seeded, _)| seeded.ends_with(file))
             .map(|(_, records)| records.last_refreshed);
-        found.unwrap_or_else(|| {
-            panic!(
-                "no {file} records in {namespace}: {:?}",
-                entry.sources.keys()
-            )
-        })
+        found.unwrap_or_else(|| panic!("no {file} records in {namespace}: {:?}", entry.configs))
     };
     let untouched = stamp("other:template", "config.toml");
     let edited = stamp("scanline:template", "10-mine.toml");
@@ -970,9 +965,8 @@ fn removing_a_put_template_shows_the_seeded_one() {
         .reseed_static(
             "p:template",
             None,
-            "config:",
             vec![(
-                "config:/x/10.toml".to_string(),
+                beachcomber::cache::Origin::Config("/x/10.toml".into()),
                 template_tree("seeded", "t"),
             )],
         )
@@ -981,7 +975,7 @@ fn removing_a_put_template_shows_the_seeded_one() {
         .write_static(
             "p:template",
             None,
-            "put",
+            &beachcomber::cache::Origin::Put,
             "version",
             CacheValue::String("mine".into()),
             None,
@@ -1007,7 +1001,7 @@ fn a_reseed_keeps_a_put_template_on_top() {
         .write_static(
             "p:template",
             None,
-            "put",
+            &beachcomber::cache::Origin::Put,
             "version",
             CacheValue::String("mine".into()),
             None,
@@ -1017,9 +1011,8 @@ fn a_reseed_keeps_a_put_template_on_top() {
         .reseed_static(
             "p:template",
             None,
-            "config:",
             vec![(
-                "config:/x/10.toml".to_string(),
+                beachcomber::cache::Origin::Config("/x/10.toml".into()),
                 template_tree("seeded", "t"),
             )],
         )
@@ -1066,14 +1059,13 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
     let cache = Arc::new(Cache::new());
     let registry = Arc::new(crate::common::registry::with_shipped_defaults());
     registry.register_static("scanline:template");
-    let label = "config:/x/10-mine.toml".to_string();
+    let label = beachcomber::cache::Origin::Config("/x/10-mine.toml".into());
 
     const SWAPS: u64 = 500;
     cache
         .reseed_static(
             "scanline:template",
             None,
-            "config:",
             vec![(label.clone(), template_tree("v1", "t1"))],
         )
         .unwrap();
@@ -1114,7 +1106,6 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
             .reseed_static(
                 "scanline:template",
                 None,
-                "config:",
                 vec![(label.clone(), template_tree("v1", &format!("t{i}")))],
             )
             .unwrap();
@@ -1137,9 +1128,10 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
 fn every_file_keeps_its_record_and_the_last_file_answers() {
     let cache = Cache::new();
     let registry = crate::common::registry::with_shipped_defaults();
-    let defaults = "config:/c/defaults/aws.toml";
-    let main = "config:/c/config.toml";
-    let drop_in = "config:/c/conf.d/10-mine.toml";
+    let config = |file: &str| Origin::Config(file.into());
+    let defaults = config("/c/defaults/aws.toml");
+    let main = config("/c/config.toml");
+    let drop_in = config("/c/conf.d/10-mine.toml");
     let tree = |v: &str| {
         CacheValue::Object(HashMap::from([(
             "profile".to_string(),
@@ -1150,11 +1142,10 @@ fn every_file_keeps_its_record_and_the_last_file_answers() {
         .reseed_static(
             "aws:template",
             None,
-            "config:",
             vec![
-                (defaults.into(), tree("from-defaults")),
-                (main.into(), tree("from-main")),
-                (drop_in.into(), tree("from-drop-in")),
+                (defaults.clone(), tree("from-defaults")),
+                (main.clone(), tree("from-main")),
+                (drop_in.clone(), tree("from-drop-in")),
             ],
         )
         .unwrap();
@@ -1166,7 +1157,7 @@ fn every_file_keeps_its_record_and_the_last_file_answers() {
         read.fields["profile"],
         CacheValue::String("from-drop-in".into())
     );
-    assert_eq!(&*read.records["profile"].source, drop_in);
+    assert_eq!(read.records["profile"].source, drop_in);
 
     let labels: Vec<String> = cache
         .layer_stacks("aws", None, &[])
@@ -1195,8 +1186,7 @@ fn every_file_keeps_its_record_and_the_last_file_answers() {
         .reseed_static(
             "*:cache",
             None,
-            "config:",
-            vec![(defaults.into(), decay(4)), (main.into(), decay(6))],
+            vec![(defaults, decay(4)), (main, decay(6))],
         )
         .unwrap();
     assert_eq!(cache.resolve_decay("git", None), 6);
@@ -1210,13 +1200,12 @@ fn a_refused_write_leaves_the_previous_seed_untouched() {
     // have landed, nor the previous seed have gone.
     let cache = Cache::new();
     let registry = crate::common::registry::with_shipped_defaults();
-    let old = "config:/x/old.toml".to_string();
+    let old = beachcomber::cache::Origin::Config("/x/old.toml".into());
 
     cache
         .reseed_static(
             "hostname",
             None,
-            "config:",
             vec![(
                 old.clone(),
                 CacheValue::Object(HashMap::from([(
@@ -1231,17 +1220,16 @@ fn a_refused_write_leaves_the_previous_seed_untouched() {
         .reseed_static(
             "hostname",
             None,
-            "config:",
             vec![
                 (
-                    "config:/x/new.toml".to_string(),
+                    beachcomber::cache::Origin::Config("/x/new.toml".into()),
                     CacheValue::Object(HashMap::from([(
                         "other".to_string(),
                         CacheValue::String("new".into()),
                     )])),
                 ),
                 (
-                    "config:/x/new.toml".to_string(),
+                    beachcomber::cache::Origin::Config("/x/new.toml".into()),
                     CacheValue::String("boom".into()),
                 ),
             ],

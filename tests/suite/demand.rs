@@ -102,7 +102,7 @@ async fn field_demand_warms_only_owning_source() {
                 .get_lifecycle_snapshots()
                 .await
                 .keys()
-                .map(|k| k.source.clone())
+                .map(|k| k.source.to_string())
                 .collect::<Vec<String>>()
         },
         |w| w.iter().any(|s| s == "refs"),

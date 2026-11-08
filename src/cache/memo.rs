@@ -72,7 +72,7 @@ impl MemoRecord {
     pub fn cache_answer(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut answer = serde_json::Map::new();
         answer.insert("age_ms".into(), (self.age_ms as u64).into());
-        answer.insert("source".into(), presented_label(MEMO_SOURCE).into());
+        answer.insert("source".into(), Origin::Memo.presented_label().into());
         for (key, v) in &self.keys {
             if let Ok(v) = serde_json::to_value(v) {
                 answer.insert(key.clone(), v);
@@ -127,9 +127,8 @@ impl Cache {
             );
             if let Some(value) = memo.data {
                 let src = entry
-                    .sources
-                    .entry(MEMO_SOURCE.to_string())
-                    .or_insert_with(|| CacheSourceEntry::static_at(now));
+                    .memo
+                    .get_or_insert_with(|| Box::new(CacheSourceEntry::static_at(now)));
                 crate::provider::insert_path(&mut src.fields, field, value);
                 src.last_refreshed = now;
             }
@@ -140,9 +139,8 @@ impl Cache {
                 .entry(make_cache_key(&facet_of(provider, Facet::Cache), path))
                 .or_insert_with(|| CacheEntry::empty(now));
             let src = entry
-                .sources
-                .entry(MEMO_SOURCE.to_string())
-                .or_insert_with(|| CacheSourceEntry::static_at(now));
+                .memo
+                .get_or_insert_with(|| Box::new(CacheSourceEntry::static_at(now)));
             crate::provider::insert_path(&mut src.fields, field, Value::Object(keys));
             src.last_refreshed = now;
         }
@@ -202,15 +200,15 @@ impl Cache {
             for address in &gone {
                 entry.memos.remove(address);
             }
-            if let Some(src) = entry.sources.get_mut(MEMO_SOURCE) {
+            if let Some(src) = entry.memo.as_mut() {
                 for address in &gone {
                     crate::provider::remove_path(&mut src.fields, address);
                 }
                 if src.fields.is_empty() {
-                    entry.sources.remove(MEMO_SOURCE);
+                    entry.memo = None;
                 }
             }
-            if entry.sources.is_empty() && entry.memos.is_empty() {
+            if entry.holds_no_map() && entry.memos.is_empty() {
                 occupied.remove();
             }
         }
@@ -222,15 +220,15 @@ impl Cache {
             .entry(make_cache_key(&facet_of(provider, Facet::Cache), path))
         {
             let entry = occupied.get_mut();
-            if let Some(src) = entry.sources.get_mut(MEMO_SOURCE) {
+            if let Some(src) = entry.memo.as_mut() {
                 for address in &gone {
                     crate::provider::remove_path(&mut src.fields, address);
                 }
                 if src.fields.is_empty() {
-                    entry.sources.remove(MEMO_SOURCE);
+                    entry.memo = None;
                 }
             }
-            if entry.sources.is_empty() {
+            if entry.holds_no_map() {
                 occupied.remove();
             }
         }
@@ -269,8 +267,8 @@ impl Cache {
                     continue;
                 };
                 let data = entry
-                    .sources
-                    .get(MEMO_SOURCE)
+                    .memo
+                    .as_ref()
                     .and_then(|src| crate::provider::lookup_path(&src.fields, tail))
                     .cloned();
                 (stamp.clone(), data)
@@ -282,10 +280,7 @@ impl Cache {
                     link.as_deref(),
                 ))
                 .and_then(|entry| {
-                    match crate::provider::lookup_path(
-                        &entry.sources.get(MEMO_SOURCE)?.fields,
-                        tail,
-                    )? {
+                    match crate::provider::lookup_path(&entry.memo.as_ref()?.fields, tail)? {
                         Value::Object(keys) => Some(keys.clone()),
                         _ => None,
                     }
@@ -311,7 +306,7 @@ impl Cache {
             .entries
             .get_mut(&make_cache_key(&facet_of(provider, Facet::Cache), path))
             .is_some_and(|mut entry| {
-                let Some(src) = entry.sources.get_mut(MEMO_SOURCE) else {
+                let Some(src) = entry.memo.as_mut() else {
                     return false;
                 };
                 match crate::provider::lookup_path_mut(&mut src.fields, field) {
@@ -439,7 +434,7 @@ mod tests {
         );
         // Nothing in `<p>:memo` holds a value for it.
         let entry = cache.get_entry("k:memo", None).expect("the stamp's entry");
-        assert!(entry.sources.is_empty());
+        assert!(entry.holds_no_map());
         assert!(entry.memos.contains_key("context"));
     }
 
@@ -513,8 +508,16 @@ mod tests {
         assert!(!cache.evict_memo("k", None, "f"), "only once");
         assert!(woken.try_recv().is_err(), "nothing went the second time");
         assert!(cache.memo_record("k", None, "f").is_none());
-        assert!(cache.stored_keys("k", None, MEMO_SOURCE, "f").is_none());
-        assert!(cache.stored_keys("k", None, MEMO_SOURCE, "g").is_some());
+        assert!(
+            cache
+                .stored_keys("k", None, &crate::cache::Origin::Memo, "f")
+                .is_none()
+        );
+        assert!(
+            cache
+                .stored_keys("k", None, &crate::cache::Origin::Memo, "g")
+                .is_some()
+        );
         assert!(cache.memo_record("k", None, "g").is_some());
         assert_eq!(
             cache.memo_record("k", Some("/m"), "f").unwrap().data,
@@ -561,7 +564,7 @@ mod tests {
             .write_static(
                 "k",
                 Some("/elsewhere"),
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "f.below",
                 Value::Int(1),
                 None,
@@ -575,7 +578,7 @@ mod tests {
             .write_static(
                 "k:template",
                 None,
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "",
                 Value::Object(HashMap::from([(
                     "g".to_string(),
@@ -610,14 +613,21 @@ mod tests {
             .write_static(
                 "k:macro",
                 None,
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "lib",
                 Value::String("".into()),
                 None,
             )
             .unwrap();
         cache
-            .write_static("k:cache", None, PUT_SOURCE, "_.decay", Value::Int(2), None)
+            .write_static(
+                "k:cache",
+                None,
+                &crate::cache::Origin::Put,
+                "_.decay",
+                Value::Int(2),
+                None,
+            )
             .unwrap();
         assert!(
             live(None, "f") && live(None, "g"),
@@ -629,9 +639,8 @@ mod tests {
             .reseed_static(
                 "k:template",
                 None,
-                CONFIG_SOURCE_PREFIX,
                 vec![(
-                    "config:/c.toml".into(),
+                    crate::cache::Origin::Config("/c.toml".into()),
                     Value::Object(HashMap::from([(
                         "f".to_string(),
                         Value::String("{{ 2 }}".into()),
@@ -646,9 +655,8 @@ mod tests {
             .reseed_static(
                 "k:template",
                 None,
-                CONFIG_SOURCE_PREFIX,
                 vec![(
-                    "config:/c.toml".into(),
+                    crate::cache::Origin::Config("/c.toml".into()),
                     Value::Object(HashMap::from([(
                         "f".to_string(),
                         Value::String("{{ 2 }}".into()),
@@ -682,9 +690,9 @@ mod tests {
         );
         assert_eq!(read.records["f"].expected_interval_secs, Some(30));
         assert_eq!(read.records["g"].expected_interval_secs, None);
-        assert_eq!(&*read.records["f"].source, MEMO_SOURCE);
-        assert_eq!(presented_label(MEMO_SOURCE), "memo");
-        assert!(is_static_label(MEMO_SOURCE));
+        assert_eq!(read.records["f"].source, Origin::Memo);
+        assert_eq!(Origin::Memo.presented_label(), "memo");
+        assert!(Origin::Memo.is_static());
     }
 
     #[test]
@@ -699,7 +707,8 @@ mod tests {
         cache.write_memo("k", Some("/m"), "none", memo(H1, None, None));
         let rows = cache.list_rows();
         assert_eq!(rows.len(), 1, "{rows:?}");
-        let row = &rows[0];
+        let (origin, row) = &rows[0];
+        assert_eq!(*origin, Origin::Memo);
         assert_eq!(
             (
                 row.provider.as_str(),
@@ -707,7 +716,7 @@ mod tests {
                 row.source.as_str(),
                 row.field.as_str()
             ),
-            ("k:memo", Some("/m"), MEMO_SOURCE, "f")
+            ("k:memo", Some("/m"), "memo", "f")
         );
         assert_eq!(row.value, serde_json::json!(1));
         assert!(row.kind.is_none(), "the server fills it in");

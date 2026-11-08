@@ -444,7 +444,14 @@ async fn a_watch_on_a_namespace_nothing_answers_wakes_on_its_first_put() {
     assert!(first.data.is_none(), "and its first frame is a miss");
 
     writer
-        .write_static("nowhere", None, "put", "x", Value::String("1".into()), None)
+        .write_static(
+            "nowhere",
+            None,
+            &beachcomber::cache::Origin::Put,
+            "x",
+            Value::String("1".into()),
+            None,
+        )
         .unwrap();
     let frame = next_frame(&mut reader).await;
     assert_eq!(frame.data.unwrap(), serde_json::json!("1"));
@@ -466,7 +473,7 @@ async fn a_template_put_wakes_a_watch_on_the_field() {
         .write_static(
             "nowhere:template",
             None,
-            "put",
+            &beachcomber::cache::Origin::Put,
             "x",
             Value::String("{{ 1 }}".into()),
             None,
@@ -493,7 +500,14 @@ async fn a_watch_on_the_put_facet_wakes_on_a_data_write() {
     assert!(first.ok && first.data.is_none(), "{first:?}");
 
     writer
-        .write_static("nowhere", None, "put", "x", Value::String("1".into()), None)
+        .write_static(
+            "nowhere",
+            None,
+            &beachcomber::cache::Origin::Put,
+            "x",
+            Value::String("1".into()),
+            None,
+        )
         .unwrap();
     let frame = next_frame(&mut reader).await;
     assert_eq!(frame.data.unwrap(), serde_json::json!("1"));

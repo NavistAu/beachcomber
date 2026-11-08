@@ -590,7 +590,9 @@ mod tests {
             schedule.with_validity(Validity::take(vec![f.clone()])),
         );
         assert_eq!(cache.record_state("p", None, "s"), RecordState::Valid);
-        let keys = cache.stored_keys("p", None, "s", "v").unwrap();
+        let keys = cache
+            .stored_keys("p", None, &Origin::source("s"), "v")
+            .unwrap();
         assert!(
             matches!(&keys.get("hash"), Some(Value::String(h)) if h.len() == 16
                 && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())),

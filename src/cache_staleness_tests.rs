@@ -232,12 +232,18 @@ async fn cache_entry_without_ttl_never_stale() {
 /// age of `ns.a`.
 #[tokio::test(start_paused = true)]
 async fn put_addresses_keep_their_own_age() {
-    use crate::cache::PUT_SOURCE;
     let cache = Cache::new();
     let registry = crate::provider::registry::ProviderRegistry::new();
     let put = |node: &str, v: i64| {
         cache
-            .write_static("ns", None, PUT_SOURCE, node, Value::Int(v), None)
+            .write_static(
+                "ns",
+                None,
+                &crate::cache::Origin::Put,
+                node,
+                Value::Int(v),
+                None,
+            )
             .unwrap();
     };
     put("a", 1);
@@ -254,11 +260,17 @@ async fn put_addresses_keep_their_own_age() {
 /// A put with a ttl is stale once it is older than the ttl, and not before.
 #[tokio::test(start_paused = true)]
 async fn a_put_ttl_record_is_stale_past_its_ttl() {
-    use crate::cache::PUT_SOURCE;
     let cache = Cache::new();
     let registry = crate::provider::registry::ProviderRegistry::new();
     cache
-        .write_static("ns", None, PUT_SOURCE, "a", Value::Int(1), Some(30))
+        .write_static(
+            "ns",
+            None,
+            &crate::cache::Origin::Put,
+            "a",
+            Value::Int(1),
+            Some(30),
+        )
         .unwrap();
     let stale = || {
         cache

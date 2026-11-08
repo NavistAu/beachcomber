@@ -744,7 +744,7 @@ impl Config {
     /// How an error names the file `path`: its label as every surface shows
     /// it, `config(~/.config/beachcomber/conf.d/10-mine.toml)`.
     pub fn error_label(path: &Path) -> String {
-        crate::cache::presented_label(&Self::config_label(path))
+        Self::config_label(path).presented_label()
     }
 
     /// `message`, an error about a table of this configuration
@@ -777,12 +777,11 @@ impl Config {
         }
     }
 
-    /// The static source label for a record seeded from `path`: `config:` plus
-    /// the file's path with `$HOME` written as `~`
-    /// (`config:~/.config/beachcomber/conf.d/10-mine.toml`).
-    pub fn config_label(path: &Path) -> String {
+    /// The writer of a record seeded from `path`: the file, its path with
+    /// `$HOME` written as `~` (`~/.config/beachcomber/conf.d/10-mine.toml`).
+    pub fn config_label(path: &Path) -> crate::cache::Origin {
         let shown = libbeachcomber::path::Home::from_env().compact_path(path);
-        format!("{}{shown}", crate::cache::CONFIG_SOURCE_PREFIX)
+        crate::cache::Origin::Config(std::sync::Arc::from(&*shown))
     }
 
     /// The conf.d directory for a given main config file path:

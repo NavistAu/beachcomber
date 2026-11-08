@@ -16,8 +16,8 @@ use tracing::{debug, info, warn};
 
 use crate::query::Instance;
 
-use crate::cache::Cache;
 pub use crate::cache::FailureSnapshot;
+use crate::cache::{Cache, Origin};
 use crate::config::Config;
 use crate::provider::InvalidationStrategy;
 use crate::provider::registry::{ProviderRegistry, RegistryHandle};
@@ -365,7 +365,7 @@ fn snapshot_entry(
         polls_elapsed,
         next_poll_in_secs,
         watches_files,
-        source: key.source.clone(),
+        source: key.source.to_string(),
     }
 }
 
@@ -415,10 +415,9 @@ fn build_status(
     for (key, entry) in lifecycle.iter() {
         let (provider, path, node) = (&key.provider, &key.path, &key.node);
         // A memo's label as every reader sees it; a Source by its own name.
-        let source = if key.source == crate::cache::MEMO_SOURCE {
-            crate::cache::presented_label(&key.source)
-        } else {
-            key.source.clone()
+        let source = match key.source {
+            Origin::Memo => key.source.presented_label(),
+            _ => key.source.to_string(),
         };
         // Poll timer info — only for entries with a poll path.
         if let Some(pt) = &entry.poll_timer {
@@ -723,13 +722,15 @@ impl Scheduler {
     /// writes it afresh, and a put's poll is its expiry clock, with nothing
     /// to run.
     fn fire(&self, key: &lifecycle::Key, want: Want) {
-        match key.source.as_str() {
-            crate::cache::PUT_SOURCE => {}
-            crate::cache::MEMO_SOURCE => {
+        match &key.source {
+            Origin::Memo => {
                 self.cache
                     .drop_memo_hash(&key.provider, key.path.as_deref(), &key.node);
             }
-            source => self.execute_source(&key.provider, source, key.path.as_deref(), want),
+            Origin::Source(source) => {
+                self.execute_source(&key.provider, source, key.path.as_deref(), want)
+            }
+            Origin::Put | Origin::Config(_) | Origin::Computed(_) => {}
         }
     }
 
@@ -779,10 +780,10 @@ impl Scheduler {
                 failures.remove(&retune.key);
             }
             failures.retain(|key, _| {
-                crate::cache::is_static_label(&key.source)
+                key.source.is_static()
                     || !plan
                         .affected
-                        .contains(&(key.provider.clone(), key.source.clone()))
+                        .contains(&(key.provider.clone(), key.source.name().to_string()))
             });
         }
 
@@ -794,24 +795,33 @@ impl Scheduler {
         // eviction and restamp below then see its record) or is overtaken.
         let runs = Arc::clone(self.registry.runs());
         for key in runs.in_flight() {
-            let named = (key.provider.clone(), key.source.clone());
+            let named = (key.provider.clone(), key.source.name().to_string());
             let gone = plan.evict.contains(&key)
                 || plan.affected.contains(&named)
-                || self.registry.source(&key.provider, &key.source).is_none();
+                || self
+                    .registry
+                    .source(&key.provider, key.source.name())
+                    .is_none();
             let rescheduled = plan.retune.iter().any(|r| r.key == key)
                 || previous
-                    .source_metadata(&key.provider, &key.source)
-                    .zip(self.registry.source_metadata(&key.provider, &key.source))
+                    .source_metadata(&key.provider, key.source.name())
+                    .zip(
+                        self.registry
+                            .source_metadata(&key.provider, key.source.name()),
+                    )
                     .is_some_and(|(before, now)| !same_schedule(before, now));
             if gone {
                 runs.supersede(&key, Overtake::Gone, &self.registry, &self.cache);
             } else if rescheduled {
                 runs.supersede(&key, Overtake::Again, &self.registry, &self.cache);
-                if let Some(sm) = self.registry.source_metadata(&key.provider, &key.source) {
+                if let Some(sm) = self
+                    .registry
+                    .source_metadata(&key.provider, key.source.name())
+                {
                     self.cache.restamp_schedule(
                         &key.provider,
                         key.path.as_deref(),
-                        &key.source,
+                        key.source.name(),
                         crate::cache::Schedule::of(sm),
                     );
                 }
@@ -841,12 +851,12 @@ impl Scheduler {
             if retune.stored_changed
                 && let Some(sm) = self
                     .registry
-                    .source_metadata(&retune.key.provider, &retune.key.source)
+                    .source_metadata(&retune.key.provider, retune.key.source.name())
             {
                 self.cache.restamp_schedule(
                     &retune.key.provider,
                     retune.key.path.as_deref(),
-                    &retune.key.source,
+                    retune.key.source.name(),
                     crate::cache::Schedule::of(sm),
                 );
             }
@@ -1040,10 +1050,10 @@ impl Scheduler {
                             let watches = self.reload(next, &registry, &mut lifecycle);
                             for key in &watches.drop {
                                 drop_watches_for_key(key, &mut watch_paths, registrar.as_ref());
-                                self.cache.tree_unwatched(&key.provider, key.path.as_deref(), &key.source);
+                                self.cache.tree_unwatched(&key.provider, key.path.as_deref(), key.source.name());
                             }
                             for key in &watches.rewatch {
-                                let Some(sm) = self.registry.source_metadata(&key.provider, &key.source) else {
+                                let Some(sm) = self.registry.source_metadata(&key.provider, key.source.name()) else {
                                     continue;
                                 };
                                 watch_instance(
@@ -1113,7 +1123,7 @@ impl Scheduler {
                                 let key = lifecycle::Key {
                                     provider: provider.clone(),
                                     path: root.clone(),
-                                    source: sm.name.clone(),
+                                    source: Origin::source(&sm.name),
                                     node: String::new(),
                                 };
                                 let outcome = lifecycle.demand(
@@ -1171,7 +1181,7 @@ impl Scheduler {
                     // finds the record invalid, and a build's output that no
                     // read asks about costs nothing.
                     for key in resolve_tree_keys(&paths, &watch_paths) {
-                        self.cache.tree_changed(&key.provider, key.path.as_deref(), &key.source);
+                        self.cache.tree_changed(&key.provider, key.path.as_deref(), key.source.name());
                     }
                     if let Some(barrier) = &barrier {
                         barrier.hear(&paths);
@@ -1180,7 +1190,7 @@ impl Scheduler {
                     for key in affected_keys {
                         let outcome = lifecycle.on_fsevent(key.clone(), Instant::now());
                         if outcome.refresh {
-                            if crate::cache::is_static_label(&key.source) {
+                            if key.source.is_static() {
                                 self.fire(&key, Want::Fresh);
                             } else {
                                 settling.changed(key, Instant::now());
@@ -1196,7 +1206,7 @@ impl Scheduler {
                     if settled_rx.is_some() =>
                 {
                     for sub in watch_paths.get(&path).into_iter().flatten() {
-                        let (provider, root, source) = (&sub.key.provider, sub.key.path.as_deref(), &sub.key.source);
+                        let (provider, root, source) = (&sub.key.provider, sub.key.path.as_deref(), sub.key.source.name());
                         if sub.patterns.iter().any(|p| p == ".") && !self.cache.tree_is_watched(provider, root, source) {
                             self.cache.tree_watched(provider, root, source);
                         }
@@ -1298,7 +1308,7 @@ impl Scheduler {
 
                     for key in &actions.watch_drops {
                         drop_watches_for_key(key, &mut watch_paths, registrar.as_ref());
-                        self.cache.tree_unwatched(&key.provider, key.path.as_deref(), &key.source);
+                        self.cache.tree_unwatched(&key.provider, key.path.as_deref(), key.source.name());
                     }
 
                     for key in &actions.evictions {
@@ -1311,7 +1321,7 @@ impl Scheduler {
                         // per (provider, path, source)).
                         on_evicted(&self.cache, &self.registry, key);
                         drop_watches_for_key(key, &mut watch_paths, registrar.as_ref());
-                        self.cache.tree_forget(&key.provider, key.path.as_deref(), &key.source);
+                        self.cache.tree_forget(&key.provider, key.path.as_deref(), key.source.name());
                     }
 
                     for (key, new_state) in &actions.transitions {
@@ -1354,7 +1364,7 @@ fn watch_instance(
     let key = lifecycle::Key {
         provider: provider.to_string(),
         path: root.map(str::to_string),
-        source: sm.name.clone(),
+        source: Origin::source(&sm.name),
         node: String::new(),
     };
     let watches = instance_watches(&key, sm);
@@ -1527,7 +1537,7 @@ fn apply_put_written(
     ttl_secs: Option<u64>,
     now: Instant,
 ) {
-    lifecycle.remove_static_keys(crate::cache::PUT_SOURCE, provider, path, |address| {
+    lifecycle.remove_static_keys(&Origin::Put, provider, path, |address| {
         crate::cache::is_at_or_below(address, node)
     });
     let Some(ttl_secs) = ttl_secs else {
@@ -1536,7 +1546,7 @@ fn apply_put_written(
     let key = lifecycle::Key {
         provider: provider.to_string(),
         path: path.map(str::to_string),
-        source: crate::cache::PUT_SOURCE.to_string(),
+        source: Origin::Put,
         node: node.to_string(),
     };
     lifecycle.on_demand(key, SourceLifecycleConfig::ttl(ttl_secs), now);
@@ -1548,7 +1558,7 @@ fn memo_key(provider: &str, path: Option<&str>, node: &str) -> lifecycle::Key {
     lifecycle::Key {
         provider: provider.to_string(),
         path: path.map(str::to_string),
-        source: crate::cache::MEMO_SOURCE.to_string(),
+        source: Origin::Memo,
         node: node.to_string(),
     }
 }
@@ -1567,7 +1577,7 @@ fn apply_memo_written(
     now: Instant,
 ) -> Vec<lifecycle::Key> {
     let mut displaced = lifecycle.remove_static_keys(
-        crate::cache::MEMO_SOURCE,
+        &Origin::Memo,
         &key.provider,
         key.path.as_deref(),
         |address| crate::cache::overlaps(address, &key.node),
@@ -1691,20 +1701,20 @@ fn plan_reload(
         retune: Vec::new(),
     };
     for (key, entry) in lifecycle.iter() {
-        if crate::cache::is_static_label(&key.source) {
+        if key.source.is_static() {
             continue;
         }
         let affected = plan
             .affected
-            .contains(&(key.provider.clone(), key.source.clone()));
+            .contains(&(key.provider.clone(), key.source.name().to_string()));
         let Some(now) = next
-            .source_metadata(&key.provider, &key.source)
+            .source_metadata(&key.provider, key.source.name())
             .filter(|_| !affected)
         else {
             plan.evict.push(key.clone());
             continue;
         };
-        let before = previous.source_metadata(&key.provider, &key.source);
+        let before = previous.source_metadata(&key.provider, key.source.name());
         let config = source_lifecycle_config(cache, &key.provider, key.path.as_deref(), now);
         if before.is_some_and(|before| same_schedule(before, now)) && config == entry.config {
             continue;
@@ -1727,17 +1737,18 @@ fn plan_reload(
 /// memo its value and its record, a Source its whole contribution.
 fn evict(cache: &Cache, key: &lifecycle::Key) {
     let path = key.path.as_deref();
-    match key.source.as_str() {
-        crate::cache::PUT_SOURCE => {
+    match &key.source {
+        Origin::Put => {
             cache.evict_put(&key.provider, path, &key.node);
             if let Some(store) = cache.put_store() {
                 store.expire(&libbeachcomber::key::join(&key.provider, &key.node), path);
             }
         }
-        crate::cache::MEMO_SOURCE => {
+        Origin::Memo => {
             cache.evict_memo(&key.provider, path, &key.node);
         }
-        source => cache.remove_source(&key.provider, path, source),
+        Origin::Source(source) => cache.remove_source(&key.provider, path, source),
+        Origin::Config(_) | Origin::Computed(_) => {}
     }
 }
 
@@ -1745,8 +1756,8 @@ fn evict(cache: &Cache, key: &lifecycle::Key) {
 /// what it was known to call.
 fn on_evicted(cache: &Cache, registry: &ProviderRegistry, key: &lifecycle::Key) {
     evict(cache, key);
-    registry.forget_roots(&key.provider, &key.source, key.path.as_deref());
-    registry.forget_callees(&key.provider, &key.source, key.path.as_deref());
+    registry.forget_roots(&key.provider, key.source.name(), key.path.as_deref());
+    registry.forget_callees(&key.provider, key.source.name(), key.path.as_deref());
 }
 
 /// Resolve affected lifecycle keys from a set of changed paths using watch_paths + patterns.
@@ -1776,7 +1787,7 @@ fn tree_if_registered(cache: &Cache, registrar: Option<&Registrar>, key: &lifecy
     if let (Some(registrar), Some(root)) = (registrar, &key.path)
         && registrar.is_active(std::path::Path::new(root))
     {
-        cache.tree_watched(&key.provider, key.path.as_deref(), &key.source);
+        cache.tree_watched(&key.provider, key.path.as_deref(), key.source.name());
     }
 }
 
@@ -1825,7 +1836,7 @@ mod tests {
         let key = Key {
             provider: "git".into(),
             path: Some("/r".into()),
-            source: "main".into(),
+            source: crate::cache::Origin::source("main"),
             node: String::new(),
         };
         let config = SourceLifecycleConfig {
@@ -1903,7 +1914,7 @@ mod tests {
         lifecycle::Key {
             provider: "build".into(),
             path: path.map(str::to_string),
-            source: crate::cache::PUT_SOURCE.into(),
+            source: crate::cache::Origin::Put,
             node: node.into(),
         }
     }
@@ -1926,7 +1937,7 @@ mod tests {
             .write_static(
                 "git:cache",
                 None,
-                crate::cache::PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "_.decay",
                 crate::provider::Value::Int(6),
                 None,
@@ -1951,7 +1962,7 @@ mod tests {
             .write_static(
                 "git:cache",
                 None,
-                crate::cache::PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "_.decay",
                 crate::provider::Value::Int(2),
                 None,
@@ -1967,7 +1978,7 @@ mod tests {
             .write_static(
                 "git:cache",
                 Some("/w/proj"),
-                crate::cache::PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "_.decay",
                 crate::provider::Value::Int(6),
                 None,
@@ -2034,12 +2045,18 @@ mod tests {
 
     #[test]
     fn evicting_a_put_key_removes_only_that_address() {
-        use crate::cache::PUT_SOURCE;
         use crate::provider::Value;
         let cache = Cache::new();
         let write = |node: &str, v: i64| {
             cache
-                .write_static("build", None, PUT_SOURCE, node, Value::Int(v), Some(10))
+                .write_static(
+                    "build",
+                    None,
+                    &crate::cache::Origin::Put,
+                    node,
+                    Value::Int(v),
+                    Some(10),
+                )
                 .unwrap();
         };
         write("status", 1);
@@ -2048,7 +2065,7 @@ mod tests {
         evict(&cache, &put_key(None, "status"));
 
         let rows = cache.list_rows();
-        let fields: Vec<&str> = rows.iter().map(|r| r.field.as_str()).collect();
+        let fields: Vec<&str> = rows.iter().map(|(_, r)| r.field.as_str()).collect();
         assert_eq!(fields, vec!["eta"]);
     }
 
@@ -2056,7 +2073,6 @@ mod tests {
     /// leaves `build.status`, which a deeper put owns.
     #[test]
     fn evicting_a_put_address_leaves_a_deeper_put_address() {
-        use crate::cache::PUT_SOURCE;
         use crate::provider::Value;
         use std::collections::HashMap;
         let cache = Cache::new();
@@ -2064,7 +2080,7 @@ mod tests {
             .write_static(
                 "build",
                 None,
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "",
                 Value::Object(HashMap::from([
                     ("eta".to_string(), Value::Int(1)),
@@ -2077,7 +2093,7 @@ mod tests {
             .write_static(
                 "build",
                 None,
-                PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "status",
                 Value::String("x".into()),
                 Some(300),
@@ -2087,7 +2103,7 @@ mod tests {
         evict(&cache, &put_key(None, ""));
 
         let rows = cache.list_rows();
-        let fields: Vec<&str> = rows.iter().map(|r| r.field.as_str()).collect();
+        let fields: Vec<&str> = rows.iter().map(|(_, r)| r.field.as_str()).collect();
         assert_eq!(fields, vec!["status"]);
     }
 
@@ -2108,7 +2124,7 @@ mod tests {
         let key = |source: &str| lifecycle::Key {
             provider: "git".into(),
             path: Some(dir.display().to_string()),
-            source: source.into(),
+            source: Origin::source(source),
             node: String::new(),
         };
         let sub = |source: &str, pattern: &str| Subscription {
@@ -2449,7 +2465,7 @@ mod tests {
         let key = lifecycle::Key {
             provider: "p".into(),
             path: None,
-            source: "s".into(),
+            source: crate::cache::Origin::source("s"),
             node: String::new(),
         };
         let t0 = Instant::now();
@@ -2597,7 +2613,7 @@ mod tests {
             keys.push(lifecycle::Key {
                 provider: "p".into(),
                 path: crate::query::address_of(at),
-                source: "a".into(),
+                source: crate::cache::Origin::source("a"),
                 node: String::new(),
             });
         }
@@ -2647,7 +2663,7 @@ mod tests {
         let key = |source: &str| lifecycle::Key {
             provider: "p".into(),
             path: None,
-            source: source.into(),
+            source: Origin::source(source),
             node: String::new(),
         };
         for name in ["keep", "tune", "gone", "body"] {
@@ -2656,7 +2672,7 @@ mod tests {
             lifecycle.on_demand(key(name), config, Instant::now());
         }
         let put = lifecycle::Key {
-            source: crate::cache::PUT_SOURCE.into(),
+            source: crate::cache::Origin::Put,
             node: "n".into(),
             ..key("")
         };
@@ -2670,7 +2686,7 @@ mod tests {
         ));
         let plan = plan_reload(&cache, &lifecycle, &before, &after);
         let mut evicted = plan.evict.clone();
-        evicted.sort_by(|a, b| a.source.cmp(&b.source));
+        evicted.sort_by_key(|k| k.source.to_string());
         assert_eq!(evicted, vec![key("body"), key("gone")]);
         assert_eq!(plan.retune.len(), 1);
         let tune = &plan.retune[0];
@@ -2689,7 +2705,7 @@ mod tests {
             source("gone", "5s", 1)
         ));
         let mut evicted = plan_reload(&cache, &lifecycle, &before, &off).evict;
-        evicted.sort_by(|a, b| a.source.cmp(&b.source));
+        evicted.sort_by_key(|k| k.source.to_string());
         assert_eq!(
             evicted,
             vec![key("body"), key("gone"), key("keep"), key("tune")]
@@ -2712,7 +2728,7 @@ mod tests {
         let key = lifecycle::Key {
             provider: "p".into(),
             path: None,
-            source: "a".into(),
+            source: crate::cache::Origin::source("a"),
             node: String::new(),
         };
         lifecycle.on_demand(
@@ -2724,7 +2740,7 @@ mod tests {
             .write_static(
                 "p:cache",
                 None,
-                "config:t",
+                &crate::cache::Origin::Config("t".into()),
                 "_.decay",
                 crate::provider::Value::Int(2),
                 None,
@@ -2808,7 +2824,7 @@ mod tests {
         assert!(cache.memo_record("k", None, "f").is_none());
         assert!(
             cache
-                .stored_keys("k", None, crate::cache::MEMO_SOURCE, "f")
+                .stored_keys("k", None, &crate::cache::Origin::Memo, "f")
                 .is_none()
         );
         assert!(cache.memo_record("k", None, "g").is_some(), "{sibling:?}");
@@ -3049,7 +3065,7 @@ mod tests {
             .write_static(
                 "k:cache",
                 None,
-                crate::cache::PUT_SOURCE,
+                &crate::cache::Origin::Put,
                 "_.decay",
                 crate::provider::Value::Int(2),
                 None,

@@ -1,5 +1,5 @@
 use beachcomber::cache::Schedule;
-use beachcomber::cache::{Cache, PUT_SOURCE};
+use beachcomber::cache::{Cache, Origin};
 use beachcomber::protocol::Response;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -139,7 +139,16 @@ async fn force_on_static_namespace_returns_error() {
 
     let mut fields = HashMap::new();
     fields.insert("val".to_string(), Value::String("hello".to_string()));
-    cache.put_source("mystore", None, PUT_SOURCE, fields, Schedule::default());
+    cache
+        .write_static(
+            "mystore",
+            None,
+            &Origin::Put,
+            "",
+            Value::Object(fields),
+            None,
+        )
+        .unwrap();
 
     let server =
         crate::common::scheduler::server(sock.clone(), Arc::clone(&cache), registry, watchers);

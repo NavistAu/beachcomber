@@ -549,7 +549,7 @@ mod tests {
         try_fire(&dir.config, &mut dir.settings, &mut |kind, loaded| {
             let labels: Vec<String> = loaded.seed.writes["x:template"]
                 .iter()
-                .map(|(label, _)| label.clone())
+                .map(|(label, _)| label.to_string())
                 .collect();
             seen.push((kind, loaded.errors.len(), labels));
         });

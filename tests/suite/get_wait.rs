@@ -1,5 +1,5 @@
 use beachcomber::cache::Schedule;
-use beachcomber::cache::{Cache, PUT_SOURCE};
+use beachcomber::cache::{Cache, Origin};
 use beachcomber::protocol::Response;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
@@ -176,8 +176,17 @@ async fn wait_static_namespace_returns_cached_ignoring_stale() {
 
     let mut fields = HashMap::new();
     fields.insert("val".to_string(), Value::String("static-value".to_string()));
-    // interval=0 will make it stale after 1 second.
-    cache.put_source("mystore", None, PUT_SOURCE, fields, Schedule::poll(0, 1));
+    // A seed with interval=0 is stale after 1 second.
+    cache
+        .write_static(
+            "mystore",
+            None,
+            &Origin::Config("test.toml".into()),
+            "",
+            Value::Object(fields),
+            Some(0),
+        )
+        .unwrap();
 
     // Advance mock clock by 2s so elapsed().as_secs() > 0 — avoids a real 1.1s wall wait.
     tokio::time::pause();

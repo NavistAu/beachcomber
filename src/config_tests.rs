@@ -490,11 +490,11 @@ fn config_label_writes_home_as_tilde() {
     unsafe { std::env::set_var("HOME", &home) };
 
     assert_eq!(
-        Config::config_label(&home.join(".config/beachcomber/conf.d/10-mine.toml")),
+        Config::config_label(&home.join(".config/beachcomber/conf.d/10-mine.toml")).to_string(),
         "config:~/.config/beachcomber/conf.d/10-mine.toml"
     );
     assert_eq!(
-        Config::config_label(std::path::Path::new("/etc/beachcomber/config.toml")),
+        Config::config_label(std::path::Path::new("/etc/beachcomber/config.toml")).to_string(),
         "config:/etc/beachcomber/config.toml",
         "a path outside $HOME is written in full"
     );
