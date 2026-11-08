@@ -22,7 +22,7 @@ fn sh_eval(out: &[u8], print: &str) -> String {
 
 #[test]
 fn sh_output_survives_a_real_eval() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = Path::new("/");
 
     // Rendered: `conda` is a namespace the daemon holds only a template for, so

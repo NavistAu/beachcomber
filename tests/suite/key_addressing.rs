@@ -42,7 +42,7 @@ mod grammar {
 
     #[test]
     fn every_jinja_spelling_of_an_address_reads_the_same_node() {
-        let d = TestDaemon::spawn();
+        let d = TestDaemon::serve();
         let cwd = project(&d);
         put(
             &d,
@@ -82,7 +82,7 @@ mod grammar {
     /// and `*:cache._.decay` is still the decay of every provider.
     #[test]
     fn a_reserved_word_is_no_namespace() {
-        let d = TestDaemon::spawn();
+        let d = TestDaemon::serve();
         let cwd = project(&d);
 
         for (key, word) in [
@@ -124,7 +124,7 @@ mod grammar {
     /// way it was written.
     #[test]
     fn a_name_holding_a_dot_is_written_as_it_is_read() {
-        let d = TestDaemon::spawn();
+        let d = TestDaemon::serve();
         let cwd = project(&d);
 
         put(&d, &cwd, "p['a.b']", "1");
@@ -161,7 +161,7 @@ result."c.d" = "{{ data }}"
 "#,
         )
         .unwrap();
-        let d = TestDaemon::spawn_in(socket, home, xdg);
+        let d = TestDaemon::serve_in(socket, home, xdg);
         let cwd = project(&d);
 
         assert_eq!(get(&d, &cwd, &["t['a.b']"]), "tpl");
@@ -189,7 +189,7 @@ result."c.d" = "{{ data }}"
              \"go:golang.org/x/tools/gopls\":[{\"version\":\"0.16.0\",\"source\":{\"path\":\"$config\"}}]}\nJSON\n",
         );
         (
-            TestDaemon::spawn_with_tools(socket, home, xdg, Some(&bin)),
+            TestDaemon::serve_with_tools(socket, home, xdg, Some(&bin)),
             cwd,
         )
     }
@@ -270,7 +270,7 @@ result."c.d" = "{{ data }}"
     /// A quoted `~` the shell did not expand is still `$HOME`.
     #[test]
     fn a_quoted_tilde_directory_is_home() {
-        let d = TestDaemon::spawn();
+        let d = TestDaemon::serve();
         let cwd = project(&d);
         put(&d, &cwd, "p", r#"{"a":1}"#);
 
@@ -338,7 +338,7 @@ result."c.d" = "{{ data }}"
     /// read one grammar, so a path one accepts the other does too.
     #[test]
     fn a_negative_index_reads_from_the_end_in_get_and_in_pluck() {
-        let d = TestDaemon::spawn();
+        let d = TestDaemon::serve();
         let cwd = project(&d);
         put(&d, &cwd, "p", r#"{"l":[1,2,3]}"#);
 
@@ -368,7 +368,7 @@ result."c.d" = "{{ data }}"
     /// holds a `.` included.
     #[test]
     fn the_cache_facet_answers_a_leaf_whose_name_holds_a_dot() {
-        let d = TestDaemon::spawn();
+        let d = TestDaemon::serve();
         let cwd = project(&d);
         put(&d, &cwd, "p", r#"{"a.b":5,"o":{"x":1}}"#);
 
@@ -388,7 +388,7 @@ result."c.d" = "{{ data }}"
     /// template walking `comb['p:cache']` does; a node has no leaf answer.
     #[test]
     fn the_cache_facet_reads_below_a_leaf() {
-        let d = TestDaemon::spawn();
+        let d = TestDaemon::serve();
         let cwd = project(&d);
         put(&d, &cwd, "p", r#"{"a.b":5,"o":{"x":1}}"#);
         put(&d, &cwd, "p:template.t", r#""{{ 1 }}""#);
@@ -421,7 +421,7 @@ result."c.d" = "{{ data }}"
     /// `put` names a provider by the rule configuration does.
     #[test]
     fn put_refuses_the_names_config_refuses() {
-        let d = TestDaemon::spawn();
+        let d = TestDaemon::serve();
         let cwd = project(&d);
         for head in ["<x>", "a*b"] {
             d.comb(&cwd)

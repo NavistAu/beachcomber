@@ -31,7 +31,7 @@ fn run(d: &TestDaemon, args: &[&str], envs: &[(&str, &str)]) -> (i32, String) {
 
 #[test]
 fn color_and_ascii_are_global_flags() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     for args in [
         &["--color", "always", "status"][..],
         &["status", "--color", "always"],
@@ -69,7 +69,7 @@ fn color_and_ascii_are_global_flags() {
 
 #[test]
 fn the_color_flag_wins_over_no_color() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let (_, out) = run(&d, &["status", "--color", "always"], &[("NO_COLOR", "1")]);
     assert!(out.contains(ESC), "--color always beats NO_COLOR:\n{out}");
     let (_, out) = run(&d, &["status", "--color", "never"], &[]);
@@ -78,7 +78,7 @@ fn the_color_flag_wins_over_no_color() {
 
 #[test]
 fn the_template_filters_follow_the_color_setting() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let tpl = r##"{{ "x" | fg("#ff0000") }}{{ "y" | bold }}"##;
     let coloured = "\x1b[38;2;255;0;0mx\x1b[0m\x1b[1my\x1b[0m";
     // The colour depth is the caller's terminal: 24-bit says so.
@@ -156,7 +156,7 @@ fn the_daemon_log_has_no_ansi_without_a_terminal() {
 /// `TERM`, else 16 colours.
 #[test]
 fn colours_follow_the_terminal_depth() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let tpl = r##"{{ "x" | fg("#ff0000") }}{{ "y" | bg(236) }}{{ "z" | fg("green") }}"##;
     let eval = |envs: &[(&str, &str)]| {
         let mut all = vec![("COLORTERM", ""), ("TERM", "dumb")];

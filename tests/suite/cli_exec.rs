@@ -15,7 +15,7 @@ use std::path::Path;
 /// prints its output.
 #[test]
 fn eval_of_exec_call_prints_command_output() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args(["eval", r#"{{ exec("echo hi") }}"#])
@@ -28,7 +28,7 @@ fn eval_of_exec_call_prints_command_output() {
 /// enabled — `comb` is the user's own shell surface.
 #[test]
 fn get_of_template_with_exec_prints_command_output() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args(["put", "demo:template.shout", r#""{{ exec('echo ok') }}""#])
@@ -52,7 +52,7 @@ fn get_of_template_with_exec_prints_command_output() {
 /// `comb get` pins the number of real spawns.
 #[test]
 fn get_of_exec_or_cache_cascade_spawns_command_exactly_once() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     let dir = tempfile::TempDir::new().unwrap();
     let counter = dir.path().join("counter.txt");
@@ -101,7 +101,7 @@ const DISABLED: &str = "exec() is disabled in this context";
 /// why, and nothing is spawned.
 #[test]
 fn no_exec_get_of_an_exec_template_fails() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     d.comb(Path::new("/"))
         .args(["put", "demo:template.shout", r#""{{ exec('echo ok') }}""#])
         .assert()
@@ -117,7 +117,7 @@ fn no_exec_get_of_an_exec_template_fails() {
 /// `--no-exec` on `eval`.
 #[test]
 fn no_exec_eval_fails() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     d.comb(Path::new("/"))
         .args(["--no-exec", "eval", r#"{{ exec("echo hi") }}"#])
         .assert()
@@ -129,7 +129,7 @@ fn no_exec_eval_fails() {
 /// reports it and exits rather than streaming.
 #[test]
 fn no_exec_watch_fails() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     d.comb(Path::new("/"))
         .args(["put", "demo:template.shout", r#""{{ exec('echo ok') }}""#])
         .assert()
@@ -147,7 +147,7 @@ fn no_exec_watch_fails() {
 /// failed, with the reason in its cell.
 #[test]
 fn no_exec_status_row_renders_as_failed() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     d.comb(Path::new("/"))
         .args(["put", "demo:template.shout", r#""{{ exec('echo ok') }}""#])
         .assert()

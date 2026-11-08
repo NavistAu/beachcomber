@@ -211,7 +211,7 @@ async fn an_empty_string_is_a_value() {
 #[test]
 fn comb_put_json_null_removes() {
     use crate::common::daemon::TestDaemon;
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = std::path::Path::new("/");
     d.comb(cwd).args(["put", "ns.a", "1"]).assert().success();
     d.comb(cwd).args(["put", "ns.a", "null"]).assert().success();
@@ -225,7 +225,7 @@ fn comb_put_json_null_removes() {
 #[test]
 fn comb_put_json_null_with_ttl_exits_2() {
     use crate::common::daemon::TestDaemon;
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = std::path::Path::new("/");
     d.comb(cwd).args(["put", "ns.a", "1"]).assert().success();
     d.comb(cwd)
@@ -244,7 +244,7 @@ fn comb_put_json_null_with_ttl_exits_2() {
 #[test]
 fn comb_put_without_data_is_a_usage_error() {
     use crate::common::daemon::TestDaemon;
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = std::path::Path::new("/");
     d.comb(cwd)
         .args(["put", "ns.a"])

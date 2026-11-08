@@ -32,7 +32,7 @@ fn seed(d: &TestDaemon) {
 
 #[test]
 fn get_takes_a_template_as_the_value_of_f() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     seed(&d);
     assert_eq!(
         ok(
@@ -50,7 +50,7 @@ fn get_takes_a_template_as_the_value_of_f() {
 
 #[test]
 fn status_takes_a_template_through_the_f_suffix() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     seed(&d);
     assert_eq!(
         ok(
@@ -72,7 +72,7 @@ fn status_takes_a_template_through_the_f_suffix() {
 
 #[test]
 fn an_unknown_suffix_is_refused() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     refused(&d, &["g.Z", "x"], "unknown format suffix '.Z'");
     // `.p` was a second spelling of the default; the default needs none.
     refused(&d, &["g.p", "x"], "unknown format suffix '.p'");
@@ -82,7 +82,7 @@ fn an_unknown_suffix_is_refused() {
 
 #[test]
 fn get_and_watch_list_the_same_formats_in_their_help() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let want = "text (default), json, sh, csv, CSV, tsv, TSV, or a template";
     for command in ["get", "watch"] {
         let help = ok(&d, &[command, "--help"]);
@@ -94,7 +94,7 @@ fn get_and_watch_list_the_same_formats_in_their_help() {
 /// The `stale` flag is gone, so no help names it, `put --ttl`'s included.
 #[test]
 fn no_help_mentions_stale() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     for command in [
         "daemon", "get", "status", "put", "refresh", "watch", "eval", "init", "check", "kill",
     ] {
@@ -169,7 +169,7 @@ fn a_status_template_sees_the_row_and_env() {
 /// engine frame in the message.
 #[test]
 fn a_template_that_does_not_compile_fails_the_command() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     seed(&d);
     for args in [
         &["get", "--global", "-f", "{{ x ", "fmtprov"][..],

@@ -153,7 +153,7 @@ fn daemon_with_home(files: &[(&str, &str)]) -> (TestDaemon, PathBuf) {
         std::env::remove_var("AWS_CONFIG_FILE");
         std::env::remove_var("CLOUDSDK_CONFIG");
     }
-    let d = TestDaemon::spawn_in(socket, home, xdg);
+    let d = TestDaemon::serve_in(socket, home, xdg);
     let cwd = d.home.join("ws").join("project");
     std::fs::create_dir_all(&cwd).unwrap();
     (d, cwd)

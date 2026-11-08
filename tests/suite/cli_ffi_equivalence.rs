@@ -255,7 +255,7 @@ fn text_of(v: &Value) -> String {
 
 #[test]
 fn comb_get_json_and_bc_get_answer_identically() {
-    let daemon = TestDaemon::spawn();
+    let daemon = TestDaemon::serve();
 
     // The cwd: a repository under the daemon's `$HOME`, so the `git.*` keys
     // have a work tree and the `put`s below land on a path the chain reaches.

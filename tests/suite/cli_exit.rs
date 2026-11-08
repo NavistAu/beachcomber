@@ -28,7 +28,7 @@ fn seed(d: &TestDaemon) {
 
 #[test]
 fn a_miss_exits_zero_in_every_format() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     for format in [
         "text",
         "json",
@@ -51,7 +51,7 @@ fn a_miss_exits_zero_in_every_format() {
 
 #[test]
 fn strict_makes_a_miss_exit_one() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     seed(&d);
     let miss = ["get", "--global", "-f", "json", "nosuch.x"];
 
@@ -89,7 +89,7 @@ fn strict_makes_a_miss_exit_one() {
 
 #[test]
 fn an_error_exits_two_whatever_strict_says() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     for strict in [&[][..], &["--strict"]] {
         for format in ["text", "json"] {
             let args = [strict, &["get", "--global", "-f", format, "a:b:c.x"]].concat();

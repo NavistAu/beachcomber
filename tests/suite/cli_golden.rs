@@ -5,7 +5,7 @@ use std::path::Path;
 
 #[test]
 fn golden_get_returns_known_value() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     // Seed a virtual key.  `get` always injects CWD as path context for virtual
     // providers; we fix CWD to "/" (every `comb` here runs at "/") so we must also put
@@ -32,7 +32,7 @@ fn golden_get_returns_known_value() {
 /// from the same entry without either command naming a directory.
 #[test]
 fn get_json_finds_put_created_virtual_without_explicit_path() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args(["put", "myvirtual", r#"{"field1":"hello"}"#])
@@ -55,7 +55,7 @@ fn get_json_finds_put_created_virtual_without_explicit_path() {
 /// path-matched on both ends) is not an error at all: it is `null`, exit 0.
 #[test]
 fn single_key_get_error_paths_always_write_stderr() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args(["put", "myvirtual2", r#"{"field1":"hello"}"#, "--path", "/"])
@@ -91,7 +91,7 @@ fn single_key_get_error_paths_always_write_stderr() {
 /// nested field, and the bare provider (flattened `key=value` lines).
 #[test]
 fn get_text_finds_put_created_virtual_without_explicit_path() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args([
@@ -132,7 +132,7 @@ fn get_text_finds_put_created_virtual_without_explicit_path() {
 /// test above.
 #[test]
 fn get_sh_finds_put_created_virtual_without_explicit_path() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args([
@@ -167,7 +167,7 @@ fn get_sh_finds_put_created_virtual_without_explicit_path() {
 /// provider queried alongside it still answers, so the miss is silent.
 #[test]
 fn multi_key_get_text_finds_put_created_virtual_without_explicit_path() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args(["put", "multivirt", r#"{"field1":"multi-hello"}"#])
@@ -185,7 +185,7 @@ fn multi_key_get_text_finds_put_created_virtual_without_explicit_path() {
 
 #[test]
 fn golden_eval_renders_template() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     // A template with no provider.field references is rendered directly without
     // touching the daemon — cheapest golden path. This source carries a tag so
@@ -201,7 +201,7 @@ fn golden_eval_renders_template() {
 
 #[test]
 fn golden_init_prints_or_writes_config() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     // `comb init` detects installed tools and prints suggestions.
     // It doesn't contact the daemon, so it always exits 0.
@@ -218,7 +218,7 @@ fn golden_init_prints_or_writes_config() {
 
 #[test]
 fn eval_single_tag_prints_raw_string() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args(["put", "evalprov", r#"{"s":"hello"}"#])
@@ -236,7 +236,7 @@ fn eval_single_tag_prints_raw_string() {
 
 #[test]
 fn eval_text_with_no_tags_prints_itself_even_when_it_looks_like_a_key() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args(["put", "evalbare", r#"{"s":"hello"}"#])
@@ -255,7 +255,7 @@ fn eval_text_with_no_tags_prints_itself_even_when_it_looks_like_a_key() {
 
 #[test]
 fn eval_template_with_literal_text() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args(["put", "evaltmpl", r#"{"s":"main"}"#])
@@ -272,7 +272,7 @@ fn eval_template_with_literal_text() {
 
 #[test]
 fn eval_single_tag_bool_prints_true() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args(["put", "evalbool", r#"{"b":true,"c":false}"#])
@@ -294,7 +294,7 @@ fn eval_single_tag_bool_prints_true() {
 
 #[test]
 fn eval_single_tag_object_prints_like_get_text() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     // `--path /` matches the "/" CWD these tests run `comb` at, so the
     // server-side `-f text` path finds the same entry `eval` does.
@@ -330,7 +330,7 @@ fn eval_single_tag_object_prints_like_get_text() {
 
 #[test]
 fn get_of_a_template_written_with_tags_renders_it() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     // A template is data the daemon holds under `x:template`; `get x.y`
     // renders it with the caller's environment.
@@ -358,7 +358,7 @@ fn get_of_a_template_written_with_tags_renders_it() {
 
 #[test]
 fn eval_nested_virtual_dependency_is_fetched() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     // `x.a` is a template naming `b.y`, itself a template naming `comb.d.w`:
     // the resolver must reach through two levels of stored template and
@@ -387,7 +387,7 @@ fn eval_nested_virtual_dependency_is_fetched() {
 
 #[test]
 fn fmt_renders_literal_filter_and_conditional() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args(["put", "fmtprov", r#"{"val":"formatted","n":3}"#])
@@ -418,7 +418,7 @@ fn fmt_renders_literal_filter_and_conditional() {
 
 #[test]
 fn eval_default_filter_fires_on_daemon_miss() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     // A daemon-backed ref that misses leaves the key absent from the render
     // context, so it is *undefined* and `default` fires. Binding a miss to JSON
@@ -449,7 +449,7 @@ fn eval_default_filter_fires_on_daemon_miss() {
 
 #[test]
 fn fmt_missing_and_null_render_empty() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args(["put", "nullfmt", r#"{"v":"x","n":null}"#, "--path", "/"])

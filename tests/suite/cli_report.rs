@@ -20,7 +20,7 @@ fn diagnostics(d: &TestDaemon, args: &[&str]) -> String {
 
 #[test]
 fn every_failure_is_an_error_line_naming_its_subject() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cases: &[(&[&str], &str)] = &[
         (&["get", "--global", "a:b:c.x"], "error: a:b:c.x: "),
         (
@@ -61,7 +61,7 @@ fn every_failure_is_an_error_line_naming_its_subject() {
 
 #[test]
 fn a_resolver_error_names_its_own_field() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let stderr = diagnostics(&d, &["eval", "{{ 1 | nosuchfilter }}"]);
     assert!(stderr.starts_with("error: <eval>"), "{stderr}");
     assert_eq!(stderr.lines().count(), 1, "{stderr}");

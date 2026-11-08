@@ -34,7 +34,7 @@ fn eval(d: &TestDaemon, cwd: &Path, src: &str) -> String {
 
 #[test]
 fn a_put_array_reads_back_as_an_array() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(&d, &cwd, &["demo", r#"{"l":[1,2,{"z":3}]}"#]);
 
@@ -52,7 +52,7 @@ fn a_put_array_reads_back_as_an_array() {
 
 #[test]
 fn a_null_element_is_absent_and_the_list_closes_up() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(&d, &cwd, &["demo.l", "[1,null,3]"]);
     assert_eq!(json(&d, &cwd, "demo.l"), serde_json::json!([1, 3]));
@@ -60,7 +60,7 @@ fn a_null_element_is_absent_and_the_list_closes_up() {
 
 #[test]
 fn a_template_sees_a_stored_array_as_a_list() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(&d, &cwd, &["demo.l", r#"["a","b","c"]"#]);
 
@@ -76,7 +76,7 @@ fn a_template_sees_a_stored_array_as_a_list() {
 
 #[test]
 fn a_put_at_an_index_writes_into_the_array() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(&d, &cwd, &["demo.l", "[1,2,3]"]);
 
@@ -94,7 +94,7 @@ fn a_put_at_an_index_writes_into_the_array() {
 
 #[test]
 fn a_nearer_array_replaces_a_farther_one_whole() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(&d, &cwd, &["--global", "demo.l", "[1,2,3]"]);
     put(&d, &cwd, &["demo.l", "[9]"]);
@@ -116,7 +116,7 @@ result.list = "{{ data }}"
 "#,
     )
     .unwrap();
-    let d = TestDaemon::spawn_in(socket, home, xdg);
+    let d = TestDaemon::serve_in(socket, home, xdg);
     let cwd = project(&d);
 
     assert_eq!(json(&d, &cwd, "s.list"), serde_json::json!([1, 2, 3]));
@@ -125,7 +125,7 @@ result.list = "{{ data }}"
 
 #[test]
 fn status_shows_an_array_as_one_row() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(&d, &cwd, &["demo.l", "[1,2]"]);
 

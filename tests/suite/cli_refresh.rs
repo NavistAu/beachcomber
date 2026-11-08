@@ -16,7 +16,7 @@ use std::time::Duration;
 
 #[test]
 fn refresh_of_a_provider_prints_nothing_and_exits_0() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(&d.home)
         .args(["refresh", "hostname"])
@@ -31,7 +31,7 @@ fn refresh_of_a_provider_prints_nothing_and_exits_0() {
 /// that line back as the error message, so nothing may be added to it.
 #[test]
 fn refresh_of_a_static_namespace_is_the_daemons_refusal() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(&d.home)
         .args(["put", "my", r#"{"a":1}"#])
@@ -49,7 +49,7 @@ fn refresh_of_a_static_namespace_is_the_daemons_refusal() {
 
 #[test]
 fn refresh_of_a_facet_key_is_an_error() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(&d.home)
         .args(["refresh", "a:b:c.x"])
@@ -60,7 +60,7 @@ fn refresh_of_a_facet_key_is_an_error() {
 
 #[test]
 fn refresh_global_is_accepted_for_a_global_source() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(&d.home)
         .args(["refresh", "--global", "hostname.name"])
@@ -76,7 +76,7 @@ fn refresh_global_is_accepted_for_a_global_source() {
 /// rows the refresh writes name the fixture's path and nothing else.
 #[test]
 fn refresh_resolves_a_relative_path_against_the_callers_cwd() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let repo = GitRepoFixture::new();
     let cwd = repo.path();
     let canonical = cwd.canonicalize().unwrap();
@@ -116,7 +116,7 @@ fn refresh_resolves_a_relative_path_against_the_callers_cwd() {
 /// each other.
 #[test]
 fn refresh_takes_the_path_as_a_flag_and_rejects_two_spellings_at_once() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let home = d.home.to_str().unwrap();
 
     d.comb(&d.home)
@@ -146,7 +146,7 @@ fn refresh_takes_the_path_as_a_flag_and_rejects_two_spellings_at_once() {
 /// answer is an error — never a silent refresh of the global entry.
 #[test]
 fn refresh_from_a_deleted_cwd_with_no_path_is_an_error() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let gone = d.home.join("gone");
     std::fs::create_dir_all(&gone).unwrap();
 

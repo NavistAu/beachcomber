@@ -107,7 +107,7 @@ fn cwd_is_ignored() {
 // ── binding, through comb get ─────────────────────────────────────────────────
 
 fn daemon() -> (TestDaemon, PathBuf) {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = d.home.join("ws").join("project");
     std::fs::create_dir_all(&cwd).unwrap();
     (d, cwd)

@@ -27,7 +27,7 @@ result.never = "{{{{ none }}}}"
         ),
     )
     .unwrap();
-    let d = TestDaemon::spawn_in(socket, home, xdg);
+    let d = TestDaemon::serve_in(socket, home, xdg);
     (d, runs)
 }
 

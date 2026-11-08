@@ -32,7 +32,7 @@ fn usage_error(d: &TestDaemon, cwd: &Path, args: &[&str]) {
 
 #[test]
 fn put_takes_a_trailing_path_the_flag_and_global() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let (project, elsewhere) = dirs(&d);
     let at = project.to_str().unwrap();
 
@@ -58,7 +58,7 @@ fn put_takes_a_trailing_path_the_flag_and_global() {
 
 #[test]
 fn refresh_takes_the_short_flag() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let (project, elsewhere) = dirs(&d);
     let at = project.to_str().unwrap();
     ok(&d, &elsewhere, &["refresh", "-p", at, "hostname"]);
@@ -68,7 +68,7 @@ fn refresh_takes_the_short_flag() {
 
 #[test]
 fn watch_takes_the_short_flag() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let (project, elsewhere) = dirs(&d);
     let at = project.to_str().unwrap();
     ok(&d, &elsewhere, &["put", "p.v", "\"seen\"", at]);
@@ -77,7 +77,7 @@ fn watch_takes_the_short_flag() {
 
 #[test]
 fn eval_takes_a_trailing_path_the_flag_and_global() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let (project, elsewhere) = dirs(&d);
     let at = project.to_str().unwrap();
     ok(&d, &elsewhere, &["put", "p.v", "\"here\"", at]);
@@ -103,7 +103,7 @@ fn eval_takes_a_trailing_path_the_flag_and_global() {
 
 #[test]
 fn the_three_spellings_conflict_on_every_command() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let (project, elsewhere) = dirs(&d);
     let at = project.to_str().unwrap();
     for args in [
@@ -129,7 +129,7 @@ fn the_three_spellings_conflict_on_every_command() {
 /// `[PATH]` line of every command with fixed positionals, read the same.
 #[test]
 fn every_command_describes_the_path_in_the_same_words() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let (_, elsewhere) = dirs(&d);
     let help = |cmd: &str| ok(&d, &elsewhere, &[cmd, "--help"]);
     // The description of `needle`: beside it, or, in clap's long layout
@@ -166,7 +166,7 @@ fn every_command_describes_the_path_in_the_same_words() {
 /// are run from.
 #[test]
 fn a_template_reads_files_in_the_directory_it_is_addressed_at() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let (project, elsewhere) = dirs(&d);
     std::fs::write(project.join("marker"), "project\n").unwrap();
     std::fs::write(elsewhere.join("marker"), "elsewhere\n").unwrap();
@@ -200,7 +200,7 @@ fn a_template_reads_files_in_the_directory_it_is_addressed_at() {
 /// whose last argument can only be a directory, it is refused with the fix.
 #[test]
 fn a_trailing_directory_starts_with_slash_tilde_or_dot_on_every_command() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let (project, _) = dirs(&d);
     let ws = project.parent().unwrap();
 
@@ -226,7 +226,7 @@ fn a_trailing_directory_starts_with_slash_tilde_or_dot_on_every_command() {
 /// it, never a directory called `~bob` under the current one.
 #[test]
 fn a_tilde_user_directory_is_an_error_on_every_command() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let (_project, cwd) = dirs(&d);
     for args in [
         &["get", "x.v", "--path", "~bob/x"][..],

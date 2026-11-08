@@ -8,7 +8,7 @@ use crate::common::daemon::TestDaemon;
 /// daemon, before or after the subcommand.
 #[test]
 fn the_flag_beats_the_environment_on_every_command() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let sock = d.socket.path.to_str().unwrap().to_string();
     let elsewhere = d.home.join("elsewhere.sock");
 

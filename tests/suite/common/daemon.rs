@@ -168,7 +168,8 @@ struct InProcess {
 }
 
 impl TestDaemon {
-    // Used by cli_golden.rs integration tests.
+    /// A real `comb daemon` process, for a test about the process or its
+    /// environment; [`TestDaemon::serve`] is the same daemon in-process.
     #[allow(dead_code)]
     pub fn spawn() -> Self {
         let socket = IsolatedSocket::new();
@@ -248,6 +249,62 @@ impl TestDaemon {
     /// [`TestDaemon::advance`] moves.
     #[allow(dead_code)]
     pub fn serve_in_process(socket: IsolatedSocket, home: PathBuf, xdg: PathBuf) -> Self {
+        Self::serve_here(socket, home, xdg)
+    }
+
+    /// [`TestDaemon::spawn`]'s daemon, served in this process
+    /// ([`TestDaemon::serve_with_tools`]): for a test about what the daemon
+    /// answers, not about its process or its environment.
+    #[allow(dead_code)]
+    pub fn serve() -> Self {
+        let socket = IsolatedSocket::new();
+        let home = socket.dir.path().join("home");
+        let xdg = socket.dir.path().join("xdg");
+        Self::serve_in(socket, home, xdg)
+    }
+
+    /// [`TestDaemon::spawn_in`]'s daemon, served in this process.
+    #[allow(dead_code)]
+    pub fn serve_in(socket: IsolatedSocket, home: PathBuf, xdg: PathBuf) -> Self {
+        Self::serve_with_tools(socket, home, xdg, None)
+    }
+
+    /// [`TestDaemon::spawn_with_tools`]'s daemon, served in this process:
+    /// this process's `PATH` and variables are set as [`isolate`] sets a
+    /// spawned one's, `tools` (if any) then the stand-ins ([`stub_bin`])
+    /// first, where [`TestDaemon::serve_in_process`] leaves `PATH` as the test
+    /// set it. A test whose daemon must see an environment other than its
+    /// own (the caller's variables, an env file) spawns one.
+    #[allow(dead_code)]
+    pub fn serve_with_tools(
+        socket: IsolatedSocket,
+        home: PathBuf,
+        xdg: PathBuf,
+        tools: Option<&Path>,
+    ) -> Self {
+        let path = std::env::join_paths(
+            tools
+                .into_iter()
+                .chain(std::iter::once(stub_bin()))
+                .map(Path::to_path_buf)
+                .chain(std::env::split_paths(
+                    &std::env::var_os("PATH").unwrap_or_default(),
+                )),
+        )
+        .expect("a PATH of directories");
+        // SAFETY: one test per process, and nothing else reads the environment
+        // until the daemon below starts.
+        unsafe {
+            std::env::set_var("PATH", path);
+            std::env::set_var("BEACHCOMBER_SOCKET", &socket.path);
+            std::env::set_var("RUST_LOG", "error");
+            std::env::remove_var("KUBECONFIG");
+            std::env::remove_var("TALOSCONFIG");
+        }
+        Self::serve_here(socket, home, xdg)
+    }
+
+    fn serve_here(socket: IsolatedSocket, home: PathBuf, xdg: PathBuf) -> Self {
         std::fs::create_dir_all(&home).expect("create temp HOME");
         // SAFETY: one test per process, and nothing else reads the environment
         // until the daemon below starts.

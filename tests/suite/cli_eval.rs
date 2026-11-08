@@ -91,7 +91,7 @@ fn eval_resolves_daemon_served_template_from_env() {
 /// of the caller's environment.
 #[test]
 fn eval_reads_the_same_addresses_get_takes() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     d.comb(Path::new("/"))
         .args(["put", "--global", "p", r#"{"cargo:x":"1.0","o":{"a b":2}}"#])
         .assert()
@@ -119,7 +119,7 @@ fn eval_reads_the_same_addresses_get_takes() {
 /// compile error rather than trying to render anything.
 #[test]
 fn eval_compile_error_exits_2_naming_it() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args(["eval", "{{ 1 + }}"])
@@ -132,7 +132,7 @@ fn eval_compile_error_exits_2_naming_it() {
 /// a call block hands it a body; `include` is refused before anything renders.
 #[test]
 fn eval_renders_an_inline_macro() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(Path::new("/"))
         .args([
@@ -157,7 +157,7 @@ fn eval_renders_an_inline_macro() {
 /// the same library, read through the same resolver.
 #[test]
 fn eval_and_a_format_import() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     d.comb(Path::new("/"))
         .args([
             "put",
@@ -206,7 +206,7 @@ fn eval_and_a_format_import() {
 /// refused by name, not reported as unknown functions.
 #[test]
 fn url_on_the_client_is_refused_clearly() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     for call in ["url('http://127.0.0.1:1/')", "plugin('a', 'b')"] {
         let name = call.split('(').next().unwrap();
@@ -226,7 +226,7 @@ fn url_on_the_client_is_refused_clearly() {
 /// string.
 #[test]
 fn eval_f_json_keeps_a_number() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     d.comb(Path::new("/"))
         .args(["eval", "-f", "json", "{{ 1 + 1 }}"])
         .assert()
@@ -243,7 +243,7 @@ fn eval_f_json_keeps_a_number() {
 /// nothing under text.
 #[test]
 fn eval_f_json_of_an_absent_value_is_null() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     d.comb(Path::new("/"))
         .args(["eval", "-f", "json", "{{ none }}"])
         .assert()
@@ -255,7 +255,7 @@ fn eval_f_json_of_an_absent_value_is_null() {
 /// does; the `e.j` suffix spells json.
 #[test]
 fn eval_f_sh_and_the_json_suffix() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     d.comb(Path::new("/"))
         .args(["eval", "-f", "sh", "{{ {'a': 'x y'} }}"])
         .assert()
@@ -271,7 +271,7 @@ fn eval_f_sh_and_the_json_suffix() {
 /// A format `eval` has no use for is refused, naming the ones it has.
 #[test]
 fn eval_refuses_a_format_it_does_not_have() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     d.comb(Path::new("/"))
         .args(["eval", "-f", "csv", "{{ 1 }}"])
         .assert()

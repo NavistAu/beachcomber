@@ -83,7 +83,7 @@ fn json_rows(d: &TestDaemon, cwd: &Path, args: &[&str]) -> Vec<serde_json::Value
 
 #[test]
 fn rendered_leaves_sit_beside_the_raw_templates_and_the_cached_data() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -112,7 +112,7 @@ fn rendered_leaves_sit_beside_the_raw_templates_and_the_cached_data() {
 /// unless `--all` or a `facet` filter asks for them.
 #[test]
 fn facet_rows_are_hidden_unless_asked_for() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -150,7 +150,7 @@ fn facet_rows_are_hidden_unless_asked_for() {
 /// `value!=-`, shown by `--filter value=-` or `--all`.
 #[test]
 fn an_absent_leaf_is_a_null_row_shown_only_when_asked() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(&d, &cwd, &["t:template.nothing", r#""{{ none }}""#]);
     put(&d, &cwd, &["t:template.some", r#""{{ 'x' }}""#]);
@@ -186,7 +186,7 @@ fn an_absent_leaf_is_a_null_row_shown_only_when_asked() {
 
 #[test]
 fn the_human_header_names_source_after_field() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -200,7 +200,7 @@ fn the_human_header_names_source_after_field() {
 
 #[test]
 fn colour_marks_the_rendered_value_cyan_rather_than_with_a_glyph() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -217,7 +217,7 @@ fn colour_marks_the_rendered_value_cyan_rather_than_with_a_glyph() {
 
 #[test]
 fn colour_off_with_no_ascii_marks_the_rendered_value_with_the_unicode_glyph() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -233,7 +233,7 @@ fn colour_off_with_no_ascii_marks_the_rendered_value_with_the_unicode_glyph() {
 /// the next one.
 #[test]
 fn what_a_render_runs_is_a_row_of_the_same_status() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -247,7 +247,7 @@ fn what_a_render_runs_is_a_row_of_the_same_status() {
 
 #[test]
 fn rendered_rows_carry_kind_and_source_rendered_in_json() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -264,7 +264,7 @@ fn rendered_rows_carry_kind_and_source_rendered_in_json() {
 
 #[test]
 fn the_lifecycle_filter_selects_only_the_rendered_rows() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -281,7 +281,7 @@ fn the_lifecycle_filter_selects_only_the_rendered_rows() {
 
 #[test]
 fn a_leaf_that_fails_shows_its_error_text_as_the_value() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(
         &d,
@@ -304,7 +304,7 @@ fn a_leaf_that_fails_shows_its_error_text_as_the_value() {
 
 #[test]
 fn a_string_form_leaf_that_fails_names_the_script() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(
         &d,
@@ -327,7 +327,7 @@ fn a_string_form_leaf_that_fails_names_the_script() {
 
 #[test]
 fn a_template_put_at_another_path_is_not_rendered_here() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     let other = d.home.join("ws").join("elsewhere");
     std::fs::create_dir_all(&other).unwrap();
@@ -359,7 +359,7 @@ fn a_template_put_at_another_path_is_not_rendered_here() {
 /// marked `shadowed` in json.
 #[test]
 fn a_cached_field_with_a_template_over_it_is_shadowed_by_it() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let repo = GitRepoFixture::new();
     let cwd = repo.path().to_path_buf();
 
@@ -417,7 +417,7 @@ fn a_cached_field_with_a_template_over_it_is_shadowed_by_it() {
 
 #[test]
 fn a_template_put_at_the_global_entry_renders_at_a_cwd_below_home() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(
         &d,
@@ -445,7 +445,7 @@ fn a_template_put_at_the_global_entry_renders_at_a_cwd_below_home() {
 /// shadows are its children, not rows of their own.
 #[test]
 fn tree_lists_the_layers_under_each_value_and_marks_the_shadowed_ones() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(&d, &cwd, &["t:template.greet", r#""{{ 'tpl' }}""#]);
     put(&d, &cwd, &["t.greet", r#""data""#]);
@@ -522,7 +522,7 @@ fn tree_lists_every_config_file_that_sets_a_template() {
         "[client.providers.aws]\ntemplate.profile = \"{{ 'mine' }}\"\n",
     )
     .unwrap();
-    let d = TestDaemon::spawn_in(socket, home, xdg);
+    let d = TestDaemon::serve_in(socket, home, xdg);
     let cwd = project(&d);
 
     let out = status(
@@ -592,7 +592,7 @@ result.v = "{{ data }}"
 "#,
     )
     .unwrap();
-    let d = TestDaemon::spawn_in(socket, home, xdg);
+    let d = TestDaemon::serve_in(socket, home, xdg);
     let cwd = std::fs::canonicalize(&project_dir).unwrap();
     // Read from the project, then from `~`, so both instances hold a record.
     comb(&d, &cwd).args(["get", "walk.v"]).assert().success();
@@ -629,7 +629,7 @@ result.v = "{{ data }}"
 /// age when it read none.
 #[test]
 fn a_rendered_row_is_as_old_as_its_oldest_input() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(&d, &cwd, &["seed", r#"{"v":"x"}"#]);
     put(&d, &cwd, &["t:template.reads", r#""{{ comb.seed.v }}""#]);
@@ -668,7 +668,7 @@ fn a_rendered_row_is_as_old_as_its_oldest_input() {
 /// In json each row carries its `layers`, the answering one marked.
 #[test]
 fn tree_json_rows_carry_their_layers() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(&d, &cwd, &["t:template.greet", r#""{{ 'tpl' }}""#]);
     put(&d, &cwd, &["t.greet", r#""data""#]);
@@ -691,7 +691,7 @@ fn tree_json_rows_carry_their_layers() {
 /// `rendered`; "template" is the facet and the leaf it was rendered from.
 #[test]
 fn a_rendered_row_is_rendered_in_every_column_that_names_it() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     let out = comb(&d, &cwd)
         .args(["status", "-f", "sh", "--filter", "lifecycle=rendered"])
@@ -713,7 +713,7 @@ fn a_rendered_row_is_rendered_in_every_column_that_names_it() {
 
 #[test]
 fn tree_with_another_format_is_a_usage_error() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     comb(&d, &cwd)
         .args(["status", "--tree", "-f", "csv"])
@@ -751,7 +751,7 @@ fn rows_of(d: &TestDaemon, cwd: &Path, p: &str, extra: &[&str]) -> Vec<String> {
 /// answers. `-a` lists them too, and `--filter shadowed=true` lists only them.
 #[test]
 fn the_default_status_lists_what_a_read_answers() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(&d, &cwd, &["--global", "t.v", r#""far""#]);
     put(&d, &cwd, &["t.v", r#""near""#]);
@@ -830,7 +830,7 @@ result.b = "{{ 'src-b' }}"
 "#,
     )
     .unwrap();
-    let d = TestDaemon::spawn_in(socket, home, xdg);
+    let d = TestDaemon::serve_in(socket, home, xdg);
     let cwd = project(&d);
     comb(&d, &cwd)
         .args(["get", "--global", "s"])

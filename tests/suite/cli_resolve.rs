@@ -68,7 +68,7 @@ fn short_host(d: &TestDaemon, cwd: &Path) -> String {
 
 #[test]
 fn a_nested_template_leaf_is_addressable() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -78,7 +78,7 @@ fn a_nested_template_leaf_is_addressable() {
 
 #[test]
 fn a_group_renders_every_leaf_and_keeps_its_shape() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -91,7 +91,7 @@ fn a_group_renders_every_leaf_and_keeps_its_shape() {
 
 #[test]
 fn a_namespace_merges_the_rendered_tree_over_its_data() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -110,7 +110,7 @@ fn a_namespace_merges_the_rendered_tree_over_its_data() {
 
 #[test]
 fn an_address_past_a_template_walks_into_the_rendered_object() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
     put(
@@ -142,7 +142,7 @@ fn an_address_past_a_template_walks_into_the_rendered_object() {
 
 #[test]
 fn an_address_past_a_template_indexes_a_rendered_array() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
     put(
@@ -160,7 +160,7 @@ fn an_address_past_a_template_indexes_a_rendered_array() {
 
 #[test]
 fn a_template_at_a_cached_fields_path_wins_and_the_raw_template_stays_readable() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let repo = GitRepoFixture::new();
     let cwd = repo.path().to_path_buf();
     put(&d, &cwd, &["git:template.branch", r#""{{ \"main\" }}""#]);
@@ -177,7 +177,7 @@ fn a_template_at_a_cached_fields_path_wins_and_the_raw_template_stays_readable()
 /// all `git:cache` has.
 #[test]
 fn a_literal_comb_field_beside_a_lazy_comb_still_demands_only_its_own_source() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let repo = GitRepoFixture::new();
     let cwd = repo.path().to_path_buf();
     put(
@@ -210,7 +210,7 @@ fn a_literal_comb_field_beside_a_lazy_comb_still_demands_only_its_own_source() {
 
 #[test]
 fn text_flattens_every_level_to_sorted_leaf_lines() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -227,7 +227,7 @@ fn text_flattens_every_level_to_sorted_leaf_lines() {
 
 #[test]
 fn sh_shell_quotes_every_flattened_value() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
     put(&d, &cwd, &["q", r#"{"v":"it's a b"}"#]);
@@ -247,7 +247,7 @@ fn sh_shell_quotes_every_flattened_value() {
 
 #[test]
 fn a_cycle_fails_the_query_naming_both_nodes() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
     put(
@@ -376,7 +376,7 @@ fn a_managed_default_renders_through_comb_get() {
     beachcomber::daemon::defaults::write_managed_defaults(&defaults, env!("BEACHCOMBER_VERSION"))
         .expect("write managed defaults");
     assert!(defaults.join("conda.toml").is_file());
-    let d = TestDaemon::spawn_in(socket, home, xdg);
+    let d = TestDaemon::serve_in(socket, home, xdg);
     let cwd = project(&d);
 
     let out = comb(&d, &cwd)
@@ -408,7 +408,7 @@ fn daemon_with_defaults_and_tools(tools: &[(&str, &str)]) -> (TestDaemon, PathBu
     for (name, script) in tools {
         crate::common::daemon::tool(&bin, name, script);
     }
-    (TestDaemon::spawn_in(socket, home, xdg), bin)
+    (TestDaemon::serve_in(socket, home, xdg), bin)
 }
 
 /// A `kubectl` that prints `ctx-1` for `config current-context` and nothing
@@ -581,7 +581,7 @@ fn talos_context_is_absent_when_talosctl_has_no_context_or_is_missing() {
 
 #[test]
 fn a_template_put_at_the_cwd_is_not_visible_to_a_global_read() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 
@@ -595,7 +595,7 @@ fn a_template_put_at_the_cwd_is_not_visible_to_a_global_read() {
 
 #[test]
 fn a_template_put_globally_is_visible_to_both_reads() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(&d, &cwd, &["--global", "scanline:template", TREE]);
 
@@ -614,7 +614,7 @@ fn a_template_put_globally_is_visible_to_both_reads() {
 /// ref is falsy at any depth).
 #[test]
 fn a_daemon_rejected_key_is_an_error_in_every_format() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
 
     for format in ["text", "json"] {
@@ -632,7 +632,7 @@ fn a_daemon_rejected_key_is_an_error_in_every_format() {
 /// `text`, exit 2 under `json`.
 #[test]
 fn an_unknown_provider_is_a_miss() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
 
     comb(&d, &cwd)
@@ -651,7 +651,7 @@ fn an_unknown_provider_is_a_miss() {
 
 #[test]
 fn a_rejected_ref_inside_a_template_is_falsy() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     put(
         &d,
@@ -666,7 +666,7 @@ fn a_rejected_ref_inside_a_template_is_falsy() {
 
 #[test]
 fn multi_key_output_keeps_its_shape_per_format_and_a_miss_reports_itself() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let cwd = project(&d);
     seed_scanline(&d, &cwd);
 

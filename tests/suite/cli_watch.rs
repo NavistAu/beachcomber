@@ -23,7 +23,7 @@ const TREE_EDITED: &str = r#"{"widgets":{"foo":"{{ 'hi!' }}"}}"#;
 
 #[test]
 fn watch_defaults_to_the_callers_cwd() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let project = d.home.join("ws/project");
     std::fs::create_dir_all(&project).unwrap();
 
@@ -42,7 +42,7 @@ fn watch_defaults_to_the_callers_cwd() {
 /// sibling was never visible.
 #[test]
 fn watch_from_a_sibling_directory_does_not_see_that_directorys_value() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let project = d.home.join("ws/project");
     let other = d.home.join("ws/other");
     std::fs::create_dir_all(&project).unwrap();
@@ -63,7 +63,7 @@ fn watch_from_a_sibling_directory_does_not_see_that_directorys_value() {
 
 #[test]
 fn watch_global_reads_the_home_entry_from_anywhere() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let elsewhere = d.home.join("ws/other");
     std::fs::create_dir_all(&elsewhere).unwrap();
 
@@ -77,7 +77,7 @@ fn watch_global_reads_the_home_entry_from_anywhere() {
 
 #[test]
 fn watch_takes_a_relative_positional_path() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let ws = d.home.join("ws");
     let project = ws.join("project");
     std::fs::create_dir_all(&project).unwrap();
@@ -92,7 +92,7 @@ fn watch_takes_a_relative_positional_path() {
 
 #[test]
 fn watch_takes_the_path_as_a_flag() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let project = d.home.join("ws/project");
     std::fs::create_dir_all(&project).unwrap();
 
@@ -112,7 +112,7 @@ fn watch_takes_the_path_as_a_flag() {
 /// answer is an error — never a silent watch of the global entry.
 #[test]
 fn watch_from_a_deleted_cwd_with_no_path_is_an_error() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let gone = d.home.join("gone");
     std::fs::create_dir_all(&gone).unwrap();
 
@@ -140,7 +140,7 @@ fn watch_from_a_deleted_cwd_with_no_path_is_an_error() {
 /// above covers the `None` branch.
 #[test]
 fn watch_from_a_deleted_cwd_with_a_relative_path_is_an_error() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let gone = d.home.join("gone");
     std::fs::create_dir_all(&gone).unwrap();
 
@@ -171,7 +171,7 @@ fn watch_from_a_deleted_cwd_with_a_relative_path_is_an_error() {
 /// fan-in subscribes to it because the resolution read it.
 #[test]
 fn watch_emits_the_resolved_value_and_refires_when_its_template_changes() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let project = d.home.join("ws/project");
     std::fs::create_dir_all(&project).unwrap();
 
@@ -195,7 +195,7 @@ fn watch_emits_the_resolved_value_and_refires_when_its_template_changes() {
 /// printed again; an edit of the template is a new value, printed.
 #[test]
 fn a_watch_rerenders_when_a_memo_hash_drops() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let project = d.home.join("ws/project");
     std::fs::create_dir_all(&project).unwrap();
     let put = |key: &str, data: &str| {
@@ -243,7 +243,7 @@ fn a_watch_rerenders_when_a_memo_hash_drops() {
 /// that edits the library re-renders the watched value with the new text.
 #[test]
 fn a_library_edit_rerenders_a_watch() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let project = d.home.join("ws/project");
     std::fs::create_dir_all(&project).unwrap();
     let library = |text: &str| format!("\"{{% macro m() %}}{text}{{% endmacro %}}\"");
@@ -276,7 +276,7 @@ fn a_library_edit_rerenders_a_watch() {
 /// prints the library's words and exits 2.
 #[test]
 fn watch_refuses_an_env_key() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     d.comb(&d.home)
         .args(["watch", "env.HOME"])
@@ -291,7 +291,7 @@ fn watch_refuses_an_env_key() {
 /// json` prints it.
 #[test]
 fn watch_on_a_template_facet_streams_the_raw_tree() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let project = d.home.join("ws/project");
     std::fs::create_dir_all(&project).unwrap();
 
@@ -312,7 +312,7 @@ fn watch_on_a_template_facet_streams_the_raw_tree() {
 /// wire, which is what `watch` used to print.
 #[test]
 fn watch_json_frames_are_bare_values() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let project = d.home.join("ws/project");
     std::fs::create_dir_all(&project).unwrap();
 
@@ -338,7 +338,7 @@ fn watch_json_frames_are_bare_values() {
 /// a `put` gives it one.
 #[test]
 fn json_watch_on_a_missing_key_prints_null_then_the_value() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
 
     let mut w = watch_lines(&d, &d.home, &["--global", "my.a", "-f", "json"]);
     assert_eq!(w.next_line(), "null");
@@ -355,7 +355,7 @@ fn json_watch_on_a_missing_key_prints_null_then_the_value() {
 /// text, and the value's rendering follows when a `put` gives it one.
 #[test]
 fn template_watch_on_a_missing_key_renders_the_template_then_the_value() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let tpl = "{{ value if value is defined else 'none' }}";
 
     let got = d
@@ -379,7 +379,7 @@ fn template_watch_on_a_missing_key_renders_the_template_then_the_value() {
 /// after `put … null` is `null`.
 #[test]
 fn json_watch_prints_null_when_the_value_goes() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     d.comb(&d.home)
         .args(["put", "--global", "my", r#"{"a":1}"#])
         .assert()
@@ -399,7 +399,7 @@ fn json_watch_prints_null_when_the_value_goes() {
 /// no line for one: the value going and coming back shows only the values.
 #[test]
 fn text_watch_prints_no_line_for_a_miss() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     d.comb(&d.home)
         .args(["put", "--global", "my", r#"{"a":1}"#])
         .assert()
@@ -424,7 +424,7 @@ fn text_watch_prints_no_line_for_a_miss() {
 /// ABI and every SDK report them.
 #[test]
 fn a_refused_watch_reads_as_a_refused_get() {
-    let d = TestDaemon::spawn();
+    let d = TestDaemon::serve();
     let stderr = |command: &str| {
         let out = d
             .comb(&d.home)
