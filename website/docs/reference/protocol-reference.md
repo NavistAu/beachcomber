@@ -305,6 +305,7 @@ Response:
 ],"age_ms":0}
 ```
 
+- Rows are sorted by `provider`, then `path` (the global entry first), then `source` as presented, then `field`.
 - `path` is the directory the row is stored at, `null` for the global entry.
 - `source` is always present, presented as a `:cache` answer's is: `source(<name>)` for a Source of the provider, `put`, `config(<file>)`, `computed(<line>)`, or `memo` for a `<p>:memo` row (one per memo that holds a value, aged by its memo).
 - `kind` is always present, an object tagged by its own `kind`: `{"kind": "lifecycle", "decay": N, "depth": D, "watches_files": bool}` for a lifecycle entry (`decay` 0 is Active), or `{"kind": "once"}`, `{"kind": "static"}`, `{"kind": "transient"}`.

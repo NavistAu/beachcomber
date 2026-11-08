@@ -558,3 +558,46 @@ async fn a_request_field_the_op_does_not_take_is_refused() {
 
     handle.abort();
 }
+
+/// `status` rows come back sorted by provider, path, source, field — not in
+/// the cache's hash order — so two calls agree and a sort's ties are stable.
+#[tokio::test]
+async fn status_rows_are_sorted_by_provider_path_source_field() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    for provider in ["zz", "aa", "mm"] {
+        for path in [None, Some("/b"), Some("/a")] {
+            for source in [beachcomber::cache::PUT_SOURCE, "config:/c/x.toml"] {
+                for field in ["y", "x"] {
+                    cache
+                        .write_static(provider, path, source, field, Value::Int(1), None)
+                        .unwrap();
+                }
+            }
+        }
+    }
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
+    let handle = server.spawn().unwrap();
+
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+    stream.write_all(b"{\"op\": \"status\"}\n").await.unwrap();
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).await.unwrap();
+    let resp: Response = serde_json::from_str(&line).unwrap();
+    let key = |r: &serde_json::Value| {
+        let s = |k: &str| r[k].as_str().map(str::to_string);
+        (s("provider"), s("path"), s("source"), s("field"))
+    };
+    let got: Vec<_> = resp
+        .data
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(key)
+        .collect();
+    assert_eq!(got.len(), 36, "{got:?}");
+    let mut sorted = got.clone();
+    sorted.sort();
+    assert_eq!(got, sorted);
+    handle.abort();
+}

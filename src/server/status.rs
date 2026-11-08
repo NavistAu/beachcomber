@@ -126,6 +126,16 @@ pub(super) async fn handle_status(ctx: &Ctx, registry: &Arc<ProviderRegistry>) -
     for row in rows.iter_mut() {
         row.source = crate::cache::presented_label(&row.source);
     }
+    // One order on the wire, not the cache's hash order: a client's stable
+    // sort then breaks its ties the same way every time.
+    rows.sort_by(|a, b| {
+        (&a.provider, &a.path, &a.source, &a.field).cmp(&(
+            &b.provider,
+            &b.path,
+            &b.source,
+            &b.field,
+        ))
+    });
 
     match serde_json::to_value(&rows) {
         Ok(v) => Response::ok(v, 0),
