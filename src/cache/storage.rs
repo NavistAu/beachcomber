@@ -449,7 +449,7 @@ impl Cache {
     /// Other sources at the same (provider, path) are not touched.
     /// Creates the entry if absent; updates only `source_name`'s record if present.
     ///
-    /// The `schedule` is written into the `<provider>:cache` entry at the same
+    /// The `schedule`, with the run's `validity`, is written into the `<provider>:cache` entry at the same
     /// path, under the same label, one object per top-level field, before the
     /// record itself: a reader that sees the record sees its schedule. One
     /// notification, the record's.
@@ -459,10 +459,11 @@ impl Cache {
         path: Option<&str>,
         source_name: &str,
         fields: HashMap<String, Value>,
-        schedule: Schedule,
+        schedule: &crate::provider::Schedule,
+        validity: Option<Validity>,
     ) {
         let now = Instant::now();
-        let stored = schedule.stored_keys();
+        let stored = schedule.stored_keys(validity.as_ref());
         if !stored.is_empty() {
             let facet_key = make_cache_key(&facet_of(provider, Facet::Cache), path);
             // A record rewritten with the schedule it already carries only has
@@ -513,8 +514,8 @@ impl Cache {
             CacheSourceEntry {
                 fields,
                 last_refreshed: now,
-                expected_interval_secs: schedule.poll.map(|(secs, _)| secs),
-                validity: schedule.validity,
+                expected_interval_secs: schedule.expected_interval_secs(),
+                validity,
             },
         );
         if let Some(ref watchers) = self.watchers {
@@ -762,14 +763,16 @@ mod tests {
             Some("/repo"),
             "base",
             make_fields(&[("branch", "main"), ("sha", "abc123")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
         cache.put_source(
             "git",
             Some("/repo"),
             "extras",
             make_fields(&[("dirty", "false")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
 
         // Overwrite only "base" with new data.
@@ -778,7 +781,8 @@ mod tests {
             Some("/repo"),
             "base",
             make_fields(&[("branch", "feat/x"), ("sha", "def456")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
 
         // "extras" source must be untouched.
@@ -815,14 +819,16 @@ mod tests {
             Some("/repo"),
             "refs",
             make_fields(&[("branch", "main")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
         cache.put_source(
             "git",
             Some("/repo"),
             "diff",
             make_fields(&[("dirty", "true")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
 
         cache.remove_source("git", Some("/repo"), "refs");
@@ -850,7 +856,8 @@ mod tests {
             Some("/repo"),
             "refs",
             make_fields(&[("branch", "main")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
 
         cache.remove_source("git", Some("/repo"), "refs");
@@ -869,7 +876,8 @@ mod tests {
             Some("/repo"),
             "refs",
             make_fields(&[("branch", "main")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
         cache.remove_source("git", Some("/repo"), "nope");
         assert!(
@@ -888,14 +896,16 @@ mod tests {
             Some("/repo"),
             "base",
             make_fields(&[("branch", "main")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
         cache.put_source(
             "git",
             Some("/repo"),
             "extras",
             make_fields(&[("dirty", "true")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
 
         // "branch" lives in "base" — get_field should find it.

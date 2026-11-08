@@ -3,7 +3,7 @@
 //! alone, and the `version` and `venv_name` templates over it.
 
 use super::{age, scenario, schedule, served};
-use beachcomber::provider::{FailbackConfig, InvalidationStrategy};
+use beachcomber::provider::{FailbackConfig, Schedule};
 use serde_json::json;
 use std::path::Path;
 
@@ -237,21 +237,18 @@ fn python_keeps_its_schedule() {
     let (meta, rooted) = schedule("python", "venv");
     assert!(rooted);
     assert_eq!(
-        meta.invalidation,
-        InvalidationStrategy::Watch {
-            patterns: vec![".venv".into(), "pyproject.toml".into()],
-            abs_paths: vec![],
-        }
+        super::trigger(&meta.schedule),
+        Schedule::watch(vec![".venv".into(), "pyproject.toml".into()], vec![])
     );
     assert_eq!(
-        meta.failback,
+        meta.schedule.failback,
         FailbackConfig {
             reattempts: 3,
             interval_secs: 60
         }
     );
-    assert!(meta.nearest);
-    assert_eq!(meta.decay, None, "the provider's decay prototype");
+    assert!(meta.schedule.nearest);
+    assert_eq!(meta.schedule.decay, None, "the provider's decay prototype");
 }
 
 /// A shipped Source takes any line from a later file, one leaf at a time:

@@ -472,7 +472,14 @@ mod tests {
                 "x".to_string(),
                 crate::provider::Value::Int(x),
             )]);
-            cache.put_source("p", path, "s", fields, crate::cache::Schedule::default());
+            cache.put_source(
+                "p",
+                path,
+                "s",
+                fields,
+                &crate::provider::Schedule::default(),
+                None,
+            );
         };
         put(Some("/near"), 1);
         tokio::time::advance(std::time::Duration::from_secs(5)).await;

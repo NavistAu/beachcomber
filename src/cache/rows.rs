@@ -253,7 +253,8 @@ mod tests {
             Some("/repo"),
             "head",
             make_fields(&[("branch", "main")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
         cache
             .write_static(
@@ -287,7 +288,8 @@ mod tests {
             None,
             "s",
             make_fields(&[("a", "1")]),
-            Schedule::poll(5, 1),
+            &crate::provider::Schedule::poll(5, 1),
+            None,
         );
         cache
             .write_static(

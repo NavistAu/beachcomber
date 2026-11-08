@@ -300,7 +300,8 @@ mod tests {
             Some("/repo"),
             "refs",
             refs_fields,
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
 
         let registry = ProviderRegistry::shipped(&std::env::vars().collect());

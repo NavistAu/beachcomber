@@ -721,7 +721,7 @@ mod instance_chain_tests {
     use super::*;
     use crate::provider::registry::ProviderRegistry;
     use crate::provider::{
-        FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult,
+        FailbackConfig, FieldSchema, Schedule, Source, SourceMetadata, SourceResult,
     };
     use std::sync::Arc;
 
@@ -760,18 +760,14 @@ mod instance_chain_tests {
             SourceMetadata {
                 name: "main".into(),
                 fields: vec![FieldSchema { name: "v".into() }],
-                invalidation: InvalidationStrategy::Poll {
-                    interval_secs: 30,
-                    count: 2,
+                schedule: Schedule {
+                    failback: FailbackConfig {
+                        reattempts: 3,
+                        interval_secs: 30,
+                    },
+                    nearest: self.nearest,
+                    ..Schedule::poll(30, 2)
                 },
-                failback: FailbackConfig {
-                    reattempts: 3,
-                    interval_secs: 30,
-                },
-                decay: None,
-                budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
-                timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
-                nearest: self.nearest,
             }
         }
     }

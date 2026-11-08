@@ -640,7 +640,8 @@ mod tests {
             Some("/repo"),
             "head",
             make_fields(&[("branch", "main")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
         cache
             .write_static(
@@ -657,7 +658,8 @@ mod tests {
             Some("/repo"),
             "head",
             make_fields(&[("branch", "dev")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
 
         let read = cache
@@ -699,7 +701,8 @@ mod tests {
             Some("/repo"),
             "head",
             make_fields(&[("branch", "main")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
         cache
             .write_static(
@@ -743,7 +746,8 @@ mod tests {
             Some("/repo"),
             "head",
             fields,
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
         cache
     }
@@ -822,7 +826,8 @@ mod tests {
             Some("/repo"),
             "refs",
             make_fields(&[("branch", "main")]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
         put(&cache, "", tools(&[("note", Value::Int(2))]));
         let read = read_tools(&cache);

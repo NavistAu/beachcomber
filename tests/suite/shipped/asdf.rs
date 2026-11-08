@@ -3,7 +3,7 @@
 //! sets it.
 
 use super::{age, scenario, schedule, served};
-use beachcomber::provider::{FailbackConfig, InvalidationStrategy};
+use beachcomber::provider::{FailbackConfig, Schedule};
 use serde_json::json;
 use std::path::Path;
 
@@ -156,19 +156,16 @@ fn asdf_keeps_its_schedule() {
     let (meta, rooted) = schedule("asdf", "tools");
     assert!(rooted);
     assert_eq!(
-        meta.invalidation,
-        InvalidationStrategy::Watch {
-            patterns: vec![".tool-versions".into()],
-            abs_paths: vec![],
-        }
+        super::trigger(&meta.schedule),
+        Schedule::watch(vec![".tool-versions".into()], vec![])
     );
     assert_eq!(
-        meta.failback,
+        meta.schedule.failback,
         FailbackConfig {
             reattempts: 3,
             interval_secs: 60
         }
     );
-    assert!(!meta.nearest, "the instances cascade");
-    assert_eq!(meta.decay, None, "the provider's decay prototype");
+    assert!(!meta.schedule.nearest, "the instances cascade");
+    assert_eq!(meta.schedule.decay, None, "the provider's decay prototype");
 }

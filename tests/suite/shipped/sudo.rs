@@ -8,7 +8,7 @@
 //! part of what is tested.
 
 use super::{age, schedule, served};
-use beachcomber::provider::{FailbackConfig, InvalidationStrategy};
+use beachcomber::provider::{FailbackConfig, Schedule};
 use serde_json::json;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
@@ -186,15 +186,9 @@ fn sudo_provider_metadata() {
     assert!(!rooted);
     let fields: Vec<&str> = meta.fields.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(fields, ["active"]);
+    assert_eq!(super::trigger(&meta.schedule), Schedule::poll(30, 2));
     assert_eq!(
-        meta.invalidation,
-        InvalidationStrategy::Poll {
-            interval_secs: 30,
-            count: 2,
-        }
-    );
-    assert_eq!(
-        meta.failback,
+        meta.schedule.failback,
         FailbackConfig {
             reattempts: 3,
             interval_secs: 30

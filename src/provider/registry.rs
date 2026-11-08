@@ -651,7 +651,7 @@ impl ProviderRegistry {
     ) -> crate::query::InstanceWalk {
         let nearest = self
             .source(provider, source)
-            .is_some_and(|s| s.has_root() && s.metadata().nearest);
+            .is_some_and(|s| s.has_root() && s.metadata().schedule.nearest);
         crate::query::InstanceWalk::new(dir, nearest)
     }
 
@@ -724,7 +724,8 @@ impl ProviderRegistry {
         };
         if let Some(mut walked) = walked {
             let now = tokio::time::Instant::now();
-            let unclaimed = root == Found::Nothing && src.has_root() && src.metadata().nearest;
+            let unclaimed =
+                root == Found::Nothing && src.has_root() && src.metadata().schedule.nearest;
             // An old unclaimed answer goes as a new one comes in, so a
             // long-lived daemon does not hold one per directory ever asked
             // about.
@@ -1422,7 +1423,7 @@ fn engine_defaults(config: &Config) -> EngineDefaults {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{FailbackConfig, FieldSchema, InvalidationStrategy, SourceResult};
+    use crate::provider::{FailbackConfig, FieldSchema, Schedule, SourceResult};
 
     /// `f` where a Source's run executes: on a blocking thread of a runtime,
     /// so a call it makes can start and wait for another run.
@@ -1464,18 +1465,13 @@ mod tests {
                 .into_iter()
                 .map(|n| FieldSchema { name: n.into() })
                 .collect(),
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 30,
-                count: 2,
+            schedule: Schedule {
+                failback: FailbackConfig {
+                    reattempts: 3,
+                    interval_secs: 30,
+                },
+                ..Schedule::poll(30, 2)
             },
-            failback: FailbackConfig {
-                reattempts: 3,
-                interval_secs: 30,
-            },
-            decay: None,
-            budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
-            timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
-            nearest: false,
         }
     }
 
@@ -1546,14 +1542,21 @@ mod tests {
         ProviderRegistry::with_config(&config, &std::env::vars().collect()).unwrap()
     }
 
-    fn invalidation(reg: &ProviderRegistry, provider: &str, source: &str) -> InvalidationStrategy {
-        reg.provider_sources(provider)
+    /// What invalidates `provider.source`: its schedule's poll and watches.
+    fn invalidation(reg: &ProviderRegistry, provider: &str, source: &str) -> Schedule {
+        let s = &reg
+            .provider_sources(provider)
             .unwrap()
             .iter()
             .find(|s| s.name == source)
             .unwrap_or_else(|| panic!("{provider}.{source} is registered"))
-            .invalidation
-            .clone()
+            .schedule;
+        Schedule {
+            poll: s.poll,
+            watch: s.watch.clone(),
+            watch_abs: s.watch_abs.clone(),
+            ..Schedule::default()
+        }
     }
 
     #[test]
@@ -1582,18 +1585,12 @@ result.x = "{{ data }}"
         );
         assert_eq!(
             invalidation(&reg, "git", "extra"),
-            InvalidationStrategy::Poll {
-                interval_secs: 7,
-                count: 2
-            },
+            Schedule::poll(7, 2),
             "git's own `_` beats the abstract one"
         );
         assert_eq!(
             invalidation(&reg, "demo", "s"),
-            InvalidationStrategy::Poll {
-                interval_secs: 60,
-                count: 12
-            },
+            Schedule::poll(60, 12),
             "another provider's `_` does not reach it"
         );
         assert_eq!(reg.sources_for_key("git", "extra"), vec!["extra"]);
@@ -1606,14 +1603,14 @@ result.x = "{{ data }}"
         );
         let meta = &reg.provider_sources("demo").unwrap()[0];
         assert_eq!(
-            meta.invalidation,
-            InvalidationStrategy::Poll {
-                interval_secs: 60,
-                count: 12
-            }
+            meta.schedule.invalidation(),
+            Schedule::poll(60, 12).invalidation()
         );
         assert_eq!(
-            (meta.failback.reattempts, meta.failback.interval_secs),
+            (
+                meta.schedule.failback.reattempts,
+                meta.schedule.failback.interval_secs
+            ),
             (3, 1)
         );
         assert_eq!(
@@ -1852,12 +1849,12 @@ result.x = "{{ data }}"
              [daemon.providers.mise.sources.tools]\nreturn = \"{{ result | poll('15s') | nearest }}\"\n",
         );
         assert!(
-            !source_meta(&reg, "git", "diff").nearest,
+            !source_meta(&reg, "git", "diff").schedule.nearest,
             "the shipped git.diff says nearest, and this line replaces it"
         );
-        assert!(source_meta(&reg, "mise", "tools").nearest);
+        assert!(source_meta(&reg, "mise", "tools").schedule.nearest);
         assert!(
-            source_meta(&reg, "git", "head").nearest,
+            source_meta(&reg, "git", "head").schedule.nearest,
             "a Source with no return keeps what it declares"
         );
     }
@@ -1870,9 +1867,13 @@ result.x = "{{ data }}"
             for sm in metas {
                 let source = reg.source(&provider, &sm.name).unwrap();
                 if source.has_root() {
-                    rooted.push((provider.clone(), sm.name.clone(), sm.nearest));
+                    rooted.push((provider.clone(), sm.name.clone(), sm.schedule.nearest));
                 } else {
-                    assert!(!sm.nearest, "{provider}.{}: no root to be nearest", sm.name);
+                    assert!(
+                        !sm.schedule.nearest,
+                        "{provider}.{}: no root to be nearest",
+                        sm.name
+                    );
                 }
             }
         }
@@ -1959,17 +1960,14 @@ return = "{{ result | poll('15s') }}"
         );
         assert_eq!(
             invalidation(&reg, "git", "diff"),
-            InvalidationStrategy::Poll {
-                interval_secs: 15,
-                count: 8
-            },
+            Schedule::poll(15, 8),
             "the line replaces the schedule whole"
         );
         // The Source the scheduler holds says the same, and still runs.
         let held = reg.source("git", "diff").unwrap();
         assert_eq!(
-            held.metadata().invalidation,
-            invalidation(&reg, "git", "diff")
+            held.metadata().schedule.invalidation(),
+            invalidation(&reg, "git", "diff").invalidation()
         );
         // The others keep theirs.
         let stock = ProviderRegistry::shipped(&std::env::vars().collect());
@@ -1997,14 +1995,20 @@ return = "{{ result | poll('15s') }}"
                 source_meta(&reg, provider, source),
                 source_meta(&stock, provider, source),
             );
-            assert_eq!(got.invalidation, want.invalidation, "{provider}.{source}");
-            assert_eq!(got.failback, want.failback, "{provider}.{source}");
-            assert_eq!(got.decay, want.decay, "{provider}.{source}");
+            assert_eq!(got.schedule, want.schedule, "{provider}.{source}");
+            assert_eq!(
+                got.schedule.failback, want.schedule.failback,
+                "{provider}.{source}"
+            );
+            assert_eq!(
+                got.schedule.decay, want.schedule.decay,
+                "{provider}.{source}"
+            );
         }
-        assert!(matches!(
-            invalidation(&reg, "git", "refs"),
-            InvalidationStrategy::Watch { .. }
-        ));
+        assert!(
+            invalidation(&reg, "git", "refs").poll.is_none(),
+            "watch-driven"
+        );
     }
 
     #[test]
@@ -2023,19 +2027,23 @@ return = "{{ result | poll('15s') }}"
                 .iter()
                 .find(|s| s.name == "diff")
                 .unwrap()
+                .schedule
                 .failback,
-            diff.failback,
+            diff.schedule.failback,
             "the shipped git.diff names a failback"
         );
         assert_eq!(
-            (diff.failback.reattempts, diff.failback.interval_secs),
+            (
+                diff.schedule.failback.reattempts,
+                diff.schedule.failback.interval_secs
+            ),
             (
                 crate::scheduler::lifecycle::DEFAULT_FAILBACK_COUNT,
                 crate::scheduler::lifecycle::DEFAULT_FAILBACK_INTERVAL_SECS
             )
         );
-        assert_eq!(diff.budget, std::time::Duration::from_millis(30));
-        assert_eq!(diff.timeout, std::time::Duration::from_secs(4));
+        assert_eq!(diff.schedule.budget, std::time::Duration::from_millis(30));
+        assert_eq!(diff.schedule.timeout, std::time::Duration::from_secs(4));
         // Its own line wins when it names them.
         let reg = registry_from(
             "[daemon.providers.git.sources.diff]\n\
@@ -2043,19 +2051,22 @@ return = "{{ result | poll('15s') }}"
         );
         let diff = source_meta(&reg, "git", "diff");
         assert_eq!(
-            (diff.failback.reattempts, diff.failback.interval_secs),
+            (
+                diff.schedule.failback.reattempts,
+                diff.schedule.failback.interval_secs
+            ),
             (5, 2)
         );
-        assert_eq!(diff.budget, std::time::Duration::from_millis(7));
+        assert_eq!(diff.schedule.budget, std::time::Duration::from_millis(7));
         // And the budget reaches a Source whose line names none.
         let reg = registry_from("[daemon]\nbudget = \"30ms\"\n");
         assert_eq!(
-            source_meta(&reg, "git", "lineage").budget,
+            source_meta(&reg, "git", "lineage").schedule.budget,
             std::time::Duration::from_millis(30)
         );
         // git's others name their own, to have the next prompt right.
         assert_eq!(
-            source_meta(&reg, "git", "refs").budget,
+            source_meta(&reg, "git", "refs").schedule.budget,
             std::time::Duration::from_millis(100)
         );
     }
@@ -2074,15 +2085,15 @@ return = "{{ result | super }}"
         );
         let diff = source_meta(&reg, "git", "diff");
         assert_eq!(
-            diff.invalidation,
-            InvalidationStrategy::Poll {
-                interval_secs: 60,
-                count: 12
-            },
+            diff.schedule.invalidation(),
+            Schedule::poll(60, 12).invalidation(),
             "the abstract `_`, two levels up"
         );
         assert_eq!(
-            (diff.failback.reattempts, diff.failback.interval_secs),
+            (
+                diff.schedule.failback.reattempts,
+                diff.schedule.failback.interval_secs
+            ),
             (7, 3),
             "git's `_`, one level up, beats the abstract failback('1s', 3)"
         );
@@ -2091,18 +2102,12 @@ return = "{{ result | super }}"
             "[daemon.providers.git.sources.diff]\n\
              return = \"{{ result | poll('9s', 2) | super }}\"\n",
         );
-        assert_eq!(
-            invalidation(&reg, "git", "diff"),
-            InvalidationStrategy::Poll {
-                interval_secs: 9,
-                count: 2
-            }
-        );
+        assert_eq!(invalidation(&reg, "git", "diff"), Schedule::poll(9, 2));
         // A sibling without a return of its own is untouched by the `_` lines.
-        assert!(matches!(
-            invalidation(&reg, "git", "refs"),
-            InvalidationStrategy::Watch { .. }
-        ));
+        assert!(
+            invalidation(&reg, "git", "refs").poll.is_none(),
+            "watch-driven"
+        );
     }
 
     /// The shipped providers are layers, as any other file's are.

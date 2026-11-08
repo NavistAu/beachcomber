@@ -1,5 +1,6 @@
 pub mod config_source;
 pub mod registry;
+mod schedule;
 pub mod source_call;
 
 #[cfg(test)]
@@ -11,6 +12,8 @@ mod registry_tests;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+pub use schedule::{FailbackConfig, Poll, Schedule};
 
 /// Note: `#[serde(untagged)]` means Float values that are whole numbers (e.g., 42.0)
 /// may deserialize as Int on a round-trip. This is acceptable for shell state values
@@ -381,53 +384,12 @@ pub struct FieldSchema {
     pub name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum InvalidationStrategy {
-    Poll {
-        interval_secs: u64,
-        /// Polls in the Active window: it lasts `interval_secs × count`. A
-        /// count of 0 is a `ttl` (only it writes one): live for
-        /// `interval_secs`, never polled, then one decay step as long.
-        count: u32,
-    },
-    Watch {
-        patterns: Vec<String>,
-        abs_paths: Vec<String>,
-    },
-    WatchAndPoll {
-        patterns: Vec<String>,
-        abs_paths: Vec<String>,
-        interval_secs: u64,
-        count: u32,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FailbackConfig {
-    pub reattempts: u32,
-    pub interval_secs: u64,
-}
-
-/// Returns the expected refresh interval for a provider's strategy, in whole seconds.
-/// Used to populate `CacheEntry::expected_interval_secs` on write paths so staleness
-/// reporting works correctly for sync-miss and rerun writes.
-pub fn expected_interval_secs(strategy: &InvalidationStrategy) -> Option<u64> {
-    match strategy {
-        InvalidationStrategy::Poll { interval_secs, .. } => Some(*interval_secs),
-        InvalidationStrategy::WatchAndPoll { interval_secs, .. } => Some(*interval_secs),
-        InvalidationStrategy::Watch { .. } => None,
-    }
-}
-
 /// Returns the filesystem patterns that should trigger re-execution for a provider.
 /// Trailing `/` is stripped from each pattern so ".venv/" and ".venv" are equivalent.
-pub fn watch_patterns(strategy: &InvalidationStrategy) -> Vec<String> {
-    let raw: &[String] = match strategy {
-        InvalidationStrategy::Watch { patterns, .. } => patterns,
-        InvalidationStrategy::WatchAndPoll { patterns, .. } => patterns,
-        InvalidationStrategy::Poll { .. } => return Vec::new(),
-    };
-    raw.iter()
+pub fn watch_patterns(schedule: &Schedule) -> Vec<String> {
+    schedule
+        .watch
+        .iter()
         .map(|p| p.trim_end_matches('/').to_string())
         .collect()
 }
@@ -440,26 +402,18 @@ pub fn is_tree_pattern(pattern: &str) -> bool {
 
 /// Whether a Source's `watch` covers the tree below its directory: a change
 /// there, which nothing stats, makes its record invalid for the next read.
-pub fn watches_tree(strategy: &InvalidationStrategy) -> bool {
-    match strategy {
-        InvalidationStrategy::Watch { patterns, .. }
-        | InvalidationStrategy::WatchAndPoll { patterns, .. } => patterns.iter().any(|p| p == "."),
-        InvalidationStrategy::Poll { .. } => false,
-    }
+pub fn watches_tree(schedule: &Schedule) -> bool {
+    schedule.watch.iter().any(|p| p == ".")
 }
 
 /// What is wrong with a Source of one instance (no `root`, so the one at `~`)
-/// whose schedule is `invalidation` and `nearest`, in words for `subject`
+/// whose schedule is `schedule`, in words for `subject`
 /// (`<provider>.<source>`); `None` when nothing is. The one instance has no
 /// directory a relative watch path could be resolved against, so it would
 /// watch nothing, silently; and there is no nearer instance for `nearest` to
 /// prefer.
-pub fn one_instance_problem(
-    subject: &str,
-    invalidation: &InvalidationStrategy,
-    nearest: bool,
-) -> Option<String> {
-    let relative = watch_patterns(invalidation);
+pub fn one_instance_problem(subject: &str, schedule: &Schedule) -> Option<String> {
+    let relative = watch_patterns(schedule);
     if !relative.is_empty() {
         let listed: Vec<String> = relative.iter().map(|p| format!("'{p}'")).collect();
         return Some(format!(
@@ -467,18 +421,9 @@ pub fn one_instance_problem(
             listed.join(", ")
         ));
     }
-    nearest.then(|| format!("{subject} has one instance; nearest has no effect"))
-}
-
-/// Returns the absolute filesystem paths to watch for a Source's strategy.
-/// Sources are responsible for expanding `~` / `$XDG_*` in metadata() before
-/// the value reaches this helper.
-pub fn watch_abs_paths(strategy: &InvalidationStrategy) -> Vec<String> {
-    match strategy {
-        InvalidationStrategy::Watch { abs_paths, .. } => abs_paths.clone(),
-        InvalidationStrategy::WatchAndPoll { abs_paths, .. } => abs_paths.clone(),
-        InvalidationStrategy::Poll { .. } => Vec::new(),
-    }
+    schedule
+        .nearest
+        .then(|| format!("{subject} has one instance; nearest has no effect"))
 }
 
 /// Expand a leading `~` ([`libbeachcomber::path::expand_tilde`]) and `$HOME`,
@@ -540,23 +485,7 @@ pub fn expand_abs_path(
 pub struct SourceMetadata {
     pub name: String,
     pub fields: Vec<FieldSchema>,
-    pub invalidation: InvalidationStrategy,
-    pub failback: FailbackConfig,
-    /// Decay steps before eviction, when the Source sets its own (`ttl(...)`
-    /// sets 1). `None` takes the provider's `_.decay` prototype.
-    pub decay: Option<u8>,
-    /// How long a read of a stale record waits for its run before answering
-    /// with the record: the Source's `budget(...)`, else `[daemon] budget`.
-    pub budget: std::time::Duration,
-    /// How long one `execute` may take before it is cut off: the Source's
-    /// `timeout(...)`, else `[daemon] timeout`.
-    pub timeout: std::time::Duration,
-    /// How the Source's instances combine. `false` cascades: a read takes
-    /// each leaf from the nearest instance that has it, then the next one up,
-    /// ending at `~`. `true` is `| nearest`: the nearest instance answers
-    /// alone, and no instance found is no value. Meaningless for a Source
-    /// with no root, whose one instance is at `~` either way.
-    pub nearest: bool,
+    pub schedule: Schedule,
 }
 
 /// What a Source produces on a successful execute. Disjoint with sibling
@@ -714,12 +643,9 @@ pub trait Source: Send + Sync {
 /// file under `$HOME`, as its watch registers it; one of more names nothing
 /// there. A declared directory is an input as a node, by its own mtime: an
 /// entry created, removed or renamed in it is a change, one deeper is not.
-pub fn declared_inputs(
-    strategy: &InvalidationStrategy,
-    root: Option<&str>,
-) -> Vec<std::path::PathBuf> {
+pub fn declared_inputs(schedule: &Schedule, root: Option<&str>) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
-    for pattern in watch_patterns(strategy) {
+    for pattern in watch_patterns(schedule) {
         if is_tree_pattern(&pattern) {
             continue;
         }
@@ -733,11 +659,7 @@ pub fn declared_inputs(
             None => {}
         }
     }
-    out.extend(
-        watch_abs_paths(strategy)
-            .into_iter()
-            .map(std::path::PathBuf::from),
-    );
+    out.extend(schedule.watch_abs.iter().map(std::path::PathBuf::from));
     out
 }
 
@@ -748,10 +670,10 @@ mod tests {
 
     #[test]
     fn a_tree_pattern_is_no_stat_input() {
-        let strategy = InvalidationStrategy::Watch {
-            patterns: vec![".git/index".into(), ".".into(), "!.git".into()],
-            abs_paths: vec![],
-        };
+        let strategy = Schedule::watch(
+            vec![".git/index".into(), ".".into(), "!.git".into()],
+            vec![],
+        );
         assert!(watches_tree(&strategy));
         assert_eq!(
             declared_inputs(&strategy, Some("/r")),
@@ -761,10 +683,7 @@ mod tests {
 
     #[test]
     fn watch_patterns_strips_trailing_slash() {
-        let strategy = InvalidationStrategy::Watch {
-            patterns: vec![".venv/".into(), "pyproject.toml".into()],
-            abs_paths: vec![],
-        };
+        let strategy = Schedule::watch(vec![".venv/".into(), "pyproject.toml".into()], vec![]);
         let patterns = watch_patterns(&strategy);
         assert_eq!(
             patterns,
@@ -774,24 +693,19 @@ mod tests {
 
     #[test]
     fn watch_patterns_handles_watch_and_poll() {
-        let strategy = InvalidationStrategy::WatchAndPoll {
-            patterns: vec![".git".into()],
-            abs_paths: vec![],
-            interval_secs: 60,
-            count: 2,
+        let strategy = Schedule {
+            poll: Some(Poll {
+                interval_secs: 60,
+                count: 2,
+            }),
+            ..Schedule::watch(vec![".git".into()], vec![])
         };
         assert_eq!(watch_patterns(&strategy), vec![".git".to_string()]);
     }
 
     #[test]
     fn watch_patterns_empty_for_poll() {
-        assert!(
-            watch_patterns(&InvalidationStrategy::Poll {
-                interval_secs: 10,
-                count: 2
-            })
-            .is_empty()
-        );
+        assert!(watch_patterns(&Schedule::poll(10, 2)).is_empty());
     }
 
     fn make_source(name: &str, fields: Vec<&str>) -> SourceMetadata {
@@ -801,18 +715,13 @@ mod tests {
                 .into_iter()
                 .map(|n| FieldSchema { name: n.into() })
                 .collect(),
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 30,
-                count: 2,
+            schedule: Schedule {
+                failback: FailbackConfig {
+                    reattempts: 3,
+                    interval_secs: 30,
+                },
+                ..Schedule::poll(30, 2)
             },
-            failback: FailbackConfig {
-                reattempts: 3,
-                interval_secs: 30,
-            },
-            decay: None,
-            budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
-            timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
-            nearest: false,
         }
     }
 
@@ -1065,11 +974,15 @@ mod tests {
 
     #[test]
     fn the_inputs_are_the_watch_declaration() {
-        let strategy = InvalidationStrategy::WatchAndPoll {
-            patterns: vec!["state.json".into(), ".cfg/x".into()],
-            abs_paths: vec!["/etc/hosts".into()],
-            interval_secs: 60,
-            count: 2,
+        let strategy = Schedule {
+            poll: Some(Poll {
+                interval_secs: 60,
+                count: 2,
+            }),
+            ..Schedule::watch(
+                vec!["state.json".into(), ".cfg/x".into()],
+                vec!["/etc/hosts".into()],
+            )
         };
         assert_eq!(
             declared_inputs(&strategy, Some("/r")),
@@ -1086,14 +999,7 @@ mod tests {
             "at ~ a name of one component lies under $HOME; a path names nothing"
         );
         assert!(
-            declared_inputs(
-                &InvalidationStrategy::Poll {
-                    interval_secs: 5,
-                    count: 1
-                },
-                Some("/r")
-            )
-            .is_empty(),
+            declared_inputs(&Schedule::poll(5, 1), Some("/r")).is_empty(),
             "a Source that only polls has none"
         );
     }

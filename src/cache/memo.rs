@@ -603,7 +603,8 @@ mod tests {
             Some("/m/a"),
             "s",
             make_fields(&[("g", "v")]),
-            Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
         assert!(!live(None, "g"), "a Source's run");
         assert!(live(None, "f"));

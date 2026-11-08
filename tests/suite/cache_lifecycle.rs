@@ -6,7 +6,7 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, Schedule, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerHandle, SchedulerMessage};
@@ -23,18 +23,13 @@ fn lc_counter_source_meta() -> SourceMetadata {
         fields: vec![FieldSchema {
             name: "value".into(),
         }],
-        invalidation: InvalidationStrategy::Poll {
-            interval_secs: 5,
-            count: 2,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 30,
+            },
+            ..Schedule::poll(5, 2)
         },
-        failback: FailbackConfig {
-            reattempts: 3,
-            interval_secs: 30,
-        },
-        decay: None,
-        budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-        timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
-        nearest: false,
     }
 }
 

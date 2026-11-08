@@ -3,7 +3,7 @@
 //! the `gcloud` templates that index it by the shell's selector.
 
 use super::{age, scenario, schedule, served};
-use beachcomber::provider::{FailbackConfig, InvalidationStrategy};
+use beachcomber::provider::{FailbackConfig, Schedule};
 use serde_json::json;
 use std::path::Path;
 
@@ -264,19 +264,13 @@ fn gcloud_keeps_its_schedule() {
         "a whole node: {:?}",
         meta.fields
     );
+    assert_eq!(super::trigger(&meta.schedule), Schedule::poll(60, 2));
     assert_eq!(
-        meta.invalidation,
-        InvalidationStrategy::Poll {
-            interval_secs: 60,
-            count: 2,
-        }
-    );
-    assert_eq!(
-        meta.failback,
+        meta.schedule.failback,
         FailbackConfig {
             reattempts: 3,
             interval_secs: 30
         }
     );
-    assert!(!meta.nearest);
+    assert!(!meta.schedule.nearest);
 }

@@ -574,20 +574,21 @@ mod tests {
         rewrite(&f, "1", SystemTime::now() - Duration::from_secs(10));
         let cache = Cache::new();
         assert_eq!(cache.record_state("p", None, "s"), RecordState::Cold);
-        let schedule =
-            Schedule::from_strategy(&crate::provider::InvalidationStrategy::WatchAndPoll {
-                patterns: Vec::new(),
-                abs_paths: vec![f.to_string_lossy().into_owned()],
+        let schedule = crate::provider::Schedule {
+            poll: Some(crate::provider::Poll {
                 interval_secs: 60,
                 count: 1,
-            });
+            }),
+            ..crate::provider::Schedule::watch(Vec::new(), vec![f.to_string_lossy().into_owned()])
+        };
         let fields = HashMap::from([("v".to_string(), Value::Int(1))]);
         cache.put_source(
             "p",
             None,
             "s",
             fields,
-            schedule.with_validity(Validity::take(vec![f.clone()])),
+            &schedule,
+            Validity::take(vec![f.clone()]),
         );
         assert_eq!(cache.record_state("p", None, "s"), RecordState::Valid);
         let keys = cache

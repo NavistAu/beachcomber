@@ -2,7 +2,7 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, Schedule, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
@@ -45,19 +45,18 @@ fn slow_source_meta() -> SourceMetadata {
         fields: vec![FieldSchema {
             name: "value".into(),
         }],
-        invalidation: InvalidationStrategy::Poll {
-            interval_secs: 60,
-            count: 2,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 30,
+            },
+            decay: None,
+            budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
+            // The Source's own timeout, which the scheduler applies to its run.
+            timeout: Duration::from_secs(1),
+            nearest: false,
+            ..Schedule::poll(60, 2)
         },
-        failback: FailbackConfig {
-            reattempts: 3,
-            interval_secs: 30,
-        },
-        decay: None,
-        budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-        // The Source's own timeout, which the scheduler applies to its run.
-        timeout: Duration::from_secs(1),
-        nearest: false,
     }
 }
 

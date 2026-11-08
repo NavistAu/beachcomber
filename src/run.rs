@@ -574,7 +574,7 @@ impl Runs {
             done: false,
         };
         tokio::spawn(async move {
-            let timeout = source.metadata().timeout;
+            let timeout = source.metadata().schedule.timeout;
             let dir = crate::query::instance_dir(settle.key.path.as_deref());
             // The run reads through the registry it began under, which its
             // Source's `comb.<p>` reader holds only weakly: kept here, a
@@ -592,7 +592,7 @@ impl Runs {
                     // file its lines read immediately before it is read: a
                     // change while it runs fails the next read's check, which
                     // makes one run more, never a stale answer.
-                    let invalidation = &source.metadata().invalidation;
+                    let invalidation = &source.metadata().schedule;
                     let declared = Stamped::take(crate::provider::declared_inputs(
                         invalidation,
                         root.as_deref(),
@@ -801,7 +801,8 @@ fn record(registry: &ProviderRegistry, cache: &Cache, key: &Key, result: Ran) ->
                     root,
                     source_name,
                     result.fields,
-                    crate::cache::Schedule::of(meta).with_validity(validity),
+                    &meta.schedule,
+                    validity,
                 );
                 debug!("Executed source '{provider}.{source_name}' path={root:?}");
                 Outcome::Stored
@@ -811,8 +812,8 @@ fn record(registry: &ProviderRegistry, cache: &Cache, key: &Key, result: Ran) ->
                     .entry(key.clone())
                     .or_insert_with(|| {
                         crate::scheduler::FailureState::new(
-                            meta.failback.reattempts,
-                            std::time::Duration::from_secs(meta.failback.interval_secs),
+                            meta.schedule.failback.reattempts,
+                            std::time::Duration::from_secs(meta.schedule.failback.interval_secs),
                         )
                     })
                     // The row and the verdict already name the Source.
@@ -834,9 +835,7 @@ fn record(registry: &ProviderRegistry, cache: &Cache, key: &Key, result: Ran) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{
-        FailbackConfig, FieldSchema, InvalidationStrategy, SourceMetadata, Value,
-    };
+    use crate::provider::{FailbackConfig, FieldSchema, Schedule, SourceMetadata, Value};
     use std::sync::Condvar;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
@@ -905,18 +904,14 @@ mod tests {
         SourceMetadata {
             name: "s".into(),
             fields: vec![FieldSchema { name: "n".into() }],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 60,
-                count: 2,
+            schedule: Schedule {
+                failback: FailbackConfig {
+                    reattempts: failback,
+                    interval_secs: 3600,
+                },
+                timeout,
+                ..Schedule::poll(60, 2)
             },
-            failback: FailbackConfig {
-                reattempts: failback,
-                interval_secs: 3600,
-            },
-            decay: None,
-            budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
-            timeout,
-            nearest: false,
         }
     }
 
@@ -1051,12 +1046,15 @@ mod tests {
             .unwrap()
             .set_modified(std::time::SystemTime::now() - Duration::from_secs(10))
             .unwrap();
+        let base = meta(3, Duration::from_secs(60));
         let f = fixture_of(SourceMetadata {
-            invalidation: InvalidationStrategy::Watch {
-                patterns: Vec::new(),
-                abs_paths: vec![input.to_string_lossy().into_owned()],
+            schedule: Schedule {
+                poll: None,
+                watch: Vec::new(),
+                watch_abs: vec![input.to_string_lossy().into_owned()],
+                ..base.schedule
             },
-            ..meta(3, Duration::from_secs(60))
+            ..base
         });
         let first = f.start(Want::Cold).unwrap();
         // Executing: it stamped its input first.
@@ -1142,14 +1140,7 @@ mod tests {
                 state.display()
             ),
             result: ResultSpec::Fields(vec![("v".into(), "{{ data }}".into())]),
-            recorded: crate::shape::decorators::Recorded {
-                invalidation: poll.invalidation,
-                failback: poll.failback,
-                budget: poll.budget,
-                timeout: poll.timeout,
-                decay: None,
-                nearest: false,
-            },
+            recorded: poll.schedule,
         };
         let vars: Arc<HashMap<String, String>> = Arc::new(std::env::vars().collect());
         let plugins = Arc::new(crate::engine::PluginSet::new(vec![], Arc::new(loader)));

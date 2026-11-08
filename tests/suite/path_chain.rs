@@ -18,13 +18,12 @@
 use crate::common::daemon::isolate;
 use crate::common::git::GitRepoFixture;
 use beachcomber::cache::Cache;
-use beachcomber::cache::Schedule;
 use beachcomber::config::Config;
 use beachcomber::protocol::Response;
+use beachcomber::provider::Schedule;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, ProviderMetadata, Source, SourceMetadata,
-    SourceResult, Value,
+    FailbackConfig, FieldSchema, ProviderMetadata, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::scheduler::{Scheduler, SchedulerHandle};
 use beachcomber::server::Server;
@@ -350,18 +349,13 @@ fn source_meta(name: &str, field: &str) -> SourceMetadata {
     SourceMetadata {
         name: name.into(),
         fields: vec![FieldSchema { name: field.into() }],
-        invalidation: InvalidationStrategy::Poll {
-            interval_secs: 60,
-            count: 2,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 30,
+            },
+            ..Schedule::poll(60, 2)
         },
-        failback: FailbackConfig {
-            reattempts: 3,
-            interval_secs: 30,
-        },
-        decay: None,
-        budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-        timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
-        nearest: false,
     }
 }
 
@@ -405,7 +399,7 @@ struct MixedProvider;
 impl MixedProvider {
     fn metadata(&self) -> ProviderMetadata {
         let mut near = source_meta("near", "nf");
-        near.nearest = true;
+        near.schedule.nearest = true;
         ProviderMetadata {
             name: "mix".to_string(),
             sources: vec![near, source_meta("casc", "cf")],
@@ -437,14 +431,16 @@ async fn a_nearest_sources_outer_records_do_not_surface_through_a_cascading_sibl
         Some(&outer),
         "near",
         fields(vec![("nf", Value::String("outer-near".into()))]),
-        Schedule::default(),
+        &Schedule::default(),
+        None,
     );
     f.cache.put_source(
         "mix",
         Some(&outer),
         "casc",
         fields(vec![("cf", Value::String("outer-casc".into()))]),
-        Schedule::default(),
+        &Schedule::default(),
+        None,
     );
 
     let mut s = f.connect().await;
@@ -577,7 +573,8 @@ async fn a_cold_source_runs_even_when_its_sibling_is_warm() {
         None,
         "glob",
         fields(vec![("gv", Value::Int(0))]),
-        Schedule::default(),
+        &Schedule::default(),
+        None,
     );
 
     let mut s = f.connect().await;
@@ -804,7 +801,8 @@ async fn a_provider_record_is_read_at_its_sources_instances() {
             ("v", Value::String("global-v".into())),
             ("gv", Value::String("G".into())),
         ]),
-        Schedule::default(),
+        &Schedule::default(),
+        None,
     );
     f.cache.put_source(
         "p",
@@ -814,11 +812,18 @@ async fn a_provider_record_is_read_at_its_sources_instances() {
             ("v", Value::String("project-v".into())),
             ("pv", Value::String("P".into())),
         ]),
-        Schedule::default(),
+        &Schedule::default(),
+        None,
     );
     // The rooted source's instance at `~`: it has been asked once already.
-    f.cache
-        .put_source("p", None, "proj", fields(vec![]), Schedule::default());
+    f.cache.put_source(
+        "p",
+        None,
+        "proj",
+        fields(vec![]),
+        &Schedule::default(),
+        None,
+    );
 
     let mut s = f.connect().await;
 
@@ -856,14 +861,16 @@ async fn sources_sharing_the_global_entry_merge_in_a_fixed_order() {
         None,
         "proj",
         fields(vec![("v", Value::String("from-proj".into()))]),
-        Schedule::default(),
+        &Schedule::default(),
+        None,
     );
     f.cache.put_source(
         "p",
         None,
         "glob",
         fields(vec![("v", Value::String("from-glob".into()))]),
-        Schedule::default(),
+        &Schedule::default(),
+        None,
     );
 
     let mut s = f.connect().await;
@@ -896,7 +903,8 @@ async fn a_static_record_merges_into_a_provider_produced_object() {
             "gv",
             Value::Object(fields(vec![("y", Value::Int(2))])),
         )]),
-        Schedule::default(),
+        &Schedule::default(),
+        None,
     );
 
     let mut s = f.connect().await;
@@ -1132,10 +1140,7 @@ struct WalkSource(SourceMetadata);
 impl WalkSource {
     fn meta() -> SourceMetadata {
         SourceMetadata {
-            invalidation: InvalidationStrategy::Watch {
-                patterns: vec![".values".into()],
-                abs_paths: vec![],
-            },
+            schedule: Schedule::watch(vec![".values".into()], vec![]),
             ..source_meta("s", "<k>")
         }
     }

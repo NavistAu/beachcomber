@@ -1,6 +1,7 @@
 //! `defaults/battery.toml`: the battery, from `sys`.
 
 use super::scenario;
+use beachcomber::provider::Schedule;
 use serde_json::json;
 
 /// A machine with no battery has no fields (a miss); one with a battery has
@@ -46,11 +47,5 @@ fn battery_is_one_source_on_every_platform() {
             "time_remaining_secs"
         ]
     );
-    assert_eq!(
-        state.invalidation,
-        beachcomber::provider::InvalidationStrategy::Poll {
-            interval_secs: 30,
-            count: 4
-        }
-    );
+    assert_eq!(super::trigger(&state.schedule), Schedule::poll(30, 4));
 }

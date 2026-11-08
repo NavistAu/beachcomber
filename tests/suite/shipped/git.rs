@@ -10,7 +10,7 @@ use crate::common::poll::{poll_until_async, poll_until_eq};
 use beachcomber::cache::Cache;
 use beachcomber::client::Client;
 use beachcomber::config::Config;
-use beachcomber::provider::{InvalidationStrategy, Source, SourceMetadata};
+use beachcomber::provider::{Poll, Schedule, Source, SourceMetadata};
 use beachcomber::scheduler::Scheduler;
 use beachcomber::server::Server;
 use serde_json::json;
@@ -778,9 +778,8 @@ async fn git_returns_miss_for_non_repo() {
 /// about: no watch of `.git` itself, which a lockfile would set off.
 #[test]
 fn git_schedules_watch_what_each_source_reads() {
-    let watch = |patterns: &[&str]| InvalidationStrategy::Watch {
-        patterns: patterns.iter().map(|p| p.to_string()).collect(),
-        abs_paths: vec![],
+    let watch = |patterns: &[&str]| {
+        Schedule::watch(patterns.iter().map(|p| p.to_string()).collect(), vec![])
     };
     for (source, invalidation, failback) in [
         ("head", watch(&[".git/HEAD"]), 60),
@@ -803,11 +802,12 @@ fn git_schedules_watch_what_each_source_reads() {
         ),
         (
             "diff",
-            InvalidationStrategy::WatchAndPoll {
-                patterns: vec![".".into(), "!.git".into()],
-                abs_paths: vec![],
-                interval_secs: 30,
-                count: 4,
+            Schedule {
+                poll: Some(Poll {
+                    interval_secs: 30,
+                    count: 4,
+                }),
+                ..Schedule::watch(vec![".".into(), "!.git".into()], vec![])
             },
             60,
         ),
@@ -823,30 +823,34 @@ fn git_schedules_watch_what_each_source_reads() {
         ),
         (
             "status",
-            InvalidationStrategy::WatchAndPoll {
-                patterns: [
-                    ".git/index",
-                    ".git/HEAD",
-                    ".git/refs",
-                    ".git/packed-refs",
-                    ".git/config",
-                    ".",
-                    "!.git",
-                ]
-                .map(String::from)
-                .to_vec(),
-                abs_paths: vec![],
-                interval_secs: 60,
-                count: 2,
+            Schedule {
+                poll: Some(Poll {
+                    interval_secs: 60,
+                    count: 2,
+                }),
+                ..Schedule::watch(
+                    [
+                        ".git/index",
+                        ".git/HEAD",
+                        ".git/refs",
+                        ".git/packed-refs",
+                        ".git/config",
+                        ".",
+                        "!.git",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
+                    vec![],
+                )
             },
             30,
         ),
     ] {
         let (meta, rooted) = schedule("git", source);
-        assert_eq!(meta.invalidation, invalidation, "{source}");
-        assert_eq!(meta.failback.reattempts, 3, "{source}");
-        assert_eq!(meta.failback.interval_secs, failback, "{source}");
-        assert!(meta.nearest, "{source} is nearest");
+        assert_eq!(super::trigger(&meta.schedule), invalidation, "{source}");
+        assert_eq!(meta.schedule.failback.reattempts, 3, "{source}");
+        assert_eq!(meta.schedule.failback.interval_secs, failback, "{source}");
+        assert!(meta.schedule.nearest, "{source} is nearest");
         assert!(rooted, "{source} has a root");
     }
 }

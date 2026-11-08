@@ -16,10 +16,10 @@
 
 use crate::common::git::GitRepoFixture;
 use beachcomber::cache::Cache;
-use beachcomber::cache::Schedule;
+use beachcomber::provider::Schedule;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, Source, SourceMetadata, SourceResult, Value,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -627,18 +627,13 @@ fn twin_meta(name: &str, field: &str) -> SourceMetadata {
     SourceMetadata {
         name: name.into(),
         fields: vec![FieldSchema { name: field.into() }],
-        invalidation: InvalidationStrategy::Poll {
-            interval_secs: 600,
-            count: 2,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 30,
+            },
+            ..Schedule::poll(600, 2)
         },
-        failback: FailbackConfig {
-            reattempts: 3,
-            interval_secs: 30,
-        },
-        decay: None,
-        budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-        timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
-        nearest: false,
     }
 }
 
@@ -686,7 +681,8 @@ async fn field_age_through_get_is_the_owning_sources_age() {
         None,
         "alpha",
         [("a".to_string(), Value::Int(1))].into_iter().collect(),
-        Schedule::poll(600, 1),
+        &Schedule::poll(600, 1),
+        None,
     );
     tokio::time::advance(Duration::from_millis(10)).await;
     cache.put_source(
@@ -694,7 +690,8 @@ async fn field_age_through_get_is_the_owning_sources_age() {
         None,
         "beta",
         [("b".to_string(), Value::Int(2))].into_iter().collect(),
-        Schedule::poll(600, 1),
+        &Schedule::poll(600, 1),
+        None,
     );
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);

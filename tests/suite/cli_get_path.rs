@@ -10,7 +10,7 @@ use beachcomber::cache::Cache;
 ///
 /// Unit tests for the disambiguation logic itself live in src/main.rs
 /// under `#[cfg(test)] mod path_disambiguation_tests`.
-use beachcomber::cache::Schedule;
+use beachcomber::provider::Schedule;
 use beachcomber::provider::Value;
 use libbeachcomber::resolve::FetchError;
 use libbeachcomber::{ClientConfig, Session};
@@ -70,12 +70,26 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
     let mut git = HashMap::new();
     git.insert("branch".to_string(), Value::String("main".to_string()));
     git.insert("dirty".to_string(), Value::Bool(false));
-    cache.put_source("git", Some(&repo_path), "refs", git, Schedule::poll(60, 1));
+    cache.put_source(
+        "git",
+        Some(&repo_path),
+        "refs",
+        git,
+        &Schedule::poll(60, 1),
+        None,
+    );
 
     // Seed a hostname entry (global — no path).
     let mut hostname = HashMap::new();
     hostname.insert("name".to_string(), Value::String("myhost".to_string()));
-    cache.put_source("hostname", None, "host", hostname, Schedule::poll(60, 1));
+    cache.put_source(
+        "hostname",
+        None,
+        "host",
+        hostname,
+        &Schedule::poll(60, 1),
+        None,
+    );
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     server.spawn().unwrap();

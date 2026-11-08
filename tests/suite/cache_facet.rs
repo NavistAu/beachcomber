@@ -7,8 +7,8 @@
 use crate::common::git::GitRepoFixture;
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
-use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
+use beachcomber::provider::{Schedule, Value};
 use beachcomber::watcher_registry::WatcherRegistry;
 use serde_json::json;
 use std::sync::Arc;
@@ -499,7 +499,8 @@ async fn layers_list_a_put_over_a_source_and_mark_the_put_answered() {
         None,
         "host",
         fields,
-        beachcomber::cache::Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
     assert!(
         put(&mut s, "hostname.name", json!("from-put"), None, None)

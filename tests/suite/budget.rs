@@ -7,7 +7,7 @@
 use beachcomber::cache::Cache;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, Schedule, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::watcher_registry::WatcherRegistry;
 use serde_json::{Value as Json, json};
@@ -71,18 +71,15 @@ fn meta(source: &str, field: &str, budget: Duration, failback: u32) -> SourceMet
     SourceMetadata {
         name: source.into(),
         fields: vec![FieldSchema { name: field.into() }],
-        invalidation: InvalidationStrategy::Poll {
-            interval_secs: 60,
-            count: 2,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: failback,
+                interval_secs: 3600,
+            },
+            budget,
+            timeout: Duration::from_secs(600),
+            ..Schedule::poll(60, 2)
         },
-        failback: FailbackConfig {
-            reattempts: failback,
-            interval_secs: 3600,
-        },
-        decay: None,
-        budget,
-        timeout: Duration::from_secs(600),
-        nearest: false,
     }
 }
 
@@ -244,11 +241,10 @@ async fn a_stale_record_answers_within_its_budget_and_the_run_goes_on() {
 #[tokio::test]
 async fn a_read_of_a_ttl_record_past_its_ttl_runs_the_source() {
     let mut ttl = meta("s", "n", BUDGET, 3);
-    ttl.invalidation = InvalidationStrategy::Poll {
-        interval_secs: 60,
-        count: 0,
+    ttl.schedule = Schedule {
+        decay: Some(1),
+        ..Schedule::poll(60, 0)
     };
-    ttl.decay = Some(1);
     let d = daemon(vec![ttl]);
     stale(&d, "g.n").await;
 

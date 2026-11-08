@@ -1,5 +1,5 @@
 use crate::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, Schedule, Source, SourceMetadata, SourceResult, Value,
 };
 
 fn fake_source_metadata() -> SourceMetadata {
@@ -8,18 +8,13 @@ fn fake_source_metadata() -> SourceMetadata {
         fields: vec![FieldSchema {
             name: "value".into(),
         }],
-        invalidation: InvalidationStrategy::Poll {
-            interval_secs: 30,
-            count: 2,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 30,
+            },
+            ..Schedule::poll(30, 2)
         },
-        failback: FailbackConfig {
-            reattempts: 3,
-            interval_secs: 30,
-        },
-        decay: None,
-        budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
-        timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
-        nearest: false,
     }
 }
 
@@ -55,10 +50,7 @@ fn provider_execute_returns_result() {
 
 #[test]
 fn invalidation_strategy_poll() {
-    match FakeSource.metadata().invalidation {
-        InvalidationStrategy::Poll { interval_secs, .. } => {
-            assert_eq!(interval_secs, 30);
-        }
-        _ => panic!("Expected Poll invalidation strategy"),
-    }
+    let schedule = &FakeSource.metadata().schedule;
+    assert!(!schedule.watches(), "Expected Poll invalidation strategy");
+    assert_eq!(schedule.poll.map(|p| p.interval_secs), Some(30));
 }

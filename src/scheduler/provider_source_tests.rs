@@ -6,11 +6,10 @@
 
 use crate::cache::Cache;
 use crate::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, Schedule, Source, SourceMetadata, SourceResult, Value,
 };
 use crate::scheduler::lifecycle::{
-    DEFAULT_DECAY, DEFAULT_POLL_COUNT, LifecycleRegistry, LifecycleState, SourceLifecycleConfig,
-    StrategyKind,
+    DEFAULT_DECAY, LifecycleRegistry, LifecycleState, SourceLifecycleConfig,
 };
 use std::collections::HashMap;
 use std::time::Duration;
@@ -20,11 +19,7 @@ use tokio::time::Instant;
 // Shared fixture helpers
 // ---------------------------------------------------------------------------
 
-fn make_source_meta(
-    name: &str,
-    field_names: &[&str],
-    invalidation: InvalidationStrategy,
-) -> SourceMetadata {
+fn make_source_meta(name: &str, field_names: &[&str], invalidation: Schedule) -> SourceMetadata {
     SourceMetadata {
         name: name.into(),
         fields: field_names
@@ -33,46 +28,32 @@ fn make_source_meta(
                 name: n.to_string(),
             })
             .collect(),
-        invalidation,
-        failback: FailbackConfig {
-            reattempts: 3,
-            interval_secs: 60,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 60,
+            },
+            ..invalidation
         },
-        decay: None,
-        budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
-        timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
-        nearest: false,
     }
 }
 
 fn watch_source_config() -> SourceLifecycleConfig {
-    SourceLifecycleConfig {
-        strategy_kind: StrategyKind::Watch,
-        poll_interval: None,
-        poll_count: DEFAULT_POLL_COUNT,
-        decay: DEFAULT_DECAY,
-        ttl: None,
-    }
+    SourceLifecycleConfig::new(Schedule::default(), DEFAULT_DECAY)
 }
 
 fn poll_source_config(interval: Duration, k: u32) -> SourceLifecycleConfig {
-    SourceLifecycleConfig {
-        strategy_kind: StrategyKind::Poll,
-        poll_interval: Some(interval),
-        poll_count: k,
-        decay: DEFAULT_DECAY,
-        ttl: None,
-    }
+    SourceLifecycleConfig::new(Schedule::poll(interval.as_secs(), k), DEFAULT_DECAY)
 }
 
 fn watch_and_poll_config(interval: Duration, k: u32) -> SourceLifecycleConfig {
-    SourceLifecycleConfig {
-        strategy_kind: StrategyKind::WatchAndPoll,
-        poll_interval: Some(interval),
-        poll_count: k,
-        decay: DEFAULT_DECAY,
-        ttl: None,
-    }
+    SourceLifecycleConfig::new(
+        Schedule {
+            watch: vec!["f".into()],
+            ..Schedule::poll(interval.as_secs(), k)
+        },
+        DEFAULT_DECAY,
+    )
 }
 
 fn make_fields(pairs: &[(&str, &str)]) -> HashMap<String, Value> {
@@ -176,14 +157,16 @@ fn watch_source_refreshes_on_filesystem_event() {
         Some("/repo"),
         "refs",
         make_fields(&[("branch", "main"), ("commit", "abc")]),
-        crate::cache::Schedule::default(),
+        &Schedule::default(),
+        None,
     );
     cache.put_source(
         "git",
         Some("/repo"),
         "diff",
         make_fields(&[("lines_added", "5")]),
-        crate::cache::Schedule::default(),
+        &Schedule::default(),
+        None,
     );
 
     // Refresh refs only.
@@ -192,7 +175,8 @@ fn watch_source_refreshes_on_filesystem_event() {
         Some("/repo"),
         "refs",
         make_fields(&[("branch", "feat"), ("commit", "def")]),
-        crate::cache::Schedule::default(),
+        &Schedule::default(),
+        None,
     );
 
     // diff fields must be untouched.
@@ -276,13 +260,7 @@ fn path_scoped_watch_source_decays_per_k_duration() {
     };
     let t0 = Instant::now();
 
-    let cfg = SourceLifecycleConfig {
-        strategy_kind: StrategyKind::Watch,
-        poll_interval: None,
-        poll_count: DEFAULT_POLL_COUNT,
-        decay: DEFAULT_DECAY,
-        ttl: None,
-    };
+    let cfg = SourceLifecycleConfig::new(Schedule::default(), DEFAULT_DECAY);
     reg.on_demand(key.clone(), cfg, t0);
     assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
 
@@ -403,7 +381,8 @@ async fn field_freshness_reflects_owning_source_last_refresh() {
         Some("/repo"),
         "refs",
         make_fields(&[("branch", "main")]),
-        crate::cache::Schedule::default(),
+        &Schedule::default(),
+        None,
     );
 
     // Simulate passage of 10ms (small but measurable).
@@ -415,7 +394,8 @@ async fn field_freshness_reflects_owning_source_last_refresh() {
         Some("/repo"),
         "diff",
         make_fields(&[("lines_added", "3")]),
-        crate::cache::Schedule::default(),
+        &Schedule::default(),
+        None,
     );
 
     // Source B's age should be younger than source A's age.
@@ -472,18 +452,17 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
     let meta = make_source_meta(
         "global",
         &["tool"],
-        InvalidationStrategy::Watch {
-            patterns: vec![],
-            abs_paths: vec![abs_path.clone()],
-        },
+        Schedule::watch(vec![], vec![abs_path.clone()]),
     );
     let source = FakeSource(meta);
 
     // Verify the source metadata carries the absolute path correctly.
-    match &source.metadata().invalidation {
-        InvalidationStrategy::Watch {
-            patterns,
-            abs_paths,
+    match &source.metadata().schedule {
+        Schedule {
+            poll: None,
+            watch: patterns,
+            watch_abs: abs_paths,
+            ..
         } => {
             assert!(
                 patterns.is_empty(),
@@ -505,7 +484,8 @@ fn watch_source_with_absolute_path_uses_abs_paths() {
         None, // the instance at `~` → the global entry (path=None)
         "global",
         make_fields(&[("rust", "1.80.0")]),
-        crate::cache::Schedule::default(),
+        &Schedule::default(),
+        None,
     );
 
     let (val, _) = cache
@@ -533,14 +513,16 @@ fn cross_source_field_write_isolation() {
         Some("/path"),
         "source_a",
         make_fields(&[("a1", "original_a1"), ("a2", "original_a2")]),
-        crate::cache::Schedule::default(),
+        &Schedule::default(),
+        None,
     );
     cache.put_source(
         "myprovider",
         Some("/path"),
         "source_b",
         make_fields(&[("b1", "original_b1")]),
-        crate::cache::Schedule::default(),
+        &Schedule::default(),
+        None,
     );
 
     // Source A refreshes with new values.
@@ -549,7 +531,8 @@ fn cross_source_field_write_isolation() {
         Some("/path"),
         "source_a",
         make_fields(&[("a1", "new_a1"), ("a2", "new_a2")]),
-        crate::cache::Schedule::default(),
+        &Schedule::default(),
+        None,
     );
 
     // a1 and a2 must reflect the new values.

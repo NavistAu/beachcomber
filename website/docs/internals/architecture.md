@@ -53,7 +53,7 @@ The Server and Scheduler share `Arc<Cache>` and `Arc<ProviderRegistry>`. The Ser
 | `src/protocol.rs` | Re-exports `libbeachcomber::protocol`, the one definition of the wire: `Request`, `Response` and the `status`, `introspect` and `hello` payloads, which the daemon, the CLI, the C ABI and the SDKs share. A request key is parsed once into a `Key` in `src/query.rs` |
 | `src/query.rs` | Source-aware request planning: `Key::parse` (the key parsed once into its provider and the address's segments — a source name is never a key segment — checked against the grammar and the reserved names, with a `:put` / `:source` / `:cache` facet split off as the layers it reads; the closed facet set is `libbeachcomber::key::split_facet`'s), `normalise_path`, and `QueryPlan::build` which derives the `SourceDemand` (which Sources a query warms). Consumed by both `Get` and `Watch` |
 | `src/config.rs` | TOML config loading from XDG directories; `Config` (composed from its layers), `DaemonConfig` |
-| `src/provider/mod.rs` | The `Source` trait (`ConfigSource` its one implementation in production); `ProviderMetadata`, `SourceMetadata`, `FieldSchema`, `InvalidationStrategy`, `FailbackConfig`, `SourceResult`; `expand_abs_path()` helper |
+| `src/provider/mod.rs` | The `Source` trait (`ConfigSource` its one implementation in production); `ProviderMetadata`, `SourceMetadata`, `FieldSchema`, `SourceResult`; `expand_abs_path()` helper. `src/provider/schedule.rs`: `Schedule`, a Source's one schedule (poll, watch, decay, failback, budget, timeout, nearest), read by the lifecycle, the failure backoff and `<p>:cache` |
 | `src/provider/registry.rs` | `ProviderRegistry`: the Sources a configuration declares, and their providers' metadata; `declared_sources` map (`HashMap<(provider, field), source_name>`) walked by `sources_for_key` (nearest declared ancestor of a key, then sentinel fields); built-in registration; validation at registration |
 | `src/watcher_registry.rs` | Broadcast channel registry for watch subscribers; subscription keyed per `(provider, path, source)` with support for both relative `patterns` and absolute `abs_paths` |
 | `src/plugin/` | The plugins compiled in: `StaticLibrary` over a table of `extern "C"` symbols, answered by name before any search path, each call through the one path a library's takes. `sys/` for what only the OS can say, `git/` for what a repository says through git's commands (the symbols `refs`, `diff`, `lineage`, `status`; `src/boundaries/git.rs` is the one place git's environment is set) |
@@ -114,7 +114,7 @@ shape layer (`src/shape/`) builds providers from the composed files
 (`defaults/*.toml`, `config.toml`, `conf.d/*.toml`): a config Source is a jinja
 function (`root`, `data`, `result`, `return`) whose `_` prototypes and `| super`
 chains are resolved at load, its decorators (`poll`, `watch`, `ttl`, `failback`,
-`budget`, `nearest`) become the Source's `InvalidationStrategy` and failback, and
+`budget`, `timeout`, `nearest`) become the Source's `Schedule`, and
 a provider's own `template`/`result`/`return` lines are checked at load too (they
 do no IO).
 `enabled = false` makes the registry treat the provider as having no Sources.

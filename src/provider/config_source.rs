@@ -3,7 +3,7 @@
 //! `root` says which directory an instance answers for, `data` is the body
 //! (one engine call, cwd = the root, env = the daemon's own), `result` is the
 //! field lines over `data`. The schedule comes from the Source's `return`
-//! chain, already recorded as [`Recorded`].
+//! chain, already recorded as [`Schedule`](crate::provider::Schedule).
 //!
 //! The files the `data` and `result` lines read (`read`, `stat`, `realpath`,
 //! `lup`, `glob`) are the record's stat inputs, beside its `watch(...)`
@@ -37,7 +37,6 @@
 use crate::engine::{CallFn, Calls, PluginSet, daemon_engine_env};
 use crate::provider::source_call::{Called, Running, calls_in};
 use crate::provider::{FieldSchema, Source, SourceMetadata, SourceResult, Value};
-use crate::shape::decorators::Recorded;
 use libbeachcomber::engine::{EngineCtx, with_ctx};
 use libbeachcomber::eval::{
     Finding, Known, Line, Probe, eval_line, eval_line_with, lint, refs_in, undeclared_names,
@@ -181,7 +180,7 @@ pub struct ConfigSourceSpec {
     pub root: Option<String>,
     pub data: String,
     pub result: ResultSpec,
-    pub recorded: Recorded,
+    pub recorded: crate::provider::Schedule,
 }
 
 pub struct ConfigSource {
@@ -429,12 +428,10 @@ impl ConfigSource {
             return Err(load_error("data", &format!("{who} cannot call itself")));
         }
 
-        let recorded = &spec.recorded;
         if spec.root.is_none()
             && let Some(problem) = crate::provider::one_instance_problem(
                 &format!("{}.{}", spec.provider, spec.name),
-                &recorded.invalidation,
-                recorded.nearest,
+                &spec.recorded,
             )
         {
             return Err(load_error("return", &problem));
@@ -442,12 +439,7 @@ impl ConfigSource {
         let meta = SourceMetadata {
             name: spec.name.clone(),
             fields,
-            invalidation: recorded.invalidation.clone(),
-            failback: recorded.failback,
-            decay: recorded.decay,
-            budget: recorded.budget,
-            timeout: recorded.timeout,
-            nearest: recorded.nearest,
+            schedule: spec.recorded.clone(),
         };
         Ok(Self {
             spec,
@@ -712,7 +704,7 @@ fn source_ctx(
 mod tests {
     use super::*;
     use crate::boundaries::library::MockLibraryLoader;
-    use crate::provider::{FailbackConfig, InvalidationStrategy};
+    use crate::provider::{FailbackConfig, Poll, Schedule};
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -765,20 +757,14 @@ mod tests {
         }
     }
 
-    fn recorded() -> Recorded {
-        Recorded {
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 60,
-                count: 12,
-            },
+    fn recorded() -> Schedule {
+        Schedule {
             failback: FailbackConfig {
                 reattempts: 3,
                 interval_secs: 1,
             },
             budget: Duration::from_millis(50),
-            timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
-            decay: None,
-            nearest: false,
+            ..Schedule::poll(60, 12)
         }
     }
 
@@ -962,43 +948,35 @@ mod tests {
         let meta = src.metadata();
         let names: Vec<_> = meta.fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b"]);
-        assert_eq!(meta.invalidation, recorded().invalidation);
-        assert_eq!(meta.failback, recorded().failback);
+        assert_eq!(meta.schedule, recorded());
     }
 
     #[test]
     fn the_recorded_schedule_passes_through() {
         let strategies = [
-            InvalidationStrategy::Watch {
-                patterns: vec![".git/HEAD".into()],
-                abs_paths: vec![],
+            Schedule::watch(vec![".git/HEAD".into()], vec![]),
+            Schedule {
+                poll: Some(Poll {
+                    interval_secs: 30,
+                    count: 2,
+                }),
+                ..Schedule::watch(vec![".git/HEAD".into()], vec![])
             },
-            InvalidationStrategy::WatchAndPoll {
-                patterns: vec![".git/HEAD".into()],
-                abs_paths: vec![],
-                interval_secs: 30,
-                count: 2,
-            },
-            InvalidationStrategy::Poll {
-                interval_secs: 30,
-                count: 2,
-            },
+            Schedule::poll(30, 2),
         ];
         for invalidation in strategies {
             let mut sp = spec(Some("/r"), "x", fields(&[("a", "1")]));
-            sp.recorded = Recorded {
-                invalidation: invalidation.clone(),
+            sp.recorded = Schedule {
                 failback: FailbackConfig {
                     reattempts: 7,
                     interval_secs: 9,
                 },
-                budget: Duration::from_millis(321),
-                timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
                 decay: Some(1),
-                nearest: false,
+                budget: Duration::from_millis(321),
+                ..invalidation.clone()
             };
-            let meta = source(sp).metadata().clone();
-            assert_eq!(meta.invalidation, invalidation);
+            let meta = source(sp).metadata().schedule.clone();
+            assert_eq!(meta.invalidation(), invalidation.invalidation());
             assert_eq!(meta.failback.reattempts, 7);
             assert_eq!(meta.failback.interval_secs, 9);
             assert_eq!(meta.budget, Duration::from_millis(321));
@@ -1009,10 +987,7 @@ mod tests {
     #[test]
     fn a_relative_watch_needs_a_root_to_be_relative_to() {
         let mut sp = spec(None, "x", fields(&[("a", "1")]));
-        sp.recorded.invalidation = InvalidationStrategy::Watch {
-            patterns: vec![".git/HEAD".into()],
-            abs_paths: vec![],
-        };
+        sp.recorded = Schedule::watch(vec![".git/HEAD".into()], vec![]);
         let err = new_err(sp.clone());
         assert!(
             err.starts_with(
@@ -1025,10 +1000,7 @@ mod tests {
         sp.root = Some("{{ lup('.git') | dirname }}".into());
         assert!(source(sp.clone()).has_root());
         sp.root = None;
-        sp.recorded.invalidation = InvalidationStrategy::Watch {
-            patterns: vec![],
-            abs_paths: vec!["/etc/hosts".into()],
-        };
+        sp.recorded = Schedule::watch(vec![], vec!["/etc/hosts".into()]);
         assert!(!source(sp).has_root());
     }
 

@@ -1,6 +1,6 @@
 use beachcomber::cache::Cache;
-use beachcomber::cache::Schedule;
 use beachcomber::protocol::Response;
+use beachcomber::provider::Schedule;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::server::Server;
@@ -35,7 +35,14 @@ async fn server_handles_get_global_provider() {
         Value::String("testhost.local".to_string()),
     );
     fields.insert("short".to_string(), Value::String("testhost".to_string()));
-    cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
+    cache.put_source(
+        "hostname",
+        None,
+        "host",
+        fields,
+        &Schedule::poll(60, 1),
+        None,
+    );
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
@@ -70,7 +77,14 @@ async fn server_handles_get_single_field() {
         Value::String("testhost.local".to_string()),
     );
     fields.insert("short".to_string(), Value::String("testhost".to_string()));
-    cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
+    cache.put_source(
+        "hostname",
+        None,
+        "host",
+        fields,
+        &Schedule::poll(60, 1),
+        None,
+    );
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();

@@ -3,7 +3,7 @@
 //! allow database allows it.
 
 use super::{age, schedule, served};
-use beachcomber::provider::{FailbackConfig, InvalidationStrategy};
+use beachcomber::provider::{FailbackConfig, Schedule};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -242,19 +242,16 @@ fn direnv_keeps_its_schedule() {
     let (meta, rooted) = schedule("direnv", "state");
     assert!(rooted);
     assert_eq!(
-        meta.invalidation,
-        InvalidationStrategy::Watch {
-            patterns: vec![".envrc".into()],
-            abs_paths: vec![],
-        }
+        super::trigger(&meta.schedule),
+        Schedule::watch(vec![".envrc".into()], vec![])
     );
     assert_eq!(
-        meta.failback,
+        meta.schedule.failback,
         FailbackConfig {
             reattempts: 3,
             interval_secs: 60
         }
     );
-    assert!(meta.nearest);
-    assert_eq!(meta.decay, None, "the provider's decay prototype");
+    assert!(meta.schedule.nearest);
+    assert_eq!(meta.schedule.decay, None, "the provider's decay prototype");
 }

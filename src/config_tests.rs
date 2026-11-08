@@ -1110,7 +1110,7 @@ result.x = "{{ data }}"
     assert_eq!(config.daemon().budget(), Duration::from_millis(20));
     let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect()).unwrap();
     let source = &registry.provider_sources("budget").unwrap()[0];
-    assert_eq!(source.budget, Duration::from_millis(20));
+    assert_eq!(source.schedule.budget, Duration::from_millis(20));
 }
 
 /// Every spelling the one-tree config removed, at every level it could appear.
@@ -1570,21 +1570,21 @@ fn a_source_with_no_return_anywhere_is_watch_only_with_the_engine_defaults() {
     );
     let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect()).unwrap();
     let meta = &registry.provider_sources("demo").unwrap()[0];
+    assert_eq!((meta.schedule.poll, meta.schedule.watches()), (None, false));
     assert_eq!(
-        meta.invalidation,
-        crate::provider::InvalidationStrategy::Watch {
-            patterns: vec![],
-            abs_paths: vec![]
-        }
-    );
-    assert_eq!(
-        (meta.failback.reattempts, meta.failback.interval_secs),
+        (
+            meta.schedule.failback.reattempts,
+            meta.schedule.failback.interval_secs
+        ),
         (
             crate::scheduler::lifecycle::DEFAULT_FAILBACK_COUNT,
             crate::scheduler::lifecycle::DEFAULT_FAILBACK_INTERVAL_SECS
         )
     );
-    assert_eq!(meta.budget, crate::scheduler::lifecycle::DEFAULT_BUDGET);
+    assert_eq!(
+        meta.schedule.budget,
+        crate::scheduler::lifecycle::DEFAULT_BUDGET
+    );
 }
 
 #[test]

@@ -1,102 +1,36 @@
 //! The schedule a Source's records carry into the `<p>:cache` facet.
 
 use super::*;
-use crate::provider::Value;
+use crate::provider::{Schedule, Value};
 use std::collections::HashMap;
 use tokio::time::Instant;
 
-/// What a Source's records carry into the `<p>:cache` facet beside them: the
-/// schedule that keeps them fresh, and the validity of the run that made
-/// them. Built from the Source's metadata ([`Schedule::of`]) and, by the run,
-/// [`Schedule::with_validity`], so a record and what is known of it are
-/// written together and removed together.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Schedule {
-    /// `(interval_secs, count)` for a Source that polls.
-    pub poll: Option<(u64, u32)>,
-    /// The watch patterns, then the absolute paths, for a Source that watches.
-    pub watch: Vec<String>,
-    /// The Source's own decay depth (`ttl(...)` sets 1), stored as `decay`.
-    pub decay: Option<u8>,
-    /// The record's stat inputs as its run found them, stored as `hash`;
-    /// `None` for a Source with none (one that only polls).
-    pub validity: Option<Validity>,
-}
-
+/// What a Source's records carry into the `<p>:cache` facet beside them:
+/// the schedule that keeps them fresh, and the validity of the run that made
+/// them, written with the record and removed with it.
 impl Schedule {
-    pub fn poll(interval_secs: u64, count: u32) -> Self {
-        Self {
-            poll: Some((interval_secs, count)),
-            watch: Vec::new(),
-            decay: None,
-            validity: None,
-        }
-    }
-
-    /// The schedule of a Source: its invalidation strategy and, when it sets
-    /// one, its own decay depth.
-    pub fn of(source: &crate::provider::SourceMetadata) -> Self {
-        Self {
-            decay: source.decay,
-            ..Self::from_strategy(&source.invalidation)
-        }
-    }
-
-    /// The schedule, with the validity of the run whose records it carries.
-    pub fn with_validity(self, validity: Option<Validity>) -> Self {
-        Self { validity, ..self }
-    }
-
-    pub fn from_strategy(strategy: &crate::provider::InvalidationStrategy) -> Self {
-        use crate::provider::InvalidationStrategy::*;
-        match strategy {
-            Poll {
-                interval_secs,
-                count,
-            } => Self::poll(*interval_secs, *count),
-            Watch {
-                patterns,
-                abs_paths,
-            } => Self {
-                poll: None,
-                watch: patterns.iter().chain(abs_paths).cloned().collect(),
-                decay: None,
-                validity: None,
-            },
-            WatchAndPoll {
-                patterns,
-                abs_paths,
-                interval_secs,
-                count,
-            } => Self {
-                poll: Some((*interval_secs, *count)),
-                watch: patterns.iter().chain(abs_paths).cloned().collect(),
-                decay: None,
-                validity: None,
-            },
-        }
-    }
-
-    /// The stored `:cache` keys of one record: `poll`, `watch`, `decay` and
-    /// `hash` (16 hex digits).
-    pub(super) fn stored_keys(&self) -> HashMap<String, Value> {
+    /// The stored `:cache` keys of one record: `poll`, `watch` (the relative
+    /// paths, then the absolute ones), `decay`, and `hash` (16 hex digits)
+    /// from the run's `validity`; `None` for a Source with no stat inputs.
+    pub(crate) fn stored_keys(&self, validity: Option<&Validity>) -> HashMap<String, Value> {
         let mut keys = HashMap::new();
-        if let Some(validity) = &self.validity {
+        if let Some(validity) = validity {
             keys.insert(
                 "hash".to_string(),
                 Value::String(libbeachcomber::validity::hex(validity.hash)),
             );
         }
-        if let Some((interval_secs, count)) = self.poll {
-            keys.insert("poll".to_string(), poll_key(interval_secs, count));
+        if let Some(poll) = self.poll {
+            keys.insert("poll".to_string(), poll_key(poll.interval_secs, poll.count));
         }
         if let Some(decay) = self.decay {
             keys.insert("decay".to_string(), Value::Int(i64::from(decay)));
         }
-        if !self.watch.is_empty() {
+        if self.watches() {
+            let watch = self.watch.iter().chain(&self.watch_abs).cloned();
             keys.insert(
                 "watch".to_string(),
-                Value::Array(self.watch.iter().cloned().map(Value::String).collect()),
+                Value::Array(watch.map(Value::String).collect()),
             );
         }
         keys
@@ -134,7 +68,7 @@ impl Cache {
         provider: &str,
         path: Option<&str>,
         source_name: &str,
-        schedule: Schedule,
+        schedule: &Schedule,
     ) {
         let validity;
         let fields: Vec<String> = {
@@ -144,14 +78,14 @@ impl Cache {
             let Some(src) = entry.sources.get_mut(source_name) else {
                 return;
             };
-            src.expected_interval_secs = schedule.poll.map(|(secs, _)| secs);
+            src.expected_interval_secs = schedule.expected_interval_secs();
             // The run's validity is the record's, not the schedule's: it
             // stays, and with it the stored `hash`.
             validity = src.validity.clone();
             src.fields.keys().cloned().collect()
         };
         let facet_key = make_cache_key(&facet_of(provider, Facet::Cache), path);
-        let stored = schedule.with_validity(validity).stored_keys();
+        let stored = schedule.stored_keys(validity.as_ref());
         if stored.is_empty() {
             if let Some(mut entry) = self.entries.get_mut(&facet_key) {
                 entry.sources.remove(source_name);
@@ -189,19 +123,20 @@ mod tests {
     #[test]
     fn put_source_writes_the_schedule_into_the_cache_facet() {
         let cache = Cache::new();
-        let schedule =
-            Schedule::from_strategy(&crate::provider::InvalidationStrategy::WatchAndPoll {
-                patterns: vec![".git/index".into()],
-                abs_paths: vec!["/etc/x".into()],
+        let schedule = crate::provider::Schedule {
+            poll: Some(crate::provider::Poll {
                 interval_secs: 30,
                 count: 3,
-            });
+            }),
+            ..crate::provider::Schedule::watch(vec![".git/index".into()], vec!["/etc/x".into()])
+        };
         cache.put_source(
             "git",
             Some("/repo"),
             "status",
             make_fields(&[("dirty", "false"), ("staged", "0")]),
-            schedule,
+            &schedule,
+            None,
         );
 
         let facet =
@@ -230,10 +165,11 @@ mod tests {
             None,
             "status",
             make_fields(&[("state", "ok")]),
-            Schedule {
+            &Schedule {
                 decay: Some(1),
                 ..Schedule::poll(30, 1)
             },
+            None,
         );
         let keys = cache
             .stored_keys("build", None, &Origin::source("status"), "state")
@@ -252,7 +188,8 @@ mod tests {
             None,
             "s",
             make_fields(&[("a", "1")]),
-            Schedule::default(),
+            &Schedule::default(),
+            None,
         );
         assert!(stored(&cache, "p", None).is_none());
     }
@@ -265,14 +202,16 @@ mod tests {
             None,
             "one",
             make_fields(&[("a", "1")]),
-            Schedule::poll(5, 1),
+            &Schedule::poll(5, 1),
+            None,
         );
         cache.put_source(
             "p",
             None,
             "two",
             make_fields(&[("b", "2")]),
-            Schedule::poll(9, 1),
+            &Schedule::poll(9, 1),
+            None,
         );
         cache.remove_source("p", None, "one");
 
@@ -301,7 +240,8 @@ mod tests {
             None,
             "s",
             make_fields(&[("a", "1")]),
-            Schedule::poll(5, 1),
+            &Schedule::poll(5, 1),
+            None,
         );
         cache.remove_source("p", None, "s");
         assert_eq!(cache.resolve_decay("p", None), 2);

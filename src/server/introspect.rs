@@ -116,34 +116,22 @@ async fn handle_introspect_daemon(ctx: &Ctx) -> Response {
     )
 }
 
-pub(super) fn summarize_invalidation(strategy: &crate::provider::InvalidationStrategy) -> String {
-    use crate::provider::InvalidationStrategy;
-    match strategy {
-        InvalidationStrategy::Poll {
-            interval_secs,
-            count: 0,
-        } => format!("ttl {interval_secs}s"),
-        InvalidationStrategy::Poll { interval_secs, .. } => format!("poll {interval_secs}s"),
-        InvalidationStrategy::Watch { patterns, .. } => {
-            if patterns.is_empty() {
-                "watch (abs_paths)".to_string()
+pub(super) fn summarize_invalidation(schedule: &crate::provider::Schedule) -> String {
+    let pats = if schedule.watch.is_empty() {
+        "(abs_paths)".to_string()
+    } else {
+        schedule.watch.join(",")
+    };
+    match schedule.poll {
+        None => format!("watch {pats}"),
+        Some(poll) => {
+            let kind = if poll.count == 0 { "ttl" } else { "poll" };
+            let every = format!("{kind} {}s", poll.interval_secs);
+            if schedule.watches() {
+                format!("watch {pats} + {every}")
             } else {
-                format!("watch {}", patterns.join(","))
+                every
             }
-        }
-        InvalidationStrategy::WatchAndPoll {
-            patterns,
-            interval_secs,
-            count,
-            ..
-        } => {
-            let pats = if patterns.is_empty() {
-                "(abs_paths)".to_string()
-            } else {
-                patterns.join(",")
-            };
-            let schedule = if *count == 0 { "ttl" } else { "poll" };
-            format!("watch {pats} + {schedule} {interval_secs}s")
         }
     }
 }
@@ -200,7 +188,7 @@ pub(super) async fn handle_introspect_providers(
                         "invalidation": if disabled {
                             "disabled".to_string()
                         } else {
-                            summarize_invalidation(&sm.invalidation)
+                            summarize_invalidation(&sm.schedule)
                         },
                     })
                 })
@@ -212,7 +200,7 @@ pub(super) async fn handle_introspect_providers(
             } else {
                 meta.sources
                     .first()
-                    .map(|sm| summarize_invalidation(&sm.invalidation))
+                    .map(|sm| summarize_invalidation(&sm.schedule))
                     .unwrap_or_else(|| "data-only".to_string())
             };
 

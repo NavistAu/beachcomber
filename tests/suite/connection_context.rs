@@ -1,9 +1,9 @@
 use beachcomber::cache::Cache;
-use beachcomber::cache::Schedule;
 use beachcomber::protocol::Response;
+use beachcomber::provider::Schedule;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, Source, SourceMetadata, SourceResult, Value,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,18 +24,13 @@ impl Source for RootedSourceImpl {
             fields: vec![FieldSchema {
                 name: "active_path".into(),
             }],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 60,
-                count: 2,
+            schedule: Schedule {
+                failback: FailbackConfig {
+                    reattempts: 3,
+                    interval_secs: 30,
+                },
+                ..Schedule::poll(60, 2)
             },
-            failback: FailbackConfig {
-                reattempts: 3,
-                interval_secs: 30,
-            },
-            decay: None,
-            budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-            timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
-            nearest: false,
         })
     }
 
@@ -77,18 +72,13 @@ impl Source for GlobalSourceImpl {
             fields: vec![FieldSchema {
                 name: "info".into(),
             }],
-            invalidation: InvalidationStrategy::Watch {
-                patterns: vec![],
-                abs_paths: vec![],
+            schedule: Schedule {
+                failback: FailbackConfig {
+                    reattempts: 3,
+                    interval_secs: 30,
+                },
+                ..Schedule::watch(vec![], vec![])
             },
-            failback: FailbackConfig {
-                reattempts: 3,
-                interval_secs: 30,
-            },
-            decay: None,
-            budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-            timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
-            nearest: false,
         })
     }
 
@@ -159,7 +149,8 @@ async fn a_request_path_addresses_its_instance() {
         Some("/project/a"),
         "main",
         fields_a,
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
 
     let mut fields_b = HashMap::new();
@@ -172,7 +163,8 @@ async fn a_request_path_addresses_its_instance() {
         Some("/project/b"),
         "main",
         fields_b,
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
@@ -228,7 +220,14 @@ async fn global_provider_answers_any_path() {
         "info".to_string(),
         Value::String("global-value".to_string()),
     );
-    cache.put_source("globalprov", None, "main", fields, Schedule::default());
+    cache.put_source(
+        "globalprov",
+        None,
+        "main",
+        fields,
+        &Schedule::default(),
+        None,
+    );
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
@@ -278,7 +277,14 @@ async fn a_rooted_instance_that_has_the_key_never_defers_to_the_global_one() {
         "active_path".to_string(),
         Value::String("global-sentinel".to_string()),
     );
-    cache.put_source("pathprov", None, "main", fields, Schedule::poll(60, 1));
+    cache.put_source(
+        "pathprov",
+        None,
+        "main",
+        fields,
+        &Schedule::poll(60, 1),
+        None,
+    );
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();

@@ -1,7 +1,7 @@
 use beachcomber::cache::Cache;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, Schedule, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
@@ -135,21 +135,19 @@ impl Source for CountingSource {
     }
 }
 
-fn path_source(name: &str, invalidation: InvalidationStrategy) -> SourceMetadata {
+fn path_source(name: &str, invalidation: Schedule) -> SourceMetadata {
     SourceMetadata {
         name: name.into(),
         fields: vec![FieldSchema {
             name: format!("{name}_runs"),
         }],
-        invalidation,
-        failback: FailbackConfig {
-            reattempts: 3,
-            interval_secs: 30,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 30,
+            },
+            ..invalidation
         },
-        decay: None,
-        budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-        timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
-        nearest: false,
     }
 }
 
@@ -159,22 +157,10 @@ struct PollAndWatchProvider;
 
 impl PollAndWatchProvider {
     fn polled() -> SourceMetadata {
-        path_source(
-            "polled",
-            InvalidationStrategy::Poll {
-                interval_secs: 3600,
-                count: 2,
-            },
-        )
+        path_source("polled", Schedule::poll(3600, 2))
     }
     fn watched() -> SourceMetadata {
-        path_source(
-            "watched",
-            InvalidationStrategy::Watch {
-                patterns: vec!["foo.txt".into()],
-                abs_paths: vec![],
-            },
-        )
+        path_source("watched", Schedule::watch(vec!["foo.txt".into()], vec![]))
     }
 }
 

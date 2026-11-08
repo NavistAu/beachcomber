@@ -181,20 +181,18 @@ fn mise_provider_is_one_source_with_a_tool_sentinel() {
     assert_eq!(tools.name, "tools");
     assert!(tools.fields.iter().all(|f| f.name.starts_with('<')));
     assert!(registry.source("mise", "tools").unwrap().has_root());
-    match &tools.invalidation {
-        beachcomber::provider::InvalidationStrategy::Watch {
-            patterns,
-            abs_paths,
-        } => {
-            assert_eq!(
-                patterns,
-                &vec!["mise.toml".to_string(), ".mise.toml".into()]
-            );
-            assert_eq!(abs_paths.len(), 1);
-            assert!(abs_paths[0].ends_with("/mise"), "{abs_paths:?}");
-        }
-        other => panic!("expected Watch, got {other:?}"),
-    }
+    let schedule = &tools.schedule;
+    assert!(schedule.poll.is_none(), "expected Watch, got {schedule:?}");
+    assert_eq!(
+        schedule.watch,
+        vec!["mise.toml".to_string(), ".mise.toml".into()]
+    );
+    assert_eq!(schedule.watch_abs.len(), 1);
+    assert!(
+        schedule.watch_abs[0].ends_with("/mise"),
+        "{:?}",
+        schedule.watch_abs
+    );
 }
 
 /// The root is the nearest directory holding either file, from a

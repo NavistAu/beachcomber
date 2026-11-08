@@ -218,8 +218,9 @@ pub(super) fn start_for_read(
     };
     // A record it has is waited for up to the Source's budget; a cold one,
     // or a forced run, to the run's end.
-    let until =
-        read.until(matches!(want, Want::Changed | Want::Any).then(|| source.metadata().budget));
+    let until = read.until(
+        matches!(want, Want::Changed | Want::Any).then(|| source.metadata().schedule.budget),
+    );
     let key = instance_key(provider, source_name, root);
     let run = registry.runs().start(want, registry, cache, &key)?;
     Some(Pending { run, until })
@@ -242,7 +243,7 @@ pub(super) async fn hear_tree(
     let Some(source) = registry.source(provider, source_name) else {
         return;
     };
-    if crate::provider::watches_tree(&source.metadata().invalidation)
+    if crate::provider::watches_tree(&source.metadata().schedule)
         && cache.tree_is_watched(provider, root, source_name)
         && let Some(barrier) = cache.barrier()
     {
@@ -825,18 +826,15 @@ mod tests {
             META.get_or_init(|| crate::provider::SourceMetadata {
                 name: "s".into(),
                 fields: vec![crate::provider::FieldSchema { name: "n".into() }],
-                invalidation: crate::provider::InvalidationStrategy::Poll {
-                    interval_secs: 60,
-                    count: 2,
+                schedule: crate::provider::Schedule {
+                    failback: crate::provider::FailbackConfig {
+                        reattempts: 3,
+                        interval_secs: 3600,
+                    },
+                    budget: Duration::from_secs(3600),
+                    timeout: Duration::from_secs(600),
+                    ..crate::provider::Schedule::poll(60, 2)
                 },
-                failback: crate::provider::FailbackConfig {
-                    reattempts: 3,
-                    interval_secs: 3600,
-                },
-                decay: None,
-                budget: Duration::from_secs(3600),
-                timeout: Duration::from_secs(600),
-                nearest: false,
             })
         }
 

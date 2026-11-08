@@ -656,7 +656,8 @@ mod tests {
             None,
             source,
             HashMap::from([(field.to_string(), Value::Int(value))]),
-            crate::cache::Schedule::default(),
+            &crate::provider::Schedule::default(),
+            None,
         );
     }
 

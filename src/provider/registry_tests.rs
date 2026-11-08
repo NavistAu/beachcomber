@@ -1,6 +1,6 @@
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult,
+    FailbackConfig, FieldSchema, Schedule, Source, SourceMetadata, SourceResult,
 };
 
 /// A provider of one Source, `s`, of one field, `f`, that answers nothing.
@@ -10,18 +10,13 @@ fn named_meta() -> SourceMetadata {
     SourceMetadata {
         name: "s".into(),
         fields: vec![FieldSchema { name: "f".into() }],
-        invalidation: InvalidationStrategy::Poll {
-            interval_secs: 60,
-            count: 1,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 60,
+            },
+            ..Schedule::poll(60, 1)
         },
-        failback: FailbackConfig {
-            reattempts: 3,
-            interval_secs: 60,
-        },
-        decay: None,
-        budget: crate::scheduler::lifecycle::DEFAULT_BUDGET,
-        timeout: crate::scheduler::lifecycle::DEFAULT_TIMEOUT,
-        nearest: false,
     }
 }
 

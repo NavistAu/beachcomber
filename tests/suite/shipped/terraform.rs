@@ -3,7 +3,7 @@
 //! `workspace` template over it.
 
 use super::{age, scenario, schedule, served};
-use beachcomber::provider::{FailbackConfig, InvalidationStrategy};
+use beachcomber::provider::{FailbackConfig, Schedule};
 use serde_json::json;
 use std::path::Path;
 
@@ -146,19 +146,16 @@ fn terraform_keeps_its_schedule() {
     let (meta, rooted) = schedule("terraform", "state");
     assert!(rooted);
     assert_eq!(
-        meta.invalidation,
-        InvalidationStrategy::Watch {
-            patterns: vec![".terraform/environment".into()],
-            abs_paths: vec![],
-        }
+        super::trigger(&meta.schedule),
+        Schedule::watch(vec![".terraform/environment".into()], vec![])
     );
     assert_eq!(
-        meta.failback,
+        meta.schedule.failback,
         FailbackConfig {
             reattempts: 3,
             interval_secs: 60
         }
     );
-    assert!(meta.nearest);
-    assert_eq!(meta.decay, None, "the provider's decay prototype");
+    assert!(meta.schedule.nearest);
+    assert_eq!(meta.schedule.decay, None, "the provider's decay prototype");
 }

@@ -20,7 +20,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::cache::Origin;
-use crate::provider::InvalidationStrategy;
+use crate::provider::Schedule;
 
 /// Decay steps before eviction unless a lifecycle says otherwise.
 pub const DEFAULT_DECAY: u8 = 4;
@@ -87,96 +87,53 @@ pub struct DecayTimer {
     pub step_deadline: Instant,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StrategyKind {
-    Poll,
-    Watch,
-    WatchAndPoll,
-}
-
+/// A schedule as the lifecycle runs it: the Source's own, with the decay
+/// depth resolved (its own, else its provider's `_` prototype at the
+/// instance's directory).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceLifecycleConfig {
-    pub strategy_kind: StrategyKind,
-    /// Some for Poll/WatchAndPoll, None for pure Watch.
-    pub poll_interval: Option<Duration>,
-    /// Polls in the Active window; the window is `interval × count`.
-    pub poll_count: u32,
+    pub schedule: Schedule,
     /// Decay steps before eviction, at least 1.
     pub decay: u8,
-    /// A `ttl`: no poll timer, an Active window of this long and decay steps
-    /// of this long too, not doubling (a ttl has one). From a strategy with a
-    /// poll count of 0 ([`InvalidationStrategy`]); `None` for everything else.
-    pub ttl: Option<Duration>,
 }
 
 impl SourceLifecycleConfig {
-    pub fn from_strategy(strategy: &InvalidationStrategy, decay: u8) -> Self {
-        let (kind, poll_interval, poll_count) = match strategy {
-            InvalidationStrategy::Poll {
-                interval_secs,
-                count,
-            } => (
-                StrategyKind::Poll,
-                Some(Duration::from_secs(*interval_secs)),
-                *count,
-            ),
-            InvalidationStrategy::Watch { .. } => (StrategyKind::Watch, None, DEFAULT_POLL_COUNT),
-            InvalidationStrategy::WatchAndPoll {
-                interval_secs,
-                count,
-                ..
-            } => (
-                StrategyKind::WatchAndPoll,
-                Some(Duration::from_secs(*interval_secs)),
-                *count,
-            ),
-        };
-        // A count of 0 is a ttl: the interval is how long the value lives,
-        // and nothing polls it.
-        if poll_count == 0 {
-            return Self {
-                strategy_kind: kind,
-                poll_interval: None,
-                poll_count,
-                decay,
-                ttl: poll_interval,
-            };
-        }
-        Self {
-            strategy_kind: kind,
-            poll_interval,
-            poll_count,
-            decay,
-            ttl: None,
-        }
+    pub fn new(schedule: Schedule, decay: u8) -> Self {
+        Self { schedule, decay }
     }
 
     /// The lifecycle of a ttl of `secs` with no watch: Active for the ttl,
     /// one decay step as long, no poll.
     pub fn ttl(secs: u64) -> Self {
-        Self::from_strategy(
-            &InvalidationStrategy::Poll {
-                interval_secs: secs,
-                count: 0,
-            },
-            1,
-        )
+        Self::new(Schedule::poll(secs, 0), 1)
+    }
+
+    /// The poll timer's interval: `None` for a watch-only Source and for a
+    /// ttl, which nothing polls.
+    pub fn poll_interval(&self) -> Option<Duration> {
+        self.schedule.poll_interval()
+    }
+
+    /// Polls in the Active window, for a schedule with a poll timer.
+    pub fn poll_count(&self) -> Option<u32> {
+        self.schedule.poll.filter(|p| p.count > 0).map(|p| p.count)
     }
 
     /// The Active window: the ttl, else `interval × count`; a watch-only
-    /// Source has no interval of its own and takes the default one.
+    /// Source has no interval of its own and takes the default window.
     pub fn lifespan(&self) -> Duration {
-        self.ttl.unwrap_or_else(|| {
-            self.poll_interval
-                .unwrap_or(Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS))
-                * self.poll_count
-        })
+        self.schedule
+            .ttl()
+            .unwrap_or_else(|| match self.schedule.poll {
+                Some(p) => Duration::from_secs(p.interval_secs) * p.count,
+                None => Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS) * DEFAULT_POLL_COUNT,
+            })
     }
 
     /// How long decay step `step` lasts: `lifespan × 2^step`, or for a ttl
-    /// the ttl itself.
+    /// (a step as long as itself, not doubling) the ttl itself.
     pub fn step_length(&self, step: u8) -> Duration {
-        match self.ttl {
+        match self.schedule.ttl() {
             Some(ttl) => ttl,
             None => self.lifespan() * (1u32 << step),
         }
@@ -265,7 +222,7 @@ impl LifecycleRegistry {
         match self.entries.get_mut(&key) {
             None => {
                 // Cold → Active
-                let poll_timer = config.poll_interval.map(|p| PollTimer {
+                let poll_timer = config.poll_interval().map(|p| PollTimer {
                     last_fired: now,
                     interval: p,
                 });
@@ -302,7 +259,7 @@ impl LifecycleRegistry {
                     entry.state = LifecycleState::Active;
                     if let Some(pt) = entry.poll_timer.as_mut() {
                         pt.last_fired = now;
-                        if let Some(pi) = config.poll_interval {
+                        if let Some(pi) = config.poll_interval() {
                             pt.interval = pi;
                         }
                     }
@@ -326,7 +283,7 @@ impl LifecycleRegistry {
         let Some(entry) = self.entries.get_mut(key) else {
             return false;
         };
-        entry.poll_timer = match (config.poll_interval, entry.poll_timer.take()) {
+        entry.poll_timer = match (config.poll_interval(), entry.poll_timer.take()) {
             (Some(interval), Some(timer)) => Some(PollTimer { interval, ..timer }),
             (Some(interval), None) => Some(PollTimer {
                 last_fired: entry.decay_timer.last_demand,
@@ -420,7 +377,7 @@ impl LifecycleRegistry {
 
                         // Adjust poll interval if there is a poll path.
                         if let Some(pt) = entry.poll_timer.as_mut()
-                            && let Some(p) = entry.config.poll_interval
+                            && let Some(p) = entry.config.poll_interval()
                         {
                             pt.interval = p * rate_mult;
                         }
@@ -564,13 +521,7 @@ mod tests {
     }
 
     fn test_config() -> SourceLifecycleConfig {
-        SourceLifecycleConfig {
-            strategy_kind: StrategyKind::Poll,
-            poll_interval: Some(Duration::from_secs(60)),
-            poll_count: 12,
-            decay: DEFAULT_DECAY,
-            ttl: None,
-        }
+        SourceLifecycleConfig::new(Schedule::poll(60, 12), DEFAULT_DECAY)
     }
 
     /// Scenario: Cold cache miss triggers inline fetch.
@@ -892,22 +843,14 @@ mod tests {
     }
 
     fn watch_only() -> SourceLifecycleConfig {
-        SourceLifecycleConfig::from_strategy(
-            &InvalidationStrategy::Watch {
-                patterns: vec![],
-                abs_paths: vec![],
-            },
-            DEFAULT_DECAY,
-        )
+        SourceLifecycleConfig::new(Schedule::default(), DEFAULT_DECAY)
     }
 
     fn watch_and_poll() -> SourceLifecycleConfig {
-        SourceLifecycleConfig::from_strategy(
-            &InvalidationStrategy::WatchAndPoll {
-                patterns: vec![],
-                abs_paths: vec![],
-                interval_secs: 60,
-                count: 12,
+        SourceLifecycleConfig::new(
+            Schedule {
+                watch: vec!["f".into()],
+                ..Schedule::poll(60, 12)
             },
             DEFAULT_DECAY,
         )
@@ -1031,7 +974,7 @@ mod tests {
     #[test]
     fn the_active_window_is_interval_times_count() {
         let mut cfg = ten_second_poll(DEFAULT_DECAY);
-        cfg.poll_count = 3;
+        cfg.schedule.poll.as_mut().unwrap().count = 3;
         assert_eq!(cfg.lifespan(), Duration::from_secs(30));
 
         let mut reg = LifecycleRegistry::new();
@@ -1045,13 +988,7 @@ mod tests {
     }
 
     fn ten_second_poll(decay: u8) -> SourceLifecycleConfig {
-        SourceLifecycleConfig {
-            strategy_kind: StrategyKind::Poll,
-            poll_interval: Some(Duration::from_secs(10)),
-            poll_count: 1,
-            decay,
-            ttl: None,
-        }
+        SourceLifecycleConfig::new(Schedule::poll(10, 1), decay)
     }
 
     /// A ttl of 10 s: live 10 s, stale 10 s, evicted at 20 s, and nothing
@@ -1062,7 +999,7 @@ mod tests {
         let key = test_key_global("p");
         let t0 = Instant::now();
         let cfg = SourceLifecycleConfig::ttl(10);
-        assert_eq!(cfg.poll_interval, None);
+        assert_eq!(cfg.poll_interval(), None);
         reg.on_demand(key.clone(), cfg, t0);
         assert_eq!(reg.poll_interval(&key), None);
 
@@ -1172,7 +1109,7 @@ mod tests {
         // Active) and one decay step of 60 s.
         reg.on_demand(callee.clone(), ten_second_poll(1), t0);
         let mut longer = ten_second_poll(1);
-        longer.poll_count = 3;
+        longer.schedule.poll.as_mut().unwrap().count = 3;
         reg.on_demand(caller.clone(), longer, t0);
 
         let at = |s| t0 + Duration::from_secs(s);

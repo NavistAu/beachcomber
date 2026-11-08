@@ -1,5 +1,5 @@
 use beachcomber::cache::Cache;
-use beachcomber::cache::Schedule;
+use beachcomber::provider::Schedule;
 use beachcomber::provider::Value;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::collections::HashMap;
@@ -35,7 +35,14 @@ fn git_status_fields() -> HashMap<String, Value> {
 
 fn bench_cache_read_global(c: &mut Criterion) {
     let cache = Cache::new();
-    cache.put_source("hostname", None, "host", host_fields(), Schedule::default());
+    cache.put_source(
+        "hostname",
+        None,
+        "host",
+        host_fields(),
+        &Schedule::default(),
+        None,
+    );
 
     c.bench_function("cache_read_global", |b| {
         b.iter(|| {
@@ -52,7 +59,8 @@ fn bench_cache_read_path_scoped(c: &mut Criterion) {
         Some("/home/user/project"),
         "refs",
         git_refs_fields(),
-        Schedule::poll(120, 1),
+        &Schedule::poll(120, 1),
+        None,
     );
 
     c.bench_function("cache_read_path_scoped", |b| {
@@ -68,14 +76,28 @@ fn bench_cache_write(c: &mut Criterion) {
 
     c.bench_function("cache_write", |b| {
         b.iter(|| {
-            cache.put_source("hostname", None, "host", host_fields(), Schedule::default());
+            cache.put_source(
+                "hostname",
+                None,
+                "host",
+                host_fields(),
+                &Schedule::default(),
+                None,
+            );
         })
     });
 }
 
 fn bench_cache_read_contention(c: &mut Criterion) {
     let cache = Arc::new(Cache::new());
-    cache.put_source("hostname", None, "host", host_fields(), Schedule::default());
+    cache.put_source(
+        "hostname",
+        None,
+        "host",
+        host_fields(),
+        &Schedule::default(),
+        None,
+    );
 
     let mut group = c.benchmark_group("cache_read_contention");
     for num_threads in [1, 4, 8, 16] {
@@ -114,14 +136,16 @@ fn bench_cache_field_extraction(c: &mut Criterion) {
         Some("/project"),
         "refs",
         git_refs_fields(),
-        Schedule::poll(120, 1),
+        &Schedule::poll(120, 1),
+        None,
     );
     cache.put_source(
         "git",
         Some("/project"),
         "status",
         git_status_fields(),
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
 
     let mut group = c.benchmark_group("cache_field_extraction");

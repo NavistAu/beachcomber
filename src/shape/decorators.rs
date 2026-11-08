@@ -10,7 +10,7 @@
 //! that names anything but a literal, `_.name` or an expression over those
 //! cannot render.
 
-use crate::provider::{FailbackConfig, InvalidationStrategy, expand_abs_path};
+use crate::provider::{FailbackConfig, Poll, Schedule, expand_abs_path};
 use crate::scheduler::lifecycle::DEFAULT_POLL_COUNT;
 use libbeachcomber::engine::op_error;
 use libbeachcomber::engine::pure_engine_env;
@@ -64,23 +64,6 @@ impl Object for Sentinel {
     fn render(self: &Arc<Self>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
-}
-
-/// What a Source's return chain says about its schedule, with the engine's
-/// defaults filled in.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Recorded {
-    pub invalidation: InvalidationStrategy,
-    pub failback: FailbackConfig,
-    pub budget: Duration,
-    /// How long one run may take before it is cut off.
-    pub timeout: Duration,
-    /// `Some(1)` for a `ttl(...)` Source; otherwise the provider's `_.decay`
-    /// decides.
-    pub decay: Option<u8>,
-    /// `| nearest`: the nearest instance answers alone. Not saying it is
-    /// cascade.
-    pub nearest: bool,
 }
 
 /// What a Source gets for a decorator its chain does not name: every Source
@@ -178,7 +161,7 @@ pub fn record_return(
     defaults: &EngineDefaults,
     vars: &Arc<HashMap<String, String>>,
     env: &Environment<'static>,
-) -> Result<Recorded, ReturnError> {
+) -> Result<Schedule, ReturnError> {
     if lines.is_empty() {
         return Err(ReturnError {
             level: 0,
@@ -219,7 +202,7 @@ pub fn record_return(
 }
 
 /// The nearest line's call of each decorator.
-fn merge(levels: &[Line], defaults: &EngineDefaults) -> Result<Recorded, ReturnError> {
+fn merge(levels: &[Line], defaults: &EngineDefaults) -> Result<Schedule, ReturnError> {
     if let Some(level) = levels
         .iter()
         .position(|l| l.poll.is_some() && l.ttl.is_some())
@@ -241,31 +224,18 @@ fn merge(levels: &[Line], defaults: &EngineDefaults) -> Result<Recorded, ReturnE
         Some((None, poll)) => (poll, None),
         None => (None, None),
     };
-    let watch = levels.iter().find_map(|l| l.watch.clone());
-    let invalidation = match (watch, schedule) {
-        (None, Some((interval_secs, count))) => InvalidationStrategy::Poll {
+    let (watch, watch_abs) = levels
+        .iter()
+        .find_map(|l| l.watch.clone())
+        .unwrap_or_default();
+    Ok(Schedule {
+        poll: schedule.map(|(interval_secs, count)| Poll {
             interval_secs,
             count,
-        },
-        (Some((patterns, abs_paths)), None) => InvalidationStrategy::Watch {
-            patterns,
-            abs_paths,
-        },
-        (Some((patterns, abs_paths)), Some((interval_secs, count))) => {
-            InvalidationStrategy::WatchAndPoll {
-                patterns,
-                abs_paths,
-                interval_secs,
-                count,
-            }
-        }
-        (None, None) => InvalidationStrategy::Watch {
-            patterns: vec![],
-            abs_paths: vec![],
-        },
-    };
-    Ok(Recorded {
-        invalidation,
+        }),
+        watch,
+        watch_abs,
+        decay,
         failback: levels
             .iter()
             .find_map(|l| l.failback)
@@ -278,7 +248,6 @@ fn merge(levels: &[Line], defaults: &EngineDefaults) -> Result<Recorded, ReturnE
             .iter()
             .find_map(|l| l.timeout)
             .unwrap_or(defaults.timeout),
-        decay,
         nearest: levels.iter().any(|l| l.nearest),
     })
 }
@@ -612,27 +581,34 @@ mod tests {
         )
     }
 
-    fn record(lines: &[&str]) -> Result<Recorded, String> {
+    fn record(lines: &[&str]) -> Result<Schedule, String> {
         record_return(lines, "status", &defaults(), &test_vars(), &return_env())
             .map_err(|e| e.message)
     }
 
-    fn rec(line: &str) -> Recorded {
+    fn rec(line: &str) -> Schedule {
         record(&[line]).unwrap_or_else(|e| panic!("{line}: {e}"))
     }
 
-    fn poll(interval_secs: u64, count: u32) -> InvalidationStrategy {
-        InvalidationStrategy::Poll {
-            interval_secs,
-            count,
+    /// What invalidates `s`: its poll and its watches, nothing else.
+    fn inv(s: &Schedule) -> Schedule {
+        Schedule {
+            poll: s.poll,
+            watch: s.watch.clone(),
+            watch_abs: s.watch_abs.clone(),
+            ..Schedule::default()
         }
     }
 
-    fn watch(patterns: &[&str], abs: &[&str]) -> InvalidationStrategy {
-        InvalidationStrategy::Watch {
-            patterns: patterns.iter().map(|s| s.to_string()).collect(),
-            abs_paths: abs.iter().map(|s| s.to_string()).collect(),
-        }
+    fn poll(interval_secs: u64, count: u32) -> Schedule {
+        Schedule::poll(interval_secs, count)
+    }
+
+    fn watch(patterns: &[&str], abs: &[&str]) -> Schedule {
+        Schedule::watch(
+            patterns.iter().map(|s| s.to_string()).collect(),
+            abs.iter().map(|s| s.to_string()).collect(),
+        )
     }
 
     /// A line's context is a map of its names, not a list of pairs.
@@ -656,17 +632,17 @@ mod tests {
     #[test]
     fn poll_only_is_poll_with_default_count() {
         let r = rec("{{ result | poll('60s') }}");
-        assert_eq!(r.invalidation, poll(60, DEFAULT_POLL_COUNT));
+        assert_eq!(inv(&r), poll(60, DEFAULT_POLL_COUNT));
         assert_eq!(r.decay, None);
-        assert_eq!(rec("{{ result | poll(30, 4) }}").invalidation, poll(30, 4));
-        assert_eq!(rec("{{ result | poll('2m') }}").invalidation, poll(120, 12));
+        assert_eq!(inv(&rec("{{ result | poll(30, 4) }}")), poll(30, 4));
+        assert_eq!(inv(&rec("{{ result | poll('2m') }}")), poll(120, 12));
     }
 
     #[test]
     fn watch_relative_and_absolute_split() {
         let r = rec("{{ result | watch('.git/index', '/etc/hosts', 'Cargo.toml') }}");
         assert_eq!(
-            r.invalidation,
+            inv(&r),
             watch(&[".git/index", "Cargo.toml"], &["/etc/hosts"])
         );
     }
@@ -674,10 +650,8 @@ mod tests {
     #[test]
     fn absolute_watch_entries_expand_from_the_given_variables() {
         let r = rec("{{ result | watch('~/a', '$HOME/b', '$XDG_CONFIG_HOME/c') }}");
-        let InvalidationStrategy::Watch { abs_paths, .. } = r.invalidation else {
-            panic!("watch only");
-        };
-        assert_eq!(abs_paths, ["/home/t/a", "/home/t/b", "/xdg/c"]);
+        assert!(r.poll.is_none(), "watch only");
+        assert_eq!(r.watch_abs, ["/home/t/a", "/home/t/b", "/xdg/c"]);
     }
 
     #[test]
@@ -701,7 +675,7 @@ mod tests {
     #[test]
     fn watch_of_a_tree() {
         let r = rec("{{ result | watch('.git/index', '.', '!.git') }}");
-        assert_eq!(r.invalidation, watch(&[".git/index", ".", "!.git"], &[]));
+        assert_eq!(inv(&r), watch(&[".git/index", ".", "!.git"], &[]));
     }
 
     #[test]
@@ -715,12 +689,13 @@ mod tests {
     fn watch_and_poll_is_watch_and_poll() {
         let r = rec("{{ result | watch('.git/index') | poll('60s', 12) }}");
         assert_eq!(
-            r.invalidation,
-            InvalidationStrategy::WatchAndPoll {
-                patterns: vec![".git/index".into()],
-                abs_paths: vec![],
-                interval_secs: 60,
-                count: 12,
+            inv(&r),
+            Schedule {
+                poll: Some(Poll {
+                    interval_secs: 60,
+                    count: 12
+                }),
+                ..Schedule::watch(vec![".git/index".into()], vec![])
             }
         );
     }
@@ -728,16 +703,17 @@ mod tests {
     #[test]
     fn ttl_is_poll_n_0_decay_1() {
         let r = rec("{{ result | ttl('30s') }}");
-        assert_eq!(r.invalidation, poll(30, 0));
+        assert_eq!(inv(&r), poll(30, 0));
         assert_eq!(r.decay, Some(1));
         let r = rec("{{ result | ttl(5) | watch('a') }}");
         assert_eq!(
-            r.invalidation,
-            InvalidationStrategy::WatchAndPoll {
-                patterns: vec!["a".into()],
-                abs_paths: vec![],
-                interval_secs: 5,
-                count: 0,
+            inv(&r),
+            Schedule {
+                poll: Some(Poll {
+                    interval_secs: 5,
+                    count: 0
+                }),
+                ..Schedule::watch(vec!["a".into()], vec![])
             }
         );
         assert_eq!(r.decay, Some(1));
@@ -752,7 +728,7 @@ mod tests {
     #[test]
     fn no_schedule_decorator_is_watch_only() {
         let r = rec("{{ result | failback('5s', 2) }}");
-        assert_eq!(r.invalidation, watch(&[], &[]));
+        assert_eq!(inv(&r), watch(&[], &[]));
         assert_eq!(r.decay, None);
     }
 
@@ -890,12 +866,13 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(
-            r.invalidation,
-            InvalidationStrategy::WatchAndPoll {
-                patterns: vec![".git/index".into()],
-                abs_paths: vec![],
-                interval_secs: 60,
-                count: 12,
+            inv(&r),
+            Schedule {
+                poll: Some(Poll {
+                    interval_secs: 60,
+                    count: 12
+                }),
+                ..Schedule::watch(vec![".git/index".into()], vec![])
             }
         );
         assert_eq!(
@@ -923,14 +900,14 @@ mod tests {
         .unwrap();
         assert_eq!(r.failback.reattempts, 4);
         assert_eq!(r.budget, Duration::from_millis(70));
-        assert!(matches!(
-            r.invalidation,
-            InvalidationStrategy::WatchAndPoll {
+        assert!(r.watches(), "watch and poll");
+        assert_eq!(
+            r.poll,
+            Some(Poll {
                 interval_secs: 9,
-                count: 2,
-                ..
-            }
-        ));
+                count: 2
+            })
+        );
     }
 
     #[test]
@@ -943,7 +920,7 @@ mod tests {
             &return_env(),
         )
         .unwrap();
-        assert_eq!(r.invalidation, watch(&["deploy.pid"], &[]));
+        assert_eq!(inv(&r), watch(&["deploy.pid"], &[]));
     }
 
     #[test]
@@ -979,12 +956,13 @@ mod tests {
     #[test]
     fn literal_expressions_and_underscore_name_are_constants() {
         assert_eq!(
-            rec("{{ result | watch('a' ~ 'b') | poll(2 * 30) }}").invalidation,
-            InvalidationStrategy::WatchAndPoll {
-                patterns: vec!["ab".into()],
-                abs_paths: vec![],
-                interval_secs: 60,
-                count: 12,
+            inv(&rec("{{ result | watch('a' ~ 'b') | poll(2 * 30) }}")),
+            Schedule {
+                poll: Some(Poll {
+                    interval_secs: 60,
+                    count: 12
+                }),
+                ..Schedule::watch(vec!["ab".into()], vec![])
             }
         );
         let r = record_return(
@@ -995,15 +973,15 @@ mod tests {
             &return_env(),
         )
         .unwrap();
-        assert_eq!(r.invalidation, watch(&[".build.lock"], &[]));
+        assert_eq!(inv(&r), watch(&[".build.lock"], &[]));
     }
 
     #[test]
     fn a_later_duplicate_decorator_replaces_an_earlier_one() {
         let poll_30 = ("{{ result | poll('10s') | poll('30s', 4) }}", poll(30, 4));
-        assert_eq!(rec(poll_30.0).invalidation, poll_30.1);
+        assert_eq!(inv(&rec(poll_30.0)), poll_30.1);
         assert_eq!(
-            rec("{{ result | watch('a') | watch('b') }}").invalidation,
+            inv(&rec("{{ result | watch('a') | watch('b') }}")),
             watch(&["b"], &[])
         );
         assert_eq!(
@@ -1026,17 +1004,13 @@ mod tests {
             "{{ result | poll('60s', 12) }}",
         ])
         .unwrap();
-        assert_eq!(r.invalidation, poll(15, 12));
+        assert_eq!(inv(&r), poll(15, 12));
         let r = record(&[
             "{{ result | poll('15s', 3) | super }}",
             "{{ result | poll('60s', 12) }}",
         ])
         .unwrap();
-        assert_eq!(
-            r.invalidation,
-            poll(15, 3),
-            "the prototype's count is dropped too"
-        );
+        assert_eq!(inv(&r), poll(15, 3), "the prototype's count is dropped too");
         // Within one line a later duplicate still replaces an earlier one,
         // wherever super sits.
         let r = record(&[
@@ -1044,14 +1018,14 @@ mod tests {
             "{{ result | watch('w') }}",
         ])
         .unwrap();
-        assert!(matches!(
-            r.invalidation,
-            InvalidationStrategy::WatchAndPoll {
+        assert!(r.watches(), "watch and poll");
+        assert_eq!(
+            r.poll,
+            Some(Poll {
                 interval_secs: 20,
-                count: 2,
-                ..
-            }
-        ));
+                count: 2
+            })
+        );
     }
 
     #[test]
@@ -1108,14 +1082,14 @@ mod tests {
             "{{ result | poll('60s', 12) }}",
         ])
         .unwrap();
-        assert_eq!(r.invalidation, poll(5, 0));
+        assert_eq!(inv(&r), poll(5, 0));
         assert_eq!(r.decay, Some(1));
         let r = record(&[
             "{{ result | poll('15s') | super }}",
             "{{ result | ttl('5s') }}",
         ])
         .unwrap();
-        assert_eq!(r.invalidation, poll(15, DEFAULT_POLL_COUNT));
+        assert_eq!(inv(&r), poll(15, DEFAULT_POLL_COUNT));
         assert_eq!(r.decay, None);
         let e = record(&[
             "{{ result | ttl('5s') | poll('60s') | super }}",
@@ -1322,7 +1296,7 @@ mod tests {
     #[test]
     fn super_inside_a_string_is_not_super() {
         let r = rec("{{ result | watch('a|super') }}");
-        assert_eq!(r.invalidation, watch(&["a|super"], &[]));
+        assert_eq!(inv(&r), watch(&["a|super"], &[]));
     }
 
     #[test]
@@ -1413,7 +1387,7 @@ mod tests {
     fn a_return_line_renders_on_the_pure_library() {
         let r =
             rec("{% set d = '/a/b/c.txt' | dirname | basename | upper %}{{ result | poll('2s') }}");
-        assert_eq!(r.invalidation, poll(2, 12));
+        assert_eq!(inv(&r), poll(2, 12));
         let colour = "{% set c = 'x' | fg('#ff0000') | bold %}{{ result | poll('2s') }}";
         assert!(record(&[colour]).is_ok());
         let e = record(&["{% set d = 'x' | read %}{{ result | poll('2s') }}"]).unwrap_err();

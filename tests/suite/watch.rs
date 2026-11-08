@@ -1,9 +1,9 @@
 use beachcomber::cache::Cache;
-use beachcomber::cache::Schedule;
 use beachcomber::protocol::Response;
+use beachcomber::provider::Schedule;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::collections::HashMap;
@@ -48,18 +48,13 @@ fn watched_meta() -> SourceMetadata {
                 name: "dirty".into(),
             },
         ],
-        invalidation: InvalidationStrategy::Poll {
-            interval_secs: 60,
-            count: 1,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 1,
+            },
+            ..Schedule::poll(60, 1)
         },
-        failback: FailbackConfig {
-            reattempts: 3,
-            interval_secs: 1,
-        },
-        decay: None,
-        budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-        timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
-        nearest: false,
     }
 }
 
@@ -95,7 +90,8 @@ async fn watch_receives_initial_value() {
         None,
         "main",
         git_fields("main", false),
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
@@ -140,7 +136,8 @@ async fn watch_receives_updates() {
         None,
         "main",
         git_fields("main", false),
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
     let cache_writer = cache.clone();
 
@@ -174,7 +171,8 @@ async fn watch_receives_updates() {
         None,
         "main",
         git_fields("feature/new-branch", false),
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
 
     // Read the update
@@ -208,7 +206,8 @@ async fn watch_filters_unchanged_field() {
         None,
         "main",
         git_fields("main", false),
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
     let cache_writer = cache.clone();
 
@@ -242,7 +241,8 @@ async fn watch_filters_unchanged_field() {
         None,
         "main",
         git_fields("main", true),
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
 
     // Should NOT receive any update — branch didn't change. On this
@@ -273,7 +273,8 @@ async fn watch_provider_level_gets_all_changes() {
         None,
         "main",
         git_fields("main", false),
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
     let cache_writer = cache.clone();
 
@@ -311,7 +312,8 @@ async fn watch_provider_level_gets_all_changes() {
         None,
         "main",
         git_fields("main", true),
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
 
     // Should receive an update
@@ -375,7 +377,8 @@ async fn watch_miss_then_update() {
         None,
         "main",
         git_fields("main", false),
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
 
     // Should receive the populated value
@@ -525,7 +528,8 @@ async fn introspect_counts_one_watch_once() {
         None,
         "refs",
         git_fields("main", false),
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
@@ -600,7 +604,8 @@ async fn watch_ends_when_client_disconnects_without_a_write() {
         None,
         "refs",
         git_fields("main", false),
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
@@ -658,7 +663,8 @@ async fn watch_stays_open_while_client_is_connected() {
         None,
         "refs",
         git_fields("main", false),
-        Schedule::poll(60, 1),
+        &Schedule::poll(60, 1),
+        None,
     );
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);

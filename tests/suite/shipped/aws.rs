@@ -3,7 +3,7 @@
 //! index it by the shell's selector.
 
 use super::{age, scenario, schedule, served};
-use beachcomber::provider::{FailbackConfig, InvalidationStrategy};
+use beachcomber::provider::{FailbackConfig, Poll, Schedule};
 use serde_json::json;
 use std::path::Path;
 
@@ -187,22 +187,23 @@ fn aws_keeps_its_schedule_and_watches_the_default_path() {
         meta.fields
     );
     assert_eq!(
-        meta.invalidation,
-        InvalidationStrategy::WatchAndPoll {
-            patterns: vec![],
-            abs_paths: vec![format!("{home}/.aws/config")],
-            interval_secs: 60,
-            count: 2,
+        super::trigger(&meta.schedule),
+        Schedule {
+            poll: Some(Poll {
+                interval_secs: 60,
+                count: 2
+            }),
+            ..Schedule::watch(vec![], vec![format!("{home}/.aws/config")])
         }
     );
     assert_eq!(
-        meta.failback,
+        meta.schedule.failback,
         FailbackConfig {
             reattempts: 3,
             interval_secs: 30
         }
     );
-    assert!(!meta.nearest);
+    assert!(!meta.schedule.nearest);
 }
 
 /// The file is INI as `fromini` reads it: a quoted value is unquoted and `:`

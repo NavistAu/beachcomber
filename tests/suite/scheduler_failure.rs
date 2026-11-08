@@ -2,7 +2,7 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult,
+    FailbackConfig, FieldSchema, Schedule, Source, SourceMetadata, SourceResult,
 };
 use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
@@ -19,18 +19,13 @@ fn failing_source_meta() -> SourceMetadata {
         fields: vec![FieldSchema {
             name: "value".into(),
         }],
-        invalidation: InvalidationStrategy::Poll {
-            interval_secs: 60,
-            count: 2,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 30,
+            },
+            ..Schedule::poll(60, 2)
         },
-        failback: FailbackConfig {
-            reattempts: 3,
-            interval_secs: 30,
-        },
-        decay: None,
-        budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-        timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
-        nearest: false,
     }
 }
 
@@ -228,9 +223,12 @@ async fn failback_skips_the_runs_reads_start_and_force_does_not() {
             use std::sync::OnceLock;
             static M: OnceLock<SourceMetadata> = OnceLock::new();
             M.get_or_init(|| SourceMetadata {
-                failback: FailbackConfig {
-                    reattempts: 1,
-                    interval_secs: 3600,
+                schedule: Schedule {
+                    failback: FailbackConfig {
+                        reattempts: 1,
+                        interval_secs: 3600,
+                    },
+                    ..failing_source_meta().schedule
                 },
                 ..failing_source_meta()
             })

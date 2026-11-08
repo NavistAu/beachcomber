@@ -2,7 +2,7 @@ use beachcomber::cache::Cache;
 use beachcomber::config::Config;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, Schedule, Source, SourceMetadata, SourceResult, Value,
 };
 use beachcomber::query::Instance;
 use beachcomber::scheduler::{Scheduler, SchedulerMessage};
@@ -60,18 +60,13 @@ fn counter_source_meta() -> SourceMetadata {
         fields: vec![FieldSchema {
             name: "count".into(),
         }],
-        invalidation: InvalidationStrategy::Poll {
-            interval_secs: 60,
-            count: 2,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 30,
+            },
+            ..Schedule::poll(60, 2)
         },
-        failback: FailbackConfig {
-            reattempts: 3,
-            interval_secs: 30,
-        },
-        decay: None,
-        budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-        timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
-        nearest: false,
     }
 }
 
@@ -302,11 +297,10 @@ fn held(poll_secs: u64) -> Held {
     let runs = Arc::new(AtomicU32::new(0));
     let gate = Arc::new(Gate::new());
     let meta = SourceMetadata {
-        invalidation: InvalidationStrategy::Poll {
-            interval_secs: poll_secs,
-            count: 60,
+        schedule: Schedule {
+            timeout: Duration::from_secs(600),
+            ..Schedule::poll(poll_secs, 60)
         },
-        timeout: Duration::from_secs(600),
         ..counter_source_meta()
     };
     let mut registry = ProviderRegistry::new();

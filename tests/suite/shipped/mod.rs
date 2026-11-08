@@ -311,6 +311,18 @@ pub fn schedule(provider: &str, source: &str) -> (beachcomber::provider::SourceM
 /// Give `path`, a file or a directory, an mtime well in the past, so a stamp
 /// of it is not racy (a directory an entry was made in a moment ago is) and a
 /// rewrite within the same second is a change.
+/// The poll and watch of a schedule alone (what `invalidation` was), the rest
+/// at its default: failback, nearest, decay, budget and timeout are asserted
+/// on their own.
+pub fn trigger(s: &beachcomber::provider::Schedule) -> beachcomber::provider::Schedule {
+    beachcomber::provider::Schedule {
+        poll: s.poll,
+        watch: s.watch.clone(),
+        watch_abs: s.watch_abs.clone(),
+        ..Default::default()
+    }
+}
+
 pub fn age(path: &Path) {
     std::fs::File::open(path)
         .unwrap()

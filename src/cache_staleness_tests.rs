@@ -1,5 +1,5 @@
 use crate::cache::Cache;
-use crate::provider::{InvalidationStrategy, Value, expected_interval_secs};
+use crate::provider::{Poll, Schedule, Value};
 use std::collections::HashMap;
 
 // ── from tests/suite/staleness.rs ──────────
@@ -12,13 +12,7 @@ fn fresh_entry_is_not_stale() {
     fields.insert("value".to_string(), Value::String("hello".to_string()));
 
     // Put with a 60-second interval — entry is brand new, should not be stale.
-    cache.put_source(
-        "myprov",
-        None,
-        "main",
-        fields,
-        crate::cache::Schedule::poll(60, 1),
-    );
+    cache.put_source("myprov", None, "main", fields, &Schedule::poll(60, 1), None);
 
     let entry = cache.get_entry("myprov", None).unwrap();
     assert!(
@@ -39,13 +33,7 @@ async fn expired_entry_is_stale() {
     fields.insert("value".to_string(), Value::String("hello".to_string()));
 
     // Interval of 0 seconds: is_stale() returns true when elapsed().as_secs() > 0.
-    cache.put_source(
-        "myprov",
-        None,
-        "main",
-        fields,
-        crate::cache::Schedule::poll(0, 1),
-    );
+    cache.put_source("myprov", None, "main", fields, &Schedule::poll(0, 1), None);
 
     // Advance mock clock by 2 seconds — as_secs() truncates so 1s may give 0; 2s is safe.
     tokio::time::advance(std::time::Duration::from_secs(2)).await;
@@ -65,13 +53,7 @@ fn no_interval_entry_is_never_stale() {
     fields.insert("value".to_string(), Value::String("hello".to_string()));
 
     // put_source with None interval — no staleness tracking.
-    cache.put_source(
-        "myprov",
-        None,
-        "main",
-        fields,
-        crate::cache::Schedule::default(),
-    );
+    cache.put_source("myprov", None, "main", fields, &Schedule::default(), None);
 
     let entry = cache.get_entry("myprov", None).unwrap();
     assert!(
@@ -84,27 +66,20 @@ fn no_interval_entry_is_never_stale() {
 
 #[test]
 fn expected_interval_secs_maps_all_strategies() {
+    assert_eq!((Schedule::poll(30, 2)).expected_interval_secs(), Some(30));
     assert_eq!(
-        expected_interval_secs(&InvalidationStrategy::Poll {
-            interval_secs: 30,
-            count: 2
-        }),
-        Some(30)
-    );
-    assert_eq!(
-        expected_interval_secs(&InvalidationStrategy::WatchAndPoll {
-            patterns: vec![".git".into()],
-            abs_paths: vec![],
-            interval_secs: 60,
-            count: 2,
-        }),
+        (Schedule {
+            poll: Some(Poll {
+                interval_secs: 60,
+                count: 2
+            }),
+            ..Schedule::watch(vec![".git".into()], vec![])
+        })
+        .expected_interval_secs(),
         Some(60)
     );
     assert_eq!(
-        expected_interval_secs(&InvalidationStrategy::Watch {
-            patterns: vec![".git".into()],
-            abs_paths: vec![],
-        }),
+        (Schedule::watch(vec![".git".into()], vec![])).expected_interval_secs(),
         None
     );
 }
@@ -117,13 +92,7 @@ async fn cache_put_source_with_zero_interval_reports_stale_after_interval() {
     let mut fields = HashMap::new();
     fields.insert("x".to_string(), Value::String("v".into()));
     // interval of 0 => is_stale() true when elapsed().as_secs() > 0; advance 2s to be safe.
-    cache.put_source(
-        "fake",
-        None,
-        "main",
-        fields,
-        crate::cache::Schedule::poll(0, 1),
-    );
+    cache.put_source("fake", None, "main", fields, &Schedule::poll(0, 1), None);
     tokio::time::advance(std::time::Duration::from_secs(2)).await;
     let entry = cache.get_entry("fake", None).expect("entry present");
     assert!(entry.is_stale(), "entry should be stale with interval=0");
@@ -153,7 +122,8 @@ async fn cache_entry_becomes_stale_after_advance() {
         Some("/repo"),
         "base",
         make_fields(&[("branch", "main")]),
-        crate::cache::Schedule::poll(30, 1),
+        &Schedule::poll(30, 1),
+        None,
     );
 
     // Immediately after insertion the entry must not be stale.
@@ -186,7 +156,8 @@ async fn cache_entry_age_ms_advances_with_mock_clock() {
         None,
         "main",
         make_fields(&[("name", "box1")]),
-        crate::cache::Schedule::default(),
+        &Schedule::default(),
+        None,
     );
 
     let before = cache
@@ -216,7 +187,8 @@ async fn cache_entry_without_ttl_never_stale() {
         None,
         "main",
         make_fields(&[("name", "box1")]),
-        crate::cache::Schedule::default(), // no interval → is_stale() always returns false
+        &crate::provider::Schedule::default(), // no interval → is_stale() always returns false
+        None,
     );
 
     tokio::time::advance(tokio::time::Duration::from_secs(3600)).await;

@@ -1,6 +1,6 @@
-use beachcomber::cache::Schedule;
 use beachcomber::cache::{Cache, Origin};
 use beachcomber::protocol::Response;
+use beachcomber::provider::Schedule;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
 use std::collections::HashMap;
@@ -37,7 +37,14 @@ async fn get_force_evicts_and_re_executes() {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("stale-host".to_string()));
     fields.insert("short".to_string(), Value::String("stale".to_string()));
-    cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
+    cache.put_source(
+        "hostname",
+        None,
+        "host",
+        fields,
+        &Schedule::poll(60, 1),
+        None,
+    );
 
     // Confirm the cache has the stale entry.
     assert!(
@@ -100,7 +107,14 @@ async fn get_without_force_returns_cached_entry() {
     let mut fields = HashMap::new();
     fields.insert("name".to_string(), Value::String("cached-host".to_string()));
     fields.insert("short".to_string(), Value::String("cached".to_string()));
-    cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
+    cache.put_source(
+        "hostname",
+        None,
+        "host",
+        fields,
+        &Schedule::poll(60, 1),
+        None,
+    );
 
     let server =
         crate::common::scheduler::server(sock.clone(), Arc::clone(&cache), registry, watchers);
@@ -215,22 +229,17 @@ struct FlakyProvider(
 );
 
 fn flaky_meta() -> beachcomber::provider::SourceMetadata {
-    use beachcomber::provider::{FailbackConfig, FieldSchema, InvalidationStrategy};
+    use beachcomber::provider::{FailbackConfig, FieldSchema, Schedule};
     beachcomber::provider::SourceMetadata {
         name: "main".into(),
         fields: vec![FieldSchema { name: "v".into() }],
-        invalidation: InvalidationStrategy::Poll {
-            interval_secs: 60,
-            count: 2,
+        schedule: Schedule {
+            failback: FailbackConfig {
+                reattempts: 3,
+                interval_secs: 30,
+            },
+            ..Schedule::poll(60, 2)
         },
-        failback: FailbackConfig {
-            reattempts: 3,
-            interval_secs: 30,
-        },
-        decay: None,
-        budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-        timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
-        nearest: false,
     }
 }
 

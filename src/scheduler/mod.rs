@@ -19,7 +19,7 @@ use crate::query::Instance;
 pub use crate::cache::FailureSnapshot;
 use crate::cache::{Cache, Origin};
 use crate::config::Config;
-use crate::provider::InvalidationStrategy;
+use crate::provider::Schedule;
 use crate::provider::registry::{ProviderRegistry, RegistryHandle};
 use crate::run::{Overtake, Want};
 use crate::scheduler::lifecycle::{
@@ -109,7 +109,7 @@ pub struct LifecycleSnapshot {
     /// poll_timer.interval`, clamped to now). `None` for pure Watch sources
     /// (no poll timer).
     pub next_poll_in_secs: Option<u64>,
-    /// True if the provider uses Watch or WatchAndPoll invalidation strategy.
+    /// True unless the Source only polls ([`crate::provider::Schedule::watches_files`]).
     pub watches_files: bool,
     /// Source name for this lifecycle entry.
     pub source: String,
@@ -368,10 +368,7 @@ fn snapshot_entry(
     entry: &lifecycle::LifecycleEntry,
     now: Instant,
 ) -> LifecycleSnapshot {
-    let watches_files = matches!(
-        entry.config.strategy_kind,
-        lifecycle::StrategyKind::Watch | lifecycle::StrategyKind::WatchAndPoll
-    );
+    let watches_files = entry.config.schedule.watches_files();
     let poll_interval_secs = entry
         .poll_timer
         .as_ref()
@@ -384,7 +381,7 @@ fn snapshot_entry(
         step => entry.config.step_length(step),
     }
     .as_secs();
-    let poll_count = entry.config.poll_interval.map(|_| entry.config.poll_count);
+    let poll_count = entry.config.poll_count();
 
     // polls_elapsed: how many polls have fired in the current lifecycle step.
     // Only meaningful when there is a poll path.
@@ -874,7 +871,7 @@ impl Scheduler {
                         &key.provider,
                         key.path.as_deref(),
                         key.source.name(),
-                        crate::cache::Schedule::of(sm),
+                        &sm.schedule,
                     );
                 }
             }
@@ -909,7 +906,7 @@ impl Scheduler {
                     &retune.key.provider,
                     retune.key.path.as_deref(),
                     retune.key.source.name(),
-                    crate::cache::Schedule::of(sm),
+                    &sm.schedule,
                 );
             }
             if retune.watches_changed {
@@ -1115,7 +1112,7 @@ impl Scheduler {
                                     sm,
                                     key.path.as_deref(),
                                 );
-                                if crate::provider::watches_tree(&sm.invalidation) {
+                                if crate::provider::watches_tree(&sm.schedule) {
                                     tree_if_registered(&self.cache, registrar.as_ref(), key);
                                 }
                             }
@@ -1172,7 +1169,7 @@ impl Scheduler {
                                         sm,
                                         root.as_deref(),
                                     );
-                                    if crate::provider::watches_tree(&sm.invalidation) {
+                                    if crate::provider::watches_tree(&sm.schedule) {
                                         tree_if_registered(&self.cache, registrar.as_ref(), &key);
                                     }
                                 } else if let Some(registrar) = &registrar
@@ -1404,21 +1401,18 @@ fn watch_instance(
 /// `$HOME` is the firehose, and the instance refreshes by poll, by demand and
 /// when a read finds an input changed. An absolute entry (`/…`, or `~`/`$XDG_*`
 /// expanded by the Source) is watched whatever the root, and an event on it
-/// refreshes this instance. A Poll Source registers no watch at all: an empty
-/// pattern list matches every event under its root.
+/// refreshes this instance. A Source that only polls names no path and
+/// registers no watch at all.
 fn instance_watches(
     key: &lifecycle::Key,
     sm: &crate::provider::SourceMetadata,
 ) -> Vec<(PathBuf, Subscription)> {
     let mut out = Vec::new();
-    if matches!(sm.invalidation, InvalidationStrategy::Poll { .. }) {
-        return out;
-    }
     let subscription = |patterns: Vec<String>| Subscription {
         key: key.clone(),
         patterns,
     };
-    let patterns = crate::provider::watch_patterns(&sm.invalidation);
+    let patterns = crate::provider::watch_patterns(&sm.schedule);
     if let Some(root) = &key.path
         && !patterns.is_empty()
     {
@@ -1438,7 +1432,7 @@ fn instance_watches(
             }
         }
     }
-    for abs in crate::provider::watch_abs_paths(&sm.invalidation) {
+    for abs in &sm.schedule.watch_abs {
         out.push((PathBuf::from(abs), subscription(Vec::new())));
     }
     out
@@ -1625,26 +1619,19 @@ fn static_lifecycle_config(
     ttl_secs: Option<u64>,
     watch: &[String],
 ) -> SourceLifecycleConfig {
-    let abs_paths = watch.to_vec();
-    match ttl_secs {
-        Some(interval_secs) if abs_paths.is_empty() => SourceLifecycleConfig::ttl(interval_secs),
-        Some(interval_secs) => SourceLifecycleConfig::from_strategy(
-            &InvalidationStrategy::WatchAndPoll {
-                patterns: Vec::new(),
-                abs_paths,
-                interval_secs,
-                count: 0,
-            },
-            1,
-        ),
-        None => SourceLifecycleConfig::from_strategy(
-            &InvalidationStrategy::Watch {
-                patterns: Vec::new(),
-                abs_paths,
-            },
-            cache.resolve_decay(provider, path),
-        ),
-    }
+    let schedule = Schedule {
+        poll: ttl_secs.map(|interval_secs| crate::provider::Poll {
+            interval_secs,
+            count: 0,
+        }),
+        ..Schedule::watch(Vec::new(), watch.to_vec())
+    };
+    let decay = if ttl_secs.is_some() {
+        1
+    } else {
+        cache.resolve_decay(provider, path)
+    };
+    SourceLifecycleConfig::new(schedule, decay)
 }
 
 /// The lifecycle a Source of `provider` runs under: its own strategy, with the
@@ -1656,9 +1643,10 @@ fn source_lifecycle_config(
     path: Option<&str>,
     sm: &crate::provider::SourceMetadata,
 ) -> SourceLifecycleConfig {
-    SourceLifecycleConfig::from_strategy(
-        &sm.invalidation,
-        sm.decay
+    SourceLifecycleConfig::new(
+        sm.schedule.clone(),
+        sm.schedule
+            .decay
             .unwrap_or_else(|| cache.resolve_decay(provider, path)),
     )
 }
@@ -1703,11 +1691,17 @@ struct ReloadPlan {
 /// Whether two metadata of one Source schedule it alike, in everything the
 /// scheduler reads of it when it creates an entry.
 fn same_schedule(a: &crate::provider::SourceMetadata, b: &crate::provider::SourceMetadata) -> bool {
-    a.invalidation == b.invalidation
-        && a.failback == b.failback
-        && a.decay == b.decay
-        && a.budget == b.budget
-        && a.nearest == b.nearest
+    alike(&a.schedule, &b.schedule)
+}
+
+/// Whether two schedules are alike in all but the `timeout`, which each run
+/// reads from its Source as it starts: a reload that changes only that
+/// leaves the instance, and a run in flight, as they are.
+fn alike(a: &Schedule, b: &Schedule) -> bool {
+    *a == Schedule {
+        timeout: a.timeout,
+        ..b.clone()
+    }
 }
 
 /// Compare every Source instance in `lifecycle` as `previous` scheduled it with
@@ -1740,16 +1734,21 @@ fn plan_reload(
         };
         let before = previous.source_metadata(&key.provider, key.source.name());
         let config = source_lifecycle_config(cache, &key.provider, key.path.as_deref(), now);
-        if before.is_some_and(|before| same_schedule(before, now)) && config == entry.config {
+        if before.is_some_and(|before| same_schedule(before, now))
+            && config.decay == entry.config.decay
+            && alike(&config.schedule, &entry.config.schedule)
+        {
             continue;
         }
         plan.retune.push(Retune {
             key: key.clone(),
             stored_changed: before.is_none_or(|before| {
-                crate::cache::Schedule::of(before) != crate::cache::Schedule::of(now)
+                before.schedule.stored_keys(None) != now.schedule.stored_keys(None)
             }),
-            failback_changed: before.is_none_or(|before| before.failback != now.failback),
-            watches_changed: before.is_none_or(|before| before.invalidation != now.invalidation),
+            failback_changed: before
+                .is_none_or(|before| before.schedule.failback != now.schedule.failback),
+            watches_changed: before
+                .is_none_or(|before| before.schedule.invalidation() != now.schedule.invalidation()),
             rewatch: entry.state == LifecycleState::Active,
             config,
         });
@@ -1863,13 +1862,7 @@ mod tests {
             source: crate::cache::Origin::source("main"),
             node: String::new(),
         };
-        let config = SourceLifecycleConfig {
-            strategy_kind: StrategyKind::Poll,
-            poll_interval: Some(Duration::from_secs(60)),
-            poll_count: 12,
-            decay: 1,
-            ttl: None,
-        };
+        let config = SourceLifecycleConfig::new(Schedule::poll(60, 12), 1);
         let t0 = Instant::now();
         let mut registry = LifecycleRegistry::new();
         registry.on_demand(key.clone(), config, t0);
@@ -2005,9 +1998,9 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(sm.decay, None);
+        assert_eq!(sm.schedule.decay, None);
         assert_eq!(source_lifecycle_config(&cache, "git", None, &sm).decay, 6);
-        sm.decay = Some(1);
+        sm.schedule.decay = Some(1);
         assert_eq!(source_lifecycle_config(&cache, "git", None, &sm).decay, 1);
     }
 
@@ -2699,6 +2692,44 @@ mod tests {
         )
     }
 
+    /// A reload that changes only a Source's `timeout` leaves its instance
+    /// alone: each run reads the timeout as it starts.
+    #[test]
+    fn a_reload_of_only_the_timeout_retunes_nothing() {
+        let cache = Arc::new(Cache::new());
+        let load = |ret: &str| {
+            let toml = format!(
+                "[daemon.providers.p.sources.s]\ndata = \"{{{{ 1 }}}}\"\n\
+                 result.f = \"{{{{ data }}}}\"\nreturn = \"{{{{ result | {ret} }}}}\"\n"
+            );
+            ProviderRegistry::with_config(
+                &crate::config::Config::from_toml(&toml),
+                &std::env::vars().collect(),
+            )
+            .unwrap()
+            .share(&cache)
+        };
+        let before = load("poll('5s')");
+        let after = load("poll('5s') | timeout('3s')");
+        let (was, now) = (
+            before.source_metadata("p", "s").unwrap(),
+            after.source_metadata("p", "s").unwrap(),
+        );
+        assert_ne!(was.schedule.timeout, now.schedule.timeout);
+        assert!(same_schedule(was, now));
+        let mut lifecycle = LifecycleRegistry::new();
+        let key = lifecycle::Key {
+            provider: "p".into(),
+            path: None,
+            source: Origin::source("s"),
+            node: String::new(),
+        };
+        let config = source_lifecycle_config(&cache, "p", None, was);
+        lifecycle.on_demand(key, config, Instant::now());
+        let plan = plan_reload(&cache, &lifecycle, &before, &after);
+        assert!(plan.evict.is_empty() && plan.retune.is_empty());
+    }
+
     /// What a reload does to each instance: the Source that is gone or whose
     /// body changed is evicted, the one whose poll changed is retuned in place
     /// (and its stored schedule differs), the one left alone is untouched, and
@@ -2754,7 +2785,7 @@ mod tests {
         let tune = &plan.retune[0];
         assert_eq!(tune.key, key("tune"));
         assert!(tune.stored_changed && !tune.failback_changed && tune.watches_changed);
-        assert_eq!(tune.config.poll_interval, Some(Duration::from_secs(9)));
+        assert_eq!(tune.config.poll_interval(), Some(Duration::from_secs(9)));
         assert!(
             !plan.evict.contains(&put) && plan.retune.iter().all(|r| r.key != put),
             "a put is never touched"
@@ -3107,21 +3138,19 @@ mod tests {
         let cfg = static_lifecycle_config(&cache, "k", None, Some(600), &[]);
         assert_eq!(cfg, SourceLifecycleConfig::ttl(600));
         assert_eq!(
-            (cfg.lifespan(), cfg.decay, cfg.strategy_kind),
-            (Duration::from_secs(600), 1, lifecycle::StrategyKind::Poll)
+            (cfg.lifespan(), cfg.decay, cfg.schedule.watches_files()),
+            (Duration::from_secs(600), 1, false),
+            "polled, watching nothing"
         );
         let cfg = static_lifecycle_config(&cache, "k", None, Some(600), &w);
         assert_eq!(
-            (cfg.poll_interval, cfg.ttl),
+            (cfg.poll_interval(), cfg.schedule.ttl()),
             (None, Some(Duration::from_secs(600)))
         );
         assert_eq!(
-            (cfg.lifespan(), cfg.decay, cfg.strategy_kind),
-            (
-                Duration::from_secs(600),
-                1,
-                lifecycle::StrategyKind::WatchAndPoll
-            )
+            (cfg.lifespan(), cfg.decay, cfg.schedule.watch_abs.clone()),
+            (Duration::from_secs(600), 1, w.to_vec()),
+            "a ttl that watches"
         );
         cache
             .write_static(
@@ -3135,8 +3164,14 @@ mod tests {
             .unwrap();
         let cfg = static_lifecycle_config(&cache, "k", None, None, &w);
         assert_eq!(
-            (cfg.lifespan(), cfg.decay, cfg.strategy_kind),
-            (Duration::from_secs(720), 2, lifecycle::StrategyKind::Watch)
+            (
+                cfg.lifespan(),
+                cfg.decay,
+                cfg.schedule.poll,
+                cfg.schedule.watches_files()
+            ),
+            (Duration::from_secs(720), 2, None, true),
+            "watch-only"
         );
     }
 }

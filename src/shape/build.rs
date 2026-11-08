@@ -7,8 +7,9 @@
 //! Source resolves through, its `return` chain rendered once into a schedule,
 //! and the rules between Sources of one provider.
 
+use crate::provider::Schedule;
 use crate::provider::config_source::{ConfigSourceSpec, ResultSpec};
-use crate::shape::decorators::{EngineDefaults, Recorded, record_return, return_env};
+use crate::shape::decorators::{EngineDefaults, record_return, return_env};
 use crate::shape::prototype::{Kind, Link, chain, effective, source_prototypes, super_chain};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -73,7 +74,7 @@ fn check_return(
     defaults: &EngineDefaults,
     vars: &Arc<HashMap<String, String>>,
     env: &minijinja::Environment<'static>,
-) -> Result<Option<Recorded>, String> {
+) -> Result<Option<Schedule>, String> {
     let lines = super_chain(links, "return");
     let mut strs: Vec<&str> = Vec::new();
     for (_, value) in &lines {

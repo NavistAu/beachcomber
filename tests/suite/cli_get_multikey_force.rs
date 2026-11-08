@@ -5,7 +5,7 @@
 
 use crate::common::daemon::isolate;
 use beachcomber::cache::Cache;
-use beachcomber::cache::Schedule;
+use beachcomber::provider::Schedule;
 use beachcomber::provider::Value;
 use libbeachcomber::resolve::Fetch;
 use libbeachcomber::{Client, ClientConfig};
@@ -38,7 +38,14 @@ async fn setup_seeded() -> (TempDir, std::path::PathBuf) {
         Value::String("seeded-value".to_string()),
     );
     fields.insert("short".to_string(), Value::String("seeded".to_string()));
-    cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
+    cache.put_source(
+        "hostname",
+        None,
+        "host",
+        fields,
+        &Schedule::poll(60, 1),
+        None,
+    );
 
     let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     server.spawn().unwrap();

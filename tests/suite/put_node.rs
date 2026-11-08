@@ -14,7 +14,7 @@ use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
-    FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
+    FailbackConfig, FieldSchema, Schedule, Source, SourceMetadata, SourceResult, Value,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -56,18 +56,13 @@ impl Source for SentinelSource {
             fields: vec![FieldSchema {
                 name: "<tool>".into(),
             }],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 60,
-                count: 2,
+            schedule: Schedule {
+                failback: FailbackConfig {
+                    reattempts: 3,
+                    interval_secs: 30,
+                },
+                ..Schedule::poll(60, 2)
             },
-            failback: FailbackConfig {
-                reattempts: 3,
-                interval_secs: 30,
-            },
-            decay: None,
-            budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-            timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
-            nearest: false,
         })
     }
 
@@ -96,18 +91,13 @@ impl Source for CountingSource {
             fields: vec![FieldSchema {
                 name: "name".into(),
             }],
-            invalidation: InvalidationStrategy::Poll {
-                interval_secs: 60,
-                count: 2,
+            schedule: Schedule {
+                failback: FailbackConfig {
+                    reattempts: 3,
+                    interval_secs: 30,
+                },
+                ..Schedule::poll(60, 2)
             },
-            failback: FailbackConfig {
-                reattempts: 3,
-                interval_secs: 30,
-            },
-            decay: None,
-            budget: beachcomber::scheduler::lifecycle::DEFAULT_BUDGET,
-            timeout: beachcomber::scheduler::lifecycle::DEFAULT_TIMEOUT,
-            nearest: false,
         })
     }
 
