@@ -58,7 +58,7 @@ export default function Hero(): JSX.Element {
           <span className={styles.registrySep} aria-hidden="true">·</span>
           <a className={styles.registryLink} href="https://rubygems.org/gems/libbeachcomber" target="_blank" rel="noopener noreferrer">RubyGems</a>
           <span className={styles.registrySep} aria-hidden="true">·</span>
-          <a className={styles.registryLink} href="https://luarocks.org/modules/navist/libbeachcomber" target="_blank" rel="noopener noreferrer">LuaRocks</a>
+          <a className={styles.registryLink} href="https://luarocks.org/modules/jhogendorn/libbeachcomber" target="_blank" rel="noopener noreferrer">LuaRocks</a>
         </div>
       </div>
 

@@ -129,3 +129,5 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
         painful this would be to do and maintain. For example, dropping all the formatting tools drops the minijinja
         dep. Maybe core dependencies go back to as old a version as makes sense to reduce supply chain attack.
 - [ ] `llms.txt` for the website — machine-readable project summary for LLM consumption.
+- [ ] Publish the LuaRocks rock under a `navist` account (LuaRocks has no orgs) instead of `jhogendorn`; then point
+      the website (`Hero.tsx`) and README links at `luarocks.org/modules/navist/libbeachcomber`.
