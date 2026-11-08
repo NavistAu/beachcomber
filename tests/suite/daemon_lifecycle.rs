@@ -279,12 +279,14 @@ fn a_daemon_out_of_descriptors_logs_once_and_recovers() {
     }
     let mut child = launch(&mut cmd, None, spawn::READY_TIMEOUT).expect("the daemon serves");
 
-    // A connection the daemon answers, or the last that it does not.
+    // A connection the daemon answers, or the last that it does not. A daemon
+    // out of descriptors may already have closed this one, and macOS then
+    // refuses `setsockopt` on it with EINVAL: unanswered, like any other.
     let answered = || {
         let mut stream = std::os::unix::net::UnixStream::connect(&socket.path).ok()?;
         stream
             .set_read_timeout(Some(Duration::from_millis(500)))
-            .unwrap();
+            .ok()?;
         stream.write_all(b"{\"op\":\"hello\"}\n").ok()?;
         matches!(stream.read(&mut [0u8; 1]), Ok(1)).then_some(stream)
     };
