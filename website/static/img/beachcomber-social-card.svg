@@ -61,7 +61,7 @@
       <text x="20" y="36" fill="#6a5e4a">$</text>
       <text x="44" y="36" fill="#e8dfc8">comb g git.branch .</text>
       <text x="20" y="72" fill="#06d6f0">main</text>
-      <text x="104" y="72" fill="#6a5e4a">← 15 µs from shared cache</text>
+      <text x="104" y="72" fill="#6a5e4a">← from the shared cache</text>
     </g>
   </g>
 

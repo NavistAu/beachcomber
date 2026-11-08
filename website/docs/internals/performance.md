@@ -15,7 +15,7 @@ This document records all performance optimizations applied to beachcomber, the 
 
 3. **Provider execution is the cold path (but still matters).** Providers only execute on invalidation (filesystem change or poll timer), not on every query. But slow providers block `spawn_blocking` thread pool slots and delay cache freshness. Keep them fast.
 
-4. **Amortize connection overhead.** Unix socket connect is ~30µs. For consumers querying multiple values per render cycle (prompts, status bars), a persistent connection (`ClientSession`) amortizes this to ~15µs/query.
+4. **Amortize connection overhead.** Consumers that read several values per render cycle (prompts, status bars) should keep one connection open (`Session`) instead of connecting for each read. A kept-open read of `git.branch` costs about 0.1 ms in Rust or through the C ABI (Round 5).
 
 5. **The scheduler must never block.** Provider execution happens on `spawn_blocking` threads. The scheduler's async loop must remain responsive to messages, filesystem events, and poll timers at all times.
 
@@ -252,6 +252,32 @@ Three rounds for the benches, 15 for the CLI, five for the suite (2508 tests eac
 - **Labels (about 4%)**: two `$HOME` look-ups per file in the plan and one in the composition.
 
 **Rule for future changes:** what a load reads every line in (an engine, its global names, the configuration, the provider lines, the seed) is built once per load and handed to whatever needs it. Nothing is cached across loads, and nothing that depends on the configuration is a process-wide static.
+### Round 5: The warm read
+
+**Problem:** a prompt's read, a kept-open `Session` reading `git.branch` at a repository, had grown to about 0.19 ms in Rust and 0.24 ms through the C ABI on the Intel Mac below. A profile put most of the client half in work a plain cached value never uses: `Resolver::new` built the template engine and bound the whole environment for every resolution, and `get_here` collected the process environment for every call. The release profile was `opt-level = "z"`, which slowed every part of the path, daemon included.
+
+**Fix:**
+
+- The resolver builds its engine and `env` value on first render (`resolve.rs`, `Resolver::jinja`, `Resolver::env`).
+- `resolve::Inputs::env` is a `dyn env::Vars`. `env::Lazy` reads the process environment on first use, and `Session::get`, `Client::get` and a `bc_get` with NULL `env_json` make one per call. A plain read never reads it, and a long-lived session still sees the environment as it is at each call.
+- The release profile is `opt-level = 3`. Sizes on x86_64-apple-darwin: `comb` 6.74 → 10.63 MB, `libbeachcomber.dylib` 3.62 → 4.72 MB.
+
+**Result:** the median of three rounds of 5,000 reads on one connection each, `develop` at `0afc6241` against this round. The machine is an Intel MacBook Pro (MacBookPro16,4, x86_64), at a 1-minute load of 1.2–1.7:
+
+| Read | Before | After |
+|---|---|---|
+| Raw socket `get` of `git.branch` at a path, no client work | 98 µs | 83 µs |
+| Raw socket `get` of `hostname.name`, the global entry | 40 µs | 30 µs |
+| Rust `Session::get("git.branch")` at a path | 191 µs | 101 µs |
+| C ABI `bc_session_get` | 235 µs | 101 µs |
+| Python SDK `Session.get` | 301 µs | 133 µs |
+| `comb get git.branch <dir>`, one process, wall time | 17.8 ms | 16.7 ms |
+
+The CLI's time is mostly process start. In the same harness `comb --version` takes 11 ms, `/usr/bin/true` 5 ms and `git rev-parse --abbrev-ref HEAD` 21 ms. `cargo bench --bench socket -- session_get_git_branch_at_path` measures the Session read in-process, as a guard against regressions.
+
+**What remains:** the daemon's half. It canonicalises the request path on every read with realpath, and stats every recorded input of the record it serves. Neither has a cheap stamp that is also correct (`docs/roadmap.md`).
+
+**Rule for future changes:** a read of a cached value builds no template engine and reads no environment. Anything a render needs is built when the render first asks for it.
 
 ---
 
@@ -275,9 +301,12 @@ These are one run through `ProviderRegistry::shipped` (`cargo bench --bench prov
 | Cache read (global key) | 157 ns |
 | Cache read (key with a path) | 205 ns |
 | Cache write | 182 ns |
-| Socket round-trip (cold, new connection) | 34 µs |
-| Socket round-trip (warm, ClientSession) | 15 µs |
+| Raw socket `get`, kept-open connection: `hostname.name` / `git.branch` at a path | 30 µs / 83 µs |
+| Rust `Session::get`, `git.branch` at a path | 101 µs |
+| C ABI `bc_session_get` / Python SDK `Session.get`, same read | 101 µs / 133 µs |
 | 100 sequential gets on 1 connection | 945 µs (9.5 µs/get) |
+
+The cache rows and the last row are older criterion figures (`cargo bench --bench cache`, `--bench socket`). The socket rows are the Round 5 figures, measured on the Intel Mac with a warm daemon.
 
 ### Throughput
 
@@ -723,8 +752,8 @@ Option A, reads 1.2 s apart on a fresh clone: 38 ms for `git.dirty` and 49 for `
 
 | Scenario | Before beachcomber | With beachcomber |
 |---|---|---|
-| zsh prompt (3 queries) | ~5ms (gitstatus fork) | 45µs (ClientSession) — **111x faster** |
-| tmux status (100 panes, 10s refresh) | 2.5s CPU (500 shell forks) | 7.5ms (socket queries) — **333x faster** |
+| A prompt's 3 reads on one kept-open Session | a `git` process each (21 ms for `git rev-parse` on the Intel Mac) | about 0.3 ms (3 × 101 µs, Round 5) |
+| tmux status (100 panes, 10s refresh) | 2.5s CPU (500 shell forks) | 500 socket reads, about 15 ms (500 × 30 µs, Round 5) |
 | fseventsd load (N watchers) | N watchers × N dispatch | 1 watcher, shared cache |
 
 ---

@@ -6,7 +6,7 @@ sidebar_position: 1
 
 Shell prompts run on every keypress that produces a new prompt line. If your prompt calls `git status`, `kubectl config current-context`, or similar tools, you are forking a process — often several — dozens of times per minute. On a busy workstation with many terminal windows open, this adds up quickly and causes visible prompt lag.
 
-Beachcomber solves this by keeping those values in a shared cache updated by a background daemon. Your prompt calls `comb g`, which reads from that cache over a Unix socket in roughly 34 microseconds. The underlying tool (git, kubectl, etc.) runs on a timer in the background, not on your prompt's critical path.
+Beachcomber solves this by keeping those values in a shared cache updated by a background daemon. Your prompt calls `comb g`, which reads from that cache over a Unix socket, so no tool runs on the call. The underlying tool (git, kubectl, etc.) runs on a timer in the background, not on your prompt's critical path.
 
 ## Prerequisites
 
@@ -168,15 +168,15 @@ To confirm data freshness, make a change in a repository (stage a file) and pres
 
 ## Performance
 
-Each `comb g` call returns a cached value over a Unix socket. Typical round-trip time is around 34 microseconds. Compare that to the tools beachcomber replaces:
+Each `comb g` call is one process that reads a cached value over a Unix socket. Most of its cost is starting the process: the read itself is about 0.1 ms. Compare that to the tools beachcomber replaces:
 
 | Source | Typical cost |
 |---|---|
-| `comb g` (cached) | ~34 µs |
-| `git rev-parse --abbrev-ref HEAD` | 5–15 ms |
+| `comb g git.branch` (cached), measured | ~17 ms, of which `comb --version` alone is 11 ms |
+| `git rev-parse --abbrev-ref HEAD`, measured | ~21 ms |
 | `kubectl config current-context` | 50–150 ms |
 
-A prompt that used to call `git` and `kubectl` directly could take 60–170 ms to draw. With beachcomber it takes under 1 ms. The difference is most noticeable when switching between many terminal tabs quickly or working over a slow filesystem.
+The measured rows come from an Intel MacBook Pro (x86_64), timed per process in one harness. The cost of `comb g` stays fixed while the tool it replaces gets slower with the repository or the tool. A prompt that reads several values pays for one start per `comb g`. A shell or editor integration that keeps a session open through an SDK pays about 0.1 ms a read and no process at all.
 
 The daemon handles the expensive work on its own schedule, independent of your prompt.
 

@@ -52,7 +52,7 @@ let battery = session.get("battery.percent", None)?;
 - **Synchronous** — no async runtime needed
 - **Socket activation** — starts the daemon automatically if not running
 - **The value `comb get` prints** — templates rendered, `serde_json::Value` out
-- **Persistent sessions** — reuse one connection for multiple queries (15µs/query vs 34µs)
+- **Persistent sessions** — reuse one connection for multiple queries (about 0.1 ms a read)
 - **Configurable timeouts** — default 250ms, adjustable via `ClientConfig`
 
 ## API reference
@@ -116,7 +116,7 @@ while let Some(event) = stream.next_event()? {
 
 #### `client.session()`
 
-Open a persistent connection. Reduces per-query overhead to ~15µs.
+Open a persistent connection: no connect per query, about 0.1 ms a read of `git.branch` at a path (Intel Mac, x86_64; see [Performance](../internals/performance.md#round-5-the-warm-read)).
 
 ```rust
 let mut session = client.session()?;

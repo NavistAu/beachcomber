@@ -45,7 +45,7 @@ source <(curl -fsSL https://beachcomber.sh/scripts/polyfill.sh)
 3. For `g`/`get` commands, it dispatches to native tool fallbacks by key name
 4. For any other command (`r`, `s`, `w`, etc.) or unknown key, it prints an install hint to stderr and returns non-zero
 
-**Why this is the right default:** upstream integrations can write `comb g git.branch .` everywhere and it works on every machine. Users with beachcomber get the ~34µs cached path. Users without it get the native tool. No conditional logic in the integration code.
+**Why this is the right default:** upstream integrations can write `comb g git.branch .` everywhere and it works on every machine. Users with beachcomber get the cached path. Users without it get the native tool. No conditional logic in the integration code.
 
 **Example — a starship module that works everywhere:**
 

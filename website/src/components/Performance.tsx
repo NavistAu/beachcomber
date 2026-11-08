@@ -17,7 +17,7 @@ const chartData = [
   },
   {
     label: 'beachcomber',
-    value: '15µs',
+    value: '0.1ms',
     width: '100%',
     minWidth: '4px',
     barStyle: styles.chartBarFast,
@@ -33,7 +33,7 @@ const beforeStats = [
 
 const afterStats = [
   {stat: '1 daemon', desc: 'one beachcomber process serves every shell, editor, and status bar on the machine'},
-  {stat: '15µs queries', desc: 'cached reads over a Unix socket — faster than a syscall to disk'},
+  {stat: '0.1ms reads', desc: 'a cached value on a kept-open session, client to daemon and back (Intel Mac, x86_64)'},
   {stat: '45k req/sec', desc: 'sustained throughput on a single socket with zero coordination overhead'},
 ];
 

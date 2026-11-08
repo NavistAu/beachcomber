@@ -8,7 +8,7 @@ sidebar_position: 2
 
 tmux evaluates `#(command)` format strings by forking a shell every time the status bar refreshes. With a `status-interval` of 5 seconds and a handful of queries, that is a steady stream of subprocesses — each one potentially spawning git, running a battery command, or querying the network.
 
-beachcomber changes the economics. The daemon pre-caches values in the background; each `comb g` call reads from that cache in roughly 34 microseconds. The subprocesses still happen, but they return almost instantly instead of blocking on I/O. Across a session with multiple windows and a short refresh interval this adds up to a meaningful difference in shell and CPU overhead.
+beachcomber changes the economics. The daemon pre-caches values in the background; each `comb g` call reads from that cache: one `comb` start (about 17 ms on an Intel Mac, almost all of it the start) and a read of about 0.1 ms. The subprocesses still happen, but none of them runs the tool or blocks on I/O. Across a session with multiple windows and a short refresh interval this adds up to a meaningful difference in shell and CPU overhead.
 
 Each `comb g` call also signals demand to the daemon, which keeps the relevant provider warm automatically.
 

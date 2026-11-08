@@ -23,7 +23,7 @@ const tabs: Tab[] = [
     label: 'CLI',
     lines: [
       {type: 'cmd', prompt: '$ ', text: 'comb g git.branch .'},
-      {type: 'out', text: 'main', annotation: '← 15µs'},
+      {type: 'out', text: 'main', annotation: '← from the cache'},
       {type: 'spacer'},
       {type: 'cmd', prompt: '$ ', text: 'comb g battery.percent'},
       {type: 'out', text: '85'},
@@ -117,7 +117,7 @@ const tabs: Tab[] = [
       {type: 'spans', spans: [['set ', 'keyword'], ['-g status-left ', 'text'], ['\\', 'operator']]},
       {type: 'spans', spans: [['  ', 'text'], ["'[#S] #(comb g kubecontext.context)'", 'string']]},
       {type: 'spacer'},
-      {type: 'comment', text: '# Low interval is fine — queries cost ~34µs'},
+      {type: 'comment', text: '# Low interval is fine — every call is a cache read'},
       {type: 'spans', spans: [['set ', 'keyword'], ['-g status-interval ', 'text'], ['5', 'number']]},
     ],
   },

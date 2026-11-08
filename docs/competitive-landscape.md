@@ -98,15 +98,14 @@ All of these are independently computing the same answers to the same questions.
 
 **Daemon proposal:** A detailed daemon design exists (nickwb's gist, 2020) with Unix socket architecture, targeting 16ms render budget. A proof-of-concept repo exists. Neither has shipped. The daemon would be architecturally similar to beachcomber.
 
-**Relationship to beachcomber:** Starship is the highest-value integration target. It's the most popular prompt but has no caching and no daemon. beachcomber is exactly the missing piece — starship could query beachcomber's socket for git/battery/hostname instead of computing everything from scratch on every prompt. Today's workaround: starship invokes gitoxide every time. With beachcomber: starship reads pre-cached state in 15µs.
+**Relationship to beachcomber:** Starship is the highest-value integration target. It's the most popular prompt but has no caching and no daemon. beachcomber is exactly the missing piece — starship could query beachcomber's socket for git/battery/hostname instead of computing everything from scratch on every prompt. Today's workaround: starship invokes gitoxide every time. With beachcomber: starship reads pre-cached state, at a cost that does not grow with the repository.
 
 **Key numbers:**
 
 | | Starship (no cache) | beachcomber + Starship |
 |---|---|---|
-| Git status per prompt | 1-5ms (small repo), 200ms+ (large) | 15µs (cache read) |
-| Battery per prompt | 5-10ms (subprocess) | 15µs (cache read) |
-| Total prompt cost | 5-50ms | <100µs |
+| Git status per prompt | 1-5ms (small repo), 200ms+ (large) | about 0.1 ms on a kept-open session; one `comb` process (about 17 ms, mostly start) from a `[custom]` module |
+| Battery per prompt | 5-10ms (subprocess) | the same cache read |
 
 ---
 

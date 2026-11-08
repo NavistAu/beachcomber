@@ -27,8 +27,12 @@ many shells are open. macOS and Linux.
 How you read it, and what a read costs:
 
 - **Rust client** (`libbeachcomber`) on a persistent session: about 0.1 ms.
-- **SDKs for C, Go, Lua, Node.js, Python and Ruby**, sessions over the same client through its C ABI: about 0.2 ms.
-- **`comb` CLI**, for shell scripts and prompts: about 5 ms, most of it starting the process.
+- **SDKs for C, Go, Lua, Node.js, Python and Ruby**, sessions over the same client through its C ABI: about 0.1 ms
+  from C, 0.13 ms from Python.
+- **`comb` CLI**, for shell scripts and prompts: about 17 ms, most of it starting the process.
+
+Measured on an Intel MacBook Pro (x86_64), reading `git.branch` in a repository from a warm daemon
+([how](website/docs/internals/performance.md#round-5-the-warm-read)).
 
 <img src="docs/assets/demo.gif" alt="Terminal: comb g reads git.branch, then several git fields at once; comb e renders a prompt segment from git and battery; hyperfine times that segment against running git status and pmset, with comments on what the timings include." width="100%">
 
@@ -57,8 +61,10 @@ Every shell, every editor plugin, every status bar, every prompt framework is in
 | Operation | Latency |
 |---|---|
 | Cache read (global key) | **157 ns** |
-| Socket query (warm, persistent connection) | **15 µs** |
-| Socket query (cold, new connection) | 34 µs |
+| Raw socket `get`, kept-open connection: global key / `git.branch` at a path | **30 µs** / 83 µs |
+| Rust `Session` read of `git.branch` at a path | **0.10 ms** |
+| The same read through the C ABI / the Python SDK | 0.10 ms / 0.13 ms |
+| `comb get git.branch` as a process (`comb --version` alone: 11 ms) | 17 ms |
 | A full `git` refresh on this repository: 10 `git` processes, nothing else | **about 150 ms** |
 | Throughput (10 concurrent clients) | **45,000 req/sec** |
 
@@ -66,8 +72,8 @@ Every shell, every editor plugin, every status bar, every prompt framework is in
 
 | Scenario | Without beachcomber | With beachcomber | Improvement |
 |---|---|---|---|
-| [zsh](https://www.zsh.org) prompt (3 queries) | ~5ms ([gitstatus](https://github.com/romkatv/gitstatus) fork) | **45µs** (persistent session) | 111x faster |
-| [tmux](https://github.com/tmux/tmux) status (100 panes, 10s refresh) | ~2.5s CPU (500 shell forks) | **7.5ms** (socket queries) | 333x fewer forks |
+| [zsh](https://www.zsh.org) prompt (3 reads) | a `git` process each (`git rev-parse`: 21 ms) | **about 0.3 ms** (3 reads on one session) | no processes |
+| [tmux](https://github.com/tmux/tmux) status (100 panes, 10s refresh) | ~2.5s CPU (500 shell forks) | **about 15 ms** (500 socket reads) | 333x fewer forks |
 | fseventsd dispatch load | N watchers × N events | 1 watcher, shared | Linear reduction |
 
 ---
@@ -971,7 +977,7 @@ set -g status-left '[#S] #(comb g kubecontext.context)'
 set -g status-interval 5
 ```
 
-**Why this is different from the problem described above:** each `#()` invocation still forks a shell, but `comb` reads a pre-cached value in ~34µs instead of spawning git (5ms+) or running a battery subprocess (6ms). The total time savings across a 50-pane tmux session is substantial.
+**Why this is different from the problem described above:** each `#()` invocation still forks a shell, but `comb` reads a pre-cached value instead of running git or a battery subprocess, whose own cost grows with the repository and the tool. The total time savings across a 50-pane tmux session is substantial.
 
 The simple `#()` approach shown above is already a major improvement over shelling out to git or battery commands directly. Each `comb g` also signals demand to the daemon, keeping the provider warm automatically.
 
@@ -1216,7 +1222,7 @@ Features:
 - **Synchronous** — no async runtime needed
 - **Socket activation** — starts the daemon automatically if not running
 - **The value `comb get` prints** — templates rendered, `serde_json::Value` out
-- **Persistent sessions** — reuse one connection for multiple queries (15µs/query vs 34µs)
+- **Persistent sessions** — reuse one connection for multiple queries (about 0.1 ms a read)
 - **Configurable timeouts** — default 250ms, adjustable via `ClientConfig`
 
 ---
@@ -1227,7 +1233,7 @@ Features:
 
 `scripts/polyfill.sh` defines a `comb()` shell function that stands in for the real binary. If comb is already installed, the script does nothing. If comb is not installed, the function handles `comb g <key>` calls by falling back to native tools for known keys (git, hostname, uptime, battery, and more).
 
-This lets integrations write `comb g git.branch .` and have it work everywhere — with or without beachcomber installed. Users with beachcomber get the ~34µs cached path. Users without get the native tool.
+This lets integrations write `comb g git.branch .` and have it work everywhere — with or without beachcomber installed. Users with beachcomber get the cached path. Users without get the native tool.
 
 ```sh
 # Install — add to your shell rc
@@ -1891,7 +1897,7 @@ powerline-daemon was also single-threaded, meaning one slow git segment on a mon
 
 On typical repositories starship completes in 1-5ms. On large monorepos it degrades significantly. Async git status — where the prompt renders immediately and git data fills in when ready — has been the most-requested feature since 2019 and has not shipped. The design space for a daemon has been explored (a detailed proposal exists from 2020) but has not been implemented.
 
-beachcomber is the missing piece for starship. Using the `[custom.*]` module, starship can read pre-cached state from beachcomber instead of computing git/battery/hostname on every prompt. The latency drops from 5ms to 15µs for cache-warm queries.
+beachcomber is the missing piece for starship. Using the `[custom.*]` module, starship can read pre-cached state from beachcomber instead of computing git/battery/hostname on every prompt. A cache-warm read is one `comb` process with no `git` behind it.
 
 **beachcomber vs Starship:** Not competitors — beachcomber is infrastructure that starship (and [oh-my-posh](https://ohmyposh.dev), and p10k, and any other prompt framework) can use as a backend. The integration is already possible today via `comb g` in custom modules.
 
