@@ -39,7 +39,15 @@
 
 use crate::config::{Config, LOG_LEVELS, duration_value, log_level_filter};
 use crate::scheduler::lifecycle::{MAX_DECAY, decay_error};
+use libbeachcomber::duration::{refuse_below, refuse_parse, whole_seconds};
 use std::path::Path;
+
+/// A config value as the text the refusal quotes: a string without its quotes.
+fn duration_text(value: &toml::Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_string)
+}
 
 /// What one layer seeds, and what is wrong with it.
 #[derive(Debug, Default)]
@@ -275,13 +283,13 @@ impl Reader {
                         .into(),
                 ),
                 "timeout" | "budget" => {
-                    if duration_value(value).is_none_or(|d| d.is_zero()) {
-                        let example = if key == "timeout" { "10s" } else { "50ms" };
-                        let other = if key == "timeout" { "500ms" } else { "2s" };
-                        self.err(format!(
-                            "[daemon] {key} must be a duration of at least 1ms (\"{example}\", \
-                             \"{other}\"), got {value}"
-                        ));
+                    let refused = match duration_value(value) {
+                        None => Some(refuse_parse(&duration_text(value))),
+                        Some(d) if d.is_zero() => Some(refuse_below("1ms")),
+                        Some(_) => None,
+                    };
+                    if let Some(why) = refused {
+                        self.err(format!("[daemon] {key}: {why}"));
                     }
                 }
                 "provider_timeout_secs" => self.err(
@@ -295,13 +303,12 @@ impl Reader {
                         .into(),
                 ),
                 "watchdog_interval" | "watchdog_threshold" | "idle_shutdown" => {
-                    let whole =
-                        duration_value(value).filter(|d| d.subsec_nanos() == 0 && !d.is_zero());
-                    if whole.is_none() {
-                        self.err(format!(
-                            "[daemon] {key} must be a duration of whole seconds, at least 1s \
-                             (\"30s\", \"2m\"), got {value}"
-                        ));
+                    let refused = match duration_value(value) {
+                        None => Some(refuse_parse(&duration_text(value))),
+                        Some(d) => whole_seconds(d).err(),
+                    };
+                    if let Some(why) = refused {
+                        self.err(format!("[daemon] {key}: {why}"));
                     }
                 }
                 _ => self.err(format!("unknown key '{key}' in [daemon]")),

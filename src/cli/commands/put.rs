@@ -16,11 +16,13 @@ pub fn run_put(
     // A ttl is whole seconds of at least one; refused here, before a daemon
     // is started for a put that cannot happen.
     let ttl = match ttl {
-        Some(d) if d.subsec_nanos() != 0 || d.is_zero() => {
-            crate::cli::report::error("--ttl", "must be a whole number of seconds, at least 1s");
-            return Outcome::Error;
-        }
-        Some(d) => Some(format!("{}s", d.as_secs())),
+        Some(d) => match libbeachcomber::duration::whole_seconds(d) {
+            Ok(secs) => Some(format!("{secs}s")),
+            Err(e) => {
+                crate::cli::report::error("--ttl", &e);
+                return Outcome::Error;
+            }
+        },
         None => None,
     };
     let socket_path = match crate::cli::connect::connect(config) {

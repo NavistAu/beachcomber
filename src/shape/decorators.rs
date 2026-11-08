@@ -406,7 +406,10 @@ fn record(
             arity(args.len() == 1, "a duration")?;
             let duration = duration_of(name, &args[0])?;
             if duration.is_zero() {
-                return Err(format!("{name}(): must be at least 1ms"));
+                return Err(format!(
+                    "{name}(): {}",
+                    libbeachcomber::duration::refuse_below("1ms")
+                ));
             }
             if name == "budget" {
                 line.budget = Some(duration);
@@ -438,7 +441,7 @@ fn duration_of(name: &str, value: &MjValue) -> Result<Duration, String> {
                 "budget" | "timeout" => {
                     format!("{name}(): a number is whole seconds; write '50ms' for less")
                 }
-                _ => format!("{name}(): interval must be a whole number of seconds"),
+                _ => format!("{name}(): {}", libbeachcomber::duration::refuse_fraction()),
             }),
         ValueKind::String => {
             let text = value.as_str().unwrap_or_default();
@@ -453,18 +456,12 @@ fn duration_of(name: &str, value: &MjValue) -> Result<Duration, String> {
 /// An interval: whole seconds, from 1 s to a year.
 fn interval_of(name: &str, value: &MjValue) -> Result<u64, String> {
     let duration = duration_of(name, value)?;
-    if duration.is_zero() {
-        return Err(format!("{name}(): interval must be at least 1s"));
+    let secs =
+        libbeachcomber::duration::whole_seconds(duration).map_err(|e| format!("{name}(): {e}"))?;
+    if secs > MAX_INTERVAL_SECS {
+        return Err(format!("{name}(): interval must be at most 1 year"));
     }
-    if duration.subsec_nanos() != 0 {
-        return Err(format!("{name}(): interval must be whole seconds"));
-    }
-    match duration.as_secs() {
-        secs if secs > MAX_INTERVAL_SECS => {
-            Err(format!("{name}(): interval must be at most 1 year"))
-        }
-        secs => Ok(secs),
-    }
+    Ok(secs)
 }
 
 fn count_of(name: &str, value: &MjValue) -> Result<u32, String> {
@@ -1153,7 +1150,7 @@ mod tests {
         ] {
             assert_eq!(
                 record(&[line]).unwrap_err(),
-                format!("{decorator}(): interval must be whole seconds"),
+                format!("{decorator}(): must be a whole number of seconds"),
                 "{line}"
             );
         }
@@ -1276,13 +1273,13 @@ mod tests {
         for line in ["{{ result | poll(0) }}", "{{ result | poll(-5) }}"] {
             assert_eq!(
                 record(&[line]).unwrap_err(),
-                "poll(): interval must be at least 1s",
+                "poll(): must be at least 1s",
                 "{line}"
             );
         }
         assert_eq!(
             record(&["{{ result | poll(1.5) }}"]).unwrap_err(),
-            "poll(): interval must be a whole number of seconds"
+            "poll(): must be a whole number of seconds"
         );
     }
 

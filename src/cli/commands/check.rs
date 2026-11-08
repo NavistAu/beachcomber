@@ -21,10 +21,7 @@ use std::time::Duration;
 /// least one, which is what the sampler counts in.
 fn procs_duration(s: &str) -> Result<u64, String> {
     let d = crate::config::duration_arg(s)?;
-    if d.subsec_nanos() != 0 || d.is_zero() {
-        return Err("procs --duration must be a whole number of seconds, at least 1s".into());
-    }
-    Ok(d.as_secs())
+    libbeachcomber::duration::whole_seconds(d).map_err(|e| format!("procs --duration: {e}"))
 }
 
 /// Subcommands for `comb check`.

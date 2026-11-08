@@ -1210,21 +1210,20 @@ fn an_unknown_key_in_bare_daemon_is_an_error() {
     for (bad, want) in [
         (
             "timeout = \"x\"",
-            "[daemon] timeout must be a duration of at least 1ms (\"10s\", \"500ms\"), got \"x\"",
+            "[daemon] timeout: invalid duration `x`: whole numbers each with a unit, d, h, m, s \
+             or ms, largest first; a bare number is seconds (\"250ms\", \"30s\", \"1m30s\", \
+             \"2d3h\", \"60\")",
         ),
-        (
-            "timeout = 0",
-            "[daemon] timeout must be a duration of at least 1ms (\"10s\", \"500ms\"), got 0",
-        ),
+        ("timeout = 0", "[daemon] timeout: must be at least 1ms"),
         (
             "idle_shutdown = -1",
-            "[daemon] idle_shutdown must be a duration of whole seconds, at least 1s (\"30s\", \
-             \"2m\"), got -1",
+            "[daemon] idle_shutdown: invalid duration `-1`: whole numbers each with a unit, d, \
+             h, m, s or ms, largest first; a bare number is seconds (\"250ms\", \"30s\", \
+             \"1m30s\", \"2d3h\", \"60\")",
         ),
         (
             "idle_shutdown = \"0s\"",
-            "[daemon] idle_shutdown must be a duration of whole seconds, at least 1s (\"30s\", \
-             \"2m\"), got \"0s\"",
+            "[daemon] idle_shutdown: must be at least 1s",
         ),
         (
             "provider_timeout_secs = 5",
@@ -1275,7 +1274,7 @@ fn a_type_error_is_a_load_error_not_the_default_config() {
     let errors = config.errors();
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(
-        errors[0].contains("config.toml): [daemon] timeout must be"),
+        errors[0].contains("config.toml): [daemon] timeout: invalid duration"),
         "{errors:?}"
     );
     assert_eq!(
@@ -1339,7 +1338,7 @@ fn budget_defaults_to_50ms_and_takes_ms() {
         let errors = seeded_errors(&format!("[daemon]\nbudget = {bad}\n"));
         assert_eq!(errors.len(), 1, "{bad}: {errors:?}");
         assert!(
-            errors[0].starts_with("[daemon] budget must be a duration of at least 1ms"),
+            errors[0].starts_with("[daemon] budget: "),
             "{bad}: {errors:?}"
         );
     }
@@ -1384,9 +1383,7 @@ fn the_watchdog_keys_are_whole_seconds_of_at_least_one() {
         let errors = seeded_errors(&format!("[daemon]\n{key} = {bad}\n"));
         assert_eq!(errors.len(), 1, "{key} = {bad}: {errors:?}");
         assert!(
-            errors[0].starts_with(&format!(
-                "[daemon] {key} must be a duration of whole seconds, at least 1s"
-            )),
+            errors[0].starts_with(&format!("[daemon] {key}: ")),
             "{errors:?}"
         );
     }

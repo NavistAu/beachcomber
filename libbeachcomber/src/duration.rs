@@ -14,6 +14,35 @@ use std::time::Duration;
 pub const GRAMMAR: &str = "whole numbers each with a unit, d, h, m, s or ms, largest first; a bare \
      number is seconds (\"250ms\", \"30s\", \"1m30s\", \"2d3h\", \"60\")";
 
+/// Why `text` is not a duration. Every refusal below is the words after a
+/// caller's own subject (`--ttl:`, `poll():`, `[daemon] idle_shutdown:`).
+pub fn refuse_parse(text: &str) -> String {
+    format!("invalid duration `{text}`: {GRAMMAR}")
+}
+
+/// Why a duration with a fraction of a second is refused where only whole
+/// seconds are taken.
+pub fn refuse_fraction() -> &'static str {
+    "must be a whole number of seconds"
+}
+
+/// Why a duration below `min` (written as it is, `1s`, `1ms`) is refused.
+pub fn refuse_below(min: &str) -> String {
+    format!("must be at least {min}")
+}
+
+/// `d` as whole seconds of at least one, or the rule it breaks: what an
+/// interval, a ttl and the `[daemon]` second-counting keys take.
+pub fn whole_seconds(d: Duration) -> Result<u64, String> {
+    if d.is_zero() {
+        return Err(refuse_below("1s"));
+    }
+    if d.subsec_nanos() != 0 {
+        return Err(refuse_fraction().to_string());
+    }
+    Ok(d.as_secs())
+}
+
 /// A unit of the grammar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Unit {
@@ -114,7 +143,7 @@ pub fn from_value(value: &minijinja::Value) -> Result<Duration, String> {
     match value.kind() {
         ValueKind::String => {
             let text = value.as_str().unwrap_or_default();
-            parse(text).ok_or_else(|| format!("invalid duration `{text}`: {GRAMMAR}"))
+            parse(text).ok_or_else(|| refuse_parse(text))
         }
         ValueKind::Number => value
             .as_i64()
@@ -152,6 +181,22 @@ mod tests {
         ] {
             assert_eq!(parse(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn one_refusal_per_rule() {
+        let s = Duration::from_secs;
+        assert_eq!(whole_seconds(s(30)), Ok(30));
+        assert_eq!(
+            whole_seconds(Duration::ZERO),
+            Err("must be at least 1s".into())
+        );
+        assert_eq!(
+            whole_seconds(Duration::from_millis(1500)),
+            Err("must be a whole number of seconds".into())
+        );
+        assert!(refuse_parse("soon").starts_with("invalid duration `soon`: whole numbers"));
+        assert_eq!(refuse_below("1ms"), "must be at least 1ms");
     }
 
     #[test]

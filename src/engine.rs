@@ -664,7 +664,7 @@ mod tests {
             "{err}"
         );
         let err = url_error(&format!("{{{{ url('{}/v', timeout='x') }}}}", server.url()));
-        assert!(err.contains("url(): timeout="), "{err}");
+        assert!(err.contains("url(): timeout: "), "{err}");
     }
 
     #[test]

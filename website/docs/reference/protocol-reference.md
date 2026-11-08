@@ -256,7 +256,7 @@ Errors:
 - a write to `<p>:memo`: `<p>:memo is written by cache(); edit <p>:template.<f>, or refresh <p>`
 - a write to `<p>:cache` other than `_.decay`, or a `_.decay` that is not a positive integer: see [The `:cache` facet](#the-cache-facet)
 - a `:template` leaf that is not a string, or a template that does not compile (naming the leaf)
-- a `ttl` of `0s`: `ttl must be at least 1s`; an unparsable one: `invalid ttl: <ttl>`; a `ttl` with `data: null`: `a ttl on an absent value has no meaning`
+- a `ttl` of `0s`: `ttl: must be at least 1s`; one finer than a second: `ttl: must be a whole number of seconds`; an unparsable one: ``ttl: invalid duration `<ttl>`: <the grammar>``; a `ttl` with `data: null`: `a ttl on an absent value has no meaning`
 - non-object `data` at a namespace root: `put data at the root must be an object`
 - more than ten node segments: `put key is nested too deeply (limit 10 segments)`
 
@@ -284,7 +284,7 @@ Errors:
 - a facet key: `memo takes a provider.field key, not a facet: <key>`; a bare provider: `memo takes a provider.field key: <key> names no field`
 - a hash that is not sixteen lowercase hex digits: `invalid memo hash: <hash> (sixteen lowercase hex digits)`
 - a relative watch path: `a memo's watch paths are absolute: <path>`
-- a `ttl` of `0s`: `ttl must be at least 1s`; an unparsable one or one finer than a second: `invalid ttl: <ttl>`
+- a `ttl` of `0s`: `ttl: must be at least 1s`; one finer than a second: `ttl: must be a whole number of seconds`; an unparsable one: ``ttl: invalid duration `<ttl>`: <the grammar>``
 - more than ten node segments, an invalid key or provider name: as for `put`
 
 ### `status`

@@ -195,12 +195,14 @@ pub(super) fn add_spinner(jinja: &mut Environment<'_>, ctx: &Arc<EngineCtx>) {
             let frames = frames.ok_or_else(|| op_error("spinner(): takes frames"))?;
             let step = match step.as_ref().filter(|s| !is_absent(s)) {
                 None => Duration::from_secs(1),
-                Some(s) => {
-                    duration::from_value(s).map_err(|e| op_error(format!("spinner(): step {e}")))?
-                }
+                Some(s) => duration::from_value(s)
+                    .map_err(|e| op_error(format!("spinner(): step: {e}")))?,
             };
             if step.is_zero() {
-                return Err(op_error("spinner(): step must be at least 1ms"));
+                return Err(op_error(format!(
+                    "spinner(): step: {}",
+                    duration::refuse_below("1ms")
+                )));
             }
             if is_absent(&frames) {
                 return Ok(UNDEFINED);

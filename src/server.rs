@@ -1794,11 +1794,11 @@ fn parse_ttl(ttl: Option<&str>) -> Result<Option<u64>, String> {
     let Some(t) = ttl else {
         return Ok(None);
     };
-    match crate::config::parse_whole_seconds(t).map(|d| d.as_secs()) {
-        None => Err(format!("invalid ttl: {t}")),
-        Some(0) => Err("ttl must be at least 1s".to_string()),
-        Some(n) => Ok(Some(n)),
-    }
+    let d = libbeachcomber::duration::parse(t)
+        .ok_or_else(|| format!("ttl: {}", libbeachcomber::duration::refuse_parse(t)))?;
+    libbeachcomber::duration::whole_seconds(d)
+        .map(Some)
+        .map_err(|e| format!("ttl: {e}"))
 }
 
 /// What a `memo` request writes, checked: the provider, the directory, the

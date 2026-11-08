@@ -194,7 +194,10 @@ async fn put_with_an_invalid_ttl_is_refused() {
         )
         .unwrap();
     assert!(!r.ok);
-    assert_eq!(r.error.as_deref(), Some("invalid ttl: soon"));
+    assert_eq!(
+        r.error.as_deref(),
+        Some(format!("ttl: {}", libbeachcomber::duration::refuse_parse("soon")).as_str(),)
+    );
     let r = client
         .put(
             "build.status",
@@ -205,7 +208,7 @@ async fn put_with_an_invalid_ttl_is_refused() {
         )
         .unwrap();
     assert!(!r.ok);
-    assert_eq!(r.error.as_deref(), Some("ttl must be at least 1s"));
+    assert_eq!(r.error.as_deref(), Some("ttl: must be at least 1s"));
     assert!(put_rows(&client, "build").is_empty(), "nothing was written");
     handle.abort();
 }
@@ -223,7 +226,10 @@ async fn a_sub_second_put_ttl_is_still_refused() {
         )
         .unwrap();
     assert!(!r.ok);
-    assert_eq!(r.error.as_deref(), Some("invalid ttl: 500ms"));
+    assert_eq!(
+        r.error.as_deref(),
+        Some("ttl: must be a whole number of seconds")
+    );
     assert!(put_rows(&client, "build").is_empty(), "nothing was written");
     handle.abort();
 }

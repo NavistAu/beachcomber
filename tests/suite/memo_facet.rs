@@ -480,7 +480,7 @@ async fn a_bad_memo_request_is_refused() {
             json!({"op": "memo", "key": "demo.f", "hash": H1, "ttl": "500ms"})
         )
         .await,
-        "invalid ttl: 500ms"
+        "ttl: must be a whole number of seconds"
     );
     assert_eq!(
         refused(
@@ -488,7 +488,7 @@ async fn a_bad_memo_request_is_refused() {
             json!({"op": "memo", "key": "demo.f", "hash": H1, "ttl": "0s"})
         )
         .await,
-        "ttl must be at least 1s"
+        "ttl: must be at least 1s"
     );
     assert!(
         refused(&mut d, json!({"op": "memo", "key": "demo.f"}))

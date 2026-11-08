@@ -382,12 +382,7 @@ fn ttl(ctx: &EngineCtx, piped: MjValue, args: &[MjValue]) -> Result<MjValue, Err
             return Ok(());
         }
         let d = crate::duration::from_value(d).map_err(|e| op_error(format!("ttl(): {e}")))?;
-        if d.is_zero() {
-            return Err(op_error("ttl(): interval must be at least 1s"));
-        }
-        if d.subsec_nanos() != 0 {
-            return Err(op_error("ttl(): interval must be whole seconds"));
-        }
+        crate::duration::whole_seconds(d).map_err(|e| op_error(format!("ttl(): {e}")))?;
         if leaf.ttl.replace(d).is_some() {
             return Err(op_error("ttl(): given twice"));
         }
@@ -559,9 +554,9 @@ mod tests {
         for (bad, why) in [
             (
                 "'v' | ttl('500ms')",
-                "ttl(): interval must be whole seconds",
+                "ttl(): must be a whole number of seconds",
             ),
-            ("'v' | ttl('0s')", "ttl(): interval must be at least 1s"),
+            ("'v' | ttl('0s')", "ttl(): must be at least 1s"),
             ("'v' | ttl('soon')", "ttl(): invalid duration `soon`"),
             ("'v' | ttl()", "ttl(): takes one duration"),
             ("'v' | ttl('1s', '2s')", "ttl(): takes one duration"),

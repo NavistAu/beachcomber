@@ -87,7 +87,10 @@ fn a_bad_duration_is_refused_in_the_same_words_on_every_flag() {
 #[test]
 fn a_ttl_the_daemon_cannot_take_is_refused_before_it_starts() {
     let tmp = tempfile::tempdir().unwrap();
-    for ttl in ["500ms", "0s"] {
+    for (ttl, why) in [
+        ("500ms", "must be a whole number of seconds"),
+        ("0s", "must be at least 1s"),
+    ] {
         let out = comb(&tmp)
             .args(["put", "--ttl", ttl, "k", "1"])
             .output()
@@ -95,7 +98,7 @@ fn a_ttl_the_daemon_cannot_take_is_refused_before_it_starts() {
         assert_eq!(out.status.code(), Some(2), "{ttl}");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains("error: --ttl: must be a whole number of seconds, at least 1s"),
+            stderr.contains(&format!("error: --ttl: {why}")),
             "{ttl}: {stderr}"
         );
     }

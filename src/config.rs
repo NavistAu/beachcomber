@@ -37,7 +37,7 @@ pub use libbeachcomber::duration::{GRAMMAR as DURATION_GRAMMAR, parse as parse_d
 /// [`parse_duration`] as clap's value parser: every duration flag takes the
 /// one grammar and refuses anything else in the same words.
 pub fn duration_arg(s: &str) -> Result<Duration, String> {
-    parse_duration(s).ok_or_else(|| format!("invalid duration `{s}`: {DURATION_GRAMMAR}"))
+    parse_duration(s).ok_or_else(|| libbeachcomber::duration::refuse_parse(s))
 }
 
 /// A duration a config value holds: a string in the one grammar, or an

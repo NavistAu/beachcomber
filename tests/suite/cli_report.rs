@@ -29,7 +29,7 @@ fn every_failure_is_an_error_line_naming_its_subject() {
         ),
         (
             &["put", "--global", "--ttl", "0", "rp", "{}"],
-            "error: --ttl: must be a whole number of seconds, at least 1s\n",
+            "error: --ttl: must be at least 1s\n",
         ),
         (
             &["status", "--filter", "nosuchcolumn=1"],

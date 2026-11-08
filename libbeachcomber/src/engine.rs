@@ -176,9 +176,10 @@ pub fn timeout_kwarg(kwargs: &Kwargs, function: &str) -> Result<std::time::Durat
     match crate::duration::from_value(&value) {
         Ok(d) if !d.is_zero() => Ok(d),
         Ok(_) => Err(op_error(format!(
-            "{function}(): timeout= must be at least 1ms"
+            "{function}(): timeout: {}",
+            crate::duration::refuse_below("1ms")
         ))),
-        Err(e) => Err(op_error(format!("{function}(): timeout= {e}"))),
+        Err(e) => Err(op_error(format!("{function}(): timeout: {e}"))),
     }
 }
 
@@ -411,7 +412,7 @@ mod tests {
         assert!(err.contains("timed out after 10ms"), "{err}");
         for bad in ["'x'", "'0s'", "true"] {
             let err = eval(&format!("exec('echo hi', timeout={bad})")).unwrap_err();
-            assert!(err.contains("exec(): timeout="), "{bad}: {err}");
+            assert!(err.contains("exec(): timeout: "), "{bad}: {err}");
         }
     }
 

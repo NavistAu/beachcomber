@@ -307,7 +307,7 @@ naming its file and table:
   [FAIL] local    config(~/.config/beachcomber/conf.d/96-bad.toml): [daemon.providers.q.sources.s] result.x: cache(): a client template's filter; a Source's records are the daemon's
   [FAIL] local    config(~/.config/beachcomber/conf.d/96-bad.toml): unknown key 'other' in [client.providers.r]
   [FAIL] local    config(~/.config/beachcomber/conf.d/96-bad.toml): unknown key 'bogus' in [daemon]
-  [FAIL] local    config(~/.config/beachcomber/conf.d/96-bad.toml): [daemon] budget must be a duration of at least 1ms ("50ms", "2s"), got 0
+  [FAIL] local    config(~/.config/beachcomber/conf.d/96-bad.toml): [daemon] budget: must be at least 1ms
   [WARN] local    config(~/.config/beachcomber/conf.d/96-bad.toml): [client.providers.r] template.ok: unknown name 'gti' (this line sees env, comb, …)
 ```
 
