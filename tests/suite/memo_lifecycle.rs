@@ -103,12 +103,12 @@ fn an_absent_watch_path_is_watched_through_its_parent_and_its_creation_drops_the
 }
 
 /// A memo with a one-second ttl: its status row is a lifecycle row of depth
-/// one; reads do not keep it; once its ttl has passed its hash is gone, it
-/// decays and lets go of its watch (`introspect watches` is empty and
-/// `introspect lifecycle` names it), and one decay step later it is evicted,
-/// its value and its record with it.
+/// one; reads do not keep it; once its ttl has passed it reads stale (its
+/// hash kept, nothing polled it), it decays and lets go of its watch
+/// (`introspect watches` is empty and `introspect lifecycle` names it), and
+/// one decay step later it is evicted, its value and its record with it.
 ///
-/// The ttl (1 s) and its one decay step (2 s) pass on the daemon's clock,
+/// The ttl (1 s) and its one decay step (1 s) pass on the daemon's clock,
 /// which the test moves on: each ends at the scheduler's next tick.
 #[test]
 fn a_memo_decays_lets_go_of_its_watch_and_is_evicted() {
@@ -151,9 +151,11 @@ fn a_memo_decays_lets_go_of_its_watch_and_is_evicted() {
         Vec::is_empty,
     );
     assert!(
-        record(sock, &s.project).get("hash").is_none(),
-        "the ttl dropped it"
+        record(sock, &s.project).get("hash").is_some(),
+        "no poll dropped it"
     );
+    let get = json!({"op": "get", "key": "demo.f", "path": s.project});
+    assert_eq!(ask(sock, get)["memo"]["stale"], json!(true));
     let decaying: Vec<Value> = entries(sock, "lifecycle")
         .into_iter()
         .map(|mut e| {
@@ -169,7 +171,7 @@ fn a_memo_decays_lets_go_of_its_watch_and_is_evicted() {
         ]
     );
 
-    s.daemon.advance(Duration::from_secs(2));
+    s.daemon.advance(Duration::from_secs(1));
     wait(
         "demo:memo.f",
         "the memo evicted",

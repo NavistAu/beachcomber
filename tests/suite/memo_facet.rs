@@ -168,7 +168,7 @@ async fn a_memo_op_stores_a_value_and_its_keys() {
         leaf,
         json!({"source": "memo", "hash": H1,
                "watch": ["/h/.kube/config"],
-               "poll": {"interval": "600s", "count": 1}, "decay": 1})
+               "poll": {"interval": "600s", "count": 0}, "decay": 1})
     );
 }
 
@@ -306,7 +306,7 @@ async fn a_template_write_drops_the_hash() {
     let leaf = d.cache_of("demo.f", None).await;
     assert!(leaf.get("hash").is_none(), "{leaf}");
     assert_eq!(leaf["source"], json!("memo"), "the record stays: {leaf}");
-    assert_eq!(leaf["poll"], json!({"interval": "600s", "count": 1}));
+    assert_eq!(leaf["poll"], json!({"interval": "600s", "count": 0}));
     assert_eq!(
         d.get("demo:memo.f", None).await.data,
         Some(json!("v")),

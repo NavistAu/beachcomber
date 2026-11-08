@@ -206,7 +206,7 @@ enum Commands {
             value_parser = trailing_dir
         )]
         at: Option<String>,
-        /// Expire the node: kept for this long (e.g., "30s", "5m") and one decay step more (twice as long), then removed; the next put renews it. Whole seconds, at least 1s; not with null data
+        /// Expire the node: current for this long (e.g., "30s", "5m"), then kept as long again, then removed; reads do not renew it, the next put does. Whole seconds, at least 1s; not with null data
         #[arg(long, value_name = "DURATION", value_parser = beachcomber::config::duration_arg)]
         ttl: Option<std::time::Duration>,
         /// Keep the put across a daemon restart, best effort: in the cache directory, which may be cleared

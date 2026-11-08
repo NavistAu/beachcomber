@@ -342,9 +342,11 @@ fn snapshot_entry(
         .unwrap_or(0);
 
     let decay = lifecycle::to_decay_level(&entry.state);
-    let rate_mult: u64 = if decay == 0 { 1 } else { 1u64 << decay };
-
-    let step_duration_secs = entry.config.lifespan().as_secs() * rate_mult;
+    let step_duration_secs = match decay {
+        0 => entry.config.lifespan(),
+        step => entry.config.step_length(step),
+    }
+    .as_secs();
     let poll_count = entry.config.poll_interval.map(|_| entry.config.poll_count);
 
     // polls_elapsed: how many polls have fired in the current lifecycle step.
@@ -1039,7 +1041,7 @@ impl Scheduler {
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::PutWritten { provider, path, node, ttl_secs }) => {
-                            apply_put_written(&mut lifecycle, &self.cache, &provider, path.as_deref(), &node, ttl_secs, Instant::now());
+                            apply_put_written(&mut lifecycle, &provider, path.as_deref(), &node, ttl_secs, Instant::now());
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::MemoWritten { provider, path, node, ttl_secs, watch }) => {
@@ -1532,10 +1534,10 @@ fn paths_of<'a>(
 
 /// Apply a `PutWritten`: drop every `put` lifecycle key at or below `node`,
 /// then, when the put has a ttl, make the address a lifecycle entry
-/// ([`static_lifecycle_config`]).
+/// ([`SourceLifecycleConfig::ttl`]): live for the ttl, stale for as long,
+/// then evicted. Nothing renews it but the next put.
 fn apply_put_written(
     lifecycle: &mut LifecycleRegistry,
-    cache: &Cache,
     provider: &str,
     path: Option<&str>,
     node: &str,
@@ -1545,17 +1547,16 @@ fn apply_put_written(
     lifecycle.remove_static_keys(crate::cache::PUT_SOURCE, provider, path, |address| {
         crate::cache::is_at_or_below(address, node)
     });
-    if ttl_secs.is_none() {
+    let Some(ttl_secs) = ttl_secs else {
         return;
-    }
+    };
     let key = lifecycle::Key {
         provider: provider.to_string(),
         path: path.map(str::to_string),
         source: crate::cache::PUT_SOURCE.to_string(),
         node: node.to_string(),
     };
-    let cfg = static_lifecycle_config(cache, provider, path, ttl_secs, &[]);
-    lifecycle.on_demand(key, cfg, now);
+    lifecycle.on_demand(key, SourceLifecycleConfig::ttl(ttl_secs), now);
 }
 
 /// The lifecycle key of the memo of `provider`'s template leaf `node` at
@@ -1594,10 +1595,10 @@ fn apply_memo_written(
     displaced
 }
 
-/// The lifecycle of a static address (a put's, a memo's). A ttl is
-/// `poll(ttl, 1)` with decay 1: valid for the ttl, readable but stale for one
-/// decay step, then evicted; `watch` paths beside it make it
-/// `watch_and_poll`. With none, it is watch-only, Active for the default
+/// The lifecycle of a memo's address. A ttl is a poll of count 0 with decay
+/// 1, as a put's ([`SourceLifecycleConfig::ttl`]): valid for the ttl, then
+/// stale for as long (a reader renders it again), then evicted, never
+/// polled; `watch` paths beside it make it `watch_and_poll`. With none, it is watch-only, Active for the default
 /// window and decaying at the depth `provider`'s `_` prototype gives at
 /// `path` (`Cache::resolve_decay`).
 fn static_lifecycle_config(
@@ -1609,19 +1610,13 @@ fn static_lifecycle_config(
 ) -> SourceLifecycleConfig {
     let abs_paths = watch.to_vec();
     match ttl_secs {
-        Some(interval_secs) if abs_paths.is_empty() => SourceLifecycleConfig::from_strategy(
-            &InvalidationStrategy::Poll {
-                interval_secs,
-                count: 1,
-            },
-            1,
-        ),
+        Some(interval_secs) if abs_paths.is_empty() => SourceLifecycleConfig::ttl(interval_secs),
         Some(interval_secs) => SourceLifecycleConfig::from_strategy(
             &InvalidationStrategy::WatchAndPoll {
                 patterns: Vec::new(),
                 abs_paths,
                 interval_secs,
-                count: 1,
+                count: 0,
             },
             1,
         ),
@@ -1981,45 +1976,32 @@ mod tests {
         );
     }
 
-    /// Each put address is its own entry: valid for the ttl, stale for one
-    /// decay step (twice the ttl), then evicted. Nothing but a put renews it.
+    /// Each put address is its own entry: valid for the ttl, stale for as
+    /// long, then evicted, with no poll. Nothing but a put renews it.
     #[test]
     fn a_put_entry_is_not_renewed_by_reads() {
         let mut lifecycle = LifecycleRegistry::new();
         let t0 = Instant::now();
-        apply_put_written(
-            &mut lifecycle,
-            &Cache::new(),
-            "build",
-            None,
-            "status",
-            Some(10),
-            t0,
-        );
+        apply_put_written(&mut lifecycle, "build", None, "status", Some(10), t0);
 
         // No read path touches a put key: the only API that renews an entry is
         // `on_demand`, and `apply_put_written` is its only put caller. The
         // ttl runs out regardless of what else happens.
-        let actions = lifecycle.tick(t0 + Duration::from_secs(11));
+        let actions = lifecycle.tick(t0 + Duration::from_secs(10));
         assert_eq!(
             actions.transitions.len(),
             1,
             "Active -> Decay(1) after the ttl"
         );
         assert!(actions.evictions.is_empty());
-        let actions = lifecycle.tick(t0 + Duration::from_secs(10 + 20 + 1));
+        assert!(actions.polls_due.is_empty());
+        let actions = lifecycle.tick(t0 + Duration::from_secs(19));
+        assert!(actions.evictions.is_empty() && actions.polls_due.is_empty());
+        let actions = lifecycle.tick(t0 + Duration::from_secs(20));
         assert_eq!(actions.evictions, vec![put_key(None, "status")]);
 
         // The next put starts it over.
-        apply_put_written(
-            &mut lifecycle,
-            &Cache::new(),
-            "build",
-            None,
-            "status",
-            Some(10),
-            t0,
-        );
+        apply_put_written(&mut lifecycle, "build", None, "status", Some(10), t0);
         assert_eq!(put_keys(&lifecycle), vec!["status"]);
     }
 
@@ -2028,34 +2010,18 @@ mod tests {
         let mut lifecycle = LifecycleRegistry::new();
         let t0 = Instant::now();
         for node in ["a", "a.b", "ab", "c"] {
-            apply_put_written(
-                &mut lifecycle,
-                &Cache::new(),
-                "build",
-                None,
-                node,
-                Some(10),
-                t0,
-            );
+            apply_put_written(&mut lifecycle, "build", None, node, Some(10), t0);
         }
-        apply_put_written(
-            &mut lifecycle,
-            &Cache::new(),
-            "build",
-            Some("/p"),
-            "a",
-            Some(10),
-            t0,
-        );
+        apply_put_written(&mut lifecycle, "build", Some("/p"), "a", Some(10), t0);
 
         // A put with no ttl at `a` drops `a` and `a.b`, not `ab`, `c` or the
         // same node at another path.
-        apply_put_written(&mut lifecycle, &Cache::new(), "build", None, "a", None, t0);
+        apply_put_written(&mut lifecycle, "build", None, "a", None, t0);
         assert_eq!(put_keys(&lifecycle), vec!["a", "ab", "c"]);
         assert!(lifecycle.iter().any(|(k, _)| k.path.is_some()));
 
         // The root address covers every node at that (provider, path).
-        apply_put_written(&mut lifecycle, &Cache::new(), "build", None, "", None, t0);
+        apply_put_written(&mut lifecycle, "build", None, "", None, t0);
         assert_eq!(put_keys(&lifecycle), vec!["a"]);
     }
 
@@ -2687,15 +2653,7 @@ mod tests {
             node: "n".into(),
             ..key("")
         };
-        apply_put_written(
-            &mut lifecycle,
-            &cache,
-            "p",
-            None,
-            "n",
-            Some(60),
-            Instant::now(),
-        );
+        apply_put_written(&mut lifecycle, "p", None, "n", Some(60), Instant::now());
 
         let after = load(format!(
             "{}{}{}",
@@ -2803,44 +2761,22 @@ mod tests {
         key
     }
 
-    /// A scheduler over `cache` and the shipped defaults, not running: what
-    /// its loop does with one key is [`Scheduler::fire`].
-    fn scheduler_over(cache: &Arc<Cache>) -> Scheduler {
-        let registry = ProviderRegistry::shipped(&std::env::vars().collect()).share(cache);
-        let watchers = Arc::new(WatcherRegistry::new());
-        Scheduler::new(Arc::clone(cache), registry, Config::default(), watchers).1
-    }
-
-    /// A memo's poll is its ttl running out: its hash goes and the rest of its
-    /// record and its value stay, and its readers are woken.
+    /// A memo's ttl never polls it: past the ttl its record stays, hash and
+    /// value, and reads stale, so a reader renders it again.
     #[test]
-    fn a_memo_poll_drops_the_hash_and_keeps_the_record() {
-        let watchers = Arc::new(WatcherRegistry::new());
-        let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+    fn a_memo_with_a_ttl_is_never_polled() {
+        let cache = Cache::new();
         let mut lifecycle = LifecycleRegistry::new();
         let t0 = Instant::now();
-        let key = write_memo(&cache, &mut lifecycle, "f", Some(10), &[], t0);
-        let mut woken = watchers.subscribe("k", None);
-
-        assert!(
-            lifecycle
-                .tick(t0 + Duration::from_secs(9))
-                .polls_due
-                .is_empty()
-        );
-        let actions = lifecycle.tick(t0 + Duration::from_secs(10));
-        assert_eq!(actions.polls_due, vec![key.clone()]);
-        scheduler_over(&cache).fire(&key, Want::Any);
-
-        let record = cache.memo_record("k", None, "f").expect("the record stays");
-        assert_eq!(record.hash(), None);
-        assert!(record.keys.contains_key("poll"), "{:?}", record.keys);
-        assert_eq!(record.data, Some(crate::provider::Value::Int(1)));
-        assert!(woken.try_recv().is_ok(), "the namespace was notified");
+        write_memo(&cache, &mut lifecycle, "f", Some(10), &[], t0);
+        for s in [9, 10, 19, 20] {
+            let actions = lifecycle.tick(t0 + Duration::from_secs(s));
+            assert!(actions.polls_due.is_empty(), "at {s} s: {actions:?}");
+        }
     }
 
-    /// A ttl memo is valid for its ttl, then decays one step (its watches go
-    /// as it does) and is evicted: its value and its record.
+    /// A ttl memo is valid for its ttl, then decays one step as long (its
+    /// watches go as it does) and is evicted: its value and its record.
     #[test]
     fn a_memo_with_a_ttl_is_evicted_after_one_step() {
         let cache = Cache::new();
@@ -2854,11 +2790,11 @@ mod tests {
         assert_eq!(lifecycle.state(&key), Some(&LifecycleState::Decay(1)));
         assert!(
             lifecycle
-                .tick(t0 + Duration::from_secs(29))
+                .tick(t0 + Duration::from_secs(19))
                 .evictions
                 .is_empty()
         );
-        let actions = lifecycle.tick(t0 + Duration::from_secs(30));
+        let actions = lifecycle.tick(t0 + Duration::from_secs(20));
         assert_eq!(actions.evictions, vec![key.clone()]);
         evict(&cache, &key);
 
@@ -2940,8 +2876,8 @@ mod tests {
         assert_eq!(record.data, Some(crate::provider::Value::Int(1)));
     }
 
-    /// A write-back starts its address's lifecycle again, its poll and its
-    /// window from the write, and replaces the entries of the memos it
+    /// A write-back starts its address's lifecycle again, its window from
+    /// the write and its new ttl, and replaces the entries of the memos it
     /// displaced there (above or below it), which it returns.
     #[test]
     fn a_memo_write_replaces_its_entry() {
@@ -2956,12 +2892,14 @@ mod tests {
             .find(|(k, _)| **k == key)
             .map(|(_, e)| e.clone())
             .unwrap();
-        let poll = entry.poll_timer.expect("a ttl polls");
+        assert!(entry.poll_timer.is_none(), "a ttl never polls");
         assert_eq!(
-            (poll.last_fired, poll.interval),
-            (t1, Duration::from_secs(20))
+            (
+                entry.decay_timer.last_demand,
+                entry.decay_timer.step_deadline
+            ),
+            (t1, t1 + Duration::from_secs(20))
         );
-        assert_eq!(entry.decay_timer.last_demand, t1);
 
         let below = write_memo(&cache, &mut lifecycle, "g.x", Some(10), &[], t0);
         let other = write_memo(&cache, &mut lifecycle, "h", Some(10), &[], t0);
@@ -3074,19 +3012,24 @@ mod tests {
         );
     }
 
-    /// A ttl gives `poll(ttl, 1)` with decay 1, and watch paths beside it
-    /// make it watch too; with no ttl a memo is watch-only, Active for the
+    /// A memo's ttl is a ttl as a put's is (never polled, one decay step as
+    /// long), and watch paths beside it make it watch too; with no ttl a memo is watch-only, Active for the
     /// default window, at its provider's `_.decay`.
     #[test]
     fn a_memos_lifecycle_is_its_ttl_or_the_default_window() {
         let cache = Cache::new();
         let w = ["/w".to_string()];
         let cfg = static_lifecycle_config(&cache, "k", None, Some(600), &[]);
+        assert_eq!(cfg, SourceLifecycleConfig::ttl(600));
         assert_eq!(
             (cfg.lifespan(), cfg.decay, cfg.strategy_kind),
             (Duration::from_secs(600), 1, lifecycle::StrategyKind::Poll)
         );
         let cfg = static_lifecycle_config(&cache, "k", None, Some(600), &w);
+        assert_eq!(
+            (cfg.poll_interval, cfg.ttl),
+            (None, Some(Duration::from_secs(600)))
+        );
         assert_eq!(
             (cfg.lifespan(), cfg.decay, cfg.strategy_kind),
             (

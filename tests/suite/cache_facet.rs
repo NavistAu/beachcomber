@@ -226,7 +226,7 @@ async fn the_cache_facet_pairs_with_the_record_the_read_resolves() {
     assert!(from_near.get("poll").is_none(), "near record: {from_near}");
 
     let from_far = get(&mut s, "ns:cache.a", Some(far)).await.data.unwrap();
-    assert_eq!(from_far["poll"], json!({"interval": "60s", "count": 1}));
+    assert_eq!(from_far["poll"], json!({"interval": "60s", "count": 0}));
     handle.abort();
 }
 
@@ -240,7 +240,7 @@ async fn a_ttl_put_reports_its_schedule_and_a_reput_without_one_drops_it() {
     );
 
     let leaf = get(&mut s, "build:cache.status", None).await.data.unwrap();
-    assert_eq!(leaf["poll"], json!({"interval": "300s", "count": 1}));
+    assert_eq!(leaf["poll"], json!({"interval": "300s", "count": 0}));
     assert_eq!(leaf["decay"], json!(1));
 
     assert!(
@@ -393,7 +393,7 @@ async fn the_cache_facet_of_an_object_node_is_a_tree_of_leaf_answers() {
     assert_eq!(whole["b"]["c"]["source"], json!("put"));
     assert_eq!(
         whole["b"]["c"]["poll"],
-        json!({"interval": "60s", "count": 1}),
+        json!({"interval": "60s", "count": 0}),
         "a leaf below a ttl'd address carries that address's schedule: {whole}"
     );
     assert_eq!(whole["b"]["d"]["decay"], json!(1));

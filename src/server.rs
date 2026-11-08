@@ -1973,8 +1973,8 @@ pub(crate) async fn put(
         Err(e) => return Response::error(e),
     };
 
-    // A ttl is the put's lifecycle: valid for N, stale for one decay
-    // step, then gone. It needs a value to expire.
+    // A ttl is the put's lifecycle: valid for N, stale for N more, then
+    // gone. It needs a value to expire.
     if ttl.is_some() && data.is_null() {
         return Response::error("a ttl on an absent value has no meaning");
     }
@@ -2732,6 +2732,10 @@ fn handle_introspect_daemon(
 fn summarize_invalidation(strategy: &crate::provider::InvalidationStrategy) -> String {
     use crate::provider::InvalidationStrategy;
     match strategy {
+        InvalidationStrategy::Poll {
+            interval_secs,
+            count: 0,
+        } => format!("ttl {interval_secs}s"),
         InvalidationStrategy::Poll { interval_secs, .. } => format!("poll {interval_secs}s"),
         InvalidationStrategy::Watch { patterns, .. } => {
             if patterns.is_empty() {
@@ -2743,6 +2747,7 @@ fn summarize_invalidation(strategy: &crate::provider::InvalidationStrategy) -> S
         InvalidationStrategy::WatchAndPoll {
             patterns,
             interval_secs,
+            count,
             ..
         } => {
             let pats = if patterns.is_empty() {
@@ -2750,7 +2755,8 @@ fn summarize_invalidation(strategy: &crate::provider::InvalidationStrategy) -> S
             } else {
                 patterns.join(",")
             };
-            format!("watch {pats} + poll {interval_secs}s")
+            let schedule = if *count == 0 { "ttl" } else { "poll" };
+            format!("watch {pats} + {schedule} {interval_secs}s")
         }
     }
 }

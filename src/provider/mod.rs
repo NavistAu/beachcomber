@@ -428,7 +428,9 @@ pub struct FieldSchema {
 pub enum InvalidationStrategy {
     Poll {
         interval_secs: u64,
-        /// Polls in the Active window: it lasts `interval_secs × count`.
+        /// Polls in the Active window: it lasts `interval_secs × count`. A
+        /// count of 0 is a `ttl` (only it writes one): live for
+        /// `interval_secs`, never polled, then one decay step as long.
         count: u32,
     },
     Watch {

@@ -103,6 +103,10 @@ pub struct SourceLifecycleConfig {
     pub poll_count: u32,
     /// Decay steps before eviction, at least 1.
     pub decay: u8,
+    /// A `ttl`: no poll timer, an Active window of this long and decay steps
+    /// of this long too, not doubling (a ttl has one). From a strategy with a
+    /// poll count of 0 ([`InvalidationStrategy`]); `None` for everything else.
+    pub ttl: Option<Duration>,
 }
 
 impl SourceLifecycleConfig {
@@ -127,20 +131,55 @@ impl SourceLifecycleConfig {
                 *count,
             ),
         };
+        // A count of 0 is a ttl: the interval is how long the value lives,
+        // and nothing polls it.
+        if poll_count == 0 {
+            return Self {
+                strategy_kind: kind,
+                poll_interval: None,
+                poll_count,
+                decay,
+                ttl: poll_interval,
+            };
+        }
         Self {
             strategy_kind: kind,
             poll_interval,
             poll_count,
             decay,
+            ttl: None,
         }
     }
 
-    /// The Active window: `interval × count`; a watch-only Source has no
-    /// interval of its own and takes the default one.
+    /// The lifecycle of a ttl of `secs` with no watch: Active for the ttl,
+    /// one decay step as long, no poll.
+    pub fn ttl(secs: u64) -> Self {
+        Self::from_strategy(
+            &InvalidationStrategy::Poll {
+                interval_secs: secs,
+                count: 0,
+            },
+            1,
+        )
+    }
+
+    /// The Active window: the ttl, else `interval × count`; a watch-only
+    /// Source has no interval of its own and takes the default one.
     pub fn lifespan(&self) -> Duration {
-        self.poll_interval
-            .unwrap_or(Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS))
-            * self.poll_count
+        self.ttl.unwrap_or_else(|| {
+            self.poll_interval
+                .unwrap_or(Duration::from_secs(DEFAULT_POLL_INTERVAL_SECS))
+                * self.poll_count
+        })
+    }
+
+    /// How long decay step `step` lasts: `lifespan × 2^step`, or for a ttl
+    /// the ttl itself.
+    pub fn step_length(&self, step: u8) -> Duration {
+        match self.ttl {
+            Some(ttl) => ttl,
+            None => self.lifespan() * (1u32 << step),
+        }
     }
 }
 
@@ -377,7 +416,7 @@ impl LifecycleRegistry {
                     if let LifecycleState::Decay(step) = new_state {
                         let rate_mult = 1u32 << step;
 
-                        dt.step_deadline = now + entry.config.lifespan() * rate_mult;
+                        dt.step_deadline = now + entry.config.step_length(step);
 
                         // Adjust poll interval if there is a poll path.
                         if let Some(pt) = entry.poll_timer.as_mut()
@@ -419,8 +458,8 @@ impl LifecycleRegistry {
             }
             for key in held {
                 if let Some(entry) = self.entries.get_mut(&key) {
-                    let step = 1u32 << entry.config.decay;
-                    entry.decay_timer.step_deadline = now + entry.config.lifespan() * step;
+                    entry.decay_timer.step_deadline =
+                        now + entry.config.step_length(entry.config.decay);
                 }
                 actions.evictions.retain(|k| *k != key);
             }
@@ -530,6 +569,7 @@ mod tests {
             poll_interval: Some(Duration::from_secs(60)),
             poll_count: 12,
             decay: DEFAULT_DECAY,
+            ttl: None,
         }
     }
 
@@ -999,10 +1039,63 @@ mod tests {
             poll_interval: Some(Duration::from_secs(10)),
             poll_count: 1,
             decay,
+            ttl: None,
         }
     }
 
-    /// Depth 1: valid for one poll, stale for one doubled step, then gone.
+    /// A ttl of 10 s: live 10 s, stale 10 s, evicted at 20 s, and nothing
+    /// polls it on the way.
+    #[test]
+    fn a_ttl_is_live_then_stale_for_as_long_then_evicted_and_never_polled() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key_global("p");
+        let t0 = Instant::now();
+        let cfg = SourceLifecycleConfig::ttl(10);
+        assert_eq!(cfg.poll_interval, None);
+        reg.on_demand(key.clone(), cfg, t0);
+        assert_eq!(reg.poll_interval(&key), None);
+
+        let at = |s| t0 + Duration::from_secs(s);
+        let mut polled = Vec::new();
+        for s in [9, 10, 19] {
+            polled.extend(reg.tick(at(s)).polls_due);
+            let want = if s < 10 {
+                LifecycleState::Active
+            } else {
+                LifecycleState::Decay(1)
+            };
+            assert_eq!(reg.state(&key), Some(&want), "at {s} s");
+        }
+        let actions = reg.tick(at(20));
+        polled.extend(actions.polls_due);
+        assert_eq!(actions.evictions, vec![key.clone()]);
+        assert_eq!(reg.state(&key), None);
+        assert!(polled.is_empty(), "a ttl never polls: {polled:?}");
+    }
+
+    /// A read in a ttl's stale step makes it live again, for a full ttl.
+    #[test]
+    fn a_read_in_a_ttls_stale_step_makes_it_live_again() {
+        let mut reg = LifecycleRegistry::new();
+        let key = test_key_global("p");
+        let t0 = Instant::now();
+        reg.on_demand(key.clone(), SourceLifecycleConfig::ttl(10), t0);
+        reg.tick(t0 + Duration::from_secs(10));
+
+        let outcome = reg.demand(
+            key.clone(),
+            || unreachable!("the entry has its config"),
+            t0 + Duration::from_secs(15),
+        );
+        assert_eq!(outcome.transition, StateTransition::Reinstated { from: 1 });
+        reg.tick(t0 + Duration::from_secs(24));
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Active));
+        assert!(reg.tick(t0 + Duration::from_secs(25)).polls_due.is_empty());
+        assert_eq!(reg.state(&key), Some(&LifecycleState::Decay(1)));
+    }
+
+    /// `poll(10s, 1)` at depth 1: valid for one poll, stale for one doubled
+    /// step, then gone.
     #[test]
     fn depth_one_is_valid_then_stale_for_one_step_then_evicted() {
         let mut reg = LifecycleRegistry::new();

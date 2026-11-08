@@ -98,7 +98,7 @@ fn a_cached_leaf_runs_its_command_once() {
     let record = c.json("p:cache.f");
     assert_eq!(record["source"], "memo", "{record}");
     assert_eq!(record["watch"], json!([c.home.join("state")]), "{record}");
-    assert_eq!(record["poll"]["count"], 1, "{record}");
+    assert_eq!(record["poll"]["count"], 0, "{record}");
     assert_eq!(record["decay"], 1, "{record}");
     let hash = record["hash"].as_str().unwrap();
     assert!(

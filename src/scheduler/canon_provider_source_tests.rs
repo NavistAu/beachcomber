@@ -51,6 +51,7 @@ fn watch_source_config() -> SourceLifecycleConfig {
         poll_interval: None,
         poll_count: DEFAULT_POLL_COUNT,
         decay: DEFAULT_DECAY,
+        ttl: None,
     }
 }
 
@@ -60,6 +61,7 @@ fn poll_source_config(interval: Duration, k: u32) -> SourceLifecycleConfig {
         poll_interval: Some(interval),
         poll_count: k,
         decay: DEFAULT_DECAY,
+        ttl: None,
     }
 }
 
@@ -69,6 +71,7 @@ fn watch_and_poll_config(interval: Duration, k: u32) -> SourceLifecycleConfig {
         poll_interval: Some(interval),
         poll_count: k,
         decay: DEFAULT_DECAY,
+        ttl: None,
     }
 }
 
@@ -278,6 +281,7 @@ fn path_scoped_watch_source_decays_per_k_duration() {
         poll_interval: None,
         poll_count: DEFAULT_POLL_COUNT,
         decay: DEFAULT_DECAY,
+        ttl: None,
     };
     reg.on_demand(key.clone(), cfg, t0);
     assert_eq!(reg.state(&key), Some(&LifecycleState::Active));

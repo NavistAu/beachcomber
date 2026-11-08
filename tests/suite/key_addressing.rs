@@ -409,7 +409,7 @@ result."c.d" = "{{ data }}"
             ("p:cache.o.x.source", "put"),
             ("p:cache['a.b'].source", "put"),
             ("p:cache.n.decay", "1"),
-            ("p:cache.n.poll.count", "1"),
+            ("p:cache.n.poll.count", "0"),
             ("p:cache.t.source", "template"),
             ("p:cache.o.source", ""),
             ("p:cache.o.x.nonesuch", ""),

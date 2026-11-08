@@ -165,7 +165,8 @@ impl std::error::Error for ReturnError {}
 /// A later call of a decorator in one line replaces an earlier one, whole.
 /// Across `| super` a Source's own setting beats its prototype's: a decorator
 /// a nearer line set is kept and the farther line's call of it is dropped.
-/// `ttl` is `poll` with a count of 1 and a decay of 1: the two share one slot.
+/// `ttl` is `poll` with a count of 0 (never polled) and a decay of 1: the two
+/// share one slot.
 ///
 /// `vars` are the variables a path argument expands from: the only part of a
 /// decorator's arguments that reads anything outside the line (the rest are
@@ -228,14 +229,15 @@ fn merge(levels: &[Line], defaults: &EngineDefaults) -> Result<Recorded, ReturnE
             message: "ttl() and poll() cannot be combined".into(),
         });
     }
-    // `ttl` is sugar for `poll(n, 1)` plus decay 1: one slot, the nearest
-    // line's call winning.
+    // `ttl(n)` is a poll of interval n and count 0, which nothing else can
+    // write: live for n, never polled, then one decay step of n. It shares
+    // `poll`'s slot, the nearest line's call winning.
     let (schedule, decay) = match levels
         .iter()
         .find(|l| l.poll.is_some() || l.ttl.is_some())
         .map(|l| (l.ttl, l.poll))
     {
-        Some((Some(secs), _)) => (Some((secs, 1)), Some(1)),
+        Some((Some(secs), _)) => (Some((secs, 0)), Some(1)),
         Some((None, poll)) => (poll, None),
         None => (None, None),
     };
@@ -727,9 +729,9 @@ mod tests {
     }
 
     #[test]
-    fn ttl_is_poll_n_1_decay_1() {
+    fn ttl_is_poll_n_0_decay_1() {
         let r = rec("{{ result | ttl('30s') }}");
-        assert_eq!(r.invalidation, poll(30, 1));
+        assert_eq!(r.invalidation, poll(30, 0));
         assert_eq!(r.decay, Some(1));
         let r = rec("{{ result | ttl(5) | watch('a') }}");
         assert_eq!(
@@ -738,7 +740,7 @@ mod tests {
                 patterns: vec!["a".into()],
                 abs_paths: vec![],
                 interval_secs: 5,
-                count: 1,
+                count: 0,
             }
         );
         assert_eq!(r.decay, Some(1));
@@ -1109,7 +1111,7 @@ mod tests {
             "{{ result | poll('60s', 12) }}",
         ])
         .unwrap();
-        assert_eq!(r.invalidation, poll(5, 1));
+        assert_eq!(r.invalidation, poll(5, 0));
         assert_eq!(r.decay, Some(1));
         let r = record(&[
             "{{ result | poll('15s') | super }}",

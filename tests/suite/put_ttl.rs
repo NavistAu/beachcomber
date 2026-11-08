@@ -62,11 +62,11 @@ async fn each_put_address_gets_its_own_lifecycle() {
     let rows = put_rows(&client, "build");
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert_eq!(rows[0].field, "eta");
-    assert_eq!(rows[0].poll_interval_secs, Some(60));
     assert_eq!(rows[1].field, "status");
-    assert_eq!(rows[1].poll_interval_secs, Some(300));
     for row in &rows {
-        assert_eq!(row.poll_count, Some(1), "{row:?}");
+        // A ttl never polls, so a row of one shows no poll.
+        assert_eq!(row.poll_interval_secs, None, "{row:?}");
+        assert_eq!(row.poll_count, None, "{row:?}");
         assert!(
             matches!(row.kind, Some(RowKind::Lifecycle { decay: 0, .. })),
             "{row:?}"
@@ -94,7 +94,7 @@ async fn a_nested_row_takes_the_lifecycle_of_the_put_address_above_it() {
             matches!(row.kind, Some(RowKind::Lifecycle { .. })),
             "{row:?}"
         );
-        assert_eq!(row.poll_interval_secs, Some(60), "{row:?}");
+        assert_eq!(row.poll_interval_secs, None, "{row:?}");
     }
     handle.abort();
 }

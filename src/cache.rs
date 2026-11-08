@@ -647,7 +647,9 @@ impl CacheSourceEntry {
     /// Returns true if the source is older than its expected refresh interval.
     pub fn is_stale(&self) -> bool {
         match self.expected_interval_secs {
-            Some(interval) => self.last_refreshed.elapsed().as_secs() > interval,
+            Some(interval) => {
+                self.last_refreshed.elapsed() > std::time::Duration::from_secs(interval)
+            }
             None => false,
         }
     }
@@ -679,7 +681,9 @@ impl RecordFreshness {
 
     pub fn is_stale(&self) -> bool {
         match self.expected_interval_secs {
-            Some(interval) => self.last_refreshed.elapsed().as_secs() > interval,
+            Some(interval) => {
+                self.last_refreshed.elapsed() > std::time::Duration::from_secs(interval)
+            }
             None => false,
         }
     }
@@ -728,8 +732,9 @@ impl PutStamp {
     }
 
     pub fn is_stale(&self) -> bool {
-        self.interval_secs
-            .is_some_and(|interval| self.written.elapsed().as_secs() > interval)
+        self.interval_secs.is_some_and(|interval| {
+            self.written.elapsed() > std::time::Duration::from_secs(interval)
+        })
     }
 }
 
@@ -1581,8 +1586,8 @@ impl Cache {
     }
 
     /// Write the schedule of a put into `<namespace>:cache` under the `put`
-    /// label, ahead of the put itself: a ttl'd put polls once, for its ttl, and
-    /// decays in one step. The put replaces whatever stood at `node` and below
+    /// label, ahead of the put itself: a ttl'd put is a poll of no count (live
+    /// for its ttl, never polled) that decays in one step as long. The put replaces whatever stood at `node` and below
     /// it, so their schedules go first. A root put has no address of its own, so
     /// each top-level key carries the schedule.
     fn write_put_schedule(
@@ -1600,7 +1605,7 @@ impl Cache {
         let facet = cache_facet_of(namespace);
         for address in schedule_addresses(node, value) {
             let stored = Value::Object(HashMap::from([
-                ("poll".to_string(), poll_key(ttl_secs, 1)),
+                ("poll".to_string(), poll_key(ttl_secs, 0)),
                 ("decay".to_string(), Value::Int(1)),
             ]));
             self.write_static(&facet, path, PUT_SOURCE, &address, stored, None)
@@ -2355,7 +2360,7 @@ impl Cache {
         let now = Instant::now();
         let mut keys = HashMap::from([("hash".to_string(), Value::String(memo.hash))]);
         if let Some(ttl_secs) = memo.ttl_secs {
-            keys.insert("poll".to_string(), poll_key(ttl_secs, 1));
+            keys.insert("poll".to_string(), poll_key(ttl_secs, 0));
             keys.insert("decay".to_string(), Value::Int(1));
         }
         if !memo.watch.is_empty() {
@@ -4196,7 +4201,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             json(&Value::Object(keys)),
-            serde_json::json!({"poll": {"interval": "300s", "count": 1}, "decay": 1})
+            serde_json::json!({"poll": {"interval": "300s", "count": 0}, "decay": 1})
         );
 
         // A leaf below the address takes the address's keys.
@@ -4600,8 +4605,8 @@ mod tests {
         assert_eq!(record.entry, None);
         assert_eq!(
             record.keys["poll"],
-            poll_key(600, 1),
-            "a ttl is poll(ttl, 1)"
+            poll_key(600, 0),
+            "a ttl is a poll of count 0"
         );
         assert_eq!(record.keys["decay"], Value::Int(1));
         assert_eq!(
@@ -4726,7 +4731,7 @@ mod tests {
         assert_eq!(record.hash(), None);
         assert!(!record.is_live());
         assert_eq!(record.data, Some(Value::Int(1)));
-        assert_eq!(record.keys["poll"], poll_key(60, 1));
+        assert_eq!(record.keys["poll"], poll_key(60, 0));
     }
 
     #[test]

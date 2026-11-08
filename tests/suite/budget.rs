@@ -239,6 +239,24 @@ async fn a_stale_record_answers_within_its_budget_and_the_run_goes_on() {
     );
 }
 
+/// A `ttl(60s)` Source (a poll of count 0, decay 1) is stale past its ttl as
+/// a poll is, and a read in that stale window runs it.
+#[tokio::test]
+async fn a_read_of_a_ttl_record_past_its_ttl_runs_the_source() {
+    let mut ttl = meta("s", "n", BUDGET, 3);
+    ttl.invalidation = InvalidationStrategy::Poll {
+        interval_secs: 60,
+        count: 0,
+    };
+    ttl.decay = Some(1);
+    let d = daemon(vec![ttl]);
+    stale(&d, "g.n").await;
+
+    let late = ask(d.sock.clone(), get("g.n")).await;
+    assert_eq!(d.sides[0].runs.load(Ordering::SeqCst), 2, "the read ran it");
+    assert_eq!(late["data"], json!(1), "served while the run is held");
+}
+
 /// Whether a read is still waiting after `for`: the direction a loaded
 /// machine cannot flake, since it only ever makes the read slower.
 async fn still_waiting(read: &mut tokio::task::JoinHandle<Json>, r#for: Duration) -> bool {
