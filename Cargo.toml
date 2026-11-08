@@ -45,7 +45,7 @@ tokio-util = "0.7"
 ureq = "3"
 libloading = "0.9"
 minijinja = { workspace = true }
-terminal_size = "0.3"
+terminal_size = "0.4"
 thiserror = "2.0.18"
 sha2 = "0.11.0"
 libbeachcomber = { path = "libbeachcomber", version = "0.10.1" }
