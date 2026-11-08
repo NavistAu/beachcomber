@@ -78,7 +78,7 @@ fn status_after_help() -> String {
         from the same fast source instead of independently forking processes.\n\n\
         https://beachcomber.sh\n\
         MIT License — Copyright NavistAu",
-    after_help = "Format suffixes are the short spelling of -f on get, watch and status: comb g.j (json), \
+    after_help = "Format suffixes are the short spelling of -f on get, watch, status and eval: comb g.j (json), \
         g.s (sh), g.c / g.C (csv, CSV with a header row), g.t / g.T (tsv, TSV with a header row), \
         g.f TEMPLATE (a template)."
 )]

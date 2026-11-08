@@ -336,7 +336,7 @@ pub fn rewrite_suffix(mut args: Vec<String>) -> Result<Vec<String>, String> {
     }
     let Some(formats) = formats_of(&command) else {
         return Err(format!(
-            "comb {command} takes no format: a format suffix applies to get, watch and status"
+            "comb {command} takes no format: a format suffix applies to get, watch, status and eval"
         ));
     };
     let value = if suffix == "f" {
