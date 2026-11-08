@@ -6,11 +6,11 @@
 
 ## The Problem
 
-Picture your typical development machine. You have 30 terminal shells open — tmux, iTerm tabs, nested sessions. Each one is running powerlevel10k with gitstatus enabled.
+Picture your typical development machine. You have 30 terminal shells open — [tmux](https://github.com/tmux/tmux), [iTerm](https://iterm2.com) tabs, nested sessions. Each one is running [powerlevel10k](https://github.com/romkatv/powerlevel10k) with [gitstatus](https://github.com/romkatv/gitstatus) enabled.
 
 **That's 30 gitstatusd daemons.** Each one spawns a thread pool of up to `min(32, 2 × NUM_CPUS)` threads. On a 16-core machine, that's 960 threads — all independently watching overlapping filesystem trees, all independently computing the same answer to "what branch am I on?"
 
-Now look at your tmux status bar. If you're using a common config like gpakosz/.tmux, it forks a shell process for every pane to collect battery, hostname, and git data. Every 10 seconds. 50 panes × 10 data points = **500 shell forks every 10 seconds.** Your laptop is burning CPU to spawn processes that each run for 5ms and return the same answer they returned 10 seconds ago.
+Now look at your tmux status bar. If you're using a common config like [gpakosz/.tmux](https://github.com/gpakosz/.tmux), it forks a shell process for every pane to collect battery, hostname, and git data. Every 10 seconds. 50 panes × 10 data points = **500 shell forks every 10 seconds.** Your laptop is burning CPU to spawn processes that each run for 5ms and return the same answer they returned 10 seconds ago.
 
 Meanwhile, `fseventsd` is pegging a CPU core dispatching the same filesystem change event to 30 independent FSEvents registrations — one per gitstatusd instance — all watching the same `.git` directory.
 
@@ -34,8 +34,8 @@ Every shell, every editor plugin, every status bar, every prompt framework is in
 
 | Scenario | Without beachcomber | With beachcomber | Improvement |
 |---|---|---|---|
-| zsh prompt (3 queries) | ~5ms (gitstatus fork) | **45µs** (persistent session) | 111x faster |
-| tmux status (100 panes, 10s refresh) | ~2.5s CPU (500 shell forks) | **7.5ms** (socket queries) | 333x fewer forks |
+| [zsh](https://www.zsh.org) prompt (3 queries) | ~5ms ([gitstatus](https://github.com/romkatv/gitstatus) fork) | **45µs** (persistent session) | 111x faster |
+| [tmux](https://github.com/tmux/tmux) status (100 panes, 10s refresh) | ~2.5s CPU (500 shell forks) | **7.5ms** (socket queries) | 333x fewer forks |
 | fseventsd dispatch load | N watchers × N events | 1 watcher, shared | Linear reduction |
 
 ---
@@ -259,7 +259,7 @@ graph TB
     USS --> Editors["neovim · lualine<br/>scripts · CI/automation"]
 ```
 
-**Providers are never re-executed on every query.** A git status is computed once when `.git` changes, then served from cache to every reader — whether that's one prompt or a hundred tmux panes. The filesystem watcher is registered once for all concurrent readers.
+**Providers are never re-executed on every query.** A git status is computed once when `.git` changes, then served from cache to every reader — whether that's one prompt or a hundred [tmux](https://github.com/tmux/tmux) panes. The filesystem watcher is registered once for all concurrent readers.
 
 **The directory you are standing in is the default.** `comb g git.branch` with no path addresses the current working directory; `comb g --global git.branch` addresses the global entry, which is `$HOME`. An SDK session can set its directory once (`set_context`) and leave the path off every request after that; the session sends it with each request.
 
@@ -839,7 +839,7 @@ feature/fast-cache
 
 | Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `gcloud_configs` | none | `active_config` (string), plus one object per gcloud configuration: `{ project, account }` | poll 60s | 1.08 µs |
+| `gcloud_configs` | none | `active_config` (string), plus one object per [gcloud](https://cloud.google.com/sdk/gcloud) configuration: `{ project, account }` | poll 60s | 1.08 µs |
 | `aws_profiles` | none | one object per profile in `~/.aws/config`: `{ region }` | watch `~/.aws/config` + poll 60s | < 1 µs |
 | `terraform` | project | `workspace` (string) | watch `.terraform/environment` | < 1 µs |
 
@@ -877,7 +877,7 @@ Only `python` and `terraform` have a daemon provider of the same name, so only t
 | Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
 | `python` | project | `venv` (bool), `local_venv_name` (string), `venv_version` (string) — plus the `venv_name` and `version` templates above | watch `.venv/`, `pyproject.toml` | < 1 µs |
-| `mise` | project | one string field per tool name (e.g. `node`, `rust`) — one `tools` source (`defaults/mise.toml`): what mise resolves at the project, global tools included; outside a project, at `~` | watch `.mise.toml`, `mise.toml` | varies |
+| `mise` | project | one string field per tool name (e.g. `node`, `rust`) — one `tools` source (`defaults/mise.toml`): what [mise](https://mise.jdx.dev) resolves at the project, global tools included; outside a project, at `~` | watch `.mise.toml`, `mise.toml` | varies |
 | `asdf` | project | one string field per tool name (e.g. `nodejs`, `ruby`) — the project's `.tool-versions`, then the global one's at `~` | watch `.tool-versions` | < 1 µs |
 | `direnv` | project | `status` (string), `allowed` (bool) | watch `.envrc` | varies |
 
@@ -924,7 +924,7 @@ precmd() {
 
 ### tmux status bar (format string replacement)
 
-tmux evaluates `#(command)` format strings to populate the status bar. Each `#()` is a subprocess — beachcomber makes these essentially free because the daemon is already running.
+[tmux](https://github.com/tmux/tmux) evaluates `#(command)` format strings to populate the status bar. Each `#()` is a subprocess — beachcomber makes these essentially free because the daemon is already running.
 
 ```tmux
 # ~/.tmux.conf
@@ -945,7 +945,7 @@ The simple `#()` approach shown above is already a major improvement over shelli
 
 ### bash prompt (PROMPT_COMMAND)
 
-bash runs `PROMPT_COMMAND` before each prompt. `eval` the `key='value'` sh output from a whole-provider query into prefixed locals to minimize subprocess calls.
+[bash](https://www.gnu.org/software/bash/) runs `PROMPT_COMMAND` before each prompt. `eval` the `key='value'` sh output from a whole-provider query into prefixed locals to minimize subprocess calls.
 
 ```bash
 # ~/.bashrc
@@ -975,7 +975,7 @@ PROMPT_COMMAND=__beachcomber_prompt
 
 ### fish prompt function
 
-fish's `fish_prompt` function is called before each prompt. fish has no subshell penalty for command substitutions, so this is already efficient.
+[fish](https://fishshell.com)'s `fish_prompt` function is called before each prompt. fish has no subshell penalty for command substitutions, so this is already efficient.
 
 ```fish
 # ~/.config/fish/functions/fish_prompt.fish
@@ -1001,7 +1001,7 @@ end
 
 ### neovim statusline (Lua SDK)
 
-The `beachcomber` Lua SDK auto-detects LuaJIT (which neovim always ships) and binds the shared `libbeachcomber` C ABI directly via `ffi` for zero-dependency, sub-millisecond access:
+The `beachcomber` Lua SDK auto-detects [LuaJIT](https://luajit.org) (which [neovim](https://neovim.io) always ships) and binds the shared `libbeachcomber` C ABI directly via `ffi` for zero-dependency, sub-millisecond access:
 
 ```lua
 -- In your statusline plugin or init.lua
@@ -1021,7 +1021,7 @@ Outside LuaJIT — on PUC Lua 5.1–5.4, which has no `ffi` — the SDK falls ba
 
 ### starship custom module
 
-starship's `[custom.*]` modules run a shell command and display its output. Using beachcomber as the backend replaces starship's per-prompt git computation with a cache read.
+[starship](https://starship.rs)'s `[custom.*]` modules run a shell command and display its output. Using beachcomber as the backend replaces starship's per-prompt git computation with a cache read.
 
 ```toml
 # ~/.config/starship.toml
@@ -1053,7 +1053,7 @@ symbol = "☸ "
 
 ### polybar / waybar / sketchybar custom module
 
-Status bars on Linux (polybar, waybar) and macOS (sketchybar) poll external commands for dynamic content. beachcomber makes the polling interval irrelevant — each query costs microseconds.
+Status bars on Linux ([polybar](https://github.com/polybar/polybar), [waybar](https://github.com/Alexays/Waybar)) and macOS ([sketchybar](https://github.com/FelixKratz/SketchyBar)) poll external commands for dynamic content. beachcomber makes the polling interval irrelevant — each query costs microseconds.
 
 **polybar:**
 ```ini
@@ -1147,7 +1147,7 @@ fi
 
 ### Rust SDK (`libbeachcomber`)
 
-For Rust consumers, the `libbeachcomber` crate provides a typed, synchronous API with no tokio dependency:
+For Rust consumers, the `libbeachcomber` crate provides a typed, synchronous API with no [tokio](https://tokio.rs) dependency:
 
 ```toml
 [dependencies]
@@ -1229,15 +1229,15 @@ branch=$(comb g git.branch . 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/d
 
 ## Client SDKs
 
-Every SDK provides typed APIs, socket discovery, timeouts, and error handling by binding the shared `libbeachcomber` C ABI (via `libbeachcomber-ffi`). Python, Ruby, and C are stdlib-only (`ctypes`, `fiddle`, and the generated header, respectively). Go vendors `purego` to call the ABI without cgo. Node.js binds it through `koffi`, an optional peer dependency, and falls back to a `comb` subprocess when `koffi` isn't installed. Lua uses LuaJIT's `ffi` when available (including inside Neovim) and falls back to a `comb` subprocess under PUC Lua 5.1–5.4, which has no `ffi`.
+Every SDK provides typed APIs, socket discovery, timeouts, and error handling by binding the shared `libbeachcomber` C ABI (via `libbeachcomber-ffi`). Python, Ruby, and C are stdlib-only (`ctypes`, `fiddle`, and the generated header, respectively). Go vendors `purego` to call the ABI without cgo. Node.js binds it through `koffi`, an optional peer dependency, and falls back to a `comb` subprocess when `koffi` isn't installed. Lua uses [LuaJIT](https://luajit.org)'s `ffi` when available (including inside [Neovim](https://neovim.io)) and falls back to a `comb` subprocess under PUC Lua 5.1–5.4, which has no `ffi`.
 
 | SDK | Location | Notes |
 |---|---|---|
-| **Rust** (`libbeachcomber`) | `libbeachcomber/` | Sync, no tokio dependency |
+| **Rust** (`libbeachcomber`) | `libbeachcomber/` | Sync, no [tokio](https://tokio.rs) dependency |
 | **C** (`libbeachcomber`) | `sdks/c/` | Shared + static lib, generated header, no embedded JSON parser |
 | **Python** (`libbeachcomber`) | `sdks/python/` | Dataclasses, sync client + session, ctypes over the C ABI |
-| **Node.js** (`libbeachcomber`) | `sdks/node/` | TypeScript, async API, koffi (optional peer dep) with subprocess fallback |
-| **Go** (`beachcomber`) | `sdks/go/` | Idiomatic error returns, vendored purego over the C ABI |
+| **Node.js** (`libbeachcomber`) | `sdks/node/` | TypeScript, async API, [koffi](https://koffi.dev) (optional peer dep) with subprocess fallback |
+| **Go** (`beachcomber`) | `sdks/go/` | Idiomatic error returns, vendored [purego](https://github.com/ebitengine/purego) over the C ABI |
 | **Lua** (`beachcomber`) | `sdks/lua/` | LuaJIT ffi, with PUC Lua subprocess fallback |
 | **Ruby** (`libbeachcomber`) | `sdks/ruby/` | Block-based sessions, fiddle over the C ABI |
 | **Shell** (POSIX function) | In README | Copy-paste fallback pattern |
@@ -1546,7 +1546,7 @@ Then `chmod 600` and restart the daemon (`pkill -f 'comb daemon'` — it socket-
 - **Stderr:** A command that succeeds has its stderr dropped. One that fails (a non-zero exit, a timeout) has the tail of its stderr in the error message the daemon logs for the refresh.
 - **Timeouts:** `exec` kills a command after `timeout` (default `'10s'`): `exec('slow-tool', timeout='30s')`. A timeout fails the refresh, and the next trigger retries it.
 - **Shell:** A string is executed via `sh -c`; a list (`exec(['cmd', 'arg'])`) is one argument per element with no shell. Use absolute paths for reliability, or ensure your PATH is set correctly in the daemon's environment.
-- **Rooted Sources:** `data` runs with the instance's `root` as its working directory. A Source with no `root` is the one instance at `~`. A read from a directory takes each value from the instance at its nearest root, then the next root up, ending at `~`: a **cascade**, the default, which suits layered settings (mise, asdf's `.tool-versions`) where a project sets some keys and `~` the rest. Add `| nearest` to `return` and the nearest instance answers alone: a key it lacks is absent, and a directory whose `root` renders none has no instance and no value (it does not fall back to `~`). That suits "the one you are in" (git, direnv, a Python venv, a terraform root): `return = "{{ result | watch('.git/HEAD') | nearest }}"`. Put `nearest` on a `_` prototype and reach it with `| super` to make a provider's Sources nearest together.
+- **Rooted Sources:** `data` runs with the instance's `root` as its working directory. A Source with no `root` is the one instance at `~`. A read from a directory takes each value from the instance at its nearest root, then the next root up, ending at `~`: a **cascade**, the default, which suits layered settings ([mise](https://mise.jdx.dev), [asdf](https://asdf-vm.com)'s `.tool-versions`) where a project sets some keys and `~` the rest. Add `| nearest` to `return` and the nearest instance answers alone: a key it lacks is absent, and a directory whose `root` renders none has no instance and no value (it does not fall back to `~`). That suits "the one you are in" (git, [direnv](https://direnv.net), a Python venv, a [terraform](https://developer.hashicorp.com/terraform) root): `return = "{{ result | watch('.git/HEAD') | nearest }}"`. Put `nearest` on a `_` prototype and reach it with `| super` to make a provider's Sources nearest together.
 - **Performance:** Every process spawn costs 2-6ms minimum. For Sources that poll frequently (< 30s), prefer `read` and `lup` over spawning CLI tools. See the design principles in [Performance](https://beachcomber.sh/docs/internals/performance#design-principles).
 
 ---
@@ -1811,7 +1811,7 @@ The `comb` CLI renders the JSON response into additional output formats on the c
 
 **`CSV` / `TSV`:** Same as `csv`/`tsv` but prefixed with a header row of field names.
 
-**`fmt`:** A minijinja template rendered over the value — `comb g.f '{{ branch }} ({{ dirty }})' git .` → `main (true)`.
+**`fmt`:** A [minijinja](https://github.com/mitsuhiko/minijinja) template rendered over the value — `comb g.f '{{ branch }} ({{ dirty }})' git .` → `main (true)`.
 
 Use format suffixes on the CLI (`.s` sh, `.c` csv, `.C` CSV, `.t` tsv, `.T` TSV, `.f` fmt) or the `-f` flag.
 
@@ -1823,7 +1823,7 @@ beachcomber did not emerge from a vacuum. Several excellent tools have explored 
 
 ### gitstatusd (romkatv/gitstatus)
 
-gitstatusd is the engine behind powerlevel10k and one of the fastest git status implementations in existence. On the Chromium repository (413k files), it returns results in 30ms — raw `git status` takes 295ms on the same repo.
+[gitstatusd](https://github.com/romkatv/gitstatus) is the engine behind [powerlevel10k](https://github.com/romkatv/powerlevel10k) and one of the fastest git status implementations in existence. On the [Chromium](https://www.chromium.org) repository (413k files), it returns results in 30ms — raw `git status` takes 295ms on the same repo.
 
 gitstatusd's key insight was correct: a persistent daemon that maintains an in-memory cache of directory mtimes amortizes the cost of repeated git status queries. That insight is the foundation beachcomber builds on.
 
@@ -1835,7 +1835,7 @@ See `docs/competitive-landscape.md` for detailed numbers.
 
 ### Watchman (Meta/Facebook)
 
-Watchman is a general-purpose filesystem watching daemon used by Jest, Buck, and Bazel. It is excellent at what it does: tracking file changes, maintaining an in-memory database of file metadata, and pushing events to subscribers via a rich expression language.
+[Watchman](https://facebook.github.io/watchman/) is a general-purpose filesystem watching daemon used by [Jest](https://jestjs.io), [Buck](https://buck.build), and [Bazel](https://bazel.build). It is excellent at what it does: tracking file changes, maintaining an in-memory database of file metadata, and pushing events to subscribers via a rich expression language.
 
 Watchman knows *that* files changed. It does not know *what a git branch is*, what battery percentage means, or how to assemble prompt data. It is plumbing, not porcelain.
 
@@ -1845,7 +1845,7 @@ beachcomber operates at a higher abstraction layer. The daemon internally uses t
 
 ### powerline-daemon (powerline/powerline)
 
-powerline-daemon is the conceptual ancestor of beachcomber. It was the original "cache prompt data in a daemon" approach — one daemon per user, Unix socket, serving shell prompts, tmux, and vim.
+[powerline-daemon](https://github.com/powerline/powerline) is the conceptual ancestor of beachcomber. It was the original "cache prompt data in a daemon" approach — one daemon per user, Unix socket, serving shell prompts, [tmux](https://github.com/tmux/tmux), and [vim](https://www.vim.org).
 
 The architectural mistake: powerline-daemon cached the *rendering engine*, not the *data*. The daemon avoided re-parsing Python config files and re-importing modules on every prompt, but still invoked fresh subprocesses for git status, battery, and every other data source on every render. The 20-50ms per render that users experienced was entirely the subprocess overhead that the daemon failed to amortize.
 
@@ -1855,13 +1855,13 @@ powerline-daemon was also single-threaded, meaning one slow git segment on a mon
 
 ### Starship
 
-Starship is the most popular cross-shell prompt with 55k stars. It is fast for typical repositories, with parallel module computation via rayon. It has no daemon, no caching, and no persistent state — each prompt invocation is a fresh process that computes everything from scratch.
+[Starship](https://starship.rs) is the most popular cross-shell prompt with 55k stars. It is fast for typical repositories, with parallel module computation via [rayon](https://github.com/rayon-rs/rayon). It has no daemon, no caching, and no persistent state — each prompt invocation is a fresh process that computes everything from scratch.
 
 On typical repositories starship completes in 1-5ms. On large monorepos it degrades significantly. Async git status — where the prompt renders immediately and git data fills in when ready — has been the most-requested feature since 2019 and has not shipped. The design space for a daemon has been explored (a detailed proposal exists from 2020) but has not been implemented.
 
 beachcomber is the missing piece for starship. Using the `[custom.*]` module, starship can read pre-cached state from beachcomber instead of computing git/battery/hostname on every prompt. The latency drops from 5ms to 15µs for cache-warm queries.
 
-**beachcomber vs Starship:** Not competitors — beachcomber is infrastructure that starship (and oh-my-posh, and p10k, and any other prompt framework) can use as a backend. The integration is already possible today via `comb g` in custom modules.
+**beachcomber vs Starship:** Not competitors — beachcomber is infrastructure that starship (and [oh-my-posh](https://ohmyposh.dev), and p10k, and any other prompt framework) can use as a backend. The integration is already possible today via `comb g` in custom modules.
 
 ### Oh My Posh
 
@@ -1873,7 +1873,7 @@ The differences: disk-based (not memory), no daemon, no multi-consumer sharing, 
 
 ### direnv
 
-direnv hooks into the shell's pre-prompt to manage directory-scoped environment variables. It uses mtime-based change detection on `.envrc` files and re-evaluates them when they change.
+[direnv](https://direnv.net) hooks into the shell's pre-prompt to manage directory-scoped environment variables. It uses mtime-based change detection on `.envrc` files and re-evaluates them when they change.
 
 beachcomber's `direnv` provider (`defaults/direnv.toml`) reads direnv's allow database to say whether the nearest `.envrc` is allowed, and caches that; it does not evaluate the `.envrc`. Multiple consumers (different shell sessions, tmux panes) can see the direnv state through beachcomber without each asking direnv. This is the integration, not the replacement — direnv's evaluation semantics are its own.
 
@@ -1898,11 +1898,11 @@ No single tool does all of this together:
 
 No. beachcomber is infrastructure — a data cache that prompt frameworks can consume. It does not render prompts, apply themes, or manage shell hooks. Think of it as a fast, shared data source that your existing prompt setup can optionally use instead of computing everything from scratch.
 
-With beachcomber, starship reads git state from a cache instead of invoking gitoxide. With beachcomber, powerlevel10k (if it gains socket support) could share one gitstatusd-equivalent across all shells. The prompt frameworks stay; they just get faster.
+With beachcomber, [starship](https://starship.rs) reads git state from a cache instead of invoking [gitoxide](https://github.com/GitoxideLabs/gitoxide). With beachcomber, [powerlevel10k](https://github.com/romkatv/powerlevel10k) (if it gains socket support) could share one gitstatusd-equivalent across all shells. The prompt frameworks stay; they just get faster.
 
 ### Why not just use Watchman?
 
-Watchman tells you *which files changed*. beachcomber tells you *what the git status is*, *what the battery percentage is*, *which kubernetes context is active*. Watchman is a lower-level primitive — it produces events, not interpreted state.
+[Watchman](https://facebook.github.io/watchman/) tells you *which files changed*. beachcomber tells you *what the git status is*, *what the battery percentage is*, *which kubernetes context is active*. Watchman is a lower-level primitive — it produces events, not interpreted state.
 
 Building on Watchman would mean beachcomber is also responsible for maintaining a Watchman installation, handling its failure modes, and adding 88MB+ to your system. The `notify` crate beachcomber uses talks to FSEvents/inotify directly, achieving the same result without the dependency.
 
@@ -1912,7 +1912,7 @@ Light. The cache holds one result object per `(provider, path)` combination. A t
 
 Unlike Watchman, beachcomber does not maintain an in-memory database of every file's metadata. It knows that `.git/HEAD` changed; it does not index every file in your repository.
 
-On a system with 20 shells and typical usage, expect the daemon to use 10-30MB of RSS. The tokio thread pool is fixed-size; provider executions happen on `spawn_blocking` threads that are bounded by tokio's defaults.
+On a system with 20 shells and typical usage, expect the daemon to use 10-30MB of RSS. The [tokio](https://tokio.rs) thread pool is fixed-size; provider executions happen on `spawn_blocking` threads that are bounded by tokio's defaults.
 
 ### What happens when the daemon crashes?
 
