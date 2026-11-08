@@ -1,11 +1,45 @@
 //! Objects, lists and numbers: `pluck`, `merge`, `map`, `pick`, `omit` and
-//! `clamp`.
+//! `clamp`; and `truthy`, bool-like text read as a bool.
 
 use super::{UNDEFINED, is_absent, number};
 use crate::engine::{EngineCtx, op_error};
 use minijinja::value::{Kwargs, Rest, Serde, Value as MjValue, ValueKind, ValueOrKwargs};
 use minijinja::{Environment, Error, State};
 use std::sync::Arc;
+
+pub(super) fn add_truthy(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
+    env.add_filter("truthy", truthy);
+}
+
+/// `v | truthy`: a bool is itself; text (trimmed, any case) `true`, `1`, `yes`,
+/// `on` is true and `false`, `0`, `no`, `off`, `''` false; a number is true unless
+/// zero; absent gives undefined. Any other text, or kind, is an error.
+fn truthy(v: MjValue) -> Result<MjValue, Error> {
+    if is_absent(&v) {
+        return Ok(UNDEFINED);
+    }
+    let bad = || {
+        op_error(format!(
+            "truthy(): {v} is not a bool-like value; use true/false, 1/0, yes/no or on/off"
+        ))
+    };
+    Ok(MjValue::from(match v.kind() {
+        ValueKind::Bool => return Ok(v),
+        ValueKind::Number => number("truthy", "the subject", &v)? != 0.0,
+        ValueKind::String => match v
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase()
+            .as_str()
+        {
+            "true" | "1" | "yes" | "on" => true,
+            "false" | "0" | "no" | "off" | "" => false,
+            _ => return Err(bad()),
+        },
+        _ => return Err(bad()),
+    }))
+}
 
 pub(super) fn add_pluck(env: &mut Environment<'_>, _: &Arc<EngineCtx>) {
     env.add_filter("pluck", pluck);
@@ -200,6 +234,43 @@ fn map(state: &mut State, value: MjValue, args: Rest<ValueOrKwargs>) -> Result<M
 #[cfg(test)]
 mod tests {
     use crate::library::testing::{eval, eval_json};
+
+    #[test]
+    fn truthy_reads_bool_like_values() {
+        for t in [
+            "true", "'true'", "' TRUE '", "'1'", "'Yes'", "'on'", "1", "-2", "0.5",
+        ] {
+            assert_eq!(
+                eval(&format!("{t} | truthy | tojson")).unwrap(),
+                "true",
+                "{t}"
+            );
+        }
+        for f in [
+            "false", "'false'", "'0'", "'No'", "' OFF'", "''", "'  '", "0", "0.0",
+        ] {
+            assert_eq!(
+                eval(&format!("{f} | truthy | tojson")).unwrap(),
+                "false",
+                "{f}"
+            );
+        }
+        assert_eq!(eval("true | truthy | tojson").unwrap(), "true");
+        // Absent stays absent, so `| default(x)` still fires.
+        assert_eq!(eval("none | truthy | default('d')").unwrap(), "d");
+        assert_eq!(eval("nope | truthy | default('d')").unwrap(), "d");
+    }
+
+    #[test]
+    fn truthy_refuses_anything_else() {
+        let e = eval("'maybe' | truthy").unwrap_err();
+        assert!(
+            e.contains("truthy(): maybe is not a bool-like value"),
+            "{e}"
+        );
+        assert!(e.contains("yes/no"), "{e}");
+        assert!(eval("[1] | truthy").unwrap_err().contains("truthy(): "));
+    }
 
     #[test]
     fn pluck_path_forms() {
