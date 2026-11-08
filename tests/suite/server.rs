@@ -37,7 +37,7 @@ async fn server_handles_get_global_provider() {
     fields.insert("short".to_string(), Value::String("testhost".to_string()));
     cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -72,7 +72,7 @@ async fn server_handles_get_single_field() {
     fields.insert("short".to_string(), Value::String("testhost".to_string()));
     cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -98,7 +98,7 @@ async fn server_handles_cache_miss_with_sync_execution() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
     // No cache populated — the server should execute the provider inline
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -139,7 +139,7 @@ async fn server_handles_cache_miss_provider_returns_none() {
     let home = tempfile::TempDir::new().unwrap();
     unsafe { std::env::set_var("HOME", home.path()) };
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -174,7 +174,7 @@ async fn server_handles_cache_miss_static_namespace() {
     // Register a static namespace name but don't populate cache
     registry.register_static("mystatic");
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -202,7 +202,7 @@ async fn server_handles_cache_miss_static_namespace() {
 async fn server_handles_unknown_provider() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -227,7 +227,7 @@ async fn server_handles_unknown_provider() {
 async fn server_handles_refresh() {
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -253,7 +253,7 @@ async fn daemon_introspect_includes_uptime_and_request_counters() {
     // Request::Introspect{daemon} in T27.
     let (_tmp, sock, cache, registry, watchers) = setup();
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -339,7 +339,7 @@ async fn nested_key_walks_into_object_field() {
     );
     registry.register_static("myproj");
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -380,7 +380,7 @@ async fn nested_key_missing_subkey_is_a_miss() {
     );
     registry.register_static("myproj");
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -436,7 +436,7 @@ async fn a_put_answered_get_runs_no_source_and_sends_no_demand() {
         sock.clone(),
         cache.clone(),
         registry,
-        Some(beachcomber::scheduler::SchedulerHandle::new(tx)),
+        beachcomber::scheduler::SchedulerHandle::new(tx),
         watchers,
     );
     let handle = server.spawn().unwrap();
@@ -471,7 +471,7 @@ async fn a_get_of_a_field_the_put_does_not_cover_runs_and_demands_the_source() {
         sock.clone(),
         cache.clone(),
         registry,
-        Some(beachcomber::scheduler::SchedulerHandle::new(tx)),
+        beachcomber::scheduler::SchedulerHandle::new(tx),
         watchers,
     );
     let handle = server.spawn().unwrap();
@@ -491,7 +491,7 @@ async fn a_get_of_a_field_the_put_does_not_cover_runs_and_demands_the_source() {
 #[tokio::test]
 async fn a_path_that_is_not_absolute_is_refused_on_every_op() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     for path in ["rel/x", "", "~/x"] {
@@ -527,7 +527,7 @@ async fn a_path_that_is_not_absolute_is_refused_on_every_op() {
 #[tokio::test]
 async fn a_request_field_the_op_does_not_take_is_refused() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     for request in [

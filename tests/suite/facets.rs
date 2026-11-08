@@ -6,7 +6,6 @@ use crate::common::git::GitRepoFixture;
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::server::Server;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -49,7 +48,7 @@ async fn send_recv(stream: &mut UnixStream, request: &str) -> Response {
 #[tokio::test]
 async fn put_then_get_field_on_facet_key() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -75,7 +74,7 @@ async fn put_then_get_field_on_facet_key() {
 #[tokio::test]
 async fn get_whole_facet_key_returns_object() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -102,7 +101,7 @@ async fn get_whole_facet_key_returns_object() {
 #[tokio::test]
 async fn macro_is_a_facet() {
     let (tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let rate = "{% macro row() %}r{% endmacro %}";
@@ -158,7 +157,7 @@ async fn macro_is_a_facet() {
 #[tokio::test]
 async fn a_put_to_macro_is_linted() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
@@ -239,7 +238,7 @@ async fn a_put_to_macro_is_linted() {
 #[tokio::test]
 async fn a_put_of_a_non_string_template_leaf_is_refused() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
@@ -275,7 +274,7 @@ async fn a_put_of_a_non_string_template_leaf_is_refused() {
 #[tokio::test]
 async fn an_unknown_facet_is_an_invalid_facet_key_on_every_op() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache.clone(), registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache.clone(), registry, watchers);
     let handle = server.spawn().unwrap();
 
     for (key, head) in [
@@ -322,7 +321,7 @@ async fn an_unknown_facet_is_an_invalid_facet_key_on_every_op() {
 #[tokio::test]
 async fn get_two_colons_is_invalid_facet() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -341,7 +340,7 @@ async fn get_two_colons_is_invalid_facet() {
 #[tokio::test]
 async fn get_empty_facet_name_is_invalid() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -360,7 +359,7 @@ async fn get_empty_facet_name_is_invalid() {
 #[tokio::test]
 async fn get_facet_name_with_bad_chars_is_invalid() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -385,7 +384,7 @@ async fn get_facet_name_with_bad_chars_is_invalid() {
 #[tokio::test]
 async fn watch_two_colons_is_invalid_facet_before_subscribing() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -417,7 +416,7 @@ async fn watch_two_colons_is_invalid_facet_before_subscribing() {
 #[tokio::test]
 async fn refresh_two_colons_is_invalid_facet() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -436,7 +435,7 @@ async fn refresh_two_colons_is_invalid_facet() {
 #[tokio::test]
 async fn refresh_on_a_facet_key_is_an_error() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -478,7 +477,7 @@ async fn refresh_on_a_facet_key_is_an_error() {
 #[tokio::test]
 async fn a_colon_below_the_head_is_part_of_a_segment() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -515,7 +514,7 @@ async fn a_colon_below_the_head_is_part_of_a_segment() {
 #[tokio::test]
 async fn a_key_the_grammar_refuses_is_invalid_in_every_op() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     for key in ["p..a", "p['a", "p.a]", "/tmp/x", "~/ws"] {
@@ -550,7 +549,7 @@ async fn a_key_the_grammar_refuses_is_invalid_in_every_op() {
 #[tokio::test]
 async fn status_row_for_facet_key_put_is_static() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -604,7 +603,7 @@ async fn warmed_repo_with_a_put_branch(stream: &mut UnixStream, repo: &GitRepoFi
 #[tokio::test]
 async fn the_put_facet_reads_only_the_put_layer() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let repo = GitRepoFixture::new();
@@ -645,7 +644,7 @@ async fn the_put_facet_reads_only_the_put_layer() {
 #[tokio::test]
 async fn the_source_facet_shows_a_value_a_put_hides() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let repo = GitRepoFixture::new();
@@ -674,7 +673,7 @@ async fn the_source_facet_shows_a_value_a_put_hides() {
 #[tokio::test]
 async fn the_source_facet_warms_like_the_plain_key() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut stream = UnixStream::connect(&sock).await.unwrap();
     let repo = GitRepoFixture::new();
@@ -694,7 +693,7 @@ async fn the_source_facet_warms_like_the_plain_key() {
 #[tokio::test]
 async fn a_put_to_the_put_or_source_facet_is_refused() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
@@ -728,7 +727,7 @@ async fn a_put_to_the_put_or_source_facet_is_refused() {
 #[tokio::test]
 async fn a_refresh_of_a_layer_facet_names_the_key_as_given() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
@@ -751,7 +750,7 @@ async fn a_refresh_of_a_layer_facet_names_the_key_as_given() {
 #[tokio::test]
 async fn a_second_colon_after_a_layer_facet_is_an_invalid_facet_key() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut stream = UnixStream::connect(&sock).await.unwrap();
 
@@ -771,7 +770,7 @@ async fn a_second_colon_after_a_layer_facet_is_an_invalid_facet_key() {
 #[tokio::test]
 async fn a_cold_watch_on_the_put_facet_warms_nothing() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache.clone(), registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache.clone(), registry, watchers);
     let handle = server.spawn().unwrap();
     let repo = GitRepoFixture::new();
     let mut stream = UnixStream::connect(&sock).await.unwrap();

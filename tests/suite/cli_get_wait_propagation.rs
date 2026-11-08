@@ -15,7 +15,6 @@ use crate::common::daemon::isolate;
 use beachcomber::cache::Cache;
 use beachcomber::cache::Schedule;
 use beachcomber::provider::Value;
-use beachcomber::server::Server;
 use libbeachcomber::resolve::Fetch;
 use libbeachcomber::{Client, ClientConfig, Wait};
 use std::collections::HashMap;
@@ -56,7 +55,7 @@ async fn setup_stale() -> (TempDir, std::path::PathBuf) {
     tokio::time::advance(std::time::Duration::from_secs(2)).await;
     tokio::time::resume();
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     // `spawn` binds the socket synchronously — it is connectable on return.
     server.spawn().expect("server binds socket");
     (tmp, sock)

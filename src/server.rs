@@ -28,7 +28,7 @@ pub struct Server {
     socket_path: PathBuf,
     cache: Arc<Cache>,
     registry: RegistryHandle,
-    scheduler: Option<SchedulerHandle>,
+    scheduler: SchedulerHandle,
     watchers: Arc<WatcherRegistry>,
     start_instant: Instant,
     requests_total: Arc<AtomicU64>,
@@ -54,7 +54,7 @@ impl Server {
         socket_path: PathBuf,
         cache: Arc<Cache>,
         registry: impl Into<RegistryHandle>,
-        scheduler: Option<SchedulerHandle>,
+        scheduler: SchedulerHandle,
         watchers: Arc<WatcherRegistry>,
     ) -> Self {
         Self {
@@ -76,7 +76,7 @@ impl Server {
         socket_path: PathBuf,
         cache: Arc<Cache>,
         registry: impl Into<RegistryHandle>,
-        scheduler: Option<SchedulerHandle>,
+        scheduler: SchedulerHandle,
         watchers: Arc<WatcherRegistry>,
         config: Config,
     ) -> Self {
@@ -212,7 +212,7 @@ async fn handle_connection(
     stream: tokio::net::UnixStream,
     cache: Arc<Cache>,
     registry: RegistryHandle,
-    scheduler: Option<SchedulerHandle>,
+    scheduler: SchedulerHandle,
     watchers: Arc<WatcherRegistry>,
     start_instant: Instant,
     requests_total: Arc<AtomicU64>,
@@ -243,7 +243,7 @@ async fn handle_connection(
                     path,
                     &cache,
                     &registry,
-                    scheduler.as_ref(),
+                    &scheduler,
                     &watchers,
                     &mut reader,
                     &mut writer,
@@ -260,7 +260,7 @@ async fn handle_connection(
                     &request,
                     &cache,
                     &current,
-                    scheduler.as_ref(),
+                    &scheduler,
                     start_instant,
                     &requests_total,
                     &active_watches,
@@ -405,7 +405,7 @@ async fn handle_watch(
     path: Option<String>,
     cache: &Arc<Cache>,
     handle: &RegistryHandle,
-    scheduler: Option<&SchedulerHandle>,
+    scheduler: &SchedulerHandle,
     watchers: &Arc<WatcherRegistry>,
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: &mut tokio::net::unix::OwnedWriteHalf,
@@ -454,8 +454,8 @@ async fn handle_watch(
         tokio::select! {
             _ = setup.chain_watch.changed.notified() => {
                 // Signal ongoing demand
-                if !setup.layered && let Some(sched) = scheduler {
-                    demand_watched(sched, &setup.provider_name, &setup.instances, &setup.called).await;
+                if !setup.layered {
+                    demand_watched(scheduler, &setup.provider_name, &setup.instances, &setup.called).await;
                 }
             }
             changed = swapped.changed() => {
@@ -551,7 +551,7 @@ async fn watch_setup(
     key: &str,
     requested: Option<&str>,
     registry: Arc<ProviderRegistry>,
-    scheduler: Option<&SchedulerHandle>,
+    scheduler: &SchedulerHandle,
     watchers: &Arc<WatcherRegistry>,
 ) -> Result<WatchSetup, String> {
     // The plan refuses a facet outside the closed set, as for every op.
@@ -584,8 +584,8 @@ async fn watch_setup(
 
     // Signal demand for every instance on the chains (source-aware: a field
     // demands only its owning Source).
-    if !layered && let Some(sched) = scheduler {
-        demand_watched(sched, &provider_name, &instances, &called).await;
+    if !layered {
+        demand_watched(scheduler, &provider_name, &instances, &called).await;
     }
 
     // Subscribe to every entry the read walk visits, not just the addressed
@@ -841,38 +841,6 @@ async fn settle(pending: Vec<Pending>) -> Result<bool, String> {
         }
     }
     Ok(ended)
-}
-
-/// Start the run of an instance that `want` needs, or take the one in flight
-/// (whoever started it), and wait for it: whether there was one to wait for.
-/// An instance in failback backoff has none unless `want` is forced.
-///
-/// A run that failed is a miss (its failure is logged where it is recorded),
-/// and the read goes on to the rest of the chain. One that failed because a
-/// Source it calls failed, or called itself, is a fault in the lines, not in
-/// the world: the read shows it, as it shows a `root` that fails.
-///
-/// The run records itself: a read that stops waiting (its connection gone)
-/// takes nothing with it.
-async fn run_for_read(
-    registry: &Arc<ProviderRegistry>,
-    cache: &Arc<Cache>,
-    want: Want,
-    provider: &str,
-    source_name: &str,
-    root: Option<&str>,
-) -> Result<bool, String> {
-    let key = instance_key(provider, source_name, root);
-    let Some(run) = registry.runs().start(want, registry, cache, &key) else {
-        return Ok(false);
-    };
-    match run.outcome().await {
-        Outcome::Failed {
-            message,
-            fault: true,
-        } => Err(message),
-        _ => Ok(true),
-    }
 }
 
 /// The instances, by provider, of the Sources `provider`'s `result` and
@@ -1869,7 +1837,7 @@ async fn write_watch_line(
 pub(crate) async fn put(
     cache: &Arc<Cache>,
     registry: &Arc<ProviderRegistry>,
-    scheduler: Option<&SchedulerHandle>,
+    scheduler: &SchedulerHandle,
     key: &str,
     data: &serde_json::Value,
     ttl: Option<&str>,
@@ -2010,9 +1978,7 @@ pub(crate) async fn put(
         if let Some(store) = store {
             store.record(&address, effective_path.as_deref(), None);
         }
-        if let Some(sched) = scheduler {
-            sched.send(put_written()).await;
-        }
+        scheduler.send(put_written()).await;
         return Response::miss();
     }
 
@@ -2060,9 +2026,7 @@ pub(crate) async fn put(
     if let Some(value) = persisted {
         cache.mark_persisted(namespace, effective_path.as_deref(), node, &value);
     }
-    if let Some(sched) = scheduler {
-        sched.send(put_written()).await;
-    }
+    scheduler.send(put_written()).await;
 
     // A namespace no provider declares becomes a static one; a provider
     // namespace that merely gained a static record does not
@@ -2077,7 +2041,7 @@ async fn handle_request(
     request: &Request,
     cache: &Arc<Cache>,
     registry: &Arc<ProviderRegistry>,
-    scheduler: Option<&SchedulerHandle>,
+    scheduler: &SchedulerHandle,
     start_instant: Instant,
     requests_total: &AtomicU64,
     active_watches: &AtomicUsize,
@@ -2230,20 +2194,16 @@ async fn handle_request(
             // Demand every instance the read reached, so each is kept warm and,
             // the first time, its schedule is registered. The Sources the
             // lines call are kept warm the same way, while they are called.
-            if let Some(sched) = scheduler {
-                for (called_provider, instances) in called {
-                    sched
-                        .send(SchedulerMessage::QueryActivity {
-                            provider: called_provider,
-                            instances,
-                        })
-                        .await;
-                }
+            for (called_provider, instances) in called {
+                scheduler
+                    .send(SchedulerMessage::QueryActivity {
+                        provider: called_provider,
+                        instances,
+                    })
+                    .await;
             }
-            if let Some(sched) = scheduler
-                && !reached.is_empty()
-            {
-                sched
+            if !reached.is_empty() {
+                scheduler
                     .send(SchedulerMessage::QueryActivity {
                         provider: provider_name.to_string(),
                         instances: reached,
@@ -2344,35 +2304,12 @@ async fn handle_request(
                     plan.requested_path.as_deref().unwrap_or("~")
                 ));
             }
-            match scheduler {
-                Some(sched) => {
-                    sched
-                        .send(SchedulerMessage::Refresh {
-                            provider: provider_name.to_string(),
-                            instances,
-                        })
-                        .await;
-                }
-                // No scheduler (an embedded server): the same runs, a run of
-                // each that begins after now, waited for here.
-                None => {
-                    for instance in &instances {
-                        let warmed = run_for_read(
-                            registry,
-                            cache,
-                            Want::Fresh,
-                            provider_name,
-                            &instance.source,
-                            instance.root.as_deref(),
-                        )
-                        .await;
-                        if let Err(msg) = warmed {
-                            warn!("refresh {key}: {msg}");
-                            return Response::error(msg);
-                        }
-                    }
-                }
-            }
+            scheduler
+                .send(SchedulerMessage::Refresh {
+                    provider: provider_name.to_string(),
+                    instances,
+                })
+                .await;
             Response::miss()
         }
         Request::Put {
@@ -2418,9 +2355,7 @@ async fn handle_request(
                     watch: write.watch.clone(),
                 };
                 cache.write_memo(&provider, path.as_deref(), &field, write);
-                if let Some(sched) = scheduler {
-                    sched.send(written).await;
-                }
+                scheduler.send(written).await;
                 Response::miss()
             }
             Err(msg) => Response::error(msg),
@@ -2428,13 +2363,8 @@ async fn handle_request(
         Request::Status {} => {
             let mut rows = cache.list_rows();
 
-            let (lifecycle, failures) = if let Some(sched) = scheduler {
-                let lc = sched.get_lifecycle_snapshots().await;
-                let fs = sched.get_failure_states().await;
-                (lc, fs)
-            } else {
-                (Default::default(), Default::default())
-            };
+            let lifecycle = scheduler.get_lifecycle_snapshots().await;
+            let failures = scheduler.get_failure_states().await;
 
             // A Source that has failed every run has stored nothing, so it
             // has no row: give it an absent one per field it declares, which
@@ -2562,17 +2492,16 @@ async fn handle_request(
             IntrospectSubject::Daemon => {
                 // Gather in_flight, the watch backend and the watches that
                 // failed from scheduler status if available.
-                let (in_flight_count, watch_backend, watches) = if let Some(sched) = scheduler
-                    && let Some(sched_status) = sched.get_status().await
-                {
-                    (
-                        sched_status.in_flight.len() as u64,
-                        sched_status.watch_backend,
-                        sched_status.watches,
-                    )
-                } else {
-                    (0, "unknown".to_string(), Vec::new())
-                };
+                let (in_flight_count, watch_backend, watches) =
+                    if let Some(sched_status) = scheduler.get_status().await {
+                        (
+                            sched_status.in_flight.len() as u64,
+                            sched_status.watch_backend,
+                            sched_status.watches,
+                        )
+                    } else {
+                        (0, "unknown".to_string(), Vec::new())
+                    };
                 let active_watchers = active_watches.load(Ordering::Relaxed) as u64;
                 let cache_entries = cache.len() as u64;
                 handle_introspect_daemon(
@@ -2773,20 +2702,14 @@ fn summarize_invalidation(strategy: &crate::provider::InvalidationStrategy) -> S
 
 async fn handle_introspect_providers(
     registry: &ProviderRegistry,
-    scheduler: Option<&SchedulerHandle>,
+    scheduler: &SchedulerHandle,
 ) -> Response {
-    let backoff_list: Vec<LifecycleInfo> = if let Some(s) = scheduler {
-        s.get_status()
-            .await
-            .map(|st| st.lifecycle)
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let failures = match scheduler {
-        Some(s) => s.get_failure_states().await,
-        None => Default::default(),
-    };
+    let backoff_list: Vec<LifecycleInfo> = scheduler
+        .get_status()
+        .await
+        .map(|st| st.lifecycle)
+        .unwrap_or_default();
+    let failures = scheduler.get_failure_states().await;
 
     let mut providers_out = Vec::new();
     let mut verdicts = Vec::new();
@@ -2968,15 +2891,12 @@ fn handle_introspect_cache(cache: &Cache) -> Response {
     )
 }
 
-async fn handle_introspect_lifecycle(scheduler: Option<&SchedulerHandle>) -> Response {
-    let lifecycle: Vec<LifecycleInfo> = if let Some(s) = scheduler {
-        s.get_status()
-            .await
-            .map(|st| st.lifecycle)
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+async fn handle_introspect_lifecycle(scheduler: &SchedulerHandle) -> Response {
+    let lifecycle: Vec<LifecycleInfo> = scheduler
+        .get_status()
+        .await
+        .map(|st| st.lifecycle)
+        .unwrap_or_default();
 
     let mut verdicts = Vec::new();
     if lifecycle.is_empty() {
@@ -3012,15 +2932,12 @@ async fn handle_introspect_lifecycle(scheduler: Option<&SchedulerHandle>) -> Res
     )
 }
 
-async fn handle_introspect_watches(scheduler: Option<&SchedulerHandle>) -> Response {
-    let watches = match scheduler {
-        Some(s) => s
-            .get_status()
-            .await
-            .map(|st| st.watches)
-            .unwrap_or_default(),
-        None => Vec::new(),
-    };
+async fn handle_introspect_watches(scheduler: &SchedulerHandle) -> Response {
+    let watches = scheduler
+        .get_status()
+        .await
+        .map(|st| st.watches)
+        .unwrap_or_default();
 
     let verdicts = watch_verdicts(&watches);
 
@@ -3085,15 +3002,12 @@ fn watch_verdicts(watches: &[crate::watcher::Watch]) -> Vec<serde_json::Value> {
     verdicts
 }
 
-async fn handle_introspect_timers(scheduler: Option<&SchedulerHandle>) -> Response {
-    let timers: Vec<PollTimerInfo> = if let Some(s) = scheduler {
-        s.get_status()
-            .await
-            .map(|st| st.poll_timers)
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+async fn handle_introspect_timers(scheduler: &SchedulerHandle) -> Response {
+    let timers: Vec<PollTimerInfo> = scheduler
+        .get_status()
+        .await
+        .map(|st| st.poll_timers)
+        .unwrap_or_default();
 
     let mut verdicts = vec![serde_json::json!({
         "level": "PASS",
@@ -3127,12 +3041,12 @@ async fn handle_introspect_timers(scheduler: Option<&SchedulerHandle>) -> Respon
     )
 }
 
-async fn handle_introspect_demand(scheduler: Option<&SchedulerHandle>) -> Response {
-    let demand: Vec<DemandInfo> = if let Some(s) = scheduler {
-        s.get_status().await.map(|st| st.demand).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+async fn handle_introspect_demand(scheduler: &SchedulerHandle) -> Response {
+    let demand: Vec<DemandInfo> = scheduler
+        .get_status()
+        .await
+        .map(|st| st.demand)
+        .unwrap_or_default();
 
     let verdict = serde_json::json!({
         "level": "PASS",
@@ -3252,7 +3166,7 @@ mod tests {
             socket.clone(),
             cache,
             registry,
-            Some(handle),
+            handle,
             Arc::new(WatcherRegistry::new()),
         )
         .spawn()

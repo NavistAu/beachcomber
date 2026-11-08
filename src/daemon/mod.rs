@@ -39,7 +39,7 @@ async fn replay_persisted_puts(
         let replayed = crate::server::put(
             cache,
             &registry,
-            Some(scheduler),
+            scheduler,
             &entry.key,
             &entry.data,
             ttl.as_deref(),
@@ -241,7 +241,7 @@ async fn run_daemon_with_cancel(
         socket_path,
         cache,
         registry,
-        Some(handle),
+        handle,
         watchers,
         config.clone(),
     );

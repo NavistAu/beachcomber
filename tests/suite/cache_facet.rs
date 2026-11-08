@@ -9,7 +9,6 @@ use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
 use serde_json::json;
 use std::sync::Arc;
@@ -85,7 +84,7 @@ async fn serve_on(
     tokio::task::JoinHandle<std::io::Result<()>>,
     std::path::PathBuf,
 ) {
-    let handle = Server::new(sock.clone(), cache.clone(), registry, None, watchers)
+    let handle = crate::common::scheduler::server(sock.clone(), cache.clone(), registry, watchers)
         .spawn()
         .unwrap();
     let stream = UnixStream::connect(&sock).await.unwrap();
@@ -427,7 +426,7 @@ async fn a_cache_facet_key_cannot_be_refreshed() {
 async fn a_watch_on_the_cache_facet_wakes_on_a_data_write() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let writer = cache.clone();
-    let handle = Server::new(sock.clone(), cache, registry, None, watchers)
+    let handle = crate::common::scheduler::server(sock.clone(), cache, registry, watchers)
         .spawn()
         .unwrap();
 

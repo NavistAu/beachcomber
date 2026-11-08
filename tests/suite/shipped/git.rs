@@ -691,13 +691,7 @@ async fn setup_daemon() -> (
     scheduler.use_polling_watcher(Duration::from_millis(50));
     tokio::spawn(async move { scheduler.run().await });
 
-    let server = Server::new(
-        sock.clone(),
-        cache,
-        registry,
-        Some(handle.clone()),
-        watchers,
-    );
+    let server = Server::new(sock.clone(), cache, registry, handle.clone(), watchers);
     // `spawn` binds the socket synchronously — it is connectable on return.
     server.spawn().expect("server binds socket");
 

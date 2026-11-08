@@ -5,7 +5,6 @@ use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
-use beachcomber::server::Server;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -176,7 +175,7 @@ async fn a_request_path_addresses_its_instance() {
         Schedule::poll(60, 1),
     );
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
@@ -201,7 +200,7 @@ async fn a_request_path_addresses_its_instance() {
 #[tokio::test]
 async fn the_wire_has_no_context_op() {
     let (_tmp, sock, cache, registry, watchers) = setup_with_custom_registry();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
@@ -231,7 +230,7 @@ async fn global_provider_answers_any_path() {
     );
     cache.put_source("globalprov", None, "main", fields, Schedule::default());
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
@@ -281,7 +280,7 @@ async fn a_rooted_instance_that_has_the_key_never_defers_to_the_global_one() {
     );
     cache.put_source("pathprov", None, "main", fields, Schedule::poll(60, 1));
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();

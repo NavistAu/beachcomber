@@ -6,7 +6,6 @@
 
 use beachcomber::cache::Cache;
 use beachcomber::protocol::PROTOCOL_VERSION;
-use beachcomber::server::Server;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -18,7 +17,7 @@ async fn spawn_server() -> (TempDir, std::path::PathBuf) {
     let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let registry = Arc::new(crate::common::registry::with_shipped_defaults());
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     server.spawn().unwrap();
     (tmp, sock)
 }

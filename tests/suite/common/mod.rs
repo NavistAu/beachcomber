@@ -5,5 +5,6 @@ pub mod git;
 pub mod mtime;
 pub mod poll;
 pub mod registry;
+pub mod scheduler;
 pub mod socket;
 pub mod watch;

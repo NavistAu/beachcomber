@@ -1,7 +1,6 @@
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::server::Server;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -36,7 +35,7 @@ async fn send_recv(stream: &mut UnixStream, request: &str) -> Response {
 #[tokio::test]
 async fn store_and_get_roundtrip() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -71,7 +70,7 @@ async fn store_and_get_roundtrip() {
 #[tokio::test]
 async fn a_put_over_a_source_field_is_accepted_and_wins() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -89,7 +88,7 @@ async fn a_put_over_a_source_field_is_accepted_and_wins() {
 #[tokio::test]
 async fn refresh_on_a_sourceless_namespace_is_an_error() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -137,7 +136,7 @@ fn scopes(tmp: &TempDir) -> (String, String) {
 async fn store_with_path_scope() {
     let (tmp, sock, cache, registry, watchers) = setup();
     let (a, b) = scopes(&tmp);
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -191,7 +190,7 @@ async fn store_with_path_scope() {
 async fn a_global_put_is_visible_at_every_path() {
     let (tmp, sock, cache, registry, watchers) = setup();
     let (a, _b) = scopes(&tmp);
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -227,7 +226,7 @@ async fn a_global_put_is_visible_at_every_path() {
 async fn path_scoped_put_wins_over_global_at_its_own_path() {
     let (tmp, sock, cache, registry, watchers) = setup();
     let (a, b) = scopes(&tmp);
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -268,7 +267,7 @@ async fn path_scoped_put_wins_over_global_at_its_own_path() {
 async fn a_read_misses_when_no_entry_on_its_chain_holds_the_record() {
     let (tmp, sock, cache, registry, watchers) = setup();
     let (a, b) = scopes(&tmp);
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -299,7 +298,7 @@ async fn a_read_misses_when_no_entry_on_its_chain_holds_the_record() {
 async fn records_merge_across_the_chain() {
     let (tmp, sock, cache, registry, watchers) = setup();
     let (a, _b) = scopes(&tmp);
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -355,7 +354,7 @@ async fn records_merge_across_the_chain() {
 async fn watch_reads_through_the_chain() {
     let (tmp, sock, cache, registry, watchers) = setup();
     let (a, _b) = scopes(&tmp);
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();

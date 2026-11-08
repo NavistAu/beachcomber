@@ -1,12 +1,11 @@
 //! A warm read checks its record's stat inputs (phase 4 §2.2–§2.4).
 //!
-//! The server here runs with no scheduler, so nothing watches and nothing
-//! polls: a read that answers the new value found the change itself.
+//! The server here runs an idle scheduler (one that runs nothing), so nothing
+//! watches and nothing polls: a read that answers the new value found the change itself.
 
 use crate::common::git::GitRepoFixture;
 use beachcomber::cache::Cache;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
 use serde_json::{Value as Json, json};
 use std::path::{Path, PathBuf};
@@ -16,7 +15,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 /// An in-process server of the shipped defaults,
-/// with `toml` over them, and no scheduler.
+/// with `toml` over them, and an idle scheduler.
 struct Served {
     sock: PathBuf,
     cache: Arc<Cache>,
@@ -34,7 +33,7 @@ fn serve(toml: &str) -> Served {
     let registry = load.registry.share(&cache);
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("s");
-    Server::new(sock.clone(), cache.clone(), registry, None, watchers)
+    crate::common::scheduler::idle_server(sock.clone(), cache.clone(), registry, watchers)
         .spawn()
         .unwrap();
     Served {

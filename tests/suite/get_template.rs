@@ -21,7 +21,6 @@ use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
-use beachcomber::server::Server;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -121,7 +120,7 @@ fn scanline_template_tree() -> serde_json::Value {
 #[tokio::test]
 async fn get_a_template_leaf_returns_the_expression_and_nothing_else() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
     seed_scanline(&mut s).await;
@@ -137,7 +136,7 @@ async fn get_a_template_leaf_returns_the_expression_and_nothing_else() {
 #[tokio::test]
 async fn get_a_template_group_returns_the_whole_object() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
     seed_scanline(&mut s).await;
@@ -162,7 +161,7 @@ async fn get_a_template_group_returns_the_whole_object() {
 #[tokio::test]
 async fn get_a_namespace_returns_data_and_the_whole_template_tree() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
     seed_scanline(&mut s).await;
@@ -190,7 +189,7 @@ async fn get_a_namespace_returns_data_and_the_whole_template_tree() {
 #[tokio::test]
 async fn get_below_a_template_string_returns_it_with_the_leftover_rest() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
     seed_scanline(&mut s).await;
@@ -213,7 +212,7 @@ async fn get_below_a_template_string_returns_it_with_the_leftover_rest() {
 async fn get_a_cached_field_with_a_template_returns_both_halves() {
     let repo = GitRepoFixture::new();
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -250,7 +249,7 @@ async fn get_a_cached_field_with_a_template_returns_both_halves() {
 #[tokio::test]
 async fn get_on_the_facet_itself_returns_the_template_as_data() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
     seed_scanline(&mut s).await;
@@ -279,7 +278,7 @@ async fn get_on_the_facet_itself_returns_the_template_as_data() {
 #[tokio::test]
 async fn leftover_segments_are_joined_back_into_rest() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
     seed_scanline(&mut s).await;
@@ -307,7 +306,7 @@ async fn leftover_segments_are_joined_back_into_rest() {
 #[tokio::test]
 async fn a_template_miss_attaches_nothing() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
     seed_scanline(&mut s).await;
@@ -338,7 +337,7 @@ async fn seed_box(s: &mut UnixStream) {
 #[tokio::test]
 async fn a_template_answers_where_the_data_half_has_nothing() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
     seed_box(&mut s).await;
@@ -385,7 +384,7 @@ async fn a_template_answers_where_the_data_half_has_nothing() {
 #[tokio::test]
 async fn a_watch_frame_carries_the_template_where_the_data_half_has_nothing() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut s = UnixStream::connect(&sock).await.unwrap();
@@ -419,7 +418,7 @@ async fn a_template_resolves_from_the_requested_directory_not_the_scope() {
     let dir = TempDir::new().unwrap();
     let dir = dir.path().to_str().unwrap();
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -462,7 +461,7 @@ async fn a_template_below_the_repo_root_stays_below_it() {
     let sub = repo.create_subdir("sub");
     let sub = sub.to_str().unwrap();
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -514,7 +513,7 @@ async fn a_nearer_template_shadows_a_farther_one() {
         sub.to_str().unwrap().to_string(),
     );
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -555,7 +554,7 @@ async fn a_nearer_template_shadows_a_farther_one() {
 #[tokio::test]
 async fn a_namespace_with_only_templates_is_not_unknown() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
     seed_scanline_template(&mut s).await;
@@ -575,7 +574,7 @@ async fn a_namespace_with_only_templates_is_not_unknown() {
 #[tokio::test]
 async fn a_namespace_with_neither_data_nor_templates_is_a_miss() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -596,7 +595,7 @@ async fn a_namespace_with_neither_data_nor_templates_is_a_miss() {
 #[tokio::test]
 async fn a_template_only_response_carries_no_freshness() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
     seed_scanline_template(&mut s).await;
@@ -698,7 +697,7 @@ async fn field_age_through_get_is_the_owning_sources_age() {
         Schedule::poll(600, 1),
     );
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -723,7 +722,7 @@ async fn field_age_through_get_is_the_owning_sources_age() {
 #[tokio::test]
 async fn a_watch_frame_carries_the_template() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut s = UnixStream::connect(&sock).await.unwrap();
@@ -752,7 +751,7 @@ async fn a_watch_frame_carries_the_template() {
 #[tokio::test]
 async fn a_watch_wakes_on_a_template_change_and_on_a_value() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut s = UnixStream::connect(&sock).await.unwrap();

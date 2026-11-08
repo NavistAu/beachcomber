@@ -3,7 +3,6 @@
 // Status was changed to return cache rows.
 
 use beachcomber::cache::Cache;
-use beachcomber::server::Server;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -16,7 +15,7 @@ async fn kill_reads_the_pid_the_daemon_reports() {
     let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let registry = Arc::new(crate::common::registry::with_shipped_defaults());
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     server.spawn().unwrap();
 
     let pid = tokio::task::spawn_blocking(move || {

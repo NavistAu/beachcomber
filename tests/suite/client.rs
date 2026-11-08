@@ -3,7 +3,6 @@ use beachcomber::cache::Cache;
 use beachcomber::cache::Schedule;
 use beachcomber::client::Client;
 use beachcomber::provider::Value;
-use beachcomber::server::Server;
 use libbeachcomber::resolve::FetchError;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,7 +29,7 @@ async fn setup_server() -> (TempDir, std::path::PathBuf) {
     user.insert("uid".to_string(), Value::Int(501));
     cache.put_source("user", None, "name", user, Schedule::poll(60, 1));
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     server.spawn().unwrap();
 
     (tmp, sock)

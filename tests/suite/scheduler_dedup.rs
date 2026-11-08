@@ -335,15 +335,9 @@ fn held(poll_secs: u64) -> Held {
     tokio::spawn(scheduler.run());
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("s");
-    beachcomber::server::Server::new(
-        sock.clone(),
-        cache,
-        registry,
-        Some(handle.clone()),
-        watchers,
-    )
-    .spawn()
-    .unwrap();
+    beachcomber::server::Server::new(sock.clone(), cache, registry, handle.clone(), watchers)
+        .spawn()
+        .unwrap();
     Held {
         sock,
         _dir: dir,
@@ -495,7 +489,7 @@ async fn a_reload_supersedes_a_run_a_read_started() {
         sock.clone(),
         cache.clone(),
         in_force.clone(),
-        Some(handle.clone()),
+        handle.clone(),
         watchers,
     )
     .spawn()
@@ -564,7 +558,7 @@ async fn a_ring_of_reads_between_runs_finds_the_last_value_and_waits_on_nothing(
         .unwrap()
         .share(&cache);
     let sock = dir.join("s");
-    beachcomber::server::Server::new(sock.clone(), cache, registry, None, watchers)
+    crate::common::scheduler::server(sock.clone(), cache, registry, watchers)
         .spawn()
         .unwrap();
 

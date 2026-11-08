@@ -3,7 +3,6 @@ use beachcomber::cache::{Cache, PUT_SOURCE};
 use beachcomber::protocol::Response;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::server::Server;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -46,7 +45,8 @@ async fn get_force_evicts_and_re_executes() {
         "cache should have the seeded entry"
     );
 
-    let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
+    let server =
+        crate::common::scheduler::server(sock.clone(), Arc::clone(&cache), registry, watchers);
     let handle = server.spawn().unwrap();
 
     // Send a force=true get for hostname.
@@ -102,7 +102,8 @@ async fn get_without_force_returns_cached_entry() {
     fields.insert("short".to_string(), Value::String("cached".to_string()));
     cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
 
-    let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
+    let server =
+        crate::common::scheduler::server(sock.clone(), Arc::clone(&cache), registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -140,7 +141,8 @@ async fn force_on_static_namespace_returns_error() {
     fields.insert("val".to_string(), Value::String("hello".to_string()));
     cache.put_source("mystore", None, PUT_SOURCE, fields, Schedule::default());
 
-    let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
+    let server =
+        crate::common::scheduler::server(sock.clone(), Arc::clone(&cache), registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -246,7 +248,8 @@ async fn a_forced_run_that_fails_keeps_the_last_good_value() {
     registry
         .register_sources("flaky", FlakyProvider(runs.clone(), fail.clone()).sources())
         .unwrap();
-    let server = Server::new(sock.clone(), cache, Arc::new(registry), None, watchers);
+    let server =
+        crate::common::scheduler::server(sock.clone(), cache, Arc::new(registry), watchers);
     let handle = server.spawn().unwrap();
 
     let get = |force: bool| {

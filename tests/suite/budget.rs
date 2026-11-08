@@ -9,7 +9,6 @@ use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
-use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
 use serde_json::{Value as Json, json};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -148,9 +147,10 @@ fn daemon(sources: Vec<SourceMetadata>) -> Daemon {
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("s");
-    let handle = Server::new(sock.clone(), cache, Arc::new(registry), None, watchers)
-        .spawn()
-        .unwrap();
+    let handle =
+        crate::common::scheduler::server(sock.clone(), cache, Arc::new(registry), watchers)
+            .spawn()
+            .unwrap();
     Daemon {
         sock,
         _dir: dir,
@@ -363,11 +363,10 @@ async fn an_instance_in_failback_backoff_is_read_as_it_is() {
     let dir = tempfile::tempdir().unwrap();
     let sock = dir.path().join("s");
     let watchers = Arc::new(WatcherRegistry::new());
-    let handle = Server::new(
+    let handle = crate::common::scheduler::server(
         sock.clone(),
         Arc::new(Cache::with_watchers(watchers.clone())),
         Arc::new(registry),
-        None,
         watchers,
     )
     .spawn()

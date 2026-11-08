@@ -82,7 +82,7 @@ fn a_held_registration_is_pending_and_waits_for_no_one() {
         let (_events, rx) = tokio::sync::mpsc::channel(1);
         scheduler.use_watcher(FsWatcher::with_backend(Box::new(Held(gate.clone()))), rx);
         rt.spawn(scheduler.run());
-        Server::new(sock.clone(), cache, registry, Some(handle), watchers)
+        Server::new(sock.clone(), cache, registry, handle, watchers)
             .spawn()
             .unwrap();
     }

@@ -255,11 +255,10 @@ async fn failback_skips_the_runs_reads_start_and_force_does_not() {
     let tmp = tempfile::tempdir().unwrap();
     let sock = tmp.path().join("s");
     let watchers = Arc::new(WatcherRegistry::new());
-    let server = beachcomber::server::Server::new(
+    let server = crate::common::scheduler::server(
         sock.clone(),
         Arc::new(Cache::with_watchers(watchers.clone())),
         Arc::new(registry),
-        None,
         watchers,
     );
     let handle = server.spawn().unwrap();

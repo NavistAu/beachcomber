@@ -7,7 +7,6 @@
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
 use serde_json::{Value as Json, json};
 use std::path::PathBuf;
@@ -38,9 +37,10 @@ fn serve_with(registry: ProviderRegistry) -> Served {
     let sock = tmp.path().join("s");
     let watchers = Arc::new(WatcherRegistry::new());
     let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-    let handle = Server::new(sock.clone(), cache, Arc::new(registry), None, watchers)
-        .spawn()
-        .unwrap();
+    let handle =
+        crate::common::scheduler::server(sock.clone(), cache, Arc::new(registry), watchers)
+            .spawn()
+            .unwrap();
     let s = std::os::unix::net::UnixStream::connect(&sock).unwrap();
     s.set_nonblocking(true).unwrap();
     Served {

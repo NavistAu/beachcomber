@@ -5,7 +5,6 @@ use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
-use beachcomber::server::Server;
 use beachcomber::watcher_registry::WatcherRegistry;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -99,7 +98,7 @@ async fn watch_receives_initial_value() {
         Schedule::poll(60, 1),
     );
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
@@ -145,7 +144,7 @@ async fn watch_receives_updates() {
     );
     let cache_writer = cache.clone();
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
@@ -213,7 +212,7 @@ async fn watch_filters_unchanged_field() {
     );
     let cache_writer = cache.clone();
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
@@ -278,7 +277,7 @@ async fn watch_provider_level_gets_all_changes() {
     );
     let cache_writer = cache.clone();
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
@@ -341,7 +340,7 @@ async fn watch_miss_then_update() {
     // Do NOT pre-populate cache
     let cache_writer = cache.clone();
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
@@ -436,7 +435,7 @@ async fn open_watch(
 async fn a_watch_on_a_namespace_nothing_answers_wakes_on_its_first_put() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let writer = cache.clone();
-    let handle = Server::new(sock.clone(), cache, registry, None, watchers)
+    let handle = crate::common::scheduler::server(sock.clone(), cache, registry, watchers)
         .spawn()
         .unwrap();
 
@@ -456,7 +455,7 @@ async fn a_watch_on_a_namespace_nothing_answers_wakes_on_its_first_put() {
 async fn a_template_put_wakes_a_watch_on_the_field() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let writer = cache.clone();
-    let handle = Server::new(sock.clone(), cache, registry, None, watchers)
+    let handle = crate::common::scheduler::server(sock.clone(), cache, registry, watchers)
         .spawn()
         .unwrap();
 
@@ -486,7 +485,7 @@ async fn a_template_put_wakes_a_watch_on_the_field() {
 async fn a_watch_on_the_put_facet_wakes_on_a_data_write() {
     let (_tmp, sock, cache, registry, watchers) = setup();
     let writer = cache.clone();
-    let handle = Server::new(sock.clone(), cache, registry, None, watchers)
+    let handle = crate::common::scheduler::server(sock.clone(), cache, registry, watchers)
         .spawn()
         .unwrap();
 
@@ -514,7 +513,7 @@ async fn introspect_counts_one_watch_once() {
         git_fields("main", false),
         Schedule::poll(60, 1),
     );
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     // A watch at a nested path, so its chain has several links.
@@ -590,7 +589,7 @@ async fn watch_ends_when_client_disconnects_without_a_write() {
         Schedule::poll(60, 1),
     );
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();
@@ -648,7 +647,7 @@ async fn watch_stays_open_while_client_is_connected() {
         Schedule::poll(60, 1),
     );
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
 
     let stream = UnixStream::connect(&sock).await.unwrap();

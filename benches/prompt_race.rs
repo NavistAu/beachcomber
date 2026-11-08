@@ -413,7 +413,7 @@ fn read_after_mutation() {
         let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
             .expect("the bench lines load")
             .share(&cache);
-        let handle = watched.then(|| {
+        let handle = if watched {
             let (handle, scheduler) = Scheduler::new(
                 cache.clone(),
                 registry.clone(),
@@ -422,7 +422,12 @@ fn read_after_mutation() {
             );
             rt.spawn(async move { scheduler.run().await });
             handle
-        });
+        } else {
+            // Drained and ignored: a read with no scheduler to help it.
+            let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+            rt.spawn(async move { while rx.recv().await.is_some() {} });
+            beachcomber::scheduler::SchedulerHandle::new(tx)
+        };
         let sock_dir = TempDir::new().unwrap();
         let sock = sock_dir.path().join("s");
         let server = Server::new(sock.clone(), cache.clone(), registry, handle, watchers);

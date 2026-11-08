@@ -9,7 +9,7 @@
 //! the JSON. Where a value depends on the machine (the hostname, the load) it
 //! asserts the shape and the type.
 //!
-//! [`served`] is the same shipped registry behind a server with no scheduler,
+//! [`served`] is the same shipped registry behind a server with an idle scheduler,
 //! whose Sources see only the variables a test gives them: nothing watches
 //! and nothing polls, so a read that answers a changed file found the change
 //! itself (the record's stat inputs), and a test of what a file's lines make
@@ -130,8 +130,8 @@ impl Scenario {
     }
 }
 
-/// The shipped defaults, with `conf` over them, served by a [`served`] with no
-/// scheduler or a [`served_watching`] with one on the host's own file watcher.
+/// The shipped defaults, with `conf` over them, served by a [`served`] with an
+/// idle scheduler (one that runs nothing) or a [`served_watching`] with one on the host's own file watcher.
 pub struct Served {
     /// The Sources' `HOME`, and this process's: a temp directory, canonical.
     pub home: PathBuf,
@@ -185,7 +185,7 @@ fn serve(vars: &[(&str, &str)], conf: &str, watching: bool) -> Served {
     {
         let _enter = runtime.enter();
         let registry = load.registry.share(&cache);
-        let handle = watching.then(|| {
+        let handle = if watching {
             let (handle, scheduler) = beachcomber::scheduler::Scheduler::new(
                 cache.clone(),
                 registry.clone(),
@@ -194,7 +194,9 @@ fn serve(vars: &[(&str, &str)], conf: &str, watching: bool) -> Served {
             );
             tokio::spawn(async move { scheduler.run().await });
             handle
-        });
+        } else {
+            crate::common::scheduler::idle()
+        };
         Server::new(sock.clone(), cache.clone(), registry, handle, watchers)
             .spawn()
             .expect("serve");

@@ -282,7 +282,7 @@ async fn wait_zero_on_a_stale_memo_runs_nothing() {
     let watchers = std::sync::Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
     let cache = std::sync::Arc::new(beachcomber::cache::Cache::with_watchers(watchers.clone()));
     let registry = std::sync::Arc::new(crate::common::registry::with_shipped_defaults());
-    beachcomber::server::Server::new(sock.clone(), cache, registry, None, watchers)
+    crate::common::scheduler::server(sock.clone(), cache, registry, watchers)
         .spawn()
         .expect("the server binds its socket");
     // A `comb` on a thread of its own, so this runtime's one thread serves it.

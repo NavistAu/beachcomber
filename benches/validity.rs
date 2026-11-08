@@ -573,7 +573,11 @@ fn budget_accuracy() {
         )
         .expect("the bench lines load")
         .share(&cache);
-        beachcomber::server::Server::new(sock.clone(), cache, registry, None, watchers)
+        // Drained and ignored: a read with no scheduler to help it.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let scheduler = beachcomber::scheduler::SchedulerHandle::new(tx);
+        beachcomber::server::Server::new(sock.clone(), cache, registry, scheduler, watchers)
             .spawn()
             .expect("bind the bench socket");
     }

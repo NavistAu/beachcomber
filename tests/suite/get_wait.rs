@@ -3,7 +3,6 @@ use beachcomber::cache::{Cache, PUT_SOURCE};
 use beachcomber::protocol::Response;
 use beachcomber::provider::Value;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::server::Server;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -53,7 +52,8 @@ async fn wait_fresh_entry_is_served_from_cache() {
         "entry with 60s interval must not be stale after 10 s"
     );
 
-    let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
+    let server =
+        crate::common::scheduler::server(sock.clone(), Arc::clone(&cache), registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -116,7 +116,8 @@ async fn wait_stale_entry_evicts_and_re_executes() {
         "entry with interval=0 must be stale after clock advance"
     );
 
-    let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
+    let server =
+        crate::common::scheduler::server(sock.clone(), Arc::clone(&cache), registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -191,7 +192,8 @@ async fn wait_static_namespace_returns_cached_ignoring_stale() {
         "static entry with interval=0 must be stale after clock advance"
     );
 
-    let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
+    let server =
+        crate::common::scheduler::server(sock.clone(), Arc::clone(&cache), registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();
@@ -235,7 +237,8 @@ async fn force_wins_over_wait() {
     fields.insert("short".to_string(), Value::String("seeded".to_string()));
     cache.put_source("hostname", None, "host", fields, Schedule::poll(60, 1));
 
-    let server = Server::new(sock.clone(), Arc::clone(&cache), registry, None, watchers);
+    let server =
+        crate::common::scheduler::server(sock.clone(), Arc::clone(&cache), registry, watchers);
     let handle = server.spawn().unwrap();
 
     let mut stream = UnixStream::connect(&sock).await.unwrap();

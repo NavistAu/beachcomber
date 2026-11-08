@@ -43,7 +43,7 @@ impl TestServer {
             sock_clone,
             cache,
             registry,
-            Some(handle),
+            handle,
             Arc::new(WatcherRegistry::new()),
         );
         rt.spawn(async move { server.run().await.unwrap() });

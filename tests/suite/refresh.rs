@@ -1,12 +1,10 @@
 //! `refresh` re-executes the Sources a key demands — each at its own scope —
 //! and refuses a key no Source answers (spec §3.7).
 //!
-//! Most servers here are built without a scheduler, so a refresh runs inline on
-//! the connection task and the response is written only once the Sources have
-//! run. That is what lets those cases advance the clock by a known amount and
-//! assert exact ages. The scheduler-backed case at the bottom runs the refresh
-//! in the background, so it waits for the age of `git.commit` to fall back
-//! below what the advanced clock made it.
+//! The scheduler runs a refresh in the background and the response does not
+//! wait for it, so a case that refreshes advances the clock by a known amount
+//! and waits for the age of what it refreshed to fall back below what the
+//! advanced clock made it.
 //!
 //! `git` is the fixture because it is the one shipped provider with several Sources
 //! over one namespace. The fields under test are `commit` (source `refs`) and
@@ -17,7 +15,6 @@ use crate::common::poll::poll_until_async;
 use beachcomber::cache::Cache;
 use beachcomber::protocol::Response;
 use beachcomber::provider::registry::ProviderRegistry;
-use beachcomber::server::Server;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -91,10 +88,23 @@ async fn advance_10s() {
     tokio::time::resume();
 }
 
+/// Wait for `key`'s record to be written again: its age falls below `before`.
+async fn rerun(stream: &mut UnixStream, key: &str, path: &str, before: u64) {
+    poll_until_async(
+        &format!("{key} age_ms after its refresh"),
+        "back below its pre-refresh age",
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        async || age(stream, key, path).await,
+        |a| *a < before,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn refreshing_a_field_re_executes_only_its_owning_source() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let repo = GitRepoFixture::new();
     let path = repo.path_str();
@@ -102,6 +112,7 @@ async fn refreshing_a_field_re_executes_only_its_owning_source() {
 
     warm(&mut s, "git.commit", path).await;
     warm(&mut s, "git.lines_added", path).await;
+    warm(&mut s, "git.branch", path).await;
     advance_10s().await;
 
     let refs_before = age(&mut s, "git.commit", path).await;
@@ -113,10 +124,7 @@ async fn refreshing_a_field_re_executes_only_its_owning_source() {
 
     let resp = send_recv(&mut s, &refresh("git.commit", path)).await;
     assert!(resp.ok, "refresh git.commit: {:?}", resp.error);
-    assert!(
-        age(&mut s, "git.commit", path).await < refs_before,
-        "refresh git.commit must re-execute `refs`"
-    );
+    rerun(&mut s, "git.commit", path, refs_before).await;
     assert!(
         age(&mut s, "git.lines_added", path).await >= diff_before,
         "refresh git.commit must leave `diff` alone"
@@ -124,8 +132,10 @@ async fn refreshing_a_field_re_executes_only_its_owning_source() {
 
     // The same rule for `git.branch`: `head` is the only source it demands,
     // so `diff` is still untouched.
+    let branch_before = age(&mut s, "git.branch", path).await;
     let resp = send_recv(&mut s, &refresh("git.branch", path)).await;
     assert!(resp.ok, "refresh git.branch: {:?}", resp.error);
+    rerun(&mut s, "git.branch", path, branch_before).await;
     assert!(
         age(&mut s, "git.lines_added", path).await >= diff_before,
         "refresh git.branch must leave `diff` alone"
@@ -137,7 +147,7 @@ async fn refreshing_a_field_re_executes_only_its_owning_source() {
 #[tokio::test]
 async fn refreshing_a_namespace_re_executes_every_source() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let repo = GitRepoFixture::new();
     let path = repo.path_str();
@@ -152,14 +162,9 @@ async fn refreshing_a_namespace_re_executes_every_source() {
 
     let resp = send_recv(&mut s, &refresh("git", path)).await;
     assert!(resp.ok, "refresh git: {:?}", resp.error);
-    assert!(
-        age(&mut s, "git.commit", path).await < refs_before,
-        "a namespace refresh re-executes `refs`"
-    );
-    assert!(
-        age(&mut s, "git.lines_added", path).await < diff_before,
-        "a namespace refresh re-executes `diff`"
-    );
+    // A namespace refresh re-executes `refs` and `diff` alike.
+    rerun(&mut s, "git.commit", path, refs_before).await;
+    rerun(&mut s, "git.lines_added", path, diff_before).await;
 
     handle.abort();
 }
@@ -169,7 +174,7 @@ async fn refreshing_a_namespace_re_executes_every_source() {
 #[tokio::test]
 async fn a_nearest_provider_with_no_instance_here_cannot_be_refreshed() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
     let outside = TempDir::new().unwrap();
@@ -193,7 +198,7 @@ async fn a_nearest_provider_with_no_instance_here_cannot_be_refreshed() {
 #[tokio::test]
 async fn a_key_no_source_answers_cannot_be_refreshed() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -226,7 +231,7 @@ async fn a_global_refresh_without_a_home_repository_has_nothing_to_refresh() {
     unsafe { std::env::set_var("HOME", home.path().canonicalize().unwrap()) };
 
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 

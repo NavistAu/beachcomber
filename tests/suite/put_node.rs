@@ -16,7 +16,6 @@ use beachcomber::provider::registry::ProviderRegistry;
 use beachcomber::provider::{
     FailbackConfig, FieldSchema, InvalidationStrategy, Source, SourceMetadata, SourceResult, Value,
 };
-use beachcomber::server::Server;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
@@ -159,7 +158,7 @@ fn data_of(resp: Response, context: &str) -> serde_json::Value {
 #[tokio::test]
 async fn a_put_replaces_the_existing_value_at_its_address() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -204,7 +203,7 @@ async fn a_put_replaces_the_existing_value_at_its_address() {
 #[tokio::test]
 async fn put_at_a_nested_node_is_readable_at_every_level() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -245,7 +244,7 @@ async fn put_at_a_nested_node_is_readable_at_every_level() {
 #[tokio::test]
 async fn put_scalar_at_the_root_is_rejected() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -287,7 +286,7 @@ async fn put_scalar_at_the_root_is_rejected() {
 #[tokio::test]
 async fn put_key_deeper_than_the_cap_is_rejected() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -344,7 +343,7 @@ async fn put_key_deeper_than_the_cap_is_rejected() {
 #[tokio::test]
 async fn put_data_with_a_dotted_key_keeps_it_one_name() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -387,7 +386,7 @@ async fn put_data_with_a_dotted_key_keeps_it_one_name() {
 #[tokio::test]
 async fn put_of_an_empty_object_creates_no_entry() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -449,7 +448,7 @@ async fn put_of_an_empty_object_creates_no_entry() {
 #[tokio::test]
 async fn put_below_the_root_accepts_any_json() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -490,7 +489,7 @@ async fn put_below_the_root_accepts_any_json() {
 #[tokio::test]
 async fn put_adds_a_static_record_to_a_provider_namespace() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -570,7 +569,7 @@ async fn put_adds_a_static_record_to_a_provider_namespace() {
 #[tokio::test]
 async fn a_nearer_source_beats_a_global_put() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
     let repo = GitRepoFixture::new();
@@ -605,7 +604,7 @@ async fn a_put_under_a_sentinel_source_layers_over_it() {
         .register_sources("toolset", SentinelProvider.sources())
         .unwrap();
     let (_tmp, sock, cache, registry, watchers) = setup_with_registry(registry);
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -661,7 +660,7 @@ async fn a_cold_get_of_a_field_a_sentinel_source_never_declared_runs_it() {
         .register_sources("toolset", SentinelProvider.sources())
         .unwrap();
     let (_tmp, sock, cache, registry, watchers) = setup_with_registry(registry);
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -692,7 +691,7 @@ async fn a_put_object_at_the_provider_node_hides_unlisted_source_fields() {
         .register_sources("counted", CountingProvider.sources())
         .unwrap();
     let (_tmp, sock, cache, registry, watchers) = setup_with_registry(registry);
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -758,7 +757,7 @@ async fn a_put_object_at_the_provider_node_hides_unlisted_source_fields() {
 #[tokio::test]
 async fn put_at_a_node_under_a_facet_namespace() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -788,7 +787,7 @@ async fn put_at_a_node_under_a_facet_namespace() {
 #[tokio::test]
 async fn a_template_put_that_does_not_compile_is_refused() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 
@@ -825,7 +824,7 @@ async fn a_template_put_that_does_not_compile_is_refused() {
 #[tokio::test]
 async fn status_shows_a_nested_put_as_one_row_at_its_address() {
     let (_tmp, sock, cache, registry, watchers) = setup();
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     let handle = server.spawn().unwrap();
     let mut s = UnixStream::connect(&sock).await.unwrap();
 

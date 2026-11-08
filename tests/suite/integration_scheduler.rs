@@ -25,7 +25,7 @@ async fn setup_with_scheduler() -> (TempDir, std::path::PathBuf) {
 
     // Server::spawn binds before returning, so the socket is connectable the
     // moment this line completes — nothing to sleep on.
-    let server = Server::new(sock.clone(), cache, registry, Some(handle), watchers);
+    let server = Server::new(sock.clone(), cache, registry, handle, watchers);
     server.spawn().expect("server should bind");
 
     (tmp, sock)

@@ -119,7 +119,9 @@ impl Fixture {
             sock.clone(),
             cache.clone(),
             registry,
-            scheduler.clone(),
+            scheduler
+                .clone()
+                .unwrap_or_else(crate::common::scheduler::idle),
             watchers,
         );
         server.spawn().unwrap();
@@ -1840,7 +1842,7 @@ async fn watch_follows_the_whole_chain() {
 // ── refresh reaches the scheduler's execute path ─────────────────────────────
 
 /// A real daemon — scheduler included, so `refresh` reaches
-/// `Scheduler::execute_source` rather than the server's scheduler-less no-op —
+/// `Scheduler::execute_source` —
 /// with `$HOME` a fresh temp root.
 async fn daemon_at_a_temp_home() -> (TempDir, TempDir, PathBuf, PathBuf) {
     let home_dir = TempDir::new().unwrap();

@@ -311,7 +311,7 @@ See [Performance](./performance.md) for the full performance profile, benchmark 
 
 ## 7. Testing
 
-A shipped file is tested as a user reads it: `tests/suite/shipped/<namespace>.rs`, through `tests/suite/shipped/mod.rs`. `scenario()` is a daemon in the test's process over a temp `HOME` and `XDG_CONFIG_HOME`, which writes the managed defaults as `comb daemon` does; `served(vars, conf)` is the same shipped registry behind a server with no scheduler, so a read that answers a changed file found the change itself; and a Source can be run straight, `with_shipped_defaults().source(p, s).execute(dir)`, which needs no daemon and costs no socket.
+A shipped file is tested as a user reads it: `tests/suite/shipped/<namespace>.rs`, through `tests/suite/shipped/mod.rs`. `scenario()` is a daemon in the test's process over a temp `HOME` and `XDG_CONFIG_HOME`, which writes the managed defaults as `comb daemon` does; `served(vars, conf)` is the same shipped registry behind a server with an idle scheduler (one that runs nothing), so a read that answers a changed file found the change itself; and a Source can be run straight, `with_shipped_defaults().source(p, s).execute(dir)`, which needs no daemon and costs no socket.
 
 ```rust
 #[test]

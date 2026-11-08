@@ -12,7 +12,6 @@ use beachcomber::cache::Cache;
 /// under `#[cfg(test)] mod path_disambiguation_tests`.
 use beachcomber::cache::Schedule;
 use beachcomber::provider::Value;
-use beachcomber::server::Server;
 use libbeachcomber::resolve::FetchError;
 use libbeachcomber::{ClientConfig, Session};
 use std::collections::HashMap;
@@ -78,7 +77,7 @@ async fn setup_server_with_git_repo() -> (TempDir, std::path::PathBuf, TempDir, 
     hostname.insert("name".to_string(), Value::String("myhost".to_string()));
     cache.put_source("hostname", None, "host", hostname, Schedule::poll(60, 1));
 
-    let server = Server::new(sock.clone(), cache, registry, None, watchers);
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
     server.spawn().unwrap();
 
     (sock_tmp, sock, repo_tmp, repo_path)
