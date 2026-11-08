@@ -1037,6 +1037,44 @@ mod path_chain_tests {
         }
     }
 
+    /// The same requested path, asked again as the tree changes under it,
+    /// always gets what realpath says now: a memo of the answer must not
+    /// outlive a rename, a removal or a directory replaced by a symlink.
+    #[test]
+    fn normalise_follows_the_tree_as_it_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let ask = |p: &std::path::Path| normalise_path(Some(&s(p))).unwrap();
+        std::fs::create_dir_all(base.join("a/b")).unwrap();
+        std::fs::create_dir(base.join("real")).unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+
+        // A symlinked directory, and `..`, are read through.
+        assert_eq!(ask(&base.join("link")), Some(s(&base.join("real"))));
+        assert_eq!(ask(&base.join("a/../real")), Some(s(&base.join("real"))));
+        // Ask through the not-yet-canonical /tmp path too (macOS /tmp is a
+        // symlink); the answer is the canonical one either way.
+        assert_eq!(ask(&tmp.path().join("a/b")), Some(s(&base.join("a/b"))));
+        let requested = base.join("a/b");
+        assert_eq!(ask(&requested), Some(s(&requested)));
+
+        // `a` renamed and replaced by a symlink to its new name: the same
+        // request now names a2/b.
+        std::fs::rename(base.join("a"), base.join("a2")).unwrap();
+        std::os::unix::fs::symlink(base.join("a2"), base.join("a")).unwrap();
+        assert_eq!(ask(&requested), Some(s(&base.join("a2/b"))));
+
+        // Removed: kept verbatim, not the last answer.
+        std::fs::remove_dir(base.join("a2/b")).unwrap();
+        assert_eq!(ask(&requested), Some(s(&requested)));
+
+        // Recreated as a real directory again.
+        std::fs::remove_file(base.join("a")).unwrap();
+        std::fs::create_dir_all(base.join("a/b")).unwrap();
+        assert_eq!(ask(&requested), Some(s(&requested)));
+    }
+
     #[test]
     fn chain_of_the_global_entry_is_just_itself() {
         assert_eq!(path_chain(None), vec![None]);
