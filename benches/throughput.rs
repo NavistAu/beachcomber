@@ -106,7 +106,7 @@ fn bench_concurrent_throughput(c: &mut Criterion) {
                         }
 
                         let total = counter.load(Ordering::Relaxed);
-                        criterion::black_box(total);
+                        std::hint::black_box(total);
                     }
                 })
             },

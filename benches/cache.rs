@@ -40,7 +40,7 @@ fn bench_cache_read_global(c: &mut Criterion) {
     c.bench_function("cache_read_global", |b| {
         b.iter(|| {
             let entry = cache.get_entry("hostname", None);
-            criterion::black_box(entry);
+            std::hint::black_box(entry);
         })
     });
 }
@@ -58,7 +58,7 @@ fn bench_cache_read_path_scoped(c: &mut Criterion) {
     c.bench_function("cache_read_path_scoped", |b| {
         b.iter(|| {
             let entry = cache.get_entry("git", Some("/home/user/project"));
-            criterion::black_box(entry);
+            std::hint::black_box(entry);
         })
     });
 }
@@ -90,7 +90,7 @@ fn bench_cache_read_contention(c: &mut Criterion) {
                             thread::spawn(move || {
                                 for _ in 0..100 {
                                     let entry = cache.get_entry("hostname", None);
-                                    criterion::black_box(entry);
+                                    std::hint::black_box(entry);
                                 }
                             })
                         })
@@ -129,14 +129,14 @@ fn bench_cache_field_extraction(c: &mut Criterion) {
     group.bench_function("flattened_entry", |b| {
         b.iter(|| {
             let entry = cache.get_entry("git", Some("/project")).unwrap();
-            criterion::black_box(entry.flatten_fields());
+            std::hint::black_box(entry.flatten_fields());
         })
     });
 
     group.bench_function("single_field_via_get_field", |b| {
         b.iter(|| {
             let val = cache.get_field("git", Some("/project"), "branch").unwrap();
-            criterion::black_box(val);
+            std::hint::black_box(val);
         })
     });
 

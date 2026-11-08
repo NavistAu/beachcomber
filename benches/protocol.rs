@@ -7,8 +7,8 @@ fn bench_parse_get_request(c: &mut Criterion) {
 
     c.bench_function("parse_get_request", |b| {
         b.iter(|| {
-            let req: Request = serde_json::from_str(criterion::black_box(json)).unwrap();
-            criterion::black_box(req);
+            let req: Request = serde_json::from_str(std::hint::black_box(json)).unwrap();
+            std::hint::black_box(req);
         })
     });
 }
@@ -18,8 +18,8 @@ fn bench_parse_refresh_request(c: &mut Criterion) {
 
     c.bench_function("parse_refresh_request", |b| {
         b.iter(|| {
-            let req: Request = serde_json::from_str(criterion::black_box(json)).unwrap();
-            criterion::black_box(req);
+            let req: Request = serde_json::from_str(std::hint::black_box(json)).unwrap();
+            std::hint::black_box(req);
         })
     });
 }
@@ -32,8 +32,8 @@ fn bench_serialize_response_json(c: &mut Criterion) {
 
     c.bench_function("serialize_response_json", |b| {
         b.iter(|| {
-            let json = serde_json::to_string(criterion::black_box(&response)).unwrap();
-            criterion::black_box(json);
+            let json = serde_json::to_string(std::hint::black_box(&response)).unwrap();
+            std::hint::black_box(json);
         })
     });
 }
@@ -41,15 +41,15 @@ fn bench_serialize_response_json(c: &mut Criterion) {
 fn bench_split_key(c: &mut Criterion) {
     c.bench_function("split_key_dotted", |b| {
         b.iter(|| {
-            let result = split_key(criterion::black_box("git.branch")).ok();
-            criterion::black_box(result);
+            let result = split_key(std::hint::black_box("git.branch")).ok();
+            std::hint::black_box(result);
         })
     });
 
     c.bench_function("split_key_simple", |b| {
         b.iter(|| {
-            let result = split_key(criterion::black_box("hostname")).ok();
-            criterion::black_box(result);
+            let result = split_key(std::hint::black_box("hostname")).ok();
+            std::hint::black_box(result);
         })
     });
 }

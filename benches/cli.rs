@@ -134,7 +134,7 @@ fn bench_cli_get_cold(c: &mut Criterion) {
                 "comb get failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            criterion::black_box(output);
+            std::hint::black_box(output);
         })
     });
 }

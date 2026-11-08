@@ -91,7 +91,7 @@ fn bench_socket_roundtrip_cold(c: &mut Criterion) {
                     now: std::time::SystemTime::now(),
                 };
                 let value = resolve("hostname.name", &inputs, &mut session).unwrap();
-                criterion::black_box(value);
+                std::hint::black_box(value);
             }
         })
     });
@@ -111,7 +111,7 @@ fn bench_socket_roundtrip_text(c: &mut Criterion) {
                     value.as_ref(),
                     libbeachcomber::render::Format::Text,
                 );
-                criterion::black_box(text);
+                std::hint::black_box(text);
             }
         })
     });
@@ -127,7 +127,7 @@ fn bench_socket_refresh(c: &mut Criterion) {
             async move {
                 let client = Client::new(sock);
                 let resp = client.refresh("hostname", None).unwrap();
-                criterion::black_box(resp);
+                std::hint::black_box(resp);
             }
         })
     });
@@ -153,7 +153,7 @@ fn bench_sequential_gets(c: &mut Criterion) {
                     writer.write_all(req).await.unwrap();
                     let mut line = String::new();
                     reader.read_line(&mut line).await.unwrap();
-                    criterion::black_box(&line);
+                    std::hint::black_box(&line);
                     line.clear();
                 }
             }
@@ -172,7 +172,7 @@ fn bench_socket_session_gets(c: &mut Criterion) {
                 let mut session = lib_client(sock).session().unwrap();
                 for _ in 0..10 {
                     let resp = session.get("hostname.name", None).unwrap();
-                    criterion::black_box(resp);
+                    std::hint::black_box(resp);
                 }
             }
         })

@@ -170,7 +170,7 @@ fn bench_resolve(c: &mut Criterion) {
                 assert_eq!(value, Ok(Some(json!("memo"))), "a hit, not a spawn");
             }
             group.bench_with_input(BenchmarkId::new(name, vars), &vars, |b, _| {
-                b.iter(|| criterion::black_box(resolve(key, &inputs, &mut fetch)))
+                b.iter(|| std::hint::black_box(resolve(key, &inputs, &mut fetch)))
             });
         }
     }
@@ -183,10 +183,10 @@ fn bench_icon(c: &mut Criterion) {
     assert_eq!(glyph("dev-git"), Some('\u{e702}'));
     let mut group = c.benchmark_group("icon");
     group.bench_function("icon", |b| {
-        b.iter(|| glyph(criterion::black_box("md-folder_open")))
+        b.iter(|| glyph(std::hint::black_box("md-folder_open")))
     });
     group.bench_function("file_icon", |b| {
-        b.iter(|| file_glyph(criterion::black_box("src/some/where/main.test.ts")))
+        b.iter(|| file_glyph(std::hint::black_box("src/some/where/main.test.ts")))
     });
     group.finish();
 }

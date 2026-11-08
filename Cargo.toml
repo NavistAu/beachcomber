@@ -62,7 +62,7 @@ beachcomber = { path = ".", features = ["test-helpers"] }
 libbeachcomber_ffi = { package = "libbeachcomber-ffi", path = "libbeachcomber-ffi" }
 tempfile = "3"
 tokio-test = "0.4"
-criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
 ctor = "1"
 walkdir = "2"
 pretty_assertions = "1"

@@ -297,7 +297,7 @@ fn bench_warm_gets(c: &mut Criterion) {
     let mut group = c.benchmark_group("warm_get");
     for (name, key, path) in cases {
         group.bench_function(name, |b| {
-            b.iter(|| criterion::black_box(conn.get(key, path)));
+            b.iter(|| std::hint::black_box(conn.get(key, path)));
         });
     }
     group.finish();
@@ -323,13 +323,13 @@ fn bench_stat_pass(c: &mut Criterion) {
         .collect();
     let mut group = c.benchmark_group("stat_pass");
     group.bench_function("lstat", |b| {
-        b.iter(|| criterion::black_box(std::fs::symlink_metadata(&files[0]).is_ok()));
+        b.iter(|| std::hint::black_box(std::fs::symlink_metadata(&files[0]).is_ok()));
     });
     for n in [1, 4, 10] {
         let validity = beachcomber::cache::Validity::take(files[..n].to_vec()).unwrap();
         assert_eq!(validity.check(), libbeachcomber::validity::Check::Valid);
         group.bench_function(n.to_string(), |b| {
-            b.iter(|| criterion::black_box(validity.check()));
+            b.iter(|| std::hint::black_box(validity.check()));
         });
     }
     group.finish();
@@ -349,7 +349,7 @@ fn warm_get_percentiles() {
     for _ in 0..ROUNDS {
         for (i, (_, key, path)) in cases.iter().enumerate() {
             let t0 = Instant::now();
-            criterion::black_box(conn.get(key, path));
+            std::hint::black_box(conn.get(key, path));
             samples[i].push(t0.elapsed());
         }
     }

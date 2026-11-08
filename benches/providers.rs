@@ -29,7 +29,7 @@ fn bench_shipped_source(c: &mut Criterion, provider: &str, source: &str) {
         .unwrap_or_else(|| panic!("{provider}.{source} is shipped"));
     c.bench_function(&format!("provider_{provider}_execute"), |b| {
         b.iter(|| {
-            criterion::black_box(s.execute(None).unwrap().fields.len());
+            std::hint::black_box(s.execute(None).unwrap().fields.len());
         })
     });
 }
@@ -57,7 +57,7 @@ fn bench_git_execute(c: &mut Criterion) {
 
     c.bench_function("provider_git_execute", |b| {
         b.iter(|| {
-            criterion::black_box(run());
+            std::hint::black_box(run());
         })
     });
 }
@@ -69,7 +69,7 @@ fn bench_git_vs_raw(c: &mut Criterion) {
     group.bench_function("beachcomber_git_provider", |b| {
         let mut run = execute_all_sources("git", repo_path);
         b.iter(|| {
-            criterion::black_box(run());
+            std::hint::black_box(run());
         })
     });
 
@@ -80,7 +80,7 @@ fn bench_git_vs_raw(c: &mut Criterion) {
                 .current_dir(repo_path)
                 .output()
                 .unwrap();
-            criterion::black_box(output);
+            std::hint::black_box(output);
         })
     });
 
