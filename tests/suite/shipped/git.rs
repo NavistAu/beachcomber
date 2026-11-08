@@ -1085,8 +1085,10 @@ fn git_inputs_are_the_files_git_reads_in_a_linked_worktree() {
 fn git_reads_with_nothing_changed_run_nothing() {
     let repo = GitRepoFixture::new();
     let dir = repo.path().canonicalize().unwrap();
-    for path in [".git", ".git/HEAD", ".git/index", ".git/refs/heads/main"] {
-        age(&dir.join(path));
+    // Every stamp old enough not to be racy, directories included: a racy one
+    // is checked again on the next read, which would be a run.
+    for entry in walk(&dir.join(".git")) {
+        age(&entry);
     }
     let s = served(&[], "");
     s.get("git", Some(&dir)).expect("git answers");
