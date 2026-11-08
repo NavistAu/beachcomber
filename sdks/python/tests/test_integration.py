@@ -108,8 +108,9 @@ def test_status_returns_cache_rows(client: Client) -> None:
 
 
 def test_a_status_row_says_when_it_polls_next(client: Client) -> None:
-    client.put("widget5ttl", {"v": 1}, ttl="1m")
-    row = next(r for r in client.status() if r.provider == "widget5ttl")
+    # `hostname` polls; a put, even one with a ttl, never does.
+    client.get("hostname.short")
+    row = next(r for r in client.status() if r.provider == "hostname")
     assert isinstance(row.next_poll_in_secs, int)
 
 

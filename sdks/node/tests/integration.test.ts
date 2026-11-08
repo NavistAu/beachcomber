@@ -131,10 +131,11 @@ describe('Client against a real daemon (FFI transport)', { skip }, () => {
   });
 
   it('a status row says when it polls next', async () => {
-    await client.put('itest_status_ttl', { k: 'v' }, { ttl: '1m' });
+    // `hostname` polls; a put, even one with a ttl, never does.
+    await client.get('hostname.short');
     const rows = await client.status();
-    const row = rows.find((r) => r.provider === 'itest_status_ttl');
-    assert.ok(row, 'the ttl row');
+    const row = rows.find((r) => r.provider === 'hostname');
+    assert.ok(row, 'the hostname row');
     assert.equal(typeof row.nextPollInSecs, 'number');
   });
 
