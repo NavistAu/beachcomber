@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **A daemon whose binary is deleted now restarts.** The daemon shuts down gracefully when its binary changes, so the next query starts the new one; but Homebrew, Nix and mise install each version under its own directory and delete the old one, so the old path vanished rather than changed, and a `brew upgrade` left the old daemon running indefinitely. The self-watch's poll now counts a missing binary as a change.
+
 ## [0.10.1] - 2026-11-08
 
 ### Fixed

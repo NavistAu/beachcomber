@@ -601,7 +601,7 @@ pub fn spawn_binary_self_watch_with<F: FnOnce() + Send + 'static>(
                     }
                     if Instant::now() >= next_poll {
                         next_poll = Instant::now() + poll_interval;
-                        if matches!(binary_newer_than(&exe, start_unix_ms), Ok(true)) {
+                        if binary_changed(&exe, start_unix_ms) {
                             tracing::info!(
                                 "daemon binary changed (mtime poll); initiating graceful shutdown"
                             );
@@ -624,14 +624,25 @@ pub fn spawn_binary_self_watch_with<F: FnOnce() + Send + 'static>(
     });
 }
 
-/// Block until `exe`'s mtime is newer than `start_unix_ms`, checking every
-/// `poll_interval`. Stat failures (e.g. deleted binary) are not a change.
+/// Block until `exe` has changed (see [`binary_changed`]), checking every
+/// `poll_interval`.
 fn poll_until_changed(exe: &Path, poll_interval: Duration, start_unix_ms: u64) {
     loop {
         std::thread::sleep(poll_interval);
-        if matches!(binary_newer_than(exe, start_unix_ms), Ok(true)) {
+        if binary_changed(exe, start_unix_ms) {
             return;
         }
+    }
+}
+
+/// The self-watch's test: `exe`'s mtime is newer than the process start, or
+/// `exe` is gone. Homebrew, Nix and mise install each version under its own
+/// directory and delete the old one, so the old path vanishes rather than
+/// changing. Other stat failures (permissions, say) are not a change.
+fn binary_changed(exe: &Path, start_unix_ms: u64) -> bool {
+    match binary_newer_than(exe, start_unix_ms) {
+        Ok(newer) => newer,
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
     }
 }
 

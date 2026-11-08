@@ -24,3 +24,56 @@ fn poll_catches_binary_replacement_when_fs_events_are_dead() {
     rx.recv_timeout(std::time::Duration::from_secs(3))
         .expect("mtime poll fired on_change");
 }
+
+/// A package manager that installs each version under its own directory
+/// (Homebrew's Cellar, Nix, mise) deletes the old one: the binary's path
+/// vanishes rather than changing, and the poll counts that as a change.
+#[test]
+fn poll_catches_binary_directory_removed_when_fs_events_are_dead() {
+    let tmp = tempfile::tempdir().unwrap();
+    let keg = tmp.path().join("0.1.0").join("bin");
+    std::fs::create_dir_all(&keg).unwrap();
+    let fake_bin = keg.join("comb");
+    std::fs::write(&fake_bin, b"v1").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    beachcomber::singleton::spawn_binary_self_watch_with(
+        fake_bin.clone(),
+        std::time::Duration::from_millis(10),
+        false,
+        move || {
+            let _ = tx.send(());
+        },
+    );
+
+    std::fs::remove_dir_all(tmp.path().join("0.1.0")).unwrap();
+
+    rx.recv_timeout(std::time::Duration::from_secs(3))
+        .expect("poll fired on_change for a removed binary");
+}
+
+/// The same with the fs-event fast path on, as production runs it: the poll
+/// still backs it up when the watched directory itself goes.
+#[test]
+fn binary_directory_removed_fires_with_fs_events_on() {
+    let tmp = tempfile::tempdir().unwrap();
+    let keg = tmp.path().join("0.1.0").join("bin");
+    std::fs::create_dir_all(&keg).unwrap();
+    let fake_bin = keg.join("comb");
+    std::fs::write(&fake_bin, b"v1").unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    beachcomber::singleton::spawn_binary_self_watch_with(
+        fake_bin.clone(),
+        std::time::Duration::from_millis(50),
+        true,
+        move || {
+            let _ = tx.send(());
+        },
+    );
+
+    std::fs::remove_dir_all(tmp.path().join("0.1.0")).unwrap();
+
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .expect("self-watch fired on_change for a removed binary");
+}
