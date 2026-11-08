@@ -4,7 +4,8 @@ A daemon that caches shell environment state. macOS and Linux.
 
 - Binary `comb`. Crates: `beachcomber` (workspace root), `libbeachcomber` (Rust client), `libbeachcomber-ffi` (C-ABI
   cdylib for the SDKs).
-- Rust and `cargo-nextest` pinned in `mise.toml` (`mise install`). All Rust deps vendored in `vendor/`; builds offline.
+- Rust and `cargo-nextest` pinned in `mise.toml` (`mise install`); run cargo via `mise exec --` where it is not on
+  PATH. `vendor/` is a gitignored local cache, not used by the build.
 - Open work: `docs/roadmap.md`. Shipped: `CHANGELOG.md`. Also `docs/architecture.md`, `docs/protocol-spec.md`,
   `docs/performance.md`, `docs/decisionlog/`.
 - `docs/canon/` is deprecated and historical (2026-10-07): background only; it does not bind tests or code.
@@ -13,7 +14,7 @@ A daemon that caches shell environment state. macOS and Linux.
 
 - `develop` is the default branch and integration target. `main` is the release branch, advanced only by a
   `develop` → `main` PR; branch protection requires green CI.
-- Release: on `develop`, `cargo xtask set-version X.Y.Z` (all 14 version touchpoints) + CHANGELOG; merge the
+- Release: on `develop`, `cargo xtask set-version X.Y.Z` (every version touchpoint) + CHANGELOG; merge the
   `develop` → `main` PR. `release.yml` on push to `main` tags `vX.Y.Z` and publishes to all registries (incl. Homebrew).
   Checklist: `docs/releasing.md`.
 - CI (`.github/workflows/ci.yml`) runs on pushes/PRs to `develop` and `main`.
@@ -31,7 +32,8 @@ cargo fmt -- --check
 
 - `.config/nextest.toml` sets `global-timeout = "30s"` for the suite.
 - `uptime_provider_executes` needs an unsandboxed environment; CI runs
-  `cargo nextest run -E 'not test(uptime_provider_executes)'`.
+  `cargo nextest run --workspace -E 'not test(uptime_provider_executes)'`. Without `--workspace` only the root crate's
+  tests run, not `libbeachcomber`'s.
 - Watcher tests use `FsWatcher::new_polling` (works under sandboxes without FSEvents/inotify); production uses
   `FsWatcher::new`.
 - Unit tests are `#[cfg(test)]` modules in `src/`. Integration tests live in `tests/`; each top-level file is a separate
