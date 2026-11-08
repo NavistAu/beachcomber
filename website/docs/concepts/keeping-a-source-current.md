@@ -82,8 +82,10 @@ directly in that directory, not everything below it.
 
 ## Expire instead: `ttl()`
 
-`ttl(time)` doesn't run the source on its own. The answer is kept for that long, and after that the next read runs
-it:
+`ttl(time)` never runs the source on its own. The answer is live for that long, then stale for as long again: still
+held, with nothing run in the background. A read while it is stale gets the held answer at once and runs the source
+again, so the next read gets the new one. Every read restarts the live window, so the answer is evicted about twice
+`time` after the last read, and the read after that runs the source:
 
 ```toml
 return = "{{ result | ttl('5s') }}"
@@ -94,8 +96,8 @@ $ comb get clock.for_5s
 05:30:18
 $ comb get clock.for_5s    # 2 seconds later
 05:30:18
-$ comb get clock.for_5s    # 6 seconds later
-05:30:23
+$ comb get clock.for_5s    # 12 seconds later
+05:30:30
 ```
 
 Use it for something cheap to work out on demand, but not worth running when nobody's looking.

@@ -56,8 +56,9 @@ $ comb eval "{{ exec(['echo', 'hi']) | trim }}"
 hi
 ```
 
-`trim` takes off the newline the command printed at the end. A command that fails is an error you'll see; add
-`or 'fallback'` after it if failing is normal.
+`trim` takes off the newline the command printed at the end. A command that fails is an error you'll see, and `or`
+does not catch it. If failing is normal, make the command succeed (`'cmd 2>/dev/null || true'`) and add
+`or 'fallback'` for its empty output.
 
 ## Fetch from the web
 

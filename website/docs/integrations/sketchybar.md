@@ -8,7 +8,7 @@ Sketchybar is a macOS status bar replacement that runs scripts on a timer to upd
 
 ## Prerequisites
 
-beachcomber is socket-activated: the daemon starts automatically on the first `comb` query and shuts down after an idle period. You do not need to launch it manually. Sketchybar will socket-activate the daemon the first time a script runs.
+beachcomber is socket-activated: the daemon starts automatically on the first `comb` query and it stays resident unless `[daemon] idle_shutdown` is set (then it exits after that long with no demand). You do not need to launch it manually. Sketchybar will socket-activate the daemon the first time a script runs.
 
 If you want the daemon warm before the bar appears (to avoid a one-time cache miss on the first poll), start it eagerly from your session init — for example, by calling `comb s` in a launchd plist. See the [Reference](../reference/cli-commands.md) page for the full list of commands.
 

@@ -18,7 +18,8 @@ The filters and functions a template can call. Templates are jinja (minijinja), 
   `pprint`, `safe` and `escape`/`e`.
 - **Empty is absent for the parse and path filters.** `'' | fromjson`, `'' | fromini`, `'' | basename` and
   `'' | dirname` are undefined.
-- **Text filters take a string.** A number or a bool is its text; a list or a map is an error.
+- **Text filters take a string.** A number or a bool is its text; a list or a map is an error. minijinja's built-ins
+  (`upper`, `lower`, ...) take any value's text.
 - **Bad input is an error the user sees**, written `name(): why`, for example
   `fg(): unknown colour "nope": use a name (red, bright_red), 0-255 or #rrggbb`.
 
@@ -214,7 +215,8 @@ whose hash was dropped was invalidated (an edit of the template, a data write un
 file's change), so every reader renders it.
 
 **How long a memo lives.** Each memo has a lifecycle of its own from its write, and nothing a read does renews it.
-With `ttl(d)` it is valid for `d`, when the daemon drops its hash, and is evicted one decay step (`2d`) later; the files
+With `ttl(d)` it is valid for `d`, when the daemon drops its hash, then stale for `d` more, and is evicted at about
+`2d`; the files
 `watch()` recorded are watched for those first `d`, and a change to one drops the hash at once. With no `ttl()` its
 files are watched for twelve minutes, and the memo is kept down its provider's `_.decay` ladder (about six hours at the
 default four steps) before it is evicted and the next read renders it afresh. Once its files are no longer watched,

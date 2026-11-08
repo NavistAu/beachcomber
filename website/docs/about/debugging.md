@@ -65,7 +65,7 @@ comb s --filter=lifecycle=decay2
 watch -c comb status
 ```
 
-`★` means Active (healthy, polling at base rate). `3`/`2`/`1`/`0` are the decay countdown — `0` means the entry evicts on the next scheduler tick. `∙` means the entry watches its files while it is Active (a decaying one has dropped its watches, and a read checks its files instead). `⚠` replaces `★` when the provider is in failure-suppress.
+`★` means Active (healthy, polling at base rate). `3`/`2`/`1`/`0` are the decay countdown — `0` is the last decay step: the entry is evicted when that step's window (interval × 2^depth × count) ends. `∙` means the entry watches its files while it is Active (a decaying one has dropped its watches, and a read checks its files instead). `⚠` replaces `★` when the provider is in failure-suppress.
 
 For daemon internals, use `comb check` subjects:
 

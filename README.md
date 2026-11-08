@@ -242,7 +242,7 @@ beachcomber is a single async daemon that:
 4. Caches results in a shared in-memory map (157ns reads)
 5. Returns cached data instantly to any number of concurrent readers
 
-The daemon is socket-activated: it starts automatically when any client connects, and shuts down after an idle period when all connections drop.
+The daemon is socket-activated: it starts automatically when any client connects, and stays resident unless `[daemon] idle_shutdown` is set; when it is, the daemon exits after that long with no demand.
 
 ```mermaid
 graph TB
@@ -263,7 +263,7 @@ graph TB
 
 **The directory you are standing in is the default.** `comb g git.branch` with no path addresses the current working directory; `comb g --global git.branch` addresses the global entry, which is `$HOME`. An SDK session can set its directory once (`set_context`) and leave the path off every request after that; the session sends it with each request.
 
-**Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand, keeping the provider warm automatically. Resource usage scales with actual query patterns. Entries enter a decay sequence after queries stop — staying warm for a grace period (30s default) in case a new shell opens, then progressively slowing and eventually evicting.
+**Demand-driven lifecycle:** the daemon watches nothing until queried. Each `get` request signals demand, keeping the provider warm automatically. Resource usage scales with actual query patterns. Entries enter a decay sequence after queries stop — staying Active for the poll interval × count after the last read (`poll('60s', 12)` by default: 12 minutes) in case a new shell opens, then progressively slowing and eventually evicting.
 
 **Put and streaming:** external processes can also write data into the cache via `comb p`, exposing arbitrary state to prompt and statusline consumers without writing a Source. Long-lived connections can stream changes via `comb w`, receiving an NDJSON line each time a cache value is updated.
 
@@ -343,7 +343,7 @@ comb s --filter=lifecycle=active
 comb s --filter=lifecycle=decay1
 
 # Sort options
-comb s --sort age             # oldest first
+comb s --sort age             # youngest first (rows with no age first)
 comb s --sort lifecycle       # most-decayed first
 
 # Script-friendly formats (bypass the human preset)
@@ -351,7 +351,7 @@ comb s -f tsv
 comb s -f json
 ```
 
-**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay<N>|once|static|rendered`, `--sort <default|provider|path|field|value|age|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default 120), and the global `--color=auto|always|never` (wins over `NO_COLOR`) and `--ascii`.
+**Flags:** `--format <preset>` (one of: `human`, `tsv`, `json`, `csv`, `table`, `sh`), `--filter <KEY=VALUE>`, `--filter=lifecycle=active|decay<N>|once|static|rendered`, `--sort <default|provider|path|field|value|age|poll_interval|lifecycle>`, `--no-trunc`, `--max-width=auto|N` (default auto: the terminal width, 120 when not a terminal; a bad value is refused), and the global `--color=auto|always|never` (wins over `NO_COLOR`) and `--ascii`.
 
 A namespace holding a `[client.providers.<p>]` template renders one extra row per leaf visible from the caller's directory — resolved with this shell's environment and `exec()` enabled, exactly as `comb get` would render it — beside the raw template row and any cached value at that address; a field that's both cached and templated shows both rows. A rendered row's SOURCE is `rendered`, its VALUE is marked (cyan, or a `▸ `/`> ` lead-in without colour), and `--filter=lifecycle=rendered` selects just those rows.
 
@@ -380,14 +380,14 @@ Write static data at any node of the tree. The key is `namespace` or `namespace.
 ```sh
 comb p myapp '{"status":"healthy","version":"1.2.3"}'
 comb p myapp.deploy.count 3                                # any node, any JSON below the root
-comb p myapp '{"status":"healthy"}' --ttl 30s             # kept 30s and one decay step more (60s), then gone
+comb p myapp '{"status":"healthy"}' --ttl 30s             # live 30s, stale 30s more, gone at about 60s
 comb p myapp '{"status":"building"}' --path ~/project     # a directory instead of the cwd
 comb p myapp '{"status":"ok"}' --global                    # the global entry ($HOME)
 comb p myapp null                                          # remove the node (null means absent)
 comb p myapp:template.greeting '"hello {{ env.USER }}"'    # a template — comb g myapp.greeting renders it
 ```
 
-A write **replaces** whatever a put left at that node: `comb p myapp '{"b":2}'` states all of `myapp`, and `comb p myapp.b 2` replaces only `myapp.b`. `comb p myapp null` removes the node and writes nothing; `data` is required, so a put without it is a usage error. A `put` never removes a record a provider's Source produces; it layers over it and hides it at that directory until the put is removed. `data` at a namespace root must be a JSON object; below the root, any JSON.
+A write **replaces** whatever a put left at that node: `comb p myapp '{"b":2}'` states all of `myapp`, and `comb p myapp.b 2` replaces only `myapp.b`. `comb p myapp null` removes the node and writes nothing; `data` is required, so a put without it is a usage error. A `put` never removes a record a provider's Source produces; it layers over it and hides it at that directory until the put is removed. `data` at a namespace root must be a JSON object; below the root, any JSON. A `:template` leaf must be a string: `comb p myapp:template.a 5` is refused.
 
 Like `comb g`, a `put` defaults to the current working directory; `--global` addresses `$HOME` instead and cannot be combined with `--path`.
 
@@ -400,7 +400,7 @@ comb g myapp                 # → full JSON
 
 A put sits above the Source in the layer order, so it hides Source and seed values at that directory — `comb p git '{"note":1}'` makes `comb g git` answer just `note` there, until the put is removed. The Source keeps refreshing its own layer beneath it (`comb g git:source`).
 
-`--ttl` (at least `1s`, not with `null`) makes the put a lifecycle entry of its own. Each put address has its own lifecycle, so `comb p --ttl 300 build.status '"passing"'` and `comb p --ttl 60 build.eta '"4m"'` expire independently, and a re-put without `--ttl` drops the expiry.
+`--ttl` (at least `1s`, not with `null`) makes the put a lifecycle entry of its own: live for that long, then stale (still served) for as long again, and evicted about twice the ttl after the put. Reads do not renew it; the next put does. Each put address has its own lifecycle, so `comb p --ttl 300 build.status '"passing"'` and `comb p --ttl 60 build.eta '"4m"'` expire independently, and a re-put without `--ttl` drops the expiry.
 
 ### `comb r` (refresh) `<key> [path] [--path <path>] [--global]`
 
@@ -446,7 +446,7 @@ comb e '{{ git.branch | truncate(20) }}' .
 
 ### `comb i` (init)
 
-Detect installed tools and print shell integration snippets tailored to your environment.
+Detect configured tools (by their config files or env vars) and print shell integration snippets tailored to your environment.
 
 ```sh
 comb i
@@ -566,7 +566,7 @@ A provider is a namespace made of **Sources**, and a Source is a jinja function:
 # socket_path = "/path/to/socket.sock"
 
 # Log level for daemon output.
-# Options: "error", "warn", "info", "debug", "trace"
+# Options: "off", "error", "warn", "info", "debug", "trace"
 # Default: "info"
 # Logs go to: $XDG_STATE_HOME/beachcomber/daemon.log
 log_level = "info"
@@ -722,10 +722,10 @@ beachcomber ships 16 providers organized by category, plus template-backed names
 |---|---|---|---|---|
 | `hostname` | none | `name` (string), `short` (string) | poll 10m | 400 ns |
 | `user` | none | `name` (string), `uid` (int) | poll 10m | 395 ns |
-| `load` | none | `one` (float), `five` (float), `fifteen` (float) | poll 10s / floor 5s | 550 ns |
+| `load` | none | `one` (float), `five` (float), `fifteen` (float) | poll 10s | 550 ns |
 | `uptime` | none | `seconds` (int), `days` (int), `hours` (int), `minutes` (int) | poll 60s | 660 ns |
-| `battery` | none | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string), `status_raw` (string, Linux) | poll 30s / floor 5s | 6 ms |
-| `network` | none | `interface` (string), `ip` (string), `ipv6` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s / floor 5s | 2 ms |
+| `battery` | none | `percent` (int), `charging` (bool), `time_remaining_secs` (int), `status` (string), `status_raw` (string, Linux) | poll 30s | 6 ms |
+| `network` | none | `interface` (string), `ip` (string), `ipv6` (string), `vpn_active` (bool), `vpn_name` (string), `ssid` (string), `online` (bool) | poll 10s | 2 ms |
 | `sudo` | none | `active` (bool) | poll 30s | < 1 µs |
 | `uname` | none | `sysname` (string), `release` (string), `version` (string), `machine` (string) | poll 1h | < 1 µs |
 
@@ -766,7 +766,7 @@ beachcomber ships 16 providers organized by category, plus template-backed names
 
 | Provider | Root | Fields | Invalidation | Typical Latency |
 |---|---|---|---|---|
-| `git` | project | 30 fields (see table below) | watch `.git` and the working tree + fallback poll | `head` no process; the rest about 150 ms, 10 `git` processes, on this repository |
+| `git` | project | 31 fields (see table below) | watch `.git` and the working tree + fallback poll | `head` no process; the rest about 150 ms, 10 `git` processes, on this repository |
 
 **Fields:**
 
@@ -792,7 +792,8 @@ beachcomber ships 16 providers organized by category, plus template-backed names
 | `state` | string | Repo state: "clean", "merge", "rebase", "cherry-pick", "bisect", "revert" |
 | `state_step` | int | Current step of a rebase in progress; absent otherwise |
 | `state_total` | int | Total steps of a rebase in progress; absent otherwise |
-| `last_commit_age_secs` | int | Seconds since last commit |
+| `last_commit_timestamp` | int | Time of the last commit, Unix seconds |
+| `last_commit_age_secs` | int | Seconds since the last commit, worked out client-side from `last_commit_timestamp` at read time |
 | `commit_summary` | string | First line of HEAD commit message |
 | `push_ahead` | int | Commits ahead of the push remote |
 | `push_behind` | int | Commits behind the push remote |
@@ -808,27 +809,26 @@ beachcomber ships 16 providers organized by category, plus template-backed names
 ```json
 // comb g.j git .
 {
-  "branch": "feature/fast-cache",
-  "commit": "a1b2c3d",
-  "detached": false,
-  "upstream": "origin/main",
-  "tag": "v0.4.0",
-  "dirty": true,
-  "staged": 3,
-  "unstaged": 1,
-  "untracked": 0,
-  "conflicted": 0,
   "ahead": 2,
   "behind": 0,
-  "stash": 1,
+  "branch": "feature/fast-cache",
+  "commit": "a1b2c3d",
+  "conflicted": 0,
+  "detached": false,
+  "dirty": true,
+  "last_commit_age_secs": 3420,
+  "last_commit_timestamp": 1767225600,
   "lines_added": 47,
   "lines_removed": 12,
   "lines_staged_added": 23,
   "lines_staged_removed": 5,
+  "staged": 3,
+  "stash": 1,
   "state": "clean",
-  "state_step": 0,
-  "state_total": 0,
-  "last_commit_age_secs": 3420
+  "tag": "v0.4.0",
+  "unstaged": 1,
+  "untracked": 0,
+  "upstream": "origin/main"
 }
 
 // comb g git.branch .
@@ -1710,7 +1710,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op": "get", "key": "git", "path": "/home/user/project"}
 {"op": "get", "key": "battery"}
 {"op": "get", "key": "git", "path": "/home/user/project", "force": true}
-{"op": "get", "key": "git.branch", "path": "/home/user/project", "wait": true}
+{"op": "get", "key": "git.branch", "path": "/home/user/project", "wait": "2s"}
 {"op": "refresh", "key": "git", "path": "/home/user/project"}
 {"op": "put", "key": "myapp", "data": {"status": "healthy"}}
 {"op": "put", "key": "myapp", "data": {"status": "ok"}, "ttl": "30s", "path": "/project"}
@@ -1758,13 +1758,13 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 
 ### Operations
 
-**`hello`:** Version negotiation. Clients should send this as the first op on any new connection. Returns `{"ok":true,"data":{"protocol_version":"1.0","daemon_version":"0.6.0"}}`. `protocol_version` follows semver (major.minor) and is independent of the daemon binary version.
+**`hello`:** Version negotiation. Clients should send this as the first op on any new connection. Returns `{"ok":true,"data":{"daemon_version":"0.10.1","protocol_version":"1.0"},"age_ms":0}` (JSON key order is not part of the contract). `protocol_version` follows semver (major.minor) and is independent of the daemon binary version.
 
-**`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. A null `data` with `ok: true` indicates the provider exists but returned no value (e.g., a git provider queried outside a repository).
+**`get`:** Read a cached value. If the key has never been computed, the daemon executes the provider synchronously before returning. Successive calls are served from cache until the value's refresh interval elapses. `ok: true` with no `data` key is a miss: the provider exists but returned no value (e.g., a git provider queried outside a repository).
 
 **`refresh`:** Re-execute Sources out-of-band; does not return the new value. The key selects which Sources run, exactly as it selects which a `get` warms: `refresh git` re-executes every Source of `git`, `refresh git.branch` only the Source that owns `branch`. Each runs at the instance that answers for the requested directory — the root its `root` names for it, or the one instance at `~` for a Source with no root — so `path` is optional and is only consulted by Sources that have a root. A key that names no Source has nothing to re-execute and is an error — a static namespace, an unknown name, or a field no Source owns (a layer facet or `:cache` key is `cannot refresh <key>: a layer facet is read-only`): `{"ok": false, "error": "nothing to refresh: <key> has no sources"}`. Reading configuration afresh is not a refresh; the config watcher does that.
 
-**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write replaces whatever a put left at that node; `"data": null` removes it. A put replaces the node at that directory, hiding Source and seed values; removing it shows them again. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`, at least `1s`) makes the put its own lifecycle entry: kept for that long and one decay step more (twice as long), then evicted. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success.
+**`put`:** Write static data at any node. The `key` is `namespace` or `namespace.node…`, the same dotted address `get` takes, and the write replaces whatever a put left at that node; `"data": null` removes it. A put replaces the node at that directory, hiding Source and seed values; removing it shows them again. `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root, any JSON. An optional `ttl` duration (e.g., `"30s"`, at least `1s`) makes the put its own lifecycle entry: live for that long, then stale (still served) for as long again, then evicted at about twice the ttl. Reads do not renew it; the next put does. An optional `path` scopes the entry to a directory. Returns `{"ok": true}` on success.
 
 ```json
 {"op":"put","key":"myapp","data":{"status":"healthy"}}
@@ -1772,7 +1772,7 @@ Connect with `SOCK_STREAM`. Each message is a JSON object followed by `\n`. Each
 {"op":"put","key":"myapp","data":{"status":"ok"},"ttl":"30s","path":"/project"}
 ```
 
-**`memo`:** Store what a template leaf's `| cache()` computed — the client's resolver sends it after a render that missed, and no SDK binds it. `key` is the leaf (`provider.field`, never a facet), `path` the reader's directory, `hash` the client's sixteen lowercase hex digits over the leaf's inputs, `data` the leaf's value (absent for a leaf that rendered nothing), `watch` the absolute paths whose change invalidates it, `ttl` its lifetime. A `get` that attaches a template half then carries the memo beside it as `memo` (`{hash, stale, age_ms, data}`, a tree of them for a group), found up the chain from the requested directory; `<p>:cache.<field>` answers `source: memo` with its stored keys. A template or data write at the leaf, a `refresh` of the key, the `ttl` running out and a change to a `watch` path drop the memo's `hash`. The write starts the memo's lifecycle and nothing else renews it: its watch paths are watched while it is Active, and it is evicted one decay step after its `ttl` (twice the ttl), or with no `ttl` at the end of its provider's decay ladder. Returns `{"ok": true}`.
+**`memo`:** Store what a template leaf's `| cache()` computed — the client's resolver sends it after a render that missed, and no SDK binds it. `key` is the leaf (`provider.field`, never a facet), `path` the reader's directory, `hash` the client's sixteen lowercase hex digits over the leaf's inputs, `data` the leaf's value (absent for a leaf that rendered nothing), `watch` the absolute paths whose change invalidates it, `ttl` its lifetime. A `get` that attaches a template half then carries the memo beside it as `memo` (`{hash, stale, age_ms, data}`, a tree of them for a group), found up the chain from the requested directory; `<p>:cache.<field>` answers `source: memo` with its stored keys. A template or data write at the leaf, a `refresh` of the key, the `ttl` running out and a change to a `watch` path drop the memo's `hash`. The write starts the memo's lifecycle and nothing else renews it: its watch paths are watched while it is Active, and it is live for its `ttl`, stale for as long again, and evicted at about twice the ttl, or with no `ttl` at the end of its provider's decay ladder. Returns `{"ok": true}`.
 
 ```json
 {"op":"memo","key":"kubecontext.context","path":"/project","hash":"9c6001d328a94690","data":"prod","watch":["/home/me/.kube/config"],"ttl":"10m"}
@@ -1922,7 +1922,7 @@ You can verify the daemon is responsive at any time with `comb s`. If the daemon
 
 ### Can I use this on Linux?
 
-Yes. macOS and Linux are both fully supported in 0.6.0. Pre-built packages ship for `.deb`, `.rpm`, `aarch64`, and `x86_64` targets. The filesystem watcher, battery reader, and network reader are all abstracted behind platform traits; Linux-specific paths (`/sys/class/power_supply/`, `/sys/class/net/`) are used on Linux just as IOKit/pmset are used on macOS.
+Yes. macOS and Linux are both fully supported. Pre-built packages ship for `.deb`, `.rpm`, `aarch64`, and `x86_64` targets. The filesystem watcher, battery reader, and network reader are all abstracted behind platform traits; Linux-specific paths (`/sys/class/power_supply/`, `/sys/class/net/`) are used on Linux just as IOKit/pmset are used on macOS.
 
 ### Can I run multiple daemons simultaneously?
 

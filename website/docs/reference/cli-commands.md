@@ -216,7 +216,7 @@ comb s --filter=lifecycle=active
 comb s --filter=lifecycle=decay1
 
 # Sort options
-comb s --sort age             # oldest first
+comb s --sort age             # youngest first (rows with no age first)
 
 # Script-friendly formats (bypass the human preset)
 comb s -f tsv
@@ -225,7 +225,7 @@ comb s -f json
 
 The machine formats lay a row out in the columns `PROVIDER PATH FIELD SOURCE VALUE AGE_MS KIND DECAY POLL_INTERVAL_SECS POLL_COUNT FAILURE_CONSECUTIVE_FAILURES FAILURE_SUPPRESSED_UNTIL_UNIX_MS FAILURE_LAST_ERROR`, through the same cell encoders as `comb get`: `csv` and `tsv` have no header row and `CSV` and `TSV` do, a VALUE is its raw text (JSON for an object or array), and an absent field is an empty cell. `json` is one row object per line. `sh` names each variable `provider_path_field` with every character outside `[A-Za-z0-9_]` written as `_`, plus `_SOURCE`, `_KIND` and the lifecycle fields beside it.
 
-**Flags:** `-f`/`--format` (`human` (default), `table`, `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, or a template), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default 120), `--depth N`, and the global `--color` and `--ascii` ([Colour and glyphs](#colour-and-glyphs)).
+**Flags:** `-f`/`--format` (`human` (default), `table`, `json`, `sh`, `csv`, `CSV`, `tsv`, `TSV`, or a template), `--filter <key=value|key!=value>` (repeatable; see [Filters](#filters)), `-a`/`--all` (drop the default filters), `--tree` (the layers behind each value), `--sort <default|provider|path|field|value|age|lifecycle|poll_interval>` (`default` keeps each provider's rows together — its plain rows, then each facet's — by field, then by path with the global entry first), `--no-trunc`, `--max-width=auto|N` (default auto: the terminal width, 120 when not a terminal; a bad value is refused), `--depth N`, and the global `--color` and `--ascii` ([Colour and glyphs](#colour-and-glyphs)).
 
 A path at or below `$HOME` is written from `~` in both tables, the global entry as `~` itself — in its symlinked form or its real one — and so is a file in a SOURCE label, `check`'s path lines and `check config --origins`. The machine formats keep the stored path, the global entry as an empty cell (`null` in json).
 
@@ -269,7 +269,7 @@ $ comb p scanline:template.greeting '"hi {{ env.USER }}"'
 $ USER=jane comb s -a --filter=provider=scanline
 PROVIDER            FIELD     SOURCE    VALUE               PATH          AGE  POLL  TTL
 scanline:template   greeting  put       hi {{ env.USER }}   ~/ws/project  0s      -  ---
-scanline            greeting  template  hi jane             ~/ws/project  0s      -  ---
+scanline            greeting  rendered  ▸ hi jane           ~/ws/project  0s      -  ---
 ```
 
 A cached field with a template over it shows **both** rows at that same address — `git.branch` cached by the `head` Source plus a `git:template.branch` override both list, so the raw cached value and the effective rendered one are visible side by side rather than one hiding the other. A leaf whose expression fails to render shows the failure text as its value instead of dropping the row.
@@ -343,7 +343,7 @@ Write static data into the cache. External processes use this to expose state to
 # Put application status into cache — scoped to the current directory
 comb p myapp '{"status":"healthy","version":"1.2.3"}'
 
-# Put with TTL — kept 30s and one decay step more (60s), then removed; the next put renews it
+# Put with TTL — live 30s, stale 30s more, gone at about 60s; reads don't renew it, the next put does
 comb p myapp '{"status":"healthy"}' --ttl 30s
 
 # Keep the put across a daemon restart (best effort)
@@ -362,13 +362,13 @@ comb p myapp null
 comb p myapp:template.greeting '"hello {{ env.USER }}"'
 ```
 
-A template is checked as the configuration's are: one that does not compile is refused, naming the leaf (`myapp:template.greeting: syntax error: …`), and nothing is written. One that reads a provider nothing has yet is taken, since a later put may make it.
+A template is checked as the configuration's are: every `:template` leaf must be a string, and a put of a non-string leaf (`comb p myapp:template.a 5`) is refused; one that does not compile is refused, naming the leaf (`myapp:template.greeting: syntax error: …`), and nothing is written. One that reads a provider nothing has yet is taken, since a later put may make it.
 
 **Replace:** a write replaces whatever a put left at the node, so `comb p myapp '{"version":"1.2.4"}'` states all of `myapp` and a `status` written earlier is gone, while `comb p myapp.version '"1.2.4"'` replaces only that node. A `put` never removes a record a provider's Source produces: it sits above it in the layer order and hides it until the put is removed (`comb g provider:source` still shows the Source's answer). `comb p myapp null` removes the node and writes nothing in its place.
 
 `data` at a namespace root must be a JSON object (`put data at the root must be an object`); below the root any JSON is legal, so `comb p myapp.deploy.count 3` and `comb p myapp.status '"healthy"'` are both fine. `data` is required: `comb p myapp` is a usage error, and removal is the JSON value `null`. A nested `null` inside `data` is an absent leaf, not `""`. Arrays are stored and returned as objects keyed by index.
 
-**TTL:** `--ttl` (at least `1s`; not with `null`) makes the put a lifecycle entry of its own, one per put address: `comb p --ttl 300 build.status '"passing"'` and `comb p --ttl 60 build.eta '"4m"'` expire independently, and a re-put without `--ttl` drops the expiry. `comb g build:cache.status` shows its `poll` and `decay`.
+**TTL:** `--ttl` (at least `1s`; not with `null`) makes the put a lifecycle entry of its own, one per put address: live for the ttl, then stale (still served) for as long again, and gone at about twice the ttl. Reads do not renew it; the next put does. `comb p --ttl 300 build.status '"passing"'` and `comb p --ttl 60 build.eta '"4m"'` expire independently, and a re-put without `--ttl` drops the expiry. `comb g build:cache.status` shows its `poll` and `decay`.
 
 **Persist:** `--persist` keeps the put across a daemon restart, best effort. The daemon writes each persisted put (its key, directory, value and, with `--ttl`, the wall-clock time it expires) to `$XDG_CACHE_HOME/beachcomber/puts.json` (default `~/.cache/beachcomber/puts.json`), replacing the file through a rename after each change, and puts them again before it serves, each with the ttl it has left; one whose ttl ran out while the daemon was down is dropped. A missing file is nothing to put; an unreadable or invalid one is logged as a warning, ignored, and replaced on the next persisted put. The latest put to an address decides: a put there without `--persist`, `null`, or its ttl running out drops the kept entry, and a put above it replaces it as it replaces the node. `comb g myapp:cache.status.persist` is `true` for a persisted put (written by the daemon; a put to it is refused). It is not a guarantee: the cache directory may be cleared by the system or by you, and a value may be lost, so use it for convenience, never for data you cannot recreate.
 
@@ -511,7 +511,7 @@ comb e '{{ exec(["git", "rev-parse", "--short", "HEAD"]) }}' .
 
 ## `comb i` (init)
 
-Detect installed tools (starship, powerlevel10k, tmux, neovim, polybar, waybar, sketchybar, oh-my-zsh, etc.) and print integration snippets for them.
+Detect configured tools, by their config files or env vars (starship, powerlevel10k, tmux, neovim, polybar, waybar, sketchybar, oh-my-zsh, etc.) and print integration snippets for them.
 
 ```sh
 comb i

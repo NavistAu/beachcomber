@@ -8,7 +8,7 @@ Waybar polls external commands on an interval to populate status bar modules. Wi
 
 ## Prerequisites
 
-beachcomber is socket-activated: the daemon starts automatically on the first `comb` query and shuts down after an idle period. You do not need to launch it manually. Waybar itself will socket-activate the daemon the first time a module executes.
+beachcomber is socket-activated: the daemon starts automatically on the first `comb` query and it stays resident unless `[daemon] idle_shutdown` is set (then it exits after that long with no demand). You do not need to launch it manually. Waybar itself will socket-activate the daemon the first time a module executes.
 
 If you want the daemon warm before the bar appears (to avoid a one-time cache miss on the first poll), start it eagerly from your session init — for example, by calling `comb s` in a systemd user unit. See the [Reference](../reference/cli-commands.md) page for the full list of commands.
 

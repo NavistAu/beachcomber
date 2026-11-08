@@ -45,13 +45,13 @@ Every duration below takes the one grammar in [CLI Commands: Durations](./cli-co
 
 ### Reloading
 
-The daemon watches every file above. An edit takes effect once the whole composed set loads; one that does not is
+The daemon watches every file above except `env`. An edit takes effect once the whole composed set loads; one that does not is
 ignored, logged, and shown by `comb check config`, and the previous configuration keeps serving.
 
 | An edit to | Takes effect by |
 |---|---|
 | anything under `[daemon.providers]` or `[client.providers]` | reloading in place, within seconds; puts are untouched |
-| a bare `[daemon]` key or `[daemon.plugin]` | restarting the daemon, automatically |
+| a bare `[daemon]` key or `[daemon.plugin]` | the daemon exiting; the next read starts one on the new settings. Puts and the cache are lost, except `--persist` puts |
 | the env file | `comb kill`; the next read starts a daemon that loads it |
 
 On an in-place reload, a Source whose `root`, `data` or `result` changed is evicted and runs on its next read; one whose
@@ -187,11 +187,13 @@ of `<p>`, and `[daemon.providers._.sources._]` to every Source of every provider
 
 | Line | Type | Required | Sees | Meaning |
 |---|---|---|---|---|
-| `root` | jinja line | no | `env`, `_` | The directory an instance answers for, usually `{{ lup('<marker>') \| dirname }}`. Empty or none: one instance at `~`. Under `nearest`, none means no instance |
-| `data` | jinja line | yes | `env`, `comb`, `sources`, `daemon`, `_`, and any provider by name | The body, run in the daemon with the root as working directory. Can call every engine function, `exec`, `url` and `plugin` included |
+| `root` | jinja line | no | `env`, `_` | The directory an instance answers for, usually `{{ lup('<marker>') \| dirname }}`. Empty or none: one instance at `~`. Under `nearest`, none means no instance. `exec`, `url` and `plugin` are allowed here, but comb warns: the line runs again for each new directory resolved, so prefer `lup()` |
+| `data` | jinja line | yes | `env`, `comb`, `sources`, `daemon`, `_`, and any provider by name | The body, run in the daemon with the root as working directory. Can call every engine function, `exec`, `url` and `plugin` included (so can `root` and `result`; put the work here so it runs once and every `result` shares it) |
 | `result` | jinja line, or a table of them | yes | `data`, `_` | `result = "{{ data }}"` makes the whole value the provider's node; `result.<field> = "…"` declares fields one by one |
 | `return` | jinja line | no | `result`, `_` | The schedule: `result` piped through [decorators](#return-decorators) |
 
+- Every line of a Source can call the engine's functions whatever its Sees column lists; that column is the names it
+  reads. In a Source's lines `_.name` is the Source's name.
 - `env` is the daemon's environment, env file included. `comb.<p>` reads another provider as a `get` would.
   `sources.<s>()` calls a sibling Source, `daemon.providers.<p>.sources.<s>()` any provider's; a Source cannot call
   itself.
@@ -228,7 +230,7 @@ one decorator in a line replaces an earlier one.
 |---|---|---|---|
 | `poll(interval, count)` | interval: whole seconds, 1s to 1 year; count: 1 to 10000 | count 12 | Re-run every `interval` while read; after `count` runs unread, start decaying |
 | `watch(path, …)` | one or more non-empty paths | | Re-run when a path changes. Relative to the root; `/`, `~` or `$` start an absolute path; `'.'` is the whole root; `'!dir'` leaves `dir` out of `'.'` (needs `'.'`); `~` and `/` are watched on their entries only, not their trees |
-| `ttl(interval)` | as `poll`'s interval | | `poll(interval, 1)` with a decay of 1: the value expires. Not with `poll` |
+| `ttl(interval)` | as `poll`'s interval | | The value is live for `interval`, then stale (served, nothing run in the background) for as long again; a read while stale runs the Source, unread it is evicted at about twice `interval`. Never runs on its own. Not with `poll` |
 | `failback(interval, count)` | interval first, as a string (`'1s'`); count 1 to 10000 | `'1s', 3` | After `count` failures in a row, retry from `interval`, doubling |
 | `budget(d)` | duration ≥ 1ms; a number is whole seconds | `[daemon] budget` | How long a read waits for this Source's run |
 | `timeout(d)` | duration ≥ 1ms | `[daemon] timeout` | How long one run may take |

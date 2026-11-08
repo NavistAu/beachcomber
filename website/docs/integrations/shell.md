@@ -12,7 +12,7 @@ Beachcomber solves this by keeping those values in a shared cache updated by a b
 
 Before adding shell integration, make sure `comb` is installed and on your `PATH`. Run `comb --version` to confirm.
 
-The daemon is socket-activated — it starts automatically the first time your prompt runs `comb g`, and shuts down after an idle period. You do not need to launch it manually. At any point, run `comb s` to confirm the daemon is reachable and see cache statistics.
+The daemon is socket-activated — it starts automatically the first time your prompt runs `comb g`, and it stays resident unless `[daemon] idle_shutdown` is set (then it exits after that long with no demand). You do not need to launch it manually. At any point, run `comb s` to confirm the daemon is reachable and see cache statistics.
 
 ## zsh
 

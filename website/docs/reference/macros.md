@@ -59,7 +59,8 @@ usage = '''
 [WARN] local    config(~/.config/beachcomber/config.toml): [client.providers.scanline] macro.rate: unknown macro library 'scanline:macro.theme' (no layer declares it)
 ```
 
-- A library that does not compile, or prints, is an error, and it is not seeded.
+- A library that does not compile, or prints, is a configuration error: the daemon refuses to start on it, a running
+  daemon keeps its current configuration, and a `put` of one is refused.
 - One that imports a library no layer declares is a warning: a later `put` may declare it.
 
 `comb status -a`, or `--filter facet=macro`, shows one row per library per layer, its SOURCE the file or `put`.

@@ -16,7 +16,7 @@ Beachcomber eliminates that overhead. Its `comb g` command reads from an in-memo
 comb g load.one
 ```
 
-If this prints a number, the daemon is up. The daemon is socket-activated — it starts on the first `comb` call and shuts down after an idle period. You do not need to launch it manually. If the command errors, confirm `comb --version` works and see the [Debugging](../about/debugging.md) page.
+If this prints a number, the daemon is up. The daemon is socket-activated — it starts on the first `comb` call and it stays resident unless `[daemon] idle_shutdown` is set (then it exits after that long with no demand). You do not need to launch it manually. If the command errors, confirm `comb --version` works and see the [Debugging](../about/debugging.md) page.
 
 - Starship is installed and active in your shell. Verify with:
 

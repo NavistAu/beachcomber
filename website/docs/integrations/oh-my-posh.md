@@ -16,7 +16,7 @@ oh-my-posh is a cross-shell prompt theme engine supporting bash, zsh, fish, and 
 comb g load.one
 ```
 
-If this prints a number (e.g. `0.42`), the daemon is up. The daemon is socket-activated — it starts on the first `comb` call and shuts down after an idle period. You do not need to launch it manually. If the command errors, confirm `comb --version` works and see the [Debugging](../about/debugging.md) page.
+If this prints a number (e.g. `0.42`), the daemon is up. The daemon is socket-activated — it starts on the first `comb` call and it stays resident unless `[daemon] idle_shutdown` is set (then it exits after that long with no demand). You do not need to launch it manually. If the command errors, confirm `comb --version` works and see the [Debugging](../about/debugging.md) page.
 
 - oh-my-posh installed. Verify with:
 

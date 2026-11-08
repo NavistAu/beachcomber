@@ -67,7 +67,7 @@ comb get deploy -f json
 
 ## Values that expire
 
-`--ttl` gives a value a lifetime: it is valid for that long, kept for one more step, then removed. Each `put` renews it,
+`--ttl` gives a value a lifetime: it is live for that long, kept (stale) for as long again, then removed. Reads don't renew it; each `put` does,
 which suits a heartbeat:
 
 ```sh

@@ -37,7 +37,9 @@ fixed: anything else is an error. Each is a template, run by the daemon rather t
 
 `data` and `result` are separate so that the work runs once and any number of values come out of it. git's `status`
 source runs `git status` once and gives `staged`, `unstaged`, `untracked` and more from it. It also lets a later file
-change one `result` line, or just the `data`, without repeating the rest. `exec` and `url` work only in `data`.
+change one `result` line, or just the `data`, without repeating the rest. `exec`, `url` and `plugin` run only in a
+source's lines; put them in `data` so the work runs once and every `result` shares it. In `root` they work, but comb
+warns, since `root` runs again for each new directory: use `lup()` there.
 
 `root` is how a provider takes part in [the cascade](./cascade.md), the same way git's values belong to the
 repository.

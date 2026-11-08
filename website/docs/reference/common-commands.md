@@ -218,8 +218,8 @@ $ comb g.j deploy
 null
 ```
 
-`--ttl` makes a value expire: it lives for the ttl, lingers for one idle step, and is then removed. Putting it again
-renews it:
+`--ttl` makes a value expire: it is live for the ttl, stale (still served) for as long again, and gone at about twice
+the ttl. Reads do not renew it; putting it again does:
 
 ```shell-session
 $ comb p --global build.eta '"4m"' --ttl 30s
@@ -285,7 +285,7 @@ It exits `0` when healthy, `1` on a warning and `2` on a failure. The other subj
 
 ## Stop the daemon: `comb kill`
 
-The daemon starts on the first `comb` command and stops itself when idle. `comb kill` (`comb k`) stops it now, for
+The daemon starts on the first `comb` command and stays resident unless `[daemon] idle_shutdown` is set. `comb kill` (`comb k`) stops it now, for
 instance after upgrading comb; the next command starts a fresh one.
 
 ```shell-session

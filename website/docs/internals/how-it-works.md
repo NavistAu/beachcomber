@@ -12,7 +12,7 @@ beachcomber is a single async daemon that:
 4. Caches results in a shared in-memory map (157ns reads)
 5. Returns cached data instantly to any number of concurrent readers
 
-The daemon is socket-activated: it starts automatically when any client connects, and shuts down after an idle period when all connections drop.
+The daemon is socket-activated: it starts automatically when any client connects, and stays resident unless `[daemon] idle_shutdown` is set; when it is, the daemon exits after that long with no demand. Records the daemon seeds from config do not keep it up; data a client `put` does.
 
 ```mermaid
 graph TB
