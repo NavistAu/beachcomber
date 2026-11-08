@@ -625,6 +625,31 @@ pub struct Scheduler {
     polling_watcher: Option<Duration>,
     /// A watcher and its events a test hands in ([`Self::use_watcher`]).
     given_watcher: Option<(FsWatcher, mpsc::Receiver<Vec<PathBuf>>)>,
+    /// The kernel-native backend: how `run()` makes a watcher on it and
+    /// tests its delivery. The real one unless a test hands in its own
+    /// ([`Self::use_native`]).
+    native: Native,
+}
+
+type Watcher = (FsWatcher, mpsc::Receiver<Vec<PathBuf>>);
+type SelfTest = Arc<dyn Fn() -> std::pin::Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
+
+struct Native {
+    watcher: Box<dyn Fn() -> notify::Result<Watcher> + Send + Sync>,
+    self_test: SelfTest,
+}
+
+impl Default for Native {
+    fn default() -> Self {
+        Self {
+            watcher: Box::new(FsWatcher::new),
+            self_test: Arc::new(|| {
+                Box::pin(crate::watcher::self_test_native_backend(
+                    crate::watcher::WATCH_SELF_TEST_TIMEOUT,
+                ))
+            }),
+        }
+    }
 }
 
 impl Scheduler {
@@ -650,6 +675,7 @@ impl Scheduler {
             run_watch_self_test: false,
             polling_watcher: None,
             given_watcher: None,
+            native: Native::default(),
         };
         (handle, scheduler)
     }
@@ -874,6 +900,23 @@ impl Scheduler {
         self.run_watch_self_test = false;
     }
 
+    /// Test seam: make the "native" watcher with `watcher` and test its
+    /// delivery with `self_test`, startup self-test and re-probe alike.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn use_native(
+        &mut self,
+        watcher: impl Fn() -> notify::Result<Watcher> + Send + Sync + 'static,
+        self_test: impl Fn() -> std::pin::Pin<Box<dyn Future<Output = bool> + Send>>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        self.native = Native {
+            watcher: Box::new(watcher),
+            self_test: Arc::new(self_test),
+        };
+    }
+
     pub async fn run(mut self) {
         // Provider file-watching starts on the kernel-native backend
         // immediately; the watch self-test (canon provider_source.md §"Watch
@@ -890,7 +933,7 @@ impl Scheduler {
         let watcher = match (self.given_watcher.take(), self.polling_watcher) {
             (Some(given), _) => Ok(given),
             (None, Some(interval)) => FsWatcher::new_polling(interval),
-            (None, None) => FsWatcher::new(),
+            (None, None) => (self.native.watcher)(),
         };
         // The registrations are made by the registrar's worker, which owns
         // the watcher; the loop keeps the events. Without a watcher the loop
@@ -936,11 +979,9 @@ impl Scheduler {
         let mut self_test_rx: Option<tokio::sync::oneshot::Receiver<bool>> =
             if self.run_watch_self_test && registrar.is_some() {
                 let (tx, rx) = tokio::sync::oneshot::channel();
+                let self_test = (self.native.self_test)();
                 tokio::spawn(async move {
-                    let ok = crate::watcher::self_test_native_backend(
-                        crate::watcher::WATCH_SELF_TEST_TIMEOUT,
-                    )
-                    .await;
+                    let ok = self_test.await;
                     let _ = tx.send(ok);
                 });
                 Some(rx)
@@ -949,15 +990,12 @@ impl Scheduler {
             };
         // Set while on the polling fallback: fires once a re-run self-test passes.
         let mut reprobe_rx: Option<tokio::sync::oneshot::Receiver<()>> = None;
-        let reprobe = || {
+        let self_test = Arc::clone(&self.native.self_test);
+        let reprobe = move || {
             let (tx, rx) = tokio::sync::oneshot::channel();
+            let self_test = Arc::clone(&self_test);
             tokio::spawn(async move {
-                crate::watcher::until_native_delivers(|| {
-                    crate::watcher::self_test_native_backend(
-                        crate::watcher::WATCH_SELF_TEST_TIMEOUT,
-                    )
-                })
-                .await;
+                crate::watcher::until_native_delivers(|| self_test()).await;
                 let _ = tx.send(());
             });
             Some(rx)
@@ -1233,7 +1271,7 @@ impl Scheduler {
                 {
                     reprobe_rx = None;
                     if res.is_ok() {
-                        match FsWatcher::new() {
+                        match (self.native.watcher)() {
                             Ok((native, native_rx)) => {
                                 if let Some(registrar) = &registrar {
                                     registrar.replace_backend(native);
@@ -2238,6 +2276,86 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "never both Active");
             tokio::task::yield_now().await;
         }
+    }
+
+    /// A scheduler whose startup self-test fails serves its watches from
+    /// polling; once a re-run of the self-test passes, after the backoff, it
+    /// reports native again and has every watch registered on a new native
+    /// watcher.
+    #[tokio::test(start_paused = true)]
+    async fn a_scheduler_on_polling_goes_back_to_native_when_the_self_test_passes() {
+        use crate::watcher::WatchState::Active;
+        use crate::watcher::test_backend::{Call, Gate, Held};
+        use std::sync::Mutex;
+        use std::sync::atomic::AtomicUsize;
+        let tmp = tempfile::tempdir().unwrap();
+        let (config, dirs) = watching_sources(&tmp.path().canonicalize().unwrap(), 1);
+        let cache = Arc::new(Cache::new());
+        let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
+            .unwrap()
+            .share(&cache);
+        let (handle, mut scheduler) =
+            Scheduler::new(cache, registry, config, Arc::new(WatcherRegistry::new()));
+        // Each "native" watcher made: what it was asked to watch, and the
+        // sender that keeps its event channel open.
+        type Made = (Arc<Mutex<Vec<Call>>>, mpsc::Sender<Vec<PathBuf>>);
+        let made: Arc<Mutex<Vec<Made>>> = Arc::default();
+        let tests = Arc::new(AtomicUsize::new(0));
+        let (made_by, tested) = (Arc::clone(&made), Arc::clone(&tests));
+        scheduler.self_test_watch_backend();
+        scheduler.use_native(
+            move || {
+                let (held, calls) = Held::new(&Gate::opened());
+                let (tx, rx) = mpsc::channel(1);
+                made_by.lock().unwrap().push((calls, tx));
+                Ok((FsWatcher::with_backend(Box::new(held)), rx))
+            },
+            // The startup self-test fails; every re-run passes.
+            move || {
+                let passes = tested.fetch_add(1, Ordering::SeqCst) > 0;
+                Box::pin(async move { passes })
+            },
+        );
+        tokio::spawn(scheduler.run());
+        handle.send(demand("w0")).await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let watched = |status: &SchedulerStatus| {
+            states(status).contains(&(dirs[0].clone(), Active { via: None }))
+        };
+        loop {
+            let status = handle.get_status().await.expect("the loop answers");
+            if status.watch_backend == "polling" && watched(&status) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "never on polling");
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(made.lock().unwrap().len(), 1, "no native watcher made yet");
+
+        let (first, _) = crate::watcher::NATIVE_REPROBE_BACKOFF;
+        tokio::time::advance(first).await;
+        let rewatched = || {
+            made.lock().unwrap().get(1).is_some_and(|(calls, _)| {
+                calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|c| matches!(c, Call::Watch(p, _) if *p == dirs[0]))
+            })
+        };
+        loop {
+            let status = handle.get_status().await.expect("the loop answers");
+            if status.watch_backend == "native" && watched(&status) && rewatched() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never back on native with the watch registered on it"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(tests.load(Ordering::SeqCst), 2, "startup, then one re-run");
     }
 
     /// A scheduler that takes nothing from its queue and answers nothing costs
