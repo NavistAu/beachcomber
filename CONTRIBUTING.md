@@ -54,7 +54,7 @@ See `website/docs/internals/architecture.md` for a full overview. Key files:
 
 - `src/scheduler.rs` — the core: trigger management, provider execution, subscriptions
 - `src/server.rs` — Unix socket server, protocol handling
-- `src/cache.rs` — concurrent cache (DashMap)
+- `src/cache/` — concurrent cache (DashMap)
 - `src/provider/` — all provider implementations
 - `benches/` — criterion benchmarks
 

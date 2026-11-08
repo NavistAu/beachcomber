@@ -44,7 +44,7 @@ Async tokio daemon on a Unix socket, one task per connection.
 
 - `src/scheduler/` — poll timers, filesystem watching (notify), demand tracking, cache lifecycle (Active / Decay1-4 /
   Evicted; `src/scheduler/lifecycle.rs`), provider execution via `spawn_blocking` (providers are synchronous).
-- `src/server.rs` — accept loop. `src/cache.rs` — DashMap keyed `"provider\0path"`.
+- `src/server.rs` — accept loop. `src/cache/` — DashMap keyed `"provider\0path"`.
 - `src/protocol.rs` — NDJSON `Request`/`Response`. `src/config.rs` — TOML, XDG paths, env files (`#[serde(default)]`
   throughout).
 - `src/provider/` — `Provider` trait implementations; `registry.rs` registers built-in + config-defined;
