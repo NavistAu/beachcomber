@@ -46,11 +46,11 @@ A test or bench that needs a provider registry builds it on the shipped defaults
 cargo bench
 ```
 
-See `docs/performance.md` for the performance regression checklist — verify these thresholds before submitting PRs that touch the hot path.
+See `website/docs/internals/performance.md` for the performance regression checklist — verify these thresholds before submitting PRs that touch the hot path.
 
 ### Project Structure
 
-See `docs/architecture.md` for a full overview. Key files:
+See `website/docs/internals/architecture.md` for a full overview. Key files:
 
 - `src/scheduler.rs` — the core: trigger management, provider execution, subscriptions
 - `src/server.rs` — Unix socket server, protocol handling
@@ -60,14 +60,14 @@ See `docs/architecture.md` for a full overview. Key files:
 
 ## Contributing a New Provider
 
-See `docs/provider-development.md` for a step-by-step walkthrough. The short version:
+See `website/docs/internals/provider-development.md` for a step-by-step walkthrough. The short version:
 
 1. Create `src/provider/yourprovider.rs` implementing the `Provider` trait
 2. Add tests in `tests/suite/provider_yourprovider.rs`, registered as a `mod` in `tests/suite/main.rs`
 3. Register in `src/provider/mod.rs` and `src/provider/registry.rs`
 4. Run `cargo nextest run -E 'test(provider_yourprovider)'` and `cargo bench --bench providers`
 
-**Performance guidelines:** Read a file instead of spawning a process whenever possible. See the performance tiers in `docs/performance.md`.
+**Performance guidelines:** Read a file instead of spawning a process whenever possible. See the performance tiers in `website/docs/internals/performance.md`.
 
 ## Branch Workflow
 

@@ -1,7 +1,7 @@
 //! `put` at any node of the tree.
 //!
 //! A `put` key is `namespace` or `namespace.node…` — the same dotted address
-//! `get` takes (`docs/canon/field_resolution.md` invariant 12: a query may
+//! `get` takes (`website/docs/reference/protocol-reference.md` "Keys": a query may
 //! address any node of the value tree). Writes deep-merge into whatever is
 //! already there, only at the addressed node;
 //! `data: null` removes it. There is no ownership: a put layers over

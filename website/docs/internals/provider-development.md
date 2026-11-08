@@ -263,7 +263,7 @@ The root a directory finds is kept: a `root` line (it may run a command) is rend
 
 ### Cache lifecycle
 
-The full decay model (state machine, step durations, reinstatement rules) is described in `docs/architecture.md` §5. A Source's watches exist only while its instance is Active: decay drops them and the read that reinstates the instance registers them again, so a decaying record is checked by stat (§4) rather than by an event.
+The full decay model (state machine, step durations, reinstatement rules) is described in [Architecture](./architecture.md#5-demand-driven-cache-lifecycle). A Source's watches exist only while its instance is Active: decay drops them and the read that reinstates the instance registers them again, so a decaying record is checked by stat (§4) rather than by an event.
 
 **Decay depth is data.** After the Active window an entry steps through its `decay` steps (4 unless told otherwise; step n lasts `lifespan × 2^n`) and is then evicted. A depth is put like any value: `comb put '<provider>:cache._.decay' 6` for one provider, `comb put '*:cache._.decay' 3` for every provider, with `--path` to scope it to a directory and below; the nearest prototype wins, and a lifecycle fixes its depth when it registers. `comb get <provider>:cache.<field>` shows the `poll`, `watch` and `decay` an entry registered with. There is no per-source keep-alive duration: `fsevent_lifespan` was removed, and a watch-only Source's Active window is the default poll lifespan (60 s × 12).
 
@@ -271,7 +271,7 @@ The full decay model (state machine, step durations, reinstatement rules) is des
 
 ## 6. Performance
 
-A Source runs on tokio's blocking thread pool. A slow one delays cache freshness but does not block the scheduler loop. Still, keep them fast. The tier list from `docs/performance.md`:
+A Source runs on tokio's blocking thread pool. A slow one delays cache freshness but does not block the scheduler loop. Still, keep them fast. The tier list from [Performance](./performance.md#provider-execution-time-tiers):
 
 | Tier | Time | Providers | Method |
 |---|---|---|---|
@@ -291,7 +291,7 @@ data = "{{ exec('gcloud config get-value project') }}"
 data = "{{ '~/.config/gcloud/configurations/config_default' | read | fromini }}"
 ```
 
-Real examples from `docs/performance.md`:
+Real examples from [Performance](./performance.md):
 - `gcloud`: reading `~/.config/gcloud/properties` instead of spawning the Python CLI — 500ms to 1µs (~500,000x)
 - `git` stash: reading `.git/logs/refs/stash` instead of `git stash list` — 5ms to 1µs
 - `git`'s `head`: reading `<gitdir>/HEAD` in the plugin, so `git.branch` costs no process at all
@@ -305,7 +305,7 @@ Real examples from `docs/performance.md`:
 
 **Rule 4: A plugin symbol must be reentrant, or the library is locked.** A library on the search path is entered by one thread at a time. A compiled-in plugin takes no lock, so its symbols keep nothing between calls.
 
-See `docs/performance.md` for the full performance profile, benchmark commands, and the regression checklist.
+See [Performance](./performance.md) for the full performance profile, benchmark commands, and the regression checklist.
 
 ---
 

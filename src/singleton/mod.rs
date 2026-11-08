@@ -161,7 +161,7 @@ pub enum SupersessionDecision {
 /// - Same hash but **not serving** → supersede; the owner is wedged between flock
 ///   and bind (or its socket was deleted), so a healthy daemon must rebind.
 ///
-/// See `docs/canon/singleton.md` §"Same-build serving probe".
+/// See `website/docs/internals/architecture.md` §7.
 pub fn decide_supersession(
     existing: &PidFileRecord,
     our_binary_hash: &str,
@@ -286,8 +286,8 @@ pub fn acquire_or_supersede_with(
 }
 
 // ---------------------------------------------------------------------------
-// Orphan reaping — canonical daemon only. See docs/canon/singleton.md
-// §"Orphan reaping".
+// Orphan reaping — canonical daemon only. See
+// `website/docs/internals/architecture.md` §7.
 // ---------------------------------------------------------------------------
 
 /// Grace age below which a candidate is never reaped (canon: 60s).

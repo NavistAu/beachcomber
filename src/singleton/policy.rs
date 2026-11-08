@@ -43,7 +43,7 @@ pub fn is_binary_newer(mtime_unix_ms: u64, process_start_unix_ms: u64) -> bool {
 
 /// Context the reaper carries into each per-candidate decision.
 ///
-/// See `docs/canon/singleton.md` §"Orphan reaping".
+/// See `website/docs/internals/architecture.md` §7.
 pub struct ReapContext {
     pub our_pid: u32,
     pub our_socket: std::path::PathBuf,

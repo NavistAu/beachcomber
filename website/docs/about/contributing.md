@@ -48,11 +48,11 @@ Some tests require filesystem watching (FSEvents) and may not work inside sandbo
 cargo bench
 ```
 
-See `docs/performance.md` for the performance regression checklist — verify these thresholds before submitting PRs that touch the hot path.
+See [Performance](../internals/performance.md#performance-regression-checklist) for the performance regression checklist — verify these thresholds before submitting PRs that touch the hot path.
 
 ### Project Structure
 
-See `docs/architecture.md` for a full overview. Key files:
+See [Architecture](../internals/architecture.md) for a full overview. Key files:
 
 - `src/scheduler/` — the core: trigger management, provider execution, subscriptions
 - `src/server.rs` — Unix socket server, protocol handling
@@ -63,13 +63,13 @@ See `docs/architecture.md` for a full overview. Key files:
 
 ## Contributing a New Provider
 
-See `docs/provider-development.md`, "Writing a Source". The short version:
+See [Writing a Source](../internals/provider-development.md). The short version:
 
 1. Write `defaults/yourprovider.toml`, and add it to `SHIPPED` in `src/daemon/defaults.rs`
 2. Add tests in `tests/suite/shipped/yourprovider.rs`, registered as a `mod` in `tests/suite/shipped/mod.rs`
 3. Run `cargo nextest run -E 'test(shipped::yourprovider::)'`
 
-**Performance guidelines:** Read a file instead of spawning a process whenever possible. See the performance tiers in `docs/performance.md`.
+**Performance guidelines:** Read a file instead of spawning a process whenever possible. See the performance tiers in [Performance](../internals/performance.md#provider-execution-time-tiers).
 
 ## Pull Requests
 

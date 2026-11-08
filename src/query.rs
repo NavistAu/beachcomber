@@ -24,8 +24,8 @@ pub fn validate_key(key: &str) -> Result<(), String> {
 pub use libbeachcomber::key::parse_facet;
 
 /// Parse a request key into one of two forms. A source name is metadata on a
-/// record, never a level in the key tree (`docs/canon/provider_source.md`
-/// "Record") — the second-and-later segments are always the field, however
+/// record, never a level in the key tree (`website/docs/internals/architecture.md`,
+/// "Provider→Source layering") — the second-and-later segments are always the field, however
 /// many dots it contains.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyParse {

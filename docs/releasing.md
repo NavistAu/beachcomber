@@ -43,7 +43,7 @@ Verify docs reflect the new version's features:
 
 - `README.md` — CLI reference, protocol ops, feature descriptions
 - `CLAUDE.md` — protocol ops list, architecture notes
-- `docs/architecture.md` — design decisions
+- `website/docs/internals/architecture.md` — design decisions
 - `docs/roadmap.md` — mark shipped items as `[x]`
 - `website/docs/reference/cli-commands.md` — new subcommands
 - `website/docs/reference/protocol-reference.md` — new protocol ops

@@ -1,7 +1,7 @@
 //! ProcessTable boundary trait — abstracts uid-owned process enumeration from OS state.
 //!
-//! Used by the singleton's orphan reaping (see `docs/canon/singleton.md`
-//! §"Orphan reaping"). Hand-rolled per platform (`sysctl KERN_PROC_ALL` on
+//! Used by the singleton's orphan reaping (see
+//! `website/docs/internals/architecture.md` §7). Hand-rolled per platform (`sysctl KERN_PROC_ALL` on
 //! macOS, /proc on Linux) — deliberately no external dependency.
 //!
 //! macOS must NOT use libproc's `proc_listallpids` for the pid list: seatbelt

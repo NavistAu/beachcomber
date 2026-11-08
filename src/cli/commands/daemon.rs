@@ -152,7 +152,7 @@ pub fn run_daemon(
     // it is serving the socket, or superseded (after a short serving-probe grace)
     // if it is wedged before bind. Startup orphan-reaping by binary path was
     // removed (it also killed peer daemons on other socket paths). See
-    // `docs/canon/singleton.md` §"Same-build serving probe".
+    // `website/docs/internals/architecture.md` §7.
 
     // The env file becomes the daemon's own environment, which every Source
     // reads and every command it runs inherits. Setting it is sound only while

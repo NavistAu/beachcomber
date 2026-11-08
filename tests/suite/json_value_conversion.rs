@@ -2,7 +2,7 @@
 //!
 //! Four independent copies of this conversion once existed — in `put`, script,
 //! http and library providers — and all four stringified nested objects instead
-//! of recursing, contradicting `docs/canon/field_resolution.md` invariant 12
+//! of recursing, contradicting `website/docs/reference/protocol-reference.md` "Keys"
 //! ("addressing is independent of whether a node is cached or computed").
 //!
 //! These tests pin two things: the conversion behaves correctly, and it exists

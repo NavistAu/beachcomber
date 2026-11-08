@@ -44,7 +44,7 @@ impl Value {
     /// Do not pattern-match `serde_json::Value` to build a `Value` anywhere else;
     /// four copies of that match previously existed and all four failed to
     /// recurse, so nested objects were silently stringified despite
-    /// `docs/canon/field_resolution.md` invariant 12 promising depth-independent
+    /// `website/docs/reference/protocol-reference.md` "Keys" promising depth-independent
     /// addressing.
     ///
     /// Objects become [`Value::Object`] and arrays [`Value::Array`]. Null is

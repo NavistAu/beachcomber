@@ -6,9 +6,8 @@ A daemon that caches shell environment state. macOS and Linux.
   cdylib for the SDKs).
 - Rust and `cargo-nextest` pinned in `mise.toml` (`mise install`); run cargo via `mise exec --` where it is not on
   PATH. `vendor/` is a gitignored local cache, not used by the build.
-- Open work: `docs/roadmap.md`. Shipped: `CHANGELOG.md`. Also `docs/architecture.md`, `website/docs/reference/protocol-reference.md` (wire protocol),
-  `docs/performance.md`, `docs/decisionlog/`.
-- `docs/canon/` is deprecated and historical (2026-10-07): background only; it does not bind tests or code.
+- Open work: `docs/roadmap.md`. Shipped: `CHANGELOG.md`. Also `docs/decisionlog/`, and in `website/docs/`:
+  `internals/architecture.md`, `internals/performance.md`, `reference/protocol-reference.md` (wire protocol).
 
 ## Branches and releases
 
@@ -52,7 +51,7 @@ Async tokio daemon on a Unix socket, one task per connection.
   `library.rs` loads `.so`/`.dylib` C-ABI providers via `libloading`. Provider fields are `serde_json::Value`.
 - `src/daemon/` — process lifecycle, watchdog on the scheduler heartbeat.
 - Only actively queried keys poll at the base rate; idle keys decay with exponential backoff and are evicted.
-- Adding a provider: `docs/provider-development.md`.
+- Adding a provider: `website/docs/internals/provider-development.md`.
 
 ## Protocol and config
 

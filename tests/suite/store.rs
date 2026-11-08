@@ -174,7 +174,7 @@ async fn store_with_path_scope() {
 //
 // A read at a path collects the static records — those whose source is `put` or
 // `config:<file>` — from every entry on the chain from that path up to `$HOME`,
-// the nearest winning (`docs/canon/field_resolution.md` §"Path resolution").
+// the nearest winning (`website/docs/reference/protocol-reference.md`, `get`).
 // The pathless entry is the global one, the last link of every chain, so data a
 // pathless `put` stored stays reachable from any directory — which is what
 // every SDK's bc_get/bc_eval needs, since they supply a cwd unconditionally.
