@@ -1,6 +1,38 @@
-# beachcomber
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
+  <img src="docs/assets/hero-light.svg" alt="beachcomber: faster prompts, less load. On the left, without comb, every prompt, status bar, editor and agent runs git, battery, network, kube and load commands itself, many copies at once. On the right, comb runs each command once and every tool reads the cached answer from it. Counters under each side tally answers, processes spawned and time spent waiting." width="100%">
+</picture>
 
-> One daemon. One cache. Every consumer reads from it.
+<!-- LuaRocks: the module is meant to live under navist; move this badge once it is published there -->
+<p align="center">
+  <a href="https://github.com/NavistAu/beachcomber/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/NavistAu/beachcomber/ci.yml?branch=develop&amp;label=CI"></a>
+  <a href="https://github.com/NavistAu/beachcomber/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/NavistAu/beachcomber"></a>
+  <a href="https://crates.io/crates/beachcomber"><img alt="crates.io" src="https://img.shields.io/crates/v/beachcomber"></a>
+  <a href="https://github.com/NavistAu/homebrew-tap"><img alt="Homebrew" src="https://img.shields.io/badge/homebrew-navistau%2Ftap-blue"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/NavistAu/beachcomber"></a>
+  <br>
+  <a href="https://www.npmjs.com/package/libbeachcomber"><img alt="npm" src="https://img.shields.io/npm/v/libbeachcomber?label=npm"></a>
+  <a href="https://pypi.org/project/libbeachcomber/"><img alt="PyPI" src="https://img.shields.io/pypi/v/libbeachcomber"></a>
+  <a href="https://rubygems.org/gems/libbeachcomber"><img alt="RubyGems" src="https://img.shields.io/gem/v/libbeachcomber"></a>
+  <a href="https://luarocks.org/modules/jhogendorn/libbeachcomber"><img alt="LuaRocks" src="https://img.shields.io/luarocks/v/jhogendorn/libbeachcomber"></a>
+  <a href="https://pkg.go.dev/github.com/NavistAu/beachcomber/sdks/go"><img alt="Go Reference" src="https://pkg.go.dev/badge/github.com/NavistAu/beachcomber/sdks/go.svg"></a>
+</p>
+
+beachcomber is a daemon, `comb`, that works out your shell's state (git status, battery, network, kube context,
+tool versions, and anything you define) and keeps it cached. It runs a command again when a file it depends on
+changes or its poll timer fires. Prompts, [tmux](https://github.com/tmux/tmux) status bars, editors and scripts read from that cache over
+a Unix socket instead of each running the same commands for themselves: one watcher and one run per change, however
+many shells are open. macOS and Linux.
+
+How you read it, and what a read costs:
+
+- **Rust client** (`libbeachcomber`) on a persistent session: about 0.1 ms.
+- **SDKs for C, Go, Lua, Node.js, Python and Ruby**, sessions over the same client through its C ABI: about 0.2 ms.
+- **`comb` CLI**, for shell scripts and prompts: about 5 ms, most of it starting the process.
+
+<img src="docs/assets/demo.gif" alt="Terminal: comb g reads git.branch, then several git fields at once; comb e renders a prompt segment from git and battery; hyperfine times that segment against running git status and pmset, with comments on what the timings include." width="100%">
+
+<sub>Recorded with <a href="https://github.com/charmbracelet/vhs">vhs</a> from <a href="docs/assets/demo.tape"><code>docs/assets/demo.tape</code></a>.</sub>
 
 ---
 
