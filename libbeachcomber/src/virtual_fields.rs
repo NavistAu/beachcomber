@@ -118,6 +118,26 @@ pub(crate) fn refs_from_names(names: impl IntoIterator<Item = String>) -> Vec<Re
 
 // ── Value conversion ──────────────────────────────────────────────────────────
 
+/// Whether a NaN or infinity sits anywhere inside `v`; serde would turn it
+/// into a silent JSON null.
+fn has_nonfinite(v: &MjValue) -> bool {
+    use minijinja::value::ValueKind::*;
+    match v.kind() {
+        Number => (v.clone().try_into() as Result<f64, _>).is_ok_and(|f| !f.is_finite()),
+        Map => v
+            .try_iter()
+            .into_iter()
+            .flatten()
+            .any(|k| v.get_item(&k).is_ok_and(|x| has_nonfinite(&x))),
+        Seq | Iterable => v
+            .try_iter()
+            .into_iter()
+            .flatten()
+            .any(|x| has_nonfinite(&x)),
+        _ => false,
+    }
+}
+
 /// Convert the value a one-tag line evaluated to into the value it yields:
 /// the one rule the client's templates and the daemon's lines share.
 ///
@@ -156,17 +176,49 @@ pub(crate) fn mj_to_json(v: MjValue) -> Result<Option<JsonValue>, String> {
     // Structured values keep their shape: an interior node is an object and a
     // sequence an array, rather than MiniJinja's `{"a": 1}` debug rendering —
     // canon `field_resolution.md` invariants 8 and 12. serde round-trips the
-    // whole tree (a nested `none` becomes JSON null); anything it cannot
-    // represent falls through to the string form below.
+    // whole tree (a nested `none` becomes JSON null). A number it cannot
+    // represent (an integer past 64 bits, NaN, inf) is the same error as at
+    // the top level, never the map's text or a silent null.
     if matches!(
         v.kind(),
         minijinja::value::ValueKind::Map
             | minijinja::value::ValueKind::Seq
             | minijinja::value::ValueKind::Iterable
-    ) && let Ok(json) = serde_json::to_value(&v)
-    {
-        return Ok(Some(json));
+    ) {
+        if has_nonfinite(&v) {
+            return Err(format!("{v} is not a number JSON can hold"));
+        }
+        return serde_json::to_value(&v)
+            .map(Some)
+            .map_err(|_| format!("{v} is not a number JSON can hold"));
     }
     // Strings, and anything else as its text.
     Ok(Some(JsonValue::String(v.to_string())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use minijinja::Environment;
+
+    fn eval(expr: &str) -> Result<Option<JsonValue>, String> {
+        let env = Environment::new();
+        mj_to_json(env.compile_expression(expr).unwrap().eval(()).unwrap())
+    }
+
+    #[test]
+    fn a_map_with_an_unholdable_number_is_an_error() {
+        for e in ["{'big': 2**70}", "{'a': {'n': 1e999}}", "[1, 1e999]"] {
+            let err = eval(e).unwrap_err();
+            assert!(err.contains("is not a number JSON can hold"), "{e}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_map_of_ordinary_numbers_keeps_its_shape() {
+        assert_eq!(
+            eval("{'a': 1, 'b': [2.5, none]}").unwrap(),
+            Some(serde_json::json!({"a": 1, "b": [2.5, null]}))
+        );
+    }
 }
