@@ -636,27 +636,31 @@ pub trait Source: Send + Sync {
 }
 
 /// The stat inputs a `watch(...)` declaration names for the instance at
-/// `root` (`None` is the instance at `~`), which a run stamps immediately before
+/// `root`, which a run stamps immediately before
 /// it begins; beside them, a record's inputs are the files its run's lines read,
 /// each stamped before it was read ([`crate::run::reads_here`]). Each relative entry joined to the root, and each absolute one as
 /// written. At the instance at `~`, a relative entry of one component is a
 /// file under `$HOME`, as its watch registers it; one of more names nothing
 /// there. A declared directory is an input as a node, by its own mtime: an
 /// entry created, removed or renamed in it is a change, one deeper is not.
-pub fn declared_inputs(schedule: &Schedule, root: Option<&str>) -> Vec<std::path::PathBuf> {
+pub fn declared_inputs(
+    schedule: &Schedule,
+    root: &crate::query::Dir,
+    home: &crate::query::Home,
+) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     for pattern in watch_patterns(schedule) {
         if is_tree_pattern(&pattern) {
             continue;
         }
         match root {
-            Some(root) => out.push(std::path::Path::new(root).join(&pattern)),
-            None if !pattern.contains('/') => {
-                if let Some(home) = crate::query::home_dir() {
-                    out.push(home.join(&pattern));
+            crate::query::Dir::At(root) => out.push(std::path::Path::new(root).join(&pattern)),
+            crate::query::Dir::Global if !pattern.contains('/') => {
+                if let Some(home) = home.dir() {
+                    out.push(std::path::Path::new(home).join(&pattern));
                 }
             }
-            None => {}
+            crate::query::Dir::Global => {}
         }
     }
     out.extend(schedule.watch_abs.iter().map(std::path::PathBuf::from));
@@ -668,6 +672,14 @@ mod tests {
     use super::*;
     use libbeachcomber::merge::deep_merge;
 
+    fn at_r() -> crate::query::Dir {
+        crate::query::Dir::At("/r".into())
+    }
+
+    fn no_home() -> crate::query::Home {
+        crate::query::Home::default()
+    }
+
     #[test]
     fn a_tree_pattern_is_no_stat_input() {
         let strategy = Schedule::watch(
@@ -676,7 +688,7 @@ mod tests {
         );
         assert!(watches_tree(&strategy));
         assert_eq!(
-            declared_inputs(&strategy, Some("/r")),
+            declared_inputs(&strategy, &at_r(), &no_home()),
             vec![std::path::PathBuf::from("/r/.git/index")]
         );
     }
@@ -985,21 +997,24 @@ mod tests {
             )
         };
         assert_eq!(
-            declared_inputs(&strategy, Some("/r")),
+            declared_inputs(&strategy, &at_r(), &no_home()),
             [
                 std::path::PathBuf::from("/r/state.json"),
                 "/r/.cfg/x".into(),
                 "/etc/hosts".into()
             ]
         );
-        let home = crate::query::home_dir().expect("HOME");
+        let home = crate::query::Home::of(Some("/h"));
         assert_eq!(
-            declared_inputs(&strategy, None),
-            [home.join("state.json"), "/etc/hosts".into()],
+            declared_inputs(&strategy, &crate::query::Dir::Global, &home),
+            [
+                std::path::PathBuf::from("/h/state.json"),
+                "/etc/hosts".into()
+            ],
             "at ~ a name of one component lies under $HOME; a path names nothing"
         );
         assert!(
-            declared_inputs(&Schedule::poll(5, 1), Some("/r")).is_empty(),
+            declared_inputs(&Schedule::poll(5, 1), &at_r(), &no_home()).is_empty(),
             "a Source that only polls has none"
         );
     }

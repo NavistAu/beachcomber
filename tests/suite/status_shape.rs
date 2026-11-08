@@ -1133,7 +1133,7 @@ async fn lifecycle_snapshots_message_returns_per_entry_data() {
             provider: "load".to_string(),
             instances: vec![Instance {
                 source: "loadavg".to_string(),
-                root: None,
+                root: beachcomber::query::Dir::Global,
             }],
         })
         .await;

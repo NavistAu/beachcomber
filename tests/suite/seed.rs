@@ -511,9 +511,20 @@ async fn a_provider_decay_table_seeds_its_own_cache_facet() {
     );
     let load = ProviderRegistry::load(&config, &std::env::vars().collect());
     beachcomber::daemon::seed::seed_facets(&cache, &load.registry, load.seed);
-    assert_eq!(cache.resolve_decay("git", None), 2);
     assert_eq!(
-        cache.resolve_decay("hostname", None),
+        cache.resolve_decay(
+            "git",
+            &beachcomber::query::Dir::Global,
+            &beachcomber::query::Home::default()
+        ),
+        2
+    );
+    assert_eq!(
+        cache.resolve_decay(
+            "hostname",
+            &beachcomber::query::Dir::Global,
+            &beachcomber::query::Home::default()
+        ),
         beachcomber::scheduler::lifecycle::DEFAULT_DECAY,
         "a provider with no table of its own takes the default"
     );
@@ -700,7 +711,13 @@ fn a_reload_keeps_the_age_of_records_it_did_not_change() {
     reload(&cache, &handle, &sink, &mut last, layers());
 
     let title = cache
-        .read_merged("scanline:template", None, &[], &registry, Layers::All)
+        .read_merged(
+            "scanline:template",
+            &beachcomber::query::Dir::Global,
+            &[],
+            &registry,
+            Layers::All,
+        )
         .and_then(|read| read.fields.get("title").cloned());
     assert_eq!(
         title,
@@ -801,7 +818,13 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
     beachcomber::daemon::seed::seed_facets(&cache, &registry, load.seed);
     let leaf = |name: &str| {
         cache
-            .read_merged("scanline:template", None, &[], &registry, Layers::All)
+            .read_merged(
+                "scanline:template",
+                &beachcomber::query::Dir::Global,
+                &[],
+                &registry,
+                Layers::All,
+            )
             .and_then(|read| read.fields.get(name).cloned())
     };
     assert_eq!(leaf("title"), Some(CacheValue::String("t1".into())));
@@ -983,7 +1006,13 @@ fn removing_a_put_template_shows_the_seeded_one() {
         .unwrap();
     let version = || {
         cache
-            .read_merged("p:template", None, &[], &registry, Layers::All)
+            .read_merged(
+                "p:template",
+                &beachcomber::query::Dir::Global,
+                &[],
+                &registry,
+                Layers::All,
+            )
             .and_then(|r| r.fields.get("version").cloned())
     };
     assert_eq!(version(), Some(CacheValue::String("mine".into())));
@@ -1018,7 +1047,13 @@ fn a_reseed_keeps_a_put_template_on_top() {
         )
         .unwrap();
     let read = cache
-        .read_merged("p:template", None, &[], &registry, Layers::All)
+        .read_merged(
+            "p:template",
+            &beachcomber::query::Dir::Global,
+            &[],
+            &registry,
+            Layers::All,
+        )
         .unwrap();
     assert_eq!(
         read.fields.get("version"),
@@ -1031,7 +1066,13 @@ fn a_reseed_keeps_a_put_template_on_top() {
     // The seed is stored beneath the put, not skipped.
     cache.remove_put("p:template", None, "version");
     let read = cache
-        .read_merged("p:template", None, &[], &registry, Layers::All)
+        .read_merged(
+            "p:template",
+            &beachcomber::query::Dir::Global,
+            &[],
+            &registry,
+            Layers::All,
+        )
         .unwrap();
     assert_eq!(
         read.fields.get("version"),
@@ -1078,7 +1119,13 @@ fn a_re_seed_never_shows_a_gap_to_a_concurrent_read() {
             let mut reads = 0u64;
             while !stop.load(Ordering::Relaxed) {
                 let read = cache
-                    .read_merged("scanline:template", None, &[], &registry, Layers::All)
+                    .read_merged(
+                        "scanline:template",
+                        &beachcomber::query::Dir::Global,
+                        &[],
+                        &registry,
+                        Layers::All,
+                    )
                     .expect("the namespace is never empty");
                 assert!(
                     read.fields.contains_key("version"),
@@ -1151,7 +1198,13 @@ fn every_file_keeps_its_record_and_the_last_file_answers() {
         .unwrap();
 
     let read = cache
-        .read_merged("aws:template", None, &[], &registry, Layers::All)
+        .read_merged(
+            "aws:template",
+            &beachcomber::query::Dir::Global,
+            &[],
+            &registry,
+            Layers::All,
+        )
         .unwrap();
     assert_eq!(
         read.fields["profile"],
@@ -1160,7 +1213,12 @@ fn every_file_keeps_its_record_and_the_last_file_answers() {
     assert_eq!(read.records["profile"].source, drop_in);
 
     let labels: Vec<String> = cache
-        .layer_stacks("aws", None, &[])
+        .layer_stacks(
+            "aws",
+            &beachcomber::query::Dir::Global,
+            &[],
+            &beachcomber::query::Home::from_env(),
+        )
         .into_iter()
         .filter(|(tail, _)| tail == "profile")
         .map(|(_, record)| record.label)
@@ -1189,7 +1247,14 @@ fn every_file_keeps_its_record_and_the_last_file_answers() {
             vec![(defaults, decay(4)), (main, decay(6))],
         )
         .unwrap();
-    assert_eq!(cache.resolve_decay("git", None), 6);
+    assert_eq!(
+        cache.resolve_decay(
+            "git",
+            &beachcomber::query::Dir::Global,
+            &beachcomber::query::Home::default()
+        ),
+        6
+    );
 }
 
 #[test]
@@ -1238,7 +1303,13 @@ fn a_refused_write_leaves_the_previous_seed_untouched() {
     assert!(format!("{err}").contains("must be an object"), "{err}");
 
     let read = cache
-        .read_merged("hostname", None, &[], &registry, Layers::All)
+        .read_merged(
+            "hostname",
+            &beachcomber::query::Dir::Global,
+            &[],
+            &registry,
+            Layers::All,
+        )
         .expect("the previous seed is still there");
     assert_eq!(
         read.fields.get("note"),

@@ -267,27 +267,27 @@ fn bench_convergence_l(c: &mut Criterion) {
                 instances: vec![
                     Instance {
                         source: "head".to_string(),
-                        root: Some(path.clone()),
+                        root: beachcomber::query::Dir::At(path.clone()),
                     },
                     Instance {
                         source: "refs".to_string(),
-                        root: Some(path.clone()),
+                        root: beachcomber::query::Dir::At(path.clone()),
                     },
                     Instance {
                         source: "diff".to_string(),
-                        root: Some(path.clone()),
+                        root: beachcomber::query::Dir::At(path.clone()),
                     },
                     Instance {
                         source: "branches".to_string(),
-                        root: Some(path.clone()),
+                        root: beachcomber::query::Dir::At(path.clone()),
                     },
                     Instance {
                         source: "lineage".to_string(),
-                        root: Some(path.clone()),
+                        root: beachcomber::query::Dir::At(path.clone()),
                     },
                     Instance {
                         source: "status".to_string(),
-                        root: Some(path.clone()),
+                        root: beachcomber::query::Dir::At(path.clone()),
                     },
                 ],
             })

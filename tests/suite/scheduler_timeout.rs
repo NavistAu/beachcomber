@@ -139,7 +139,7 @@ async fn slow_provider_times_out() {
             provider: "slow".to_string(),
             instances: vec![Instance {
                 source: "main".to_string(),
-                root: None,
+                root: beachcomber::query::Dir::Global,
             }],
         })
         .await;

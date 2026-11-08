@@ -32,7 +32,7 @@ async fn scheduler_refresh_populates_cache() {
             provider: "hostname".to_string(),
             instances: vec![Instance {
                 source: "host".to_string(),
-                root: None,
+                root: beachcomber::query::Dir::Global,
             }],
         })
         .await;
@@ -223,11 +223,11 @@ async fn a_poll_source_registers_no_watch_and_a_watch_source_matches_only_its_pa
             instances: vec![
                 Instance {
                     source: "polled".to_string(),
-                    root: Some(root.to_string_lossy().into_owned()),
+                    root: beachcomber::query::Dir::At(root.to_string_lossy().into_owned()),
                 },
                 Instance {
                     source: "watched".to_string(),
-                    root: Some(root.to_string_lossy().into_owned()),
+                    root: beachcomber::query::Dir::At(root.to_string_lossy().into_owned()),
                 },
             ],
         })

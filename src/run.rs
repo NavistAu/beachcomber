@@ -576,12 +576,13 @@ impl Runs {
         };
         tokio::spawn(async move {
             let timeout = source.metadata().schedule.timeout;
-            let dir = crate::query::instance_dir(settle.key.path.as_deref());
+            let entry = crate::query::Dir::keyed(settle.key.path.as_deref());
+            let home = settle.registry.home().clone();
+            let dir = entry.path(&home).map(str::to_string);
             // The run reads through the registry it began under, which its
             // Source's `comb.<p>` reader holds only weakly: kept here, a
             // reload mid-run cannot leave it reading a registry that has gone.
             let keep = Arc::clone(&settle.registry);
-            let root = settle.key.path.clone();
             let stamped = Arc::clone(&settle.state.stamped);
             let (tree_cache, tree_key) = (Arc::clone(&settle.cache), settle.key.clone());
             let ran = tokio::time::timeout(
@@ -596,13 +597,14 @@ impl Runs {
                     let invalidation = &source.metadata().schedule;
                     let declared = Stamped::take(crate::provider::declared_inputs(
                         invalidation,
-                        root.as_deref(),
+                        &entry,
+                        &home,
                     ))
                     .with_tree(
                         if crate::provider::watches_tree(invalidation) {
                             tree_cache.tree_stamp(
                                 &tree_key.provider,
-                                root.as_deref(),
+                                entry.address(),
                                 tree_key.source.name(),
                             )
                         } else {

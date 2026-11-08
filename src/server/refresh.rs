@@ -67,7 +67,7 @@ pub(super) async fn handle_refresh(
         }
         return Response::error(format!(
             "nothing to refresh: {addressed} has no instance at {}",
-            plan.requested_path.as_deref().unwrap_or("~")
+            plan.requested_path.address().unwrap_or("~")
         ));
     }
     scheduler

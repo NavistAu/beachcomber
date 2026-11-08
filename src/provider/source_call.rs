@@ -21,6 +21,7 @@
 use crate::cache::{Cache, RecordFreshness};
 use crate::provider::Value;
 use crate::provider::registry::{CalleeMap, ProviderRegistry};
+use crate::query::Dir;
 use crate::run::{Cycle, Outcome, Want};
 use crate::scheduler::lifecycle::Key;
 use libbeachcomber::eval::{Probe, undeclared_names};
@@ -98,12 +99,11 @@ fn is_running(provider: &str, source: &str) -> bool {
 
 /// Note, against the run in progress on this thread, that it called
 /// `provider`'s `source` at the instances of `chain`.
-fn note_call(provider: &str, source: &str, chain: &[Option<String>]) {
+fn note_call(provider: &str, source: &str, chain: &[Dir]) {
     RUNNING.with(|r| {
         if let Some(frame) = r.borrow_mut().last_mut() {
-            frame
-                .called
-                .insert((provider.into(), source.into()), chain.to_vec());
+            let roots = chain.iter().cloned().map(Dir::into_address).collect();
+            frame.called.insert((provider.into(), source.into()), roots);
         }
     });
 }
@@ -177,8 +177,8 @@ pub fn source_call(
     if registry.is_disabled(provider) {
         return Ok(None);
     }
-    let entry = entry.and_then(crate::query::address_of);
-    Ok(kept_chain(registry, provider, source, entry.as_deref())?
+    let entry = Dir::named(entry, registry.home());
+    Ok(kept_chain(registry, provider, source, &entry)?
         .and_then(|chain| stored(cache, provider, source, &chain)))
 }
 
@@ -243,16 +243,16 @@ fn warm_chain(
     source: &str,
     entry: Option<&str>,
     arrived: tokio::time::Instant,
-) -> Result<Vec<Option<String>>, Unwarmed> {
+) -> Result<Vec<Dir>, Unwarmed> {
     if registry.is_disabled(provider) {
         note_call(provider, source, &[]);
         return Ok(Vec::new());
     }
-    let entry = entry.and_then(crate::query::address_of);
-    let chain = crate::query::instance_chain(registry, provider, source, entry.as_deref())
+    let entry = Dir::named(entry, registry.home());
+    let chain = crate::query::instance_chain(registry, provider, source, &entry)
         .map_err(Unwarmed::Fault)?;
     for root in &chain {
-        let root = root.as_deref();
+        let root = root.address();
         // A valid instance is the common call: answered before anything
         // shared is locked.
         if let Some(barrier) = tree_barrier(registry, cache, provider, source, root) {
@@ -303,16 +303,11 @@ pub fn tree_barrier<'c>(
 /// The stored records of `provider`'s Source `source` at the instances of
 /// `chain` (nearest first), merged nearest-first; `None` when nothing is
 /// stored.
-fn stored(
-    cache: &Cache,
-    provider: &str,
-    source: &str,
-    chain: &[Option<String>],
-) -> Option<CalledRecord> {
+fn stored(cache: &Cache, provider: &str, source: &str, chain: &[Dir]) -> Option<CalledRecord> {
     let mut merged = serde_json::Map::new();
     let mut oldest: Option<RecordFreshness> = None;
     for root in chain.iter().rev() {
-        let Some(stored) = cache.get_source(provider, root.as_deref(), source) else {
+        let Some(stored) = cache.get_source(provider, root.address(), source) else {
             continue;
         };
         if stored.fields.is_empty() {
@@ -325,7 +320,7 @@ fn stored(
         {
             oldest = Some(RecordFreshness {
                 source: crate::cache::Origin::source(source),
-                entry: root.as_deref().map(Arc::from),
+                entry: root.address().map(Arc::from),
                 last_refreshed: stored.last_refreshed,
                 expected_interval_secs: stored.expected_interval_secs,
             });
@@ -382,8 +377,8 @@ fn kept_chain(
     registry: &ProviderRegistry,
     provider: &str,
     source: &str,
-    dir: Option<&str>,
-) -> Result<Option<Vec<Option<String>>>, String> {
+    dir: &Dir,
+) -> Result<Option<Vec<Dir>>, String> {
     registry
         .instance_walk(provider, source, dir)
         .collect(|root_dir| match registry.renders_root(provider, source) {
@@ -512,7 +507,7 @@ mod tests {
         put(Some("/near"), 1);
         tokio::time::advance(std::time::Duration::from_secs(5)).await;
         put(None, 2);
-        let chain = [Some("/near".to_string()), None];
+        let chain = [Dir::At("/near".to_string()), Dir::Global];
         let record = stored(&cache, "p", "s", &chain).expect("both are stored");
         assert_eq!(record.value, serde_json::json!({"x": 1}));
         assert_eq!(record.fresh.entry.as_deref(), Some("/near"));

@@ -104,7 +104,7 @@ async fn repeated_failures_trigger_backoff() {
                 provider: "failing".to_string(),
                 instances: vec![Instance {
                     source: "main".to_string(),
-                    root: None,
+                    root: beachcomber::query::Dir::Global,
                 }],
             })
             .await;
@@ -181,7 +181,7 @@ return = "{{{{ result | poll('60s') | failback('60s', 3) }}}}"
                 provider: "claude".to_string(),
                 instances: vec![Instance {
                     source: "summary".to_string(),
-                    root: None,
+                    root: beachcomber::query::Dir::Global,
                 }],
             })
             .await;

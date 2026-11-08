@@ -665,7 +665,7 @@ mod tests {
         let read = cache
             .read_merged(
                 "git",
-                Some("/repo"),
+                &crate::query::Dir::At("/repo".into()),
                 &[
                     Instance::new("head", Some("/repo")),
                     Instance::new("head", None),
@@ -719,7 +719,7 @@ mod tests {
         let read = cache
             .read_merged(
                 "git",
-                Some("/repo"),
+                &crate::query::Dir::At("/repo".into()),
                 &[
                     Instance::new("head", Some("/repo")),
                     Instance::new("head", None),
@@ -771,7 +771,7 @@ mod tests {
         cache
             .read_merged(
                 "git",
-                Some("/repo"),
+                &crate::query::Dir::At("/repo".into()),
                 &[
                     Instance::new("head", Some("/repo")),
                     Instance::new("head", None),
@@ -855,7 +855,7 @@ mod tests {
         let read = cache
             .read_merged(
                 "git",
-                Some("/repo"),
+                &crate::query::Dir::At("/repo".into()),
                 &[
                     Instance::new("refs", Some("/repo")),
                     Instance::new("refs", None),
@@ -949,12 +949,12 @@ mod tests {
         write(Origin::Config("a.toml".into()), "seed");
         write(Origin::Put, "put");
         let read = cache
-            .read_merged("p", None, &[], &registry, Layers::All)
+            .read_merged("p", &crate::query::Dir::Global, &[], &registry, Layers::All)
             .unwrap();
         assert_eq!(read.fields.get("x"), Some(&Value::String("put".into())));
         assert!(cache.remove_put("p", None, "x"));
         let read = cache
-            .read_merged("p", None, &[], &registry, Layers::All)
+            .read_merged("p", &crate::query::Dir::Global, &[], &registry, Layers::All)
             .unwrap();
         assert_eq!(read.fields.get("x"), Some(&Value::String("seed".into())));
     }
@@ -1054,7 +1054,15 @@ mod tests {
                 .stored_keys("build", None, &crate::cache::Origin::Put, "status")
                 .is_none()
         );
-        assert_eq!(cache.resolve_decay("build", None), 2, "the prototype stays");
+        assert_eq!(
+            cache.resolve_decay(
+                "build",
+                &crate::query::Dir::Global,
+                &crate::query::Home::default()
+            ),
+            2,
+            "the prototype stays"
+        );
 
         // Expiry and a re-put without a ttl take them too.
         cache

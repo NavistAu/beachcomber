@@ -474,7 +474,14 @@ fn the_shipped_cache_prototype_is_the_decay_default() {
         rows[0].source
     );
     assert_eq!(rows[0].value, json!({"decay": 4}));
-    assert_eq!(cache.resolve_decay("hostname", None), 4);
+    assert_eq!(
+        cache.resolve_decay(
+            "hostname",
+            &beachcomber::query::Dir::Global,
+            &beachcomber::query::Home::default()
+        ),
+        4
+    );
 }
 
 // ── the daemon seeds them as the lowest layer ────────────────────────────────

@@ -6,7 +6,7 @@ use super::read::{all_instances, called_instances};
 use crate::cache::Cache;
 use crate::protocol::Response;
 use crate::provider::registry::ProviderRegistry;
-use crate::query::{Instance, QueryPlan};
+use crate::query::{Dir, Instance, QueryPlan};
 use crate::scheduler::{SchedulerHandle, SchedulerMessage};
 use crate::watcher_registry::WatcherRegistry;
 use std::sync::Arc;
@@ -139,7 +139,7 @@ pub(super) struct WatchSetup {
     registry: Arc<ProviderRegistry>,
     plan: QueryPlan,
     provider_name: String,
-    requested_path: Option<String>,
+    requested_path: Dir,
     /// A layer facet is a plain read: a watch on one warms nothing.
     layered: bool,
     instances: Vec<Instance>,
@@ -153,7 +153,7 @@ impl WatchSetup {
             cache,
             &self.registry,
             &self.plan.target,
-            self.requested_path.as_deref(),
+            &self.requested_path,
             &self.instances,
             self.plan.layers,
         )
@@ -191,7 +191,7 @@ pub(super) async fn watch_setup(
     let called = if layered || registry.lines().all_calls(&provider_name).is_empty() {
         Vec::new()
     } else {
-        called_instances(&registry, &provider_name, requested_path.as_deref())
+        called_instances(&registry, &provider_name, &requested_path)
             .await
             .map(|(called, _)| called)
             .inspect_err(|msg| warn!("watch {key}: {msg}"))?
@@ -215,9 +215,10 @@ pub(super) async fn watch_setup(
     let chain_watch = {
         let changed = Arc::new(tokio::sync::Notify::new());
         let mut tasks = Vec::new();
-        let mut links: Vec<(String, Option<String>)> = crate::query::read_chain(
-            requested_path.as_deref(),
+        let mut links: Vec<(String, Dir)> = crate::query::read_chain(
+            &requested_path,
             &crate::query::roots_of(&instances),
+            registry.home(),
         )
         .into_iter()
         .map(|layer| (provider_name.clone(), layer))
@@ -226,15 +227,16 @@ pub(super) async fn watch_setup(
         for (called_provider, instances) in &called {
             links.extend(
                 crate::query::read_chain(
-                    requested_path.as_deref(),
+                    &requested_path,
                     &crate::query::roots_of(instances),
+                    registry.home(),
                 )
                 .into_iter()
                 .map(|layer| (called_provider.clone(), layer)),
             );
         }
         for (namespace, layer) in links {
-            let mut sub = watchers.subscribe(namespace.as_str(), layer.as_deref());
+            let mut sub = watchers.subscribe(namespace.as_str(), layer.address());
             let changed = Arc::clone(&changed);
             tasks.push(tokio::spawn(async move {
                 // A lagged subscriber has missed notifications, but one

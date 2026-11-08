@@ -596,18 +596,23 @@ impl Cache {
     /// directory chain from `path`, nearest wins, and at one directory
     /// `<provider>:cache` beats `*:cache` — else
     /// [`DEFAULT_DECAY`](crate::scheduler::lifecycle::DEFAULT_DECAY).
-    pub fn resolve_decay(&self, provider: &str, path: Option<&str>) -> u8 {
+    pub fn resolve_decay(
+        &self,
+        provider: &str,
+        path: &crate::query::Dir,
+        home: &crate::query::Home,
+    ) -> u8 {
         let namespaces = [
             facet_of(provider, Facet::Cache),
             facet_of("*", Facet::Cache),
         ];
-        crate::query::path_chain(path)
+        path.chain(home)
             .iter()
             .find_map(|layer| {
                 namespaces.iter().find_map(|namespace| {
                     let entry = self
                         .entries
-                        .get(&make_cache_key(namespace, layer.as_deref()))?;
+                        .get(&make_cache_key(namespace, layer.address()))?;
                     let mut out = MergedRead {
                         fields: HashMap::new(),
                         records: HashMap::new(),
@@ -992,7 +997,11 @@ mod tests {
     fn resolve_decay_prefers_the_provider_prototype() {
         let cache = Cache::new();
         assert_eq!(
-            cache.resolve_decay("git", None),
+            cache.resolve_decay(
+                "git",
+                &crate::query::Dir::Global,
+                &crate::query::Home::default()
+            ),
             crate::scheduler::lifecycle::DEFAULT_DECAY
         );
         cache
@@ -1005,7 +1014,15 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(cache.resolve_decay("git", None), 6, "the star prototype");
+        assert_eq!(
+            cache.resolve_decay(
+                "git",
+                &crate::query::Dir::Global,
+                &crate::query::Home::default()
+            ),
+            6,
+            "the star prototype"
+        );
         cache
             .write_static(
                 "git:cache",
@@ -1016,8 +1033,23 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(cache.resolve_decay("git", None), 2, "the provider's own");
-        assert_eq!(cache.resolve_decay("mise", None), 6);
+        assert_eq!(
+            cache.resolve_decay(
+                "git",
+                &crate::query::Dir::Global,
+                &crate::query::Home::default()
+            ),
+            2,
+            "the provider's own"
+        );
+        assert_eq!(
+            cache.resolve_decay(
+                "mise",
+                &crate::query::Dir::Global,
+                &crate::query::Home::default()
+            ),
+            6
+        );
     }
 
     #[test]
@@ -1037,19 +1069,65 @@ mod tests {
         };
         put("*:cache", None, 3);
         put("git:cache", Some("/w/proj"), 6);
-        assert_eq!(cache.resolve_decay("git", Some("/w/proj")), 6);
-        assert_eq!(cache.resolve_decay("git", Some("/w/proj/sub")), 6);
-        assert_eq!(cache.resolve_decay("git", Some("/w/other")), 3);
-        assert_eq!(cache.resolve_decay("git", None), 3);
-        assert_eq!(cache.resolve_decay("mise", Some("/w/proj/sub")), 3);
+        assert_eq!(
+            cache.resolve_decay(
+                "git",
+                &crate::query::Dir::At("/w/proj".into()),
+                &crate::query::Home::default()
+            ),
+            6
+        );
+        assert_eq!(
+            cache.resolve_decay(
+                "git",
+                &crate::query::Dir::At("/w/proj/sub".into()),
+                &crate::query::Home::default()
+            ),
+            6
+        );
+        assert_eq!(
+            cache.resolve_decay(
+                "git",
+                &crate::query::Dir::At("/w/other".into()),
+                &crate::query::Home::default()
+            ),
+            3
+        );
+        assert_eq!(
+            cache.resolve_decay(
+                "git",
+                &crate::query::Dir::Global,
+                &crate::query::Home::default()
+            ),
+            3
+        );
+        assert_eq!(
+            cache.resolve_decay(
+                "mise",
+                &crate::query::Dir::At("/w/proj/sub".into()),
+                &crate::query::Home::default()
+            ),
+            3
+        );
 
         put("*:cache", Some("/w/proj/sub"), 5);
         assert_eq!(
-            cache.resolve_decay("git", Some("/w/proj/sub/x")),
+            cache.resolve_decay(
+                "git",
+                &crate::query::Dir::At("/w/proj/sub/x".into()),
+                &crate::query::Home::default()
+            ),
             5,
             "a nearer star beats a farther provider prototype"
         );
         put("git:cache", Some("/w/proj/sub"), 2);
-        assert_eq!(cache.resolve_decay("git", Some("/w/proj/sub")), 2);
+        assert_eq!(
+            cache.resolve_decay(
+                "git",
+                &crate::query::Dir::At("/w/proj/sub".into()),
+                &crate::query::Home::default()
+            ),
+            2
+        );
     }
 }

@@ -7,7 +7,7 @@ use crate::cache::{Cache, Layers, MergedRead};
 use crate::protocol::{Response, Wait};
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::source_call::instance_key;
-use crate::query::{Ask, Found, Instance, InstanceWalk, Key, QueryPlan};
+use crate::query::{Ask, Dir, Found, Instance, InstanceWalk, Key, QueryPlan};
 use crate::run::{Outcome, Want};
 use crate::scheduler::SchedulerMessage;
 use std::collections::HashMap;
@@ -68,7 +68,7 @@ pub(super) async fn next_instance(
     provider: &str,
     source: &str,
     memo: &mut RootMemo,
-) -> Result<Option<Option<String>>, String> {
+) -> Result<Option<Dir>, String> {
     let answer = match walk.ask() {
         Ask::Done => return Ok(None),
         Ask::Home => Found::Home,
@@ -113,7 +113,7 @@ pub(super) async fn all_instances(
     let mut memo = RootMemo::default();
     for source in crate::query::demanded_source_names(registry, &plan.provider, &read_demand(plan))
     {
-        let dir = plan.requested_path.as_deref();
+        let dir = &plan.requested_path;
         out.extend(chain(registry, &plan.provider, &source, dir, &mut memo).await?);
     }
     Ok(out)
@@ -125,7 +125,7 @@ async fn chain(
     registry: &Arc<ProviderRegistry>,
     provider: &str,
     source: &str,
-    dir: Option<&str>,
+    dir: &Dir,
     memo: &mut RootMemo,
 ) -> Result<Vec<Instance>, String> {
     let mut walk = registry.instance_walk(provider, source, dir);
@@ -281,7 +281,7 @@ pub(super) async fn settle(pending: Vec<Pending>) -> Result<bool, String> {
 pub(super) async fn called_instances(
     registry: &Arc<ProviderRegistry>,
     provider: &str,
-    dir: Option<&str>,
+    dir: &Dir,
 ) -> Result<(Vec<(String, Vec<Instance>)>, bool), String> {
     let called: Vec<(String, String)> = registry.lines().all_calls(provider).to_vec();
     let mut out: Vec<(String, Vec<Instance>)> = Vec::new();
@@ -312,13 +312,13 @@ pub(super) async fn warm_called(
     registry: &Arc<ProviderRegistry>,
     cache: &Arc<Cache>,
     provider: &str,
-    dir: Option<&str>,
+    dir: &Dir,
     read: Read,
 ) -> Result<(Vec<(String, Vec<Instance>)>, bool), String> {
     let (called, resolved) = called_instances(registry, provider, dir).await?;
     for (called_provider, instances) in &called {
         for instance in instances {
-            let root = instance.root.as_deref();
+            let root = instance.root.address();
             hear_tree(
                 registry,
                 cache,
@@ -339,7 +339,7 @@ pub(super) async fn warm_called(
                     cache,
                     called_provider,
                     &instance.source,
-                    instance.root.as_deref(),
+                    instance.root.address(),
                     read,
                 )
             })
@@ -376,16 +376,16 @@ pub(super) struct Climbed {
 pub(super) struct Walking {
     name: String,
     walk: InstanceWalk,
-    next: Option<Option<String>>,
+    next: Option<Dir>,
     over: bool,
 }
 
 /// How near a root is to the directory read: deeper is nearer, and the
 /// instance at `~` is the farthest of all.
-pub(super) fn nearness(root: &Option<String>) -> i64 {
+pub(super) fn nearness(root: &Dir) -> i64 {
     match root {
-        Some(root) => std::path::Path::new(root).components().count() as i64,
-        None => -1,
+        Dir::At(root) => std::path::Path::new(root).components().count() as i64,
+        Dir::Global => -1,
     }
 }
 
@@ -430,7 +430,7 @@ pub(super) async fn climb(
         .iter()
         .map(|name| Walking {
             name: name.clone(),
-            walk: registry.instance_walk(provider, name, plan.requested_path.as_deref()),
+            walk: registry.instance_walk(provider, name, &plan.requested_path),
             next: None,
             over: false,
         })
@@ -474,18 +474,18 @@ pub(super) async fn climb(
             });
             if honor_put
                 && plan.target.is_field()
-                && cache.put_answers(provider, root.as_deref(), plan.target.rest())
+                && cache.put_answers(provider, root.address(), plan.target.rest())
             {
                 continue;
             }
             if let Climb::Warm(read) = mode {
-                hear_tree(registry, cache, provider, &w.name, root.as_deref(), read).await;
+                hear_tree(registry, cache, provider, &w.name, root.address(), read).await;
                 pending.extend(start_for_read(
                     registry,
                     cache,
                     provider,
                     &w.name,
-                    root.as_deref(),
+                    root.address(),
                     read,
                 ));
             }
@@ -513,7 +513,7 @@ pub(super) fn read_chain_merged(
 ) -> Option<MergedRead> {
     cache.read_merged(
         &plan.provider,
-        plan.requested_path.as_deref(),
+        &plan.requested_path,
         visited,
         registry,
         plan.layers,
@@ -571,7 +571,7 @@ pub(super) async fn handle_get(
             cache,
             registry,
             &plan.target,
-            plan.requested_path.as_deref(),
+            &plan.requested_path,
             &instances,
         );
     }
@@ -581,7 +581,7 @@ pub(super) async fn handle_get(
     // directory the caller is standing in — so the template half reads
     // from the requested path, which the plan already canonicalised. The
     // data half reads the instances the walk below reaches.
-    let template_path = plan.requested_path.as_deref();
+    let template_path = &plan.requested_path;
 
     // `--force` re-executes below, per instance; nothing is evicted
     // here. Evicting the addressed entry wholesale used to take the
@@ -638,15 +638,7 @@ pub(super) async fn handle_get(
     // nothing pays nothing.
     let called =
         if plan.layers != crate::cache::Layers::Put && registry.lines().has_calls(provider_name) {
-            match warm_called(
-                registry,
-                cache,
-                provider_name,
-                plan.requested_path.as_deref(),
-                read,
-            )
-            .await
-            {
+            match warm_called(registry, cache, provider_name, &plan.requested_path, read).await {
                 Ok((called, changed)) => {
                     // The first read of the lines found no root resolved
                     // for the called Sources, or them cold: read again.

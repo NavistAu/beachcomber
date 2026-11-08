@@ -146,7 +146,7 @@ async fn rapid_refreshes_are_deduplicated() {
                 provider: "counter".to_string(),
                 instances: vec![Instance {
                     source: "main".to_string(),
-                    root: None,
+                    root: beachcomber::query::Dir::Global,
                 }],
             })
             .await;

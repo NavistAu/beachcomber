@@ -103,8 +103,8 @@ impl DaemonRead for RegistryReader {
         if let Some((registry, _)) = self.bound.get()
             && let Some(registry) = registry.upgrade()
         {
-            let root = dir.and_then(crate::query::address_of);
-            registry.set_callees((provider, source, root.as_deref()), called);
+            let root = crate::query::Dir::named(dir, registry.home());
+            registry.set_callees((provider, source, root.address()), called);
         }
     }
 
@@ -157,18 +157,18 @@ impl DaemonRead for RegistryReader {
                 &registry,
                 cache,
                 &plan.provider,
-                plan.requested_path.as_deref(),
+                plan.requested_path.address(),
             )?;
         }
         let instances = crate::query::instances_for(
             &registry,
             &plan.provider,
             &crate::query::SourceDemand::All,
-            plan.requested_path.as_deref(),
+            &plan.requested_path,
         )?;
         let merged = cache.read_merged(
             &plan.provider,
-            plan.requested_path.as_deref(),
+            &plan.requested_path,
             &instances,
             &registry,
             Layers::All,
@@ -185,7 +185,7 @@ impl DaemonRead for RegistryReader {
             cache,
             &registry,
             &plan.provider,
-            plan.requested_path.as_deref(),
+            &plan.requested_path,
             merged,
         );
         Ok(returned.read.map(|m| m.fields))
@@ -263,13 +263,12 @@ struct KeptRoot {
 
 /// The directories a `root` line's answer for `dir` can depend on, nearest
 /// first: `dir` and each above it, up to `$HOME` (or `/` outside it).
-fn walk_up(dir: &str) -> Vec<std::path::PathBuf> {
-    let home = crate::query::home_dir();
+fn walk_up(dir: &str, home: &crate::query::Home) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     let mut at = Some(std::path::Path::new(dir));
     while let Some(here) = at {
         out.push(here.to_path_buf());
-        if home.as_deref() == Some(here) {
+        if home.dir().map(std::path::Path::new) == Some(here) {
             break;
         }
         at = here.parent();
@@ -279,10 +278,10 @@ fn walk_up(dir: &str) -> Vec<std::path::PathBuf> {
 
 /// How many of `walked` (from [`walk_up`]) the answer `found` depends on: up
 /// to the root it found when that is one of them, else all of them.
-fn walked_to(walked: &[std::path::PathBuf], found: &Found) -> usize {
+fn walked_to(walked: &[std::path::PathBuf], found: &Found, home: &crate::query::Home) -> usize {
     let root = match found {
         Found::At(root) => Some(std::path::PathBuf::from(root)),
-        Found::Home => crate::query::home_dir(),
+        Found::Home => home.dir().map(std::path::PathBuf::from),
         Found::Nothing => None,
     };
     root.and_then(|root| walked.iter().position(|dir| *dir == root))
@@ -351,6 +350,10 @@ pub struct ProviderRegistry {
     retirements: Arc<Retirements>,
     /// The reload epoch this registry was put in force at (see [`Retirements`]).
     born: std::sync::atomic::AtomicU64,
+    /// The `$HOME` that is the global entry ([`crate::query::Dir`]): the
+    /// `HOME` of the variables the registry was loaded with, else this
+    /// process's.
+    home: crate::query::Home,
 }
 
 /// The Sources a reload removed or changed, by the reload epoch that did it.
@@ -403,7 +406,21 @@ impl ProviderRegistry {
             definitions: HashMap::new(),
             retirements: Arc::default(),
             born: std::sync::atomic::AtomicU64::new(0),
+            home: crate::query::Home::from_env(),
         }
+    }
+
+    /// The `$HOME` that is the global entry: every directory this registry's
+    /// daemon keys, walks or runs in at `~` is found against it.
+    pub fn home(&self) -> &crate::query::Home {
+        &self.home
+    }
+
+    /// This registry with `home` as its `$HOME`, in place of the one it was
+    /// loaded with.
+    pub fn with_home(mut self, home: crate::query::Home) -> Self {
+        self.home = home;
+        self
     }
 
     /// The providers' own lines: what a read of a provider's records, and the
@@ -579,7 +596,11 @@ impl ProviderRegistry {
             if out.iter().any(|(op, oi)| *op == p && *oi == instance) {
                 continue;
             }
-            let key = (p.clone(), instance.source.clone(), instance.root.clone());
+            let key = (
+                p.clone(),
+                instance.source.clone(),
+                instance.root.address().map(str::to_string),
+            );
             if let Some(called) = self.callees.get(&key) {
                 for ((cp, cs), roots) in called.iter() {
                     for root in roots {
@@ -647,17 +668,17 @@ impl ProviderRegistry {
         &self,
         provider: &str,
         source: &str,
-        dir: Option<&str>,
+        dir: &crate::query::Dir,
     ) -> crate::query::InstanceWalk {
         let nearest = self
             .source(provider, source)
             .is_some_and(|s| s.has_root() && s.metadata().schedule.nearest);
-        crate::query::InstanceWalk::new(dir, nearest)
+        crate::query::InstanceWalk::new(dir, nearest, &self.home)
     }
 
     /// What `provider`'s Source `source` finds as its root for `dir`:
     /// [`Found::At`] a directory, [`Found::Home`] when that is `$HOME` (the
-    /// instance at `~`, see [`crate::query::normalise_path`]), or
+    /// instance at `~`, see [`crate::query::Dir`]), or
     /// [`Found::Nothing`]. What nothing means is the walk's
     /// ([`crate::query::InstanceWalk`]).
     ///
@@ -691,7 +712,7 @@ impl ProviderRegistry {
         // it renders is a change the next read sees.
         let walked = self
             .renders_root(provider, source)
-            .then(|| crate::cache::Stamped::take(walk_up(dir)));
+            .then(|| crate::cache::Stamped::take(walk_up(dir, &self.home)));
         let found = src.root(dir);
         if let Err(msg) = &found
             && self.renders_root(provider, source)
@@ -708,18 +729,11 @@ impl ProviderRegistry {
             // A test's Source walks up from `dir`, which is canonical: an
             // ancestor of it is too, and only `~` is special.
             Some(root) if !self.renders_root(provider, source) => {
-                if crate::query::is_home(&root) {
-                    Found::Home
-                } else {
-                    Found::At(root)
-                }
+                Found::from(crate::query::Dir::of(&root, &self.home))
             }
             // A rendered root is whatever the line says: canonicalise it.
-            Some(root) if root == dir && !crate::query::is_home(&root) => Found::At(root),
-            Some(root) => match crate::query::address_of(&root) {
-                Some(root) => Found::At(root),
-                None => Found::Home,
-            },
+            Some(root) if root == dir => Found::from(crate::query::Dir::of(&root, &self.home)),
+            Some(root) => Found::from(crate::query::Dir::canonical(&root, &self.home)),
             None => Found::Nothing,
         };
         if let Some(mut walked) = walked {
@@ -735,7 +749,7 @@ impl ProviderRegistry {
                         .is_none_or(|at| now.duration_since(at) < UNCLAIMED_TTL)
                 });
             }
-            let depends = walked_to(&walk_up(dir), &root);
+            let depends = walked_to(&walk_up(dir, &self.home), &root, &self.home);
             walked.truncate(depends);
             self.roots.insert(
                 (provider.to_string(), source.to_string(), dir.to_string()),
@@ -1118,6 +1132,9 @@ impl ProviderRegistry {
     /// config with no layers has no providers.
     pub fn load(config: &Config, vars: &HashMap<String, String>) -> ConfigLoad {
         let mut registry = Self::new();
+        if let Some(home) = vars.get("HOME") {
+            registry.home = crate::query::Home::of(Some(home));
+        }
 
         // ── The providers' own lines ──────────────────────────────────────────
         // First: what a provider's `result` says decides what its Sources may
@@ -2529,7 +2546,7 @@ result.y = "{{ data }}"
         std::fs::write(&flag, "b").unwrap();
         let (registry, _cache) = calling_registry(&flag);
         let at = dir.path().to_str().unwrap();
-        let root = crate::query::address_of(at);
+        let root = crate::query::Dir::canonical(at, registry.home()).into_address();
         let a = registry.source("p", "a").unwrap();
 
         execute(&a, at).unwrap();
@@ -2549,7 +2566,7 @@ result.y = "{{ data }}"
         std::fs::write(&flag, "b").unwrap();
         let (registry, _cache) = calling_registry(&flag);
         let at = dir.path().to_str().unwrap();
-        let root = crate::query::address_of(at);
+        let root = crate::query::Dir::canonical(at, registry.home()).into_address();
         let a = registry.source("p", "a").unwrap();
         execute(&a, at).unwrap();
         assert_eq!(demanded_with(&registry, "a", &root), ["p.a", "p.b"]);
@@ -2567,7 +2584,7 @@ result.y = "{{ data }}"
         std::fs::write(&flag, "b").unwrap();
         let (registry, _cache) = calling_registry(&flag);
         let at = dir.path().to_str().unwrap();
-        let root = crate::query::address_of(at);
+        let root = crate::query::Dir::canonical(at, registry.home()).into_address();
         execute(&registry.source("p", "a").unwrap(), at).unwrap();
         assert_eq!(registry.callers_of().len(), 1);
 

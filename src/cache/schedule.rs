@@ -244,7 +244,14 @@ mod tests {
             None,
         );
         cache.remove_source("p", None, "s");
-        assert_eq!(cache.resolve_decay("p", None), 2);
+        assert_eq!(
+            cache.resolve_decay(
+                "p",
+                &crate::query::Dir::Global,
+                &crate::query::Home::default()
+            ),
+            2
+        );
     }
 
     #[test]
@@ -261,7 +268,15 @@ mod tests {
                     None,
                 )
                 .unwrap();
-            assert_eq!(cache.resolve_decay("p", None), expected, "decay {n}");
+            assert_eq!(
+                cache.resolve_decay(
+                    "p",
+                    &crate::query::Dir::Global,
+                    &crate::query::Home::default()
+                ),
+                expected,
+                "decay {n}"
+            );
         }
     }
 }

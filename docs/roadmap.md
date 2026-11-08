@@ -80,7 +80,7 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 
 - [ ] Hyperfine benchmarks — before/after comparisons for tmux status bar refresh and p10k prompt render with
       beachcomber vs native tools. Publish results on the website.
-- [ ] **Skip realpath on a warm read.** `query::normalise_path` canonicalises every request path (about a third of the
+- [ ] **Skip realpath on a warm read.** `query::Dir::requested` canonicalises every request path (about a third of the
       daemon's CPU per warm read in a 2026-11 profile). A memo is only correct if it sees any ancestor renamed or
       replaced by a symlink; a `stat` of the target cannot, and an `lstat` per component costs ~80% of realpath. It
       needs invalidation from directory events on the ancestors. `normalise_follows_the_tree_as_it_changes` pins

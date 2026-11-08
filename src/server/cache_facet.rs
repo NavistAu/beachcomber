@@ -7,7 +7,7 @@ use crate::cache::{Cache, Layers};
 use crate::protocol::Response;
 use crate::provider::registry::ProviderRegistry;
 use crate::provider::source_call::instance_key;
-use crate::query::{Instance, Key, QueryPlan};
+use crate::query::{Dir, Instance, Key, QueryPlan};
 use std::sync::Arc;
 use tracing::warn;
 
@@ -31,7 +31,7 @@ pub(super) fn cache_facet_response(
     cache: &Cache,
     registry: &ProviderRegistry,
     target: &Key,
-    requested: Option<&str>,
+    requested: &Dir,
     reached: &[Instance],
 ) -> Response {
     let provider = &target.provider;
@@ -85,7 +85,7 @@ pub(super) fn cache_facet_tree(
     registry: &ProviderRegistry,
     provider: &str,
     path: &[String],
-    requested: Option<&str>,
+    requested: &Dir,
     reached: &[Instance],
 ) -> Option<serde_json::Value> {
     let rest = &libbeachcomber::key::format_address(path);
@@ -107,9 +107,11 @@ pub(super) fn cache_facet_tree(
     // depth, as `source_lifecycle_config` and `static_lifecycle_config` resolve it.
     let inherit_decay = |answer: &mut serde_json::Map<String, serde_json::Value>,
                          entry: Option<&str>| {
-        answer
-            .entry("decay")
-            .or_insert_with(|| cache.resolve_decay(provider, entry).into());
+        answer.entry("decay").or_insert_with(|| {
+            cache
+                .resolve_decay(provider, &Dir::keyed(entry), registry.home())
+                .into()
+        });
     };
     let leaf = |tail: &str| -> Option<serde_json::Value> {
         let record = merged.as_ref()?.records.get(tail)?;
@@ -139,7 +141,7 @@ pub(super) fn cache_facet_tree(
     };
 
     let template_leaf = |tail: &str| -> serde_json::Value {
-        match cache.memo_record(provider, requested, tail) {
+        match cache.memo_record(provider, requested, registry.home(), tail) {
             // Every memo is a lifecycle entry (`apply_memo_written`).
             Some(memo) => {
                 let mut answer = memo.cache_answer();
@@ -235,7 +237,7 @@ pub(super) fn layers_response(
 ) -> Response {
     use crate::cache::LayerRecord;
     let provider = plan.provider.as_str();
-    let requested = plan.requested_path.as_deref();
+    let requested = &plan.requested_path;
     let merged = cache.read_merged(provider, requested, instances, registry, Layers::All);
     let Answered { merged, half } = answer(cache, registry, provider, &[], requested, merged);
 
@@ -255,7 +257,7 @@ pub(super) fn layers_response(
         matches!(node, Some(serde_json::Value::String(_))).then_some(at)
     };
 
-    let stacked = cache.layer_stacks(provider, requested, instances);
+    let stacked = cache.layer_stacks(provider, requested, instances, registry.home());
     // A memo is read only through its template: one at an address no template
     // string stands at is no layer of anything.
     let (mut ordered, data): (Vec<_>, Vec<_>) = stacked
@@ -330,7 +332,7 @@ pub(super) fn layers_response(
             .collect();
         if let Some(string) = template_string(leaf) {
             let live = cache
-                .memo_record(provider, requested, &string)
+                .memo_record(provider, requested, registry.home(), &string)
                 .filter(crate::cache::MemoRecord::is_live);
             let memo = live.and_then(|memo| {
                 list.iter()

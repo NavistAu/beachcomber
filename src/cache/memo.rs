@@ -242,24 +242,25 @@ impl Cache {
     }
 
     /// The memo of `provider`'s template leaf `tail` (a canonical address) a
-    /// read from `chain_from` finds: up the directory chain, nearest first,
+    /// read from `chain_from` finds: up its directory chain, nearest first,
     /// the first directory holding a memo record at `tail` deciding. `None`
     /// when there is none — and at once for a provider never given a memo.
     pub fn memo_record(
         &self,
         provider: &str,
-        chain_from: Option<&str>,
+        chain_from: &crate::query::Dir,
+        home: &crate::query::Home,
         tail: &str,
     ) -> Option<MemoRecord> {
         if !self.has_memos(provider) {
             return None;
         }
         let memo_facet = facet_of(provider, Facet::Memo);
-        for link in crate::query::path_chain(chain_from) {
+        for link in chain_from.chain(home) {
             let (stamp, data) = {
                 let Some(entry) = self
                     .entries
-                    .get(&make_cache_key(&memo_facet, link.as_deref()))
+                    .get(&make_cache_key(&memo_facet, link.address()))
                 else {
                     continue;
                 };
@@ -277,7 +278,7 @@ impl Cache {
                 .entries
                 .get(&make_cache_key(
                     &facet_of(provider, Facet::Cache),
-                    link.as_deref(),
+                    link.address(),
                 ))
                 .and_then(|entry| {
                     match crate::provider::lookup_path(&entry.memo.as_ref()?.fields, tail)? {
@@ -291,7 +292,7 @@ impl Cache {
                 keys,
                 age_ms: stamp.age_ms(),
                 stale: stamp.is_stale(),
-                entry: link,
+                entry: link.into_address(),
             });
         }
         None
@@ -401,7 +402,14 @@ mod tests {
                 ..memo(H1, Some(Value::String("prod".into())), Some(600))
             },
         );
-        let record = cache.memo_record("k", None, "context").expect("a record");
+        let record = cache
+            .memo_record(
+                "k",
+                &crate::query::Dir::Global,
+                &crate::query::Home::default(),
+                "context",
+            )
+            .expect("a record");
         assert_eq!(record.data, Some(Value::String("prod".into())));
         assert_eq!(record.hash(), Some(H1));
         assert!(record.is_live());
@@ -416,15 +424,40 @@ mod tests {
             record.keys["watch"],
             Value::Array(vec![Value::String("/h/.kube/config".into())])
         );
-        assert!(cache.memo_record("k", None, "namespace").is_none());
-        assert!(cache.memo_record("other", None, "context").is_none());
+        assert!(
+            cache
+                .memo_record(
+                    "k",
+                    &crate::query::Dir::Global,
+                    &crate::query::Home::default(),
+                    "namespace"
+                )
+                .is_none()
+        );
+        assert!(
+            cache
+                .memo_record(
+                    "other",
+                    &crate::query::Dir::Global,
+                    &crate::query::Home::default(),
+                    "context"
+                )
+                .is_none()
+        );
     }
 
     #[test]
     fn a_memo_of_absence_is_a_record_with_no_value() {
         let cache = Cache::new();
         cache.write_memo("k", None, "context", memo(H1, None, None));
-        let record = cache.memo_record("k", None, "context").expect("a record");
+        let record = cache
+            .memo_record(
+                "k",
+                &crate::query::Dir::Global,
+                &crate::query::Home::default(),
+                "context",
+            )
+            .expect("a record");
         assert_eq!(record.data, None);
         assert_eq!(record.hash(), Some(H1));
         assert_eq!(
@@ -442,19 +475,42 @@ mod tests {
     fn a_memo_is_found_up_the_chain_nearest_first() {
         let cache = Cache::new();
         cache.write_memo("k", Some("/m/a"), "f", memo(H1, Some(Value::Int(1)), None));
-        let record = cache.memo_record("k", Some("/m/a/b"), "f").unwrap();
+        let record = cache
+            .memo_record(
+                "k",
+                &crate::query::Dir::At("/m/a/b".into()),
+                &crate::query::Home::default(),
+                "f",
+            )
+            .unwrap();
         assert_eq!(
             (record.entry.as_deref(), record.data),
             (Some("/m/a"), Some(Value::Int(1)))
         );
-        assert!(cache.memo_record("k", Some("/m"), "f").is_none());
+        assert!(
+            cache
+                .memo_record(
+                    "k",
+                    &crate::query::Dir::At("/m".into()),
+                    &crate::query::Home::default(),
+                    "f"
+                )
+                .is_none()
+        );
         cache.write_memo(
             "k",
             Some("/m/a/b"),
             "f",
             memo(H2, Some(Value::Int(2)), None),
         );
-        let record = cache.memo_record("k", Some("/m/a/b"), "f").unwrap();
+        let record = cache
+            .memo_record(
+                "k",
+                &crate::query::Dir::At("/m/a/b".into()),
+                &crate::query::Home::default(),
+                "f",
+            )
+            .unwrap();
         assert_eq!(
             (record.hash(), record.data.clone()),
             (Some(H2), Some(Value::Int(2)))
@@ -468,24 +524,74 @@ mod tests {
         cache.write_memo("k", None, "g.y", memo(H1, Some(Value::Int(2)), None));
         cache.write_memo("k", None, "h", memo(H1, Some(Value::Int(3)), None));
         cache.write_memo("k", None, "g", memo(H2, None, None));
-        assert!(cache.memo_record("k", None, "g.x").is_none());
-        assert!(cache.memo_record("k", None, "g.y").is_none());
-        let g = cache.memo_record("k", None, "g").unwrap();
+        assert!(
+            cache
+                .memo_record(
+                    "k",
+                    &crate::query::Dir::Global,
+                    &crate::query::Home::default(),
+                    "g.x"
+                )
+                .is_none()
+        );
+        assert!(
+            cache
+                .memo_record(
+                    "k",
+                    &crate::query::Dir::Global,
+                    &crate::query::Home::default(),
+                    "g.y"
+                )
+                .is_none()
+        );
+        let g = cache
+            .memo_record(
+                "k",
+                &crate::query::Dir::Global,
+                &crate::query::Home::default(),
+                "g",
+            )
+            .unwrap();
         assert_eq!((g.hash(), g.data.clone()), (Some(H2), None));
         assert!(
             !g.keys.contains_key("poll"),
             "the old memo's keys went with it"
         );
         assert_eq!(
-            cache.memo_record("k", None, "h").unwrap().data,
+            cache
+                .memo_record(
+                    "k",
+                    &crate::query::Dir::Global,
+                    &crate::query::Home::default(),
+                    "h"
+                )
+                .unwrap()
+                .data,
             Some(Value::Int(3)),
             "a sibling stays"
         );
         // And the other way: one below replaces the one above.
         cache.write_memo("k", None, "g.z", memo(H1, Some(Value::Int(4)), None));
-        assert!(cache.memo_record("k", None, "g").is_none());
+        assert!(
+            cache
+                .memo_record(
+                    "k",
+                    &crate::query::Dir::Global,
+                    &crate::query::Home::default(),
+                    "g"
+                )
+                .is_none()
+        );
         assert_eq!(
-            cache.memo_record("k", None, "g.z").unwrap().data,
+            cache
+                .memo_record(
+                    "k",
+                    &crate::query::Dir::Global,
+                    &crate::query::Home::default(),
+                    "g.z"
+                )
+                .unwrap()
+                .data,
             Some(Value::Int(4))
         );
     }
@@ -507,7 +613,16 @@ mod tests {
         assert!(woken.try_recv().is_ok(), "the namespace was notified");
         assert!(!cache.evict_memo("k", None, "f"), "only once");
         assert!(woken.try_recv().is_err(), "nothing went the second time");
-        assert!(cache.memo_record("k", None, "f").is_none());
+        assert!(
+            cache
+                .memo_record(
+                    "k",
+                    &crate::query::Dir::Global,
+                    &crate::query::Home::default(),
+                    "f"
+                )
+                .is_none()
+        );
         assert!(
             cache
                 .stored_keys("k", None, &crate::cache::Origin::Memo, "f")
@@ -518,9 +633,26 @@ mod tests {
                 .stored_keys("k", None, &crate::cache::Origin::Memo, "g")
                 .is_some()
         );
-        assert!(cache.memo_record("k", None, "g").is_some());
+        assert!(
+            cache
+                .memo_record(
+                    "k",
+                    &crate::query::Dir::Global,
+                    &crate::query::Home::default(),
+                    "g"
+                )
+                .is_some()
+        );
         assert_eq!(
-            cache.memo_record("k", Some("/m"), "f").unwrap().data,
+            cache
+                .memo_record(
+                    "k",
+                    &crate::query::Dir::At("/m".into()),
+                    &crate::query::Home::default(),
+                    "f"
+                )
+                .unwrap()
+                .data,
             Some(Value::Int(2))
         );
 
@@ -538,7 +670,14 @@ mod tests {
         cache.write_memo("k", None, "f", memo(H1, Some(Value::Int(1)), Some(60)));
         assert!(cache.drop_memo_hash("k", None, "f"));
         assert!(!cache.drop_memo_hash("k", None, "f"), "only once");
-        let record = cache.memo_record("k", None, "f").unwrap();
+        let record = cache
+            .memo_record(
+                "k",
+                &crate::query::Dir::Global,
+                &crate::query::Home::default(),
+                "f",
+            )
+            .unwrap();
         assert_eq!(record.hash(), None);
         assert!(!record.is_live());
         assert_eq!(record.data, Some(Value::Int(1)));
@@ -550,7 +689,7 @@ mod tests {
         let cache = Cache::new();
         let live = |path: Option<&str>, f: &str| {
             cache
-                .memo_record("k", path, f)
+                .memo_record("k", &crate::query::Dir::keyed(path), &Default::default(), f)
                 .is_some_and(|r| r.hash().is_some())
         };
         let write_all = || {
@@ -679,7 +818,13 @@ mod tests {
         cache.write_memo("k", None, "g", memo(H1, Some(Value::Int(2)), None));
         cache.write_memo("k", None, "none", memo(H1, None, None));
         let read = cache
-            .read_merged("k:memo", None, &[], &registry, Layers::All)
+            .read_merged(
+                "k:memo",
+                &crate::query::Dir::Global,
+                &[],
+                &registry,
+                Layers::All,
+            )
             .expect("a hit");
         assert_eq!(
             read.fields,

@@ -109,7 +109,7 @@ async fn integration_cold_miss_populates_cache_and_enters_active() {
             provider: "lc_counter".to_string(),
             instances: vec![Instance {
                 source: "main".to_string(),
-                root: None,
+                root: beachcomber::query::Dir::Global,
             }],
         })
         .await;
@@ -170,7 +170,7 @@ async fn integration_active_entry_appears_in_status() {
             provider: "lc_counter".to_string(),
             instances: vec![Instance {
                 source: "main".to_string(),
-                root: None,
+                root: beachcomber::query::Dir::Global,
             }],
         })
         .await;
@@ -252,7 +252,7 @@ async fn integration_status_response_reports_decay_level() {
             provider: "lc_counter".to_string(),
             instances: vec![Instance {
                 source: "main".to_string(),
-                root: None,
+                root: beachcomber::query::Dir::Global,
             }],
         })
         .await;
@@ -326,7 +326,7 @@ async fn integration_repeated_queries_keep_data_warm() {
             provider: "lc_counter".to_string(),
             instances: vec![Instance {
                 source: "main".to_string(),
-                root: None,
+                root: beachcomber::query::Dir::Global,
             }],
         })
         .await;
@@ -356,7 +356,7 @@ async fn integration_repeated_queries_keep_data_warm() {
                 provider: "lc_counter".to_string(),
                 instances: vec![Instance {
                     source: "main".to_string(),
-                    root: None,
+                    root: beachcomber::query::Dir::Global,
                 }],
             })
             .await;

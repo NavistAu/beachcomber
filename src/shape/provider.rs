@@ -832,7 +832,7 @@ pub fn returned_over(
     cache: &Cache,
     registry: &ProviderRegistry,
     provider: &str,
-    path: Option<&str>,
+    path: &crate::query::Dir,
     result: Option<MergedRead>,
 ) -> Returned {
     registry.lines().returned(
@@ -849,7 +849,7 @@ pub fn returned_over(
                 )
                 .map(|facet| facet.fields)
         },
-        &|p, s| source_call(registry, cache, p, s, path),
+        &|p, s| source_call(registry, cache, p, s, path.address()),
     )
 }
 

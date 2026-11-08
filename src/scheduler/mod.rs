@@ -4,7 +4,7 @@ pub mod lifecycle;
 mod provider_source_tests;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{mpsc, oneshot};
@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, Instant, interval, sleep_until};
 use tracing::{debug, info, warn};
 
-use crate::query::Instance;
+use crate::query::{Dir, Home, Instance};
 
 pub use crate::cache::FailureSnapshot;
 use crate::cache::{Cache, Origin};
@@ -735,7 +735,7 @@ impl Scheduler {
             self.execute_source(
                 provider,
                 &instance.source,
-                instance.root.as_deref(),
+                instance.root.address(),
                 Want::Fresh,
             );
         }
@@ -988,6 +988,7 @@ impl Scheduler {
                 Some(Registrar::start(
                     watcher,
                     crate::watcher::WATCH_RETRY_INTERVAL,
+                    self.registry.home().clone(),
                 )),
                 rx,
                 None,
@@ -1088,7 +1089,7 @@ impl Scheduler {
                         }
                         Some(SchedulerMessage::MemoWritten { provider, path, node, ttl_secs, watch }) => {
                             let key = memo_key(&provider, path.as_deref(), &node);
-                            let displaced = apply_memo_written(&mut lifecycle, &self.cache, &key, ttl_secs, &watch, Instant::now());
+                            let displaced = apply_memo_written(&mut lifecycle, &self.cache, self.registry.home(), &key, ttl_secs, &watch, Instant::now());
                             for gone in &displaced {
                                 drop_watches_for_key(gone, &mut watch_paths, registrar.as_ref());
                             }
@@ -1111,6 +1112,7 @@ impl Scheduler {
                                     &key.provider,
                                     sm,
                                     key.path.as_deref(),
+                                    self.registry.home(),
                                 );
                                 if crate::provider::watches_tree(&sm.schedule) {
                                     tree_if_registered(&self.cache, registrar.as_ref(), key);
@@ -1140,7 +1142,7 @@ impl Scheduler {
                                 let Some(sm) = self.registry.source_metadata(provider, &instance.source) else {
                                     continue;
                                 };
-                                let root = instance.root.clone();
+                                let root = instance.root.clone().into_address();
                                 let key = lifecycle::Key {
                                     provider: provider.clone(),
                                     path: root.clone(),
@@ -1149,7 +1151,7 @@ impl Scheduler {
                                 };
                                 let outcome = lifecycle.demand(
                                     key.clone(),
-                                    || source_lifecycle_config(&self.cache, provider, root.as_deref(), sm),
+                                    || source_lifecycle_config(&self.cache, provider, root.as_deref(), sm, self.registry.home()),
                                     now,
                                 );
 
@@ -1168,6 +1170,7 @@ impl Scheduler {
                                         provider,
                                         sm,
                                         root.as_deref(),
+                                        self.registry.home(),
                                     );
                                     if crate::provider::watches_tree(&sm.schedule) {
                                         tree_if_registered(&self.cache, registrar.as_ref(), &key);
@@ -1381,6 +1384,7 @@ fn watch_instance(
     provider: &str,
     sm: &crate::provider::SourceMetadata,
     root: Option<&str>,
+    home: &Home,
 ) {
     let key = lifecycle::Key {
         provider: provider.to_string(),
@@ -1388,7 +1392,7 @@ fn watch_instance(
         source: Origin::source(&sm.name),
         node: String::new(),
     };
-    let watches = instance_watches(&key, sm);
+    let watches = instance_watches(&key, sm, home);
     watch_key(registrar, watch_paths, &key, watches);
 }
 
@@ -1406,6 +1410,7 @@ fn watch_instance(
 fn instance_watches(
     key: &lifecycle::Key,
     sm: &crate::provider::SourceMetadata,
+    home: &Home,
 ) -> Vec<(PathBuf, Subscription)> {
     let mut out = Vec::new();
     let subscription = |patterns: Vec<String>| Subscription {
@@ -1422,10 +1427,10 @@ fn instance_watches(
     // all of `$HOME`. Its files are the single-component patterns joined to
     // `$HOME` (`mise.toml`, `.tool-versions`), each watched on its own.
     if key.path.is_none()
-        && let Some(home) = crate::query::home_dir()
+        && let Some(home) = home.dir()
     {
         for pattern in &patterns {
-            let file = home.join(pattern);
+            let file = Path::new(home).join(pattern);
             if !pattern.contains('/') && !crate::provider::is_tree_pattern(pattern) && file.exists()
             {
                 out.push((file, subscription(Vec::new())));
@@ -1589,6 +1594,7 @@ fn memo_key(provider: &str, path: Option<&str>, node: &str) -> lifecycle::Key {
 fn apply_memo_written(
     lifecycle: &mut LifecycleRegistry,
     cache: &Cache,
+    home: &Home,
     key: &lifecycle::Key,
     ttl_secs: Option<u64>,
     watch: &[String],
@@ -1601,7 +1607,14 @@ fn apply_memo_written(
         |address| crate::cache::overlaps(address, &key.node),
     );
     displaced.retain(|gone| gone != key);
-    let cfg = static_lifecycle_config(cache, &key.provider, key.path.as_deref(), ttl_secs, watch);
+    let cfg = static_lifecycle_config(
+        cache,
+        home,
+        &key.provider,
+        key.path.as_deref(),
+        ttl_secs,
+        watch,
+    );
     lifecycle.on_demand(key.clone(), cfg, now);
     displaced
 }
@@ -1614,6 +1627,7 @@ fn apply_memo_written(
 /// `path` (`Cache::resolve_decay`).
 fn static_lifecycle_config(
     cache: &Cache,
+    home: &Home,
     provider: &str,
     path: Option<&str>,
     ttl_secs: Option<u64>,
@@ -1629,7 +1643,7 @@ fn static_lifecycle_config(
     let decay = if ttl_secs.is_some() {
         1
     } else {
-        cache.resolve_decay(provider, path)
+        cache.resolve_decay(provider, &Dir::keyed(path), home)
     };
     SourceLifecycleConfig::new(schedule, decay)
 }
@@ -1642,12 +1656,13 @@ fn source_lifecycle_config(
     provider: &str,
     path: Option<&str>,
     sm: &crate::provider::SourceMetadata,
+    home: &Home,
 ) -> SourceLifecycleConfig {
     SourceLifecycleConfig::new(
         sm.schedule.clone(),
         sm.schedule
             .decay
-            .unwrap_or_else(|| cache.resolve_decay(provider, path)),
+            .unwrap_or_else(|| cache.resolve_decay(provider, &Dir::keyed(path), home)),
     )
 }
 
@@ -1733,7 +1748,8 @@ fn plan_reload(
             continue;
         };
         let before = previous.source_metadata(&key.provider, key.source.name());
-        let config = source_lifecycle_config(cache, &key.provider, key.path.as_deref(), now);
+        let config =
+            source_lifecycle_config(cache, &key.provider, key.path.as_deref(), now, next.home());
         if before.is_some_and(|before| same_schedule(before, now))
             && config.decay == entry.config.decay
             && alike(&config.schedule, &entry.config.schedule)
@@ -1999,9 +2015,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(sm.schedule.decay, None);
-        assert_eq!(source_lifecycle_config(&cache, "git", None, &sm).decay, 6);
+        assert_eq!(
+            source_lifecycle_config(&cache, "git", None, &sm, &Home::default()).decay,
+            6
+        );
         sm.schedule.decay = Some(1);
-        assert_eq!(source_lifecycle_config(&cache, "git", None, &sm).decay, 1);
+        assert_eq!(
+            source_lifecycle_config(&cache, "git", None, &sm, &Home::default()).decay,
+            1
+        );
     }
 
     #[test]
@@ -2010,7 +2032,7 @@ mod tests {
         let sm = registry.provider_sources("git").unwrap()[0].clone();
         let cache = Cache::new();
         assert_eq!(
-            source_lifecycle_config(&cache, "git", None, &sm).decay,
+            source_lifecycle_config(&cache, "git", None, &sm, &Home::default()).decay,
             lifecycle::DEFAULT_DECAY
         );
         cache
@@ -2023,9 +2045,12 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(source_lifecycle_config(&cache, "git", None, &sm).decay, 2);
         assert_eq!(
-            source_lifecycle_config(&cache, "mise", None, &sm).decay,
+            source_lifecycle_config(&cache, "git", None, &sm, &Home::default()).decay,
+            2
+        );
+        assert_eq!(
+            source_lifecycle_config(&cache, "mise", None, &sm, &Home::default()).decay,
             lifecycle::DEFAULT_DECAY,
             "another provider's prototype does not apply"
         );
@@ -2040,11 +2065,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            source_lifecycle_config(&cache, "git", Some("/w/proj/sub"), &sm).decay,
+            source_lifecycle_config(&cache, "git", Some("/w/proj/sub"), &sm, &Home::default())
+                .decay,
             6
         );
         assert_eq!(
-            source_lifecycle_config(&cache, "git", Some("/w/other"), &sm).decay,
+            source_lifecycle_config(&cache, "git", Some("/w/other"), &sm, &Home::default()).decay,
             2
         );
     }
@@ -2174,6 +2200,7 @@ mod tests {
         let registrar = Registrar::start(
             FsWatcher::with_backend(Box::new(held)),
             crate::watcher::WATCH_RETRY_INTERVAL,
+            Home::from_env(),
         );
         let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
         let key = |source: &str| lifecycle::Key {
@@ -2667,7 +2694,7 @@ mod tests {
             .unwrap();
             keys.push(lifecycle::Key {
                 provider: "p".into(),
-                path: crate::query::address_of(at),
+                path: Dir::canonical(at, &Home::from_env()).into_address(),
                 source: crate::cache::Origin::source("a"),
                 node: String::new(),
             });
@@ -2724,7 +2751,7 @@ mod tests {
             source: Origin::source("s"),
             node: String::new(),
         };
-        let config = source_lifecycle_config(&cache, "p", None, was);
+        let config = source_lifecycle_config(&cache, "p", None, was, &Home::default());
         lifecycle.on_demand(key, config, Instant::now());
         let plan = plan_reload(&cache, &lifecycle, &before, &after);
         assert!(plan.evict.is_empty() && plan.retune.is_empty());
@@ -2761,7 +2788,7 @@ mod tests {
         };
         for name in ["keep", "tune", "gone", "body"] {
             let sm = before.source_metadata("p", name).unwrap();
-            let config = source_lifecycle_config(&cache, "p", None, sm);
+            let config = source_lifecycle_config(&cache, "p", None, sm, &Home::default());
             lifecycle.on_demand(key(name), config, Instant::now());
         }
         let put = lifecycle::Key {
@@ -2826,7 +2853,7 @@ mod tests {
         };
         lifecycle.on_demand(
             key.clone(),
-            source_lifecycle_config(&cache, "p", None, sm),
+            source_lifecycle_config(&cache, "p", None, sm, &Home::default()),
             Instant::now(),
         );
         cache
@@ -2873,7 +2900,15 @@ mod tests {
             },
         );
         let key = memo_key("k", None, node);
-        apply_memo_written(lifecycle, cache, &key, ttl_secs, &watch, at);
+        apply_memo_written(
+            lifecycle,
+            cache,
+            &Home::default(),
+            &key,
+            ttl_secs,
+            &watch,
+            at,
+        );
         key
     }
 
@@ -2914,13 +2949,32 @@ mod tests {
         assert_eq!(actions.evictions, vec![key.clone()]);
         evict(&cache, &key);
 
-        assert!(cache.memo_record("k", None, "f").is_none());
+        assert!(
+            cache
+                .memo_record(
+                    "k",
+                    &crate::query::Dir::Global,
+                    &crate::query::Home::default(),
+                    "f"
+                )
+                .is_none()
+        );
         assert!(
             cache
                 .stored_keys("k", None, &crate::cache::Origin::Memo, "f")
                 .is_none()
         );
-        assert!(cache.memo_record("k", None, "g").is_some(), "{sibling:?}");
+        assert!(
+            cache
+                .memo_record(
+                    "k",
+                    &crate::query::Dir::Global,
+                    &crate::query::Home::default(),
+                    "g"
+                )
+                .is_some(),
+            "{sibling:?}"
+        );
     }
 
     /// A memo's watch registers through the registrar (Pending, then Active),
@@ -2987,7 +3041,14 @@ mod tests {
             .await
             .expect("the namespace is woken")
             .unwrap();
-        let record = cache.memo_record("k", None, "f").unwrap();
+        let record = cache
+            .memo_record(
+                "k",
+                &crate::query::Dir::Global,
+                &crate::query::Home::default(),
+                "f",
+            )
+            .unwrap();
         assert_eq!(record.hash(), None);
         assert_eq!(record.data, Some(crate::provider::Value::Int(1)));
     }
@@ -3020,7 +3081,15 @@ mod tests {
         let below = write_memo(&cache, &mut lifecycle, "g.x", Some(10), &[], t0);
         let other = write_memo(&cache, &mut lifecycle, "h", Some(10), &[], t0);
         let group = memo_key("k", None, "g");
-        let displaced = apply_memo_written(&mut lifecycle, &cache, &group, None, &[], t1);
+        let displaced = apply_memo_written(
+            &mut lifecycle,
+            &cache,
+            &Home::default(),
+            &group,
+            None,
+            &[],
+            t1,
+        );
         assert_eq!(displaced, vec![below]);
         let mut nodes: Vec<&str> = lifecycle.iter().map(|(k, _)| k.node.as_str()).collect();
         nodes.sort();
@@ -3057,6 +3126,7 @@ mod tests {
         let registrar = Registrar::start(
             FsWatcher::with_backend(Box::new(held)),
             crate::watcher::WATCH_RETRY_INTERVAL,
+            Home::from_env(),
         );
         let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
         let config = PathBuf::from("/h/.kube/config");
@@ -3095,6 +3165,7 @@ mod tests {
         let registrar = Registrar::start(
             FsWatcher::with_backend(Box::new(held)),
             crate::watcher::WATCH_RETRY_INTERVAL,
+            Home::from_env(),
         );
         let mut watch_paths: HashMap<PathBuf, Vec<Subscription>> = HashMap::new();
         let key = memo_key("k", None, "f");
@@ -3135,14 +3206,14 @@ mod tests {
     fn a_memos_lifecycle_is_its_ttl_or_the_default_window() {
         let cache = Cache::new();
         let w = ["/w".to_string()];
-        let cfg = static_lifecycle_config(&cache, "k", None, Some(600), &[]);
+        let cfg = static_lifecycle_config(&cache, &Home::default(), "k", None, Some(600), &[]);
         assert_eq!(cfg, SourceLifecycleConfig::ttl(600));
         assert_eq!(
             (cfg.lifespan(), cfg.decay, cfg.schedule.watches_files()),
             (Duration::from_secs(600), 1, false),
             "polled, watching nothing"
         );
-        let cfg = static_lifecycle_config(&cache, "k", None, Some(600), &w);
+        let cfg = static_lifecycle_config(&cache, &Home::default(), "k", None, Some(600), &w);
         assert_eq!(
             (cfg.poll_interval(), cfg.schedule.ttl()),
             (None, Some(Duration::from_secs(600)))
@@ -3162,7 +3233,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        let cfg = static_lifecycle_config(&cache, "k", None, None, &w);
+        let cfg = static_lifecycle_config(&cache, &Home::default(), "k", None, None, &w);
         assert_eq!(
             (
                 cfg.lifespan(),

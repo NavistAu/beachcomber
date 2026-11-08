@@ -31,6 +31,7 @@ pub(super) fn memo_write(
     data: Option<&serde_json::Value>,
     watch: &[String],
     ttl: Option<&str>,
+    home: &crate::query::Home,
 ) -> Result<(String, Option<String>, String, crate::cache::MemoWrite), String> {
     let (provider, field) = libbeachcomber::key::split_key(key)?;
     libbeachcomber::key::check_head(provider)?;
@@ -63,7 +64,7 @@ pub(super) fn memo_write(
         return Err(format!("a memo's watch paths are absolute: {relative}"));
     }
     let ttl_secs = parse_ttl(ttl)?;
-    let path = crate::query::normalise_path(path)?;
+    let path = crate::query::Dir::requested(path, home)?.into_address();
     let write = crate::cache::MemoWrite {
         data: data.and_then(crate::provider::Value::from_json),
         hash: hash.to_string(),
@@ -186,8 +187,8 @@ pub(crate) async fn put(
 
     // Resolve optional path — canonicalize if provided. `$HOME`, like a
     // request carrying no path at all, is the global entry.
-    let effective_path: Option<String> = match crate::query::normalise_path(path) {
-        Ok(p) => p,
+    let effective_path: Option<String> = match crate::query::Dir::requested(path, registry.home()) {
+        Ok(p) => p.into_address(),
         Err(e) => return Response::error(e),
     };
 
@@ -287,7 +288,8 @@ pub(super) async fn handle_memo(
     watch: &[String],
     ttl: Option<&str>,
 ) -> Response {
-    match memo_write(key, path, hash, data, watch, ttl) {
+    let home = ctx.registry.current().home().clone();
+    match memo_write(key, path, hash, data, watch, ttl, &home) {
         Ok((provider, path, field, write)) => {
             let written = crate::scheduler::SchedulerMessage::MemoWritten {
                 provider: provider.clone(),

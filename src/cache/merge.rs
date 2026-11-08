@@ -3,7 +3,7 @@
 use super::*;
 use crate::provider::Value;
 use crate::provider::registry::ProviderRegistry;
-use crate::query::Instance;
+use crate::query::{Dir, Home, Instance};
 use crate::shape::provider::Bound;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -348,7 +348,7 @@ impl Cache {
             let name = &sm.name;
             let held = visited
                 .iter()
-                .any(|i| i.root.as_deref() == at && i.source == *name)
+                .any(|i| i.root.address() == at && i.source == *name)
                 .then(|| entry.and_then(|e| e.sources.get_key_value(name.as_str())))
                 .flatten()
                 .filter(|(_, src)| !src.fields.is_empty())
@@ -389,7 +389,7 @@ impl Cache {
     fn result_calls(
         &self,
         namespace: &str,
-        requested: Option<&str>,
+        requested: &Dir,
         registry: &ProviderRegistry,
     ) -> CalledRecords {
         let lines = registry.lines();
@@ -400,8 +400,13 @@ impl Cache {
             .result_calls(namespace)
             .iter()
             .map(|(p, s)| {
-                let record =
-                    crate::provider::source_call::source_call(registry, self, p, s, requested);
+                let record = crate::provider::source_call::source_call(
+                    registry,
+                    self,
+                    p,
+                    s,
+                    requested.address(),
+                );
                 ((p.clone(), s.clone()), record)
             })
             .collect()
@@ -437,12 +442,13 @@ impl Cache {
     pub fn read_merged(
         &self,
         namespace: &str,
-        requested: Option<&str>,
+        requested: &Dir,
         visited: &[Instance],
         registry: &ProviderRegistry,
         layers: Layers,
     ) -> Option<MergedRead> {
-        let chain = crate::query::read_chain(requested, &crate::query::roots_of(visited));
+        let chain =
+            crate::query::read_chain(requested, &crate::query::roots_of(visited), registry.home());
         let mut out = MergedRead {
             fields: HashMap::new(),
             records: HashMap::new(),
@@ -475,7 +481,7 @@ impl Cache {
         for layer in chain.iter().rev() {
             let Some(entry) = self
                 .entries
-                .get(&make_cache_key(namespace, layer.as_deref()))
+                .get(&make_cache_key(namespace, layer.address()))
             else {
                 continue;
             };
@@ -493,7 +499,7 @@ impl Cache {
             if layers != Layers::Put && visited.iter().any(|i| i.root == *layer) {
                 hit |= Self::merge_provider_records(
                     Some(&entry),
-                    layer.as_deref(),
+                    layer.address(),
                     namespace,
                     registry,
                     visited,
@@ -502,7 +508,7 @@ impl Cache {
                 );
             }
             if layers != Layers::Source {
-                hit |= Self::merge_static_records(&entry, layer.as_deref(), target);
+                hit |= Self::merge_static_records(&entry, layer.address(), target);
             }
             if hit && cuts {
                 merge_read(
@@ -536,13 +542,14 @@ impl Cache {
     pub fn layer_stacks(
         &self,
         namespace: &str,
-        requested: Option<&str>,
+        requested: &Dir,
         visited: &[Instance],
+        home: &Home,
     ) -> Vec<(String, LayerRecord)> {
         let mut out = Vec::new();
         let memo = facet_of(namespace, Facet::Memo);
-        for link in crate::query::read_chain(requested, &[]) {
-            if let Some(entry) = self.entries.get(&make_cache_key(&memo, link.as_deref())) {
+        for link in crate::query::read_chain(requested, &[], home) {
+            if let Some(entry) = self.entries.get(&make_cache_key(&memo, link.address())) {
                 let values = entry.memo.as_ref().map(|src| &src.fields);
                 for (address, stamp) in &entry.memos {
                     let value = values
@@ -554,7 +561,7 @@ impl Cache {
                         LayerRecord {
                             label: Origin::Memo.presented_label(),
                             facet: Some("memo".to_string()),
-                            path: link.clone(),
+                            path: link.clone().into_address(),
                             value,
                             age_ms: stamp.age_ms(),
                             answered: false,
@@ -564,22 +571,16 @@ impl Cache {
             }
         }
         let template = facet_of(namespace, Facet::Template);
-        for link in crate::query::read_chain(requested, &[]) {
-            if let Some(entry) = self
-                .entries
-                .get(&make_cache_key(&template, link.as_deref()))
-            {
-                Self::static_layers(&entry, link.as_deref(), Some("template"), &mut out);
+        for link in crate::query::read_chain(requested, &[], home) {
+            if let Some(entry) = self.entries.get(&make_cache_key(&template, link.address())) {
+                Self::static_layers(&entry, link.address(), Some("template"), &mut out);
             }
         }
-        for link in crate::query::read_chain(requested, &crate::query::roots_of(visited)) {
-            let Some(entry) = self
-                .entries
-                .get(&make_cache_key(namespace, link.as_deref()))
-            else {
+        for link in crate::query::read_chain(requested, &crate::query::roots_of(visited), home) {
+            let Some(entry) = self.entries.get(&make_cache_key(namespace, link.address())) else {
                 continue;
             };
-            Self::static_layers(&entry, link.as_deref(), None, &mut out);
+            Self::static_layers(&entry, link.address(), None, &mut out);
             for instance in visited.iter().filter(|i| i.root == link) {
                 let Some((name, src)) = entry.sources.get_key_value(instance.source.as_str())
                 else {
@@ -589,7 +590,7 @@ impl Cache {
                 for (tail, value) in leaves_of(&src.fields) {
                     out.push((
                         tail,
-                        LayerRecord::new(&origin, None, link.as_deref(), &value, src.age_ms()),
+                        LayerRecord::new(&origin, None, link.address(), &value, src.age_ms()),
                     ));
                 }
             }
@@ -667,7 +668,7 @@ mod tests {
         visited: &[&str],
     ) -> Option<MergedRead> {
         let visited: Vec<Instance> = visited.iter().map(|s| Instance::new(s, None)).collect();
-        cache.read_merged("demo", None, &visited, registry, Layers::All)
+        cache.read_merged("demo", &Dir::Global, &visited, registry, Layers::All)
     }
 
     #[test]
@@ -851,7 +852,13 @@ mod tests {
         let cache = Cache::new();
         assert!(
             cache
-                .read_merged("solo", None, &[], &registry, Layers::All)
+                .read_merged(
+                    "solo",
+                    &crate::query::Dir::Global,
+                    &[],
+                    &registry,
+                    Layers::All
+                )
                 .is_none()
         );
     }
@@ -874,7 +881,7 @@ mod tests {
         write(Origin::Put, "tree.right", Value::Int(2));
 
         let read = cache
-            .read_merged("p", None, &[], &registry, Layers::All)
+            .read_merged("p", &crate::query::Dir::Global, &[], &registry, Layers::All)
             .expect("both maps");
         assert_eq!(
             read.records["tree.left"].age_ms(),

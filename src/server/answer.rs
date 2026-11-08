@@ -5,7 +5,7 @@ use super::read::lookup_merged;
 use crate::cache::{Cache, MergedRead};
 use crate::protocol::Response;
 use crate::provider::registry::ProviderRegistry;
-use crate::query::{Instance, Key};
+use crate::query::{Dir, Home, Instance, Key};
 use std::collections::HashMap;
 
 /// A data hit, carrying the freshness [`freshness`] found for it.
@@ -108,7 +108,7 @@ pub(super) fn answer(
     registry: &ProviderRegistry,
     provider: &str,
     address: &[String],
-    path: Option<&str>,
+    path: &Dir,
     result: Option<MergedRead>,
 ) -> Answered {
     let returned = crate::shape::provider::returned_over(cache, registry, provider, path, result);
@@ -116,7 +116,7 @@ pub(super) fn answer(
     if let Some(template) = &half.template
         && cache.has_memos(provider)
     {
-        half.memo = memo_half(cache, provider, path, template, &half.at);
+        half.memo = memo_half(cache, provider, path, registry.home(), template, &half.at);
     }
     Answered {
         half,
@@ -131,20 +131,24 @@ pub(super) fn answer(
 pub(super) fn memo_half(
     cache: &Cache,
     provider: &str,
-    path: Option<&str>,
+    path: &Dir,
+    home: &Home,
     template: &serde_json::Value,
     at: &str,
 ) -> Option<serde_json::Value> {
     match template {
         serde_json::Value::String(_) => cache
-            .memo_record(provider, path, at)
+            .memo_record(provider, path, home, at)
             .map(|memo| memo.half()),
         serde_json::Value::Object(group) => {
             let tree: serde_json::Map<String, serde_json::Value> = group
                 .iter()
                 .filter_map(|(k, t)| {
                     let below = libbeachcomber::key::push(at, k);
-                    Some((k.clone(), memo_half(cache, provider, path, t, &below)?))
+                    Some((
+                        k.clone(),
+                        memo_half(cache, provider, path, home, t, &below)?,
+                    ))
                 })
                 .collect();
             (!tree.is_empty()).then(|| tree.into())
@@ -240,7 +244,7 @@ pub(super) fn read_watch_value(
     cache: &Cache,
     registry: &ProviderRegistry,
     target: &Key,
-    requested: Option<&str>,
+    requested: &Dir,
     reached: &[Instance],
     layers: crate::cache::Layers,
 ) -> Response {
@@ -266,7 +270,7 @@ pub(super) fn answer_read(
     cache: &Cache,
     registry: &ProviderRegistry,
     target: &Key,
-    requested: Option<&str>,
+    requested: &Dir,
     layers: crate::cache::Layers,
     merged: Option<MergedRead>,
 ) -> Answered {
@@ -310,7 +314,7 @@ mod tests {
             &cache,
             &registry,
             &target,
-            Some("/repo"),
+            &Dir::At("/repo".into()),
             &[Instance::new("refs", Some("/repo"))],
             crate::cache::Layers::All,
         );
@@ -359,7 +363,13 @@ mod tests {
             .expect("put accepted");
 
         let read = cache
-            .read_merged("p", None, &[], &registry, crate::cache::Layers::All)
+            .read_merged(
+                "p",
+                &crate::query::Dir::Global,
+                &[],
+                &registry,
+                crate::cache::Layers::All,
+            )
             .expect("both maps");
 
         assert_eq!(
@@ -413,7 +423,13 @@ mod tests {
             .expect("put accepted");
 
         let read = cache
-            .read_merged("p", Some("/x/y"), &[], &registry, crate::cache::Layers::All)
+            .read_merged(
+                "p",
+                &crate::query::Dir::At("/x/y".into()),
+                &[],
+                &registry,
+                crate::cache::Layers::All,
+            )
             .expect("both layers");
 
         assert_eq!(

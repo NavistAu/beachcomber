@@ -376,9 +376,10 @@ fn lock(table: &Mutex<Table>) -> MutexGuard<'_, Table> {
 impl Registrar {
     /// Start the worker over `watcher`; a failed path is asked for again no
     /// sooner than `retry_after` after its last ask ([`WATCH_RETRY_INTERVAL`]).
+    /// `home` is the `$HOME` watched on its entries only ([`where_to_watch`]).
     /// The worker ends when the registrar is dropped, after the registration
     /// under way, if any.
-    pub fn start(watcher: FsWatcher, retry_after: Duration) -> Self {
+    pub fn start(watcher: FsWatcher, retry_after: Duration, home: crate::query::Home) -> Self {
         let (commands, rx) = std::sync::mpsc::channel();
         let table = Arc::new(Mutex::new(Table::default()));
         let (settled_tx, settled) = mpsc::unbounded_channel();
@@ -388,6 +389,7 @@ impl Registrar {
             settled: settled_tx,
             held: HashMap::new(),
             kernel: HashMap::new(),
+            home,
         };
         std::thread::Builder::new()
             .name("comb-watches".into())
@@ -518,6 +520,8 @@ struct Worker {
     /// The registrations made, by path: whether below its entries too, and
     /// how many paths rest on it.
     kernel: HashMap<PathBuf, Kernel>,
+    /// The `$HOME` watched on its entries only.
+    home: crate::query::Home,
 }
 
 struct Kernel {
@@ -564,7 +568,7 @@ impl Worker {
     }
 
     fn register(&mut self, path: &Path) -> WatchState {
-        let (on, recursive) = match where_to_watch(path) {
+        let (on, recursive) = match where_to_watch(path, &self.home) {
             Ok(found) => found,
             Err(error) => return WatchState::Failed { error },
         };
@@ -631,12 +635,12 @@ impl Worker {
 /// on the path itself when it exists; while it does not, on the entries of
 /// the nearest directory above it that does. `/` and `$HOME` are watched on
 /// their entries only, whatever asked for them: their trees are everything.
-fn where_to_watch(path: &Path) -> Result<(PathBuf, bool), String> {
+fn where_to_watch(path: &Path, home: &crate::query::Home) -> Result<(PathBuf, bool), String> {
     match std::fs::metadata(path) {
         Ok(_) => {
             let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
             let everything =
-                real == Path::new("/") || crate::query::home_dir().is_some_and(|h| h == real);
+                real == Path::new("/") || home.dir().is_some_and(|h| Path::new(h) == real);
             Ok((path.to_path_buf(), !everything))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -920,7 +924,11 @@ mod registrar_tests {
     fn registrar(gate: &Arc<Gate>) -> (Registrar, Arc<Mutex<Vec<Call>>>) {
         let (held, calls) = Held::new(gate);
         (
-            Registrar::start(FsWatcher::with_backend(Box::new(held)), Duration::ZERO),
+            Registrar::start(
+                FsWatcher::with_backend(Box::new(held)),
+                Duration::ZERO,
+                crate::query::Home::from_env(),
+            ),
             calls,
         )
     }
@@ -930,7 +938,11 @@ mod registrar_tests {
         let (mut held, calls) = Held::new(&Gate::opened());
         held.refuse_trees = true;
         (
-            Registrar::start(FsWatcher::with_backend(Box::new(held)), retry_after),
+            Registrar::start(
+                FsWatcher::with_backend(Box::new(held)),
+                retry_after,
+                crate::query::Home::from_env(),
+            ),
             calls,
         )
     }
@@ -946,7 +958,10 @@ mod registrar_tests {
     #[test]
     fn root_and_home_are_watched_on_their_entries_only() {
         let (r, calls) = registrar(&Gate::opened());
-        let home = crate::query::home_dir().filter(|h| h.is_dir());
+        let home = crate::query::Home::from_env()
+            .dir()
+            .map(PathBuf::from)
+            .filter(|h| h.is_dir());
         let wide: Vec<PathBuf> = std::iter::once(PathBuf::from("/")).chain(home).collect();
         for path in &wide {
             r.watch(path.clone());

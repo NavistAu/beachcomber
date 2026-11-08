@@ -48,7 +48,7 @@ fn render_template_rows(
     filters: &[String],
     memos: &mut Vec<MemoWrite>,
 ) -> Vec<CacheRow> {
-    let chain = crate::query::path_chain(Some(cwd));
+    let chain = address_chain(cwd);
     let mut addrs: Vec<(String, String)> = Vec::new();
     for row in rows {
         let Some(provider) = row.provider.strip_suffix(TEMPLATE_FACET) else {
@@ -159,7 +159,7 @@ fn layer_stacks(
     let canonical = std::fs::canonicalize(cwd)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| cwd.to_string());
-    let chain = crate::query::path_chain(Some(&canonical));
+    let chain = address_chain(&canonical);
     let mut trees: HashMap<(String, Option<String>), Option<serde_json::Value>> = HashMap::new();
     rows.iter()
         .map(|row| {
@@ -204,7 +204,7 @@ fn mark_shadowed(
     let canonical = std::fs::canonicalize(cwd)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| cwd.to_string());
-    let chain = crate::query::path_chain(Some(&canonical));
+    let chain = address_chain(&canonical);
     for (row, stack) in rows.iter_mut().zip(stacks) {
         let Some(stack) = stack else { continue };
         if matches!(row.kind, Some(RowKind::Rendered)) || !chain.contains(&row.path) {
@@ -509,4 +509,15 @@ fn warn_if_daemon_degraded(client: &crate::client::Client) {
             ));
         }
     }
+}
+
+/// The cache addresses a read at `dir` consults, nearest first
+/// ([`crate::query::Dir::chain`]), against this process's `$HOME`.
+fn address_chain(dir: &str) -> Vec<Option<String>> {
+    let home = crate::query::Home::from_env();
+    crate::query::Dir::of(dir, &home)
+        .chain(&home)
+        .into_iter()
+        .map(crate::query::Dir::into_address)
+        .collect()
 }

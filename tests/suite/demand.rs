@@ -31,7 +31,7 @@ async fn watch_only_providers_do_not_enter_poll_timers() {
             provider: "hostname".to_string(),
             instances: vec![Instance {
                 source: "host".to_string(),
-                root: None,
+                root: beachcomber::query::Dir::Global,
             }],
         })
         .await;
@@ -83,7 +83,7 @@ async fn field_demand_warms_only_owning_source() {
             provider: "git".to_string(),
             instances: vec![Instance {
                 source: "refs".to_string(),
-                root: Some(path.clone()),
+                root: beachcomber::query::Dir::At(path.clone()),
             }],
         })
         .await;

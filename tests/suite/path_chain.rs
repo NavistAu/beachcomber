@@ -10,10 +10,12 @@
 //! directory, and the one at `~`. A read asks the nearest instance first and
 //! walks up the instances, root by root, only while the key is missing.
 //!
-//! Each test owns its `$HOME`: nextest runs every test in its own process, so
-//! `set_var("HOME", …)` here is process-local. That assumption is nextest's,
-//! not cargo's — under `NEXTEST=1 cargo test` these share one process and one
-//! `$HOME`, and `query::home_dir`'s `OnceLock` freezes whichever won the race.
+//! Each test owns its `$HOME`. Its registry is given it
+//! (`ProviderRegistry::with_home`), and it is set in the process environment
+//! too, which a config Source's `env` reads: nextest runs every test in its own
+//! process, so `set_var("HOME", …)` here is process-local. That assumption is
+//! nextest's, not cargo's — under `NEXTEST=1 cargo test` these share one
+//! process and one environment.
 
 use crate::common::daemon::isolate;
 use crate::common::git::GitRepoFixture;
@@ -102,7 +104,11 @@ impl Fixture {
         let sock = sock_dir.path().join("test.sock");
         let watchers = Arc::new(beachcomber::watcher_registry::WatcherRegistry::new());
         let cache = Arc::new(Cache::with_watchers(watchers.clone()));
-        let registry = Arc::new(build());
+        // The registry is given this `$HOME`: one built before it was set
+        // holds the one it was built under.
+        let registry = Arc::new(
+            build().with_home(beachcomber::query::Home::of(Some(&home.to_string_lossy()))),
+        );
         let scheduler = scheduled.then(|| {
             let (handle, mut scheduler) = Scheduler::new(
                 cache.clone(),

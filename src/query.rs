@@ -7,8 +7,7 @@
 //! they share identical resolution semantics.
 
 use crate::provider::registry::ProviderRegistry;
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::path::Path;
 
 /// The facet syntax of a head; the rules are [`libbeachcomber::key::parse_facet`]'s.
 pub use libbeachcomber::key::parse_facet;
@@ -72,117 +71,160 @@ impl Key {
     }
 }
 
-/// The daemon's `$HOME`, canonicalised, read once per process.
-///
-/// `$HOME` is the global path (canon `field_resolution.md` §"Path resolution"):
-/// a request addressing it addresses the global cache entry, which is keyed
-/// pathless internally.
-pub fn home_dir() -> Option<PathBuf> {
-    static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
-    HOME.get_or_init(|| {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|p| p.canonicalize().unwrap_or(p))
-    })
-    .clone()
-}
+pub use libbeachcomber::path::Home;
 
-/// Canonicalise a requested path into the address a cache entry is keyed by.
-///
-/// A request's path is absolute: the client made it so, against the caller's
-/// own directory and `$HOME` (`libbeachcomber::path::normalise`), which the
-/// daemon cannot see. A relative path, an empty one or one starting `~` is
-/// refused, never joined to the daemon's own working directory. A path that
-/// cannot be canonicalised is kept verbatim rather than dropped.
+/// A cache entry's directory: the global entry, or an absolute directory.
 ///
 /// **The global entry is `$HOME`: its address is `None`, its directory is
 /// `$HOME`.** A request naming `$HOME` and a request carrying no path at all
 /// are the same request, and both key the pathless entry — so `$HOME` never
 /// gets a cache entry of its own beside the global one. The directory half of
-/// that rule is [`instance_dir`]: the instance at the global entry still has a
+/// that rule is [`Dir::path`]: the instance at the global entry still has a
 /// real directory to read, and it is `$HOME`.
-pub fn normalise_path(requested: Option<&str>) -> Result<Option<String>, String> {
-    let Some(p) = requested else {
-        return Ok(None);
-    };
-    if !Path::new(p).is_absolute() {
-        return Err(format!("path must be absolute: {p:?}"));
-    }
-    Ok(address_of(p))
+///
+/// Whose `$HOME` is the caller's to say: a daemon's is its registry's
+/// ([`ProviderRegistry::home`]), captured once from the environment it was
+/// given, so nothing below reads the process environment.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Dir {
+    /// The global entry, the instance at `~`.
+    Global,
+    /// An absolute directory other than `$HOME`.
+    At(String),
 }
 
-/// The cache address of an absolute directory: canonicalised (kept verbatim
-/// when it cannot be), and `None` — the global entry — for `$HOME`. What
-/// [`normalise_path`] gives a request, and what the daemon's own directories
-/// (rendered roots, instance directories) are keyed by.
-pub fn address_of(dir: &str) -> Option<String> {
-    let absolute = Path::new(dir)
-        .canonicalize()
-        .map(|abs| abs.to_string_lossy().to_string())
-        .unwrap_or_else(|_| dir.to_string());
-    if is_home(&absolute) {
-        return None;
-    }
-    Some(absolute)
-}
-
-/// Whether `dir` is the daemon's `$HOME`, byte for byte.
-pub fn is_home(dir: &str) -> bool {
-    home_dir().is_some_and(|home| home.as_os_str() == dir)
-}
-
-/// The directory a Source runs in to produce the records of the instance at
-/// `root` — the directory half of the rule at [`normalise_path`].
-///
-/// The instance's root, except at the instance at `~`, whose address is `None`
-/// and whose directory is `$HOME`: without it a repository at `$HOME` would be
-/// queried with no directory at all and answer nothing.
-pub fn instance_dir(root: Option<&str>) -> Option<String> {
-    match root {
-        Some(root) => Some(root.to_string()),
-        None => home_dir().map(|home| home.to_string_lossy().into_owned()),
-    }
-}
-
-/// The chain of cache-entry addresses a read at `path` consults, nearest first
-/// and always ending at the global entry.
-///
-/// `path` itself, then each ancestor below `$HOME` when `path` is under
-/// `$HOME` and every ancestor up to `/` when it is not, then `None` — the
-/// global entry. A pathless read has the one-link chain `[None]`.
-///
-/// `$HOME` itself is never a link: it *is* the global entry, and
-/// [`normalise_path`] turns every address naming it into `None`, so no writer
-/// can put anything at `Some($HOME)` for the walk to find.
-///
-/// This is the chain static records resolve up. The chain a read of a
-/// namespace actually walks is [`read_chain`], which also carries the entry
-/// the namespace's own records live at.
-pub fn path_chain(path: Option<&str>) -> Vec<Option<String>> {
-    let Some(p) = path else {
-        return vec![None];
-    };
-    let home = home_dir();
-    let mut out = Vec::new();
-    let mut current = Some(Path::new(p));
-    while let Some(dir) = current {
-        if home.as_deref() == Some(dir) {
-            break;
+impl Dir {
+    /// The entry `dir` names as written: `$HOME` is the global one.
+    pub fn of(dir: &str, home: &Home) -> Dir {
+        match home.dir() {
+            Some(h) if Path::new(h) == Path::new(dir) => Dir::Global,
+            _ => Dir::At(dir.to_string()),
         }
-        out.push(Some(dir.to_string_lossy().into_owned()));
-        current = dir.parent();
     }
-    out.push(None);
-    out
+
+    /// The entry a cache address names: `None` is the global entry. For an
+    /// address already made ([`Dir::address`]), as a cache key holds it.
+    pub fn keyed(address: Option<&str>) -> Dir {
+        address.map_or(Dir::Global, |a| Dir::At(a.to_string()))
+    }
+
+    /// The entry a daemon read at `dir` is keyed by ([`Dir::canonical`]);
+    /// no directory is the global entry.
+    pub fn named(dir: Option<&str>, home: &Home) -> Dir {
+        dir.map_or(Dir::Global, |dir| Dir::canonical(dir, home))
+    }
+
+    /// The entry an absolute directory is keyed by: canonicalised (kept
+    /// verbatim when it cannot be), then [`Dir::of`]. What a request's path
+    /// becomes ([`Dir::requested`]), and what the daemon's own directories
+    /// (rendered roots, instance directories) are keyed by.
+    pub fn canonical(dir: &str, home: &Home) -> Dir {
+        let absolute = Path::new(dir)
+            .canonicalize()
+            .map(|abs| abs.to_string_lossy().to_string())
+            .unwrap_or_else(|_| dir.to_string());
+        Dir::of(&absolute, home)
+    }
+
+    /// The entry a request's path names; no path is the global entry.
+    ///
+    /// A request's path is absolute: the client made it so, against the
+    /// caller's own directory and `$HOME` (`libbeachcomber::path::normalise`),
+    /// which the daemon cannot see. A relative path, an empty one or one
+    /// starting `~` is refused, never joined to the daemon's own working
+    /// directory. A path that cannot be canonicalised is kept verbatim rather
+    /// than dropped ([`Dir::canonical`]).
+    pub fn requested(requested: Option<&str>, home: &Home) -> Result<Dir, String> {
+        let Some(p) = requested else {
+            return Ok(Dir::Global);
+        };
+        if !Path::new(p).is_absolute() {
+            return Err(format!("path must be absolute: {p:?}"));
+        }
+        Ok(Dir::canonical(p, home))
+    }
+
+    /// The address a cache entry is keyed by: `None` for the global entry.
+    pub fn address(&self) -> Option<&str> {
+        match self {
+            Dir::Global => None,
+            Dir::At(dir) => Some(dir),
+        }
+    }
+
+    /// [`Dir::address`], owned.
+    pub fn into_address(self) -> Option<String> {
+        match self {
+            Dir::Global => None,
+            Dir::At(dir) => Some(dir),
+        }
+    }
+
+    /// Whether this is the global entry.
+    pub fn is_global(&self) -> bool {
+        *self == Dir::Global
+    }
+
+    /// The directory a Source runs in to produce the records of the instance
+    /// here: the directory itself, except at the global entry, whose directory
+    /// is `$HOME` — without it a repository at `$HOME` would be queried with
+    /// no directory at all and answer nothing.
+    pub fn path<'a>(&'a self, home: &'a Home) -> Option<&'a str> {
+        match self {
+            Dir::Global => home.dir(),
+            Dir::At(dir) => Some(dir),
+        }
+    }
+
+    /// The entry above this one: the parent directory, else the global entry
+    /// — above the filesystem root, and at a child of `$HOME`, whose parent
+    /// *is* the global entry. The global entry is its own parent.
+    pub fn parent(&self, home: &Home) -> Dir {
+        match self {
+            Dir::Global => Dir::Global,
+            Dir::At(dir) => Path::new(dir)
+                .parent()
+                .map_or(Dir::Global, |up| Dir::of(&up.to_string_lossy(), home)),
+        }
+    }
+
+    /// The chain of entries a read here consults, nearest first and always
+    /// ending at the global entry.
+    ///
+    /// This directory, then each ancestor below `$HOME` when it is under
+    /// `$HOME` and every ancestor up to `/` when it is not, then the global
+    /// entry. A read at the global entry has the one-link chain `[Global]`.
+    ///
+    /// `$HOME` itself is never a link: it *is* the global entry, and
+    /// [`Dir::of`] turns every directory naming it into [`Dir::Global`], so no
+    /// writer can put anything at `$HOME`'s own address for the walk to find.
+    ///
+    /// This is the chain static records resolve up. The chain a read of a
+    /// namespace actually walks is [`read_chain`], which also carries the
+    /// entry the namespace's own records live at.
+    pub fn chain(&self, home: &Home) -> Vec<Dir> {
+        let mut at = match self {
+            Dir::At(dir) => Dir::of(dir, home),
+            Dir::Global => Dir::Global,
+        };
+        let mut out = Vec::new();
+        while !at.is_global() {
+            let up = at.parent(home);
+            out.push(at);
+            at = up;
+        }
+        out.push(Dir::Global);
+        out
+    }
 }
 
 /// Every cache-entry address one read of a namespace consults, nearest first:
-/// [`path_chain`] from the requested path, plus each instance the read reached
+/// [`Dir::chain`] from the requested path, plus each instance the read reached
 /// that is not already a link of it.
 ///
 /// A reached root is usually on that chain already: a Source's `root` walks up
 /// from the requested path, so it is an ancestor-or-self of it, or `$HOME`,
-/// which [`normalise_path`] turns into the global link. But the walk does not
+/// which [`Dir::of`] turns into the global link. But the walk does not
 /// stop at `$HOME` and the chain does: a project marker *above* `$HOME` (a
 /// repository at `/srv/x` with `$HOME` at `/srv/x/home`) is an instance at a
 /// directory the chain from `$HOME/proj` never reaches. The instance still has
@@ -192,9 +234,9 @@ pub fn path_chain(path: Option<&str>) -> Vec<Option<String>> {
 /// any entry a frame is assembled from wakes the stream.
 ///
 /// [`Cache::read_merged`]: crate::cache::Cache::read_merged
-pub fn read_chain(requested: Option<&str>, extra: &[Option<String>]) -> Vec<Option<String>> {
-    let on_chain = path_chain(requested);
-    let mut chain: Vec<Option<String>> = Vec::new();
+pub fn read_chain(requested: &Dir, extra: &[Dir], home: &Home) -> Vec<Dir> {
+    let on_chain = requested.chain(home);
+    let mut chain: Vec<Dir> = Vec::new();
     for root in extra {
         if !on_chain.contains(root) && !chain.contains(root) {
             chain.push(root.clone());
@@ -235,6 +277,16 @@ pub enum Found {
     Nothing,
 }
 
+impl From<Dir> for Found {
+    /// A root found at `dir`: [`Found::Home`] at the global entry.
+    fn from(dir: Dir) -> Found {
+        match dir {
+            Dir::Global => Found::Home,
+            Dir::At(root) => Found::At(root),
+        }
+    }
+}
+
 /// The walk up one Source's instances from a directory.
 ///
 /// A cascading Source's walk is `R1 = root(dir)`, then `root(parent(R1))`, and
@@ -254,26 +306,29 @@ pub enum Found {
 /// Source's `root` line off the async workers.
 #[derive(Debug, Clone)]
 pub struct InstanceWalk {
-    /// The directory the walk starts from; `None` is the global entry.
-    start: Option<String>,
+    /// The entry the walk starts from.
+    start: Dir,
     /// Whether the nearest instance answers alone.
     nearest: bool,
     /// The instances yielded so far, nearest first.
-    seen: Vec<Option<String>>,
+    seen: Vec<Dir>,
     /// Set when a nearest walk found nothing.
     over: bool,
+    /// The `$HOME` the global entry is.
+    home: Home,
 }
 
 impl InstanceWalk {
-    /// A walk for a read at `dir`: the plan's `requested_path`, so `None` is
-    /// `$HOME` or no path at all. `nearest` is the Source's setting and only
-    /// counts for a Source with a root.
-    pub fn new(dir: Option<&str>, nearest: bool) -> Self {
+    /// A walk for a read at `dir`: the plan's `requested_path`, so the global
+    /// entry is `$HOME` or no path at all. `nearest` is the Source's setting
+    /// and only counts for a Source with a root.
+    pub fn new(dir: &Dir, nearest: bool, home: &Home) -> Self {
         Self {
-            start: dir.map(str::to_string),
+            start: dir.clone(),
             nearest,
             seen: Vec::new(),
             over: false,
+            home: home.clone(),
         }
     }
 
@@ -284,43 +339,43 @@ impl InstanceWalk {
         }
         match self.seen.last() {
             None => match (&self.start, self.nearest) {
-                (Some(dir), _) => Ask::Root(dir.clone()),
-                (None, true) => home_dir().map_or(Ask::Home, |home| {
-                    Ask::Root(home.to_string_lossy().into_owned())
-                }),
-                (None, false) => Ask::Home,
+                (Dir::At(dir), _) => Ask::Root(dir.clone()),
+                (Dir::Global, true) => self
+                    .home
+                    .dir()
+                    .map_or(Ask::Home, |home| Ask::Root(home.to_string())),
+                (Dir::Global, false) => Ask::Home,
             },
             Some(_) if self.nearest => Ask::Done,
-            Some(None) => Ask::Done,
-            Some(Some(root)) => match Path::new(root).parent() {
-                // The filesystem root has no parent, and `$HOME` is the
-                // instance at `~` itself: either way the next is `~`.
-                None => Ask::Home,
-                Some(parent) if home_dir().as_deref() == Some(parent) => Ask::Home,
-                Some(parent) => Ask::Root(parent.to_string_lossy().into_owned()),
+            Some(Dir::Global) => Ask::Done,
+            // Above the filesystem root, and above a child of `$HOME`, is the
+            // instance at `~`.
+            Some(root) => match root.parent(&self.home) {
+                Dir::Global => Ask::Home,
+                Dir::At(parent) => Ask::Root(parent),
             },
         }
     }
 
     /// Take the answer to [`InstanceWalk::ask`] (ignored for `Ask::Home`) and
-    /// return the next instance: `Some(root)`, `Some(None)` for the instance
-    /// at `~`, or `None` when a nearest walk found no instance at all.
-    pub fn step(&mut self, answer: Found) -> Result<Option<Option<String>>, String> {
+    /// return the next instance, or `None` when a nearest walk found no
+    /// instance at all.
+    pub fn step(&mut self, answer: Found) -> Result<Option<Dir>, String> {
         let mut next = match self.ask() {
             Ask::Done => return Err("the instance chain is over".into()),
-            Ask::Home => None,
+            Ask::Home => Dir::Global,
             Ask::Root(_) => match answer {
-                Found::At(root) => Some(root),
-                Found::Home => None,
+                Found::At(root) => Dir::At(root),
+                Found::Home => Dir::Global,
                 Found::Nothing if self.nearest => {
                     self.over = true;
                     return Ok(None);
                 }
-                Found::Nothing => None,
+                Found::Nothing => Dir::Global,
             },
         };
-        if next.is_some() && self.seen.contains(&next) {
-            next = None;
+        if !next.is_global() && self.seen.contains(&next) {
+            next = Dir::Global;
         }
         if self.seen.len() >= MAX_INSTANCES {
             return Err(format!(
@@ -341,7 +396,7 @@ impl InstanceWalk {
     pub fn collect(
         mut self,
         mut resolve: impl FnMut(&str) -> Result<Option<Found>, String>,
-    ) -> Result<Option<Vec<Option<String>>>, String> {
+    ) -> Result<Option<Vec<Dir>>, String> {
         let mut chain = Vec::new();
         loop {
             let answer = match self.ask() {
@@ -362,8 +417,8 @@ impl InstanceWalk {
 
 /// Every instance of `provider`'s Source `source` that a read at `dir` can
 /// reach, nearest first. A cascading Source ends with the instance at `~`
-/// (`None`), and one with no root has the one-instance chain `[None]`; a
-/// nearest Source has the one instance its root finds, or none.
+/// ([`Dir::Global`]), and one with no root has the one-instance chain
+/// `[Global]`; a nearest Source has the one instance its root finds, or none.
 ///
 /// `dir` is the plan's `requested_path`. An error is a `root` that could not be
 /// worked out; it is the read's error, never the instance at `~`.
@@ -371,8 +426,8 @@ pub fn instance_chain(
     registry: &ProviderRegistry,
     provider: &str,
     source: &str,
-    dir: Option<&str>,
-) -> Result<Vec<Option<String>>, String> {
+    dir: &Dir,
+) -> Result<Vec<Dir>, String> {
     registry
         .instance_walk(provider, source, dir)
         .collect(|root_dir| registry.instance_root(provider, source, root_dir).map(Some))
@@ -385,7 +440,7 @@ pub fn instances_for(
     registry: &ProviderRegistry,
     provider: &str,
     demand: &SourceDemand,
-    dir: Option<&str>,
+    dir: &Dir,
 ) -> Result<Vec<Instance>, String> {
     let mut out = Vec::new();
     for source in demanded_source_names(registry, provider, demand) {
@@ -399,27 +454,29 @@ pub fn instances_for(
     Ok(out)
 }
 
-/// One instance of a Source: the Source's name and the root it answers for
-/// (`None` is the instance at `~`). The unit demand and refreshes address.
+/// One instance of a Source: the Source's name and the root it answers for.
+/// The unit demand and refreshes address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Instance {
     pub source: String,
-    pub root: Option<String>,
+    pub root: Dir,
 }
 
 impl Instance {
+    /// The instance of `source` at the cache address `root` (`None` is the
+    /// instance at `~`).
     pub fn new(source: &str, root: Option<&str>) -> Self {
         Self {
             source: source.to_string(),
-            root: root.map(str::to_string),
+            root: Dir::keyed(root),
         }
     }
 }
 
 /// The distinct roots of `instances`, in the order first met: the extra links
 /// [`read_chain`] adds to a read.
-pub fn roots_of(instances: &[Instance]) -> Vec<Option<String>> {
-    let mut roots: Vec<Option<String>> = Vec::new();
+pub fn roots_of(instances: &[Instance]) -> Vec<Dir> {
+    let mut roots: Vec<Dir> = Vec::new();
     for instance in instances {
         if !roots.contains(&instance.root) {
             roots.push(instance.root.clone());
@@ -489,11 +546,11 @@ pub fn demanded_source_names(
 #[derive(Debug, Clone)]
 pub struct QueryPlan {
     pub provider: String,
-    /// The request's own path, canonicalised ([`normalise_path`]) — where the
+    /// The request's own path, canonicalised ([`Dir::requested`]) — where the
     /// caller is standing. Static records, and so the template half of a read,
     /// resolve up the chain from here, and it is where each demanded Source's
     /// instance chain starts ([`InstanceWalk`]).
-    pub requested_path: Option<String>,
+    pub requested_path: Dir,
     pub target: Key,
     pub demand: SourceDemand,
     /// Which layers the read sees: `p:put` and `p:source` name one, anything
@@ -510,7 +567,7 @@ impl QueryPlan {
         registry: &ProviderRegistry,
     ) -> Result<QueryPlan, String> {
         let (target, layers) = Key::parse(raw_key)?;
-        let requested_path = normalise_path(path_hint)?;
+        let requested_path = Dir::requested(path_hint, registry.home())?;
         let provider = target.provider.clone();
 
         // The Sources the key reads. The layer facets `:put` and `:cache` warm
@@ -784,8 +841,12 @@ mod instance_chain_tests {
         registry_of(name, root_fn, false)
     }
 
+    /// The `$HOME` these registries are given: no real directory, so no test
+    /// here depends on the one it runs under.
+    const HOME: &str = "/no-such-beachcomber-home/u";
+
     fn registry_of(name: &str, root_fn: Option<RootFn>, nearest: bool) -> ProviderRegistry {
-        let mut reg = ProviderRegistry::new();
+        let mut reg = ProviderRegistry::new().with_home(Home::of(Some(HOME)));
         let fake = FakeProvider {
             name: name.into(),
             root_fn,
@@ -796,10 +857,15 @@ mod instance_chain_tests {
     }
 
     fn home() -> String {
-        home_dir()
-            .expect("$HOME is set")
-            .to_string_lossy()
-            .into_owned()
+        HOME.to_string()
+    }
+
+    /// The instance chain of `reg`'s `p.main` from `dir` (`None` is `~`), as
+    /// cache addresses.
+    fn chain_at(reg: &ProviderRegistry, dir: Option<&str>) -> Result<Vec<Option<String>>, String> {
+        let dir = dir.map_or(Dir::Global, |d| Dir::of(d, reg.home()));
+        instance_chain(reg, "p", "main", &dir)
+            .map(|chain| chain.into_iter().map(Dir::into_address).collect())
     }
 
     /// A root that is the nearest of `markers` at or above the directory: the
@@ -819,10 +885,7 @@ mod instance_chain_tests {
         let proj = format!("{}/ws/proj", home());
         let reg = registry_with("p", Some(marker_walk(vec![proj.clone()])));
         let dir = format!("{proj}/src");
-        assert_eq!(
-            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
-            vec![Some(proj), None]
-        );
+        assert_eq!(chain_at(&reg, Some(&dir)).unwrap(), vec![Some(proj), None]);
     }
 
     #[test]
@@ -832,7 +895,7 @@ mod instance_chain_tests {
         let reg = registry_with("p", Some(marker_walk(vec![outer.clone(), inner.clone()])));
         let dir = format!("{inner}/src");
         assert_eq!(
-            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            chain_at(&reg, Some(&dir)).unwrap(),
             vec![Some(inner), Some(outer), None]
         );
     }
@@ -849,31 +912,22 @@ mod instance_chain_tests {
             Some(Arc::new(move |_dir: &str| Ok(Some(answer.clone())))),
         );
         let dir = format!("{}/ws/elsewhere/deep", home());
-        assert_eq!(
-            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
-            vec![Some(fixed), None]
-        );
+        assert_eq!(chain_at(&reg, Some(&dir)).unwrap(), vec![Some(fixed), None]);
     }
 
     #[test]
     fn a_source_with_no_root_has_one_instance() {
         let reg = registry_with("p", None);
         let dir = format!("{}/ws/anywhere", home());
-        assert_eq!(
-            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
-            vec![None]
-        );
-        assert_eq!(instance_chain(&reg, "p", "main", None).unwrap(), vec![None]);
+        assert_eq!(chain_at(&reg, Some(&dir)).unwrap(), vec![None]);
+        assert_eq!(chain_at(&reg, None).unwrap(), vec![None]);
     }
 
     #[test]
     fn a_root_that_is_home_is_the_instance_at_home() {
         let reg = registry_with("p", Some(Arc::new(|_dir: &str| Ok(Some(home())))));
         let dir = format!("{}/ws/proj", home());
-        assert_eq!(
-            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
-            vec![None]
-        );
+        assert_eq!(chain_at(&reg, Some(&dir)).unwrap(), vec![None]);
     }
 
     #[test]
@@ -883,10 +937,7 @@ mod instance_chain_tests {
         let above = "/no-such-beachcomber-marker/repo".to_string();
         let reg = registry_with("p", Some(marker_walk(vec![above.clone()])));
         let dir = format!("{above}/deep/er");
-        assert_eq!(
-            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
-            vec![Some(above), None]
-        );
+        assert_eq!(chain_at(&reg, Some(&dir)).unwrap(), vec![Some(above), None]);
     }
 
     #[test]
@@ -896,7 +947,7 @@ mod instance_chain_tests {
         let reg = registry_of("p", Some(marker_walk(vec![outer, inner.clone()])), true);
         let dir = format!("{inner}/src");
         assert_eq!(
-            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            chain_at(&reg, Some(&dir)).unwrap(),
             vec![Some(inner)],
             "no outer instance, and no instance at ~"
         );
@@ -907,11 +958,11 @@ mod instance_chain_tests {
         let reg = registry_of("p", Some(marker_walk(vec![])), true);
         let dir = format!("{}/ws/proj", home());
         assert_eq!(
-            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
+            chain_at(&reg, Some(&dir)).unwrap(),
             Vec::<Option<String>>::new()
         );
         assert_eq!(
-            instance_chain(&reg, "p", "main", None).unwrap(),
+            chain_at(&reg, None).unwrap(),
             Vec::<Option<String>>::new(),
             "a read at ~ asks the root from $HOME, and it found nothing"
         );
@@ -921,31 +972,22 @@ mod instance_chain_tests {
     fn a_nearest_chain_that_found_home_is_the_instance_at_home() {
         let reg = registry_of("p", Some(Arc::new(|_dir: &str| Ok(Some(home())))), true);
         let dir = format!("{}/ws/proj", home());
-        assert_eq!(
-            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
-            vec![None]
-        );
-        assert_eq!(instance_chain(&reg, "p", "main", None).unwrap(), vec![None]);
+        assert_eq!(chain_at(&reg, Some(&dir)).unwrap(), vec![None]);
+        assert_eq!(chain_at(&reg, None).unwrap(), vec![None]);
     }
 
     #[test]
     fn a_nearest_source_with_no_root_still_has_its_instance_at_home() {
         let reg = registry_of("p", None, true);
         let dir = format!("{}/ws/proj", home());
-        assert_eq!(
-            instance_chain(&reg, "p", "main", Some(&dir)).unwrap(),
-            vec![None]
-        );
+        assert_eq!(chain_at(&reg, Some(&dir)).unwrap(), vec![None]);
     }
 
     #[test]
     fn a_root_that_fails_is_the_chains_error_not_home() {
         let reg = registry_with("p", Some(Arc::new(|_dir: &str| Err("no luck".to_string()))));
         let dir = format!("{}/ws/proj", home());
-        assert_eq!(
-            instance_chain(&reg, "p", "main", Some(&dir)),
-            Err("no luck".to_string())
-        );
+        assert_eq!(chain_at(&reg, Some(&dir)), Err("no luck".to_string()));
     }
 
     #[test]
@@ -961,28 +1003,34 @@ mod instance_chain_tests {
             })),
         );
         let dir = format!("{}/ws/proj", home());
-        let err = instance_chain(&reg, "p", "main", Some(&dir)).unwrap_err();
+        let err = chain_at(&reg, Some(&dir)).unwrap_err();
         assert!(err.contains("does not settle"), "{err}");
     }
 
     #[test]
     fn read_chain_adds_a_root_the_directory_chain_does_not_reach() {
-        let above = Some("/no-such-beachcomber-marker/repo".to_string());
-        let dir = format!("{}/ws/proj", home());
-        let chain = read_chain(Some(&dir), &[above.clone(), None]);
+        let above = Dir::At("/no-such-beachcomber-marker/repo".to_string());
+        let dir = Dir::At(format!("{}/ws/proj", home()));
+        let chain = read_chain(&dir, &[above.clone(), Dir::Global], &Home::of(Some(HOME)));
         assert_eq!(chain.first(), Some(&above), "the extra link leads");
-        assert_eq!(chain.last(), Some(&None), "the global entry ends it");
+        assert_eq!(chain.last(), Some(&Dir::Global), "the global entry ends it");
         assert_eq!(
-            chain.iter().filter(|l| l.is_none()).count(),
+            chain.iter().filter(|l| l.is_global()).count(),
             1,
             "a root already on the chain is not added twice: {chain:?}"
         );
     }
 
     #[test]
-    fn instance_dir_is_home_for_the_instance_at_home() {
-        assert_eq!(instance_dir(None), Some(home()));
-        assert_eq!(instance_dir(Some("/a/b")), Some("/a/b".to_string()));
+    fn the_directory_of_the_global_entry_is_home() {
+        let home = Home::of(Some(HOME));
+        assert_eq!(Dir::Global.path(&home), Some(HOME));
+        assert_eq!(Dir::At("/a/b".into()).path(&home), Some("/a/b"));
+        assert_eq!(
+            Dir::Global.path(&Home::default()),
+            None,
+            "no home, no directory"
+        );
     }
 }
 
@@ -990,16 +1038,43 @@ mod instance_chain_tests {
 mod path_chain_tests {
     use super::*;
 
-    fn home() -> String {
-        home_dir()
-            .expect("$HOME is set")
-            .to_string_lossy()
-            .into_owned()
+    /// A `$HOME` that is a real directory, so canonicalising reaches it.
+    fn real_home() -> (tempfile::TempDir, Home) {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = Home::of(Some(&tmp.path().to_string_lossy()));
+        (tmp, home)
+    }
+
+    const HOME: &str = "/no-such-beachcomber-home/u";
+
+    fn home() -> Home {
+        Home::of(Some(HOME))
+    }
+
+    /// The chain from `dir` (`None` is `~`), as cache addresses.
+    fn path_chain(dir: Option<&str>) -> Vec<Option<String>> {
+        let home = home();
+        dir.map_or(Dir::Global, |d| Dir::of(d, &home))
+            .chain(&home)
+            .into_iter()
+            .map(Dir::into_address)
+            .collect()
+    }
+
+    fn normalise_path(requested: Option<&str>) -> Result<Option<String>, String> {
+        Dir::requested(requested, &home()).map(Dir::into_address)
     }
 
     #[test]
     fn normalise_maps_home_to_the_global_entry() {
-        assert_eq!(normalise_path(Some(&home())), Ok(None));
+        assert_eq!(normalise_path(Some(HOME)), Ok(None));
+        // `$HOME` as written, through a symlink (macOS `/tmp`), is the global
+        // entry too: both sides are canonical.
+        let (tmp, home) = real_home();
+        assert_eq!(
+            Dir::requested(Some(&tmp.path().to_string_lossy()), &home),
+            Ok(Dir::Global)
+        );
     }
 
     #[test]
@@ -1070,7 +1145,7 @@ mod path_chain_tests {
 
     #[test]
     fn chain_under_home_stops_below_home() {
-        let home = home();
+        let home = HOME;
         let deep = format!("{home}/ws/project/foo");
         assert_eq!(
             path_chain(Some(&deep)),
@@ -1086,7 +1161,7 @@ mod path_chain_tests {
 
     #[test]
     fn chain_of_home_itself_is_only_the_global_entry() {
-        assert_eq!(path_chain(Some(&home())), vec![None]);
+        assert_eq!(path_chain(Some(HOME)), vec![None]);
     }
 
     #[test]
