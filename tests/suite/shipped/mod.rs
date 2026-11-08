@@ -151,9 +151,10 @@ pub fn served(vars: &[(&str, &str)], conf: &str) -> Served {
 }
 
 /// [`served`] with a scheduler on the host's own file watcher (FSEvents,
-/// inotify), not the polling one: what a read does with a file event.
-pub fn served_watching() -> Served {
-    serve(&[], "", true)
+/// inotify), not the polling one: what a read does with a file event. `conf`
+/// is a layer over the shipped file, as [`served`] takes it.
+pub fn served_watching(conf: &str) -> Served {
+    serve(&[], conf, true)
 }
 
 fn serve(vars: &[(&str, &str)], conf: &str, watching: bool) -> Served {

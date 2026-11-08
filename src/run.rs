@@ -281,9 +281,10 @@ impl State {
 }
 
 /// `future` to its end on this thread, parked between wakes: how a blocking
-/// thread waits on a run. Needs no runtime: the run's [`State::notify`] wakes
-/// it as it wakes a task.
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
+/// thread waits on a run, or on a file-event barrier. Needs no runtime: the
+/// run's [`State::notify`] wakes it as it wakes a task (a barrier's timer still
+/// needs the runtime's context, which a thread of its blocking pool has).
+pub(crate) fn block_on<F: std::future::Future>(future: F) -> F::Output {
     struct Unpark(std::thread::Thread);
     impl std::task::Wake for Unpark {
         fn wake(self: Arc<Self>) {

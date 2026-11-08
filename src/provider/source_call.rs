@@ -207,7 +207,8 @@ pub fn run_call(
     if is_running(provider, source) {
         return Err(itself());
     }
-    let chain = match warm_chain(registry, cache, provider, source, entry) {
+    let arrived = tokio::time::Instant::now();
+    let chain = match warm_chain(registry, cache, provider, source, entry, arrived) {
         Ok(chain) => chain,
         Err(Unwarmed::Cycle) => return Err(itself()),
         Err(Unwarmed::Fault(message)) => return Err(call_error(message)),
@@ -232,13 +233,16 @@ enum Unwarmed {
 /// wait for would defeat the record's validity. A disabled provider has no
 /// instances: nothing of it runs, and the call is noted all the same, with
 /// none, since what the caller stored depends on the answer and switching the
-/// provider on changes it.
+/// provider on changes it. An instance whose Source watches its tree is
+/// checked once the file events from before `arrived` are heard, as a read of
+/// it would be ([`tree_barrier`]).
 fn warm_chain(
     registry: &Arc<ProviderRegistry>,
     cache: &Arc<Cache>,
     provider: &str,
     source: &str,
     entry: Option<&str>,
+    arrived: tokio::time::Instant,
 ) -> Result<Vec<Option<String>>, Unwarmed> {
     if registry.is_disabled(provider) {
         note_call(provider, source, &[]);
@@ -251,6 +255,9 @@ fn warm_chain(
         let root = root.as_deref();
         // A valid instance is the common call: answered before anything
         // shared is locked.
+        if let Some(barrier) = tree_barrier(registry, cache, provider, source, root) {
+            crate::run::block_on(barrier.pass(arrived));
+        }
         let Some(want) = Want::for_read(cache.record_state(provider, root, source)) else {
             continue;
         };
@@ -272,6 +279,25 @@ fn warm_chain(
     }
     note_call(provider, source, &chain);
     Ok(chain)
+}
+
+/// The barrier a check of the instance at `root` waits on first, when its
+/// Source watches its tree and that tree is watched: a change in the tree,
+/// which no stat sees, is then in the record's state. `None` when there is
+/// nothing to wait for.
+pub fn tree_barrier<'c>(
+    registry: &ProviderRegistry,
+    cache: &'c Cache,
+    provider: &str,
+    source: &str,
+    root: Option<&str>,
+) -> Option<&'c Arc<crate::watcher::Barrier>> {
+    let watches = registry
+        .source(provider, source)
+        .is_some_and(|s| crate::provider::watches_tree(&s.metadata().schedule));
+    (watches && cache.tree_is_watched(provider, root, source))
+        .then(|| cache.barrier())
+        .flatten()
 }
 
 /// The stored records of `provider`'s Source `source` at the instances of
@@ -335,11 +361,13 @@ pub fn warm_provider(
         .iter()
         .map(|s| (provider.to_string(), s.name.clone()));
     let called = registry.lines().all_calls(provider).iter().cloned();
+    // One instant for every Source: a barrier passed for one serves the rest.
+    let arrived = tokio::time::Instant::now();
     for (p, s) in own.chain(called).collect::<Vec<_>>() {
         if is_running(&p, &s) {
             continue;
         }
-        match warm_chain(registry, cache, &p, &s, entry) {
+        match warm_chain(registry, cache, &p, &s, entry, arrived) {
             Ok(_) | Err(Unwarmed::Cycle) => {}
             Err(Unwarmed::Fault(message)) => return Err(call_error(message)),
         }

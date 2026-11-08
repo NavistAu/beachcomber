@@ -1200,13 +1200,18 @@ fn tracked_file(f: &FirstRead) -> String {
 /// A repository served with the host's own file watcher, once a change in its
 /// tree is known to come through; `None` where none is delivered (a sandbox).
 fn first_read_watching() -> Option<FirstRead> {
+    first_read_watching_with("")
+}
+
+/// [`first_read_watching`] with `conf` layered over the shipped file.
+fn first_read_watching_with(conf: &str) -> Option<FirstRead> {
     let repo = GitRepoFixture::new();
     let dir = repo.path().canonicalize().unwrap();
     let f = FirstRead {
         repo,
         _bare: TempDir::new().unwrap(),
         dir,
-        s: served_watching(),
+        s: served_watching(conf),
     };
     // FSEvents can hand over a change well after it was made: the making of the
     // repository, heard before anything watches it, wakes no Source later.
@@ -1267,6 +1272,44 @@ fn first_read_after_making_an_untracked_file() {
         f.write(&format!("new{attempt}.txt"), "n\n");
     });
     assert!(f.get("untracked").is_some_and(|n| n != json!(0)));
+}
+
+/// A Source that reads another provider from its `data` line reads it as a
+/// read of that provider would: after the file events from before it, so a
+/// change in the called Source's tree just before is seen.
+#[test]
+fn a_source_reading_git_hears_its_tree_first() {
+    let Some(f) = first_read_watching_with(
+        r#"
+[daemon.providers.dep.sources.s]
+root = "{{ lup('.git', root=true) | dirname }}"
+data = "{{ comb.git.untracked }}"
+result.n = "{{ data }}"
+return = "{{ result | nearest }}"
+"#,
+    ) else {
+        return;
+    };
+    let dir = f.dir.to_string_lossy().into_owned();
+    // Every attempt: a record found invalid for another reason (a racy stamp)
+    // would hide a stale one.
+    for attempt in 0..20 {
+        // git's record is current, every event before now heard.
+        let before = f.get("untracked").and_then(|n| n.as_i64()).unwrap();
+        f.write(&format!("dep{attempt}.txt"), "n\n");
+        // `dep` has nothing stored: its read runs it, and its run reads git.
+        {
+            let _enter = f.s.runtime.enter();
+            f.s.cache.remove_source("dep", Some(&dir), "s");
+        }
+        let got = f.s.get("dep.n", Some(&f.dir));
+        assert_eq!(
+            got.as_ref()
+                .map(|n| n.to_string().trim_matches('"').to_string()),
+            Some((before + 1).to_string()),
+            "attempt {attempt}: dep read git's untracked count from before the change"
+        );
+    }
 }
 
 /// A change in the tree runs nothing by itself: a build's output that no read

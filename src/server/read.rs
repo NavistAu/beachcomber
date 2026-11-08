@@ -240,12 +240,8 @@ pub(super) async fn hear_tree(
     if read.force {
         return;
     }
-    let Some(source) = registry.source(provider, source_name) else {
-        return;
-    };
-    if crate::provider::watches_tree(&source.metadata().schedule)
-        && cache.tree_is_watched(provider, root, source_name)
-        && let Some(barrier) = cache.barrier()
+    if let Some(barrier) =
+        crate::provider::source_call::tree_barrier(registry, cache, provider, source_name, root)
     {
         barrier.pass(read.began).await;
     }
