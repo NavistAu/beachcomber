@@ -836,8 +836,15 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
         },
     );
 
-    std::fs::write(&drop_in, RESEED_INVALID).unwrap();
-    crate::common::mtime::touch_future(&drop_in);
+    // Each edit is written beside and renamed in: the watch must never read
+    // a file truncated and not yet rewritten, an empty and valid layer.
+    let edit = |body: &str| {
+        let part = tmp.path().join("10-mine.toml.part");
+        std::fs::write(&part, body).unwrap();
+        std::fs::rename(&part, &drop_in).unwrap();
+        crate::common::mtime::touch_future(&drop_in);
+    };
+    edit(RESEED_INVALID);
     reload(&cache, &handle, &sink, &mut last, layers());
     assert_eq!(
         leaf("title"),
@@ -850,8 +857,7 @@ fn an_invalid_edit_is_rejected_and_the_next_valid_one_applied() {
         "and leaves the rest of the previous seed alone"
     );
 
-    std::fs::write(&drop_in, RESEED_V2).unwrap();
-    crate::common::mtime::touch_future(&drop_in);
+    edit(RESEED_V2);
     rx.recv_timeout(Duration::from_secs(3))
         .expect("a valid edit after the invalid one is reported");
     assert_eq!(
