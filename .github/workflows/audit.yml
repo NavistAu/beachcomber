@@ -1,0 +1,43 @@
+name: Audit
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # New advisories land against unchanged lockfiles.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # Vulnerabilities fail the job; unmaintained/unsound notices are warnings only.
+      - name: Audit Cargo.lock
+        run: cargo audit
+
+  npm-audit:
+    name: npm audit (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit npm lockfiles
+        # Advisory: never fails the build; results go to the step summary.
+        continue-on-error: true
+        run: |
+          for dir in website sdks/node; do
+            echo "### npm audit: $dir" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            (cd "$dir" && npm audit --audit-level=high) 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done

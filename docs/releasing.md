@@ -64,6 +64,7 @@ gh pr create --base main --head develop --title "Release vX.Y.Z" --fill
 - Benchmark
 - SDK tests: C, Go, Lua, Node.js, Python, Ruby
 - Installer validation: npm, PyPI
+- Audit: `cargo audit` against `Cargo.lock` (blocking; `audit.yml`). The npm audit job there is advisory only
 
 Do not merge until CI is fully green. **Merging the PR is the release** — there is nothing to do by hand afterwards (see step 5).
 
