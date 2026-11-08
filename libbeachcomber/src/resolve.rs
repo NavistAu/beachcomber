@@ -30,6 +30,7 @@ use crate::virtual_fields::{Ref, mj_to_json};
 use minijinja::Environment;
 use minijinja::value::{Serde, Value as MjValue};
 use serde_json::{Map, Value as JsonValue};
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, PoisonError, RwLock, mpsc};
 
@@ -367,14 +368,16 @@ struct Resolver<'a> {
     /// text's refs are read in, built once: its library bound to the caller's
     /// `env` and directory, the only ones an `exec()` child sees, and its
     /// loader the [`Libraries`] read so far. Shared, so a render on another
-    /// thread (a lazy `comb`) runs in it too.
-    jinja: Arc<Probe<'static>>,
+    /// thread (a lazy `comb`) runs in it too. Built on the first render, so
+    /// a read that renders nothing never pays for it ([`Self::jinja`]).
+    jinja: OnceCell<Arc<Probe<'static>>>,
     /// The macro libraries read so far ([`Self::closure`]).
     libraries: Libraries,
     /// The caller's environment as a template reads it, `env`: built once,
     /// and shared by every render rather than copied into each — an engine
-    /// value is reference-counted, so binding it is a pointer copy.
-    env: MjValue,
+    /// value is reference-counted, so binding it is a pointer copy. Built on
+    /// the first render too ([`Self::env`]).
+    env: OnceCell<MjValue>,
     fetch: &'a mut dyn Fetch,
     /// The daemon's answers so far: a node, or its refusal of the key.
     memo: HashMap<Coord, Result<Option<Got>, String>>,
@@ -398,43 +401,57 @@ struct Resolver<'a> {
 
 impl<'a> Resolver<'a> {
     fn new(inputs: &'a Inputs<'a>, fetch: &'a mut dyn Fetch) -> Self {
-        let frames = Arc::<MemoFrames>::default();
-        let mut jinja = build_engine_env(Arc::new(EngineCtx {
-            env: inputs.env.clone(),
-            cwd: inputs.dir().map(Into::into),
-            allow_exec: inputs.allow_exec,
-            now: inputs.now,
-            // A client's render: nothing checks what it read.
-            touched: None,
-            memo: Some(frames.clone()),
-        }));
-        // An import loads a library this resolution has read. A name it has
-        // not is the engine's "template not found": only a computed name
-        // could reach that, and the structural scan refuses those first.
-        let libraries = Libraries::default();
-        let loaded = libraries.clone();
-        jinja.set_loader(move |name| {
-            let loaded = loaded.read().unwrap_or_else(PoisonError::into_inner);
-            Ok(loaded.get(name).cloned())
-        });
         Self {
             inputs,
-            jinja: Arc::new(Probe::new(jinja)),
-            libraries,
-            // In name order, so `env | items` and a loop over `env` read the
-            // same order every run.
-            env: MjValue::from(Serde(inputs.env.iter().collect::<BTreeMap<_, _>>())),
+            jinja: OnceCell::new(),
+            libraries: Libraries::default(),
+            env: OnceCell::new(),
             fetch,
             memo: HashMap::new(),
             resolved: HashMap::new(),
             order: Vec::new(),
             stack: Vec::new(),
             oldest: None,
-            frames,
+            frames: Arc::default(),
             memos: Vec::new(),
             last_hit: false,
             memo_hit: false,
         }
+    }
+
+    /// The engine, built on first use: a plain cached value never renders,
+    /// and building it (and binding the caller's whole environment) is most
+    /// of a read's client-side cost.
+    fn jinja(&self) -> &Arc<Probe<'static>> {
+        self.jinja.get_or_init(|| {
+            let mut jinja = build_engine_env(Arc::new(EngineCtx {
+                env: self.inputs.env.clone(),
+                cwd: self.inputs.dir().map(Into::into),
+                allow_exec: self.inputs.allow_exec,
+                now: self.inputs.now,
+                // A client's render: nothing checks what it read.
+                touched: None,
+                memo: Some(self.frames.clone()),
+            }));
+            // An import loads a library this resolution has read. A name it
+            // has not is the engine's "template not found": only a computed
+            // name could reach that, and the structural scan refuses those
+            // first.
+            let loaded = self.libraries.clone();
+            jinja.set_loader(move |name| {
+                let loaded = loaded.read().unwrap_or_else(PoisonError::into_inner);
+                Ok(loaded.get(name).cloned())
+            });
+            Arc::new(Probe::new(jinja))
+        })
+    }
+
+    /// The caller's environment as `env`, built on first use. In name order,
+    /// so `env | items` and a loop over `env` read the same order every run.
+    fn env(&self) -> &MjValue {
+        self.env.get_or_init(|| {
+            MjValue::from(Serde(self.inputs.env.iter().collect::<BTreeMap<_, _>>()))
+        })
     }
 
     /// The data of `got`, noted as an input this resolution used.
@@ -629,7 +646,7 @@ impl<'a> Resolver<'a> {
         let libraries = self.closure(src, key)?;
         let mut refs: Vec<Ref> = std::iter::once(src)
             .chain(libraries.iter().map(String::as_str))
-            .flat_map(|text| discover_refs(&self.jinja, text))
+            .flat_map(|text| discover_refs(self.jinja(), text))
             .filter(|r| match r {
                 Ref::Dynamic(name) | Ref::Resolved(name, _) => !locals.contains_key(name),
                 Ref::Env(_) | Ref::CombField(..) | Ref::CombProvider(_) => true,
@@ -650,7 +667,7 @@ impl<'a> Resolver<'a> {
         let rendered = if refs.contains(&Ref::Dynamic("comb".to_string())) {
             self.render_with_lazy_comb(src, key, bound, &refs)
         } else {
-            evaluate_node(self.jinja.env(), src, key, self.context(None, bound))
+            evaluate_node(self.jinja().env(), src, key, self.context(None, bound))
         };
         if let Some(Frame::Leaf(leaf)) = self.frames.pop() {
             self.settle(leaf, &rendered);
@@ -745,7 +762,7 @@ impl<'a> Resolver<'a> {
     /// `env`, a lazy `comb` when the render has one, and every name `bound`
     /// holds. A name `bound` holds wins: a local called `env` is that local.
     fn context(&self, comb: Option<LazyNode>, bound: Map<String, JsonValue>) -> MjValue {
-        let env = (!bound.contains_key("env")).then(|| ("env".to_string(), self.env.clone()));
+        let env = (!bound.contains_key("env")).then(|| ("env".to_string(), self.env().clone()));
         let comb = comb.map(|node| ("comb".to_string(), MjValue::from_object(node)));
         let bound = bound
             .into_iter()
@@ -775,7 +792,7 @@ impl<'a> Resolver<'a> {
         };
         let comb = LazyNode::comb(bridge.clone(), prefetched, Arc::new(Prefetch::of(refs)));
         let context = self.context(Some(comb), bound);
-        let jinja = self.jinja.clone();
+        let jinja = self.jinja().clone();
 
         std::thread::scope(|scope| {
             let render = scope.spawn(move || {
