@@ -1,7 +1,6 @@
 //! Handler for the `eval` subcommand.
 //!
-//! `eval` evaluates a value expression in either of the two forms canon
-//! `field_resolution.md` (invariant 14) defines: exactly one `{{ expr }}`
+//! `eval` evaluates a value expression in either of the two forms: exactly one `{{ expr }}`
 //! (which keeps the expression's natural type), or literal text and/or
 //! several tags (which is string-valued — a source with no tags at all is
 //! its literal text).

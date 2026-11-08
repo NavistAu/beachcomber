@@ -573,7 +573,7 @@ comb d --socket /tmp/beachcomber-debug.sock
 
 The daemon exits cleanly on SIGINT (Ctrl+C) or SIGTERM. Prefer `comb kill` from another shell rather than signalling manually.
 
-**One daemon per user.** The daemon whose socket matches its own resolution above is the *canonical* daemon. It removes orphaned `comb daemon` processes (reparented to PID 1, on sockets nothing resolves) at startup and hourly. A foreground debug run under your shell is never touched; a daemon you run under a supervisor on a *non-default* socket is parented to PID 1, so mark it exempt with `--no-reap`. Full rules in the repo's `docs/canon/singleton.md`.
+**One daemon per user.** The daemon whose socket matches its own resolution above is the *canonical* daemon. It removes orphaned `comb daemon` processes (reparented to PID 1, on sockets nothing resolves) at startup and hourly. A foreground debug run under your shell is never touched; a daemon you run under a supervisor on a *non-default* socket is parented to PID 1, so mark it exempt with `--no-reap`.
 
 **Readiness.** `--ready-fd <FD>` names a descriptor the daemon inherited (3 or above): it writes a newline there once its socket is served, or once it finds a daemon of its own build already serving it, and closes it. A daemon that exits first closes it unwritten, so whoever holds the other end learns of the exit at once. comb and every SDK start a daemon this way, and a supervisor can too.
 

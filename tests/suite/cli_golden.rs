@@ -143,8 +143,8 @@ fn get_sh_finds_put_created_virtual_without_explicit_path() {
         .assert()
         .success();
 
-    // `sh` shell-quotes every value it renders (canon field_resolution.md
-    // invariant 8), so the expected forms carry their quotes.
+    // `sh` shell-quotes every value it renders, so the
+    // expected forms carry their quotes.
     d.comb(Path::new("/"))
         .args(["get", "-f", "sh", "shvirt.stdin"])
         .assert()
@@ -210,8 +210,7 @@ fn golden_init_prints_or_writes_config() {
 
 // ── one expression syntax: `comb eval` over both forms ────────────────────────
 //
-// `comb eval` accepts both forms canon `field_resolution.md` invariant 14
-// defines: exactly one `{{ expr }}` tag (natural type) or literal text and/or
+// `comb eval` accepts both forms: exactly one `{{ expr }}` tag (natural type) or literal text and/or
 // several tags (string) — a source with no tags at all is its literal text.
 // A typed result prints through `libbeachcomber::render::render_data` — the
 // same renderer `comb get -f text` uses — so `comb eval '{{ p.f }}'` and

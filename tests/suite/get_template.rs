@@ -622,7 +622,7 @@ async fn a_template_only_response_carries_no_freshness() {
     handle.abort();
 }
 
-// ── (f) the socket twin of the canon per-source field freshness pin ─────────
+// ── (f) the socket twin of the per-source field freshness pin ─────────
 
 fn twin_meta(name: &str, field: &str) -> SourceMetadata {
     SourceMetadata {
@@ -672,7 +672,7 @@ impl TwinProvider {
 /// namespace reports the older of the two.
 ///
 /// The twin of `field_freshness_reflects_owning_source_last_refresh` in
-/// `src/scheduler/canon_provider_source_tests.rs`, which pins the same rule through
+/// `src/scheduler/provider_source_tests.rs`, which pins the same rule through
 /// `Cache::get_field`. This one survives that call being retired.
 #[tokio::test(start_paused = true)]
 async fn field_age_through_get_is_the_owning_sources_age() {

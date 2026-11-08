@@ -99,7 +99,7 @@ A `get` fixture typically seeds cache values and templates via `setup`
 Daemon queries a `get` makes are scoped to the fixture's `cwd`. A
 pathless (global) `setup` `put` is still visible to them: a read at a path
 resolves static records up the directory chain, and the global entry is the
-last link of every chain (canon `field_resolution.md` §"Path resolution").
+last link of every chain.
 Seed with `args.path` only when the fixture is about path-keyed data.
 
 ### The `eval` op

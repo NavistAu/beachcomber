@@ -1121,7 +1121,7 @@ fn exec_is_a_runtime_error_when_the_surface_disallows_it() {
 
 #[test]
 fn exec_runs_in_the_template_form_too_and_is_refused_the_same_way() {
-    // Both forms of canon invariant 14 share one environment, so the
+    // Both forms of a value expression share one environment, so the
     // surface's decision reaches a template exactly as it reaches a tag.
     let env = spec_env();
     let mut f = MapFetch::default();
@@ -1445,7 +1445,7 @@ fn a_miss_binds_nothing_so_default_fires_at_any_depth() {
     // every `| default(...)` in the wild silently render empty; pre-creating
     // an empty `comb.nope` to hold a missed field would make the
     // whole-provider ref *defined* and render `{}`. Chaining through a miss
-    // stays undefined, so it is falsy at any depth (canon).
+    // stays undefined, so it is falsy at any depth.
     let env = spec_env();
     let mut f = MapFetch::default();
     let i = inputs(&env);
@@ -1527,7 +1527,7 @@ fn the_two_expression_forms_keep_their_types() {
 fn the_single_tag_form_keeps_structured_shapes() {
     // An interior node resolves to its subtree as an object, a sequence
     // stays a sequence, and a filter yielding an iterable keeps that shape
-    // too (canon invariants 8 and 12) — the typed path never re-renders a
+    // too — the typed path never re-renders a
     // structured result as a string. Literal text is what stringifies it.
     let env = spec_env();
     let mut f = MapFetch::default();

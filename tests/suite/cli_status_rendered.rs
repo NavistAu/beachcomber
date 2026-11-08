@@ -2,8 +2,8 @@
 //! cached rows, and every row's SOURCE.
 //!
 //! The daemon holds templates as data under `<p>:template` and never
-//! evaluates them (canon `field_resolution.md` invariant 7). `status` is a
-//! surface that may `exec()` (canon `field_resolution.md` invariant 15), so
+//! evaluates them. `status` is a
+//! surface that may `exec()`, so
 //! the CLI resolves each template leaf for its own directory and environment
 //! — exactly as `comb get` would — and adds one marked row per leaf. Those
 //! rows carry `source = template` and `kind = template`; nothing on the wire

@@ -614,7 +614,7 @@ fn a_template_put_globally_is_visible_to_both_reads() {
 
 /// The daemon answers `ok: false` for an invalid facet key. The key the user
 /// typed being refused is an error in every format, worded by the daemon —
-/// only a ref inside a template naming such a key is falsy (canon: a missing
+/// only a ref inside a template naming such a key is falsy (a missing
 /// ref is falsy at any depth).
 #[test]
 fn a_daemon_rejected_key_is_an_error_in_every_format() {

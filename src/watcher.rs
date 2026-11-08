@@ -83,8 +83,7 @@ impl FsWatcher {
 }
 
 /// Which backend serves provider file-watching, decided at daemon startup by
-/// the watch self-test (canon `provider_source.md` §"Watch backend health"),
-/// and re-tested while on polling ([`until_native_delivers`]).
+/// the watch self-test, and re-tested while on polling ([`until_native_delivers`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WatchBackend {
     /// Kernel-native (FSEvents / inotify) — the self-test confirmed delivery.
@@ -102,7 +101,7 @@ impl WatchBackend {
     }
 }
 
-/// Watch self-test timeout (canon: 2s). Healthy-idle delivery is ~10ms, but
+/// Watch self-test timeout. Healthy-idle delivery is ~10ms, but
 /// hundreds of ms under heavy filesystem load — the timeout must not
 /// misclassify a loaded-but-healthy backend as dead. Concurrent with the
 /// scheduler loop, so it costs no startup latency.

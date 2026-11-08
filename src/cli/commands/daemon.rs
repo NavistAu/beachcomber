@@ -218,7 +218,7 @@ pub fn run_daemon(
             }
         }
 
-        // Orphan reaping — reaping daemon only (canon §"Who reaps"). The
+        // Orphan reaping — reaping daemon only. The
         // reaper role is decided against the ENV-FREE resolution (config →
         // default, ignoring --socket and $BEACHCOMBER_SOCKET): env is
         // per-process, and honoring it here lets two daemons of one uid each
@@ -226,7 +226,7 @@ pub fn run_daemon(
         // interval's first tick fires immediately (startup sweep), then
         // hourly. Sweeps run on the blocking pool: the process walk and the
         // SIGTERM grace waits are synchronous. Reaper health is surfaced via
-        // introspect/status/check (canon invariant 13).
+        // introspect/status/check, never silently degraded.
         let reaper_health = std::sync::Arc::new(crate::singleton::ReaperHealth::default());
         if crate::singleton::policy::is_canonical_daemon(
             &socket_path,
@@ -235,8 +235,7 @@ pub fn run_daemon(
             use std::sync::atomic::Ordering::Relaxed;
             reaper_health.armed.store(true, Relaxed);
 
-            // Visibility self-test at arming (canon §"Reaper visibility
-            // self-test") — warn once here, not per sweep.
+            // Visibility self-test at arming — warn once here, not per sweep.
             {
                 use crate::boundaries::proc_table::{ProcessTable, RealProcessTable};
                 let visible = RealProcessTable.pid1_visible();

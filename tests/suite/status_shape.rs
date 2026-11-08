@@ -1192,7 +1192,7 @@ async fn status_response_lifecycle_row_carries_kind_and_fields() {
     // `target/` working tree; `git status`/`git diff` over it on the Linux CI runner
     // took >30s and timed the test out.
     // Request the whole provider ("git") so both sources (refs + diff) are warmed.
-    // A field request like "git.branch" only demands the refs source (canon §150/§268),
+    // A field request like "git.branch" only demands the refs source,
     // which would leave the diff source absent from the status output.
     let repo = GitRepoFixture::new();
     let repo_path = repo.path_str();

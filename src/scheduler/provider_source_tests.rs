@@ -1,4 +1,4 @@
-//! Provider/Source behaviour assertions (from the retired `docs/canon/provider_source.md`)
+//! Provider/Source behaviour assertions
 //!
 //! One test per Gherkin scenario. Tests use `LifecycleRegistry` directly for
 //! lifecycle scenarios and `Cache` directly for cache-write isolation scenarios.

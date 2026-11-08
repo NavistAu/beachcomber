@@ -290,11 +290,11 @@ pub fn acquire_or_supersede_with(
 // `website/docs/internals/architecture.md` §7.
 // ---------------------------------------------------------------------------
 
-/// Grace age below which a candidate is never reaped (canon: 60s).
+/// Grace age below which a candidate is never reaped.
 pub const REAP_GRACE_AGE_SECS: u64 = 60;
 
-/// Outcome of one reap sweep. Feeds the canon-mandated per-sweep summary log
-/// and the reaper health counters (canon singleton.md invariant 13): a sweep
+/// Outcome of one reap sweep. Feeds the per-sweep summary log
+/// and the reaper health counters: a sweep
 /// that found nothing eligible must be distinguishable from a sweep that
 /// could not see anything.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -312,10 +312,9 @@ pub struct SweepReport {
     /// Kill attempts failing for any other reason.
     pub kill_failed: u32,
     /// Reaper visibility self-test at this sweep: PID 1 present in the raw
-    /// enumeration (canon §"Reaper visibility self-test").
+    /// enumeration.
     pub pid1_visible: bool,
-    /// Reaped orphans whose corpse files (socket + pid files) were removed
-    /// (canon §"Corpse cleanup", invariant 14).
+    /// Reaped orphans whose corpse files (socket + pid files) were removed.
     pub corpses_unlinked: u32,
 }
 
@@ -329,8 +328,8 @@ impl SweepReport {
 }
 
 /// Shared reaper health state — written by the canonical daemon's reap loop,
-/// read by the server's introspect handler. Backs canon singleton.md
-/// invariant 13 ("reaper capability is never silently degraded"): the
+/// read by the server's introspect handler. Backs the rule that reaper
+/// capability is never silently degraded: the
 /// visibility self-test verdict and OS-denied kill counts are observable via
 /// `comb check daemon`, `comb status`, and introspect `reaper`.
 #[derive(Debug, Default)]
@@ -361,9 +360,9 @@ impl ReaperHealth {
 }
 
 /// Run one reap sweep with injected boundaries. For each uid-owned process,
-/// `decide_reap` applies the canon exemption rules; orphans are killed via
+/// `decide_reap` applies the exemption rules; orphans are killed via
 /// `kill` (SIGTERM → 1s grace → SIGKILL in production). Evaluates the
-/// visibility self-test and logs the canon-mandated per-sweep summary at
+/// visibility self-test and logs the per-sweep summary at
 /// debug level. Returns the full report.
 pub fn reap_sweep_with(
     table: &dyn crate::boundaries::proc_table::ProcessTable,
@@ -392,7 +391,7 @@ pub fn reap_sweep_with(
                             "reaped orphan daemon"
                         );
                         report.reaped.push(candidate.pid);
-                        // Corpse cleanup (canon §"Corpse cleanup"): remove the
+                        // Corpse cleanup: remove the
                         // dead orphan's socket + pid files so existence-probing
                         // clients cannot re-latch onto the path.
                         if !socket.as_os_str().is_empty() && cleanup(&socket) {
@@ -435,7 +434,7 @@ pub fn reap_sweep_with(
 /// Remove a reaped orphan's corpse files: the socket itself and the sibling
 /// `pid` file. Probes first and NEVER unlinks a serving
 /// socket — a racing respawn that re-bound the path between kill and cleanup
-/// keeps its socket (canon §"Corpse cleanup", invariant 14). Returns true if
+/// keeps its socket. Returns true if
 /// anything was removed.
 pub fn cleanup_orphan_corpse(
     probe: &dyn crate::boundaries::socket::SocketProbe,
@@ -494,7 +493,7 @@ pub fn spawn_binary_self_watch<F: FnOnce() + Send + 'static>(on_change: F) -> st
     Ok(())
 }
 
-/// Self-watch poll interval (canon: 5s). The poll is the guarantee; the
+/// Self-watch poll interval. The poll is the guarantee; the
 /// fs-event watch is only the fast path.
 pub const SELF_WATCH_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -520,7 +519,7 @@ pub fn spawn_binary_self_watch_with<F: FnOnce() + Send + 'static>(
             .unwrap_or(0);
 
         // Watcher setup failure is a degradation, not a defeat: the poll
-        // below runs regardless (canon §"Self-supervision").
+        // below runs regardless.
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
         let watcher = if fs_events {
             match (notify::recommended_watcher(tx), exe.parent()) {

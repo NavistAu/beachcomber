@@ -287,7 +287,7 @@ fn probe_until_serving_waits_through_grace_for_late_bind() {
 }
 
 // ---------------------------------------------------------------------------
-// Orphan reaping — canon §"Orphan reaping" behaviour assertions
+// Orphan reaping behaviour assertions
 // ---------------------------------------------------------------------------
 
 use beachcomber::boundaries::proc_table::{ProcessInfo, ProcessTable};
@@ -533,7 +533,7 @@ fn reap_sweep_continues_past_kill_failures() {
     );
 }
 
-// --- SweepReport (canon invariant 13: every sweep leaves an accountable trace) ---
+// --- SweepReport: every sweep leaves an accountable trace ---
 
 #[test]
 fn sweep_report_tallies_rows_candidates_and_exemptions() {
@@ -650,7 +650,7 @@ fn reaper_health_record_sweep_accumulates() {
     assert!(!health.visibility_ok.load(Relaxed));
 }
 
-// --- Corpse cleanup (canon §"Corpse cleanup", invariant 14) ---
+// --- Corpse cleanup ---
 
 #[test]
 fn reap_sweep_calls_cleanup_with_orphan_socket_and_counts() {
@@ -741,7 +741,7 @@ fn cleanup_orphan_corpse_never_unlinks_serving_socket() {
     assert!(tmp.path().join("pid").exists(), "pid file left in place");
 }
 
-// --- Reaper-role resolution ignores $BEACHCOMBER_SOCKET (canon §"Who reaps") ---
+// --- Reaper-role resolution ignores $BEACHCOMBER_SOCKET ---
 
 #[test]
 fn reaper_resolution_ignores_beachcomber_socket_env() {

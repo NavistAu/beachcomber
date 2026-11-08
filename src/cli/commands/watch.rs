@@ -12,8 +12,7 @@
 //!
 //! This module only renders what the library emits, per output format —
 //! reusing `libbeachcomber::render::render_data` for `text`/`sh` exactly as
-//! `get` does, including the shell-quoting `-f sh` requires (canon
-//! `field_resolution.md` invariant 8). A frame is one line. A miss is what
+//! `get` does, including the shell-quoting `-f sh` requires. A frame is one line. A miss is what
 //! `get` prints for one: `null` under `-f json`, a template's own rendering
 //! under `-f '<template>'` (through the one `render_template` `get` uses),
 //! and no line at all under every other format.

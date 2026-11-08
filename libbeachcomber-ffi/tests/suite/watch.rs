@@ -24,7 +24,7 @@ use beachcomber::{
 
 /// The directory every watch here addresses. Nothing is stored at it: each
 /// fixture `put`s globally, and the global entry is the last link of every
-/// path's chain (canon `field_resolution.md` §"Path resolution").
+/// path's chain.
 const CWD: &str = "/tmp";
 
 /// `bc_watch_open` at [`CWD`] with an optional environment.

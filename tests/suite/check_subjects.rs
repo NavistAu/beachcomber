@@ -830,7 +830,7 @@ fn check_daemon_reports_watch_backend() {
     stop(&mut daemon);
 }
 
-// --- Reaper health surfacing (canon singleton.md invariant 13) ---
+// --- Reaper health surfacing ---
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspect_daemon_reaper_absent_when_not_attached() {

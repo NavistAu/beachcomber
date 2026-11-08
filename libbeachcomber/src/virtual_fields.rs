@@ -22,7 +22,7 @@ use std::collections::HashSet;
 
 /// A kinded reference discovered in an expression.
 ///
-/// The reference kinds of canon `field_resolution.md`:
+/// The reference kinds:
 /// - `env.X` → `Env(X)`
 /// - `comb.P.F` → `CombField(P, F)` (the raw cached value, never a template)
 /// - `comb.P` → `CombProvider(P)` (the whole provider object)
@@ -174,8 +174,8 @@ pub(crate) fn mj_to_json(v: MjValue) -> Result<Option<JsonValue>, String> {
         }
     }
     // Structured values keep their shape: an interior node is an object and a
-    // sequence an array, rather than MiniJinja's `{"a": 1}` debug rendering —
-    // canon `field_resolution.md` invariants 8 and 12. serde round-trips the
+    // sequence an array, rather than MiniJinja's `{"a": 1}` debug rendering.
+    // serde round-trips the
     // whole tree (a nested `none` becomes JSON null). A number it cannot
     // represent (an integer past 64 bits, NaN, inf) is the same error as at
     // the top level, never the map's text or a silent null.

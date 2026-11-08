@@ -87,8 +87,8 @@ pub fn socket_arg(argv: &[String]) -> Option<std::path::PathBuf> {
     None
 }
 
-/// The canon reap rule: uid-owned `comb daemon` processes are orphans unless
-/// an exemption applies. Exemptions, in canon order:
+/// The reap rule: uid-owned `comb daemon` processes are orphans unless
+/// an exemption applies. Exemptions, in order:
 ///
 /// 1. the reaper itself, or a process on the reaper's own socket path
 ///    (startup contention — flock and serving probe govern those);

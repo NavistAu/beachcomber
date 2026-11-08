@@ -2,8 +2,8 @@
 //! (`crate::singleton::spawn_binary_self_watch_with`) — an fs-event watch as
 //! the fast path, a guaranteed mtime poll as the backstop, 200ms debounce —
 //! but gates the restart on the new file actually parsing. Config
-//! self-supervision is deliberately not part of the singleton canon (that spec
-//! covers binary freshness); the user-facing contract lives in the website
+//! self-supervision is deliberately not part of the singleton's binary-freshness
+//! check; the user-facing contract lives in the website
 //! configuration reference.
 //!
 //! Not every change is a restart. A change that touches only what is under

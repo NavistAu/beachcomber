@@ -1,5 +1,5 @@
 //! `$HOME` is the global path, and a read resolves static records up the
-//! directory chain (canon `field_resolution.md` §"Path resolution").
+//! directory chain.
 //!
 //! The chain for a path `P` is `P`, each ancestor below `$HOME` (or every one
 //! up to `/` when `P` is outside `$HOME`), then the global entry — which is

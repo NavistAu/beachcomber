@@ -9,7 +9,7 @@
 //! 737 system pids) while leaving `sysctl KERN_PROC_ALL` unrestricted, which
 //! made a sandbox-spawned canonical daemon silently blind to every orphan it
 //! existed to reap. Per-pid detail calls (`proc_pidinfo`, `KERN_PROCARGS2`)
-//! are not filtered and stay as-is. See canon §"Reaper visibility self-test".
+//! are not filtered and stay as-is. See [`ProcessTable::pid1_visible`].
 
 /// One row of the process table, as much as reaping needs to know.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +28,7 @@ pub trait ProcessTable: Send + Sync {
     /// cannot be read (permission, zombie, raced exit) are omitted.
     fn list_own(&self) -> Vec<ProcessInfo>;
 
-    /// Reaper visibility self-test (canon singleton.md): true when PID 1
+    /// Reaper visibility self-test: true when PID 1
     /// appears in the RAW enumeration (before uid filtering). False means the
     /// process table is confined (sandbox, hidepid) and reaping is blind to
     /// processes outside the confinement.
@@ -71,8 +71,8 @@ mod imp {
     /// System-wide pid list via `sysctl KERN_PROC_ALL`.
     ///
     /// NOT `proc_listallpids`: seatbelt sandbox profiles filter libproc's pid
-    /// list to the session while leaving this sysctl unrestricted (canon
-    /// singleton.md §"Reaper visibility self-test", 2026-07-16 incident).
+    /// list to the session while leaving this sysctl unrestricted
+    /// (2026-07-16 incident: the reaper went blind in a sandbox).
     fn raw_pids() -> Vec<libc::c_int> {
         let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ALL, 0];
 
@@ -364,7 +364,7 @@ mod tests {
         // Regression guard for the sandbox-confined enumeration bug: the raw pid
         // list must plausibly span the system, not just this process's session.
         // We can't assert an absolute count (containers are small), but PID 1
-        // visibility plus our own presence is the canon-blessed minimum; this
+        // visibility plus our own presence is the minimum; this
         // test additionally pins that enumeration and the probe agree on the
         // same mechanism (both must come from the sysctl/procfs raw list).
         let table = RealProcessTable;

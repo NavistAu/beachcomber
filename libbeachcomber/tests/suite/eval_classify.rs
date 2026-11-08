@@ -1,8 +1,7 @@
 //! Classification, reference discovery and the template render for value
 //! expressions — `libbeachcomber::eval`, the primitives `resolve` is built on.
 //!
-//! Pins canon `field_resolution.md` invariant 14: a value expression written as
-//! exactly one `{{ expr }}` keeps the expression's natural type; one written
+//! Pins the two forms of a value expression: one written as exactly one `{{ expr }}` keeps the expression's natural type; one written
 //! with literal text or more than one tag is a string-valued template. A
 //! source with no tags at all is its own literal text — there is no
 //! bare-expression form. Evaluation against fetched data is `tests/suite/resolve.rs`.
@@ -361,8 +360,8 @@ fn render_template_over_assembled_context() {
         "main*"
     );
     // A null in the assembled context renders as nothing — not the literal
-    // word `none`. The same "missing is falsy" reading canon gives `env.*`
-    // misses and `render::render_value` gives an explicit null.
+    // word `none`. It reads like a missing
+    // `env.*`, and like `render::render_value` on an explicit null.
     let rendered = render_template("[{{ git.tag }}]", &ctx).unwrap();
     assert_eq!(rendered, "[]");
     assert!(!rendered.contains("none"), "got: {rendered}");

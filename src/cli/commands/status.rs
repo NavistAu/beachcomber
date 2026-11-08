@@ -15,8 +15,7 @@ use libbeachcomber::resolve::{MemoWrite, Slot, eval_with, resolve_traced, write_
 use std::collections::HashMap;
 use std::io::IsTerminal;
 
-/// The namespace facet holding value expressions (canon
-/// `field_resolution.md` "Facet").
+/// The namespace facet holding value expressions.
 const TEMPLATE_FACET: &str = ":template";
 
 /// The SOURCE a rendered row reports: nothing produced it but this
@@ -28,13 +27,12 @@ const MEMO_SOURCE: &str = "memo";
 
 /// One rendered row per template leaf the caller's directory can see.
 ///
-/// The daemon holds templates as data and never evaluates them (canon
-/// `field_resolution.md` invariant 7), so `status` shows raw expressions
+/// The daemon holds templates as data and never evaluates them, so `status` shows raw expressions
 /// where a user wants values. Each leaf under a `<p>:template` row visible
 /// from `cwd` — the row's own path, an ancestor of it up to `$HOME`, or the
-/// global entry (canon invariant 2) — is resolved as `<p>.<leaf>` would be by
+/// global entry — is resolved as `<p>.<leaf>` would be by
 /// `comb get`, with `exec()` on: `comb status` is one of the surfaces that
-/// opted in (canon `field_resolution.md` invariant 15).
+/// opted in.
 ///
 /// A leaf that resolves to nothing is a row with a null value, which the
 /// default `value!=-` filter hides. A leaf that fails carries its failure as
@@ -313,7 +311,7 @@ pub fn run_status(
         Ok(mut rows) => {
             // The daemon never evaluates a template, so the rendered rows are
             // added here, from this shell's directory and environment. A
-            // template resolves relative to `cwd` (canon invariant 2); with
+            // template resolves relative to `cwd`; with
             // no cwd to resolve against, there is no correct directory to
             // stamp a rendered row with, so rendering is skipped rather than
             // resolving every leaf as if the caller stood at "" — which

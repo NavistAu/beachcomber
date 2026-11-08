@@ -441,7 +441,7 @@ pub struct ClientConfig {
     pub auto_start: bool,
     /// Whether templates this client resolves may call `exec()`. Off by
     /// default: an embedding caller does not spawn processes on the user's
-    /// behalf unless it says so (canon `field_resolution.md` invariant 15).
+    /// behalf unless it says so.
     pub exec: bool,
 }
 

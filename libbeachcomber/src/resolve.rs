@@ -16,8 +16,7 @@
 //! A miss and a failure are different answers: `Ok(None)` is "nothing is
 //! stored at that address", `Err` is "something is wrong".
 //!
-//! See `docs/superpowers/specs/2026-09-05-one-tree-resolution-design.md` §4
-//! and canon `field_resolution.md`.
+//! See `docs/decisionlog/261007074623-field-value-by-coalescing-facets.md`.
 
 use crate::engine::{EngineCtx, build_engine_env};
 use crate::eval::{
@@ -118,7 +117,7 @@ impl Inputs<'_> {
 /// `Rejected` is the daemon answering `ok: false` to the key itself: an
 /// invalid facet. The key the caller asked for being
 /// rejected is an error the caller hears, in the daemon's own words; a ref
-/// inside a template naming a rejected key is a missing ref, and canon says a
+/// inside a template naming a rejected key is a missing ref, and a
 /// missing ref is falsy at any depth.
 #[derive(Debug, PartialEq, Eq)]
 pub enum FetchError {
@@ -580,7 +579,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// [`Self::fetch`] for a ref inside a template: a key the daemon rejected
-    /// is a missing ref, and a missing ref is falsy at any depth (canon), so
+    /// is a missing ref, and a missing ref is falsy at any depth, so
     /// it binds nothing. A transport failure still stops the resolution.
     fn fetch_ref(&mut self, key: &str) -> Result<Option<Got>, ResolveError> {
         match self.fetch(key) {
