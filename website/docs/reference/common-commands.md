@@ -227,7 +227,7 @@ $ comb g build.eta
 4m
 ```
 
-See [`comb p`](../reference/cli-commands.md#comb-p-put-key-json-data-path---ttl-duration--p-path---global).
+See [`comb p`](../reference/cli-commands.md#comb-p-put-key-json-data-path---ttl-duration---persist--p-path---global).
 
 ## Get a fresh value: `refresh`, `--force`, `--wait`
 
