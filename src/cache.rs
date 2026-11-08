@@ -2833,6 +2833,20 @@ impl Cache {
         self.entries.is_empty()
     }
 
+    /// Whether the cache holds nothing but what the daemon seeded from its
+    /// own configuration (`config:<file>` maps): no Source record, put or
+    /// memo. Idle shutdown asks this; a seed alone does not keep a daemon up.
+    pub fn holds_only_config_seeds(&self) -> bool {
+        self.entries.iter().all(|entry| {
+            entry.puts.is_empty()
+                && entry.memos.is_empty()
+                && entry
+                    .sources
+                    .keys()
+                    .all(|label| label.starts_with(CONFIG_SOURCE_PREFIX))
+        })
+    }
+
     /// List one row per (source, field) across all cache entries.
     /// Used by `Request::Status` to return the tabular "what is warm?" payload.
     /// Each row's `age_ms` comes from that field's owning source's last-refreshed timestamp.

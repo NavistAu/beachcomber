@@ -1333,9 +1333,10 @@ impl Scheduler {
                         debug!("lifecycle: key {:?} -> {:?}", key, new_state);
                     }
 
-                    // Idle shutdown.
+                    // Idle shutdown: the daemon's own config seeds do not
+                    // count, anything a client or a run wrote does.
                     if let Some(idle) = idle_shutdown
-                        && self.cache.is_empty()
+                        && self.cache.holds_only_config_seeds()
                         && lifecycle.is_empty()
                         && last_activity.elapsed() >= idle
                     {
