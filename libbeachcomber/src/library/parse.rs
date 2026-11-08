@@ -3,7 +3,7 @@
 
 use super::{UNDEFINED, arguments, is_absent, is_absent_text, text, whole};
 use crate::engine::{EngineCtx, op_error};
-use minijinja::value::{Kwargs, Rest, Value as MjValue};
+use minijinja::value::{Kwargs, Rest, Serde, Value as MjValue};
 use minijinja::{Environment, Error, ErrorKind};
 use std::sync::Arc;
 
@@ -53,7 +53,7 @@ fn fromjson_filter(value: MjValue) -> Result<MjValue, Error> {
         return Ok(UNDEFINED);
     }
     serde_json::from_str::<serde_json::Value>(&text("fromjson", &value)?)
-        .map(|v| MjValue::from_serialize(&v))
+        .map(|v| MjValue::from(Serde(&v)))
         .map_err(|e| Error::new(ErrorKind::InvalidOperation, format!("fromjson(): {e}")))
 }
 
@@ -78,7 +78,7 @@ fn fromini(value: MjValue) -> Result<MjValue, Error> {
             table[k] = serde_json::Value::String(v.to_string());
         }
     }
-    Ok(MjValue::from_serialize(serde_json::Value::Object(out)))
+    Ok(MjValue::from(Serde(serde_json::Value::Object(out))))
 }
 
 /// `s | fromtoml`: a TOML document as a map. A datetime is its text.
@@ -93,7 +93,7 @@ fn fromtoml(value: MjValue) -> Result<MjValue, Error> {
             crate::toml_text::reason(&e, &src)
         ))
     })?;
-    Ok(MjValue::from_serialize(toml_json(toml::Value::Table(doc))))
+    Ok(MjValue::from(Serde(toml_json(toml::Value::Table(doc)))))
 }
 
 fn toml_json(v: toml::Value) -> serde_json::Value {
@@ -121,7 +121,7 @@ fn fromyaml(value: MjValue) -> Result<MjValue, Error> {
         .map_err(|e| op_error(format!("fromyaml(): {e}")))?;
     match docs.len() {
         0 => Ok(UNDEFINED),
-        1 => Ok(MjValue::from_serialize(yaml_json(docs.remove(0))?)),
+        1 => Ok(MjValue::from(Serde(yaml_json(docs.remove(0))?))),
         n => Err(op_error(format!("fromyaml(): {n} documents; expected one"))),
     }
 }
@@ -186,11 +186,11 @@ fn regex_search(value: MjValue, pattern_arg: MjValue) -> Result<MjValue, Error> 
     }
     let s = text("regex_search", &value)?;
     Ok(re.captures(&s).map_or(UNDEFINED, |caps| {
-        MjValue::from_serialize(
+        MjValue::from(Serde(
             caps.iter()
                 .map(|g| g.map(|m| m.as_str()))
                 .collect::<Vec<_>>(),
-        )
+        ))
     }))
 }
 
@@ -300,7 +300,7 @@ mod tests {
         let e = err("[1] | fromtoml");
         assert!(e.contains("fromtoml(): expected text"), "{e}");
         for absent in ["''", "none", "nope"] {
-            assert_eq!(ok(&format!("({absent} | fromtoml) is undefined")), "true");
+            assert_eq!(ok(&format!("({absent} | fromtoml) is undefined")), "True");
         }
     }
 
@@ -333,7 +333,7 @@ mod tests {
         for absent in ["''", "none", "nope", "'# only a comment\\n'"] {
             assert_eq!(
                 ok(&format!("({absent} | fromyaml) is undefined")),
-                "true",
+                "True",
                 "{absent}"
             );
         }
@@ -366,11 +366,11 @@ mod tests {
 
     #[test]
     fn regex_search_without_a_match_or_subject_is_undefined() {
-        assert_eq!(ok("('abc' | regex_search('z')) is undefined"), "true");
-        assert_eq!(ok("(none | regex_search('a')) is undefined"), "true");
-        assert_eq!(ok("(nope | regex_search('a')) is undefined"), "true");
-        assert_eq!(ok("('' | regex_search('a')) is undefined"), "true");
-        assert_eq!(ok("('' | regex_search('^')) is defined"), "true");
+        assert_eq!(ok("('abc' | regex_search('z')) is undefined"), "True");
+        assert_eq!(ok("(none | regex_search('a')) is undefined"), "True");
+        assert_eq!(ok("(nope | regex_search('a')) is undefined"), "True");
+        assert_eq!(ok("('' | regex_search('a')) is undefined"), "True");
+        assert_eq!(ok("('' | regex_search('^')) is defined"), "True");
     }
 
     #[test]
@@ -410,8 +410,8 @@ mod tests {
 
     #[test]
     fn regex_replace_checks_its_arguments_first() {
-        assert_eq!(ok("(none | regex_replace('a', 'b')) is undefined"), "true");
-        assert_eq!(ok("(nope | regex_replace('a', 'b')) is undefined"), "true");
+        assert_eq!(ok("(none | regex_replace('a', 'b')) is undefined"), "True");
+        assert_eq!(ok("(nope | regex_replace('a', 'b')) is undefined"), "True");
         for subject in ["'abc'", "none"] {
             let e = err(&format!("{subject} | regex_replace('(', 'x')"));
             assert!(e.contains("regex_replace(): invalid pattern"), "{e}");

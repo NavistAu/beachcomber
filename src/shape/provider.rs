@@ -57,7 +57,7 @@ use libbeachcomber::eval::{
     Known, Line, Probe, Use, evaluate, lint, single_tag_expression, undeclared_names, used_names,
 };
 use libbeachcomber::library::{Surface, first_refused};
-use minijinja::value::{Object, ObjectRepr, Value as MjValue};
+use minijinja::value::{Object, ObjectRepr, Serde, Value as MjValue};
 use minijinja::{Environment, Error};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -595,7 +595,7 @@ impl ProviderLines {
             vars.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
         vars.push((
             "_".into(),
-            MjValue::from_serialize(serde_json::json!({"name": provider})),
+            MjValue::from(Serde(serde_json::json!({"name": provider}))),
         ));
         let sink = MjValue::from_object(FacetSink::default());
         let value = render_level(self.probe.env(), &lines, 0, &Arc::new(vars), &sink)
@@ -756,7 +756,7 @@ impl ProviderLines {
             ReturnKind::Line => {}
         }
         let as_value = |fields: Option<&HashMap<String, Value>>| {
-            fields.map_or_else(|| MjValue::from(()), MjValue::from_serialize)
+            fields.map_or_else(|| MjValue::from(()), |v| MjValue::from(Serde(v)))
         };
         let mut vars = Vec::new();
         if chains.return_reads_result {
@@ -1083,7 +1083,7 @@ fn render_level(
             }),
         ));
     }
-    evaluate(env, &lines[level], MjValue::from_iter(context)).map_err(|e| e.message().to_string())
+    evaluate(env, &lines[level], MjValue::from_pairs(context)).map_err(|e| e.message().to_string())
 }
 
 #[cfg(test)]
@@ -1223,8 +1223,9 @@ mod tests {
     #[test]
     fn name_is_the_provider_the_line_is_applied_to() {
         let lines = lines("");
-        let client =
-            MjValue::from_serialize(json!({"providers": {"aws": {"template": {"p": "x"}}}}));
+        let client = MjValue::from(Serde(
+            json!({"providers": {"aws": {"template": {"p": "x"}}}}),
+        ));
         assert_eq!(
             lines.template_tree("aws", &client).unwrap(),
             Some(json!({"p": "x"}))
@@ -1235,8 +1236,9 @@ mod tests {
     #[test]
     fn a_template_line_may_read_another_providers_client_tree() {
         let lines = lines("[git]\ntemplate = \"{{ client.providers.aws.template }}\"");
-        let client =
-            MjValue::from_serialize(json!({"providers": {"aws": {"template": {"p": "x"}}}}));
+        let client = MjValue::from(Serde(
+            json!({"providers": {"aws": {"template": {"p": "x"}}}}),
+        ));
         assert_eq!(
             lines.template_tree("git", &client).unwrap(),
             Some(json!({"p": "x"}))
@@ -1247,12 +1249,12 @@ mod tests {
     fn a_template_line_that_gives_a_non_table_is_an_error() {
         let lines = lines("[git]\ntemplate = \"{{ 1 }}\"");
         let err = lines
-            .template_tree("git", &MjValue::from_serialize(json!({})))
+            .template_tree("git", &MjValue::from(Serde(json!({}))))
             .unwrap_err();
         assert!(err.starts_with("git template: "), "{err}");
         let lines = self::lines("[git]\ntemplate = \"{{ {'a': 1} }}\"");
         let err = lines
-            .template_tree("git", &MjValue::from_serialize(json!({})))
+            .template_tree("git", &MjValue::from(Serde(json!({}))))
             .unwrap_err();
         assert!(err.contains("'a'"), "{err}");
     }
@@ -1263,8 +1265,8 @@ mod tests {
                 provider,
                 Key::Return,
                 vec![
-                    ("result", MjValue::from_serialize(json!({"a": 1}))),
-                    ("template", MjValue::from_serialize(json!({"t": "x"}))),
+                    ("result", MjValue::from(Serde(json!({"a": 1})))),
+                    ("template", MjValue::from(Serde(json!({"t": "x"})))),
                 ],
             )
             .unwrap()
@@ -1343,7 +1345,7 @@ mod tests {
             .eval(
                 "demo",
                 Key::Return,
-                vec![("result", MjValue::from_serialize(json!({"a": 1})))],
+                vec![("result", MjValue::from(Serde(json!({"a": 1}))))],
             )
             .unwrap_err();
         assert!(

@@ -519,7 +519,7 @@ mod tests {
         assert_eq!(out.unwrap(), "x/y");
         assert_eq!(leaf.paths, [PathBuf::from("/r/x/y")]);
         let (out, leaf) = leaf_render(ctx.clone(), None, false, "none | watch()");
-        assert_eq!((out.unwrap(), leaf.paths), ("none".into(), vec![]));
+        assert_eq!((out.unwrap(), leaf.paths), ("None".into(), vec![]));
         let (out, _) = leaf_render(ctx, None, false, "1 | watch()");
         assert!(
             out.unwrap_err()
@@ -771,7 +771,7 @@ mod tests {
             &[
                 MjValue::from("kubectl x"),
                 MjValue::from(()),
-                MjValue::from_serialize(json!({"b": 1, "a": [true]})),
+                MjValue::from(minijinja::value::Serde(json!({"b": 1, "a": [true]}))),
             ],
             &[absent.to_path_buf()],
         )

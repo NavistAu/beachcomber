@@ -25,7 +25,7 @@ pub use scan::{Tag, TagKind, Use, scan_tags, used_names};
 use crate::library::memo::{MemoHit, hit_in};
 use crate::virtual_fields::{Ref, refs_from_names};
 use minijinja::Environment;
-use minijinja::value::Value as MjValue;
+use minijinja::value::{Serde, Value as MjValue};
 use std::collections::HashSet;
 
 // ── Forms ─────────────────────────────────────────────────────────────────────
@@ -471,7 +471,7 @@ pub fn evaluate(
     let value = match ran {
         Ok(value) => value,
         Err(e) => match hit_in(&e) {
-            Some(MemoHit(memo)) => return Ok(memo.as_ref().map(MjValue::from_serialize)),
+            Some(MemoHit(memo)) => return Ok(memo.as_ref().map(|v| MjValue::from(Serde(v)))),
             None => return Err(EvalError::runtime(form, &e)),
         },
     };
@@ -538,7 +538,7 @@ pub fn eval_line(
     src: &str,
     context: &serde_json::Value,
 ) -> Result<Option<serde_json::Value>, String> {
-    eval_line_with(env, src, MjValue::from_serialize(context))
+    eval_line_with(env, src, MjValue::from(Serde(context)))
 }
 
 /// [`eval_line`] against a context that is already an engine value, so it
@@ -751,9 +751,13 @@ mod tests {
             ..Default::default()
         };
         let env = crate::engine::build_engine_env(std::sync::Arc::new(truecolor));
-        let out = super::evaluate(&env, tpl, minijinja::Value::from_serialize(&ctx))
-            .unwrap()
-            .unwrap();
+        let out = super::evaluate(
+            &env,
+            tpl,
+            minijinja::Value::from(minijinja::value::Serde(&ctx)),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(out.as_str(), Some("\x1b[38;2;0;255;0mmain\x1b[0m"));
     }
 }
@@ -762,7 +766,7 @@ mod tests {
 mod line_tests {
     use super::{EvalError, Form, eval_line, evaluate, undeclared_names, without_engine_frame};
     use crate::engine::build_engine_env;
-    use minijinja::value::Value as MjValue;
+    use minijinja::value::{Serde, Value as MjValue};
     use serde_json::json;
 
     fn run(src: &str, context: serde_json::Value) -> Result<Option<serde_json::Value>, String> {
@@ -774,7 +778,7 @@ mod line_tests {
         evaluate(
             &build_engine_env(Default::default()),
             src,
-            MjValue::from_serialize(context),
+            MjValue::from(Serde(context)),
         )
     }
 
@@ -1077,7 +1081,7 @@ mod line_tests {
 
     #[test]
     fn a_number_json_cannot_hold_is_an_error() {
-        let err = run("{{ 1 / 0 }}", json!({})).unwrap_err();
+        let err = run("{{ 1e308 * 10 }}", json!({})).unwrap_err();
         assert!(err.contains("inf"), "unexpected message: {err}");
     }
 

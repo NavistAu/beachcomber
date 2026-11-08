@@ -234,8 +234,8 @@ mod tests {
         assert_eq!(ok("'~' | expanduser"), "/Users/j");
         assert_eq!(ok("'/abs/~/x' | expanduser"), "/abs/~/x");
         assert_eq!(ok("'rel/x' | expanduser"), "rel/x");
-        assert_eq!(ok("('' | expanduser) is undefined"), "true");
-        assert_eq!(ok("(none | expanduser) is undefined"), "true");
+        assert_eq!(ok("('' | expanduser) is undefined"), "True");
+        assert_eq!(ok("(none | expanduser) is undefined"), "True");
     }
 
     #[test]
@@ -252,12 +252,12 @@ mod tests {
     fn ext_is_the_last_extension_without_its_dot() {
         assert_eq!(ok("'a.tar.gz' | ext"), "gz");
         assert_eq!(ok("'/x/y/main.rs' | ext"), "rs");
-        assert_eq!(ok("'/x.d/readme' | ext is undefined"), "true");
+        assert_eq!(ok("'/x.d/readme' | ext is undefined"), "True");
         assert_eq!(ok("'.bashrc.bak' | ext"), "bak");
         for none in ["'Makefile'", "'.bashrc'", "'a.'", "''", "none", "'/x/dir/'"] {
             assert_eq!(
                 ok(&format!("({none} | ext) is undefined")),
-                "true",
+                "True",
                 "{none}"
             );
         }
@@ -302,7 +302,7 @@ mod tests {
         let e = at(&[], None, "'/a' | relpath('b')").unwrap_err();
         assert!(e.contains("relpath(): b is relative"), "{e}");
         assert_eq!(at(&[], None, "'/a/x' | relpath('/a')").unwrap(), "x");
-        assert_eq!(ok("(none | relpath('/a')) is undefined"), "true");
+        assert_eq!(ok("(none | relpath('/a')) is undefined"), "True");
         let e = err("none | relpath");
         assert!(
             e.contains("relpath(): a base path is required"),
@@ -350,7 +350,7 @@ mod tests {
             let e = err(&format!("'/a' | shorten_path({bad})"));
             assert!(e.contains("shorten_path(): n"), "{bad}: {e}");
         }
-        assert_eq!(ok("(none | shorten_path) is undefined"), "true");
+        assert_eq!(ok("(none | shorten_path) is undefined"), "True");
         assert_eq!(ok("'' | shorten_path"), "");
         let e = err("[1] | shorten_path");
         assert!(e.contains("shorten_path(): expected text"), "{e}");
@@ -381,8 +381,8 @@ mod tests {
             );
             assert_eq!(eval(&format!("'{path}' | dirname")).unwrap(), dir, "{path}");
         }
-        assert_eq!(eval("(none | dirname) is undefined").unwrap(), "true");
-        assert_eq!(eval("('' | basename) is undefined").unwrap(), "true");
+        assert_eq!(eval("(none | dirname) is undefined").unwrap(), "True");
+        assert_eq!(eval("('' | basename) is undefined").unwrap(), "True");
         assert_eq!(eval("(7 | basename)").unwrap(), "7");
         let err = eval("[1] | dirname").unwrap_err();
         assert!(err.contains("dirname(): expected text"), "{err}");

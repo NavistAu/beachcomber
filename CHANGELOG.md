@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **BREAKING: templates render through `minijinja` 3, whose output follows Python's Jinja2.** Where a value becomes text (`~`, `join`, `string`, a tag beside other text) a bool is `True`/`False`, `none` is `None` in `~`, `join` and `string` (a tag of it still prints nothing), and a list or map prints Python-style (`['a', 'b']`, `{'k': 'v'}`). `tojson` puts a space after `,` and `:`, so an `exec` fed `stdin=(x | tojson)` sees different bytes and its memo hash changes once. `//` and `%` floor like Python (`7 // -2` is `-4`), `round` rounds half to even, bools count as numbers (`true is number`, `[true] | sum`), `1 / 0` is a division error rather than `inf`, and `min`/`max` compare text case-insensitively. A lone tag is still its typed value (`{{ x is defined }}` is JSON `true`). Test a bool with `if x` or `x is true`, not against text, and build JSON with `tojson`, not by joining strings.
 - **Dependencies moved to new major versions.** `toml` 1 (TOML spec 1.1), `ctor` 1, `base64` 0.23, `mockall` 0.15, `criterion` 0.8 and `terminal_size` 0.4. Config files and `fromtoml` now accept TOML 1.1: inline tables over several lines and with a trailing comma, `\e` and `\xHH` escapes, and times without seconds. Config parse errors word some reasons differently (`unclosed table, expected ']'` where it was `invalid table header; expected '.', ']'`), and some now give a reason where they gave none; a duplicate key still names the key, and a datetime with a zero fraction still prints without it.
 
 ### Fixed
@@ -20,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
-- **Dependencies updated for published advisories.** `rustls` 0.23.46 (RUSTSEC-2026-0285, -0346, -0348, -0349: TLS 1.3 handshake boundaries, secrets in `Debug` output, pre-authentication allocation, key-exchange downgrade), `rustls-webpki` 0.103.16 and `webpki-roots` 1.0.11 (RUSTSEC-2026-0381, -0382: distrusted intermediates), `h2` 0.4.20 (RUSTSEC-2026-0258), `tokio` 1.54 (RUSTSEC-2026-0386), `crossbeam-epoch` 0.9.21 (RUSTSEC-2026-0204), `block-buffer` 0.12.1, and `anyhow` dropped from the tree (RUSTSEC-2026-0190). The `url` engine's HTTPS requests go through `rustls`. Every other compatible dependency is at its latest release too, except `minijinja`, held below 2.22: from 2.22 a bool prints as `True`/`False` wherever it becomes text (`~`, `string`, `join`), which would change every template that joins one.
+- **Dependencies updated for published advisories.** `rustls` 0.23.46 (RUSTSEC-2026-0285, -0346, -0348, -0349: TLS 1.3 handshake boundaries, secrets in `Debug` output, pre-authentication allocation, key-exchange downgrade), `rustls-webpki` 0.103.16 and `webpki-roots` 1.0.11 (RUSTSEC-2026-0381, -0382: distrusted intermediates), `h2` 0.4.20 (RUSTSEC-2026-0258), `tokio` 1.54 (RUSTSEC-2026-0386), `crossbeam-epoch` 0.9.21 (RUSTSEC-2026-0204), `block-buffer` 0.12.1, and `anyhow` dropped from the tree (RUSTSEC-2026-0190). The `url` engine's HTTPS requests go through `rustls`. Every other compatible dependency is at its latest release too.
 
 ## [0.10.1] - 2026-11-08
 

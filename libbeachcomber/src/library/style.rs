@@ -266,9 +266,9 @@ mod tests {
         assert_eq!(eval(TRUE, "'' | bold").unwrap(), "");
         assert_eq!(
             eval(TRUE, "(none | fg('red')) is undefined").unwrap(),
-            "true"
+            "True"
         );
-        assert_eq!(eval(TRUE, "(missing | bold) is undefined").unwrap(), "true");
+        assert_eq!(eval(TRUE, "(missing | bold) is undefined").unwrap(), "True");
     }
 
     #[test]
@@ -347,7 +347,7 @@ mod tests {
         for text in ["none", "missing"] {
             assert_eq!(
                 eval(&[], &format!("hyperlink('u', {text}) is undefined")).unwrap(),
-                "true"
+                "True"
             );
         }
         assert_eq!(eval(&[], "hyperlink(none, 'text')").unwrap(), "text");

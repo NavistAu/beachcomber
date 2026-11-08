@@ -567,7 +567,7 @@ fn an_import_cycle_errors_without_panicking() {
     assert_eq!(
         resolve_with("s.c", &mut f, &vars),
         Err(ResolveError::Runtime(
-            "s.c: template render error: recursion limit exceeded (in s:macro.b:1)".into()
+            "s.c: template render error: recursion limit exceeded (in s:macro.a:1)".into()
         ))
     );
     let reads = f
@@ -1387,7 +1387,7 @@ fn none_is_absent_and_text_around_it_is_a_string() {
 fn a_number_json_cannot_hold_is_an_error() {
     let env = spec_env();
     let mut f = MapFetch::default();
-    match eval("{{ 1 / 0 }}", &inputs(&env), &mut f) {
+    match eval("{{ 1e308 * 10 }}", &inputs(&env), &mut f) {
         Err(ResolveError::Runtime(m)) => assert!(m.contains("inf"), "unexpected message: {m}"),
         other => panic!("expected a runtime error, got {other:?}"),
     }
@@ -1488,7 +1488,7 @@ fn a_miss_binds_nothing_so_default_fires_at_any_depth() {
             &mut f
         )
         .unwrap(),
-        Some(json!(r#"V|{"f": "V"}"#))
+        Some(json!("V|{'f': 'V'}"))
     );
 
     // A resolved hit lands beside a resolved miss on the same provider: the
@@ -1832,7 +1832,7 @@ fn a_literal_comb_field_stays_precise_beside_a_computed_name() {
             &mut f,
             &env
         ),
-        Some(json!("main/a1/true"))
+        Some(json!("main/a1/True"))
     );
     let keys = f.keys();
     assert!(
@@ -1916,8 +1916,8 @@ fn every_form_of_env_reads_the_caller_environment() {
         ),
         ("{% for k in env %}{{ k }},{% endfor %}", "A,B,"),
         ("{{ env | length }}", "2"),
-        ("{{ env.NOPE is defined }}", "false"),
-        ("{{ env['NOPE'] is undefined }}", "true"),
+        ("{{ env.NOPE is defined }}", "False"),
+        ("{{ env['NOPE'] is undefined }}", "True"),
         ("{{ env.NOPE | default('fb') }}", "fb"),
         ("[{{ env.NOPE }}]", "[]"),
     ];
@@ -1930,7 +1930,13 @@ fn every_form_of_env_reads_the_caller_environment() {
             "with a lazy comb: {src}"
         );
         // A string result, whichever form: one tag of text renders the same.
+        // A lone tag is the value itself, so a bool is JSON's, not jinja's text.
         let as_text = |v: Option<Value>| v.map(|v| v.as_str().map_or(v.to_string(), String::from));
+        let want = match want {
+            "True" => "true",
+            "False" => "false",
+            w => w,
+        };
         f.seed("t.leaf", Some(CWD), tmpl(json!(src)))
             .seed("t", Some(CWD), tmpl(json!({ "leaf": src })))
             .seed("t.outer", Some(CWD), tmpl(json!("{{ t.leaf }}")));

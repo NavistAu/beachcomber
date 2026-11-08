@@ -385,7 +385,7 @@ mod tests {
     fn exec_stdin_takes_structured_data_through_tojson() {
         assert_eq!(
             eval(r#"exec('cat', stdin=({"a": [1, "x"]} | tojson))"#).unwrap(),
-            r#"{"a":[1,"x"]}"#
+            r#"{"a": [1, "x"]}"#
         );
     }
 

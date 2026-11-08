@@ -301,7 +301,7 @@ pub(crate) fn number(name: &str, what: &str, v: &MjValue) -> Result<f64, Error> 
 #[cfg(test)]
 pub(crate) mod testing {
     use crate::engine::{EngineCtx, build_engine_env};
-    use minijinja::Value as MjValue;
+    use minijinja::value::{Serde, Value as MjValue};
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -320,7 +320,7 @@ pub(crate) mod testing {
         let env = build_engine_env(ctx);
         let compiled = env.compile_expression(expr).map_err(|e| e.to_string())?;
         let value = compiled
-            .eval(MjValue::from_serialize(serde_json::json!({})))
+            .eval(MjValue::from(Serde(serde_json::json!({}))))
             .map_err(|e| e.to_string())?;
         Ok(value.to_string())
     }
@@ -331,7 +331,7 @@ pub(crate) mod testing {
         let value = env
             .compile_expression(expr)
             .unwrap()
-            .eval(MjValue::from_serialize(serde_json::json!({})))
+            .eval(MjValue::from(Serde(serde_json::json!({}))))
             .unwrap();
         serde_json::to_string(&value).unwrap()
     }

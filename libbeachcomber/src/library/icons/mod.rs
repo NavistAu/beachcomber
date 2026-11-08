@@ -141,8 +141,8 @@ mod tests {
 
     #[test]
     fn icon_absent_is_absent() {
-        assert_eq!(ok("icon(none) is undefined"), "true");
-        assert_eq!(ok("icon(missing) is undefined"), "true");
+        assert_eq!(ok("icon(none) is undefined"), "True");
+        assert_eq!(ok("icon(missing) is undefined"), "True");
     }
 
     #[test]
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn file_icon_by_lowercased_name() {
-        assert_eq!(ok("file_icon('Makefile') == file_icon('makefile')"), "true");
+        assert_eq!(ok("file_icon('Makefile') == file_icon('makefile')"), "True");
         assert_ne!(file_glyph("Makefile"), files::DEFAULT);
     }
 
@@ -205,8 +205,8 @@ mod tests {
 
     #[test]
     fn file_icon_absent_is_absent() {
-        assert_eq!(ok("file_icon(none) is undefined"), "true");
-        assert_eq!(ok("file_icon('') is undefined"), "true");
+        assert_eq!(ok("file_icon(none) is undefined"), "True");
+        assert_eq!(ok("file_icon('') is undefined"), "True");
     }
 
     #[test]

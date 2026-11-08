@@ -9,7 +9,7 @@
 //! left as minijinja has them.
 
 use super::{UNDEFINED, is_absent};
-use minijinja::value::{Rest, Value as MjValue};
+use minijinja::value::{Rest, Value as MjValue, ValueOrKwargs};
 use minijinja::{Environment, Error, State, filters};
 
 /// The builtins that take an absent subject as they are: they supply a default,
@@ -18,22 +18,25 @@ pub const EXEMPT: &[&str] = &[
     "default", "d", "bool", "tojson", "pprint", "safe", "escape", "e",
 ];
 
-/// Call `inner`, the builtin, unless its subject is absent.
-fn guarded(inner: &MjValue, state: &State, args: &[MjValue]) -> Result<MjValue, Error> {
-    match args.first() {
-        Some(subject) if is_absent(subject) => Ok(UNDEFINED),
-        _ => inner.call(state, args),
-    }
+/// Register `name` to call `inner`, the builtin, unless its subject is absent.
+fn guard(
+    jinja: &mut Environment<'_>,
+    name: &'static str,
+    inner: impl Fn(&mut State, &[MjValue]) -> Result<MjValue, Error> + Send + Sync + 'static,
+) {
+    jinja.add_filter(name, move |state: &mut State, args: Rest<ValueOrKwargs>| {
+        let args = args.into_values();
+        match args.first() {
+            Some(subject) if is_absent(subject) => Ok(UNDEFINED),
+            _ => inner(state, &args),
+        }
+    });
 }
 
 macro_rules! guard {
     ($jinja:expr, $($name:literal => $f:path),+ $(,)?) => {$(
-        {
-            let inner = MjValue::from_function($f);
-            $jinja.add_filter($name, move |state: &State, args: Rest<MjValue>| {
-                guarded(&inner, state, &args)
-            });
-        }
+        let f = MjValue::from_function($f);
+        guard($jinja, $name, move |state, args| f.call(state, args));
     )+};
 }
 
@@ -114,10 +117,7 @@ mod tests {
             "regex_replace" => vec![MjValue::from("a"), MjValue::from("b")],
             "relpath" => vec![MjValue::from("/a")],
             "hash" => vec![MjValue::from("md5")],
-            "ramp" => vec![
-                MjValue::from_serialize([50]),
-                MjValue::from_serialize(["lo", "hi"]),
-            ],
+            "ramp" => vec![MjValue::from(vec![50]), MjValue::from(vec!["lo", "hi"])],
             "pick" | "omit" => vec![MjValue::from("a")],
             "clamp" => vec![MjValue::from(0), MjValue::from(1)],
             _ => vec![],
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn every_filter_returns_undefined_for_an_absent_subject() {
         let jinja = build_pure_engine_env(Default::default());
-        let state = jinja.empty_state();
+        let mut state = jinja.empty_state();
         let names = filter_names(&jinja);
         assert!(names.len() > 40, "the listing was not read: {names:?}");
         for exempt in EXEMPT {
@@ -154,7 +154,7 @@ mod tests {
         let r = |t: &str| jinja.render_str(t, ()).unwrap();
         assert_eq!(r("{{ none | default('x', true) }}"), "x");
         assert_eq!(r("{{ missing | default('x') }}"), "x");
-        assert_eq!(r("{{ none | bool }}"), "false");
+        assert_eq!(r("{{ none | bool }}"), "False");
         assert_eq!(r("{{ none | tojson }}"), "null");
         assert_eq!(r("{{ missing | upper | default('x') }}"), "x");
     }
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn parsers_and_paths_read_empty_as_absent() {
         let jinja = build_pure_engine_env(Default::default());
-        let state = jinja.empty_state();
+        let mut state = jinja.empty_state();
         for name in [
             "fromjson",
             "fromini",

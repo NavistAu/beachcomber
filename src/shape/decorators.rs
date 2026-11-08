@@ -14,7 +14,7 @@ use crate::provider::{FailbackConfig, InvalidationStrategy, expand_abs_path};
 use crate::scheduler::lifecycle::DEFAULT_POLL_COUNT;
 use libbeachcomber::engine::build_pure_engine_env;
 use libbeachcomber::engine::op_error;
-use minijinja::value::{Kwargs, Object, ObjectRepr, Rest, Value as MjValue, ValueKind};
+use minijinja::value::{Kwargs, Object, ObjectRepr, Rest, Serde, Value as MjValue, ValueKind};
 use minijinja::{Environment, Error, ErrorKind, UndefinedBehavior};
 use std::collections::HashMap;
 use std::fmt;
@@ -296,8 +296,8 @@ fn context(render: &Render, printed: &Arc<AtomicUsize>) -> MjValue {
     let sentinel = MjValue::from_object(Sentinel {
         printed: printed.clone(),
     });
-    let underscore = MjValue::from_serialize(serde_json::json!({"name": render.name}));
-    MjValue::from_iter([("result", sentinel), ("_", underscore)])
+    let underscore = MjValue::from(Serde(serde_json::json!({"name": render.name})));
+    MjValue::from_pairs([("result", sentinel), ("_", underscore)])
 }
 
 /// Render `render.lines[level]`, its `super` rendering the next line. Every
@@ -634,6 +634,24 @@ mod tests {
             patterns: patterns.iter().map(|s| s.to_string()).collect(),
             abs_paths: abs.iter().map(|s| s.to_string()).collect(),
         }
+    }
+
+    /// A line's context is a map of its names, not a list of pairs.
+    #[test]
+    fn a_line_renders_over_a_map_of_result_and_underscore() {
+        let render = Render {
+            base: return_env(),
+            lines: vec![],
+            name: "status".into(),
+            vars: test_vars(),
+            recorded: Mutex::default(),
+            failure: Mutex::default(),
+        };
+        let ctx = context(&render, &Arc::default());
+        assert_eq!(ctx.kind(), ValueKind::Map);
+        let name = ctx.get_attr("_").and_then(|u| u.get_attr("name")).unwrap();
+        assert_eq!(name.as_str(), Some("status"));
+        assert!(!ctx.get_attr("result").unwrap().is_undefined());
     }
 
     #[test]

@@ -45,7 +45,7 @@ use libbeachcomber::eval::{
 use libbeachcomber::fs::{MOST_TOUCHED, Touched};
 use libbeachcomber::virtual_fields::Ref;
 use minijinja::Environment;
-use minijinja::value::Value as MjValue;
+use minijinja::value::{Serde, Value as MjValue};
 use serde_json::{Value as Json, json};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -153,7 +153,7 @@ impl minijinja::value::Object for LazyComb {
         }
         read.get(name)
             .filter(|node| !node.is_null())
-            .map(MjValue::from_serialize)
+            .map(|v| MjValue::from(Serde(v)))
     }
 
     fn enumerate(self: &Arc<Self>) -> minijinja::value::Enumerator {
@@ -556,14 +556,15 @@ impl ConfigSource {
             minijinja::value::Object::get_value(&comb, &MjValue::from(name.as_str()))
                 .map(|node| (name.as_str(), node))
         });
-        let data_context: MjValue = [
-            ("env", MjValue::from_serialize(&*self.env)),
-            ("comb", MjValue::from_dyn_object(comb.clone())),
-            ("_", MjValue::from_serialize(self.underscore())),
-        ]
-        .into_iter()
-        .chain(plain)
-        .collect();
+        let data_context = MjValue::from_pairs(
+            [
+                ("env", MjValue::from(Serde(&*self.env))),
+                ("comb", MjValue::from_dyn_object(comb.clone())),
+                ("_", MjValue::from(Serde(self.underscore()))),
+            ]
+            .into_iter()
+            .chain(plain),
+        );
         let data = eval_line_with(&jinja, &self.spec.data, data_context);
         if let Some(failed) = comb.failed.lock().ok().and_then(|mut f| f.take()) {
             return Err(stage_error(&self.spec, "data", failed));

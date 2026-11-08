@@ -98,7 +98,7 @@ mod tests {
         assert_eq!(ok("spark([-2, 0, 2])"), "▁▅█");
         assert_eq!(ok("spark([0.5, 1.5])"), "▁█");
         assert_eq!(ok("spark([7])"), "▅");
-        assert_eq!(ok("spark([]) == ''"), "true");
+        assert_eq!(ok("spark([]) == ''"), "True");
     }
 
     #[test]
@@ -130,8 +130,8 @@ mod tests {
 
     #[test]
     fn spark_of_nothing_is_undefined_after_its_arguments_are_checked() {
-        assert_eq!(ok("spark(none) is undefined"), "true");
-        assert_eq!(ok("spark(nope) is undefined"), "true");
+        assert_eq!(ok("spark(none) is undefined"), "True");
+        assert_eq!(ok("spark(nope) is undefined"), "True");
         let e = err("spark(none, lo=3, hi=1)");
         assert!(e.contains("spark(): lo 3 is above hi 1"), "{e}");
         let e = err("spark(none, lo='a')");

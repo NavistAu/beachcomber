@@ -3,7 +3,7 @@
 
 use super::{UNDEFINED, is_absent, number};
 use crate::engine::{EngineCtx, op_error};
-use minijinja::value::{Kwargs, Rest, Value as MjValue, ValueKind};
+use minijinja::value::{Kwargs, Rest, Serde, Value as MjValue, ValueKind, ValueOrKwargs};
 use minijinja::{Environment, Error, State};
 use std::sync::Arc;
 
@@ -65,7 +65,7 @@ fn select_keys(name: &str, obj: &MjValue, keys: &[MjValue], keep: bool) -> Resul
             out.push((key, value));
         }
     }
-    Ok(MjValue::from_iter(out))
+    Ok(MjValue::from_pairs(out))
 }
 
 /// One side of `clamp`: a number, or `none` (or undefined) for an open side.
@@ -135,7 +135,7 @@ pub fn merge_values(values: impl Iterator<Item = MjValue>) -> Result<MjValue, Er
         let json = serde_json::to_value(&v).map_err(|e| op_error(format!("merge(): {e}")))?;
         acc = Some(merge_json(acc.unwrap_or(serde_json::Value::Null), json));
     }
-    Ok(acc.map_or(UNDEFINED, MjValue::from_serialize))
+    Ok(acc.map_or(UNDEFINED, |v| MjValue::from(Serde(v))))
 }
 
 fn merge_json(base: serde_json::Value, over: serde_json::Value) -> serde_json::Value {
@@ -173,13 +173,14 @@ fn strip_nulls(v: serde_json::Value) -> serde_json::Value {
 
 /// `map`, extended to objects: `obj | map('filter', args…)` applies the
 /// filter to each value and keeps the keys. Anything else is jinja's `map`.
-fn map(state: &State, value: MjValue, args: Rest<MjValue>) -> Result<MjValue, Error> {
+fn map(state: &mut State, value: MjValue, args: Rest<ValueOrKwargs>) -> Result<MjValue, Error> {
     if is_absent(&value) {
         return Ok(UNDEFINED);
     }
     if value.kind() != ValueKind::Map {
         return minijinja::filters::map(state, value, args).map(MjValue::from);
     }
+    let args = args.into_values();
     let (pos, kwargs): (&[MjValue], Kwargs) = minijinja::value::from_args(&args)?;
     let name = match pos.first().and_then(|a| a.as_str()) {
         Some(name) if !kwargs.has("attribute") => name.to_string(),
@@ -193,7 +194,7 @@ fn map(state: &State, value: MjValue, args: Rest<MjValue>) -> Result<MjValue, Er
         call.extend(pos[1..].iter().cloned());
         out.push((key, state.apply_filter(&name, &call)?));
     }
-    Ok(MjValue::from_iter(out))
+    Ok(MjValue::from_pairs(out))
 }
 
 #[cfg(test)]
@@ -211,11 +212,11 @@ mod tests {
         for miss in ["a.missing.c", "node[5]", "a[0]", "node.version"] {
             assert_eq!(
                 eval(&format!("(({data}) | pluck('{miss}')) is undefined")).unwrap(),
-                "true",
+                "True",
                 "{miss}"
             );
         }
-        assert_eq!(eval("(none | pluck('a')) is undefined").unwrap(), "true");
+        assert_eq!(eval("(none | pluck('a')) is undefined").unwrap(), "True");
         assert_eq!(
             p("node.-1.version"),
             "20.0.0",
@@ -283,11 +284,20 @@ mod tests {
         );
     }
 
+    /// Built from pairs, each result is a map, not a list of pairs.
+    #[test]
+    fn pick_omit_and_map_over_an_object_give_an_object() {
+        for f in ["pick('a')", "omit('b')", "map('upper')"] {
+            let t = format!("({{'a': 'x', 'b': 'y'}} | {f}) is mapping");
+            assert_eq!(eval(&t).unwrap(), "True", "{f}");
+        }
+    }
+
     #[test]
     fn pick_and_omit_of_nothing_are_undefined() {
         for f in ["pick('a')", "omit('a')"] {
-            assert_eq!(eval(&format!("(none | {f}) is undefined")).unwrap(), "true");
-            assert_eq!(eval(&format!("(nope | {f}) is undefined")).unwrap(), "true");
+            assert_eq!(eval(&format!("(none | {f}) is undefined")).unwrap(), "True");
+            assert_eq!(eval(&format!("(nope | {f}) is undefined")).unwrap(), "True");
         }
     }
 
@@ -327,10 +337,10 @@ mod tests {
 
     #[test]
     fn clamp_of_nothing_is_undefined_after_its_bounds_are_checked() {
-        assert_eq!(eval("(none | clamp(0, 1)) is undefined").unwrap(), "true");
+        assert_eq!(eval("(none | clamp(0, 1)) is undefined").unwrap(), "True");
         assert_eq!(
             eval("(nope | clamp(none, none)) is undefined").unwrap(),
-            "true"
+            "True"
         );
         let err = eval("none | clamp(3, 1)").unwrap_err();
         assert!(err.contains("clamp(): lo 3 is above hi 1"), "{err}");

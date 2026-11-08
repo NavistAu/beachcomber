@@ -5,9 +5,7 @@ members = [".", "libbeachcomber", "libbeachcomber-ffi", "tests/fixtures/test_pro
 version = "0.10.1"
 
 [workspace.dependencies]
-# Below 2.22: from 2.22 a bool's Display is Python's `True`/`False`, which `~`, `string` and `join` use too,
-# so every template joining a bool would change output. Lifting this needs a decision on that (and minijinja 3).
-minijinja = { version = ">=2.19, <2.22", default-features = false, features = ["builtins", "json", "macros", "multi_template", "serde", "urlencode"] }
+minijinja = { version = "3.1", default-features = false, features = ["builtins", "json", "macros", "multi_template", "serde", "urlencode"] }
 
 [package]
 name = "beachcomber"

@@ -320,7 +320,7 @@ mod tests {
             "14"
         );
         assert_eq!(at("1.5 | strftime('%S', tz='UTC')").unwrap(), "01");
-        assert_eq!(at("(none | strftime('%F')) is undefined").unwrap(), "true");
+        assert_eq!(at("(none | strftime('%F')) is undefined").unwrap(), "True");
     }
 
     #[test]
@@ -383,9 +383,9 @@ mod tests {
 
     #[test]
     fn fromiso_absent_empty_and_malformed() {
-        assert_eq!(at("('' | fromiso) is undefined").unwrap(), "true");
-        assert_eq!(at("(none | fromiso) is undefined").unwrap(), "true");
-        assert_eq!(at("(missing | fromiso) is undefined").unwrap(), "true");
+        assert_eq!(at("('' | fromiso) is undefined").unwrap(), "True");
+        assert_eq!(at("(none | fromiso) is undefined").unwrap(), "True");
+        assert_eq!(at("(missing | fromiso) is undefined").unwrap(), "True");
         for bad in [
             "'yesterday'",
             "'2026-13-45'",
@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(at("(now() - 30) | ago(floor='m')").unwrap(), "now");
         assert_eq!(at("(now() - 0.4) | ago").unwrap(), "now");
         assert_eq!(at("(now() - 0.4) | ago(floor='ms')").unwrap(), "400ms ago");
-        assert_eq!(at("(none | ago) is undefined").unwrap(), "true");
+        assert_eq!(at("(none | ago) is undefined").unwrap(), "True");
         for bad in [
             "'x' | ago",
             "5 | ago(0)",
@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(frame(500, "spinner('abc', step='250ms')"), "c");
         assert_eq!(frame(10_000, "spinner(['x', 'y'], 5)"), "x");
         assert_eq!(frame(5_000, "spinner(['x', 'y'], 5)"), "y");
-        assert_eq!(frame(0, "spinner(none) is undefined"), "true");
+        assert_eq!(frame(0, "spinner(none) is undefined"), "True");
         for bad in [
             "spinner('')",
             "spinner([])",
@@ -463,11 +463,11 @@ mod tests {
         assert_eq!(eval("0 | duration").unwrap(), "0s");
         assert_eq!(eval("0 | duration(floor='m')").unwrap(), "0m");
         assert_eq!(eval("30 | duration(floor='h')").unwrap(), "0h");
-        assert_eq!(eval("(none | duration) is undefined").unwrap(), "true");
-        assert_eq!(eval("(missing | duration) is undefined").unwrap(), "true");
+        assert_eq!(eval("(none | duration) is undefined").unwrap(), "True");
+        assert_eq!(eval("(missing | duration) is undefined").unwrap(), "True");
         assert_eq!(
             eval("(none | duration(floor=none))is undefined").unwrap(),
-            "true"
+            "True"
         );
     }
 
@@ -500,7 +500,7 @@ mod tests {
         assert_eq!(eval("'90' | seconds").unwrap(), "90");
         assert_eq!(eval("45 | seconds").unwrap(), "45");
         assert_eq!(eval("1.5 | seconds").unwrap(), "1.5");
-        assert_eq!(eval("(none | seconds) is undefined").unwrap(), "true");
+        assert_eq!(eval("(none | seconds) is undefined").unwrap(), "True");
         for bad in ["'soon'", "''", "-3", "'-1s'", "true", "[1]"] {
             let err = eval(&format!("{bad} | seconds")).unwrap_err();
             assert!(err.contains("seconds():"), "`{bad}` gave `{err}`");

@@ -150,8 +150,8 @@ mod tests {
 
     #[test]
     fn hash_of_nothing_is_undefined_after_alg_is_checked() {
-        assert_eq!(ok("(none | hash('md5')) is undefined"), "true");
-        assert_eq!(ok("(nope | hash('sha1')) is undefined"), "true");
+        assert_eq!(ok("(none | hash('md5')) is undefined"), "True");
+        assert_eq!(ok("(nope | hash('sha1')) is undefined"), "True");
         for bad in ["'sha512'", "'SHA256'", "1", "none"] {
             for subject in ["'x'", "none"] {
                 let err = eval(&format!("{subject} | hash({bad})")).unwrap_err();
@@ -181,8 +181,8 @@ mod tests {
     #[test]
     fn base64_of_nothing_is_undefined() {
         for f in ["b64encode", "b64decode"] {
-            assert_eq!(ok(&format!("(none | {f}) is undefined")), "true");
-            assert_eq!(ok(&format!("(nope | {f}) is undefined")), "true");
+            assert_eq!(ok(&format!("(none | {f}) is undefined")), "True");
+            assert_eq!(ok(&format!("(nope | {f}) is undefined")), "True");
         }
     }
 
@@ -206,7 +206,7 @@ mod tests {
     fn urlencode_is_minijinjas() {
         assert_eq!(ok("{'q': 'a b'} | urlencode"), "q=a%20b");
         assert_eq!(ok("'a b/c' | urlencode"), "a%20b/c");
-        assert_eq!(ok("(none | urlencode) is undefined"), "true");
-        assert_eq!(ok("(nope | urlencode) is undefined"), "true");
+        assert_eq!(ok("(none | urlencode) is undefined"), "True");
+        assert_eq!(ok("(nope | urlencode) is undefined"), "True");
     }
 }

@@ -11,7 +11,9 @@ use crate::boundaries::library::{LibraryLoader, LoadedLibrary};
 use libbeachcomber::engine::{EngineCtx, build_engine_env, build_pure_engine_env, op_error};
 use libbeachcomber::library::data::merge_values;
 use libbeachcomber::path::expand_tilde;
-use minijinja::value::{Enumerator, Kwargs, Object, ObjectRepr, Rest, Value as MjValue, ValueKind};
+use minijinja::value::{
+    Enumerator, Kwargs, Object, ObjectRepr, Rest, Serde, Value as MjValue, ValueKind,
+};
 use minijinja::{Environment, Error, State};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -195,7 +197,7 @@ pub fn daemon_engine_env<'a>(ctx: Arc<EngineCtx>, plugins: Arc<PluginSet>) -> En
             let json_args = serde_json::to_value(rest)
                 .map_err(|e| op_error(format!("plugin(): arguments are not JSON: {e}")))?;
             let result = plugins.call(&name, symbol, &json_args).map_err(op_error)?;
-            Ok(MjValue::from_serialize(result))
+            Ok(MjValue::from(Serde(result)))
         },
     );
     jinja
@@ -211,7 +213,7 @@ pub fn provider_engine_env<'a>(ctx: Arc<EngineCtx>) -> Environment<'a> {
     jinja.add_filter("facet", facet);
     jinja.add_function(
         "merge",
-        |state: &State, args: Rest<MjValue>| -> Result<MjValue, Error> {
+        |state: &mut State, args: Rest<MjValue>| -> Result<MjValue, Error> {
             let called;
             let operands: &[MjValue] = match args.as_slice() {
                 [only] if only.downcast_object_ref::<Sources>().is_some() => {
@@ -314,7 +316,8 @@ impl Sources {
             calls: records
                 .into_iter()
                 .map(|(name, record)| {
-                    let record = record.map_or_else(|| MjValue::from(()), MjValue::from_serialize);
+                    let record =
+                        record.map_or_else(|| MjValue::from(()), |v| MjValue::from(Serde(v)));
                     (name, Arc::new(SourceCall { record }))
                 })
                 .collect(),
@@ -322,7 +325,7 @@ impl Sources {
     }
 
     /// Every Source called once, in declaration order.
-    fn call_all(&self, state: &State) -> Result<Vec<MjValue>, Error> {
+    fn call_all(&self, state: &mut State) -> Result<Vec<MjValue>, Error> {
         self.calls
             .iter()
             .map(|(_, call)| call.call(state, &[]))
@@ -364,7 +367,11 @@ impl Object for SourceCall {
         ObjectRepr::Plain
     }
 
-    fn call(self: &Arc<Self>, _state: &State<'_, '_>, args: &[MjValue]) -> Result<MjValue, Error> {
+    fn call(
+        self: &Arc<Self>,
+        _state: &mut State<'_, '_>,
+        args: &[MjValue],
+    ) -> Result<MjValue, Error> {
         if !args.is_empty() {
             return Err(op_error("a Source in sources takes no arguments"));
         }
@@ -467,12 +474,16 @@ impl Object for Call {
         ObjectRepr::Plain
     }
 
-    fn call(self: &Arc<Self>, _state: &State<'_, '_>, args: &[MjValue]) -> Result<MjValue, Error> {
+    fn call(
+        self: &Arc<Self>,
+        _state: &mut State<'_, '_>,
+        args: &[MjValue],
+    ) -> Result<MjValue, Error> {
         if !args.is_empty() {
             return Err(op_error("a Source takes no arguments"));
         }
         match (self.call)(&self.provider, &self.source).map_err(op_error)? {
-            Some(record) => Ok(MjValue::from_serialize(record)),
+            Some(record) => Ok(MjValue::from(Serde(record))),
             None => Ok(MjValue::from(())),
         }
     }
@@ -1002,7 +1013,7 @@ mod tests {
         second.adopt_loaded(&first);
         assert_eq!(
             render(second, "{{ plugin('sys', 'uname').sysname is string }}").unwrap(),
-            "true"
+            "True"
         );
     }
 

@@ -29,7 +29,7 @@ use crate::library::memo::{Cached, Frame, Leaf, Memo, MemoFrames};
 use crate::protocol::Wait;
 use crate::virtual_fields::{Ref, mj_to_json};
 use minijinja::Environment;
-use minijinja::value::Value as MjValue;
+use minijinja::value::{Serde, Value as MjValue};
 use serde_json::{Map, Value as JsonValue};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, PoisonError, RwLock, mpsc};
@@ -424,7 +424,7 @@ impl<'a> Resolver<'a> {
             libraries,
             // In name order, so `env | items` and a loop over `env` read the
             // same order every run.
-            env: MjValue::from_serialize(inputs.env.iter().collect::<BTreeMap<_, _>>()),
+            env: MjValue::from(Serde(inputs.env.iter().collect::<BTreeMap<_, _>>())),
             fetch,
             memo: HashMap::new(),
             resolved: HashMap::new(),
@@ -750,8 +750,8 @@ impl<'a> Resolver<'a> {
         let comb = comb.map(|node| ("comb".to_string(), MjValue::from_object(node)));
         let bound = bound
             .into_iter()
-            .map(|(name, value)| (name, MjValue::from_serialize(&value)));
-        env.into_iter().chain(comb).chain(bound).collect()
+            .map(|(name, value)| (name, MjValue::from(Serde(&value))));
+        MjValue::from_pairs(env.into_iter().chain(comb).chain(bound))
     }
 
     /// Render with `comb` a lazy node.

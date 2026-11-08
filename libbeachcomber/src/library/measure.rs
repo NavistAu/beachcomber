@@ -115,7 +115,7 @@ mod tests {
         assert_eq!(eval("'日本' | width").unwrap(), "4");
         assert_eq!(eval("'\\u001b[31mab\\u001b[0m' | width").unwrap(), "2");
         assert_eq!(eval("12 | width").unwrap(), "2");
-        assert_eq!(eval("(none | width) is undefined").unwrap(), "true");
+        assert_eq!(eval("(none | width) is undefined").unwrap(), "True");
         assert!(
             eval("[1] | width")
                 .unwrap_err()
@@ -164,8 +164,8 @@ mod tests {
             let err = eval(bad).unwrap_err();
             assert!(err.contains("pad():"), "`{bad}` gave `{err}`");
         }
-        assert_eq!(eval("(none | pad(3)) is undefined").unwrap(), "true");
-        assert_eq!(eval("(missing | pad(3)) is undefined").unwrap(), "true");
+        assert_eq!(eval("(none | pad(3)) is undefined").unwrap(), "True");
+        assert_eq!(eval("(missing | pad(3)) is undefined").unwrap(), "True");
         assert_eq!(eval("7 | pad(3, 'right')").unwrap(), "  7");
     }
 
@@ -200,6 +200,6 @@ mod tests {
             let err = eval(bad).unwrap_err();
             assert!(err.contains("truncate():"), "`{bad}` gave `{err}`");
         }
-        assert_eq!(eval("(none | truncate(3)) is undefined").unwrap(), "true");
+        assert_eq!(eval("(none | truncate(3)) is undefined").unwrap(), "True");
     }
 }

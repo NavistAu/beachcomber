@@ -184,8 +184,8 @@ mod tests {
 
     #[test]
     fn ramp_of_nothing_is_undefined_after_its_arguments_are_checked() {
-        assert_eq!(ok("(none | ramp([1], ['a', 'b'])) is undefined"), "true");
-        assert_eq!(ok("(nope | ramp([1], ['a', 'b'])) is undefined"), "true");
+        assert_eq!(ok("(none | ramp([1], ['a', 'b'])) is undefined"), "True");
+        assert_eq!(ok("(nope | ramp([1], ['a', 'b'])) is undefined"), "True");
         let e = err("none | ramp([2, 1], [1, 2, 3])");
         assert!(e.contains("ramp(): thresholds must ascend"), "{e}");
     }
@@ -259,7 +259,7 @@ mod tests {
             let e = err(&format!("0.5 | pct({bad})"));
             assert!(e.contains("pct(): digits"), "{bad}: {e}");
         }
-        assert_eq!(ok("(none | pct) is undefined"), "true");
+        assert_eq!(ok("(none | pct) is undefined"), "True");
         let e = err("none | pct(-1)");
         assert!(e.contains("pct(): digits"), "arguments first: {e}");
     }
@@ -294,7 +294,7 @@ mod tests {
             e.contains("compact(): the subject x is not a number"),
             "{e}"
         );
-        assert_eq!(ok("(none | compact) is undefined"), "true");
+        assert_eq!(ok("(none | compact) is undefined"), "True");
     }
 
     #[test]
@@ -321,6 +321,6 @@ mod tests {
         assert!(e.contains("bytes(): the subject -1 is negative"), "{e}");
         let e = err("'x' | bytes");
         assert!(e.contains("bytes(): the subject x is not a number"), "{e}");
-        assert_eq!(ok("(none | bytes) is undefined"), "true");
+        assert_eq!(ok("(none | bytes) is undefined"), "True");
     }
 }

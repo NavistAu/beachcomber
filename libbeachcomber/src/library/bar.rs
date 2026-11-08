@@ -480,7 +480,7 @@ fn place_marker(cells: &mut Vec<Cell>, w: usize, col: usize, glyph: &str) {
 mod tests {
     use crate::engine::{EngineCtx, build_pure_engine_env};
     use crate::term::strip_escapes;
-    use minijinja::Value as MjValue;
+    use minijinja::value::{Serde, Value as MjValue};
     use serde_json::{Value, json};
     use std::sync::Arc;
 
@@ -523,7 +523,7 @@ mod tests {
         );
         jinja(vars)
             .compile_expression(&expr)
-            .and_then(|e| e.eval(MjValue::from_serialize(Value::Object(context))))
+            .and_then(|e| e.eval(MjValue::from(Serde(Value::Object(context)))))
             .map(|v| v.to_string())
             .map_err(|e| e.to_string())
     }

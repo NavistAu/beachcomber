@@ -8,7 +8,7 @@
 use super::{UNDEFINED, is_absent};
 use crate::engine::{EngineCtx, op_error};
 use crate::fs::{Touch, Touched};
-use minijinja::value::{Kwargs, Value as MjValue};
+use minijinja::value::{Kwargs, Serde, Value as MjValue};
 use minijinja::{Environment, Error};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -134,7 +134,7 @@ fn glob(ctx: &EngineCtx, pattern: &MjValue) -> Result<MjValue, Error> {
         .collect();
     out.sort();
     out.dedup();
-    Ok(MjValue::from_serialize(out))
+    Ok(MjValue::from(Serde(out)))
 }
 
 /// One component of a glob pattern.
@@ -255,7 +255,7 @@ fn stat(ctx: &EngineCtx, path: &MjValue) -> Result<MjValue, Error> {
             } else {
                 MjValue::from(s.mtime())
             };
-            Ok(MjValue::from_iter([
+            Ok(MjValue::from_pairs([
                 ("size", MjValue::from(s.size)),
                 ("mtime", mtime),
                 ("kind", MjValue::from(s.kind.name())),
@@ -645,7 +645,7 @@ mod tests {
         let (_dir, root, ctx) = tree();
         let g = |expr: &str| eval_in(ctx.clone(), expr).unwrap();
         assert_eq!(g("'*.tf' | glob | join(',')"), "a.tf,b.tf");
-        assert_eq!(g("'*.tf' | glob | length > 0"), "true");
+        assert_eq!(g("'*.tf' | glob | length > 0"), "True");
         assert_eq!(g("'sub/*.tf' | glob | join(',')"), "sub/d.tf");
         assert_eq!(g("'./*.txt' | glob | join(',')"), "c.txt",);
         let abs = format!("{}/*.tf", root.display());
@@ -704,7 +704,7 @@ mod tests {
             "0",
             "a file has no children"
         );
-        assert_eq!(g("('*.nope' | glob) == []"), "true");
+        assert_eq!(g("('*.nope' | glob) == []"), "True");
     }
 
     #[test]
@@ -721,8 +721,8 @@ mod tests {
     fn glob_of_nothing_is_undefined_and_a_bad_pattern_is_an_error() {
         let (_dir, _root, ctx) = tree();
         let g = |expr: &str| eval_in(ctx.clone(), expr);
-        assert_eq!(g("(none | glob) is undefined").unwrap(), "true");
-        assert_eq!(g("(nope | glob) is undefined").unwrap(), "true");
+        assert_eq!(g("(none | glob) is undefined").unwrap(), "True");
+        assert_eq!(g("(nope | glob) is undefined").unwrap(), "True");
         let e = g("'[' | glob").unwrap_err();
         assert!(e.contains("glob(): invalid pattern \"[\""), "{e}");
         let e = g("'***/x' | glob").unwrap_err();
@@ -783,11 +783,11 @@ mod tests {
     fn stat_of_what_is_not_there_is_undefined() {
         let (_dir, _root, ctx) = repo();
         let s = |expr: &str| eval_in(ctx.clone(), expr).unwrap();
-        assert_eq!(s("('nope' | stat) is undefined"), "true");
-        assert_eq!(s("('~/a/.git/HEAD/under' | stat) is undefined"), "true");
-        assert_eq!(s("('' | stat) is undefined"), "true");
-        assert_eq!(s("(none | stat) is undefined"), "true");
-        assert_eq!(s("(missing | stat) is undefined"), "true");
+        assert_eq!(s("('nope' | stat) is undefined"), "True");
+        assert_eq!(s("('~/a/.git/HEAD/under' | stat) is undefined"), "True");
+        assert_eq!(s("('' | stat) is undefined"), "True");
+        assert_eq!(s("(none | stat) is undefined"), "True");
+        assert_eq!(s("(missing | stat) is undefined"), "True");
         assert_eq!(s("('nope' | stat | default('gone'))"), "gone");
     }
 
@@ -868,13 +868,13 @@ mod tests {
     fn realpath_of_what_is_not_there_is_undefined() {
         let (_dir, _root, ctx) = repo();
         let real = |expr: &str| eval_in(ctx.clone(), expr).unwrap();
-        assert_eq!(real("('nope' | realpath) is undefined"), "true");
+        assert_eq!(real("('nope' | realpath) is undefined"), "True");
         assert_eq!(
             real("('~/a/.git/HEAD/under' | realpath) is undefined"),
-            "true"
+            "True"
         );
-        assert_eq!(real("('' | realpath) is undefined"), "true");
-        assert_eq!(real("(none | realpath) is undefined"), "true");
+        assert_eq!(real("('' | realpath) is undefined"), "True");
+        assert_eq!(real("(none | realpath) is undefined"), "True");
     }
 
     #[test]
@@ -931,7 +931,7 @@ mod tests {
         let (_d, _root, ctx) = repo();
         assert_eq!(
             eval_in(ctx.clone(), "('nope' | read) is undefined").unwrap(),
-            "true"
+            "True"
         );
         assert_eq!(
             eval_in(ctx, "('nope' | read) or 'fallback'").unwrap(),
@@ -966,9 +966,9 @@ mod tests {
         let (_d, _root, ctx) = repo();
         assert_eq!(
             eval_in(ctx, "lup('.nothing-here') is undefined").unwrap(),
-            "true"
+            "True"
         );
-        assert_eq!(eval("lup('.git') is undefined").unwrap(), "true");
+        assert_eq!(eval("lup('.git') is undefined").unwrap(), "True");
     }
 
     #[test]
@@ -978,7 +978,7 @@ mod tests {
         let cwd = root.join("a/b/c");
         let home = root.join("a/b");
         let ctx = ctx_with(&[("HOME", home.to_str().unwrap())], Some(&cwd));
-        assert_eq!(eval_in(ctx, "lup('.git') is undefined").unwrap(), "true");
+        assert_eq!(eval_in(ctx, "lup('.git') is undefined").unwrap(), "True");
     }
 
     #[test]
@@ -987,7 +987,7 @@ mod tests {
         std::fs::write(root.join("a/b/.env"), "").unwrap();
         std::fs::write(root.join(".env"), "").unwrap();
         let want = format!(
-            "[{:?}, {:?}]",
+            "['{}', '{}']",
             root.join("a/b/.env").to_str().unwrap(),
             root.join(".env").to_str().unwrap()
         );
@@ -1018,7 +1018,7 @@ mod tests {
         );
         assert_eq!(
             eval_in(ctx, "lup('.env', git=true) is undefined").unwrap(),
-            "true"
+            "True"
         );
     }
 
@@ -1028,7 +1028,7 @@ mod tests {
         let ctx = ctx_with(&[], Some(dir.path()));
         assert_eq!(
             eval_in(ctx, "lup('.env', git=true) is undefined").unwrap(),
-            "true"
+            "True"
         );
     }
 

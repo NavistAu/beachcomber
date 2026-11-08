@@ -16,7 +16,7 @@
 //! per `(key, path)`, and recorded as a dependency.
 
 use crate::resolve::ResolveError;
-use minijinja::value::{Enumerator, Object, ObjectRepr, Value as MjValue};
+use minijinja::value::{Enumerator, Object, ObjectRepr, Serde, Value as MjValue};
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
 use std::sync::mpsc;
@@ -188,11 +188,11 @@ impl Object for LazyNode {
             return whole
                 .as_ref()
                 .and_then(|w| w.get(&name))
-                .map(MjValue::from_serialize);
+                .map(|v| MjValue::from(Serde(v)));
         }
         let prefetched = self.prefetched.as_ref().and_then(|p| p.get(&name));
         if self.prefetch.exact.contains(&member) {
-            return prefetched.map(MjValue::from_serialize);
+            return prefetched.map(|v| MjValue::from(Serde(v)));
         }
         if self.provider.is_none() && self.prefetch.through.contains(&member) {
             return Some(MjValue::from_object(Self {
@@ -206,9 +206,7 @@ impl Object for LazyNode {
                 whole: OnceLock::new(),
             }));
         }
-        self.bridge
-            .read(member)
-            .map(|v| MjValue::from_serialize(&v))
+        self.bridge.read(member).map(|v| MjValue::from(Serde(&v)))
     }
 
     fn enumerate(self: &Arc<Self>) -> Enumerator {
