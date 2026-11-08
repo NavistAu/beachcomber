@@ -455,7 +455,7 @@ impl Config {
             Err(e) => Self::compose(
                 ReadLayers {
                     layers: Vec::new(),
-                    errors: vec![Self::parse_error(&path, &e)],
+                    errors: vec![Self::parse_error(&path, &e, text)],
                 },
                 None,
             ),
@@ -482,13 +482,12 @@ impl Config {
     /// first line, which carries the line and column, and the reason, which
     /// the toml crate puts below its snippet. Verdict lists, the daemon's
     /// refusal and the reload log all show this one line.
-    fn parse_error(file: &Path, e: &toml::de::Error) -> String {
+    fn parse_error(file: &Path, e: &toml::de::Error, src: &str) -> String {
         let text = e.to_string();
         let at = text.lines().next().unwrap_or_default().trim_end();
         // The reason may run to several lines ("invalid string", "expected
         // ..."): folded, so the error stays one line.
-        let reason = e
-            .message()
+        let reason = libbeachcomber::toml_text::reason(e, src)
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty())
@@ -607,7 +606,7 @@ impl Config {
             };
             match toml::from_str::<toml::Value>(&content) {
                 Ok(layer) => out.layers.push((file, layer)),
-                Err(e) => out.errors.push(Self::parse_error(&file, &e)),
+                Err(e) => out.errors.push(Self::parse_error(&file, &e, &content)),
             }
         }
         out

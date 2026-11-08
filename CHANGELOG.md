@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **`comb` restarts a daemon older than itself.** After a package upgrade (Homebrew, Nix, mise install each version apart), the old daemon kept running until it was killed. Now a query command (`get`, `put`, `eval`, `refresh`, `watch`) that finds the daemon reporting an older release, by semver precedence with build metadata ignored, stops it with SIGTERM as `comb kill` does, starts its own, and prints `comb: restarted daemon <old> -> <new>` on stderr. Once per invocation; a newer daemon, an equal one or an unparseable version is left alone, as is any daemon under a configuration the new one would refuse. `comb status` warns instead of restarting, and the SDKs never restart a daemon.
 
+### Changed
+
+- **Dependencies moved to new major versions.** `toml` 1 (TOML spec 1.1), `ctor` 1, `base64` 0.23, `mockall` 0.15, `criterion` 0.8 and `terminal_size` 0.4. Config files and `fromtoml` now accept TOML 1.1: inline tables over several lines and with a trailing comma, `\e` and `\xHH` escapes, and times without seconds. Config parse errors word some reasons differently (`unclosed table, expected ']'` where it was `invalid table header; expected '.', ']'`), and some now give a reason where they gave none; a duplicate key still names the key, and a datetime with a zero fraction still prints without it.
+
 ### Fixed
 
 - **A daemon whose binary is deleted now restarts.** The daemon shuts down gracefully when its binary changes, so the next query starts the new one; but Homebrew, Nix and mise install each version under its own directory and delete the old one, so the old path vanished rather than changed, and a `brew upgrade` left the old daemon running indefinitely. The self-watch's poll now counts a missing binary as a change.

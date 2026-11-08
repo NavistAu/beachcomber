@@ -238,7 +238,9 @@ fn toml_to_json(value: &toml::Value) -> serde_json::Value {
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
         toml::Value::Boolean(b) => serde_json::Value::Bool(*b),
-        toml::Value::Datetime(d) => serde_json::Value::String(d.to_string()),
+        toml::Value::Datetime(d) => {
+            serde_json::Value::String(libbeachcomber::toml_text::datetime(d))
+        }
         toml::Value::Array(a) => serde_json::Value::Array(a.iter().map(toml_to_json).collect()),
         toml::Value::Table(t) => serde_json::Value::Object(
             t.iter()

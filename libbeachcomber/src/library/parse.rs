@@ -86,9 +86,13 @@ fn fromtoml(value: MjValue) -> Result<MjValue, Error> {
     if is_absent_text(&value) {
         return Ok(UNDEFINED);
     }
-    let doc: toml::Table = text("fromtoml", &value)?
-        .parse()
-        .map_err(|e: toml::de::Error| op_error(format!("fromtoml(): {}", e.message())))?;
+    let src = text("fromtoml", &value)?;
+    let doc: toml::Table = src.parse().map_err(|e: toml::de::Error| {
+        op_error(format!(
+            "fromtoml(): {}",
+            crate::toml_text::reason(&e, &src)
+        ))
+    })?;
     Ok(MjValue::from_serialize(toml_json(toml::Value::Table(doc))))
 }
 
@@ -101,7 +105,7 @@ fn toml_json(v: toml::Value) -> serde_json::Value {
             serde_json::Number::from_f64(f).map_or_else(|| J::String(f.to_string()), J::Number)
         }
         toml::Value::Boolean(b) => J::Bool(b),
-        toml::Value::Datetime(d) => J::String(d.to_string()),
+        toml::Value::Datetime(d) => J::String(crate::toml_text::datetime(&d)),
         toml::Value::Array(a) => J::Array(a.into_iter().map(toml_json).collect()),
         toml::Value::Table(t) => J::Object(t.into_iter().map(|(k, v)| (k, toml_json(v))).collect()),
     }
