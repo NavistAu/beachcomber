@@ -135,7 +135,8 @@ opt-level = 3
 opt-level = 3
 
 [profile.release]
-opt-level = "z"
+# Speed over size: a read is the product, and "z" cost a Session read ~50 µs.
+opt-level = 3
 lto = true
 strip = true
 
