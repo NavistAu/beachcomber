@@ -6,11 +6,12 @@
 # SIGTERM to the test process group, waits 10s for shutdown, then SIGKILLs.
 # The whole run fails spectacularly — which is what we want.
 #
-# 30s is the ENFORCED performance budget, per CLAUDE.md: a suite that cannot
-# finish in 30s is a failure that must be investigated, not accommodated.
+# 10s is the ENFORCED performance budget, per CLAUDE.md: a suite that cannot
+# finish in 10s is a failure that must be investigated, not accommodated.
 # Raising this value is not a fix and needs explicit owner sign-off (the
-# 2026-08-29 bump to 90s was unauthorised and was reverted 2026-09-22).
-global-timeout = "30s"
+# 2026-08-29 bump to 90s was unauthorised and was reverted 2026-09-22; the
+# budget went 30s -> 10s on 2026-11-09, the suite then ~9s at load 30-70).
+global-timeout = "10s"
 
 # Per-test slow detection and termination. Any single test exceeding the period
 # is reported as SLOW; after terminate-after periods it's hard-killed.
@@ -28,7 +29,16 @@ slow-timeout = { period = "15s", terminate-after = 2 }
 # No real subprocesses leak here — a genuinely leaked daemon runs indefinitely
 # and is still caught at 1s — so this only removes the spurious instrumented-run
 # flake. If it recurs at 1s, investigate what is actually outliving the test.
+# (One cause found: on macOS a test spawned alongside another inherited its
+# output pipes; `tests/suite/main.rs` closes them at startup.)
 leak-timeout = { period = "1s", result = "fail" }
+
+# Three tests per core: a test spends about half its time waiting on the
+# processes it runs (`comb`, `git`), so one per core leaves cores idle, and
+# on a machine busy with other work more threads hold a fairer share of it.
+# Measured on an M2 Max (12 cores) at load 30-50: 12 threads ~11.5s, 24
+# ~10s, 36 ~9.5s, 48 no better. CI keeps one per core (below).
+test-threads = 36
 
 # --- No test groups ---
 # No group caps the suite's parallelism: every test has its own socket,
@@ -55,6 +65,8 @@ global-timeout = "10m"
 slow-timeout = { period = "15s", terminate-after = 2 }
 # Never stop the suite early on a single failure — collect all results.
 fail-fast = false
+# A CI runner's few cores, one test each: the timing assertions are sized for it.
+test-threads = "num-cpus"
 
 [profile.ci.junit]
 path = "target/nextest/junit.xml"
