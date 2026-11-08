@@ -3,50 +3,63 @@
 use crate::cli::exit::Outcome;
 use libbeachcomber::spawn::is_serving;
 use std::path::Path;
+use std::time::Duration;
 
-pub fn run_kill(socket_path: &Path, timeout: std::time::Duration) -> Outcome {
+pub fn run_kill(socket_path: &Path, timeout: Duration) -> Outcome {
     if !is_serving(socket_path) {
         println!("Daemon is not running.");
         return Outcome::Done;
     }
-
-    let pid = match resolve_daemon_pid(socket_path) {
-        Ok(pid) => pid,
+    match stop(socket_path, timeout) {
+        Ok(Stopped::Pid(pid)) => {
+            println!("Daemon stopped (pid {pid}).");
+            Outcome::Done
+        }
+        Ok(Stopped::AlreadyGone) => {
+            println!("Daemon process was already stopped.");
+            Outcome::Done
+        }
         Err(msg) => {
             crate::cli::report::error("daemon", msg);
-            return Outcome::Error;
+            Outcome::Error
         }
-    };
+    }
+}
+
+/// How [`stop`] ended a serving daemon.
+pub enum Stopped {
+    /// It exited on SIGTERM.
+    Pid(i32),
+    /// It was gone before the signal reached it.
+    AlreadyGone,
+}
+
+/// Stop the daemon serving `socket_path` through its own graceful shutdown
+/// (SIGTERM), waiting up to `timeout` for the socket to stop answering.
+pub fn stop(socket_path: &Path, timeout: Duration) -> Result<Stopped, String> {
+    let pid = resolve_daemon_pid(socket_path)?;
 
     // SIGTERM for a clean shutdown; the daemon's signal handler catches it.
     if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() == Some(libc::ESRCH) {
-            println!("Daemon process was already stopped.");
-            return Outcome::Done;
+            return Ok(Stopped::AlreadyGone);
         }
-        crate::cli::report::error("daemon", format_args!("could not signal pid {pid}: {err}"));
-        return Outcome::Error;
+        return Err(format!("could not signal pid {pid}: {err}"));
     }
 
     // Poll until the socket stops responding.
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
         if !is_serving(socket_path) {
-            println!("Daemon stopped (pid {pid}).");
-            return Outcome::Done;
+            return Ok(Stopped::Pid(pid));
         }
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(5));
     }
-
-    crate::cli::report::error(
-        "daemon",
-        format_args!(
-            "did not exit within {}; send SIGKILL if needed: kill -9 {pid}",
-            libbeachcomber::render::duration(timeout)
-        ),
-    );
-    Outcome::Error
+    Err(format!(
+        "did not exit within {}; send SIGKILL if needed: kill -9 {pid}",
+        libbeachcomber::render::duration(timeout)
+    ))
 }
 
 /// The pid of the daemon serving `socket_path`, as it reports it itself

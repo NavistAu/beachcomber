@@ -266,10 +266,20 @@ pub fn run_status(
         crate::cli::report::error("--sort", e);
         return Outcome::Error;
     }
-    let socket_path = match crate::cli::connect::connect(config) {
+    let socket_path = match crate::cli::connect::connect_as_is(config) {
         Ok(socket) => socket,
         Err(outcome) => return outcome,
     };
+    // Shown, not fixed: `status` reports the daemon it finds.
+    if let Ok(hello) = crate::client::build_client(&socket_path).hello()
+        && crate::cli::connect::older(&hello.daemon_version, libbeachcomber::VERSION)
+    {
+        crate::cli::report::warning(format_args!(
+            "daemon {} is older than comb {}; the next query restarts it",
+            hello.daemon_version,
+            libbeachcomber::VERSION
+        ));
+    }
 
     let is_tty = std::io::stdout().is_terminal();
     let Style { color, ascii } = style;

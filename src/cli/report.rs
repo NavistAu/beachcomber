@@ -57,3 +57,9 @@ pub fn watch_error(key: &str, e: &WatchError) {
         other => error(key, other),
     }
 }
+
+/// `comb: <what>` — something comb did on its own that the user should know
+/// of, as restarting an older daemon.
+pub fn note(what: impl Display) {
+    eprintln!("comb: {what}");
+}

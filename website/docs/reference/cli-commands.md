@@ -5,7 +5,7 @@ title: CLI Commands
 
 # CLI Commands
 
-All commands are subcommands of `comb`. The daemon is socket-activated — you never need to start it manually.
+All commands are subcommands of `comb`. The daemon is socket-activated — you never need to start it manually. If the running daemon is an older release than `comb` (a package upgrade left it running), a query command (`get`, `put`, `eval`, `refresh`, `watch`) stops it gracefully, as `comb kill` does, and starts the new one, printing `comb: restarted daemon <old> -> <new>` on stderr; a newer daemon is left alone. `comb status` only warns about an older daemon.
 
 Every command has a single-letter shorthand. Long forms (`get`, `status`, etc.) also work.
 
