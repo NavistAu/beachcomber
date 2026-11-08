@@ -911,14 +911,20 @@ impl Config {
                 let key = key.trim();
                 let value = value.trim();
 
-                // Strip surrounding quotes if present
-                let value = if (value.starts_with('"') && value.ends_with('"'))
-                    || (value.starts_with('\'') && value.ends_with('\''))
+                // Strip one pair of surrounding quotes (both ends, so a lone `"` stays)
+                let value = if value.len() >= 2
+                    && ((value.starts_with('"') && value.ends_with('"'))
+                        || (value.starts_with('\'') && value.ends_with('\'')))
                 {
                     &value[1..value.len() - 1]
                 } else {
                     value
                 };
+                // set_var panics on an empty key or a NUL byte.
+                if key.is_empty() || key.contains('\0') || value.contains('\0') {
+                    tracing::warn!("[daemon] env_file: skipped line with an empty key or NUL byte");
+                    continue;
+                }
                 out.push((key.to_string(), value.to_string()));
             }
         }

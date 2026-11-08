@@ -1695,6 +1695,35 @@ BEACHCOMBER_TEST_NUM=42
     );
 }
 
+/// Lines `set_var` would panic on, or quote stripping would slice badly, are
+/// skipped; the rest of the file still loads.
+#[test]
+fn env_file_skips_unusable_lines() {
+    let tmp = TempDir::new().unwrap();
+    let env_path = tmp.path().join("env");
+    std::fs::write(
+        &env_path,
+        "=novalue\nBEACHCOMBER_TEST_NUL_K\0EY=v\nBEACHCOMBER_TEST_NUL_V=a\0b\nBEACHCOMBER_TEST_LONE=\"\nBEACHCOMBER_TEST_OK=1\n",
+    )
+    .unwrap();
+    let config = Config::from_toml(&format!(
+        "[daemon]\nenv_file = {}\n",
+        toml::Value::String(env_path.to_string_lossy().to_string())
+    ));
+    temp_env::with_vars(
+        [
+            ("BEACHCOMBER_TEST_LONE", None::<&str>),
+            ("BEACHCOMBER_TEST_OK", None::<&str>),
+        ],
+        || {
+            // The lone quote is kept as is; only the three bad lines are dropped.
+            assert_eq!(load_env(&config), 2);
+            assert_eq!(std::env::var("BEACHCOMBER_TEST_LONE").unwrap(), "\"");
+            assert_eq!(std::env::var("BEACHCOMBER_TEST_OK").unwrap(), "1");
+        },
+    );
+}
+
 /// The variables a daemon started on this configuration has: this process's,
 /// with the env file's over them. Read, not set: the process is left as it was.
 #[test]
