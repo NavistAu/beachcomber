@@ -107,10 +107,10 @@ All of these are independently computing the same answers to the same questions.
 
 | | Starship (no cache) | beachcomber + Starship |
 |---|---|---|
-| Git status per prompt | 1-5ms (small repo), 200ms+ (large) | about 0.1 ms on a kept-open session; one `comb` process (about 17 ms, mostly start) from a `[custom]` module |
+| Git status per prompt | 1-5ms (small repo), 200ms+ (large) | about 36 µs on a kept-open session; one `comb` process (about 4.5 ms, mostly start) from a `[custom]` module |
 | Battery per prompt | 5-10ms (subprocess) | the same cache read |
 
-The beachcomber figures were measured on an Intel MacBook Pro (x86_64) ([Performance](../internals/performance.md#round-5-the-warm-read)).
+The beachcomber figures were measured on an Apple M2 Max MacBook Pro (12 cores, 32 GB, arm64) ([Performance](../internals/performance.md#round-5-the-warm-read)).
 
 ---
 

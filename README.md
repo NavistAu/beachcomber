@@ -26,12 +26,13 @@ many shells are open. macOS and Linux.
 
 How you read it, and what a read costs:
 
-- **Rust client** (`libbeachcomber`) on a persistent session: about 0.1 ms.
-- **SDKs for C, Go, Lua, Node.js, Python and Ruby**, sessions over the same client through its C ABI: about 0.1 ms
-  from C, 0.13 ms from Python.
-- **`comb` CLI**, for shell scripts and prompts: about 17 ms, most of it starting the process.
+- **Rust client** (`libbeachcomber`) on a persistent session: about 36 µs.
+- **SDKs for C, Go, Lua, Node.js, Python and Ruby**, sessions over the same client through its C ABI: about 36 µs
+  from C, 39 µs from Python.
+- **`comb` CLI**, for shell scripts and prompts: about 4.5 ms, most of it starting the process.
 
-Measured on an Intel MacBook Pro (x86_64), reading `git.branch` in a repository from a warm daemon
+Measured on an Apple M2 Max MacBook Pro (12 cores, 32 GB, arm64): the median of three rounds of 5,000 reads of `git.branch` in a repository on one kept-open
+connection to a warm daemon, at a 1-minute load of 3.6–4.1
 ([how](website/docs/internals/performance.md#round-5-the-warm-read)).
 
 <img src="docs/assets/demo.gif" alt="Terminal: comb g reads git.branch, then several git fields at once; comb e renders a prompt segment from git and battery; hyperfine times that segment against running git status and pmset, with comments on what the timings include." width="100%">
@@ -61,19 +62,21 @@ Every shell, every editor plugin, every status bar, every prompt framework is in
 | Operation | Latency |
 |---|---|
 | Cache read (global key) | **157 ns** |
-| Raw socket `get`, kept-open connection: global key / `git.branch` at a path | **30 µs** / 83 µs |
-| Rust `Session` read of `git.branch` at a path | **0.10 ms** |
-| The same read through the C ABI / the Python SDK | 0.10 ms / 0.13 ms |
-| `comb get git.branch` as a process (`comb --version` alone: 11 ms) | 17 ms |
+| Raw socket `get`, kept-open connection: global key / `git.branch` at a path | **12 µs** / 34 µs |
+| Rust `Session` read of `git.branch` at a path | **36 µs** |
+| The same read through the C ABI / the Python SDK | 36 µs / 39 µs |
+| `comb get git.branch` as a process (`comb --version` alone: 3.0 ms) | 4.5 ms |
 | A full `git` refresh on this repository: 10 `git` processes, nothing else | **about 150 ms** |
 | Throughput (10 concurrent clients) | **45,000 req/sec** |
+
+The rows from the raw socket to `comb get` are measured on the Apple M2 Max MacBook Pro (12 cores, 32 GB, arm64) (method above). The cache read, the refresh and the throughput are older figures from `cargo bench` and have not been re-measured on it.
 
 **Real-world impact:**
 
 | Scenario | Without beachcomber | With beachcomber | Improvement |
 |---|---|---|---|
-| [zsh](https://www.zsh.org) prompt (3 reads) | a `git` process each (`git rev-parse`: 21 ms) | **about 0.3 ms** (3 reads on one session) | no processes |
-| [tmux](https://github.com/tmux/tmux) status (100 panes, 10s refresh) | ~2.5s CPU (500 shell forks) | **about 15 ms** (500 socket reads) | 333x fewer forks |
+| [zsh](https://www.zsh.org) prompt (3 reads) | a `git` process each | **about 0.1 ms** (3 reads of 36 µs on one session) | no processes |
+| [tmux](https://github.com/tmux/tmux) status (100 panes, 10s refresh) | ~2.5s CPU (500 shell forks) | **about 17 ms** (500 raw socket reads of 34 µs) | 333x fewer forks |
 | fseventsd dispatch load | N watchers × N events | 1 watcher, shared | Linear reduction |
 
 ---
@@ -1222,7 +1225,7 @@ Features:
 - **Synchronous** — no async runtime needed
 - **Socket activation** — starts the daemon automatically if not running
 - **The value `comb get` prints** — templates rendered, `serde_json::Value` out
-- **Persistent sessions** — reuse one connection for multiple queries (about 0.1 ms a read)
+- **Persistent sessions** — reuse one connection for multiple queries (about 36 µs a read)
 - **Configurable timeouts** — default 250ms, adjustable via `ClientConfig`
 
 ---

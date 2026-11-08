@@ -30,6 +30,6 @@ Formally freezing the wire protocol or TOML config format was considered as a st
 
 ## Shared Memory / mmap Read Path
 
-A memory-mapped read path would bypass the Unix socket for cache reads, reducing per-query latency from tens of microseconds (a raw socket `get`, 30–83 µs on an Intel Mac) to nanoseconds.
+A memory-mapped read path would bypass the Unix socket for cache reads, reducing per-query latency from tens of microseconds (a raw socket `get`, 12–34 µs on an Apple M2 Max MacBook Pro (12 cores, 32 GB, arm64)) to nanoseconds.
 
-**Decision:** a 0.1 ms read on a kept-open session is already invisible in every real consumer context (shell prompts, status bars, editor plugins). Adding a shared memory path would mean maintaining a second serialization format, cross-process synchronization, platform-specific memory management, and a parallel code path in every SDK — substantial ongoing complexity for a performance gain that no workload requires today.
+**Decision:** a 36 µs read on a kept-open session is already invisible in every real consumer context (shell prompts, status bars, editor plugins). Adding a shared memory path would mean maintaining a second serialization format, cross-process synchronization, platform-specific memory management, and a parallel code path in every SDK — substantial ongoing complexity for a performance gain that no workload requires today.

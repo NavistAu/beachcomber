@@ -15,7 +15,7 @@ This document records all performance optimizations applied to beachcomber, the 
 
 3. **Provider execution is the cold path (but still matters).** Providers only execute on invalidation (filesystem change or poll timer), not on every query. But slow providers block `spawn_blocking` thread pool slots and delay cache freshness. Keep them fast.
 
-4. **Amortize connection overhead.** Consumers that read several values per render cycle (prompts, status bars) should keep one connection open (`Session`) instead of connecting for each read. A kept-open read of `git.branch` costs about 0.1 ms in Rust or through the C ABI (Round 5).
+4. **Amortize connection overhead.** Consumers that read several values per render cycle (prompts, status bars) should keep one connection open (`Session`) instead of connecting for each read. A kept-open read of `git.branch` costs about 36 µs in Rust or through the C ABI on an Apple M2 Max MacBook Pro (12 cores, 32 GB, arm64) (Round 5).
 
 5. **The scheduler must never block.** Provider execution happens on `spawn_blocking` threads. The scheduler's async loop must remain responsive to messages, filesystem events, and poll timers at all times.
 
@@ -262,7 +262,7 @@ Three rounds for the benches, 15 for the CLI, five for the suite (2508 tests eac
 - `resolve::Inputs::env` is a `dyn env::Vars`. `env::Lazy` reads the process environment on first use, and `Session::get`, `Client::get` and a `bc_get` with NULL `env_json` make one per call. A plain read never reads it, and a long-lived session still sees the environment as it is at each call.
 - The release profile is `opt-level = 3`. Sizes on x86_64-apple-darwin: `comb` 6.74 → 10.63 MB, `libbeachcomber.dylib` 3.62 → 4.72 MB.
 
-**Result:** the median of three rounds of 5,000 reads on one connection each, `develop` at `0afc6241` against this round. The machine is an Intel MacBook Pro (MacBookPro16,4, x86_64), at a 1-minute load of 1.2–1.7:
+**Result on the Intel Mac:** the median of three rounds of 5,000 reads on one connection each, `develop` at `0afc6241` against this round. The machine is an Intel MacBook Pro (MacBookPro16,4, x86_64), at a 1-minute load of 1.2–1.7:
 
 | Read | Before | After |
 |---|---|---|
@@ -273,9 +273,22 @@ Three rounds for the benches, 15 for the CLI, five for the suite (2508 tests eac
 | Python SDK `Session.get` | 301 µs | 133 µs |
 | `comb get git.branch <dir>`, one process, wall time | 17.8 ms | 16.7 ms |
 
-The CLI's time is mostly process start. In the same harness `comb --version` takes 11 ms, `/usr/bin/true` 5 ms and `git rev-parse --abbrev-ref HEAD` 21 ms. `cargo bench --bench socket -- session_get_git_branch_at_path` measures the Session read in-process, as a guard against regressions.
+The CLI's time is mostly process start. On the Intel Mac, in the same harness `comb --version` takes 11 ms, `/usr/bin/true` 5 ms and `git rev-parse --abbrev-ref HEAD` 21 ms. `cargo bench --bench socket -- session_get_git_branch_at_path` measures the Session read in-process, as a guard against regressions.
 
 **What remains:** the daemon's half. It canonicalises the request path on every read with realpath, and stats every recorded input of the record it serves. Neither has a cheap stamp that is also correct (`docs/roadmap.md`).
+
+**Again on an Apple M2 Max.** The same harness was run on `develop` at `d9b62ce7` on an Apple M2 Max MacBook Pro (12 cores, 32 GB, arm64), at a 1-minute load of 3.6–4.1 (rounds started at 4.13, 4.08 and 3.61). The daemon is the release build with a private socket, a scratch `HOME` and a scratch repository; the medians of three rounds of 5,000 reads on one connection each, 500 warm-up reads first, against `0afc6241` (before this round) measured the same way (rounds started at 4.19, 3.68 and 3.37), are:
+
+| Read | Before | After |
+|---|---|---|
+| Raw socket `get` of `git.branch` at a path, no client work | 42 µs | 34 µs |
+| Raw socket `get` of `hostname.name`, the global entry | 17 µs | 12 µs |
+| Rust `Session::get("git.branch")` at a path | 109 µs | 36 µs |
+| C ABI `bc_session_get` | 170 µs | 36 µs |
+| Python SDK `Session.get` | 179 µs | 39 µs |
+| `comb get git.branch <dir>`, one process, wall time (`hyperfine`, 200 runs a round) | 4.8 ms | 4.5 ms |
+| `comb --version`, same harness | 3.0 ms | 3.0 ms |
+| `/usr/bin/true`, same harness | 1.2 ms | 1.2 ms |
 
 **Rule for future changes:** a read of a cached value builds no template engine and reads no environment. Anything a render needs is built when the render first asks for it.
 
@@ -301,12 +314,12 @@ These are one run through `ProviderRegistry::shipped` (`cargo bench --bench prov
 | Cache read (global key) | 157 ns |
 | Cache read (key with a path) | 205 ns |
 | Cache write | 182 ns |
-| Raw socket `get`, kept-open connection: `hostname.name` / `git.branch` at a path | 30 µs / 83 µs |
-| Rust `Session::get`, `git.branch` at a path | 101 µs |
-| C ABI `bc_session_get` / Python SDK `Session.get`, same read | 101 µs / 133 µs |
+| Raw socket `get`, kept-open connection: `hostname.name` / `git.branch` at a path | 12 µs / 34 µs |
+| Rust `Session::get`, `git.branch` at a path | 36 µs |
+| C ABI `bc_session_get` / Python SDK `Session.get`, same read | 36 µs / 39 µs |
 | 100 sequential gets on 1 connection | 945 µs (9.5 µs/get) |
 
-The cache rows and the last row are older criterion figures (`cargo bench --bench cache`, `--bench socket`). The socket rows are the Round 5 figures, measured on the Intel Mac with a warm daemon.
+The cache rows and the last row are older criterion figures (`cargo bench --bench cache`, `--bench socket`). The socket rows are the Round 5 figures on the Apple M2 Max MacBook Pro (12 cores, 32 GB, arm64) (Intel Mac figures for the same reads are in Round 5).
 
 ### Throughput
 
@@ -752,8 +765,8 @@ Option A, reads 1.2 s apart on a fresh clone: 38 ms for `git.dirty` and 49 for `
 
 | Scenario | Before beachcomber | With beachcomber |
 |---|---|---|
-| A prompt's 3 reads on one kept-open Session | a `git` process each (21 ms for `git rev-parse` on the Intel Mac) | about 0.3 ms (3 × 101 µs, Round 5) |
-| tmux status (100 panes, 10s refresh) | 2.5s CPU (500 shell forks) | 500 socket reads, about 15 ms (500 × 30 µs, Round 5) |
+| A prompt's 3 reads on one kept-open Session | a `git` process each | about 0.1 ms (3 × 36 µs, Round 5) |
+| tmux status (100 panes, 10s refresh) | 2.5s CPU (500 shell forks) | 500 socket reads, about 17 ms (500 × 34 µs, Round 5) |
 | fseventsd load (N watchers) | N watchers × N dispatch | 1 watcher, shared cache |
 
 ---

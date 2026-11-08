@@ -168,15 +168,14 @@ To confirm data freshness, make a change in a repository (stage a file) and pres
 
 ## Performance
 
-Each `comb g` call is one process that reads a cached value over a Unix socket. Most of its cost is starting the process: the read itself is about 0.1 ms. Compare that to the tools beachcomber replaces:
+Each `comb g` call is one process that reads a cached value over a Unix socket. Most of its cost is starting the process: the read itself is about 36 µs. Compare that to the tools beachcomber replaces:
 
 | Source | Typical cost |
 |---|---|
-| `comb g git.branch` (cached), measured | ~17 ms, of which `comb --version` alone is 11 ms |
-| `git rev-parse --abbrev-ref HEAD`, measured | ~21 ms |
+| `comb g git.branch` (cached), measured | ~4.5 ms, of which `comb --version` alone is 3.0 ms |
 | `kubectl config current-context` | 50–150 ms |
 
-The measured rows come from an Intel MacBook Pro (x86_64), timed per process in one harness. The cost of `comb g` stays fixed while the tool it replaces gets slower with the repository or the tool. A prompt that reads several values pays for one start per `comb g`. A shell or editor integration that keeps a session open through an SDK pays about 0.1 ms a read and no process at all.
+The measured rows come from an Apple M2 Max MacBook Pro (12 cores, 32 GB, arm64), timed per process with `hyperfine` in one harness. The cost of `comb g` stays fixed while the tool it replaces gets slower with the repository or the tool. A prompt that reads several values pays for one start per `comb g`. A shell or editor integration that keeps a session open through an SDK pays about 36 µs a read and no process at all.
 
 The daemon handles the expensive work on its own schedule, independent of your prompt.
 
