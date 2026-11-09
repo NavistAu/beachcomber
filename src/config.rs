@@ -889,45 +889,69 @@ impl Config {
     }
 
     /// The env file's `KEY=VALUE` lines, in order: blanks and `#` comments
-    /// skipped, one pair of surrounding quotes stripped. No file is none.
+    /// skipped, one pair of surrounding quotes stripped. No file is none. A
+    /// line it cannot use is logged and left out ([`Self::env_file_problems`]).
     fn env_file_vars(&self) -> Vec<(String, String)> {
-        let Some(content) = self
-            .env_file_path()
-            .and_then(|path| std::fs::read_to_string(path).ok())
-        else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        for line in content.lines() {
-            let line = line.trim();
+        let (vars, problems) = self.read_env_file();
+        for problem in problems {
+            tracing::warn!("[daemon] {problem}");
+        }
+        vars
+    }
 
-            // Skip blanks and comments
+    /// What is wrong with the env file, one message per problem: a configured
+    /// file that cannot be read, and each line left out (with its number and
+    /// why). `comb check config` shows them as warnings.
+    pub fn env_file_problems(&self) -> Vec<String> {
+        self.read_env_file().1
+    }
+
+    fn read_env_file(&self) -> (Vec<(String, String)>, Vec<String>) {
+        let Some(path) = self.env_file_path() else {
+            return (Vec::new(), Vec::new());
+        };
+        let shown = libbeachcomber::path::Home::from_env().compact_path(&path);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            // The `env` beside the config file is optional; a file named in
+            // `[daemon] env_file` is meant to be there.
+            Err(e) if self.daemon.env_file.is_some() => {
+                return (Vec::new(), vec![format!("env_file {shown}: {e}")]);
+            }
+            Err(_) => return (Vec::new(), Vec::new()),
+        };
+        let (mut vars, mut problems) = (Vec::new(), Vec::new());
+        for (n, line) in content.lines().enumerate() {
+            let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-
-            if let Some((key, value)) = line.split_once('=') {
-                let key = key.trim();
-                let value = value.trim();
-
-                // Strip one pair of surrounding quotes (both ends, so a lone `"` stays)
-                let value = if value.len() >= 2
-                    && ((value.starts_with('"') && value.ends_with('"'))
-                        || (value.starts_with('\'') && value.ends_with('\'')))
-                {
-                    &value[1..value.len() - 1]
-                } else {
-                    value
-                };
-                // set_var panics on an empty key or a NUL byte.
-                if key.is_empty() || key.contains('\0') || value.contains('\0') {
-                    tracing::warn!("[daemon] env_file: skipped line with an empty key or NUL byte");
-                    continue;
-                }
-                out.push((key.to_string(), value.to_string()));
+            let skipped = |why: &str| format!("env_file {shown}:{}: {why}: skipped", n + 1);
+            let Some((key, value)) = line.split_once('=') else {
+                problems.push(skipped("no '='"));
+                continue;
+            };
+            let key = key.trim();
+            let value = value.trim();
+            // Strip one pair of surrounding quotes (both ends, so a lone `"` stays)
+            let value = if value.len() >= 2
+                && ((value.starts_with('"') && value.ends_with('"'))
+                    || (value.starts_with('\'') && value.ends_with('\'')))
+            {
+                &value[1..value.len() - 1]
+            } else {
+                value
+            };
+            // set_var panics on an empty key or a NUL byte.
+            if key.is_empty() {
+                problems.push(skipped("empty key"));
+            } else if key.contains('\0') || value.contains('\0') {
+                problems.push(skipped("NUL byte"));
+            } else {
+                vars.push((key.to_string(), value.to_string()));
             }
         }
-        out
+        (vars, problems)
     }
 
     pub fn resolve_socket_path(&self) -> PathBuf {

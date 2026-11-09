@@ -279,6 +279,12 @@ fn local_config_verdicts(config: &Config) -> Vec<serde_json::Value> {
             .into_iter()
             .map(|w| serde_json::json!({"level": "WARN", "message": w})),
     );
+    out.extend(
+        config
+            .env_file_problems()
+            .into_iter()
+            .map(|w| serde_json::json!({"level": "WARN", "message": w})),
+    );
     out.extend(defaults_verdicts(config));
     out
 }

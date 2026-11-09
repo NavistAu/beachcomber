@@ -1763,6 +1763,32 @@ fn env_file_skips_unusable_lines() {
     );
 }
 
+/// Each line the env file leaves out is a problem, with its number and why;
+/// so is a file `[daemon] env_file` names that cannot be read. The `env`
+/// beside the config file is optional: its absence is none.
+#[test]
+fn env_file_problems_name_each_line_left_out() {
+    let tmp = TempDir::new().unwrap();
+    let env_path = tmp.path().join("env");
+    std::fs::write(&env_path, "# ok\nA=1\nexport B\n=novalue\nC\0D=v\n\nE=2\n").unwrap();
+    let named = |path: &std::path::Path| {
+        Config::from_toml(&format!(
+            "[daemon]\nenv_file = {}\n",
+            toml::Value::String(path.to_string_lossy().to_string())
+        ))
+    };
+    let problems = named(&env_path).env_file_problems();
+    assert_eq!(problems.len(), 3, "{problems:?}");
+    for (problem, want) in problems
+        .iter()
+        .zip([":3: no '='", ":4: empty key", ":5: NUL byte"])
+    {
+        assert!(problem.ends_with(&format!("{want}: skipped")), "{problem}");
+    }
+    assert!(named(&tmp.path().join("gone")).env_file_problems()[0].contains("gone"));
+    assert!(Config::from_toml("").env_file_problems().is_empty());
+}
+
 /// The variables a daemon started on this configuration has: this process's,
 /// with the env file's over them. Read, not set: the process is left as it was.
 #[test]
