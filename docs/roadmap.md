@@ -6,15 +6,10 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 
 ### High Priority (next)
 
-- [ ] **Code ↔ docs reconciliation (correctness pass).** The 0.6.1 socket-resolution and Node-dist bugs were
-      both docs-said-X / code-did-Y divergences, caught only by a partial README+website audit — which itself
-      shipped errors needing a corrective second pass (`02115b2f`). Do a systematic walk of the project's line of truth
-      (test suite → code → `website/docs/reference/protocol-reference.md` / `website/docs/internals/architecture.md` / `website/docs/internals/performance.md` /
-      `docs/versioning.md` → README → website).
-      For each documented claim verify: (a) a test asserts it, (b) code matches the test, (c) docs/website describe the
-      actual behavior. Settle every divergence with either a fix or an explicit, reasoned
-      deferral. Goal: surface the next 0.6.1-class bug before a user does. Theme chosen 2026-05-29 in the post-0.6.1
-      retro.
+- [ ] **Every documented claim has a test.** The docs-against-code walk is done (about thirty statements corrected
+      by running the binary against them; see `CHANGELOG.md` Unreleased → Docs). What it did not do: for each claim in
+      `website/docs/reference/` and `website/docs/internals/`, name the test that asserts it, and add one where none
+      does. Goal: the next 0.6.1-class docs-said-X / code-did-Y bug fails a test before a user finds it.
 
 ### General
 
@@ -33,10 +28,6 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       integration could let the daemon precompute and cache these per-path env-derived values, turning those live reads
       back into cache hits where direnv is in play. Deferred until the env/cascade work lands; needs a way to ingest a
       directory's direnv-exported env and key the affected cache entries by `(path, that env)`.
-- [ ] **`eval`'s "JSON null" ambiguity across conformance runners.** A daemon-fetched ref that resolves to JSON `null`
-      is treated as data-present in the Rust and C conformance runners but as a miss in Node, Ruby, Lua and Python.
-      Settle whether `eval` has a genuine "miss" notion distinct from "resolved to null", and pin the answer with a
-      conformance fixture.
 - [ ] **Per-directory customization.** In tool-heavy directories the prompt drowns in `mise` tool/version output —
       there's no way to shape what comb feeds a given project's prompt. Two candidate mechanisms: (a) a computed
       field (e.g. `tools_prompt`) that filters the `mise` tools through an allowlist and the prompt pulls instead of the
@@ -44,6 +35,13 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       (b) a project config file (`.beachcomber.toml`?) carrying per-dir allowlists / template definitions — new
       discovery and trust surface, since config would come from arbitrary repos. Cross-references the env/cascade item
       above. The mise prompt-spam case is the acceptance test.
+
+- [ ] **A `put` over a callee does not rerun its callers.** A Source that reads another is run again when the
+      callee's input changes or the callee stores a new value, but a `put` over the callee's node changes what the
+      caller would read without counting. Decide whether a put should count, and on which reads.
+- [ ] **A callee that changes during its caller's run.** If the callee changes after the caller read it but before the
+      caller's record is stored, the record looks newer than the change and the caller is not rerun until its next run
+      (marked `shortcut:` in `src/provider/source_call.rs`). Fix by stamping each call with the value it saw.
 
 ### CLI Ergonomics
 
@@ -86,7 +84,7 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       needs invalidation from directory events on the ancestors. `normalise_follows_the_tree_as_it_changes` pins
       the behaviour a memo must keep.
 - [ ] **Event-driven validity for a warm read.** `start_for_read` → `record_state` stats every recorded input on each
-      read, and the climb re-derives its instances (`kept_root`, `next_instance`) per request. A fast path for an
+      read (and, for a Source that read others, each callee's state as well), and the climb re-derives its instances (`kept_root`, `next_instance`) per request. A fast path for an
       already-validated leaf means invalidating on file events instead of stat'ing on read, without a staleness
       window.
 - [ ] Docker test containers — controlled environments for each integration target (oh-my-tmux, p10k, starship, etc.)
@@ -95,9 +93,6 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 
 ### Documentation
 
-- [ ] Audit and consider restructuring according to diataxis
-- [ ] We added a jinja style formatter, thats used in a number of places. we need to ensure our docs are comprehensive
-      about its usage.
 - [ ] We should do a llm/agent md page in the website that gives a compact token efficient summary of the tool for llm
       purposes. this is different to llm.txt which is more for training datasets and marketing.
   - [ ] Is there any possible utility in making a beachcomber skill/plugin?
@@ -125,7 +120,7 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
     point to yes", etc.) and reshakes at random intervals. Git pre-push hook checks `comb get 8ball.sentiment` and
     blocks deploys on negative readings. Show the current reading in tmux. The universe has opinions about your release
     schedule.
-- [ ] Timeseries / sparkline guide — document how to use `comb store` to accumulate rolling timeseries data (e.g.
+- [ ] Timeseries / sparkline guide — document how to use `comb put` to accumulate rolling timeseries data (e.g.
       service response times, error rates, CPU samples) and render sparkline/histogram status tickers in tmux or
       prompts. Cover append-to-array patterns, TTL-based expiry, and how to structure the data for consumers that render
       sparklines (e.g. oh-my-tmux, tmux-sparkline, unicode block characters).
@@ -137,6 +132,5 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
   - [ ] Consider a comb-paranoid build that cuts down featureset significantly and dependency chain. depends on how
         painful this would be to do and maintain. For example, dropping all the formatting tools drops the minijinja
         dep. Maybe core dependencies go back to as old a version as makes sense to reduce supply chain attack.
-- [ ] `llms.txt` for the website — machine-readable project summary for LLM consumption.
 - [ ] Publish the LuaRocks rock under a `navist` account (LuaRocks has no orgs) instead of `jhogendorn`; then point
       the website (`Hero.tsx`) and README links at `luarocks.org/modules/navist/libbeachcomber`.
