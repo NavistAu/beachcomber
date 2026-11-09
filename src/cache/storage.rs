@@ -366,6 +366,9 @@ pub struct Cache {
     barrier: std::sync::OnceLock<Arc<crate::watcher::Barrier>>,
     /// Where persisted puts are kept; set by a daemon that keeps them.
     pub(super) put_store: std::sync::OnceLock<crate::persist::PutStore>,
+    /// When each Source record last took a value unlike the one before it,
+    /// by entry and Source: a caller stored before then read an older one.
+    changed: DashMap<(CacheKey, String), Instant>,
 }
 
 impl Default for Cache {
@@ -422,6 +425,7 @@ impl Cache {
             trees_watchable: Default::default(),
             barrier: std::sync::OnceLock::new(),
             put_store: std::sync::OnceLock::new(),
+            changed: DashMap::new(),
         }
     }
 
@@ -434,6 +438,7 @@ impl Cache {
             trees_watchable: Default::default(),
             barrier: std::sync::OnceLock::new(),
             put_store: std::sync::OnceLock::new(),
+            changed: DashMap::new(),
         }
     }
 
@@ -508,8 +513,23 @@ impl Cache {
         } else {
             Vec::new()
         };
+        let key = make_cache_key(provider, path);
+        let same = self
+            .entries
+            .get(&key)
+            .and_then(|entry| {
+                entry
+                    .sources
+                    .get(source_name)
+                    .map(|held| held.fields == fields)
+            })
+            .unwrap_or(false);
+        if !same {
+            self.changed
+                .insert((key.clone(), source_name.to_string()), now);
+        }
         self.insert_source_map(
-            make_cache_key(provider, path),
+            key,
             source_name,
             CacheSourceEntry {
                 fields,
@@ -677,6 +697,14 @@ impl Cache {
         }
     }
 
+    /// When the record `source` wrote at `(provider, path)` last took a value
+    /// unlike the one before it; `None` when it has none.
+    pub fn changed_at(&self, provider: &str, path: Option<&str>, source: &str) -> Option<Instant> {
+        self.changed
+            .get(&(make_cache_key(provider, path), source.to_string()))
+            .map(|at| *at)
+    }
+
     /// Remove a single source's contribution from the (provider, path) entry.
     /// If that was the last source, the whole entry is removed. No-op if the
     /// entry or the named source is absent — in which case no watcher
@@ -691,6 +719,7 @@ impl Cache {
             .remove_if(&facet_key, |_, entry| entry.holds_no_map());
 
         let key = make_cache_key(provider, path);
+        self.changed.remove(&(key.clone(), source.to_string()));
         // Drop the source under the shard lock, recording whether anything
         // actually changed. The `get_mut` guard must be released before the
         // `remove_if` below or DashMap deadlocks on the same shard.

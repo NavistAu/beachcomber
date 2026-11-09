@@ -18,7 +18,7 @@
 //! A Source reached again while it is running, through however many others, is
 //! a cycle: the error `sources: <p>.<s> calls itself`.
 
-use crate::cache::{Cache, RecordFreshness};
+use crate::cache::{Cache, RecordFreshness, RecordState};
 use crate::provider::Value;
 use crate::provider::registry::{CalleeMap, ProviderRegistry};
 use crate::query::Dir;
@@ -258,7 +258,8 @@ fn warm_chain(
         if let Some(barrier) = tree_barrier(registry, cache, provider, source, root) {
             crate::run::block_on(barrier.pass(arrived));
         }
-        let Some(want) = Want::for_read(cache.record_state(provider, root, source)) else {
+        let Some(want) = Want::for_read(record_state(registry, cache, provider, source, root))
+        else {
             continue;
         };
         let key = instance_key(provider, source, root);
@@ -279,6 +280,66 @@ fn warm_chain(
     }
     note_call(provider, source, &chain);
     Ok(chain)
+}
+
+/// What a read finds of the record of `provider`'s Source `source` at `root`,
+/// counting what its last run called: a valid record whose callee has an
+/// input changed, or was stored with a new value after it, is
+/// [`RecordState::Invalid`], through any number of calls between Sources. A
+/// callee past its lifetime, or with nothing stored, leaves it as it is: the
+/// caller's own lifetime stands for those.
+pub fn record_state(
+    registry: &ProviderRegistry,
+    cache: &Cache,
+    provider: &str,
+    source: &str,
+    root: Option<&str>,
+) -> RecordState {
+    let own = cache.record_state(provider, root, source);
+    if own == RecordState::Valid
+        && callee_moved(registry, cache, provider, source, root, &mut Vec::new())
+    {
+        RecordState::Invalid
+    } else {
+        own
+    }
+}
+
+/// Whether a callee of the instance at `root`, or of its callees, changed
+/// since the instance's record was stored. `seen` stops a ring of calls.
+// shortcut: a callee that changes while its caller runs, after the call, is
+// older than the caller's record and goes unseen until the caller's next run;
+// stamp each call with the callee's value if that window matters.
+fn callee_moved(
+    registry: &ProviderRegistry,
+    cache: &Cache,
+    provider: &str,
+    source: &str,
+    root: Option<&str>,
+    seen: &mut Vec<Key>,
+) -> bool {
+    let Some(called) = registry.callees_of(provider, source, root) else {
+        return false;
+    };
+    let key = instance_key(provider, source, root);
+    if seen.contains(&key) {
+        return false;
+    }
+    seen.push(key);
+    let Some(stored) = cache
+        .get_source(provider, root, source)
+        .map(|r| r.last_refreshed)
+    else {
+        return false;
+    };
+    called.iter().any(|((p, s), roots)| {
+        roots.iter().any(|r| {
+            let r = r.as_deref();
+            cache.record_state(p, r, s) == RecordState::Invalid
+                || cache.changed_at(p, r, s).is_some_and(|at| at > stored)
+                || callee_moved(registry, cache, p, s, r, seen)
+        })
+    })
 }
 
 /// The barrier a check of the instance at `root` waits on first, when its

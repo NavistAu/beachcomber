@@ -433,3 +433,62 @@ async fn the_hash_is_shown_in_cache_and_refuses_a_put() {
     assert_ne!(again["data"]["hash"], json!(hash), "a new run, a new hash");
     assert_eq!(s.get("w.v", None).await["data"], json!("22"));
 }
+
+// ── a Source is as fresh as the Sources it read ─────────────────────────────
+
+/// `w.s`, the value of `state`, read by `c.s`, read in turn by `a.s`.
+fn reading_chain(state: &Path) -> String {
+    config_source(state, &format!("watch('{}')", state.display()))
+        + "[daemon.providers.c.sources.s]\n\
+           data = \"{{ daemon.providers.w.sources.s().v }}\"\n\
+           result.v = \"{{ data }}\"\n\
+           [daemon.providers.a.sources.s]\n\
+           data = \"{{ daemon.providers.c.sources.s().v }}\"\n\
+           result.v = \"{{ data }}\"\n"
+}
+
+/// A change to a file the callee reads is seen by a read of its caller, and
+/// of the caller's caller; while nothing changes, reads of them run nothing.
+#[tokio::test]
+async fn a_change_a_called_source_sees_runs_its_callers_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    std::fs::write(&state, "1").unwrap();
+    age(&state);
+    let s = serve(&reading_chain(&state));
+    assert_eq!(s.get("a.v", None).await["data"], json!("1"));
+    let written = (s.written("a", "s"), s.written("c", "s"));
+    for _ in 0..50 {
+        assert_eq!(s.get("a.v", None).await["data"], json!("1"));
+    }
+    assert_eq!(
+        (s.written("a", "s"), s.written("c", "s")),
+        written,
+        "50 reads ran them 0 times"
+    );
+    std::fs::write(&state, "2").unwrap();
+    assert_eq!(s.get("c.v", None).await["data"], json!("2"), "the caller");
+    assert_eq!(s.get("a.v", None).await["data"], json!("2"), "its caller");
+}
+
+/// A callee run again for a read of its own, with a new value, leaves its
+/// callers' records behind: the next read of them runs them again. A run
+/// that gives the same value does not.
+#[tokio::test]
+async fn a_called_source_rewritten_runs_its_callers_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    std::fs::write(&state, "1").unwrap();
+    age(&state);
+    let s = serve(&reading_chain(&state));
+    assert_eq!(s.get("a.v", None).await["data"], json!("1"));
+    std::fs::write(&state, "1").unwrap();
+    age(&state);
+    s.get("w.v", None).await;
+    let written = s.written("a", "s");
+    assert_eq!(s.get("a.v", None).await["data"], json!("1"));
+    assert_eq!(s.written("a", "s"), written, "the same value runs nothing");
+    std::fs::write(&state, "3").unwrap();
+    assert_eq!(s.get("w.v", None).await["data"], json!("3"));
+    assert_eq!(s.get("a.v", None).await["data"], json!("3"));
+}

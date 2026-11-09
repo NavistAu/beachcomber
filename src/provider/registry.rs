@@ -457,6 +457,22 @@ impl ProviderRegistry {
         }
     }
 
+    /// What the instance (provider, source, root) called on its last run;
+    /// `None` when it called nothing.
+    pub fn callees_of(
+        &self,
+        provider: &str,
+        source: &str,
+        root: Option<&str>,
+    ) -> Option<CalleeMap> {
+        if self.callees.is_empty() {
+            return None;
+        }
+        self.callees
+            .get(&(provider.into(), source.into(), root.map(str::to_string)))
+            .map(|called| called.clone())
+    }
+
     /// Forget what the instance at `root` called: the scheduler calls this
     /// beside [`Self::forget_roots`] when the instance is evicted.
     pub fn forget_callees(&self, provider: &str, source: &str, root: Option<&str>) {

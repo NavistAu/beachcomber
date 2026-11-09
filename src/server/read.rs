@@ -214,7 +214,13 @@ pub(super) fn start_for_read(
     } else {
         // A valid instance is the common read: answered before anything
         // shared is locked.
-        Want::for_read(cache.record_state(provider, root, source_name))?
+        Want::for_read(crate::provider::source_call::record_state(
+            registry,
+            cache,
+            provider,
+            source_name,
+            root,
+        ))?
     };
     // A record it has is waited for up to the Source's budget; a cold one,
     // or a forced run, to the run's end.

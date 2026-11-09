@@ -126,7 +126,10 @@ stored record, and a callee with nothing stored runs once for the read or
 refresh that needs it, the caller's run waiting for it on its blocking thread
 (a wait that would close a ring of runs waiting on one another reads the last
 stored value instead); the scheduler demands what a Source's last run called, so
-callees stay warm and decay with their callers. Decay depth is data: the
+callees stay warm and decay with their callers. A caller is as fresh as what it
+called: a read of it counts its record changed when a callee's input changed, or
+a callee was stored with a new value after it, through any number of calls (a
+callee past its lifetime counts for nothing). Decay depth is data: the
 `<p>:cache._.decay` prototype is read when a lifecycle registers.
 
 The config self-watch classifies each change. An edit confined to
