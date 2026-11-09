@@ -75,14 +75,28 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
 
 ### Additional Providers
 
-- [ ] **`exec()` that reads an exit status.** Any non-zero exit fails the render (`libbeachcomber/src/exec.rs`
-      `run`): the error names the command, the status and stderr, and the stdout is dropped. A command whose status
-      is the answer has no clean way to say it: `ssh-add -l` exits 1 with no keys and 2 with no agent, `klist -s`
-      speaks only through its status, `grep` uses 1 for no match. Shipped files work around it
-      in the shell (`kubecontext`: `… 2>/dev/null || true`), which loses which failure it was. Proposed: a
-      `check=false` keyword, as Python's `subprocess.run`, returning `{stdout, stderr, status}` for any exit and
-      failing only on a timeout, an oversized stdout or a spawn error; without it, as today. Wants it before the
-      `ssh`, `gpg` and `kerberos` providers below.
+- [ ] **`execa()`, and `log` and `fail()`: a command's exit status, and a line that says it failed.** Any non-zero
+      exit fails `exec()` (`libbeachcomber/src/exec.rs` `run`): the error names the command, the status and stderr,
+      and the stdout is dropped. A command whose status is the answer has no clean way to say it: `ssh-add -l`
+      exits 1 with no keys and 2 with no agent, `klist -s` speaks only through its status, `grep` uses 1 for no
+      match. Shipped files work around it in the shell (`kubecontext`: `… 2>/dev/null || true`), which loses which
+      failure it was. And no line can fail at all: nothing in the library raises.
+  - `execa(cmd, ok=…)`: `exec()`'s arguments (a string for `sh -c`, a list for argv, `timeout=`, `stdin=`, `sh=`),
+    returning `{stdout, stderr, exit_code}`, after Node's `execa`. Any exit is a result unless `ok=[0, 1]` names
+    the good ones, when any other fails as `exec()` does. A timeout, an oversized stdout or a spawn error fails
+    always. `exec()` stays as it is, a string or a failure. `Exec` tier.
+  - `log.debug(msg)`, `log.info`, `log.warn`, `log.error`, `log.fatal`: a line at that level, rendering nothing.
+    Below error the render goes on: in the daemon to its log, on the client to its tracing (`-v`, `RUST_LOG`),
+    never stderr, which is the prompt's terminal (or the response metadata item above). `error` fails the line
+    as a failed `exec()` does: in a Source, nothing stored, the last good value kept, the line logged,
+    `failback` backoff; a client leaf fails, is left out of a namespace read, keeps its memo. `fatal` fails it
+    and stops the retries until an input changes or the config reloads (`ssh-add` not installed will not fix
+    itself). A line repeated on every poll is logged once, then counted. `Pure` tier: it acts on nothing else.
+  - `fail(msg)` is `log.error(msg)`, unprefixed because it changes the outcome. A guard keeps the happy path last:
+    `{% if r.exit_code > 1 %}{{ fail('no ssh agent') }}{% endif %}{{ r.stdout | trim | split('\n') | length }}`.
+  - A provider's name hides a function's: with a namespace named `url`, `{{ url.x }}` reads it (tried 2026-11-09).
+    So a provider named `log` would hide `log.warn`: make a provider named after a library global a load error.
+  - Wanted before the `ssh`, `gpg` and `kerberos` providers below.
 
 - [ ] `ssh` provider — `keys_loaded` (count of loaded keys), `agent_running` (bool). Global, poll. Useful for prompt
       indicators before push/deploy operations.
