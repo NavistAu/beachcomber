@@ -2,11 +2,9 @@
 # Docs: https://nexte.st/docs/configuration/reference/
 
 [profile.default]
-# Two levels. The target is 10s for the whole suite on the M2 Max (8.4-9.4s
-# on 2026-11-09). A run over 1.3x the machine's own best is a regression to
-# find and fix, never to accommodate: a local hook tells the agent after the
-# run, and says how busy the machine was (`.claude/hooks/suite-budget.py`,
-# gitignored; it reads the junit report below).
+# The whole suite's target is 10s on a 12-core M2 Max (8.4-9.4s on
+# 2026-11-09): a slower run is a regression to find and fix, never to
+# accommodate. The junit report below gives each test's time.
 # This cutoff only stops a hang: past it nextest SIGTERMs the test processes,
 # waits 10s, then SIGKILLs. It sits well above the budget so a smaller machine
 # (a Linux container ran 1311 tests in 10s) finishes. Raising either needs
