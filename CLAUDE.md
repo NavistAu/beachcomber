@@ -29,7 +29,7 @@ cargo clippy -- -D warnings
 cargo fmt -- --check
 ```
 
-- `.config/nextest.toml` sets `global-timeout = "30s"` for the suite.
+- `.config/nextest.toml` sets `global-timeout = "10s"` for the suite (the `ci` profile allows 10m).
 - `uptime_provider_executes` needs an unsandboxed environment; CI runs
   `cargo nextest run --workspace -E 'not test(uptime_provider_executes)'`. Without `--workspace` only the root crate's
   tests run, not `libbeachcomber`'s.
