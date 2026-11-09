@@ -87,6 +87,10 @@ Open work only. What shipped is `CHANGELOG.md`; how things got fixed is git hist
       read (and, for a Source that read others, each callee's state as well), and the climb re-derives its instances (`kept_root`, `next_instance`) per request. A fast path for an
       already-validated leaf means invalidating on file events instead of stat'ing on read, without a staleness
       window.
+- [ ] **Track the suite's speed in CI.** The 10s target holds on one 12-core Mac, and CI's runners are slower and
+      vary, so neither a fixed number nor a cutoff works there. Keep each run's nextest junit report (total and per
+      test), compare it with recent runs on the same runner type, and flag a run or a test that is well over its own
+      history, so a slower suite shows up in review instead of being found later on a laptop.
 - [ ] Docker test containers — controlled environments for each integration target (oh-my-tmux, p10k, starship, etc.)
       with both stock and beachcomber-integrated configs. Enables reproducible perf tuning, CI benchmarks, and
       side-by-side demos for upstream adoption PRs.
