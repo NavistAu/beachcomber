@@ -95,50 +95,44 @@ impl Env {
     }
 }
 
+/// Every state of the engine, one read of the whole provider each. A memo is
+/// keyed on the shell's `DOCKER_*` variables, not on a stand-in's, so each
+/// case names a `DOCKER_CONFIG` of its own (it moves only the watched file):
+/// the cases share one daemon and stay apart. A stopped engine (`ps` fails)
+/// is not running and has no count; the context follows `DOCKER_CONTEXT`.
 #[test]
-fn docker_running_with_containers() {
+fn docker_reads_every_state_of_the_engine() {
     let e = env_with(&["docker"]);
-    let v = [("STUB_IDS", "a1\nb2\nc3\n")];
-    assert_eq!(e.get("docker.count", &v), json!(3));
-    assert_eq!(e.get("docker.running", &v), json!(true));
-    assert_eq!(e.get("docker.context", &v), json!("orbstack"));
-    assert_eq!(
-        e.get("docker", &v),
-        json!({"context": "orbstack", "count": 3, "running": true})
-    );
-}
-
-#[test]
-fn docker_running_with_none_is_zero() {
-    let e = env_with(&["docker"]);
-    let v = [("STUB_IDS", "")];
-    assert_eq!(e.get("docker.count", &v), json!(0));
-    assert_eq!(e.get("docker.running", &v), json!(true));
-}
-
-/// A stopped engine: `ps` fails. Not running, and no count.
-#[test]
-fn docker_engine_down_is_not_running_and_has_no_count() {
-    let e = env_with(&["docker"]);
-    let v = [("STUB_EXIT", "1")];
-    assert_eq!(
-        e.get("docker", &v),
-        json!({"context": "orbstack", "running": false})
-    );
-    assert_eq!(e.get("docker.running", &v), json!(false));
-    assert_eq!(e.get("docker.count", &v), Value::Null);
-    assert_eq!(e.get("docker.context", &v), json!("orbstack"));
-}
-
-/// The context follows the shell's `DOCKER_CONTEXT`.
-#[test]
-fn docker_context_follows_the_shell() {
-    let e = env_with(&["docker"]);
+    for (i, (vars, want)) in [
+        (
+            vec![("STUB_IDS", "a1\nb2\nc3\n")],
+            json!({"context": "orbstack", "count": 3, "running": true}),
+        ),
+        (
+            vec![("STUB_IDS", "")],
+            json!({"context": "orbstack", "count": 0, "running": true}),
+        ),
+        (
+            vec![("STUB_EXIT", "1")],
+            json!({"context": "orbstack", "running": false}),
+        ),
+        (
+            vec![("DOCKER_CONTEXT", "work")],
+            json!({"context": "work", "count": 0, "running": true}),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let config = format!("/case-{i}");
+        let v: Vec<(&str, &str)> = vars
+            .iter()
+            .copied()
+            .chain([("DOCKER_CONFIG", config.as_str())])
+            .collect();
+        assert_eq!(e.get("docker", &v), want, "{vars:?}");
+    }
     assert_eq!(e.get("docker.context", &[]), json!("orbstack"));
-    assert_eq!(
-        e.get("docker.context", &[("DOCKER_CONTEXT", "work")]),
-        json!("work")
-    );
 }
 
 /// One `ps` serves both fields of a read.
@@ -177,23 +171,28 @@ fn docker_missing_is_absent() {
     assert_eq!(e.runs(), 0);
 }
 
+/// The connection is podman's default, or the shell's
+/// `CONTAINER_CONNECTION`; a down engine is not running. Each case names a
+/// `CONTAINER_HOST` of its own, a key of the memo, so they share a daemon.
 #[test]
-fn podman_running_count_and_connection() {
+fn podman_reads_its_connection_and_engine() {
     let e = env_with(&["podman"]);
-    let v = [("P_IDS", "x\ny\n")];
     assert_eq!(
-        e.get("podman", &v),
+        e.get(
+            "podman",
+            &[("P_IDS", "x\ny\n"), ("CONTAINER_HOST", "/case-0")]
+        ),
         json!({"context": "podman-machine-default", "count": 2, "running": true})
     );
-}
-
-#[test]
-fn podman_connection_env_wins_and_a_down_engine_is_false() {
-    let e = env_with(&["podman"]);
-    let v = [("CONTAINER_CONNECTION", "mine"), ("P_EXIT", "125")];
-    assert_eq!(e.get("podman.context", &v), json!("mine"));
-    assert_eq!(e.get("podman.running", &v), json!(false));
-    assert_eq!(e.get("podman.count", &v), Value::Null);
+    let v = [
+        ("CONTAINER_CONNECTION", "mine"),
+        ("P_EXIT", "125"),
+        ("CONTAINER_HOST", "/case-1"),
+    ];
+    assert_eq!(
+        e.get("podman", &v),
+        json!({"context": "mine", "running": false})
+    );
 }
 
 #[test]
@@ -209,18 +208,26 @@ fn podman_missing_is_absent() {
 #[test]
 fn containers_reads_both_engines() {
     // A memo is keyed on the shell's environment, not on a stand-in's, so each
-    // case has its own daemon.
-    let case = |vars: &[(&str, &str)]| env_with(&["docker", "podman"]).get("containers", vars);
+    // case names its own `DOCKER_CONFIG` and `CONTAINER_HOST`.
+    let e = env_with(&["docker", "podman"]);
+    let case = |n: &str, vars: &[(&str, &str)]| {
+        let v: Vec<(&str, &str)> = vars
+            .iter()
+            .copied()
+            .chain([("DOCKER_CONFIG", n), ("CONTAINER_HOST", n)])
+            .collect();
+        e.get("containers", &v)
+    };
     assert_eq!(
-        case(&[("STUB_IDS", "a\nb\nc\n"), ("P_IDS", "x\n")]),
+        case("/case-0", &[("STUB_IDS", "a\nb\nc\n"), ("P_IDS", "x\n")]),
         json!({"engine": "podman", "running": true, "count": 4})
     );
     assert_eq!(
-        case(&[("STUB_IDS", "a\nb\n"), ("P_EXIT", "125")]),
+        case("/case-1", &[("STUB_IDS", "a\nb\n"), ("P_EXIT", "125")]),
         json!({"engine": "docker", "running": true, "count": 2})
     );
     assert_eq!(
-        case(&[("STUB_EXIT", "1"), ("P_EXIT", "125")]),
+        case("/case-2", &[("STUB_EXIT", "1"), ("P_EXIT", "125")]),
         json!({"running": false})
     );
 }
