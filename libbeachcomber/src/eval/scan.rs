@@ -369,4 +369,14 @@ mod tests {
         assert!(!assigns(r#"x | f("a=b")"#));
         assert!(!assigns(r#"x | f("a\"=b")"#));
     }
+
+    #[test]
+    fn execa_is_its_own_name_not_exec_or_a_ref() {
+        let used = used_names("{{ 'ssh-add -l' | execa(ok=[0, 1]) }}");
+        assert!(
+            matches!(used.get("execa"), Some(Use::Call | Use::Both)),
+            "{used:?}"
+        );
+        assert!(!used.contains_key("exec"), "{used:?}");
+    }
 }

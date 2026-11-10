@@ -170,23 +170,33 @@ pub fn engine_env() -> Environment<'static> {
 
 /// Install `exec`, as a function and a filter.
 pub(crate) fn add_exec(jinja: &mut Environment<'_>) {
-    jinja.add_function("exec", |args: Rest<MjValue>, kwargs: Kwargs| {
-        match args.as_slice() {
-            [command] => exec(&ctx(), command, kwargs),
-            _ => Err(op_error(
-                "exec(): one command — a string for sh -c, or a list for argv",
-            )),
-        }
-    });
+    add_command(jinja, "exec");
+}
+
+/// Install `execa`, as a function and a filter.
+pub(crate) fn add_execa(jinja: &mut Environment<'_>) {
+    add_command(jinja, "execa");
+}
+
+fn add_command(jinja: &mut Environment<'_>, name: &'static str) {
+    jinja.add_function(
+        name,
+        move |args: Rest<MjValue>, kwargs: Kwargs| match args.as_slice() {
+            [command] => exec(&ctx(), name, command, kwargs),
+            _ => Err(op_error(format!(
+                "{name}(): one command — a string for sh -c, or a list for argv"
+            ))),
+        },
+    );
     jinja.add_filter(
-        "exec",
-        |piped: MjValue, args: Rest<MjValue>, kwargs: Kwargs| {
+        name,
+        move |piped: MjValue, args: Rest<MjValue>, kwargs: Kwargs| {
             if !args.is_empty() {
-                return Err(op_error(
-                    "exec(): a command from both the pipe and an argument",
-                ));
+                return Err(op_error(format!(
+                    "{name}(): a command from both the pipe and an argument"
+                )));
             }
-            exec(&ctx(), &piped, kwargs)
+            exec(&ctx(), name, &piped, kwargs)
         },
     );
 }
@@ -221,14 +231,23 @@ pub fn timeout_kwarg(kwargs: &Kwargs, function: &str) -> Result<std::time::Durat
     }
 }
 
-/// `exec(cmd, timeout='10s', stdin=none, sh='sh')`, the one entry behind
-/// both spellings. A string runs `sh -c`; a list is argv, no shell. The
-/// child's environment is `ctx.env` and its directory `ctx.cwd`.
-fn exec(ctx: &EngineCtx, command: &MjValue, kwargs: Kwargs) -> Result<MjValue, Error> {
+/// `exec(cmd, timeout='10s', stdin=none, sh='sh')` and
+/// `execa(cmd, ok=none, timeout=, stdin=, sh=)` (`name` says which), the one
+/// entry behind both spellings of each. A string runs `sh -c`; a list is
+/// argv, no shell. The child's environment is `ctx.env` and its directory
+/// `ctx.cwd`. `exec` fails on a non-zero exit and returns stdout; `execa`
+/// returns `{stdout, stderr, exit_code, signal}` for any exit `ok=` (a list of
+/// exit codes, any when absent) accepts.
+fn exec(ctx: &EngineCtx, name: &str, command: &MjValue, kwargs: Kwargs) -> Result<MjValue, Error> {
     if !ctx.allow_exec {
         return Err(op_error("exec() is disabled in this context"));
     }
-    let timeout = timeout_kwarg(&kwargs, "exec")?;
+    let timeout = timeout_kwarg(&kwargs, name)?;
+    let ok = if name == "execa" {
+        ok_kwarg(&kwargs)?
+    } else {
+        None
+    };
     // A raw `Value`, so a non-string (`stdin=true`, a map) is rejected rather
     // than stringified through minijinja's `Display`.
     let stdin = match kwargs.get::<Option<MjValue>>("stdin")? {
@@ -236,9 +255,9 @@ fn exec(ctx: &EngineCtx, command: &MjValue, kwargs: Kwargs) -> Result<MjValue, E
         Some(v) => match v.as_str() {
             Some(s) => Some(s.to_string()),
             None => {
-                return Err(op_error(
-                    "exec(): stdin= must be a string; use | tojson to pass structured data",
-                ));
+                return Err(op_error(format!(
+                    "{name}(): stdin= must be a string; use | tojson to pass structured data"
+                )));
             }
         },
     };
@@ -250,20 +269,22 @@ fn exec(ctx: &EngineCtx, command: &MjValue, kwargs: Kwargs) -> Result<MjValue, E
         (shell, vec!["-c".to_string(), script.to_string()])
     } else if command.kind() == ValueKind::Seq {
         if shell.is_some() {
-            return Err(op_error("exec(): sh= applies to a string command only"));
+            return Err(op_error(format!(
+                "{name}(): sh= applies to a string command only"
+            )));
         }
         let mut argv = Vec::new();
         for (i, v) in command.try_iter()?.enumerate() {
-            argv.push(coerce_argv(&v, i + 1)?);
+            argv.push(coerce_argv(name, &v, i + 1)?);
         }
         if argv.is_empty() {
-            return Err(op_error("exec(): the command list is empty"));
+            return Err(op_error(format!("{name}(): the command list is empty")));
         }
         (argv.remove(0), argv)
     } else {
-        return Err(op_error(
-            "exec(): the command must be a string for sh -c, or a list for argv",
-        ));
+        return Err(op_error(format!(
+            "{name}(): the command must be a string for sh -c, or a list for argv"
+        )));
     };
 
     let req = crate::exec::ExecRequest {
@@ -274,7 +295,42 @@ fn exec(ctx: &EngineCtx, command: &MjValue, kwargs: Kwargs) -> Result<MjValue, E
         env: &ctx.env,
         cwd: ctx.cwd.as_deref(),
     };
-    crate::exec::run(&req).map(MjValue::from).map_err(op_error)
+    if name != "execa" {
+        return crate::exec::run(&req).map(MjValue::from).map_err(op_error);
+    }
+    // A signal has no exit code, so it is outside any `ok=` list.
+    let accept = |status: &std::process::ExitStatus| {
+        ok.as_ref()
+            .is_none_or(|codes| status.code().is_some_and(|c| codes.contains(&c)))
+    };
+    let ran = crate::exec::run_with(&req, accept).map_err(op_error)?;
+    Ok(minijinja::context! {
+        stdout => ran.stdout,
+        stderr => ran.stderr,
+        exit_code => ran.code,
+        signal => ran.signal,
+    })
+}
+
+/// `execa`'s `ok=`: the exit codes that are not a failure, none when absent.
+fn ok_kwarg(kwargs: &Kwargs) -> Result<Option<Vec<i32>>, Error> {
+    let Some(value) = kwargs.get::<Option<MjValue>>("ok")? else {
+        return Ok(None);
+    };
+    let bad = || op_error("execa(): ok= must be a list of integers, such as ok=[0, 1]");
+    if value.kind() != ValueKind::Seq {
+        return Err(bad());
+    }
+    value
+        .try_iter()?
+        .map(|v| {
+            i32::try_from(v.clone())
+                .ok()
+                .filter(|_| v.kind() == ValueKind::Number)
+                .ok_or_else(bad)
+        })
+        .collect::<Result<_, _>>()
+        .map(Some)
 }
 
 /// Coerce one list element into an argv string; `position` is its 1-based
@@ -284,7 +340,7 @@ fn exec(ctx: &EngineCtx, command: &MjValue, kwargs: Kwargs) -> Result<MjValue, E
 /// `True`/`False`); a number renders canonically; undefined or none is an
 /// error (most often a missed ref reaching `exec()` unguarded); a sequence
 /// or map is an error pointing at `stdin=`.
-fn coerce_argv(v: &MjValue, position: usize) -> Result<String, Error> {
+fn coerce_argv(name: &str, v: &MjValue, position: usize) -> Result<String, Error> {
     if let Some(s) = v.as_str() {
         return Ok(s.to_string());
     }
@@ -292,10 +348,10 @@ fn coerce_argv(v: &MjValue, position: usize) -> Result<String, Error> {
         ValueKind::Bool => Ok(if v.is_true() { "true" } else { "false" }.to_string()),
         ValueKind::Number => Ok(v.to_string()),
         ValueKind::Undefined | ValueKind::None => Err(op_error(format!(
-            "exec(): argument {position} is undefined or none"
+            "{name}(): argument {position} is undefined or none"
         ))),
         _ => Err(op_error(format!(
-            "exec(): argument {position} is not a scalar; pass structured data via stdin= instead"
+            "{name}(): argument {position} is not a scalar; pass structured data via stdin= instead"
         ))),
     }
 }
@@ -490,6 +546,74 @@ mod tests {
     fn exec_disabled_names_the_context_in_both_forms() {
         let ctx = Arc::new(EngineCtx::default());
         for expr in ["exec('echo hi')", "'echo hi' | exec()"] {
+            let err = eval_in(ctx.clone(), expr).unwrap_err();
+            assert!(
+                err.contains("exec() is disabled in this context"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn execa_returns_a_map_for_any_exit() {
+        use crate::library::testing::eval_json;
+        assert_eq!(
+            eval_json("'echo hi; echo oops >&2' | execa()"),
+            r#"{"stdout":"hi","stderr":"oops","exit_code":0,"signal":null}"#
+        );
+        assert_eq!(
+            eval_json("'echo o; echo e >&2; exit 1' | execa()"),
+            r#"{"stdout":"o","stderr":"e","exit_code":1,"signal":null}"#
+        );
+        assert_eq!(
+            eval_json("execa(['sh', '-c', 'echo a b'])"),
+            r#"{"stdout":"a b","stderr":"","exit_code":0,"signal":null}"#
+        );
+    }
+
+    #[test]
+    fn execa_signal_has_no_exit_code() {
+        use crate::library::testing::eval_json;
+        assert_eq!(
+            eval_json("'kill -9 $$' | execa()"),
+            r#"{"stdout":"","stderr":"","exit_code":null,"signal":9}"#
+        );
+        assert_eq!(
+            eval("('kill -9 $$' | execa()).exit_code is none").unwrap(),
+            "True"
+        );
+        let err = eval("'kill -9 $$' | execa(ok=[0])").unwrap_err();
+        assert!(err.contains("signal: 9"), "{err}");
+    }
+
+    #[test]
+    fn execa_ok_list_fails_like_exec() {
+        let err = eval("execa('exit 4', ok=[0, 1])").unwrap_err();
+        assert!(err.contains("`sh -c 'exit 4'`: exit status: 4"), "{err}");
+        assert_eq!(eval("execa('exit 1', ok=[0, 1]).exit_code").unwrap(), "1");
+        let err = eval("execa('echo x >&2; exit 3', ok=[0])").unwrap_err();
+        assert!(err.contains("exit status: 3: x"), "{err}");
+    }
+
+    #[test]
+    fn execa_bad_ok_is_an_error() {
+        for bad in ["0", "'0'", "['a']", "[0.5]", "[true]"] {
+            let err = eval(&format!("execa('true', ok={bad})")).unwrap_err();
+            assert!(err.contains("execa(): ok="), "{bad}: {err}");
+        }
+        assert!(eval("exec('true', ok=[0])").is_err());
+    }
+
+    #[test]
+    fn execa_timeout_fails() {
+        let err = eval("execa('sleep 5', timeout='50ms')").unwrap_err();
+        assert!(err.contains("timed out after 50ms"), "{err}");
+    }
+
+    #[test]
+    fn execa_disabled_names_the_context_in_both_forms() {
+        let ctx = Arc::new(EngineCtx::default());
+        for expr in ["execa('echo hi')", "'echo hi' | execa()"] {
             let err = eval_in(ctx.clone(), expr).unwrap_err();
             assert!(
                 err.contains("exec() is disabled in this context"),

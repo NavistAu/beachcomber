@@ -89,7 +89,7 @@ impl Tier {
 pub enum Form {
     Filter,
     Function,
-    /// Both spellings of one item (`merge`, `exec`).
+    /// Both spellings of one item (`merge`, `exec`, `execa`).
     Both,
 }
 
@@ -170,6 +170,7 @@ pub const ITEMS: &[Item] = &[
     item!("glob", Filter, Io, fs::add_glob),
     item!("lup", Function, Io, fs::add_lup),
     item!("exec", Both, Exec, crate::engine::add_exec),
+    item!("execa", Both, Exec, crate::engine::add_execa),
     item!("watch", Filter, Memo, memo::add_watch),
     item!("ttl", Filter, Memo, memo::add_ttl),
     item!("cache", Filter, Memo, memo::add_cache),
@@ -490,6 +491,7 @@ mod tests {
             ("lup", "lup('x', files=true, dirs=true)"),
             ("bar", "bar(-1)"),
             ("exec", "exec(1)"),
+            ("execa", "execa(1)"),
             ("cache", "1 | cache"),
             ("watch", "1 | watch"),
             ("ttl", "1 | ttl"),

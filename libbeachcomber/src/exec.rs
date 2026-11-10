@@ -1,5 +1,5 @@
-//! Spawn engine backing the `exec()` jinja function, registered in
-//! `engine::engine_env`.
+//! Spawn engine backing the `exec()` and `execa()` jinja functions, registered
+//! in `engine::engine_env`.
 //!
 //! [`run`] spawns one argv command in its own process group, writes+closes
 //! stdin, and drains stdout/stderr concurrently — each on its own thread —
@@ -38,7 +38,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::Arc;
@@ -100,16 +100,35 @@ enum Outcome {
     WaitFailed(std::io::Error),
 }
 
+/// What a run that was accepted left behind: how it ended, stdout and stderr
+/// decoded as [`clean_stdout`] does.
+pub(crate) struct Ran {
+    /// The exit code; none when a signal ended the process.
+    pub code: Option<i32>,
+    /// The signal that ended the process, if one did.
+    pub signal: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// [`run_with`] where only a zero exit is accepted: `exec()`. Returns stdout.
+pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
+    run_with(req, ExitStatus::success).map(|ran| ran.stdout)
+}
+
 /// Spawn `req.cmd` with `req.args`, write+close stdin, and drain stdout and
 /// stderr concurrently while polling for exit or `req.timeout_ms`. See the
 /// module doc for the full bounded-deadline contract.
 ///
-/// On success, stdout is decoded lossy-UTF-8 with at most one trailing `\n`
-/// (and a preceding `\r`, if present) stripped. On failure, the error names
-/// the whole argv as run ([`argv_text`]), what happened (a non-zero exit
-/// status, a timeout, an oversized stdout, or the spawn `io::Error`), and
-/// [`STDERR_ERROR_BYTES`] of stderr.
-pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
+/// An exit `accept` approves is a success: stdout is decoded lossy-UTF-8 with
+/// at most one trailing `\n` (and a preceding `\r`, if present) stripped. On
+/// failure, the error names the whole argv as run ([`argv_text`]), what
+/// happened (an exit `accept` refused, a timeout, an oversized stdout, or the
+/// spawn `io::Error`), and [`STDERR_ERROR_BYTES`] of stderr.
+pub(crate) fn run_with(
+    req: &ExecRequest,
+    accept: impl Fn(&ExitStatus) -> bool,
+) -> Result<Ran, String> {
     let name = &argv_text(req.cmd, req.args);
     let mut command = Command::new(req.cmd);
     command
@@ -218,7 +237,7 @@ pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
     // successful exit nor a slow oversized writer's timeout can mask an
     // oversized stdout.
     let outcome = match outcome {
-        Outcome::Exited(status) if status.success() && stdout_capped.load(Ordering::Relaxed) => {
+        Outcome::Exited(status) if accept(&status) && stdout_capped.load(Ordering::Relaxed) => {
             Outcome::Capped
         }
         Outcome::TimedOut if stdout_capped.load(Ordering::Relaxed) => Outcome::Capped,
@@ -226,8 +245,13 @@ pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
     };
 
     match outcome {
-        Outcome::Exited(status) if status.success() => {
-            stdout_outcome(stdout_result, name, &stderr_buf)
+        Outcome::Exited(status) if accept(&status) => {
+            stdout_outcome(stdout_result, name, &stderr_buf).map(|stdout| Ran {
+                code: status.code(),
+                signal: status.signal(),
+                stdout,
+                stderr: clean_stdout(&stderr_buf),
+            })
         }
         Outcome::Exited(status) => Err(failure_message(name, format!("{status}"), &stderr_buf)),
         Outcome::TimedOut => Err(failure_message(
@@ -249,7 +273,7 @@ pub(crate) fn run(req: &ExecRequest) -> Result<String, String> {
 }
 
 /// Turn the stdout reader's final receive into the success/failure result a
-/// clean exit reports. `Ok` means the reader actually sent its buffer back;
+/// accepted exit reports. `Ok` means the reader actually sent its buffer back;
 /// a `Timeout` (abandoned after [`READER_JOIN_GRACE`]) or `Disconnected`
 /// (reader thread panicked) must still be a *failure*, not an empty
 /// success — a descendant that outlived the process-group kill may be
@@ -693,6 +717,31 @@ mod tests {
             "took {:?}",
             start.elapsed()
         );
+    }
+
+    fn sh(script: &str) -> Result<Ran, String> {
+        let req = ExecRequest {
+            cmd: "sh",
+            args: &["-c".to_string(), script.to_string()],
+            stdin: None,
+            timeout: Duration::from_millis(1000),
+            env: &test_env(),
+            cwd: None,
+        };
+        run_with(&req, |_| true)
+    }
+
+    #[test]
+    fn an_accepted_nonzero_exit_keeps_its_streams() {
+        let ran = sh("echo out; echo err >&2; exit 1").unwrap();
+        assert_eq!((ran.code, ran.signal), (Some(1), None));
+        assert_eq!((ran.stdout.as_str(), ran.stderr.as_str()), ("out", "err"));
+    }
+
+    #[test]
+    fn a_signal_is_a_result_with_no_code() {
+        let ran = sh("kill -9 $$").unwrap();
+        assert_eq!((ran.code, ran.signal), (None, Some(9)));
     }
 
     #[test]

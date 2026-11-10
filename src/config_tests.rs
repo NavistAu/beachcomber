@@ -361,7 +361,7 @@ fn a_client_template_is_linted_where_it_is_loaded() {
     );
 }
 
-/// A `root` line may call `exec`, `url` or `plugin`, but every new directory
+/// A `root` line may call `exec`, `execa`, `url` or `plugin`, but every new directory
 /// read runs it, so the load warns and still loads; `lup()` does not warn.
 #[test]
 fn a_root_line_that_calls_exec_warns_and_still_loads() {
@@ -385,6 +385,13 @@ fn a_root_line_that_calls_exec_warns_and_still_loads() {
             "config(/user.toml): [daemon.providers.demo.sources.s] root: exec() runs for every \
              new directory read; find the root with lup() instead"
         ]
+    );
+    let load = source("{{ 'git rev-parse' | execa() }}");
+    assert_eq!(load.warnings.len(), 1, "{:#?}", load.warnings);
+    assert!(
+        load.warnings[0].contains("root: execa() runs"),
+        "{:#?}",
+        load.warnings
     );
     let load = source("{{ lup('.git') | dirname }}");
     assert!(load.warnings.is_empty(), "{:#?}", load.warnings);

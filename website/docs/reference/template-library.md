@@ -11,7 +11,7 @@ The filters and functions a template can call. Templates are jinja (minijinja), 
 
 ## Rules for every item
 
-- **One name, one form.** An item is a filter or a function, with no alias. `merge` and `exec` keep both forms.
+- **One name, one form.** An item is a filter or a function, with no alias. `merge`, `exec` and `execa` keep both forms.
 - **Absent in, absent out.** Given `none` or undefined, every filter returns *undefined*. `| default(x)` then fires
   without a second argument, and `~` joins it as nothing. This covers minijinja's builtins too (`none | upper`,
   `missing | length`). The exceptions exist to handle absence or to render it: `default`/`d`, `bool`, `tojson`,
@@ -31,7 +31,7 @@ Each item has a tier, and the tier says where it is available.
 |---|---|---|---|---|
 | pure | its arguments | yes | yes | yes |
 | io | files | yes | yes | no |
-| exec | processes | when `exec` is allowed | yes | no |
+| exec (`exec`, `execa`) | processes | when `exec` is allowed | yes | no |
 | memo | the template leaf being rendered | a template leaf; in `-f` and `comb eval` they pass their input through | no: a load error | no |
 | daemon | the network, plugins | refused: `url() runs only in a Source's lines` | yes | no |
 
@@ -111,6 +111,7 @@ the clock of the run they render in, so a stored value is frozen until the next 
 | `lup(name, all=, files=, dirs=, follow=, git=, root=)` | the nearest path called `name` at or above the render's directory; a miss is undefined |
 | `s \| fromjson`, `s \| fromini` | text to data; text that is not JSON or INI is an error |
 | `exec(cmd, ...)`, `cmd \| exec()` | runs a command |
+| `execa(cmd, ok=, ...)`, `cmd \| execa()` | runs a command as `exec()` does (`timeout=`, `stdin=`, `sh=`) and returns `{stdout, stderr, exit_code, signal}` for any exit, a signal included: `exit_code` is none when a signal ended it, `signal` is none otherwise. `ok=[0, 1]` fails an exit code not in the list, or any signal, as `exec()` fails. A timeout, oversized stdout or spawn error always fails. `{% set r = 'ssh-add -l' \| execa() %}{% if r.exit_code is none or r.exit_code > 1 %}…{% endif %}`; `('ssh-add -l' \| execa(ok=[0, 1])).stdout` |
 | `p \| realpath` | the absolute path with symlinks followed, against the render's directory and `HOME`; a path that is not there, or `''`, is undefined; any other error names the path. It reads the filesystem, so it is not on a provider's lines |
 | `s \| fromtoml` | a TOML document as a map (a datetime is its text): `'Cargo.toml' \| read \| fromtoml \| pluck('package.version')`; `''` is undefined, text that is not TOML is an error |
 | `s \| fromyaml` | one YAML document as data: `'~/.kube/config' \| read \| fromyaml \| pluck('current-context')`; `''`, or text holding only comments, is undefined; text that is not YAML, or more than one document, is an error |

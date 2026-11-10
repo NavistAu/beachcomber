@@ -280,13 +280,13 @@ pub fn data_warnings(probe: &Probe<'_>, who: &str, data: &str, known: &Known<'_>
         .collect()
 }
 
-/// The load warning for a `root` line at `who` that calls `exec`, `url` or
-/// `plugin`: every distinct directory read runs the line, so the call forks
+/// The load warning for a `root` line at `who` that calls `exec`, `execa`, `url`
+/// or `plugin`: every distinct directory read runs the line, so the call forks
 /// (or fetches) once per new directory. Allowed, but `lup()` is what finds a
 /// root without leaving the process.
 pub fn root_warnings(who: &str, root: &str) -> Vec<String> {
     let used = libbeachcomber::eval::used_names(root);
-    ["exec", "url", "plugin"]
+    ["exec", "execa", "url", "plugin"]
         .into_iter()
         .filter(|name| {
             matches!(
