@@ -420,6 +420,11 @@ fn plan_templates(
 ) {
     let vars = PlannedVars::of(layers, world);
     vars.check_cycles(world, plan);
+    // A line renders the same over the same `[client]` tree: rendered once
+    // per distinct tree (every layer without one shares `{}`), not once per
+    // layer, which is layers x providers renders at each load.
+    let mut trees: Vec<serde_json::Value> = Vec::new();
+    let mut rendered = HashMap::new();
     for (index, layer) in layers.iter().enumerate() {
         let Layer {
             label,
@@ -429,14 +434,21 @@ fn plan_templates(
         } = layer;
         // The layer's `[client]` tree as the engine reads it, made once for
         // every provider's line.
-        let client = minijinja::Value::from(minijinja::value::Serde(
-            value
-                .get("client")
-                .and_then(|c| serde_json::to_value(c).ok())
-                .unwrap_or_else(|| serde_json::json!({})),
-        ));
+        let json = value
+            .get("client")
+            .and_then(|c| serde_json::to_value(c).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let tree_id = trees.iter().position(|t| *t == json).unwrap_or_else(|| {
+            trees.push(json.clone());
+            trees.len() - 1
+        });
+        let client = minijinja::Value::from(minijinja::value::Serde(json));
         for name in world.providers.iter().filter(|n| !read.fenced.contains(*n)) {
-            let tree = match lines.template_tree(name, &client) {
+            let tree = rendered
+                .entry((tree_id, name.clone()))
+                .or_insert_with(|| lines.template_tree(name, &client))
+                .clone();
+            let tree = match tree {
                 Ok(tree) => tree,
                 Err(e) => {
                     plan.errors.push(format!("{shown}: {e}"));
