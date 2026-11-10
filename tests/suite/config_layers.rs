@@ -2287,3 +2287,105 @@ fn introspect_providers_marks_a_disabled_provider() {
     );
     assert_eq!(row("load")["disabled"], json!(false));
 }
+
+/// The `providers` row of `name` in `introspect providers`, and the verdicts.
+fn provider_row(d: &TestDaemon, name: &str) -> (Value, Value) {
+    let providers = introspect(d, "providers");
+    let row = providers["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == name)
+        .unwrap_or_else(|| panic!("{name} listed"))
+        .clone();
+    (row, providers["verdicts"].clone())
+}
+
+#[test]
+fn an_enabled_template_switches_a_provider_off_and_on_by_its_poll() {
+    let setup = Setup::new(&[]);
+    let flag = setup.home.join("flag");
+    let gated_count = setup.home.join("gated.count");
+    let other_count = setup.home.join("other.count");
+    setup.write(
+        "config.toml",
+        &format!(
+            r#"
+[daemon.providers.gated]
+enabled.template = "{{{{ '{flag}' | read }}}}"
+enabled.poll = "1s"
+
+[daemon.providers.gated.sources.s]
+{}
+[daemon.providers.other.sources.s]
+{}"#,
+            tally_source(&gated_count),
+            tally_source(&other_count),
+            flag = flag.display(),
+        ),
+    );
+    let d = setup.daemon();
+
+    // No flag: off from the load.
+    assert_eq!(get(&d, "gated.v"), None);
+    let (row, _) = provider_row(&d, "gated");
+    assert_eq!(
+        row["invalidation"],
+        json!("disabled (enabled.template rendered false)"),
+        "{row}"
+    );
+    assert_eq!(get(&d, "other.v"), Some(json!("1")));
+    assert_eq!(runs(&other_count), 1);
+
+    std::fs::write(&flag, "on").unwrap();
+    poll_until(
+        "the gated provider",
+        "switched on by its poll",
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+        || get(&d, "gated.v"),
+        |v| *v == Some(json!("1")),
+    );
+    assert_eq!(provider_row(&d, "gated").0["disabled"], json!(false));
+
+    std::fs::remove_file(&flag).unwrap();
+    poll_until(
+        "the gated provider",
+        "switched off by its poll",
+        Duration::from_secs(10),
+        Duration::from_millis(50),
+        || get(&d, "gated.v"),
+        Option::is_none,
+    );
+    assert!(
+        warm_instances(&d, "gated").is_empty(),
+        "nothing of it is kept warm"
+    );
+
+    // Two switches later the other provider still answers from what it stored.
+    assert_eq!(get(&d, "other.v"), Some(json!("1")));
+    assert_eq!(runs(&other_count), 1, "the switches did not disturb it");
+}
+
+#[test]
+fn a_failing_enabled_template_leaves_the_provider_on_and_says_why() {
+    let setup = Setup::new(&[(
+        "config.toml",
+        "[daemon.providers.hostname]\nenabled.template = \"{{ _.fail('no check') }}\"\n",
+    )]);
+    let d = setup.daemon();
+    let (row, verdicts) = provider_row(&d, "hostname");
+    assert_eq!(row["disabled"], json!(false), "{row}");
+    assert!(
+        verdicts
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["level"] == "WARN"
+                && v["message"]
+                    .as_str()
+                    .is_some_and(|m| m.starts_with("hostname enabled.template failed: ")
+                        && m.contains("no check"))),
+        "{verdicts}"
+    );
+}

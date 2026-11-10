@@ -87,6 +87,15 @@ pub enum SchedulerMessage {
         /// registry the scheduler has not caught up with.
         registry: RegistryHandle,
     },
+    /// `provider`'s `enabled.template` rendered `on`. When the registry in
+    /// force has it the other way, a copy with it switched is put in force
+    /// as a reload would ([`ProviderRegistry::switched`]): only its Sources,
+    /// and the Sources that call them, are touched.
+    Switch {
+        provider: String,
+        on: bool,
+        registry: RegistryHandle,
+    },
 }
 
 /// A point-in-time snapshot of a single lifecycle registry entry.
@@ -977,6 +986,39 @@ impl Scheduler {
         watches
     }
 
+    /// Drop and register the watches a reload left to the run loop.
+    fn rewatch(
+        &self,
+        watches: ReloadWatches,
+        watch_paths: &mut HashMap<PathBuf, Vec<Subscription>>,
+        registrar: Option<&Registrar>,
+    ) {
+        for key in &watches.drop {
+            drop_watches_for_key(key, watch_paths, registrar);
+            self.cache
+                .tree_unwatched(&key.provider, key.path.as_deref(), key.source.name());
+        }
+        for key in &watches.rewatch {
+            let Some(sm) = self
+                .registry
+                .source_metadata(&key.provider, key.source.name())
+            else {
+                continue;
+            };
+            watch_instance(
+                registrar,
+                watch_paths,
+                &key.provider,
+                sm,
+                key.path.as_deref(),
+                self.registry.home(),
+            );
+            if crate::provider::watches_tree(&sm.schedule) {
+                tree_if_registered(&self.cache, registrar, key);
+            }
+        }
+    }
+
     /// Opt this scheduler into the startup watch self-test. The daemon path sets this; directly-constructed
     /// schedulers (tests) default to assuming the native backend, exactly the
     /// pre-self-test behaviour, and skip the probe and its 500ms worst case.
@@ -1154,28 +1196,18 @@ impl Scheduler {
                             last_activity = Instant::now();
                         }
                         Some(SchedulerMessage::Reload { next, registry }) => {
-                            let watches = self.reload(next, &registry, &mut lifecycle);
-                            for key in &watches.drop {
-                                drop_watches_for_key(key, &mut watch_paths, registrar.as_ref());
-                                self.cache.tree_unwatched(&key.provider, key.path.as_deref(), key.source.name());
-                            }
-                            for key in &watches.rewatch {
-                                let Some(sm) = self.registry.source_metadata(&key.provider, key.source.name()) else {
-                                    continue;
-                                };
-                                watch_instance(
-                                    registrar.as_ref(),
-                                    &mut watch_paths,
-                                    &key.provider,
-                                    sm,
-                                    key.path.as_deref(),
-                                    self.registry.home(),
-                                );
-                                if crate::provider::watches_tree(&sm.schedule) {
-                                    tree_if_registered(&self.cache, registrar.as_ref(), key);
-                                }
-                            }
                             last_activity = Instant::now();
+                            let watches = self.reload(next, &registry, &mut lifecycle);
+                            self.rewatch(watches, &mut watch_paths, registrar.as_ref());
+                        }
+                        // Not a client's doing: no activity for the idle
+                        // shutdown.
+                        Some(SchedulerMessage::Switch { provider, on, registry }) => {
+                            if let Some(next) = self.registry.switched(&provider, on, &self.cache) {
+                                info!("{provider}: enabled.template rendered {on}; switching it {}", if on { "on" } else { "off" });
+                                let watches = self.reload(next, &registry, &mut lifecycle);
+                                self.rewatch(watches, &mut watch_paths, registrar.as_ref());
+                            }
                         }
                         Some(SchedulerMessage::GetStatus { reply }) => {
                             let status = build_status(

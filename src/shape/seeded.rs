@@ -22,7 +22,9 @@
 //! `result` and `return`, each a jinja line (what they mean, and the load
 //! errors that need the composed tree, are [`crate::shape::provider`]'s).
 //! `enabled = false` is a bool on a named provider: sugar for the empty
-//! `result`, so a provider that produces nothing and runs no Source.
+//! `result`, so a provider that produces nothing and runs no Source. Or
+//! `enabled` is a table, `template` (a check, [`crate::provider::gate`]) and
+//! `poll`; on `_` only `poll`.
 //! `[daemon.providers.<p>.sources.<s>]` is fenced here too (`root`, `data`,
 //! `result`, `return`, each a jinja line); what a Source means is
 //! [`crate::shape::build`]'s, from the composed tree.
@@ -354,10 +356,58 @@ impl Reader {
         }
     }
 
+    /// `enabled`: a bool, or a table of `template` (a string) and `poll` (whole
+    /// seconds). On `_` only `enabled.poll`: a switch there would switch every
+    /// provider.
+    fn enabled(&mut self, name: &str, value: &toml::Value) {
+        let refuse_on_abstract = |what: &str, example: &str| {
+            format!(
+                "[daemon.providers._] {what}: the abstract provider applies to every provider: \
+                 name the provider, [daemon.providers.<p>] {what} = {example}"
+            )
+        };
+        let Some(table) = value.as_table() else {
+            if name == "_" {
+                self.err(refuse_on_abstract("enabled", "false"));
+            } else if !value.is_bool() {
+                self.err(format!(
+                    "[daemon.providers.{name}] enabled must be true or false, or a table of \
+                     template and poll, not {}",
+                    value.type_str()
+                ));
+            }
+            return;
+        };
+        for (key, sub) in table {
+            match key.as_str() {
+                "template" if name == "_" => {
+                    self.err(refuse_on_abstract("enabled.template", "\"{{ … }}\""))
+                }
+                "template" if !sub.is_str() => self.err(format!(
+                    "[daemon.providers.{name}] enabled.template must be a string (a jinja line), \
+                     not {}",
+                    sub.type_str()
+                )),
+                "template" => {}
+                "poll" => {
+                    let refused = match duration_value(sub) {
+                        None => Some(refuse_parse(&duration_text(sub))),
+                        Some(d) => whole_seconds(d).err(),
+                    };
+                    if let Some(why) = refused {
+                        self.err(format!("[daemon.providers.{name}] enabled.poll: {why}"));
+                    }
+                }
+                _ => self.err(format!(
+                    "unknown key '{key}' in [daemon.providers.{name}.enabled]"
+                )),
+            }
+        }
+    }
+
     /// `[daemon.providers.<p>]` holds `cache` (which holds only `_`, which
     /// holds only `decay`), `sources`, the provider's lines: `template`,
-    /// `result` and `return`, each a string, and `enabled`, a bool (not on
-    /// `_`: it would switch off every provider).
+    /// `result` and `return`, each a string, and `enabled` ([`Self::enabled`]).
     fn daemon_provider(&mut self, name: &str, value: &toml::Value) {
         let Some(table) = value.as_table() else {
             return self.err(format!("[daemon.providers.{name}] must be a table"));
@@ -373,18 +423,7 @@ impl Reader {
                 continue;
             }
             if key == "enabled" {
-                if name == "_" {
-                    self.err(
-                        "[daemon.providers._] enabled: the abstract provider applies to every \
-                         provider: name the provider, [daemon.providers.<p>] enabled = false"
-                            .into(),
-                    );
-                } else if !sub.is_bool() {
-                    self.err(format!(
-                        "[daemon.providers.{name}] enabled must be true or false, not {}",
-                        sub.type_str()
-                    ));
-                }
+                self.enabled(name, sub);
                 continue;
             }
             if matches!(key.as_str(), "template" | "result" | "return") {

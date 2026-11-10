@@ -1,5 +1,6 @@
 pub mod config_watch;
 pub mod defaults;
+mod gate;
 pub mod lifecycle;
 pub mod seed;
 
@@ -226,6 +227,8 @@ async fn run_daemon_with_cancel(
         Some(interval) => scheduler.use_polling_watcher(interval),
     }
     let heartbeat = scheduler.heartbeat();
+    // The providers' `enabled.template` checks, polled beside the scheduler.
+    let gate_task = gate::spawn_gate_poll(registry.clone(), handle.clone(), cancel.clone());
 
     let scheduler_handle = handle.clone();
     let scheduler_task = tokio::spawn(async move { scheduler.run().await });
@@ -276,6 +279,7 @@ async fn run_daemon_with_cancel(
     if let Some(task) = watchdog_task {
         task.abort();
     }
+    gate_task.abort();
     if stop_scheduler(&scheduler_handle, scheduler_task).await {
         info!("Daemon shut down cleanly");
     } else {

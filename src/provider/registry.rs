@@ -354,6 +354,14 @@ pub struct ProviderRegistry {
     /// `HOME` of the variables the registry was loaded with, else this
     /// process's.
     home: crate::query::Home,
+    /// Each provider's `enabled.template`, by provider.
+    gates: HashMap<String, crate::provider::gate::Gate>,
+    /// The last error of each check that failed, by provider: shared by the
+    /// registries a switch makes, so the poll's note reaches whichever is in
+    /// force.
+    gate_errors: Arc<DashMap<String, String>>,
+    /// The variables the registry was loaded with: what a check reads as `env`.
+    vars: Arc<HashMap<String, String>>,
 }
 
 /// The Sources a reload removed or changed, by the reload epoch that did it.
@@ -407,6 +415,9 @@ impl ProviderRegistry {
             retirements: Arc::default(),
             born: std::sync::atomic::AtomicU64::new(0),
             home: crate::query::Home::from_env(),
+            gates: HashMap::new(),
+            gate_errors: Arc::default(),
+            vars: Arc::default(),
         }
     }
 
@@ -1166,6 +1177,8 @@ impl ProviderRegistry {
             Ok(lines) => registry.lines = Arc::new(lines),
             Err(e) => errors.extend(e),
         }
+        registry.vars = Arc::new(vars.clone());
+        registry.load_gates(providers, &mut errors);
 
         // ── Config Sources ────────────────────────────────────────────────────
         let (
@@ -1286,6 +1299,130 @@ impl ProviderRegistry {
         }
     }
 
+    /// Read every `enabled.template` and render each that loads, once: one
+    /// that renders false starts switched off; one that fails starts on, its
+    /// error kept for `comb check providers`.
+    fn load_gates(&mut self, providers: &toml::Table, errors: &mut Vec<String>) {
+        use crate::provider::gate;
+        self.gates = gate::gates(providers);
+        if self.gates.is_empty() {
+            return;
+        }
+        let probe = gate::probe();
+        for (name, g) in &self.gates {
+            let found = gate::lint_gate(&probe, name, &g.template);
+            if !found.is_empty() {
+                errors.extend(found);
+                continue;
+            }
+            match gate::render(name, &g.template, &self.vars) {
+                Ok(true) => {}
+                Ok(false) => self.lines = Arc::new(self.lines.switched(name, true)),
+                Err(e) => {
+                    tracing::warn!("{name} enabled.template: {e}");
+                    self.gate_errors.insert(name.clone(), e);
+                }
+            }
+        }
+    }
+
+    /// Each provider's `enabled.template`, by provider.
+    pub fn gates(&self) -> &HashMap<String, crate::provider::gate::Gate> {
+        &self.gates
+    }
+
+    /// What a check reads as `env`.
+    pub fn vars(&self) -> &Arc<HashMap<String, String>> {
+        &self.vars
+    }
+
+    /// Whether `provider`'s `enabled.template` has switched it off.
+    pub fn is_switched_off(&self, provider: &str) -> bool {
+        self.lines.is_switched_off(provider)
+    }
+
+    /// Note how `provider`'s check last rendered: `Err` keeps its error, `Ok`
+    /// clears it. Whether the error is new, to log it once.
+    pub fn note_gate(&self, provider: &str, rendered: Result<(), String>) -> bool {
+        match rendered {
+            Ok(()) => {
+                self.gate_errors.remove(provider);
+                false
+            }
+            Err(e) => self.gate_errors.insert(provider.to_string(), e.clone()) != Some(e),
+        }
+    }
+
+    /// Why `provider` is switched off, as `comb check providers` says it;
+    /// `None` when it is on.
+    pub fn disabled_reason(&self, provider: &str) -> Option<String> {
+        if !self.is_disabled(provider) {
+            return None;
+        }
+        if !self.lines.is_switched_off(provider) {
+            return Some("disabled".into());
+        }
+        Some(match self.gate_errors.get(provider) {
+            Some(e) => format!("disabled (enabled.template failed: {})", e.value()),
+            None => "disabled (enabled.template rendered false)".into(),
+        })
+    }
+
+    /// The last error of `provider`'s check, if its last render failed.
+    pub fn gate_error(&self, provider: &str) -> Option<String> {
+        self.gate_errors.get(provider).map(|e| e.value().clone())
+    }
+
+    /// This registry with `provider`, which has an `enabled.template`,
+    /// switched on or off, shared over `cache`: `None` when it has no check or
+    /// is already so. Everything else is this registry's, its runtime state
+    /// shared or copied, so a reload to it changes only what the switch
+    /// touches ([`Self::retired_by`]).
+    pub fn switched(&self, provider: &str, on: bool, cache: &Arc<Cache>) -> Option<Arc<Self>> {
+        if !self.gates.contains_key(provider) || self.lines.is_switched_off(provider) != on {
+            return None;
+        }
+        let roots = self
+            .roots
+            .iter()
+            .map(|e| {
+                let kept = e.value();
+                let copy = KeptRoot {
+                    found: kept.found.clone(),
+                    walked: kept.walked.clone(),
+                    unclaimed_since: kept.unclaimed_since,
+                };
+                (e.key().clone(), copy)
+            })
+            .collect();
+        let next = Self {
+            sources: self.sources.clone(),
+            providers: self.providers.clone(),
+            declared_sources: self.declared_sources.clone(),
+            sentinel_sources: self.sentinel_sources.clone(),
+            static_names: Arc::clone(&self.static_names),
+            roots,
+            root_errors: self.root_errors.clone(),
+            failures: Arc::clone(&self.failures),
+            reader: Arc::new(RegistryReader::default()),
+            lines: Arc::new(self.lines.switched(provider, !on)),
+            config_sources: self.config_sources.clone(),
+            rendered_roots: self.rendered_roots.clone(),
+            data_calls: self.data_calls.clone(),
+            runs: Arc::clone(&self.runs),
+            callees: self.callees.clone(),
+            plugins: self.plugins.clone(),
+            definitions: self.definitions.clone(),
+            retirements: Arc::clone(&self.retirements),
+            born: std::sync::atomic::AtomicU64::new(self.epoch()),
+            home: self.home.clone(),
+            gates: self.gates.clone(),
+            gate_errors: Arc::clone(&self.gate_errors),
+            vars: Arc::clone(&self.vars),
+        };
+        Some(next.share(cache))
+    }
+
     /// What each of `data_lines`, a `(table, data line)` per config Source,
     /// reads that may be absent, as load warnings: a name no provider has,
     /// and a value only a client template of `seed` gives, which no Source
@@ -1334,6 +1471,8 @@ impl ProviderRegistry {
     ///   so a `put` racing the reload is not lost, and the namespace of a
     ///   provider that has gone but still holds puts.
     /// - What each surviving Source's instances were last known to call.
+    /// - A provider an `enabled.template` switched off, when this load's
+    ///   render of its check failed.
     ///
     /// The kept roots are not carried over: roots may have changed, and this
     /// registry renders them afresh. Its `comb.<p>` reader is its own, bound
@@ -1360,6 +1499,13 @@ impl ProviderRegistry {
         }
         for name in cache.names_with_puts() {
             self.register_static(&name);
+        }
+        // A check that failed at this load leaves its provider as it was.
+        let failed: Vec<String> = self.gate_errors.iter().map(|e| e.key().clone()).collect();
+        for name in failed {
+            if previous.is_switched_off(&name) {
+                self.lines = Arc::new(self.lines.switched(&name, true));
+            }
         }
         self.share(cache)
     }
@@ -2321,6 +2467,52 @@ result.y = "{{ data }}"
         assert!(
             load("[daemon.providers.lit]\nenabled = false\nresult = \"{{ {} }}\"\n").is_empty()
         );
+    }
+
+    #[test]
+    fn an_enabled_template_is_checked_and_rendered_at_load() {
+        let load = |text: &str| {
+            let config = crate::config_tests::with_shipped_defaults(text);
+            let mut vars: HashMap<String, String> = std::env::vars().collect();
+            vars.insert("GATE".into(), "1".into());
+            vars.remove("NOPE");
+            ProviderRegistry::load(&config, &vars)
+        };
+        let errors =
+            load("[daemon.providers.git]\nenabled.template = \"{{ _.exec('true') }}\"\n").errors;
+        assert_eq!(
+            errors,
+            vec![
+                "config(/user.toml): [daemon.providers.git] enabled.template: exec is not \
+                 available in a check: it may read files and the clock, and runs nothing"
+            ]
+        );
+        let cache = Arc::new(Cache::new());
+        let on = load("[daemon.providers.git]\nenabled.template = \"{{ env.GATE }}\"\n");
+        assert!(on.errors.is_empty(), "{:?}", on.errors);
+        let on = on.registry.share(&cache);
+        assert!(!on.is_disabled("git"));
+        assert_eq!(on.disabled_reason("git"), None);
+        let off = load("[daemon.providers.git]\nenabled.template = \"{{ env.NOPE }}\"\n").registry;
+        assert!(off.is_disabled("git"));
+        assert_eq!(
+            off.disabled_reason("git").as_deref(),
+            Some("disabled (enabled.template rendered false)")
+        );
+        // A switch is a copy with that one provider the other way.
+        let switched = on
+            .switched("git", false, &cache)
+            .expect("on, so it switches off");
+        assert!(switched.is_disabled("git") && !on.is_disabled("git"));
+        assert!(on.switched("git", true, &cache).is_none(), "already on");
+        assert!(on.switched("hostname", false, &cache).is_none(), "no check");
+        let failing = load("[daemon.providers.git]\nenabled.template = \"{{ _.fail('no') }}\"\n");
+        assert!(failing.errors.is_empty(), "{:?}", failing.errors);
+        assert!(
+            !failing.registry.is_disabled("git"),
+            "a failed check leaves it on"
+        );
+        assert!(failing.registry.gate_error("git").is_some());
     }
 
     #[test]

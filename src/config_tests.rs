@@ -744,15 +744,47 @@ fn a_non_string_template_leaf_is_an_error() {
 
 #[test]
 fn enabled_must_be_a_bool() {
-    for bad in ["\"no\"", "0", "[true]", "{ a = 1 }"] {
+    for bad in ["\"no\"", "0", "[true]"] {
         let errors = seeded_errors(&format!("[daemon.providers.git]\nenabled = {bad}\n"));
         assert_eq!(errors.len(), 1, "{bad}: {errors:?}");
         assert!(
-            errors[0].starts_with("[daemon.providers.git] enabled must be true or false, not "),
+            errors[0].starts_with(
+                "[daemon.providers.git] enabled must be true or false, or a table of template \
+                 and poll, not "
+            ),
             "{bad}: {errors:?}"
         );
     }
-    for good in ["true", "false"] {
+    for (bad, error) in [
+        (
+            "{ a = 1 }",
+            "unknown key 'a' in [daemon.providers.git.enabled]",
+        ),
+        (
+            "{ template = 1 }",
+            "[daemon.providers.git] enabled.template must be a string (a jinja line), not integer",
+        ),
+        (
+            "{ poll = \"1500ms\" }",
+            "[daemon.providers.git] enabled.poll: must be a whole number of seconds",
+        ),
+        (
+            "{ poll = \"0s\" }",
+            "[daemon.providers.git] enabled.poll: must be at least 1s",
+        ),
+    ] {
+        assert_eq!(
+            seeded_errors(&format!("[daemon.providers.git]\nenabled = {bad}\n")),
+            vec![error.to_string()],
+            "{bad}"
+        );
+    }
+    for good in [
+        "true",
+        "false",
+        "{ template = \"{{ 1 }}\" }",
+        "{ template = \"{{ 1 }}\", poll = \"10s\" }",
+    ] {
         assert_eq!(
             seeded_errors(&format!("[daemon.providers.git]\nenabled = {good}\n")),
             Vec::<String>::new()
@@ -773,6 +805,22 @@ fn enabled_on_the_abstract_provider_is_an_error() {
             "{value}"
         );
     }
+}
+
+#[test]
+fn only_enabled_poll_is_on_the_abstract_provider() {
+    assert_eq!(
+        seeded_errors("[daemon.providers._]\nenabled.poll = \"10s\"\n"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        seeded_errors("[daemon.providers._]\nenabled.template = \"{{ 1 }}\"\n"),
+        vec![
+            "[daemon.providers._] enabled.template: the abstract provider applies to every \
+             provider: name the provider, [daemon.providers.<p>] enabled.template = \"{{ … }}\""
+                .to_string()
+        ]
+    );
 }
 
 #[test]

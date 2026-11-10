@@ -87,6 +87,20 @@ pub fn is_disabled_in(providers: &toml::Table, name: &str) -> bool {
             == Some(false)
 }
 
+/// `name`'s `enabled.template` among `providers`, if it has one: a check
+/// that switches it off and on. Never on `_` (a file error).
+pub fn gate_in<'t>(providers: &'t toml::Table, name: &str) -> Option<&'t str> {
+    (name != "_")
+        .then(|| {
+            providers
+                .get(name)?
+                .get("enabled")?
+                .get("template")?
+                .as_str()
+        })
+        .flatten()
+}
+
 /// How many distinct render failures are remembered, so each is logged once. A
 /// name no `[daemon.providers.<p>]` table owns can fail too, and the set must
 /// not grow with the names a client asks for.
@@ -244,11 +258,10 @@ fn has_own_lines(providers: &toml::Table, name: &str) -> bool {
 
 /// The chains of `name` among `providers` (a composed `[daemon.providers]`). A
 /// line of the wrong type is the file check's error, and is not in a chain.
-fn chains(probe: &Probe<'_>, providers: &toml::Table, name: &str) -> Chains {
+/// `disabled` says whether it is switched off: by `enabled = false`, or by its
+/// `enabled.template`.
+fn chains(probe: &Probe<'_>, providers: &toml::Table, name: &str, disabled: bool) -> Chains {
     let links = links(providers, name);
-    // `enabled` is read from the provider's own table: on `_` it is a file
-    // error, so no prototype holds one.
-    let disabled = is_disabled_in(providers, name);
     let levels = |key: Key| -> Vec<Level> {
         let mut found: Vec<Level> = super_chain(&links, key.name())
             .into_iter()
@@ -414,8 +427,13 @@ pub struct Returned {
 /// provider's, resolved once.
 pub struct ProviderLines {
     /// The engine the lines render in, which they are read in at load too.
-    probe: Probe<'static>,
+    probe: Arc<Probe<'static>>,
     own: HashMap<String, Arc<Chains>>,
+    /// The chains of each provider with an `enabled.template`, switched off:
+    /// what it reads while [`Self::off`] names it.
+    gated_off: HashMap<String, Arc<Chains>>,
+    /// The gated providers whose check last rendered false.
+    off: std::collections::HashSet<String>,
     shared: Arc<Chains>,
     /// Whether any provider's lines call a Source: when none does, a read looks
     /// no further.
@@ -440,14 +458,32 @@ impl ProviderLines {
         let own: HashMap<String, Arc<Chains>> = providers
             .keys()
             .filter(|name| has_own_lines(providers, name))
-            .map(|name| (name.clone(), Arc::new(chains(&probe, providers, name))))
+            .map(|name| {
+                let disabled = is_disabled_in(providers, name);
+                (
+                    name.clone(),
+                    Arc::new(chains(&probe, providers, name, disabled)),
+                )
+            })
             .collect();
-        let shared = Arc::new(chains(&probe, providers, "_"));
+        let gated_off = providers
+            .keys()
+            .filter(|name| gate_in(providers, name).is_some())
+            .map(|name| {
+                (
+                    name.clone(),
+                    Arc::new(chains(&probe, providers, name, true)),
+                )
+            })
+            .collect();
+        let shared = Arc::new(chains(&probe, providers, "_", false));
         let any_calls = shared.has_calls || own.values().any(|c| c.has_calls);
         let any_disabled = own.values().any(|c| c.disabled);
         let lines = Self {
-            probe,
+            probe: Arc::new(probe),
             own,
+            gated_off,
+            off: Default::default(),
             shared,
             any_calls,
             any_disabled,
@@ -553,29 +589,69 @@ impl ProviderLines {
     /// The other providers' Sources `provider`'s `result` line calls, as
     /// `(provider, source)`.
     pub fn result_calls(&self, provider: &str) -> &[(String, String)] {
-        &self.own.get(provider).unwrap_or(&self.shared).result_calls
+        &self.pick(provider).result_calls
     }
 
     /// Whether `provider`'s `result` or `return` line calls any Source.
     pub fn has_calls(&self, provider: &str) -> bool {
-        self.any_calls && self.own.get(provider).unwrap_or(&self.shared).has_calls
+        self.any_calls && self.pick(provider).has_calls
     }
 
     /// The other providers' Sources `provider`'s `result` and `return` lines
     /// call: what a read brings up to date before the lines render.
     pub fn all_calls(&self, provider: &str) -> &[(String, String)] {
-        &self.own.get(provider).unwrap_or(&self.shared).calls
+        &self.pick(provider).calls
     }
 
-    /// Whether `provider` has `enabled = false`.
+    /// Whether `provider` is switched off: `enabled = false`, or its
+    /// `enabled.template` last rendered false.
     pub fn is_disabled(&self, provider: &str) -> bool {
-        self.any_disabled && self.own.get(provider).is_some_and(|c| c.disabled)
+        (self.any_disabled && self.own.get(provider).is_some_and(|c| c.disabled))
+            || self.is_switched_off(provider)
+    }
+
+    /// Whether `provider`'s `enabled.template` has switched it off.
+    pub fn is_switched_off(&self, provider: &str) -> bool {
+        !self.off.is_empty() && self.off.contains(provider)
+    }
+
+    /// These lines with `provider`, which has an `enabled.template`, switched
+    /// off or on. Everything compiled is shared, not rebuilt.
+    pub fn switched(&self, provider: &str, off: bool) -> Self {
+        let mut set = self.off.clone();
+        if off {
+            set.insert(provider.to_string());
+        } else {
+            set.remove(provider);
+        }
+        Self {
+            probe: Arc::clone(&self.probe),
+            own: self.own.clone(),
+            gated_off: self.gated_off.clone(),
+            off: set,
+            shared: Arc::clone(&self.shared),
+            any_calls: self.any_calls,
+            any_disabled: self.any_disabled,
+            logged: self.logged.clone(),
+            suppressed: AtomicBool::new(self.suppressed.load(Ordering::Relaxed)),
+        }
+    }
+
+    /// The chains `provider` reads now: switched off, its own, or the
+    /// abstract provider's.
+    fn pick(&self, provider: &str) -> &Arc<Chains> {
+        if self.is_switched_off(provider)
+            && let Some(off) = self.gated_off.get(provider)
+        {
+            return off;
+        }
+        self.own.get(provider).unwrap_or(&self.shared)
     }
 
     /// The resolved chains of `provider`: its own when the configuration has a
     /// table for it, the abstract provider's otherwise.
     pub fn chains_for(&self, provider: &str) -> Arc<Chains> {
-        self.own.get(provider).unwrap_or(&self.shared).clone()
+        self.pick(provider).clone()
     }
 
     /// Render `provider`'s `key` line against `vars`, plus `_.name`. On a

@@ -150,7 +150,8 @@ its own takes.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `sources.<s>` | table | none | A Source ([below](#daemonproviderspsourcess)) |
-| `enabled` | bool | `true` | `false` switches the provider off ([below](#enabled)). Not on `_` |
+| `enabled` | bool, or a table of `template` and `poll` | `true` | `false` switches the provider off; `enabled.template` switches it by a polled check ([below](#enabled)). Not on `_` |
+| `enabled.poll` | duration, whole seconds, ≥ 1s | `30s` (from `_`) | How often `enabled.template` is rendered. On `_`, every provider's |
 | `template` | jinja line | from `_` | Builds the provider's `:template` facet from `[client]` |
 | `result` | jinja line | from `_` | What the provider holds at a directory, from its Sources |
 | `return` | jinja line | from `_` | What a read of the provider answers |
@@ -214,6 +215,33 @@ enabled = false
 
 It is a bool, and a later file may set `true` again. A table holding only `enabled` for a name no provider has is an
 error (`no provider is named 'gti'`).
+
+#### `enabled.template`
+
+```toml
+[daemon.providers.docker]
+enabled.template = "{{ '/var/run/docker.sock' | stat }}"
+enabled.poll = "10s"
+
+[daemon.providers._]
+enabled.poll = "1m"   # every provider's check without its own
+```
+
+A check that switches the provider: a jinja line that renders to a truthiness. `none`, `false`, `0` and an empty string,
+list or table are off, and the provider is disabled exactly as `enabled = false` disables it (the table above);
+anything else is on.
+
+- It is rendered at load, at each reload, and every `enabled.poll` (the provider's own, else `_`'s, else `30s`).
+- It sees `env` (the daemon's environment) and `_`, and may call what reads files and the clock: `exec`, `execa`,
+  `url` and `plugin` are load errors naming the line.
+- It runs at the lowest priority, on the blocking pool, holding no lock: a slow check delays only itself.
+- A switch touches only that provider (its Sources' instances and records go when it goes off, and the Sources
+  that call them): the daemon is not restarted, and every other provider keeps what it holds.
+- A check that fails leaves the provider as it was, and is logged once until its error changes.
+- `comb check providers` says `disabled (enabled.template rendered false)`, or, when the check failed,
+  `disabled (enabled.template failed: <error>)` and a `WARN` verdict naming the error.
+- On `_`, only `enabled.poll`: `enabled` and `enabled.template` there are errors. A later file's `enabled = true` or
+  `false` replaces the table.
 
 ## `[daemon.providers.<p>.sources.<s>]`
 

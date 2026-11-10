@@ -170,7 +170,14 @@ pub(super) async fn handle_introspect_providers(
             "unknown"
         };
 
-        let disabled = registry.is_disabled(name);
+        let disabled_reason = registry.disabled_reason(name);
+        let disabled = disabled_reason.is_some();
+        if let Some(e) = registry.gate_error(name) {
+            verdicts.push(serde_json::json!({
+                "level": "WARN",
+                "message": format!("{name} enabled.template failed: {e}"),
+            }));
+        }
         let (sources_out, invalidation) = if let Some(meta) = registry.provider_metadata(name) {
             // Collect per-source info.
             let sources_out: Vec<serde_json::Value> = meta
@@ -185,8 +192,8 @@ pub(super) async fn handle_introspect_providers(
                     serde_json::json!({
                         "name": sm.name,
                         "fields": fields,
-                        "invalidation": if disabled {
-                            "disabled".to_string()
+                        "invalidation": if let Some(why) = &disabled_reason {
+                            why.clone()
                         } else {
                             summarize_invalidation(&sm.schedule)
                         },
@@ -195,8 +202,8 @@ pub(super) async fn handle_introspect_providers(
                 .collect();
 
             // Use the first source's invalidation for the top-level summary.
-            let invalidation = if disabled {
-                "disabled".to_string()
+            let invalidation = if let Some(why) = &disabled_reason {
+                why.clone()
             } else {
                 meta.sources
                     .first()

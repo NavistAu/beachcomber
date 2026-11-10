@@ -66,6 +66,9 @@ pub enum Surface {
     Provider,
     /// The decorator render of a Source's `return`.
     Decorator,
+    /// A provider's `enabled.template`: polled in the daemon, so it may read
+    /// files and the clock but runs nothing.
+    Check,
 }
 
 impl Tier {
@@ -81,6 +84,7 @@ impl Tier {
                     Tier::Clock | Tier::Io | Tier::Exec,
                     Surface::Client | Surface::Source
                 )
+                | (Tier::Clock | Tier::Io, Surface::Check)
                 | (Tier::Memo, Surface::Client)
                 | (Tier::Daemon, Surface::Source)
         )

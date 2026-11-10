@@ -1,4 +1,5 @@
 pub mod config_source;
+pub mod gate;
 pub mod registry;
 mod schedule;
 pub mod source_call;
