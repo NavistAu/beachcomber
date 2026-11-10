@@ -43,6 +43,11 @@ impl Setup {
     fn write(&self, rel: &str, body: &str) {
         let path = self.xdg.join("beachcomber").join(rel);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body = if rel.ends_with(".toml") {
+            crate::common::config::stamped(body)
+        } else {
+            body.to_string()
+        };
         std::fs::write(path, body).unwrap();
     }
 

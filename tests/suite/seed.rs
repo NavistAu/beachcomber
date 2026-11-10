@@ -45,9 +45,10 @@ impl Env {
 
         let cfg_dir = cfg.path().join("beachcomber");
         std::fs::create_dir_all(cfg_dir.join("conf.d")).unwrap();
-        std::fs::write(cfg_dir.join("config.toml"), main).unwrap();
+        use crate::common::config::stamped;
+        std::fs::write(cfg_dir.join("config.toml"), stamped(main)).unwrap();
         for (name, body) in drop_ins {
-            std::fs::write(cfg_dir.join("conf.d").join(name), body).unwrap();
+            std::fs::write(cfg_dir.join("conf.d").join(name), stamped(body)).unwrap();
         }
 
         // The daemon writes its managed defaults before it composes its
@@ -124,7 +125,7 @@ impl Env {
 /// Rewrite a config file in one rename, stamped into the future, so the watch's
 /// poll sees the change whatever the clock's granularity, and sees it once.
 pub(crate) fn rewrite(path: &Path, body: &str) {
-    crate::common::mtime::write_ahead(path, body);
+    crate::common::mtime::write_ahead(path, &crate::common::config::stamped(body));
 }
 
 pub(crate) async fn send_recv(
