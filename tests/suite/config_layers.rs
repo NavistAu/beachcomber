@@ -2343,7 +2343,11 @@ enabled.poll = "1s"
         "switched on by its poll",
         Duration::from_secs(10),
         Duration::from_millis(50),
-        || get(&d, "gated.v"),
+        || {
+            // The poll falls due at once: the daemon's clock moves its second.
+            d.advance(Duration::from_secs(1));
+            get(&d, "gated.v")
+        },
         |v| *v == Some(json!("1")),
     );
     assert_eq!(provider_row(&d, "gated").0["disabled"], json!(false));
@@ -2354,7 +2358,11 @@ enabled.poll = "1s"
         "switched off by its poll",
         Duration::from_secs(10),
         Duration::from_millis(50),
-        || get(&d, "gated.v"),
+        || {
+            // The poll falls due at once: the daemon's clock moves its second.
+            d.advance(Duration::from_secs(1));
+            get(&d, "gated.v")
+        },
         Option::is_none,
     );
     assert!(
@@ -2440,7 +2448,11 @@ enabled.poll = "1s"
         "switched on by its poll",
         Duration::from_secs(10),
         Duration::from_millis(50),
-        || get(&d, "p.v"),
+        || {
+            // The poll falls due at once: the daemon's clock moves its second.
+            d.advance(Duration::from_secs(1));
+            get(&d, "p.v")
+        },
         |v| *v == Some(json!("1")),
     );
     std::fs::remove_file(&flag).unwrap();
@@ -2449,7 +2461,11 @@ enabled.poll = "1s"
         "switched off by its poll",
         Duration::from_secs(10),
         Duration::from_millis(50),
-        || get(&d, "p.v"),
+        || {
+            // The poll falls due at once: the daemon's clock moves its second.
+            d.advance(Duration::from_secs(1));
+            get(&d, "p.v")
+        },
         Option::is_none,
     );
     assert_eq!(get(&d, "p"), Some(json!({"w": "1"})));

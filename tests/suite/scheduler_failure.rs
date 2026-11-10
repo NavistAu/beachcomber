@@ -511,7 +511,9 @@ async fn a_config_reload_re_arms_a_stopped_instance() {
 }
 
 /// An `error` is not fatal: it backs off, and retries once the backoff ends.
-#[tokio::test(flavor = "multi_thread")]
+/// On one thread, so the test can move the scheduler's clock past the
+/// backoff rather than wait it out.
+#[tokio::test(flavor = "current_thread")]
 async fn an_error_still_backs_off_and_retries() {
     let tmp = tempfile::tempdir().unwrap();
     let rig = Mode::new(&tmp.path().canonicalize().unwrap(), "1s");
@@ -522,6 +524,9 @@ async fn an_error_still_backs_off_and_retries() {
     assert_eq!(rig.runs(), 2);
     assert!(!rig.failure().await.unwrap().stopped);
     rig.set("fixed again");
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::time::resume();
     poll_until_async(
         "the retry after the backoff",
         "the fixed value",
