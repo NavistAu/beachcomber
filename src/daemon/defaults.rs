@@ -101,10 +101,41 @@ pub fn comb_layer() -> (PathBuf, toml::Value) {
 
 /// The shipped file `name`, its body `text`, as a layer.
 fn layer(name: &str, text: &str) -> (PathBuf, toml::Value) {
-    (
-        PathBuf::from("/defaults").join(name),
-        toml::from_str(text).unwrap_or_else(|e| panic!("defaults/{name} does not parse: {e}")),
-    )
+    let parsed = SHIPPED
+        .iter()
+        .position(|(n, t)| *n == name && *t == text)
+        .map(|i| parsed_shipped()[i].clone())
+        .unwrap_or_else(|| {
+            toml::from_str(text).unwrap_or_else(|e| panic!("defaults/{name} does not parse: {e}"))
+        });
+    (PathBuf::from("/defaults").join(name), parsed)
+}
+
+/// Every [`SHIPPED`] body parsed, once per process: every load reads them,
+/// and a clone costs a fraction of a parse.
+fn parsed_shipped() -> &'static [toml::Value] {
+    static PARSED: std::sync::OnceLock<Vec<toml::Value>> = std::sync::OnceLock::new();
+    PARSED.get_or_init(|| {
+        SHIPPED
+            .iter()
+            .map(|(name, text)| {
+                toml::from_str(text)
+                    .unwrap_or_else(|e| panic!("defaults/{name} does not parse: {e}"))
+            })
+            .collect()
+    })
+}
+
+/// `content`, the text of the defaults file `name`, parsed, when it is the
+/// shipped file exactly as this version writes it: the parse kept from the
+/// first load. `None` for any other text, which the caller parses.
+pub fn parsed_as_written(name: &str, content: &str) -> Option<toml::Value> {
+    let i = SHIPPED.iter().position(|(n, _)| *n == name)?;
+    let body = content
+        .strip_prefix(MARKER_PREFIX)?
+        .strip_prefix(VERSION)?
+        .strip_prefix('\n')?;
+    (body == SHIPPED[i].1).then(|| parsed_shipped()[i].clone())
 }
 
 /// What one run of [`write_managed_defaults`] did.
@@ -239,11 +270,15 @@ pub fn plan(dir: &Path, version: &str) -> Plan {
 
 /// Bring `dir` to the shipped set for `version`, creating it if absent: carry
 /// out [`plan`]. Each file is written to `<name>.tmp` and renamed over
-/// `<name>`, so a reader never sees a half-written default. Any io error
+/// `<name>`, so a reader never sees a half-written default; a directory not
+/// there yet is written whole beside it and renamed into place. Any io error
 /// propagates; the caller decides — the daemon refuses to start on one.
 pub fn write_managed_defaults(dir: &Path, version: &str) -> std::io::Result<Report> {
-    std::fs::create_dir_all(dir)?;
     let plan = plan(dir, version);
+    if !dir.exists() && write_fresh(dir, &plan).is_ok() {
+        return Ok(report(plan));
+    }
+    std::fs::create_dir_all(dir)?;
     for file in &plan.files {
         let Some(text) = &file.write else { continue };
         let tmp = dir.join(format!("{}.tmp", file.name));
@@ -253,11 +288,36 @@ pub fn write_managed_defaults(dir: &Path, version: &str) -> std::io::Result<Repo
     for name in &plan.retired {
         std::fs::remove_file(dir.join(name))?;
     }
-    Ok(Report {
-        dir: dir.to_path_buf(),
+    Ok(report(plan))
+}
+
+/// A first start: every file written into a directory beside `dir` and that
+/// renamed into place, one rename for the set rather than one per file. An
+/// error (another process made `dir` first, say) leaves `dir` to the
+/// per-file path.
+fn write_fresh(dir: &Path, plan: &Plan) -> std::io::Result<()> {
+    let parent = dir.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let tmp = parent.join(format!(".defaults.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir(&tmp)?;
+    let written = plan.files.iter().try_for_each(|file| match &file.write {
+        Some(text) => std::fs::write(tmp.join(&file.name), text),
+        None => Ok(()),
+    });
+    let renamed = written.and_then(|()| std::fs::rename(&tmp, dir));
+    if renamed.is_err() {
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+    renamed
+}
+
+fn report(plan: Plan) -> Report {
+    Report {
+        dir: plan.dir.clone(),
         written: plan.stale(),
         unmanaged: plan.unmanaged(),
         deleted: plan.retired,
         files: SHIPPED.len(),
-    })
+    }
 }

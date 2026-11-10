@@ -650,7 +650,15 @@ impl Config {
                     }
                 },
             };
-            let layer = match toml::from_str::<toml::Value>(&content) {
+            let shipped = (i < defaults_count)
+                .then(|| file.file_name().and_then(|n| n.to_str()))
+                .flatten()
+                .and_then(|name| crate::daemon::defaults::parsed_as_written(name, &content));
+            let parsed = match shipped {
+                Some(layer) => Ok(layer),
+                None => toml::from_str::<toml::Value>(&content),
+            };
+            let layer = match parsed {
                 Ok(layer) => layer,
                 Err(e) => {
                     out.errors.push(Self::parse_error(&file, &e, &content));
