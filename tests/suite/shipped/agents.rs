@@ -67,41 +67,39 @@ const SSH_ADD: &str = r#"case "$SSH_AUTH_SOCK" in
 *) echo 'Could not open a connection to your authentication agent.' >&2; exit 2 ;;
 esac"#;
 
+/// Every state the agent can be in, one read of the whole provider each: a
+/// memo is keyed on `SSH_AUTH_SOCK`, so the cases share one daemon and stay
+/// apart. No agent has no count of keys and no list, not `0` and `[]`; the
+/// socket sshd makes for a forwarded agent is told by its path.
 #[test]
-fn ssh_agent_with_keys() {
+fn ssh_reads_every_state_of_the_agent() {
     let a = agents(&[("ssh-add", SSH_ADD)]);
-    let v = [("SSH_AUTH_SOCK", "/keys")];
-    assert_eq!(a.get("ssh.agent", &v), Some(json!(true)));
-    assert_eq!(a.get("ssh.keys", &v), Some(json!(2)));
-    assert_eq!(
-        a.get("ssh.identities", &v),
-        Some(json!(["josh@laptop", "work key (with parens)"]))
-    );
-    assert_eq!(a.get("ssh.forwarded", &v), Some(json!(false)));
-}
-
-#[test]
-fn ssh_agent_with_no_keys_is_a_running_agent_holding_none() {
-    let a = agents(&[("ssh-add", SSH_ADD)]);
-    let v = [("SSH_AUTH_SOCK", "/empty")];
-    assert_eq!(a.get("ssh.agent", &v), Some(json!(true)));
-    assert_eq!(a.get("ssh.keys", &v), Some(json!(0)));
-    assert_eq!(a.get("ssh.identities", &v), Some(json!([])));
-}
-
-/// No agent: no count of keys and no list of them, not `0` and `[]`.
-#[test]
-fn ssh_without_an_agent_has_no_keys_at_all() {
-    let a = agents(&[("ssh-add", SSH_ADD)]);
-    for v in [vec![], vec![("SSH_AUTH_SOCK", "/gone")]] {
-        assert_eq!(a.get("ssh.agent", &v), Some(json!(false)));
-        assert_eq!(a.get("ssh.keys", &v), None);
-        assert_eq!(a.get("ssh.identities", &v), None);
-        assert_eq!(a.get("ssh.forwarded", &v), Some(json!(false)));
-        assert_eq!(
-            a.get("ssh", &v),
-            Some(json!({"agent": false, "forwarded": false}))
-        );
+    let none = json!({"agent": false, "forwarded": false});
+    for (sock, want) in [
+        (
+            Some("/keys"),
+            json!({
+                "agent": true,
+                "keys": 2,
+                "identities": ["josh@laptop", "work key (with parens)"],
+                "forwarded": false,
+            }),
+        ),
+        (
+            Some("/empty"),
+            json!({"agent": true, "keys": 0, "identities": [], "forwarded": false}),
+        ),
+        (None, none.clone()),
+        (Some("/gone"), none.clone()),
+        (Some("/tmp/ssh-agent.sock"), none.clone()),
+        (Some("/private/tmp/com.apple.launchd.x/Listeners"), none),
+        (
+            Some("/tmp/ssh-XXkq3J/agent.4121"),
+            json!({"agent": false, "forwarded": true}),
+        ),
+    ] {
+        let v: Vec<(&str, &str)> = sock.map(|s| ("SSH_AUTH_SOCK", s)).into_iter().collect();
+        assert_eq!(a.get("ssh", &v), Some(want), "{sock:?}");
     }
 }
 
@@ -124,18 +122,6 @@ fn ssh_runs_ssh_add_once_per_read() {
     a.get("ssh", &v);
     a.get("ssh.keys", &v);
     assert_eq!(a.runs(), 1, "memoised for 30 seconds");
-}
-
-#[test]
-fn ssh_forwarded_is_the_sshd_socket_path() {
-    let a = agents(&[("ssh-add", SSH_ADD)]);
-    let at = |p| a.get("ssh.forwarded", &[("SSH_AUTH_SOCK", p)]);
-    assert_eq!(at("/tmp/ssh-XXkq3J/agent.4121"), Some(json!(true)));
-    assert_eq!(at("/tmp/ssh-agent.sock"), Some(json!(false)));
-    assert_eq!(
-        at("/private/tmp/com.apple.launchd.x/Listeners"),
-        Some(json!(false))
-    );
 }
 
 #[test]
@@ -163,31 +149,20 @@ const GPG: &str = r#"case "$GNUPGHOME" in
 *) echo 'gpg-connect-agent: no gpg-agent running in this session' >&2 ;;
 esac"#;
 
+/// Keys and cached passphrases, one read of the whole provider per
+/// `GNUPGHOME` (the memo's key, so the cases share one daemon). With no
+/// agent, whatever the exit status, the tool prints no `OK`: no keys at all.
 #[test]
-fn gpg_counts_keys_and_cached_passphrases() {
+fn gpg_reads_every_state_of_the_agent() {
     let a = agents(&[("gpg-connect-agent", GPG)]);
-    let v = [("GNUPGHOME", "/cached")];
-    assert_eq!(a.get("gpg.agent", &v), Some(json!(true)));
-    assert_eq!(a.get("gpg.keys", &v), Some(json!(3)));
-    assert_eq!(a.get("gpg.cached", &v), Some(json!(2)));
-    let v = [("GNUPGHOME", "/cold")];
-    assert_eq!(a.get("gpg.keys", &v), Some(json!(1)));
-    assert_eq!(a.get("gpg.cached", &v), Some(json!(0)));
-    let v = [("GNUPGHOME", "/nokeys")];
-    assert_eq!(a.get("gpg.agent", &v), Some(json!(true)));
-    assert_eq!(a.get("gpg.keys", &v), Some(json!(0)));
-    assert_eq!(a.get("gpg.cached", &v), Some(json!(0)));
-}
-
-/// With no agent, whatever the exit status, the tool prints no `OK`.
-#[test]
-fn gpg_without_an_agent_holds_no_keys() {
-    let a = agents(&[("gpg-connect-agent", GPG)]);
-    for home in ["/exit0", "/exit1"] {
-        let v = [("GNUPGHOME", home)];
-        assert_eq!(a.get("gpg.agent", &v), Some(json!(false)), "{home}");
-        assert_eq!(a.get("gpg.keys", &v), None, "{home}");
-        assert_eq!(a.get("gpg.cached", &v), None, "{home}");
+    for (home, want) in [
+        ("/cached", json!({"agent": true, "keys": 3, "cached": 2})),
+        ("/cold", json!({"agent": true, "keys": 1, "cached": 0})),
+        ("/nokeys", json!({"agent": true, "keys": 0, "cached": 0})),
+        ("/exit0", json!({"agent": false})),
+        ("/exit1", json!({"agent": false})),
+    ] {
+        assert_eq!(a.get("gpg", &[("GNUPGHOME", home)]), Some(want), "{home}");
     }
 }
 
@@ -228,21 +203,33 @@ const KLIST: &str = r#"case "$KRB5CCNAME" in
 *) echo 'klist: No credentials cache found (filename: /tmp/krb5cc_1000)' >&2; exit 1 ;;
 esac"#;
 
+/// A valid ticket and its principal in MIT's and Heimdal's words, an expired
+/// one, and no cache, one read of the whole provider per `KRB5CCNAME` (the
+/// memo's key, so the cases share one daemon). Another failure is an error,
+/// not a guess.
 #[test]
-fn kerberos_valid_ticket_and_its_principal_in_mit_and_heimdal() {
+fn kerberos_reads_every_state_of_the_cache() {
     let a = agents(&[("klist", KLIST)]);
-    for (cache, principal) in [
-        ("/mit", "josh@EXAMPLE.COM"),
-        ("/heimdal", "josh@HEIMDAL.ORG"),
+    for (cache, want) in [
+        (
+            Some("/mit"),
+            json!({"ticket": true, "principal": "josh@EXAMPLE.COM"}),
+        ),
+        (
+            Some("/heimdal"),
+            json!({"ticket": true, "principal": "josh@HEIMDAL.ORG"}),
+        ),
+        (
+            Some("/expired"),
+            json!({"ticket": false, "principal": "josh@EXAMPLE.COM"}),
+        ),
+        (None, json!({"ticket": false})),
+        (Some("/none"), json!({"ticket": false})),
     ] {
-        let v = [("KRB5CCNAME", cache)];
-        assert_eq!(a.get("kerberos.ticket", &v), Some(json!(true)), "{cache}");
-        assert_eq!(
-            a.get("kerberos.principal", &v),
-            Some(json!(principal)),
-            "{cache}"
-        );
+        let v: Vec<(&str, &str)> = cache.map(|c| ("KRB5CCNAME", c)).into_iter().collect();
+        assert_eq!(a.get("kerberos", &v), Some(want), "{cache:?}");
     }
+    assert_eq!(a.get("kerberos.ticket", &[("KRB5CCNAME", "/broken")]), None);
 }
 
 /// One command serves both fields of a read: `klist -s`, then `klist`.
@@ -254,25 +241,4 @@ fn kerberos_asks_once_per_read() {
         Some(json!({"ticket": true, "principal": "josh@EXAMPLE.COM"}))
     );
     assert_eq!(a.runs(), 2, "klist -s and klist, once each");
-}
-
-#[test]
-fn kerberos_expired_ticket_is_false_with_its_principal() {
-    let a = agents(&[("klist", KLIST)]);
-    let v = [("KRB5CCNAME", "/expired")];
-    assert_eq!(a.get("kerberos.ticket", &v), Some(json!(false)));
-    assert_eq!(
-        a.get("kerberos.principal", &v),
-        Some(json!("josh@EXAMPLE.COM"))
-    );
-}
-
-#[test]
-fn kerberos_no_cache_is_no_ticket_and_no_principal() {
-    let a = agents(&[("klist", KLIST)]);
-    for v in [vec![], vec![("KRB5CCNAME", "/none")]] {
-        assert_eq!(a.get("kerberos.ticket", &v), Some(json!(false)));
-        assert_eq!(a.get("kerberos.principal", &v), None);
-    }
-    assert_eq!(a.get("kerberos.ticket", &[("KRB5CCNAME", "/broken")]), None);
 }
