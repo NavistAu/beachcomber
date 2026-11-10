@@ -267,13 +267,7 @@ fn apk_lists_the_upgradable_and_dates_the_index() {
     let index = cache.join("APKINDEX.abc123.tar.gz");
     std::fs::write(&index, "").unwrap();
     age(&index);
-    let conf = over(
-        "apk",
-        "pending",
-        "result.checked",
-        "/var/cache/apk",
-        &cache,
-    );
+    let conf = over("apk", "pending", "result.checked", "/var/cache/apk", &cache);
     let s = served(&[("PATH", &b.path)], &conf);
     assert_eq!(
         read(&s, "apk"),
