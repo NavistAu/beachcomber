@@ -261,6 +261,7 @@ pub(crate) async fn put(
             path: effective_path.clone(),
             data: data.clone(),
             expires: ttl_secs.map(|secs| crate::persist::now_ms() + secs * 1000),
+            schema: crate::config::migrate::current(),
         });
         store.record(&address, effective_path.as_deref(), kept);
     }

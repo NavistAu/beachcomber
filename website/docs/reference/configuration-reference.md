@@ -58,9 +58,39 @@ On an in-place reload, a Source whose `root`, `data` or `result` changed is evic
 schedule changed keeps its records and takes the new schedule; every other Source is untouched. Plugin libraries stay
 loaded.
 
+### Schema and migration
+
+A file says which config format it is written in with a `schema` table, as dotted keys before its first table header:
+
+```toml
+schema.version = 2
+schema.migrate = false
+
+[daemon]
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `schema.version` | `1` | the config format the file is written in: an integer counting format changes, not comb's version |
+| `schema.migrate` | `true` | whether comb migrates the file when it is behind. Set in `config.toml`, the default for every `conf.d/` file; a file's own wins |
+
+`schema` is about its file: it does not compose and is not a root.
+
+- When comb (the daemon or a client) loads a file whose `schema.version` is behind its own and migration is on for it,
+  it migrates it: under a lock in `$XDG_STATE_HOME/beachcomber/`, rewritten in place with comments and formatting kept,
+  `schema.version` stamped, the original kept as `<file>.bak`, and a line in the daemon log. A symlink is written
+  through to its target.
+- A file behind with migration off, or that cannot be written, is left as it is and is a load error naming its schema,
+  comb's and `comb migrate`.
+- A file found behind again after comb migrated it (a dotfiles manager restored it) is migrated again with a warning:
+  update its source.
+- A `schema.version` newer than comb's is a load error: the file was written for a newer comb.
+- `comb migrate [FILE…] [--dry-run]` migrates by hand and prints a diff of each file.
+- `defaults/` files are comb's own and are not migrated.
+
 ## Roots
 
-A file has two top-level tables. Anything else at the top level is an error.
+A file has two top-level tables (and its [`schema`](#schema-and-migration)). Anything else at the top level is an error.
 
 | Table | Holds |
 |---|---|

@@ -45,6 +45,8 @@ libloading = "0.9"
 minijinja = { workspace = true }
 terminal_size = "0.4"
 thiserror = "2.0.18"
+# Already in the tree (mockito): comb migrate's diffs.
+similar = "2"
 libbeachcomber = { path = "libbeachcomber", version = "0.10.1" }
 
 [features]

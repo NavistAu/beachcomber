@@ -36,6 +36,7 @@ A template is recognised by its tags, never by not being a format's name: `-f` w
 | `comb c` | `comb check` | `check config --origins`: `human` (default), `json` |
 | `comb d` | `comb daemon` | — |
 | `comb k` | `comb kill` | — |
+| — | `comb migrate` | — |
 
 A suffix applies only to a command that has `-f` and that format: `comb p.j` is `comb p takes no format`, and an unknown suffix is `unknown format suffix '.x'`.
 
@@ -591,3 +592,19 @@ comb kill --socket /tmp/beachcomber-debug.sock   # target a custom socket (the g
 The command asks the daemon for its PID (`introspect{subject:"daemon"}`); there is no PID file to go stale.
 
 **Exit codes:** `0` on success (including no-op), `2` on error (the daemon did not exit within `--timeout`, its pid could not be determined, the signal failed).
+
+## `comb migrate` `[FILE...] [--dry-run]`
+
+Bring config files to this comb's [schema](configuration-reference.md#schema-and-migration), printing a unified diff of
+each file it changes and the `.bak` it kept. With no `FILE`, every `config.toml` and `conf.d/*.toml` migration is on for;
+a `FILE` named is migrated even with `schema.migrate = false`. Loading config migrates the same files by itself; this is
+for the ones it leaves, and for seeing what changes.
+
+```sh
+comb migrate --dry-run            # the diffs; nothing written
+comb migrate                      # every file migration is on for
+comb migrate ~/.config/beachcomber/conf.d/10-mine.toml
+```
+
+**Exit codes:** `0` when done or nothing to do, `2` when a file could not be migrated (unreadable, written for a newer
+comb, not writable); the rest are still migrated.

@@ -29,6 +29,18 @@ pub struct Persisted {
     /// When a ttl'd put expires, in milliseconds since the Unix epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires: Option<u64>,
+    /// The config schema `data` was put at ([`crate::config::migrate`]): a
+    /// `:template` put's templates are migrated from it on replay. Absent is 1.
+    #[serde(default = "schema_one", skip_serializing_if = "is_schema_one")]
+    pub schema: i64,
+}
+
+fn schema_one() -> i64 {
+    1
+}
+
+fn is_schema_one(schema: &i64) -> bool {
+    *schema == 1
 }
 
 impl Persisted {
@@ -42,9 +54,35 @@ impl Persisted {
         })
     }
 
+    /// This entry at the current config schema: a `:template` put's strings
+    /// through [`crate::config::migrate::template`]; any other data as it is.
+    pub fn migrated(mut self) -> Self {
+        let current = crate::config::migrate::current();
+        if self.schema >= current {
+            return self;
+        }
+        let head = libbeachcomber::key::head_of(&self.key);
+        if libbeachcomber::key::parse_facet(head) == Ok(Some(libbeachcomber::key::Facet::Template))
+        {
+            migrate_strings(&mut self.data, self.schema);
+        }
+        self.schema = current;
+        self
+    }
+
     /// Whether this entry's address is `key` at `path`, or lies below it.
     fn at_or_below(&self, key: &str, path: Option<&str>) -> bool {
         self.path.as_deref() == path && libbeachcomber::key::within(&self.key, key)
+    }
+}
+
+/// Every string in `data`, a template at schema `from`, migrated.
+fn migrate_strings(data: &mut serde_json::Value, from: i64) {
+    match data {
+        serde_json::Value::String(s) => *s = crate::config::migrate::template(s, from),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(|v| migrate_strings(v, from)),
+        serde_json::Value::Object(map) => map.values_mut().for_each(|v| migrate_strings(v, from)),
+        _ => {}
     }
 }
 
@@ -63,7 +101,8 @@ pub fn now_ms() -> u64 {
 
 impl PutStore {
     /// A store writing to `file`, empty, and the entries `file` holds that
-    /// have not expired, in the order they were put. The caller replays them
+    /// have not expired, in the order they were put, each at the current
+    /// config schema ([`Persisted::migrated`]). The caller replays them
     /// through the put path, which records each again.
     pub fn open(file: PathBuf) -> (Self, Vec<Persisted>) {
         let entries = match std::fs::read(&file) {
@@ -84,6 +123,7 @@ impl PutStore {
         let live = entries
             .into_iter()
             .filter(|e| e.remaining_secs(now) != Some(None))
+            .map(Persisted::migrated)
             .collect();
         let store = Self {
             file,
@@ -150,6 +190,7 @@ mod tests {
             path: path.map(str::to_string),
             data: serde_json::json!(1),
             expires: None,
+            schema: 1,
         }
     }
 

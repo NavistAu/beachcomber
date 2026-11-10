@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub mod migrate;
+
 /// Deep-merge `overlay` onto `base`: matching table keys recurse; everything
 /// else (scalars, arrays, and table/non-table type mismatches) is last-wins
 /// — `overlay`'s value replaces whatever was at that slot in `base`.
@@ -145,6 +147,8 @@ pub struct Config {
     /// `None`, keeping none, unless the daemon process asked for its file, so
     /// an embedded or test daemon never reads or writes the ambient one.
     puts_file: Option<PathBuf>,
+    /// The files this load migrated ([`migrate`]).
+    migrated: Vec<migrate::Change>,
 }
 
 /// What the composed layers deserialize to: the two roots. Private, so the
@@ -175,6 +179,8 @@ pub struct ReadLayers {
     /// One per file that exists but could not be read or parsed, each prefixed
     /// with the file's `config:<path>` label.
     pub errors: Vec<String>,
+    /// The files migrated as they were read ([`migrate::Migrator::load`]).
+    pub migrated: Vec<migrate::Change>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -242,6 +248,7 @@ impl Default for Config {
             errors: Vec::new(),
             socket_flag: None,
             puts_file: None,
+            migrated: Vec::new(),
         }
     }
 }
@@ -375,10 +382,16 @@ impl Config {
     /// not restart into it. The settings of a composition that does not load
     /// are the defaults.
     pub fn load_from(config_path: &Path) -> Self {
-        let read = Self::read_layers(
+        Self::load_with(config_path, &migrate::Migrator::default())
+    }
+
+    /// [`Self::load_from`], migrating with `migrator`.
+    pub fn load_with(config_path: &Path, migrator: &migrate::Migrator) -> Self {
+        let read = Self::read_layers_with(
             Some(&Self::defaults_dir_for(config_path)),
             Some(config_path),
             &Self::conf_d_dir_for(config_path),
+            migrator,
         );
         Self::compose(read, Some(config_path.to_path_buf()))
     }
@@ -390,14 +403,24 @@ impl Config {
         Self::compose(
             ReadLayers {
                 layers,
-                errors: Vec::new(),
+                ..ReadLayers::default()
             },
             None,
         )
     }
 
     fn compose(read: ReadLayers, config_path: Option<PathBuf>) -> Self {
-        let ReadLayers { layers, mut errors } = read;
+        let ReadLayers {
+            mut layers,
+            mut errors,
+            migrated,
+        } = read;
+        // A file's `schema` is about the file: it does not compose.
+        for (_, layer) in &mut layers {
+            if let Some(table) = layer.as_table_mut() {
+                table.remove("schema");
+            }
+        }
         errors.extend(Self::validate_layers(&layers));
         let mut merged = empty_table();
         for (_, layer) in &layers {
@@ -439,6 +462,7 @@ impl Config {
             errors: Vec::new(),
             socket_flag: None,
             puts_file: None,
+            migrated,
         };
         errors.extend(config.watchdog_errors());
         config.errors = errors;
@@ -454,8 +478,8 @@ impl Config {
             Ok(layer) => Self::from_layers(vec![(path, layer)]),
             Err(e) => Self::compose(
                 ReadLayers {
-                    layers: Vec::new(),
                     errors: vec![Self::parse_error(&path, &e, text)],
+                    ..ReadLayers::default()
                 },
                 None,
             ),
@@ -498,6 +522,12 @@ impl Config {
         } else {
             format!("{}: {at}: {reason}", Self::error_label(file))
         }
+    }
+
+    /// The files this load migrated, for the daemon to log once its logger is
+    /// up (each was logged as it happened, to whatever logger there was).
+    pub fn migrated(&self) -> &[migrate::Change] {
+        &self.migrated
     }
 
     /// The layers this configuration was composed from, for seeding.
@@ -571,10 +601,24 @@ impl Config {
     /// Settings compose by deep merge, but facet tables are seeded per layer so
     /// each record keeps the label of the file that set it — which is only
     /// possible while the layers are still separable.
+    ///
+    /// The main file and each `conf.d/` file is brought to the current schema
+    /// as it is read ([`migrate::Migrator::load`]); `config.toml`'s
+    /// `schema.migrate` is the default for `conf.d/`. The managed `defaults/`
+    /// are this binary's and are not migrated.
     pub fn read_layers(
         defaults: Option<&Path>,
         config_path: Option<&Path>,
         conf_d: &Path,
+    ) -> ReadLayers {
+        Self::read_layers_with(defaults, config_path, conf_d, &migrate::Migrator::default())
+    }
+
+    fn read_layers_with(
+        defaults: Option<&Path>,
+        config_path: Option<&Path>,
+        conf_d: &Path,
+        migrator: &migrate::Migrator,
     ) -> ReadLayers {
         let mut files: Vec<(PathBuf, Option<&str>)> = Vec::new();
         let plan =
@@ -582,6 +626,7 @@ impl Config {
         if let Some(plan) = &plan {
             files.extend(plan.loaded());
         }
+        let defaults_count = files.len();
         if let Some(p) = config_path {
             files.push((p.to_path_buf(), None));
         }
@@ -591,7 +636,8 @@ impl Config {
                 .map(|file| (file, None)),
         );
         let mut out = ReadLayers::default();
-        for (file, text) in files {
+        let mut inherited = true;
+        for (i, (file, text)) in files.into_iter().enumerate() {
             let content = match text {
                 Some(text) => text.to_string(),
                 None => match std::fs::read_to_string(&file) {
@@ -604,9 +650,30 @@ impl Config {
                     }
                 },
             };
-            match toml::from_str::<toml::Value>(&content) {
-                Ok(layer) => out.layers.push((file, layer)),
-                Err(e) => out.errors.push(Self::parse_error(&file, &e, &content)),
+            let layer = match toml::from_str::<toml::Value>(&content) {
+                Ok(layer) => layer,
+                Err(e) => {
+                    out.errors.push(Self::parse_error(&file, &e, &content));
+                    continue;
+                }
+            };
+            if i < defaults_count {
+                out.layers.push((file, layer));
+                continue;
+            }
+            let main = config_path == Some(file.as_path());
+            if main {
+                inherited = migrate::schema(&layer)
+                    .ok()
+                    .and_then(|s| s.migrate)
+                    .unwrap_or(true);
+            }
+            match migrator.load(&file, layer, main || inherited) {
+                Ok((layer, change)) => {
+                    out.layers.push((file, layer));
+                    out.migrated.extend(change);
+                }
+                Err(e) => out.errors.push(e),
             }
         }
         out

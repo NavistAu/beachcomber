@@ -10,6 +10,7 @@ pub mod eval;
 pub mod get;
 pub mod init;
 pub mod kill;
+pub mod migrate;
 pub mod put;
 pub mod refresh;
 pub mod status;

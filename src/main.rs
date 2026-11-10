@@ -283,6 +283,18 @@ enum Commands {
         #[command(subcommand)]
         check_cmd: Option<CheckCommands>,
     },
+    /// Migrate config files to this comb's schema, printing a diff of each.
+    /// Loading config migrates the files migration is on for; this migrates
+    /// the files named even where `schema.migrate = false`
+    Migrate {
+        /// The files to migrate (default: config.toml and every conf.d/*.toml
+        /// migration is on for)
+        #[arg(value_name = "FILE")]
+        files: Vec<PathBuf>,
+        /// Print the diffs and write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Stop the running daemon (it will socket-activate on the next query)
     #[command(visible_alias = "k")]
     Kill {
@@ -389,6 +401,10 @@ fn run(cli: Cli) -> Outcome {
             );
             return Outcome::Error;
         }
+    }
+    // Loading config migrates it: `migrate` is the one command that must not.
+    if let Commands::Migrate { files, dry_run } = &cli.command {
+        return beachcomber::cli::commands::migrate::run_migrate(files, *dry_run);
     }
     let mut config = Config::load();
     config.set_socket_flag(cli.socket);
@@ -517,5 +533,6 @@ fn run(cli: Cli) -> Outcome {
             check_cmd,
         } => run_check(&config, check_cmd, connect_timeout, style),
         Commands::Kill { timeout } => run_kill(&config.resolve_socket_path(), timeout),
+        Commands::Migrate { .. } => unreachable!("run before the config is loaded"),
     }
 }

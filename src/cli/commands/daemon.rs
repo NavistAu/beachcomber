@@ -108,6 +108,11 @@ pub fn run_daemon(
     }
 
     tracing::info!("Starting beachcomber daemon");
+    // Migrated before the logger was up: logged now.
+    config
+        .migrated()
+        .iter()
+        .for_each(crate::config::migrate::log);
     tracing::info!("Socket: {:?}", socket_path);
     tracing::info!("Log file: {:?}", log_path);
 
