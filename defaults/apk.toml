@@ -3,7 +3,7 @@
 [daemon.providers.apk]
 enabled.template = "{{ 'apk' | which }}"
 
-[daemon.providers.apk.sources.upgradable]
+[daemon.providers.apk.sources.pending]
 # Names (the version cut off), their number, and when the index was last refreshed (the newest mtime among the APKINDEX files in apk's cache). Polled hourly; also run when the cache or the installed database change.
 data = '''{% set ns = namespace(p=[]) %}{% for l in (_.exec(['apk', 'version', '-l', '<'], timeout='30s') or '') | split('\n') %}{% if ' < ' in l %}{% set ns.p = ns.p + [l | regex_replace('^(.+?)-[0-9].*$', '${1}')] %}{% endif %}{% endfor %}{{ ns.p | tojson }}'''
 result.packages = "{{ data | fromjson }}"

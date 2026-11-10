@@ -515,12 +515,12 @@ Refreshing the lists is an action that uses the network, so it is opt-in: `brew`
 `update` Source that ships **disabled** (`enabled = false`), and runs daily when you switch it on in your configuration:
 
 ```toml
-[daemon.providers.brew.sources.update]
+[daemon.providers.brew.sources.refresh]
 enabled = true
 ```
 
-`brew.update` runs `brew update --quiet`, `dnf.update` `dnf makecache --refresh` (as the daemon's user, so it fills
-that user's own cache), `pacman.update` a plain `checkupdates`, which syncs the copy `pacman` reads. Each adds one
+`brew.refresh` runs `brew update --quiet`, `dnf.refresh` `dnf makecache --refresh` (as the daemon's user, so it fills
+that user's own cache), `pacman.refresh` a plain `checkupdates`, which syncs the copy `pacman` reads. Each adds one
 field to its provider, `at`, when it last ran. `apt` and `apk` have none, because `apt update` and `apk update` need
 root. `apt`, `apk`, `dnf` and `pacman` are not run against a real system by the tests, which use stand-in commands
 printing recorded output.

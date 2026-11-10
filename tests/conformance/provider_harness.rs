@@ -21,7 +21,7 @@ pub fn sources_of(
 ) -> Vec<(String, String, std::sync::Arc<dyn Source>)> {
     let mut out = Vec::new();
     for provider_name in registry.provider_names() {
-        // A provider or Source shipped off (`brew.update`, the opt-in
+        // A provider or Source shipped off (`brew.refresh`, the opt-in
         // refreshes) is not run: it would fetch from the network on a
         // developer's machine.
         // The package managers are run with stand-ins in `shipped/packages.rs`:

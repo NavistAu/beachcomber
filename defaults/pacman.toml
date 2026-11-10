@@ -2,11 +2,11 @@
 # `${CHECKUPDATES_DB:-${TMPDIR:-/tmp}/checkup-db-$UID}`, and fetches nothing (exit 0 is "updates", 2 "none", any other a
 # failure, as with no copy yet). Needs no root. Off where `checkupdates` is not on the daemon's PATH. Not run against a
 # real Arch: written from its manual. That copy is filled by a plain `checkupdates` (a timer of yours, or the opt-in
-# `pacman.update` below).
+# `pacman.refresh` below).
 [daemon.providers.pacman]
 enabled.template = "{{ 'checkupdates' | which }}"
 
-[daemon.providers.pacman.sources.updates]
+[daemon.providers.pacman.sources.pending]
 # Names (`name old -> new` lines), their number, and when that copy was last synced (the newest mtime among its sync/*.db). Polled hourly; also run when pacman's local database changes.
 data = '''{% set ns = namespace(p=[]) %}{% for l in (_.execa(['checkupdates', '--nosync', '--nocolor'], ok=[0, 2], timeout='60s').stdout or '') | split('\n') %}{% if ' -> ' in l %}{% set ns.p = ns.p + [l | split | first] %}{% endif %}{% endfor %}{% set db = env.CHECKUPDATES_DB or ((env.TMPDIR or '/tmp') ~ '/checkup-db-' ~ (_.exec('id -u'))) %}{% set tt = namespace(t=none) %}{% for f in ((db ~ '/sync/*.db') | glob) %}{% set m = (f | stat).mtime | int %}{% if tt.t is none or m > tt.t %}{% set tt.t = m %}{% endif %}{% endfor %}{{ {'p': ns.p, 't': tt.t} | tojson }}'''
 result.packages = "{{ (data | fromjson).p }}"
@@ -15,9 +15,9 @@ result.checked = "{{ (data | fromjson).t }}"
 return = "{{ result | poll('1h', 2) | watch('/var/lib/pacman/local') | failback('10m', 3) }}"
 
 # Opt-in: syncs checkupdates's copy daily (a plain `checkupdates`: a network fetch, no root). Off until you turn it on:
-#   [daemon.providers.pacman.sources.update]
+#   [daemon.providers.pacman.sources.refresh]
 #   enabled = true
-[daemon.providers.pacman.sources.update]
+[daemon.providers.pacman.sources.refresh]
 # When `checkupdates` last ran here. `pacman.checked` follows it.
 enabled = false
 data = "{{ _.execa(['checkupdates', '--nocolor'], ok=[0, 2], timeout='5m').exit_code }}"

@@ -246,7 +246,7 @@ anything else is on.
 #### A Source's `enabled`
 
 ```toml
-[daemon.providers.brew.sources.update]
+[daemon.providers.brew.sources.refresh]
 enabled = true                       # shipped false
 
 [daemon.providers.docker.sources.compose]

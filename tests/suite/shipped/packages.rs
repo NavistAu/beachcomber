@@ -4,7 +4,7 @@
 //! files (`checked`) are absolute system paths, so a test replaces the shipped
 //! line's path with a temp directory, as `sudo.rs` does.
 //!
-//! The opt-in refreshes (the `update` Sources: `brew.update`, ...) ship off; a test turns
+//! The opt-in refreshes (the `refresh` Sources: `brew.refresh`, ...) ship off; a test turns
 //! one on in a later file and sees the stand-in run.
 
 use super::{age, served};
@@ -57,7 +57,7 @@ impl Bin {
     }
 }
 
-/// The shipped line `path` (`["apt", "upgradable", "result", "checked"]`).
+/// The shipped line `path` (`["apt", "pending", "result", "checked"]`).
 fn shipped(provider: &str, source: &str, field: &[&str]) -> String {
     let file = format!("{provider}.toml");
     let (_, body) = beachcomber::daemon::defaults::SHIPPED
@@ -103,7 +103,7 @@ fn read(s: &super::Served, key: &str) -> Option<Value> {
     s.get(key, None)
 }
 
-const ON: &str = "[daemon.providers.NAME.sources.update]\nenabled = true\n";
+const ON: &str = "[daemon.providers.NAME.sources.refresh]\nenabled = true\n";
 
 // ---- brew ----
 
@@ -175,7 +175,7 @@ fn brew_missing_is_off() {
 
 /// The refresh ships off, runs nothing; turned on it runs `brew update`.
 #[test]
-fn brew_update_is_opt_in() {
+fn brew_refresh_is_opt_in() {
     let b = brew_bin(BREW);
     let s = served(&[("PATH", &b.path)], "");
     assert_eq!(read(&s, "brew.at"), None);
@@ -220,7 +220,7 @@ fn apt_lists_the_upgradable_and_dates_the_lists() {
         .unwrap();
     let conf = over(
         "apt",
-        "upgradable",
+        "pending",
         "result.checked",
         "/var/lib/apt/lists",
         &lists,
@@ -269,7 +269,7 @@ fn apk_lists_the_upgradable_and_dates_the_index() {
     age(&index);
     let conf = over(
         "apk",
-        "upgradable",
+        "pending",
         "result.checked",
         "/var/cache/apk",
         &cache,
@@ -314,7 +314,7 @@ foo.x86_64                        1.0-1                          updates
 fn dnf_conf(root: &Path) -> String {
     over(
         "dnf",
-        "updates",
+        "pending",
         "data",
         "/var/cache/dnf/*/repodata/repomd.xml",
         &root.join("*/repodata/repomd.xml"),
@@ -362,7 +362,7 @@ fn dnf_exit_0_is_none_and_exit_1_is_a_failure() {
 }
 
 #[test]
-fn dnf_update_is_opt_in() {
+fn dnf_refresh_is_opt_in() {
     let b = bin(&[("dnf", &says("", 0))]);
     let s = served(&[("PATH", &b.path), ("USER", "tester")], "");
     assert_eq!(read(&s, "dnf.at"), None);
@@ -422,7 +422,7 @@ fn pacman_exit_2_is_none_and_exit_1_is_a_failure() {
 
 /// The opt-in refresh is a plain `checkupdates`, which syncs its copy.
 #[test]
-fn pacman_update_is_opt_in() {
+fn pacman_refresh_is_opt_in() {
     let b = bin(&[("checkupdates", &says(PACMAN, 0))]);
     let s = served(&[("PATH", &b.path)], "");
     assert_eq!(read(&s, "pacman.at"), None);
