@@ -127,16 +127,13 @@ impl Home {
     /// Home at `raw`, with its canonical form looked up on disk.
     pub fn of(raw: Option<&str>) -> Home {
         let written = raw.filter(|h| !h.is_empty());
-        let dir = written.map(|h| {
-            std::fs::canonicalize(h)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| h.to_string())
-        });
-        let raw = written.map(|h| h.trim_end_matches('/'));
-        let canonical = raw
+        // One look-up: a trailing `/` does not change where a path resolves.
+        let resolved = written
             .and_then(|h| std::fs::canonicalize(h).ok())
-            .map(|p| p.to_string_lossy().into_owned())
-            .filter(|c| Some(c.as_str()) != raw);
+            .map(|p| p.to_string_lossy().into_owned());
+        let dir = written.map(|h| resolved.clone().unwrap_or_else(|| h.to_string()));
+        let raw = written.map(|h| h.trim_end_matches('/'));
+        let canonical = resolved.filter(|c| Some(c.as_str()) != raw);
         Home {
             raw: raw.map(str::to_string),
             canonical,

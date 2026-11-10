@@ -855,7 +855,7 @@ impl Config {
     /// The writer of a record seeded from `path`: the file, its path with
     /// `$HOME` written as `~` (`~/.config/beachcomber/conf.d/10-mine.toml`).
     pub fn config_label(path: &Path) -> crate::cache::Origin {
-        let shown = libbeachcomber::path::Home::from_env().compact_path(path);
+        let shown = labelling_home().compact_path(path);
         crate::cache::Origin::Config(std::sync::Arc::from(&*shown))
     }
 
@@ -1102,6 +1102,30 @@ fn home_relative(path: &str) -> Result<PathBuf, libbeachcomber::path::PathError>
 /// directory: the text as written is all there is to try.
 fn configured_socket(path: &str) -> PathBuf {
     home_relative(path).unwrap_or_else(|_| PathBuf::from(path))
+}
+
+/// This process's [`libbeachcomber::path::Home`], looked up once per `$HOME`
+/// rather than once per label (a load labels every layer, twice). A `$HOME`
+/// not there yet is looked up again next time, as it may be by then.
+fn labelling_home() -> libbeachcomber::path::Home {
+    use libbeachcomber::path::Home;
+    static KEPT: std::sync::Mutex<Option<(String, Home)>> = std::sync::Mutex::new(None);
+    let Ok(raw) = std::env::var("HOME") else {
+        return Home::from_env();
+    };
+    let mut kept = KEPT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((at, home)) = kept.as_ref()
+        && *at == raw
+    {
+        return home.clone();
+    }
+    let home = Home::of(Some(&raw));
+    if std::path::Path::new(&raw).is_dir() {
+        *kept = Some((raw, home.clone()));
+    }
+    home
 }
 
 #[cfg(test)]
