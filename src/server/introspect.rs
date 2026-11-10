@@ -233,7 +233,7 @@ pub(super) async fn handle_introspect_providers(
 
         // A Source whose latest runs failed, whether or not one ever succeeded.
         // One verdict per Source: the instance with the longest streak.
-        let mut failing: Vec<(&str, u32, Option<&str>)> = failures
+        let mut failing: Vec<(&str, u32, Option<&str>, bool)> = failures
             .iter()
             .filter(|(k, _)| &k.provider == name)
             .map(|(k, f)| {
@@ -241,22 +241,25 @@ pub(super) async fn handle_introspect_providers(
                     k.source.name(),
                     f.consecutive_failures,
                     f.last_error.as_deref(),
+                    f.stopped,
                 )
             })
             .collect();
         failing.sort_by(|a, b| a.0.cmp(b.0).then(b.1.cmp(&a.1)));
-        failing.dedup_by_key(|(source, _, _)| *source);
-        for (source, n, error) in &failing {
+        failing.dedup_by_key(|(source, _, _, _)| *source);
+        for (source, n, error, stopped) in &failing {
             let why = error.map_or(String::new(), |e| format!(": {e}"));
-            verdicts.push(serde_json::json!({
-                "level": "WARN",
-                "message": format!("{name}.{source} failing, {n} run(s) in a row{why}"),
-            }));
+            let message = if *stopped {
+                format!("{name}.{source} stopped (fatal){why}")
+            } else {
+                format!("{name}.{source} failing, {n} run(s) in a row{why}")
+            };
+            verdicts.push(serde_json::json!({"level": "WARN", "message": message}));
         }
         let failing = (!failing.is_empty()).then(|| {
             serde_json::json!({
-                "sources": failing.iter().map(|(s, _, _)| s).collect::<Vec<_>>(),
-                "consecutive_failures": failing.iter().map(|(_, n, _)| n).max(),
+                "sources": failing.iter().map(|(s, _, _, _)| s).collect::<Vec<_>>(),
+                "consecutive_failures": failing.iter().map(|(_, n, _, _)| n).max(),
             })
         });
 

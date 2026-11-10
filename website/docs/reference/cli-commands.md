@@ -330,7 +330,7 @@ agent     session  put     {"ctx_pct":42,"name":"claude"}  -     0s      -  ---
 | `0`  | Decay 4   | 0 remaining — next tick evicts |
 | `---` | Once / Static / Template | no lifecycle (hostname, put entries, a rendered template row) |
 
-A `∙` trailing indicator means the entry watches its files while it is Active; a decaying entry has dropped its watches, and a read checks its files instead. A `⚠` lead replaces `★` when the provider is in failure-suppress (row renders red).
+A `∙` trailing indicator means the entry watches its files while it is Active; a decaying entry has dropped its watches, and a read checks its files instead. A `⚠` lead replaces `★` when the provider is in failure-suppress (row renders red). `⚠ #03` counts the failures in a row, and POLL counts down to the retry; `⚠ stop` is a Source a template's `log.fatal(msg)` stopped: no retry is coming (POLL is `-`), VALUE shows the message when nothing is stored, and it runs again only after a change to a file its run read, a configuration reload, `comb refresh` or `comb get --force`.
 
 The default output preset is `human` (coloured table) regardless of whether stdout is a TTY. Scripts that want tab-separated data should pass `-f tsv` explicitly. Colour follows `--color`: `auto` (the default) colours only a TTY, so piping into a pager or a live viewer needs `--color=always`.
 

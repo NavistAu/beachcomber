@@ -17,8 +17,8 @@ pub const TARGET: &str = "beachcomber::template";
 const METHODS: &str = "debug, info, warn, error, fatal";
 
 /// What `log.fatal` fails a render with: an error carrying this as its
-/// source, found by [`fatal_in`].
-// shortcut: fatal fails exactly as error; the scheduler does not yet stop retrying after it.
+/// source, found by [`fatal_in`]. A Source's run that fails with it is stopped
+/// until something re-arms it (a changed input, a reload, a refresh).
 #[derive(Debug)]
 pub struct Fatal;
 

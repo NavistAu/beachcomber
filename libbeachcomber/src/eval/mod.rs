@@ -345,8 +345,17 @@ pub(crate) fn too_deep() -> String {
 /// reports the [`message`](EvalError::message) alone.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EvalError {
-    Compile { form: Form, message: String },
-    Runtime { form: Form, message: String },
+    Compile {
+        form: Form,
+        message: String,
+    },
+    /// `fatal` when the failure is a `log.fatal`: a render that stops its
+    /// Source for good, not one that backs off and retries.
+    Runtime {
+        form: Form,
+        message: String,
+        fatal: bool,
+    },
 }
 
 impl EvalError {
@@ -361,6 +370,7 @@ impl EvalError {
         EvalError::Runtime {
             form,
             message: engine_message(e),
+            fatal: crate::library::log::fatal_in(e),
         }
     }
 
@@ -458,6 +468,7 @@ pub fn evaluate(
                     return Err(EvalError::Runtime {
                         form,
                         message: "a typed line's statements print nothing".into(),
+                        fatal: false,
                     });
                 }
                 Ok((false, value)) => (form, Ok(value)),
@@ -543,19 +554,47 @@ pub fn eval_line(
     src: &str,
     context: &serde_json::Value,
 ) -> Result<Option<serde_json::Value>, String> {
-    eval_line_with(env, src, MjValue::from(Serde(context)))
+    eval_line_with(env, src, MjValue::from(Serde(context))).map_err(|e| e.message)
 }
 
 /// [`eval_line`] against a context that is already an engine value, so it
-/// may hold objects — a daemon line's lazy `comb`.
+/// may hold objects — a daemon line's lazy `comb`. A failure says whether it
+/// was a `log.fatal` ([`LineError`]).
 pub fn eval_line_with(
     env: &Environment<'_>,
     src: &str,
     context: MjValue,
-) -> Result<Option<serde_json::Value>, String> {
-    match evaluate(env, src, context).map_err(|e| e.message().to_string())? {
-        Some(value) => crate::virtual_fields::mj_to_json(value),
+) -> Result<Option<serde_json::Value>, LineError> {
+    let evaluated = evaluate(env, src, context).map_err(|e| LineError {
+        fatal: matches!(e, EvalError::Runtime { fatal: true, .. }),
+        message: e.message().to_string(),
+    })?;
+    match evaluated {
+        Some(value) => crate::virtual_fields::mj_to_json(value).map_err(LineError::from),
         None => Ok(None),
+    }
+}
+
+/// Why a line failed to evaluate: the [`EvalError::message`], and whether it
+/// was a `log.fatal`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineError {
+    pub message: String,
+    pub fatal: bool,
+}
+
+impl From<String> for LineError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            fatal: false,
+        }
+    }
+}
+
+impl std::fmt::Display for LineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
     }
 }
 
@@ -905,7 +944,8 @@ mod line_tests {
             err,
             EvalError::Runtime {
                 form: Form::Statements,
-                message: "a typed line's statements print nothing".into()
+                message: "a typed line's statements print nothing".into(),
+                fatal: false,
             }
         );
         assert_eq!(
@@ -1073,9 +1113,22 @@ mod line_tests {
         let err =
             under_a_memo("{{ 'false' | cache() | exec() }}", Some(json!("prod"))).unwrap_err();
         assert!(
-            matches!(&err, EvalError::Runtime { form: Form::SingleTag, message } if message.contains("`sh -c false`")),
+            matches!(&err, EvalError::Runtime { form: Form::SingleTag, message, .. } if message.contains("`sh -c false`")),
             "{err:?}"
         );
+    }
+
+    /// Only `log.fatal` marks the error, as the evaluator's own flag.
+    #[test]
+    fn a_log_fatal_error_carries_the_flag() {
+        let fatal = |src: &str| {
+            matches!(
+                evaluated(src, json!({})).unwrap_err(),
+                EvalError::Runtime { fatal: true, .. }
+            )
+        };
+        assert!(fatal("{{ log.fatal('gone') }}"));
+        assert!(!fatal("{{ log.error('gone') }}"));
     }
 
     #[test]

@@ -286,3 +286,249 @@ async fn failback_skips_the_runs_reads_start_and_force_does_not() {
     assert_eq!(runs.load(Ordering::SeqCst), 2, "--force runs it");
     handle.abort();
 }
+
+/// A Source whose `data` line reads `mode` and fails as it says (`fatal`,
+/// `error`) or returns it, counting its runs in `count`, in-process with a
+/// real server and scheduler.
+struct Mode {
+    dir: std::path::PathBuf,
+    sock: std::path::PathBuf,
+    cache: Arc<Cache>,
+    registry: Arc<ProviderRegistry>,
+    in_force: beachcomber::provider::registry::RegistryHandle,
+    scheduler: beachcomber::scheduler::SchedulerHandle,
+}
+
+impl Mode {
+    fn config(dir: &std::path::Path, failback: &str) -> Config {
+        Config::from_toml(&format!(
+            r#"
+[daemon.providers.p.sources.s]
+data = "{{% set n = exec('echo >> {d}/count') %}}{{{{ log.fatal('boom') if ('{d}/mode' | read | trim) == 'fatal' else (fail('soft') if ('{d}/mode' | read | trim) == 'error' else ('{d}/mode' | read | trim)) }}}}"
+result.v = "{{{{ data }}}}"
+return = "{{{{ result | poll('1h') | failback('{failback}', 1) }}}}"
+"#,
+            d = dir.display()
+        ))
+    }
+
+    fn new(dir: &std::path::Path, failback: &str) -> Self {
+        use beachcomber::provider::registry::RegistryHandle;
+        std::fs::write(dir.join("mode"), "ok").unwrap();
+        let config = Self::config(dir, failback);
+        let watchers = Arc::new(WatcherRegistry::new());
+        let cache = Arc::new(Cache::with_watchers(watchers.clone()));
+        let registry = ProviderRegistry::with_config(&config, &std::env::vars().collect())
+            .unwrap()
+            .share(&cache);
+        let in_force = RegistryHandle::new(registry.clone());
+        let (scheduler, mut task) =
+            Scheduler::new(cache.clone(), registry.clone(), config, watchers.clone());
+        task.use_polling_watcher(Duration::from_millis(50));
+        tokio::spawn(task.run());
+        let sock = dir.join("s");
+        beachcomber::server::Server::new(
+            sock.clone(),
+            cache.clone(),
+            in_force.clone(),
+            scheduler.clone(),
+            watchers,
+        )
+        .spawn()
+        .unwrap();
+        Self {
+            dir: dir.into(),
+            sock,
+            cache,
+            registry,
+            in_force,
+            scheduler,
+        }
+    }
+
+    fn set(&self, mode: &str) {
+        std::fs::write(self.dir.join("mode"), mode).unwrap();
+    }
+
+    fn runs(&self) -> usize {
+        std::fs::read_to_string(self.dir.join("count")).map_or(0, |t| t.lines().count())
+    }
+
+    async fn ask(&self, request: serde_json::Value) -> serde_json::Value {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let mut stream = tokio::net::UnixStream::connect(&self.sock).await.unwrap();
+        stream
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).await.unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    /// The value `p.v` reads, with `force` or not.
+    async fn get(&self, force: bool) -> serde_json::Value {
+        self.ask(serde_json::json!({"op": "get", "key": "p.v", "force": force}))
+            .await["data"]
+            .clone()
+    }
+
+    /// Wait for every run in flight to settle.
+    async fn settled(&self) {
+        poll_until_async(
+            "scheduler in_flight",
+            "empty",
+            Duration::from_secs(5),
+            Duration::from_millis(5),
+            async || self.scheduler.get_status().await.unwrap().in_flight,
+            |f| f.is_empty(),
+        )
+        .await;
+    }
+
+    /// What a poll (`Any`), a file event or refresh (`Fresh`), and a read
+    /// that found an input changed (`Changed`) each get of the instance.
+    fn starts(&self) -> [bool; 3] {
+        use beachcomber::run::Want;
+        let key = beachcomber::provider::source_call::instance_key("p", "s", None);
+        [Want::Any, Want::Fresh, Want::Changed].map(|w| {
+            self.registry
+                .runs()
+                .start(w, &self.registry, &self.cache, &key)
+                .is_some()
+        })
+    }
+
+    /// The instance as `comb status` shows its failure.
+    async fn failure(&self) -> Option<beachcomber::cache::FailureSnapshot> {
+        self.scheduler
+            .get_failure_states()
+            .await
+            .into_values()
+            .next()
+    }
+
+    /// Run it into a `log.fatal` after one good run: the last good value is `ok`.
+    async fn stopped(dir: &std::path::Path) -> Self {
+        let rig = Self::new(dir, "1h");
+        assert_eq!(rig.get(false).await, "ok");
+        rig.set("fatal");
+        assert_eq!(rig.get(false).await, "ok", "the last good value stands");
+        rig.settled().await;
+        assert_eq!(rig.runs(), 2);
+        rig
+    }
+}
+
+/// A `log.fatal` stops the instance with no expiry: nothing starts a run of
+/// it, a poll's, a watch's or a read's, and a read keeps the last good value.
+/// `comb status` shows it stopped, with the message.
+#[tokio::test(flavor = "multi_thread")]
+async fn log_fatal_stops_the_instance_and_keeps_the_last_good_value() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = Mode::stopped(&tmp.path().canonicalize().unwrap()).await;
+    let failure = rig.failure().await.expect("a failure is recorded");
+    assert!(failure.stopped, "{failure:?}");
+    assert!(failure.suppressed_until_unix_ms.is_none(), "no expiry");
+    assert!(failure.last_error.unwrap().contains("boom"));
+    assert_eq!(rig.starts(), [false; 3], "no poll, event or read runs it");
+    assert_eq!(rig.get(false).await, "ok");
+    assert_eq!(rig.runs(), 2);
+}
+
+/// A change to a file the failed run read re-arms it: the next read runs it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_input_re_arms_a_stopped_instance() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = Mode::stopped(&tmp.path().canonicalize().unwrap()).await;
+    rig.set("fixed value");
+    // The read starts the re-armed run and answers within the Source's
+    // budget: under load that is still the stored value. Wait for the run.
+    rig.get(false).await;
+    rig.settled().await;
+    assert_eq!(rig.runs(), 3);
+    assert_eq!(rig.get(false).await, "fixed value");
+    assert!(rig.failure().await.is_none(), "the success ended the stop");
+}
+
+/// A refresh of a key it serves, and `get --force`, re-arm it: each runs it.
+#[tokio::test(flavor = "multi_thread")]
+async fn refresh_and_force_re_arm_a_stopped_instance() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = Mode::stopped(&tmp.path().canonicalize().unwrap()).await;
+
+    rig.ask(serde_json::json!({"op": "refresh", "key": "p.v"}))
+        .await;
+    // The scheduler starts the run: wait for it to have run, then to settle.
+    poll_until_async(
+        "runs after a refresh",
+        "3",
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        async || rig.runs(),
+        |n| *n == 3,
+    )
+    .await;
+    rig.settled().await;
+
+    rig.get(true).await;
+    rig.settled().await;
+    assert_eq!(rig.runs(), 4, "--force runs it");
+    assert!(
+        rig.failure().await.unwrap().stopped,
+        "and it fails fatally again"
+    );
+}
+
+/// A config reload re-arms it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_config_reload_re_arms_a_stopped_instance() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().canonicalize().unwrap();
+    let rig = Mode::stopped(&dir).await;
+    let after =
+        ProviderRegistry::with_config(&Mode::config(&dir, "1h"), &std::env::vars().collect())
+            .unwrap()
+            .adopt(&rig.registry, &rig.cache);
+    rig.scheduler
+        .send(SchedulerMessage::Reload {
+            next: after.clone(),
+            registry: rig.in_force.clone(),
+        })
+        .await;
+    rig.scheduler
+        .get_status()
+        .await
+        .expect("the reload was handled");
+    assert!(rig.failure().await.is_none(), "the reload re-armed it");
+    let key = beachcomber::provider::source_call::instance_key("p", "s", None);
+    assert!(
+        after
+            .runs()
+            .start(beachcomber::run::Want::Any, &after, &rig.cache, &key)
+            .is_some()
+    );
+}
+
+/// An `error` is not fatal: it backs off, and retries once the backoff ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_error_still_backs_off_and_retries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let rig = Mode::new(&tmp.path().canonicalize().unwrap(), "1s");
+    assert_eq!(rig.get(false).await, "ok");
+    rig.set("error");
+    assert_eq!(rig.get(false).await, "ok");
+    rig.settled().await;
+    assert_eq!(rig.runs(), 2);
+    assert!(!rig.failure().await.unwrap().stopped);
+    rig.set("fixed again");
+    poll_until_async(
+        "the retry after the backoff",
+        "the fixed value",
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        async || rig.get(false).await,
+        |v| v == "fixed again",
+    )
+    .await;
+}

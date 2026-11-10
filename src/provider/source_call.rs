@@ -35,6 +35,10 @@ thread_local! {
     /// report: see [`ran`].
     static FAILED_CALL: RefCell<Option<String>> = const { RefCell::new(None) };
 
+    /// Whether the last run on this thread failed with `log.fatal`: see
+    /// [`ran`].
+    static FATAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
     /// The instances running on this thread, outermost first: the innermost is
     /// the caller of any call made now.
     static RUNNING: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
@@ -118,8 +122,15 @@ pub fn instance_key(provider: &str, source_name: &str, root: Option<&str>) -> Ke
     }
 }
 
-/// Whether the instance has failed enough times in a row that its failback
-/// holds it back until the backoff ends.
+/// The run on this thread has failed with `log.fatal`.
+pub fn mark_fatal() {
+    FATAL.set(true);
+}
+
+/// Whether the instance is held back: it has failed enough times in a row
+/// that its failback holds it until the backoff ends, or a `log.fatal` has
+/// stopped it, which no time ends. A stopped instance whose failed run's
+/// inputs have changed since is re-armed here, one `stat` each, and runs.
 pub fn in_failback_backoff(
     registry: &ProviderRegistry,
     provider: &str,
@@ -130,8 +141,8 @@ pub fn in_failback_backoff(
         .failures
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&instance_key(provider, source_name, root))
-        .is_some_and(|state| state.is_suppressed())
+        .get_mut(&instance_key(provider, source_name, root))
+        .is_some_and(|state| state.holds_back())
 }
 
 /// A Source's record as a call finds it, and how old it is.
@@ -452,12 +463,15 @@ fn kept_chain(
 /// why a call it made failed, if one did. A Source whose run fails because it
 /// called a Source that does not exist, or itself, is a fault of the lines,
 /// which a read shows; any other failure, a called Source's own included, stays
-/// a miss.
-pub fn ran<T>(execute: impl FnOnce() -> Result<T, String>) -> (Result<T, String>, Option<String>) {
+/// a miss. Beside it, whether the run failed with `log.fatal` ([`mark_fatal`]).
+pub fn ran<T>(
+    execute: impl FnOnce() -> Result<T, String>,
+) -> (Result<T, String>, Option<String>, bool) {
     FAILED_CALL.with(|f| *f.borrow_mut() = None);
+    FATAL.set(false);
     let result = execute();
     let failed_call = FAILED_CALL.with(|f| f.borrow_mut().take());
-    (result, failed_call)
+    (result, failed_call, FATAL.take())
 }
 
 /// `fields` as JSON members. Serializing a `Value` cannot fail (a non-finite

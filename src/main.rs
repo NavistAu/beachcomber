@@ -51,6 +51,7 @@ fn status_after_help() -> String {
         \x20 TTL    {star} 3..0    {star} Active:       ENTRY is within first TTL.PollLifetime\n\
         \x20                 # Number:        ENTRY is Idle, Polls halve each lifetime, # lifetimes until Eviction\n\
         \x20        {warn} #3                      Failing \u{2014} 3 failures in a row; POLL shows the Retry countdown\n\
+        \x20        {warn} stop                    Stopped by log.fatal \u{2014} no Retry until an input changes, a reload or a refresh\n\
         \x20        60s{times}12      PollLifetime: Current lifetime, ie 720s with 12 VALUE Refreshes\n\
         \x20                      PollRate:   Every 60s\n\
         \x20                      PollCount:  12 times\n\

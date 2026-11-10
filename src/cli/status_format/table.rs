@@ -644,6 +644,7 @@ mod tests {
             failure: Some(FailureSnapshot {
                 consecutive_failures: 1,
                 suppressed_until_unix_ms: None,
+                stopped: false,
                 last_error: Some(error.into()),
             }),
         }

@@ -119,6 +119,9 @@ pub fn row_context(r: &CacheRow) -> serde_json::Value {
         if let Some(e) = &f.last_error {
             fobj.insert("last_error".into(), serde_json::json!(e));
         }
+        if f.stopped {
+            fobj.insert("stopped".into(), serde_json::json!(true));
+        }
         if let Some(su) = f.suppressed_until_unix_ms {
             fobj.insert("suppressed_until_unix_ms".into(), serde_json::json!(su));
         }

@@ -286,6 +286,11 @@ pub(crate) struct FailureState {
     /// The latest failure's message, whole: the `comb status` table cuts it
     /// for display, everything else carries all of it.
     last_error: Option<String>,
+    /// A `log.fatal` stopped the instance: no run until something re-arms it
+    /// ([`Self::rearm`], [`Self::holds_back`]). Never expires.
+    stopped: bool,
+    /// What the failed run read, to see whether any of it has changed since.
+    inputs: Option<crate::cache::Validity>,
 }
 
 impl FailureState {
@@ -296,10 +301,46 @@ impl FailureState {
             threshold,
             backoff_interval,
             last_error: None,
+            stopped: false,
+            inputs: None,
         }
     }
 
+    /// A run failed with `log.fatal`: stopped, with the inputs it read.
+    pub(crate) fn record_fatal(&mut self, message: &str, inputs: Option<crate::cache::Validity>) {
+        self.record_failure(message);
+        self.stopped = true;
+        self.suppressed_until = None;
+        self.inputs = inputs;
+    }
+
+    /// The next demand runs it: the streak, any backoff and any stop end.
+    pub(crate) fn rearm(&mut self) {
+        self.record_success();
+    }
+
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stopped
+    }
+
+    /// Whether a run is held back now. A stopped instance whose failed run's
+    /// inputs have changed (one `stat` each) is re-armed, and is not.
+    pub(crate) fn holds_back(&mut self) -> bool {
+        use libbeachcomber::validity::Check;
+        if self.stopped
+            && self
+                .inputs
+                .as_ref()
+                .is_some_and(|v| v.check() == Check::Invalid)
+        {
+            self.rearm();
+        }
+        self.stopped || self.is_suppressed()
+    }
+
     pub(crate) fn record_failure(&mut self, message: &str) {
+        self.stopped = false;
+        self.inputs = None;
         self.consecutive_failures += 1;
         self.last_error = Some(message.to_string());
         if self.consecutive_failures >= self.threshold {
@@ -311,6 +352,8 @@ impl FailureState {
     }
 
     pub(crate) fn record_success(&mut self) {
+        self.stopped = false;
+        self.inputs = None;
         self.consecutive_failures = 0;
         self.last_error = None;
         self.suppressed_until = None;
@@ -327,6 +370,7 @@ impl FailureState {
         (self.consecutive_failures > 0).then(|| FailureSnapshot {
             consecutive_failures: self.consecutive_failures,
             suppressed_until_unix_ms: self.suppressed_until.map(instant_to_unix_ms),
+            stopped: self.stopped,
             last_error: self.last_error.clone(),
         })
     }
@@ -732,6 +776,17 @@ impl Scheduler {
     /// now.
     fn refresh_sources(&self, provider: &str, instances: &[Instance]) {
         for instance in instances {
+            // A refresh re-arms an instance a `log.fatal` stopped.
+            let key = crate::provider::source_call::instance_key(
+                provider,
+                &instance.source,
+                instance.root.address(),
+            );
+            if let Some(state) = self.failure_counts.lock().unwrap().get_mut(&key)
+                && state.is_stopped()
+            {
+                state.rearm();
+            }
             self.execute_source(
                 provider,
                 &instance.source,
@@ -828,6 +883,8 @@ impl Scheduler {
             for retune in plan.retune.iter().filter(|r| r.failback_changed) {
                 failures.remove(&retune.key);
             }
+            // A reload re-arms every instance a `log.fatal` stopped.
+            failures.retain(|_, state| !state.is_stopped());
             failures.retain(|key, _| {
                 key.source.is_static()
                     || !plan
@@ -1924,6 +1981,23 @@ mod tests {
         assert_eq!(has("failing"), Some((false, true)));
         // A streak a success ended is not shown, as before.
         assert_eq!(has("recovered"), None);
+    }
+
+    #[test]
+    fn a_fatal_failure_stops_with_no_expiry_until_rearmed_or_ended() {
+        let mut state = FailureState::new(3, Duration::from_millis(1));
+        state.record_fatal("boom", None);
+        assert!(state.is_stopped() && state.holds_back());
+        assert!(state.snapshot().unwrap().stopped);
+        assert!(state.snapshot().unwrap().suppressed_until_unix_ms.is_none());
+        // Inputs it read are unchanged, or it read none: it stays stopped.
+        assert!(state.holds_back());
+        state.rearm();
+        assert!(!state.is_stopped() && !state.holds_back() && state.snapshot().is_none());
+        // An error after a fatal, as a forced run's, is the ordinary kind.
+        state.record_fatal("boom", None);
+        state.record_failure("soft");
+        assert!(!state.is_stopped());
     }
 
     #[test]

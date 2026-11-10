@@ -171,7 +171,7 @@ environment; `comb eval` and `comb get` pass the process environment. Without th
 |---|---|
 | `log.debug(msg)`, `log.info(msg)`, `log.warn(msg)` | writes a line at that level and renders nothing; the render goes on. A non-string is written as its text. A line an origin repeats on every run is written when it first appears or changes, then counted: a different line follows `msg (repeated N times)`. A render with no origin is not counted |
 | `log.error(msg)`, `fail(msg)` | fails the render with `msg`, as a failed `exec()` does. `fail(msg)` is `log.error(msg)` |
-| `log.fatal(msg)` | fails as `log.error`; the failure is marked fatal, and does not yet stop the retries |
+| `log.fatal(msg)` | fails as `log.error`, and stops a daemon Source's retries: no poll, watch or read runs that instance again, and `comb status` shows it stopped (`⚠ stop`) with `msg`. Reads keep the last good value. It never expires; it is re-armed by a change to a file the failed run read, a configuration reload, `comb refresh` of a key the Source serves, or `comb get --force` on one |
 
 `log` has these five methods; another (`log.critical`) is an error that lists them. Put the failure check first and the
 happy path last:

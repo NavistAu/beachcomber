@@ -178,6 +178,10 @@ WARN beachcomber::run: Source 'flaky.main' failed: flaky.main: data: `sh -c 'cat
 After repeated failures the Source backs off. `failback(interval, count)` on `return` sets how: after `count` failures in
 a row, retries are spaced from `interval`, doubling. A command that succeeds has its stderr dropped.
 
+A line that fails with `log.fatal(msg)` instead stops the Source: nothing runs it again until a file it read changes, the
+configuration reloads, or `comb refresh` / `comb get --force` asks. See
+[the template library](../reference/template-library.md).
+
 ## Keep it fast
 
 Each run of `exec()` starts a process, which costs milliseconds. For a value that lives in a file, read the file instead

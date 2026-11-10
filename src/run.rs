@@ -40,8 +40,26 @@ use tracing::{debug, warn};
 /// stat inputs (what it declared, stamped immediately before it began, and
 /// what its lines read, each stamped before it was read), or its error and
 /// whether it was a fault in the lines (a Source it calls failed, or it
-/// called itself).
-type Ran = Result<(SourceResult, Option<Validity>), (String, bool)>;
+/// called itself), and whether it was a `log.fatal`, with the inputs the
+/// failed run read (what re-arms the stopped instance when one changes).
+type Ran = Result<(SourceResult, Option<Validity>), Failure>;
+
+struct Failure {
+    message: String,
+    fault: bool,
+    /// `Some` when the run failed with `log.fatal`: its inputs' validity.
+    fatal: Option<Option<Validity>>,
+}
+
+impl Failure {
+    fn plain(message: String) -> Self {
+        Self {
+            message,
+            fault: false,
+            fatal: None,
+        }
+    }
+}
 
 /// What a caller needs of a run of an instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -612,25 +630,28 @@ impl Runs {
                         },
                     );
                     let _ = stamped.set(Validity::of(declared.clone()));
-                    let (result, failed_call) = ran(|| source.execute(dir.as_deref()));
-                    let result = result.map(|result| {
-                        let read = reads.touches();
-                        let validity = if read.is_empty() {
-                            stamped.get().cloned().flatten()
-                        } else {
-                            Validity::of(declared.and_read(read))
-                        };
-                        (result, validity)
-                    });
-                    (result, failed_call)
+                    let (result, failed_call, fatal) = ran(|| source.execute(dir.as_deref()));
+                    let read = reads.touches();
+                    let validity = if read.is_empty() {
+                        stamped.get().cloned().flatten()
+                    } else {
+                        Validity::of(declared.and_read(read))
+                    };
+                    match result {
+                        Ok(result) => Ok((result, validity)),
+                        Err(message) => Err(Failure {
+                            message,
+                            fault: failed_call.is_some(),
+                            fatal: fatal.then_some(validity),
+                        }),
+                    }
                 }),
             )
             .await;
             let result = match ran {
-                Ok(Ok((Ok(result), _))) => Ok(result),
-                Ok(Ok((Err(message), failed_call))) => Err((message, failed_call.is_some())),
-                Ok(Err(e)) => Err((format!("panicked: {e}"), false)),
-                Err(_) => Err((crate::scheduler::timed_out(timeout), false)),
+                Ok(Ok(result)) => result,
+                Ok(Err(e)) => Err(Failure::plain(format!("panicked: {e}"))),
+                Err(_) => Err(Failure::plain(crate::scheduler::timed_out(timeout))),
             };
             settle.finish(result);
         });
@@ -810,21 +831,27 @@ fn record(registry: &ProviderRegistry, cache: &Cache, key: &Key, result: Ran) ->
                 debug!("Executed source '{provider}.{source_name}' path={root:?}");
                 Outcome::Stored
             }
-            Err((message, fault)) => {
-                lock(&registry.failures)
-                    .entry(key.clone())
-                    .or_insert_with(|| {
-                        crate::scheduler::FailureState::new(
-                            meta.schedule.failback.reattempts,
-                            std::time::Duration::from_secs(meta.schedule.failback.interval_secs),
-                        )
-                    })
-                    // The row and the verdict already name the Source.
-                    .record_failure(
-                        message
-                            .strip_prefix(&format!("{provider}.{source_name}: "))
-                            .unwrap_or(&message),
-                    );
+            Err(Failure {
+                message,
+                fault,
+                fatal,
+            }) => {
+                let mut failures = lock(&registry.failures);
+                let state = failures.entry(key.clone()).or_insert_with(|| {
+                    crate::scheduler::FailureState::new(
+                        meta.schedule.failback.reattempts,
+                        std::time::Duration::from_secs(meta.schedule.failback.interval_secs),
+                    )
+                });
+                // The row and the verdict already name the Source.
+                let shown = message
+                    .strip_prefix(&format!("{provider}.{source_name}: "))
+                    .unwrap_or(&message);
+                match fatal {
+                    Some(inputs) => state.record_fatal(shown, inputs),
+                    None => state.record_failure(shown),
+                }
+                drop(failures);
                 warn!("Source '{provider}.{source_name}' failed: {message}");
                 Outcome::Failed { message, fault }
             }

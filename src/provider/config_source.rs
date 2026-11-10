@@ -39,7 +39,8 @@ use crate::provider::source_call::{Called, Running, calls_in};
 use crate::provider::{FieldSchema, Source, SourceMetadata, SourceResult, Value};
 use libbeachcomber::engine::{EngineCtx, with_ctx};
 use libbeachcomber::eval::{
-    Finding, Known, Line, Probe, eval_line, eval_line_with, lint, refs_in, undeclared_names,
+    Finding, Known, Line, LineError, Probe, eval_line, eval_line_with, lint, refs_in,
+    undeclared_names,
 };
 use libbeachcomber::fs::{MOST_TOUCHED, Touched};
 use libbeachcomber::virtual_fields::Ref;
@@ -209,6 +210,15 @@ pub struct ConfigSource {
 /// at load and at run. A line's message comes from the one evaluator, which
 /// has already taken the engine's frame off it, so a render that fails
 /// because a Source it calls failed shows no frame per Source down the chain.
+/// A `result` line over `context`, its failure flagged as a line's is.
+fn eval_result(
+    env: &minijinja::Environment<'_>,
+    line: &str,
+    context: &Json,
+) -> Result<Option<Json>, LineError> {
+    eval_line_with(env, line, MjValue::from(Serde(context)))
+}
+
 fn stage_error(spec: &ConfigSourceSpec, stage: &str, message: impl std::fmt::Display) -> String {
     format!("{}.{}: {stage}: {message}", spec.provider, spec.name)
 }
@@ -561,6 +571,15 @@ impl ConfigSource {
         with_ctx(ctx, || self.render_lines(path))
     }
 
+    /// A line's failure as the run's error. A `log.fatal` is noted for the run
+    /// ([`mark_fatal`]), which stops the instance.
+    fn line_error(&self, stage: &str, e: LineError) -> String {
+        if e.fatal {
+            crate::provider::source_call::mark_fatal();
+        }
+        stage_error(&self.spec, stage, e)
+    }
+
     /// The `data` and `result` lines, rendered in the run's context.
     fn render_lines(&self, path: Option<&str>) -> Result<SourceResult, String> {
         let mut jinja = daemon_engine_env(self.plugins.clone());
@@ -594,26 +613,25 @@ impl ConfigSource {
         if let Some(failed) = comb.failed.lock().ok().and_then(|mut f| f.take()) {
             return Err(stage_error(&self.spec, "data", failed));
         }
-        let data = data.map_err(|e| stage_error(&self.spec, "data", e))?;
+        let data = data.map_err(|e| self.line_error("data", e))?;
         let result_context = json!({"data": data, "_": self.underscore()});
 
         match &self.spec.result {
             ResultSpec::Whole(line) => {
-                let stage = |e| stage_error(&self.spec, "result", e);
-                match eval_line(&jinja, line, &result_context).map_err(stage)? {
+                let stage = |e: LineError| self.line_error("result", e);
+                match eval_result(&jinja, line, &result_context).map_err(stage)? {
                     Some(Json::Object(map)) => Ok(SourceResult::from_json_object(&map)),
                     None => Ok(SourceResult::new()),
-                    Some(other) => Err(stage(format!(
-                        "a whole node must be an object, got {}",
-                        kind(&other)
-                    ))),
+                    Some(other) => Err(stage(
+                        format!("a whole node must be an object, got {}", kind(&other)).into(),
+                    )),
                 }
             }
             ResultSpec::Fields(pairs) => {
                 let mut out = SourceResult::new();
                 for (name, line) in pairs {
-                    let json = eval_line(&jinja, line, &result_context)
-                        .map_err(|e| stage_error(&self.spec, &format!("result.{name}"), e))?;
+                    let json = eval_result(&jinja, line, &result_context)
+                        .map_err(|e| self.line_error(&format!("result.{name}"), e))?;
                     if let Some(v) = json.as_ref().and_then(Value::from_json) {
                         out.insert(name.clone(), v);
                     }

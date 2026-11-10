@@ -142,7 +142,12 @@ pub fn format_ttl_cell(
 
             if let Some(f) = failure {
                 let attempt = f.consecutive_failures.min(99);
-                let text = format!("{warn} #{attempt:02} {indicator}");
+                // A `log.fatal` stopped it: no retry is coming.
+                let text = if f.stopped {
+                    format!("{warn} stop {indicator}")
+                } else {
+                    format!("{warn} #{attempt:02} {indicator}")
+                };
                 return TtlCell {
                     text,
                     color: Some(ansi::Color::Red),
@@ -205,6 +210,9 @@ pub fn format_poll_cell(
         return "-".to_string();
     }
     if let Some(f) = failure {
+        if f.stopped {
+            return "-".to_string();
+        }
         let retry = failure_retry_secs(f, next_poll_in_secs, now_unix_ms).min(TTL_SECONDS_MAX);
         return render::duration(Duration::from_secs(retry));
     }
@@ -650,6 +658,7 @@ mod ttl_cell_tests {
         let snap = FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
+            stopped: false,
             last_error: None,
         };
         let cell = format_ttl_cell(
@@ -669,10 +678,29 @@ mod ttl_cell_tests {
     }
 
     #[test]
+    fn a_stopped_source_says_stop_and_has_no_retry() {
+        let snap = FailureSnapshot {
+            consecutive_failures: 1,
+            suppressed_until_unix_ms: None,
+            stopped: true,
+            last_error: None,
+        };
+        let kind = RowKind::Lifecycle {
+            decay: 1,
+            depth: 4,
+            watches_files: true,
+        };
+        let cell = format_ttl_cell(Some(&kind), Some(60), Some(12), Some(&snap), false, &W6);
+        assert_eq!(cell.text, "\u{26a0} stop \u{2219}");
+        assert_eq!(format_poll_cell(Some(&kind), Some(30), Some(&snap), 0), "-");
+    }
+
+    #[test]
     fn failure_ascii_fallback() {
         let snap = FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
+            stopped: false,
             last_error: None,
         };
         let cell = format_ttl_cell(
@@ -880,6 +908,7 @@ mod poll_cell_tests {
         let snap = FailureSnapshot {
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
+            stopped: false,
             last_error: None,
         };
         assert_eq!(
@@ -902,6 +931,7 @@ mod poll_cell_tests {
         let snap = FailureSnapshot {
             consecutive_failures: 5,
             suppressed_until_unix_ms: Some(10_000),
+            stopped: false,
             last_error: None,
         };
         // (10_000 - 3_000) / 1000 = 7s remaining until suppression lifts.

@@ -294,6 +294,7 @@ fn human_preset_colours_the_age_of_a_failing_row() {
     );
     let mut failing = rows.clone();
     failing[0].failure = Some(FailureSnapshot {
+        stopped: false,
         consecutive_failures: 1,
         suppressed_until_unix_ms: None,
         last_error: None,
@@ -1053,6 +1054,7 @@ fn failure_snapshot_serde_round_trip() {
     use serde_json::json;
 
     let snap = FailureSnapshot {
+        stopped: false,
         consecutive_failures: 5,
         suppressed_until_unix_ms: Some(1_700_000_000_000),
         last_error: None,
@@ -1067,6 +1069,7 @@ fn failure_snapshot_serde_round_trip() {
 
     // optional field absent when None
     let snap2 = FailureSnapshot {
+        stopped: false,
         consecutive_failures: 1,
         suppressed_until_unix_ms: None,
         last_error: None,
@@ -1784,6 +1787,7 @@ fn failure_state_renders_warn_and_red_row() {
         polls_elapsed: None,
         next_poll_in_secs: None,
         failure: Some(FailureSnapshot {
+            stopped: false,
             consecutive_failures: 3,
             suppressed_until_unix_ms: None,
             last_error: None,
@@ -3371,6 +3375,7 @@ fn a_template_reads_the_failures_last_error() {
     use beachcomber::cache::FailureSnapshot;
     let mut row = sample_lifecycle_row();
     row.failure = Some(FailureSnapshot {
+        stopped: false,
         consecutive_failures: 2,
         suppressed_until_unix_ms: None,
         last_error: Some("exit status: 128".into()),
@@ -3387,6 +3392,7 @@ fn a_failing_row_with_no_value_shows_its_latest_error() {
     let mut row = sample_lifecycle_row();
     row.value = serde_json::Value::Null;
     row.failure = Some(FailureSnapshot {
+        stopped: false,
         consecutive_failures: 2,
         suppressed_until_unix_ms: None,
         last_error: Some("git.refs: data: `git`: exit status: 128".into()),
@@ -3422,6 +3428,7 @@ fn the_defaults_show_a_failing_row_with_no_value() {
     let mut failing = sample_lifecycle_row();
     failing.value = serde_json::Value::Null;
     failing.failure = Some(FailureSnapshot {
+        stopped: false,
         consecutive_failures: 1,
         suppressed_until_unix_ms: None,
         last_error: Some("data: `git`: exit status: 128".into()),

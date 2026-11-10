@@ -454,6 +454,10 @@ pub struct FailureSnapshot {
     pub consecutive_failures: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suppressed_until_unix_ms: Option<u64>,
+    /// A `log.fatal` stopped the Source: it runs no more until an input it
+    /// read changes, the configuration reloads, or it is refreshed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
     /// The latest failure's message: its first line, cut short.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
