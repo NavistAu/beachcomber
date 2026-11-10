@@ -37,7 +37,12 @@ impl Agents {
         let dir: PathBuf = self.s.project.clone();
         let log = self.log();
         let log = log.to_str().unwrap();
-        let vars: Vec<(&str, &str)> = vars.iter().copied().chain([("RUN_LOG", log)]).collect();
+        let path = std::env::var("PATH").unwrap();
+        let vars: Vec<(&str, &str)> = vars
+            .iter()
+            .copied()
+            .chain([("RUN_LOG", log), ("PATH", &path)])
+            .collect();
         self.s.get_in_env(key, Path::new(&dir), &vars)
     }
 

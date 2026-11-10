@@ -142,7 +142,12 @@ fn asdf_python_version_falls_through_to_asdf() {
     // a second, and answer from its own config).
     // SAFETY: nextest runs each test in its own process, and the daemon that
     // reads this `PATH` has not started.
-    unsafe { std::env::set_var("PATH", "/usr/bin:/bin") };
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            crate::common::daemon::system_bin().display().to_string(),
+        )
+    };
     let s = scenario();
     tool_versions(&s.project, "python 3.11.9\n");
     assert_eq!(s.get("python.version", &s.project), Some(json!("3.11.9")));

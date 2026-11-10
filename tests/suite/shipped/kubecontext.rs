@@ -51,7 +51,10 @@ impl Tools {
         );
         let mut cmd = self.s.daemon.command(&self.s.daemon.home);
         let out = cmd
-            .env("PATH", format!("{path}:/usr/bin:/bin"))
+            .env(
+                "PATH",
+                format!("{path}:{}", crate::common::daemon::system_bin().display()),
+            )
             .env("COMB_STUB_LOG", &self.log)
             .envs(vars.iter().copied())
             .args(args)

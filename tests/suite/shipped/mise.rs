@@ -24,8 +24,12 @@ fn entry(version: &str, config: &Path) -> Value {
 /// directories, and never the developer's own `mise`.
 fn daemon_path(bin: Option<&Path>) {
     let path = match bin {
-        Some(bin) => format!("{}:/usr/bin:/bin", bin.display()),
-        None => "/usr/bin:/bin".to_string(),
+        Some(bin) => format!(
+            "{}:{}",
+            bin.display(),
+            crate::common::daemon::system_bin().display()
+        ),
+        None => crate::common::daemon::system_bin().display().to_string(),
     };
     // SAFETY: nextest runs each test in its own process, and the daemon that
     // reads this `PATH` has not started.

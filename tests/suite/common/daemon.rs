@@ -35,21 +35,17 @@ pub fn stop(process: &mut Child) {
 /// (= `<home>/.local/state`), `$XDG_CACHE_HOME` (= `<home>/.cache`, where
 /// persisted puts live) and `$BEACHCOMBER_SOCKET` (= `sock`), with
 /// `RUST_LOG=error`, and `$KUBECONFIG` and `$TALOSCONFIG` removed, so nothing it runs can read or write the developer's real
-/// config, defaults, log or daemon; and put [`stub_bin`] first on its `PATH`,
-/// so no template it renders runs the developer's own tools. A coverage run's
+/// config, defaults, log or daemon; and give it [`test_path`] for `PATH`, so
+/// no template it renders runs the developer's own tools. A coverage run's
 /// `$LLVM_PROFILE_FILE` is kept, even for a caller that cleared the rest.
 pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path, sock: &Path) -> &'a mut Command {
-    let path = std::env::join_paths(std::iter::once(stub_bin().to_path_buf()).chain(
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
-    ))
-    .expect("a PATH of directories");
     cmd.env("HOME", home)
         .env("XDG_CONFIG_HOME", xdg)
         .env("XDG_STATE_HOME", home.join(".local/state"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
         .env("BEACHCOMBER_SOCKET", sock)
         .env("RUST_LOG", "error")
-        .env("PATH", path)
+        .env("PATH", test_path(None))
         // The variables the shipped templates read (`kubecontext`, `talos`):
         // the developer's own name their real config files.
         .env_remove("KUBECONFIG")
@@ -62,6 +58,82 @@ pub fn isolate<'a>(cmd: &'a mut Command, home: &Path, xdg: &Path, sock: &Path) -
         cmd.env("LLVM_PROFILE_FILE", profile);
     }
     cmd
+}
+
+/// The `PATH` a test's `comb` and daemon see: `tools` (a test's own fakes),
+/// then [`stub_bin`], then [`system_bin`]. Never the developer's own `PATH`,
+/// whose tools (docker, gpg, brew, ...) would make every cold `comb status`
+/// run them, slowly, and its answer depend on the machine.
+pub fn test_path(tools: Option<&Path>) -> std::ffi::OsString {
+    std::env::join_paths(
+        tools
+            .into_iter()
+            .chain([stub_bin(), system_bin()])
+            .map(Path::to_path_buf),
+    )
+    .expect("a PATH of directories")
+}
+
+/// The tools the shipped files gate on (`which`) or run that live in a
+/// system directory on some platform; [`system_bin`] leaves them out, so a
+/// shipped provider over one is off unless a test provides the tool.
+const HIDDEN: &[&str] = &[
+    "ssh-add",
+    "klist",
+    "gpg-connect-agent",
+    "docker",
+    "podman",
+    "brew",
+    "apt",
+    "dnf",
+    "apk",
+    "checkupdates",
+];
+
+/// `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin` as one directory of symlinks,
+/// the first of each name, without the [`HIDDEN`] tools: what `sh` and a
+/// test's fake scripts need, and nothing installed by the developer but
+/// `git`, the one the tests' own repositories are made with (macOS's
+/// `/usr/bin/git` is an `xcrun` shim, twice as slow a start). Made once per
+/// target directory.
+// shortcut: a tool added to the system later is not linked until the target dir's `sys-bin` is removed.
+pub fn system_bin() -> &'static Path {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("sys-bin");
+        if dir.is_dir() {
+            return dir;
+        }
+        // Made beside and renamed into place, so a test process that looks
+        // while another makes it sees all of it or none.
+        let part = dir.with_extension(std::process::id().to_string());
+        let _ = std::fs::remove_dir_all(&part);
+        std::fs::create_dir_all(&part).expect("make the system bin");
+        if let Some(git) = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|d| d.join("git"))
+            .find(|g| g.is_file())
+        {
+            let _ = std::os::unix::fs::symlink(git, part.join("git"));
+        }
+        for sys in ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+            let Ok(entries) = std::fs::read_dir(sys) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if HIDDEN.iter().any(|h| name == *h) || part.join(&name).symlink_metadata().is_ok()
+                {
+                    continue;
+                }
+                let _ = std::os::unix::fs::symlink(entry.path(), part.join(&name));
+            }
+        }
+        // Another process may have put its own in place first; either will do.
+        if std::fs::rename(&part, &dir).is_err() {
+            let _ = std::fs::remove_dir_all(&part);
+        }
+        dir
+    })
 }
 
 /// The tools the shipped files run through `exec()`, as stand-ins that have
@@ -209,18 +281,8 @@ impl TestDaemon {
         isolate(&mut cmd, &home, &xdg, &socket.path)
             .args(["daemon", "--exit-with-parent", "--socket"])
             .arg(&socket.path);
-        if let Some(tools) = tools {
-            let isolated = cmd
-                .get_envs()
-                .find(|(k, _)| *k == "PATH")
-                .and_then(|(_, v)| v)
-                .map(std::ffi::OsStr::to_os_string)
-                .unwrap_or_default();
-            let path = std::env::join_paths(
-                std::iter::once(tools.to_path_buf()).chain(std::env::split_paths(&isolated)),
-            )
-            .expect("a PATH of directories");
-            cmd.env("PATH", path);
+        if tools.is_some() {
+            cmd.env("PATH", test_path(tools));
         }
         let process = launch(&mut cmd);
         Self {
@@ -271,8 +333,7 @@ impl TestDaemon {
 
     /// [`TestDaemon::spawn_with_tools`]'s daemon, served in this process:
     /// this process's `PATH` and variables are set as [`isolate`] sets a
-    /// spawned one's, `tools` (if any) then the stand-ins ([`stub_bin`])
-    /// first, where [`TestDaemon::serve_in_process`] leaves `PATH` as the test
+    /// spawned one's ([`test_path`]), where [`TestDaemon::serve_in_process`] leaves `PATH` as the test
     /// set it. A test whose daemon must see an environment other than its
     /// own (the caller's variables, an env file) spawns one.
     #[allow(dead_code)]
@@ -282,16 +343,7 @@ impl TestDaemon {
         xdg: PathBuf,
         tools: Option<&Path>,
     ) -> Self {
-        let path = std::env::join_paths(
-            tools
-                .into_iter()
-                .chain(std::iter::once(stub_bin()))
-                .map(Path::to_path_buf)
-                .chain(std::env::split_paths(
-                    &std::env::var_os("PATH").unwrap_or_default(),
-                )),
-        )
-        .expect("a PATH of directories");
+        let path = test_path(tools);
         // SAFETY: one test per process, and nothing else reads the environment
         // until the daemon below starts.
         unsafe {

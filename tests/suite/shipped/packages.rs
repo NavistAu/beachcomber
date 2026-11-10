@@ -28,7 +28,11 @@ fn bin(tools: &[(&str, &str)]) -> Bin {
     for (name, body) in tools {
         crate::common::daemon::tool(&bindir, name, &format!("#!/bin/sh\n{body}\n"));
     }
-    let path = format!("{}:/usr/bin:/bin", bindir.display());
+    let path = format!(
+        "{}:{}",
+        bindir.display(),
+        crate::common::daemon::system_bin().display()
+    );
     // SAFETY: nextest runs each test in its own process, before its server.
     unsafe { std::env::set_var("PATH", &path) };
     Bin {

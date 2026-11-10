@@ -212,7 +212,12 @@ fn python_the_templates_render_over_the_source() {
     // a second, and answer from its own config).
     // SAFETY: nextest runs each test in its own process, and the daemon that
     // reads this `PATH` has not started.
-    unsafe { std::env::set_var("PATH", "/usr/bin:/bin") };
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            crate::common::daemon::system_bin().display().to_string(),
+        )
+    };
     let s = scenario();
     venv(&s.project, ".venv", "version = 3.12.4\n");
     assert_eq!(s.get("python.version", &s.project), Some(json!("3.12.4")));

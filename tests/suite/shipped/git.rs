@@ -1594,10 +1594,7 @@ fn a_source_over_lup_does_not_run_for_entries_coming_and_going() {
 /// A `git` in `dir` that logs each command and its environment to `dir/log`,
 /// then runs the real one.
 fn logging_git(dir: &Path) -> std::path::PathBuf {
-    let real = std::env::split_paths(&std::env::var_os("PATH").unwrap())
-        .map(|d| d.join("git"))
-        .find(|p| p.is_file())
-        .expect("git on PATH");
+    let real = crate::common::daemon::system_bin().join("git");
     crate::common::daemon::tool(
         dir,
         "git",
@@ -1620,11 +1617,7 @@ fn git_a_refresh_spawns_the_same_commands() {
     let repo = GitRepoFixture::new();
     let tools = TempDir::new().unwrap();
     let log = logging_git(tools.path());
-    let path = std::env::join_paths(
-        std::iter::once(tools.path().to_path_buf())
-            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-    )
-    .unwrap();
+    let path = crate::common::daemon::test_path(Some(tools.path()));
     // SAFETY: nextest gives each test its own process, and nothing else reads
     // the environment until the server below starts.
     unsafe { std::env::set_var("PATH", path) };

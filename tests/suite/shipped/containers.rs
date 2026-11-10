@@ -20,7 +20,12 @@ struct Env {
 /// the `names`. `get`'s `PATH` is that bin, then the system's.
 fn env_with(names: &[&str]) -> Env {
     // SAFETY: nextest runs each test in its own process, before any daemon.
-    unsafe { std::env::set_var("PATH", "/usr/bin:/bin") };
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            crate::common::daemon::system_bin().display().to_string(),
+        )
+    };
     let s = scenario();
     let base = s.daemon.home.parent().unwrap().to_path_buf();
     let bin = base.join("bin");
@@ -59,9 +64,16 @@ impl Env {
             &self.s.daemon.socket.path,
         );
         // Only the stand-ins and the system: not the stub bin the other tests use.
-        cmd.env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
-            .env("STUB_LOG", &self.log)
-            .envs(vars.iter().copied());
+        cmd.env(
+            "PATH",
+            format!(
+                "{}:{}",
+                self.bin.display(),
+                crate::common::daemon::system_bin().display()
+            ),
+        )
+        .env("STUB_LOG", &self.log)
+        .envs(vars.iter().copied());
         let out = cmd
             .current_dir(&self.s.daemon.home)
             .args(["get", "-f", "json", key])

@@ -437,11 +437,9 @@ fn daemon_with_defaults_and_fake_kubectl() -> (TestDaemon, PathBuf) {
 }
 
 fn path_with(bin: &Path) -> String {
-    format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    )
+    crate::common::daemon::test_path(Some(bin))
+        .into_string()
+        .unwrap()
 }
 
 /// A `PATH` holding `bin` and a `sh`, and nothing else: no tool the
