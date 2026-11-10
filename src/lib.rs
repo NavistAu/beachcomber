@@ -56,6 +56,32 @@ fn prefer_nextest_advisory() {
     }
 }
 
+/// A test process keeps its state and cache (`$XDG_STATE_HOME`,
+/// `$XDG_CACHE_HOME`) in a directory of its own, removed when it exits: never
+/// the developer's. A config load that migrates a file locks `migrate.lock`
+/// and rewrites `migrated.json` in the state directory; shared, every test
+/// process queued on the one lock and grew the developer's record by a
+/// temp path each. A test about those directories sets its own.
+#[cfg(test)]
+#[ctor::ctor(unsafe)]
+fn isolate_state_dirs() {
+    let dir = std::env::temp_dir().join(format!("beachcomber-test-{}", std::process::id()));
+    // SAFETY: a constructor runs before `main`, while the process has one
+    // thread; the exit handler only removes the directory.
+    unsafe {
+        std::env::set_var("XDG_STATE_HOME", dir.join("state"));
+        std::env::set_var("XDG_CACHE_HOME", dir.join("cache"));
+        libc::atexit(remove_state_dirs);
+    }
+}
+
+#[cfg(test)]
+extern "C" fn remove_state_dirs() {
+    let _ = std::fs::remove_dir_all(
+        std::env::temp_dir().join(format!("beachcomber-test-{}", std::process::id())),
+    );
+}
+
 /// The root crate and `beachcomber-client` derive `BEACHCOMBER_VERSION`
 /// independently at build time (see `build-common/version.rs`), each from its
 /// own `build.rs`. This asserts the two derivations never disagree.
