@@ -14,4 +14,5 @@ pub mod migrate;
 pub mod put;
 pub mod refresh;
 pub mod status;
+pub mod verbose;
 pub mod watch;

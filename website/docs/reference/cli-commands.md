@@ -170,6 +170,35 @@ comb g.j git:source .            # → what the Source computed, even where a pu
 - **Newlines.** A scalar printed under text has no trailing newline, so it embeds verbatim. Everything else — json, sh, csv, tsv, and text of a container or of several keys — ends each line in one.
 - **Several keys.** One document across the keys, a miss holding its place: `null` in the json array, an empty line under text and sh, an empty cell under csv and tsv.
 
+**`-v`, `-vv`, `-vvv`: how the value was read.** stdout is the value exactly as without the flag; stderr carries the read's metadata, through the same `-f`. The metadata is a tree with the provider's shape, and each node keeps its own metadata under `_` at that node, as `<p>:cache._.decay` does (so no field may be named `_`): its `age_ms`, whether a run is `executing`, its `chain` and its `log`.
+
+The **chain** is every layer that could supply the leaf, in the order each supersedes the next: the one that answered first (`"answered": true`), then each one it hides. A row is `{"layer", "path", "value", "log"}`: the layer (`put`, `source(<name>)`, `config(<file>)`, `computed(<line>)`, `template`, `memo`), the directory it is stored at as `comb status` writes one (`~` is the global entry), the value it holds, and the lines that layer raised. Each `-v` shows more:
+
+| flag | chain and fields | log lines |
+|---|---|---|
+| `-v` | the answering row; `age_ms`, `executing` | `error`, `fatal`, `warn` |
+| `-vv` | every row, each with its `value` | + `info` |
+| `-vvv` | + the rest of its `:cache`: `hash`, `decay`, `poll`, `watch` | + `debug` |
+
+The lines are the `_.log.*` lines behind the value (a Source's latest stored run's, a template's from this render or, on a memo hit, the render that stored the memo), the reasons comb gives for its own decisions (a memo hit or miss and why), and the failures a read hides: a Source that failed and was served its last good value (`error`), one `_.log.fatal` stopped (`fatal`), a leaf left out of an object because its template failed (`error`). A line sits under the row that raised it; one no row raised, or that a Source raised for several leaves, sits on the node, saying where it came from (`origin`, and `path` for a Source's). A Source keeps `debug` lines while a `-vvv` read has asked about its provider in the last 12 minutes, so the run after that read has them (`comb g -vvv --force …`).
+
+```
+$ comb g git.branch -vv
+demo
+FIELD        SOURCE        VALUE   PATH    AGE
+git.branch   put           ▸ demo  ~/proj  0.0s
+└─ shadowed  source(head)  main    ~/proj    4s
+     ┆       [warn] index.lock present, branch may be stale
+
+$ comb g prompt.branch -vv
+demo
+FIELD          SOURCE                                     VALUE                             PATH    AGE
+prompt.branch  rendered                                   ▸ demo                            ~/proj  0.0s
+└─ :template   config(~/.config/beachcomber/config.toml)  {{ comb.git.branch | default… }}  ~         2d
+```
+
+Under `text` the metadata is drawn as [`comb status --tree`](#--tree-the-layers-behind-each-value) draws its rows, with its headings, words, glyphs and colours, under one header for every key read: per key, and per leaf of an object, a field row that is the answer, its VALUE marked `▸` (`>` under `--ascii`), aged to a tenth of a second under a minute. From `-vv` the layers behind it hang under it as `--tree` hangs them: `:template` for a template record, `shadowed` for a layer the read did not take, a `config(<file>)` row for each config file that sets the leaf. A memo hit's field row is the memo, its lines straight under it. A log line hangs under the row that raised it, marked `┆` (`:` under `--ascii`) two columns in from the start of that row's FIELD text rather than with a branch, since it is no layer, and a `│` runs past it only to reach a later sibling: `[level] message` from the SOURCE column on, uncut, the level coloured on a terminal at 7:1 contrast (dark or light by `COLORFGBG`). A line no single row raised (a hidden layer's at `-v`, comb's own, the client's) hangs under the field row, saying where it came from (`  ┆  [warn] source(head) ~/proj: …`). At `-vvv` the POLL and TTL columns join, showing a Source's answer as `comb status` does (decay, poll, watch), AGE and POLL as wide as status keeps them; `hash` is in the other formats only. A `-vvv` read that starts a provider's debug capture says so (`info`, origin `comb`): a stored run from before it kept none, so they appear after its next run (`comb g -vvv --force`, or `comb refresh`). The columns fit stderr's width, 120 off a terminal, as `comb status` fits its own. Every other format prints the tree as it prints any object: for one key that key's, for several one document keyed by key (`{"git.branch": {"_": {…}}, "git.ahead": {"_": {…}}}` under json). `-v` costs a `:cache` read and a `layers` op per key; a read without it costs nothing more.
+
 **Layers and the `:cache` facet.** A field's value is the first layer that has it: the effective template (rendered here), then `put` (what `comb p` and the `config:` seeds stored), then the Source. Nothing merges implicitly, `null` means absent, and each layer is readable on its own at any depth: `provider:template`, `provider:put` and `provider:source` (the last two are read-only), `provider:memo` (what a cached template stored; only its write-back writes it), and `provider:cache`, the daemon's metadata about the same tree.
 
 | `:cache` key | Type | Description |

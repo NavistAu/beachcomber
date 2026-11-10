@@ -13,7 +13,7 @@ use crate::cli::exit::Outcome;
 use crate::cli::output_format::{Format, render_template};
 use crate::config::Config;
 use libbeachcomber::render::{render_value_in, render_values_in};
-use libbeachcomber::resolve::{Slot, resolve_traced, write_back};
+use libbeachcomber::resolve::{Slot, resolve_logged, write_back};
 use serde_json::Value;
 
 /// Whether `s` is a directory rather than a key: it starts with `/`, `~` or
@@ -50,6 +50,7 @@ pub fn split_keys_and_path(
 
 /// `path` is what `main.rs` already settled: `None` for `--global`, otherwise
 /// `--path`, the trailing positional, or the current directory.
+#[allow(clippy::too_many_arguments)]
 pub fn run_get(
     config: &Config,
     keys: &[String],
@@ -58,6 +59,8 @@ pub fn run_get(
     force: bool,
     wait: libbeachcomber::Wait,
     style: crate::cli::style::Style,
+    verbose: u8,
+    err_color: bool,
 ) -> Outcome {
     // `comb` always requires the daemon (design §2), a key whose answer needs
     // no request (`env.HOME`) included.
@@ -89,10 +92,22 @@ pub fn run_get(
     let mut slots: Vec<(&str, Option<Value>)> = Vec::with_capacity(keys.len());
     let mut memos = Vec::new();
     let mut outcome = Outcome::Done;
+    let level = super::verbose::level(verbose);
+    session.set_log(level);
+    // What `-v` says of each key that resolved: its age and its lines.
+    let mut reads = Vec::new();
     for key in keys {
-        let value = match resolve_traced(key, &inputs, &mut session) {
+        let value = match resolve_logged(key, &inputs, &mut session, level) {
             Ok(traced) => {
                 memos.extend(traced.memos);
+                if level.is_some() {
+                    reads.push((
+                        key.as_str(),
+                        traced.oldest_input_ms,
+                        traced.log,
+                        traced.value.clone(),
+                    ));
+                }
                 if traced.value.is_none() {
                     outcome = outcome.max(Outcome::Miss);
                 }
@@ -127,8 +142,11 @@ pub fn run_get(
             })
         }
     };
+    // Whether stdout ended mid-line, as a scalar does.
+    let mut open_line = false;
     match rendered {
         Ok(out) => {
+            open_line = !out.is_empty() && !out.ends_with('\n');
             print!("{out}");
             // The caller has its answer before the memos go back.
             let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -138,8 +156,124 @@ pub fn run_get(
             outcome = Outcome::Error;
         }
     }
+    if level.is_some() {
+        session.set_log(None);
+        let metas: Vec<Meta<'_>> = reads
+            .into_iter()
+            .map(|(key, age, log, value)| {
+                let meta = super::verbose::metadata(&mut session, key, path, age, log, verbose);
+                (key, meta, value)
+            })
+            .collect();
+        let shown = Shown {
+            dir: path,
+            count: verbose,
+            color: err_color,
+            style,
+        };
+        match verbose_text(&metas, &format, &inputs, &mut session, &shown) {
+            Ok(text) => {
+                // On one terminal the metadata starts on a line of its own;
+                // stdout stays as it is.
+                use std::io::IsTerminal;
+                if open_line && std::io::stdout().is_terminal() && std::io::stderr().is_terminal() {
+                    eprintln!();
+                }
+                eprint!("{text}");
+            }
+            Err(e) => {
+                crate::cli::report::error_named(e);
+                outcome = Outcome::Error;
+            }
+        }
+    }
     write_back(&memos, &mut session);
     outcome
+}
+
+/// A key read under `-v`: the key, its metadata, and the value it came to.
+type Meta<'a> = (&'a str, super::verbose::Node, Option<Value>);
+
+/// How `-v`'s `text` is drawn: the directory read from, the count, and
+/// stderr's colour.
+struct Shown<'a> {
+    dir: Option<&'a str>,
+    count: u8,
+    color: bool,
+    style: crate::cli::style::Style,
+}
+
+/// The metadata of every key read, as `format` prints a value: one document,
+/// a key's own for one key, keyed by key for several; under `text` the rows
+/// `comb status --tree` draws ([`super::verbose::human`]), fitted to
+/// stderr's width.
+fn verbose_text(
+    metas: &[Meta<'_>],
+    format: &Format,
+    inputs: &libbeachcomber::resolve::Inputs<'_>,
+    session: &mut libbeachcomber::Session,
+    shown: &Shown<'_>,
+) -> Result<String, String> {
+    if metas.is_empty() {
+        return Ok(String::new());
+    }
+    let style = shown.style;
+    match format {
+        Format::Template(template) => {
+            let slots: Vec<(&str, Option<Value>)> = metas
+                .iter()
+                .map(|(k, m, _)| (*k, Some(m.to_json())))
+                .collect();
+            render_template(template, &slots, inputs, session)
+        }
+        Format::Preset(crate::cli::output_format::Preset::Text) => {
+            // POLL and TTL, at -vvv, are what `comb status` says of the rows.
+            let status = if shown.count >= 3 {
+                session.status().unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let cols =
+                terminal_size::terminal_size_of(std::io::stderr()).map(|(w, _)| w.0 as usize);
+            let width = crate::cli::status_format::resolve_max_width(None, cols)
+                .expect("no --max-width to refuse");
+            let reads: Vec<super::verbose::Read<'_>> = metas
+                .iter()
+                .map(|(key, node, value)| super::verbose::Read {
+                    key,
+                    node,
+                    value: value.as_ref(),
+                })
+                .collect();
+            Ok(super::verbose::human(
+                &reads,
+                &super::verbose::Drawing {
+                    dir: shown.dir,
+                    count: shown.count,
+                    ascii: style.ascii,
+                    color: shown.color,
+                    width: Some(width),
+                    status: &status,
+                },
+            ))
+        }
+        Format::Preset(preset) => {
+            let format = preset
+                .value_format()
+                .expect("get's formats are value formats");
+            let (key, doc) = match metas {
+                [(key, meta, _)] => (*key, meta.to_json()),
+                many => (
+                    "",
+                    many.iter()
+                        .map(|(k, m, _)| (k.to_string(), m.to_json()))
+                        .collect::<serde_json::Map<_, _>>()
+                        .into(),
+                ),
+            };
+            Ok(render_value_in(key, Some(&doc), format, &style.tree()))
+        }
+    }
 }
 
 #[cfg(test)]

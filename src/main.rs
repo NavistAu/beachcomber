@@ -108,6 +108,12 @@ struct Cli {
     /// `$BEACHCOMBER_SOCKET`, which it matches
     #[arg(long, global = true, value_name = "PATH")]
     socket: Option<PathBuf>,
+    /// `get`: say how each value was read, on stderr, through the same `-f`.
+    /// `-v` its age, source and layer with error and warn lines; `-vv` adds
+    /// where it answered from, what it hid and info lines; `-vvv` the rest of
+    /// its `:cache` and debug lines
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
     #[command(subcommand)]
     command: Commands,
 }
@@ -448,6 +454,14 @@ fn run(cli: Cli) -> Outcome {
                 force,
                 wait.unwrap_or_default(),
                 style,
+                cli.verbose,
+                Style::new(
+                    cli.color,
+                    beachcomber::cli::style::no_color(std::env::var_os("NO_COLOR").as_deref()),
+                    std::io::IsTerminal::is_terminal(&std::io::stderr()),
+                    cli.ascii,
+                )
+                .color,
             )
         }
         Commands::Status {

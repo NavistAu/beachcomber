@@ -147,6 +147,12 @@ pub struct ChildMark {
     pub answered: bool,
     /// A template record (`<p>:template`), not data.
     pub template: bool,
+    /// A log line, not a layer (`comb get -v`): its level. Its text is the
+    /// row's value, drawn from the SOURCE column on.
+    pub line: Option<libbeachcomber::protocol::Level>,
+    /// A line under a layer row, not under the value row: whether that layer
+    /// is the last.
+    pub under: Option<bool>,
 }
 
 /// The branch glyph of a row hanging under the one above: `├─`, or `└─` for
@@ -167,6 +173,17 @@ impl ChildMark {
     /// record that defines it, `shadowed` for a layer the read did not take.
     /// Colour dims a shadowed layer as well; the word is there either way.
     pub(super) fn field(self, ascii: bool) -> String {
+        let g = Glyphs::of(ascii);
+        if self.line.is_some() {
+            // A line is no layer, so it takes no branch: its mark sits two
+            // in from the text of the row it belongs to, and the tree's bar
+            // runs past it only to reach a later sibling of that row.
+            return match self.under {
+                None => format!("  {}", g.line),
+                Some(true) => format!("     {}", g.line),
+                Some(false) => format!("{}    {}", g.pipe, g.line),
+            };
+        }
         let mut cell = vec![self.glyph(ascii)];
         if self.template {
             cell.push(":template");
@@ -183,7 +200,7 @@ impl ChildMark {
 /// whose children then show what shadows it. A rendered row is never its own
 /// template layer — its template record is what defines it — but a memo hit's
 /// row is the memo that answered it.
-pub(super) fn is_the_row(row: &CacheRow, layer: &crate::cache::LayerRecord) -> bool {
+pub fn is_the_row(row: &CacheRow, layer: &crate::cache::LayerRecord) -> bool {
     let rendered = matches!(row.kind, Some(crate::cache::RowKind::Rendered));
     match layer.facet.as_deref() {
         Some("memo") => rendered && layer.answered && row.source == "memo",
@@ -227,7 +244,7 @@ pub fn display_source(row: &CacheRow) -> String {
 /// behind it (`children[i]` for `rows[i]`), except the layer that is the row
 /// itself. The marks run parallel: `None` for a value row, a [`ChildMark`]
 /// for a layer.
-pub(super) fn tree_display_rows(
+pub fn tree_display_rows(
     rows: &[CacheRow],
     children: &[Vec<crate::cache::LayerRecord>],
 ) -> (Vec<CacheRow>, Vec<Option<ChildMark>>) {
@@ -257,6 +274,8 @@ pub(super) fn tree_display_rows(
                 last: i + 1 == layers.len(),
                 answered: layer.answered,
                 template: layer.facet.as_deref() == Some("template"),
+                line: None,
+                under: None,
             }));
         }
     }

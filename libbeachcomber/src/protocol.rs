@@ -455,7 +455,7 @@ pub struct HelloInfo {
 }
 
 /// One row of the `status` payload — one per (provider, path, source, field).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CacheRow {
     pub provider: String,
     /// The directory the row is stored at; `null` for the global entry.

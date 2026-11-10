@@ -623,9 +623,7 @@ pub(super) async fn handle_get(
     // How long the read waits for each run it needs: its budgets
     // count from now.
     let read = Read::new(force, wait);
-    if log == Some(Level::Debug) {
-        registry.logs.want_debug(provider_name);
-    }
+    let debug_started = log == Some(Level::Debug) && registry.logs.want_debug(provider_name);
 
     // The instance chains, climbed together nearest first ([`climb`]):
     // each instance is brought up to date and the merged read asked for
@@ -739,6 +737,19 @@ pub(super) async fn handle_get(
     let mut response = resolve_halves(&merged, &plan.target, half);
     if let Some(level) = log {
         response.log = read_log(registry, &logged, level);
+        // A stored run from before this ask kept none of its debug lines.
+        let debugged = response
+            .log
+            .iter()
+            .any(|l| l.level == Level::Debug && l.origin.starts_with("source("));
+        if debug_started && !logged.is_empty() && !debugged {
+            response.log.push(LogLine::new(
+                Level::Info,
+                "comb",
+                "debug lines are kept from now: they appear after the next run \
+                 (comb get -vvv --force, or comb refresh)",
+            ));
+        }
     }
     response
 }

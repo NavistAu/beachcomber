@@ -3,7 +3,7 @@
 //! formats each column, [`table`] lays the human and table presets out, and
 //! [`machine`] renders the machine formats (json, csv, tsv, sh, templates).
 
-mod ansi;
+pub(crate) mod ansi;
 mod cells;
 mod filter;
 mod machine;
@@ -23,11 +23,11 @@ pub use cells::{
 pub use filter::{DEFAULT_FILTERS, apply_filters, effective_filters, provider_could_pass};
 pub use machine::{RowRender, render_delimited, render_sh_env, render_template_format};
 pub use row::{
-    ChildMark, default_depth, display_source, flatten_rows, row_base, row_context, row_facet,
-    tree_branch,
+    ChildMark, default_depth, display_source, flatten_rows, is_the_row, row_base, row_context,
+    row_facet, tree_branch, tree_display_rows,
 };
 pub use sort::apply_sort;
-pub use table::{render_human, render_tree};
+pub use table::{Shape, draw, read_shape, render_human, render_tree};
 pub use text::pad_cols;
 
 use machine::render_json;

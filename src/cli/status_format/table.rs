@@ -34,8 +34,44 @@ const TTL_COL_IDX: usize = 7;
 const HEADERS: [&str; COLS] = [
     "PROVIDER", "FIELD", "SOURCE", "VALUE", "PATH", "AGE", "POLL", "TTL",
 ];
+const H_FIELD: usize = 1;
+const H_SOURCE: usize = 2;
 const H_AGE: usize = 5;
 const H_POLL: usize = 6;
+
+/// Which of the columns a render draws, and how.
+pub struct Shape {
+    /// The columns drawn, by index, in order.
+    cols: &'static [usize],
+    /// The margin on each side: the left one printed, the right reserved.
+    margin: usize,
+    /// A read's rows (`comb get -v`) rather than the cache's: each value row
+    /// is the answer, marked with the rendered glyph and aged to a tenth of a
+    /// second under a minute, and AGE and POLL take no stability floors, as
+    /// nothing redraws them, unless POLL is drawn, as `comb status` draws it.
+    read: bool,
+}
+
+/// `comb status`: every column.
+pub const STATUS: Shape = Shape {
+    cols: &[0, 1, 2, 3, 4, 5, 6, 7],
+    margin: MARGIN,
+    read: false,
+};
+
+/// `comb get -v`: the key in FIELD, no PROVIDER, and POLL and TTL only for
+/// `lifecycle` (`-vvv`).
+pub fn read_shape(lifecycle: bool) -> Shape {
+    Shape {
+        cols: if lifecycle {
+            &[1, 2, 3, 4, 5, 6, 7]
+        } else {
+            &[1, 2, 3, 4, 5]
+        },
+        margin: 0,
+        read: true,
+    }
+}
 
 /// The least the SOURCE column is cut to when the width cap needs room
 /// (less at a narrow cap: a fifth of it), lifted by `--no-trunc`.
@@ -67,9 +103,7 @@ const MIN_VALUE_WIDTH: usize = 8;
 // shows the leaf that discriminates it.
 const MIN_PATH_WIDTH: usize = 20;
 const MIN_FIELD_WIDTH: usize = 20;
-const SEP_TOTAL: usize = 14; // 7 separators × 2 spaces
 const MARGIN: usize = 2; // left margin, printed; right margin, reserved only
-const MARGIN_TOTAL: usize = MARGIN * 2;
 
 /// `comb status --tree`: each value row followed by the layers behind it
 /// (`children[i]` for `rows[i]`), in the `human`, `table` or `json` preset.
@@ -126,9 +160,24 @@ pub(super) fn render_table(
     trunc: Option<usize>,
     ascii: bool,
 ) -> String {
+    draw(rows, marks, color_enabled, trunc, ascii, &STATUS)
+}
+
+/// [`render_table`] in `shape`: `comb status`'s, or a read's
+/// ([`read_shape`]).
+pub fn draw(
+    rows: &[CacheRow],
+    marks: &[Option<ChildMark>],
+    color_enabled: bool,
+    trunc: Option<usize>,
+    ascii: bool,
+    shape: &Shape,
+) -> String {
     let env = Env {
         color: color_enabled,
         ascii,
+        read: shape.read,
+        floors: !shape.read || shape.cols.contains(&H_POLL),
         // Display-only: a path under $HOME is written from `~`, and the
         // global entry is `~` itself. Machine presets never come through
         // here — they use `row.path` directly.
@@ -144,8 +193,9 @@ pub(super) fn render_table(
     let mark_of = |index: usize| marks.get(index).copied().flatten();
 
     let mut widths = measure(rows, &mark_of, &env);
+    widths.hide(shape.cols);
     let caps = match trunc {
-        Some(total_cap) => fit(&mut widths, total_cap),
+        Some(total_cap) => fit(&mut widths, total_cap, shape),
         None => Caps::default(),
     };
 
@@ -153,13 +203,17 @@ pub(super) fn render_table(
     for (index, row) in rows.iter().enumerate() {
         lines.push(data_line(row, mark_of(index), &env, &widths, &caps));
     }
-    layout(&lines, color_enabled)
+    layout(&lines, color_enabled, shape)
 }
 
 /// What every row of one render shares.
 struct Env {
     color: bool,
     ascii: bool,
+    /// [`Shape::read`].
+    read: bool,
+    /// AGE and POLL take their stability floors.
+    floors: bool,
     home: Home,
     now_unix_ms: u64,
     ttl_widths: TtlWidths,
@@ -170,12 +224,23 @@ struct Env {
 struct Cell {
     text: String,
     vis: usize,
+    /// A log line's text: it runs on past the columns after it, which are
+    /// not drawn, and takes no part in their widths.
+    span: bool,
 }
 
 impl Cell {
     fn plain(text: String) -> Self {
         let vis = text.cols();
-        Cell { text, vis }
+        Cell {
+            text,
+            vis,
+            span: false,
+        }
+    }
+
+    fn empty() -> Self {
+        Cell::plain(String::new())
     }
 }
 
@@ -197,6 +262,28 @@ struct Widths {
     ttl: usize,
     age_raw: usize,
     poll_raw: usize,
+}
+
+impl Widths {
+    /// Give the columns `cols` leaves out no width, so the fit spends none
+    /// on them.
+    fn hide(&mut self, cols: &[usize]) {
+        let all: [&mut usize; COLS] = [
+            &mut self.provider,
+            &mut self.field,
+            &mut self.source,
+            &mut self.value,
+            &mut self.path,
+            &mut self.age,
+            &mut self.poll,
+            &mut self.ttl,
+        ];
+        for (i, width) in all.into_iter().enumerate() {
+            if !cols.contains(&i) {
+                *width = 0;
+            }
+        }
+    }
 }
 
 /// How much of a failing row's error its VALUE cell shows, before the width
@@ -248,6 +335,11 @@ fn measure(rows: &[CacheRow], mark_of: &dyn Fn(usize) -> Option<ChildMark>, env:
         let taint_width = if tainted { MARKER_WIDTH } else { 0 };
         w.path = w.path.max(path.cols());
         w.source = w.source.max(shown_source(&row.source, &env.home).cols());
+        if let Some(mark) = mark_of(index).filter(|m| m.line.is_some()) {
+            // A log line's text runs past the columns: only its FIELD counts.
+            w.field = w.field.max(mark.field(env.ascii).cols());
+            continue;
+        }
         if let Some(mark) = mark_of(index) {
             // A layer row has no PROVIDER, POLL or TTL of its own.
             w.field = w.field.max(mark.field(env.ascii).cols());
@@ -257,21 +349,20 @@ fn measure(rows: &[CacheRow], mark_of: &dyn Fn(usize) -> Option<ChildMark>, env:
                 .max(format_age_with_polls(row.age_ms, None, env.ascii).cols());
             continue;
         }
-        let marker_width =
-            taint_width + template_marker(row.kind.as_ref(), env.color, env.ascii).cols();
+        let marker_width = taint_width + answer_marker(row, env).cols();
         w.provider = w.provider.max(row.provider.cols());
         w.field = w.field.max(row.field.cols());
         w.value = w.value.max(value.cols() + marker_width);
-        w.age = w
-            .age
-            .max(format_age_with_polls(row.age_ms, row.polls_elapsed, env.ascii).cols());
+        w.age = w.age.max(age_text(row, None, env).cols());
         w.ttl = w.ttl.max(ttl_cell_of(row, env).text.cols());
         w.poll = w.poll.max(poll_text_of(row, env).cols());
     }
     w.age_raw = w.age;
     w.poll_raw = w.poll;
-    w.age = w.age.max(AGE_MIN_WIDTH);
-    w.poll = w.poll.max(POLL_MIN_WIDTH);
+    if env.floors {
+        w.age = w.age.max(AGE_MIN_WIDTH);
+        w.poll = w.poll.max(POLL_MIN_WIDTH);
+    }
     w
 }
 
@@ -311,9 +402,10 @@ struct Caps {
 /// ceiling keeps a deep name (75+ chars at --depth 0) from starving
 /// VALUE outright. VALUE then takes what remains above PATH's floor;
 /// PATH takes what both decline.
-fn fit(w: &mut Widths, total_cap: usize) -> Caps {
-    let fixed =
-        |w: &Widths| w.provider + w.source + w.age + w.poll + w.ttl + SEP_TOTAL + MARGIN_TOTAL;
+fn fit(w: &mut Widths, total_cap: usize, shape: &Shape) -> Caps {
+    // Two spaces between each pair of columns drawn, and both margins.
+    let seps = 2 * shape.cols.len().saturating_sub(1) + 2 * shape.margin;
+    let fixed = |w: &Widths| w.provider + w.source + w.age + w.poll + w.ttl + seps;
     let flex_floors =
         MIN_FIELD_WIDTH.min(w.field) + MIN_PATH_WIDTH.min(w.path) + MIN_VALUE_WIDTH.min(w.value);
     // SOURCE is cut only by what the row still overflows with FIELD, PATH
@@ -379,6 +471,7 @@ fn header_line(w: &Widths, color: bool) -> [Cell; COLS] {
     texts.map(|h| Cell {
         vis: h.len(),
         text: ansi::wrap(&h, ansi::Color::Bold, color),
+        span: false,
     })
 }
 
@@ -406,6 +499,11 @@ fn data_line(
     caps: &Caps,
 ) -> [Cell; COLS] {
     let ell = ellipsis(env.ascii);
+    if let Some(mark) = mark
+        && let Some(level) = mark.line
+    {
+        return line_cells(row, mark, level, env);
+    }
     let (path_raw, value_raw, tainted) = row_texts(row, env);
 
     let provider = match mark {
@@ -434,9 +532,9 @@ fn data_line(
         Cell::plain(provider),
         Cell::plain(field),
         Cell::plain(source),
-        value_cell(row, &value_raw, tainted, env, caps.value),
+        value_cell(row, mark, &value_raw, tainted, env, caps.value),
         Cell::plain(path),
-        age_cell(row, env, w.age),
+        age_cell(row, mark, env, w.age),
         poll_cell(row, mark, env, w.poll),
         ttl_cell(row, mark, env),
     ];
@@ -461,12 +559,67 @@ fn data_line(
     cells
 }
 
+/// A log line's cells: its mark in FIELD, then `[level] text` from SOURCE
+/// on, uncut.
+fn line_cells(
+    row: &CacheRow,
+    mark: ChildMark,
+    level: libbeachcomber::protocol::Level,
+    env: &Env,
+) -> [Cell; COLS] {
+    let text = row.value.as_str().unwrap_or_default();
+    let mut cells: [Cell; COLS] = std::array::from_fn(|_| Cell::empty());
+    cells[H_FIELD] = Cell::plain(mark.field(env.ascii));
+    cells[H_SOURCE] = Cell {
+        text: format!(
+            "[{}] {}",
+            ansi::level(level, level.name(), env.color),
+            sanitize_cell(text, env.ascii)
+        ),
+        vis: 0,
+        span: true,
+    };
+    cells
+}
+
+/// What leads a value row's VALUE cell: under a read the rendered glyph on
+/// every value row that has a value, the answer; otherwise
+/// [`template_marker`]'s.
+fn answer_marker(row: &CacheRow, env: &Env) -> String {
+    match env.read {
+        true if row.value.is_null() => String::new(),
+        true => format!("{} ", Glyphs::of(env.ascii).rendered),
+        false => template_marker(row.kind.as_ref(), env.color, env.ascii),
+    }
+}
+
+/// The AGE text: a layer's polls are not its own; under a read a value row
+/// is aged to a tenth of a second under a minute (`2.1s`).
+fn age_text(row: &CacheRow, mark: Option<ChildMark>, env: &Env) -> String {
+    let polls = if mark.is_some() {
+        None
+    } else {
+        row.polls_elapsed
+    };
+    match row.age_ms {
+        Some(ms) if env.read && mark.is_none() && ms < 60_000 => {
+            let base = format!("{:.1}s", ms as f64 / 1000.0);
+            match polls {
+                Some(n) => format!("{base}{}{n}", Glyphs::of(env.ascii).times),
+                None => base,
+            }
+        }
+        _ => format_age_with_polls(row.age_ms, polls, env.ascii),
+    }
+}
+
 /// The VALUE cell. A sanitized row is flagged in it, so the eye can find the
 /// rows whose text was rewritten without diffing against the source. The
 /// markers are part of the cell, so they take part in the width budget and
 /// truncate with everything else.
 fn value_cell(
     row: &CacheRow,
+    mark: Option<ChildMark>,
     value_raw: &str,
     tainted: bool,
     env: &Env,
@@ -480,7 +633,10 @@ fn value_cell(
     // A rendered row is marked ahead of the taint marker: colour-off builds
     // need to see "this was computed here" before anything else in the cell
     // (design decision 5).
-    let rendered = template_marker(row.kind.as_ref(), env.color, env.ascii);
+    let rendered = match mark {
+        Some(_) => String::new(),
+        None => answer_marker(row, env),
+    };
     let value = format!("{rendered}{taint}{}", sanitize_cell(value_raw, env.ascii));
     let value = capped(value, cap, truncate, ellipsis(env.ascii));
     let vis = value.cols();
@@ -489,16 +645,17 @@ fn value_cell(
     } else {
         value
     };
-    Cell { text, vis }
+    Cell {
+        text,
+        vis,
+        span: false,
+    }
 }
 
 /// The AGE cell, right-aligned against the floored column width (see
 /// [`AGE_MIN_WIDTH`]), yellow when its last run failed.
-fn age_cell(row: &CacheRow, env: &Env, width: usize) -> Cell {
-    let text = format!(
-        "{:>width$}",
-        format_age_with_polls(row.age_ms, row.polls_elapsed, env.ascii)
-    );
+fn age_cell(row: &CacheRow, mark: Option<ChildMark>, env: &Env, width: usize) -> Cell {
+    let text = format!("{:>width$}", age_text(row, mark, env));
     let vis = text.cols();
     let text = if !env.color {
         text
@@ -511,7 +668,11 @@ fn age_cell(row: &CacheRow, env: &Env, width: usize) -> Cell {
     } else {
         ansi::wrap(&text, ansi::Color::BrightGreen, true)
     };
-    Cell { text, vis }
+    Cell {
+        text,
+        vis,
+        span: false,
+    }
 }
 
 /// A row's TTL cell, from its lifecycle metadata.
@@ -544,7 +705,11 @@ fn ttl_cell(row: &CacheRow, mark: Option<ChildMark>, env: &Env) -> Cell {
         (true, Some(c)) => ansi::wrap(&ttl.text, c, true),
         _ => ttl.text,
     };
-    Cell { text, vis }
+    Cell {
+        text,
+        vis,
+        span: false,
+    }
 }
 
 /// Seconds until next poll / next retry attempt, as a bare string.
@@ -575,7 +740,7 @@ fn poll_cell(row: &CacheRow, mark: Option<ChildMark>, env: &Env, width: usize) -
 
 /// Join lines (the header first) into the table: margin, two-space
 /// separators, columns padded to their widest visible cell.
-fn layout(lines: &[[Cell; COLS]], color: bool) -> String {
+fn layout(lines: &[[Cell; COLS]], color: bool, shape: &Shape) -> String {
     let mut col_widths = [0usize; COLS];
     for line in lines {
         for (width, cell) in col_widths.iter_mut().zip(line) {
@@ -590,7 +755,8 @@ fn layout(lines: &[[Cell; COLS]], color: bool) -> String {
     // trailing space onto the next screen line and the whole table rendered
     // double-spaced. Reserving without printing keeps the two columns of
     // breathing room and leaves the rows free of trailing whitespace.
-    let left_margin = " ".repeat(MARGIN);
+    let left_margin = " ".repeat(shape.margin);
+    let last = shape.cols.last().copied().unwrap_or(0);
     let stripe = ansi::stripe_bg();
     let mut out = String::new();
     for (idx, line) in lines.iter().enumerate() {
@@ -601,15 +767,19 @@ fn layout(lines: &[[Cell; COLS]], color: bool) -> String {
         let striped = color && idx >= 1 && (idx - 1) % 2 == 1;
 
         let mut text = String::new();
-        for (i, cell) in line.iter().enumerate() {
-            if i > 0 {
+        for (n, &i) in shape.cols.iter().enumerate() {
+            let cell = &line[i];
+            if n > 0 {
                 text.push_str("  ");
             }
             text.push_str(&cell.text);
+            if cell.span {
+                break;
+            }
             // Pad to column width on all but the last column — and on the
             // last too when striping, so the stripe is a rectangle rather
             // than a ragged bar.
-            if i < COLS - 1 || striped {
+            if i != last || striped {
                 text.push_str(&" ".repeat(col_widths[i].saturating_sub(cell.vis)));
             }
         }

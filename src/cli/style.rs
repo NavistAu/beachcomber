@@ -62,6 +62,8 @@ pub struct Glyphs {
     pub last_branch: &'static str,
     /// The bar that carries a tree down past a branch with more below it.
     pub pipe: &'static str,
+    /// A log line's mark: it belongs to the row above, and is no layer.
+    pub line: &'static str,
     pub ellipsis: &'static str,
     /// The dash of a sentence, and of a cell with nothing in it.
     pub dash: &'static str,
@@ -77,6 +79,7 @@ pub const UNICODE: Glyphs = Glyphs {
     branch: "\u{251c}\u{2500}",
     last_branch: "\u{2514}\u{2500}",
     pipe: "\u{2502}",
+    line: "\u{2506}",
     ellipsis: "\u{2026}",
     dash: "\u{2014}",
 };
@@ -91,6 +94,7 @@ pub const ASCII: Glyphs = Glyphs {
     branch: "|-",
     last_branch: "`-",
     pipe: "|",
+    line: ":",
     ellipsis: "...",
     dash: "-",
 };

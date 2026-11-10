@@ -79,16 +79,16 @@ impl RunLogs {
         }
     }
 
-    /// A read asked for `provider`'s `debug` lines, now.
-    pub fn want_debug(&self, provider: &str) {
+    /// A read asked for `provider`'s `debug` lines, now: whether that
+    /// starts their capture, no ask being within [`DEBUG_WINDOW`].
+    pub fn want_debug(&self, provider: &str) -> bool {
         let now = tokio::time::Instant::now();
         let mut debug = lock(&self.debug);
-        match debug.get_mut(provider) {
-            Some(asked) => *asked = now,
-            None => {
-                debug.insert(provider.to_string(), now);
-            }
-        }
+        let started = debug
+            .get(provider)
+            .is_none_or(|asked| asked.elapsed() >= DEBUG_WINDOW);
+        debug.insert(provider.to_string(), now);
+        started
     }
 
     /// The lines of `key`'s latest stored run.
