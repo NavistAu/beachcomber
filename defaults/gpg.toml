@@ -3,11 +3,17 @@
 enabled.template = "{{ 'gpg-connect-agent' | which }}"
 
 # `--no-autostart`: asking never starts an agent. With none running it says so on stderr and
-# prints no `OK`, whatever its exit status. Memoised on $GNUPGHOME, for 30 seconds.
+# prints no `OK`, whatever its exit status. Run once per read whichever fields it serves, memoised
+# on $GNUPGHOME for 30 seconds.
+[client.providers.gpg]
+var.keyinfo = "{{ \"gpg-connect-agent --no-autostart 'keyinfo --list' /bye\" | ttl('30s') | cache(env.GNUPGHOME) | execa(ok=[0, 1, 2]) }}"
+# Whether gpg-agent is running for $GNUPGHOME: it answered `OK`.
+var.up = "{{ keyinfo.stdout | regex_search('(?m)^OK$') is defined }}"
+
 [client.providers.gpg.template]
 # Whether gpg-agent is running for $GNUPGHOME.
-agent = "{{ (\"gpg-connect-agent --no-autostart 'keyinfo --list' /bye\" | ttl('30s') | cache(env.GNUPGHOME) | execa(ok=[0, 1, 2])).stdout | regex_search('(?m)^OK$') is defined }}"
-# How many keys the agent holds secrets for (its `S KEYINFO` lines); 0 when there is no agent.
-keys = "{{ ((\"gpg-connect-agent --no-autostart 'keyinfo --list' /bye\" | ttl('30s') | cache(env.GNUPGHOME) | execa(ok=[0, 1, 2])).stdout | regex_replace('(?m)^S KEYINFO ', '@@') | split('@@') | length) - 1 }}"
-# How many of them have their passphrase cached (the `cached` field of `KEYINFO` is `1`); 0 means the next signature asks.
-cached = "{{ ((\"gpg-connect-agent --no-autostart 'keyinfo --list' /bye\" | ttl('30s') | cache(env.GNUPGHOME) | execa(ok=[0, 1, 2])).stdout | regex_replace('(?m)^S KEYINFO \\\\S+ \\\\S+ \\\\S+ \\\\S+ 1\\\\b.*$', '@@') | split('@@') | length) - 1 }}"
+agent = "{{ up }}"
+# How many keys the agent holds secrets for (its `S KEYINFO` lines); absent when there is no agent.
+keys = "{{ ((keyinfo.stdout | regex_replace('(?m)^S KEYINFO ', '@@') | split('@@') | length) - 1) if up }}"
+# How many of them have their passphrase cached (the `cached` field of `KEYINFO` is `1`); 0 means the next signature asks, absent that there is no agent.
+cached = "{{ ((keyinfo.stdout | regex_replace('(?m)^S KEYINFO \\\\S+ \\\\S+ \\\\S+ \\\\S+ 1\\\\b.*$', '@@') | split('@@') | length) - 1) if up }}"

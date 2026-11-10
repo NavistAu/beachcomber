@@ -1,10 +1,14 @@
 # Docker, read in the shell that asks: `docker context show` and `docker ps -q`. Client templates, not a Source, because
 # the answer follows $DOCKER_CONTEXT, $DOCKER_HOST and $DOCKER_CONFIG, which the daemon would see only as they were when
-# it started. Every field is absent when `docker` is not on the shell's PATH. Each is memoised for 30 seconds.
+# it started. Every field is absent when `docker` is not on the shell's PATH. Each command is memoised for 30 seconds.
+[client.providers.docker]
+# The running containers: `docker ps -q` with a 2 second limit, counted, once per read. Absent while the engine does not answer (stopped, or a hang past the limit fails the read).
+var.ps = '''{{ ("n=$(docker ps -q 2>/dev/null) && echo \"$n\" | awk 'NF{c++} END{print c+0}'; true" | ttl('30s') | cache(env.DOCKER_CONTEXT, env.DOCKER_HOST, env.DOCKER_CONFIG) | exec(timeout='2s') or none) if 'docker' | which }}'''
+
 [client.providers.docker.template]
 # The context in effect; re-run when $DOCKER_CONTEXT, $DOCKER_HOST or $DOCKER_CONFIG changes, or the config file does.
 context = '''{{ ('docker context show 2>/dev/null || true' | watch((env.DOCKER_CONFIG or '~/.docker') ~ '/config.json') | ttl('30s') | cache(env.DOCKER_CONTEXT, env.DOCKER_HOST, env.DOCKER_CONFIG) | exec() or none) if 'docker' | which }}'''
-# The running containers: `docker ps -q` with a 2 second limit, counted. Absent while the engine does not answer (stopped, or a hang past the limit fails the read), so a count is there only when `running`.
-count = '''{{ (("n=$(docker ps -q 2>/dev/null) && echo \"$n\" | awk 'NF{c++} END{print c+0}'; true" | ttl('30s') | cache(env.DOCKER_CONTEXT, env.DOCKER_HOST, env.DOCKER_CONFIG) | exec(timeout='2s') or none) | int) if 'docker' | which }}'''
+# How many containers are running; absent while the engine does not answer, so a count is there only when `running`.
+count = "{{ (ps | int) if ps is defined }}"
 # Whether the engine answers; false when docker is installed and does not, absent when it is not installed.
-running = "{{ (docker.count is number) if 'docker' | which }}"
+running = "{{ (ps is defined) if 'docker' | which }}"

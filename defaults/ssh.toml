@@ -2,12 +2,16 @@
 # On only where `ssh-add` is on the daemon's PATH; the templates below run in your shell.
 enabled.template = "{{ 'ssh-add' | which }}"
 
+[client.providers.ssh]
+# `ssh-add -l` against the shell's agent ($SSH_AUTH_SOCK), run once per read whichever fields it serves: exit 2 is no agent, 1 an agent holding no key. Memoised on the socket, for 30 seconds.
+var.listed = "{{ 'ssh-add -l' | ttl('30s') | cache(env.SSH_AUTH_SOCK) | execa(ok=[0, 1, 2]) }}"
+
 [client.providers.ssh.template]
-# Whether the shell's ssh agent ($SSH_AUTH_SOCK) answers: `ssh-add -l` exits 2 when it cannot reach one. Memoised on the socket, for 30 seconds.
-agent = "{{ ('ssh-add -l' | ttl('30s') | cache(env.SSH_AUTH_SOCK) | execa(ok=[0, 1, 2])).exit_code != 2 }}"
-# How many keys the agent holds, counting the lines of `ssh-add -l` that name one: 0 when it holds none or there is no agent.
-keys = "{{ (('ssh-add -l' | ttl('30s') | cache(env.SSH_AUTH_SOCK) | execa(ok=[0, 1, 2])).stdout | regex_replace('(?m)^\\\\d+ \\\\S+ ', '@@') | split('@@') | length) - 1 }}"
-# Each key's comment, the text between its fingerprint and its `(TYPE)`; an empty list when the agent holds none or there is no agent.
-identities = "{{ ('ssh-add -l' | ttl('30s') | cache(env.SSH_AUTH_SOCK) | execa(ok=[0, 1, 2])).stdout | split('\\n') | map('regex_search', '^\\\\S+ \\\\S+ (.*) \\\\(\\\\S+\\\\)$') | select | map('last') | list }}"
+# Whether the shell's ssh agent answers.
+agent = "{{ listed.exit_code != 2 }}"
+# How many keys the agent holds, counting the lines of `ssh-add -l` that name one; absent when there is no agent.
+keys = "{{ ((listed.stdout | regex_replace('(?m)^\\\\d+ \\\\S+ ', '@@') | split('@@') | length) - 1) if listed.exit_code != 2 }}"
+# Each key's comment, the text between its fingerprint and its `(TYPE)`; absent when there is no agent.
+identities = "{{ (listed.stdout | split('\\n') | map('regex_search', '^\\\\S+ \\\\S+ (.*) \\\\(\\\\S+\\\\)$') | select | map('last') | list) if listed.exit_code != 2 }}"
 # Whether the socket is the one sshd made for a forwarded agent, `/tmp/ssh-*/agent.*`: a guess from the path.
 forwarded = "{{ (env.SSH_AUTH_SOCK or '') | regex_search('^/tmp/ssh-[^/]+/agent\\\\.') is defined }}"

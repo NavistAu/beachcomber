@@ -20,7 +20,7 @@ fn agents(tools: &[(&str, &str)]) -> Agents {
     let bin = tempfile::tempdir().unwrap();
     let dir = bin.path().canonicalize().unwrap();
     for (name, body) in tools {
-        crate::common::daemon::tool(&dir, name, &format!("#!/bin/sh\n{body}\n"));
+        crate::common::daemon::tool(&dir, name, &format!("#!/bin/sh\n{LOGGED}\n{body}\n"));
     }
     // `sh -c` runs the commands, and is all of `PATH` that is not ours.
     std::os::unix::fs::symlink("/bin/sh", dir.join("sh")).unwrap();
@@ -35,9 +35,25 @@ fn agents(tools: &[(&str, &str)]) -> Agents {
 impl Agents {
     fn get(&self, key: &str, vars: &[(&str, &str)]) -> Option<Value> {
         let dir: PathBuf = self.s.project.clone();
-        self.s.get_in_env(key, Path::new(&dir), vars)
+        let log = self.log();
+        let log = log.to_str().unwrap();
+        let vars: Vec<(&str, &str)> = vars.iter().copied().chain([("RUN_LOG", log)]).collect();
+        self.s.get_in_env(key, Path::new(&dir), &vars)
+    }
+
+    /// Where every stand-in logs each run.
+    fn log(&self) -> PathBuf {
+        self._bin.path().join("runs.log")
+    }
+
+    /// How many times the stand-ins have run.
+    fn runs(&self) -> usize {
+        std::fs::read_to_string(self.log()).map_or(0, |s| s.lines().count())
     }
 }
+
+/// Each stand-in logs its run first.
+const LOGGED: &str = r#"echo "$0 $*" >> "$RUN_LOG""#;
 
 const SSH_ADD: &str = r#"case "$SSH_AUTH_SOCK" in
 /keys) printf '%s\n' '256 SHA256:aaa josh@laptop (ED25519)' '3072 SHA256:bbb work key (with parens) (RSA)'; exit 0 ;;
@@ -68,15 +84,41 @@ fn ssh_agent_with_no_keys_is_a_running_agent_holding_none() {
     assert_eq!(a.get("ssh.identities", &v), Some(json!([])));
 }
 
+/// No agent: no count of keys and no list of them, not `0` and `[]`.
 #[test]
-fn ssh_without_an_agent_holds_no_keys() {
+fn ssh_without_an_agent_has_no_keys_at_all() {
     let a = agents(&[("ssh-add", SSH_ADD)]);
     for v in [vec![], vec![("SSH_AUTH_SOCK", "/gone")]] {
         assert_eq!(a.get("ssh.agent", &v), Some(json!(false)));
-        assert_eq!(a.get("ssh.keys", &v), Some(json!(0)));
-        assert_eq!(a.get("ssh.identities", &v), Some(json!([])));
+        assert_eq!(a.get("ssh.keys", &v), None);
+        assert_eq!(a.get("ssh.identities", &v), None);
         assert_eq!(a.get("ssh.forwarded", &v), Some(json!(false)));
+        assert_eq!(
+            a.get("ssh", &v),
+            Some(json!({"agent": false, "forwarded": false}))
+        );
     }
+}
+
+/// One `ssh-add -l` serves every field of a read, and the next read is its
+/// memo's.
+#[test]
+fn ssh_runs_ssh_add_once_per_read() {
+    let a = agents(&[("ssh-add", SSH_ADD)]);
+    let v = [("SSH_AUTH_SOCK", "/keys")];
+    assert_eq!(
+        a.get("ssh", &v),
+        Some(json!({
+            "agent": true,
+            "keys": 2,
+            "identities": ["josh@laptop", "work key (with parens)"],
+            "forwarded": false,
+        }))
+    );
+    assert_eq!(a.runs(), 1);
+    a.get("ssh", &v);
+    a.get("ssh.keys", &v);
+    assert_eq!(a.runs(), 1, "memoised for 30 seconds");
 }
 
 #[test]
@@ -139,9 +181,20 @@ fn gpg_without_an_agent_holds_no_keys() {
     for home in ["/exit0", "/exit1"] {
         let v = [("GNUPGHOME", home)];
         assert_eq!(a.get("gpg.agent", &v), Some(json!(false)), "{home}");
-        assert_eq!(a.get("gpg.keys", &v), Some(json!(0)), "{home}");
-        assert_eq!(a.get("gpg.cached", &v), Some(json!(0)), "{home}");
+        assert_eq!(a.get("gpg.keys", &v), None, "{home}");
+        assert_eq!(a.get("gpg.cached", &v), None, "{home}");
     }
+}
+
+/// One `gpg-connect-agent` serves every field of a read.
+#[test]
+fn gpg_runs_once_per_read() {
+    let a = agents(&[("gpg-connect-agent", GPG)]);
+    assert_eq!(
+        a.get("gpg", &[("GNUPGHOME", "/cached")]),
+        Some(json!({"agent": true, "keys": 3, "cached": 2}))
+    );
+    assert_eq!(a.runs(), 1);
 }
 
 #[test]
@@ -185,6 +238,17 @@ fn kerberos_valid_ticket_and_its_principal_in_mit_and_heimdal() {
             "{cache}"
         );
     }
+}
+
+/// One command serves both fields of a read: `klist -s`, then `klist`.
+#[test]
+fn kerberos_asks_once_per_read() {
+    let a = agents(&[("klist", KLIST)]);
+    assert_eq!(
+        a.get("kerberos", &[("KRB5CCNAME", "/mit")]),
+        Some(json!({"ticket": true, "principal": "josh@EXAMPLE.COM"}))
+    );
+    assert_eq!(a.runs(), 2, "klist -s and klist, once each");
 }
 
 #[test]

@@ -78,6 +78,10 @@ pub(super) struct TemplateHalf {
     at: String,
     /// The memos of the template's leaves ([`memo_half`]).
     memo: Option<serde_json::Value>,
+    /// The provider's vars, beside a template half when it has any.
+    var: Option<serde_json::Value>,
+    /// The vars' memos, by name.
+    var_memo: Option<serde_json::Value>,
 }
 
 /// What a `get` answers once the provider's `return` has read the data: the
@@ -111,12 +115,36 @@ pub(super) fn answer(
     path: &Dir,
     result: Option<MergedRead>,
 ) -> Answered {
-    let returned = crate::shape::provider::returned_over(cache, registry, provider, path, result);
+    let mut returned =
+        crate::shape::provider::returned_over(cache, registry, provider, path, result);
+    // The vars are no field: out of the tree a read walks, and beside any
+    // template half it sends, for the leaves it holds to read.
+    let var = returned
+        .template
+        .as_mut()
+        .and_then(|fields| fields.remove(crate::shape::seeded::VAR_NODE))
+        .and_then(|vars| serde_json::to_value(&vars).ok())
+        .filter(serde_json::Value::is_object);
     let mut half = template_half(returned.template, address);
     if let Some(template) = &half.template
         && cache.has_memos(provider)
     {
         half.memo = memo_half(cache, provider, path, registry.home(), template, &half.at);
+    }
+    if half.template.is_some()
+        && let Some(var) = var
+    {
+        if cache.has_memos(provider) {
+            half.var_memo = memo_half(
+                cache,
+                provider,
+                path,
+                registry.home(),
+                &var,
+                crate::shape::seeded::VAR_NODE,
+            );
+        }
+        half.var = Some(var);
     }
     Answered {
         half,
@@ -191,6 +219,7 @@ pub(super) fn template_half(
                     rest: Some(format_address(&below[i..])),
                     at: format_address(&path[..=i]),
                     memo: None,
+                    ..TemplateHalf::default()
                 };
             }
             _ => return TemplateHalf::default(),
@@ -202,6 +231,7 @@ pub(super) fn template_half(
             rest: None,
             at: format_address(path),
             memo: None,
+            ..TemplateHalf::default()
         },
         _ => TemplateHalf::default(),
     }
@@ -234,7 +264,9 @@ pub(super) fn resolve_halves(
             .map_or_else(Response::miss, |data| hit_response(data, freshness(m, ""))),
         None => Response::miss(),
     };
-    response.with_halves(half.template, half.rest, half.memo)
+    response
+        .with_halves(half.template, half.rest, half.memo)
+        .with_vars(half.var, half.var_memo)
 }
 
 // Watch reads only from cache — it starts no run on a cold miss (unlike Get).

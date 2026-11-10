@@ -112,9 +112,11 @@ pub(super) async fn handle_watch(
 }
 
 /// What decides whether a watch frame is new: its data, its template and its
-/// memo half. Ages are not compared: a frame is about what changed, and an
-/// age always has.
+/// memo half, then its vars and theirs. Ages are not compared: a frame is
+/// about what changed, and an age always has.
 pub(super) type FrameIdentity = (
+    Option<serde_json::Value>,
+    Option<serde_json::Value>,
     Option<serde_json::Value>,
     Option<serde_json::Value>,
     Option<serde_json::Value>,
@@ -128,6 +130,11 @@ pub(super) fn frame_identity(frame: &Response) -> FrameIdentity {
             .memo
             .as_ref()
             .map(|memo| libbeachcomber::protocol::memo_without_ages(frame.template.as_ref(), memo)),
+        frame.var.clone(),
+        frame
+            .var_memo
+            .as_ref()
+            .map(|memo| libbeachcomber::protocol::memo_without_ages(frame.var.as_ref(), memo)),
     )
 }
 

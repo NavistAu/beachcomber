@@ -293,6 +293,16 @@ leaf is one expression: {{ … | cache() | … }}`), on a seed and on a `put` to
 it in its tag is a warning (`cache() with nothing after it stores a value already computed`): it is legal, and hits
 skip nothing.
 
+**A cached var.** A [var](./configuration-reference.md#vars) piped through `cache()` is memoised by the same rules,
+as one leaf at `<p>.var.<name>`: its memo is `<p>:memo.var.<name>`, its hash `<p>:cache.var.<name>.hash`, and an edit of
+the var drops it. One cached var serves every leaf that reads it, so a command that several fields parse runs once
+per change, not once per field:
+
+```toml
+[client.providers.gpg]
+var.keyinfo = "{{ \"gpg-connect-agent --no-autostart 'keyinfo --list' /bye\" | ttl('30s') | cache(env.GNUPGHOME) | execa(ok=[0, 1, 2]) }}"
+```
+
 ### Bars
 
 `_.bar(width, part, ..., empty=none, fill_fg=none, text_fg=none, label_fg=none, bold=false)` is one styled row exactly

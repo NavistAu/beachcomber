@@ -372,7 +372,7 @@ fn resolve_reading(
     })
 }
 
-/// Whether a frame's node is the one a resolution read: the same data,
+/// Whether a frame's node is the one a resolution read: the same data, vars,
 /// template, rest and memo half. Ages are not compared; a frame is about what
 /// changed, so a memo whose hash was dropped is a change and one that only
 /// grew older is not.
@@ -387,10 +387,17 @@ fn already_read(read: Option<&Option<Got>>, frame: &Got) -> bool {
             .as_ref()
             .map(|memo| crate::protocol::memo_without_ages(got.template.as_ref(), memo))
     };
+    let var_memo = |got: &Got| {
+        got.var_memo
+            .as_ref()
+            .map(|memo| crate::protocol::memo_without_ages(got.var.as_ref(), memo))
+    };
     read.data == frame.data
         && read.template == frame.template
         && read.rest == frame.rest
         && memo(read) == memo(frame)
+        && read.var == frame.var
+        && var_memo(read) == var_memo(frame)
 }
 
 /// One daemon watch the fan-in holds: on `(key, path)`, a key the latest

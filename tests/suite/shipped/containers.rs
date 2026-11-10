@@ -109,6 +109,10 @@ fn docker_running_with_none_is_zero() {
 fn docker_engine_down_is_not_running_and_has_no_count() {
     let e = env_with(&["docker"]);
     let v = [("STUB_EXIT", "1")];
+    assert_eq!(
+        e.get("docker", &v),
+        json!({"context": "orbstack", "running": false})
+    );
     assert_eq!(e.get("docker.running", &v), json!(false));
     assert_eq!(e.get("docker.count", &v), Value::Null);
     assert_eq!(e.get("docker.context", &v), json!("orbstack"));
@@ -123,6 +127,20 @@ fn docker_context_follows_the_shell() {
         e.get("docker.context", &[("DOCKER_CONTEXT", "work")]),
         json!("work")
     );
+}
+
+/// One `ps` serves both fields of a read.
+#[test]
+fn docker_ps_runs_once_per_read() {
+    let e = env_with(&["docker"]);
+    assert_eq!(
+        e.get("docker", &[("STUB_IDS", "a\nb\n")]),
+        json!({"context": "orbstack", "count": 2, "running": true})
+    );
+    assert_eq!(e.runs(), 1);
+    let e = env_with(&["podman"]);
+    e.get("podman", &[("P_IDS", "x\n")]);
+    assert_eq!(e.runs(), 1);
 }
 
 /// Memoised: many reads, one `ps`.

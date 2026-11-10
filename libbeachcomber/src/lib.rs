@@ -1136,6 +1136,8 @@ fn parse_node(resp: Response) -> resolve::Got {
         rest: resp.rest,
         memo: resp.memo,
         age_ms: resp.age_ms,
+        var: resp.var,
+        var_memo: resp.var_memo,
     }
 }
 
@@ -1273,6 +1275,7 @@ mod tests {
                 rest: None,
                 memo: None,
                 age_ms: Some(30),
+                ..Got::default()
             }
         );
         assert_eq!(
@@ -1285,6 +1288,7 @@ mod tests {
                 rest: None,
                 memo: None,
                 age_ms: Some(812),
+                ..Got::default()
             }
         );
         assert_eq!(
@@ -1295,6 +1299,7 @@ mod tests {
                 rest: None,
                 memo: None,
                 age_ms: Some(812),
+                ..Got::default()
             }
         );
         assert_eq!(

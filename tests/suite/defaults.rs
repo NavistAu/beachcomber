@@ -282,12 +282,18 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
                 "{name}: the table names the file's provider"
             );
             let table = table.as_table().unwrap();
-            assert_eq!(
-                table.keys().collect::<Vec<_>>(),
-                ["template"],
-                "{name}: a client provider holds only its template"
+            assert!(
+                table.keys().all(|k| k == "template" || k == "var")
+                    && table.contains_key("template"),
+                "{name}: a client provider holds its template, and its vars"
             );
-            for (field, leaf) in table["template"].as_table().unwrap() {
+            let vars = table.get("var").and_then(|v| v.as_table()).into_iter();
+            let leaves = table["template"]
+                .as_table()
+                .unwrap()
+                .iter()
+                .chain(vars.flatten());
+            for (field, leaf) in leaves {
                 let src = leaf
                     .as_str()
                     .unwrap_or_else(|| panic!("{name}: {field} is not a string"));
@@ -303,7 +309,7 @@ fn every_shipped_template_is_a_single_tag_that_compiles() {
             }
         }
     }
-    assert_eq!(checked, 32, "every shipped template is covered");
+    assert_eq!(checked, 38, "every shipped template and var is covered");
 }
 
 /// A shipped Source is documented where it is written: the line under its

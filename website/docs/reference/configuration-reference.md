@@ -349,8 +349,10 @@ What clients render. The daemon stores these and never evaluates them.
 |---|---|---|
 | `template.<leaf>` | string, or a table of them | A template, seeded as `<p>:template.<leaf>`. Nested tables are groups |
 | `macro.<name>` | string | A [macro library](./macros.md), seeded as `<p>:macro.<name>` |
+| `var.<name>` | string | A value the provider's templates share, read bare (`{{ name.field }}`); seeded as `<p>:template.var.<name>` |
 
-Any other key in `[client]` or `[client.providers.<p>]` is an error.
+Any other key in `[client]` or `[client.providers.<p>]` is an error. `[client.providers._]`, the prototype, holds only
+`var`: its vars reach every provider a `[client.providers]` table names.
 
 ```toml
 [client.providers.prompt.template]
@@ -377,9 +379,39 @@ mode = "{{ env.THEME_MODE or 'dark' }}"
 
 The language is in [Templates](../concepts/templates.md) and the [Template Library](./template-library.md).
 
+### Vars
+
+```toml
+[client.providers.ssh]
+var.listed = "{{ 'ssh-add -l' | ttl('30s') | cache(env.SSH_AUTH_SOCK) | execa(ok=[0, 1, 2]) }}"
+
+[client.providers.ssh.template]
+agent = "{{ listed.exit_code != 2 }}"
+keys = "{{ (listed.stdout | trim | split('\\n') | length) if listed.exit_code == 0 }}"
+```
+
+- A var is a value expression, written as a template leaf is, and its value any value one renders: a map from
+  `_.execa()`, a list, a string. A template of the same provider reads it by its bare name, and its fields by
+  attribute.
+- It is computed at most once per read, however many leaves read it, and only when a leaf the read renders names it.
+  A var absent (`none`, undefined) binds nothing, as a missing ref does.
+- A var reads what a template reads: `env`, providers (`comb.*` and bare names), and the provider's other vars. Vars
+  that read each other in a ring are a load error naming them (`var cycle: a -> b -> a`).
+- A var's name is a jinja identifier, not `_`, `comb`, `env`, `loop` or a word of the engine's own (`none`, `if`, …).
+  Within the provider it hides a provider of the same name.
+- `[client.providers._] var.<name>` reaches every provider; a provider's own var of that name wins, whichever file
+  either is in. Among one kind a later file replaces a var and keeps its siblings.
+- A var piped through `cache()` is memoised as a cached leaf is, at `<p>:memo.var.<name>` ([Caching a
+  template](./template-library.md#caching-a-template)).
+- A var is no field: `comb get <p>` leaves it out and a read of `<p>.var` answers only data. `comb get <p>:template`
+  shows the vars under `var`, beside the leaves; `template.var` is reserved for them. A `put` does not write a var.
+- The daemon sends a provider's vars beside the template it sends for a read ([var
+  half](./protocol-reference.md#var-half)): a read costs no request more, with vars or without.
+
 ## Names
 
-A provider name, a Source name, a template leaf and a macro name follow one rule:
+A provider name, a Source name, a template leaf and a macro name follow one rule (a var name is a jinja identifier,
+[above](#vars)):
 
 - no `:`, `.`, `[`, `]` or `*`, and not starting with `/`, `~` or `<`;
 - not empty; a quoted key holding a `.` (`"a.b" = …`) is one name, read as `t['a.b']`;

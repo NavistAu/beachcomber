@@ -34,6 +34,20 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, PoisonError, RwLock, mpsc};
 
+/// The node of a provider's `:template` tree its `var.<name>` bindings
+/// stand at, `<p>:template.var.<name>`; their memos are `<p>:memo.var.<name>`.
+/// Not a field: the daemon takes it out of the tree a read walks and sends it
+/// beside the template half instead ([`Got::var`]).
+pub const VAR_NODE: &str = "var";
+
+/// One provider's var table as the daemon sent it: each binding's source by
+/// name, and the memo half beside them.
+#[derive(Clone)]
+struct VarTable {
+    sources: Map<String, JsonValue>,
+    memo: Option<JsonValue>,
+}
+
 /// One node as the daemon returned it: the `get` response of design §3.4.
 ///
 /// `data` is the cached value at the address, `template` the template tree in
@@ -56,6 +70,11 @@ pub struct Got {
     pub memo: Option<JsonValue>,
     /// Age of `data`, present only with it.
     pub age_ms: Option<u128>,
+    /// The provider's vars, by name, sent beside a template half when it has
+    /// any ([`crate::protocol::Response::var`]).
+    pub var: Option<JsonValue>,
+    /// The vars' memos, by name.
+    pub var_memo: Option<JsonValue>,
 }
 
 /// Which directory a query addresses.
@@ -344,7 +363,7 @@ pub fn eval_with(
 ) -> Result<Option<JsonValue>, ResolveError> {
     let mut r = Resolver::new(inputs, fetch);
     r.push(name)?;
-    let rendered = r.render_frame_with(src, name, locals, Frame::Format);
+    let rendered = r.render_frame_with(src, name, None, locals, Frame::Format);
     r.stack.pop();
     let memos = std::mem::take(&mut r.memos);
     write_back(&memos, r.fetch);
@@ -401,6 +420,12 @@ struct Resolver<'a> {
     last_hit: bool,
     /// Whether the addressed leaf was ([`Traced::memo_hit`]).
     memo_hit: bool,
+    /// Each provider's var table, as the daemon sent it beside a template
+    /// half; a provider with none has no entry.
+    var_tables: HashMap<String, VarTable>,
+    /// What each var resolved to so far, by its `(p.var.<name>, path)`: as
+    /// [`Self::resolved`] is for a node.
+    vars: HashMap<Coord, Result<Option<JsonValue>, String>>,
 }
 
 impl<'a> Resolver<'a> {
@@ -421,6 +446,8 @@ impl<'a> Resolver<'a> {
             memos: Vec::new(),
             last_hit: false,
             memo_hit: false,
+            var_tables: HashMap::new(),
+            vars: HashMap::new(),
         }
     }
 
@@ -606,6 +633,9 @@ impl<'a> Resolver<'a> {
                 Err(FetchError::Rejected(m)) => Err(m),
                 Err(e @ FetchError::Transport(_)) => return Err(ResolveError::Fetch(e)),
             };
+        if let Ok(Some(got)) = &answer {
+            self.note_vars(key, got);
+        }
         self.memo.insert(coord.clone(), answer.clone());
         self.order.push(coord);
         answer.map_err(rejected)
@@ -639,7 +669,12 @@ impl<'a> Resolver<'a> {
             self.inputs.force,
             self.inputs.wait,
         ));
-        let rendered = self.render_frame_with(src, key, &Map::new(), frame);
+        // The provider whose leaf (or var) this is: its vars are in scope.
+        let provider = crate::key::split_key(key)
+            .ok()
+            .and_then(|(head, _)| crate::key::split_facet(head).ok())
+            .and_then(|(base, facet)| facet.is_none().then(|| base.to_string()));
+        let rendered = self.render_frame_with(src, key, provider.as_deref(), &Map::new(), frame);
         self.stack.pop();
         rendered
     }
@@ -656,6 +691,7 @@ impl<'a> Resolver<'a> {
         &mut self,
         src: &str,
         key: &str,
+        provider: Option<&str>,
         locals: &Map<String, JsonValue>,
         frame: Frame,
     ) -> Result<Option<JsonValue>, ResolveError> {
@@ -670,7 +706,12 @@ impl<'a> Resolver<'a> {
             .collect();
         refs.sort();
         refs.dedup();
+        let vars = match provider {
+            Some(provider) => self.bind_vars(provider, &mut refs)?,
+            None => Map::new(),
+        };
         let mut bound = self.bind(&refs)?;
+        bound.extend(vars);
         for (name, value) in locals {
             bound.insert(name.clone(), value.clone());
         }
@@ -994,6 +1035,101 @@ impl<'a> Resolver<'a> {
             }
         }
         Ok(top)
+    }
+
+    /// The vars of `provider` that `refs` name, each computed (at most once
+    /// per resolution) and taken out of `refs`, so a var hides a provider of
+    /// its name. An absent var binds nothing, as a missing ref does. A name
+    /// alone is a ref, so a render with none pays no fetch for the table.
+    fn bind_vars(
+        &mut self,
+        provider: &str,
+        refs: &mut Vec<Ref>,
+    ) -> Result<Map<String, JsonValue>, ResolveError> {
+        let mut bound = Map::new();
+        let named = |r: &Ref| match r {
+            Ref::Dynamic(name) | Ref::Resolved(name, _) => Some(name.clone()),
+            _ => None,
+        };
+        let names: BTreeSet<String> = refs
+            .iter()
+            .filter_map(named)
+            .filter(|n| n != "env" && n != "comb")
+            .collect();
+        if names.is_empty() {
+            return Ok(bound);
+        }
+        // The table came beside the template half of the leaf being
+        // rendered: a provider with no vars sent none, and costs nothing.
+        let Some(table) = self.var_tables.get(provider).cloned() else {
+            return Ok(bound);
+        };
+        let names: BTreeSet<String> = names
+            .into_iter()
+            .filter(|n| table.sources.contains_key(n))
+            .collect();
+        for name in &names {
+            if let Some(value) = self.var(provider, name, &table)? {
+                bound.insert(name.clone(), value);
+            }
+        }
+        refs.retain(|r| named(r).is_none_or(|n| !names.contains(&n)));
+        Ok(bound)
+    }
+
+    /// Keep the var table the daemon sent beside a template half of `key`'s
+    /// provider ([`Got::var`]): the first one this resolution was sent.
+    fn note_vars(&mut self, key: &str, got: &Got) {
+        let Some(JsonValue::Object(sources)) = &got.var else {
+            return;
+        };
+        let Ok((head, _)) = crate::key::split_key(key) else {
+            return;
+        };
+        if let Ok((provider, None)) = crate::key::split_facet(head) {
+            self.var_tables
+                .entry(provider.to_string())
+                .or_insert_with(|| VarTable {
+                    sources: sources.clone(),
+                    memo: got.var_memo.clone(),
+                });
+        }
+    }
+
+    /// The value of `provider`'s var `name`, rendered once per resolution as
+    /// a leaf at `<p>.var.<name>`, so its `cache()` memoises it there. A
+    /// render failure is the reading leaf's; a var reading itself, however
+    /// far round, is a cycle.
+    fn var(
+        &mut self,
+        provider: &str,
+        name: &str,
+        table: &VarTable,
+    ) -> Result<Option<JsonValue>, ResolveError> {
+        let key = crate::key::join(provider, &crate::key::push(VAR_NODE, name));
+        let coord = self.coord(&key);
+        if !self.on_stack(&key)
+            && let Some(done) = self.vars.get(&coord)
+        {
+            return done.clone().map_err(ResolveError::Runtime);
+        }
+        let Some(JsonValue::String(src)) = table.sources.get(name) else {
+            return Err(ResolveError::Config(format!(
+                "{key}: a var is a string (a value expression)"
+            )));
+        };
+        let memo = table.memo.as_ref().and_then(|m| m.get(name));
+        let outcome = self.render(src, &key, &key, memo);
+        match &outcome {
+            Ok(value) => {
+                self.vars.insert(coord, Ok(value.clone()));
+            }
+            Err(ResolveError::Runtime(m)) => {
+                self.vars.insert(coord, Err(m.clone()));
+            }
+            Err(_) => {}
+        }
+        outcome
     }
 
     /// The caller's `$var`; `None` when unset.

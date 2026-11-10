@@ -66,6 +66,8 @@ Other fields vary per op. A field the op does not take is refused, never ignored
 | `template` | any | `get` and `watch`: the [template half](#template-half) |
 | `rest` | string | `get` and `watch`: the part of the key the template walk could not consume |
 | `memo` | any | `get` and `watch`: the [memo half](#memo-half), beside the template half |
+| `var` | object | `get` and `watch`: the provider's [vars](#var-half), beside the template half; omitted when it has none |
+| `var_memo` | object | `get` and `watch`: the vars' memos, by name, beside `var`; omitted when no var has one |
 
 A field with no value is omitted, never set to `null`. A response field a client does not know should be ignored: a newer daemon may add one. JSON key order is not part of the contract, in requests, responses or payloads.
 
@@ -207,6 +209,21 @@ A memo is found as a static record is: up the chain from the requested path, nea
 
 The daemon drops a memo's hash, and notifies the namespace's watchers at the memo's directory, when the field is invalidated: a `put` or a configuration reload of the template at or above the leaf, a data write at or under the leaf (a `put` to `<p>`, its removal or expiry, a configuration seed, or a Source's run storing the field), a `refresh` of the key, the memo's `ttl` running out, and a change to one of its `watch` paths while it is Active.
 
+### Var half
+
+A provider's `var.<name>` bindings ([configuration](./configuration-reference.md#vars)) are seeded at `<p>:template.var.<name>`. They are no field: the template half of a read never holds the `var` node (a read of `<p>.var…` answers data alone), and `<p>:template` shows it as configuration. A response that carries a template half of a provider with vars carries them beside it, so the client renders a leaf that reads one without another request:
+
+```json
+{"ok": true, "template": "{{ listed.exit_code != 2 }}",
+ "var": {"listed": "{{ 'ssh-add -l' | ttl('30s') | cache(env.SSH_AUTH_SOCK) | execa(ok=[0, 1, 2]) }}"},
+ "var_memo": {"listed": {"hash": "9c6001d328a94690", "stale": false, "age_ms": 5200, "data": {"exit_code": 0, "stdout": "…"}}}}
+```
+
+- `var` — every var of the provider, by name, each a value expression; the prototype's (`[client.providers._]`) already merged beneath the provider's own. Omitted when the provider has none, and on a response with no template half.
+- `var_memo` — each cached var's memo, by name, shaped as a leaf's [memo half](#memo-half): a var memoises at `<p>:memo.var.<name>`, written by the `memo` op with key `<p>.var.<name>`. Omitted when no var has one.
+
+Both are additive: a client that does not know them ignores them, and renders a template that reads a var with the var absent.
+
 ### `refresh`
 
 Re-execute the Sources the key demands — every Source of the namespace for a bare `provider`, only the one owning the field for `provider.field` — each at the instance that answers for the requested directory (the root its `root` names for it, or the one instance at `~` for a Source with no root), out-of-band. It does not return the new value: it answers `{"ok": true}` once acknowledged, and later `get` calls return the refreshed value once the run completes.
@@ -254,6 +271,7 @@ Errors:
 - an invalid facet: `invalid facet key: <head> (…)`; a key the grammar cannot read: `invalid key: <key>`
 - a write to a layer facet: `<p>:put and <p>:source are read-only; write <p>.<node>`
 - a write to `<p>:memo`: `<p>:memo is written by cache(); edit <p>:template.<f>, or refresh <p>`
+- a write at `<p>:template.var`, or of a `<p>:template` tree holding `var`: `<key>: var is the vars' node, set in [client.providers.<p>] var.<name>; a put does not write a var`
 - a write to `<p>:cache` other than `_.decay`, or a `_.decay` that is not a positive integer: see [The `:cache` facet](#the-cache-facet)
 - a `:template` leaf that is not a string, or a template that does not compile (naming the leaf)
 - a `ttl` of `0s`: `ttl: must be at least 1s`; one finer than a second: `ttl: must be a whole number of seconds`; an unparsable one: ``ttl: invalid duration `<ttl>`: <the grammar>``; a `ttl` with `data: null`: `a ttl on an absent value has no meaning`

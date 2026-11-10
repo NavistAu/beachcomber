@@ -123,6 +123,7 @@ fn both(d: Value, t: Value) -> Got {
         age_ms: Some(30),
         rest: None,
         memo: None,
+        ..Got::default()
     }
 }
 
@@ -2682,4 +2683,199 @@ fn a_budget_wait_renders_a_stale_memo() {
         ..inputs(&env)
     };
     assert_eq!(resolve("p.f", &zero, &mut f), Ok(Some(json!("NOW"))));
+}
+
+// ── Vars: `[client.providers.<p>] var.<name>`, sent beside a template half ──
+
+/// `got`, with `vars` (and their memos) beside it, as the daemon sends a
+/// template half of a provider that has vars.
+fn with_vars(got: Got, vars: &Value, var_memo: Option<Value>) -> Got {
+    Got {
+        var: Some(vars.clone()),
+        var_memo,
+        ..got
+    }
+}
+
+/// A provider whose leaves `a` and `b` read the var `r`, a command that
+/// appends to `log` and prints a map; `c` reads none.
+fn var_fetch(log: &std::path::Path) -> MapFetch {
+    let r = format!(
+        "{{{{ \"echo run >> {} && echo '{{\\\"n\\\": 2}}'\" | exec() | fromjson }}}}",
+        log.display()
+    );
+    let vars = json!({ "r": r, "s": "{{ r.n * 10 }}", "gone": "{{ none }}" });
+    let tree = json!({
+        "a": "{{ r.n }}",
+        "b": "{{ s + r.n }}",
+        "c": "{{ 'plain' }}",
+        "d": "{{ gone is defined }}",
+    });
+    let mut f = MapFetch::default();
+    let p = Some(CWD);
+    let leaf = |k: &str| with_vars(tmpl(tree[k].clone()), &vars, None);
+    f.seed("p", p, with_vars(tmpl(tree.clone()), &vars, None))
+        .seed("p.a", p, leaf("a"))
+        .seed("p.b", p, leaf("b"))
+        .seed("p.c", p, leaf("c"))
+        .seed("p.d", p, leaf("d"));
+    f
+}
+
+fn runs(log: &std::path::Path) -> usize {
+    std::fs::read_to_string(log).map_or(0, |s| s.lines().count())
+}
+
+/// However many leaves read a var, it is computed once per resolution, and
+/// a var reads another; it is no field of the provider. The table came with
+/// the read: one request.
+#[test]
+fn a_var_is_computed_once_per_resolution_and_is_no_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let env = env_of(&[]);
+    let mut f = var_fetch(&log);
+    assert_eq!(
+        resolve("p", &exec_inputs(&env), &mut f),
+        Ok(Some(json!({"a": 2, "b": 22, "c": "plain", "d": false})))
+    );
+    assert_eq!(runs(&log), 1, "three readers, one run");
+    assert_eq!(f.keys(), vec!["p"]);
+
+    let mut f = var_fetch(&log);
+    assert_eq!(
+        resolve("p.b", &exec_inputs(&env), &mut f),
+        Ok(Some(json!(22)))
+    );
+    assert_eq!(runs(&log), 2);
+    assert_eq!(f.keys(), vec!["p.b"], "the vars came beside the template");
+}
+
+/// A var no leaf of the read names is never computed.
+#[test]
+fn a_var_is_computed_only_when_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let env = env_of(&[]);
+    let mut f = var_fetch(&log);
+    assert_eq!(
+        resolve("p.c", &exec_inputs(&env), &mut f),
+        Ok(Some(json!("plain")))
+    );
+    assert_eq!(
+        resolve("p.d", &exec_inputs(&env), &mut f),
+        Ok(Some(json!(false)))
+    );
+    assert_eq!(
+        runs(&log),
+        0,
+        "an absent var binds nothing, and r was never read"
+    );
+    assert_eq!(f.keys(), vec!["p.c", "p.d"]);
+}
+
+/// A provider with no vars: a leaf reading other providers bare costs the
+/// requests for those and nothing more; the leaf alone, one request.
+#[test]
+fn a_provider_with_no_vars_costs_no_request() {
+    let env = env_of(&[]);
+    let mut f = MapFetch::default();
+    f.seed("p.a", Some(CWD), tmpl(json!("{{ 'x' ~ (q or '') }}")));
+    assert_eq!(resolve("p.a", &inputs(&env), &mut f), Ok(Some(json!("x"))));
+    assert_eq!(f.keys(), vec!["p.a", "q"]);
+    let mut f = MapFetch::default();
+    f.seed("p.a", Some(CWD), tmpl(json!("{{ 'x' }}")));
+    assert_eq!(resolve("p.a", &inputs(&env), &mut f), Ok(Some(json!("x"))));
+    assert_eq!(f.keys(), vec!["p.a"], "exactly one request");
+}
+
+/// A cached var is memoised as a cached leaf is, at `<p>.var.<name>`: a miss
+/// queues its write, a hit runs nothing.
+#[test]
+fn a_cached_var_is_memoised_at_its_var_address() {
+    let env = env_of(&[("SOCK", "/s")]);
+    let vars = json!({ "r": "{{ env.SOCK | cache() | upper }}" });
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.a",
+        Some(CWD),
+        with_vars(tmpl(json!("{{ r }}!")), &vars, None),
+    );
+    let traced = resolve_traced("p.a", &inputs(&env), &mut f).unwrap();
+    assert_eq!(traced.value, Some(json!("/S!")));
+    assert_eq!(traced.memos.len(), 1);
+    assert_eq!(traced.memos[0].key, "p.var.r");
+    assert_eq!(traced.memos[0].hash, hash_of(&["/s"]));
+    assert_eq!(traced.memos[0].data, Some(json!("/S")));
+
+    let mut f = MapFetch::default();
+    let hit = json!({ "r": memo(hash_of(&["/s"]), Some(json!("HIT")), 5) });
+    f.seed(
+        "p.a",
+        Some(CWD),
+        with_vars(tmpl(json!("{{ r }}!")), &vars, Some(hit)),
+    );
+    let traced = resolve_traced("p.a", &inputs(&env), &mut f).unwrap();
+    assert_eq!(traced.value, Some(json!("HIT!")));
+    assert!(traced.memos.is_empty(), "a hit writes nothing");
+    assert_eq!(traced.oldest_input_ms, Some(5), "as old as its memo");
+}
+
+/// What a var reads is what the leaf that read it depends on: a watch
+/// follows it.
+#[test]
+fn a_leaf_depends_on_what_its_vars_read() {
+    let env = env_of(&[]);
+    let vars = json!({ "r": "{{ git.branch }}" });
+    let mut f = MapFetch::default();
+    f.seed(
+        "p.a",
+        Some(CWD),
+        with_vars(tmpl(json!("{{ r }}")), &vars, None),
+    )
+    .seed("git.branch", Some(CWD), data(json!("main")));
+    assert_eq!(
+        resolve("p.a", &inputs(&env), &mut f),
+        Ok(Some(json!("main")))
+    );
+    assert_eq!(
+        deps("p.a", &inputs(&env), &mut f).unwrap(),
+        vec![
+            ("p.a".to_string(), Some(CWD.to_string())),
+            ("git.branch".to_string(), Some(CWD.to_string())),
+        ]
+    );
+}
+
+/// A var hides the provider of its name; vars reading each other in a ring
+/// are a cycle, named.
+#[test]
+fn a_var_hides_a_provider_and_a_ring_of_vars_is_a_cycle() {
+    let env = env_of(&[]);
+    let mut f = MapFetch::default();
+    let vars = json!({ "git": "{{ 'mine' }}" });
+    f.seed(
+        "p.a",
+        Some(CWD),
+        with_vars(tmpl(json!("{{ git }}")), &vars, None),
+    );
+    assert_eq!(
+        resolve("p.a", &inputs(&env), &mut f),
+        Ok(Some(json!("mine")))
+    );
+    assert_eq!(f.keys(), vec!["p.a"]);
+
+    let mut f = MapFetch::default();
+    let vars = json!({ "x": "{{ y }}", "y": "{{ x }}" });
+    f.seed(
+        "p.a",
+        Some(CWD),
+        with_vars(tmpl(json!("{{ x }}")), &vars, None),
+    );
+    match resolve("p.a", &inputs(&env), &mut f) {
+        Err(ResolveError::Config(m)) => {
+            assert!(m.contains("p.var.x") && m.contains("cycle"), "{m}")
+        }
+        other => panic!("{other:?}"),
+    }
 }

@@ -145,6 +145,19 @@ pub(crate) async fn put(
     // compile is refused. A name no provider has is not, since a later
     // put may make that provider.
     if facet == Some(Facet::Template) {
+        // A var is configuration only, for now: `[client.providers.<p>] var.<name>`.
+        let var = crate::shape::seeded::VAR_NODE;
+        let at_var = libbeachcomber::key::segments(node)
+            .first()
+            .map(|s| s.as_ref())
+            == Some(var)
+            || (node.is_empty() && data.get(var).is_some());
+        if at_var {
+            return Response::error(format!(
+                "{key}: {var} is the vars' node, set in [client.providers.<p>] {var}.<name>; a \
+                 put does not write a var"
+            ));
+        }
         let engine = libbeachcomber::eval::Probe::new(libbeachcomber::engine::engine_env());
         let at = libbeachcomber::key::join(namespace, node);
         if let Some(leaf) = crate::daemon::seed::non_string_template_leaf(data, &at) {

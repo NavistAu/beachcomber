@@ -267,6 +267,55 @@ async fn a_put_of_a_non_string_template_leaf_is_refused() {
     handle.abort();
 }
 
+/// A var is configuration (`[client.providers.<p>] var.<name>`): a put at
+/// `<p>:template.var`, or of a tree holding `var`, is refused and writes
+/// nothing. A template half of a provider with no vars carries no var half.
+#[tokio::test]
+async fn a_put_of_a_var_is_refused_and_no_vars_send_no_var_half() {
+    let (_tmp, sock, cache, registry, watchers) = setup();
+    let server = crate::common::scheduler::server(sock.clone(), cache, registry, watchers);
+    let handle = server.spawn().unwrap();
+    let mut stream = UnixStream::connect(&sock).await.unwrap();
+
+    for (key, data) in [
+        ("p:template.var.x", serde_json::json!("{{ 1 }}")),
+        ("p:template.var", serde_json::json!({"x": "{{ 1 }}"})),
+        (
+            "p:template",
+            serde_json::json!({"a": "{{ 1 }}", "var": {"x": "{{ 1 }}"}}),
+        ),
+    ] {
+        let r = send_recv(
+            &mut stream,
+            &serde_json::json!({"op": "put", "key": key, "data": data}).to_string(),
+        )
+        .await;
+        assert!(!r.ok, "{key} is refused");
+        assert!(
+            r.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("a put does not write a var"),
+            "{:?}",
+            r.error
+        );
+    }
+    let r = send_recv(&mut stream, r#"{"op":"get","key":"p:template"}"#).await;
+    assert_eq!(r.data, None, "nothing was written");
+
+    let r = send_recv(
+        &mut stream,
+        r#"{"op":"put","key":"p:template.a","data":"{{ 1 }}"}"#,
+    )
+    .await;
+    assert!(r.ok, "{:?}", r.error);
+    let r = send_recv(&mut stream, r#"{"op":"get","key":"p.a"}"#).await;
+    assert_eq!(r.template, Some(serde_json::json!("{{ 1 }}")));
+    assert_eq!((r.var, r.var_memo), (None, None));
+
+    handle.abort();
+}
+
 // The facets are a closed set: `template`, `macro`, `memo`, `put`, `source`
 // and `cache`. Any other name after the colon is refused by every op that takes a
 // key, naming the head as the caller wrote it, and nothing is stored or read.

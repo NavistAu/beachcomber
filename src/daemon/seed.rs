@@ -418,14 +418,15 @@ fn plan_templates(
     world: &ClientWorld,
     plan: &mut Seed,
 ) {
-    let known = world.known();
-    for Layer {
-        label,
-        shown,
-        value,
-        read,
-    } in layers
-    {
+    let vars = PlannedVars::of(layers, world);
+    vars.check_cycles(world, plan);
+    for (index, layer) in layers.iter().enumerate() {
+        let Layer {
+            label,
+            shown,
+            value,
+            read,
+        } = layer;
         // The layer's `[client]` tree as the engine reads it, made once for
         // every provider's line.
         let client = minijinja::Value::from(minijinja::value::Serde(
@@ -435,41 +436,197 @@ fn plan_templates(
                 .unwrap_or_else(|| serde_json::json!({})),
         ));
         for name in world.providers.iter().filter(|n| !read.fenced.contains(*n)) {
-            match lines.template_tree(name, &client) {
-                Ok(Some(tree)) => {
-                    let mut compiles = true;
-                    for (leaf, finding) in
-                        lint_template_tree(&world.engine, &tree, "template", &known)
-                    {
-                        let message =
-                            format!("{shown}: [client.providers.{name}] {leaf}: {finding}");
-                        match finding {
-                            libbeachcomber::eval::Finding::Compile(_) => {
-                                compiles = false;
-                                plan.errors.push(message);
-                            }
-                            libbeachcomber::eval::Finding::Unknown(_) => {
-                                plan.warnings.push(message)
-                            }
-                        }
-                    }
-                    if !compiles {
-                        continue;
-                    }
-                    let value = Value::from_json(&tree).expect("a template tree has no null");
-                    plan.writes
-                        .entry(crate::cache::facet_of(
-                            name,
-                            libbeachcomber::key::Facet::Template,
-                        ))
-                        .or_default()
-                        .push((label.clone(), value));
+            let tree = match lines.template_tree(name, &client) {
+                Ok(tree) => tree,
+                Err(e) => {
+                    plan.errors.push(format!("{shown}: {e}"));
+                    continue;
                 }
-                Ok(None) => {}
-                Err(e) => plan.errors.push(format!("{shown}: {e}")),
+            };
+            let layer_vars = vars.of_layer(index, name);
+            if tree.is_none() && layer_vars.is_empty() {
+                continue;
+            }
+            let mut tree = tree.unwrap_or_else(|| serde_json::json!({}));
+            let names = vars.names(name);
+            let mut providers = world.providers.clone();
+            providers.extend(names.iter().cloned());
+            let known = libbeachcomber::eval::Known {
+                providers: &providers,
+                ..world.known()
+            };
+            let mut compiles = true;
+            let mut findings = lint_template_tree(&world.engine, &tree, "template", &known);
+            let layer_vars = serde_json::Value::Object(layer_vars);
+            findings.extend(lint_template_tree(
+                &world.engine,
+                &layer_vars,
+                "var",
+                &known,
+            ));
+            for (leaf, finding) in findings {
+                let message = format!("{shown}: [client.providers.{name}] {leaf}: {finding}");
+                match finding {
+                    libbeachcomber::eval::Finding::Compile(_) => {
+                        compiles = false;
+                        plan.errors.push(message);
+                    }
+                    libbeachcomber::eval::Finding::Unknown(_) => plan.warnings.push(message),
+                }
+            }
+            if !compiles {
+                continue;
+            }
+            if let (serde_json::Value::Object(tree), serde_json::Value::Object(layer_vars)) =
+                (&mut tree, layer_vars)
+                && !layer_vars.is_empty()
+            {
+                tree.insert(
+                    crate::shape::seeded::VAR_NODE.to_string(),
+                    serde_json::Value::Object(layer_vars),
+                );
+            }
+            let value = Value::from_json(&tree).expect("a template tree has no null");
+            plan.writes
+                .entry(crate::cache::facet_of(
+                    name,
+                    libbeachcomber::key::Facet::Template,
+                ))
+                .or_default()
+                .push((label.clone(), value));
+        }
+    }
+}
+
+/// Every layer's `var.<name>` bindings, and the cascade between them: a
+/// provider's own var beats the prototype's (`[client.providers._]`) of the
+/// same name in any layer, and among one kind a later layer beats an earlier.
+/// The prototype's reach every provider some layer's `[client.providers]`
+/// names: the ones whose templates could read them.
+struct PlannedVars<'l> {
+    layers: &'l [Layer<'l>],
+    /// `(provider, name)` for every var a provider declares itself.
+    own: std::collections::BTreeSet<(String, String)>,
+    /// The providers a `[client.providers]` table names.
+    client: std::collections::BTreeSet<String>,
+}
+
+impl<'l> PlannedVars<'l> {
+    fn of(layers: &'l [Layer<'l>], world: &ClientWorld) -> Self {
+        let own = layers
+            .iter()
+            .flat_map(|layer| &layer.read.vars)
+            .filter(|(provider, _)| provider != "_")
+            .flat_map(|(provider, vars)| vars.keys().map(|n| (provider.clone(), n.clone())))
+            .collect();
+        let client = layers
+            .iter()
+            .filter_map(|layer| layer.value.get("client")?.get("providers")?.as_table())
+            .flat_map(|table| table.keys())
+            .filter(|name| world.providers.contains(name))
+            .cloned()
+            .collect();
+        Self {
+            layers,
+            own,
+            client,
+        }
+    }
+
+    /// The vars layer `index` writes for `provider`: its own, and the
+    /// prototype's it does not declare in any layer.
+    fn of_layer(&self, index: usize, provider: &str) -> serde_json::Map<String, serde_json::Value> {
+        let mut out = serde_json::Map::new();
+        if !self.client.contains(provider) {
+            return out;
+        }
+        for (owner, vars) in &self.layers[index].read.vars {
+            for (name, text) in vars {
+                let own = owner == provider;
+                let prototype =
+                    owner == "_" && !self.own.contains(&(provider.to_string(), name.clone()));
+                if own || prototype {
+                    out.insert(name.clone(), text.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// The table a read of `provider` sees, every layer composed.
+    fn effective(&self, provider: &str) -> serde_json::Map<String, serde_json::Value> {
+        let mut out = serde_json::Map::new();
+        for index in 0..self.layers.len() {
+            out.extend(self.of_layer(index, provider));
+        }
+        out
+    }
+
+    /// The names of `provider`'s vars, which its templates read bare.
+    fn names(&self, provider: &str) -> Vec<String> {
+        self.effective(provider).keys().cloned().collect()
+    }
+
+    /// A var that reads itself, however far round, is a load error naming
+    /// the vars: once per provider, at the first cycle found in name order.
+    fn check_cycles(&self, world: &ClientWorld, plan: &mut Seed) {
+        for provider in &self.client {
+            let table = self.effective(provider);
+            let reads = |name: &str| -> Vec<String> {
+                let src = table.get(name).and_then(|t| t.as_str()).unwrap_or_default();
+                let mut out: Vec<String> = libbeachcomber::eval::discover_refs(&world.engine, src)
+                    .into_iter()
+                    .filter_map(|r| match r {
+                        libbeachcomber::virtual_fields::Ref::Dynamic(n)
+                        | libbeachcomber::virtual_fields::Ref::Resolved(n, _) => Some(n),
+                        _ => None,
+                    })
+                    .filter(|n| table.contains_key(n))
+                    .collect();
+                out.dedup();
+                out
+            };
+            if let Some(cycle) = first_cycle(table.keys().cloned().collect(), reads) {
+                plan.errors.push(format!(
+                    "[client.providers.{provider}] var cycle: {}",
+                    cycle.join(" -> ")
+                ));
             }
         }
     }
+}
+
+/// The first cycle of the graph `next` draws over `nodes`, searched from each
+/// in order: its names, the first repeated at the end.
+fn first_cycle(nodes: Vec<String>, next: impl Fn(&str) -> Vec<String>) -> Option<Vec<String>> {
+    fn visit(
+        node: &str,
+        path: &mut Vec<String>,
+        done: &mut std::collections::BTreeSet<String>,
+        next: &dyn Fn(&str) -> Vec<String>,
+    ) -> Option<Vec<String>> {
+        if let Some(at) = path.iter().position(|n| n == node) {
+            let mut cycle = path[at..].to_vec();
+            cycle.push(node.to_string());
+            return Some(cycle);
+        }
+        if done.contains(node) {
+            return None;
+        }
+        path.push(node.to_string());
+        for n in next(node) {
+            if let Some(cycle) = visit(&n, path, done, next) {
+                return Some(cycle);
+            }
+        }
+        path.pop();
+        done.insert(node.to_string());
+        None
+    }
+    let mut done = std::collections::BTreeSet::new();
+    nodes
+        .iter()
+        .find_map(|n| visit(n, &mut Vec::new(), &mut done, &next))
 }
 
 /// What a `put` of `data` to `namespace` (`<p>:macro`) at `node` writes, checked
@@ -774,6 +931,67 @@ mod tests {
         assert_eq!(
             writes[1].1,
             Value::from_json(&serde_json::json!({"b": "2"})).unwrap()
+        );
+    }
+
+    /// A provider's vars are seeded at `<p>:template.var`, and the
+    /// prototype's reach every client provider, its own var of a name
+    /// winning in any layer. A template reading a var is not told the name
+    /// is unknown.
+    #[test]
+    fn vars_seed_at_the_var_node_with_the_prototype_beneath_a_providers_own() {
+        let layers = [
+            crate::daemon::defaults::comb_layer(),
+            layer_at("/a.toml", "[client.providers.p]\nvar.x = \"{{ 'own' }}\"\n"),
+            layer_at(
+                "/b.toml",
+                "[client.providers._]\nvar.x = \"{{ 'proto' }}\"\nvar.y = \"{{ x }}\"\n\n\
+                 [client.providers.q]\ntemplate.t = \"{{ x ~ y }}\"\n",
+            ),
+        ];
+        let plan = plan_of(&layers);
+        assert_eq!(plan.errors, Vec::<String>::new());
+        assert!(
+            !plan
+                .warnings
+                .iter()
+                .any(|w| w.contains("[client.providers.q]")),
+            "{:#?}",
+            plan.warnings
+        );
+        let tree = |p: &str| -> Vec<serde_json::Value> {
+            plan.writes[&format!("{p}:template")]
+                .iter()
+                .map(|(_, v)| serde_json::to_value(v).unwrap())
+                .collect()
+        };
+        assert_eq!(
+            tree("p"),
+            [
+                serde_json::json!({"var": {"x": "{{ 'own' }}"}}),
+                serde_json::json!({"var": {"y": "{{ x }}"}}),
+            ],
+            "the later prototype's x does not beat p's own"
+        );
+        assert_eq!(
+            tree("q"),
+            [serde_json::json!({
+                "t": "{{ x ~ y }}",
+                "var": {"x": "{{ 'proto' }}", "y": "{{ x }}"},
+            })]
+        );
+    }
+
+    /// Vars reading each other in a ring are a load error naming them.
+    #[test]
+    fn a_cycle_of_vars_is_a_load_error() {
+        let layers = [layer(
+            "[client.providers.p]\nvar.a = \"{{ b.x }}\"\nvar.b = \"{{ c }}\"\n\
+             var.c = \"{{ a | length }}\"\nvar.d = \"{{ a }}\"\n",
+        )];
+        assert_eq!(
+            plan_of(&layers).errors,
+            ["[client.providers.p] var cycle: a -> b -> c -> a"]
         );
     }
 

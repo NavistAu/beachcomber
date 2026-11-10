@@ -14,6 +14,10 @@
 //! - `[client.providers.<p>] macro.<name>` is a macro library: a string, under
 //!   a name the name rule allows. Each is kept ([`Seeded::macros`]) for the
 //!   seeding to lint and write at `<p>:macro`.
+//! - `[client.providers.<p>] var.<name>` is a binding the provider's templates
+//!   read bare: a string under a name [`var_name_error`] allows, kept
+//!   ([`Seeded::vars`]) for the seeding to lint and write at
+//!   `<p>:template.var.<name>`. `[client.providers._]` holds only `var`.
 //! - `[daemon.providers.<p>.cache._] decay` seeds `<p>:cache`, an integer from
 //!   1 to [`MAX_DECAY`]; the abstract provider `_` seeds `*:cache`, the
 //!   prototype every provider without its own falls back to.
@@ -65,6 +69,38 @@ pub struct Seeded {
     /// `(provider, libraries)`: each provider's macro libraries that are a
     /// string under a name the name rule allows, by name.
     pub macros: Vec<(String, serde_json::Map<String, serde_json::Value>)>,
+    /// `(provider, vars)`: each provider's `var.<name>` bindings that are a
+    /// string under a name [`var_name_error`] allows, by name. `_` is the
+    /// prototype, whose vars every provider sees.
+    pub vars: Vec<(String, serde_json::Map<String, serde_json::Value>)>,
+}
+
+/// The node a provider's `var.<name>` bindings are seeded at in its
+/// `:template` tree, `<p>:template.var.<name>`: reserved there, so no
+/// template field is called it.
+pub const VAR_NODE: &str = libbeachcomber::resolve::VAR_NODE;
+
+/// Why `name` is no var name, or `None` when it is one: a jinja identifier,
+/// which a template reads bare, and not one of the names every template
+/// already has or the engine reads as a word of its own.
+pub fn var_name_error(name: &str) -> Option<&'static str> {
+    let mut chars = name.chars();
+    let identifier = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !identifier {
+        return Some(
+            "a var name is a jinja identifier: letters, digits and '_', not first a digit",
+        );
+    }
+    const TAKEN: [&str; 17] = [
+        "_", "comb", "env", "true", "false", "none", "True", "False", "None", "and", "or", "not",
+        "in", "is", "if", "else", "loop",
+    ];
+    TAKEN
+        .contains(&name)
+        .then_some("'_', 'comb', 'env', 'loop' and the engine's own words are taken")
 }
 
 /// Why `text` at `name` is no macro library, or `None` when it is one: a
@@ -120,6 +156,11 @@ impl Reader {
                 continue;
             };
             for (name, provider) in providers {
+                // `_` is the prototype: its vars reach every provider.
+                if name == "_" {
+                    self.client_prototype(provider);
+                    continue;
+                }
                 match provider_name_error("client.providers", name, true) {
                     Some(e) => self.err(e),
                     None => self.client_provider(name, provider),
@@ -137,6 +178,10 @@ impl Reader {
                 self.macros(name, sub);
                 continue;
             }
+            if key == "var" {
+                self.vars(name, sub);
+                continue;
+            }
             if key != "template" {
                 self.err(format!("unknown key '{key}' in [client.providers.{name}]"));
                 continue;
@@ -152,6 +197,47 @@ impl Reader {
             if self.out.errors.len() > before {
                 self.out.fenced.insert(name.to_string());
             }
+        }
+    }
+
+    /// `[client.providers._]`: the prototype, which holds only `var`.
+    fn client_prototype(&mut self, value: &toml::Value) {
+        let Some(table) = value.as_table() else {
+            return self.err("[client.providers._] must be a table".into());
+        };
+        for (key, sub) in table {
+            if key == "var" {
+                self.vars("_", sub);
+            } else {
+                self.err(format!(
+                    "unknown key '{key}' in [client.providers._] (the prototype holds only var)"
+                ));
+            }
+        }
+    }
+
+    /// `[client.providers.<p>] var`: a table of bindings, each a string (a
+    /// value expression) under a name [`var_name_error`] allows.
+    fn vars(&mut self, provider: &str, value: &toml::Value) {
+        let Some(table) = value.as_table() else {
+            return self.err(format!(
+                "[client.providers.{provider}] var must be a table of value expressions \
+                 (var.<name> = \"{{{{ … }}}}\")"
+            ));
+        };
+        let mut vars = serde_json::Map::new();
+        for (name, text) in table {
+            let refused = var_name_error(name)
+                .or_else(|| (!text.is_str()).then_some("must be a string (a value expression)"));
+            match refused {
+                Some(e) => self.err(format!("[client.providers.{provider}] var.{name}: {e}")),
+                None => {
+                    vars.insert(name.clone(), text.as_str().unwrap_or_default().into());
+                }
+            }
+        }
+        if !vars.is_empty() {
+            self.out.vars.push((provider.to_string(), vars));
         }
     }
 
@@ -200,6 +286,13 @@ impl Reader {
                 };
                 self.err(format!(
                     "[client.providers.{provider}] {at} has an empty key"
+                ));
+                continue;
+            }
+            if prefix.is_empty() && key == VAR_NODE {
+                self.err(format!(
+                    "[client.providers.{provider}] template.{VAR_NODE} is reserved: a binding \
+                     the templates share is var.<name>"
                 ));
                 continue;
             }

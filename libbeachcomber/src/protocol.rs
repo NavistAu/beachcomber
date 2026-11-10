@@ -288,6 +288,15 @@ pub struct Response {
     /// has a memo. Absent when no leaf has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memo: Option<serde_json::Value>,
+    /// The var half of a `get`, present only beside a template half and only
+    /// when the provider has vars: its `var.<name>` bindings, each a value
+    /// expression the client renders at most once per read, by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub var: Option<serde_json::Value>,
+    /// The memos `| cache()` stored for the vars, by name, each shaped as a
+    /// leaf's memo half is. Absent when no var has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub var_memo: Option<serde_json::Value>,
 }
 
 /// A `get`'s memo half with each memo's `age_ms` taken out, walked beside the
@@ -332,6 +341,8 @@ impl Response {
             template: None,
             rest: None,
             memo: None,
+            var: None,
+            var_memo: None,
         }
     }
 
@@ -356,6 +367,17 @@ impl Response {
         self.template = template;
         self.rest = rest;
         self.memo = memo;
+        self
+    }
+
+    /// Attach the var half and its memos ([`Response::var`]).
+    pub fn with_vars(
+        mut self,
+        var: Option<serde_json::Value>,
+        var_memo: Option<serde_json::Value>,
+    ) -> Self {
+        self.var = var;
+        self.var_memo = var_memo;
         self
     }
 }

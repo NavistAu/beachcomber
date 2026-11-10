@@ -566,8 +566,9 @@ fn every_refusal_says_what_it_refuses() {
             invalid("*", "daemon", STAR),
         ),
         (
-            "[client.providers._]\n".to_string(),
-            invalid("_", "client", "'_' is reserved: it names a prototype table"),
+            "[client.providers._]\ntemplate.x = \"1\"\n".to_string(),
+            "unknown key 'template' in [client.providers._] (the prototype holds only var)"
+                .to_string(),
         ),
         (
             "[client.providers.env]\n".to_string(),
@@ -952,8 +953,13 @@ fn an_old_colon_table_is_an_unknown_table() {
 fn provider_names_hold_no_colon_star_or_nothing_and_the_prototype_is_not_a_client_provider() {
     let errors = seeded_errors("[client.providers.\"a:b\"]\ntemplate.x = \"1\"\n");
     assert!(errors.iter().any(|e| e.contains("'a:b'")), "{errors:?}");
+    // The client prototype holds vars and nothing else.
     let errors = seeded_errors("[client.providers._]\ntemplate.x = \"1\"\n");
-    assert!(errors.iter().any(|e| e.contains("'_'")), "{errors:?}");
+    assert!(
+        errors.iter().any(|e| e.contains("'template'")),
+        "{errors:?}"
+    );
+    assert!(seeded_errors("[client.providers._]\nvar.x = \"{{ 1 }}\"\n").is_empty());
     let errors = seeded_errors("[daemon.providers.\"*\"]\n");
     assert!(errors.iter().any(|e| e.contains("'*'")), "{errors:?}");
     assert!(seeded_errors("[daemon.providers._.cache._]\ndecay = 4\n").is_empty());
@@ -2176,4 +2182,32 @@ fn a_toml_parse_error_keeps_its_reason() {
     assert!(errors[0].contains("line 4"), "{errors:?}");
     assert!(errors[0].contains(&reason), "{errors:?}");
     assert!(!errors[0].contains('\n'), "one line: {errors:?}");
+}
+
+/// A var is a string under a jinja identifier other than `_`, `comb` or
+/// `env`; `template.var` is the vars' node, so no field is called it.
+#[test]
+fn var_names_are_identifiers_and_template_var_is_reserved() {
+    assert!(seeded_errors("[client.providers.p]\nvar.ok_1 = \"{{ 1 }}\"\n").is_empty());
+    for name in ["_", "comb", "env", "1x", "a-b", "none"] {
+        let errors = seeded_errors(&format!(
+            "[client.providers.p]\nvar.\"{name}\" = \"{{{{ 1 }}}}\"\n"
+        ));
+        assert_eq!(errors.len(), 1, "{name}: {errors:?}");
+        assert!(
+            errors[0].starts_with(&format!("[client.providers.p] var.{name}: ")),
+            "{errors:?}"
+        );
+    }
+    assert_eq!(
+        seeded_errors("[client.providers.p]\nvar.x = 1\n"),
+        ["[client.providers.p] var.x: must be a string (a value expression)"]
+    );
+    assert_eq!(
+        seeded_errors("[client.providers.p]\ntemplate.var = \"{{ 1 }}\"\n"),
+        [
+            "[client.providers.p] template.var is reserved: a binding the templates share is \
+          var.<name>"
+        ]
+    );
 }

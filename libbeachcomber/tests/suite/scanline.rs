@@ -171,6 +171,7 @@ impl Fetch for Scanline<'_> {
             rest,
             memo: None,
             age_ms,
+            ..Got::default()
         }))
     }
     fn memo(&mut self, _write: &libbeachcomber::resolve::MemoWrite) -> Result<(), FetchError> {
