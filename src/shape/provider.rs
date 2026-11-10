@@ -68,6 +68,11 @@ use tokio::time::Instant;
 /// Sources. The one line the code supplies; every other comes from a file.
 pub const DEFAULT_RESULT: &str = "{{ _.merge(sources) }}";
 
+/// The shipped abstract provider's `template` line (`defaults/00-comb.toml`):
+/// the layer's own `[client.providers.<p>.template]`. Read natively where it
+/// is a provider's whole chain ([`ProviderLines::template_tree`]).
+pub const SHIPPED_TEMPLATE: &str = "{{ client.providers[_.name].template }}";
+
 /// The `result` of a provider with `enabled = false`: it produces nothing.
 pub const DISABLED_RESULT: &str = "{{ {} }}";
 
@@ -707,9 +712,29 @@ impl ProviderLines {
         provider: &str,
         client: &MjValue,
     ) -> Result<Option<serde_json::Value>, String> {
-        let vars = vec![("client", client.clone())];
-        let Some(value) = self.eval(provider, Key::Template, vars)?.value else {
-            return Ok(None);
+        // Every load reads every provider's line over every layer: the
+        // shipped one is looked up, not rendered, giving what it would.
+        let value = if self.chains_for(provider).lines[Key::Template.index()]
+            .iter()
+            .map(String::as_str)
+            .eq([SHIPPED_TEMPLATE])
+        {
+            let found = client
+                .get_attr("providers")
+                .and_then(|p| p.get_item(&MjValue::from(provider)))
+                .and_then(|p| p.get_attr("template"))
+                .ok()
+                .filter(|v| !v.is_undefined() && !v.is_none());
+            let Some(value) = found else {
+                return Ok(None);
+            };
+            value
+        } else {
+            let vars = vec![("client", client.clone())];
+            let Some(value) = self.eval(provider, Key::Template, vars)?.value else {
+                return Ok(None);
+            };
+            value
         };
         let tree = serde_json::to_value(&value).map_err(|e| e.to_string())?;
         match check_tree(&tree, "") {
@@ -1330,6 +1355,34 @@ mod tests {
             Some(json!({"p": "x"}))
         );
         assert_eq!(lines.template_tree("gcp", &client).unwrap(), None);
+    }
+
+    /// The shipped line, read natively, gives what rendering it gives: the
+    /// same line in other words (so rendered) over the same trees.
+    #[test]
+    fn the_shipped_template_line_read_natively_is_the_line_rendered() {
+        let (_, shipped) = crate::daemon::defaults::comb_layer();
+        assert_eq!(
+            shipped["daemon"]["providers"]["_"]["template"].as_str(),
+            Some(SHIPPED_TEMPLATE)
+        );
+        let native = lines("");
+        let rendered = lines("[_]\ntemplate = \"{{ (client.providers[_.name].template) }}\"");
+        for tree in [
+            json!({}),
+            json!({"providers": {}}),
+            json!({"providers": {"aws": {}}}),
+            json!({"providers": {"aws": {"template": {"p": "x", "g": {"q": "y"}}}}}),
+            json!({"providers": {"aws": {"template": 1}}}),
+            json!({"providers": {"aws": {"template": {"a": 1}}}}),
+        ] {
+            let client = MjValue::from(Serde(tree.clone()));
+            assert_eq!(
+                native.template_tree("aws", &client),
+                rendered.template_tree("aws", &client),
+                "{tree}"
+            );
+        }
     }
 
     #[test]
