@@ -325,6 +325,42 @@ fn a_string_form_leaf_that_fails_names_the_script() {
     );
 }
 
+/// Two providers' leaves render at once, not one after the other: each
+/// stand-in tool marks that it started, then waits (up to 2s) for the other's
+/// mark. Rendered in turn, the first gives up alone; together, both meet. No
+/// clock is read, so a loaded machine slows it but cannot fail it.
+#[test]
+fn providers_render_side_by_side() {
+    let d = TestDaemon::serve();
+    let cwd = project(&d);
+    let marks = d.home.join("marks");
+    std::fs::create_dir_all(&marks).unwrap();
+    let marks = marks.display();
+    for (me, other) in [("ping", "pong"), ("pong", "ping")] {
+        let script = format!(
+            "touch {marks}/{me}; i=0; while [ ! -e {marks}/{other} ] && [ $i -lt 100 ]; \
+             do sleep 0.02; i=$((i+1)); done; [ -e {marks}/{other} ] && echo met || echo alone"
+        );
+        put(
+            &d,
+            &cwd,
+            &[
+                &format!("{me}:template.leaf"),
+                &format!(r#""{{{{ _.exec('{script}') }}}}""#),
+            ],
+        );
+    }
+
+    let rows = json_rows(&d, &cwd, &["--filter", "source=rendered"]);
+    for provider in ["ping", "pong"] {
+        assert!(
+            rows.iter()
+                .any(|r| r["provider"] == provider && r["value"] == "met"),
+            "{provider} ran beside the other: {rows:#?}"
+        );
+    }
+}
+
 #[test]
 fn a_template_put_at_another_path_is_not_rendered_here() {
     let d = TestDaemon::serve();

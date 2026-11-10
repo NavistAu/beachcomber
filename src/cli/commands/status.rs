@@ -40,11 +40,15 @@ const MEMO_SOURCE: &str = "memo";
 ///
 /// The memos the leaves rendered go onto `memos`, for the caller to write
 /// back once the table is out.
+///
+/// `session` renders the first provider's leaves; other providers render at
+/// once, each on a session of its own from `client`.
 fn render_template_rows(
     rows: &[CacheRow],
     cwd: &str,
     env: &HashMap<String, String>,
-    session: &mut libbeachcomber::Session,
+    session: libbeachcomber::Session,
+    client: &crate::client::Client,
     filters: &[String],
     memos: &mut Vec<MemoWrite>,
 ) -> Vec<CacheRow> {
@@ -74,48 +78,117 @@ fn render_template_rows(
     addrs.dedup();
 
     let inputs = crate::cli::inputs(cwd, env, Slot::Cwd, false, libbeachcomber::Wait::Budget);
+    // One provider's leaves run in order on one session, so they share its
+    // memo hits and nothing runs twice; providers run side by side, so a
+    // slow tool in one does not hold up the rest. Each group carries the
+    // index of its first leaf in `addrs`; the queue pops from the back.
+    let mut start = 0;
+    let mut groups: Vec<Group<'_>> = addrs
+        .chunk_by(|a, b| a.0 == b.0)
+        .map(|group| {
+            start += group.len();
+            (start - group.len(), group)
+        })
+        .collect();
+    groups.reverse();
+    let queue = std::sync::Mutex::new(groups);
+    let first = std::sync::Mutex::new(Some(session));
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let done: Vec<Vec<(usize, CacheRow, Vec<MemoWrite>)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers.min(queue.lock().unwrap().len()))
+            .map(|_| scope.spawn(|| render_groups(&queue, &first, client, &inputs, cwd)))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    // Back in address order, as one session rendering them in turn left them.
+    let mut rendered: Vec<_> = done.into_iter().flatten().collect();
+    rendered.sort_by_key(|(i, ..)| *i);
+    rendered
+        .into_iter()
+        .map(|(_, row, written)| {
+            memos.extend(written);
+            row
+        })
+        .collect()
+}
+
+/// The next group off `queue`, its lock released on return.
+fn pop<'a>(queue: &std::sync::Mutex<Vec<Group<'a>>>) -> Option<Group<'a>> {
+    queue.lock().unwrap().pop()
+}
+
+/// One provider's leaves, `(provider, field)`, with the index of the first
+/// in the full address list.
+type Group<'a> = (usize, &'a [(String, String)]);
+
+/// A worker of [`render_template_rows`]: takes provider groups off `queue`
+/// until none are left, rendering each on one session — `first`'s if still
+/// unclaimed, else its own. Each row comes back with its index in `addrs` and
+/// the memos it rendered.
+fn render_groups(
+    queue: &std::sync::Mutex<Vec<Group<'_>>>,
+    first: &std::sync::Mutex<Option<libbeachcomber::Session>>,
+    client: &crate::client::Client,
+    inputs: &libbeachcomber::resolve::Inputs<'_>,
+    cwd: &str,
+) -> Vec<(usize, CacheRow, Vec<MemoWrite>)> {
+    let mut session = None;
     let mut out = Vec::new();
-    for (provider, field) in addrs {
-        // A rendered value has no age of its own: it is as old as the oldest
-        // cached input it used, and has none when it used none.
-        let (value, age_ms, source) = match resolve_traced(
-            &libbeachcomber::key::join(&provider, &field),
-            &inputs,
-            session,
-        ) {
-            Ok(traced) => {
-                memos.extend(traced.memos);
-                (
-                    traced.value.unwrap_or(serde_json::Value::Null),
-                    traced.oldest_input_ms,
-                    if traced.memo_hit {
-                        MEMO_SOURCE
-                    } else {
-                        RENDERED_SOURCE
-                    },
-                )
-            }
-            Err(e) => (
-                serde_json::Value::String(e.to_string()),
-                None,
-                RENDERED_SOURCE,
-            ),
-        };
-        out.push(CacheRow {
-            shadowed: false,
-            provider,
-            path: Some(cwd.to_string()),
-            source: source.to_string(),
-            field,
-            value,
-            age_ms,
-            kind: Some(RowKind::Rendered),
-            poll_interval_secs: None,
-            poll_count: None,
-            polls_elapsed: None,
-            next_poll_in_secs: None,
-            failure: None,
+    // Popped through `pop`: a `while let` on the lock itself would hold it
+    // for the whole loop body, and the workers would take turns.
+    while let Some((start, group)) = pop(queue) {
+        let session = session.get_or_insert_with(|| {
+            first
+                .lock()
+                .unwrap()
+                .take()
+                .map_or_else(|| client.connect(), Ok)
         });
+        for (i, (provider, field)) in group.iter().enumerate() {
+            let mut written = Vec::new();
+            // A rendered value has no age of its own: it is as old as the
+            // oldest cached input it used, and has none when it used none.
+            let (value, age_ms, source) = match session
+                .as_mut()
+                .map_err(|e| e.to_string())
+                .and_then(|session| {
+                    resolve_traced(&libbeachcomber::key::join(provider, field), inputs, session)
+                        .map_err(|e| e.to_string())
+                }) {
+                Ok(traced) => {
+                    written = traced.memos;
+                    (
+                        traced.value.unwrap_or(serde_json::Value::Null),
+                        traced.oldest_input_ms,
+                        if traced.memo_hit {
+                            MEMO_SOURCE
+                        } else {
+                            RENDERED_SOURCE
+                        },
+                    )
+                }
+                Err(e) => (serde_json::Value::String(e), None, RENDERED_SOURCE),
+            };
+            out.push((
+                start + i,
+                CacheRow {
+                    shadowed: false,
+                    provider: provider.clone(),
+                    path: Some(cwd.to_string()),
+                    source: source.to_string(),
+                    field: field.clone(),
+                    value,
+                    age_ms,
+                    kind: Some(RowKind::Rendered),
+                    poll_interval_secs: None,
+                    poll_count: None,
+                    polls_elapsed: None,
+                    next_poll_in_secs: None,
+                    failure: None,
+                },
+                written,
+            ));
+        }
     }
     out
 }
@@ -384,14 +457,15 @@ fn with_rendered_rows(
     memos: &mut Vec<MemoWrite>,
 ) -> Vec<CacheRow> {
     if let Ok(cwd) = std::env::current_dir()
-        && let Ok(mut session) = client.connect()
+        && let Ok(session) = client.connect()
     {
         let cwd = cwd.to_string_lossy().into_owned();
         let rendered = render_template_rows(
             &rows,
             &cwd,
             &crate::cli::shell_env(),
-            &mut session,
+            session,
+            client,
             filters,
             memos,
         );
